@@ -121,6 +121,17 @@ pub mod error_codes {
 
     // Push notification codes (5xxx) - not errors, but server-initiated messages
     // delivered via the ErrorMessage proto field for backward compatibility.
+    //
+    // CONVENTION: The ServerMessage proto lacks a dedicated Notification variant,
+    // so user-facing push notifications are tunneled through the Error variant
+    // with codes in the 5xxx range. Clients MUST treat code >= 5000 && < 6000
+    // as notifications (not errors). The `message` field carries a JSON payload:
+    //   { "type": "user_notification", "notification_id": "...",
+    //     "notification_type": "...", "title": "...", "content": "..." }
+    // The `detail` field is unused (empty string).
+    //
+    // TODO: Add a dedicated Notification variant to server_message::Message in
+    // the proto definition to avoid this protocol abuse.
     pub const NOTIFICATION_PUSH: i32 = 5000;
 
     // Internal errors (9xxx)
@@ -275,8 +286,14 @@ impl ApiError {
     /// The detail field is left empty to avoid leaking sensitive information.
     #[must_use] 
     pub fn to_proto_error(&self) -> crate::proto::client::ErrorMessage {
+        // Sanitize Internal errors to avoid leaking sensitive implementation details
+        // (e.g. database connection strings, stack traces) to clients.
+        let message = match self {
+            Self::Internal(_) => "Internal error".to_string(),
+            _ => self.message().to_string(),
+        };
         crate::proto::client::ErrorMessage {
-            message: self.message().to_string(),
+            message,
             code: self.code(),
             detail: String::new(),
         }

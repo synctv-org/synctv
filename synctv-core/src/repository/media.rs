@@ -427,34 +427,45 @@ impl MediaRepository {
         Ok(())
     }
 
-    /// Swap positions of two media using a provided transaction
+    /// Swap positions of two media using a provided transaction.
+    ///
+    /// Uses a single CTE-based UPDATE to atomically swap both positions,
+    /// avoiding intermediate states that would violate the UNIQUE(playlist_id, position) constraint.
     pub async fn swap_positions_with_tx(
         &self,
         media_id1: &MediaId,
         media_id2: &MediaId,
         tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     ) -> Result<()> {
-        let pos1: i32 = sqlx::query_scalar("SELECT position FROM media WHERE id = $1 FOR UPDATE")
-            .bind(media_id1.as_str())
-            .fetch_one(&mut **tx)
-            .await?;
-
-        let pos2: i32 = sqlx::query_scalar("SELECT position FROM media WHERE id = $1 FOR UPDATE")
-            .bind(media_id2.as_str())
-            .fetch_one(&mut **tx)
-            .await?;
-
-        sqlx::query("UPDATE media SET position = $2 WHERE id = $1")
-            .bind(media_id1.as_str())
-            .bind(pos2)
-            .execute(&mut **tx)
-            .await?;
-
-        sqlx::query("UPDATE media SET position = $2 WHERE id = $1")
-            .bind(media_id2.as_str())
-            .bind(pos1)
-            .execute(&mut **tx)
-            .await?;
+        sqlx::query(
+            r"
+            WITH locked AS (
+                SELECT id, position
+                FROM media
+                WHERE id IN ($1, $2)
+                ORDER BY id
+                FOR UPDATE
+            ),
+            swap AS (
+                SELECT
+                    a.id AS id_a, a.position AS pos_a,
+                    b.id AS id_b, b.position AS pos_b
+                FROM locked a, locked b
+                WHERE a.id = $1 AND b.id = $2
+            )
+            UPDATE media m
+            SET position = CASE m.id
+                WHEN s.id_a THEN s.pos_b
+                WHEN s.id_b THEN s.pos_a
+            END
+            FROM swap s
+            WHERE m.id IN (s.id_a, s.id_b)
+            "
+        )
+        .bind(media_id1.as_str())
+        .bind(media_id2.as_str())
+        .execute(&mut **tx)
+        .await?;
 
         Ok(())
     }
@@ -473,6 +484,8 @@ impl MediaRepository {
     ///
     /// Sorts updates by `media_id` before acquiring FOR UPDATE locks to prevent
     /// deadlocks when concurrent transactions lock the same rows in different order.
+    /// Uses a two-phase approach (sentinel then final values) to avoid violating
+    /// the UNIQUE(playlist_id, position) constraint during intermediate states.
     pub async fn reorder_batch_with_tx(
         &self,
         updates: &[(MediaId, i32)],
@@ -495,7 +508,18 @@ impl MediaRepository {
                 .await?;
         }
 
-        // Now update positions within the lock scope
+        // Phase 1: Move all affected rows to negative sentinel positions to
+        // clear the UNIQUE constraint space for the final positions.
+        for (i, (media_id, _)) in sorted_updates.iter().enumerate() {
+            let sentinel = -(i as i32) - 1; // -1, -2, -3, ...
+            sqlx::query("UPDATE media SET position = $2 WHERE id = $1")
+                .bind(media_id.as_str())
+                .bind(sentinel)
+                .execute(&mut **tx)
+                .await?;
+        }
+
+        // Phase 2: Set the final positions (now safe since no collisions)
         for (media_id, new_position) in &sorted_updates {
             sqlx::query("UPDATE media SET position = $2 WHERE id = $1")
                 .bind(media_id.as_str())

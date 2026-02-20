@@ -688,17 +688,27 @@ mod websocket_e2e {
         // Create services
         let jwt_service = JwtService::new(TEST_JWT_SECRET).expect("JwtService");
         let username_cache = UsernameCache::new(None, "test_un:".to_string(), 100, 300);
+        let redis_client = redis::Client::open(infra.redis_url.as_str()).expect("Redis client");
+        let redis_conn = redis::aio::ConnectionManager::new(redis_client).await.expect("Redis ConnectionManager");
+        let key_builder = synctv_core::cache::KeyBuilder::new("test:".to_string());
+        let brute_force = synctv_core::service::auth::BruteForceProtection::new(redis_conn.clone(), "test:".to_string());
         let user_service = Arc::new(UserService::new(
             pool.clone(),
             jwt_service.clone(),
             username_cache,
             PasswordComplexityConfig::default(),
+            redis_conn,
+            key_builder,
+            brute_force,
         ));
         let room_service = Arc::new(RoomService::new(pool.clone(), (*user_service).clone()));
 
         // Create cluster manager (single-node mode with Redis for Pub/Sub)
+        let redis_client_for_cluster = redis::Client::open(redis_url.clone()).expect("Failed to open Redis client");
+        let redis_conn_for_cluster = redis_client_for_cluster.get_connection_manager().await.expect("Failed to get ConnectionManager");
         let cluster_config = ClusterConfig {
-            redis_url: redis_url.clone(),
+            redis_client: Some(redis_client_for_cluster),
+            redis_conn: Some(redis_conn_for_cluster),
             node_id: node_id.to_string(),
             ..Default::default()
         };

@@ -108,7 +108,7 @@ pub struct RedisPubSub {
 impl RedisPubSub {
     /// Create a new `RedisPubSub` service.
     pub fn new(
-        redis_url: &str,
+        redis_client: RedisClient,
         message_hub: Arc<RoomMessageHub>,
         node_id: String,
         admin_event_tx: broadcast::Sender<ClusterEvent>,
@@ -116,7 +116,7 @@ impl RedisPubSub {
         cache_invalidation: Option<CacheInvalidationService>,
         deduplicator: Arc<MessageDeduplicator>,
     ) -> Result<Self> {
-        Self::with_key_prefix(redis_url, message_hub, node_id, "synctv:", admin_event_tx, permission_service, cache_invalidation, deduplicator, 300)
+        Self::with_key_prefix(redis_client, message_hub, node_id, "synctv:", admin_event_tx, permission_service, cache_invalidation, deduplicator, 300)
     }
 
     /// Create a new `RedisPubSub` service with a custom key prefix.
@@ -124,7 +124,7 @@ impl RedisPubSub {
     /// `catchup_window_secs` controls how far back to replay Redis Stream events
     /// when this node first connects.  Pass `300` for the default (5 minutes).
     pub fn with_key_prefix(
-        redis_url: &str,
+        redis_client: RedisClient,
         message_hub: Arc<RoomMessageHub>,
         node_id: String,
         key_prefix: &str,
@@ -134,8 +134,6 @@ impl RedisPubSub {
         deduplicator: Arc<MessageDeduplicator>,
         catchup_window_secs: u64,
     ) -> Result<Self> {
-        let redis_client = RedisClient::open(redis_url).context("Failed to create Redis client")?;
-
         Ok(Self {
             redis_client,
             shared_conn: tokio::sync::Mutex::new(None),
@@ -1793,6 +1791,7 @@ mod tests {
     #[ignore = "Requires Redis server"]
     async fn test_pubsub_integration() {
         let redis_url = "redis://127.0.0.1:6379";
+        let redis_client = RedisClient::open(redis_url).unwrap();
         let message_hub = Arc::new(RoomMessageHub::new());
 
         let (admin_tx, _) = broadcast::channel(256);
@@ -1801,10 +1800,10 @@ mod tests {
         let dedup1 = Arc::new(MessageDeduplicator::with_defaults());
         let dedup2 = Arc::new(MessageDeduplicator::with_defaults());
         let pubsub1 = Arc::new(
-            RedisPubSub::new(redis_url, message_hub.clone(), "node1".to_string(), admin_tx.clone(), None, None, dedup1).unwrap(),
+            RedisPubSub::new(redis_client.clone(), message_hub.clone(), "node1".to_string(), admin_tx.clone(), None, None, dedup1).unwrap(),
         );
         let pubsub2 = Arc::new(
-            RedisPubSub::new(redis_url, message_hub.clone(), "node2".to_string(), admin_tx.clone(), None, None, dedup2).unwrap(),
+            RedisPubSub::new(redis_client, message_hub.clone(), "node2".to_string(), admin_tx.clone(), None, None, dedup2).unwrap(),
         );
 
         // Start both

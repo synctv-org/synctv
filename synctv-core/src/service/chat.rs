@@ -15,6 +15,10 @@ use crate::{
     Error, Result,
 };
 
+/// Maximum allowed chat message length in characters.
+/// Used by both the WebSocket handler and the service layer for consistent validation.
+pub const MAX_CHAT_MESSAGE_CHARS: usize = 500;
+
 /// Chat service for managing chat messages
 #[derive(Clone)]
 pub struct ChatService {
@@ -98,9 +102,9 @@ impl ChatService {
             return Err(Error::InvalidInput("Message content cannot be empty".to_string()));
         }
 
-        if content.chars().count() > 500 {
+        if content.chars().count() > MAX_CHAT_MESSAGE_CHARS {
             return Err(Error::InvalidInput(
-                "Message content must be at most 500 characters".to_string(),
+                format!("Message content must be at most {MAX_CHAT_MESSAGE_CHARS} characters"),
             ));
         }
 

@@ -213,24 +213,20 @@ impl OAuth2ApiImpl {
                 .await
                 .map_err(ApiError::from)?;
 
+            // Set email_verified inside the transaction if the OAuth2 provider confirmed the email
+            if user_info.email_verified && user_info.email.is_some() {
+                sqlx::query("UPDATE users SET email_verified = true, updated_at = NOW() WHERE id = $1")
+                    .bind(new_user.id.as_str())
+                    .execute(&mut *tx)
+                    .await
+                    .map_err(|e| {
+                        ApiError::Internal(format!("Failed to set email_verified in transaction: {e}"))
+                    })?;
+            }
+
             tx.commit().await.map_err(|e| {
                 ApiError::Internal(format!("Failed to commit transaction: {e}"))
             })?;
-
-            // Set email_verified if the OAuth2 provider confirmed the user's email
-            if user_info.email_verified && user_info.email.is_some() {
-                if let Err(e) = self
-                    .user_service
-                    .set_email_verified(&new_user.id, true)
-                    .await
-                {
-                    tracing::warn!(
-                        error = %e,
-                        user_id = %new_user.id.as_str(),
-                        "Failed to set email_verified for OAuth2 user"
-                    );
-                }
-            }
 
             let (access_token, refresh_token) = self
                 .user_service

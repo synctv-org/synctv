@@ -198,7 +198,7 @@ impl Gops {
         self.size
     }
 
-    /// Evict the oldest GOP from this stream, updating per-stream counters.
+    /// Evict the oldest GOP from this stream, updating per-stream and global counters.
     /// Returns the number of bytes evicted, or 0 if nothing could be evicted.
     fn evict_oldest_gop(&mut self, reason: &str) -> usize {
         if self.gops.len() <= 1 {
@@ -289,3 +289,4 @@ impl Gops {
         &self.gops
     }
 }
+

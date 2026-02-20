@@ -209,10 +209,7 @@ impl NodeRegistry {
     ///
     /// The `key_prefix` is prepended to cluster node keys in Redis (e.g. `"synctv:"` produces
     /// keys like `synctv:cluster:nodes:<node_id>`). Pass an empty string to use unprefixed keys.
-    pub fn new(redis_url: String, node_id: String, heartbeat_timeout_secs: i64, key_prefix: &str) -> Result<Self> {
-        let redis_client = redis::Client::open(redis_url)
-            .map_err(|e| Error::Configuration(format!("Failed to connect to Redis: {e}")))?;
-
+    pub fn new(redis_client: redis::Client, node_id: String, heartbeat_timeout_secs: i64, key_prefix: &str) -> Result<Self> {
         let nodes_cache = moka::future::Cache::builder()
             .time_to_live(std::time::Duration::from_secs(NODES_CACHE_TTL_SECS))
             .max_capacity(1)
@@ -1418,7 +1415,7 @@ mod tests {
     #[test]
     fn test_node_registry_creation_and_fencing_token() {
         // redis::Client::open succeeds even without a running Redis server
-        let registry = NodeRegistry::new("redis://localhost:6379".to_string(), "test_node".to_string(), 30, "synctv:").unwrap();
+        let registry = NodeRegistry::new(redis::Client::open("redis://localhost:6379").unwrap(), "test_node".to_string(), 30, "synctv:").unwrap();
 
         // Get fencing token
         let token = registry.current_fencing_token();
@@ -1461,7 +1458,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_merge_dns_peers_inserts_new() {
-        let registry = NodeRegistry::new("redis://localhost:6379".to_string(), "self".to_string(), 30, "synctv:").unwrap();
+        let registry = NodeRegistry::new(redis::Client::open("redis://localhost:6379").unwrap(), "self".to_string(), 30, "synctv:").unwrap();
 
         let peer = NodeInfo::new(
             "dns-peer-1".to_string(),
@@ -1478,7 +1475,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_merge_dns_peers_does_not_overwrite_existing() {
-        let registry = NodeRegistry::new("redis://localhost:6379".to_string(), "self".to_string(), 30, "synctv:").unwrap();
+        let registry = NodeRegistry::new(redis::Client::open("redis://localhost:6379").unwrap(), "self".to_string(), 30, "synctv:").unwrap();
 
         // Pre-populate local cache directly (simulating a prior registration)
         {

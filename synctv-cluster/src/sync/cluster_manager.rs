@@ -24,10 +24,14 @@ use synctv_core::models::id::{RoomId, UserId};
 use synctv_core::service::PermissionService;
 
 /// Cluster configuration
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct ClusterConfig {
-    /// Redis connection URL
-    pub redis_url: String,
+    /// Pre-built Redis client (shared across the process).
+    /// `None` for local-only / single-node mode (used in tests).
+    pub redis_client: Option<redis::Client>,
+    /// Pre-built Redis connection manager (shared across the process).
+    /// `None` for local-only / single-node mode (used in tests).
+    pub redis_conn: Option<redis::aio::ConnectionManager>,
     /// Unique identifier for this node
     pub node_id: String,
     /// Deduplication window duration
@@ -48,10 +52,27 @@ pub struct ClusterConfig {
     pub catchup_window_secs: u64,
 }
 
+impl std::fmt::Debug for ClusterConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ClusterConfig")
+            .field("redis_client", &self.redis_client.as_ref().map(|_| "redis::Client { .. }"))
+            .field("redis_conn", &self.redis_conn.as_ref().map(|_| "ConnectionManager { .. }"))
+            .field("node_id", &self.node_id)
+            .field("dedup_window", &self.dedup_window)
+            .field("cleanup_interval", &self.cleanup_interval)
+            .field("critical_channel_capacity", &self.critical_channel_capacity)
+            .field("publish_channel_capacity", &self.publish_channel_capacity)
+            .field("key_prefix", &self.key_prefix)
+            .field("catchup_window_secs", &self.catchup_window_secs)
+            .finish()
+    }
+}
+
 impl Default for ClusterConfig {
     fn default() -> Self {
         Self {
-            redis_url: "redis://127.0.0.1:6379".to_string(),
+            redis_client: None,
+            redis_conn: None,
             node_id: format!("node_{}", nanoid::nanoid!(8)),
             dedup_window: Duration::from_secs(10),
             cleanup_interval: Duration::from_secs(30),
@@ -130,38 +151,20 @@ impl ClusterManager {
 
         let (admin_event_tx, _) = broadcast::channel(4096);
 
-        // Start Redis pub/sub if Redis URL is provided.
-        // When Redis is configured, also enable distributed subscription state on
-        // the message hub and auto-spawn its TTL refresh task.
-        let (message_hub, redis_publish_tx, redis_critical_tx, redis_pubsub) = if config.redis_url.is_empty() {
-            warn!("Redis URL not provided, running in single-node mode");
-            let hub = Arc::new(RoomMessageHub::new());
-            (hub, None, None, None)
-        } else {
-            // Create a Redis connection for the message hub's distributed
+        // Start Redis pub/sub using the pre-built client/connection.
+        // When Redis is not provided, run in single-node mode (tests).
+        let (message_hub, redis_publish_tx, redis_critical_tx, redis_pubsub) = if let (Some(redis_client), Some(redis_conn)) = (config.redis_client.clone(), config.redis_conn.clone()) {
+            // Reuse the shared connection for the message hub's distributed
             // subscription state and TTL refresh background task.
-            let hub = {
-                let client = redis::Client::open(config.redis_url.clone())
-                    .map_err(|e| crate::error::Error::Redis(e.to_string()))?;
-                match client.get_connection_manager().await {
-                    Ok(conn) => RoomMessageHub::new()
-                        .with_redis(conn, &config.key_prefix),
-                    Err(e) => {
-                        warn!(
-                            error = %e,
-                            "Failed to create Redis connection for RoomMessageHub TTL refresh; \
-                             falling back to local-only hub (subscription state will not be persisted)"
-                        );
-                        RoomMessageHub::new()
-                    }
-                }
-            };
-            let message_hub = Arc::new(hub);
+            let hub = Arc::new(
+                RoomMessageHub::new()
+                    .with_redis(redis_conn, &config.key_prefix),
+            );
 
             let redis_pubsub = Arc::new(
                 RedisPubSub::with_key_prefix(
-                    &config.redis_url,
-                    message_hub.clone(),
+                    redis_client,
+                    hub.clone(),
                     config.node_id.clone(),
                     &config.key_prefix,
                     admin_event_tx.clone(),
@@ -205,7 +208,11 @@ impl ClusterManager {
                 }
             });
 
-            (message_hub, Some(tx), Some(critical_tx), Some(redis_pubsub))
+            (hub, Some(tx), Some(critical_tx), Some(redis_pubsub))
+        } else {
+            warn!("Redis not provided, running in single-node mode");
+            let hub = Arc::new(RoomMessageHub::new());
+            (hub, None, None, None)
         };
 
         Ok(Self {
@@ -227,11 +234,6 @@ impl ClusterManager {
             }),
             connection_manager: None,
         })
-    }
-
-    /// Create with default configuration
-    pub async fn with_defaults() -> ClusterResult<Self> {
-        Self::new(ClusterConfig::default(), None, None).await
     }
 
     /// Get the message hub (for subscriptions)
@@ -654,7 +656,8 @@ mod tests {
     #[tokio::test]
     async fn test_cluster_manager_single_node() {
         let config = ClusterConfig {
-            redis_url: "".to_string(), // No Redis
+            redis_client: None,
+            redis_conn: None, // No Redis
             node_id: "test_node".to_string(),
             dedup_window: Duration::from_secs(1),
             cleanup_interval: Duration::from_secs(1),
@@ -707,7 +710,8 @@ mod tests {
     #[tokio::test]
     async fn test_admin_event_channel_subscription() {
         let config = ClusterConfig {
-            redis_url: "".to_string(),
+            redis_client: None,
+            redis_conn: None,
             node_id: "test_node".to_string(),
             dedup_window: Duration::from_secs(1),
             cleanup_interval: Duration::from_secs(1),
@@ -749,7 +753,8 @@ mod tests {
     #[tokio::test]
     async fn test_admin_event_channel_multiple_subscribers() {
         let config = ClusterConfig {
-            redis_url: "".to_string(),
+            redis_client: None,
+            redis_conn: None,
             node_id: "test_node".to_string(),
             dedup_window: Duration::from_secs(1),
             cleanup_interval: Duration::from_secs(1),

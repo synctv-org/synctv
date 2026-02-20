@@ -14,8 +14,10 @@ CREATE TABLE IF NOT EXISTS media (
     -- File name
     name VARCHAR(255) NOT NULL,
 
-    -- Sort position (within playlist)
-    position INTEGER NOT NULL DEFAULT 0,
+    -- Sort position (within playlist).
+    -- No DEFAULT: callers must always compute the next position via MAX+1
+    -- to avoid UNIQUE constraint violations on concurrent inserts.
+    position INTEGER NOT NULL,
 
     -- ========== Video source type (string for flexibility) ==========
     source_provider VARCHAR(64) NOT NULL DEFAULT 'direct_url',

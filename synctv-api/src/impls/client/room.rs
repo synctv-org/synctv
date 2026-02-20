@@ -269,15 +269,19 @@ impl ClientApiImpl {
         let uid = UserId::from_string(user_id.to_string());
         let rid = RoomId::from_string(room_id.to_string());
 
-        // 1. Publish RoomDeleted cluster event FIRST so other replicas disconnect
-        //    their users before we delete the DB record. If publishing fails, we
-        //    still proceed with deletion to avoid permanent DB/cluster inconsistency.
+        // 1. Delete the DB record first. If this fails, no cluster event is
+        //    published and no connections are dropped -- the room remains intact.
+        self.room_service.delete_room(rid.clone(), uid.clone()).await
+            .map_err(ApiError::from)?;
+
+        // 2. Publish RoomDeleted cluster event so other replicas disconnect
+        //    their users. Only reached after successful DB deletion.
         if let Some(ref tx) = self.redis_publish_tx {
             if let Err(e) = tx.send(synctv_cluster::sync::PublishRequest {
                 event: synctv_cluster::sync::ClusterEvent::RoomDeleted {
                     event_id: nanoid::nanoid!(16),
                     room_id: rid.clone(),
-                    deleted_by: uid.clone(),
+                    deleted_by: uid,
                     timestamp: chrono::Utc::now(),
                 },
             }).await {
@@ -285,12 +289,8 @@ impl ClientApiImpl {
             }
         }
 
-        // 2. Force disconnect all local connections in the deleted room
+        // 3. Force disconnect all local connections in the deleted room
         self.connection_manager.disconnect_room(&rid);
-
-        // 3. Delete the DB record last
-        self.room_service.delete_room(rid.clone(), uid).await
-            .map_err(ApiError::from)?;
 
         Ok(crate::proto::client::DeleteRoomResponse {
             success: true,
@@ -591,7 +591,11 @@ impl ClientApiImpl {
         })
     }
 
-    /// Check if a room exists and whether it requires a password (public endpoint)
+    /// Check if a room exists and whether it requires a password (public endpoint).
+    ///
+    /// Only returns whether the room requires a password -- the room name is
+    /// intentionally omitted to avoid leaking room metadata to unauthenticated
+    /// users (room enumeration / information disclosure).
     pub async fn check_room(
         &self,
         req: crate::proto::client::CheckRoomRequest,
@@ -599,13 +603,13 @@ impl ClientApiImpl {
         let rid = RoomId::from_string(req.room_id);
 
         match self.room_service.get_room(&rid).await {
-            Ok(room) => {
+            Ok(_room) => {
                 let settings = self.room_service.get_room_settings(&rid).await
                     .unwrap_or_default();
                 Ok(crate::proto::client::CheckRoomResponse {
                     exists: true,
                     requires_password: settings.require_password.0,
-                    name: room.name,
+                    name: String::new(),
                 })
             }
             Err(_) => Ok(crate::proto::client::CheckRoomResponse {
@@ -642,31 +646,25 @@ impl ClientApiImpl {
         let (rooms, _total) = self.room_service.list_rooms(&query).await
             .map_err(|e| ApiError::Internal(format!("Failed to list rooms: {e}")))?;
 
-        // Sort by online count (local count for ranking, distributed for display).
-        // Use local count for initial sorting to avoid O(N) Redis calls on all rooms.
+        // Fetch distributed connection counts for all candidate rooms (single Redis MGET),
+        // then sort by distributed count to get a globally correct ranking.
+        let room_id_refs: Vec<&synctv_core::models::RoomId> = rooms.iter().map(|r| &r.id).collect();
+        let distributed_counts = self.connection_manager
+            .room_connection_count_distributed_batch(&room_id_refs)
+            .await;
+
         let mut room_online: Vec<(synctv_core::models::Room, i32)> = rooms
             .into_iter()
-            .map(|room| {
-                let online_count = self.connection_manager.room_connection_count(&room.id) as i32;
-                (room, online_count)
-            })
+            .zip(distributed_counts.into_iter())
+            .map(|(room, count)| (room, count as i32))
             .collect();
         room_online.sort_by_key(|item| std::cmp::Reverse(item.1));
-        let top_rooms_preliminary: Vec<_> = room_online.into_iter().take(limit as usize).collect();
+        let top_rooms: Vec<_> = room_online.into_iter().take(limit as usize).collect();
 
-        // Fetch distributed online counts for the top N rooms only
-        let mut top_rooms = Vec::with_capacity(top_rooms_preliminary.len());
-        for (room, _local_count) in top_rooms_preliminary {
-            let distributed_count = self.connection_manager.room_connection_count_distributed(&room.id).await as i32;
-            top_rooms.push((room, distributed_count));
-        }
-
-        // Batch-fetch member counts for the top N rooms only
-        let mut member_counts = std::collections::HashMap::new();
-        for (room, _) in &top_rooms {
-            let count = self.room_service.get_member_count(&room.id).await.unwrap_or(0);
-            member_counts.insert(room.id.as_str().to_string(), count);
-        }
+        // Batch-fetch member counts for the top N rooms (single SQL query instead of N+1)
+        let top_room_id_refs: Vec<&synctv_core::models::RoomId> = top_rooms.iter().map(|(r, _)| &r.id).collect();
+        let member_counts = self.room_service.get_member_count_batch(&top_room_id_refs).await
+            .unwrap_or_default();
 
         // Batch-fetch settings for the top N rooms
         let room_ids: Vec<&str> = top_rooms.iter().map(|(r, _)| r.id.as_str()).collect();

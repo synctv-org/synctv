@@ -6,6 +6,7 @@ use sqlx::PgPool;
 use tracing::{error, info, warn};
 
 use crate::{
+    bootstrap::RedisHandles,
     cache::{
         CacheInvalidationService, CacheManager,
         RoomCache, UserCache, UsernameCache,
@@ -63,16 +64,17 @@ pub struct Services {
     pub cache_invalidation: Arc<CacheInvalidationService>,
     /// Cache manager coordinating all cache layers
     pub cache_manager: CacheManager,
-    /// Shared Redis connection (optional, None if Redis not configured).
+    /// Shared Redis connection.
     ///
-    /// In Sentinel mode, this is a shared `Arc<RwLock<>>` so that the
-    /// background health check can hot-swap the inner `ConnectionManager` on
-    /// failover and all callers automatically see the new connection.  In
-    /// Standalone mode the inner `ConnectionManager` handles transient
-    /// reconnections transparently on its own.
+    /// Redis is mandatory. In Sentinel mode, the background health check
+    /// hot-swaps the inner `ConnectionManager` on failover; all callers
+    /// automatically see the new connection.  In Standalone mode the inner
+    /// `ConnectionManager` handles transient reconnections transparently.
     ///
     /// Use `.read().await.clone()` to obtain a working connection handle.
-    pub redis_conn: Option<Arc<tokio::sync::RwLock<redis::aio::ConnectionManager>>>,
+    pub redis_conn: Arc<tokio::sync::RwLock<redis::aio::ConnectionManager>>,
+    /// Shared Redis client (for operations that need a `Client`, e.g. Pub/Sub).
+    pub redis_client: redis::Client,
     /// `CancellationToken` for settings listen task (cancel on shutdown)
     pub settings_cancel: tokio_util::sync::CancellationToken,
     /// Settings listen task handle (joined on shutdown).
@@ -90,24 +92,22 @@ impl Services {
     /// each call obtains a working handle to the same underlying connection pool.
     /// This is the correct way to share the connection with services that pre-date
     /// the `Arc<RwLock<>>` hot-swap pattern used for Sentinel failover.
-    pub async fn redis_conn_snapshot(&self) -> Option<redis::aio::ConnectionManager> {
-        if let Some(ref shared) = self.redis_conn {
-            Some(shared.read().await.clone())
-        } else {
-            None
-        }
+    pub async fn redis_conn_snapshot(&self) -> redis::aio::ConnectionManager {
+        self.redis_conn.read().await.clone()
     }
 }
 
 /// Initialize all core services
 ///
-/// The caller must supply a pre-built `CacheInvalidationService` so that the
-/// same instance (with the correct cluster node ID) is shared across every
-/// component.  The caller is also responsible for calling `.start()` on it
+/// The caller must supply pre-built `RedisHandles` (created by `init_redis`)
+/// and a pre-built `CacheInvalidationService` so that the same instance (with
+/// the correct cluster node ID) is shared across every component.  The caller
+/// is also responsible for calling `.start()` on the cache invalidation service
 /// after this function returns, so there is exactly one Redis subscriber.
 pub async fn init_services(
     pool: PgPool,
     config: &Config,
+    redis_handles: RedisHandles,
     cache_invalidation: Arc<CacheInvalidationService>,
 ) -> Result<Services, anyhow::Error> {
     info!("Initializing services...");
@@ -117,221 +117,24 @@ pub async fn init_services(
     let jwt_service = load_jwt_service(config)?;
     info!("JWT service initialized");
 
-    // Initialize shared Redis connection (used by token blacklist, rate limiter, and username cache)
-    //
-    // The connection is wrapped in `Arc<RwLock<ConnectionManager>>` so that the
-    // Sentinel health check can hot-swap the inner `ConnectionManager` on failover
-    // and all callers that access `Services.redis_conn` automatically see the updated
-    // connection on their next access.
-    let (redis_conn, redis_client) = if config.redis.url.is_empty() {
-        (None, None)
-    } else {
-        use crate::config::RedisDeploymentMode;
-
-        // Note: Cluster mode is rejected by config validation (AppConfig::validate).
-        // The unreachable!() in the match arm below is a safety net.
-
-        // Sentinel mode now uses SentinelClient for automatic master failover.
-
-        match config.redis.deployment_mode {
-            RedisDeploymentMode::Standalone => {
-                info!("Initializing Redis in standalone mode");
-                let client = redis::Client::open(config.redis.url.clone())?;
-                let conn = redis::aio::ConnectionManager::new(client.clone()).await?;
-                // Wrap in Arc<RwLock<>> for type-uniformity with Sentinel mode.
-                // In standalone mode the inner ConnectionManager handles transient
-                // reconnections transparently; callers just read-lock and clone.
-                let shared = Arc::new(tokio::sync::RwLock::new(conn));
-                (Some(shared), Some(client))
-            }
-            RedisDeploymentMode::Sentinel => {
-                info!("Initializing Redis in sentinel mode");
-                let master_name = config.redis.sentinel_master_name.as_ref()
-                    .ok_or_else(|| anyhow::anyhow!("sentinel_master_name is required for sentinel mode"))?;
-
-                if config.redis.sentinel_addresses.is_empty() {
-                    return Err(anyhow::anyhow!("sentinel_addresses cannot be empty for sentinel mode"));
-                }
-
-                // Discover the current master via Sentinel and create a Client.
-                // ConnectionManager will automatically reconnect on transient failures,
-                // but won't discover a NEW master after failover (redis-rs limitation).
-                // The health check below monitors for failover and hot-swaps the inner
-                // ConnectionManager so all callers see the new master automatically.
-                let sentinel_addrs: Vec<&str> = config.redis.sentinel_addresses.iter().map(String::as_str).collect();
-                let mut sentinel = redis::sentinel::Sentinel::build(sentinel_addrs.clone())?;
-
-                let node_info: Option<&redis::sentinel::SentinelNodeConnectionInfo> = None;
-                let client = sentinel
-                    .async_master_for(master_name.as_str(), node_info)
-                    .await
-                    .map_err(|e| anyhow::anyhow!("Sentinel master discovery failed: {e}"))?;
-
-                let initial_master_addr = client.get_connection_info().addr().to_string();
-                info!(master = %initial_master_addr, "Sentinel discovered initial master");
-
-                let conn = redis::aio::ConnectionManager::new(client.clone()).await?;
-
-                // Wrap the connection in Arc<RwLock<...>> so the sentinel health
-                // check can hot-swap it on failover.  All callers that hold a
-                // reference to this Arc will see the updated ConnectionManager the
-                // next time they acquire a read lock.
-                let shared_conn = Arc::new(tokio::sync::RwLock::new(conn));
-
-                // Start a background health check that:
-                // 1. Periodically PINGs Redis (every 5s) to detect connection loss
-                // 2. After 3 consecutive PING failures, queries Sentinel for the current master
-                // 3. On failover detection, creates a new ConnectionManager pointing at the new master
-                //    and writes it into `shared_conn`, so all callers see the updated connection.
-                {
-                    let sentinel_addresses = config.redis.sentinel_addresses.clone();
-                    let master_name = master_name.clone();
-                    let known_master_addr = initial_master_addr.clone();
-                    let shared_conn_clone = shared_conn.clone();
-                    crate::spawn::spawn_monitored("sentinel_master_health_check", async move {
-                        let mut interval = tokio::time::interval(std::time::Duration::from_secs(5));
-                        // Skip the first immediate tick
-                        interval.tick().await;
-                        let mut consecutive_ping_failures = 0u32;
-                        let mut known_master = known_master_addr;
-
-                        loop {
-                            interval.tick().await;
-
-                            // Step 1: PING the current connection
-                            let ping_ok = {
-                                let mut conn = shared_conn_clone.write().await;
-                                redis::cmd("PING")
-                                    .query_async::<String>(&mut *conn)
-                                    .await
-                                    .is_ok()
-                            };
-
-                            if ping_ok {
-                                if consecutive_ping_failures > 0 {
-                                    tracing::info!(
-                                        previous_failures = consecutive_ping_failures,
-                                        "Sentinel health check: Redis PING recovered"
-                                    );
-                                }
-                                consecutive_ping_failures = 0;
-                                continue;
-                            }
-
-                            consecutive_ping_failures += 1;
-                            tracing::warn!(
-                                consecutive_failures = consecutive_ping_failures,
-                                "Sentinel health check: Redis PING failed"
-                            );
-
-                            // Step 2: After 3 consecutive failures, attempt Sentinel re-discovery
-                            if consecutive_ping_failures < 3 {
-                                continue;
-                            }
-
-                            tracing::warn!(
-                                "Sentinel health check: {} consecutive PING failures, querying Sentinel for current master",
-                                consecutive_ping_failures
-                            );
-
-                            let addrs: Vec<&str> = sentinel_addresses.iter().map(String::as_str).collect();
-                            let sentinel_result = redis::sentinel::Sentinel::build(addrs);
-                            let mut sentinel = match sentinel_result {
-                                Ok(s) => s,
-                                Err(e) => {
-                                    tracing::warn!(
-                                        error = %e,
-                                        "Sentinel health check: failed to connect to Sentinel nodes"
-                                    );
-                                    continue;
-                                }
-                            };
-
-                            let node_info: Option<&redis::sentinel::SentinelNodeConnectionInfo> = None;
-                            match sentinel.async_master_for(master_name.as_str(), node_info).await {
-                                Ok(new_master_client) => {
-                                    let new_addr = new_master_client.get_connection_info().addr().to_string();
-                                    if new_addr == known_master {
-                                        tracing::info!(
-                                            master = %new_addr,
-                                            "Sentinel master unchanged, rebuilding connection"
-                                        );
-                                    } else {
-                                        tracing::warn!(
-                                            old_master = %known_master,
-                                            new_master = %new_addr,
-                                            "Sentinel failover detected, reconnecting to new master"
-                                        );
-                                    }
-
-                                    // Step 3: Create a new ConnectionManager and hot-swap it.
-                                    // All callers that access Services.redis_conn will acquire
-                                    // a fresh read-lock after this write completes and will see
-                                    // the new ConnectionManager pointing at the promoted master.
-                                    match redis::aio::ConnectionManager::new(new_master_client).await {
-                                        Ok(new_conn) => {
-                                            *shared_conn_clone.write().await = new_conn;
-                                            known_master = new_addr;
-                                            consecutive_ping_failures = 0;
-                                            tracing::info!(
-                                                master = %known_master,
-                                                "Sentinel health check: reconnected to Redis master"
-                                            );
-                                        }
-                                        Err(e) => {
-                                            tracing::error!(
-                                                error = %e,
-                                                "Sentinel health check: failed to create new ConnectionManager"
-                                            );
-                                        }
-                                    }
-                                }
-                                Err(e) => {
-                                    tracing::warn!(
-                                        error = %e,
-                                        "Sentinel health check: failed to query current master"
-                                    );
-                                }
-                            }
-                        }
-                    });
-                    info!("Sentinel master health check started (interval: 5s, failover threshold: 3 failures)");
-                }
-
-                // Return the Arc<RwLock<>> directly.  All callers that need a working
-                // ConnectionManager should call `.read().await.clone()` to get the
-                // current connection.  This ensures that after a Sentinel failover the
-                // hot-swapped ConnectionManager is visible to all callers.
-                (Some(shared_conn), Some(client))
-            }
-            RedisDeploymentMode::Cluster => {
-                unreachable!("Cluster mode was already checked and rejected");
-            }
-        }
-    };
-
-    // Extract a plain ConnectionManager snapshot from the Arc<RwLock<>> for passing
-    // to individual services.
+    // Extract a plain ConnectionManager snapshot for passing to individual services.
     //
     // IMPORTANT (Sentinel mode): This snapshot is taken once at init time. In Sentinel
     // mode, the background health check hot-swaps the ConnectionManager inside
-    // `redis_conn` (the Arc<RwLock<>>) on failover. However, services that store this
-    // snapshot will keep using the old ConnectionManager until they are recreated.
-    // ConnectionManager handles *transient* reconnection internally, but it cannot
-    // discover a NEW master after Sentinel failover.
+    // `redis_handles.conn` (the Arc<RwLock<>>) on failover. However, services that
+    // store this snapshot will keep using the old ConnectionManager until they are
+    // recreated. ConnectionManager handles *transient* reconnection internally, but
+    // it cannot discover a NEW master after Sentinel failover.
     //
     // For long-lived operations in Sentinel deployments, callers should prefer
     // `Services::redis_conn_snapshot()` to obtain a fresh handle that reflects the
     // latest Sentinel failover, rather than caching this init-time snapshot.
-    let redis_conn_plain: Option<redis::aio::ConnectionManager> = if let Some(ref shared) = redis_conn {
-        Some(shared.read().await.clone())
-    } else {
-        None
-    };
+    let redis_conn_plain: redis::aio::ConnectionManager = redis_handles.conn_snapshot().await;
+    let redis_client = redis_handles.client.clone();
 
     // Initialize username cache (using config values)
     let username_cache = UsernameCache::new(
-        redis_conn_plain.clone(),
+        Some(redis_conn_plain.clone()),
         format!("{}username:", config.redis.key_prefix),
         config.cache.username_cache_capacity as usize,
         config.cache.username_cache_ttl_seconds,
@@ -346,7 +149,7 @@ pub async fn init_services(
     // Initialize user and room L1/L2 caches (using config values)
     let user_cache = Arc::new(
         UserCache::new(
-            redis_conn_plain.clone(),
+            Some(redis_conn_plain.clone()),
             config.cache.l1_capacity,
             l1_ttl_minutes,
             config.cache.l2_ttl_seconds,
@@ -355,7 +158,7 @@ pub async fn init_services(
     );
     let room_cache = Arc::new(
         RoomCache::new(
-            redis_conn_plain.clone(),
+            Some(redis_conn_plain.clone()),
             config.cache.l1_capacity,
             l1_ttl_minutes,
             config.cache.l2_ttl_seconds,
@@ -365,27 +168,29 @@ pub async fn init_services(
     info!("User and room caches initialized (l1_capacity={}, l1_ttl={}s, l2_ttl={}s)",
         config.cache.l1_capacity, config.cache.l1_ttl_seconds, config.cache.l2_ttl_seconds);
 
-    // Initialize brute-force protection (uses Redis for distributed tracking, in-memory fallback)
+    // Redis is mandatory for auth services (brute-force protection and refresh token rotation)
+    let redis_conn_required = redis_conn_plain.clone();
+
+    // Initialize brute-force protection (Redis-backed distributed tracking)
     let brute_force = crate::service::BruteForceProtection::new(
-        redis_conn_plain.clone(),
+        redis_conn_required.clone(),
         config.redis.key_prefix.clone(),
     );
-    info!("Brute-force protection initialized (redis={})", redis_conn_plain.is_some());
+    info!("Brute-force protection initialized (Redis-backed)");
 
-    // Initialize UserService
-    let mut user_service = UserService::new(pool.clone(), jwt_service.clone(), username_cache.clone(), config.password_complexity.clone());
+    // Initialize UserService with mandatory Redis for refresh token rotation
+    let key_builder = crate::cache::KeyBuilder::from_config(config);
+    let mut user_service = UserService::new(
+        pool.clone(),
+        jwt_service.clone(),
+        username_cache.clone(),
+        config.password_complexity.clone(),
+        redis_conn_required,
+        key_builder,
+        brute_force,
+    );
     user_service.set_cache_invalidation(cache_invalidation.clone());
-    user_service.set_brute_force_protection(brute_force);
-    // Enable refresh token rotation (Redis-backed JTI blacklist) when Redis is available
-    if let Some(ref conn) = redis_conn_plain {
-        let key_builder = crate::cache::KeyBuilder::from_config(config);
-        user_service.set_redis_conn(conn.clone(), key_builder);
-        info!("UserService initialized with refresh token rotation (Redis-backed JTI blacklist)");
-    } else {
-        warn!("UserService: Redis not configured — refresh token rotation (JTI blacklist) is DISABLED. \
-               Used refresh tokens cannot be revoked, increasing replay attack risk. \
-               Configure Redis to enable full refresh token security.");
-    }
+    info!("UserService initialized with Redis-backed refresh token rotation and brute-force protection");
 
     // Initialize RoomService
     let mut room_service = RoomService::new(pool.clone(), user_service.clone());
@@ -440,18 +245,12 @@ pub async fn init_services(
     };
 
     // Initialize rate limiter
-    let rate_limiter = RateLimiter::new(redis_conn_plain.clone(), config.redis.key_prefix.clone());
+    let rate_limiter = RateLimiter::new(Some(redis_conn_plain.clone()), config.redis.key_prefix.clone());
     let rate_limit_config = RateLimitConfig::default();
-    if redis_conn_plain.is_some() {
-        info!(
-            "Rate limiter initialized (chat: {}/s, danmaku: {}/s)",
-            rate_limit_config.chat_per_second, rate_limit_config.danmaku_per_second
-        );
-    } else {
-        warn!(
-            "Rate limiting using in-memory fallback (no Redis) — limits are per-instance only"
-        );
-    }
+    info!(
+        "Rate limiter initialized (chat: {}/s, danmaku: {}/s)",
+        rate_limit_config.chat_per_second, rate_limit_config.danmaku_per_second
+    );
 
     // Initialize content filter
     let content_filter = ContentFilter::new();
@@ -464,8 +263,8 @@ pub async fn init_services(
     info!("Initializing RemoteProviderManager...");
     let provider_instance_manager = Arc::new(RemoteProviderManager::new(
         provider_instance_repo.clone(),
-        redis_conn_plain.clone(),
-        redis_client.clone(),
+        Some(redis_conn_plain.clone()),
+        Some(redis_client.clone()),
     ));
 
     // Pre-warm cache with all enabled provider instances from database
@@ -496,14 +295,8 @@ pub async fn init_services(
     // but fail at runtime when a user tries to authenticate.
     let oauth2_configured = config.oauth2.providers.as_object()
         .map_or(false, |m| !m.is_empty());
-    let oauth2_service = if oauth2_configured && redis_conn_plain.is_none() {
-        return Err(anyhow::anyhow!(
-            "OAuth2 providers are configured but Redis is not available. \
-             OAuth2 requires Redis for CSRF state storage. \
-             Either configure Redis (set redis.url) or disable OAuth2 providers."
-        ));
-    } else if let Some(ref conn) = redis_conn_plain {
-        init_oauth2_service(pool.clone(), config, conn.clone()).await?
+    let oauth2_service = if oauth2_configured {
+        init_oauth2_service(pool.clone(), config, redis_conn_plain.clone()).await?
     } else {
         None
     };
@@ -557,14 +350,9 @@ pub async fn init_services(
     }
 
     // Initialize Publish Key service (for RTMP streaming)
-    let publish_key_service = if let Some(ref conn) = redis_conn_plain {
-        info!("Publish key service initialized with Redis-backed JTI deduplication");
-        PublishKeyService::with_default_ttl(jwt_service.clone())
-            .with_redis(conn.clone(), config.redis.key_prefix.clone())
-    } else {
-        info!("Publish key service initialized (local-only JTI deduplication)");
-        PublishKeyService::with_default_ttl(jwt_service.clone())
-    };
+    info!("Publish key service initialized with Redis-backed JTI deduplication");
+    let publish_key_service = PublishKeyService::with_default_ttl(jwt_service.clone())
+        .with_redis(redis_conn_plain.clone(), config.redis.key_prefix.clone());
 
     // Initialize User Notification service
     let notification_repo = NotificationRepository::new(pool.clone());
@@ -604,7 +392,8 @@ pub async fn init_services(
         audit_service,
         cache_invalidation,
         cache_manager,
-        redis_conn,
+        redis_conn: redis_handles.conn.clone(),
+        redis_client: redis_handles.client.clone(),
         settings_cancel,
         settings_listen_task: Arc::new(tokio::sync::Mutex::new(Some(settings_listen_task))),
         audit_flush_handle: Arc::new(tokio::sync::Mutex::new(Some(audit_flush_handle))),

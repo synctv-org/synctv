@@ -14,8 +14,10 @@ CREATE TABLE playlists (
     -- Tree structure (file system style)
     parent_id CHAR(12) REFERENCES playlists(id) ON DELETE CASCADE,
 
-    -- Sort position (support manual directory reordering)
-    position INT NOT NULL DEFAULT 0,
+    -- Sort position (support manual directory reordering).
+    -- No DEFAULT: callers must always compute the next position via MAX+1
+    -- to avoid UNIQUE constraint violations on concurrent inserts.
+    position INT NOT NULL,
 
     -- ========== Dynamic folder support ==========
     source_provider VARCHAR(64),

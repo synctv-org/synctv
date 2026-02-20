@@ -60,6 +60,7 @@ services:
       SYNCTV_SERVER_HTTP_PORT: 8080
       SYNCTV_SERVER_GRPC_PORT: 50051
       SYNCTV_JWT_SECRET: ${SYNCTV_JWT_SECRET:?SYNCTV_JWT_SECRET must be set (min 32 chars)}
+      SYNCTV_SERVER_CLUSTER_SECRET: ${SYNCTV_SERVER_CLUSTER_SECRET:-changeme-generate-a-random-secret}
       RUST_LOG: ${RUST_LOG:-info}
       RUST_BACKTRACE: ${RUST_BACKTRACE:-0}
     depends_on:

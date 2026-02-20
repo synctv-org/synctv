@@ -105,6 +105,13 @@ impl HlsProxyClient {
         )
     }
 
+    /// Set the gRPC connection pool (for sharing with other components).
+    #[must_use]
+    pub fn with_connection_pool(mut self, pool: GrpcConnectionPool) -> Self {
+        self.connection_pool = pool;
+        self
+    }
+
     /// Fetch M3U8 playlist from the publisher node via gRPC.
     ///
     /// Playlists are cached with a short TTL (default 1s) to coalesce concurrent

@@ -114,21 +114,41 @@ impl ClientApiImpl {
         // Notify other replicas to invalidate permission cache
         self.publish_permission_changed(&rid, &target_uid, &uid).await;
 
-        // Get updated member
-        let members = self.room_service.get_room_members(&rid).await
-            .map_err(ApiError::from)?;
-        let member = members.into_iter()
-            .find(|m| m.user_id == target_uid)
+        // Get updated member directly instead of fetching all members
+        let member = self.room_service.get_member(&rid, &target_uid).await
+            .map_err(ApiError::from)?
             .ok_or_else(|| ApiError::NotFound("Member not found".to_string()))?;
+
+        // Fetch username for the target user
+        let username = self.user_service.get_user(&target_uid).await
+            .map(|u| u.username)
+            .unwrap_or_else(|_| format!("user_{}", target_uid.as_str()));
+
+        let member_with_user = synctv_core::models::RoomMemberWithUser {
+            room_id: member.room_id,
+            user_id: member.user_id,
+            username,
+            role: member.role,
+            status: member.status,
+            added_permissions: member.added_permissions,
+            removed_permissions: member.removed_permissions,
+            admin_added_permissions: member.admin_added_permissions,
+            admin_removed_permissions: member.admin_removed_permissions,
+            joined_at: member.joined_at,
+            is_online: false,
+            is_active: true,
+            banned_at: member.banned_at,
+            banned_reason: member.banned_reason,
+        };
 
         // Fetch room settings for proper three-layer permission calculation
         let room_settings = self.room_service.get_room_settings(&rid).await
             .unwrap_or_default();
         let role_default = self.room_service.permission_service()
-            .calculate_role_default_permissions(&member.role, &room_settings);
+            .calculate_role_default_permissions(&member_with_user.role, &room_settings);
 
         Ok(crate::proto::client::UpdateMemberPermissionsResponse {
-            member: Some(room_member_to_proto(member, role_default)),
+            member: Some(room_member_to_proto(member_with_user, role_default)),
         })
     }
 

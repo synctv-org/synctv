@@ -568,10 +568,7 @@ impl AdminService for AdminServiceImpl {
         let req = request.into_inner();
         let room_id = if req.room_id.is_empty() { None } else { Some(req.room_id.as_str()) };
         let streams = self.admin_api.list_active_streams(room_id).await
-            .map_err(|e| {
-                tracing::error!("list_active_streams error: {e}");
-                Status::internal("Internal error")
-            })?;
+            .map_err(|e| map_api_error(crate::impls::ApiError::Internal(e.to_string())))?;
         Ok(Response::new(ListActiveStreamsResponse { streams }))
     }
 
@@ -589,10 +586,7 @@ impl AdminService for AdminServiceImpl {
         self.admin_api
             .kick_stream(&req.room_id, &req.media_id, &req.reason)
             .await
-            .map_err(|e| {
-                tracing::error!("kick_stream error: {e}");
-                Status::internal("Internal error")
-            })?;
+            .map_err(|e| map_api_error(crate::impls::ApiError::Internal(e.to_string())))?;
 
         Ok(Response::new(KickStreamResponse {}))
     }

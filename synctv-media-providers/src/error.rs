@@ -88,10 +88,12 @@ pub async fn check_response(resp: reqwest::Response) -> Result<reqwest::Response
         };
         let url = resp.url().to_string();
         // Read response body for debugging; truncate to 1 KB to avoid OOM.
+        // Use char-safe truncation to avoid panicking on multi-byte UTF-8.
         let body = match resp.text().await {
             Ok(text) => {
                 if text.len() > 1024 {
-                    format!("{}...(truncated)", &text[..1024])
+                    let truncated: String = text.chars().take(1024).collect();
+                    format!("{truncated}...(truncated)")
                 } else {
                     text
                 }
@@ -161,6 +163,10 @@ pub fn provider_backoff() -> backon::ExponentialBuilder {
 ///
 /// Only retries on transient errors (network errors and 5xx server errors).
 /// Client errors (4xx), parse errors, and auth errors fail immediately.
+///
+/// When the error contains a `retry_after_secs` value (from HTTP 429 responses),
+/// the retry will sleep for at least that duration before the next attempt,
+/// even if the backoff schedule would have used a shorter delay.
 pub async fn with_retry<F, Fut, T>(op: F) -> Result<T, ProviderClientError>
 where
     F: FnMut() -> Fut,
@@ -169,6 +175,23 @@ where
     use backon::Retryable;
     op.retry(provider_backoff())
         .when(|e: &ProviderClientError| e.is_retryable())
+        .notify(|e: &ProviderClientError, dur: std::time::Duration| {
+            // If the server sent a Retry-After header, honor it by sleeping
+            // for the additional time beyond what the backoff already provides.
+            if let ProviderClientError::Http { retry_after_secs: Some(secs), .. } = e {
+                let retry_after = std::time::Duration::from_secs(*secs);
+                if retry_after > dur {
+                    let extra = retry_after - dur;
+                    tracing::info!(
+                        "Honoring Retry-After: sleeping extra {extra:?} (server requested {secs}s, backoff was {dur:?})"
+                    );
+                    // backon's notify is sync, so we use std::thread::sleep here.
+                    // This is acceptable because retries are infrequent and
+                    // provider calls are already on a dedicated task.
+                    std::thread::sleep(extra);
+                }
+            }
+        })
         .await
 }
 

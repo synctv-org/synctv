@@ -42,6 +42,9 @@ pub struct LivestreamConfig {
     /// Advertised gRPC address of this node for cross-node proxying.
     /// Used by `PublisherManager` for re-registration after `StreamHub` restart.
     pub grpc_address: String,
+    /// Maximum memory (in megabytes) for in-memory HLS segment storage.
+    /// 0 means use the built-in default (512 MB).
+    pub hls_memory_max_mb: u64,
 }
 
 /// Handle returned by [`LivestreamServer::start`].
@@ -195,8 +198,10 @@ impl LivestreamServer {
         // Clone registry for cleanup on StreamHub restart
         let registry_for_cleanup = self.publisher_registry.clone();
         let node_id_for_cleanup = self.config.node_id.clone();
-        // Channel to notify PublisherManager to re-register after StreamHub restart
-        let (reregister_tx, reregister_rx) = mpsc::channel::<()>(4);
+        // Notify to signal PublisherManager to re-register after StreamHub restart.
+        // Uses Notify instead of mpsc channel so signals are never lost even if
+        // multiple restarts occur before the listener wakes up.
+        let reregister_notify = Arc::new(tokio::sync::Notify::new());
         // Channel to notify pull/external managers to stop all streams before StreamHub restart.
         // This ensures zombie streams (still connected to the old hub) are cleaned up.
         let (stop_streams_tx, mut stop_streams_rx) = mpsc::channel::<()>(4);
@@ -219,6 +224,7 @@ impl LivestreamServer {
         let rtmp_gop_cache_size = self.config.gop_cache_size;
         let rtmp_auth = self.auth.clone();
         let rtmp_event_sender = event_sender.clone();
+        let reregister_notify_for_hub = Arc::clone(&reregister_notify);
 
         // 2. Spawn StreamHub event loop with automatic recovery
         let hub_handle = tokio::spawn(async move {
@@ -329,7 +335,7 @@ impl LivestreamServer {
                 }
 
                 // Notify PublisherManager to re-register all active publishers immediately
-                let _ = reregister_tx.try_send(());
+                reregister_notify_for_hub.notify_one();
 
                 if restart_count >= MAX_RESTARTS {
                     error!(
@@ -349,7 +355,16 @@ impl LivestreamServer {
         });
 
         // 3. Start HLS remuxer (converts RTMP to HLS segments)
-        let hls_storage = Arc::new(MemoryStorage::new()) as Arc<dyn synctv_xiu::storage::HlsStorage>;
+        let hls_storage = if self.config.hls_memory_max_mb > 0 {
+            let max_bytes = self.config.hls_memory_max_mb as usize * 1024 * 1024;
+            info!(
+                "HLS memory storage max set to {} MB",
+                self.config.hls_memory_max_mb,
+            );
+            Arc::new(MemoryStorage::with_limits(max_bytes, 0)) as Arc<dyn synctv_xiu::storage::HlsStorage>
+        } else {
+            Arc::new(MemoryStorage::new()) as Arc<dyn synctv_xiu::storage::HlsStorage>
+        };
 
         // Warn if using in-memory HLS storage in cluster mode (cluster_secret is set).
         // In cluster mode, each HLS segment request for a remote publisher requires a
@@ -431,17 +446,22 @@ impl LivestreamServer {
 
         info!("HLS remuxer started (in-process, no standalone HTTP server)");
 
-        // 5a. Create HLS proxy client early so PullStreamManager can invalidate
-        //     HLS cache when stale epochs are detected (LIVE-8).
-        let hls_proxy = crate::grpc::HlsProxyClient::with_defaults(self.config.cluster_secret.clone());
+        // 5a. Create a shared gRPC connection pool for HlsProxy and PullStreamManager
+        //     to avoid redundant HTTP/2 connections to the same publisher nodes.
+        let shared_grpc_pool = crate::grpc::GrpcConnectionPool::with_defaults();
 
-        // 5b. Create PullStreamManager
+        // 5b. Create HLS proxy client with the shared pool
+        let hls_proxy = crate::grpc::HlsProxyClient::with_defaults(self.config.cluster_secret.clone())
+            .with_connection_pool(shared_grpc_pool.clone());
+
+        // 5c. Create PullStreamManager with the same shared pool
         let pull_manager = Arc::new(PullStreamManager::with_timeouts(
             self.publisher_registry.clone(),
             event_sender.clone(),
             self.config.cleanup_check_interval_seconds,
             self.config.stream_timeout_seconds,
         )
+        .with_connection_pool(shared_grpc_pool)
         .with_cluster_secret(self.config.cluster_secret.clone())
         .with_hls_proxy(hls_proxy.clone()));
         // Start periodic cleanup of stale creation locks to prevent memory leaks
@@ -489,12 +509,13 @@ impl LivestreamServer {
         }
         let publisher_manager_handle = tokio::spawn({
             let pm = Arc::clone(&publisher_manager);
-            let mut reregister_rx = reregister_rx;
+            let reregister = Arc::clone(&reregister_notify);
             async move {
                 // Spawn a task to listen for re-registration signals from StreamHub restart
                 let pm_for_reregister = Arc::clone(&pm);
                 tokio::spawn(async move {
-                    while reregister_rx.recv().await.is_some() {
+                    loop {
+                        reregister.notified().await;
                         pm_for_reregister.reregister_all_publishers().await;
                     }
                 });

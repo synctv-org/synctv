@@ -5,7 +5,7 @@ CREATE TABLE IF NOT EXISTS room_members (
 
     -- Role and Status (separated as per design)
     role SMALLINT NOT NULL DEFAULT 3,  -- 1=creator, 2=admin, 3=member, 4=guest
-    status SMALLINT NOT NULL DEFAULT 1,  -- 1=active, 2=pending, 3=banned
+    status SMALLINT NOT NULL DEFAULT 1,  -- 1=active, 2=pending, 3=banned, 4=left
 
     -- Allow/Deny permission pattern
     -- effective_permissions = ((global_default | room_added | admin_added | member_added) & ~(room_removed | admin_removed | member_removed))
@@ -60,26 +60,28 @@ ALTER TABLE room_members
     ADD CONSTRAINT check_room_members_role
     CHECK (role BETWEEN 1 AND 4);
 
--- Status constraint: 1=active, 2=pending, 3=banned
+-- Status constraint: 1=active, 2=pending, 3=banned, 4=left
 ALTER TABLE room_members
     ADD CONSTRAINT check_room_members_status
-    CHECK (status BETWEEN 1 AND 3);
+    CHECK (status BETWEEN 1 AND 4);
 
 -- Consistency constraint: left_at and status must agree.
 -- Active/pending members (status 1,2) must have left_at IS NULL.
 -- Banned members (status 3) must have banned_at set AND left_at set
 -- (a banned member has effectively left the room).
+-- Left members (status 4) must have left_at set.
 ALTER TABLE room_members
     ADD CONSTRAINT check_room_members_left_at_status
     CHECK (
         (status IN (1, 2) AND left_at IS NULL)
         OR (status = 3 AND banned_at IS NOT NULL AND left_at IS NOT NULL)
+        OR (status = 4 AND left_at IS NOT NULL)
     );
 
 -- Comments
 COMMENT ON TABLE room_members IS 'Room membership with Allow/Deny permission pattern';
 COMMENT ON COLUMN room_members.role IS 'Room role: 1=creator, 2=admin, 3=member, 4=guest';
-COMMENT ON COLUMN room_members.status IS 'Member status: 1=active, 2=pending, 3=banned';
+COMMENT ON COLUMN room_members.status IS 'Member status: 1=active, 2=pending, 3=banned, 4=left';
 COMMENT ON COLUMN room_members.added_permissions IS 'Extra permissions added to role default (Allow pattern)';
 COMMENT ON COLUMN room_members.removed_permissions IS 'Permissions removed from role default (Deny pattern)';
 COMMENT ON COLUMN room_members.version IS 'Optimistic lock version for permission updates';

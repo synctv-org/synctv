@@ -13,8 +13,7 @@ use crate::{
     livestream::pull_stream::PullStream,
     livestream::managed_stream::{ManagedStream, StreamPool},
 };
-use synctv_xiu::streamhub::define::{StreamHubEvent, StreamHubEventSender};
-use synctv_xiu::streamhub::stream::StreamIdentifier;
+use synctv_xiu::streamhub::define::StreamHubEventSender;
 use tracing::{debug, info, error, warn};
 use std::sync::Arc;
 use std::time::Duration;
@@ -89,6 +88,13 @@ impl PullStreamManager {
     #[must_use]
     pub fn with_cluster_secret(mut self, secret: Option<String>) -> Self {
         self.cluster_secret = secret;
+        self
+    }
+
+    /// Set a shared gRPC connection pool (for sharing with HlsProxyClient etc.).
+    #[must_use]
+    pub fn with_connection_pool(mut self, pool: GrpcConnectionPool) -> Self {
+        self.connection_pool = pool;
         self
     }
 
@@ -262,23 +268,18 @@ impl PullStreamManager {
         // that triggered creation. (Reuse paths increment inside get_existing().)
         pull_stream.lifecycle().increment_subscriber_count();
 
-        // Store in pool with idle cleanup - send UnPublish to StreamHub on cleanup
-        let hub_sender = self.stream_hub_event_sender.clone();
+        // Store in pool with idle cleanup.
+        // Call stream.stop() which sets the `stopped` flag and sends UnPublish exactly once,
+        // preventing the Drop impl from sending a duplicate UnPublish.
+        let cleanup_stream = pull_stream.clone();
         self.pool.insert_and_cleanup(
             stream_key,
             pull_stream.clone(),
-            move |stream_key: &str| {
-                let hub_sender = hub_sender.clone();
-                let stream_key = stream_key.to_string();
+            move |_stream_key: &str| {
+                let stream = cleanup_stream.clone();
                 Box::pin(async move {
-                    if let Some((room_id, media_id)) = stream_key.split_once(':') {
-                        let identifier = StreamIdentifier::Rtmp {
-                            app_name: room_id.to_string(),
-                            stream_name: media_id.to_string(),
-                        };
-                        if let Err(e) = hub_sender.try_send(StreamHubEvent::UnPublish { identifier }) {
-                            warn!("Failed to send UnPublish for idle-cleaned pull stream {}: {}", stream_key, e);
-                        }
+                    if let Err(e) = stream.stop().await {
+                        warn!("Failed to stop pull stream during idle cleanup: {}", e);
                     }
                 })
             },

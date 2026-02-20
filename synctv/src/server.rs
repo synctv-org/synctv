@@ -19,6 +19,9 @@ use synctv_core::{
     Config,
 };
 use synctv_cluster::sync::ClusterEvent;
+
+use crate::shutdown::ShutdownCoordinator;
+
 /// Livestream server state (held for graceful shutdown).
 ///
 /// Dropping the handle stops the `StreamHub` event loop and all dependent tasks.
@@ -26,7 +29,11 @@ pub struct LivestreamState {
     pub handle: synctv_livestream::livestream::LivestreamHandle,
 }
 
-/// Container for shared services
+/// Container for shared runtime services.
+///
+/// This struct holds only runtime service references. Shutdown-related resources
+/// (cancellation tokens, background task handles, flush hooks) are managed by
+/// `ShutdownCoordinator`.
 #[derive(Clone)]
 #[allow(dead_code)]
 pub struct Services {
@@ -60,29 +67,8 @@ pub struct Services {
     pub health_monitor: Option<Arc<synctv_cluster::discovery::HealthMonitor>>,
     pub load_balancer: Option<Arc<synctv_cluster::discovery::LoadBalancer>>,
     /// Shared Redis connection for playback caching.
-    ///
-    /// Stored as `Arc<RwLock<ConnectionManager>>` so that the background
-    /// Sentinel health check in `synctv_core::bootstrap::services` can hot-swap
-    /// the inner `ConnectionManager` on master failover.  Request handlers
-    /// call `.read().await.clone()` to obtain a working snapshot; the internal
-    /// `ConnectionManager` `Arc` means the clone is cheap.
-    pub redis_conn: Option<Arc<tokio::sync::RwLock<redis::aio::ConnectionManager>>>,
-    /// `CancellationToken` for settings listen task
-    pub settings_cancel: tokio_util::sync::CancellationToken,
-    /// `CancellationToken` for partition management tasks
-    pub partition_cancel: tokio_util::sync::CancellationToken,
-    /// Leader elector for singleton operations (None in single-node mode)
-    pub leader_elector: Option<synctv_cluster::leader::AnyLeaderElector>,
-    /// `CancellationToken` for leader election loop
-    pub leader_cancel: tokio_util::sync::CancellationToken,
-    /// K8s DNS refresh background task abort handle (aborted during shutdown)
-    pub dns_refresh_abort: Option<tokio::task::AbortHandle>,
-    /// Settings listen task handle (joined before DB pool closure to release PG connection)
-    pub settings_listen_task: Arc<tokio::sync::Mutex<Option<tokio::task::JoinHandle<()>>>>,
-    /// Audit flush handle for graceful shutdown (flushed before DB pool closure)
-    pub audit_flush_handle: Arc<tokio::sync::Mutex<Option<synctv_core::service::AuditFlushHandle>>>,
-    /// Background task `JoinHandles` to await during graceful shutdown
-    pub background_handles: Arc<tokio::sync::Mutex<Vec<JoinHandle<()>>>>,
+    pub redis_client: redis::Client,
+    pub redis_conn: Arc<tokio::sync::RwLock<redis::aio::ConnectionManager>>,
 }
 
 /// `SyncTV` server - manages all server components
@@ -94,8 +80,6 @@ pub struct SyncTvServer {
     grpc_handle: Option<JoinHandle<()>>,
     http_handle: Option<JoinHandle<()>>,
 }
-
-impl Services {}
 
 impl SyncTvServer {
     /// Create a new server instance
@@ -115,8 +99,9 @@ impl SyncTvServer {
         }
     }
 
-    /// Start all servers and wait for shutdown signal
-    pub async fn start(mut self) -> anyhow::Result<()> {
+    /// Start all servers and wait for shutdown signal, using a `ShutdownCoordinator`
+    /// for centralized shutdown orchestration.
+    pub async fn start_with_coordinator(mut self, coordinator: ShutdownCoordinator) -> anyhow::Result<()> {
         info!("Starting SyncTV server...");
 
         // Create shutdown signal channel
@@ -210,12 +195,9 @@ impl SyncTvServer {
             }
         }
 
-        // Signal all components to shut down
+        // Signal gRPC/HTTP servers to shut down
         let _ = shutdown_tx.send(true);
         cleanup_cancel.cancel();
-        self.services.settings_cancel.cancel();
-        self.services.partition_cancel.cancel();
-        self.services.leader_cancel.cancel();
 
         // Wait for gRPC and HTTP servers to finish with a timeout
         let drain_timeout = self.config.server.shutdown_drain_timeout_seconds;
@@ -261,16 +243,15 @@ impl SyncTvServer {
             }
         }
 
-        // Now shut down the cluster manager so the admin event broadcast
-        // channel closes, allowing the admin_event_handle listener to exit.
+        // Shut down the cluster manager so the admin event broadcast channel
+        // closes, allowing the admin_event_handle listener to exit.
         if let Some(ref cluster_mgr) = self.services.cluster_manager {
             info!("Shutting down cluster manager (post-drain, closing admin event channel)...");
             cluster_mgr.shutdown().await;
             info!("Cluster manager shut down (admin event channel closed)");
         }
 
-        // Wait for admin event listener — it should exit quickly since its
-        // broadcast channel is closed.
+        // Wait for admin event listener
         if let Some(handle) = admin_event_handle {
             info!("Waiting for admin event listener to stop...");
             match tokio::time::timeout(Duration::from_secs(5), handle).await {
@@ -279,34 +260,27 @@ impl SyncTvServer {
             }
         }
 
-        // Run remaining shutdown steps (connection drain is skipped since
-        // we already drained above; cluster manager shutdown is idempotent)
-        self.shutdown().await;
+        // Shut down remaining infrastructure components
+        self.shutdown_components().await;
 
+        // Centralized shutdown: cancel tokens → drain tasks → run hooks
+        coordinator.shutdown().await;
+
+        // Close the database connection pool (after audit flush and settings task)
+        info!("Closing database connection pool...");
+        self.pool.close().await;
+        info!("Database pool closed");
+
+        info!("SyncTV server shut down complete");
         Ok(())
     }
 
-    /// Gracefully shut down remaining server components.
+    /// Shut down infrastructure components (STUN, livestream, health monitor, node registry).
     ///
-    /// Connection draining and cluster manager shutdown are handled in `start()`
-    /// before this method is called — draining happens first so that events
-    /// generated during drain (UserLeft, etc.) are broadcast through the
-    /// still-alive pub/sub system.
-    ///
-    /// This method handles the remaining shutdown steps:
-    /// - Deregisters node from cluster registry for immediate peer discovery of departure
-    /// - Sequentially shuts down components: STUN -> livestream -> health monitor -> background tasks
-    /// - Flushes audit buffer and closes database pool
-    /// - Ensures zero-downtime deployments in Kubernetes (readiness probe fails immediately)
-    async fn shutdown(&self) {
-        info!("Shutting down SyncTV server...");
-
-        // 1. Connection draining is performed in start() BEFORE cluster manager
-        // shutdown, so that events generated during drain (UserLeft, etc.) are
-        // properly broadcast through the still-alive pub/sub system.
-
-        // 1.5. Deregister this node from the cluster registry so other nodes
-        // discover the departure immediately instead of waiting for heartbeat timeout.
+    /// This is separate from the `ShutdownCoordinator` because these components
+    /// have custom shutdown protocols (not just cancellation tokens or join handles).
+    async fn shutdown_components(&self) {
+        // Deregister node from cluster registry
         if let Some(ref registry) = self.services.node_registry {
             info!("Deregistering node from cluster registry...");
             if let Err(e) = registry.unregister().await {
@@ -316,149 +290,36 @@ impl SyncTvServer {
             }
         }
 
-        // 2. Shut down STUN server
+        // Shut down STUN server
         if let Some(ref stun) = self.services.stun_server {
             info!("Shutting down STUN server...");
             stun.shutdown().await;
             info!("STUN server shut down");
         }
 
-        // 4. Stop livestream: abort the StreamHub event loop
+        // Stop livestream
         if let Some(ref state) = self.livestream_state {
             info!("Stopping livestream infrastructure...");
             state.handle.shutdown();
             info!("Livestream infrastructure shut down");
         }
 
-        // 4.5. Shut down health monitor (await the monitoring task)
+        // Shut down health monitor
         if let Some(ref health_monitor) = self.services.health_monitor {
             info!("Shutting down health monitor...");
             health_monitor.shutdown().await;
             info!("Health monitor shut down");
         }
 
-        // 4.6. Abort K8s DNS refresh loop (if active)
-        if let Some(ref abort_handle) = self.services.dns_refresh_abort {
-            info!("Aborting K8s DNS refresh loop...");
-            abort_handle.abort();
-            info!("K8s DNS refresh loop aborted");
-        }
-
-        // 5. Cluster manager shutdown is handled earlier in the start() method
-        // (before awaiting admin_event_handle) so that the broadcast channel closes
-        // and the admin event listener exits naturally. ClusterManager::shutdown()
-        // is idempotent, so this is a no-op if already called.
-
-        // 5.5. Await tracked background tasks with a per-task timeout.
-        // Each task gets up to 30 seconds to finish.  If it hasn't stopped by then,
-        // log a warning and move on — we don't want a stuck background task to block
-        // the rest of the shutdown sequence (database pool closure, etc.).
-        {
-            let mut handles = self.services.background_handles.lock().await;
-            if !handles.is_empty() {
-                info!("Waiting for {} background task(s) to finish...", handles.len());
-                for handle in handles.drain(..) {
-                    match tokio::time::timeout(Duration::from_secs(30), handle).await {
-                        Ok(_) => {}
-                        Err(_) => {
-                            warn!("A background task did not finish within 30s during shutdown, proceeding");
-                        }
-                    }
-                }
-                info!("Background tasks finished");
-            }
-        }
-
-        // 6. Redis publish channel closes when sender is dropped
+        // Redis publish channel closes when sender is dropped
         if self.services.redis_publish_tx.is_some() {
             info!("Closing Redis publish channel");
         }
-
-        // 6.5. Flush audit service buffer BEFORE closing the database pool.
-        // The audit service buffers events in memory and writes them to the DB
-        // in batches. If we close the pool first, the final flush would fail and
-        // recent audit events would be lost.
-        //
-        // Issue #38: The flush has a 60-second timeout (increased from 30s) to
-        // reduce the chance of losing events when the DB is under stress during
-        // shutdown. Progress is logged every 10s so operators can see whether
-        // the flush is making progress or completely stuck.
-        {
-            let mut handle_guard = self.services.audit_flush_handle.lock().await;
-            if let Some(flush_handle) = handle_guard.take() {
-                info!("Flushing audit service buffer (timeout: 60s)...");
-                // Use a select loop so we can log progress every 10s
-                let flush_timeout = Duration::from_secs(60);
-                let progress_interval = Duration::from_secs(10);
-                let mut elapsed = Duration::ZERO;
-                let flush_fut = flush_handle.shutdown();
-                tokio::pin!(flush_fut);
-                let mut flushed = false;
-                loop {
-                    match tokio::time::timeout(progress_interval, &mut flush_fut).await {
-                        Ok(()) => {
-                            info!("Audit service buffer flushed successfully");
-                            flushed = true;
-                            break;
-                        }
-                        Err(_) => {
-                            elapsed += progress_interval;
-                            if elapsed >= flush_timeout {
-                                warn!(
-                                    "Audit service flush timed out after {}s; \
-                                     some buffered events may be lost. Continuing shutdown.",
-                                    flush_timeout.as_secs()
-                                );
-                                break;
-                            }
-                            info!(
-                                "Audit service flush still in progress ({}/{}s elapsed)...",
-                                elapsed.as_secs(),
-                                flush_timeout.as_secs()
-                            );
-                        }
-                    }
-                }
-                if !flushed {
-                    warn!("Audit flush did not complete — check DB connectivity during shutdown");
-                }
-            }
-        }
-
-        // 6.6. Join the settings listen task BEFORE closing the database pool.
-        // The settings task holds a PG LISTEN connection. If we close the pool
-        // first, the task may panic or leak the connection.
-        // A 30-second timeout prevents shutdown from hanging indefinitely if the
-        // settings task fails to respond to the cancellation signal.
-        {
-            let mut task_guard = self.services.settings_listen_task.lock().await;
-            if let Some(task) = task_guard.take() {
-                info!("Waiting for settings listen task to stop...");
-                match tokio::time::timeout(Duration::from_secs(30), task).await {
-                    Ok(_) => {
-                        info!("Settings listen task stopped");
-                    }
-                    Err(_) => {
-                        warn!("Settings listen task did not stop within 30s, proceeding with shutdown");
-                    }
-                }
-            }
-        }
-
-        // 7. Close the database connection pool
-        info!("Closing database connection pool...");
-        self.pool.close().await;
-        info!("Database pool closed");
-
-        info!("SyncTV server shut down complete");
     }
 
     /// Start gRPC server
     async fn start_grpc_server(&self, shutdown_rx: watch::Receiver<bool>) -> anyhow::Result<JoinHandle<()>> {
         let config = self.config.clone();
-        // Pass the Option<Arc<ClusterManager>> through directly.
-        // gRPC handlers that require cluster support will return Unavailable
-        // when cluster_manager is None (single-node mode without Redis).
         let cluster_manager = self.services.cluster_manager.clone();
 
         let services = self.services.clone();
@@ -489,7 +350,8 @@ impl SyncTvServer {
                 oauth2_service: services.oauth2_service,
                 audit_service: services.audit_service,
                 node_registry: services.node_registry,
-                redis_conn: services.redis_conn.clone(),
+                redis_client: services.redis_client.clone(),
+                redis_conn: Some(services.redis_conn.clone()),
                 shutdown_rx: Some(shutdown_rx),
                 builtin_stun_url: services.stun_server.as_ref().map(|s| {
                     let addr = s.external_addr();
@@ -524,26 +386,10 @@ impl SyncTvServer {
 
         let live_streaming_infrastructure = self.services.live_streaming_infrastructure.clone();
 
-        // Create WebSocket ticket service using the shared Redis connection.
-        // Previously this created a separate Redis client + ConnectionManager,
-        // which was redundant since services.redis_conn is already a multiplexed
-        // ConnectionManager that supports concurrent use.
-        //
-        // In cluster mode (cluster_secret is non-empty), Redis is required.
-        // WsTicketService::new() will return an error if cluster_mode is true and
-        // redis_conn is None, preventing silent in-memory fallback in multi-replica setups.
         let is_cluster_mode = !self.config.server.cluster_secret.is_empty();
-        // Get a fresh ConnectionManager snapshot from the shared Arc<RwLock<>>
-        // for services that hold their own copy. The ConnectionManager is
-        // internally Arc-backed so the clone is cheap; Sentinel failover is handled
-        // by the background health check which updates the shared RwLock.
-        let redis_conn_snapshot: Option<redis::aio::ConnectionManager> = if let Some(ref shared) = self.services.redis_conn {
-            Some(shared.read().await.clone())
-        } else {
-            None
-        };
+        let redis_conn_snapshot = self.services.redis_conn.read().await.clone();
         let ws_ticket_service = match synctv_core::service::WsTicketService::new(
-            redis_conn_snapshot,
+            Some(redis_conn_snapshot),
             None,
             is_cluster_mode,
         ) {
@@ -580,7 +426,7 @@ impl SyncTvServer {
                 live_streaming_infrastructure,
                 rate_limiter: self.services.rate_limiter.clone(),
                 ws_ticket_service,
-                redis_conn: self.services.redis_conn.clone(),
+                redis_conn: Some(self.services.redis_conn.clone()),
                 builtin_stun_url: self.services.stun_server.as_ref().map(|s| {
                     let addr = s.external_addr();
                     format!("stun:{}:{}", addr.ip(), addr.port())

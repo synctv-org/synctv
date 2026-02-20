@@ -67,7 +67,7 @@ pub use chat_partition_manager::{
 pub use cleanup::{CleanupService, CleanupConfig, CleanupResult};
 pub use credential_encryption::CredentialEncryption;
 pub use db_maintenance::DatabaseMaintenanceService;
-pub use distributed_lock::{DistributedLock, LockGuard};
+pub use distributed_lock::{DistributedLock, LockGuard, MigrationLock, PgAdvisoryMigrationLock};
 pub use email::{EmailService, EmailConfig};
 pub use email_templates::{EmailTemplateManager, EmailTemplateType};
 pub use optimistic_retry::retry_with_optimistic_lock;

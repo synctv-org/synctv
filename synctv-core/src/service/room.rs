@@ -1106,6 +1106,11 @@ impl RoomService {
         self.member_service.count_members(room_id).await
     }
 
+    /// Get member counts for multiple rooms in a single query.
+    pub async fn get_member_count_batch(&self, room_ids: &[&RoomId]) -> Result<std::collections::HashMap<String, i32>> {
+        self.member_service.count_members_batch(room_ids).await
+    }
+
     /// Get a specific room member record.
     ///
     /// Returns `None` if the user is not (or is no longer) a member of the room.

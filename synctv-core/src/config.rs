@@ -1658,6 +1658,7 @@ mod tests {
             buffer_sizes: BufferSizesConfig::default(),
             cache: CacheConfig::default(),
             http_rate_limits: HttpRateLimitConfig::default(),
+            grpc_rate_limits: GrpcRateLimitConfig::default(),
         });
 
         assert!(!config.database_url().is_empty());
@@ -1699,6 +1700,8 @@ mod tests {
             password_complexity: PasswordComplexityConfig::default(),
             buffer_sizes: BufferSizesConfig::default(),
             cache: CacheConfig::default(),
+            http_rate_limits: HttpRateLimitConfig::default(),
+            grpc_rate_limits: GrpcRateLimitConfig::default(),
         };
 
         assert_eq!(config.grpc_address(), "127.0.0.1:50051");
@@ -1750,6 +1753,7 @@ mod tests {
             buffer_sizes: BufferSizesConfig::default(),
             cache: CacheConfig::default(),
             http_rate_limits: HttpRateLimitConfig::default(),
+            grpc_rate_limits: GrpcRateLimitConfig::default(),
         }
     }
 

@@ -69,6 +69,41 @@ impl DirectUrlProvider {
         }
     }
 
+    /// Forbidden header names that must not be set via user-supplied config.
+    ///
+    /// These headers can be exploited for request smuggling, credential injection,
+    /// or SSRF amplification if user-controlled.
+    const FORBIDDEN_HEADERS: &[&str] = &[
+        "host",
+        "authorization",
+        "cookie",
+        "transfer-encoding",
+        "content-length",
+        "connection",
+        "upgrade",
+        "proxy-authorization",
+        "proxy-connection",
+        "te",
+        "trailer",
+        "x-forwarded-for",
+        "x-forwarded-host",
+        "x-real-ip",
+    ];
+
+    /// Validate that custom headers do not include forbidden header names.
+    fn validate_headers(headers: &HashMap<String, String>) -> Result<(), ProviderError> {
+        for key in headers.keys() {
+            let lower = key.to_lowercase();
+            if Self::FORBIDDEN_HEADERS.contains(&lower.as_str()) {
+                return Err(ProviderError::InvalidConfig(format!(
+                    "DirectUrl header '{}' is forbidden for security reasons",
+                    key
+                )));
+            }
+        }
+        Ok(())
+    }
+
     /// Detect format from URL path extension.
     ///
     /// Parses the URL to extract the path component, then checks the file
@@ -138,6 +173,10 @@ impl MediaProvider for DirectUrlProvider {
 
         // SSRF protection: reject URLs targeting private/internal networks at add time
         Self::validate_url_not_internal(&config.url)?;
+
+        // Validate custom headers: reject forbidden header names that could be
+        // used for request smuggling or credential injection.
+        Self::validate_headers(&config.headers)?;
 
         Ok(())
     }
@@ -314,6 +353,33 @@ mod tests {
         assert!(DirectUrlProvider::validate_rtmp_url_not_internal("rtmp://live.example.com/live/stream").is_ok());
         assert!(DirectUrlProvider::validate_rtmp_url_not_internal("rtmps://live.example.com/live/stream").is_ok());
         assert!(DirectUrlProvider::validate_rtmp_url_not_internal("rtmp://93.184.216.34:1935/live/stream").is_ok());
+    }
+
+    #[test]
+    fn test_forbidden_headers_rejected() {
+        let mut headers = HashMap::new();
+        headers.insert("Host".to_string(), "evil.com".to_string());
+        assert!(DirectUrlProvider::validate_headers(&headers).is_err());
+
+        let mut headers = HashMap::new();
+        headers.insert("authorization".to_string(), "Bearer token".to_string());
+        assert!(DirectUrlProvider::validate_headers(&headers).is_err());
+
+        let mut headers = HashMap::new();
+        headers.insert("Cookie".to_string(), "session=abc".to_string());
+        assert!(DirectUrlProvider::validate_headers(&headers).is_err());
+
+        let mut headers = HashMap::new();
+        headers.insert("Transfer-Encoding".to_string(), "chunked".to_string());
+        assert!(DirectUrlProvider::validate_headers(&headers).is_err());
+    }
+
+    #[test]
+    fn test_allowed_headers_accepted() {
+        let mut headers = HashMap::new();
+        headers.insert("Referer".to_string(), "https://example.com".to_string());
+        headers.insert("User-Agent".to_string(), "MyPlayer/1.0".to_string());
+        assert!(DirectUrlProvider::validate_headers(&headers).is_ok());
     }
 
     #[test]

@@ -183,6 +183,16 @@ impl MediaProvider for AlistProvider {
         // Parse source_config first
         let config = AlistSourceConfig::try_from(source_config)?;
 
+        // Re-validate host URL at request time to protect against DNS rebinding.
+        // The hostname may have been safe at config time but could resolve to a
+        // private IP now.
+        validate_url_for_ssrf(&config.host).map_err(|e| match e {
+            ValidationError::SSRF(msg) => {
+                ProviderError::InvalidUrl(format!("SSRF protection: {msg}"))
+            }
+            _ => ProviderError::InvalidUrl(e.to_string()),
+        })?;
+
         // Get appropriate client based on instance_name from config
         let client = self
             .get_client(config.provider_instance_name.as_deref())

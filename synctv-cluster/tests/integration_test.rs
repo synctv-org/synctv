@@ -56,8 +56,11 @@ impl TestRedis {
 
 /// Helper: create a `ClusterManager` connected to the given Redis URL.
 async fn create_node(redis_url: &str, node_id: &str) -> ClusterManager {
+    let client = redis::Client::open(redis_url).expect("Failed to open Redis client");
+    let conn = client.get_connection_manager().await.expect("Failed to get ConnectionManager");
     let config = ClusterConfig {
-        redis_url: redis_url.to_string(),
+        redis_client: Some(client),
+        redis_conn: Some(conn),
         node_id: node_id.to_string(),
         dedup_window: Duration::from_secs(10),
         cleanup_interval: Duration::from_secs(30),
@@ -257,8 +260,11 @@ async fn test_cross_replica_cache_invalidation() {
     let mut local_rx_a = cache_svc_a.subscribe();
 
     // Create node A with cache invalidation enabled
+    let client_a = redis::Client::open(redis.redis_url.clone()).expect("Failed to open Redis client");
+    let conn_a = client_a.get_connection_manager().await.expect("Failed to get ConnectionManager");
     let config_a = ClusterConfig {
-        redis_url: redis.redis_url.clone(),
+        redis_client: Some(client_a),
+        redis_conn: Some(conn_a),
         node_id: "node_a".to_string(),
         dedup_window: Duration::from_secs(10),
         cleanup_interval: Duration::from_secs(30),
@@ -784,9 +790,10 @@ async fn test_redis_stream_catchup() {
     // Now start a subscriber node that connects to the same Redis.
     // On first connect it snapshots stream tips, so pre-existing messages
     // won't be delivered. But any new messages should arrive via pub/sub.
+    let redis_client = redis::Client::open(redis.redis_url.clone()).expect("Failed to open Redis client");
     let subscriber_node = Arc::new(
         RedisPubSub::new(
-            &redis.redis_url,
+            redis_client,
             message_hub.clone(),
             "subscriber_node".to_string(),
             admin_tx,
@@ -1273,8 +1280,11 @@ async fn test_cross_replica_permission_cache_invalidation_via_cache_service() {
     let mut local_rx_a = cache_svc_a.subscribe();
 
     // Create node A with cache invalidation enabled
+    let client_a = redis::Client::open(redis.redis_url.clone()).expect("Failed to open Redis client");
+    let conn_a = client_a.get_connection_manager().await.expect("Failed to get ConnectionManager");
     let config_a = ClusterConfig {
-        redis_url: redis.redis_url.clone(),
+        redis_client: Some(client_a),
+        redis_conn: Some(conn_a),
         node_id: "node_a".to_string(),
         dedup_window: Duration::from_secs(10),
         cleanup_interval: Duration::from_secs(30),
@@ -1341,7 +1351,8 @@ async fn test_room_hub_connection_manager_state_consistency() {
     use synctv_cluster::sync::{ConnectionManager, ConnectionLimits};
 
     let config = ClusterConfig {
-        redis_url: "".to_string(), // No Redis -- single-node mode
+        redis_client: None,
+        redis_conn: None, // No Redis -- single-node mode
         node_id: "test_node".to_string(),
         dedup_window: Duration::from_secs(1),
         cleanup_interval: Duration::from_secs(1),
@@ -1436,7 +1447,8 @@ async fn test_room_hub_connection_manager_state_consistency() {
 #[tokio::test]
 async fn test_rapid_subscribe_unsubscribe_no_leak() {
     let config = ClusterConfig {
-        redis_url: "".to_string(),
+        redis_client: None,
+        redis_conn: None,
         node_id: "test_node".to_string(),
         dedup_window: Duration::from_secs(1),
         cleanup_interval: Duration::from_secs(1),

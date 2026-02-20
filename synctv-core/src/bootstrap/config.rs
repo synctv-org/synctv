@@ -1,7 +1,6 @@
 //! Configuration loading
 
 use anyhow::Result;
-use tracing::info;
 
 use crate::Config;
 
@@ -74,7 +73,7 @@ pub fn load_config() -> Result<Config> {
     // Validate configuration (fail fast on misconfigurations)
     if let Err(errors) = config.validate() {
         for error in &errors {
-            tracing::error!("Config validation error: {}", error);
+            eprintln!("Config validation error: {}", error);
         }
         return Err(anyhow::anyhow!(
             "Configuration validation failed with {} error(s): {}",
@@ -83,9 +82,9 @@ pub fn load_config() -> Result<Config> {
         ));
     }
 
-    info!("Configuration loaded and validated successfully");
-    info!("gRPC address: {}", config.grpc_address());
-    info!("HTTP address: {}", config.http_address());
+    eprintln!("Configuration loaded and validated successfully");
+    eprintln!("gRPC address: {}", config.grpc_address());
+    eprintln!("HTTP address: {}", config.http_address());
 
     Ok(config)
 }

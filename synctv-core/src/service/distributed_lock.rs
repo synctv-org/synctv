@@ -61,6 +61,117 @@ use redis::Script;
 use std::future::Future;
 use crate::{Error, Result, InternalExt};
 
+/// Abstraction over a distributed migration lock.
+///
+/// Consumers that only need acquire/release semantics (e.g. `run_migrations`)
+/// program against this trait instead of depending on Redis directly.
+#[async_trait::async_trait]
+pub trait MigrationLock: Send + Sync {
+    /// Try to acquire the lock.
+    ///
+    /// Returns `Ok(Some(lock_value))` if acquired, `Ok(None)` if already held,
+    /// or `Err` on infrastructure failure.
+    async fn acquire(&self, key: &str, ttl_secs: u64) -> anyhow::Result<Option<String>>;
+
+    /// Release a previously acquired lock.
+    ///
+    /// Returns `true` if the lock was released, `false` if not held or expired.
+    async fn release(&self, key: &str, lock_value: &str) -> anyhow::Result<bool>;
+}
+
+/// `MigrationLock` implementation backed by the existing Redis `DistributedLock`.
+#[async_trait::async_trait]
+impl MigrationLock for DistributedLock {
+    async fn acquire(&self, key: &str, ttl_secs: u64) -> anyhow::Result<Option<String>> {
+        DistributedLock::acquire(self, key, ttl_secs)
+            .await
+            .map_err(|e| anyhow::anyhow!("{e}"))
+    }
+
+    async fn release(&self, key: &str, lock_value: &str) -> anyhow::Result<bool> {
+        DistributedLock::release(self, key, lock_value)
+            .await
+            .map_err(|e| anyhow::anyhow!("{e}"))
+    }
+}
+
+/// PostgreSQL advisory lock-based `MigrationLock`.
+///
+/// Used as a fallback when the Redis lock fails. Uses `pg_try_advisory_lock`
+/// with a retry loop, mirroring the existing behaviour in `migrations.rs`.
+pub struct PgAdvisoryMigrationLock {
+    pool: sqlx::PgPool,
+}
+
+/// Stable advisory lock key for migration coordination (hash of "synctv_migration").
+const PG_ADVISORY_LOCK_KEY: i64 = 0x73796E63_74766D69_u64 as i64;
+
+impl PgAdvisoryMigrationLock {
+    pub fn new(pool: sqlx::PgPool) -> Self {
+        Self { pool }
+    }
+}
+
+#[async_trait::async_trait]
+impl MigrationLock for PgAdvisoryMigrationLock {
+    async fn acquire(&self, _key: &str, ttl_secs: u64) -> anyhow::Result<Option<String>> {
+        use sqlx::Acquire;
+
+        let max_wait = std::time::Duration::from_secs(ttl_secs);
+        let retry_interval = std::time::Duration::from_secs(5);
+        let start = tokio::time::Instant::now();
+
+        let mut conn = self
+            .pool
+            .acquire()
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to acquire DB connection for PG advisory lock: {e}"))?;
+
+        loop {
+            let acquired: (bool,) =
+                sqlx::query_as("SELECT pg_try_advisory_lock($1)")
+                    .bind(PG_ADVISORY_LOCK_KEY)
+                    .fetch_one(conn.acquire().await?)
+                    .await
+                    .map_err(|e| anyhow::anyhow!("Failed to attempt PostgreSQL advisory lock: {e}"))?;
+
+            if acquired.0 {
+                // Return a sentinel value; release is a no-op because PG advisory
+                // locks are released when the session ends.
+                return Ok(Some("pg_advisory".to_string()));
+            }
+
+            if start.elapsed() >= max_wait {
+                return Err(anyhow::anyhow!(
+                    "Timed out waiting for PostgreSQL advisory lock after {}s",
+                    max_wait.as_secs()
+                ));
+            }
+
+            tracing::info!(
+                "PostgreSQL advisory lock held by another connection, retrying in {}s (elapsed: {}s / {}s)...",
+                retry_interval.as_secs(),
+                start.elapsed().as_secs(),
+                max_wait.as_secs()
+            );
+            tokio::time::sleep(retry_interval).await;
+        }
+    }
+
+    async fn release(&self, _key: &str, _lock_value: &str) -> anyhow::Result<bool> {
+        // PG advisory locks acquired via pg_try_advisory_lock are session-scoped;
+        // they are released when the connection is returned to the pool.
+        // We explicitly release here for cleanliness.
+        let result: (bool,) =
+            sqlx::query_as("SELECT pg_advisory_unlock($1)")
+                .bind(PG_ADVISORY_LOCK_KEY)
+                .fetch_one(&self.pool)
+                .await
+                .map_err(|e| anyhow::anyhow!("Failed to release PG advisory lock: {e}"))?;
+        Ok(result.0)
+    }
+}
+
 /// Distributed lock service (single Redis instance)
 ///
 /// Provides Redis-based distributed locking for cross-replica critical sections

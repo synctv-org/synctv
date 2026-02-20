@@ -96,6 +96,9 @@ pub struct EmailService {
     template_manager: Arc<EmailTemplateManager>,
     /// Optional Redis client for distributed code storage
     redis: Option<Arc<redis::Client>>,
+    /// Reusable SMTP transport (connection-pooled by lettre).
+    /// Created once during initialization when email config is present.
+    smtp_transport: Option<AsyncSmtpTransport<Tokio1Executor>>,
 }
 
 impl std::fmt::Debug for EmailService {
@@ -117,9 +120,33 @@ impl EmailService {
             .build()
     }
 
+    /// Build a reusable SMTP transport from config.
+    /// lettre's `AsyncSmtpTransport` manages an internal connection pool,
+    /// so building it once and reusing avoids per-email TLS handshakes.
+    fn build_smtp_transport(config: &EmailConfig) -> std::result::Result<AsyncSmtpTransport<Tokio1Executor>, EmailError> {
+        let creds = Credentials::new(
+            config.smtp_username.clone(),
+            config.smtp_password.clone(),
+        );
+        let transport = if config.use_tls {
+            AsyncSmtpTransport::<Tokio1Executor>::relay(&config.smtp_host)
+                .map_err(|e| EmailError::SendError(format!("Failed to create SMTP transport: {e}")))?
+                .credentials(creds)
+                .port(config.smtp_port)
+                .build()
+        } else {
+            AsyncSmtpTransport::<Tokio1Executor>::builder_dangerous(&config.smtp_host)
+                .credentials(creds)
+                .port(config.smtp_port)
+                .build()
+        };
+        Ok(transport)
+    }
+
     /// Create a new email service (without Redis - single node only)
     pub fn new(config: Option<EmailConfig>) -> Result<Self> {
         let template_manager = EmailTemplateManager::new()?;
+        let smtp_transport = config.as_ref().and_then(|c| Self::build_smtp_transport(c).ok());
         Ok(Self {
             config,
             local_codes: Arc::new(Self::build_local_codes_cache(10)),
@@ -127,12 +154,14 @@ impl EmailService {
             max_attempts: 3,
             template_manager: Arc::new(template_manager),
             redis: None,
+            smtp_transport,
         })
     }
 
     /// Create with custom TTL (without Redis - single node only)
     pub fn with_ttl(config: Option<EmailConfig>, code_ttl_minutes: i64) -> Result<Self> {
         let template_manager = EmailTemplateManager::new()?;
+        let smtp_transport = config.as_ref().and_then(|c| Self::build_smtp_transport(c).ok());
         Ok(Self {
             config,
             local_codes: Arc::new(Self::build_local_codes_cache(code_ttl_minutes)),
@@ -140,12 +169,14 @@ impl EmailService {
             max_attempts: 3,
             template_manager: Arc::new(template_manager),
             redis: None,
+            smtp_transport,
         })
     }
 
     /// Create a new email service with Redis support (multi-node safe)
     pub fn with_redis(config: Option<EmailConfig>, redis: Arc<redis::Client>) -> Result<Self> {
         let template_manager = EmailTemplateManager::new()?;
+        let smtp_transport = config.as_ref().and_then(|c| Self::build_smtp_transport(c).ok());
         Ok(Self {
             config,
             local_codes: Arc::new(Self::build_local_codes_cache(10)),
@@ -153,6 +184,7 @@ impl EmailService {
             max_attempts: 3,
             template_manager: Arc::new(template_manager),
             redis: Some(redis),
+            smtp_transport,
         })
     }
 
@@ -757,7 +789,7 @@ impl EmailService {
         self.send_message(config, email).await
     }
 
-    /// Send email message via SMTP
+    /// Send email message via the pooled SMTP transport
     async fn send_message(
         &self,
         config: &EmailConfig,
@@ -768,25 +800,9 @@ impl EmailService {
             .ok_or_else(|| EmailError::SendError("No recipients in email envelope".to_string()))?
             .clone();
 
-        // Create SMTP credentials
-        let creds = Credentials::new(
-            config.smtp_username.clone(),
-            config.smtp_password.clone(),
-        );
-
-        // Create SMTP transport
-        let transport = if config.use_tls {
-            AsyncSmtpTransport::<Tokio1Executor>::relay(&config.smtp_host)
-                .map_err(|e| EmailError::SendError(format!("Failed to create SMTP transport: {e}")))?
-                .credentials(creds)
-                .port(config.smtp_port)
-                .build()
-        } else {
-            AsyncSmtpTransport::<Tokio1Executor>::builder_dangerous(&config.smtp_host)
-                .credentials(creds)
-                .port(config.smtp_port)
-                .build()
-        };
+        // Use the pre-built pooled transport (avoids per-email TLS handshake)
+        let transport = self.smtp_transport.as_ref()
+            .ok_or_else(|| EmailError::SendError("SMTP transport not initialized".to_string()))?;
 
         // Send email
         transport

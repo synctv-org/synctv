@@ -17,32 +17,40 @@ pub enum MemberStatus {
     Pending,
     /// Banned from room
     Banned,
+    /// Left the room (soft-deleted membership)
+    Left,
 }
 
 
 impl MemberStatus {
-    #[must_use] 
+    #[must_use]
     pub const fn as_str(&self) -> &'static str {
         match self {
             Self::Active => "active",
             Self::Pending => "pending",
             Self::Banned => "banned",
+            Self::Left => "left",
         }
     }
 
-    #[must_use] 
+    #[must_use]
     pub const fn is_active(&self) -> bool {
         matches!(self, Self::Active)
     }
 
-    #[must_use] 
+    #[must_use]
     pub const fn is_pending(&self) -> bool {
         matches!(self, Self::Pending)
     }
 
-    #[must_use] 
+    #[must_use]
     pub const fn is_banned(&self) -> bool {
         matches!(self, Self::Banned)
+    }
+
+    #[must_use]
+    pub const fn is_left(&self) -> bool {
+        matches!(self, Self::Left)
     }
 }
 
@@ -54,6 +62,7 @@ impl FromStr for MemberStatus {
             "active" => Ok(Self::Active),
             "pending" => Ok(Self::Pending),
             "banned" => Ok(Self::Banned),
+            "left" => Ok(Self::Left),
             _ => Err(format!("Unknown member status: {s}")),
         }
     }
@@ -78,6 +87,7 @@ impl sqlx::Encode<'_, sqlx::Postgres> for MemberStatus {
             Self::Active => 1,
             Self::Pending => 2,
             Self::Banned => 3,
+            Self::Left => 4,
         };
         <i16 as sqlx::Encode<sqlx::Postgres>>::encode_by_ref(&val, buf)
     }
@@ -90,6 +100,7 @@ impl<'r> sqlx::Decode<'r, sqlx::Postgres> for MemberStatus {
             1 => Ok(Self::Active),
             2 => Ok(Self::Pending),
             3 => Ok(Self::Banned),
+            4 => Ok(Self::Left),
             _ => Err(format!("Invalid MemberStatus value: {val}").into()),
         }
     }
@@ -232,6 +243,7 @@ impl RoomMember {
     }
 
     pub fn leave(&mut self) {
+        self.status = MemberStatus::Left;
         self.left_at = Some(Utc::now());
     }
 

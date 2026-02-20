@@ -235,6 +235,58 @@ impl BilibiliSourceConfig {
             } => provider_instance_name.as_deref(),
         }
     }
+
+    /// Get a reference to the cookies from any variant
+    fn cookies(&self) -> &HashMap<String, String> {
+        match self {
+            Self::Video { cookies, .. }
+            | Self::Pgc { cookies, .. }
+            | Self::Live { cookies, .. } => cookies,
+        }
+    }
+
+    /// Validate that cookie keys and values do not contain control characters
+    /// or HTTP header-unsafe characters that could lead to header injection.
+    fn validate_cookies(&self) -> Result<(), ProviderError> {
+        for (key, value) in self.cookies() {
+            if key.is_empty() {
+                return Err(ProviderError::InvalidConfig(
+                    "Bilibili cookie key must not be empty".to_string(),
+                ));
+            }
+            if key.chars().any(|c| c.is_control() || c == ';' || c == '=' || c == ' ') {
+                return Err(ProviderError::InvalidConfig(format!(
+                    "Bilibili cookie key '{}' contains invalid characters (control chars, ';', '=', or spaces)",
+                    key
+                )));
+            }
+            if value.chars().any(|c| c.is_control() || c == ';') {
+                return Err(ProviderError::InvalidConfig(format!(
+                    "Bilibili cookie value for key '{}' contains invalid characters (control chars or ';')",
+                    key
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    /// Return a sanitized copy of the cookies with any unsafe characters removed.
+    /// This is a defense-in-depth measure applied at request time.
+    fn sanitized_cookies(&self) -> HashMap<String, String> {
+        self.cookies()
+            .iter()
+            .filter(|(k, _)| !k.is_empty())
+            .map(|(k, v)| {
+                let clean_key: String = k.chars()
+                    .filter(|c| !c.is_control() && *c != ';' && *c != '=' && *c != ' ')
+                    .collect();
+                let clean_value: String = v.chars()
+                    .filter(|c| !c.is_control() && *c != ';')
+                    .collect();
+                (clean_key, clean_value)
+            })
+            .collect()
+    }
 }
 
 impl TryFrom<&Value> for BilibiliSourceConfig {
@@ -259,6 +311,9 @@ impl MediaProvider for BilibiliProvider {
         // Parse source_config first
         let config = BilibiliSourceConfig::try_from(source_config)?;
 
+        // Sanitize cookies at request time as defense-in-depth
+        let sanitized_cookies = config.sanitized_cookies();
+
         // Get appropriate client based on instance_name from config
         let client = self.get_client(config.provider_instance_name()).await;
 
@@ -267,7 +322,6 @@ impl MediaProvider for BilibiliProvider {
                 bvid,
                 aid,
                 cid,
-                cookies,
                 ..
             } => {
                 let bvid = bvid.unwrap_or_default();
@@ -277,7 +331,7 @@ impl MediaProvider for BilibiliProvider {
                     aid,
                     bvid: bvid.clone(),
                     cid,
-                    cookies: cookies.clone(),
+                    cookies: sanitized_cookies.clone(),
                 };
                 let dash_resp = client.get_dash_video_url(request).await?;
 
@@ -289,7 +343,7 @@ impl MediaProvider for BilibiliProvider {
                     aid,
                     bvid: bvid.clone(),
                     cid,
-                    cookies,
+                    cookies: sanitized_cookies.clone(),
                 };
                 if let Ok(subtitle_resp) = client.get_subtitles(subtitle_request).await {
                     subtitles = subtitle_resp
@@ -348,12 +402,12 @@ impl MediaProvider for BilibiliProvider {
             }
 
             BilibiliSourceConfig::Pgc {
-                epid, cid, cookies, ..
+                epid, cid, ..
             } => {
                 let request = synctv_media_providers::grpc::bilibili::GetDashPgcurlReq {
                     epid,
                     cid,
-                    cookies: cookies.clone(),
+                    cookies: sanitized_cookies.clone(),
                 };
                 let dash_resp = client.get_dash_pgcurl(request).await?;
 
@@ -365,7 +419,7 @@ impl MediaProvider for BilibiliProvider {
                     aid: 0,
                     bvid: String::new(),
                     cid,
-                    cookies,
+                    cookies: sanitized_cookies.clone(),
                 };
                 if let Ok(subtitle_resp) = client.get_subtitles(subtitle_request).await {
                     subtitles = subtitle_resp
@@ -420,13 +474,13 @@ impl MediaProvider for BilibiliProvider {
             }
 
             BilibiliSourceConfig::Live {
-                room_id, cookies, ..
+                room_id, ..
             } => {
                 // Live streams use HLS — no DASH
                 let request = synctv_media_providers::grpc::bilibili::GetLiveStreamsReq {
                     cid: room_id,
                     hls: true,
-                    cookies,
+                    cookies: sanitized_cookies,
                 };
                 let live_resp = client.get_live_streams(request).await?;
 
@@ -534,6 +588,10 @@ impl MediaProvider for BilibiliProvider {
             }
         }
 
+        // Validate cookie keys/values don't contain control characters or
+        // HTTP header-unsafe characters that could lead to header injection.
+        config.validate_cookies()?;
+
         Ok(())
     }
 
@@ -627,6 +685,7 @@ mod tests {
                 }
             }
         }
+        config.validate_cookies()?;
         Ok(())
     }
 
@@ -734,5 +793,38 @@ mod tests {
             "cid": 12345
         });
         assert!(validate_bilibili(config).is_err());
+    }
+
+    #[test]
+    fn test_cookie_with_control_chars_rejected() {
+        let config = json!({
+            "type": "video",
+            "bvid": "BV1xx411c7mD",
+            "cid": 12345,
+            "cookies": {"SESSDATA": "value\r\nInjected-Header: evil"}
+        });
+        assert!(validate_bilibili(config).is_err());
+    }
+
+    #[test]
+    fn test_cookie_key_with_semicolon_rejected() {
+        let config = json!({
+            "type": "video",
+            "bvid": "BV1xx411c7mD",
+            "cid": 12345,
+            "cookies": {"key;inject": "value"}
+        });
+        assert!(validate_bilibili(config).is_err());
+    }
+
+    #[test]
+    fn test_valid_cookies_accepted() {
+        let config = json!({
+            "type": "video",
+            "bvid": "BV1xx411c7mD",
+            "cid": 12345,
+            "cookies": {"SESSDATA": "abc123def456"}
+        });
+        assert!(validate_bilibili(config).is_ok());
     }
 }

@@ -543,8 +543,9 @@ impl Common {
             }
         }
 
+        let cache = Cache::new(gop_num, per_stream_max_bytes, statistic_data_sender);
         self.stream_handler
-            .set_cache(Cache::new(gop_num, per_stream_max_bytes, statistic_data_sender))
+            .set_cache(cache)
             .await;
         Ok(())
     }

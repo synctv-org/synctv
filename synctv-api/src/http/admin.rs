@@ -816,7 +816,7 @@ async fn list_streams(
     let streams = api
         .list_active_streams(room_id)
         .await
-        .map_err(|e| AppError::internal(e.to_string()))?;
+        .map_err(|e| admin_err_to_app_error(crate::impls::ApiError::Internal(e.to_string())))?;
     Ok(Json(admin::ListActiveStreamsResponse { streams }))
 }
 
@@ -832,7 +832,7 @@ async fn kick_stream(
     let api = require_admin_api(&state)?;
     api.kick_stream(&req.room_id, &req.media_id, &req.reason)
         .await
-        .map_err(|e| AppError::internal(e.to_string()))?;
+        .map_err(|e| admin_err_to_app_error(crate::impls::ApiError::Internal(e.to_string())))?;
     Ok(Json(admin::KickStreamResponse {}))
 }
 

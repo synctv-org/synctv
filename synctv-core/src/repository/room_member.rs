@@ -287,34 +287,36 @@ impl RoomMemberRepository {
         }
     }
 
-    /// Remove a user from all rooms (soft delete - set `left_at` on all active memberships).
+    /// Remove a user from all rooms (soft delete - set `status = Left` and `left_at`).
     ///
     /// Used during user deletion/ban to clean up room memberships.
     /// Returns the number of memberships removed.
     pub async fn remove_all_for_user(&self, user_id: &UserId) -> Result<u64> {
         let result = sqlx::query(
             "UPDATE room_members
-             SET left_at = $2, version = version + 1
+             SET status = $3, left_at = $2, version = version + 1
              WHERE user_id = $1 AND left_at IS NULL"
         )
         .bind(user_id.as_str())
         .bind(chrono::Utc::now())
+        .bind(MemberStatus::Left)
         .execute(&self.pool)
         .await?;
 
         Ok(result.rows_affected())
     }
 
-    /// Remove user from room (soft delete - set `left_at`)
+    /// Remove user from room (soft delete - set `status = Left` and `left_at`)
     pub async fn remove(&self, room_id: &RoomId, user_id: &UserId) -> Result<bool> {
         let result = sqlx::query(
             "UPDATE room_members
-             SET left_at = $3, version = version + 1
+             SET status = $4, left_at = $3, version = version + 1
              WHERE room_id = $1 AND user_id = $2 AND left_at IS NULL"
         )
         .bind(room_id.as_str())
         .bind(user_id.as_str())
         .bind(chrono::Utc::now())
+        .bind(MemberStatus::Left)
         .execute(&self.pool)
         .await?;
 
@@ -748,6 +750,37 @@ impl RoomMemberRepository {
         Ok(i32::try_from(count).unwrap_or(i32::MAX))
     }
 
+    /// Get member counts for multiple rooms in a single query.
+    ///
+    /// Returns a map from room ID string to member count. Rooms with zero
+    /// members will not appear in the map.
+    pub async fn count_by_rooms_batch(&self, room_ids: &[&RoomId]) -> Result<std::collections::HashMap<String, i32>> {
+        if room_ids.is_empty() {
+            return Ok(std::collections::HashMap::new());
+        }
+
+        let ids: Vec<&str> = room_ids.iter().map(|r| r.as_str()).collect();
+        let rows = sqlx::query(
+            "SELECT room_id, COUNT(*)::int as member_count
+             FROM room_members
+             WHERE room_id = ANY($1) AND left_at IS NULL AND status != $2
+             GROUP BY room_id"
+        )
+        .bind(&ids)
+        .bind(MemberStatus::Banned)
+        .fetch_all(&self.pool)
+        .await?;
+
+        let mut map = std::collections::HashMap::with_capacity(rows.len());
+        for row in rows {
+            let room_id: String = row.try_get("room_id")?;
+            let count: i32 = row.try_get("member_count")?;
+            map.insert(room_id, count);
+        }
+
+        Ok(map)
+    }
+
     /// Get rooms where a user is a member
     pub async fn list_by_user(&self, user_id: &UserId, pagination: PageParams) -> Result<(Vec<RoomId>, i64)> {
         let limit = pagination.limit() as i64;
@@ -899,7 +932,7 @@ impl RoomMemberRepository {
     ) -> Result<bool> {
         let result = sqlx::query(
             "UPDATE room_members AS target
-             SET left_at = $4, version = target.version + 1
+             SET status = $5, left_at = $4, version = target.version + 1
              WHERE target.room_id = $1
                AND target.user_id = $3
                AND target.left_at IS NULL
@@ -915,6 +948,7 @@ impl RoomMemberRepository {
         .bind(actor_id.as_str())
         .bind(target_id.as_str())
         .bind(chrono::Utc::now())
+        .bind(MemberStatus::Left)
         .execute(&self.pool)
         .await?;
 

@@ -25,12 +25,12 @@ pub struct UserService {
     cache_invalidation: Option<Arc<CacheInvalidationService>>,
     /// Password complexity configuration from config file
     password_complexity: PasswordComplexityConfig,
-    /// Optional brute-force protection for login attempts
-    brute_force: Option<BruteForceProtection>,
+    /// Brute-force protection for login attempts (Redis-backed)
+    brute_force: BruteForceProtection,
     /// Whether email verification is required for login (true when email service is configured)
     email_verification_required: bool,
-    /// Optional Redis connection for refresh token blacklist (rotation)
-    redis_conn: Option<redis::aio::ConnectionManager>,
+    /// Redis connection for refresh token blacklist (rotation)
+    redis_conn: redis::aio::ConnectionManager,
     /// Key builder for Redis keys
     key_builder: KeyBuilder,
 }
@@ -50,6 +50,9 @@ impl UserService {
         jwt_service: JwtService,
         username_cache: UsernameCache,
         password_complexity: PasswordComplexityConfig,
+        redis_conn: redis::aio::ConnectionManager,
+        key_builder: KeyBuilder,
+        brute_force: BruteForceProtection,
     ) -> Self {
         Self {
             repository: UserRepository::new(pool),
@@ -57,10 +60,10 @@ impl UserService {
             username_cache,
             cache_invalidation: None,
             password_complexity,
-            brute_force: None,
+            brute_force,
             email_verification_required: false,
-            redis_conn: None,
-            key_builder: KeyBuilder::default(),
+            redis_conn,
+            key_builder,
         }
     }
 
@@ -69,24 +72,9 @@ impl UserService {
         self.cache_invalidation = Some(service);
     }
 
-    /// Set the brute-force protection service for per-account login rate limiting
-    pub fn set_brute_force_protection(&mut self, service: BruteForceProtection) {
-        self.brute_force = Some(service);
-    }
-
     /// Enable email verification requirement for login (call when email service is configured)
     pub const fn set_email_verification_required(&mut self, required: bool) {
         self.email_verification_required = required;
-    }
-
-    /// Set the Redis connection and key builder for refresh token rotation blacklist.
-    ///
-    /// When Redis is available, used refresh tokens are blacklisted to prevent
-    /// replay attacks. Without Redis, refresh token rotation is not enforced
-    /// (tokens are still validated for signature, expiration, and password changes).
-    pub fn set_redis_conn(&mut self, conn: redis::aio::ConnectionManager, key_builder: KeyBuilder) {
-        self.redis_conn = Some(conn);
-        self.key_builder = key_builder;
     }
 
     /// Register a new user
@@ -112,9 +100,7 @@ impl UserService {
         // mass-registration attempts (credential stuffing, spam account creation).
         // Use a fixed key instead of the attacker-controlled username to prevent
         // bypassing per-account lockout by varying the username on each attempt.
-        if let Some(ref bf) = self.brute_force {
-            bf.check_allowed("__registration__", client_ip).await?;
-        }
+        self.brute_force.check_allowed("__registration__", client_ip).await?;
 
         // Validate input
         self.validate_username(&username)?;
@@ -252,9 +238,7 @@ impl UserService {
         // Check brute-force lockout before expensive Argon2 verification.
         // This applies to all usernames (existing or not) to prevent
         // distributed attacks while also saving CPU on locked accounts.
-        if let Some(ref bf) = self.brute_force {
-            bf.check_allowed(&username, client_ip).await?;
-        }
+        self.brute_force.check_allowed(&username, client_ip).await?;
 
         // Get user by username
         let maybe_user = self
@@ -281,10 +265,8 @@ impl UserService {
             Some(u) if is_valid => u,
             _ => {
                 // Record failed attempt for brute-force tracking
-                if let Some(ref bf) = self.brute_force {
-                    if let Err(e) = bf.record_failure(&username, client_ip).await {
-                        tracing::warn!(error = %e, "Failed to record login failure for brute-force tracking");
-                    }
+                if let Err(e) = self.brute_force.record_failure(&username, client_ip).await {
+                    tracing::warn!(error = %e, "Failed to record login failure for brute-force tracking");
                 }
                 return Err(Error::Authentication("Authentication failed".to_string()));
             }
@@ -296,30 +278,27 @@ impl UserService {
             || user.deleted_at.is_some()
         {
             // Record failure (account is locked/deleted but attacker shouldn't know)
-            if let Some(ref bf) = self.brute_force {
-                if let Err(e) = bf.record_failure(&username, client_ip).await {
-                    tracing::warn!(error = %e, "Failed to record login failure for brute-force tracking");
-                }
+            if let Err(e) = self.brute_force.record_failure(&username, client_ip).await {
+                tracing::warn!(error = %e, "Failed to record login failure for brute-force tracking");
             }
             return Err(Error::Authentication("Authentication failed".to_string()));
         }
 
-        // Check email verification when email service is configured
+        // Check email verification when email service is configured (generic message
+        // to prevent leaking account existence via distinct error messages)
         if self.email_verification_required && user.email.is_some() && !user.email_verified {
             return Err(Error::Authentication(
-                "Email not verified. Please check your inbox for a verification link.".to_string(),
+                "Authentication failed".to_string(),
             ));
         }
 
         // Successful login: reset brute-force counters (username + IP)
-        if let Some(ref bf) = self.brute_force {
-            if let Err(e) = bf.reset(&username).await {
-                tracing::warn!(error = %e, "Failed to reset brute-force counter after successful login");
-            }
-            if let Some(ip) = client_ip {
-                if let Err(e) = bf.reset_ip(&ip).await {
-                    tracing::warn!(error = %e, "Failed to reset IP brute-force counter after successful login");
-                }
+        if let Err(e) = self.brute_force.reset(&username).await {
+            tracing::warn!(error = %e, "Failed to reset brute-force counter after successful login");
+        }
+        if let Some(ip) = client_ip {
+            if let Err(e) = self.brute_force.reset_ip(&ip).await {
+                tracing::warn!(error = %e, "Failed to reset IP brute-force counter after successful login");
             }
         }
 
@@ -349,9 +328,7 @@ impl UserService {
         client_ip: Option<std::net::IpAddr>,
     ) -> Result<(User, String, String)> {
         // Check per-IP and per-account brute-force before token issuance.
-        if let Some(ref bf) = self.brute_force {
-            bf.check_allowed(provider_user_id, client_ip).await?;
-        }
+        self.brute_force.check_allowed(provider_user_id, client_ip).await?;
 
         // Get user to ensure they exist and are active
         let user = self.repository
@@ -365,23 +342,19 @@ impl UserService {
             || user.status == crate::models::UserStatus::Pending
         {
             // Record failure so repeated attempts against locked accounts are throttled
-            if let Some(ref bf) = self.brute_force {
-                if let Err(e) = bf.record_failure(provider_user_id, client_ip).await {
-                    tracing::warn!(error = %e, "Failed to record OAuth2 login failure for brute-force tracking");
-                }
+            if let Err(e) = self.brute_force.record_failure(provider_user_id, client_ip).await {
+                tracing::warn!(error = %e, "Failed to record OAuth2 login failure for brute-force tracking");
             }
             return Err(Error::Authentication("Authentication failed".to_string()));
         }
 
         // Successful OAuth2 login: reset brute-force counters (provider user ID + IP)
-        if let Some(ref bf) = self.brute_force {
-            if let Err(e) = bf.reset(provider_user_id).await {
-                tracing::warn!(error = %e, "Failed to reset brute-force counter after successful OAuth2 login");
-            }
-            if let Some(ip) = client_ip {
-                if let Err(e) = bf.reset_ip(&ip).await {
-                    tracing::warn!(error = %e, "Failed to reset IP brute-force counter after successful OAuth2 login");
-                }
+        if let Err(e) = self.brute_force.reset(provider_user_id).await {
+            tracing::warn!(error = %e, "Failed to reset brute-force counter after successful OAuth2 login");
+        }
+        if let Some(ip) = client_ip {
+            if let Err(e) = self.brute_force.reset_ip(&ip).await {
+                tracing::warn!(error = %e, "Failed to reset IP brute-force counter after successful OAuth2 login");
             }
         }
 
@@ -398,16 +371,13 @@ impl UserService {
 
     /// Refresh access token with **Refresh Token Rotation**.
     ///
-    /// When Redis is available, each refresh token can only be used once:
-    /// 1. The old refresh token's JTI is checked against a Redis blacklist.
+    /// Each refresh token can only be used once:
+    /// 1. The old refresh token's JTI is checked against the Redis blacklist.
     /// 2. If the JTI is blacklisted, the request is rejected (possible token theft replay).
     ///    Additionally, the entire refresh token family for the user is revoked as a
     ///    precaution (all refresh tokens issued before this moment become invalid).
     /// 3. After issuing new tokens, the old JTI is added to the blacklist with a TTL
     ///    equal to the old token's remaining lifetime.
-    ///
-    /// Without Redis, refresh token rotation is not enforced (tokens are still
-    /// validated for signature, expiration, and password version changes).
     pub async fn refresh_token(&self, refresh_token: String) -> Result<(String, String)> {
         // Verify refresh token
         let claims = self.jwt_service.verify_refresh_token(&refresh_token)?;
@@ -448,15 +418,15 @@ impl UserService {
             }
         }
 
-        // Refresh Token Rotation: check blacklist and family revocation (Redis only)
-        if let Some(ref conn) = self.redis_conn {
+        // Refresh Token Rotation: check blacklist and family revocation
+        {
             let old_jti = &claims.jti;
 
             // Check if the entire refresh token family for this user has been revoked
             // (triggered when a blacklisted JTI is replayed, indicating possible token theft).
             let family_key = self.key_builder.refresh_token_family_revoked(user_id.as_str());
             let family_revoked_at: Option<i64> = {
-                let mut conn = conn.clone();
+                let mut conn = self.redis_conn.clone();
                 conn.get(&family_key).await.unwrap_or(None)
             };
             if let Some(revoked_at) = family_revoked_at {
@@ -477,7 +447,7 @@ impl UserService {
             if !old_jti.is_empty() {
                 let blacklist_key = self.key_builder.refresh_token_blacklist(old_jti);
                 let is_blacklisted: bool = {
-                    let mut conn = conn.clone();
+                    let mut conn = self.redis_conn.clone();
                     conn.exists(&blacklist_key).await.unwrap_or(false)
                 };
 
@@ -494,7 +464,7 @@ impl UserService {
                     let now = chrono::Utc::now().timestamp();
                     // Family revocation TTL: use remaining token lifetime + buffer
                     let family_ttl = ((claims.exp - now).max(0) as u64).saturating_add(3600);
-                    let mut conn = conn.clone();
+                    let mut conn = self.redis_conn.clone();
                     let _: std::result::Result<(), _> = conn
                         .set_ex(&family_key, now, family_ttl)
                         .await;
@@ -514,21 +484,14 @@ impl UserService {
 
         // Blacklist the old refresh token JTI AFTER successfully issuing new tokens.
         // This ensures atomicity: if token generation fails, the old token remains valid.
-        if self.redis_conn.is_none() {
-            tracing::debug!(
-                user_id = %user_id.as_str(),
-                "Refresh token rotation skipped: Redis not configured. \
-                 Old refresh token remains valid until expiry."
-            );
-        }
-        if let Some(ref conn) = self.redis_conn {
+        {
             let old_jti = &claims.jti;
             if !old_jti.is_empty() {
                 let blacklist_key = self.key_builder.refresh_token_blacklist(old_jti);
                 let now = chrono::Utc::now().timestamp();
                 // TTL = remaining lifetime of the old token (it can't be used after expiry anyway)
                 let remaining_ttl = (claims.exp - now).max(60) as u64;
-                let mut conn = conn.clone();
+                let mut conn = self.redis_conn.clone();
                 if let Err(e) = conn.set_ex::<_, _, ()>(&blacklist_key, "1", remaining_ttl).await {
                     // Log but don't fail: the new tokens are already issued.
                     // Worst case: the old token could be replayed once more.
@@ -949,198 +912,188 @@ impl UserService {
 mod tests {
     use super::*;
 
-    // Helper to create a test service with dummy JWT secret
-    fn create_test_service() -> UserService {
-        let pool = PgPool::connect_lazy("postgresql://fake").unwrap();
+    // Validation tests use the standalone validators directly since they don't
+    // require a full UserService with Redis/brute-force dependencies.
 
-        let jwt = JwtService::new("test-secret-for-user-service-long-enough-1234567890").unwrap();
-        let username_cache = UsernameCache::new(None, "test:".to_string(), 10, 0);
-        UserService::new(pool, jwt, username_cache, PasswordComplexityConfig::default())
+    fn validate_username(username: &str) -> Result<()> {
+        crate::validation::UsernameValidator::new()
+            .validate(username)
+            .map_err(|e| Error::InvalidInput(e.to_string()))
     }
 
-    #[tokio::test]
-    async fn test_validate_username() {
-        let service = create_test_service();
-
-        assert!(service.validate_username("abc").is_ok());
-        assert!(service.validate_username("user123").is_ok());
-        assert!(service.validate_username("user_name").is_ok());
-        assert!(service.validate_username("user-name").is_ok());
-
-        assert!(service.validate_username("ab").is_err()); // Too short
-        assert!(service.validate_username(&"a".repeat(51)).is_err()); // Too long
-        assert!(service.validate_username("user@name").is_err()); // Invalid char
+    fn validate_email(email: &str) -> Result<()> {
+        let email = email.trim();
+        if email.is_empty() {
+            return Err(Error::InvalidInput("Email cannot be empty".to_string()));
+        }
+        crate::validation::EmailValidator::new()
+            .validate(email)
+            .map_err(|e| Error::InvalidInput(e.to_string()))
     }
 
-    #[tokio::test]
-    async fn test_validate_password() {
-        let service = create_test_service();
+    fn validate_password(password: &str) -> Result<()> {
+        crate::validation::PasswordValidator::from_config(&PasswordComplexityConfig::default())
+            .validate(password)
+            .map_err(|e| Error::InvalidInput(e.to_string()))
+    }
 
+    #[test]
+    fn test_validate_username() {
+        assert!(validate_username("abc").is_ok());
+        assert!(validate_username("user123").is_ok());
+        assert!(validate_username("user_name").is_ok());
+        assert!(validate_username("user-name").is_ok());
+
+        assert!(validate_username("ab").is_err()); // Too short
+        assert!(validate_username(&"a".repeat(51)).is_err()); // Too long
+        assert!(validate_username("user@name").is_err()); // Invalid char
+    }
+
+    #[test]
+    fn test_validate_password() {
         // PasswordValidator requires: min 8 chars, uppercase, lowercase, digit
-        assert!(service.validate_password("Password123").is_ok());
-        assert!(service.validate_password("Pass123!").is_ok());
+        assert!(validate_password("Password123").is_ok());
+        assert!(validate_password("Pass123!").is_ok());
 
-        assert!(service.validate_password("short").is_err()); // Too short
-        assert!(service.validate_password("password123").is_err()); // No uppercase
-        assert!(service.validate_password(&"a".repeat(129)).is_err()); // Too long
+        assert!(validate_password("short").is_err()); // Too short
+        assert!(validate_password("password123").is_err()); // No uppercase
+        assert!(validate_password(&"a".repeat(129)).is_err()); // Too long
     }
 
     // ========== Username Validation Edge Cases ==========
 
-    #[tokio::test]
-    async fn test_validate_username_empty() {
-        let service = create_test_service();
-        assert!(service.validate_username("").is_err());
+    #[test]
+    fn test_validate_username_empty() {
+        assert!(validate_username("").is_err());
     }
 
-    #[tokio::test]
-    async fn test_validate_username_exact_min_length() {
-        let service = create_test_service();
-        assert!(service.validate_username("abc").is_ok());
+    #[test]
+    fn test_validate_username_exact_min_length() {
+        assert!(validate_username("abc").is_ok());
     }
 
-    #[tokio::test]
-    async fn test_validate_username_exact_max_length() {
-        let service = create_test_service();
-        assert!(service.validate_username(&"a".repeat(50)).is_ok());
+    #[test]
+    fn test_validate_username_exact_max_length() {
+        assert!(validate_username(&"a".repeat(50)).is_ok());
     }
 
-    #[tokio::test]
-    async fn test_validate_username_starts_with_underscore() {
-        let service = create_test_service();
-        assert!(service.validate_username("_username").is_err());
+    #[test]
+    fn test_validate_username_starts_with_underscore() {
+        assert!(validate_username("_username").is_err());
     }
 
-    #[tokio::test]
-    async fn test_validate_username_starts_with_hyphen() {
-        let service = create_test_service();
-        assert!(service.validate_username("-username").is_err());
+    #[test]
+    fn test_validate_username_starts_with_hyphen() {
+        assert!(validate_username("-username").is_err());
     }
 
-    #[tokio::test]
-    async fn test_validate_username_special_chars() {
-        let service = create_test_service();
-        assert!(service.validate_username("user@name").is_err());
-        assert!(service.validate_username("user name").is_err());
-        assert!(service.validate_username("user.name").is_err());
-        assert!(service.validate_username("user!name").is_err());
+    #[test]
+    fn test_validate_username_special_chars() {
+        assert!(validate_username("user@name").is_err());
+        assert!(validate_username("user name").is_err());
+        assert!(validate_username("user.name").is_err());
+        assert!(validate_username("user!name").is_err());
     }
 
-    #[tokio::test]
-    async fn test_validate_username_alphanumeric_with_underscores_hyphens() {
-        let service = create_test_service();
-        assert!(service.validate_username("user_name-123").is_ok());
-        assert!(service.validate_username("User123").is_ok());
-        assert!(service.validate_username("a-b-c").is_ok());
-        assert!(service.validate_username("a_b_c").is_ok());
+    #[test]
+    fn test_validate_username_alphanumeric_with_underscores_hyphens() {
+        assert!(validate_username("user_name-123").is_ok());
+        assert!(validate_username("User123").is_ok());
+        assert!(validate_username("a-b-c").is_ok());
+        assert!(validate_username("a_b_c").is_ok());
     }
 
     // ========== Email Validation ==========
 
-    #[tokio::test]
-    async fn test_validate_email_valid() {
-        let service = create_test_service();
-        assert!(service.validate_email("user@example.com").is_ok());
-        assert!(service.validate_email("user.name@example.co.uk").is_ok());
-        assert!(service.validate_email("user+tag@example.com").is_ok());
+    #[test]
+    fn test_validate_email_valid() {
+        assert!(validate_email("user@example.com").is_ok());
+        assert!(validate_email("user.name@example.co.uk").is_ok());
+        assert!(validate_email("user+tag@example.com").is_ok());
     }
 
-    #[tokio::test]
-    async fn test_validate_email_invalid() {
-        let service = create_test_service();
-        assert!(service.validate_email("notanemail").is_err());
-        assert!(service.validate_email("@example.com").is_err());
-        assert!(service.validate_email("user@").is_err());
-        assert!(service.validate_email("user@example").is_err());
+    #[test]
+    fn test_validate_email_invalid() {
+        assert!(validate_email("notanemail").is_err());
+        assert!(validate_email("@example.com").is_err());
+        assert!(validate_email("user@").is_err());
+        assert!(validate_email("user@example").is_err());
     }
 
-    #[tokio::test]
-    async fn test_validate_email_empty() {
-        let service = create_test_service();
-        assert!(service.validate_email("").is_err());
+    #[test]
+    fn test_validate_email_empty() {
+        assert!(validate_email("").is_err());
     }
 
-    #[tokio::test]
-    async fn test_validate_email_whitespace_trimmed() {
-        let service = create_test_service();
-        assert!(service.validate_email("  user@example.com  ").is_ok());
+    #[test]
+    fn test_validate_email_whitespace_trimmed() {
+        assert!(validate_email("  user@example.com  ").is_ok());
     }
 
-    #[tokio::test]
-    async fn test_validate_email_only_whitespace() {
-        let service = create_test_service();
-        assert!(service.validate_email("   ").is_err());
+    #[test]
+    fn test_validate_email_only_whitespace() {
+        assert!(validate_email("   ").is_err());
     }
 
     // ========== Password Validation Edge Cases ==========
 
-    #[tokio::test]
-    async fn test_validate_password_empty() {
-        let service = create_test_service();
-        assert!(service.validate_password("").is_err());
+    #[test]
+    fn test_validate_password_empty() {
+        assert!(validate_password("").is_err());
     }
 
-    #[tokio::test]
-    async fn test_validate_password_no_lowercase() {
-        let service = create_test_service();
-        assert!(service.validate_password("PASSWORD123").is_err());
+    #[test]
+    fn test_validate_password_no_lowercase() {
+        assert!(validate_password("PASSWORD123").is_err());
     }
 
-    #[tokio::test]
-    async fn test_validate_password_no_digit() {
-        let service = create_test_service();
-        assert!(service.validate_password("Passworddd").is_err());
+    #[test]
+    fn test_validate_password_no_digit() {
+        assert!(validate_password("Passworddd").is_err());
     }
 
-    #[tokio::test]
-    async fn test_validate_password_exact_min_length() {
-        let service = create_test_service();
-        assert!(service.validate_password("Abcdefg1").is_ok());
+    #[test]
+    fn test_validate_password_exact_min_length() {
+        assert!(validate_password("Abcdefg1").is_ok());
     }
 
-    #[tokio::test]
-    async fn test_validate_password_one_below_min() {
-        let service = create_test_service();
-        assert!(service.validate_password("Abcdef1").is_err());
+    #[test]
+    fn test_validate_password_one_below_min() {
+        assert!(validate_password("Abcdef1").is_err());
     }
 
-    #[tokio::test]
-    async fn test_validate_password_exact_max_length() {
-        let service = create_test_service();
+    #[test]
+    fn test_validate_password_exact_max_length() {
         // Build a 128-char password that satisfies complexity: uppercase, lowercase, digit, no long repeats
         let pwd = "Ab1".repeat(42) + "Ab";
         assert_eq!(pwd.len(), 128);
-        assert!(service.validate_password(&pwd).is_ok());
+        assert!(validate_password(&pwd).is_ok());
     }
 
-    #[tokio::test]
-    async fn test_validate_password_over_max_length() {
-        let service = create_test_service();
+    #[test]
+    fn test_validate_password_over_max_length() {
         let pwd = "Ab1".repeat(43);
         assert_eq!(pwd.len(), 129);
-        assert!(service.validate_password(&pwd).is_err());
+        assert!(validate_password(&pwd).is_err());
     }
 
     // ========== Error Type Validation ==========
 
-    #[tokio::test]
-    async fn test_validate_username_returns_invalid_input_error() {
-        let service = create_test_service();
-        let err = service.validate_username("ab").unwrap_err();
+    #[test]
+    fn test_validate_username_returns_invalid_input_error() {
+        let err = validate_username("ab").unwrap_err();
         assert!(matches!(err, Error::InvalidInput(_)));
     }
 
-    #[tokio::test]
-    async fn test_validate_email_returns_invalid_input_error() {
-        let service = create_test_service();
-        let err = service.validate_email("notanemail").unwrap_err();
+    #[test]
+    fn test_validate_email_returns_invalid_input_error() {
+        let err = validate_email("notanemail").unwrap_err();
         assert!(matches!(err, Error::InvalidInput(_)));
     }
 
-    #[tokio::test]
-    async fn test_validate_password_returns_invalid_input_error() {
-        let service = create_test_service();
-        let err = service.validate_password("short").unwrap_err();
+    #[test]
+    fn test_validate_password_returns_invalid_input_error() {
+        let err = validate_password("short").unwrap_err();
         assert!(matches!(err, Error::InvalidInput(_)));
     }
 

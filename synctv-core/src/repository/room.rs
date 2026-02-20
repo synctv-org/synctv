@@ -87,10 +87,13 @@ impl RoomRepository {
     }
 
     /// Update room
+    ///
+    /// Note: `updated_at` is set automatically by the `update_rooms_updated_at`
+    /// BEFORE UPDATE trigger, so we omit it from the SET clause.
     pub async fn update(&self, room: &Room) -> Result<Room> {
         let updated = sqlx::query_as::<_, Room>(
             "UPDATE rooms
-             SET name = $2, description = $3, status = $4, is_banned = $5, updated_at = $6
+             SET name = $2, description = $3, status = $4, is_banned = $5
              WHERE id = $1 AND deleted_at IS NULL
              RETURNING id, name, description, created_by, status, is_banned, created_at, updated_at, deleted_at"
         )
@@ -99,7 +102,6 @@ impl RoomRepository {
         .bind(&room.description)
         .bind(room.status)
         .bind(room.is_banned)
-        .bind(chrono::Utc::now())
         .fetch_optional(&self.pool)
         .await?
         .ok_or_else(|| crate::Error::NotFound(format!("Room {} not found", room.id.as_str())))?;

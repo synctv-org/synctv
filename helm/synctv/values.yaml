@@ -127,7 +127,11 @@ podAnnotations: {}
 podLabels: {}
 
 ## Graceful Shutdown
-terminationGracePeriodSeconds: 60
+## Must exceed the total shutdown time budget:
+##   preStop sleep (5s) + HTTP/gRPC drain (30s) + connection drain (30s)
+##   + cluster shutdown + audit flush + background task cancellation.
+## 240s provides comfortable headroom.
+terminationGracePeriodSeconds: 240
 
 ## Lifecycle Hooks
 ## preStop hook ensures in-flight requests complete before pod termination.

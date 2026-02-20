@@ -722,7 +722,7 @@ mod tests {
     #[tokio::test]
     async fn test_cluster_client_no_remote_nodes() {
         let registry = Arc::new(
-            NodeRegistry::new("redis://localhost:6379".to_string(), "self_node".to_string(), 30, "synctv:").unwrap(),
+            NodeRegistry::new(redis::Client::open("redis://localhost:6379").unwrap(), "self_node".to_string(), 30, "synctv:").unwrap(),
         );
         // Populate local cache directly (no Redis connection needed)
         {

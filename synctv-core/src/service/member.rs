@@ -647,6 +647,11 @@ impl MemberService {
         self.member_repo.count_by_room(room_id).await
     }
 
+    /// Get member counts for multiple rooms in a single query.
+    pub async fn count_members_batch(&self, room_ids: &[&RoomId]) -> Result<std::collections::HashMap<String, i32>> {
+        self.member_repo.count_by_rooms_batch(room_ids).await
+    }
+
     /// Check if a user is a member of a room
     pub async fn is_member(&self, room_id: &RoomId, user_id: &UserId) -> Result<bool> {
         self.member_repo.is_member(room_id, user_id).await

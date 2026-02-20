@@ -203,7 +203,7 @@ mod tests {
 
     /// Helper: create a NodeRegistry (redis::Client::open succeeds without a running server)
     fn make_registry() -> Arc<NodeRegistry> {
-        Arc::new(NodeRegistry::new("redis://localhost:6379".to_string(), "self".to_string(), 30, "test:").unwrap())
+        Arc::new(NodeRegistry::new(redis::Client::open("redis://localhost:6379").unwrap(), "self".to_string(), 30, "test:").unwrap())
     }
 
     /// Helper: populate N nodes directly into the local cache (no Redis required)

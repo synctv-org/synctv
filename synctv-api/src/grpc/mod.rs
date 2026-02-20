@@ -139,6 +139,9 @@ pub struct GrpcServerConfig<'a> {
     pub oauth2_service: Option<Arc<synctv_core::service::OAuth2Service>>,
     pub audit_service: Arc<synctv_core::service::AuditService>,
     pub node_registry: Option<Arc<synctv_cluster::discovery::NodeRegistry>>,
+    /// Pre-built Redis client (from the single `init_redis()` call).
+    /// Used by the fallback `NodeRegistry` creation to avoid duplicate `redis::Client::open()`.
+    pub redis_client: redis::Client,
     /// Shared Redis connection for playback caching (Sentinel-failover safe)
     pub redis_conn: Option<crate::SharedRedisConn>,
     pub shutdown_rx: Option<tokio::sync::watch::Receiver<bool>>,
@@ -174,6 +177,7 @@ pub async fn serve(grpc_config: GrpcServerConfig<'_>) -> anyhow::Result<()> {
         oauth2_service,
         audit_service,
         node_registry,
+        redis_client,
         redis_conn,
         shutdown_rx,
         builtin_stun_url,
@@ -526,9 +530,11 @@ pub async fn serve(grpc_config: GrpcServerConfig<'_>) -> anyhow::Result<()> {
             ),
         );
         tracing::info!("Cluster gRPC service registered with shared-secret auth (using shared NodeRegistry)");
-    } else if !config.redis.url.is_empty() {
+    } else {
         // Fallback: create a standalone NodeRegistry for cluster gRPC (single-node mode)
-        match synctv_cluster::discovery::NodeRegistry::new(config.redis.url.clone(), cluster_node_id.clone(), 30, &config.redis.key_prefix) {
+        let fallback_result = synctv_cluster::discovery::NodeRegistry::new(redis_client, cluster_node_id.clone(), 30, &config.redis.key_prefix)
+            .map_err(|e| e.to_string());
+        match fallback_result {
             Ok(fallback_registry) => {
                 let cluster_server = synctv_cluster::grpc::ClusterServer::new(
                     std::sync::Arc::new(fallback_registry),

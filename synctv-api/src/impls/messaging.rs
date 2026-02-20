@@ -415,7 +415,9 @@ impl StreamMessageHandler {
                             }
                         }
                         Ok(ClusterEvent::UserNotification { ref user_id, ref title, ref content, ref notification_type, ref notification_id, .. }) => {
-                            // RT-1: Push persistent notification to user's active WebSocket connection
+                            // RT-1: Push persistent notification to user's active WebSocket connection.
+                            // NOTE: Uses Error variant with code 5000 (NOTIFICATION_PUSH) as a
+                            // transport for notifications. See error_codes::NOTIFICATION_PUSH docs.
                             if *user_id == self.user_id {
                                 let json_data = serde_json::json!({
                                     "type": "user_notification",
@@ -917,7 +919,9 @@ impl StreamMessageHandler {
                         }
 
                         admin_event = admin_rx.recv() => {
-                            // RT-1: Push UserNotification to this user's WebSocket
+                            // RT-1: Push UserNotification to this user's WebSocket.
+                            // NOTE: Uses Error variant with code 5000 (NOTIFICATION_PUSH) as a
+                            // transport for notifications. See error_codes::NOTIFICATION_PUSH docs.
                             if let Ok(ClusterEvent::UserNotification { user_id: ref uid, ref title, ref content, ref notification_type, ref notification_id, .. }) = admin_event {
                                 if *uid == user_id {
                                     let json_data = serde_json::json!({
@@ -1060,8 +1064,11 @@ impl StreamMessageHandler {
                 if chat_msg.content.is_empty() {
                     return Err("Chat message cannot be empty".to_string());
                 }
-                if chat_msg.content.chars().count() > 2000 {
-                    return Err("Chat message too long (max 2000 characters)".to_string());
+                if chat_msg.content.chars().count() > synctv_core::service::chat::MAX_CHAT_MESSAGE_CHARS {
+                    return Err(format!(
+                        "Chat message too long (max {} characters)",
+                        synctv_core::service::chat::MAX_CHAT_MESSAGE_CHARS,
+                    ));
                 }
 
                 // Check if this is a danmaku message (has position)
@@ -1516,21 +1523,36 @@ impl StreamMessageHandler {
                 ));
             }
 
-            // Update the canonical position without broadcasting to avoid
-            // feedback loops (the client already knows its own position).
-            // We use update_state directly to set the current_time.
-            if let Err(e) = playback_service
+            // Update the canonical position and broadcast to same-replica
+            // clients so they can detect drift. The sender is excluded by
+            // event_id filtering (each connection ignores events it originated).
+            match playback_service
                 .update_state(self.room_id.clone(), |s| {
                     s.current_time = report.current_time;
                     s.updated_at = chrono::Utc::now();
                 })
                 .await
             {
-                tracing::debug!(
-                    error = %e,
-                    room_id = %self.room_id.as_str(),
-                    "Failed to update playback state from progress report (non-critical)"
-                );
+                Ok(updated_state) => {
+                    // Local-only broadcast (no Redis) -- progress reports are
+                    // high-frequency and only relevant to same-replica clients.
+                    let event = synctv_cluster::sync::ClusterEvent::PlaybackStateChanged {
+                        event_id: nanoid::nanoid!(16),
+                        room_id: self.room_id.clone(),
+                        user_id: self.user_id.clone(),
+                        username: self.username.clone(),
+                        state: updated_state,
+                        timestamp: chrono::Utc::now(),
+                    };
+                    self.cluster_manager.message_hub().broadcast(&self.room_id, event);
+                }
+                Err(e) => {
+                    tracing::debug!(
+                        error = %e,
+                        room_id = %self.room_id.as_str(),
+                        "Failed to update playback state from progress report (non-critical)"
+                    );
+                }
             }
         }
 

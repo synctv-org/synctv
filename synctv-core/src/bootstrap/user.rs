@@ -11,20 +11,14 @@ use crate::{
     Error, Result,
 };
 
-/// Bootstrap root user on first startup
+/// Bootstrap root user on first startup.
 ///
-/// This function creates a root user if none exists and bootstrap is enabled.
-/// It should be called after database migrations but before service initialization.
+/// Creates a root user if none exists and bootstrap is enabled. On first
+/// deployment (no users in the database at all), bootstrap failure is fatal
+/// because the system would have no way to be administered. If users already
+/// exist, the failure is logged as a warning and startup continues.
 ///
-/// # Arguments
-///
-/// * `pool` - Database connection pool
-/// * `config` - Bootstrap configuration
-///
-/// # Returns
-///
-/// * `Ok(())` if root user exists or was created successfully
-/// * `Err` if database error occurs
+/// Should be called after database migrations but before service initialization.
 pub async fn bootstrap_root_user(pool: &PgPool, config: &BootstrapConfig) -> Result<()> {
     if !config.create_root_user {
         info!("Root user bootstrap disabled in config");
@@ -79,7 +73,7 @@ pub async fn bootstrap_root_user(pool: &PgPool, config: &BootstrapConfig) -> Res
 
     let created_user = repository.create(&user).await?;
 
-    info!("✓ Root user created successfully:");
+    info!("Root user created successfully:");
     info!("  ID: {}", created_user.id.as_str());
     info!("  Username: {}", created_user.username);
     info!("  Role: {:?}", created_user.role);
@@ -91,6 +85,19 @@ pub async fn bootstrap_root_user(pool: &PgPool, config: &BootstrapConfig) -> Res
     }
 
     Ok(())
+}
+
+/// Check whether any (non-deleted) users exist in the database.
+///
+/// Used during startup to distinguish first deployment (no users) from
+/// subsequent starts. On first deployment, root bootstrap failure is fatal.
+pub async fn has_any_users(pool: &PgPool) -> bool {
+    sqlx::query_scalar::<_, bool>(
+        "SELECT EXISTS(SELECT 1 FROM users WHERE deleted_at IS NULL LIMIT 1)",
+    )
+    .fetch_one(pool)
+    .await
+    .unwrap_or(false)
 }
 
 #[cfg(test)]

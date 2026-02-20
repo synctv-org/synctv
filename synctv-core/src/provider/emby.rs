@@ -168,6 +168,16 @@ impl MediaProvider for EmbyProvider {
         // Parse source_config first
         let config = EmbySourceConfig::try_from(source_config)?;
 
+        // Re-validate host URL at request time to protect against DNS rebinding.
+        // The hostname may have been safe at config time but could resolve to a
+        // private IP now.
+        validate_url_for_ssrf(&config.host).map_err(|e| match e {
+            ValidationError::SSRF(msg) => {
+                ProviderError::InvalidUrl(format!("SSRF protection: {msg}"))
+            }
+            _ => ProviderError::InvalidUrl(e.to_string()),
+        })?;
+
         // Get appropriate client based on instance_name from config
         let client = self
             .get_client(config.provider_instance_name.as_deref())
@@ -252,19 +262,22 @@ impl MediaProvider for EmbyProvider {
                 continue;
             };
 
-            // Extract subtitles -- no credentials in subtitle URLs
+            // Extract subtitles -- include api_key query param for browser
+            // access since subtitle requests come from the browser directly
+            // and cannot set custom headers like X-Emby-Token.
             let subtitles: Vec<SubtitleTrack> = source
                 .media_stream_info
                 .iter()
                 .filter(|stream| stream.r#type == "Subtitle")
                 .map(|stream| {
                     let subtitle_url = format!(
-                        "{}/Videos/{}/{}/Subtitles/{}/Stream.{}",
+                        "{}/Videos/{}/{}/Subtitles/{}/Stream.{}?api_key={}",
                         config.host.trim_end_matches('/'),
                         config.item_id,
                         source.id,
                         stream.index,
                         stream.codec.to_lowercase(),
+                        config.token,
                     );
 
                     SubtitleTrack {

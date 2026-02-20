@@ -1,5 +1,4 @@
 use chrono::{DateTime, Utc};
-use redis::AsyncCommands;
 use sqlx::PgPool;
 use std::collections::HashMap;
 
@@ -11,7 +10,7 @@ use crate::{
     models::{User, UserId, SignupMethod},
     models::oauth2_client::OAuth2Provider,
     repository::{UserRepository, UserOAuthProviderRepository},
-    service::auth::{hash_password, verify_password, JwtService, TokenType, BruteForceProtection},
+    service::auth::{hash_password, verify_password, JwtService, TokenType, BruteForceProtection, TokenBlacklistStore},
     Error, Result,
 };
 
@@ -25,12 +24,12 @@ pub struct UserService {
     cache_invalidation: Option<Arc<CacheInvalidationService>>,
     /// Password complexity configuration from config file
     password_complexity: PasswordComplexityConfig,
-    /// Brute-force protection for login attempts (Redis-backed)
+    /// Brute-force protection for login attempts
     brute_force: BruteForceProtection,
     /// Whether email verification is required for login (true when email service is configured)
     email_verification_required: bool,
-    /// Redis connection for refresh token blacklist (rotation)
-    redis_conn: redis::aio::ConnectionManager,
+    /// Token blacklist store for refresh token rotation (Redis or in-memory)
+    token_blacklist: Arc<dyn TokenBlacklistStore>,
     /// Key builder for Redis keys
     key_builder: KeyBuilder,
 }
@@ -50,7 +49,7 @@ impl UserService {
         jwt_service: JwtService,
         username_cache: UsernameCache,
         password_complexity: PasswordComplexityConfig,
-        redis_conn: redis::aio::ConnectionManager,
+        token_blacklist: Arc<dyn TokenBlacklistStore>,
         key_builder: KeyBuilder,
         brute_force: BruteForceProtection,
     ) -> Self {
@@ -62,7 +61,7 @@ impl UserService {
             password_complexity,
             brute_force,
             email_verification_required: false,
-            redis_conn,
+            token_blacklist,
             key_builder,
         }
     }
@@ -425,10 +424,7 @@ impl UserService {
             // Check if the entire refresh token family for this user has been revoked
             // (triggered when a blacklisted JTI is replayed, indicating possible token theft).
             let family_key = self.key_builder.refresh_token_family_revoked(user_id.as_str());
-            let family_revoked_at: Option<i64> = {
-                let mut conn = self.redis_conn.clone();
-                conn.get(&family_key).await.unwrap_or(None)
-            };
+            let family_revoked_at = self.token_blacklist.get_family_revoked_at(&family_key).await;
             if let Some(revoked_at) = family_revoked_at {
                 // Reject any refresh token issued before the family revocation timestamp
                 if claims.iat <= revoked_at {
@@ -446,12 +442,7 @@ impl UserService {
             // Check if this specific JTI has been blacklisted (already used)
             if !old_jti.is_empty() {
                 let blacklist_key = self.key_builder.refresh_token_blacklist(old_jti);
-                let is_blacklisted: bool = {
-                    let mut conn = self.redis_conn.clone();
-                    conn.exists(&blacklist_key).await.unwrap_or(false)
-                };
-
-                if is_blacklisted {
+                if self.token_blacklist.is_blacklisted(&blacklist_key).await {
                     // A blacklisted JTI is being replayed! This indicates the refresh token
                     // was stolen and both the legitimate user and attacker are trying to use it.
                     // Revoke the entire refresh token family for this user as a precaution.
@@ -462,14 +453,8 @@ impl UserService {
                     );
 
                     let now = chrono::Utc::now().timestamp();
-                    // Family revocation TTL: use the configured refresh token lifetime to ensure
-                    // all valid refresh tokens are covered, even if the replayed token was near
-                    // expiry. Adding a 1-hour buffer for clock skew.
                     let family_ttl = self.jwt_service.refresh_token_duration_seconds().saturating_add(3600);
-                    let mut conn = self.redis_conn.clone();
-                    let _: std::result::Result<(), _> = conn
-                        .set_ex(&family_key, now, family_ttl)
-                        .await;
+                    self.token_blacklist.set_family_revoked(&family_key, now, family_ttl).await;
 
                     return Err(Error::Authentication("Authentication failed".to_string()));
                 }
@@ -486,17 +471,8 @@ impl UserService {
                 let now = chrono::Utc::now().timestamp();
                 // TTL = remaining lifetime of the old token (it can't be used after expiry anyway)
                 let remaining_ttl = (claims.exp - now).max(60) as u64;
-                let mut conn = self.redis_conn.clone();
-                if let Err(e) = conn.set_ex::<_, _, ()>(&blacklist_key, "1", remaining_ttl).await {
-                    // Fail closed: if we cannot blacklist the old token, refuse to issue new ones
-                    // to prevent the race window where the old token could be replayed.
-                    tracing::error!(
-                        jti = %old_jti,
-                        error = %e,
-                        "Failed to blacklist used refresh token JTI in Redis — refusing to issue new tokens"
-                    );
-                    return Err(Error::Internal("Failed to rotate refresh token".to_string()));
-                }
+                // Fail closed: if blacklist write fails, refuse to issue new tokens
+                self.token_blacklist.blacklist(&blacklist_key, remaining_ttl).await?;
             }
         }
 

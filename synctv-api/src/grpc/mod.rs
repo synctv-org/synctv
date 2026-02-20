@@ -141,7 +141,8 @@ pub struct GrpcServerConfig<'a> {
     pub node_registry: Option<Arc<synctv_cluster::discovery::NodeRegistry>>,
     /// Pre-built Redis client (from the single `init_redis()` call).
     /// Used by the fallback `NodeRegistry` creation to avoid duplicate `redis::Client::open()`.
-    pub redis_client: redis::Client,
+    /// `None` in standalone mode without Redis.
+    pub redis_client: Option<redis::Client>,
     /// Shared Redis connection for playback caching (Sentinel-failover safe)
     pub redis_conn: Option<crate::SharedRedisConn>,
     pub shutdown_rx: Option<tokio::sync::watch::Receiver<bool>>,
@@ -531,8 +532,8 @@ pub async fn serve(grpc_config: GrpcServerConfig<'_>) -> anyhow::Result<()> {
             ),
         );
         tracing::info!("Cluster gRPC service registered with shared-secret auth (using shared NodeRegistry)");
-    } else {
-        // Fallback: create a standalone NodeRegistry for cluster gRPC (single-node mode)
+    } else if let Some(redis_client) = redis_client {
+        // Fallback: create a standalone NodeRegistry for cluster gRPC (single-node mode with Redis)
         let fallback_result = synctv_cluster::discovery::NodeRegistry::new(redis_client, cluster_node_id.clone(), 30, &config.redis.key_prefix)
             .map_err(|e| e.to_string());
         match fallback_result {
@@ -556,6 +557,8 @@ pub async fn serve(grpc_config: GrpcServerConfig<'_>) -> anyhow::Result<()> {
                 tracing::warn!("Failed to create NodeRegistry for cluster gRPC: {e}");
             }
         }
+    } else {
+        tracing::info!("No Redis configured — skipping cluster gRPC service registration");
     }
 
     // Register gRPC health check service (standard grpc.health.v1.Health)

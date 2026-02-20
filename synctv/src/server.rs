@@ -66,9 +66,9 @@ pub struct Services {
     pub node_registry: Option<Arc<synctv_cluster::discovery::NodeRegistry>>,
     pub health_monitor: Option<Arc<synctv_cluster::discovery::HealthMonitor>>,
     pub load_balancer: Option<Arc<synctv_cluster::discovery::LoadBalancer>>,
-    /// Shared Redis connection for playback caching.
-    pub redis_client: redis::Client,
-    pub redis_conn: Arc<tokio::sync::RwLock<redis::aio::ConnectionManager>>,
+    /// Shared Redis connection for playback caching (optional in standalone mode).
+    pub redis_client: Option<redis::Client>,
+    pub redis_conn: Option<Arc<tokio::sync::RwLock<redis::aio::ConnectionManager>>>,
     /// Credential encryption for protecting sensitive data (optional)
     pub credential_encryption: Option<synctv_core::service::CredentialEncryption>,
 }
@@ -358,7 +358,7 @@ impl SyncTvServer {
                 audit_service: services.audit_service,
                 node_registry: services.node_registry,
                 redis_client: services.redis_client.clone(),
-                redis_conn: Some(services.redis_conn.clone()),
+                redis_conn: services.redis_conn.clone(),
                 shutdown_rx: Some(shutdown_rx),
                 builtin_stun_url: services.stun_server.as_ref().map(|s| {
                     let addr = s.external_addr();
@@ -394,18 +394,22 @@ impl SyncTvServer {
         let live_streaming_infrastructure = self.services.live_streaming_infrastructure.clone();
 
         let is_cluster_mode = !self.config.server.cluster_secret.is_empty();
-        let redis_conn_snapshot = self.services.redis_conn.read().await.clone();
-        let ws_ticket_service = match synctv_core::service::WsTicketService::new(
-            Some(redis_conn_snapshot),
-            None,
-            is_cluster_mode,
-        ) {
-            Ok(svc) => Some(Arc::new(svc)),
-            Err(e) => {
-                return Err(anyhow::anyhow!(
-                    "Failed to initialize WebSocket ticket service: {e}"
-                ));
+        let ws_ticket_service = if let Some(ref redis_conn) = self.services.redis_conn {
+            let redis_conn_snapshot = redis_conn.read().await.clone();
+            match synctv_core::service::WsTicketService::new(
+                Some(redis_conn_snapshot),
+                None,
+                is_cluster_mode,
+            ) {
+                Ok(svc) => Some(Arc::new(svc)),
+                Err(e) => {
+                    return Err(anyhow::anyhow!(
+                        "Failed to initialize WebSocket ticket service: {e}"
+                    ));
+                }
             }
+        } else {
+            Some(Arc::new(synctv_core::service::WsTicketService::with_memory(None)))
         };
 
         let http_router = synctv_api::http::create_router_from_config(
@@ -433,7 +437,7 @@ impl SyncTvServer {
                 live_streaming_infrastructure,
                 rate_limiter: self.services.rate_limiter.clone(),
                 ws_ticket_service,
-                redis_conn: Some(self.services.redis_conn.clone()),
+                redis_conn: self.services.redis_conn.clone(),
                 builtin_stun_url: self.services.stun_server.as_ref().map(|s| {
                     let addr = s.external_addr();
                     format!("stun:{}:{}", addr.ip(), addr.port())

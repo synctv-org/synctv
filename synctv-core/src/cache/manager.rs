@@ -203,11 +203,12 @@ mod tests {
     use super::*;
 
     fn make_caches() -> (Arc<UserCache>, Arc<RoomCache>) {
+        let l2: Arc<dyn crate::cache::CacheL2Backend> = Arc::new(crate::cache::NoopCacheL2);
         let user_cache = Arc::new(
-            UserCache::new(None, 100, 5, 0, "test:user:".to_string()).unwrap(),
+            UserCache::new(l2.clone(), 100, 5, 0, "test:user:".to_string()).unwrap(),
         );
         let room_cache = Arc::new(
-            RoomCache::new(None, 100, 5, 0, "test:room:".to_string()).unwrap(),
+            RoomCache::new(l2, 100, 5, 0, "test:room:".to_string()).unwrap(),
         );
         (user_cache, room_cache)
     }

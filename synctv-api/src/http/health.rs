@@ -147,7 +147,7 @@ pub async fn readiness_check(State(state): State<AppState>) -> impl IntoResponse
     let ws_ticket_status = state.ws_ticket_service.as_ref().map(|svc| {
         let is_cluster_mode = state.cluster_manager.is_some();
         let health = check_ws_ticket_health(svc);
-        if is_cluster_mode && !svc.is_redis_backed() {
+        if is_cluster_mode && svc.backend_name() != "redis" {
             error_messages.push(
                 "WsTicketService: memory mode is not safe in cluster mode (tickets created on one node cannot be validated on another)".to_string()
             );
@@ -270,11 +270,7 @@ async fn check_redis_health(state: &AppState) -> Result<(), String> {
 /// Reports whether the service is using Redis-backed (multi-replica safe) or
 /// memory-backed (single-replica only) storage.
 fn check_ws_ticket_health(svc: &synctv_core::service::WsTicketService) -> String {
-    if svc.is_redis_backed() {
-        "healthy (redis)".to_string()
-    } else {
-        "healthy (memory)".to_string()
-    }
+    format!("healthy ({})", svc.backend_name())
 }
 
 /// Check email service health

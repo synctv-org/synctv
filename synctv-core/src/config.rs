@@ -1020,9 +1020,21 @@ impl Config {
             );
         }
 
-        // Warn about missing Redis (security features degrade)
+        // Validate Redis requirement based on deployment mode
         if self.redis.url.is_empty() {
-            tracing::warn!("Redis is not configured — token blacklist and rate limiting will be DISABLED");
+            if self.cluster.enabled {
+                errors.push(
+                    "Redis is required when cluster mode is enabled (cluster.enabled=true). \
+                     Configure redis.url or set SYNCTV_REDIS_URL."
+                        .to_string(),
+                );
+            } else {
+                tracing::info!(
+                    "Redis is not configured — running in standalone mode with in-memory fallbacks. \
+                     All features work, but data (rate limits, brute-force counters, token blacklist) \
+                     will not persist across restarts."
+                );
+            }
         }
 
         // Validate connection limits
@@ -1142,21 +1154,16 @@ impl Config {
             );
         }
 
-        // Error if cluster_secret is empty when Redis is configured (Issue #39).
+        // Require cluster_secret when cluster mode is enabled (Issue #39).
         //
         // An empty `cluster_secret` means that ANY node claiming to be part of the
-        // cluster can call inter-node gRPC endpoints without authentication.  Redis
-        // enables cross-replica coordination, so its presence signals that this
-        // deployment intends to run in multi-replica mode, which requires a secret.
+        // cluster can call inter-node gRPC endpoints without authentication.
         //
-        // Operators who genuinely want Redis for single-node features (e.g., rate
-        // limiting, token blacklist, cache invalidation) without cluster mode MUST
-        // still set a non-empty `cluster_secret` to acknowledge that they understand
-        // the implications.  A short random value (e.g., `openssl rand -hex 32`) is
-        // sufficient; the value is only used for inter-node gRPC authentication.
-        if !self.redis.url.is_empty() && self.server.cluster_secret.is_empty() {
+        // In standalone mode, `cluster_secret` is not required even with Redis
+        // configured, because there are no inter-node gRPC endpoints to protect.
+        if self.cluster.enabled && self.server.cluster_secret.is_empty() {
             errors.push(
-                "server.cluster_secret must be set when Redis is configured. \
+                "server.cluster_secret must be set when cluster mode is enabled. \
                  An empty cluster_secret leaves inter-node gRPC endpoints unauthenticated. \
                  Generate a secret with: openssl rand -hex 32 \
                  and set it as SYNCTV_SERVER_CLUSTER_SECRET or server.cluster_secret in your config."
@@ -1199,15 +1206,15 @@ impl Config {
                 }
             }
 
-        // **P0-2**: Validate OAuth2 requires Redis
-        // OAuth2 uses state storage for CSRF protection during the authorization flow.
-        // In multi-replica deployments, the callback request may hit a different replica
-        // than the one that generated the auth URL. Without Redis, state lookup fails.
+        // Validate OAuth2 state storage requirements.
+        // In cluster mode, Redis is required for OAuth2 state storage because the
+        // callback request may hit a different replica than the one that generated
+        // the auth URL. In standalone mode, an in-memory state store is used.
         let oauth2_enabled = self.oauth2.providers.as_object()
             .is_some_and(|obj| !obj.is_empty());
-        if oauth2_enabled && self.redis.url.is_empty() {
+        if oauth2_enabled && self.redis.url.is_empty() && self.cluster.enabled {
             errors.push(
-                "OAuth2 requires Redis for state storage in multi-replica deployments. \
+                "OAuth2 requires Redis for state storage in cluster mode. \
                  Configure redis.url or disable OAuth2 by removing all oauth2.providers."
                     .to_string(),
             );
@@ -2011,23 +2018,33 @@ mod tests {
     }
 
     #[test]
-    fn test_validate_redis_configured_requires_cluster_secret() {
-        // Issue #39: Redis configured but cluster_secret empty → must be an error
+    fn test_validate_cluster_enabled_requires_cluster_secret() {
+        // cluster.enabled=true + cluster_secret empty → must be an error
         let mut config = valid_prod_config();
+        config.cluster.enabled = true;
         config.server.cluster_secret = String::new(); // clear the secret
-        // Redis is configured by default in valid_prod_config()
         let errors = config.validate().unwrap_err();
         assert!(
-            errors.iter().any(|e| e.contains("cluster_secret must be set when Redis is configured")),
+            errors.iter().any(|e| e.contains("cluster_secret must be set when cluster mode is enabled")),
             "Expected cluster_secret error, got: {:?}",
             errors
         );
     }
 
     #[test]
-    fn test_validate_redis_configured_with_cluster_secret_ok() {
-        // valid_prod_config() already sets cluster_secret, so this should pass.
-        let config = valid_prod_config();
-        assert!(config.validate().is_ok(), "Expected Ok with Redis + cluster_secret set");
+    fn test_validate_standalone_redis_without_cluster_secret_ok() {
+        // Standalone mode (cluster.enabled=false) with Redis but no cluster_secret → OK
+        let mut config = valid_prod_config();
+        config.cluster.enabled = false;
+        config.server.cluster_secret = String::new();
+        assert!(config.validate().is_ok(), "Expected Ok in standalone mode without cluster_secret");
+    }
+
+    #[test]
+    fn test_validate_cluster_enabled_with_cluster_secret_ok() {
+        // cluster.enabled=true + cluster_secret set → should pass
+        let mut config = valid_prod_config();
+        config.cluster.enabled = true;
+        assert!(config.validate().is_ok(), "Expected Ok with cluster mode + cluster_secret set");
     }
 }

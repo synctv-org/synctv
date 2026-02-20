@@ -33,11 +33,11 @@ use crate::cluster_bridge::ClusterPlaybackBroadcaster;
 use crate::server::{LivestreamState, Services, SyncTvServer};
 use crate::shutdown::{AuditFlushHook, SettingsListenHook, ShutdownCoordinator};
 
-/// Infrastructure: Redis, Database, NodeID.
+/// Infrastructure: Redis (optional), Database, NodeID.
 struct Infrastructure {
     config: Config,
     pool: PgPool,
-    redis_handles: RedisHandles,
+    redis_handles: Option<RedisHandles>,
     node_id: String,
 }
 
@@ -132,9 +132,15 @@ impl Application {
         let node_id = generate_node_id();
         info!("Node ID: {node_id}");
 
-        // Redis (mandatory dependency)
+        // Redis (optional in standalone mode, mandatory in cluster mode)
         let sentinel_cancel = shutdown.register_token("sentinel_health_check");
         let redis_handles = init_redis(&config, Some(sentinel_cancel)).await?;
+
+        if redis_handles.is_some() {
+            info!("Redis connected");
+        } else {
+            info!("Running without Redis (standalone mode)");
+        }
 
         // Database (with cancellable pool metrics task)
         let db_metrics_cancel = shutdown.register_token("db_pool_metrics");
@@ -151,13 +157,23 @@ impl Application {
     // -- Phase 2: Schema --------------------------------------------------------
 
     async fn init_schema(infra: &Infrastructure) -> Result<()> {
-        // Run migrations (with distributed lock via shared Redis connection)
-        let migration_lock = synctv_core::service::DistributedLock::new(
-            infra.redis_handles.conn_snapshot().await,
-        );
+        // Run migrations with appropriate lock strategy:
+        // - Redis available: distributed lock (safe for multi-replica)
+        // - No Redis: PostgreSQL advisory lock (safe for single-node)
+        let migration_lock: Box<dyn synctv_core::service::MigrationLock> = if let Some(ref rh) = infra.redis_handles {
+            info!("Using Redis distributed lock for migrations");
+            Box::new(synctv_core::service::DistributedLock::new(
+                rh.conn_snapshot().await,
+            ))
+        } else {
+            info!("Using PostgreSQL advisory lock for migrations");
+            Box::new(synctv_core::service::PgAdvisoryMigrationLock::new(
+                infra.pool.clone(),
+            ))
+        };
         crate::migrations::run_migrations(
             &infra.pool,
-            &migration_lock,
+            migration_lock.as_ref(),
             &infra.config.redis.key_prefix,
         )
         .await?;
@@ -201,9 +217,11 @@ impl Application {
     ) -> Result<CoreState> {
         // Initialize CacheInvalidationService early (before init_services).
         // Uses the cluster node_id so invalidation messages are correctly attributed.
+        // When Redis is not configured, cache invalidation operates in no-op mode.
         let key_builder = KeyBuilder::from_config(&infra.config);
+        let redis_client_for_cache = infra.redis_handles.as_ref().map(|h| h.client.clone());
         let cache_invalidation = Arc::new(CacheInvalidationService::new(
-            Some(infra.redis_handles.client.clone()),
+            redis_client_for_cache,
             infra.node_id.clone(),
             key_builder.cache_invalidation_stream(),
         ));
@@ -211,8 +229,10 @@ impl Application {
         // Start the cache invalidation Redis subscriber BEFORE init_services.
         // Issue #44: subscriber must be running before any service publishes an
         // invalidation event to avoid dropped messages during initialization.
-        if let Err(e) = cache_invalidation.start().await {
-            warn!("Failed to start cache invalidation listener: {}", e);
+        if infra.redis_handles.is_some() {
+            if let Err(e) = cache_invalidation.start().await {
+                warn!("Failed to start cache invalidation listener: {}", e);
+            }
         }
 
         // Initialize core services
@@ -260,6 +280,14 @@ impl Application {
         core: &CoreState,
         shutdown: &mut ShutdownCoordinator,
     ) -> Result<LeaderState> {
+        // Without Redis, use AlwaysLeader (single node = always the leader)
+        let Some(ref redis_conn) = core.services.redis_conn else {
+            info!("No Redis configured — using AlwaysLeader (single node)");
+            return Ok(LeaderState {
+                leader_check: Arc::new(synctv_core::service::AlwaysLeader),
+            });
+        };
+
         let leader_cancel = shutdown.register_token("leader_election");
 
         let (leader_elector, leader_election_handle) = {
@@ -317,7 +345,7 @@ impl Application {
                         );
                     }
 
-                    let plain_conn = core.services.redis_conn.read().await.clone();
+                    let plain_conn = redis_conn.read().await.clone();
                     let elector = LeaderElector::new(
                         plain_conn,
                         infra.node_id.clone(),
@@ -427,14 +455,14 @@ impl Application {
             "Connection manager initialized with configurable limits"
         );
 
-        // ClusterManager
+        // ClusterManager (requires Redis)
         let permission_service =
             Some(core.services.room_service.permission_service().clone());
 
-        let cluster_manager = {
+        let cluster_manager = if let Some(ref rh) = infra.redis_handles {
             let cluster_config = ClusterConfig {
-                redis_client: Some(infra.redis_handles.client.clone()),
-                redis_conn: Some(infra.redis_handles.conn_snapshot().await),
+                redis_client: Some(rh.client.clone()),
+                redis_conn: Some(rh.conn_snapshot().await),
                 node_id: infra.node_id.clone(),
                 dedup_window: Duration::from_secs(infra.config.cluster.catchup_window_secs.saturating_mul(2).max(600)),
                 cleanup_interval: Duration::from_secs(30),
@@ -461,6 +489,9 @@ impl Application {
                     None
                 }
             }
+        } else {
+            info!("No Redis configured — skipping ClusterManager (single-node mode)");
+            None
         };
 
         // Wire cluster broadcaster into PlaybackService
@@ -473,12 +504,12 @@ impl Application {
             info!("PlaybackService wired with cluster broadcaster");
         }
 
-        // Cluster discovery (NodeRegistry, HealthMonitor, LoadBalancer)
+        // Cluster discovery (NodeRegistry, HealthMonitor, LoadBalancer) — requires Redis
         let (node_registry, health_monitor, load_balancer, dns_refresh_handle) =
-            if let Some(ref cm) = cluster_manager {
+            if let (Some(ref cm), Some(ref rh)) = (&cluster_manager, &infra.redis_handles) {
                 init_cluster_discovery(
                     &infra.config,
-                    &infra.redis_handles,
+                    rh,
                     cm,
                     &connection_manager,
                 )
@@ -515,7 +546,7 @@ impl Application {
     ) -> Result<ServerComponents> {
         // Livestream
         let (livestream_state, live_infra, background_handles) =
-            init_livestream(&infra.config, &core.services, &infra.redis_handles, &infra.node_id)
+            init_livestream(&infra.config, &core.services, infra.redis_handles.as_ref(), &infra.node_id)
                 .await?;
         for (i, handle) in background_handles.into_iter().enumerate() {
             shutdown.register_task(
@@ -590,8 +621,8 @@ impl Application {
             node_registry: cluster.node_registry,
             health_monitor: cluster.health_monitor,
             load_balancer: cluster.load_balancer,
-            redis_client: infra.redis_handles.client.clone(),
-            redis_conn: core.services.redis_conn.clone(),
+            redis_client: infra.redis_handles.as_ref().map(|h| h.client.clone()),
+            redis_conn: core.services.redis_conn.clone(),  // already Option
             credential_encryption: core.services.credential_encryption.clone(),
         };
 

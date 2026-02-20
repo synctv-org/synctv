@@ -12,21 +12,31 @@ use crate::server;
 ///
 /// Returns the `LivestreamState` handle (for graceful shutdown) and the shared
 /// `LiveStreamingInfrastructure` (passed to gRPC/HTTP servers).
+///
+/// When `redis_handles` is `None`, uses an in-memory stream registry.
 pub async fn init_livestream(
     config: &Config,
     synctv_services: &synctv_core::bootstrap::services::Services,
-    redis_handles: &RedisHandles,
+    redis_handles: Option<&RedisHandles>,
     node_id: &str,
 ) -> Result<(Option<server::LivestreamState>, Option<Arc<synctv_livestream::api::LiveStreamingInfrastructure>>, Vec<tokio::task::JoinHandle<()>>)> {
     info!("Initializing livestream infrastructure...");
 
-    let redis_conn = redis_handles.conn_snapshot().await;
-
-    // Publisher registry for Redis (used by PullStreamManager + PublisherManager)
-    // Clone before move so we can also pass redis_conn to SyncTvRtmpAuth for the
-    // cross-replica rtmp:user_streams HSET mapping.
-    let redis_conn_for_auth = redis_conn.clone();
-    let publisher_registry = Arc::new(synctv_livestream::relay::StreamRegistry::new(redis_conn)) as Arc<dyn synctv_livestream::relay::StreamRegistryTrait>;
+    // Publisher registry: Redis-backed when available, in-memory otherwise
+    let (publisher_registry, redis_conn_for_auth): (Arc<dyn synctv_livestream::relay::StreamRegistryTrait>, _) =
+        if let Some(rh) = redis_handles {
+            let redis_conn = rh.conn_snapshot().await;
+            let redis_conn_for_auth = redis_conn.clone();
+            let registry = Arc::new(synctv_livestream::relay::StreamRegistry::new(redis_conn))
+                as Arc<dyn synctv_livestream::relay::StreamRegistryTrait>;
+            info!("Livestream publisher registry: Redis-backed");
+            (registry, Some(redis_conn_for_auth))
+        } else {
+            let registry = Arc::new(synctv_livestream::relay::InMemoryStreamRegistry::new())
+                as Arc<dyn synctv_livestream::relay::StreamRegistryTrait>;
+            info!("Livestream publisher registry: in-memory");
+            (registry, None)
+        };
 
     // Shared tracker for user->stream mapping (kick-on-ban)
     let user_stream_tracker: synctv_livestream::api::UserStreamTracker =
@@ -71,9 +81,7 @@ pub async fn init_livestream(
     background_handles.push(lifecycle_handle);
 
     // RTMP auth callback (needs synctv-core services)
-    // Attach the Redis connection so cross-replica user->stream mapping is maintained
-    // in `rtmp:user_streams` (HSET) in addition to the Set-based publisher registry.
-    let rtmp_auth_impl = rtmp_auth::SyncTvRtmpAuth::new(
+    let mut rtmp_auth_impl = rtmp_auth::SyncTvRtmpAuth::new(
         synctv_services.room_service.clone(),
         synctv_services.user_service.clone(),
         synctv_services.publish_key_service.clone(),
@@ -84,7 +92,10 @@ pub async fn init_livestream(
         Some(stream_lifecycle_tx),
         config.redis.key_prefix.clone(),
     );
-    let rtmp_auth_impl = rtmp_auth_impl.with_redis(redis_conn_for_auth);
+    // Attach Redis connection for cross-replica user->stream mapping when available
+    if let Some(conn) = redis_conn_for_auth {
+        rtmp_auth_impl = rtmp_auth_impl.with_redis(conn);
+    }
     let rtmp_auth: Arc<dyn synctv_livestream::AuthCallback> = Arc::new(rtmp_auth_impl);
 
     // One-shot facade: start all xiu components

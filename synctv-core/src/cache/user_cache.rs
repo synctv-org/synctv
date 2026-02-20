@@ -6,8 +6,11 @@
 //!
 //! Built on the generic `TieredCache<K, V>` infrastructure.
 
+use std::sync::Arc;
+
 use serde::{Deserialize, Serialize};
 
+use crate::cache::l2_backend::CacheL2Backend;
 use crate::cache::tiered::{CacheKey, TieredCache, Timestamped};
 use crate::models::{UserId, UserRole, UserStatus};
 use crate::Result;
@@ -114,20 +117,20 @@ impl UserCache {
     /// Create a new `UserCache`
     ///
     /// # Arguments
-    /// * `redis_conn` - Optional Redis `ConnectionManager`. If None, only L1 caching is used.
+    /// * `l2` - L2 cache backend (e.g. `RedisCacheL2` or `NoopCacheL2`)
     /// * `l1_max_capacity` - Maximum number of entries in L1 cache
     /// * `l1_ttl_minutes` - TTL for L1 cache entries in minutes
-    /// * `l2_ttl_seconds` - TTL for L2 (Redis) cache entries in seconds
-    /// * `key_prefix` - Redis key prefix (e.g., "synctv:user:")
+    /// * `l2_ttl_seconds` - TTL for L2 cache entries in seconds
+    /// * `key_prefix` - L2 key prefix (e.g., "synctv:user:")
     pub fn new(
-        redis_conn: Option<redis::aio::ConnectionManager>,
+        l2: Arc<dyn CacheL2Backend>,
         l1_max_capacity: u64,
         l1_ttl_minutes: u64,
         l2_ttl_seconds: u64,
         key_prefix: String,
     ) -> Result<Self> {
         let inner = TieredCache::new(
-            redis_conn,
+            l2,
             l1_max_capacity,
             l1_ttl_minutes,
             l2_ttl_seconds,
@@ -221,7 +224,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_l1_cache_only() {
-        let cache = UserCache::new(None, 100, 5, 0, "test:".to_string()).unwrap();
+        let cache = UserCache::new(Arc::new(crate::cache::NoopCacheL2), 100, 5, 0, "test:".to_string()).unwrap();
 
         let user_id = create_test_user_id("user1");
         let user = create_test_user("user1", "alice");
@@ -241,7 +244,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_batch_lookup() {
-        let cache = UserCache::new(None, 100, 5, 0, "test:".to_string()).unwrap();
+        let cache = UserCache::new(Arc::new(crate::cache::NoopCacheL2), 100, 5, 0, "test:".to_string()).unwrap();
 
         let user1 = create_test_user_id("user1");
         let user2 = create_test_user_id("user2");

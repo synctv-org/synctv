@@ -9,6 +9,7 @@ use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 
+use crate::cache::l2_backend::CacheL2Backend;
 use crate::cache::tiered::TieredCache;
 use crate::models::UserId;
 use crate::{cache::CacheInvalidationService, Result};
@@ -68,13 +69,13 @@ impl UsernameCache {
     /// Create a new `UsernameCache`
     ///
     /// # Arguments
-    /// * `redis_conn` - Optional Redis `ConnectionManager`. If None, only in-memory caching is used.
-    /// * `key_prefix` - Redis key prefix (e.g., "synctv:username:")
+    /// * `l2` - L2 cache backend (e.g. `RedisCacheL2` or `NoopCacheL2`)
+    /// * `key_prefix` - L2 key prefix (e.g., "synctv:username:")
     /// * `memory_cache_size` - Maximum number of entries in memory cache
-    /// * `ttl_seconds` - Cache TTL in Redis (0 = no expiration)
+    /// * `ttl_seconds` - Cache TTL in L2 (0 = no expiration)
     #[must_use]
     pub fn new(
-        redis_conn: Option<redis::aio::ConnectionManager>,
+        l2: Arc<dyn CacheL2Backend>,
         key_prefix: String,
         memory_cache_size: usize,
         ttl_seconds: u64,
@@ -82,7 +83,7 @@ impl UsernameCache {
         // TieredCache::new returns Result but only fails on construction errors
         // which won't happen with valid parameters. Unwrap is safe here.
         let inner = TieredCache::new(
-            redis_conn,
+            l2,
             memory_cache_size as u64,
             L1_TTL_MINUTES,
             ttl_seconds,
@@ -223,7 +224,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_memory_cache_only() {
-        let cache = UsernameCache::new(None, "test:".to_string(), 10, 0);
+        let cache = UsernameCache::new(Arc::new(crate::cache::NoopCacheL2), "test:".to_string(), 10, 0);
 
         let user_id = create_test_user_id("user1");
 
@@ -242,7 +243,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_batch_lookup() {
-        let cache = UsernameCache::new(None, "test:".to_string(), 10, 0);
+        let cache = UsernameCache::new(Arc::new(crate::cache::NoopCacheL2), "test:".to_string(), 10, 0);
 
         let user1 = create_test_user_id("user1");
         let user2 = create_test_user_id("user2");
@@ -266,7 +267,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_clear_memory() {
-        let cache = UsernameCache::new(None, "test:".to_string(), 10, 0);
+        let cache = UsernameCache::new(Arc::new(crate::cache::NoopCacheL2), "test:".to_string(), 10, 0);
 
         let user_id = create_test_user_id("user1");
         cache.set(&user_id, "alice").await.unwrap();
@@ -278,7 +279,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_invalidate_by_id() {
-        let cache = UsernameCache::new(None, "test:".to_string(), 10, 0);
+        let cache = UsernameCache::new(Arc::new(crate::cache::NoopCacheL2), "test:".to_string(), 10, 0);
 
         let user_id = create_test_user_id("user1");
         cache.set(&user_id, "alice").await.unwrap();

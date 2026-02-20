@@ -1,4 +1,4 @@
-//! Rate limiting service with Redis-backed distributed sliding window.
+//! Rate limiting service with pluggable backends.
 //!
 //! # Usage
 //!
@@ -10,21 +10,13 @@
 //! - **API-level**: `synctv-api` uses `RateLimiter` in gRPC interceptors,
 //!   tower middleware layers, and HTTP handlers for request-level throttling.
 //!
-//! If rate limiting were only needed at the API boundary, it would belong in
-//! `synctv-api`. Its placement here reflects the domain-level usage.
+//! # Backends
 //!
-//! # Multi-Replica Behavior
-//!
-//! When Redis is configured, rate limits are **shared across all replicas** using
-//! a Redis sorted-set sliding window algorithm. A user's request count is tracked
-//! globally, so the configured limit applies to the total across all nodes.
-//!
-//! When Redis is unavailable (not configured or temporarily down), the service
-//! falls back to **per-instance in-memory** limiting using the `governor` crate.
-//! In this mode each replica enforces the limit independently, so the effective
-//! global limit becomes `N * max_requests` where `N` is the number of replicas.
-//! This is an intentional trade-off: allowing slightly more requests is preferable
-//! to rejecting all requests during a Redis outage.
+//! - **Redis** (`RedisRateLimitBackend`): Uses sorted-set sliding window for
+//!   accurate cross-replica rate limiting. Falls back to in-memory governor
+//!   on Redis errors (graceful degradation).
+//! - **In-Memory** (`InMemoryRateLimitBackend`): Uses `governor` crate (GCRA
+//!   algorithm). Per-instance only, not shared across replicas.
 //!
 //! ## Implications for Operators
 //!
@@ -38,18 +30,19 @@
 //!   use in-memory limiting regardless of Redis availability, since gRPC
 //!   interceptors are synchronous.
 
+use async_trait::async_trait;
 use crate::Result;
 use governor::{DefaultKeyedRateLimiter, Quota, RateLimiter as GovernorRateLimiter};
+use governor::clock::Clock;
 use nonzero_ext::nonzero;
-use redis::AsyncCommands;
 use std::num::NonZeroU32;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use thiserror::Error;
 use moka::sync::Cache as MokaCache;
 
-/// Type alias for the keyed rate limiter cache used by `InMemoryRateLimiter`.
-type RateLimiterCache = MokaCache<(u32, u64), Arc<DefaultKeyedRateLimiter<String>>>;
+/// Type alias for the keyed rate limiter cache used by `InMemoryGovernorLimiter`.
+type GovernorLimiterCache = MokaCache<(u32, u64), Arc<DefaultKeyedRateLimiter<String>>>;
 
 /// Rate limiting error
 #[derive(Error, Debug)]
@@ -74,28 +67,20 @@ impl From<RateLimitError> for crate::Error {
     }
 }
 
+// ============================================================================
+// In-memory governor limiter (always present for sync + fallback)
+// ============================================================================
+
 /// In-memory rate limiter backed by the `governor` crate (GCRA algorithm).
 ///
 /// Uses a keyed rate limiter with `String` keys. Each unique key gets its own
-/// independent rate limit bucket. Governor handles all the timing, pruning, and
-/// thread-safety internally.
-///
-/// Note: Governor uses a fixed quota per limiter instance. Since our API allows
-/// callers to specify different (`max_requests`, `window_seconds`) per call, we
-/// create separate governor instances for each quota configuration. In practice,
-/// only a few distinct configurations are used (chat, danmaku), so this is fine.
-///
-/// Uses a Moka cache with TTL and max capacity to prevent unbounded memory growth.
-/// Entries are evicted after idle timeout or when the cache reaches max capacity
-/// (64 quota configurations).
+/// independent rate limit bucket.
 #[derive(Clone)]
-struct InMemoryRateLimiter {
-    /// Stores governor keyed limiters per (`max_requests`, `window_seconds`) pair.
-    /// Uses Moka cache with TTL-based eviction to prevent unbounded growth.
-    limiters: Arc<RateLimiterCache>,
+struct InMemoryGovernorLimiter {
+    limiters: Arc<GovernorLimiterCache>,
 }
 
-impl InMemoryRateLimiter {
+impl InMemoryGovernorLimiter {
     fn new() -> Self {
         let cache = MokaCache::builder()
             .max_capacity(64)
@@ -106,16 +91,12 @@ impl InMemoryRateLimiter {
         }
     }
 
-    /// Get or create a governor keyed rate limiter for the given quota.
     fn get_limiter(&self, max_requests: u32, window_seconds: u64) -> Arc<DefaultKeyedRateLimiter<String>> {
         let key = (max_requests, window_seconds);
         if let Some(limiter) = self.limiters.get(&key) {
             return limiter;
         }
 
-        // Create quota: max_requests per window_seconds
-        // Governor's Quota::with_period gives us one cell per period,
-        // then allow_burst lets us burst up to max_requests.
         let period = Duration::from_secs(window_seconds)
             .checked_div(max_requests)
             .unwrap_or(Duration::from_millis(1));
@@ -128,7 +109,6 @@ impl InMemoryRateLimiter {
         limiter
     }
 
-    /// Check rate limit. Returns Ok(()) if allowed, or the `retry_after` seconds.
     fn check(&self, key: &str, max_requests: u32, window_seconds: u64) -> std::result::Result<(), u64> {
         let limiter = self.get_limiter(max_requests, window_seconds);
         match limiter.check_key(&key.to_string()) {
@@ -142,27 +122,15 @@ impl InMemoryRateLimiter {
     }
 }
 
-use governor::clock::Clock;
-
 /// Extract a low-cardinality tier label from a rate-limit key.
 ///
 /// Issue #31: Prometheus metric labels must never include high-cardinality
-/// values such as user IDs, IP addresses, or room IDs — doing so would cause
-/// unbounded label cardinality and OOM in the Prometheus server.
-///
-/// This function maps a full key like `"user:abc123:auth"` to just `"auth"`,
-/// or `"room_password_check:10.0.0.1:room_xyz"` to `"room_password_check"`.
-///
-/// Rules:
-/// 1. Split on `':'` and take the **last** segment that is a known tier name.
-/// 2. If no known tier is found, return `"unknown"`.
+/// values such as user IDs, IP addresses, or room IDs.
 fn extract_rate_limit_tier(key: &str) -> &'static str {
-    // Known tier names used across the codebase.
     const KNOWN_TIERS: &[&str] = &[
         "auth", "read", "write", "media", "chat", "danmaku",
         "room_password_check", "grpc", "api",
     ];
-    // Walk segments from right to left so the most-specific label wins.
     for segment in key.rsplit(':') {
         for &tier in KNOWN_TIERS {
             if segment == tier {
@@ -170,7 +138,6 @@ fn extract_rate_limit_tier(key: &str) -> &'static str {
             }
         }
     }
-    // Check if the whole key (or its prefix) matches a known tier.
     for &tier in KNOWN_TIERS {
         if key.starts_with(tier) {
             return tier;
@@ -179,132 +146,78 @@ fn extract_rate_limit_tier(key: &str) -> &'static str {
     "unknown"
 }
 
-/// Rate limiter using Redis sliding window algorithm
-///
-/// **Production Enhancement (#26)**: Implements graceful degradation for Redis failures.
-/// - Uses Redis sorted sets for accurate cross-replica sliding window rate limiting
-/// - Automatically falls back to per-instance in-memory limiting (`governor` crate) when:
-///   - Redis is not configured at startup
-///   - Redis becomes unavailable at runtime (connection errors, timeouts)
-/// - Fallback ensures service availability even during Redis outages
-/// - Metrics track fallback events via `RATE_LIMIT_REDIS_FALLBACKS_TOTAL`
-///
-/// Trade-off: In-memory fallback is per-instance only (not shared across replicas),
-/// so rate limits become per-replica during Redis outages.
-#[derive(Clone)]
-pub struct RateLimiter {
-    redis_conn: Option<redis::aio::ConnectionManager>,
-    key_prefix: String,
-    /// In-memory fallback (always present, used when `redis_conn` is None)
-    in_memory: InMemoryRateLimiter,
+/// Get current timestamp in milliseconds
+fn current_timestamp_millis() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| d.as_millis() as u64)
 }
 
-impl RateLimiter {
-    /// Create a new `RateLimiter`
-    ///
-    /// If `redis_conn` is None, falls back to per-instance in-memory rate limiting.
-    pub fn new(redis_conn: Option<redis::aio::ConnectionManager>, key_prefix: String) -> Self {
-        if redis_conn.is_none() {
-            tracing::warn!(
-                "Rate limiting using in-memory fallback (governor): Redis not configured. \
-                 Limits are per-instance only (not shared across replicas)."
-            );
-        }
+// ============================================================================
+// RateLimitBackend trait
+// ============================================================================
+
+/// Backend for async rate limiting operations.
+///
+/// Implementations handle the distributed (Redis) or local (in-memory) rate
+/// limiting logic. The `RateLimiter` wraps this trait and adds sync support.
+#[async_trait]
+pub trait RateLimitBackend: Send + Sync {
+    /// Check if a request is allowed. Returns `Ok(())` if allowed.
+    /// On Redis errors, implementations may fall back to in-memory.
+    async fn check(&self, key: &str, max_requests: u32, window_seconds: u64) -> std::result::Result<(), RateLimitError>;
+
+    /// Strict distributed check. Fails closed when Redis is unavailable.
+    async fn check_strict(&self, key: &str, max_requests: u32, window_seconds: u64) -> std::result::Result<(), RateLimitError>;
+
+    /// Get remaining quota: (remaining_requests, reset_time_seconds).
+    async fn get_quota(&self, key: &str, max_requests: u32, window_seconds: u64) -> Result<(u32, u64)>;
+
+    /// Reset rate limit for a key.
+    async fn reset(&self, key: &str) -> Result<()>;
+
+    /// Health check. Returns `Ok(())` if the backend is healthy.
+    async fn health_check(&self) -> std::result::Result<(), String>;
+
+    /// A label for logging/debug purposes.
+    fn backend_name(&self) -> &'static str;
+}
+
+// ============================================================================
+// Redis implementation
+// ============================================================================
+
+/// Redis-backed rate limiter using sorted-set sliding window.
+///
+/// Falls back to in-memory governor on Redis errors (graceful degradation).
+pub struct RedisRateLimitBackend {
+    conn: redis::aio::ConnectionManager,
+    key_prefix: String,
+    /// In-memory fallback for when Redis is temporarily unavailable.
+    fallback: InMemoryGovernorLimiter,
+}
+
+impl RedisRateLimitBackend {
+    pub fn new(conn: redis::aio::ConnectionManager, key_prefix: String) -> Self {
         Self {
-            redis_conn,
+            conn,
             key_prefix,
-            in_memory: InMemoryRateLimiter::new(),
+            fallback: InMemoryGovernorLimiter::new(),
         }
     }
+}
 
-    /// Create a `RateLimiter` with in-memory fallback only (no Redis)
-    #[must_use]
-    pub fn in_memory_only(key_prefix: String) -> Self {
-        Self {
-            redis_conn: None,
-            key_prefix,
-            in_memory: InMemoryRateLimiter::new(),
-        }
-    }
+#[async_trait]
+impl RateLimitBackend for RedisRateLimitBackend {
+    async fn check(&self, key: &str, max_requests: u32, window_seconds: u64) -> std::result::Result<(), RateLimitError> {
+        use redis::AsyncCommands;
 
-    /// Check if Redis is connected and responding
-    ///
-    /// Returns Ok(()) if Redis is healthy, or an error if not configured or unreachable.
-    pub async fn health_check(&self) -> std::result::Result<(), String> {
-        let Some(ref conn) = self.redis_conn else {
-            return Err("Redis not configured".to_string());
-        };
-        let mut conn = conn.clone();
-        redis::cmd("PING")
-            .query_async::<String>(&mut conn)
-            .await
-            .map_err(|e| format!("Redis ping failed: {e}"))?;
-        Ok(())
-    }
-
-    /// Synchronous rate limit check using the in-memory governor limiter.
-    ///
-    /// # WARNING: Per-Instance Only (Not Distributed)
-    ///
-    /// This method **always** uses the in-memory `governor` limiter regardless
-    /// of whether Redis is configured.  gRPC interceptors are synchronous and
-    /// cannot `await` a Redis call, so there is no distributed alternative.
-    ///
-    /// **Implication in multi-replica deployments:**
-    /// The effective global limit is `max_requests × N` where `N` is the number
-    /// of replicas.  To compensate, the gRPC tier limits in
-    /// `GrpcRateLimitTier::max_requests()` are deliberately set to 1/10th of
-    /// the corresponding HTTP limits.  The async tower middleware layer
-    /// (`GrpcRateLimitLayer`) uses `check_rate_limit` (Redis-backed) for
-    /// distributed enforcement and should be preferred when possible.
-    ///
-    /// For distributed rate limiting, use `check_rate_limit` (async).
-    pub fn check_rate_limit_sync(
-        &self,
-        key: &str,
-        max_requests: u32,
-        window_seconds: u64,
-    ) -> std::result::Result<(), RateLimitError> {
-        let mem_key = format!("{}grpc:{}", self.key_prefix, key);
-        self.in_memory
-            .check(&mem_key, max_requests, window_seconds)
-            .map_err(|retry_after_seconds| RateLimitError::RateLimitExceeded {
-                retry_after_seconds,
-            })
-    }
-
-    /// Check if a request is allowed under the rate limit
-    ///
-    /// Returns Ok(()) if allowed, or `RateLimitError` if rate limit exceeded
-    ///
-    /// # Arguments
-    /// * `key` - Unique identifier for the rate limit (e.g., "`user:{user_id}:chat`")
-    /// * `max_requests` - Maximum number of requests allowed in the window
-    /// * `window_seconds` - Size of the sliding window in seconds
-    pub async fn check_rate_limit(
-        &self,
-        key: &str,
-        max_requests: u32,
-        window_seconds: u64,
-    ) -> std::result::Result<(), RateLimitError> {
-        // If Redis not configured, use governor in-memory fallback
-        let Some(ref conn) = self.redis_conn else {
-            let mem_key = format!("{}{}", self.key_prefix, key);
-            return self.in_memory.check(&mem_key, max_requests, window_seconds)
-                .map_err(|retry_after_seconds| RateLimitError::RateLimitExceeded { retry_after_seconds });
-        };
-
-        let mut conn = conn.clone();
-
+        let mut conn = self.conn.clone();
         let redis_key = format!("{}{}", self.key_prefix, key);
-        let now = Self::current_timestamp_millis();
+        let now = current_timestamp_millis();
         let window_start = now.saturating_sub(window_seconds * 1000);
         let expire_seconds = (window_seconds + 1) as i64;
 
-        // Use Lua script for true atomic rate limiting (prevents TOCTOU race)
-        // The script: removes expired entries, adds the new request, counts, and sets expiry.
-        // A per-key sequence counter generates unique members so concurrent requests
-        // within the same millisecond are counted separately instead of overwriting.
         let script = redis::Script::new(
             r"
             redis.call('ZREMRANGEBYSCORE', KEYS[1], 0, ARGV[1])
@@ -328,24 +241,17 @@ impl RateLimiter {
         {
             Ok(count) => count,
             Err(e) => {
-                // Redis error at runtime -- degrade to in-memory limiter instead
-                // of failing the request. This keeps HTTP and gRPC behavior
-                // consistent (both use governor fallback on Redis failure).
                 tracing::warn!(
                     "Redis rate limiter unavailable, falling back to in-memory: {}",
                     e
                 );
-                // Issue #31: Extract tier type from the key to avoid high-cardinality
-                // label values. Key format: "prefix:user:<id>:<tier>" or "<tier>:<...>"
-                // We extract the last segment after the last ':' as the tier label.
-                // Never include user IDs, IP addresses, or other per-entity values.
                 let tier_label = extract_rate_limit_tier(key);
                 crate::metrics::rate_limit::RATE_LIMIT_REDIS_FALLBACKS_TOTAL
                     .with_label_values(&[tier_label])
                     .inc();
                 let mem_key = format!("{}{}", self.key_prefix, key);
                 return self
-                    .in_memory
+                    .fallback
                     .check(&mem_key, max_requests, window_seconds)
                     .map_err(|retry_after_seconds| RateLimitError::RateLimitExceeded {
                         retry_after_seconds,
@@ -354,8 +260,6 @@ impl RateLimiter {
         };
 
         if current_count > max_requests {
-            // Rate limit exceeded
-            // Calculate retry_after by finding oldest entry in window
             let oldest: Option<u64> = conn
                 .zrange_withscores(&redis_key, 0, 0)
                 .await
@@ -378,32 +282,10 @@ impl RateLimiter {
         Ok(())
     }
 
-    /// Distributed rate limit check that always uses Redis.
-    ///
-    /// Unlike `check_rate_limit` which falls back to in-memory governor when Redis
-    /// is unavailable, this method enforces distributed rate limiting and **denies
-    /// requests (fail closed)** when Redis is unreachable.
-    ///
-    /// Designed for use in async tower middleware layers (e.g., gRPC blacklist or
-    /// rate-limit layers) where per-node-only limiting is insufficient.
-    pub async fn check_rate_limit_distributed(
-        &self,
-        key: &str,
-        max_requests: u32,
-        window_seconds: u64,
-    ) -> std::result::Result<(), RateLimitError> {
-        let Some(ref conn) = self.redis_conn else {
-            tracing::error!(
-                "Distributed rate limit check failed: Redis not configured. Denying request (fail closed)."
-            );
-            return Err(RateLimitError::RateLimitExceeded {
-                retry_after_seconds: 1,
-            });
-        };
-
-        let mut conn = conn.clone();
+    async fn check_strict(&self, key: &str, max_requests: u32, window_seconds: u64) -> std::result::Result<(), RateLimitError> {
+        let mut conn = self.conn.clone();
         let redis_key = format!("{}{}", self.key_prefix, key);
-        let now = Self::current_timestamp_millis();
+        let now = current_timestamp_millis();
         let window_start = now.saturating_sub(window_seconds * 1000);
         let expire_seconds = (window_seconds + 1) as i64;
 
@@ -448,31 +330,14 @@ impl RateLimiter {
         Ok(())
     }
 
-    /// Get remaining quota for a rate limit
-    ///
-    /// Returns (`remaining_requests`, `reset_time_seconds`)
-    pub async fn get_quota(
-        &self,
-        key: &str,
-        max_requests: u32,
-        window_seconds: u64,
-    ) -> Result<(u32, u64)> {
-        // If Redis not configured, return a best-effort estimate.
-        // We intentionally do NOT call `check_key()` here because governor's
-        // `check_key()` consumes a token, and `get_quota()` is meant to be a
-        // read-only query. Consuming a token on every quota check would cause
-        // callers to burn through their rate limit just by inspecting it.
-        let Some(ref conn) = self.redis_conn else {
-            return Ok((max_requests, 0));
-        };
+    async fn get_quota(&self, key: &str, max_requests: u32, window_seconds: u64) -> Result<(u32, u64)> {
+        use redis::AsyncCommands;
 
-        let mut conn = conn.clone();
-
+        let mut conn = self.conn.clone();
         let redis_key = format!("{}{}", self.key_prefix, key);
-        let now = Self::current_timestamp_millis();
+        let now = current_timestamp_millis();
         let window_start = now.saturating_sub(window_seconds * 1000);
 
-        // Remove expired entries and count
         let mut pipe = redis::pipe();
         pipe.atomic()
             .zrembyscore(&redis_key, 0, window_start as i64)
@@ -481,10 +346,8 @@ impl RateLimiter {
 
         let results: Vec<u32> = pipe.query_async(&mut conn).await?;
         let current_count = results.first().copied().unwrap_or(0);
-
         let remaining = max_requests.saturating_sub(current_count);
 
-        // Calculate reset time (when oldest entry expires)
         let oldest: Option<u64> = conn
             .zrange_withscores(&redis_key, 0, 0)
             .await
@@ -502,30 +365,201 @@ impl RateLimiter {
         Ok((remaining, reset_seconds))
     }
 
-    /// Reset rate limit for a key (for testing or admin purposes)
-    pub async fn reset(&self, key: &str) -> Result<()> {
+    async fn reset(&self, key: &str) -> Result<()> {
         let full_key = format!("{}{}", self.key_prefix, key);
-        if let Some(ref conn) = self.redis_conn {
-            let mut conn = conn.clone();
-            let seq_key = format!("{full_key}:seq");
-            let _: () = redis::cmd("DEL")
-                .arg(&full_key)
-                .arg(&seq_key)
-                .query_async(&mut conn)
-                .await?;
-        }
-        // Governor doesn't support per-key reset, but keys auto-expire
-        // based on the GCRA algorithm, so this is acceptable.
+        let mut conn = self.conn.clone();
+        let seq_key = format!("{full_key}:seq");
+        let _: () = redis::cmd("DEL")
+            .arg(&full_key)
+            .arg(&seq_key)
+            .query_async(&mut conn)
+            .await?;
         Ok(())
     }
 
-    /// Get current timestamp in milliseconds
+    async fn health_check(&self) -> std::result::Result<(), String> {
+        let mut conn = self.conn.clone();
+        redis::cmd("PING")
+            .query_async::<String>(&mut conn)
+            .await
+            .map_err(|e| format!("Redis ping failed: {e}"))?;
+        Ok(())
+    }
+
+    fn backend_name(&self) -> &'static str {
+        "redis"
+    }
+}
+
+// ============================================================================
+// In-memory implementation
+// ============================================================================
+
+/// In-memory rate limiter using `governor` (GCRA algorithm).
+///
+/// Per-instance only — not shared across replicas.
+pub struct InMemoryRateLimitBackend {
+    key_prefix: String,
+    governor: InMemoryGovernorLimiter,
+}
+
+impl InMemoryRateLimitBackend {
+    pub fn new(key_prefix: String) -> Self {
+        Self {
+            key_prefix,
+            governor: InMemoryGovernorLimiter::new(),
+        }
+    }
+}
+
+#[async_trait]
+impl RateLimitBackend for InMemoryRateLimitBackend {
+    async fn check(&self, key: &str, max_requests: u32, window_seconds: u64) -> std::result::Result<(), RateLimitError> {
+        let mem_key = format!("{}{}", self.key_prefix, key);
+        self.governor.check(&mem_key, max_requests, window_seconds)
+            .map_err(|retry_after_seconds| RateLimitError::RateLimitExceeded { retry_after_seconds })
+    }
+
+    async fn check_strict(&self, _key: &str, _max_requests: u32, _window_seconds: u64) -> std::result::Result<(), RateLimitError> {
+        tracing::error!(
+            "Distributed rate limit check failed: Redis not configured. Denying request (fail closed)."
+        );
+        Err(RateLimitError::RateLimitExceeded {
+            retry_after_seconds: 1,
+        })
+    }
+
+    async fn get_quota(&self, _key: &str, max_requests: u32, _window_seconds: u64) -> Result<(u32, u64)> {
+        // In-memory mode returns max_requests as a best-effort estimate
+        // without consuming a token.
+        Ok((max_requests, 0))
+    }
+
+    async fn reset(&self, _key: &str) -> Result<()> {
+        // Governor doesn't support per-key reset, but keys auto-expire
+        // based on the GCRA algorithm.
+        Ok(())
+    }
+
+    async fn health_check(&self) -> std::result::Result<(), String> {
+        Err("Redis not configured".to_string())
+    }
+
+    fn backend_name(&self) -> &'static str {
+        "memory"
+    }
+}
+
+// ============================================================================
+// RateLimiter (public API)
+// ============================================================================
+
+/// Rate limiter with pluggable backend and sync fallback.
+///
+/// Wraps an async `RateLimitBackend` (Redis or in-memory) and always
+/// maintains a local `InMemoryGovernorLimiter` for synchronous operations
+/// (gRPC interceptors).
+#[derive(Clone)]
+pub struct RateLimiter {
+    backend: Arc<dyn RateLimitBackend>,
+    /// In-memory governor for sync operations (always present)
+    sync_limiter: InMemoryGovernorLimiter,
+    key_prefix: String,
+}
+
+impl RateLimiter {
+    /// Create a new `RateLimiter` with a custom backend.
+    pub fn from_backend(backend: Arc<dyn RateLimitBackend>, key_prefix: String) -> Self {
+        Self {
+            backend,
+            sync_limiter: InMemoryGovernorLimiter::new(),
+            key_prefix,
+        }
+    }
+
+    /// Create a new `RateLimiter`, choosing backend based on Redis availability.
+    pub fn new(redis_conn: Option<redis::aio::ConnectionManager>, key_prefix: String) -> Self {
+        if let Some(conn) = redis_conn {
+            let backend = Arc::new(RedisRateLimitBackend::new(conn, key_prefix.clone()));
+            Self::from_backend(backend, key_prefix)
+        } else {
+            tracing::warn!(
+                "Rate limiting using in-memory fallback (governor): Redis not configured. \
+                 Limits are per-instance only (not shared across replicas)."
+            );
+            let backend = Arc::new(InMemoryRateLimitBackend::new(key_prefix.clone()));
+            Self::from_backend(backend, key_prefix)
+        }
+    }
+
+    /// Create a `RateLimiter` with in-memory fallback only (no Redis)
+    #[must_use]
+    pub fn in_memory_only(key_prefix: String) -> Self {
+        let backend = Arc::new(InMemoryRateLimitBackend::new(key_prefix.clone()));
+        Self::from_backend(backend, key_prefix)
+    }
+
+    /// Check if Redis is connected and responding
+    pub async fn health_check(&self) -> std::result::Result<(), String> {
+        self.backend.health_check().await
+    }
+
+    /// Synchronous rate limit check using the in-memory governor limiter.
     ///
-    /// Returns 0 if system time is before Unix epoch (should never happen in practice).
-    fn current_timestamp_millis() -> u64 {
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_or(0, |d| d.as_millis() as u64)
+    /// Always uses in-memory governor regardless of backend. gRPC interceptors
+    /// are synchronous and cannot `await` a Redis call.
+    pub fn check_rate_limit_sync(
+        &self,
+        key: &str,
+        max_requests: u32,
+        window_seconds: u64,
+    ) -> std::result::Result<(), RateLimitError> {
+        let mem_key = format!("{}grpc:{}", self.key_prefix, key);
+        self.sync_limiter
+            .check(&mem_key, max_requests, window_seconds)
+            .map_err(|retry_after_seconds| RateLimitError::RateLimitExceeded {
+                retry_after_seconds,
+            })
+    }
+
+    /// Check if a request is allowed under the rate limit (async).
+    pub async fn check_rate_limit(
+        &self,
+        key: &str,
+        max_requests: u32,
+        window_seconds: u64,
+    ) -> std::result::Result<(), RateLimitError> {
+        self.backend.check(key, max_requests, window_seconds).await
+    }
+
+    /// Distributed rate limit check that fails closed when Redis is unavailable.
+    pub async fn check_rate_limit_distributed(
+        &self,
+        key: &str,
+        max_requests: u32,
+        window_seconds: u64,
+    ) -> std::result::Result<(), RateLimitError> {
+        self.backend.check_strict(key, max_requests, window_seconds).await
+    }
+
+    /// Get remaining quota for a rate limit.
+    pub async fn get_quota(
+        &self,
+        key: &str,
+        max_requests: u32,
+        window_seconds: u64,
+    ) -> Result<(u32, u64)> {
+        self.backend.get_quota(key, max_requests, window_seconds).await
+    }
+
+    /// Reset rate limit for a key.
+    pub async fn reset(&self, key: &str) -> Result<()> {
+        self.backend.reset(key).await
+    }
+
+    /// Return the backend name.
+    pub fn backend_name(&self) -> &'static str {
+        self.backend.backend_name()
     }
 }
 
@@ -554,7 +588,7 @@ mod tests {
     #[test]
     fn test_rate_limiter_without_redis() {
         let limiter = RateLimiter::new(None, "test:".to_string());
-        assert!(limiter.redis_conn.is_none());
+        assert_eq!(limiter.backend_name(), "memory");
     }
 
     #[tokio::test]
@@ -565,11 +599,8 @@ mod tests {
         let limiter = RateLimiter::new(Some(conn), "test:".to_string());
 
         let key = "user:test1:chat";
-
-        // Reset before test
         limiter.reset(key).await.unwrap();
 
-        // First 10 requests should succeed
         for i in 0..10 {
             limiter
                 .check_rate_limit(key, 10, 1)
@@ -577,17 +608,13 @@ mod tests {
                 .unwrap_or_else(|_| panic!("Request {} should succeed", i));
         }
 
-        // 11th request should fail
         let result = limiter.check_rate_limit(key, 10, 1).await;
         assert!(matches!(
             result,
             Err(RateLimitError::RateLimitExceeded { .. })
         ));
 
-        // Wait for window to expire
         tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
-
-        // Should work again
         limiter.check_rate_limit(key, 10, 1).await.unwrap();
     }
 
@@ -601,24 +628,15 @@ mod tests {
         let key = "user:test2:chat";
         limiter.reset(key).await.unwrap();
 
-        // Use 5 requests in 1 second window
         for _ in 0..5 {
             limiter.check_rate_limit(key, 5, 1).await.unwrap();
         }
-
-        // Should be rate limited
         assert!(limiter.check_rate_limit(key, 5, 1).await.is_err());
 
-        // Wait 0.6 seconds (more than half the window)
         tokio::time::sleep(tokio::time::Duration::from_millis(600)).await;
-
-        // Still limited (sliding window)
         assert!(limiter.check_rate_limit(key, 5, 1).await.is_err());
 
-        // Wait another 0.5 seconds (total 1.1s, oldest entries expired)
         tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
-
-        // Should work now
         limiter.check_rate_limit(key, 5, 1).await.unwrap();
     }
 
@@ -632,16 +650,13 @@ mod tests {
         let key = "user:test3:chat";
         limiter.reset(key).await.unwrap();
 
-        // Check initial quota
         let (remaining, _) = limiter.get_quota(key, 10, 1).await.unwrap();
         assert_eq!(remaining, 10);
 
-        // Use 3 requests
         for _ in 0..3 {
             limiter.check_rate_limit(key, 10, 1).await.unwrap();
         }
 
-        // Check remaining
         let (remaining, reset_time) = limiter.get_quota(key, 10, 1).await.unwrap();
         assert_eq!(remaining, 7);
         assert!(reset_time <= 1);
@@ -652,8 +667,6 @@ mod tests {
         let limiter = RateLimiter::new(None, "test:".to_string());
 
         let key = "user:test_gov:chat";
-
-        // First 10 requests should succeed (burst capacity = 10)
         for i in 0..10 {
             limiter
                 .check_rate_limit(key, 10, 1)
@@ -661,7 +674,6 @@ mod tests {
                 .unwrap_or_else(|_| panic!("Governor request {} should succeed", i));
         }
 
-        // 11th request should be rate limited
         let result = limiter.check_rate_limit(key, 10, 1).await;
         assert!(
             matches!(result, Err(RateLimitError::RateLimitExceeded { .. })),
@@ -673,20 +685,13 @@ mod tests {
     async fn test_governor_independent_keys() {
         let limiter = RateLimiter::new(None, "test:".to_string());
 
-        // Exhaust limit for key1
         for _ in 0..5 {
             limiter.check_rate_limit("key1", 5, 1).await.unwrap();
         }
         assert!(limiter.check_rate_limit("key1", 5, 1).await.is_err());
-
-        // key2 should still work (independent bucket)
         assert!(limiter.check_rate_limit("key2", 5, 1).await.is_ok());
     }
 
-    /// Validates the per-IP per-room password check rate limiting pattern.
-    ///
-    /// This mirrors the key format used in `ClientApiImpl::check_room_password`:
-    /// `room_password_check:{client_ip}:{room_id}`
     #[tokio::test]
     async fn test_room_password_rate_limit_pattern() {
         let limiter = RateLimiter::new(None, "test:".to_string());
@@ -695,7 +700,6 @@ mod tests {
         let room_id = "room_abc";
         let key = format!("room_password_check:{ip}:{room_id}");
 
-        // 5 attempts should succeed (matching the MAX_PASSWORD_ATTEMPTS constant)
         for i in 0..5 {
             limiter
                 .check_rate_limit(&key, 5, 300)
@@ -703,7 +707,6 @@ mod tests {
                 .unwrap_or_else(|_| panic!("Attempt {} should succeed", i + 1));
         }
 
-        // 6th attempt should be rate limited
         let result = limiter.check_rate_limit(&key, 5, 300).await;
         assert!(
             matches!(result, Err(RateLimitError::RateLimitExceeded { .. })),
@@ -711,7 +714,6 @@ mod tests {
         );
     }
 
-    /// Different IPs checking the same room should have independent limits.
     #[tokio::test]
     async fn test_room_password_rate_limit_per_ip_isolation() {
         let limiter = RateLimiter::new(None, "test:".to_string());
@@ -720,17 +722,13 @@ mod tests {
         let key_ip1 = format!("room_password_check:10.0.0.1:{room_id}");
         let key_ip2 = format!("room_password_check:10.0.0.2:{room_id}");
 
-        // Exhaust limit for IP1
         for _ in 0..5 {
             limiter.check_rate_limit(&key_ip1, 5, 300).await.unwrap();
         }
         assert!(limiter.check_rate_limit(&key_ip1, 5, 300).await.is_err());
-
-        // IP2 should still be allowed (independent bucket)
         assert!(limiter.check_rate_limit(&key_ip2, 5, 300).await.is_ok());
     }
 
-    /// Same IP checking different rooms should have independent limits.
     #[tokio::test]
     async fn test_room_password_rate_limit_per_room_isolation() {
         let limiter = RateLimiter::new(None, "test:".to_string());
@@ -739,23 +737,17 @@ mod tests {
         let key_room1 = format!("room_password_check:{ip}:room_1");
         let key_room2 = format!("room_password_check:{ip}:room_2");
 
-        // Exhaust limit for room1
         for _ in 0..5 {
             limiter.check_rate_limit(&key_room1, 5, 300).await.unwrap();
         }
         assert!(limiter.check_rate_limit(&key_room1, 5, 300).await.is_err());
-
-        // room2 should still be allowed (independent bucket)
         assert!(limiter.check_rate_limit(&key_room2, 5, 300).await.is_ok());
     }
-
-    // ========== Concurrent Burst Tests ==========
 
     #[tokio::test]
     async fn test_concurrent_burst_all_within_limit() {
         let limiter = RateLimiter::in_memory_only("burst_test:".to_string());
 
-        // Fire 10 concurrent requests with limit of 10 -- all should succeed
         let mut handles = Vec::new();
         for _ in 0..10 {
             let limiter = limiter.clone();
@@ -778,7 +770,6 @@ mod tests {
     async fn test_concurrent_burst_exceeding_limit() {
         let limiter = RateLimiter::in_memory_only("burst_over:".to_string());
 
-        // Fire 20 concurrent requests with limit of 5
         let mut handles = Vec::new();
         for _ in 0..20 {
             let limiter = limiter.clone();
@@ -796,18 +787,13 @@ mod tests {
         let successes = results.iter().filter(|r| r.is_ok()).count();
         let failures = results.iter().filter(|r| r.is_err()).count();
 
-        // Exactly 5 should succeed (burst capacity)
         assert_eq!(successes, 5, "Only 5 concurrent requests should succeed");
         assert_eq!(failures, 15, "15 requests should be rate limited");
     }
 
-    // ========== Sync Rate Limit Tests ==========
-
     #[test]
     fn test_check_rate_limit_sync_allows_within_limit() {
         let limiter = RateLimiter::in_memory_only("sync_test:".to_string());
-
-        // First request should succeed
         assert!(limiter.check_rate_limit_sync("sync_key", 5, 1).is_ok());
     }
 
@@ -827,29 +813,19 @@ mod tests {
     fn test_check_rate_limit_sync_uses_grpc_key_prefix() {
         let limiter = RateLimiter::in_memory_only("myprefix:".to_string());
 
-        // Sync method adds "grpc:" between prefix and key
-        // This is an implementation detail but ensures sync and async don't collide
         for _ in 0..3 {
             limiter.check_rate_limit_sync("key1", 3, 1).unwrap();
         }
         assert!(limiter.check_rate_limit_sync("key1", 3, 1).is_err());
-
-        // Async uses different key space (no "grpc:" prefix), so should still work
-        // (validated by the in-memory governor using different composed keys)
     }
-
-    // ========== Distributed Rate Limit Tests ==========
 
     #[tokio::test]
     async fn test_distributed_rate_limit_fails_closed_without_redis() {
         let limiter = RateLimiter::in_memory_only("dist_test:".to_string());
 
-        // Without Redis, distributed check should fail closed (deny request)
         let result = limiter.check_rate_limit_distributed("key", 10, 1).await;
         assert!(matches!(result, Err(RateLimitError::RateLimitExceeded { retry_after_seconds: 1 })));
     }
-
-    // ========== RateLimitConfig Tests ==========
 
     #[test]
     fn test_rate_limit_config_default_values() {
@@ -866,8 +842,6 @@ mod tests {
         assert_eq!(cloned.chat_per_second, config.chat_per_second);
         assert_eq!(cloned.danmaku_per_second, config.danmaku_per_second);
     }
-
-    // ========== RateLimitError Conversion Tests ==========
 
     #[test]
     fn test_rate_limit_error_to_core_error_exceeded() {
@@ -901,14 +875,10 @@ mod tests {
         assert!(display.contains("5s"));
     }
 
-    // ========== In-Memory Limiter Quota Peek Tests ==========
-
     #[tokio::test]
     async fn test_get_quota_without_redis_returns_max() {
         let limiter = RateLimiter::in_memory_only("quota_test:".to_string());
 
-        // In-memory mode returns max_requests as a best-effort estimate
-        // without consuming a token (unlike the old behavior).
         let (remaining, reset) = limiter.get_quota("key", 10, 1).await.unwrap();
         assert_eq!(remaining, 10);
         assert_eq!(reset, 0);
@@ -918,13 +888,11 @@ mod tests {
     async fn test_get_quota_without_redis_does_not_consume_token() {
         let limiter = RateLimiter::in_memory_only("quota_no_consume:".to_string());
 
-        // Calling get_quota multiple times should NOT exhaust the rate limit
         for _ in 0..20 {
             let (remaining, _) = limiter.get_quota("key", 10, 1).await.unwrap();
             assert_eq!(remaining, 10);
         }
 
-        // The actual rate limit should still have full capacity
         for i in 0..10 {
             limiter
                 .check_rate_limit("key", 10, 1)
@@ -932,8 +900,6 @@ mod tests {
                 .unwrap_or_else(|_| panic!("Request {} should succeed after get_quota calls", i));
         }
     }
-
-    // ========== Health Check Tests ==========
 
     #[tokio::test]
     async fn test_health_check_without_redis() {
@@ -943,38 +909,23 @@ mod tests {
         assert!(result.unwrap_err().contains("not configured"));
     }
 
-    // ========== InMemoryRateLimiter Caching Tests ==========
-
     #[tokio::test]
     async fn test_in_memory_different_quotas_are_independent() {
         let limiter = RateLimiter::in_memory_only("quotas:".to_string());
 
-        // Exhaust limit for (5, 1) quota
         for _ in 0..5 {
             limiter.check_rate_limit("same_key", 5, 1).await.unwrap();
         }
         assert!(limiter.check_rate_limit("same_key", 5, 1).await.is_err());
-
-        // Same key but different quota (10, 1) should still have capacity
-        // because different (max_requests, window_seconds) use different governor instances
         assert!(limiter.check_rate_limit("same_key", 10, 1).await.is_ok());
     }
 
-    /// When Redis is configured but unreachable, check_rate_limit should
-    /// degrade to in-memory governor instead of returning a RedisError.
     #[tokio::test]
     async fn test_redis_failure_falls_back_to_in_memory() {
-        // Connect to a non-existent Redis to simulate failure.
-        // ConnectionManager connects lazily, so creation succeeds; the error
-        // occurs on the first actual command.
         let client = redis::Client::open("redis://127.0.0.1:1").unwrap();
         let conn = redis::aio::ConnectionManager::new(client).await;
 
-        // If ConnectionManager refuses to connect at all (some environments),
-        // fall back to a simulated scenario using in_memory_only.
         if conn.is_err() {
-            // Can't create a ConnectionManager to a down host -- verify that
-            // in_memory_only still rate-limits properly (same code path).
             let limiter = RateLimiter::in_memory_only("fallback_test:".to_string());
             for i in 0..5 {
                 limiter
@@ -994,15 +945,11 @@ mod tests {
 
         let limiter = RateLimiter::new(Some(conn.unwrap()), "fallback_test:".to_string());
 
-        // The Redis command will fail (connection refused), but check_rate_limit
-        // should NOT return RedisError -- it should fall back to governor.
         let result = limiter.check_rate_limit("test_key", 10, 1).await;
 
-        // Should succeed (fallback to in-memory, first request within quota)
-        // OR be rate-limited (if in-memory quota exhausted) -- but NOT a RedisError.
         match &result {
-            Ok(()) => {} // Good: fell back to in-memory, allowed
-            Err(RateLimitError::RateLimitExceeded { .. }) => {} // Also fine
+            Ok(()) => {}
+            Err(RateLimitError::RateLimitExceeded { .. }) => {}
             Err(RateLimitError::RedisError(e)) => {
                 panic!(
                     "check_rate_limit should NOT propagate RedisError; expected fallback to in-memory. Got: {e}"

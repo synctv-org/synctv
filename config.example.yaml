@@ -35,8 +35,9 @@ server:
   # WARNING: An empty list in production means ALL cross-origin requests are denied.
   cors_allowed_origins: []
   # Shared secret for authenticating cluster gRPC calls between nodes.
-  # REQUIRED when Redis is configured — startup fails if this is empty and redis.url is set.
+  # REQUIRED when cluster.enabled is true — startup fails if this is empty in cluster mode.
   # This prevents unauthorized inter-node gRPC calls in multi-replica deployments.
+  # Not required in standalone mode even when Redis is configured.
   # Generate a secret with: openssl rand -hex 32
   # Environment variable: SYNCTV_SERVER_CLUSTER_SECRET
   cluster_secret: ""
@@ -66,6 +67,23 @@ database:
 # Redis Configuration
 # ============================================================================
 #
+# Redis is OPTIONAL in standalone mode (cluster.enabled=false) and MANDATORY
+# in cluster mode (cluster.enabled=true).
+#
+# When Redis is not configured (url is empty), all features still work using
+# in-memory fallbacks:
+#   - Token blacklist → in-memory cache (lost on restart)
+#   - Rate limiting → in-memory counters (lost on restart)
+#   - Brute-force protection → in-memory tracking (lost on restart)
+#   - Username/user/room caches → in-memory only
+#   - OAuth2 state → in-memory store
+#   - Livestream registry → in-memory publisher tracking
+#   - Migration locking → PostgreSQL advisory locks
+#   - Leader election → single node is always the leader
+#
+# When Redis IS configured in standalone mode, it enhances features with
+# persistence across restarts and shared state.
+#
 # Redis provides critical infrastructure for:
 #   - Token blacklist (JWT revocation across replicas)
 #   - Rate limiting
@@ -82,6 +100,8 @@ database:
 # deployments, use sentinel mode with 3+ sentinel nodes monitoring a master-replica setup.
 
 redis:
+  # Leave empty to run without Redis in standalone mode.
+  # Environment variable: SYNCTV_REDIS_URL
   url: "redis://localhost:6379"
   connect_timeout_seconds: 5
   key_prefix: "synctv:"
@@ -219,10 +239,18 @@ bootstrap:
 # Cluster Configuration
 # ============================================================================
 #
-# Controls internal channel buffer sizes for cluster communication
-# and the discovery mechanism for multi-node deployments.
+# Controls multi-node cluster mode and internal channel buffer sizes.
+#
+# When enabled=true, Redis is MANDATORY and cluster_secret must be set.
+# When enabled=false (default), this is a standalone single-node deployment
+# and Redis is optional.
 
 cluster:
+  # Enable cluster mode for multi-node deployments.
+  # When true, Redis is required and cluster_secret must be set.
+  # When false (default), runs as a standalone single-node instance.
+  # Environment variable: SYNCTV_CLUSTER_ENABLED
+  enabled: false
   # Capacity for high-priority critical event channel (KickPublisher, KickUser, etc.)
   # Critical events are never dropped; senders block when full.
   critical_channel_capacity: 1000

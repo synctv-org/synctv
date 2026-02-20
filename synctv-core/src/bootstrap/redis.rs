@@ -44,30 +44,32 @@ impl RedisHandles {
 /// Create the single Redis client + connection, start the Sentinel health
 /// check if applicable, and return the shared handles.
 ///
+/// Returns `Ok(None)` when the Redis URL is empty (standalone mode without Redis).
+/// Returns `Ok(Some(handles))` when Redis is configured and connected.
+///
 /// An optional `CancellationToken` controls the Sentinel health check loop.
 /// If `None`, the health check runs until the process exits.
 ///
 /// # Errors
 ///
-/// Returns an error if the Redis URL is empty, the client cannot be opened,
-/// or the initial connection fails.
+/// Returns an error if the client cannot be opened or the initial connection fails.
 pub async fn init_redis(
     config: &Config,
     cancel: Option<tokio_util::sync::CancellationToken>,
-) -> Result<RedisHandles, anyhow::Error> {
+) -> Result<Option<RedisHandles>, anyhow::Error> {
     if config.redis.url.is_empty() {
-        return Err(anyhow::anyhow!(
-            "Redis URL is required. Configure SYNCTV_REDIS_URL or redis.url."
-        ));
+        info!("Redis URL is not configured — running without Redis");
+        return Ok(None);
     }
 
-    match config.redis.deployment_mode {
-        RedisDeploymentMode::Standalone => init_standalone(config).await,
-        RedisDeploymentMode::Sentinel => init_sentinel(config, cancel).await,
+    let handles = match config.redis.deployment_mode {
+        RedisDeploymentMode::Standalone => init_standalone(config).await?,
+        RedisDeploymentMode::Sentinel => init_sentinel(config, cancel).await?,
         RedisDeploymentMode::Cluster => {
             unreachable!("Cluster mode was already checked and rejected by config validation");
         }
-    }
+    };
+    Ok(Some(handles))
 }
 
 async fn init_standalone(config: &Config) -> Result<RedisHandles, anyhow::Error> {

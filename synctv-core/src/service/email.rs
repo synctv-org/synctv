@@ -3,13 +3,16 @@
 //! Handles email verification and password reset email sending.
 //!
 //! ## Verification Code Storage
-//! Verification codes are stored in Redis when available (for multi-node deployments).
-//! Falls back to in-memory storage when Redis is not configured.
+//!
+//! Uses a pluggable `VerificationCodeStore` backend:
+//! - `RedisVerificationCodeStore`: Redis with TTL (multi-node safe)
+//! - `InMemoryVerificationCodeStore`: moka cache (single-node only)
 
 use chrono::{Duration, Utc};
 use rand::RngExt;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
+use async_trait::async_trait;
 use lettre::{
     AsyncSmtpTransport, AsyncTransport, Message, Tokio1Executor,
     message::{header::ContentType, Mailbox, MultiPart},
@@ -32,9 +35,6 @@ fn mask_email(email: &str) -> String {
         "***".to_string()
     }
 }
-
-/// Redis key prefix for email verification codes
-const EMAIL_CODE_KEY_PREFIX: &str = "email:code:";
 
 /// Email verification error
 #[derive(Debug, thiserror::Error)]
@@ -63,10 +63,10 @@ pub enum EmailError {
 
 /// Verification code data
 #[derive(Debug, Clone, Serialize, Deserialize)]
-struct VerificationCode {
-    code: String,
-    created_at: chrono::DateTime<Utc>,
-    attempts: u32,
+pub struct VerificationCode {
+    pub code: String,
+    pub created_at: chrono::DateTime<Utc>,
+    pub attempts: u32,
 }
 
 /// Email configuration
@@ -81,320 +81,75 @@ pub struct EmailConfig {
     pub use_tls: bool,
 }
 
-/// Email service for sending verification codes
+// ============================================================================
+// VerificationCodeStore trait
+// ============================================================================
+
+/// Backend storage for email verification codes.
 ///
-/// Storage:
-/// - When Redis is available: codes are stored in Redis with TTL (multi-node safe)
-/// - When Redis is not available: codes are stored in memory (single-node only)
-#[derive(Clone)]
-pub struct EmailService {
-    config: Option<EmailConfig>,
-    /// In-memory code storage with TTL (fallback when Redis is not available)
-    local_codes: Arc<moka::sync::Cache<String, VerificationCode>>,
-    code_ttl_minutes: i64,
-    max_attempts: u32,
-    template_manager: Arc<EmailTemplateManager>,
-    /// Optional Redis client for distributed code storage
-    redis: Option<Arc<redis::Client>>,
-    /// Reusable SMTP transport (connection-pooled by lettre).
-    /// Created once during initialization when email config is present.
-    smtp_transport: Option<AsyncSmtpTransport<Tokio1Executor>>,
+/// Implementations must provide atomic store and verify operations with
+/// attempt counting and expiry.
+#[async_trait]
+pub trait VerificationCodeStore: Send + Sync {
+    /// Store a verification code for the given email with a TTL.
+    async fn store_code(&self, email: &str, code: &VerificationCode) -> Result<()>;
+
+    /// Atomically verify a code: check existence, increment attempts, compare code,
+    /// and delete on success or max-attempts exceeded.
+    ///
+    /// Returns `Ok(())` on success, or an appropriate `Error` on failure.
+    async fn verify_code(&self, email: &str, code: &str, max_attempts: u32, ttl_minutes: i64) -> Result<()>;
+
+    /// A label for logging/debug purposes.
+    fn backend_name(&self) -> &'static str;
 }
 
-impl std::fmt::Debug for EmailService {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("EmailService")
-            .field("configured", &self.config.is_some())
-            .field("code_ttl_minutes", &self.code_ttl_minutes)
-            .field("max_attempts", &self.max_attempts)
-            .finish()
+// ============================================================================
+// Redis implementation
+// ============================================================================
+
+/// Redis key prefix for email verification codes
+const EMAIL_CODE_KEY_PREFIX: &str = "email:code:";
+
+/// Redis-backed verification code store (multi-node safe).
+pub struct RedisVerificationCodeStore {
+    redis: Arc<redis::Client>,
+    ttl_minutes: i64,
+}
+
+impl RedisVerificationCodeStore {
+    pub fn new(redis: Arc<redis::Client>, ttl_minutes: i64) -> Self {
+        Self { redis, ttl_minutes }
     }
 }
 
-impl EmailService {
-    /// Build a moka cache for local verification codes with the given TTL
-    fn build_local_codes_cache(ttl_minutes: i64) -> moka::sync::Cache<String, VerificationCode> {
-        moka::sync::Cache::builder()
-            .max_capacity(10_000)
-            .time_to_live(std::time::Duration::from_secs((ttl_minutes.max(1) * 60) as u64))
-            .build()
-    }
-
-    /// Build a reusable SMTP transport from config.
-    /// lettre's `AsyncSmtpTransport` manages an internal connection pool,
-    /// so building it once and reusing avoids per-email TLS handshakes.
-    fn build_smtp_transport(config: &EmailConfig) -> std::result::Result<AsyncSmtpTransport<Tokio1Executor>, EmailError> {
-        let creds = Credentials::new(
-            config.smtp_username.clone(),
-            config.smtp_password.clone(),
-        );
-        let transport = if config.use_tls {
-            AsyncSmtpTransport::<Tokio1Executor>::relay(&config.smtp_host)
-                .map_err(|e| EmailError::SendError(format!("Failed to create SMTP transport: {e}")))?
-                .credentials(creds)
-                .port(config.smtp_port)
-                .build()
-        } else {
-            AsyncSmtpTransport::<Tokio1Executor>::builder_dangerous(&config.smtp_host)
-                .credentials(creds)
-                .port(config.smtp_port)
-                .build()
-        };
-        Ok(transport)
-    }
-
-    /// Create a new email service (without Redis - single node only)
-    pub fn new(config: Option<EmailConfig>) -> Result<Self> {
-        let template_manager = EmailTemplateManager::new()?;
-        let smtp_transport = config.as_ref().and_then(|c| Self::build_smtp_transport(c).ok());
-        Ok(Self {
-            config,
-            local_codes: Arc::new(Self::build_local_codes_cache(10)),
-            code_ttl_minutes: 10, // 10 minutes default
-            max_attempts: 3,
-            template_manager: Arc::new(template_manager),
-            redis: None,
-            smtp_transport,
-        })
-    }
-
-    /// Create with custom TTL (without Redis - single node only)
-    pub fn with_ttl(config: Option<EmailConfig>, code_ttl_minutes: i64) -> Result<Self> {
-        let template_manager = EmailTemplateManager::new()?;
-        let smtp_transport = config.as_ref().and_then(|c| Self::build_smtp_transport(c).ok());
-        Ok(Self {
-            config,
-            local_codes: Arc::new(Self::build_local_codes_cache(code_ttl_minutes)),
-            code_ttl_minutes,
-            max_attempts: 3,
-            template_manager: Arc::new(template_manager),
-            redis: None,
-            smtp_transport,
-        })
-    }
-
-    /// Create a new email service with Redis support (multi-node safe)
-    pub fn with_redis(config: Option<EmailConfig>, redis: Arc<redis::Client>) -> Result<Self> {
-        let template_manager = EmailTemplateManager::new()?;
-        let smtp_transport = config.as_ref().and_then(|c| Self::build_smtp_transport(c).ok());
-        Ok(Self {
-            config,
-            local_codes: Arc::new(Self::build_local_codes_cache(10)),
-            code_ttl_minutes: 10,
-            max_attempts: 3,
-            template_manager: Arc::new(template_manager),
-            redis: Some(redis),
-            smtp_transport,
-        })
-    }
-
-    /// Store verification code (Redis if available, otherwise local memory)
+#[async_trait]
+impl VerificationCodeStore for RedisVerificationCodeStore {
     async fn store_code(&self, email: &str, code: &VerificationCode) -> Result<()> {
-        if let Some(ref redis) = self.redis {
-            let key = format!("{EMAIL_CODE_KEY_PREFIX}{email}");
-            let value = serde_json::to_string(code)
-                .internal_with_err("Failed to serialize verification code")?;
+        let key = format!("{EMAIL_CODE_KEY_PREFIX}{email}");
+        let value = serde_json::to_string(code)
+            .internal_with_err("Failed to serialize verification code")?;
 
-            let mut conn = redis
-                .get_multiplexed_async_connection()
-                .await
-                .internal_with_err("Redis connection failed")?;
+        let mut conn = self.redis
+            .get_multiplexed_async_connection()
+            .await
+            .internal_with_err("Redis connection failed")?;
 
-            let ttl_seconds = self.code_ttl_minutes * 60;
-            use redis::AsyncCommands;
-            let _: () = conn
-                .set_ex(&key, value, ttl_seconds as u64)
-                .await
-                .internal_with_err("Failed to store verification code in Redis")?;
+        let ttl_seconds = self.ttl_minutes * 60;
+        use redis::AsyncCommands;
+        let _: () = conn
+            .set_ex(&key, value, ttl_seconds as u64)
+            .await
+            .internal_with_err("Failed to store verification code in Redis")?;
 
-            debug!("Stored verification code in Redis for email {}", &email[..email.len().min(4)]);
-        } else {
-            self.local_codes.insert(email.to_string(), code.clone());
-            debug!("Stored verification code in memory for email {}", &email[..email.len().min(4)]);
-        }
+        debug!("Stored verification code in Redis for email {}", &email[..email.len().min(4)]);
         Ok(())
     }
 
-    /// Generate a 6-digit verification code
-    fn generate_code() -> String {
-        let mut rng = rand::rng();
-        format!("{:06}", rng.random_range(0..1_000_000))
-    }
-
-    /// Validate email format (RFC 5322 compliant)
-    fn validate_email(email: &str) -> Result<()> {
-        let email = email.trim();
-
-        // Check length constraints
-        if email.is_empty() {
-            return Err(Error::InvalidInput("Email cannot be empty".to_string()));
-        }
-        if email.len() > 254 {
-            // RFC 5321 maximum email length
-            return Err(Error::InvalidInput("Email too long (max 254 characters)".to_string()));
-        }
-
-        // Check for @ symbol
-        if !email.contains('@') {
-            return Err(Error::InvalidInput("Email must contain @ symbol".to_string()));
-        }
-
-        // Split and check parts
-        let parts: Vec<&str> = email.split('@').collect();
-        if parts.len() != 2 {
-            return Err(Error::InvalidInput("Email must contain exactly one @ symbol".to_string()));
-        }
-
-        let local = parts[0];
-        let domain = parts[1];
-
-        // Validate local part (before @)
-        if local.is_empty() {
-            return Err(Error::InvalidInput("Email local part cannot be empty".to_string()));
-        }
-        if local.len() > 64 {
-            // RFC 5321 local part max length
-            return Err(Error::InvalidInput("Email local part too long (max 64 characters)".to_string()));
-        }
-
-        // Check for invalid characters in local part
-        // Allow alphanumeric, dot, hyphen, underscore, plus
-        if !local.chars().all(|c| c.is_alphanumeric() || c == '.' || c == '-' || c == '_' || c == '+') {
-            return Err(Error::InvalidInput("Email local part contains invalid characters".to_string()));
-        }
-
-        // Local part cannot start or end with dot
-        if local.starts_with('.') || local.ends_with('.') {
-            return Err(Error::InvalidInput("Email local part cannot start or end with dot".to_string()));
-        }
-
-        // Cannot have consecutive dots
-        if local.contains("..") {
-            return Err(Error::InvalidInput("Email local part cannot contain consecutive dots".to_string()));
-        }
-
-        // Validate domain part (after @)
-        if domain.is_empty() {
-            return Err(Error::InvalidInput("Email domain cannot be empty".to_string()));
-        }
-        if domain.len() > 253 {
-            // RFC 1035 domain name max length
-            return Err(Error::InvalidInput("Email domain too long (max 253 characters)".to_string()));
-        }
-
-        // Domain must contain at least one dot
-        if !domain.contains('.') {
-            return Err(Error::InvalidInput("Email domain must contain at least one dot".to_string()));
-        }
-
-        // Domain cannot start or end with dot or hyphen
-        if domain.starts_with('.') || domain.ends_with('.') || domain.starts_with('-') || domain.ends_with('-') {
-            return Err(Error::InvalidInput("Email domain has invalid format".to_string()));
-        }
-
-        // Validate domain labels (parts separated by dots)
-        let domain_labels: Vec<&str> = domain.split('.').collect();
-        for label in &domain_labels {
-            if label.is_empty() {
-                return Err(Error::InvalidInput("Email domain cannot have empty labels".to_string()));
-            }
-            if label.len() > 63 {
-                // RFC 1035 label max length
-                return Err(Error::InvalidInput("Email domain label too long (max 63 characters)".to_string()));
-            }
-            // Labels can only contain alphanumeric and hyphens (but not start/end with hyphen)
-            if !label.chars().all(|c| c.is_alphanumeric() || c == '-') {
-                return Err(Error::InvalidInput("Email domain contains invalid characters".to_string()));
-            }
-            if label.starts_with('-') || label.ends_with('-') {
-                return Err(Error::InvalidInput("Email domain label cannot start or end with hyphen".to_string()));
-            }
-        }
-
-        // Check TLD is at least 2 characters and alphabetic
-        if let Some(tld) = domain_labels.last() {
-            if tld.len() < 2 {
-                return Err(Error::InvalidInput("Email domain TLD must be at least 2 characters".to_string()));
-            }
-            if !tld.chars().all(char::is_alphabetic) {
-                return Err(Error::InvalidInput("Email domain TLD must be alphabetic".to_string()));
-            }
-        }
-
-        Ok(())
-    }
-
-    /// Send verification code to email
-    ///
-    /// # Arguments
-    /// * `email` - Email address to send code to
-    ///
-    /// # Returns
-    /// The verification code (for testing purposes)
-    pub async fn send_verification_code(&self, email: &str) -> Result<String> {
-        // Validate email
-        Self::validate_email(email)?;
-
-        // Check if service is configured
-        if self.config.is_none() {
-            warn!("Email service not configured, returning code directly");
-            let code = Self::generate_code();
-            // Store code anyway
-            let verification_code = VerificationCode {
-                code: code.clone(),
-                created_at: Utc::now(),
-                attempts: 0,
-            };
-            self.store_code(email, &verification_code).await?;
-            return Ok(code);
-        }
-
-        // Generate code
-        let code = Self::generate_code();
-
-        // Store code
-        let verification_code = VerificationCode {
-            code: code.clone(),
-            created_at: Utc::now(),
-            attempts: 0,
-        };
-        self.store_code(email, &verification_code).await?;
-
-        // Send email
-        if let Some(config) = &self.config {
-            if let Err(e) = self.send_email_impl(config, email, "Your SyncTV verification code", &code).await {
-                tracing::error!("Failed to send email: {}", e);
-                return Err(Error::Internal(format!("Failed to send email: {e}")));
-            }
-        }
-
-        Ok(code)
-    }
-
-    /// Verify code for email
-    ///
-    /// Uses atomic check-and-update to prevent concurrent verification attempts
-    /// from bypassing the `max_attempts` check.
-    pub async fn verify_code(&self, email: &str, code: &str) -> Result<()> {
-        if let Some(ref redis) = self.redis {
-            // Redis path: use Lua script for atomic read-check-increment-return
-            self.verify_code_redis(redis, email, code).await
-        } else {
-            // Memory path: hold write lock across the entire read-modify-write
-            self.verify_code_memory(email, code).await
-        }
-    }
-
-    /// Atomic verify for Redis using a Lua script
-    async fn verify_code_redis(
-        &self,
-        redis: &redis::Client,
-        email: &str,
-        code: &str,
-    ) -> Result<()> {
+    async fn verify_code(&self, email: &str, code: &str, max_attempts: u32, _ttl_minutes: i64) -> Result<()> {
         let key = format!("{EMAIL_CODE_KEY_PREFIX}{email}");
 
-        let mut conn = redis
+        let mut conn = self.redis
             .get_multiplexed_async_connection()
             .await
             .map_err(|e| Error::Internal(format!("Redis connection failed: {e}")))?;
@@ -402,9 +157,7 @@ impl EmailService {
         // Lua script: atomically read, check attempts, verify code, and return result.
         //
         // Expiry is handled by Redis TTL (set via SET EX in store_code), so
-        // there is no need for a Lua-side time comparison. Previously the script
-        // tried `tonumber(obj['created_at'])` which returned nil because chrono
-        // serialises DateTime as an ISO-8601 string, not numeric millis.
+        // there is no need for a Lua-side time comparison.
         //
         // Returns:
         //   -1 = key not found (expired via TTL or never stored)
@@ -433,7 +186,7 @@ impl EmailService {
         let result: i64 = script
             .key(&key)
             .arg(code)
-            .arg(self.max_attempts)
+            .arg(max_attempts)
             .invoke_async(&mut conn)
             .await
             .internal_with_err("Redis script failed")?;
@@ -447,17 +200,42 @@ impl EmailService {
         }
     }
 
-    /// Atomic verify for in-memory storage using moka cache.
-    ///
-    /// Uses `entry_by_ref().and_compute_with()` for atomic read-modify-write to
-    /// prevent TOCTOU races where concurrent calls could both read the same
-    /// attempt count and bypass `max_attempts`. The closure runs under moka's
-    /// per-key lock, so concurrent verify calls for the same email are serialized.
-    async fn verify_code_memory(&self, email: &str, code: &str) -> Result<()> {
+    fn backend_name(&self) -> &'static str {
+        "redis"
+    }
+}
+
+// ============================================================================
+// In-memory implementation
+// ============================================================================
+
+/// In-memory verification code store using moka cache with TTL.
+pub struct InMemoryVerificationCodeStore {
+    cache: moka::sync::Cache<String, VerificationCode>,
+}
+
+impl InMemoryVerificationCodeStore {
+    pub fn new(ttl_minutes: i64) -> Self {
+        Self {
+            cache: moka::sync::Cache::builder()
+                .max_capacity(10_000)
+                .time_to_live(std::time::Duration::from_secs((ttl_minutes.max(1) * 60) as u64))
+                .build(),
+        }
+    }
+}
+
+#[async_trait]
+impl VerificationCodeStore for InMemoryVerificationCodeStore {
+    async fn store_code(&self, email: &str, code: &VerificationCode) -> Result<()> {
+        self.cache.insert(email.to_string(), code.clone());
+        debug!("Stored verification code in memory for email {}", &email[..email.len().min(4)]);
+        Ok(())
+    }
+
+    async fn verify_code(&self, email: &str, code: &str, max_attempts: u32, ttl_minutes: i64) -> Result<()> {
         use moka::ops::compute::Op;
 
-        let max_attempts = self.max_attempts;
-        let ttl_minutes = self.code_ttl_minutes;
         let code = code.to_string();
 
         // Use a Mutex to communicate the verification error from the closure.
@@ -465,7 +243,7 @@ impl EmailService {
         // returns, so there is no contention, but Mutex satisfies Send.
         let error_slot = std::sync::Mutex::new(Option::<Error>::None);
 
-        self.local_codes.entry_by_ref(email).and_compute_with(|maybe_entry| {
+        self.cache.entry_by_ref(email).and_compute_with(|maybe_entry| {
             let Some(entry) = maybe_entry else {
                 *error_slot.lock().unwrap() = Some(Error::InvalidInput(
                     "No verification code found".to_string(),
@@ -511,25 +289,231 @@ impl EmailService {
         }
     }
 
+    fn backend_name(&self) -> &'static str {
+        "memory"
+    }
+}
+
+// ============================================================================
+// EmailService
+// ============================================================================
+
+/// Email service for sending verification codes.
+///
+/// Uses a pluggable `VerificationCodeStore` backend for code persistence.
+#[derive(Clone)]
+pub struct EmailService {
+    config: Option<EmailConfig>,
+    code_store: Arc<dyn VerificationCodeStore>,
+    code_ttl_minutes: i64,
+    max_attempts: u32,
+    template_manager: Arc<EmailTemplateManager>,
+    /// Reusable SMTP transport (connection-pooled by lettre).
+    smtp_transport: Option<AsyncSmtpTransport<Tokio1Executor>>,
+}
+
+impl std::fmt::Debug for EmailService {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("EmailService")
+            .field("configured", &self.config.is_some())
+            .field("code_ttl_minutes", &self.code_ttl_minutes)
+            .field("max_attempts", &self.max_attempts)
+            .field("backend", &self.code_store.backend_name())
+            .finish()
+    }
+}
+
+impl EmailService {
+    /// Build a reusable SMTP transport from config.
+    fn build_smtp_transport(config: &EmailConfig) -> std::result::Result<AsyncSmtpTransport<Tokio1Executor>, EmailError> {
+        let creds = Credentials::new(
+            config.smtp_username.clone(),
+            config.smtp_password.clone(),
+        );
+        let transport = if config.use_tls {
+            AsyncSmtpTransport::<Tokio1Executor>::relay(&config.smtp_host)
+                .map_err(|e| EmailError::SendError(format!("Failed to create SMTP transport: {e}")))?
+                .credentials(creds)
+                .port(config.smtp_port)
+                .build()
+        } else {
+            AsyncSmtpTransport::<Tokio1Executor>::builder_dangerous(&config.smtp_host)
+                .credentials(creds)
+                .port(config.smtp_port)
+                .build()
+        };
+        Ok(transport)
+    }
+
+    /// Create a new email service with a custom code store backend.
+    pub fn from_store(config: Option<EmailConfig>, code_store: Arc<dyn VerificationCodeStore>, code_ttl_minutes: i64) -> Result<Self> {
+        let template_manager = EmailTemplateManager::new()?;
+        let smtp_transport = config.as_ref().and_then(|c| Self::build_smtp_transport(c).ok());
+        Ok(Self {
+            config,
+            code_store,
+            code_ttl_minutes,
+            max_attempts: 3,
+            template_manager: Arc::new(template_manager),
+            smtp_transport,
+        })
+    }
+
+    /// Create a new email service (without Redis - single node only)
+    pub fn new(config: Option<EmailConfig>) -> Result<Self> {
+        let store = Arc::new(InMemoryVerificationCodeStore::new(10));
+        Self::from_store(config, store, 10)
+    }
+
+    /// Create with custom TTL (without Redis - single node only)
+    pub fn with_ttl(config: Option<EmailConfig>, code_ttl_minutes: i64) -> Result<Self> {
+        let store = Arc::new(InMemoryVerificationCodeStore::new(code_ttl_minutes));
+        Self::from_store(config, store, code_ttl_minutes)
+    }
+
+    /// Create a new email service with Redis support (multi-node safe)
+    pub fn with_redis(config: Option<EmailConfig>, redis: Arc<redis::Client>) -> Result<Self> {
+        let store = Arc::new(RedisVerificationCodeStore::new(redis, 10));
+        Self::from_store(config, store, 10)
+    }
+
+    /// Generate a 6-digit verification code
+    fn generate_code() -> String {
+        let mut rng = rand::rng();
+        format!("{:06}", rng.random_range(0..1_000_000))
+    }
+
+    /// Validate email format (RFC 5322 compliant)
+    fn validate_email(email: &str) -> Result<()> {
+        let email = email.trim();
+
+        if email.is_empty() {
+            return Err(Error::InvalidInput("Email cannot be empty".to_string()));
+        }
+        if email.len() > 254 {
+            return Err(Error::InvalidInput("Email too long (max 254 characters)".to_string()));
+        }
+        if !email.contains('@') {
+            return Err(Error::InvalidInput("Email must contain @ symbol".to_string()));
+        }
+
+        let parts: Vec<&str> = email.split('@').collect();
+        if parts.len() != 2 {
+            return Err(Error::InvalidInput("Email must contain exactly one @ symbol".to_string()));
+        }
+
+        let local = parts[0];
+        let domain = parts[1];
+
+        if local.is_empty() {
+            return Err(Error::InvalidInput("Email local part cannot be empty".to_string()));
+        }
+        if local.len() > 64 {
+            return Err(Error::InvalidInput("Email local part too long (max 64 characters)".to_string()));
+        }
+        if !local.chars().all(|c| c.is_alphanumeric() || c == '.' || c == '-' || c == '_' || c == '+') {
+            return Err(Error::InvalidInput("Email local part contains invalid characters".to_string()));
+        }
+        if local.starts_with('.') || local.ends_with('.') {
+            return Err(Error::InvalidInput("Email local part cannot start or end with dot".to_string()));
+        }
+        if local.contains("..") {
+            return Err(Error::InvalidInput("Email local part cannot contain consecutive dots".to_string()));
+        }
+
+        if domain.is_empty() {
+            return Err(Error::InvalidInput("Email domain cannot be empty".to_string()));
+        }
+        if domain.len() > 253 {
+            return Err(Error::InvalidInput("Email domain too long (max 253 characters)".to_string()));
+        }
+        if !domain.contains('.') {
+            return Err(Error::InvalidInput("Email domain must contain at least one dot".to_string()));
+        }
+        if domain.starts_with('.') || domain.ends_with('.') || domain.starts_with('-') || domain.ends_with('-') {
+            return Err(Error::InvalidInput("Email domain has invalid format".to_string()));
+        }
+
+        let domain_labels: Vec<&str> = domain.split('.').collect();
+        for label in &domain_labels {
+            if label.is_empty() {
+                return Err(Error::InvalidInput("Email domain cannot have empty labels".to_string()));
+            }
+            if label.len() > 63 {
+                return Err(Error::InvalidInput("Email domain label too long (max 63 characters)".to_string()));
+            }
+            if !label.chars().all(|c| c.is_alphanumeric() || c == '-') {
+                return Err(Error::InvalidInput("Email domain contains invalid characters".to_string()));
+            }
+            if label.starts_with('-') || label.ends_with('-') {
+                return Err(Error::InvalidInput("Email domain label cannot start or end with hyphen".to_string()));
+            }
+        }
+
+        if let Some(tld) = domain_labels.last() {
+            if tld.len() < 2 {
+                return Err(Error::InvalidInput("Email domain TLD must be at least 2 characters".to_string()));
+            }
+            if !tld.chars().all(char::is_alphabetic) {
+                return Err(Error::InvalidInput("Email domain TLD must be alphabetic".to_string()));
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Send verification code to email
+    pub async fn send_verification_code(&self, email: &str) -> Result<String> {
+        Self::validate_email(email)?;
+
+        if self.config.is_none() {
+            warn!("Email service not configured, returning code directly");
+            let code = Self::generate_code();
+            let verification_code = VerificationCode {
+                code: code.clone(),
+                created_at: Utc::now(),
+                attempts: 0,
+            };
+            self.code_store.store_code(email, &verification_code).await?;
+            return Ok(code);
+        }
+
+        let code = Self::generate_code();
+        let verification_code = VerificationCode {
+            code: code.clone(),
+            created_at: Utc::now(),
+            attempts: 0,
+        };
+        self.code_store.store_code(email, &verification_code).await?;
+
+        if let Some(config) = &self.config {
+            if let Err(e) = self.send_email_impl(config, email, "Your SyncTV verification code", &code).await {
+                tracing::error!("Failed to send email: {}", e);
+                return Err(Error::Internal(format!("Failed to send email: {e}")));
+            }
+        }
+
+        Ok(code)
+    }
+
+    /// Verify code for email
+    pub async fn verify_code(&self, email: &str, code: &str) -> Result<()> {
+        self.code_store.verify_code(email, code, self.max_attempts, self.code_ttl_minutes).await
+    }
+
     /// Send verification email
-    ///
-    /// Generates a token and sends verification email
-    /// Returns the token (for testing)
     pub async fn send_verification_email(
         &self,
         email: &str,
         token_service: &EmailTokenService,
         user_id: &crate::models::UserId,
     ) -> Result<String> {
-        // Validate email
         Self::validate_email(email)?;
 
-        // Generate token
         let token = token_service
             .generate_token(user_id, EmailTokenType::EmailVerification)
             .await?;
 
-        // Send email
         if let Some(config) = &self.config {
             if let Err(e) = self
                 .send_verification_email_impl(config, email, &token)
@@ -547,24 +531,18 @@ impl EmailService {
     }
 
     /// Send password reset email
-    ///
-    /// Generates a token and sends password reset email
-    /// Returns the token (for testing)
     pub async fn send_password_reset_email(
         &self,
         email: &str,
         token_service: &EmailTokenService,
         user_id: &crate::models::UserId,
     ) -> Result<String> {
-        // Validate email
         Self::validate_email(email)?;
 
-        // Generate token
         let token = token_service
             .generate_token(user_id, EmailTokenType::PasswordReset)
             .await?;
 
-        // Send email
         if let Some(config) = &self.config {
             if let Err(e) = self
                 .send_password_reset_email_impl(config, email, &token)
@@ -582,25 +560,19 @@ impl EmailService {
     }
 
     /// Send a test email to verify email configuration
-    ///
-    /// This is used by admins to test email settings
     pub async fn send_test_email(&self, to: &str) -> Result<()> {
-        // Validate email
         Self::validate_email(to)?;
 
-        // Check if service is configured
         let config = self
             .config
             .as_ref()
             .ok_or_else(|| Error::Internal("Email service not configured".to_string()))?;
 
-        // Render template
         let sent_at = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S UTC").to_string();
         let (html_body, plain_text_body) = self.template_manager
             .render_test_email(&config.smtp_host, config.smtp_port, &sent_at)
             .internal_with_err("Failed to render template")?;
 
-        // Send test email
         let subject = "SyncTV Email Test";
         self.send_html_email(config, to, subject, &html_body, &plain_text_body)
             .await
@@ -610,7 +582,6 @@ impl EmailService {
         Ok(())
     }
 
-    /// Send verification email implementation
     async fn send_verification_email_impl(
         &self,
         config: &EmailConfig,
@@ -625,7 +596,6 @@ impl EmailService {
         self.send_html_email(config, to, subject, &html_body, &plain_text_body).await
     }
 
-    /// Send password reset email implementation
     async fn send_password_reset_email_impl(
         &self,
         config: &EmailConfig,
@@ -640,7 +610,6 @@ impl EmailService {
         self.send_html_email(config, to, subject, &html_body, &plain_text_body).await
     }
 
-    /// Send plain text email using SMTP
     async fn send_email_impl(
         &self,
         config: &EmailConfig,
@@ -648,7 +617,6 @@ impl EmailService {
         subject: &str,
         body: &str,
     ) -> std::result::Result<(), EmailError> {
-        // Parse email addresses
         let from_mailbox: Mailbox = format!("{} <{}>", config.from_name, config.from_email)
             .parse()
             .map_err(|e| EmailError::SendError(format!("Invalid from address: {e}")))?;
@@ -657,7 +625,6 @@ impl EmailService {
             .parse()
             .map_err(|e| EmailError::SendError(format!("Invalid to address: {e}")))?;
 
-        // Build message
         let email = Message::builder()
             .from(from_mailbox)
             .to(to_mailbox)
@@ -665,11 +632,9 @@ impl EmailService {
             .body(body.to_string())
             .map_err(|e| EmailError::SendError(format!("Failed to build email: {e}")))?;
 
-        // Send email
         self.send_message(config, email).await
     }
 
-    /// Send HTML email with plain text fallback
     async fn send_html_email(
         &self,
         config: &EmailConfig,
@@ -678,7 +643,6 @@ impl EmailService {
         html_body: &str,
         plain_text_body: &str,
     ) -> std::result::Result<(), EmailError> {
-        // Parse email addresses
         let from_mailbox: Mailbox = format!("{} <{}>", config.from_name, config.from_email)
             .parse()
             .map_err(|e| EmailError::SendError(format!("Invalid from address: {e}")))?;
@@ -687,7 +651,6 @@ impl EmailService {
             .parse()
             .map_err(|e| EmailError::SendError(format!("Invalid to address: {e}")))?;
 
-        // Build multipart message (HTML + plain text fallback)
         let email = Message::builder()
             .from(from_mailbox)
             .to(to_mailbox)
@@ -707,26 +670,21 @@ impl EmailService {
             )
             .map_err(|e| EmailError::SendError(format!("Failed to build email: {e}")))?;
 
-        // Send email
         self.send_message(config, email).await
     }
 
-    /// Send email message via the pooled SMTP transport
     async fn send_message(
         &self,
         config: &EmailConfig,
         email: Message,
     ) -> std::result::Result<(), EmailError> {
-        // Get recipient before consuming email
         let recipient = email.envelope().to().first()
             .ok_or_else(|| EmailError::SendError("No recipients in email envelope".to_string()))?
             .clone();
 
-        // Use the pre-built pooled transport (avoids per-email TLS handshake)
         let transport = self.smtp_transport.as_ref()
             .ok_or_else(|| EmailError::SendError("SMTP transport not initialized".to_string()))?;
 
-        // Send email
         transport
             .send(email)
             .await
@@ -743,12 +701,8 @@ impl EmailService {
     }
 
     /// Clean up expired codes (local memory only - Redis handles its own TTL)
-    ///
-    /// Note: moka cache handles TTL-based expiration automatically.
-    /// This method triggers a manual sync of pending evictions.
     pub async fn cleanup_expired_codes(&self) {
-        // moka handles TTL expiration automatically; run_pending_tasks flushes evictions
-        self.local_codes.run_pending_tasks();
+        // No-op: moka handles TTL expiration automatically; Redis handles its own TTL.
     }
 
     /// Check if email service is configured
@@ -757,10 +711,10 @@ impl EmailService {
         self.config.is_some()
     }
 
-    /// Check if Redis is being used for code storage
+    /// Return the backend name of the code store.
     #[must_use]
-    pub const fn uses_redis(&self) -> bool {
-        self.redis.is_some()
+    pub fn backend_name(&self) -> &'static str {
+        self.code_store.backend_name()
     }
 }
 
@@ -820,7 +774,6 @@ mod tests {
         let email = "test@example.com";
         let code = service.send_verification_code(email).await.unwrap();
 
-        // Wait a bit to ensure expiration
         tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
 
         assert!(service.verify_code(email, &code).await.is_err());

@@ -1,7 +1,7 @@
 //! Per-account and per-IP brute-force protection for login attempts.
 //!
-//! Tracks failed login attempts per username in Redis (with in-memory fallback)
-//! and enforces exponential lockout after repeated failures:
+//! Tracks failed login attempts per username and per IP, enforcing exponential
+//! lockout after repeated failures:
 //!
 //! - 5 failures: 1 minute lockout
 //! - 10 failures: 5 minute lockout
@@ -11,16 +11,23 @@
 //! 10 minutes triggers an IP-level lockout (10 minutes), preventing distributed
 //! username enumeration attacks.
 //!
-//! The counter auto-expires after 15 minutes of no new failures (Redis TTL).
-//! A successful login resets the username counter to zero.
+//! ## Backend Abstraction
+//!
+//! Storage is abstracted via the [`AttemptTracker`] trait. Two implementations
+//! are provided:
+//! - [`RedisAttemptTracker`]: Redis-backed with in-memory fallback on errors
+//!   (fail-closed). Used when Redis is configured.
+//! - [`InMemoryAttemptTracker`]: moka cache only. Used in standalone mode
+//!   without Redis.
 
+use async_trait::async_trait;
 use redis::AsyncCommands;
 use serde::{Deserialize, Serialize};
 use std::net::IpAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
-use crate::{cache::KeyBuilder, resilience::timeout::REDIS_OPERATION_TIMEOUT, Error, Result, InternalExt};
+use crate::{cache::KeyBuilder, resilience::timeout::REDIS_OPERATION_TIMEOUT, Error, Result};
 
 /// Stored state for brute-force tracking in Redis.
 /// Serialized as JSON to store both the count and last failure timestamp.
@@ -40,136 +47,160 @@ const TIER2_LOCKOUT_SECS: u64 = 300; // 5 minutes
 const TIER3_THRESHOLD: u64 = 15;
 const TIER3_LOCKOUT_SECS: u64 = 900; // 15 minutes
 
-/// TTL for the failed attempts counter in Redis (15 minutes).
+/// TTL for the failed attempts counter (15 minutes).
 /// After 15 minutes of inactivity, the counter resets automatically.
-const ATTEMPTS_TTL_SECS: u64 = 900;
+pub const ATTEMPTS_TTL_SECS: u64 = 900;
 
 /// Per-IP failure threshold: 20 failures from the same IP triggers lockout.
 const IP_THRESHOLD: u64 = 20;
 /// Per-IP lockout duration (10 minutes).
 const IP_LOCKOUT_SECS: u64 = 600;
-/// TTL for the per-IP failure counter in Redis (10 minutes).
-const IP_ATTEMPTS_TTL_SECS: u64 = 600;
+/// TTL for the per-IP failure counter (10 minutes).
+pub const IP_ATTEMPTS_TTL_SECS: u64 = 600;
 
-/// Brute-force protection service (Redis-backed)
+// ============================================================================
+// AttemptTracker trait
+// ============================================================================
+
+/// Storage backend for brute-force attempt tracking.
+///
+/// Implementations must support:
+/// - Getting the current attempt count and last failure timestamp for a key
+/// - Recording a failed attempt (atomic increment + timestamp update)
+/// - Resetting the counter for a key
+#[async_trait]
+pub trait AttemptTracker: Send + Sync {
+    /// Get the current attempt count and last failure timestamp for `key`.
+    ///
+    /// Returns `(count, last_failure_at)` where `last_failure_at` is a Unix timestamp.
+    /// Returns `(0, 0)` if no attempts are recorded.
+    async fn get_attempts(&self, key: &str) -> (u64, i64);
+
+    /// Record a failed attempt for `key`. Atomically increments the counter and
+    /// updates the last-failure timestamp.
+    async fn record_failure(&self, key: &str, now: i64, ttl_secs: u64);
+
+    /// Reset the attempt counter for `key`.
+    async fn reset(&self, key: &str);
+}
+
+// ============================================================================
+// InMemoryAttemptTracker
+// ============================================================================
+
+/// In-memory [`AttemptTracker`] using moka cache with TTL-based expiry.
+///
+/// Used in standalone mode without Redis.
 #[derive(Clone)]
-pub struct BruteForceProtection {
-    redis_conn: redis::aio::ConnectionManager,
-    key_builder: KeyBuilder,
-    /// In-memory fallback: username -> (`attempt_count`, `last_attempt_timestamp`)
-    /// Used as fail-closed fallback when Redis operations time out or error.
-    local_attempts: Arc<moka::future::Cache<String, (u64, i64)>>,
-    /// In-memory fallback for per-IP tracking: ip -> (`attempt_count`, `last_attempt_timestamp`)
-    /// Used as fail-closed fallback when Redis operations time out or error.
-    local_ip_attempts: Arc<moka::future::Cache<String, (u64, i64)>>,
+pub struct InMemoryAttemptTracker {
+    cache: Arc<moka::future::Cache<String, (u64, i64)>>,
 }
 
-impl std::fmt::Debug for BruteForceProtection {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("BruteForceProtection")
-            .finish()
-    }
-}
-
-impl BruteForceProtection {
-    /// Create a new brute-force protection service (Redis-backed).
-    ///
-    /// In-memory caches are used as fail-closed fallback when Redis operations
-    /// time out or error, ensuring brute-force protection remains active.
+impl InMemoryAttemptTracker {
+    /// Create a new in-memory attempt tracker with the given capacity and TTL.
     #[must_use]
-    pub fn new(redis_conn: redis::aio::ConnectionManager, key_prefix: String) -> Self {
+    pub fn new(max_capacity: u64, ttl_secs: u64) -> Self {
         Self {
-            redis_conn,
-            key_builder: KeyBuilder::new(key_prefix),
-            local_attempts: Arc::new(
+            cache: Arc::new(
                 moka::future::Cache::builder()
-                    .max_capacity(50_000)
-                    .time_to_live(Duration::from_secs(ATTEMPTS_TTL_SECS))
-                    .build(),
-            ),
-            local_ip_attempts: Arc::new(
-                moka::future::Cache::builder()
-                    .max_capacity(100_000)
-                    .time_to_live(Duration::from_secs(IP_ATTEMPTS_TTL_SECS))
+                    .max_capacity(max_capacity)
+                    .time_to_live(Duration::from_secs(ttl_secs))
                     .build(),
             ),
         }
     }
+}
 
-    /// Check if a login attempt is allowed for the given username and optional IP.
-    ///
-    /// Returns `Ok(())` if the attempt is allowed, or an authentication error
-    /// with the remaining lockout duration if the account or IP is locked.
-    ///
-    /// The lockout check compares the elapsed time since the last failure against
-    /// the lockout duration for the current tier. Once the lockout period has
-    /// elapsed, the attempt is allowed even though the failure counter is preserved
-    /// (so tier escalation still works on the next failure).
-    pub async fn check_allowed(&self, username: &str, ip: Option<IpAddr>) -> Result<()> {
-        // Check IP-level lockout first
-        if let Some(ip_addr) = ip {
-            let (ip_attempts, ip_last_failure_at) = self.get_ip_attempts(&ip_addr).await?;
-            if ip_attempts >= IP_THRESHOLD {
-                let now = chrono::Utc::now().timestamp();
-                let elapsed = (now - ip_last_failure_at).max(0) as u64;
-                if elapsed < IP_LOCKOUT_SECS {
-                    let remaining = IP_LOCKOUT_SECS - elapsed;
-                    tracing::warn!(
-                        ip = %ip_addr,
-                        attempts = ip_attempts,
-                        remaining_secs = remaining,
-                        "Login attempt blocked: IP temporarily locked"
-                    );
-                    return Err(Error::Authentication(format!(
-                        "Too many failed login attempts. Please try again in {remaining} seconds.",
-                    )));
+#[async_trait]
+impl AttemptTracker for InMemoryAttemptTracker {
+    async fn get_attempts(&self, key: &str) -> (u64, i64) {
+        self.cache.get(key).await.unwrap_or((0, 0))
+    }
+
+    async fn record_failure(&self, key: &str, now: i64, _ttl_secs: u64) {
+        let (count, _) = self.cache.get(key).await.unwrap_or((0, now));
+        self.cache.insert(key.to_string(), (count + 1, now)).await;
+    }
+
+    async fn reset(&self, key: &str) {
+        self.cache.remove(key).await;
+    }
+}
+
+// ============================================================================
+// RedisAttemptTracker
+// ============================================================================
+
+/// Redis-backed [`AttemptTracker`] with in-memory fallback on errors.
+///
+/// Uses Redis Lua scripts for atomic increment + timestamp updates.
+/// Falls back to an internal moka cache when Redis times out or errors
+/// (fail-closed: brute-force protection stays active during Redis outages).
+#[derive(Clone)]
+pub struct RedisAttemptTracker {
+    conn: redis::aio::ConnectionManager,
+    /// In-memory fallback cache for fail-closed behavior on Redis errors.
+    fallback: Arc<moka::future::Cache<String, (u64, i64)>>,
+}
+
+impl RedisAttemptTracker {
+    /// Create a new Redis-backed attempt tracker.
+    #[must_use]
+    pub fn new(conn: redis::aio::ConnectionManager, max_capacity: u64, ttl_secs: u64) -> Self {
+        Self {
+            conn,
+            fallback: Arc::new(
+                moka::future::Cache::builder()
+                    .max_capacity(max_capacity)
+                    .time_to_live(Duration::from_secs(ttl_secs))
+                    .build(),
+            ),
+        }
+    }
+}
+
+#[async_trait]
+impl AttemptTracker for RedisAttemptTracker {
+    async fn get_attempts(&self, key: &str) -> (u64, i64) {
+        let mut conn = self.conn.clone();
+
+        let redis_result = tokio::time::timeout(
+            REDIS_OPERATION_TIMEOUT,
+            conn.get::<_, Option<String>>(key),
+        )
+        .await;
+
+        let redis_result = match redis_result {
+            Ok(inner) => inner,
+            Err(_) => {
+                tracing::warn!(key = %key, "Redis timeout in brute-force check, using fallback");
+                return self.fallback.get(key).await.unwrap_or((0, 0));
+            }
+        };
+
+        match redis_result {
+            Ok(Some(raw)) => {
+                // Try parsing as JSON state first, fall back to plain integer
+                // for backward compatibility with pre-existing counters.
+                if let Ok(state) = serde_json::from_str::<BruteForceState>(&raw) {
+                    return (state.count, state.last_failure_at);
                 }
+                if let Ok(count) = raw.parse::<u64>() {
+                    return (count, 0);
+                }
+                (0, 0)
+            }
+            Ok(None) => (0, 0),
+            Err(e) => {
+                tracing::warn!(key = %key, error = %e, "Redis error in brute-force check, using fallback");
+                self.fallback.get(key).await.unwrap_or((0, 0))
             }
         }
-
-        // Check per-username lockout
-        let (attempts, last_failure_at) = self.get_attempts(username).await?;
-        let lockout_secs = Self::lockout_duration(attempts);
-        if let Some(lockout_secs) = lockout_secs {
-            let now = chrono::Utc::now().timestamp();
-            let elapsed = (now - last_failure_at).max(0) as u64;
-            if elapsed < lockout_secs {
-                let remaining = lockout_secs - elapsed;
-                tracing::warn!(
-                    username = %username,
-                    attempts = attempts,
-                    lockout_secs = lockout_secs,
-                    remaining_secs = remaining,
-                    "Login attempt blocked: account temporarily locked"
-                );
-                return Err(Error::Authentication(format!(
-                    "Too many failed login attempts. Please try again in {remaining} seconds.",
-                )));
-            }
-        }
-        Ok(())
     }
 
-    /// Record a failed login attempt. Increments the counter, stores the
-    /// last-failure timestamp, and sets/refreshes the Redis TTL.
-    /// Also records the failure against the IP address if provided.
-    pub async fn record_failure(&self, username: &str, ip: Option<IpAddr>) -> Result<()> {
-        // Record IP-level failure
-        if let Some(ip_addr) = ip {
-            self.record_ip_failure(&ip_addr).await?;
-        }
-        self.record_username_failure(username).await
-    }
+    async fn record_failure(&self, key: &str, now: i64, ttl_secs: u64) {
+        let mut conn = self.conn.clone();
 
-    /// Record a failed login attempt for a specific username.
-    async fn record_username_failure(&self, username: &str) -> Result<()> {
-        let now = chrono::Utc::now().timestamp();
-        let mut conn = self.redis_conn.clone();
-        let key = self.key_builder.login_attempts(username);
-
-        // Read current state, increment, write back with timestamp.
-        // Uses a Lua script for atomicity so concurrent failures don't
-        // lose updates.
         let script = redis::Script::new(
             r"
             local raw = redis.call('GET', KEYS[1])
@@ -192,229 +223,188 @@ impl BruteForceProtection {
         let result: std::result::Result<u64, _> = tokio::time::timeout(
             REDIS_OPERATION_TIMEOUT,
             script
-                .key(&key)
+                .key(key)
                 .arg(now)
-                .arg(ATTEMPTS_TTL_SECS as i64)
+                .arg(ttl_secs as i64)
                 .invoke_async(&mut conn),
         )
-            .await
-            .unwrap_or_else(|_| Err(redis::RedisError::from((
-                redis::ErrorKind::Io,
-                "Redis timeout: record_failure",
-            ))));
+        .await
+        .unwrap_or_else(|_| Err(redis::RedisError::from((
+            redis::ErrorKind::Io,
+            "Redis timeout: record_failure",
+        ))));
 
         match result {
             Ok(count) => {
-                tracing::debug!(
-                    username = %username,
-                    attempts = count,
-                    "Recorded failed login attempt"
-                );
+                tracing::debug!(key = %key, attempts = count, "Recorded failed attempt");
             }
             Err(e) => {
-                // Degrade to in-memory fallback on Redis error (fail-closed:
-                // we still record the attempt so brute-force protection
-                // remains active during transient Redis issues)
-                tracing::warn!(
-                    username = %username,
-                    error = %e,
-                    "Redis error in record_failure, falling back to in-memory tracking"
-                );
-                let (count, _) = self.local_attempts.get(&key).await.unwrap_or((0, now));
-                self.local_attempts.insert(key, (count + 1, now)).await;
+                tracing::warn!(key = %key, error = %e, "Redis error in record_failure, using fallback");
+                let (count, _) = self.fallback.get(key).await.unwrap_or((0, now));
+                self.fallback.insert(key.to_string(), (count + 1, now)).await;
+            }
+        }
+    }
+
+    async fn reset(&self, key: &str) {
+        // Always clear fallback cache
+        self.fallback.remove(key).await;
+
+        let mut conn = self.conn.clone();
+        if let Err(e) = tokio::time::timeout(REDIS_OPERATION_TIMEOUT, conn.del::<_, ()>(key)).await {
+            tracing::warn!(key = %key, error = %e, "Redis timeout in reset, fallback already cleared");
+        }
+    }
+}
+
+// ============================================================================
+// BruteForceProtection
+// ============================================================================
+
+/// Brute-force protection service.
+///
+/// Uses [`AttemptTracker`] trait objects for storage, allowing transparent
+/// switching between Redis-backed and in-memory implementations.
+#[derive(Clone)]
+pub struct BruteForceProtection {
+    key_builder: KeyBuilder,
+    /// Attempt tracker for per-username tracking
+    username_tracker: Arc<dyn AttemptTracker>,
+    /// Attempt tracker for per-IP tracking
+    ip_tracker: Arc<dyn AttemptTracker>,
+}
+
+impl std::fmt::Debug for BruteForceProtection {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("BruteForceProtection")
+            .finish()
+    }
+}
+
+impl BruteForceProtection {
+    /// Create a new brute-force protection service with the given trackers.
+    ///
+    /// Use [`Self::with_redis`] or [`Self::in_memory`] for convenience.
+    #[must_use]
+    pub fn new(
+        key_prefix: String,
+        username_tracker: Arc<dyn AttemptTracker>,
+        ip_tracker: Arc<dyn AttemptTracker>,
+    ) -> Self {
+        Self {
+            key_builder: KeyBuilder::new(key_prefix),
+            username_tracker,
+            ip_tracker,
+        }
+    }
+
+    /// Create a Redis-backed brute-force protection service.
+    ///
+    /// Uses Redis for distributed tracking with in-memory fallback on errors.
+    #[must_use]
+    pub fn with_redis(conn: redis::aio::ConnectionManager, key_prefix: String) -> Self {
+        let username_tracker = Arc::new(RedisAttemptTracker::new(
+            conn.clone(), 50_000, ATTEMPTS_TTL_SECS,
+        ));
+        let ip_tracker = Arc::new(RedisAttemptTracker::new(
+            conn, 100_000, IP_ATTEMPTS_TTL_SECS,
+        ));
+        Self::new(key_prefix, username_tracker, ip_tracker)
+    }
+
+    /// Create an in-memory-only brute-force protection service.
+    ///
+    /// Used in standalone mode without Redis.
+    #[must_use]
+    pub fn in_memory(key_prefix: String) -> Self {
+        let username_tracker = Arc::new(InMemoryAttemptTracker::new(50_000, ATTEMPTS_TTL_SECS));
+        let ip_tracker = Arc::new(InMemoryAttemptTracker::new(100_000, IP_ATTEMPTS_TTL_SECS));
+        Self::new(key_prefix, username_tracker, ip_tracker)
+    }
+
+    /// Check if a login attempt is allowed for the given username and optional IP.
+    ///
+    /// Returns `Ok(())` if the attempt is allowed, or an authentication error
+    /// with the remaining lockout duration if the account or IP is locked.
+    pub async fn check_allowed(&self, username: &str, ip: Option<IpAddr>) -> Result<()> {
+        // Check IP-level lockout first
+        if let Some(ip_addr) = ip {
+            let ip_key = self.key_builder.login_attempts_ip(&ip_addr.to_string());
+            let (ip_attempts, ip_last_failure_at) = self.ip_tracker.get_attempts(&ip_key).await;
+            if ip_attempts >= IP_THRESHOLD {
+                let now = chrono::Utc::now().timestamp();
+                let elapsed = (now - ip_last_failure_at).max(0) as u64;
+                if elapsed < IP_LOCKOUT_SECS {
+                    let remaining = IP_LOCKOUT_SECS - elapsed;
+                    tracing::warn!(
+                        ip = %ip_addr,
+                        attempts = ip_attempts,
+                        remaining_secs = remaining,
+                        "Login attempt blocked: IP temporarily locked"
+                    );
+                    return Err(Error::Authentication(format!(
+                        "Too many failed login attempts. Please try again in {remaining} seconds.",
+                    )));
+                }
             }
         }
 
+        // Check per-username lockout
+        let key = self.key_builder.login_attempts(username);
+        let (attempts, last_failure_at) = self.username_tracker.get_attempts(&key).await;
+        let lockout_secs = Self::lockout_duration(attempts);
+        if let Some(lockout_secs) = lockout_secs {
+            let now = chrono::Utc::now().timestamp();
+            let elapsed = (now - last_failure_at).max(0) as u64;
+            if elapsed < lockout_secs {
+                let remaining = lockout_secs - elapsed;
+                tracing::warn!(
+                    username = %username,
+                    attempts = attempts,
+                    lockout_secs = lockout_secs,
+                    remaining_secs = remaining,
+                    "Login attempt blocked: account temporarily locked"
+                );
+                return Err(Error::Authentication(format!(
+                    "Too many failed login attempts. Please try again in {remaining} seconds.",
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    /// Record a failed login attempt. Increments the counter, stores the
+    /// last-failure timestamp. Also records the failure against the IP address if provided.
+    pub async fn record_failure(&self, username: &str, ip: Option<IpAddr>) -> Result<()> {
+        let now = chrono::Utc::now().timestamp();
+
+        // Record IP-level failure
+        if let Some(ip_addr) = ip {
+            let ip_key = self.key_builder.login_attempts_ip(&ip_addr.to_string());
+            self.ip_tracker.record_failure(&ip_key, now, IP_ATTEMPTS_TTL_SECS).await;
+        }
+
+        // Record username-level failure
+        let key = self.key_builder.login_attempts(username);
+        self.username_tracker.record_failure(&key, now, ATTEMPTS_TTL_SECS).await;
         Ok(())
     }
 
     /// Reset the failed login attempt counter on successful login.
     pub async fn reset(&self, username: &str) -> Result<()> {
-        let mut conn = self.redis_conn.clone();
         let key = self.key_builder.login_attempts(username);
-
-        let _: () = tokio::time::timeout(REDIS_OPERATION_TIMEOUT, conn.del(&key))
-            .await
-            .map_err(|_| Error::Internal("Redis timeout: reset login attempts".to_string()))?
-            .internal_with_err("Failed to reset login attempts")?;
-
+        self.username_tracker.reset(&key).await;
         Ok(())
     }
 
     /// Reset the per-IP failed login attempt counter on successful login.
-    ///
-    /// This prevents shared IPs (e.g., behind NAT/VPN) from accumulating
-    /// failures across different users and eventually locking out the IP.
     pub async fn reset_ip(&self, ip: &IpAddr) -> Result<()> {
-        let ip_str = ip.to_string();
-        let key = self.key_builder.login_attempts_ip(&ip_str);
-
-        let mut conn = self.redis_conn.clone();
-        let _: () = tokio::time::timeout(REDIS_OPERATION_TIMEOUT, conn.del(&key))
-            .await
-            .map_err(|_| Error::Internal("Redis timeout: reset IP login attempts".to_string()))?
-            .internal_with_err("Failed to reset IP login attempts")?;
-
+        let ip_key = self.key_builder.login_attempts_ip(&ip.to_string());
+        self.ip_tracker.reset(&ip_key).await;
         Ok(())
     }
 
-    /// Record a failed login attempt for a specific IP address.
-    async fn record_ip_failure(&self, ip: &IpAddr) -> Result<()> {
-        let now = chrono::Utc::now().timestamp();
-        let ip_str = ip.to_string();
-        let mut conn = self.redis_conn.clone();
-        let key = self.key_builder.login_attempts_ip(&ip_str);
-
-        let script = redis::Script::new(
-            r"
-            local raw = redis.call('GET', KEYS[1])
-            local count = 0
-            if raw then
-                local ok, state = pcall(cjson.decode, raw)
-                if ok and state and state.count then
-                    count = tonumber(state.count) or 0
-                end
-            end
-            count = count + 1
-            local new_state = cjson.encode({count = count, last_failure_at = tonumber(ARGV[1])})
-            redis.call('SET', KEYS[1], new_state, 'EX', tonumber(ARGV[2]))
-            return count
-            ",
-        );
-
-        let result: std::result::Result<u64, _> = tokio::time::timeout(
-            REDIS_OPERATION_TIMEOUT,
-            script
-                .key(&key)
-                .arg(now)
-                .arg(IP_ATTEMPTS_TTL_SECS as i64)
-                .invoke_async(&mut conn),
-        )
-            .await
-            .unwrap_or_else(|_| Err(redis::RedisError::from((
-                redis::ErrorKind::Io,
-                "Redis timeout: record_ip_failure",
-            ))));
-
-        match result {
-            Ok(count) => {
-                tracing::debug!(
-                    ip = %ip,
-                    attempts = count,
-                    "Recorded failed login attempt for IP"
-                );
-            }
-            Err(e) => {
-                tracing::warn!(
-                    ip = %ip,
-                    error = %e,
-                    "Redis error in record_ip_failure, falling back to in-memory tracking"
-                );
-                let (count, _) = self.local_ip_attempts.get(&key).await.unwrap_or((0, now));
-                self.local_ip_attempts.insert(key, (count + 1, now)).await;
-            }
-        }
-
-        Ok(())
-    }
-
-    /// Get the current failed attempt count and last-failure timestamp for an IP address.
-    ///
-    /// Returns `(count, last_failure_at)`. Falls back to in-memory cache on Redis errors.
-    async fn get_ip_attempts(&self, ip: &IpAddr) -> Result<(u64, i64)> {
-        let ip_str = ip.to_string();
-        let key = self.key_builder.login_attempts_ip(&ip_str);
-        let mut conn = self.redis_conn.clone();
-
-        let redis_result = tokio::time::timeout(
-            REDIS_OPERATION_TIMEOUT,
-            conn.get::<_, Option<String>>(&key),
-        )
-            .await;
-
-        let redis_result = if let Ok(inner) = redis_result { inner } else {
-            tracing::warn!(
-                ip = %ip,
-                "Redis timeout in IP brute-force check, falling back to in-memory cache"
-            );
-            let (count, ts) = self.local_ip_attempts.get(&key).await.unwrap_or((0, 0));
-            return Ok((count, ts));
-        };
-
-        match redis_result {
-            Ok(Some(raw)) => {
-                if let Ok(state) = serde_json::from_str::<BruteForceState>(&raw) {
-                    return Ok((state.count, state.last_failure_at));
-                }
-                Ok((0, 0))
-            }
-            Ok(None) => Ok((0, 0)),
-            Err(e) => {
-                tracing::warn!(
-                    ip = %ip,
-                    error = %e,
-                    "Redis error in IP brute-force check, falling back to in-memory cache"
-                );
-                let (count, ts) = self.local_ip_attempts.get(&key).await.unwrap_or((0, 0));
-                Ok((count, ts))
-            }
-        }
-    }
-
-    /// Get the current failed attempt count and last-failure timestamp for a username.
-    ///
-    /// Returns `(count, last_failure_at)` where `last_failure_at` is a Unix timestamp.
-    ///
-    /// On Redis error, falls back to the in-memory cache rather than returning 0
-    /// (fail-closed). Returning 0 on error would disable brute-force protection
-    /// entirely, allowing unlimited login attempts during transient Redis issues.
-    async fn get_attempts(&self, username: &str) -> Result<(u64, i64)> {
-        let key = self.key_builder.login_attempts(username);
-        let mut conn = self.redis_conn.clone();
-
-        let redis_result = tokio::time::timeout(
-            REDIS_OPERATION_TIMEOUT,
-            conn.get::<_, Option<String>>(&key),
-        )
-            .await;
-
-        // Flatten timeout into a Redis-style error for unified fallback handling
-        let redis_result = if let Ok(inner) = redis_result { inner } else {
-            tracing::warn!(
-                username = %username,
-                "Redis timeout in brute-force check, falling back to in-memory cache"
-            );
-            let (count, ts) = self.local_attempts.get(&key).await.unwrap_or((0, 0));
-            return Ok((count, ts));
-        };
-
-        match redis_result {
-            Ok(Some(raw)) => {
-                // Try parsing as JSON state first, fall back to plain integer
-                // for backward compatibility with pre-existing counters.
-                if let Ok(state) = serde_json::from_str::<BruteForceState>(&raw) {
-                    return Ok((state.count, state.last_failure_at));
-                }
-                // Legacy plain integer format (no timestamp available)
-                if let Ok(count) = raw.parse::<u64>() {
-                    return Ok((count, 0));
-                }
-                Ok((0, 0))
-            }
-            Ok(None) => Ok((0, 0)),
-            Err(e) => {
-                tracing::warn!(
-                    username = %username,
-                    error = %e,
-                    "Redis error in brute-force check, falling back to in-memory cache"
-                );
-                let (count, ts) = self.local_attempts.get(&key).await.unwrap_or((0, 0));
-                Ok((count, ts))
-            }
-        }
-    }
-
-    /// Determine lockout duration based on failure count (using standard Redis thresholds).
+    /// Determine lockout duration based on failure count.
     ///
     /// Returns `Some(seconds)` if locked out, `None` if allowed.
     const fn lockout_duration(attempts: u64) -> Option<u64> {
@@ -428,7 +418,6 @@ impl BruteForceProtection {
             None
         }
     }
-
 }
 
 #[cfg(test)]

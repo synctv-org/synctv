@@ -4,14 +4,12 @@
 //! Tokens are only used temporarily during login to fetch user info.
 //!
 //! ## State Storage
-//! `OAuth2` states are persisted via the [`OAuthStateStore`] trait. The
-//! production implementation ([`RedisOAuthStateStore`]) uses Redis with TTL.
-//! Alternative backends (e.g., in-memory for tests) can be injected through
-//! the trait without `OAuth2Service` knowing the underlying technology.
-//!
-//! Redis is **required** in production. This system is designed for
-//! multi-replica stateless deployment where in-memory state would break
-//! the authorization callback flow.
+//! `OAuth2` states are persisted via the [`OAuthStateStore`] trait. Two
+//! implementations are provided:
+//! - [`RedisOAuthStateStore`]: Redis-backed, required for cluster mode
+//!   (multi-replica) where the callback may hit a different node.
+//! - [`InMemoryOAuthStateStore`]: In-memory, for standalone mode without
+//!   Redis. Uses `Mutex<HashMap>` for atomic single-use consumption.
 
 use std::sync::Arc;
 use std::collections::HashMap;
@@ -128,6 +126,57 @@ impl OAuthStateStore for RedisOAuthStateStore {
             }
             None => Ok(None),
         }
+    }
+}
+
+// ============================================================================
+// InMemoryOAuthStateStore
+// ============================================================================
+
+/// In-memory [`OAuthStateStore`] for standalone mode (no Redis).
+///
+/// Uses a `Mutex<HashMap>` for atomic single-use consumption. TTL is enforced
+/// via stored expiry timestamps; expired entries are swept on every `store()`
+/// and `consume()` call to bound memory usage.
+pub struct InMemoryOAuthStateStore {
+    /// Map of token_id -> (state, expiry_instant)
+    states: std::sync::Mutex<HashMap<String, (OAuth2State, std::time::Instant)>>,
+}
+
+impl InMemoryOAuthStateStore {
+    /// Create a new in-memory OAuth state store.
+    #[must_use]
+    pub fn new() -> Self {
+        Self { states: std::sync::Mutex::new(HashMap::new()) }
+    }
+
+    /// Remove all entries whose TTL has expired.
+    fn sweep_expired(map: &mut HashMap<String, (OAuth2State, std::time::Instant)>) {
+        let now = std::time::Instant::now();
+        map.retain(|_, (_, expiry)| *expiry > now);
+    }
+}
+
+impl Default for InMemoryOAuthStateStore {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[async_trait::async_trait]
+impl OAuthStateStore for InMemoryOAuthStateStore {
+    async fn store(&self, token_id: &str, state: &OAuth2State, ttl: std::time::Duration) -> Result<()> {
+        let expiry = std::time::Instant::now() + ttl;
+        let mut map = self.states.lock().unwrap();
+        Self::sweep_expired(&mut map);
+        map.insert(token_id.to_string(), (state.clone(), expiry));
+        Ok(())
+    }
+
+    async fn consume(&self, token_id: &str) -> Result<Option<OAuth2State>> {
+        let mut map = self.states.lock().unwrap();
+        Self::sweep_expired(&mut map);
+        Ok(map.remove(token_id).map(|(state, _expiry)| state))
     }
 }
 
@@ -618,55 +667,6 @@ mod tests {
     use crate::oauth2::Provider as OAuth2ProviderTrait;
     use async_trait::async_trait;
     use sqlx::PgPool;
-    use std::collections::HashMap;
-    use std::sync::Mutex;
-
-    // ========================================================================
-    // InMemoryOAuthStateStore — no Redis required in tests
-    // ========================================================================
-
-    /// In-memory [`OAuthStateStore`] for unit tests.
-    ///
-    /// Uses a `Mutex<HashMap>` for atomic single-use consumption without Redis.
-    ///
-    /// Issue #26: TTL is now enforced using stored expiry timestamps. On every
-    /// `consume()` call, expired entries are swept from the map so that
-    /// long-running test processes don't accumulate unbounded state entries.
-    struct InMemoryOAuthStateStore {
-        /// Map of token_id -> (state, expiry_instant)
-        states: Mutex<HashMap<String, (OAuth2State, std::time::Instant)>>,
-    }
-
-    impl InMemoryOAuthStateStore {
-        fn new() -> Self {
-            Self { states: Mutex::new(HashMap::new()) }
-        }
-
-        /// Remove all entries whose TTL has expired.
-        fn sweep_expired(map: &mut HashMap<String, (OAuth2State, std::time::Instant)>) {
-            let now = std::time::Instant::now();
-            map.retain(|_, (_, expiry)| *expiry > now);
-        }
-    }
-
-    #[async_trait]
-    impl OAuthStateStore for InMemoryOAuthStateStore {
-        async fn store(&self, token_id: &str, state: &OAuth2State, ttl: std::time::Duration) -> Result<()> {
-            let expiry = std::time::Instant::now() + ttl;
-            let mut map = self.states.lock().unwrap();
-            // Sweep expired entries on store to bound memory usage
-            Self::sweep_expired(&mut map);
-            map.insert(token_id.to_string(), (state.clone(), expiry));
-            Ok(())
-        }
-
-        async fn consume(&self, token_id: &str) -> Result<Option<OAuth2State>> {
-            let mut map = self.states.lock().unwrap();
-            // Sweep expired entries on every consume to keep the map bounded
-            Self::sweep_expired(&mut map);
-            Ok(map.remove(token_id).map(|(state, _expiry)| state))
-        }
-    }
 
     // ========================================================================
     // Mock OAuth2 Provider
@@ -1442,8 +1442,8 @@ mod tests {
     // Tests: Service Configuration
     // ========================================================================
 
-    #[test]
-    fn test_state_store_is_abstracted() {
+    #[tokio::test]
+    async fn test_state_store_is_abstracted() {
         // OAuth2Service takes Arc<dyn OAuthStateStore>, not a concrete Redis type.
         // This verifies the abstraction compiles with the in-memory implementation.
         let _service = create_test_service();

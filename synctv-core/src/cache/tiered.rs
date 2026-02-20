@@ -1,19 +1,19 @@
-//! Generic two-tier cache (L1: Moka in-memory, L2: Redis)
+//! Generic two-tier cache (L1: Moka in-memory, L2: pluggable backend)
 //!
 //! Provides a reusable `TieredCache<K, V>` that encapsulates the L1+L2 caching
 //! pattern shared by `UserCache`, `RoomCache`, and any future entity caches.
 //!
 //! Integrates `SingleFlight` to prevent cache stampede: when multiple concurrent
-//! requests miss L1 and L2 simultaneously, only one request fetches from L2
-//! (Redis), and the others wait for its result.
+//! requests miss L1 and L2 simultaneously, only one request fetches from L2,
+//! and the others wait for its result.
 
-use redis::AsyncCommands;
 use serde::{de::DeserializeOwned, Serialize};
 use std::fmt::{Debug, Display};
 use std::hash::Hash;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use crate::cache::l2_backend::CacheL2Backend;
 use crate::cache::singleflight::SingleFlight;
 use crate::{Error, Result};
 
@@ -27,18 +27,18 @@ pub trait Timestamped {
 
 /// Trait for cache keys that can be converted to/from string representations.
 ///
-/// This is needed for Redis key construction and for cross-replica
+/// This is needed for L2 key construction and for cross-replica
 /// invalidation (which passes entity IDs as plain strings).
 pub trait CacheKey: Hash + Eq + Clone + Debug + Display + Send + Sync + 'static {
     fn as_str(&self) -> &str;
     fn from_id(id: &str) -> Self;
 }
 
-/// Generic two-tier cache with L1 (Moka in-memory) and L2 (Redis).
+/// Generic two-tier cache with L1 (Moka in-memory) and L2 (pluggable backend).
 ///
 /// Integrates `SingleFlight` to prevent cache stampede on L2 misses:
 /// when many concurrent requests miss L1 for the same key, only one
-/// proceeds to query L2 (Redis), and the rest wait for its result.
+/// proceeds to query L2, and the rest wait for its result.
 ///
 /// # Generation Counter (Issue #30)
 ///
@@ -58,7 +58,7 @@ where
     K: Hash + Eq + Send + Sync + 'static,
     V: Clone + Send + Sync + 'static,
 {
-    redis_conn: Option<redis::aio::ConnectionManager>,
+    l2: Arc<dyn CacheL2Backend>,
     l1_cache: Arc<moka::future::Cache<K, V>>,
     l2_ttl_seconds: u64,
     key_prefix: String,
@@ -86,32 +86,32 @@ where
     /// Create a new `TieredCache`.
     ///
     /// # Arguments
-    /// * `redis_conn` - Optional Redis `ConnectionManager`. If None, only L1 caching is used.
+    /// * `l2` - L2 cache backend (e.g. `RedisCacheL2` or `NoopCacheL2`)
     /// * `l1_max_capacity` - Maximum number of entries in L1 cache
     /// * `l1_ttl_minutes` - TTL for L1 cache entries in minutes
-    /// * `l2_ttl_seconds` - TTL for L2 (Redis) cache entries in seconds
-    /// * `key_prefix` - Redis key prefix (e.g., "synctv:user:")
+    /// * `l2_ttl_seconds` - TTL for L2 cache entries in seconds
+    /// * `key_prefix` - L2 key prefix (e.g., "synctv:user:")
     /// * `cache_type` - Label for metrics (e.g., "user", "room")
-    /// Minimum L2 TTL in seconds. Prevents persistent keys in Redis from
+    /// Minimum L2 TTL in seconds. Prevents persistent keys in L2 from
     /// unbounded memory growth when `l2_ttl_seconds` is misconfigured as 0.
     const MIN_L2_TTL_SECONDS: u64 = 60;
 
     pub fn new(
-        redis_conn: Option<redis::aio::ConnectionManager>,
+        l2: Arc<dyn CacheL2Backend>,
         l1_max_capacity: u64,
         l1_ttl_minutes: u64,
         l2_ttl_seconds: u64,
         key_prefix: String,
         cache_type: String,
     ) -> Result<Self> {
-        // Enforce minimum L2 TTL when Redis is configured to prevent
+        // Enforce minimum L2 TTL when L2 is active to prevent
         // persistent keys that cause unbounded memory growth.
-        let l2_ttl_seconds = if redis_conn.is_some() && l2_ttl_seconds < Self::MIN_L2_TTL_SECONDS {
+        let l2_ttl_seconds = if l2.is_active() && l2_ttl_seconds < Self::MIN_L2_TTL_SECONDS {
             tracing::warn!(
                 cache_type = %cache_type,
                 configured_ttl = l2_ttl_seconds,
                 enforced_ttl = Self::MIN_L2_TTL_SECONDS,
-                "L2 TTL too low, enforcing minimum to prevent unbounded Redis memory growth"
+                "L2 TTL too low, enforcing minimum to prevent unbounded L2 memory growth"
             );
             Self::MIN_L2_TTL_SECONDS
         } else {
@@ -123,7 +123,7 @@ where
             .build();
 
         Ok(Self {
-            redis_conn,
+            l2,
             l1_cache: Arc::new(l1_cache),
             l2_ttl_seconds,
             key_prefix,
@@ -139,7 +139,7 @@ where
     ///
     /// Uses `SingleFlight` for L2 lookups to prevent cache stampede: when
     /// multiple concurrent requests miss L1 for the same key, only one
-    /// proceeds to query Redis while the rest wait for its result.
+    /// proceeds to query L2, and the rest wait for its result.
     pub async fn get(&self, key: &K) -> Result<Option<V>> {
         let start = std::time::Instant::now();
 
@@ -159,12 +159,11 @@ where
             return Ok(Some(value));
         }
 
-        // Check L2 (Redis) cache via SingleFlight to prevent stampede
-        if self.redis_conn.is_some() {
+        // Check L2 cache via SingleFlight to prevent stampede
+        if self.l2.is_active() {
             let sf_key = key.as_str().to_string();
-            let conn = self.redis_conn.clone().unwrap();
-            let key_prefix = self.key_prefix.clone();
-            let key_str = key.as_str().to_string();
+            let l2 = self.l2.clone();
+            let redis_key = format!("{}{}", self.key_prefix, key.as_str());
             let cache_type = self.cache_type.clone();
 
             // Issue #30: Snapshot epoch before the async fetch begins.
@@ -177,11 +176,7 @@ where
                 sf_key,
                 {
                     async move {
-                        let mut conn = conn;
-                        let redis_key = format!("{key_prefix}{key_str}");
-                        let json: Option<String> = conn
-                            .get(&redis_key)
-                            .await
+                        let json = l2.get(&redis_key).await
                             .map_err(|e| format!("Failed to get {cache_type} from cache: {e}"))?;
 
                         match json {
@@ -251,9 +246,7 @@ where
         self.l1_cache.insert(key.clone(), value.clone()).await;
 
         // Update L2 cache
-        if let Some(ref conn) = self.redis_conn {
-            let mut conn = conn.clone();
-
+        if self.l2.is_active() {
             let redis_key = format!("{}{}", self.key_prefix, key.as_str());
             let json = serde_json::to_string(&value).map_err(|e| {
                 Error::Internal(format!("Failed to serialize {} for caching: {e}", self.cache_type))
@@ -264,10 +257,7 @@ where
             // so ttl_with_jitter is always > 0. We use max() as defense-in-depth.
             let ttl_with_jitter = add_ttl_jitter(self.l2_ttl_seconds).max(Self::MIN_L2_TTL_SECONDS);
 
-            let _: () = conn
-                .set_ex(&redis_key, json, ttl_with_jitter)
-                .await
-                .map_err(|e| Error::Internal(format!("Failed to set {} in cache: {e}", self.cache_type)))?;
+            self.l2.set(&redis_key, &json, ttl_with_jitter).await?;
 
             tracing::debug!(
                 key = %key,
@@ -288,7 +278,7 @@ where
     /// Removes from both L1 and L2 caches.
     /// L1 is invalidated first to ensure this replica immediately stops serving
     /// stale data, then L2 is cleared so other replicas don't re-populate from
-    /// stale Redis data.
+    /// stale L2 data.
     ///
     /// Also increments the epoch counter (Issue #30) so that any in-flight
     /// `SingleFlight` fetches know not to write their result to L1 cache.
@@ -303,10 +293,10 @@ where
         // Remove from L1 (in-memory) FIRST so this replica stops serving stale data immediately
         self.l1_cache.invalidate(key).await;
 
-        // Then remove from L2 (Redis) with retry logic
-        if self.redis_conn.is_some() {
+        // Then remove from L2 with retry logic
+        if self.l2.is_active() {
             let redis_key = format!("{}{}", self.key_prefix, key.as_str());
-            self.delete_from_redis_with_retry(&redis_key, 3).await?;
+            self.l2.delete_with_retry(&redis_key, 3, &self.cache_type).await?;
         }
 
         crate::metrics::cache::CACHE_EVICTIONS
@@ -326,9 +316,9 @@ where
     /// Invalidate a cache entry by raw ID string (both L1 and L2).
     ///
     /// Used by the cross-replica invalidation listener to remove a single
-    /// entry from the local in-memory cache and L2 Redis cache.
+    /// entry from the local in-memory cache and L2 cache.
     /// L1 is cleared first so this replica stops serving stale data immediately,
-    /// then L2 is cleared so other replicas don't re-populate from stale Redis data.
+    /// then L2 is cleared so other replicas don't re-populate from stale L2 data.
     ///
     /// Also increments the epoch counter (Issue #30).
     pub async fn invalidate_by_id(&self, id: &str) {
@@ -339,12 +329,12 @@ where
         let key = K::from_id(id);
         self.l1_cache.invalidate(&key).await;
 
-        // Then remove from L2 (Redis) with retry
-        if self.redis_conn.is_some() {
+        // Then remove from L2 with retry
+        if self.l2.is_active() {
             let redis_key = format!("{}{}", self.key_prefix, id);
             // Use best-effort retry for cross-replica invalidation
-            // Don't panic if Redis is temporarily unavailable
-            if let Err(e) = self.delete_from_redis_with_retry(&redis_key, 2).await {
+            // Don't panic if L2 is temporarily unavailable
+            if let Err(e) = self.l2.delete_with_retry(&redis_key, 2, &self.cache_type).await {
                 crate::metrics::cache::CACHE_ERRORS
                     .with_label_values(&[&self.cache_type, "cross_replica_invalidate"])
                     .inc();
@@ -367,7 +357,7 @@ where
     ///
     /// # Performance
     /// - L1 (Moka): Sequential lookup is optimal for in-memory cache (no I/O bottleneck)
-    /// - L2 (Redis): Uses pipeline for true batch operation (single round-trip)
+    /// - L2: Uses backend batch operation (e.g. Redis pipeline for single round-trip)
     pub async fn get_batch(&self, keys: &[K]) -> Result<std::collections::HashMap<K, V>> {
         let mut result = std::collections::HashMap::new();
         let mut missing_keys = Vec::new();
@@ -382,50 +372,42 @@ where
         }
 
         // Check L2 cache for missing keys
-        if !missing_keys.is_empty() {
-            if let Some(ref conn) = self.redis_conn {
-                let mut conn = conn.clone();
+        if !missing_keys.is_empty() && self.l2.is_active() {
+            // Issue #30: Snapshot epoch before the batch fetch begins.
+            // After the fetch completes we re-check the epoch; if it changed,
+            // an invalidation arrived mid-flight and the results may be stale.
+            let epoch_before = self.epoch.load(Ordering::Acquire);
 
-                // Issue #30: Snapshot epoch before the pipeline fetch begins.
-                // After the fetch completes we re-check the epoch; if it changed,
-                // an invalidation arrived mid-flight and the results may be stale.
-                let epoch_before = self.epoch.load(Ordering::Acquire);
+            let full_keys: Vec<String> = missing_keys
+                .iter()
+                .map(|k| format!("{}{}", self.key_prefix, k.as_str()))
+                .collect();
 
-                let mut pipe = redis::pipe();
-                for key in &missing_keys {
-                    let redis_key = format!("{}{}", self.key_prefix, key.as_str());
-                    pipe.get(&redis_key);
-                }
+            let jsons = self.l2.get_batch(&full_keys).await?;
 
-                let jsons: Vec<Option<String>> = pipe
-                    .query_async(&mut conn)
-                    .await
-                    .map_err(|e| Error::Internal(format!("Failed to batch get {}s: {e}", self.cache_type)))?;
+            // Issue #30: Only populate L1 if no invalidation arrived while
+            // the batch fetch was in-flight. If the epoch changed, the
+            // data may be stale — skip L1 writes so the next request
+            // re-fetches fresh data (consistent with `get()` behavior).
+            let epoch_after = self.epoch.load(Ordering::Acquire);
+            let epoch_changed = epoch_after != epoch_before;
 
-                // Issue #30: Only populate L1 if no invalidation arrived while
-                // the pipeline fetch was in-flight. If the epoch changed, the
-                // data may be stale — skip L1 writes so the next request
-                // re-fetches fresh data (consistent with `get()` behavior).
-                let epoch_after = self.epoch.load(Ordering::Acquire);
-                let epoch_changed = epoch_after != epoch_before;
+            if epoch_changed {
+                tracing::debug!(
+                    cache_type = %self.cache_type,
+                    epoch_before,
+                    epoch_after,
+                    "Skipping L1 writes in get_batch: invalidation arrived mid-flight (epoch changed)"
+                );
+            }
 
-                if epoch_changed {
-                    tracing::debug!(
-                        cache_type = %self.cache_type,
-                        epoch_before,
-                        epoch_after,
-                        "Skipping L1 writes in get_batch: invalidation arrived mid-flight (epoch changed)"
-                    );
-                }
-
-                // Update result (always) and L1 cache (only if epoch unchanged)
-                for (key, json_opt) in missing_keys.iter().zip(jsons) {
-                    if let Some(json) = json_opt {
-                        if let Ok(value) = serde_json::from_str::<V>(&json) {
-                            result.insert(key.clone(), value.clone());
-                            if !epoch_changed {
-                                self.l1_cache.insert(key.clone(), value).await;
-                            }
+            // Update result (always) and L1 cache (only if epoch unchanged)
+            for (key, json_opt) in missing_keys.iter().zip(jsons) {
+                if let Some(json) = json_opt {
+                    if let Ok(value) = serde_json::from_str::<V>(&json) {
+                        result.insert(key.clone(), value.clone());
+                        if !epoch_changed {
+                            self.l1_cache.insert(key.clone(), value).await;
                         }
                     }
                 }
@@ -450,56 +432,6 @@ where
         self.l1_cache.invalidate_all();
         tracing::debug!(cache_type = %self.cache_type, "L1 cache cleared");
     }
-
-    /// Delete a key from Redis with retry logic.
-    ///
-    /// Attempts to delete up to `max_retries` times with exponential backoff.
-    /// Returns error only if all retries fail.
-    async fn delete_from_redis_with_retry(&self, key: &str, max_retries: u32) -> Result<()> {
-        let Some(ref redis_conn) = self.redis_conn else {
-            return Ok(());
-        };
-
-        for attempt in 0..max_retries {
-            let mut conn = redis_conn.clone();
-
-            match conn.del::<_, ()>(key).await {
-                Ok(()) => return Ok(()),
-                Err(e) => {
-                    let is_last_attempt = attempt == max_retries - 1;
-
-                    if is_last_attempt {
-                        crate::metrics::cache::CACHE_ERRORS
-                            .with_label_values(&[&self.cache_type, "l2_delete"])
-                            .inc();
-                        tracing::error!(
-                            key = %key,
-                            error = %e,
-                            attempts = max_retries,
-                            cache_type = %self.cache_type,
-                            "Failed to delete from Redis L2 cache after retries"
-                        );
-                        return Err(Error::Internal(format!("Failed to delete from Redis cache: {e}")));
-                    } else {
-                        // Retry with exponential backoff: 10ms, 50ms, 250ms
-                        let backoff_ms = 10 * u64::pow(5, attempt);
-                        tracing::warn!(
-                            key = %key,
-                            error = %e,
-                            attempt = attempt + 1,
-                            max_retries = max_retries,
-                            backoff_ms = backoff_ms,
-                            cache_type = %self.cache_type,
-                            "Redis L2 cache delete failed, retrying"
-                        );
-                        tokio::time::sleep(tokio::time::Duration::from_millis(backoff_ms)).await;
-                    }
-                }
-            }
-        }
-
-        Ok(())
-    }
 }
 
 /// Additional methods for `TieredCache` when the value type supports timestamp comparison.
@@ -510,18 +442,14 @@ where
 {
     /// Set a value in cache only if it's newer than existing data.
     ///
-    /// Uses a Redis Lua script for fully atomic GET+compare+SET on L2, preventing
-    /// TOCTOU races where concurrent updates could overwrite newer data.
-    /// The Lua script parses the existing value's `updated_at` field directly,
-    /// so no separate Rust-side GET is needed (eliminating the race window between
-    /// a Rust GET and the Lua execution).
-    /// L1 is always updated after a successful L2 write (or when Redis is absent).
+    /// Uses the L2 backend's atomic set-if-newer operation (e.g. Redis Lua script)
+    /// to prevent TOCTOU races where concurrent updates could overwrite newer data.
+    /// L1 is always updated after a successful L2 write (or when L2 is inactive).
     pub async fn set_if_newer(&self, key: &K, value: V) -> Result<bool> {
         let new_ts = value.updated_at().timestamp_millis();
 
-        // When Redis is available, use an atomic Lua script for L2
-        if let Some(ref conn) = self.redis_conn {
-            let mut conn = conn.clone();
+        // When L2 is active, use atomic set-if-newer
+        if self.l2.is_active() {
             let redis_key = format!("{}{}", self.key_prefix, key.as_str());
 
             let new_json = serde_json::to_string(&value).map_err(|e| {
@@ -529,57 +457,14 @@ where
             })?;
 
             // l2_ttl_seconds is guaranteed >= MIN_L2_TTL_SECONDS by the constructor.
-            let ttl_seconds = add_ttl_jitter(self.l2_ttl_seconds).max(Self::MIN_L2_TTL_SECONDS) as i64;
+            let ttl_seconds = add_ttl_jitter(self.l2_ttl_seconds).max(Self::MIN_L2_TTL_SECONDS);
 
-            // Lua script: atomically GET existing JSON, parse its updated_at inside
-            // Lua via cjson, compare with the new timestamp (passed as millis),
-            // and SET only if the new value is strictly newer.
-            // Returns 1 if updated, 0 if skipped.
-            //
-            // The updated_at field is an ISO-8601 string in the JSON. We extract
-            // it via cjson.decode and compare lexicographically, which is correct
-            // for ISO-8601 timestamps in the same timezone (UTC).
-            // ARGV[1] = new JSON value
-            // ARGV[2] = TTL in seconds (always > 0)
-            // ARGV[3] = new timestamp as ISO-8601 string for comparison
-            let script = redis::Script::new(
-                r"
-                local existing = redis.call('GET', KEYS[1])
-                if existing then
-                    local ok, obj = pcall(cjson.decode, existing)
-                    if ok and obj and obj.updated_at then
-                        local existing_ts = obj.updated_at
-                        local new_ts = ARGV[3]
-                        -- Lexicographic comparison works for ISO-8601 UTC timestamps
-                        if new_ts <= existing_ts then
-                            return 0
-                        end
-                    end
-                end
-                redis.call('SET', KEYS[1], ARGV[1], 'EX', ARGV[2])
-                return 1
-                ",
-            );
-
-            // Pass the new updated_at as ISO-8601 string for Lua-side comparison.
-            // This avoids any Rust-side GET, eliminating the TOCTOU window entirely.
+            // Pass the new updated_at as ISO-8601 string for L2-side comparison.
             let new_ts_iso = value.updated_at().to_rfc3339();
 
-            let result: i64 = script
-                .key(&redis_key)
-                .arg(&new_json)
-                .arg(ttl_seconds)
-                .arg(&new_ts_iso)
-                .invoke_async(&mut conn)
-                .await
-                .map_err(|e| {
-                    Error::Internal(format!(
-                        "Failed to run set_if_newer Lua script for {}: {e}",
-                        self.cache_type
-                    ))
-                })?;
+            let was_set = self.l2.set_if_newer(&redis_key, &new_json, ttl_seconds, &new_ts_iso).await?;
 
-            if result == 0 {
+            if !was_set {
                 tracing::debug!(
                     key = %key,
                     new_ts = new_ts,
@@ -594,7 +479,7 @@ where
             return Ok(true);
         }
 
-        // No Redis: fall back to L1-only check (single-process, no TOCTOU issue)
+        // No active L2: fall back to L1-only check (single-process, no TOCTOU issue)
         if let Some(existing) = self.l1_cache.get(key).await {
             if new_ts <= existing.updated_at().timestamp_millis() {
                 tracing::debug!(
@@ -621,7 +506,8 @@ where
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("TieredCache")
             .field("cache_type", &self.cache_type)
-            .field("redis_enabled", &self.redis_conn.is_some())
+            .field("l2_backend", &self.l2.backend_name())
+            .field("l2_active", &self.l2.is_active())
             .field("l2_ttl_seconds", &self.l2_ttl_seconds)
             .field("key_prefix", &self.key_prefix)
             .finish()
@@ -686,7 +572,10 @@ mod tests {
     }
 
     fn make_cache() -> TieredCache<TestId, TestValue> {
-        TieredCache::new(None, 100, 5, 0, "test:".to_string(), "test".to_string()).unwrap()
+        TieredCache::new(
+            Arc::new(crate::cache::l2_backend::NoopCacheL2),
+            100, 5, 0, "test:".to_string(), "test".to_string(),
+        ).unwrap()
     }
 
     fn make_value(name: &str) -> TestValue {

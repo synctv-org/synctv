@@ -8,8 +8,8 @@ use tracing::{error, info, warn};
 use crate::{
     bootstrap::RedisHandles,
     cache::{
-        CacheInvalidationService, CacheManager,
-        RoomCache, UserCache, UsernameCache,
+        CacheInvalidationService, CacheL2Backend, CacheManager,
+        NoopCacheL2, RedisCacheL2, RoomCache, UserCache, UsernameCache,
     },
     repository::{UserOAuthProviderRepository, ProviderInstanceRepository, UserProviderCredentialRepository, SettingsRepository, NotificationRepository},
     service::{
@@ -30,7 +30,7 @@ pub struct Services {
     pub room_service: Arc<RoomService>,
     /// JWT token service
     pub jwt_service: JwtService,
-    /// Rate limiter (uses Redis)
+    /// Rate limiter (uses Redis when available)
     pub rate_limiter: RateLimiter,
     /// Rate limit configuration
     pub rate_limit_config: RateLimitConfig,
@@ -64,17 +64,16 @@ pub struct Services {
     pub cache_invalidation: Arc<CacheInvalidationService>,
     /// Cache manager coordinating all cache layers
     pub cache_manager: CacheManager,
-    /// Shared Redis connection.
+    /// Shared Redis connection (optional in standalone mode).
     ///
-    /// Redis is mandatory. In Sentinel mode, the background health check
-    /// hot-swaps the inner `ConnectionManager` on failover; all callers
-    /// automatically see the new connection.  In Standalone mode the inner
+    /// In Sentinel mode, the background health check hot-swaps the inner
+    /// `ConnectionManager` on failover. In Standalone mode the inner
     /// `ConnectionManager` handles transient reconnections transparently.
     ///
     /// Use `.read().await.clone()` to obtain a working connection handle.
-    pub redis_conn: Arc<tokio::sync::RwLock<redis::aio::ConnectionManager>>,
+    pub redis_conn: Option<Arc<tokio::sync::RwLock<redis::aio::ConnectionManager>>>,
     /// Shared Redis client (for operations that need a `Client`, e.g. Pub/Sub).
-    pub redis_client: redis::Client,
+    pub redis_client: Option<redis::Client>,
     /// `CancellationToken` for settings listen task (cancel on shutdown)
     pub settings_cancel: tokio_util::sync::CancellationToken,
     /// Settings listen task handle (joined on shutdown).
@@ -90,26 +89,29 @@ pub struct Services {
 impl Services {
     /// Return a plain `ConnectionManager` snapshot from the shared connection.
     ///
-    /// The `ConnectionManager` is a cheap clone — it internally uses `Arc` — so
-    /// each call obtains a working handle to the same underlying connection pool.
-    /// This is the correct way to share the connection with services that pre-date
-    /// the `Arc<RwLock<>>` hot-swap pattern used for Sentinel failover.
-    pub async fn redis_conn_snapshot(&self) -> redis::aio::ConnectionManager {
-        self.redis_conn.read().await.clone()
+    /// Returns `None` when Redis is not configured (standalone mode without Redis).
+    pub async fn redis_conn_snapshot(&self) -> Option<redis::aio::ConnectionManager> {
+        match &self.redis_conn {
+            Some(conn) => Some(conn.read().await.clone()),
+            None => None,
+        }
     }
 }
 
 /// Initialize all core services
 ///
-/// The caller must supply pre-built `RedisHandles` (created by `init_redis`)
+/// The caller must supply optional `RedisHandles` (created by `init_redis`)
 /// and a pre-built `CacheInvalidationService` so that the same instance (with
 /// the correct cluster node ID) is shared across every component.  The caller
 /// is also responsible for calling `.start()` on the cache invalidation service
 /// after this function returns, so there is exactly one Redis subscriber.
+///
+/// When `redis_handles` is `None` (standalone mode without Redis), all services
+/// use in-memory fallbacks.
 pub async fn init_services(
     pool: PgPool,
     config: &Config,
-    redis_handles: RedisHandles,
+    redis_handles: Option<RedisHandles>,
     cache_invalidation: Arc<CacheInvalidationService>,
 ) -> Result<Services, anyhow::Error> {
     info!("Initializing services...");
@@ -131,12 +133,23 @@ pub async fn init_services(
     // For long-lived operations in Sentinel deployments, callers should prefer
     // `Services::redis_conn_snapshot()` to obtain a fresh handle that reflects the
     // latest Sentinel failover, rather than caching this init-time snapshot.
-    let redis_conn_plain: redis::aio::ConnectionManager = redis_handles.conn_snapshot().await;
-    let redis_client = redis_handles.client.clone();
+    let redis_conn_plain: Option<redis::aio::ConnectionManager> = match &redis_handles {
+        Some(h) => Some(h.conn_snapshot().await),
+        None => None,
+    };
+    let redis_client: Option<redis::Client> = redis_handles.as_ref().map(|h| h.client.clone());
+
+    // Create L2 cache backend (Redis or Noop)
+    let cache_l2: Arc<dyn CacheL2Backend> = if let Some(ref conn) = redis_conn_plain {
+        Arc::new(RedisCacheL2::new(conn.clone()))
+    } else {
+        Arc::new(NoopCacheL2)
+    };
+    info!("Cache L2 backend: {}", cache_l2.backend_name());
 
     // Initialize username cache (using config values)
     let username_cache = UsernameCache::new(
-        Some(redis_conn_plain.clone()),
+        cache_l2.clone(),
         format!("{}username:", config.redis.key_prefix),
         config.cache.username_cache_capacity as usize,
         config.cache.username_cache_ttl_seconds,
@@ -151,7 +164,7 @@ pub async fn init_services(
     // Initialize user and room L1/L2 caches (using config values)
     let user_cache = Arc::new(
         UserCache::new(
-            Some(redis_conn_plain.clone()),
+            cache_l2.clone(),
             config.cache.l1_capacity,
             l1_ttl_minutes,
             config.cache.l2_ttl_seconds,
@@ -160,7 +173,7 @@ pub async fn init_services(
     );
     let room_cache = Arc::new(
         RoomCache::new(
-            Some(redis_conn_plain.clone()),
+            cache_l2.clone(),
             config.cache.l1_capacity,
             l1_ttl_minutes,
             config.cache.l2_ttl_seconds,
@@ -170,29 +183,48 @@ pub async fn init_services(
     info!("User and room caches initialized (l1_capacity={}, l1_ttl={}s, l2_ttl={}s)",
         config.cache.l1_capacity, config.cache.l1_ttl_seconds, config.cache.l2_ttl_seconds);
 
-    // Redis is mandatory for auth services (brute-force protection and refresh token rotation)
-    let redis_conn_required = redis_conn_plain.clone();
+    // Initialize brute-force protection
+    let brute_force = if let Some(ref conn) = redis_conn_plain {
+        let bf = crate::service::BruteForceProtection::with_redis(
+            conn.clone(),
+            config.redis.key_prefix.clone(),
+        );
+        info!("Brute-force protection initialized (Redis-backed)");
+        bf
+    } else {
+        let bf = crate::service::BruteForceProtection::in_memory(
+            config.redis.key_prefix.clone(),
+        );
+        info!("Brute-force protection initialized (in-memory)");
+        bf
+    };
 
-    // Initialize brute-force protection (Redis-backed distributed tracking)
-    let brute_force = crate::service::BruteForceProtection::new(
-        redis_conn_required.clone(),
-        config.redis.key_prefix.clone(),
-    );
-    info!("Brute-force protection initialized (Redis-backed)");
+    // Initialize token blacklist store
+    let refresh_ttl = jwt_service.refresh_token_duration_seconds();
+    let token_blacklist: Arc<dyn crate::service::TokenBlacklistStore> = if let Some(ref conn) = redis_conn_plain {
+        Arc::new(crate::service::RedisTokenBlacklistStore::new(conn.clone()))
+    } else {
+        Arc::new(crate::service::InMemoryTokenBlacklistStore::new(
+            100_000,
+            refresh_ttl,
+            refresh_ttl.saturating_add(3600),
+        ))
+    };
+    info!("Token blacklist store initialized ({})", if redis_conn_plain.is_some() { "Redis" } else { "in-memory" });
 
-    // Initialize UserService with mandatory Redis for refresh token rotation
+    // Initialize UserService
     let key_builder = crate::cache::KeyBuilder::from_config(config);
     let mut user_service = UserService::new(
         pool.clone(),
         jwt_service.clone(),
         username_cache.clone(),
         config.password_complexity.clone(),
-        redis_conn_required,
+        token_blacklist,
         key_builder,
         brute_force,
     );
     user_service.set_cache_invalidation(cache_invalidation.clone());
-    info!("UserService initialized with Redis-backed refresh token rotation and brute-force protection");
+    info!("UserService initialized");
 
     // Initialize RoomService
     let mut room_service = RoomService::new(pool.clone(), user_service.clone());
@@ -249,7 +281,7 @@ pub async fn init_services(
     };
 
     // Initialize rate limiter
-    let rate_limiter = RateLimiter::new(Some(redis_conn_plain.clone()), config.redis.key_prefix.clone());
+    let rate_limiter = RateLimiter::new(redis_conn_plain.clone(), config.redis.key_prefix.clone());
     let rate_limit_config = RateLimitConfig::default();
     info!(
         "Rate limiter initialized (chat: {}/s, danmaku: {}/s)",
@@ -263,12 +295,12 @@ pub async fn init_services(
         content_filter.max_chat_length, content_filter.max_danmaku_length
     );
 
-    // Initialize RemoteProviderManager (with Redis for cross-replica cache invalidation)
+    // Initialize RemoteProviderManager (with Redis for cross-replica cache invalidation when available)
     info!("Initializing RemoteProviderManager...");
     let provider_instance_manager = Arc::new(RemoteProviderManager::new(
         provider_instance_repo.clone(),
-        Some(redis_conn_plain.clone()),
-        Some(redis_client.clone()),
+        redis_conn_plain.clone(),
+        redis_client.clone(),
     ));
 
     // Pre-warm cache with all enabled provider instances from database
@@ -291,12 +323,9 @@ pub async fn init_services(
     ));
     info!("ProvidersManager initialized");
 
-    // Initialize OAuth2 service (optional - requires OAuth2 provider config and Redis).
-    //
-    // Issue #37: If OAuth2 providers are configured but Redis is not available,
-    // we must fail loudly rather than silently skipping OAuth2 initialization.
-    // Silently skipping would cause OAuth2 login to appear available in the UI
-    // but fail at runtime when a user tries to authenticate.
+    // Initialize OAuth2 service (optional - requires OAuth2 provider config).
+    // In cluster mode, Redis is required (validated at config level).
+    // In standalone mode, uses in-memory state store when Redis is not available.
     let oauth2_configured = config.oauth2.providers.as_object()
         .map_or(false, |m| !m.is_empty());
     let oauth2_service = if oauth2_configured {
@@ -354,9 +383,13 @@ pub async fn init_services(
     }
 
     // Initialize Publish Key service (for RTMP streaming)
-    info!("Publish key service initialized with Redis-backed JTI deduplication");
-    let publish_key_service = PublishKeyService::with_default_ttl(jwt_service.clone())
-        .with_redis(redis_conn_plain.clone(), config.redis.key_prefix.clone());
+    let publish_key_service = if let Some(ref conn) = redis_conn_plain {
+        info!("Publish key service initialized with Redis-backed JTI deduplication");
+        PublishKeyService::with_redis(jwt_service.clone(), 24, conn.clone(), config.redis.key_prefix.clone())
+    } else {
+        info!("Publish key service initialized with in-memory JTI deduplication");
+        PublishKeyService::with_default_ttl(jwt_service.clone())
+    };
 
     // Initialize User Notification service
     let notification_repo = NotificationRepository::new(pool.clone());
@@ -396,8 +429,8 @@ pub async fn init_services(
         audit_service,
         cache_invalidation,
         cache_manager,
-        redis_conn: redis_handles.conn.clone(),
-        redis_client: redis_handles.client.clone(),
+        redis_conn: redis_handles.as_ref().map(|h| h.conn.clone()),
+        redis_client: redis_handles.as_ref().map(|h| h.client.clone()),
         settings_cancel,
         settings_listen_task: Arc::new(tokio::sync::Mutex::new(Some(settings_listen_task))),
         audit_flush_handle: Arc::new(tokio::sync::Mutex::new(Some(audit_flush_handle))),
@@ -412,7 +445,7 @@ pub async fn init_services(
 async fn init_oauth2_service(
     pool: PgPool,
     config: &Config,
-    redis_conn: redis::aio::ConnectionManager,
+    redis_conn: Option<redis::aio::ConnectionManager>,
 ) -> Result<Option<Arc<OAuth2Service>>, anyhow::Error> {
     // 0. Initialize provider registry (register all factory functions)
     crate::oauth2::providers::init_providers();
@@ -434,9 +467,15 @@ async fn init_oauth2_service(
     }
 
     // 2. Create OAuth2 provider repository and service
-    //    Redis is guaranteed to be available (checked at startup).
+    //    Use Redis state store when available, in-memory otherwise.
     let oauth2_repo = UserOAuthProviderRepository::new(pool.clone());
-    let state_store = Arc::new(crate::service::oauth2::RedisOAuthStateStore::new(redis_conn));
+    let state_store: Arc<dyn crate::service::OAuthStateStore> = if let Some(conn) = redis_conn {
+        info!("OAuth2 state store: Redis");
+        Arc::new(crate::service::RedisOAuthStateStore::new(conn))
+    } else {
+        info!("OAuth2 state store: in-memory (standalone mode)");
+        Arc::new(crate::service::InMemoryOAuthStateStore::new())
+    };
     let oauth2_service = OAuth2Service::new(oauth2_repo, state_store);
     let oauth2_service = Arc::new(oauth2_service);
 
@@ -488,8 +527,9 @@ async fn init_oauth2_service(
         }
     }
 
-    // OAuth2 state cleanup is handled automatically by Redis SETEX TTL.
-    // No background task needed.
+    // OAuth2 state cleanup is handled automatically:
+    // - Redis: SETEX TTL auto-expires entries
+    // - In-memory: sweep_expired on each store/consume call
 
     Ok(Some(oauth2_service))
 }

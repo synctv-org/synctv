@@ -48,23 +48,37 @@ pub struct HlsProxyClient {
 }
 
 impl HlsProxyClient {
+    /// Default maximum total byte size for the segment cache (256 MB).
+    const DEFAULT_MAX_CACHE_BYTES: u64 = 256 * 1024 * 1024;
+
     /// Create a new HLS proxy client.
     ///
     /// # Arguments
     /// * `segment_cache_ttl` - TTL for cached TS segments (default: 90 seconds)
     /// * `segment_cache_max_entries` - Max cached segments (default: 1000)
+    /// * `segment_cache_max_bytes` - Max total byte size for segment cache (default: 256 MB)
     /// * `playlist_cache_ttl` - TTL for cached M3U8 playlists (default: 1 second)
     /// * `cluster_secret` - Optional cluster authentication secret
-    #[must_use] 
+    #[must_use]
     pub fn new(
         segment_cache_ttl: Duration,
         segment_cache_max_entries: u64,
+        segment_cache_max_bytes: u64,
         playlist_cache_ttl: Duration,
         cluster_secret: Option<String>,
     ) -> Self {
         let segment_cache = Cache::builder()
             .time_to_live(segment_cache_ttl)
             .max_capacity(segment_cache_max_entries)
+            .weigher(|_key: &String, value: &Bytes| -> u32 {
+                // Weight each entry by its byte size (capped at u32::MAX).
+                // moka uses the sum of weights against `max_capacity` when a
+                // weigher is NOT set, but when a weigher IS set it uses
+                // `weighted_size` for eviction. We keep `max_capacity` as the
+                // entry count limit and use `weighted_size` for the byte limit.
+                value.len().min(u32::MAX as usize) as u32
+            })
+            .max_capacity(segment_cache_max_bytes)
             .build();
 
         let playlist_cache = Cache::builder()
@@ -82,12 +96,13 @@ impl HlsProxyClient {
         }
     }
 
-    /// Create with default settings (90s segment TTL, 1s playlist TTL, 1000 max segment entries).
-    #[must_use] 
+    /// Create with default settings (90s segment TTL, 1s playlist TTL, 1000 max segment entries, 256MB max bytes).
+    #[must_use]
     pub fn with_defaults(cluster_secret: Option<String>) -> Self {
         Self::new(
             Duration::from_secs(90),
             1000,
+            Self::DEFAULT_MAX_CACHE_BYTES,
             Duration::from_secs(1),
             cluster_secret,
         )

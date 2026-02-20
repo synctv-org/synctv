@@ -120,6 +120,6 @@ impl AlistInterface for AlistService {
 
     async fn login(&self, request: LoginReq) -> Result<String, AlistError> {
         let mut client = AlistClient::new(&request.host)?;
-        client.login(&request.username, &request.password).await
+        client.login(&request.username, &request.password, request.hashed).await
     }
 }

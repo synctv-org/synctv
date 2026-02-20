@@ -18,7 +18,7 @@ use synctv_xiu::streamhub::{
     stream::StreamIdentifier,
 };
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use tokio::time::{interval, sleep, Duration};
 use tracing::{debug, error, info, trace, warn};
 use dashmap::DashMap;
@@ -135,6 +135,9 @@ pub struct PublisherManager {
     lag_event_count: AtomicU64,
     /// Duration of inactivity before a publisher is considered silent
     silent_timeout_secs: u64,
+    /// Flag to suppress silent-publisher cleanup during StreamHub restart.
+    /// Set before restart, cleared after re-registration completes.
+    is_restarting: Arc<AtomicBool>,
 }
 
 impl PublisherManager {
@@ -151,6 +154,7 @@ impl PublisherManager {
             hub_event_sender,
             lag_event_count: AtomicU64::new(0),
             silent_timeout_secs: SILENT_PUBLISHER_TIMEOUT_SECS,
+            is_restarting: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -160,6 +164,17 @@ impl PublisherManager {
     pub fn with_grpc_address(mut self, grpc_address: String) -> Self {
         self.local_grpc_address = grpc_address;
         self
+    }
+
+    /// Mark the manager as restarting to suppress silent-publisher cleanup
+    /// during the StreamHub restart window.
+    pub fn set_restarting(&self) {
+        self.is_restarting.store(true, Ordering::Release);
+    }
+
+    /// Clear the restarting flag after re-registration completes.
+    pub fn clear_restarting(&self) {
+        self.is_restarting.store(false, Ordering::Release);
     }
 
     /// Returns the number of broadcast lag events observed since startup.
@@ -252,6 +267,7 @@ impl PublisherManager {
                          Reconciling active publishers with registry."
                     );
                     self.reconcile_with_registry().await;
+                    self.reconcile_missing_from_registry().await;
                     continue;
                 }
                 Err(tokio::sync::broadcast::error::RecvError::Closed) => {
@@ -470,12 +486,68 @@ impl PublisherManager {
         );
     }
 
+    /// Bidirectional reconciliation: query Redis for all publishers on this node
+    /// and add any missing entries to `active_publishers`.
+    ///
+    /// After a broadcast channel lag, we may have missed `Publish` events,
+    /// causing publishers that exist in Redis to be absent from
+    /// `active_publishers`. Without heartbeat maintenance, these publishers
+    /// would silently expire from Redis when their TTL runs out.
+    async fn reconcile_missing_from_registry(&self) {
+        let all_streams = match self.registry.list_active_streams().await {
+            Ok(streams) => streams,
+            Err(e) => {
+                error!(
+                    "Reconcile (reverse): failed to list active streams from registry: {}",
+                    e
+                );
+                return;
+            }
+        };
+
+        let mut added = 0u32;
+        for (room_id, media_id) in &all_streams {
+            let publisher_key = format!("{room_id}:{media_id}");
+            // Skip if already tracked locally
+            if self.active_publishers.contains_key(&publisher_key) {
+                continue;
+            }
+            // Check if this publisher belongs to our node
+            match self.registry.get_publisher(room_id, media_id).await {
+                Ok(Some(info)) if info.node_id == self.local_node_id => {
+                    info!(
+                        "Reconcile (reverse): adding missing publisher room={} media={} to local tracking",
+                        room_id, media_id
+                    );
+                    let entry = Arc::new(PublisherEntry::with_user_id(info.user_id));
+                    self.active_publishers.insert(publisher_key, entry);
+                    added += 1;
+                }
+                _ => {
+                    // Not our publisher or query failed -- skip
+                }
+            }
+        }
+
+        if added > 0 {
+            info!(
+                "Reconcile (reverse): added {} missing publishers, {} total active",
+                added,
+                self.active_publishers.len()
+            );
+        }
+    }
+
     /// Force re-registration of all tracked active publishers in Redis.
     ///
     /// Called after `StreamHub` restart to ensure Redis state is consistent
     /// with the local `active_publishers` map. Without this, publishers
     /// that were cleaned up from Redis would remain stale until TTL expiry.
+    ///
+    /// Sets `is_restarting` before re-registration and clears it after,
+    /// suppressing silent-publisher cleanup during the restart window.
     pub async fn reregister_all_publishers(&self) {
+        self.set_restarting();
         // L-05: Snapshot both key and entry to access stored user_id for re-registration
         let snapshot: Vec<(String, Arc<PublisherEntry>)> = self
             .active_publishers
@@ -538,6 +610,7 @@ impl PublisherManager {
                 }
             }
         }
+        self.clear_restarting();
     }
 
     /// Cleanup a publisher: remove from local tracking, unregister from Redis,
@@ -612,9 +685,11 @@ impl PublisherManager {
                     continue;
                 };
 
-                // LS-5: Check for silent publisher (no media data for too long)
+                // LS-5: Check for silent publisher (no media data for too long).
+                // Skip during StreamHub restart to avoid false cleanups while
+                // publishers are reconnecting to the new hub instance.
                 let idle_secs = entry.idle_secs();
-                if idle_secs > self.silent_timeout_secs {
+                if idle_secs > self.silent_timeout_secs && !self.is_restarting.load(Ordering::Acquire) {
                     warn!(
                         "Silent publisher detected: room={} media={} (no data for {}s, threshold={}s)",
                         room_id, media_id, idle_secs, self.silent_timeout_secs

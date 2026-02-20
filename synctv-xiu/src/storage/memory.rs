@@ -331,18 +331,29 @@ impl HlsStorage for MemoryStorage {
             .checked_sub(older_than)
             .ok_or_else(|| Error::new(ErrorKind::InvalidInput, "older_than duration is too large"))?;
 
-        // Collect expired keys (O(N) scan, but cleanup is infrequent)
-        let expired_keys: Vec<String> = inner.data
+        // Iterate the time_index BTreeMap from the smallest sequence number.
+        // Because sequence numbers and write times are both monotonically
+        // increasing, we can stop as soon as we encounter a non-expired entry.
+        // This is O(K log N) where K is the number of expired entries, instead
+        // of the previous O(N) scan over all entries.
+        let expired_seqs: Vec<u64> = inner.time_index
             .iter()
-            .filter(|(_, entry)| entry.write_time < cutoff)
-            .map(|(key, _)| key.clone())
+            .take_while(|(&seq, _)| {
+                inner.data
+                    .get(inner.time_index.get(&seq).map_or("", |k| k.as_str()))
+                    .map_or(false, |entry| entry.write_time < cutoff)
+            })
+            .map(|(&seq, _)| seq)
             .collect();
 
         let mut deleted = 0;
-        for key in expired_keys {
-            if inner.remove(&key) {
-                deleted += 1;
-                tracing::trace!("Deleted expired key from memory: {}", key);
+        for seq in expired_seqs {
+            if let Some(key) = inner.time_index.remove(&seq) {
+                if let Some(entry) = inner.data.remove(&key) {
+                    inner.total_bytes -= entry.data.len();
+                    deleted += 1;
+                    tracing::trace!("Deleted expired key from memory: {}", key);
+                }
             }
         }
 

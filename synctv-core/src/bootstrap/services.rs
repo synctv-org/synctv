@@ -310,10 +310,19 @@ pub async fn init_services(
         }
     };
 
-    // Extract a plain ConnectionManager from the Arc<RwLock<>> for passing to individual
-    // services that were designed before the hot-swap pattern was introduced.
-    // The Arc<RwLock<>> (`redis_conn`) is stored in `Services` for the Sentinel health
-    // check. All other subsystems receive a snapshot clone of the ConnectionManager.
+    // Extract a plain ConnectionManager snapshot from the Arc<RwLock<>> for passing
+    // to individual services.
+    //
+    // IMPORTANT (Sentinel mode): This snapshot is taken once at init time. In Sentinel
+    // mode, the background health check hot-swaps the ConnectionManager inside
+    // `redis_conn` (the Arc<RwLock<>>) on failover. However, services that store this
+    // snapshot will keep using the old ConnectionManager until they are recreated.
+    // ConnectionManager handles *transient* reconnection internally, but it cannot
+    // discover a NEW master after Sentinel failover.
+    //
+    // For long-lived operations in Sentinel deployments, callers should prefer
+    // `Services::redis_conn_snapshot()` to obtain a fresh handle that reflects the
+    // latest Sentinel failover, rather than caching this init-time snapshot.
     let redis_conn_plain: Option<redis::aio::ConnectionManager> = if let Some(ref shared) = redis_conn {
         Some(shared.read().await.clone())
     } else {
@@ -373,7 +382,9 @@ pub async fn init_services(
         user_service.set_redis_conn(conn.clone(), key_builder);
         info!("UserService initialized with refresh token rotation (Redis-backed JTI blacklist)");
     } else {
-        info!("UserService initialized (refresh token rotation disabled: no Redis)");
+        warn!("UserService: Redis not configured — refresh token rotation (JTI blacklist) is DISABLED. \
+               Used refresh tokens cannot be revoked, increasing replay attack risk. \
+               Configure Redis to enable full refresh token security.");
     }
 
     // Initialize RoomService

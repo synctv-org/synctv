@@ -187,7 +187,7 @@ impl BilibiliClient {
         // Cache miss or force refresh: fetch from Bilibili API.
         let url = "https://api.bilibili.com/x/web-interface/nav";
         let req = self.add_cookies(self.client.get(url).header("Referer", REFERER));
-        let resp = check_response(req.send().await?)?;
+        let resp = check_response(req.send().await?).await?;
         let json: types::NavResp = json_with_limit(resp).await?;
 
         if json.code != 0 {
@@ -287,7 +287,7 @@ impl BilibiliClient {
             .get(url)
             .header("Referer", "https://passport.bilibili.com/login");
 
-        let resp = check_response(req.send().await?)?;
+        let resp = check_response(req.send().await?).await?;
         let json: QrCodeResp = json_with_limit(resp).await?;
 
         if json.code != 0 {
@@ -322,7 +322,9 @@ impl BilibiliClient {
         let resp = req.send().await?;
         let status = resp.status();
         if status.is_client_error() || status.is_server_error() {
-            return Err(BilibiliError::Http { status, url: resp.url().to_string(), retry_after_secs: None });
+            let url = resp.url().to_string();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(BilibiliError::Http { status, url, retry_after_secs: None, body });
         }
 
         // Extract ALL relevant cookies (SESSDATA, bili_jct, DedeUserID, DedeUserID__ckMd5)
@@ -376,7 +378,7 @@ impl BilibiliClient {
             .get(url)
             .header("Referer", "https://passport.bilibili.com/login");
 
-        let resp = check_response(req.send().await?)?;
+        let resp = check_response(req.send().await?).await?;
         let json: CaptchaResp = json_with_limit(resp).await?;
 
         if json.code != 0 {
@@ -410,7 +412,7 @@ impl BilibiliClient {
             .header("User-Agent", USER_AGENT)
             .header("Referer", "https://www.bilibili.com");
 
-        let resp = check_response(req.send().await?)?;
+        let resp = check_response(req.send().await?).await?;
         let json: SpiResp = json_with_limit(resp).await?;
 
         if json.code != 0 {
@@ -480,7 +482,7 @@ impl BilibiliClient {
             req = req.header("Cookie", cookie_str);
         }
 
-        let resp = check_response(req.send().await?)?;
+        let resp = check_response(req.send().await?).await?;
         let json: SmsResp = json_with_limit(resp).await?;
 
         if json.code != 0 {
@@ -528,7 +530,9 @@ impl BilibiliClient {
         let resp = req.send().await?;
         let status = resp.status();
         if status.is_client_error() || status.is_server_error() {
-            return Err(BilibiliError::Http { status, url: resp.url().to_string(), retry_after_secs: None });
+            let url = resp.url().to_string();
+            let body = resp.text().await.unwrap_or_default();
+            return Err(BilibiliError::Http { status, url, retry_after_secs: None, body });
         }
 
         // Extract cookies from headers BEFORE consuming body.
@@ -617,7 +621,7 @@ impl BilibiliClient {
             return Ok(response.url().to_string());
         }
 
-        Err(BilibiliError::Http { status, url: response.url().to_string(), retry_after_secs: None })
+        Err(BilibiliError::Http { status, url: response.url().to_string(), retry_after_secs: None, body: String::new() })
     }
 
     /// Get video information by BVID
@@ -636,7 +640,7 @@ impl BilibiliClient {
                 if let Some(ref cookies) = cookie_header {
                     req = req.header("Cookie", cookies.as_str());
                 }
-                let response = check_response(req.send().await?)?;
+                let response = check_response(req.send().await?).await?;
 
                 let json: serde_json::Value = json_with_limit(response).await?;
 
@@ -686,7 +690,7 @@ impl BilibiliClient {
                 if let Some(ref cookies) = cookie_header {
                     req = req.header("Cookie", cookies.as_str());
                 }
-                let response = check_response(req.send().await?)?;
+                let response = check_response(req.send().await?).await?;
                 let json: serde_json::Value = json_with_limit(response).await?;
 
                 if json["code"].as_i64() != Some(0) {
@@ -728,7 +732,7 @@ impl BilibiliClient {
                 if let Some(ref cookies) = cookie_header {
                     req = req.header("Cookie", cookies.as_str());
                 }
-                let response = check_response(req.send().await?)?;
+                let response = check_response(req.send().await?).await?;
                 let json: serde_json::Value = json_with_limit(response).await?;
 
                 if json["code"].as_i64() != Some(0) {
@@ -773,7 +777,7 @@ impl BilibiliClient {
                 if let Some(ref cookies) = cookie_header {
                     req = req.header("Cookie", cookies.as_str());
                 }
-                let resp = check_response(req.send().await?)?;
+                let resp = check_response(req.send().await?).await?;
                 let json: types::VideoPageInfoResp = json_with_limit(resp).await?;
 
                 if json.code != 0 {
@@ -831,7 +835,7 @@ impl BilibiliClient {
                 if let Some(ref cookies) = cookie_header {
                     req = req.header("Cookie", cookies.as_str());
                 }
-                let resp = check_response(req.send().await?)?;
+                let resp = check_response(req.send().await?).await?;
                 let json: types::VideoUrlResp = json_with_limit(resp).await?;
 
                 if json.code != 0 {
@@ -914,7 +918,7 @@ impl BilibiliClient {
                 if let Some(ref cookies) = cookie_header {
                     req = req.header("Cookie", cookies.as_str());
                 }
-                let resp = check_response(req.send().await?)?;
+                let resp = check_response(req.send().await?).await?;
                 let json: types::DashVideoResp = json_with_limit(resp).await?;
 
                 if json.code != 0 {
@@ -953,7 +957,7 @@ impl BilibiliClient {
                 if let Some(ref cookies) = cookie_header {
                     req = req.header("Cookie", cookies.as_str());
                 }
-                let resp = check_response(req.send().await?)?;
+                let resp = check_response(req.send().await?).await?;
                 let json: types::PlayerV2InfoResp = json_with_limit(resp).await?;
 
                 if json.code != 0 {
@@ -998,7 +1002,7 @@ impl BilibiliClient {
                 if let Some(ref cookies) = cookie_header {
                     req = req.header("Cookie", cookies.as_str());
                 }
-                let resp = check_response(req.send().await?)?;
+                let resp = check_response(req.send().await?).await?;
                 let json: types::NavResp = json_with_limit(resp).await?;
 
                 if json.code != 0 {
@@ -1035,7 +1039,7 @@ impl BilibiliClient {
                 if let Some(ref cookies) = cookie_header {
                     req = req.header("Cookie", cookies.as_str());
                 }
-                let resp = check_response(req.send().await?)?;
+                let resp = check_response(req.send().await?).await?;
                 let json: types::SeasonInfoResp = json_with_limit(resp).await?;
 
                 if json.code != 0 {
@@ -1088,7 +1092,7 @@ impl BilibiliClient {
                 if let Some(ref cookies) = cookie_header {
                     req = req.header("Cookie", cookies.as_str());
                 }
-                let resp = check_response(req.send().await?)?;
+                let resp = check_response(req.send().await?).await?;
                 let json: types::PgcUrlResp = json_with_limit(resp).await?;
 
                 if json.code != 0 {
@@ -1132,7 +1136,7 @@ impl BilibiliClient {
                 if let Some(ref cookies) = cookie_header {
                     req = req.header("Cookie", cookies.as_str());
                 }
-                let resp = check_response(req.send().await?)?;
+                let resp = check_response(req.send().await?).await?;
                 let json: types::DashPgcResp = json_with_limit(resp).await?;
 
                 if json.code != 0 {
@@ -1195,7 +1199,7 @@ impl BilibiliClient {
                 if let Some(ref cookies) = cookie_header {
                     req = req.header("Cookie", cookies.as_str());
                 }
-                let resp = check_response(req.send().await?)?;
+                let resp = check_response(req.send().await?).await?;
                 let json: types::ParseLivePageResp = json_with_limit(resp).await?;
 
                 if json.code != 0 {
@@ -1214,7 +1218,7 @@ impl BilibiliClient {
                     if let Some(ref cookies) = cookie_header {
                         master_req = master_req.header("Cookie", cookies.as_str());
                     }
-                    match check_response(master_req.send().await?) {
+                    match check_response(master_req.send().await?).await {
                         Ok(master_resp) => {
                             match json_with_limit::<types::GetLiveMasterInfoResp>(master_resp).await {
                                 Ok(master_json) if master_json.code == 0 && !master_json.data.info.uname.is_empty() => {
@@ -1270,7 +1274,7 @@ impl BilibiliClient {
                 if let Some(ref cookies) = cookie_header {
                     req = req.header("Cookie", cookies.as_str());
                 }
-                let resp = check_response(req.send().await?)?;
+                let resp = check_response(req.send().await?).await?;
                 let json: types::RoomPlayInfoResp = json_with_limit(resp).await?;
 
                 if json.code != 0 {
@@ -1337,7 +1341,7 @@ impl BilibiliClient {
                 if let Some(ref cookies) = cookie_header {
                     req = req.header("Cookie", cookies.as_str());
                 }
-                let resp = check_response(req.send().await?)?;
+                let resp = check_response(req.send().await?).await?;
                 let json: types::GetLiveDanmuInfoResp = json_with_limit(resp).await?;
 
                 if json.code != 0 {

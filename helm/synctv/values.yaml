@@ -200,6 +200,10 @@ config:
     clockSkewLeewaySecs: 60
 
   ## LoggingConfig
+  ## NOTE: If securityContext.readOnlyRootFilesystem is true (the default),
+  ## any logging.filePath must point to a writable mount (e.g., /tmp which is
+  ## backed by an emptyDir volume). Alternatively, leave filePath empty to log
+  ## to stdout only, which is the recommended approach for Kubernetes.
   logging:
     level: "info"
     format: "json"

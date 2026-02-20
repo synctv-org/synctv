@@ -389,8 +389,8 @@ async fn handle_socket(
     // Check if cluster_manager is available BEFORE incrementing metrics.
     // This prevents counter drift: if we return early, we never incremented,
     // so there's nothing to decrement.
-    let cluster_manager = if let Some(cm) = state.cluster_manager {
-        cm
+    let cluster_manager = if let Some(ref cm) = state.cluster_manager {
+        cm.clone()
     } else {
         error!("ClusterManager not available, WebSocket connection not supported");
         return;

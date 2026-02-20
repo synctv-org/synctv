@@ -469,11 +469,14 @@ impl MediaRepository {
         Ok(())
     }
 
-    /// Get the next available position in a playlist.
+    /// Get the next available position in a playlist (read-only, no locking).
     ///
-    /// When called outside a transaction, uses a plain MAX query (no locking).
-    /// For concurrent-safe usage, prefer `get_next_position_with_tx` inside an
-    /// existing transaction so the `FOR UPDATE` lock is held until commit.
+    /// **WARNING**: This method does NOT hold a lock, so concurrent inserts may
+    /// produce duplicate positions. Use [`get_next_position_with_tx`] inside an
+    /// existing transaction for any write path (e.g. `add_media`, `add_batch`).
+    ///
+    /// This method is only safe for read-only / advisory purposes (e.g. UI hints).
+    #[deprecated(note = "Use get_next_position_with_tx inside a transaction for write paths")]
     pub async fn get_next_position(&self, playlist_id: &PlaylistId) -> Result<i32> {
         let next_pos: i32 = sqlx::query_scalar(
             r"

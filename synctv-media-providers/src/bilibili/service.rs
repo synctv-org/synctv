@@ -116,16 +116,7 @@ impl BilibiliInterface for BilibiliService {
         let client = BilibiliClient::new()?;
         let (raw_status, cookies) = client.login_with_qr_code(&request.key).await?;
 
-        // Map Bilibili status codes to proto QRCodeStatus enum values:
-        // 0 -> SUCCESS (4), 86038 -> EXPIRED (1), 86101 -> NOTSCANNED (2),
-        // 86090 -> SCANNED (3), other -> UNKNOWN (0)
-        let status = match raw_status {
-            0 => 4,     // SUCCESS
-            86038 => 1, // EXPIRED
-            86101 => 2, // NOTSCANNED
-            86090 => 3, // SCANNED
-            _ => 0,     // UNKNOWN
-        };
+        let status = map_qr_status(raw_status);
 
         Ok(LoginWithQrCodeResp {
             status,
@@ -299,5 +290,50 @@ impl BilibiliInterface for BilibiliService {
                 })
                 .collect(),
         })
+    }
+}
+
+/// Map Bilibili raw QR code status to proto `QrCodeStatus` enum i32 value.
+///
+/// Extracted as a standalone function so it can be unit-tested without
+/// needing an actual HTTP response.
+pub(crate) fn map_qr_status(raw: u32) -> i32 {
+    match raw {
+        0 => 4,     // SUCCESS
+        86038 => 1, // EXPIRED
+        86101 => 2, // NOTSCANNED
+        86090 => 3, // SCANNED
+        _ => 0,     // UNKNOWN
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::grpc::bilibili::QrCodeStatus;
+
+    #[test]
+    fn test_qr_status_success() {
+        assert_eq!(map_qr_status(0), QrCodeStatus::Success as i32);
+    }
+
+    #[test]
+    fn test_qr_status_expired() {
+        assert_eq!(map_qr_status(86038), QrCodeStatus::Expired as i32);
+    }
+
+    #[test]
+    fn test_qr_status_not_scanned() {
+        assert_eq!(map_qr_status(86101), QrCodeStatus::Notscanned as i32);
+    }
+
+    #[test]
+    fn test_qr_status_scanned() {
+        assert_eq!(map_qr_status(86090), QrCodeStatus::Scanned as i32);
+    }
+
+    #[test]
+    fn test_qr_status_unknown() {
+        assert_eq!(map_qr_status(99999), QrCodeStatus::Unknown as i32);
     }
 }

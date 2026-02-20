@@ -7,24 +7,18 @@ use axum::{extract::State, Json};
 use super::{AppResult, AppState};
 use crate::proto::client::{RegisterRequest, RegisterResponse, LoginRequest, LoginResponse, RefreshTokenRequest, RefreshTokenResponse};
 
-/// Register a new user
-pub async fn register(
-    State(state): State<AppState>,
-    connect_info: axum::extract::ConnectInfo<std::net::SocketAddr>,
-    headers: axum::http::HeaderMap,
-    Json(mut req): Json<RegisterRequest>,
-) -> AppResult<Json<RegisterResponse>> {
-    // Validate and sanitize username
-    req.username = super::validation::validate_username(&req.username)
-        .map_err(|e| super::AppError::bad_request(e.to_string()))?;
-
-    // Validate password strength
-    super::validation::validate_password(&req.password)
-        .map_err(|e| super::AppError::bad_request(e.to_string()))?;
-
-    // Extract client IP with trusted-proxy check (same pattern as login, Issue #24)
-    let socket_ip = connect_info.0.ip();
-    let client_ip = if state.config.server.is_trusted_proxy(&socket_ip) {
+/// Extract the real client IP from a request.
+///
+/// Only trusts `X-Forwarded-For` / `X-Real-IP` headers when the direct
+/// connection comes from a configured trusted proxy. This prevents
+/// attackers from forging their IP to bypass per-IP brute-force protection.
+pub fn extract_client_ip(
+    config: &synctv_core::Config,
+    socket_addr: std::net::SocketAddr,
+    headers: &axum::http::HeaderMap,
+) -> std::net::IpAddr {
+    let socket_ip = socket_addr.ip();
+    if config.server.is_trusted_proxy(&socket_ip) {
         headers
             .get("x-forwarded-for")
             .and_then(|v| v.to_str().ok())
@@ -39,7 +33,17 @@ pub async fn register(
             .unwrap_or(socket_ip)
     } else {
         socket_ip
-    };
+    }
+}
+
+/// Register a new user
+pub async fn register(
+    State(state): State<AppState>,
+    connect_info: axum::extract::ConnectInfo<std::net::SocketAddr>,
+    headers: axum::http::HeaderMap,
+    Json(req): Json<RegisterRequest>,
+) -> AppResult<Json<RegisterResponse>> {
+    let client_ip = extract_client_ip(&state.config, connect_info.0, &headers);
 
     let response = state
         .client_api
@@ -57,27 +61,7 @@ pub async fn login(
     headers: axum::http::HeaderMap,
     Json(req): Json<LoginRequest>,
 ) -> AppResult<Json<LoginResponse>> {
-    let socket_ip = connect_info.0.ip();
-
-    // Only trust X-Forwarded-For / X-Real-IP when the request comes from a
-    // configured trusted proxy. Blindly accepting these headers allows an
-    // attacker to forge their IP and bypass per-IP brute-force protection.
-    let client_ip = if state.config.server.is_trusted_proxy(&socket_ip) {
-        headers
-            .get("x-forwarded-for")
-            .and_then(|v| v.to_str().ok())
-            .and_then(|s| s.split(',').next())
-            .and_then(|s| s.trim().parse::<std::net::IpAddr>().ok())
-            .or_else(|| {
-                headers
-                    .get("x-real-ip")
-                    .and_then(|v| v.to_str().ok())
-                    .and_then(|s| s.trim().parse::<std::net::IpAddr>().ok())
-            })
-            .unwrap_or(socket_ip)
-    } else {
-        socket_ip
-    };
+    let client_ip = extract_client_ip(&state.config, connect_info.0, &headers);
 
     let response = state
         .client_api

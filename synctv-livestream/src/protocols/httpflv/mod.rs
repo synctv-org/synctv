@@ -14,6 +14,8 @@ use synctv_xiu::streamhub::define::StreamHubEventSender;
 use tokio::sync::mpsc;
 use tracing::{error, info, warn};
 
+use crate::api::tracker::StreamSubscriberGuard;
+use crate::api::LiveStreamingInfrastructure;
 use crate::relay::StreamRegistry;
 
 // Re-export HttpFlvSession from xiu-httpflv
@@ -23,6 +25,10 @@ pub use synctv_xiu::httpflv::HttpFlvSession;
 pub struct HttpFlvState {
     registry: Arc<StreamRegistry>,
     stream_hub_event_sender: StreamHubEventSender,
+    /// Optional infrastructure for subscriber tracking via `StreamSubscriberGuard`.
+    /// When set, each FLV session holds a guard that decrements the subscriber
+    /// count on drop, ensuring correct idle-cleanup lifecycle.
+    infrastructure: Option<LiveStreamingInfrastructure>,
 }
 
 impl HttpFlvState {
@@ -31,7 +37,15 @@ impl HttpFlvState {
         Self {
             registry,
             stream_hub_event_sender,
+            infrastructure: None,
         }
+    }
+
+    /// Set the live streaming infrastructure for subscriber tracking.
+    #[must_use]
+    pub fn with_infrastructure(mut self, infra: LiveStreamingInfrastructure) -> Self {
+        self.infrastructure = Some(infra);
+        self
     }
 }
 
@@ -79,6 +93,21 @@ async fn handle_flv_stream(
         synctv_xiu::httpflv::FLV_RESPONSE_CHANNEL_CAPACITY,
     );
 
+    // Create subscriber guard if infrastructure is available.
+    // The guard decrements the subscriber count when dropped, ensuring
+    // the idle-cleanup task correctly tracks active viewers.
+    let subscriber_guard: Option<StreamSubscriberGuard> = if let Some(ref infra) = state.infrastructure {
+        match infra.ensure_pull_stream(&room_id, media_id, None).await {
+            Ok(guard) => Some(guard),
+            Err(e) => {
+                warn!("Failed to create subscriber guard for FLV session: {}", e);
+                None
+            }
+        }
+    } else {
+        None
+    };
+
     // Spawn FLV session using canonical (room_id, media_id) StreamIdentifier
     let mut flv_session = HttpFlvSession::new(
         room_id.clone(),
@@ -88,6 +117,7 @@ async fn handle_flv_stream(
     );
 
     tokio::spawn(async move {
+        let _guard = subscriber_guard; // held for the lifetime of this task
         if let Err(e) = flv_session.run().await {
             error!("FLV session error: {}", e);
         }

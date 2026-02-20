@@ -260,6 +260,21 @@ impl StreamMessageHandler {
                 // Cluster event (broadcast to client)
                 event = event_rx.recv() => {
                     if let Some(event) = event {
+                        // Filter WebRTC signaling: only deliver to the intended recipient.
+                        // SDP data contains IP addresses, so broadcasting to all room
+                        // members is both a privacy leak and causes incorrect WebRTC behavior.
+                        if let ClusterEvent::WebRTCSignaling { ref to, .. } = event {
+                            let is_target = if let Some((_user, conn)) = to.rsplit_once(':') {
+                                conn == self.connection_id
+                            } else {
+                                // Fallback: `to` is just a user_id
+                                *to == self.user_id.as_str()
+                            };
+                            if !is_target {
+                                continue;
+                            }
+                        }
+
                         if let Some(msg) = cluster_event_to_server_message(&event, &room_id_str) {
                             if let Err(e) = stream.send(msg) {
                                 tracing::error!("Failed to send server message: {}", e);
@@ -682,6 +697,8 @@ impl StreamMessageHandler {
         let room_id = self.room_id.clone();
         let user_id = self.user_id.clone();
         let room_id_str = room_id.as_str().to_string();
+        let event_connection_id = self.connection_id.clone();
+        let event_user_id = self.user_id.clone();
         let (mut rx_events, _connection_id) = self.cluster_manager.subscribe_with_id(
             room_id, user_id, self.connection_id.clone(),
         ).await;
@@ -695,11 +712,40 @@ impl StreamMessageHandler {
                     event = rx_events.recv() => {
                         match event {
                             Some(event) => {
+                                // Filter WebRTC signaling: only deliver to the intended
+                                // recipient (same logic as run()). SDP data contains IP
+                                // addresses, so broadcasting to all room members is both
+                                // a privacy leak and causes incorrect WebRTC behavior.
+                                if let ClusterEvent::WebRTCSignaling { ref to, .. } = event {
+                                    let is_target = if let Some((_user, conn)) = to.rsplit_once(':') {
+                                        conn == event_connection_id
+                                    } else {
+                                        *to == event_user_id.as_str()
+                                    };
+                                    if !is_target {
+                                        continue;
+                                    }
+                                }
+
+                                let is_room_deleted = matches!(event, ClusterEvent::RoomDeleted { .. });
+
                                 if let Some(msg) = cluster_event_to_server_message(&event, &room_id_str) {
                                     if let Err(e) = sender.send(msg) {
                                         tracing::error!("Failed to send message: {}", e);
                                         break;
                                     }
+                                }
+
+                                // After delivering RoomDeleted, trigger cancellation so
+                                // cleanup fires only after the event has been forwarded.
+                                // This prevents the race where the cleanup task fires
+                                // before the critical event reaches the client.
+                                if is_room_deleted {
+                                    tracing::info!(
+                                        "RoomDeleted event delivered in start(), triggering cleanup"
+                                    );
+                                    event_token.cancel();
+                                    break;
                                 }
                             }
                             None => break,

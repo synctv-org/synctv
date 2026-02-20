@@ -14,6 +14,28 @@ impl ClientApiImpl {
         room_id: &str,
         req: crate::proto::client::AddMediaRequest,
     ) -> Result<crate::proto::client::AddMediaResponse, ApiError> {
+        crate::http::validation::validate_id(room_id, "room_id")
+            .map_err(|e| ApiError::InvalidInput(format!("Invalid room_id: {e}")))?;
+
+        // Validate media URLs to prevent SSRF attacks where an attacker could
+        // force the server to make requests to internal network addresses.
+        if !req.source_config.is_empty() {
+            if let Ok(source_config) = serde_json::from_slice::<serde_json::Value>(&req.source_config) {
+                if let Some(url_str) = source_config.get("url").and_then(|u| u.as_str()) {
+                    crate::http::validation::validate_url(url_str)
+                        .map_err(|e| ApiError::InvalidInput(format!("Invalid media URL: {e}")))?;
+                }
+                if let Some(urls_arr) = source_config.get("urls").and_then(|v| v.as_array()) {
+                    for url_val in urls_arr {
+                        if let Some(url_str) = url_val.as_str() {
+                            crate::http::validation::validate_url(url_str)
+                                .map_err(|e| ApiError::InvalidInput(format!("Invalid media URL: {e}")))?;
+                        }
+                    }
+                }
+            }
+        }
+
         let uid = UserId::from_string(user_id.to_string());
         let rid = RoomId::from_string(room_id.to_string());
 
@@ -89,6 +111,11 @@ impl ClientApiImpl {
         room_id: &str,
         req: crate::proto::client::DeleteMediaRequest,
     ) -> Result<crate::proto::client::DeleteMediaResponse, ApiError> {
+        crate::http::validation::validate_id(room_id, "room_id")
+            .map_err(|e| ApiError::InvalidInput(format!("Invalid room_id: {e}")))?;
+        crate::http::validation::validate_id(&req.media_id, "media_id")
+            .map_err(|e| ApiError::InvalidInput(format!("Invalid media_id: {e}")))?;
+
         let uid = UserId::from_string(user_id.to_string());
         let rid = RoomId::from_string(room_id.to_string());
         let media_id_str = req.media_id.clone();
@@ -152,6 +179,11 @@ impl ClientApiImpl {
         room_id: &str,
         req: crate::proto::client::EditMediaRequest,
     ) -> Result<crate::proto::client::EditMediaResponse, ApiError> {
+        crate::http::validation::validate_id(room_id, "room_id")
+            .map_err(|e| ApiError::InvalidInput(format!("Invalid room_id: {e}")))?;
+        crate::http::validation::validate_id(&req.media_id, "media_id")
+            .map_err(|e| ApiError::InvalidInput(format!("Invalid media_id: {e}")))?;
+
         let uid = UserId::from_string(user_id.to_string());
         let rid = RoomId::from_string(room_id.to_string());
         let mid = synctv_core::models::MediaId::from_string(req.media_id);
@@ -674,6 +706,11 @@ impl ClientApiImpl {
         room_id: &str,
         media_id: &str,
     ) -> Result<crate::proto::client::Media, ApiError> {
+        crate::http::validation::validate_id(room_id, "room_id")
+            .map_err(|e| ApiError::InvalidInput(format!("Invalid room_id: {e}")))?;
+        crate::http::validation::validate_id(media_id, "media_id")
+            .map_err(|e| ApiError::InvalidInput(format!("Invalid media_id: {e}")))?;
+
         let uid = UserId::from_string(user_id.to_string());
         let rid = RoomId::from_string(room_id.to_string());
         let mid = synctv_core::models::MediaId::from_string(media_id.to_string());

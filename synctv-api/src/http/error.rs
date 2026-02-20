@@ -16,6 +16,9 @@ pub type AppResult<T> = Result<T, AppError>;
 pub struct AppError {
     pub status: StatusCode,
     pub message: String,
+    /// Optional application-level error code from `impls::error_codes`.
+    /// When set, this is included in the JSON error response for programmatic handling.
+    pub error_code: Option<i32>,
 }
 
 impl AppError {
@@ -23,6 +26,7 @@ impl AppError {
         Self {
             status,
             message: message.into(),
+            error_code: None,
         }
     }
 
@@ -116,6 +120,10 @@ impl std::error::Error for AppError {}
 struct ErrorResponse {
     error: String,
     status: u16,
+    /// Application-level error code for programmatic handling.
+    /// Only present when the error originates from the impls layer.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    code: Option<i32>,
 }
 
 impl IntoResponse for AppError {
@@ -124,6 +132,7 @@ impl IntoResponse for AppError {
         let body = Json(ErrorResponse {
             error: self.message,
             status: status.as_u16(),
+            code: self.error_code,
         });
 
         (status, body).into_response()
@@ -236,8 +245,9 @@ impl From<anyhow::Error> for AppError {
 impl From<crate::impls::ApiError> for AppError {
     fn from(err: crate::impls::ApiError) -> Self {
         use crate::impls::ErrorKind;
+        let error_code = err.code();
         let msg = err.to_string();
-        match err.classify() {
+        let mut app_err = match err.classify() {
             ErrorKind::NotFound => Self::not_found(msg),
             ErrorKind::Unauthenticated => Self::unauthorized(msg),
             ErrorKind::PermissionDenied => Self::forbidden(msg),
@@ -247,7 +257,9 @@ impl From<crate::impls::ApiError> for AppError {
                 tracing::error!("Internal error: {msg}");
                 Self::internal("Internal error")
             }
-        }
+        };
+        app_err.error_code = Some(error_code);
+        app_err
     }
 }
 

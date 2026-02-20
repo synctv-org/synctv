@@ -8,6 +8,7 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::HashMap;
+use std::net::IpAddr;
 
 /// Direct URL `MediaProvider`
 pub struct DirectUrlProvider {}
@@ -28,6 +29,44 @@ impl DirectUrlProvider {
                 _ => ProviderError::InvalidUrl(e.to_string()),
             }
         })
+    }
+
+    /// Validate that an RTMP/RTMPS URL does not target internal/private network addresses.
+    ///
+    /// Since `url::Url` cannot parse rtmp:// URLs, the host is extracted manually
+    /// from the `rtmp://host[:port]/app/stream` format and checked against the
+    /// SSRF blocklists (same approach as `LiveProxyProvider::validate_source_url_host`).
+    fn validate_rtmp_url_not_internal(raw: &str) -> Result<(), ProviderError> {
+        let rest = raw
+            .strip_prefix("rtmp://")
+            .or_else(|| raw.strip_prefix("rtmps://"))
+            .ok_or_else(|| ProviderError::InvalidUrl("Expected rtmp:// or rtmps:// scheme".to_string()))?;
+
+        let authority = rest.split('/').next().unwrap_or(rest);
+        let host_str = if let Some((host, _port_str)) = authority.rsplit_once(':') {
+            host
+        } else {
+            authority
+        };
+
+        // Check if host is a literal IP address
+        if let Ok(ip) = host_str.parse::<IpAddr>() {
+            if crate::validation::is_private_ip(&ip) {
+                return Err(ProviderError::InvalidUrl(
+                    "SSRF protection: URL targets a private IP address".to_string(),
+                ));
+            }
+            return Ok(());
+        }
+
+        // Check hostname against shared blocklist (localhost, metadata endpoints, etc.)
+        use synctv_media_providers::ssrf::{check_hostname, SsrfCheckResult};
+        match check_hostname(host_str) {
+            SsrfCheckResult::Ok => Ok(()),
+            SsrfCheckResult::Blocked(reason) => Err(ProviderError::InvalidUrl(
+                format!("SSRF protection: {reason}"),
+            )),
+        }
     }
 
     /// Detect format from URL path extension.
@@ -124,6 +163,8 @@ impl MediaProvider for DirectUrlProvider {
         // SSRF protection: reject URLs targeting private/internal networks
         if config.url.starts_with("http://") || config.url.starts_with("https://") {
             Self::validate_url_not_internal(&config.url)?;
+        } else if config.url.starts_with("rtmp://") || config.url.starts_with("rtmps://") {
+            Self::validate_rtmp_url_not_internal(&config.url)?;
         }
 
         let format = Self::detect_format(&config.url);
@@ -245,6 +286,34 @@ mod tests {
             DirectUrlProvider::detect_format("http://example.com/video"),
             "video"
         );
+    }
+
+    #[test]
+    fn test_rtmp_ssrf_blocks_localhost() {
+        assert!(DirectUrlProvider::validate_rtmp_url_not_internal("rtmp://localhost/live/stream").is_err());
+        assert!(DirectUrlProvider::validate_rtmp_url_not_internal("rtmps://localhost/live/stream").is_err());
+    }
+
+    #[test]
+    fn test_rtmp_ssrf_blocks_private_ipv4() {
+        assert!(DirectUrlProvider::validate_rtmp_url_not_internal("rtmp://10.0.0.1/live/stream").is_err());
+        assert!(DirectUrlProvider::validate_rtmp_url_not_internal("rtmp://192.168.1.1/live/stream").is_err());
+        assert!(DirectUrlProvider::validate_rtmp_url_not_internal("rtmp://172.16.0.1/live/stream").is_err());
+        assert!(DirectUrlProvider::validate_rtmp_url_not_internal("rtmp://127.0.0.1/live/stream").is_err());
+        assert!(DirectUrlProvider::validate_rtmp_url_not_internal("rtmps://10.0.0.1:1935/live/stream").is_err());
+    }
+
+    #[test]
+    fn test_rtmp_ssrf_blocks_metadata_endpoints() {
+        assert!(DirectUrlProvider::validate_rtmp_url_not_internal("rtmp://metadata.google.internal/live").is_err());
+        assert!(DirectUrlProvider::validate_rtmp_url_not_internal("rtmp://instance-data/live").is_err());
+    }
+
+    #[test]
+    fn test_rtmp_ssrf_allows_public_urls() {
+        assert!(DirectUrlProvider::validate_rtmp_url_not_internal("rtmp://live.example.com/live/stream").is_ok());
+        assert!(DirectUrlProvider::validate_rtmp_url_not_internal("rtmps://live.example.com/live/stream").is_ok());
+        assert!(DirectUrlProvider::validate_rtmp_url_not_internal("rtmp://93.184.216.34:1935/live/stream").is_ok());
     }
 
     #[test]

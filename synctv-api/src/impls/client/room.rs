@@ -100,8 +100,12 @@ impl ClientApiImpl {
     pub async fn create_room(
         &self,
         user_id: &str,
-        req: crate::proto::client::CreateRoomRequest,
+        mut req: crate::proto::client::CreateRoomRequest,
     ) -> Result<crate::proto::client::CreateRoomResponse, ApiError> {
+        // Validate and sanitize room name
+        req.name = crate::http::validation::validate_room_name(&req.name)
+            .map_err(|e| ApiError::InvalidInput(e.to_string()))?;
+
         let uid = UserId::from_string(user_id.to_string());
 
         let settings = if req.settings.is_empty() {
@@ -142,6 +146,9 @@ impl ClientApiImpl {
         user_id: &str,
         room_id: &str,
     ) -> Result<crate::proto::client::GetRoomResponse, ApiError> {
+        crate::http::validation::validate_id(room_id, "room_id")
+            .map_err(|e| ApiError::InvalidInput(format!("Invalid room_id: {e}")))?;
+
         let uid = UserId::from_string(user_id.to_string());
         let rid = RoomId::from_string(room_id.to_string());
 
@@ -169,6 +176,9 @@ impl ClientApiImpl {
         room_id: &str,
         req: crate::proto::client::JoinRoomRequest,
     ) -> Result<crate::proto::client::JoinRoomResponse, ApiError> {
+        crate::http::validation::validate_id(room_id, "room_id")
+            .map_err(|e| ApiError::InvalidInput(format!("Invalid room_id: {e}")))?;
+
         let uid = UserId::from_string(user_id.to_string());
         let rid = RoomId::from_string(room_id.to_string());
 
@@ -209,6 +219,9 @@ impl ClientApiImpl {
         user_id: &str,
         room_id: &str,
     ) -> Result<crate::proto::client::LeaveRoomResponse, ApiError> {
+        crate::http::validation::validate_id(room_id, "room_id")
+            .map_err(|e| ApiError::InvalidInput(format!("Invalid room_id: {e}")))?;
+
         let uid = UserId::from_string(user_id.to_string());
         let rid = RoomId::from_string(room_id.to_string());
 
@@ -250,6 +263,9 @@ impl ClientApiImpl {
         user_id: &str,
         room_id: &str,
     ) -> Result<crate::proto::client::DeleteRoomResponse, ApiError> {
+        crate::http::validation::validate_id(room_id, "room_id")
+            .map_err(|e| ApiError::InvalidInput(format!("Invalid room_id: {e}")))?;
+
         let uid = UserId::from_string(user_id.to_string());
         let rid = RoomId::from_string(room_id.to_string());
 

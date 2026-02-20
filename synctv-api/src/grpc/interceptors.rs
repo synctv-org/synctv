@@ -55,6 +55,12 @@ impl AuthInterceptor {
 
     /// Inject `UserContext` - validates JWT and extracts `user_id` + `iat`
     /// Used for `UserService` and `AdminService`
+    ///
+    /// SAFETY INVARIANT: `BlacklistCheckLayer` (tower middleware in `blacklist_layer.rs`)
+    /// MUST run before this interceptor in the gRPC pipeline. The layer performs async
+    /// security checks (password invalidation, banned/deleted user checks) that cannot
+    /// be done in a synchronous interceptor. If the ordering is wrong, revoked tokens
+    /// or banned users will bypass those checks.
     #[allow(clippy::result_large_err)]
     pub fn inject_user<T>(&self, mut request: Request<T>) -> Result<Request<T>, Status> {
         // Extract and validate the bearer token
@@ -274,28 +280,19 @@ pub enum GrpcRateLimitTier {
 impl GrpcRateLimitTier {
     /// Maximum requests per window for this tier.
     ///
-    /// # Per-Instance Scaling Note
+    /// These values are intentionally set to **1/10th** of the equivalent HTTP
+    /// rate limit tiers:
     ///
-    /// These values are used by both the synchronous `GrpcRateLimitInterceptor`
-    /// (in-memory, per-instance) and the async `GrpcRateLimitLayer` (Redis-backed,
-    /// distributed).  The values are intentionally set to **1/10th** of the
-    /// equivalent HTTP rate limit tiers:
+    /// - Auth (HTTP: 50/min)   → gRPC: 5/min
+    /// - Email (HTTP: 50/min)  → gRPC: 5/min
+    /// - Media (HTTP: 200/min) → gRPC: 20/min
+    /// - Write (HTTP: 300/min) → gRPC: 30/min
+    /// - Admin (HTTP: 300/min) → gRPC: 30/min
+    /// - Read  (HTTP: 1000/min)→ gRPC: 100/min
     ///
-    /// - Auth (HTTP: 50/min)   → gRPC: 5/min  per instance
-    /// - Email (HTTP: 50/min)  → gRPC: 5/min  per instance
-    /// - Media (HTTP: 200/min) → gRPC: 20/min per instance
-    /// - Write (HTTP: 300/min) → gRPC: 30/min per instance
-    /// - Admin (HTTP: 300/min) → gRPC: 30/min per instance
-    /// - Read  (HTTP: 1000/min)→ gRPC: 100/min per instance
-    ///
-    /// For the async `GrpcRateLimitLayer` (tower middleware), the Redis-backed
-    /// distributed limiter shares a single counter across all replicas, so the
-    /// configured value IS the global limit.
-    ///
-    /// For the synchronous `GrpcRateLimitInterceptor`, each replica enforces
-    /// the limit independently.  In a 10-replica cluster the effective global
-    /// limit would be `10 × max_requests`.  The 1/10th reduction compensates
-    /// for this so that the global gRPC limit stays roughly aligned with HTTP.
+    /// The async `GrpcRateLimitLayer` (tower middleware) uses a Redis-backed
+    /// distributed limiter that shares a single counter across all replicas,
+    /// so the configured value IS the global limit.
     pub(crate) const fn max_requests(self) -> u32 {
         match self {
             Self::Auth => 5,
@@ -317,199 +314,6 @@ impl GrpcRateLimitTier {
             Self::Admin => "admin",
             Self::Read => "read",
         }
-    }
-}
-
-/// gRPC rate limit interceptor using the in-memory governor limiter.
-///
-/// Applies per-client, per-tier rate limiting at the transport level, matching
-/// the HTTP middleware rate limiting tiers. Uses the synchronous
-/// in-memory rate limiter since tonic interceptors cannot be async.
-///
-/// Each gRPC service is registered with a specific `GrpcRateLimitTier`,
-/// ensuring that auth endpoints (5/min) cannot be abused at the rate of
-/// read endpoints (100/min).
-///
-/// Rate limit tiers (aligned with HTTP):
-/// - Auth endpoints: 5 req/min
-/// - Email endpoints: 5 req/min
-/// - Media endpoints: 20 req/min
-/// - Write endpoints: 30 req/min
-/// - Admin endpoints: 30 req/min
-/// - Read endpoints: 100 req/min
-#[derive(Clone)]
-pub struct GrpcRateLimitInterceptor {
-    rate_limiter: Arc<synctv_core::service::RateLimiter>,
-    /// Rate limit tier for this interceptor instance
-    tier: GrpcRateLimitTier,
-    /// Window in seconds
-    window_seconds: u64,
-    /// Trusted proxy CIDRs/IPs for X-Forwarded-For validation.
-    /// Only requests from these addresses may have their forwarded headers trusted.
-    trusted_proxies: Arc<Vec<String>>,
-}
-
-impl GrpcRateLimitInterceptor {
-    /// Create a new rate limit interceptor for a specific tier.
-    ///
-    /// Each gRPC service should use its own interceptor with the appropriate tier.
-    /// `trusted_proxies` controls whether X-Forwarded-For
-    /// and X-Real-IP headers are trusted (matching the HTTP middleware pattern).
-    #[must_use]
-    pub fn new(
-        rate_limiter: synctv_core::service::RateLimiter,
-        tier: GrpcRateLimitTier,
-        window_seconds: u64,
-        trusted_proxies: Vec<String>,
-    ) -> Self {
-        Self {
-            rate_limiter: Arc::new(rate_limiter),
-            tier,
-            window_seconds,
-            trusted_proxies: Arc::new(trusted_proxies),
-        }
-    }
-
-    /// Create a new interceptor instance for a different tier, sharing the
-    /// same underlying rate limiter and proxy configuration.
-    #[must_use]
-    pub fn with_tier(&self, tier: GrpcRateLimitTier) -> Self {
-        Self {
-            rate_limiter: Arc::clone(&self.rate_limiter),
-            tier,
-            window_seconds: self.window_seconds,
-            trusted_proxies: Arc::clone(&self.trusted_proxies),
-        }
-    }
-
-    /// Check if an IP address is from a trusted proxy.
-    ///
-    /// Mirrors `ServerConfig::is_trusted_proxy` logic for use in the interceptor.
-    fn is_trusted_proxy(&self, ip: &std::net::IpAddr) -> bool {
-        if self.trusted_proxies.is_empty() {
-            return false;
-        }
-        for proxy in self.trusted_proxies.iter() {
-            if let Ok(network) = proxy.parse::<ipnet::IpNet>() {
-                if network.contains(ip) {
-                    return true;
-                }
-            }
-            if let Ok(proxy_ip) = proxy.parse::<std::net::IpAddr>() {
-                if &proxy_ip == ip {
-                    return true;
-                }
-            }
-        }
-        false
-    }
-
-    /// Extract a stable client identifier from the request.
-    ///
-    /// Priority:
-    /// 1. SHA-256 hash of JWT bearer token (authenticated users)
-    /// 2. Client IP from X-Forwarded-For or X-Real-IP headers (only if from a trusted proxy
-    ///    or development mode is enabled)
-    /// 3. Peer IP address (direct connection)
-    /// 4. "anon:unknown" fallback (shared bucket; logs warning about misconfiguration)
-    fn extract_client_id<T>(&self, request: &Request<T>) -> String {
-        // 1. Try authenticated user first
-        if let Some(id) = request
-            .metadata()
-            .get("authorization")
-            .and_then(|v| v.to_str().ok())
-            .and_then(|s| {
-                JwtValidator::extract_bearer_token(s).ok().map(|token| {
-                    let hash = Sha256::digest(token.as_bytes());
-                    format!("user:{hash:x}")
-                })
-            })
-        {
-            return id;
-        }
-
-        // 2. Get the peer (socket) IP to check if it's a trusted proxy
-        let peer_ip = request.remote_addr().map(|addr| addr.ip());
-
-        let should_trust_headers = peer_ip.is_some_and(|ip| self.is_trusted_proxy(&ip));
-
-        if should_trust_headers {
-            // Try X-Forwarded-For first (first IP is the original client)
-            if let Some(ip) = request
-                .metadata()
-                .get("x-forwarded-for")
-                .and_then(|v| v.to_str().ok())
-                .and_then(|v| v.split(',').next())
-                .map(|ip| ip.trim().to_string())
-            {
-                return format!("anon:{ip}");
-            }
-            // Try X-Real-IP header
-            if let Some(ip) = request
-                .metadata()
-                .get("x-real-ip")
-                .and_then(|v| v.to_str().ok())
-            {
-                return format!("anon:{}", ip.trim());
-            }
-        }
-
-        // 3. Fall back to peer IP address (direct connection)
-        if let Some(ip) = peer_ip {
-            return format!("anon:{ip}");
-        }
-
-        // 4. No client identifier available
-        warn!(
-            "Rate limit: no client identifier available (no Authorization, X-Forwarded-For, X-Real-IP, or peer address). \
-             Falling back to shared 'anon:unknown' bucket. \
-             Configure trusted_proxies and ensure your reverse proxy sets X-Forwarded-For."
-        );
-        "anon:unknown".to_string()
-    }
-
-    /// Apply rate limiting to a gRPC request.
-    ///
-    /// Uses the tier configured for this interceptor instance to determine the
-    /// rate limit. Each client gets independent buckets per tier so that, e.g.,
-    /// auth requests (5/min) don't consume read quota (100/min).
-    #[allow(clippy::result_large_err)]
-    pub fn check<T>(&self, request: Request<T>) -> Result<Request<T>, Status> {
-        let client_id = self.extract_client_id(&request);
-
-        // Include tier in the rate limit key so each tier has its own bucket
-        let rate_key = format!("{}:{}", client_id, self.tier.key_suffix());
-
-        if let Err(_e) = self.rate_limiter.check_rate_limit_sync(
-            &rate_key,
-            self.tier.max_requests(),
-            self.window_seconds,
-        ) {
-            warn!(
-                client_id = %client_id,
-                tier = ?self.tier,
-                max_requests = self.tier.max_requests(),
-                "gRPC rate limit exceeded (per-instance in-memory limiter)"
-            );
-            synctv_core::metrics::rate_limit::RATE_LIMIT_REJECTIONS_TOTAL
-                .with_label_values(&["grpc_memory", self.tier.key_suffix()])
-                .inc();
-            return Err(Status::resource_exhausted(
-                "Rate limit exceeded. Please retry later.",
-            ));
-        }
-
-        Ok(request)
-    }
-}
-
-impl Debug for GrpcRateLimitInterceptor {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("GrpcRateLimitInterceptor")
-            .field("tier", &self.tier)
-            .field("max_requests", &self.tier.max_requests())
-            .field("window_seconds", &self.window_seconds)
-            .finish()
     }
 }
 

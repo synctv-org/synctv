@@ -180,7 +180,7 @@ impl EmbyClient {
                     .send()
                     .await?;
 
-                let response = check_response(response)?;
+                let response = check_response(response).await?;
                 let json: Value = json_with_limit(response).await?;
                 let items = json["Items"].as_array()
                     .ok_or_else(|| EmbyError::Parse("Missing Items array".to_string()))?;
@@ -219,7 +219,7 @@ impl EmbyClient {
                     .send()
                     .await?;
 
-                let response = check_response(response)?;
+                let response = check_response(response).await?;
                 let user: UserInfo = json_with_limit(response).await?;
                 Ok(user)
             }
@@ -269,7 +269,7 @@ impl EmbyClient {
                     .send()
                     .await?;
 
-                let response = check_response(response)?;
+                let response = check_response(response).await?;
                 let items: ItemsResponse = json_with_limit(response).await?;
                 Ok(items)
             }
@@ -295,7 +295,7 @@ impl EmbyClient {
                     .send()
                     .await?;
 
-                let response = check_response(response)?;
+                let response = check_response(response).await?;
                 let info: SystemInfo = json_with_limit(response).await?;
                 Ok(info)
             }
@@ -324,15 +324,26 @@ impl EmbyClient {
         // Get user views (libraries) if no path specified
         if path.is_none() && search_term.is_none() {
             let url = format!("{}{}/Users/{}/Views", self.host, prefix, url_encode(user_id));
-            let response = self
-                .client
-                .get(&url)
-                .headers(self.build_headers()?)
-                .send()
-                .await?;
+            let headers = self.build_headers()?;
+            let client = self.client.clone();
 
-            let response = check_response(response)?;
-            let views: ItemsResponse = json_with_limit(response).await?;
+            let views: ItemsResponse = with_retry(|| {
+                let url = url.clone();
+                let headers = headers.clone();
+                let client = client.clone();
+                async move {
+                    let response = client
+                        .get(&url)
+                        .headers(headers)
+                        .send()
+                        .await?;
+
+                    let response = check_response(response).await?;
+                    let views: ItemsResponse = json_with_limit(response).await?;
+                    Ok(views)
+                }
+            }).await?;
+
             return Ok(FsListResponse {
                 items: views.items,
                 paths: vec![PathInfo {
@@ -357,15 +368,25 @@ impl EmbyClient {
             url.push_str(&format!("&SearchTerm={}&Recursive=true", url_encode(term)));
         }
 
-        let response = self
-            .client
-            .get(&url)
-            .headers(self.build_headers()?)
-            .send()
-            .await?;
+        let headers = self.build_headers()?;
+        let client = self.client.clone();
 
-        let response = check_response(response)?;
-        let items: ItemsResponse = json_with_limit(response).await?;
+        let items: ItemsResponse = with_retry(|| {
+            let url = url.clone();
+            let headers = headers.clone();
+            let client = client.clone();
+            async move {
+                let response = client
+                    .get(&url)
+                    .headers(headers)
+                    .send()
+                    .await?;
+
+                let response = check_response(response).await?;
+                let items: ItemsResponse = json_with_limit(response).await?;
+                Ok(items)
+            }
+        }).await?;
 
         let mut paths = vec![PathInfo {
             name: "Home".to_string(),
@@ -461,7 +482,7 @@ impl EmbyClient {
                     .send()
                     .await?;
 
-                let response = check_response(response)?;
+                let response = check_response(response).await?;
                 let playback_info: PlaybackInfoResponse = json_with_limit(response).await?;
                 Ok(playback_info)
             }

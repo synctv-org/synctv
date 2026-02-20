@@ -123,12 +123,11 @@ impl NotificationApiImpl {
         self.notification_service
             .get(user_id, notification_id)
             .await
-            .map_err(|e| {
-                if e.to_string().contains("not found") {
+            .map_err(|e| match e {
+                synctv_core::Error::NotFound(_) => {
                     ApiError::NotFound("Notification not found".to_string())
-                } else {
-                    ApiError::Internal(format!("Failed to get notification: {e}"))
                 }
+                other => ApiError::Internal(format!("Failed to get notification: {other}")),
             })
     }
 
@@ -167,12 +166,11 @@ impl NotificationApiImpl {
         self.notification_service
             .delete(user_id, notification_id)
             .await
-            .map_err(|e| {
-                if e.to_string().contains("not found") {
+            .map_err(|e| match e {
+                synctv_core::Error::NotFound(_) => {
                     ApiError::NotFound("Notification not found".to_string())
-                } else {
-                    ApiError::Internal(format!("Failed to delete notification: {e}"))
                 }
+                other => ApiError::Internal(format!("Failed to delete notification: {other}")),
             })
     }
 

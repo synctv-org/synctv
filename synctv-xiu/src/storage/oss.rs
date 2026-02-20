@@ -205,35 +205,32 @@ mod inner {
                 self.config.base_path.clone()
             };
 
-            // List all objects in base_path
+            // List objects and stat each one to get LastModified metadata.
+            // NOTE: opendal 0.55 does not support inline metadata on list
+            // (no `metakey` option), so a per-object stat() call is required.
+            // When upgrading opendal to a version that supports
+            // `lister_with().metakey(Metakey::LastModified)`, replace the
+            // stat() calls to reduce API requests from O(2N) to O(N).
             let lister = self.operator
                 .lister(&base_path)
                 .await
                 .map_err(|e| Error::other(format!("OSS list failed: {e}")))?;
 
-            // Iterate through objects and delete old ones
             use futures::TryStreamExt;
             let mut entries = lister;
             while let Some(entry) = entries.try_next().await
                 .map_err(|e| Error::other(format!("OSS list iteration failed: {e}")))? {
 
                 let path = entry.path();
+                let metadata = self.operator.stat(path).await
+                    .map_err(|e| Error::other(format!("OSS stat failed for {path}: {e}")))?;
 
-                // Get object metadata to check last modified time
-                match self.operator.stat(path).await {
-                    Ok(metadata) => {
-                        if let Some(last_modified) = metadata.last_modified() {
-                            if last_modified < cutoff_time {
-                                // Object is older than cutoff, delete it
-                                if self.operator.delete(path).await.is_ok() {
-                                    deleted += 1;
-                                    tracing::trace!("Deleted expired OSS object: {}", path);
-                                }
-                            }
+                if let Some(last_modified) = metadata.last_modified() {
+                    if last_modified < cutoff_time {
+                        if self.operator.delete(path).await.is_ok() {
+                            deleted += 1;
+                            tracing::trace!("Deleted expired OSS object: {}", path);
                         }
-                    }
-                    Err(e) => {
-                        tracing::warn!("Failed to stat OSS object {}: {}", path, e);
                     }
                 }
             }

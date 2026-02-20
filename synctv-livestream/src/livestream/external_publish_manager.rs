@@ -162,6 +162,24 @@ impl ExternalPublishManager {
             return Ok(stream);
         }
 
+        // L-6: If get_existing returned None, the stream may be unhealthy.
+        // Explicitly remove any unhealthy entry from the pool before acquiring
+        // the creation lock. This ensures the stale entry is gone so the new
+        // stream creation path starts cleanly without waiting on the lock while
+        // a zombie entry remains visible to other callers.
+        if let Some(stale) = self.pool.streams.get(&stream_key) {
+            if !stale.lifecycle().is_healthy().await {
+                drop(stale);
+                if let Some((_, removed)) = self.pool.streams.remove(&stream_key) {
+                    warn!(
+                        "Removed unhealthy external publish stream for {}/{} before creation",
+                        room_id, media_id
+                    );
+                    let _ = removed.stop().await;
+                }
+            }
+        }
+
         // Acquire per-key creation lock
         let _guard = self.pool.acquire_creation_lock(&stream_key).await;
 
@@ -373,12 +391,15 @@ impl ExternalPublishStream {
 
         let handle = tokio::spawn(async move {
             info!("External publish task started for {}/{}", room_id, media_id);
-            let puller = match ExternalStreamPuller::new(
+            // S-2: Use new_async() for proper async DNS resolution and SSRF validation.
+            // This resolves the hostname at creation time and pins the resolved IP address,
+            // preventing DNS rebinding attacks during the connection phase.
+            let puller = match ExternalStreamPuller::new_async(
                 room_id.clone(),
                 media_id.clone(),
                 source_url,
                 stream_hub_sender,
-            ) {
+            ).await {
                 Ok(p) => p.with_confirm(confirm_tx).with_http_client(http_client),
                 Err(e) => {
                     let msg = format!("Failed to create puller for {room_id}/{media_id}: {e}");

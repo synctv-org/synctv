@@ -433,10 +433,15 @@ impl EmailService {
             .await
             .map_err(|e| Error::Internal(format!("Redis connection failed: {e}")))?;
 
-        // Lua script: atomically read, check expiry/attempts, increment, and return result
+        // Lua script: atomically read, check attempts, verify code, and return result.
+        //
+        // Expiry is handled by Redis TTL (set via SET EX in store_code), so
+        // there is no need for a Lua-side time comparison. Previously the script
+        // tried `tonumber(obj['created_at'])` which returned nil because chrono
+        // serialises DateTime as an ISO-8601 string, not numeric millis.
+        //
         // Returns:
-        //   -1 = key not found
-        //   -2 = expired
+        //   -1 = key not found (expired via TTL or never stored)
         //   -3 = too many attempts (deleted)
         //   -4 = wrong code (attempts incremented)
         //    1 = success (key deleted)
@@ -445,15 +450,8 @@ impl EmailService {
             local data = redis.call('GET', KEYS[1])
             if not data then return -1 end
             local obj = cjson.decode(data)
-            local created_ms = tonumber(obj['created_at'])
-            local now_ms = tonumber(ARGV[3])
-            local ttl_ms = tonumber(ARGV[2])
-            if now_ms > created_ms + ttl_ms then
-                redis.call('DEL', KEYS[1])
-                return -2
-            end
             obj['attempts'] = obj['attempts'] + 1
-            if obj['attempts'] > tonumber(ARGV[4]) then
+            if obj['attempts'] > tonumber(ARGV[2]) then
                 redis.call('DEL', KEYS[1])
                 return -3
             end
@@ -466,15 +464,9 @@ impl EmailService {
             ",
         );
 
-        let created_at_millis = Utc::now().timestamp_millis();
-        // We pass TTL in millis for comparison with created_at timestamp
-        let ttl_millis = self.code_ttl_minutes * 60 * 1000;
-
         let result: i64 = script
             .key(&key)
             .arg(code)
-            .arg(ttl_millis)
-            .arg(created_at_millis)
             .arg(self.max_attempts)
             .invoke_async(&mut conn)
             .await
@@ -482,45 +474,75 @@ impl EmailService {
 
         match result {
             1 => Ok(()),
-            -1 => Err(Error::InvalidInput("No verification code found".to_string())),
-            -2 => Err(Error::InvalidInput("Verification code expired".to_string())),
+            -1 => Err(Error::InvalidInput("No verification code found or code expired".to_string())),
             -3 => Err(Error::InvalidInput("Too many failed attempts".to_string())),
             -4 => Err(Error::InvalidInput("Invalid verification code".to_string())),
             _ => Err(Error::Internal("Unexpected verification result".to_string())),
         }
     }
 
-    /// Atomic verify for in-memory storage using moka cache
+    /// Atomic verify for in-memory storage using moka cache.
+    ///
+    /// Uses `entry_by_ref().and_compute_with()` for atomic read-modify-write to
+    /// prevent TOCTOU races where concurrent calls could both read the same
+    /// attempt count and bypass `max_attempts`. The closure runs under moka's
+    /// per-key lock, so concurrent verify calls for the same email are serialized.
     async fn verify_code_memory(&self, email: &str, code: &str) -> Result<()> {
-        let key = email.to_string();
+        use moka::ops::compute::Op;
 
-        let mut verification_code = self.local_codes.get(&key)
-            .ok_or_else(|| Error::InvalidInput("No verification code found".to_string()))?;
+        let max_attempts = self.max_attempts;
+        let ttl_minutes = self.code_ttl_minutes;
+        let code = code.to_string();
 
-        // Check if expired (moka handles TTL, but also check our own expiration)
-        let expiration = verification_code.created_at + Duration::minutes(self.code_ttl_minutes);
-        if Utc::now() > expiration {
-            self.local_codes.invalidate(&key);
-            return Err(Error::InvalidInput("Verification code expired".to_string()));
+        // Use a Mutex to communicate the verification error from the closure.
+        // The closure runs synchronously and completes before and_compute_with
+        // returns, so there is no contention, but Mutex satisfies Send.
+        let error_slot = std::sync::Mutex::new(Option::<Error>::None);
+
+        self.local_codes.entry_by_ref(email).and_compute_with(|maybe_entry| {
+            let Some(entry) = maybe_entry else {
+                *error_slot.lock().unwrap() = Some(Error::InvalidInput(
+                    "No verification code found".to_string(),
+                ));
+                return Op::Nop;
+            };
+
+            let mut vc = entry.into_value();
+
+            // Check if expired (moka TTL handles eviction, but also check our own)
+            let expiration = vc.created_at + Duration::minutes(ttl_minutes);
+            if Utc::now() > expiration {
+                *error_slot.lock().unwrap() = Some(Error::InvalidInput(
+                    "Verification code expired".to_string(),
+                ));
+                return Op::Remove;
+            }
+
+            // Increment and check attempts
+            vc.attempts += 1;
+            if vc.attempts > max_attempts {
+                *error_slot.lock().unwrap() = Some(Error::InvalidInput(
+                    "Too many failed attempts".to_string(),
+                ));
+                return Op::Remove;
+            }
+
+            // Wrong code: persist incremented attempt counter
+            if vc.code != code {
+                *error_slot.lock().unwrap() = Some(Error::InvalidInput(
+                    "Invalid verification code".to_string(),
+                ));
+                return Op::Put(vc);
+            }
+
+            // Success: remove code after successful verification
+            Op::Remove
+        });
+
+        match error_slot.into_inner().unwrap() {
+            Some(err) => Err(err),
+            None => Ok(()),
         }
-
-        // Check attempts
-        verification_code.attempts += 1;
-        if verification_code.attempts > self.max_attempts {
-            self.local_codes.invalidate(&key);
-            return Err(Error::InvalidInput("Too many failed attempts".to_string()));
-        }
-
-        // Verify code
-        if verification_code.code != code {
-            // Update the attempt count in the cache
-            self.local_codes.insert(key, verification_code);
-            return Err(Error::InvalidInput("Invalid verification code".to_string()));
-        }
-
-        // Remove code after successful verification
-        self.local_codes.invalidate(&key);
-        Ok(())
     }
 
     /// Send email using SMTP (deprecated - use `send_email_impl` instead)

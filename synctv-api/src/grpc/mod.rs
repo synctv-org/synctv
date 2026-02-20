@@ -383,7 +383,7 @@ pub async fn serve(grpc_config: GrpcServerConfig<'_>) -> anyhow::Result<()> {
     if let Some(_providers_mgr) = providers_manager {
         tracing::info!("Registering provider gRPC services");
 
-        // Create AppState for provider gRPC services
+        // Create provider instances for the gRPC services
         let provider_instance_manager_for_provider = _providers_mgr.instance_manager().clone();
         let alist_provider = Arc::new(AlistProvider::new(
             provider_instance_manager_for_provider.clone(),
@@ -398,16 +398,18 @@ pub async fn serve(grpc_config: GrpcServerConfig<'_>) -> anyhow::Result<()> {
         let provider_jwt_validator = Arc::new(synctv_core::service::auth::JwtValidator::new(
             Arc::new(jwt_service_for_provider.clone()),
         ));
-        let app_state = Arc::new(crate::http::AppState {
+
+        // Build a RouterConfig for provider gRPC services, sharing common fields
+        let provider_router_config = Arc::new(crate::http::RouterConfig {
             config: Arc::new(config.clone()),
-            user_service: user_service_for_provider.clone(),
-            room_service: room_service_for_provider.clone(),
+            user_service: user_service_for_provider,
+            room_service: room_service_for_provider,
             provider_instance_manager: _providers_mgr.instance_manager().clone(),
             user_provider_credential_repository: user_provider_credential_repository.clone(),
             alist_provider: alist_provider.clone(),
             bilibili_provider: bilibili_provider.clone(),
             emby_provider: emby_provider.clone(),
-            cluster_manager: None, // gRPC doesn't expose cluster_manager to HTTP
+            cluster_manager: None,
             connection_manager: Arc::new(connection_manager_for_provider.clone()),
             jwt_service: jwt_service_for_provider.clone(),
             redis_publish_tx: redis_publish_tx.clone(),
@@ -418,33 +420,29 @@ pub async fn serve(grpc_config: GrpcServerConfig<'_>) -> anyhow::Result<()> {
             email_token_service: None,
             publish_key_service: None,
             notification_service: None,
+            audit_service: audit_service.clone(),
             live_streaming_infrastructure: None,
             rate_limiter: rate_limiter_for_provider,
-            rate_limit_config: Arc::new(crate::http::middleware::RateLimitConfig::default()),
-            jwt_validator: provider_jwt_validator,
-            ws_ticket_service: None, // WebSocket ticket is HTTP-only
-            client_api: Arc::new(crate::impls::ClientApiImpl::new(
-                user_service_for_provider,
-                room_service_for_provider,
-                Arc::new(connection_manager_for_provider.clone()),
-                Arc::new(config.clone()),
-                None, // No publish_key_service for provider gRPC
-                jwt_service_for_provider.clone(),
-                None, // No live_streaming_infrastructure for provider gRPC
-                None, // No providers_manager for provider gRPC
-                None, // No settings_registry for provider gRPC
-            ).with_redis_publish_tx(redis_publish_tx.clone())
-             .with_redis_conn(redis_conn.clone())),
-            admin_api: None,
-            notification_api: None,
-            oauth2_api: None, // OAuth2 not used in provider gRPC
-            bilibili_api: Arc::new(crate::impls::BilibiliApiImpl::new(bilibili_provider)),
-            alist_api: Arc::new(crate::impls::AlistApiImpl::new(alist_provider)),
-            emby_api: Arc::new(crate::impls::EmbyApiImpl::new(emby_provider)),
+            ws_ticket_service: None,
             redis_conn: redis_conn.clone(),
+            builtin_stun_url: None,
+        });
+
+        // Reuse the already-constructed client_api and use actual rate limit config
+        let app_state = Arc::new(crate::http::AppState {
+            router_config: provider_router_config,
+            rate_limit_config: Arc::new(config.http_rate_limits.clone()),
+            jwt_validator: provider_jwt_validator,
             security_pipeline: Arc::new(synctv_core::service::SecurityPipeline::new(
                 user_service.clone(),
             )),
+            client_api: client_api.clone(),
+            admin_api: None,
+            notification_api: None,
+            oauth2_api: None,
+            bilibili_api: Arc::new(crate::impls::BilibiliApiImpl::new(bilibili_provider)),
+            alist_api: Arc::new(crate::impls::AlistApiImpl::new(alist_provider)),
+            emby_api: Arc::new(crate::impls::EmbyApiImpl::new(emby_provider)),
         });
 
         // Register provider gRPC services with auth interceptor

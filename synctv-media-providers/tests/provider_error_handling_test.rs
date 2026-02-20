@@ -32,6 +32,7 @@ fn test_error_display_http_with_retry_after() {
         status: reqwest::StatusCode::TOO_MANY_REQUESTS,
         url: "https://api.bilibili.com/test".to_string(),
         retry_after_secs: Some(30),
+        body: String::new(),
     };
     let msg = err.to_string();
     assert!(msg.contains("429"));
@@ -46,6 +47,7 @@ fn test_is_retryable_bad_gateway() {
         status: reqwest::StatusCode::BAD_GATEWAY,
         url: "https://example.com".to_string(),
         retry_after_secs: None,
+        body: String::new(),
     };
     assert!(err.is_retryable());
 }
@@ -56,6 +58,7 @@ fn test_is_retryable_service_unavailable() {
         status: reqwest::StatusCode::SERVICE_UNAVAILABLE,
         url: "https://example.com".to_string(),
         retry_after_secs: None,
+        body: String::new(),
     };
     assert!(err.is_retryable());
 }
@@ -66,6 +69,7 @@ fn test_is_retryable_gateway_timeout() {
         status: reqwest::StatusCode::GATEWAY_TIMEOUT,
         url: "https://example.com".to_string(),
         retry_after_secs: None,
+        body: String::new(),
     };
     assert!(err.is_retryable());
 }
@@ -76,6 +80,7 @@ fn test_is_not_retryable_bad_request() {
         status: reqwest::StatusCode::BAD_REQUEST,
         url: "https://example.com".to_string(),
         retry_after_secs: None,
+        body: String::new(),
     };
     assert!(!err.is_retryable());
 }
@@ -86,6 +91,7 @@ fn test_is_not_retryable_unauthorized() {
         status: reqwest::StatusCode::UNAUTHORIZED,
         url: "https://example.com".to_string(),
         retry_after_secs: None,
+        body: String::new(),
     };
     assert!(!err.is_retryable());
 }

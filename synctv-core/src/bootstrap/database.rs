@@ -13,6 +13,17 @@ use crate::resilience::timeout::DB_QUERY_TIMEOUT;
 ///
 /// Note: Migrations should be run separately by the binary crate.
 pub async fn init_database(config: &Config) -> Result<PgPool> {
+    init_database_with_cancel(config, None).await
+}
+
+/// Initialize database connection pool with an optional `CancellationToken`
+/// for graceful shutdown of the background pool metrics task.
+///
+/// If `cancel` is `None`, the metrics task runs until the process exits.
+pub async fn init_database_with_cancel(
+    config: &Config,
+    cancel: Option<tokio_util::sync::CancellationToken>,
+) -> Result<PgPool> {
     let database_url = config.database_url();
 
     // Log only host/port, not credentials
@@ -46,12 +57,23 @@ pub async fn init_database(config: &Config) -> Result<PgPool> {
     // Set database pool metrics
     crate::metrics::database::DB_POOL_SIZE_MAX.set(i64::from(config.database.max_connections));
 
-    // Spawn periodic task to update pool usage metrics
+    // Spawn periodic task to update pool usage metrics.
+    // Respects the CancellationToken for graceful shutdown.
     let pool_clone = pool.clone();
     crate::spawn::spawn_monitored("db_pool_metrics", async move {
         let mut ticker = tokio::time::interval(Duration::from_secs(15));
         loop {
-            ticker.tick().await;
+            if let Some(ref token) = cancel {
+                tokio::select! {
+                    _ = token.cancelled() => {
+                        tracing::debug!("DB pool metrics task cancelled");
+                        break;
+                    }
+                    _ = ticker.tick() => {}
+                }
+            } else {
+                ticker.tick().await;
+            }
             let size = i64::from(pool_clone.size());
             let idle = pool_clone.num_idle() as i64;
             crate::metrics::database::DB_CONNECTIONS_ACTIVE.set(size - idle);

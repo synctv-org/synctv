@@ -1,4 +1,4 @@
-use config::{Config as ConfigBuilder, ConfigError, Environment, File};
+use config::{Config as ConfigBuilder, ConfigError, File};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
@@ -627,15 +627,16 @@ impl Config {
             }
         }
 
-        // Override with environment variables (SYNCTV_JWT_SECRET, SYNCTV_DATABASE_URL, etc.)
-        builder = builder.add_source(
-            Environment::with_prefix("SYNCTV")
-                .separator("__")
-                .try_parsing(true),
-        );
-
         let config = builder.build()?;
-        config.try_deserialize()
+        let mut config: Self = config.try_deserialize()?;
+
+        // Apply SYNCTV_* environment variable overrides (single underscore format).
+        // We don't use the config crate's Environment source because its separator
+        // cannot distinguish nesting from underscores within field names.
+        // Instead, every SYNCTV_ env var is mapped explicitly here.
+        config.apply_env_overrides();
+
+        Ok(config)
     }
 
     /// Load from environment variables only (for Docker/K8s)
@@ -734,6 +735,170 @@ impl Config {
     #[must_use]
     pub fn advertise_http_address(&self) -> String {
         format!("{}:{}", self.advertise_host(), self.server.http_port)
+    }
+
+    /// Apply environment variable overrides using single-underscore format.
+    ///
+    /// Format: `SYNCTV_<SECTION>_<FIELD>=<value>`
+    ///
+    /// Examples:
+    /// - `SYNCTV_SERVER_HOST=0.0.0.0`
+    /// - `SYNCTV_DATABASE_URL=postgresql://...`
+    /// - `SYNCTV_SERVER_ADVERTISE_HOST=10.0.0.1`
+    fn apply_env_overrides(&mut self) {
+        // -- Server --
+        env_override_str("SYNCTV_SERVER_HOST", &mut self.server.host);
+        env_override_parse("SYNCTV_SERVER_GRPC_PORT", &mut self.server.grpc_port);
+        env_override_parse("SYNCTV_SERVER_HTTP_PORT", &mut self.server.http_port);
+        env_override_bool("SYNCTV_SERVER_ENABLE_REFLECTION", &mut self.server.enable_reflection);
+        env_override_bool("SYNCTV_SERVER_METRICS_ENABLED", &mut self.server.metrics_enabled);
+        env_override_csv("SYNCTV_SERVER_TRUSTED_PROXIES", &mut self.server.trusted_proxies);
+        env_override_json_or_csv("SYNCTV_SERVER_CORS_ALLOWED_ORIGINS", &mut self.server.cors_allowed_origins);
+        env_override_str("SYNCTV_SERVER_CLUSTER_SECRET", &mut self.server.cluster_secret);
+        env_override_str("SYNCTV_SERVER_ADVERTISE_HOST", &mut self.server.advertise_host);
+        env_override_parse("SYNCTV_SERVER_SHUTDOWN_DRAIN_TIMEOUT_SECONDS", &mut self.server.shutdown_drain_timeout_seconds);
+        env_override_bool("SYNCTV_SERVER_DISABLE_WS_TOKEN_QUERY", &mut self.server.disable_ws_token_query);
+
+        // -- Database --
+        env_override_str("SYNCTV_DATABASE_URL", &mut self.database.url);
+        env_override_parse("SYNCTV_DATABASE_MAX_CONNECTIONS", &mut self.database.max_connections);
+        env_override_parse("SYNCTV_DATABASE_MIN_CONNECTIONS", &mut self.database.min_connections);
+        env_override_parse("SYNCTV_DATABASE_CONNECT_TIMEOUT_SECONDS", &mut self.database.connect_timeout_seconds);
+        env_override_parse("SYNCTV_DATABASE_IDLE_TIMEOUT_SECONDS", &mut self.database.idle_timeout_seconds);
+        env_override_parse("SYNCTV_DATABASE_MAX_LIFETIME_SECONDS", &mut self.database.max_lifetime_seconds);
+
+        // -- Redis --
+        env_override_str("SYNCTV_REDIS_URL", &mut self.redis.url);
+        env_override_parse("SYNCTV_REDIS_CONNECT_TIMEOUT_SECONDS", &mut self.redis.connect_timeout_seconds);
+        env_override_str("SYNCTV_REDIS_KEY_PREFIX", &mut self.redis.key_prefix);
+        if let Ok(val) = std::env::var("SYNCTV_REDIS_DEPLOYMENT_MODE") {
+            match val.to_lowercase().as_str() {
+                "standalone" => self.redis.deployment_mode = RedisDeploymentMode::Standalone,
+                "sentinel" => self.redis.deployment_mode = RedisDeploymentMode::Sentinel,
+                "cluster" => self.redis.deployment_mode = RedisDeploymentMode::Cluster,
+                _ => {}
+            }
+        }
+        env_override_opt_str("SYNCTV_REDIS_SENTINEL_MASTER_NAME", &mut self.redis.sentinel_master_name);
+        env_override_csv("SYNCTV_REDIS_SENTINEL_ADDRESSES", &mut self.redis.sentinel_addresses);
+        env_override_csv("SYNCTV_REDIS_CLUSTER_NODES", &mut self.redis.cluster_nodes);
+
+        // -- JWT --
+        env_override_str("SYNCTV_JWT_SECRET", &mut self.jwt.secret);
+        env_override_parse("SYNCTV_JWT_ACCESS_TOKEN_DURATION_HOURS", &mut self.jwt.access_token_duration_hours);
+        env_override_parse("SYNCTV_JWT_REFRESH_TOKEN_DURATION_DAYS", &mut self.jwt.refresh_token_duration_days);
+        env_override_parse("SYNCTV_JWT_GUEST_TOKEN_DURATION_HOURS", &mut self.jwt.guest_token_duration_hours);
+        env_override_parse("SYNCTV_JWT_CLOCK_SKEW_LEEWAY_SECS", &mut self.jwt.clock_skew_leeway_secs);
+
+        // -- Logging --
+        env_override_str("SYNCTV_LOGGING_LEVEL", &mut self.logging.level);
+        env_override_str("SYNCTV_LOGGING_FORMAT", &mut self.logging.format);
+        env_override_opt_str("SYNCTV_LOGGING_FILE_PATH", &mut self.logging.file_path);
+
+        // -- Livestream --
+        env_override_parse("SYNCTV_LIVESTREAM_RTMP_PORT", &mut self.livestream.rtmp_port);
+        env_override_parse("SYNCTV_LIVESTREAM_GOP_CACHE_SIZE", &mut self.livestream.gop_cache_size);
+        env_override_parse("SYNCTV_LIVESTREAM_STREAM_TIMEOUT_SECONDS", &mut self.livestream.stream_timeout_seconds);
+        env_override_parse("SYNCTV_LIVESTREAM_CLEANUP_CHECK_INTERVAL_SECONDS", &mut self.livestream.cleanup_check_interval_seconds);
+        env_override_parse("SYNCTV_LIVESTREAM_PULL_MAX_RETRIES", &mut self.livestream.pull_max_retries);
+        env_override_parse("SYNCTV_LIVESTREAM_PULL_INITIAL_BACKOFF_MS", &mut self.livestream.pull_initial_backoff_ms);
+        env_override_parse("SYNCTV_LIVESTREAM_PULL_MAX_BACKOFF_MS", &mut self.livestream.pull_max_backoff_ms);
+        env_override_parse("SYNCTV_LIVESTREAM_MAX_FLV_TAG_SIZE_BYTES", &mut self.livestream.max_flv_tag_size_bytes);
+        env_override_parse("SYNCTV_LIVESTREAM_GOP_CACHE_MAX_MEMORY_MB", &mut self.livestream.gop_cache_max_memory_mb);
+        env_override_bool("SYNCTV_LIVESTREAM_HLS_SHARED_STORAGE", &mut self.livestream.hls_shared_storage);
+        env_override_str("SYNCTV_LIVESTREAM_HLS_STORAGE_PATH", &mut self.livestream.hls_storage_path);
+
+        // -- Email --
+        env_override_str("SYNCTV_EMAIL_SMTP_HOST", &mut self.email.smtp_host);
+        env_override_parse("SYNCTV_EMAIL_SMTP_PORT", &mut self.email.smtp_port);
+        env_override_str("SYNCTV_EMAIL_SMTP_USERNAME", &mut self.email.smtp_username);
+        env_override_str("SYNCTV_EMAIL_SMTP_PASSWORD", &mut self.email.smtp_password);
+        env_override_str("SYNCTV_EMAIL_FROM_EMAIL", &mut self.email.from_email);
+        env_override_str("SYNCTV_EMAIL_FROM_NAME", &mut self.email.from_name);
+        env_override_bool("SYNCTV_EMAIL_USE_TLS", &mut self.email.use_tls);
+
+        // -- OAuth2 --
+        env_override_str("SYNCTV_OAUTH2_REDIRECT_SCHEME", &mut self.oauth2.redirect_scheme);
+
+        // -- Media Providers --
+        env_override_parse("SYNCTV_MEDIA_PROVIDERS_REQUEST_TIMEOUT_SECONDS", &mut self.media_providers.request_timeout_seconds);
+        env_override_parse("SYNCTV_MEDIA_PROVIDERS_CONNECT_TIMEOUT_SECONDS", &mut self.media_providers.connect_timeout_seconds);
+
+        // -- WebRTC --
+        if let Ok(val) = std::env::var("SYNCTV_WEBRTC_MODE") {
+            match val.to_lowercase().as_str() {
+                "signaling_only" => self.webrtc.mode = WebRTCMode::SignalingOnly,
+                "peer_to_peer" => self.webrtc.mode = WebRTCMode::PeerToPeer,
+                _ => {}
+            }
+        }
+        env_override_bool("SYNCTV_WEBRTC_ENABLE_BUILTIN_STUN", &mut self.webrtc.enable_builtin_stun);
+        env_override_parse("SYNCTV_WEBRTC_STUN_PORT", &mut self.webrtc.stun_port);
+        env_override_str("SYNCTV_WEBRTC_STUN_HOST", &mut self.webrtc.stun_host);
+        env_override_str("SYNCTV_WEBRTC_STUN_EXTERNAL_ADDR", &mut self.webrtc.stun_external_addr);
+        env_override_str("SYNCTV_WEBRTC_TURN_SHARED_SECRET", &mut self.webrtc.turn_shared_secret);
+        env_override_json_or_csv("SYNCTV_WEBRTC_TURN_SERVER_URLS", &mut self.webrtc.turn_server_urls);
+        env_override_parse("SYNCTV_WEBRTC_TURN_CREDENTIAL_TTL_SECONDS", &mut self.webrtc.turn_credential_ttl_seconds);
+        env_override_bool("SYNCTV_WEBRTC_FILTER_PRIVATE_ICE_CANDIDATES", &mut self.webrtc.filter_private_ice_candidates);
+
+        // -- Connection Limits --
+        env_override_parse("SYNCTV_CONNECTION_LIMITS_MAX_PER_USER", &mut self.connection_limits.max_per_user);
+        env_override_parse("SYNCTV_CONNECTION_LIMITS_MAX_PER_ROOM", &mut self.connection_limits.max_per_room);
+        env_override_parse("SYNCTV_CONNECTION_LIMITS_MAX_TOTAL", &mut self.connection_limits.max_total);
+        env_override_parse("SYNCTV_CONNECTION_LIMITS_IDLE_TIMEOUT_SECONDS", &mut self.connection_limits.idle_timeout_seconds);
+        env_override_parse("SYNCTV_CONNECTION_LIMITS_MAX_DURATION_SECONDS", &mut self.connection_limits.max_duration_seconds);
+        env_override_parse("SYNCTV_CONNECTION_LIMITS_WS_MESSAGE_RATE_LIMIT_PER_SECOND", &mut self.connection_limits.ws_message_rate_limit_per_second);
+
+        // -- Bootstrap --
+        env_override_bool("SYNCTV_BOOTSTRAP_CREATE_ROOT_USER", &mut self.bootstrap.create_root_user);
+        env_override_str("SYNCTV_BOOTSTRAP_ROOT_USERNAME", &mut self.bootstrap.root_username);
+        env_override_str("SYNCTV_BOOTSTRAP_ROOT_PASSWORD", &mut self.bootstrap.root_password);
+
+        // -- Cluster --
+        env_override_bool("SYNCTV_CLUSTER_ENABLED", &mut self.cluster.enabled);
+        env_override_parse("SYNCTV_CLUSTER_CRITICAL_CHANNEL_CAPACITY", &mut self.cluster.critical_channel_capacity);
+        env_override_parse("SYNCTV_CLUSTER_PUBLISH_CHANNEL_CAPACITY", &mut self.cluster.publish_channel_capacity);
+        env_override_str("SYNCTV_CLUSTER_DISCOVERY_MODE", &mut self.cluster.discovery_mode);
+        env_override_str("SYNCTV_CLUSTER_LEADER_ELECTION_MODE", &mut self.cluster.leader_election_mode);
+        env_override_csv("SYNCTV_CLUSTER_PEERS", &mut self.cluster.peers);
+        env_override_parse("SYNCTV_CLUSTER_CATCHUP_WINDOW_SECS", &mut self.cluster.catchup_window_secs);
+
+        // -- Password Complexity --
+        env_override_parse("SYNCTV_PASSWORD_COMPLEXITY_MIN_LENGTH", &mut self.password_complexity.min_length);
+        env_override_bool("SYNCTV_PASSWORD_COMPLEXITY_REQUIRE_UPPERCASE", &mut self.password_complexity.require_uppercase);
+        env_override_bool("SYNCTV_PASSWORD_COMPLEXITY_REQUIRE_LOWERCASE", &mut self.password_complexity.require_lowercase);
+        env_override_bool("SYNCTV_PASSWORD_COMPLEXITY_REQUIRE_DIGIT", &mut self.password_complexity.require_digit);
+        env_override_bool("SYNCTV_PASSWORD_COMPLEXITY_REQUIRE_SPECIAL", &mut self.password_complexity.require_special);
+        env_override_parse("SYNCTV_PASSWORD_COMPLEXITY_MAX_REPEATED_CHARS", &mut self.password_complexity.max_repeated_chars);
+
+        // -- Buffer Sizes --
+        env_override_parse("SYNCTV_BUFFER_SIZES_WEBSOCKET_OUTBOUND", &mut self.buffer_sizes.websocket_outbound);
+        env_override_parse("SYNCTV_BUFFER_SIZES_AUDIT_BUFFER", &mut self.buffer_sizes.audit_buffer);
+
+        // -- Cache --
+        env_override_parse("SYNCTV_CACHE_L1_CAPACITY", &mut self.cache.l1_capacity);
+        env_override_parse("SYNCTV_CACHE_L1_TTL_SECONDS", &mut self.cache.l1_ttl_seconds);
+        env_override_parse("SYNCTV_CACHE_L2_TTL_SECONDS", &mut self.cache.l2_ttl_seconds);
+        env_override_parse("SYNCTV_CACHE_USERNAME_CACHE_CAPACITY", &mut self.cache.username_cache_capacity);
+        env_override_parse("SYNCTV_CACHE_USERNAME_CACHE_TTL_SECONDS", &mut self.cache.username_cache_ttl_seconds);
+        env_override_parse("SYNCTV_CACHE_PERMISSION_CACHE_CAPACITY", &mut self.cache.permission_cache_capacity);
+        env_override_parse("SYNCTV_CACHE_PERMISSION_CACHE_TTL_SECONDS", &mut self.cache.permission_cache_ttl_seconds);
+
+        // -- HTTP Rate Limits --
+        env_override_parse("SYNCTV_HTTP_RATE_LIMITS_AUTH_MAX_REQUESTS", &mut self.http_rate_limits.auth_max_requests);
+        env_override_parse("SYNCTV_HTTP_RATE_LIMITS_AUTH_WINDOW_SECONDS", &mut self.http_rate_limits.auth_window_seconds);
+        env_override_parse("SYNCTV_HTTP_RATE_LIMITS_WRITE_MAX_REQUESTS", &mut self.http_rate_limits.write_max_requests);
+        env_override_parse("SYNCTV_HTTP_RATE_LIMITS_WRITE_WINDOW_SECONDS", &mut self.http_rate_limits.write_window_seconds);
+        env_override_parse("SYNCTV_HTTP_RATE_LIMITS_READ_MAX_REQUESTS", &mut self.http_rate_limits.read_max_requests);
+        env_override_parse("SYNCTV_HTTP_RATE_LIMITS_READ_WINDOW_SECONDS", &mut self.http_rate_limits.read_window_seconds);
+        env_override_parse("SYNCTV_HTTP_RATE_LIMITS_MEDIA_MAX_REQUESTS", &mut self.http_rate_limits.media_max_requests);
+        env_override_parse("SYNCTV_HTTP_RATE_LIMITS_MEDIA_WINDOW_SECONDS", &mut self.http_rate_limits.media_window_seconds);
+        env_override_parse("SYNCTV_HTTP_RATE_LIMITS_ADMIN_MAX_REQUESTS", &mut self.http_rate_limits.admin_max_requests);
+        env_override_parse("SYNCTV_HTTP_RATE_LIMITS_ADMIN_WINDOW_SECONDS", &mut self.http_rate_limits.admin_window_seconds);
+        env_override_parse("SYNCTV_HTTP_RATE_LIMITS_STREAMING_MAX_REQUESTS", &mut self.http_rate_limits.streaming_max_requests);
+        env_override_parse("SYNCTV_HTTP_RATE_LIMITS_STREAMING_WINDOW_SECONDS", &mut self.http_rate_limits.streaming_window_seconds);
+        env_override_parse("SYNCTV_HTTP_RATE_LIMITS_WEBSOCKET_MAX_REQUESTS", &mut self.http_rate_limits.websocket_max_requests);
+        env_override_parse("SYNCTV_HTTP_RATE_LIMITS_WEBSOCKET_WINDOW_SECONDS", &mut self.http_rate_limits.websocket_window_seconds);
     }
 
     /// Validate configuration at startup (fail fast on misconfigurations)
@@ -1036,6 +1201,64 @@ impl Config {
             Ok(())
         } else {
             Err(errors)
+        }
+    }
+}
+
+// --- Environment variable override helpers (single underscore format) ---
+
+fn env_override_str(name: &str, target: &mut String) {
+    if let Ok(val) = std::env::var(name) {
+        *target = val;
+    }
+}
+
+fn env_override_opt_str(name: &str, target: &mut Option<String>) {
+    if let Ok(val) = std::env::var(name) {
+        *target = Some(val);
+    }
+}
+
+fn env_override_parse<T: std::str::FromStr>(name: &str, target: &mut T) {
+    if let Ok(val) = std::env::var(name) {
+        if let Ok(parsed) = val.parse() {
+            *target = parsed;
+        }
+    }
+}
+
+fn env_override_bool(name: &str, target: &mut bool) {
+    if let Ok(val) = std::env::var(name) {
+        match val.to_lowercase().as_str() {
+            "true" | "1" | "yes" => *target = true,
+            "false" | "0" | "no" => *target = false,
+            _ => {}
+        }
+    }
+}
+
+fn env_override_csv(name: &str, target: &mut Vec<String>) {
+    if let Ok(val) = std::env::var(name) {
+        *target = val
+            .split(',')
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect();
+    }
+}
+
+fn env_override_json_or_csv(name: &str, target: &mut Vec<String>) {
+    if let Ok(val) = std::env::var(name) {
+        // Try JSON array first (e.g., '["https://app.example.com"]')
+        if let Ok(parsed) = serde_json::from_str::<Vec<String>>(&val) {
+            *target = parsed;
+        } else {
+            // Fall back to comma-separated
+            *target = val
+                .split(',')
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect();
         }
     }
 }

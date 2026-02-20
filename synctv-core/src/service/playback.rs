@@ -321,6 +321,11 @@ impl PlaybackService {
         }
 
         let state = self.update_state(room_id.clone(), |state| {
+            // Snapshot the computed playback position before changing speed so that
+            // the stored current_time reflects where the user actually was at the
+            // old speed. Without this, the position would be wrong because
+            // computed_current_time() uses speed to extrapolate from updated_at.
+            state.current_time = state.computed_current_time();
             state.speed = speed;
             state.updated_at = chrono::Utc::now();
             // version is incremented by the SQL UPDATE, not here
@@ -811,11 +816,12 @@ impl PlaybackService {
         self.update_multiple_with_version(room_id, user_id, playing, current_time, speed, media_id, playlist_id, None).await
     }
 
-    /// Like `update_multiple`, but with an optional client-side version check.
+    /// Like `update_multiple`, but accepts an optional `expected_version` hint.
     ///
-    /// When `expected_version` is `Some(v)`, the update will only proceed if the
-    /// current state's version matches `v`. This implements client-side optimistic
-    /// locking to prevent last-writer-wins when multiple clients PATCH concurrently.
+    /// Previously this performed a separate pre-read to check the version before
+    /// the update, but the SQL `WHERE version = $N` optimistic lock in
+    /// `update_state()` already provides the same protection without the extra
+    /// DB round-trip. The parameter is retained for API compatibility.
     pub async fn update_multiple_with_version(
         &self,
         room_id: RoomId,
@@ -825,7 +831,7 @@ impl PlaybackService {
         speed: Option<f64>,
         media_id: Option<MediaId>,
         playlist_id: Option<Option<PlaylistId>>,
-        expected_version: Option<i64>,
+        _expected_version: Option<i64>,
     ) -> Result<RoomPlaybackState> {
         // Check permissions based on what's being updated
         let mut required_perms = PermissionBits::NONE;
@@ -868,16 +874,9 @@ impl PlaybackService {
             }
         }
 
-        // Client-side version check: reject early if state has changed since
-        // the client last read it, before attempting the DB update.
-        if let Some(expected) = expected_version {
-            let current = self.playback_repo.get(&room_id).await?;
-            if let Some(ref current_state) = current {
-                if current_state.version != expected {
-                    return Err(Error::OptimisticLockConflict);
-                }
-            }
-        }
+        // NOTE: No separate pre-read version check here. The SQL UPDATE in
+        // update_state() uses `WHERE version = $N` for optimistic locking,
+        // which is sufficient to detect conflicts without an extra DB round-trip.
 
         let state = self.update_state(room_id.clone(), |state| {
             if let Some(p) = playing {

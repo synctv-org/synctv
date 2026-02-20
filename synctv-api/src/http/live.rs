@@ -145,6 +145,8 @@ async fn handle_flv_stream(
     tokio::spawn(async move {
         let _guard = subscriber_guard; // held for the lifetime of this task
         let mut rx = rx;
+        let mut consecutive_drops: u32 = 0;
+        const MAX_CONSECUTIVE_DROPS: u32 = 100;
         // Periodic re-authentication interval (30s, matching WebSocket heartbeat frequency)
         let mut reauth_interval = tokio::time::interval(std::time::Duration::from_secs(30));
         reauth_interval.tick().await; // consume the immediate first tick
@@ -154,13 +156,25 @@ async fn handle_flv_stream(
                 data = rx.recv() => {
                     if let Some(chunk) = data {
                         match tx.try_send(chunk) {
-                            Ok(()) => {}
+                            Ok(()) => {
+                                consecutive_drops = 0;
+                            }
                             Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
                                 debug!("FLV client disconnected");
                                 break;
                             }
                             Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
-                                // Slow client - drop frame to prevent memory buildup
+                                consecutive_drops += 1;
+                                if consecutive_drops >= MAX_CONSECUTIVE_DROPS {
+                                    warn!(
+                                        user_id = %user_id_clone.as_str(),
+                                        room_id = %room_id_clone.as_str(),
+                                        consecutive_drops = consecutive_drops,
+                                        "FLV stream terminated: slow client exceeded {} consecutive frame drops",
+                                        MAX_CONSECUTIVE_DROPS
+                                    );
+                                    break;
+                                }
                             }
                         }
                     } else {

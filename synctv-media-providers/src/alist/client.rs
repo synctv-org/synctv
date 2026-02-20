@@ -103,36 +103,52 @@ impl AlistClient {
 
     /// Login to Alist server
     ///
-    /// Returns authentication token on success
-    pub async fn login(&mut self, username: &str, password: &str) -> Result<String, AlistError> {
+    /// Returns authentication token on success.
+    /// When `hashed` is true, uses the `/api/auth/login/hash` endpoint
+    /// which accepts a pre-hashed password.
+    pub async fn login(&mut self, username: &str, password: &str, hashed: bool) -> Result<String, AlistError> {
 
-        let url = format!("{}/api/auth/login", self.host);
+        let url = if hashed {
+            format!("{}/api/auth/login/hash", self.host)
+        } else {
+            format!("{}/api/auth/login", self.host)
+        };
         let body = json!({
             "username": username,
             "password": password,
         });
+        let headers = self.build_headers()?;
+        let client = self.client.clone();
 
-        let response = self
-            .client
-            .post(&url)
-            .headers(self.build_headers()?)
-            .json(&body)
-            .send()
-            .await?;
+        let token = with_retry(|| {
+            let url = url.clone();
+            let body = body.clone();
+            let headers = headers.clone();
+            let client = client.clone();
+            async move {
+                let response = client
+                    .post(&url)
+                    .headers(headers)
+                    .json(&body)
+                    .send()
+                    .await?;
 
-        let response = check_response(response)?;
-        let resp: AlistResp<LoginData> = json_with_limit(response).await?;
+                let response = check_response(response).await?;
+                let resp: AlistResp<LoginData> = json_with_limit(response).await?;
 
-        if resp.code != 200 {
-            return Err(AlistError::Api {
-                code: resp.code,
-                message: resp.message,
-            });
-        }
+                if resp.code != 200 {
+                    return Err(AlistError::Api {
+                        code: resp.code,
+                        message: resp.message,
+                    });
+                }
 
-        let token = resp.data
-            .ok_or_else(|| AlistError::Parse("Missing login data in response".to_string()))?
-            .token;
+                resp.data
+                    .ok_or_else(|| AlistError::Parse("Missing login data in response".to_string()))
+                    .map(|d| d.token)
+            }
+        }).await?;
+
         self.set_token(token.clone());
         Ok(token)
     }
@@ -166,7 +182,7 @@ impl AlistClient {
                     .send()
                     .await?;
 
-                let response = check_response(response)?;
+                let response = check_response(response).await?;
                 let resp: AlistResp<HttpFsGetResp> = json_with_limit(response).await?;
 
                 if resp.code != 200 {
@@ -221,7 +237,7 @@ impl AlistClient {
                     .send()
                     .await?;
 
-                let response = check_response(response)?;
+                let response = check_response(response).await?;
                 let resp: AlistResp<HttpFsListResp> = json_with_limit(response).await?;
 
                 if resp.code != 200 {
@@ -280,7 +296,7 @@ impl AlistClient {
                     .send()
                     .await?;
 
-                let response = check_response(response)?;
+                let response = check_response(response).await?;
                 let resp: AlistResp<HttpFsOtherResp> = json_with_limit(response).await?;
 
                 if resp.code != 200 {
@@ -315,7 +331,7 @@ impl AlistClient {
                     .send()
                     .await?;
 
-                let response = check_response(response)?;
+                let response = check_response(response).await?;
                 let resp: AlistResp<HttpMeResp> = json_with_limit(response).await?;
 
                 if resp.code != 200 {
@@ -394,7 +410,7 @@ impl AlistClient {
                     .send()
                     .await?;
 
-                let response = check_response(response)?;
+                let response = check_response(response).await?;
                 let resp: AlistResp<HttpFsSearchResp> = json_with_limit(response).await?;
 
                 if resp.code != 200 {

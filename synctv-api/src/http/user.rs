@@ -48,10 +48,6 @@ pub async fn update_user(
 ) -> AppResult<Json<serde_json::Value>> {
     // Check if username update is requested
     if let Some(ref username) = req.username {
-        if username.is_empty() {
-            return Err(super::AppError::bad_request("Username cannot be empty"));
-        }
-
         let set_username_req = SetUsernameRequest {
             new_username: username.clone(),
         };

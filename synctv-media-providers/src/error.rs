@@ -20,12 +20,14 @@ pub enum ProviderClientError {
     #[error("Network error: {0}")]
     Network(String),
 
-    #[error("HTTP error {status} for {url}")]
+    #[error("HTTP error {status} for {url}: {body}")]
     Http {
         status: reqwest::StatusCode,
         url: String,
         /// Retry-After header value in seconds (from HTTP 429 responses).
         retry_after_secs: Option<u64>,
+        /// Response body text for debugging (truncated to 1 KB).
+        body: String,
     },
 
     #[error("API error (code {code}): {message}")]
@@ -73,7 +75,7 @@ pub async fn json_with_limit<T: serde::de::DeserializeOwned>(
 ///
 /// For HTTP 429 responses, the `Retry-After` header is parsed and stored
 /// in the error so that callers can respect the server's backoff hint.
-pub fn check_response(resp: reqwest::Response) -> Result<reqwest::Response, ProviderClientError> {
+pub async fn check_response(resp: reqwest::Response) -> Result<reqwest::Response, ProviderClientError> {
     let status = resp.status();
     if status.is_client_error() || status.is_server_error() {
         let retry_after_secs = if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
@@ -84,10 +86,23 @@ pub fn check_response(resp: reqwest::Response) -> Result<reqwest::Response, Prov
         } else {
             None
         };
+        let url = resp.url().to_string();
+        // Read response body for debugging; truncate to 1 KB to avoid OOM.
+        let body = match resp.text().await {
+            Ok(text) => {
+                if text.len() > 1024 {
+                    format!("{}...(truncated)", &text[..1024])
+                } else {
+                    text
+                }
+            }
+            Err(_) => String::new(),
+        };
         return Err(ProviderClientError::Http {
             status,
-            url: resp.url().to_string(),
+            url,
             retry_after_secs,
+            body,
         });
     }
     Ok(resp)
@@ -173,8 +188,9 @@ mod tests {
             status: reqwest::StatusCode::NOT_FOUND,
             url: "https://example.com/api".to_string(),
             retry_after_secs: None,
+            body: "not found".to_string(),
         };
-        assert_eq!(err.to_string(), "HTTP error 404 Not Found for https://example.com/api");
+        assert_eq!(err.to_string(), "HTTP error 404 Not Found for https://example.com/api: not found");
     }
 
     #[test]
@@ -238,6 +254,7 @@ mod tests {
             status: reqwest::StatusCode::INTERNAL_SERVER_ERROR,
             url: "https://example.com".to_string(),
             retry_after_secs: None,
+            body: String::new(),
         };
         assert!(err.is_retryable());
     }
@@ -248,6 +265,7 @@ mod tests {
             status: reqwest::StatusCode::TOO_MANY_REQUESTS,
             url: "https://api.bilibili.com/x/player/wbi/playurl".to_string(),
             retry_after_secs: Some(5),
+            body: String::new(),
         };
         assert!(err.is_retryable(), "HTTP 429 should be retryable");
         // Verify retry_after_secs is captured
@@ -262,6 +280,7 @@ mod tests {
             status: reqwest::StatusCode::NOT_FOUND,
             url: "https://example.com".to_string(),
             retry_after_secs: None,
+            body: String::new(),
         };
         assert!(!err.is_retryable());
     }
@@ -272,6 +291,7 @@ mod tests {
             status: reqwest::StatusCode::FORBIDDEN,
             url: "https://example.com".to_string(),
             retry_after_secs: None,
+            body: String::new(),
         };
         assert!(!err.is_retryable());
     }

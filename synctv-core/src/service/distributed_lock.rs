@@ -102,6 +102,26 @@ impl DistributedLock {
         Self::new(redis)
     }
 
+    /// Create a new distributed lock service with deployment mode awareness.
+    ///
+    /// When `is_sentinel` is true, emits a startup warning about the split-brain
+    /// window during Sentinel failover. This is more reliable than URL-based
+    /// detection in `new_with_sentinel_check`.
+    pub fn new_with_mode(redis: RedisConnectionManager, is_sentinel: bool) -> Self {
+        if is_sentinel {
+            tracing::warn!(
+                "Distributed lock is running behind Redis Sentinel. \
+                 During a Sentinel failover, there is a brief split-brain window where \
+                 locks held on the old master may be lost because Redis replication is \
+                 asynchronous. Fencing tokens mitigate this for database writes, but \
+                 non-idempotent side effects (notifications, billing) cannot be fenced. \
+                 For production Sentinel deployments, consider using the Redlock algorithm \
+                 with multiple independent Redis masters."
+            );
+        }
+        Self::new(redis)
+    }
+
     /// Generate a fencing token for a lock key using Redis INCR
     ///
     /// Uses Redis INCR on a per-key counter to ensure monotonic tokens

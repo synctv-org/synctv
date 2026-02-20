@@ -7,10 +7,17 @@ use super::convert::user_to_proto;
 impl ClientApiImpl {
     pub async fn register(
         &self,
-        req: crate::proto::client::RegisterRequest,
+        mut req: crate::proto::client::RegisterRequest,
         client_ip: Option<std::net::IpAddr>,
     ) -> Result<crate::proto::client::RegisterResponse, ApiError> {
-        // Validation is handled by UserService::register() using production validators
+        // Validate and sanitize username
+        req.username = crate::http::validation::validate_username(&req.username)
+            .map_err(|e| ApiError::InvalidInput(e.to_string()))?;
+
+        // Validate password strength
+        crate::http::validation::validate_password(&req.password)
+            .map_err(|e| ApiError::InvalidInput(e.to_string()))?;
+
         let email = if req.email.is_empty() {
             None
         } else {

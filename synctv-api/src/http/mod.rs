@@ -79,39 +79,22 @@ pub struct RouterConfig {
     pub builtin_stun_url: Option<String>,
 }
 
-/// Shared application state
+/// Shared application state.
+///
+/// Common service fields live in `RouterConfig` (shared via `Arc`). Derived
+/// fields that are computed at startup (API impls, validators, etc.) live
+/// directly on `AppState`. Thanks to the `Deref` impl, all `RouterConfig`
+/// fields are accessible transparently (e.g. `state.user_service`).
 #[derive(Clone)]
 pub struct AppState {
-    pub config: Arc<synctv_core::Config>,
-    pub user_service: Arc<UserService>,
-    pub room_service: Arc<RoomService>,
-    pub provider_instance_manager: Arc<RemoteProviderManager>,
-    pub user_provider_credential_repository: Arc<UserProviderCredentialRepository>,
-    pub alist_provider: Arc<AlistProvider>,
-    pub bilibili_provider: Arc<BilibiliProvider>,
-    pub emby_provider: Arc<EmbyProvider>,
-    pub cluster_manager: Option<Arc<synctv_cluster::sync::ClusterManager>>,
-    pub connection_manager: Arc<synctv_cluster::sync::ConnectionManager>,
-    pub jwt_service: synctv_core::service::JwtService,
-    pub redis_publish_tx: Option<mpsc::Sender<PublishRequest>>,
-    pub oauth2_service: Option<Arc<synctv_core::service::OAuth2Service>>,
-    pub settings_service: Option<Arc<synctv_core::service::SettingsService>>,
-    pub settings_registry: Option<Arc<synctv_core::service::SettingsRegistry>>,
-    pub email_service: Option<Arc<synctv_core::service::EmailService>>,
-    /// Shared EmailTokenService (created once at startup, not per-request)
-    pub email_token_service: Option<Arc<synctv_core::service::EmailTokenService>>,
-    pub publish_key_service: Option<Arc<synctv_core::service::PublishKeyService>>,
-    pub notification_service: Option<Arc<synctv_core::service::UserNotificationService>>,
-    pub live_streaming_infrastructure: Option<Arc<LiveStreamingInfrastructure>>,
-    pub rate_limiter: synctv_core::service::rate_limit::RateLimiter,
+    /// Common service configuration (shared cheaply via `Arc`).
+    pub router_config: Arc<RouterConfig>,
     /// Shared rate limit config (created once at startup, not per-request)
     pub rate_limit_config: Arc<middleware::RateLimitConfig>,
     /// Shared JWT validator (created once at startup, not per-request)
     pub jwt_validator: Arc<synctv_core::service::auth::JwtValidator>,
     /// Shared security pipeline for post-JWT checks (password, user status)
     pub security_pipeline: Arc<synctv_core::service::SecurityPipeline>,
-    /// WebSocket ticket service for secure WebSocket authentication (HTTP only)
-    pub ws_ticket_service: Option<Arc<synctv_core::service::WsTicketService>>,
     // Unified API implementation layer
     pub client_api: Arc<crate::impls::ClientApiImpl>,
     pub admin_api: Option<Arc<crate::impls::AdminApiImpl>>,
@@ -121,8 +104,13 @@ pub struct AppState {
     pub bilibili_api: Arc<crate::impls::BilibiliApiImpl>,
     pub alist_api: Arc<crate::impls::AlistApiImpl>,
     pub emby_api: Arc<crate::impls::EmbyApiImpl>,
-    /// Shared Redis connection for playback caching (Sentinel-failover safe)
-    pub redis_conn: Option<crate::SharedRedisConn>,
+}
+
+impl std::ops::Deref for AppState {
+    type Target = RouterConfig;
+    fn deref(&self) -> &RouterConfig {
+        &self.router_config
+    }
 }
 
 impl AppState {
@@ -166,9 +154,9 @@ fn build_app_state(config: RouterConfig) -> AppState {
      .with_rate_limiter(config.rate_limiter.clone()));
 
     // Wire in the resolved STUN URL if the built-in STUN server started successfully
-    let client_api = if let Some(stun_url) = config.builtin_stun_url {
+    let client_api = if let Some(ref stun_url) = config.builtin_stun_url {
         let inner = Arc::try_unwrap(client_api).unwrap_or_else(|arc| (*arc).clone());
-        Arc::new(inner.with_builtin_stun_url(stun_url))
+        Arc::new(inner.with_builtin_stun_url(stun_url.clone()))
     } else {
         client_api
     };
@@ -219,31 +207,10 @@ fn build_app_state(config: RouterConfig) -> AppState {
     let emby_api = Arc::new(crate::impls::EmbyApiImpl::new(config.emby_provider.clone()));
 
     AppState {
-        config: config.config,
-        user_service: config.user_service,
-        room_service: config.room_service,
-        provider_instance_manager: config.provider_instance_manager,
-        user_provider_credential_repository: config.user_provider_credential_repository,
-        alist_provider: config.alist_provider,
-        bilibili_provider: config.bilibili_provider,
-        emby_provider: config.emby_provider,
-        cluster_manager: config.cluster_manager,
-        connection_manager: config.connection_manager,
-        jwt_service: config.jwt_service,
-        redis_publish_tx: config.redis_publish_tx,
-        oauth2_service: config.oauth2_service,
-        settings_service: config.settings_service,
-        settings_registry: config.settings_registry,
-        email_service: config.email_service,
-        email_token_service: config.email_token_service,
-        publish_key_service: config.publish_key_service,
-        notification_service: config.notification_service,
-        live_streaming_infrastructure: config.live_streaming_infrastructure,
-        rate_limiter: config.rate_limiter,
+        router_config: Arc::new(config),
         rate_limit_config,
         jwt_validator,
         security_pipeline,
-        ws_ticket_service: config.ws_ticket_service,
         client_api,
         admin_api,
         notification_api,
@@ -251,7 +218,6 @@ fn build_app_state(config: RouterConfig) -> AppState {
         bilibili_api,
         alist_api,
         emby_api,
-        redis_conn: config.redis_conn,
     }
 }
 

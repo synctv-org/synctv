@@ -740,24 +740,7 @@ mod websocket_e2e {
         ));
 
         // Config
-        let config = Arc::new(synctv_core::Config {
-            server: synctv_core::config::ServerConfig::default(),
-            database: Default::default(),
-            redis: Default::default(),
-            jwt: Default::default(),
-            logging: Default::default(),
-            livestream: Default::default(),
-            oauth2: Default::default(),
-            email: Default::default(),
-            media_providers: Default::default(),
-            webrtc: Default::default(),
-            connection_limits: Default::default(),
-            bootstrap: Default::default(),
-            cluster: Default::default(),
-            password_complexity: Default::default(),
-            buffer_sizes: Default::default(),
-            cache: Default::default(),
-        });
+        let config = Arc::new(synctv_core::Config::default());
 
         // ClientApiImpl
         let client_api = Arc::new(synctv_api::impls::ClientApiImpl::new(
@@ -777,7 +760,7 @@ mod websocket_e2e {
         let alist_api = Arc::new(synctv_api::impls::AlistApiImpl::new(alist_provider.clone()));
         let emby_api = Arc::new(synctv_api::impls::EmbyApiImpl::new(emby_provider.clone()));
 
-        let state = synctv_api::AppState {
+        let router_config = synctv_api::http::RouterConfig {
             config,
             user_service: user_service.clone(),
             room_service: room_service.clone(),
@@ -794,16 +777,27 @@ mod websocket_e2e {
             settings_service: None,
             settings_registry: None,
             email_service: None,
+            email_token_service: None,
             publish_key_service: None,
             notification_service: None,
+            audit_service: {
+                let (audit_svc, _audit_handle) = synctv_core::service::AuditService::new(pool.clone());
+                Arc::new(audit_svc)
+            },
             live_streaming_infrastructure: None,
             rate_limiter,
+            ws_ticket_service: None,
+            redis_conn: None,
+            builtin_stun_url: None,
+        };
+
+        let state = synctv_api::AppState {
+            router_config: Arc::new(router_config),
             rate_limit_config,
             jwt_validator,
             security_pipeline: Arc::new(synctv_core::service::SecurityPipeline::new(
                 user_service.clone(),
             )),
-            ws_ticket_service: None,
             client_api,
             admin_api: None,
             notification_api: None,
@@ -811,7 +805,6 @@ mod websocket_e2e {
             bilibili_api,
             alist_api,
             emby_api,
-            redis_conn: None,
         };
 
         // Build a minimal router with just the WebSocket endpoint

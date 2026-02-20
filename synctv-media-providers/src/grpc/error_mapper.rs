@@ -84,6 +84,7 @@ mod tests {
             status: reqwest::StatusCode::NOT_FOUND,
             url: "https://example.com".to_string(),
             retry_after_secs: None,
+            body: String::new(),
         };
         let status = map_provider_error("fs_get", &err);
         assert_eq!(status.code(), tonic::Code::NotFound);
@@ -95,6 +96,7 @@ mod tests {
             status: reqwest::StatusCode::INTERNAL_SERVER_ERROR,
             url: "https://example.com".to_string(),
             retry_after_secs: None,
+            body: String::new(),
         };
         let status = map_provider_error("get_items", &err);
         assert_eq!(status.code(), tonic::Code::Unavailable);

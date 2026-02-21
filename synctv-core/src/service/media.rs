@@ -484,6 +484,11 @@ impl MediaService {
         self.media_repo.get_by_id(media_id).await
     }
 
+    /// Get multiple media items by IDs in a single query
+    pub async fn get_media_batch(&self, media_ids: &[MediaId]) -> Result<Vec<Media>> {
+        self.media_repo.get_by_ids(media_ids).await
+    }
+
     /// Get all media in a playlist
     pub async fn get_playlist_media(&self, playlist_id: &PlaylistId) -> Result<Vec<Media>> {
         self.media_repo.get_by_playlist(playlist_id).await

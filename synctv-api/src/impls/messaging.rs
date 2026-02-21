@@ -117,6 +117,10 @@ pub struct StreamMessageHandler {
     /// Tracks whether this connection has an active WebRTC session.
     /// Used by `cleanup()` to decrement `WEBRTC_PEERS_ACTIVE` on ungraceful disconnect.
     has_webrtc_session: Arc<std::sync::atomic::AtomicBool>,
+    /// R-10/R-11: When true, `cleanup()` skips broadcasting UserLeft because the
+    /// event was already published by an explicit API call (leave_room/delete_room)
+    /// and the WS handler is disconnecting in response to that cluster event.
+    skip_cleanup_user_left: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl Clone for StreamMessageHandler {
@@ -135,6 +139,7 @@ impl Clone for StreamMessageHandler {
             sender: Arc::clone(&self.sender),
             ws_message_rate_limit: self.ws_message_rate_limit,
             has_webrtc_session: Arc::clone(&self.has_webrtc_session),
+            skip_cleanup_user_left: Arc::clone(&self.skip_cleanup_user_left),
         }
     }
 }
@@ -169,6 +174,7 @@ impl StreamMessageHandler {
             sender,
             ws_message_rate_limit: 50, // default, overridden by with_ws_message_rate_limit()
             has_webrtc_session: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            skip_cleanup_user_left: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         }
     }
 
@@ -359,6 +365,9 @@ impl StreamMessageHandler {
                                     room_id = %self.room_id.as_str(),
                                     "Received disconnect signal for this room"
                                 );
+                                // R-10/R-11: Room deletion already published
+                                // RoomDeleted event; skip redundant UserLeft.
+                                self.skip_cleanup_user_left.store(true, std::sync::atomic::Ordering::Relaxed);
                                 break;
                             }
                         }
@@ -369,6 +378,9 @@ impl StreamMessageHandler {
                                     room_id = %self.room_id.as_str(),
                                     "Received disconnect signal: kicked from room"
                                 );
+                                // R-10/R-11: The leave_room API already published
+                                // a UserLeft event; skip redundant broadcast in cleanup().
+                                self.skip_cleanup_user_left.store(true, std::sync::atomic::Ordering::Relaxed);
                                 break;
                             }
                         }
@@ -451,6 +463,10 @@ impl StreamMessageHandler {
                                     room_id = %self.room_id.as_str(),
                                     "Received cross-replica UserLeft event, disconnecting"
                                 );
+                                // R-10/R-11: The UserLeft event was already published
+                                // by the leave_room/delete_room API call. Skip the
+                                // redundant broadcast in cleanup().
+                                self.skip_cleanup_user_left.store(true, std::sync::atomic::Ordering::Relaxed);
                                 break;
                             }
                         }
@@ -722,6 +738,22 @@ impl StreamMessageHandler {
                 connection = %self.connection_id,
                 "WebRTC session cleaned up on disconnect"
             );
+        }
+
+        // R-10/R-11: If the disconnect was triggered by a cluster event that
+        // already published UserLeft (e.g. leave_room or delete_room API), skip
+        // the redundant broadcast to avoid double UserLeft events.
+        if self.skip_cleanup_user_left.load(std::sync::atomic::Ordering::Relaxed) {
+            tracing::debug!(
+                user = %self.username,
+                room = %room_id,
+                "Skipping UserLeft broadcast in cleanup (already published by API call)"
+            );
+            // Still unregister from connection manager
+            self.connection_manager
+                .unregister(&self.connection_id)
+                .await;
+            return;
         }
 
         // Broadcast UserLeft BEFORE unregistering from the connection manager.
@@ -1208,6 +1240,13 @@ impl StreamMessageHandler {
 
         match &msg.message {
             Some(Message::Chat(chat_msg)) => {
+                // R-6: Check permission first, before spending resources on rate
+                // limiting and content filtering for users who lack SEND_CHAT.
+                self.room_service
+                    .check_permission(&self.room_id, &self.user_id, PermissionBits::SEND_CHAT)
+                    .await
+                    .map_err(|e| e.to_string())?;
+
                 // Validate message length
                 if chat_msg.content.is_empty() {
                     return Err("Chat message cannot be empty".to_string());
@@ -1281,12 +1320,6 @@ impl StreamMessageHandler {
                         .filter_chat(&chat_msg.content)
                         .map_err(|e| e.to_string())?
                 };
-
-                // Check permission (same permission for all chat messages)
-                self.room_service
-                    .check_permission(&self.room_id, &self.user_id, PermissionBits::SEND_CHAT)
-                    .await
-                    .map_err(|e| e.to_string())?;
 
                 // Handle message
                 if is_danmaku {
@@ -1821,9 +1854,8 @@ impl StreamMessageHandler {
 
     /// Handle `SetPlaybackSpeed` command from WebSocket
     async fn handle_set_speed_command(&self, speed: f64) -> Result<(), String> {
-        if !(0.25..=4.0).contains(&speed) {
-            return Err("Playback speed must be between 0.25 and 4.0".to_string());
-        }
+        // R-1: No WS-layer speed validation; PlaybackService::change_speed() is
+        // the single authority for speed range enforcement.
 
         // Permission check (CHANGE_SPEED) is handled by PlaybackService::change_speed()
         self.room_service

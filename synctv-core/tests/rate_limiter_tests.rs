@@ -12,6 +12,7 @@ use synctv_core::service::{RateLimiter, RateLimitError};
 // ============================================================================
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_in_memory_rate_limiter_allows_under_limit() {
     let limiter = RateLimiter::in_memory_only("test_allow:".to_string());
 
@@ -25,6 +26,7 @@ async fn test_in_memory_rate_limiter_allows_under_limit() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_in_memory_rate_limiter_blocks_over_limit() {
     let limiter = RateLimiter::in_memory_only("test_block:".to_string());
     let key = "user:block:chat";
@@ -46,6 +48,7 @@ async fn test_in_memory_rate_limiter_blocks_over_limit() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_in_memory_rate_limiter_window_expiry() {
     let limiter = RateLimiter::in_memory_only("test_expiry:".to_string());
     let key = "user:expiry:chat";
@@ -65,6 +68,7 @@ async fn test_in_memory_rate_limiter_window_expiry() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_in_memory_independent_keys() {
     let limiter = RateLimiter::in_memory_only("test_indep:".to_string());
 
@@ -79,6 +83,7 @@ async fn test_in_memory_independent_keys() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_in_memory_sync_check() {
     let limiter = RateLimiter::in_memory_only("sync_test:".to_string());
 
@@ -92,6 +97,7 @@ async fn test_in_memory_sync_check() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_in_memory_distributed_fails_closed() {
     let limiter = RateLimiter::in_memory_only("dist:".to_string());
 
@@ -130,6 +136,7 @@ async fn create_redis_connection_manager() -> (redis::aio::ConnectionManager, te
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_redis_rate_limiter_allows_under_limit() {
     let (conn, _container) = create_redis_connection_manager().await;
     let limiter = RateLimiter::new(Some(conn), "redis_allow:".to_string());
@@ -146,6 +153,7 @@ async fn test_redis_rate_limiter_allows_under_limit() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_redis_rate_limiter_blocks_over_limit() {
     let (conn, _container) = create_redis_connection_manager().await;
     let limiter = RateLimiter::new(Some(conn), "redis_block:".to_string());
@@ -168,6 +176,7 @@ async fn test_redis_rate_limiter_blocks_over_limit() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_redis_rate_limiter_concurrent_requests() {
     let (conn, _container) = create_redis_connection_manager().await;
     let limiter = RateLimiter::new(Some(conn), "redis_conc:".to_string());
@@ -198,6 +207,7 @@ async fn test_redis_rate_limiter_concurrent_requests() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_redis_rate_limiter_strict_enforcement() {
     let (conn, _container) = create_redis_connection_manager().await;
     let limiter = RateLimiter::new(Some(conn), "redis_strict:".to_string());

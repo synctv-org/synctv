@@ -108,6 +108,33 @@ where
 }
 
 // ------------------------------------------------------------------
+// Request context extractor (IP + User-Agent for audit logs)
+// ------------------------------------------------------------------
+
+/// Extracts client IP address and User-Agent from HTTP request for audit logging.
+struct ReqCtx(crate::impls::admin::RequestContext);
+
+impl<S> FromRequestParts<S> for ReqCtx
+where
+    S: Send + Sync,
+{
+    type Rejection = std::convert::Infallible;
+
+    async fn from_request_parts(parts: &mut Parts, _state: &S) -> Result<Self, Self::Rejection> {
+        let ip_address = parts
+            .extensions
+            .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>()
+            .map(|ci| ci.0.ip().to_string());
+        let user_agent = parts
+            .headers
+            .get(axum::http::header::USER_AGENT)
+            .and_then(|v| v.to_str().ok())
+            .map(|s| s.to_string());
+        Ok(Self(crate::impls::admin::RequestContext { ip_address, user_agent }))
+    }
+}
+
+// ------------------------------------------------------------------
 // Typed request structs for admin endpoints
 // ------------------------------------------------------------------
 
@@ -272,11 +299,12 @@ async fn get_settings_group(
 
 async fn set_settings(
     auth: AuthAdmin,
+    rctx: ReqCtx,
     State(state): State<AppState>,
     Json(req): Json<admin::UpdateSettingsRequest>,
 ) -> AppResult<Json<admin::UpdateSettingsResponse>> {
     let api = require_admin_api(&state)?;
-    let resp = api.update_settings(req, &auth.user_id).await.map_err(admin_err_to_app_error)?;
+    let resp = api.update_settings(req, &auth.user_id, &rctx.0).await.map_err(admin_err_to_app_error)?;
     Ok(Json(resp))
 }
 
@@ -355,23 +383,25 @@ async fn get_user(
 
 async fn create_user(
     auth: AuthAdmin,
+    rctx: ReqCtx,
     State(state): State<AppState>,
     Json(req): Json<admin::CreateUserRequest>,
 ) -> AppResult<Json<admin::CreateUserResponse>> {
     let api = require_admin_api(&state)?;
-    let resp = api.create_user(req, auth.role).await.map_err(admin_err_to_app_error)?;
+    let resp = api.create_user(req, auth.role, &auth.user_id, &rctx.0).await.map_err(admin_err_to_app_error)?;
     Ok(Json(resp))
 }
 
 async fn delete_user(
-    _auth: AuthRoot,
+    auth: AuthRoot,
+    rctx: ReqCtx,
     State(state): State<AppState>,
     Path(user_id): Path<String>,
 ) -> AppResult<Json<admin::DeleteUserResponse>> {
     validate_path_id(&user_id, "user_id")?;
     let api = require_admin_api(&state)?;
     let resp = api
-        .delete_user(admin::DeleteUserRequest { user_id })
+        .delete_user(admin::DeleteUserRequest { user_id }, &auth.user_id, &rctx.0)
         .await
         .map_err(admin_err_to_app_error)?;
     Ok(Json(resp))
@@ -379,6 +409,7 @@ async fn delete_user(
 
 async fn set_user_role(
     auth: AuthAdmin,
+    rctx: ReqCtx,
     State(state): State<AppState>,
     Path(user_id): Path<String>,
     Json(req): Json<SetUserRoleRequest>,
@@ -393,7 +424,7 @@ async fn set_user_role(
         _ => return Err(AppError::bad_request(format!("Unknown role: {}", req.role))),
     };
     let resp = api
-        .update_user_role(admin::UpdateUserRoleRequest { user_id, role: role_i32 }, &auth.user_id, auth.role)
+        .update_user_role(admin::UpdateUserRoleRequest { user_id, role: role_i32 }, &auth.user_id, auth.role, &rctx.0)
         .await
         .map_err(admin_err_to_app_error)?;
     Ok(Json(resp))
@@ -401,6 +432,7 @@ async fn set_user_role(
 
 async fn set_user_password(
     auth: AuthAdmin,
+    rctx: ReqCtx,
     State(state): State<AppState>,
     Path(user_id): Path<String>,
     Json(req): Json<SetUserPasswordRequest>,
@@ -414,7 +446,7 @@ async fn set_user_password(
             new_password: req.password,
             reason,
             force_logout: true,
-        }, auth.user_id, auth.role)
+        }, auth.user_id, auth.role, &rctx.0)
         .await
         .map_err(admin_err_to_app_error)?;
     Ok(Json(resp))
@@ -422,6 +454,7 @@ async fn set_user_password(
 
 async fn set_user_username(
     auth: AuthAdmin,
+    rctx: ReqCtx,
     State(state): State<AppState>,
     Path(user_id): Path<String>,
     Json(req): Json<SetUserUsernameRequest>,
@@ -432,7 +465,7 @@ async fn set_user_username(
         .update_user_username(admin::UpdateUserUsernameRequest {
             user_id,
             new_username: req.username,
-        }, &auth.user_id)
+        }, &auth.user_id, &rctx.0)
         .await
         .map_err(admin_err_to_app_error)?;
     Ok(Json(resp))
@@ -440,6 +473,7 @@ async fn set_user_username(
 
 async fn ban_user(
     auth: AuthAdmin,
+    rctx: ReqCtx,
     State(state): State<AppState>,
     Path(user_id): Path<String>,
     Json(req): Json<BanRequest>,
@@ -451,7 +485,7 @@ async fn ban_user(
 
     let api = require_admin_api(&state)?;
     let resp = api
-        .ban_user(admin::BanUserRequest { user_id, reason: req.reason }, &auth.user_id, auth.role)
+        .ban_user(admin::BanUserRequest { user_id, reason: req.reason }, &auth.user_id, auth.role, &rctx.0)
         .await
         .map_err(admin_err_to_app_error)?;
     Ok(Json(resp))
@@ -459,13 +493,14 @@ async fn ban_user(
 
 async fn unban_user(
     auth: AuthAdmin,
+    rctx: ReqCtx,
     State(state): State<AppState>,
     Path(user_id): Path<String>,
 ) -> AppResult<Json<admin::UnbanUserResponse>> {
     validate_path_id(&user_id, "user_id")?;
     let api = require_admin_api(&state)?;
     let resp = api
-        .unban_user(admin::UnbanUserRequest { user_id }, &auth.user_id)
+        .unban_user(admin::UnbanUserRequest { user_id }, &auth.user_id, &rctx.0)
         .await
         .map_err(admin_err_to_app_error)?;
     Ok(Json(resp))
@@ -473,13 +508,14 @@ async fn unban_user(
 
 async fn approve_user(
     auth: AuthAdmin,
+    rctx: ReqCtx,
     State(state): State<AppState>,
     Path(user_id): Path<String>,
 ) -> AppResult<Json<admin::ApproveUserResponse>> {
     validate_path_id(&user_id, "user_id")?;
     let api = require_admin_api(&state)?;
     let resp = api
-        .approve_user(admin::ApproveUserRequest { user_id }, &auth.user_id)
+        .approve_user(admin::ApproveUserRequest { user_id }, &auth.user_id, &rctx.0)
         .await
         .map_err(admin_err_to_app_error)?;
     Ok(Json(resp))
@@ -560,20 +596,22 @@ async fn get_room(
 
 async fn delete_room(
     auth: AuthAdmin,
+    rctx: ReqCtx,
     State(state): State<AppState>,
     Path(room_id): Path<String>,
 ) -> AppResult<Json<admin::DeleteRoomResponse>> {
     validate_path_id(&room_id, "room_id")?;
     let api = require_admin_api(&state)?;
     let resp = api
-        .delete_room(admin::DeleteRoomRequest { room_id }, &auth.user_id)
+        .delete_room(admin::DeleteRoomRequest { room_id }, &auth.user_id, &rctx.0)
         .await
         .map_err(admin_err_to_app_error)?;
     Ok(Json(resp))
 }
 
 async fn set_room_password(
-    _auth: AuthAdmin,
+    auth: AuthAdmin,
+    rctx: ReqCtx,
     State(state): State<AppState>,
     Path(room_id): Path<String>,
     Json(req): Json<SetRoomPasswordAdminRequest>,
@@ -584,7 +622,7 @@ async fn set_room_password(
         .update_room_password(admin::UpdateRoomPasswordRequest {
             room_id,
             new_password: req.password,
-        })
+        }, &auth.user_id, &rctx.0)
         .await
         .map_err(admin_err_to_app_error)?;
     Ok(Json(resp))
@@ -611,6 +649,7 @@ async fn get_room_members(
 
 async fn ban_room(
     auth: AuthAdmin,
+    rctx: ReqCtx,
     State(state): State<AppState>,
     Path(room_id): Path<String>,
     Json(req): Json<BanRequest>,
@@ -622,7 +661,7 @@ async fn ban_room(
 
     let api = require_admin_api(&state)?;
     let resp = api
-        .ban_room(admin::BanRoomRequest { room_id, reason: req.reason }, &auth.user_id)
+        .ban_room(admin::BanRoomRequest { room_id, reason: req.reason }, &auth.user_id, &rctx.0)
         .await
         .map_err(admin_err_to_app_error)?;
     Ok(Json(resp))
@@ -630,27 +669,29 @@ async fn ban_room(
 
 async fn unban_room(
     auth: AuthAdmin,
+    rctx: ReqCtx,
     State(state): State<AppState>,
     Path(room_id): Path<String>,
 ) -> AppResult<Json<admin::UnbanRoomResponse>> {
     validate_path_id(&room_id, "room_id")?;
     let api = require_admin_api(&state)?;
     let resp = api
-        .unban_room(admin::UnbanRoomRequest { room_id }, &auth.user_id)
+        .unban_room(admin::UnbanRoomRequest { room_id }, &auth.user_id, &rctx.0)
         .await
         .map_err(admin_err_to_app_error)?;
     Ok(Json(resp))
 }
 
 async fn approve_room(
-    _auth: AuthAdmin,
+    auth: AuthAdmin,
+    rctx: ReqCtx,
     State(state): State<AppState>,
     Path(room_id): Path<String>,
 ) -> AppResult<Json<admin::ApproveRoomResponse>> {
     validate_path_id(&room_id, "room_id")?;
     let api = require_admin_api(&state)?;
     let resp = api
-        .approve_room(admin::ApproveRoomRequest { room_id })
+        .approve_room(admin::ApproveRoomRequest { room_id }, &auth.user_id, &rctx.0)
         .await
         .map_err(admin_err_to_app_error)?;
     Ok(Json(resp))
@@ -721,20 +762,22 @@ async fn list_providers(
 }
 
 async fn add_provider(
-    _auth: AuthAdmin,
+    auth: AuthAdmin,
+    rctx: ReqCtx,
     State(state): State<AppState>,
     Json(req): Json<admin::AddProviderInstanceRequest>,
 ) -> AppResult<Json<admin::AddProviderInstanceResponse>> {
     let api = require_admin_api(&state)?;
     let resp = api
-        .add_provider_instance(req)
+        .add_provider_instance(req, &auth.user_id, &rctx.0)
         .await
         .map_err(admin_err_to_app_error)?;
     Ok(Json(resp))
 }
 
 async fn update_provider(
-    _auth: AuthAdmin,
+    auth: AuthAdmin,
+    rctx: ReqCtx,
     State(state): State<AppState>,
     Path(name): Path<String>,
     Json(mut req): Json<admin::UpdateProviderInstanceRequest>,
@@ -742,20 +785,21 @@ async fn update_provider(
     req.name = name;
     let api = require_admin_api(&state)?;
     let resp = api
-        .update_provider_instance(req)
+        .update_provider_instance(req, &auth.user_id, &rctx.0)
         .await
         .map_err(admin_err_to_app_error)?;
     Ok(Json(resp))
 }
 
 async fn delete_provider(
-    _auth: AuthAdmin,
+    auth: AuthAdmin,
+    rctx: ReqCtx,
     State(state): State<AppState>,
     Path(name): Path<String>,
 ) -> AppResult<Json<admin::DeleteProviderInstanceResponse>> {
     let api = require_admin_api(&state)?;
     let resp = api
-        .delete_provider_instance(admin::DeleteProviderInstanceRequest { name })
+        .delete_provider_instance(admin::DeleteProviderInstanceRequest { name }, &auth.user_id, &rctx.0)
         .await
         .map_err(admin_err_to_app_error)?;
     Ok(Json(resp))
@@ -857,13 +901,14 @@ async fn list_admins(
 
 async fn add_admin(
     auth: AuthRoot,
+    rctx: ReqCtx,
     State(state): State<AppState>,
     Path(user_id): Path<String>,
 ) -> AppResult<Json<admin::AddAdminResponse>> {
     validate_path_id(&user_id, "user_id")?;
     let api = require_admin_api(&state)?;
     let resp = api
-        .add_admin(admin::AddAdminRequest { user_id }, &auth.user_id)
+        .add_admin(admin::AddAdminRequest { user_id }, &auth.user_id, &rctx.0)
         .await
         .map_err(admin_err_to_app_error)?;
     Ok(Json(resp))
@@ -871,13 +916,14 @@ async fn add_admin(
 
 async fn remove_admin(
     auth: AuthRoot,
+    rctx: ReqCtx,
     State(state): State<AppState>,
     Path(user_id): Path<String>,
 ) -> AppResult<Json<admin::RemoveAdminResponse>> {
     validate_path_id(&user_id, "user_id")?;
     let api = require_admin_api(&state)?;
     let resp = api
-        .remove_admin(admin::RemoveAdminRequest { user_id }, &auth.user_id)
+        .remove_admin(admin::RemoveAdminRequest { user_id }, &auth.user_id, &rctx.0)
         .await
         .map_err(admin_err_to_app_error)?;
     Ok(Json(resp))

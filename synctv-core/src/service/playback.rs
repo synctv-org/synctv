@@ -108,6 +108,12 @@ impl PlaybackService {
         let mut receiver = service.subscribe();
 
         crate::spawn::spawn_monitored("playback_invalidation_listener", async move {
+            // Rate-limit lag-triggered flushes (consistent with CacheManager)
+            const LAG_FLUSH_MIN_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5);
+            let mut last_lag_flush = std::time::Instant::now()
+                .checked_sub(LAG_FLUSH_MIN_INTERVAL)
+                .unwrap_or_else(std::time::Instant::now);
+
             loop {
                 match receiver.recv().await {
                     Ok(msg) => match msg {
@@ -145,11 +151,24 @@ impl PlaybackService {
                         break;
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
-                        tracing::warn!(
-                            lagged_messages = n,
-                            "Playback cache invalidation listener lagged, flushing all entries"
-                        );
-                        cache.invalidate_all();
+                        let now = std::time::Instant::now();
+                        let elapsed = now.duration_since(last_lag_flush);
+                        if elapsed >= LAG_FLUSH_MIN_INTERVAL {
+                            tracing::warn!(
+                                lagged_messages = n,
+                                "Playback cache invalidation listener lagged, flushing all entries (rate-limited)"
+                            );
+                            cache.invalidate_all();
+                            crate::metrics::cache::CACHE_LAG_FLUSH_TOTAL
+                                .with_label_values(&["playback"])
+                                .inc();
+                            last_lag_flush = now;
+                        } else {
+                            tracing::warn!(
+                                lagged_messages = n,
+                                "Playback cache invalidation listener lagged, skipping flush (rate-limited)"
+                            );
+                        }
                     }
                 }
             }

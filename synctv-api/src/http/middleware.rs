@@ -280,21 +280,27 @@ pub async fn rate_limit_middleware(
         let should_trust_headers = remote_addr.is_some_and(|ip| state.config.server.is_trusted_proxy(&ip));
 
         if should_trust_headers {
-            // Trust X-Forwarded-For from trusted proxies (or in dev mode)
-            let forwarded = request
+            // Trust X-Forwarded-For from trusted proxies (or in dev mode).
+            // Parse as IpAddr to prevent attackers from injecting arbitrary
+            // strings (e.g. "127.0.0.1, evil") as rate limit keys.
+            let forwarded_ip = request
                 .headers()
                 .get("X-Forwarded-For")
                 .and_then(|h| h.to_str().ok())
                 .and_then(|v| v.split(',').next())
-                .map(str::trim);
+                .map(str::trim)
+                .and_then(|s| s.parse::<std::net::IpAddr>().ok());
 
-            if let Some(ip) = forwarded {
-                format!("anon:{ip}")
-            } else if let Some(ip) = request
+            let real_ip = request
                 .headers()
                 .get("X-Real-IP")
                 .and_then(|h| h.to_str().ok())
-            {
+                .map(str::trim)
+                .and_then(|s| s.parse::<std::net::IpAddr>().ok());
+
+            if let Some(ip) = forwarded_ip {
+                format!("anon:{ip}")
+            } else if let Some(ip) = real_ip {
                 format!("anon:{ip}")
             } else if let Some(ip) = remote_addr {
                 format!("anon:{ip}")

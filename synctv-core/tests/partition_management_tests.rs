@@ -70,6 +70,7 @@ fn make_user(username: &str) -> User {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_chat_message_default_partition_routing() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
@@ -119,6 +120,7 @@ async fn test_chat_message_default_partition_routing() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_create_chat_message_partitions_function() {
     let (_container, pool) = create_test_pool().await;
 
@@ -149,6 +151,7 @@ async fn test_create_chat_message_partitions_function() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_chat_message_default_partition_exists() {
     let (_container, pool) = create_test_pool().await;
 
@@ -167,6 +170,7 @@ async fn test_chat_message_default_partition_exists() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_audit_logs_default_partition_exists() {
     let (_container, pool) = create_test_pool().await;
 
@@ -185,6 +189,7 @@ async fn test_audit_logs_default_partition_exists() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_audit_logs_default_partition_routing() {
     let (_container, pool) = create_test_pool().await;
 
@@ -203,6 +208,7 @@ async fn test_audit_logs_default_partition_routing() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_check_chat_message_partitions_health() {
     let (_container, pool) = create_test_pool().await;
 

@@ -96,6 +96,8 @@ pub enum AuditAction {
     MemberPermissionUpdated,
     MemberStatusUpdated,
     RoomSettingsUpdated,
+    UserApproved,
+    RoomApproved,
 }
 
 impl AuditAction {
@@ -127,6 +129,8 @@ impl AuditAction {
             Self::MemberPermissionUpdated => "member_permission_updated",
             Self::MemberStatusUpdated => "member_status_updated",
             Self::RoomSettingsUpdated => "room_settings_updated",
+            Self::UserApproved => "user_approved",
+            Self::RoomApproved => "room_approved",
         }
     }
 }
@@ -709,6 +713,8 @@ mod tests {
             (AuditAction::MemberPermissionUpdated, "member_permission_updated"),
             (AuditAction::MemberStatusUpdated, "member_status_updated"),
             (AuditAction::RoomSettingsUpdated, "room_settings_updated"),
+            (AuditAction::UserApproved, "user_approved"),
+            (AuditAction::RoomApproved, "room_approved"),
         ];
 
         for (action, expected) in actions {
@@ -762,6 +768,8 @@ mod tests {
             AuditAction::MemberPermissionUpdated,
             AuditAction::MemberStatusUpdated,
             AuditAction::RoomSettingsUpdated,
+            AuditAction::UserApproved,
+            AuditAction::RoomApproved,
         ];
 
         for action in actions {

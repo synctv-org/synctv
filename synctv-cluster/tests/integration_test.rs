@@ -1385,6 +1385,7 @@ async fn test_cross_replica_permission_cache_invalidation_via_cache_service() {
 // ============================================================================
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_room_hub_connection_manager_state_consistency() {
     use synctv_cluster::sync::{ConnectionManager, ConnectionLimits};
 
@@ -1484,6 +1485,7 @@ async fn test_room_hub_connection_manager_state_consistency() {
 // ============================================================================
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_rapid_subscribe_unsubscribe_no_leak() {
     let config = ClusterConfig {
         redis_client: None,

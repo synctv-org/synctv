@@ -3,8 +3,9 @@ CREATE TABLE IF NOT EXISTS rooms (
     id CHAR(12) PRIMARY KEY,
     name VARCHAR(255) NOT NULL,
     description TEXT NOT NULL DEFAULT '',
-    -- ON DELETE CASCADE: 删除用户时自动删除该用户创建的所有房间及相关数据
-    created_by CHAR(12) NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    -- ON DELETE RESTRICT: prevent deleting a user who still owns rooms.
+    -- Rooms should be explicitly transferred or deleted before removing the user.
+    created_by CHAR(12) NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
     status SMALLINT NOT NULL DEFAULT 1,  -- 1=active, 2=pending, 3=closed
     is_banned BOOLEAN NOT NULL DEFAULT FALSE,  -- Independent ban flag, set by global admin only
     created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,

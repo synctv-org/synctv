@@ -68,6 +68,7 @@ fn make_user(username: &str) -> User {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_create_and_get_token() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
@@ -99,6 +100,7 @@ async fn test_create_and_get_token() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_mark_token_as_used() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
@@ -126,6 +128,7 @@ async fn test_mark_token_as_used() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_validate_and_consume_valid_token() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
@@ -154,6 +157,7 @@ async fn test_validate_and_consume_valid_token() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_validate_wrong_type_fails() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
@@ -182,6 +186,7 @@ async fn test_validate_wrong_type_fails() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_expired_token_not_consumable() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
@@ -206,6 +211,7 @@ async fn test_expired_token_not_consumable() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_cleanup_expired_tokens() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
@@ -235,6 +241,7 @@ async fn test_cleanup_expired_tokens() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_delete_user_tokens() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
@@ -255,6 +262,7 @@ async fn test_delete_user_tokens() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_get_nonexistent_token() {
     let (_container, pool) = create_test_pool().await;
     let token_repo = EmailTokenRepository::new(pool.clone());

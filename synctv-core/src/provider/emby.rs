@@ -160,13 +160,61 @@ impl MediaProvider for EmbyProvider {
         Ok(())
     }
 
+    async fn prepare_source_config(
+        &self,
+        _ctx: &ProviderContext<'_>,
+        source_config: Value,
+    ) -> Result<Value, ProviderError> {
+        // Encrypt token in source_config before storage if encryption is available
+        if let Some(enc) = _ctx.credential_encryption {
+            let mut config = source_config.clone();
+            if let Some(obj) = config.as_object_mut() {
+                if let Some(token_value) = obj.get("token") {
+                    if let Some(token_str) = token_value.as_str() {
+                        if !token_str.is_empty() && !token_str.starts_with("enc:") {
+                            let encrypted = enc.encrypt(&json!(token_str))
+                                .map_err(|e| ProviderError::ApiError(format!("Failed to encrypt Emby token: {e}")))?;
+                            obj.insert("token".to_string(), Value::String(encrypted));
+                        }
+                    }
+                }
+            }
+            Ok(config)
+        } else {
+            Ok(source_config)
+        }
+    }
+
     async fn generate_playback(
         &self,
         _ctx: &ProviderContext<'_>,
         source_config: &Value,
     ) -> Result<PlaybackResult, ProviderError> {
+        // Decrypt token if encryption is configured (handles both encrypted and plaintext)
+        let decrypted_config = if let Some(enc) = _ctx.credential_encryption {
+            let mut config = source_config.clone();
+            if let Some(obj) = config.as_object_mut() {
+                if let Some(token_value) = obj.get("token") {
+                    if let Some(encrypted_str) = token_value.as_str() {
+                        if encrypted_str.starts_with("enc:") {
+                            let decrypted = enc.decrypt(encrypted_str)
+                                .map_err(|e| ProviderError::ApiError(format!("Failed to decrypt Emby token: {e}")))?;
+                            if let Some(s) = decrypted.as_str() {
+                                obj.insert("token".to_string(), Value::String(s.to_string()));
+                            } else {
+                                obj.insert("token".to_string(), decrypted);
+                            }
+                        }
+                    }
+                }
+            }
+            config
+        } else {
+            source_config.clone()
+        };
+
         // Parse source_config first
-        let config = EmbySourceConfig::try_from(source_config)?;
+        let config = EmbySourceConfig::try_from(&decrypted_config)?;
 
         // Re-validate host URL at request time to protect against DNS rebinding.
         // The hostname may have been safe at config time but could resolve to a
@@ -262,22 +310,22 @@ impl MediaProvider for EmbyProvider {
                 continue;
             };
 
-            // Extract subtitles -- include api_key query param for browser
-            // access since subtitle requests come from the browser directly
-            // and cannot set custom headers like X-Emby-Token.
+            // Extract subtitles -- do NOT include api_key in the URL to avoid
+            // leaking the Emby token to clients. Instead, subtitle URLs are
+            // fetched through the server-side proxy which injects the
+            // X-Emby-Token header (same as video streams at lines 234-238).
             let subtitles: Vec<SubtitleTrack> = source
                 .media_stream_info
                 .iter()
                 .filter(|stream| stream.r#type == "Subtitle")
                 .map(|stream| {
                     let subtitle_url = format!(
-                        "{}/Videos/{}/{}/Subtitles/{}/Stream.{}?api_key={}",
+                        "{}/Videos/{}/{}/Subtitles/{}/Stream.{}",
                         config.host.trim_end_matches('/'),
                         config.item_id,
                         source.id,
                         stream.index,
                         stream.codec.to_lowercase(),
-                        config.token,
                     );
 
                     SubtitleTrack {
@@ -312,7 +360,7 @@ impl MediaProvider for EmbyProvider {
                     headers: emby_auth_headers.clone(),
                     subtitles,
                     expires_at: emby_expires_at,
-                    cors_proxy_required: false,
+                    cors_proxy_required: true,
                 },
             );
 
@@ -356,9 +404,32 @@ impl MediaProvider for EmbyProvider {
     }
 
     fn cache_key(&self, ctx: &ProviderContext<'_>, source_config: &Value) -> String {
+        // Decrypt token if encrypted before hashing for consistent cache keys
+        let decrypted = if let Some(enc) = ctx.credential_encryption {
+            let mut config = source_config.clone();
+            if let Some(obj) = config.as_object_mut() {
+                if let Some(token_value) = obj.get("token") {
+                    if let Some(encrypted_str) = token_value.as_str() {
+                        if encrypted_str.starts_with("enc:") {
+                            if let Ok(decrypted) = enc.decrypt(encrypted_str) {
+                                if let Some(s) = decrypted.as_str() {
+                                    obj.insert("token".to_string(), Value::String(s.to_string()));
+                                } else {
+                                    obj.insert("token".to_string(), decrypted);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            config
+        } else {
+            source_config.clone()
+        };
+
         // Cache key must include token hash to prevent cross-user data leakage.
         // Different users have different tokens and may see different content.
-        if let Ok(config) = EmbySourceConfig::try_from(source_config) {
+        if let Ok(config) = EmbySourceConfig::try_from(&decrypted) {
             use sha2::{Sha256, Digest};
             let identifier = format!("{}:{}:{}", config.host, config.token, config.item_id);
             format!("{}:playback:emby:{:x}", ctx.key_prefix, Sha256::digest(identifier.as_bytes()))

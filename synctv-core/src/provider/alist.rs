@@ -175,13 +175,63 @@ impl MediaProvider for AlistProvider {
         Ok(())
     }
 
+    async fn prepare_source_config(
+        &self,
+        _ctx: &ProviderContext<'_>,
+        source_config: Value,
+    ) -> Result<Value, ProviderError> {
+        // Encrypt token in source_config before storage if encryption is available
+        if let Some(enc) = _ctx.credential_encryption {
+            let mut config = source_config.clone();
+            if let Some(obj) = config.as_object_mut() {
+                if let Some(token_value) = obj.get("token") {
+                    // Only encrypt if token is a non-empty string (not already encrypted)
+                    if let Some(token_str) = token_value.as_str() {
+                        if !token_str.is_empty() && !token_str.starts_with("enc:") {
+                            let encrypted = enc.encrypt(&json!(token_str))
+                                .map_err(|e| ProviderError::ApiError(format!("Failed to encrypt Alist token: {e}")))?;
+                            obj.insert("token".to_string(), Value::String(encrypted));
+                        }
+                    }
+                }
+            }
+            Ok(config)
+        } else {
+            Ok(source_config)
+        }
+    }
+
     async fn generate_playback(
         &self,
         _ctx: &ProviderContext<'_>,
         source_config: &Value,
     ) -> Result<PlaybackResult, ProviderError> {
+        // Decrypt token if encryption is configured (handles both encrypted and plaintext)
+        let decrypted_config = if let Some(enc) = _ctx.credential_encryption {
+            let mut config = source_config.clone();
+            if let Some(obj) = config.as_object_mut() {
+                if let Some(token_value) = obj.get("token") {
+                    if let Some(encrypted_str) = token_value.as_str() {
+                        if encrypted_str.starts_with("enc:") {
+                            let decrypted = enc.decrypt(encrypted_str)
+                                .map_err(|e| ProviderError::ApiError(format!("Failed to decrypt Alist token: {e}")))?;
+                            // decrypted is a JSON string value, extract the inner string
+                            if let Some(s) = decrypted.as_str() {
+                                obj.insert("token".to_string(), Value::String(s.to_string()));
+                            } else {
+                                obj.insert("token".to_string(), decrypted);
+                            }
+                        }
+                    }
+                }
+            }
+            config
+        } else {
+            source_config.clone()
+        };
+
         // Parse source_config first
-        let config = AlistSourceConfig::try_from(source_config)?;
+        let config = AlistSourceConfig::try_from(&decrypted_config)?;
 
         // Re-validate host URL at request time to protect against DNS rebinding.
         // The hostname may have been safe at config time but could resolve to a
@@ -321,9 +371,32 @@ impl MediaProvider for AlistProvider {
     }
 
     fn cache_key(&self, ctx: &ProviderContext<'_>, source_config: &Value) -> String {
+        // Decrypt token if encrypted before hashing for consistent cache keys
+        let decrypted = if let Some(enc) = ctx.credential_encryption {
+            let mut config = source_config.clone();
+            if let Some(obj) = config.as_object_mut() {
+                if let Some(token_value) = obj.get("token") {
+                    if let Some(encrypted_str) = token_value.as_str() {
+                        if encrypted_str.starts_with("enc:") {
+                            if let Ok(decrypted) = enc.decrypt(encrypted_str) {
+                                if let Some(s) = decrypted.as_str() {
+                                    obj.insert("token".to_string(), Value::String(s.to_string()));
+                                } else {
+                                    obj.insert("token".to_string(), decrypted);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            config
+        } else {
+            source_config.clone()
+        };
+
         // Cache key must include token hash to prevent cross-user data leakage.
         // Different users have different tokens and may see different files.
-        if let Ok(config) = AlistSourceConfig::try_from(source_config) {
+        if let Ok(config) = AlistSourceConfig::try_from(&decrypted) {
             use sha2::{Sha256, Digest};
             let identifier = format!("{}:{}:{}", config.host, config.token, config.path);
             format!("{}:playback:alist:{:x}", ctx.key_prefix, Sha256::digest(identifier.as_bytes()))

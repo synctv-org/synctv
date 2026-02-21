@@ -106,6 +106,7 @@ fn make_user(username: &str) -> User {
 // ========== set_member_permissions: GRANT_PERMISSION check ==========
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_set_member_permissions_requires_grant_permission() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
@@ -142,6 +143,7 @@ async fn test_set_member_permissions_requires_grant_permission() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_set_member_permissions_creator_can_set() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
@@ -177,6 +179,7 @@ async fn test_set_member_permissions_creator_can_set() {
 // ========== set_member_permissions: optimistic lock retry ==========
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_set_member_permissions_optimistic_lock_retry() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
@@ -243,6 +246,7 @@ async fn test_set_member_permissions_optimistic_lock_retry() {
 // ========== reset_member_permissions: clears all overrides ==========
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_reset_member_permissions_clears_all_overrides() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
@@ -291,6 +295,7 @@ async fn test_reset_member_permissions_clears_all_overrides() {
 // ========== reset_member_permissions: requires GRANT_PERMISSION ==========
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_reset_member_permissions_requires_grant_permission() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());

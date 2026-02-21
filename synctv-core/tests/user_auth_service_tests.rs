@@ -102,6 +102,7 @@ async fn create_test_pool() -> (ContainerAsync<Postgres>, PgPool) {
 // ============================================================================
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_refresh_token_happy_path() {
     let (_container, pool) = create_test_pool().await;
     let service = create_user_service(pool.clone());
@@ -140,6 +141,7 @@ async fn test_refresh_token_happy_path() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_refresh_token_old_jti_blacklisted_before_new_issued() {
     let (_container, pool) = create_test_pool().await;
     let token_blacklist: Arc<dyn TokenBlacklistStore> =
@@ -183,6 +185,7 @@ async fn test_refresh_token_old_jti_blacklisted_before_new_issued() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_refresh_token_replay_same_jti_triggers_family_revocation() {
     let (_container, pool) = create_test_pool().await;
     let token_blacklist: Arc<dyn TokenBlacklistStore> =
@@ -230,6 +233,7 @@ async fn test_refresh_token_replay_same_jti_triggers_family_revocation() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_refresh_token_password_version_mismatch_rejected() {
     let (_container, pool) = create_test_pool().await;
     let service = create_user_service(pool.clone());
@@ -269,6 +273,7 @@ async fn test_refresh_token_password_version_mismatch_rejected() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_refresh_token_banned_user_rejected() {
     let (_container, pool) = create_test_pool().await;
     let service = create_user_service(pool.clone());
@@ -304,6 +309,7 @@ async fn test_refresh_token_banned_user_rejected() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_refresh_token_deleted_user_rejected() {
     let (_container, pool) = create_test_pool().await;
     let service = create_user_service(pool.clone());
@@ -338,6 +344,7 @@ async fn test_refresh_token_deleted_user_rejected() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_refresh_token_family_revocation_timestamp_blocks_older_tokens() {
     let (_container, pool) = create_test_pool().await;
     let token_blacklist: Arc<dyn TokenBlacklistStore> =
@@ -387,6 +394,7 @@ async fn test_refresh_token_family_revocation_timestamp_blocks_older_tokens() {
 // ============================================================================
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_login_banned_user_rejected() {
     let (_container, pool) = create_test_pool().await;
     let service = create_user_service(pool.clone());
@@ -418,6 +426,7 @@ async fn test_login_banned_user_rejected() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_login_pending_user_rejected() {
     let (_container, pool) = create_test_pool().await;
     let service = create_user_service(pool.clone());
@@ -452,6 +461,7 @@ async fn test_login_pending_user_rejected() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_login_soft_deleted_user_rejected() {
     let (_container, pool) = create_test_pool().await;
     let service = create_user_service(pool.clone());
@@ -486,6 +496,7 @@ async fn test_login_soft_deleted_user_rejected() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_login_unverified_email_blocked_when_verification_required() {
     let (_container, pool) = create_test_pool().await;
     let mut service = create_user_service(pool.clone());
@@ -523,6 +534,7 @@ async fn test_login_unverified_email_blocked_when_verification_required() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_login_unverified_email_allowed_when_not_required() {
     let (_container, pool) = create_test_pool().await;
     let service = create_user_service(pool.clone());
@@ -562,6 +574,7 @@ async fn test_login_unverified_email_allowed_when_not_required() {
 // ============================================================================
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_delete_user_already_deleted_guard() {
     let (_container, pool) = create_test_pool().await;
     let service = create_user_service(pool.clone());
@@ -598,6 +611,7 @@ async fn test_delete_user_already_deleted_guard() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_delete_user_transaction_atomicity_with_oauth2() {
     let (_container, pool) = create_test_pool().await;
     let service = create_user_service(pool.clone());
@@ -637,6 +651,7 @@ async fn test_delete_user_transaction_atomicity_with_oauth2() {
 // ============================================================================
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_change_password_wrong_old_password_rejected() {
     let (_container, pool) = create_test_pool().await;
     let service = create_user_service(pool.clone());
@@ -664,6 +679,7 @@ async fn test_change_password_wrong_old_password_rejected() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_change_password_bumps_password_version() {
     let (_container, pool) = create_test_pool().await;
     let service = create_user_service(pool.clone());
@@ -695,6 +711,7 @@ async fn test_change_password_bumps_password_version() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_set_password_bumps_password_version() {
     let (_container, pool) = create_test_pool().await;
     let service = create_user_service(pool.clone());
@@ -730,6 +747,7 @@ async fn test_set_password_bumps_password_version() {
 // ============================================================================
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_create_or_load_by_oauth2_username_sanitization() {
     let (_container, pool) = create_test_pool().await;
     let service = create_user_service(pool.clone());
@@ -762,6 +780,7 @@ async fn test_create_or_load_by_oauth2_username_sanitization() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_create_or_load_by_oauth2_collision_retry() {
     let (_container, pool) = create_test_pool().await;
     let service = create_user_service(pool.clone());
@@ -793,6 +812,7 @@ async fn test_create_or_load_by_oauth2_collision_retry() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_create_or_load_by_oauth2_email_conflict_propagation() {
     let (_container, pool) = create_test_pool().await;
     let service = create_user_service(pool.clone());
@@ -828,6 +848,7 @@ async fn test_create_or_load_by_oauth2_email_conflict_propagation() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_create_or_load_by_oauth2_empty_username_uses_provider_id() {
     let (_container, pool) = create_test_pool().await;
     let service = create_user_service(pool.clone());
@@ -851,6 +872,7 @@ async fn test_create_or_load_by_oauth2_empty_username_uses_provider_id() {
 // ============================================================================
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_refresh_token_email_verification_recheck() {
     let (_container, pool) = create_test_pool().await;
 

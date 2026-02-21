@@ -12,6 +12,13 @@ use tokio::sync::mpsc;
 
 use super::ApiError;
 
+/// HTTP request context for audit logging (IP address and User-Agent).
+#[derive(Debug, Clone, Default)]
+pub struct RequestContext {
+    pub ip_address: Option<String>,
+    pub user_agent: Option<String>,
+}
+
 /// Result of validating an admin user's authentication.
 ///
 /// Returned by [`validate_admin_auth`] and consumed by both HTTP and gRPC
@@ -207,6 +214,7 @@ impl AdminApiImpl {
         &self,
         req: crate::proto::admin::DeleteRoomRequest,
         admin_user_id: &UserId,
+        ctx: &RequestContext,
     ) -> Result<crate::proto::admin::DeleteRoomResponse, ApiError> {
         let rid = RoomId::from_string(req.room_id);
 
@@ -253,8 +261,8 @@ impl AdminApiImpl {
                 synctv_core::service::AuditTargetType::Room,
                 Some(rid.as_str().to_string()),
                 serde_json::Value::Object(details),
-                None,
-                None,
+                ctx.ip_address.clone(),
+                ctx.user_agent.clone(),
             ).await {
                 tracing::error!(
                     error = %e,
@@ -275,6 +283,8 @@ impl AdminApiImpl {
     pub async fn update_room_password(
         &self,
         req: crate::proto::admin::UpdateRoomPasswordRequest,
+        admin_user_id: &UserId,
+        ctx: &RequestContext,
     ) -> Result<crate::proto::admin::UpdateRoomPasswordResponse, ApiError> {
         let room_id = RoomId::from_string(req.room_id);
         let new_password = if req.new_password.is_empty() {
@@ -284,6 +294,35 @@ impl AdminApiImpl {
         };
         self.room_service.admin_set_room_password(&room_id, new_password).await
             .map_err(ApiError::from)?;
+
+        // Audit log: room password change is a security-relevant operation.
+        {
+            let admin_username = self.user_service.get_user(admin_user_id).await
+                .map_or_else(|_| admin_user_id.as_str().to_string(), |u| u.username);
+            let mut details = serde_json::Map::new();
+            details.insert("room_id".to_string(), serde_json::Value::String(room_id.as_str().to_string()));
+            details.insert("password_set".to_string(), serde_json::Value::Bool(new_password.is_some()));
+            if let Err(e) = self.audit_service.log(
+                admin_user_id.as_str().to_string(),
+                admin_username.clone(),
+                synctv_core::service::AuditAction::RoomPasswordUpdated,
+                synctv_core::service::AuditTargetType::Room,
+                Some(room_id.as_str().to_string()),
+                serde_json::Value::Object(details),
+                ctx.ip_address.clone(),
+                ctx.user_agent.clone(),
+            ).await {
+                tracing::error!(
+                    error = %e,
+                    admin_user_id = %admin_user_id.as_str(),
+                    admin_username = %admin_username,
+                    room_id = %room_id.as_str(),
+                    action = "room_password_updated",
+                    "AUDIT LOG FAILURE: failed to record room password change. Manual review required.",
+                );
+            }
+        }
+
         Ok(crate::proto::admin::UpdateRoomPasswordResponse { success: true })
     }
 
@@ -295,9 +334,19 @@ impl AdminApiImpl {
         let members = self.room_service.get_room_members(&rid).await
             .map_err(ApiError::from)?;
 
-        let proto_members: Vec<_> = members.iter().map(admin_room_member_to_proto).collect();
+        let total = members.len() as i32;
 
-        let total = proto_members.len() as i32;
+        // Apply pagination in-memory since the underlying service returns all members.
+        let page = if req.page > 0 { req.page } else { 1 };
+        let page_size = if req.page_size > 0 { req.page_size } else { 50 };
+        let skip = ((page - 1) * page_size) as usize;
+        let proto_members: Vec<_> = members
+            .iter()
+            .skip(skip)
+            .take(page_size as usize)
+            .map(admin_room_member_to_proto)
+            .collect();
+
         Ok(crate::proto::admin::GetRoomMembersResponse {
             members: proto_members,
             total,
@@ -364,6 +413,7 @@ impl AdminApiImpl {
         req: crate::proto::admin::UpdateUserRoleRequest,
         admin_user_id: &UserId,
         caller_role: synctv_core::models::UserRole,
+        ctx: &RequestContext,
     ) -> Result<crate::proto::admin::UpdateUserRoleResponse, ApiError> {
         let uid = UserId::from_string(req.user_id);
         let user = self.user_service.get_user(&uid).await
@@ -413,8 +463,8 @@ impl AdminApiImpl {
                 synctv_core::service::AuditTargetType::User,
                 Some(uid.as_str().to_string()),
                 serde_json::Value::Object(details),
-                None,
-                None,
+                ctx.ip_address.clone(),
+                ctx.user_agent.clone(),
             ).await {
                 tracing::error!(
                     error = %e,
@@ -440,6 +490,7 @@ impl AdminApiImpl {
         req: crate::proto::admin::UpdateUserPasswordRequest,
         caller_user_id: UserId,
         caller_role: synctv_core::models::UserRole,
+        ctx: &RequestContext,
     ) -> Result<crate::proto::admin::UpdateUserPasswordResponse, ApiError> {
         use crate::http::validation::limits::{PASSWORD_MIN, PASSWORD_MAX};
         if req.new_password.chars().count() < PASSWORD_MIN {
@@ -493,8 +544,8 @@ impl AdminApiImpl {
             synctv_core::service::AuditTargetType::User,
             Some(uid.as_str().to_string()),
             serde_json::Value::Object(details),
-            None, // ip_address not available at this layer
-            None, // user_agent not available at this layer
+            ctx.ip_address.clone(),
+            ctx.user_agent.clone(),
         ).await.map_err(ApiError::from)?;
 
         Ok(crate::proto::admin::UpdateUserPasswordResponse {
@@ -543,6 +594,7 @@ impl AdminApiImpl {
         &self,
         req: crate::proto::admin::UpdateSettingsRequest,
         admin_user_id: &UserId,
+        ctx: &RequestContext,
     ) -> Result<crate::proto::admin::UpdateSettingsResponse, ApiError> {
         // Collect keys before consuming req.settings
         let changed_keys: Vec<String> = req.settings.keys().cloned().collect();
@@ -580,8 +632,8 @@ impl AdminApiImpl {
             synctv_core::service::AuditTargetType::Settings,
             None,
             serde_json::Value::Object(details),
-            None,
-            None,
+            ctx.ip_address.clone(),
+            ctx.user_agent.clone(),
         ).await {
             tracing::error!(
                 error = %e,
@@ -638,6 +690,8 @@ impl AdminApiImpl {
     pub async fn add_provider_instance(
         &self,
         req: crate::proto::admin::AddProviderInstanceRequest,
+        admin_user_id: &UserId,
+        ctx: &RequestContext,
     ) -> Result<crate::proto::admin::AddProviderInstanceResponse, ApiError> {
         // Parse config if provided
         let (jwt_secret, custom_ca) = if req.config.is_empty() {
@@ -671,6 +725,33 @@ impl AdminApiImpl {
             .await
             .map_err(ApiError::from)?;
 
+        // Audit log: provider instance creation.
+        {
+            let admin_username = self.user_service.get_user(admin_user_id).await
+                .map_or_else(|_| admin_user_id.as_str().to_string(), |u| u.username);
+            let mut details = serde_json::Map::new();
+            details.insert("instance_name".to_string(), serde_json::Value::String(instance.name.clone()));
+            details.insert("endpoint".to_string(), serde_json::Value::String(instance.endpoint.clone()));
+            if let Err(e) = self.audit_service.log(
+                admin_user_id.as_str().to_string(),
+                admin_username.clone(),
+                synctv_core::service::AuditAction::ProviderInstanceCreated,
+                synctv_core::service::AuditTargetType::ProviderInstance,
+                Some(instance.name.clone()),
+                serde_json::Value::Object(details),
+                ctx.ip_address.clone(),
+                ctx.user_agent.clone(),
+            ).await {
+                tracing::error!(
+                    error = %e,
+                    admin_user_id = %admin_user_id.as_str(),
+                    instance_name = %instance.name,
+                    action = "provider_instance_created",
+                    "AUDIT LOG FAILURE: failed to record provider instance creation.",
+                );
+            }
+        }
+
         Ok(crate::proto::admin::AddProviderInstanceResponse {
             instance: Some(provider_instance_to_proto(instance)),
         })
@@ -679,6 +760,8 @@ impl AdminApiImpl {
     pub async fn update_provider_instance(
         &self,
         req: crate::proto::admin::UpdateProviderInstanceRequest,
+        admin_user_id: &UserId,
+        ctx: &RequestContext,
     ) -> Result<crate::proto::admin::UpdateProviderInstanceResponse, ApiError> {
         // Get existing instance
         let instances = self.provider_instance_manager.get_all_instances().await
@@ -734,6 +817,32 @@ impl AdminApiImpl {
             .await
             .map_err(ApiError::from)?;
 
+        // Audit log: provider instance update.
+        {
+            let admin_username = self.user_service.get_user(admin_user_id).await
+                .map_or_else(|_| admin_user_id.as_str().to_string(), |u| u.username);
+            let mut details = serde_json::Map::new();
+            details.insert("instance_name".to_string(), serde_json::Value::String(instance.name.clone()));
+            if let Err(e) = self.audit_service.log(
+                admin_user_id.as_str().to_string(),
+                admin_username.clone(),
+                synctv_core::service::AuditAction::ProviderInstanceUpdated,
+                synctv_core::service::AuditTargetType::ProviderInstance,
+                Some(instance.name.clone()),
+                serde_json::Value::Object(details),
+                ctx.ip_address.clone(),
+                ctx.user_agent.clone(),
+            ).await {
+                tracing::error!(
+                    error = %e,
+                    admin_user_id = %admin_user_id.as_str(),
+                    instance_name = %instance.name,
+                    action = "provider_instance_updated",
+                    "AUDIT LOG FAILURE: failed to record provider instance update.",
+                );
+            }
+        }
+
         Ok(crate::proto::admin::UpdateProviderInstanceResponse {
             instance: Some(provider_instance_to_proto(instance)),
         })
@@ -742,11 +851,39 @@ impl AdminApiImpl {
     pub async fn delete_provider_instance(
         &self,
         req: crate::proto::admin::DeleteProviderInstanceRequest,
+        admin_user_id: &UserId,
+        ctx: &RequestContext,
     ) -> Result<crate::proto::admin::DeleteProviderInstanceResponse, ApiError> {
         self.provider_instance_manager
             .delete(&req.name)
             .await
             .map_err(ApiError::from)?;
+
+        // Audit log: provider instance deletion.
+        {
+            let admin_username = self.user_service.get_user(admin_user_id).await
+                .map_or_else(|_| admin_user_id.as_str().to_string(), |u| u.username);
+            let mut details = serde_json::Map::new();
+            details.insert("instance_name".to_string(), serde_json::Value::String(req.name.clone()));
+            if let Err(e) = self.audit_service.log(
+                admin_user_id.as_str().to_string(),
+                admin_username.clone(),
+                synctv_core::service::AuditAction::ProviderInstanceDeleted,
+                synctv_core::service::AuditTargetType::ProviderInstance,
+                Some(req.name.clone()),
+                serde_json::Value::Object(details),
+                ctx.ip_address.clone(),
+                ctx.user_agent.clone(),
+            ).await {
+                tracing::error!(
+                    error = %e,
+                    admin_user_id = %admin_user_id.as_str(),
+                    instance_name = %req.name,
+                    action = "provider_instance_deleted",
+                    "AUDIT LOG FAILURE: failed to record provider instance deletion.",
+                );
+            }
+        }
 
         Ok(crate::proto::admin::DeleteProviderInstanceResponse {
             success: true,
@@ -817,6 +954,8 @@ impl AdminApiImpl {
         &self,
         req: crate::proto::admin::CreateUserRequest,
         caller_role: synctv_core::models::UserRole,
+        admin_user_id: &UserId,
+        ctx: &RequestContext,
     ) -> Result<crate::proto::admin::CreateUserResponse, ApiError> {
         if req.username.is_empty() || req.password.is_empty() || req.email.is_empty() {
             return Err(ApiError::InvalidInput("Username, password, and email are required".to_string()));
@@ -857,6 +996,31 @@ impl AdminApiImpl {
             .await
             .map_err(ApiError::from)?;
 
+        // Audit log: user creation via admin panel.
+        {
+            let admin_username = self.user_service.get_user(admin_user_id).await
+                .map_or_else(|_| admin_user_id.as_str().to_string(), |u| u.username);
+            if let Err(e) = self.audit_service.log(
+                admin_user_id.as_str().to_string(),
+                admin_username.clone(),
+                synctv_core::service::AuditAction::UserCreated,
+                synctv_core::service::AuditTargetType::User,
+                Some(user.id.as_str().to_string()),
+                serde_json::json!({"reason": "User created via admin panel"}),
+                ctx.ip_address.clone(),
+                ctx.user_agent.clone(),
+            ).await {
+                tracing::error!(
+                    error = %e,
+                    admin_user_id = %admin_user_id.as_str(),
+                    admin_username = %admin_username,
+                    created_user_id = %user.id.as_str(),
+                    action = "user_created",
+                    "AUDIT LOG FAILURE: failed to record user creation. Manual review required.",
+                );
+            }
+        }
+
         Ok(crate::proto::admin::CreateUserResponse {
             user: Some(admin_user_to_proto(&user)),
         })
@@ -865,6 +1029,8 @@ impl AdminApiImpl {
     pub async fn delete_user(
         &self,
         req: crate::proto::admin::DeleteUserRequest,
+        admin_user_id: &UserId,
+        ctx: &RequestContext,
     ) -> Result<crate::proto::admin::DeleteUserResponse, ApiError> {
         let uid = UserId::from_string(req.user_id);
 
@@ -892,6 +1058,33 @@ impl AdminApiImpl {
             infra.kick_user_publishers(uid.as_str()).await;
         }
 
+        // Audit log: user deletion is a critical operation.
+        {
+            let admin_username = self.user_service.get_user(admin_user_id).await
+                .map_or_else(|_| admin_user_id.as_str().to_string(), |u| u.username);
+            let mut details = serde_json::Map::new();
+            details.insert("target_user_id".to_string(), serde_json::Value::String(uid.as_str().to_string()));
+            if let Err(e) = self.audit_service.log(
+                admin_user_id.as_str().to_string(),
+                admin_username.clone(),
+                synctv_core::service::AuditAction::UserDeleted,
+                synctv_core::service::AuditTargetType::User,
+                Some(uid.as_str().to_string()),
+                serde_json::Value::Object(details),
+                ctx.ip_address.clone(),
+                ctx.user_agent.clone(),
+            ).await {
+                tracing::error!(
+                    error = %e,
+                    admin_user_id = %admin_user_id.as_str(),
+                    admin_username = %admin_username,
+                    target_user_id = %uid.as_str(),
+                    action = "user_deleted",
+                    "AUDIT LOG FAILURE: failed to record user deletion. Manual review required.",
+                );
+            }
+        }
+
         Ok(crate::proto::admin::DeleteUserResponse { success: true })
     }
 
@@ -899,6 +1092,7 @@ impl AdminApiImpl {
         &self,
         req: crate::proto::admin::UpdateUserUsernameRequest,
         admin_user_id: &UserId,
+        ctx: &RequestContext,
     ) -> Result<crate::proto::admin::UpdateUserUsernameResponse, ApiError> {
         let uid = UserId::from_string(req.user_id);
 
@@ -945,8 +1139,8 @@ impl AdminApiImpl {
                 synctv_core::service::AuditTargetType::User,
                 Some(uid.as_str().to_string()),
                 serde_json::Value::Object(details),
-                None,
-                None,
+                ctx.ip_address.clone(),
+                ctx.user_agent.clone(),
             ).await {
                 tracing::error!(
                     error = %e,
@@ -970,6 +1164,7 @@ impl AdminApiImpl {
         req: crate::proto::admin::BanUserRequest,
         admin_user_id: &UserId,
         caller_role: synctv_core::models::UserRole,
+        ctx: &RequestContext,
     ) -> Result<crate::proto::admin::BanUserResponse, ApiError> {
         let uid = UserId::from_string(req.user_id);
         let user = self.user_service.get_user(&uid).await.map_err(ApiError::from)?;
@@ -1034,8 +1229,8 @@ impl AdminApiImpl {
                 synctv_core::service::AuditTargetType::User,
                 Some(uid.as_str().to_string()),
                 serde_json::Value::Object(details),
-                None,
-                None,
+                ctx.ip_address.clone(),
+                ctx.user_agent.clone(),
             ).await {
                 tracing::error!(
                     error = %e,
@@ -1059,6 +1254,7 @@ impl AdminApiImpl {
         &self,
         req: crate::proto::admin::UnbanUserRequest,
         admin_user_id: &UserId,
+        ctx: &RequestContext,
     ) -> Result<crate::proto::admin::UnbanUserResponse, ApiError> {
         let uid = UserId::from_string(req.user_id);
         let mut user = self.user_service.get_user(&uid).await.map_err(ApiError::from)?;
@@ -1085,8 +1281,8 @@ impl AdminApiImpl {
                 synctv_core::service::AuditTargetType::User,
                 Some(uid.as_str().to_string()),
                 serde_json::Value::Object(details),
-                None,
-                None,
+                ctx.ip_address.clone(),
+                ctx.user_agent.clone(),
             ).await {
                 tracing::error!(
                     error = %e,
@@ -1109,6 +1305,7 @@ impl AdminApiImpl {
         &self,
         req: crate::proto::admin::ApproveUserRequest,
         admin_user_id: &UserId,
+        ctx: &RequestContext,
     ) -> Result<crate::proto::admin::ApproveUserResponse, ApiError> {
         let uid = UserId::from_string(req.user_id);
         let mut user = self.user_service.get_user(&uid).await.map_err(ApiError::from)?;
@@ -1132,12 +1329,12 @@ impl AdminApiImpl {
             if let Err(e) = self.audit_service.log(
                 admin_user_id.as_str().to_string(),
                 admin_username.clone(),
-                synctv_core::service::AuditAction::UserUnbanned,
+                synctv_core::service::AuditAction::UserApproved,
                 synctv_core::service::AuditTargetType::User,
                 Some(uid.as_str().to_string()),
                 serde_json::Value::Object(details),
-                None,
-                None,
+                ctx.ip_address.clone(),
+                ctx.user_agent.clone(),
             ).await {
                 tracing::error!(
                     error = %e,
@@ -1220,6 +1417,7 @@ impl AdminApiImpl {
         &self,
         req: crate::proto::admin::BanRoomRequest,
         admin_user_id: &UserId,
+        ctx: &RequestContext,
     ) -> Result<crate::proto::admin::BanRoomResponse, ApiError> {
         let rid = RoomId::from_string(req.room_id);
         let room = self.room_service.get_room(&rid).await.map_err(ApiError::from)?;
@@ -1258,6 +1456,35 @@ impl AdminApiImpl {
             infra.kick_room_publishers(rid.as_str()).await;
         }
 
+        // Audit log: ban_room is a critical operation.
+        {
+            let admin_username = self.user_service.get_user(admin_user_id).await
+                .map_or_else(|_| admin_user_id.as_str().to_string(), |u| u.username);
+            let mut details = serde_json::Map::new();
+            details.insert("room_id".to_string(), serde_json::Value::String(rid.as_str().to_string()));
+            details.insert("room_name".to_string(), serde_json::Value::String(room.name.clone()));
+            details.insert("reason".to_string(), serde_json::Value::String(req.reason.clone()));
+            if let Err(e) = self.audit_service.log(
+                admin_user_id.as_str().to_string(),
+                admin_username.clone(),
+                synctv_core::service::AuditAction::RoomBanned,
+                synctv_core::service::AuditTargetType::Room,
+                Some(rid.as_str().to_string()),
+                serde_json::Value::Object(details),
+                ctx.ip_address.clone(),
+                ctx.user_agent.clone(),
+            ).await {
+                tracing::error!(
+                    error = %e,
+                    admin_user_id = %admin_user_id.as_str(),
+                    admin_username = %admin_username,
+                    room_id = %rid.as_str(),
+                    action = "room_banned",
+                    "AUDIT LOG FAILURE: failed to record room ban. Manual review required.",
+                );
+            }
+        }
+
         Ok(crate::proto::admin::BanRoomResponse {
             room: Some(admin_room_to_proto(
                 &updated, None,
@@ -1271,6 +1498,7 @@ impl AdminApiImpl {
         &self,
         req: crate::proto::admin::UnbanRoomRequest,
         admin_user_id: &UserId,
+        ctx: &RequestContext,
     ) -> Result<crate::proto::admin::UnbanRoomResponse, ApiError> {
         let rid = RoomId::from_string(req.room_id);
         let room = self.room_service.get_room(&rid).await.map_err(ApiError::from)?;
@@ -1281,6 +1509,34 @@ impl AdminApiImpl {
 
         let updated = self.room_service.unban_room(&rid, admin_user_id).await
             .map_err(ApiError::from)?;
+
+        // Audit log: unban_room is a security-relevant operation.
+        {
+            let admin_username = self.user_service.get_user(admin_user_id).await
+                .map_or_else(|_| admin_user_id.as_str().to_string(), |u| u.username);
+            let mut details = serde_json::Map::new();
+            details.insert("room_id".to_string(), serde_json::Value::String(rid.as_str().to_string()));
+            details.insert("room_name".to_string(), serde_json::Value::String(room.name.clone()));
+            if let Err(e) = self.audit_service.log(
+                admin_user_id.as_str().to_string(),
+                admin_username.clone(),
+                synctv_core::service::AuditAction::RoomUnbanned,
+                synctv_core::service::AuditTargetType::Room,
+                Some(rid.as_str().to_string()),
+                serde_json::Value::Object(details),
+                ctx.ip_address.clone(),
+                ctx.user_agent.clone(),
+            ).await {
+                tracing::error!(
+                    error = %e,
+                    admin_user_id = %admin_user_id.as_str(),
+                    admin_username = %admin_username,
+                    room_id = %rid.as_str(),
+                    action = "room_unbanned",
+                    "AUDIT LOG FAILURE: failed to record room unban. Manual review required.",
+                );
+            }
+        }
 
         Ok(crate::proto::admin::UnbanRoomResponse {
             room: Some(admin_room_to_proto(
@@ -1294,9 +1550,39 @@ impl AdminApiImpl {
     pub async fn approve_room(
         &self,
         req: crate::proto::admin::ApproveRoomRequest,
+        admin_user_id: &UserId,
+        ctx: &RequestContext,
     ) -> Result<crate::proto::admin::ApproveRoomResponse, ApiError> {
         let rid = RoomId::from_string(req.room_id);
         let room = self.room_service.approve_room(&rid).await.map_err(ApiError::from)?;
+
+        // Audit log: approving a room is a security-relevant operation.
+        {
+            let admin_username = self.user_service.get_user(admin_user_id).await
+                .map_or_else(|_| admin_user_id.as_str().to_string(), |u| u.username);
+            let mut details = serde_json::Map::new();
+            details.insert("room_id".to_string(), serde_json::Value::String(rid.as_str().to_string()));
+            details.insert("room_name".to_string(), serde_json::Value::String(room.name.clone()));
+            if let Err(e) = self.audit_service.log(
+                admin_user_id.as_str().to_string(),
+                admin_username.clone(),
+                synctv_core::service::AuditAction::RoomApproved,
+                synctv_core::service::AuditTargetType::Room,
+                Some(rid.as_str().to_string()),
+                serde_json::Value::Object(details),
+                ctx.ip_address.clone(),
+                ctx.user_agent.clone(),
+            ).await {
+                tracing::error!(
+                    error = %e,
+                    admin_user_id = %admin_user_id.as_str(),
+                    admin_username = %admin_username,
+                    room_id = %rid.as_str(),
+                    action = "room_approved",
+                    "AUDIT LOG FAILURE: failed to record room approval. Manual review required.",
+                );
+            }
+        }
 
         Ok(crate::proto::admin::ApproveRoomResponse {
             room: Some(admin_room_to_proto(
@@ -1401,6 +1687,7 @@ impl AdminApiImpl {
         &self,
         req: crate::proto::admin::AddAdminRequest,
         admin_user_id: &UserId,
+        ctx: &RequestContext,
     ) -> Result<crate::proto::admin::AddAdminResponse, ApiError> {
         let uid = UserId::from_string(req.user_id);
         let mut user = self.user_service.get_user(&uid).await.map_err(ApiError::from)?;
@@ -1428,8 +1715,8 @@ impl AdminApiImpl {
                 synctv_core::service::AuditTargetType::User,
                 Some(uid.as_str().to_string()),
                 serde_json::Value::Object(details),
-                None,
-                None,
+                ctx.ip_address.clone(),
+                ctx.user_agent.clone(),
             ).await {
                 tracing::error!(
                     error = %e,
@@ -1451,6 +1738,7 @@ impl AdminApiImpl {
         &self,
         req: crate::proto::admin::RemoveAdminRequest,
         admin_user_id: &UserId,
+        ctx: &RequestContext,
     ) -> Result<crate::proto::admin::RemoveAdminResponse, ApiError> {
         let uid = UserId::from_string(req.user_id);
         let mut user = self.user_service.get_user(&uid).await.map_err(ApiError::from)?;
@@ -1482,8 +1770,8 @@ impl AdminApiImpl {
                 synctv_core::service::AuditTargetType::User,
                 Some(uid.as_str().to_string()),
                 serde_json::Value::Object(details),
-                None,
-                None,
+                ctx.ip_address.clone(),
+                ctx.user_agent.clone(),
             ).await {
                 tracing::error!(
                     error = %e,
@@ -1727,9 +2015,11 @@ fn admin_user_to_proto(user: &synctv_core::models::User) -> crate::proto::admin:
 fn provider_instance_to_proto(instance: synctv_core::models::ProviderInstance) -> crate::proto::admin::ProviderInstance {
     use crate::proto::admin::ProviderInstanceStatus;
 
-    // Generate status based on enabled flag
+    // The `status` field represents actual connection state, not enabled/disabled.
+    // Since we don't track real connection status here, use Disconnected for disabled
+    // instances and Unspecified for enabled ones (actual connectivity is unknown).
     let status: i32 = if instance.enabled {
-        ProviderInstanceStatus::Connected.into()
+        ProviderInstanceStatus::Unspecified.into()
     } else {
         ProviderInstanceStatus::Disconnected.into()
     };
@@ -1999,7 +2289,7 @@ mod tests {
         assert!(!proto.insecure_tls);
         assert_eq!(proto.providers, vec!["bilibili", "alist"]);
         assert!(proto.enabled);
-        assert_eq!(proto.status, i32::from(crate::proto::admin::ProviderInstanceStatus::Connected));
+        assert_eq!(proto.status, i32::from(crate::proto::admin::ProviderInstanceStatus::Unspecified));
     }
 
     #[test]

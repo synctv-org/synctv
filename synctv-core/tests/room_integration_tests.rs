@@ -84,6 +84,7 @@ fn make_room(name: &str, description: &str, owner: &UserId) -> Room {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_create_room_basic() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
@@ -102,6 +103,7 @@ async fn test_create_room_basic() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_create_room_description_length() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
@@ -118,6 +120,7 @@ async fn test_create_room_description_length() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_update_room_settings() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
@@ -139,6 +142,7 @@ async fn test_update_room_settings() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_update_room_status() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
@@ -154,6 +158,7 @@ async fn test_update_room_status() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_soft_delete_room() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
@@ -183,6 +188,7 @@ async fn test_soft_delete_room() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_cascade_delete_user_deletes_rooms() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
@@ -219,6 +225,7 @@ async fn test_cascade_delete_user_deletes_rooms() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_cascade_delete_room_deletes_members_and_playlists() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
@@ -291,6 +298,7 @@ async fn test_cascade_delete_room_deletes_members_and_playlists() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_concurrent_room_creation_unique_ids() {
     use std::sync::Arc;
 
@@ -325,6 +333,7 @@ async fn test_concurrent_room_creation_unique_ids() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_room_ban_status() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());

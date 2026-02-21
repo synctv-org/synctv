@@ -13,6 +13,7 @@ use synctv_core::service::{
 // ============================================================================
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_in_memory_blacklist_insert_and_check() {
     let store = InMemoryTokenBlacklistStore::new(10_000, 3600, 86400);
 
@@ -24,6 +25,7 @@ async fn test_in_memory_blacklist_insert_and_check() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_in_memory_blacklist_not_blacklisted_unknown() {
     let store = InMemoryTokenBlacklistStore::new(10_000, 3600, 86400);
 
@@ -32,6 +34,7 @@ async fn test_in_memory_blacklist_not_blacklisted_unknown() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_in_memory_blacklist_ttl_expiry() {
     let store = InMemoryTokenBlacklistStore::new(10_000, 3600, 86400);
 
@@ -49,6 +52,7 @@ async fn test_in_memory_blacklist_ttl_expiry() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_in_memory_family_revoked_set_and_get() {
     let store = InMemoryTokenBlacklistStore::new(10_000, 3600, 86400);
 
@@ -95,6 +99,7 @@ async fn start_redis() -> (testcontainers::ContainerAsync<Redis>, redis::aio::Co
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_redis_blacklist_roundtrip() {
     let (_container, conn) = start_redis().await;
     let store = RedisTokenBlacklistStore::new(conn);
@@ -107,6 +112,7 @@ async fn test_redis_blacklist_roundtrip() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_redis_blacklist_ttl_expiry() {
     let (_container, conn) = start_redis().await;
     let store = RedisTokenBlacklistStore::new(conn);
@@ -124,6 +130,7 @@ async fn test_redis_blacklist_ttl_expiry() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_redis_family_revoked_roundtrip() {
     let (_container, conn) = start_redis().await;
     let store = RedisTokenBlacklistStore::new(conn);
@@ -141,6 +148,7 @@ async fn test_redis_family_revoked_roundtrip() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_redis_family_revoked_ttl_expiry() {
     let (_container, conn) = start_redis().await;
     let store = RedisTokenBlacklistStore::new(conn);

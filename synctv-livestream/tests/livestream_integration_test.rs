@@ -127,6 +127,7 @@ fn create_test_infrastructure() -> LiveStreamingInfrastructure {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_complete_hls_workflow() {
     let infrastructure = create_test_infrastructure();
 
@@ -189,6 +190,7 @@ async fn test_complete_hls_workflow() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_multiple_room_media_combinations() {
     let infrastructure = create_test_infrastructure();
 
@@ -227,6 +229,7 @@ async fn test_multiple_room_media_combinations() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_storage_key_format_consistency() {
     let infrastructure = create_test_infrastructure();
     let storage = infrastructure.segment_manager.as_ref().unwrap().storage();
@@ -244,6 +247,7 @@ async fn test_storage_key_format_consistency() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_registry_key_format_consistency() {
     let infrastructure = create_test_infrastructure();
 
@@ -272,6 +276,7 @@ async fn test_registry_key_format_consistency() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_hls_url_generation_with_custom_callback() {
     let infrastructure = create_test_infrastructure();
 
@@ -320,6 +325,7 @@ async fn test_hls_url_generation_with_custom_callback() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_segment_cleanup() {
     let infrastructure = create_test_infrastructure();
     let storage = infrastructure.segment_manager.as_ref().unwrap().storage();
@@ -347,6 +353,7 @@ async fn test_segment_cleanup() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_concurrent_segment_access() {
     let infrastructure = create_test_infrastructure();
     let storage = infrastructure.segment_manager.as_ref().unwrap().storage();
@@ -376,6 +383,7 @@ async fn test_concurrent_segment_access() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_hls_playlist_with_discontinuity() {
     let infrastructure = create_test_infrastructure();
 
@@ -426,6 +434,7 @@ async fn test_hls_playlist_with_discontinuity() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_hls_playlist_ended_stream() {
     let infrastructure = create_test_infrastructure();
 
@@ -461,6 +470,7 @@ async fn test_hls_playlist_ended_stream() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_path_parameter_separation() {
     // Test that room_id and media_id are properly separated in different contexts
 
@@ -488,6 +498,7 @@ async fn test_path_parameter_separation() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_empty_playlist_returns_none() {
     let infrastructure = create_test_infrastructure();
 

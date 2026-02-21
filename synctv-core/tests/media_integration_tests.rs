@@ -139,6 +139,7 @@ fn make_media(playlist_id: &PlaylistId, room_id: &RoomId, name: &str, position: 
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_create_media_basic() {
     let ctx = setup_test_context("1").await;
     let media_repo = MediaRepository::new(ctx.pool.clone());
@@ -154,6 +155,7 @@ async fn test_create_media_basic() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_media_get_by_id() {
     let ctx = setup_test_context("2").await;
     let media_repo = MediaRepository::new(ctx.pool.clone());
@@ -169,6 +171,7 @@ async fn test_media_get_by_id() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_media_update() {
     let ctx = setup_test_context("3").await;
     let media_repo = MediaRepository::new(ctx.pool.clone());
@@ -183,6 +186,7 @@ async fn test_media_update() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_media_delete() {
     let ctx = setup_test_context("4").await;
     let media_repo = MediaRepository::new(ctx.pool.clone());
@@ -202,6 +206,7 @@ async fn test_media_delete() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_unique_media_name_constraint() {
     let ctx = setup_test_context("5").await;
     let media_repo = MediaRepository::new(ctx.pool.clone());
@@ -215,6 +220,7 @@ async fn test_unique_media_name_constraint() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_unique_media_position_constraint() {
     let ctx = setup_test_context("6").await;
     let media_repo = MediaRepository::new(ctx.pool.clone());
@@ -228,6 +234,7 @@ async fn test_unique_media_position_constraint() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_media_get_by_playlist() {
     let ctx = setup_test_context("7").await;
     let media_repo = MediaRepository::new(ctx.pool.clone());
@@ -245,6 +252,7 @@ async fn test_media_get_by_playlist() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_media_cascade_delete_with_playlist() {
     let ctx = setup_test_context("8").await;
     let playlist_repo = PlaylistRepository::new(ctx.pool.clone());
@@ -276,6 +284,7 @@ async fn test_media_cascade_delete_with_playlist() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_media_swap_positions() {
     let ctx = setup_test_context("9").await;
     let media_repo = MediaRepository::new(ctx.pool.clone());
@@ -293,6 +302,7 @@ async fn test_media_swap_positions() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_media_count_by_playlist() {
     let ctx = setup_test_context("10").await;
     let media_repo = MediaRepository::new(ctx.pool.clone());
@@ -306,6 +316,7 @@ async fn test_media_count_by_playlist() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_media_batch_delete() {
     let ctx = setup_test_context("11").await;
     let media_repo = MediaRepository::new(ctx.pool.clone());
@@ -329,6 +340,7 @@ async fn test_media_batch_delete() {
 // ============================================================================
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_get_next_position_with_tx_empty_playlist_returns_zero() {
     let ctx = setup_test_context("next_pos_empty").await;
     let media_repo = MediaRepository::new(ctx.pool.clone());
@@ -344,6 +356,7 @@ async fn test_get_next_position_with_tx_empty_playlist_returns_zero() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_get_next_position_with_tx_existing_items() {
     let ctx = setup_test_context("next_pos_existing").await;
     let media_repo = MediaRepository::new(ctx.pool.clone());
@@ -376,6 +389,7 @@ async fn test_get_next_position_with_tx_existing_items() {
 // ============================================================================
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_swap_positions_no_constraint_violation() {
     let ctx = setup_test_context("swap_fix").await;
     let media_repo = MediaRepository::new(ctx.pool.clone());
@@ -404,6 +418,7 @@ async fn test_swap_positions_no_constraint_violation() {
 // ============================================================================
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_update_if_unchanged_succeeds_when_row_unchanged() {
     let ctx = setup_test_context("opt_lock_ok").await;
     let media_repo = MediaRepository::new(ctx.pool.clone());
@@ -430,6 +445,7 @@ async fn test_update_if_unchanged_succeeds_when_row_unchanged() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_update_if_unchanged_returns_none_when_changed_concurrently() {
     let ctx = setup_test_context("opt_lock_conflict").await;
     let media_repo = MediaRepository::new(ctx.pool.clone());
@@ -471,6 +487,7 @@ async fn test_update_if_unchanged_returns_none_when_changed_concurrently() {
 // ============================================================================
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_reorder_batch_with_tx_swaps_positions() {
     let ctx = setup_test_context("reorder_swap").await;
     let media_repo = MediaRepository::new(ctx.pool.clone());
@@ -498,6 +515,7 @@ async fn test_reorder_batch_with_tx_swaps_positions() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_reorder_batch_with_tx_empty_list_noop() {
     let ctx = setup_test_context("reorder_empty").await;
     let media_repo = MediaRepository::new(ctx.pool.clone());
@@ -511,6 +529,7 @@ async fn test_reorder_batch_with_tx_empty_list_noop() {
 // ============================================================================
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_create_batch_chunked_inserts_all() {
     let ctx = setup_test_context("batch_create").await;
     let media_repo = MediaRepository::new(ctx.pool.clone());
@@ -534,6 +553,7 @@ async fn test_create_batch_chunked_inserts_all() {
 // ============================================================================
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_count_by_playlists_batch_multiple_playlists() {
     let ctx = setup_test_context("batch_count").await;
     let playlist_repo = PlaylistRepository::new(ctx.pool.clone());
@@ -599,6 +619,7 @@ async fn test_count_by_playlists_batch_multiple_playlists() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_count_by_playlists_batch_empty_input() {
     let ctx = setup_test_context("batch_count_empty").await;
     let media_repo = MediaRepository::new(ctx.pool.clone());
@@ -612,6 +633,7 @@ async fn test_count_by_playlists_batch_empty_input() {
 // ============================================================================
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_get_by_ids_partial_returns_subset() {
     let ctx = setup_test_context("get_by_ids").await;
     let media_repo = MediaRepository::new(ctx.pool.clone());
@@ -650,6 +672,7 @@ async fn test_get_by_ids_partial_returns_subset() {
 // ============================================================================
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_delete_by_playlist_removes_all() {
     let ctx = setup_test_context("del_by_pl").await;
     let media_repo = MediaRepository::new(ctx.pool.clone());

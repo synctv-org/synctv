@@ -8,6 +8,31 @@ use super::ClientApiImpl;
 use super::convert::{media_to_proto, playlist_to_proto};
 
 impl ClientApiImpl {
+    /// Validate source_config URLs for SSRF protection.
+    ///
+    /// Checks `url` and `urls` fields in the source_config JSON to prevent
+    /// attackers from forcing the server to make requests to internal network addresses.
+    fn validate_source_config_urls(source_config_bytes: &[u8]) -> Result<(), ApiError> {
+        if source_config_bytes.is_empty() {
+            return Ok(());
+        }
+        if let Ok(source_config) = serde_json::from_slice::<serde_json::Value>(source_config_bytes) {
+            if let Some(url_str) = source_config.get("url").and_then(|u| u.as_str()) {
+                crate::http::validation::validate_url(url_str)
+                    .map_err(|e| ApiError::InvalidInput(format!("Invalid media URL: {e}")))?;
+            }
+            if let Some(urls_arr) = source_config.get("urls").and_then(|v| v.as_array()) {
+                for url_val in urls_arr {
+                    if let Some(url_str) = url_val.as_str() {
+                        crate::http::validation::validate_url(url_str)
+                            .map_err(|e| ApiError::InvalidInput(format!("Invalid media URL: {e}")))?;
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
     pub async fn add_media(
         &self,
         user_id: &str,
@@ -17,24 +42,8 @@ impl ClientApiImpl {
         crate::http::validation::validate_id(room_id, "room_id")
             .map_err(|e| ApiError::InvalidInput(format!("Invalid room_id: {e}")))?;
 
-        // Validate media URLs to prevent SSRF attacks where an attacker could
-        // force the server to make requests to internal network addresses.
-        if !req.source_config.is_empty() {
-            if let Ok(source_config) = serde_json::from_slice::<serde_json::Value>(&req.source_config) {
-                if let Some(url_str) = source_config.get("url").and_then(|u| u.as_str()) {
-                    crate::http::validation::validate_url(url_str)
-                        .map_err(|e| ApiError::InvalidInput(format!("Invalid media URL: {e}")))?;
-                }
-                if let Some(urls_arr) = source_config.get("urls").and_then(|v| v.as_array()) {
-                    for url_val in urls_arr {
-                        if let Some(url_str) = url_val.as_str() {
-                            crate::http::validation::validate_url(url_str)
-                                .map_err(|e| ApiError::InvalidInput(format!("Invalid media URL: {e}")))?;
-                        }
-                    }
-                }
-            }
-        }
+        // Validate media URLs to prevent SSRF attacks
+        Self::validate_source_config_urls(&req.source_config)?;
 
         let uid = UserId::from_string(user_id.to_string());
         let rid = RoomId::from_string(room_id.to_string());
@@ -294,6 +303,9 @@ impl ClientApiImpl {
         // Build batch items for the atomic service call
         let mut items: Vec<(String, serde_json::Value, String)> = Vec::with_capacity(req.items.len());
         for item in &req.items {
+            // Validate media URLs for SSRF protection (same as add_media)
+            Self::validate_source_config_urls(&item.source_config)?;
+
             let source_config: serde_json::Value = if item.source_config.is_empty() {
                 serde_json::json!({})
             } else {
@@ -367,16 +379,12 @@ impl ClientApiImpl {
             .map(synctv_core::models::MediaId::from_string)
             .collect();
 
-        // Fetch media items before deletion for cache invalidation
-        let media_items: Vec<synctv_core::models::Media> = {
-            let mut items = Vec::with_capacity(mids.len());
-            for mid in &mids {
-                if let Ok(Some(m)) = self.room_service.media_service().get_media(mid).await {
-                    items.push(m);
-                }
-            }
-            items
-        };
+        // M-12: Batch fetch all media in a single query instead of N+1
+        let media_items: Vec<synctv_core::models::Media> = self.room_service
+            .media_service()
+            .get_media_batch(&mids)
+            .await
+            .unwrap_or_default();
 
         let deleted_count = self.room_service
             .media_service()
@@ -478,11 +486,15 @@ impl ClientApiImpl {
         // Check membership
         self.room_service.check_membership(&rid, &uid).await
             .map_err(|e| ApiError::Authorization(format!("Forbidden: {e}")))?;
-        let media_list = self.room_service.get_playlist(&rid).await
+
+        // M-7: Use paginated query instead of loading all items into memory.
+        // Default to first page with 500 items max.
+        let pagination = synctv_core::models::PageParams::new(Some(1), Some(500));
+        let (media_list, total_count) = self.room_service.get_playlist_paginated(&rid, pagination).await
             .map_err(ApiError::from)?;
 
         let media: Vec<_> = media_list.into_iter().map(|m| media_to_proto(&m)).collect();
-        let total = media.len() as i32;
+        let total = total_count as i32;
 
         let playlist = match self.room_service.playlist_service().get_root_playlist(&rid).await {
             Ok(pl) => Some(crate::proto::client::Playlist {
@@ -721,15 +733,13 @@ impl ClientApiImpl {
             .await
             .map_err(ApiError::from)?;
 
-        // Get media list and find the requested media
-        let playlist = self.room_service.get_playlist(&rid).await
-            .map_err(ApiError::from)?;
-
-        let media = playlist
-            .iter()
-            .find(|m| m.id == mid)
+        // M-5: Direct lookup by ID instead of loading the entire playlist
+        let media = self.room_service.media_service()
+            .get_media(&mid)
+            .await
+            .map_err(ApiError::from)?
             .ok_or_else(|| ApiError::NotFound(format!("Media {media_id} not found")))?;
 
-        Ok(media_to_proto(media))
+        Ok(media_to_proto(&media))
     }
 }

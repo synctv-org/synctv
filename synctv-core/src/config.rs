@@ -321,7 +321,7 @@ impl std::fmt::Debug for RedisConfig {
 impl Default for RedisConfig {
     fn default() -> Self {
         Self {
-            url: "redis://localhost:6379".to_string(),
+            url: String::new(),
             connect_timeout_seconds: 5,
             key_prefix: "synctv:".to_string(),
             deployment_mode: RedisDeploymentMode::Standalone,
@@ -403,6 +403,9 @@ pub struct LivestreamConfig {
     /// When exceeded, the oldest GOP is evicted even if `gop_cache_size` hasn't
     /// been reached. Default: 100 MB. Set to 0 to use the built-in default (50 MB).
     pub gop_cache_max_memory_mb: u64,
+    /// Maximum memory (in megabytes) for in-memory HLS segment storage.
+    /// 0 means use the built-in default (512 MB).
+    pub hls_memory_max_mb: u64,
     /// Whether HLS segment storage is on shared storage accessible by all replicas.
     ///
     /// In cluster mode (cluster.enabled=true or `cluster_secret` is set), HLS segments
@@ -432,6 +435,7 @@ impl Default for LivestreamConfig {
             pull_max_backoff_ms: 30_000,
             max_flv_tag_size_bytes: 10 * 1024 * 1024,
             gop_cache_max_memory_mb: 100,
+            hls_memory_max_mb: 0,
             hls_shared_storage: false,
             hls_storage_path: String::new(),
         }
@@ -1791,7 +1795,8 @@ mod tests {
         });
 
         assert!(!config.database_url().is_empty());
-        assert!(!config.redis_url().is_empty());
+        // Redis URL defaults to empty (standalone mode without Redis)
+        assert!(config.redis_url().is_empty());
         assert!(config.server.grpc_port > 0);
         assert!(config.server.http_port > 0);
         assert!(config.webrtc.enable_builtin_stun);
@@ -1858,7 +1863,10 @@ mod tests {
                 disable_ws_token_query: true,
             },
             database: DatabaseConfig::default(),
-            redis: RedisConfig::default(),
+            redis: RedisConfig {
+                url: "redis://localhost:6379".to_string(),
+                ..RedisConfig::default()
+            },
             jwt: JwtConfig {
                 secret: "my-very-secret-production-key-that-is-long-enough".to_string(),
                 ..JwtConfig::default()
@@ -2114,7 +2122,7 @@ mod tests {
     fn test_validate_cluster_enabled_with_redis_ok() {
         let mut config = valid_prod_config();
         config.cluster.enabled = true;
-        // redis.url has a default value ("redis://localhost:6379"), so this should pass
+        // valid_prod_config() includes redis.url, so this should pass
         // (assuming webrtc.stun_external_addr is set for cluster mode)
         config.webrtc.stun_external_addr = "203.0.113.1:3478".to_string();
         assert!(config.validate().is_ok());

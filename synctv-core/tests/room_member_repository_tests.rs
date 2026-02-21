@@ -93,6 +93,7 @@ fn make_member(room_id: RoomId, user_id: UserId, role: RoomRole) -> RoomMember {
 // ========== add_with_options tests ==========
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_add_with_options_full_flow() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
@@ -113,6 +114,7 @@ async fn test_add_with_options_full_flow() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_add_with_options_capacity_at_max_members() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
@@ -137,6 +139,7 @@ async fn test_add_with_options_capacity_at_max_members() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_add_with_options_inactive_room_rejection() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
@@ -158,6 +161,7 @@ async fn test_add_with_options_inactive_room_rejection() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_add_with_options_duplicate_membership_check() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
@@ -181,6 +185,7 @@ async fn test_add_with_options_duplicate_membership_check() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_add_with_options_max_members_zero_bypass() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
@@ -209,6 +214,7 @@ async fn test_add_with_options_max_members_zero_bypass() {
 // ========== ban_with_role_check / remove_with_role_check tests ==========
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_ban_with_role_check_member_cannot_ban_admin() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
@@ -232,6 +238,7 @@ async fn test_ban_with_role_check_member_cannot_ban_admin() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_ban_with_role_check_creator_can_ban_admin() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
@@ -258,6 +265,7 @@ async fn test_ban_with_role_check_creator_can_ban_admin() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_remove_with_role_check_equal_rank_rejected() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
@@ -281,6 +289,7 @@ async fn test_remove_with_role_check_equal_rank_rejected() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_remove_with_role_check_self_kick_fails() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
@@ -301,6 +310,7 @@ async fn test_remove_with_role_check_self_kick_fails() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_remove_with_role_check_creator_kicks_admin() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
@@ -329,6 +339,7 @@ async fn test_remove_with_role_check_creator_kicks_admin() {
 // ========== grant_permission_atomic / revoke_permission_atomic tests ==========
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_grant_permission_atomic_bitwise_or() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
@@ -351,6 +362,7 @@ async fn test_grant_permission_atomic_bitwise_or() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_revoke_permission_atomic_bitwise_or() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
@@ -373,6 +385,7 @@ async fn test_revoke_permission_atomic_bitwise_or() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_grant_permission_atomic_left_member_returns_not_found() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
@@ -394,6 +407,7 @@ async fn test_grant_permission_atomic_left_member_returns_not_found() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_revoke_permission_atomic_left_member_returns_not_found() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
@@ -417,6 +431,7 @@ async fn test_revoke_permission_atomic_left_member_returns_not_found() {
 // ========== reset_permissions tests ==========
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_reset_permissions_zeroes_all_four_columns() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
@@ -456,6 +471,7 @@ async fn test_reset_permissions_zeroes_all_four_columns() {
 // ========== count_by_rooms_batch tests ==========
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_count_by_rooms_batch_basic() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
@@ -490,6 +506,7 @@ async fn test_count_by_rooms_batch_basic() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_count_by_rooms_batch_empty_input() {
     let (_container, pool) = create_test_pool().await;
     let member_repo = RoomMemberRepository::new(pool.clone());
@@ -501,6 +518,7 @@ async fn test_count_by_rooms_batch_empty_input() {
 // ========== list_by_user_with_details tests ==========
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_list_by_user_with_details_pagination() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
@@ -554,6 +572,7 @@ async fn test_list_by_user_with_details_pagination() {
 // ========== diagnose_add_conflict tests ==========
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_diagnose_add_conflict_banned_user() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
@@ -577,6 +596,7 @@ async fn test_diagnose_add_conflict_banned_user() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_diagnose_add_conflict_left_user() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());

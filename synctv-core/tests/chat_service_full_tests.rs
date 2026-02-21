@@ -153,6 +153,7 @@ fn make_user(username: &str) -> User {
 // ========== send_message: SEND_CHAT permission check ==========
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_send_message_without_send_chat_permission_denied() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
@@ -192,6 +193,7 @@ async fn test_send_message_without_send_chat_permission_denied() {
 // ========== send_message: chat_enabled room setting ==========
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_send_message_chat_disabled_rejected() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
@@ -225,6 +227,7 @@ async fn test_send_message_chat_disabled_rejected() {
 // ========== send_message: rate limit mapping ==========
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_send_message_rate_limit_triggers() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
@@ -300,6 +303,7 @@ async fn test_send_message_rate_limit_triggers() {
 // ========== send_danmaku: danmaku_enabled setting ==========
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_send_danmaku_disabled_rejected() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
@@ -339,6 +343,7 @@ async fn test_send_danmaku_disabled_rejected() {
 // ========== delete_message: owner can delete own message ==========
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_delete_message_owner_can_delete_own() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
@@ -369,6 +374,7 @@ async fn test_delete_message_owner_can_delete_own() {
 // ========== delete_message: non-owner requires DELETE_CHAT permission ==========
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_delete_message_non_owner_requires_delete_chat_permission() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
@@ -406,6 +412,7 @@ async fn test_delete_message_non_owner_requires_delete_chat_permission() {
 // ========== delete_message: non-owner WITH DELETE_CHAT permission succeeds ==========
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_delete_message_non_owner_with_delete_chat_succeeds() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());

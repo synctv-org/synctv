@@ -2,16 +2,19 @@
 //!
 //! ## Backend Abstraction
 //!
-//! Storage is abstracted via the [`TokenBlacklistStore`] trait. Two
+//! Storage is abstracted via the [`TokenBlacklistStore`] trait. Three
 //! implementations are provided:
 //! - [`RedisTokenBlacklistStore`]: Redis-backed, for production deployments
 //!   with Redis configured.
+//! - [`PgTokenBlacklistStore`]: PostgreSQL-backed, durable fallback for
+//!   standalone deployments without Redis. Data survives restarts.
 //! - [`InMemoryTokenBlacklistStore`]: moka cache, for standalone mode without
 //!   Redis. Data is lost on restart but the security invariants (fail-closed
 //!   blacklisting) are preserved.
 
 use async_trait::async_trait;
 use redis::AsyncCommands;
+use sqlx::PgPool;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -173,5 +176,128 @@ impl TokenBlacklistStore for RedisTokenBlacklistStore {
     async fn set_family_revoked(&self, key: &str, timestamp: i64, ttl_secs: u64) {
         let mut conn = self.conn.clone();
         let _: std::result::Result<(), _> = conn.set_ex(key, timestamp, ttl_secs).await;
+    }
+}
+
+// ============================================================================
+// PgTokenBlacklistStore
+// ============================================================================
+
+/// PostgreSQL-backed [`TokenBlacklistStore`].
+///
+/// Provides durable token blacklist storage that survives restarts, used as
+/// a fallback when Redis is unavailable (standalone deployments).
+///
+/// JTI blacklist entries are stored in the `token_blacklist` table with an
+/// `expires_at` timestamp. Expired rows are cleaned up lazily (not returned
+/// by queries) and can be purged periodically via
+/// `DELETE FROM token_blacklist WHERE expires_at < NOW()`.
+///
+/// Family revocation is stored in the same table with a `family:` key prefix
+/// and the revocation timestamp as the JTI value.
+pub struct PgTokenBlacklistStore {
+    pool: PgPool,
+}
+
+impl PgTokenBlacklistStore {
+    /// Create a new PostgreSQL-backed token blacklist store.
+    #[must_use]
+    pub const fn new(pool: PgPool) -> Self {
+        Self { pool }
+    }
+}
+
+#[async_trait]
+impl TokenBlacklistStore for PgTokenBlacklistStore {
+    async fn is_blacklisted(&self, key: &str) -> bool {
+        sqlx::query_scalar::<_, bool>(
+            "SELECT EXISTS(SELECT 1 FROM token_blacklist WHERE jti = $1 AND expires_at > NOW())"
+        )
+        .bind(key)
+        .fetch_one(&self.pool)
+        .await
+        .unwrap_or(false)
+    }
+
+    async fn blacklist(&self, key: &str, ttl_secs: u64) -> Result<()> {
+        let expires_at = chrono::Utc::now() + chrono::Duration::seconds(ttl_secs as i64);
+        sqlx::query(
+            "INSERT INTO token_blacklist (jti, expires_at) VALUES ($1, $2) \
+             ON CONFLICT (jti) DO UPDATE SET expires_at = EXCLUDED.expires_at"
+        )
+        .bind(key)
+        .bind(expires_at)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| {
+            tracing::error!(
+                key = %key,
+                error = %e,
+                "Failed to blacklist refresh token JTI in PostgreSQL"
+            );
+            crate::Error::Internal("Failed to rotate refresh token".to_string())
+        })?;
+        Ok(())
+    }
+
+    async fn get_family_revoked_at(&self, key: &str) -> Option<i64> {
+        // Family revocation timestamp is stored as the expires_at field of a
+        // special `family:<key>` entry. The actual revocation timestamp is
+        // stored by encoding it in a separate query.
+        let row: Option<(chrono::DateTime<chrono::Utc>,)> = sqlx::query_as(
+            "SELECT expires_at FROM token_blacklist WHERE jti = $1 AND expires_at > NOW()"
+        )
+        .bind(key)
+        .fetch_optional(&self.pool)
+        .await
+        .ok()?;
+
+        // We store family revocation as: jti = "family:<user_key>", expires_at = actual expiry.
+        // The revocation timestamp is stored as a second entry with jti = "family_ts:<user_key>".
+        let ts_key = format!("_ts:{key}");
+        let ts_row: Option<(chrono::DateTime<chrono::Utc>,)> = sqlx::query_as(
+            "SELECT expires_at FROM token_blacklist WHERE jti = $1"
+        )
+        .bind(&ts_key)
+        .fetch_optional(&self.pool)
+        .await
+        .ok()?;
+
+        // If the main family key exists (not expired) and we have a timestamp entry,
+        // return the timestamp. The ts entry stores the revoked_at as epoch seconds
+        // in the expires_at column (reusing the column for storage).
+        if row.is_some() {
+            ts_row.map(|(ts,)| ts.timestamp())
+        } else {
+            None
+        }
+    }
+
+    async fn set_family_revoked(&self, key: &str, timestamp: i64, ttl_secs: u64) {
+        let expires_at = chrono::Utc::now() + chrono::Duration::seconds(ttl_secs as i64);
+
+        // Store the family revocation marker
+        let _ = sqlx::query(
+            "INSERT INTO token_blacklist (jti, expires_at) VALUES ($1, $2) \
+             ON CONFLICT (jti) DO UPDATE SET expires_at = EXCLUDED.expires_at"
+        )
+        .bind(key)
+        .bind(expires_at)
+        .execute(&self.pool)
+        .await;
+
+        // Store the revocation timestamp in a companion entry.
+        // We encode the timestamp as a DateTime for storage.
+        let ts_key = format!("_ts:{key}");
+        let revoked_at = chrono::DateTime::from_timestamp(timestamp, 0)
+            .unwrap_or_else(|| chrono::Utc::now());
+        let _ = sqlx::query(
+            "INSERT INTO token_blacklist (jti, expires_at) VALUES ($1, $2) \
+             ON CONFLICT (jti) DO UPDATE SET expires_at = EXCLUDED.expires_at"
+        )
+        .bind(&ts_key)
+        .bind(revoked_at)
+        .execute(&self.pool)
+        .await;
     }
 }

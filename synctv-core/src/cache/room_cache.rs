@@ -96,20 +96,20 @@ impl RoomCache {
     /// # Arguments
     /// * `l2` - L2 cache backend (e.g. `RedisCacheL2` or `NoopCacheL2`)
     /// * `l1_max_capacity` - Maximum number of entries in L1 cache
-    /// * `l1_ttl_minutes` - TTL for L1 cache entries in minutes
+    /// * `l1_ttl_seconds` - TTL for L1 cache entries in seconds
     /// * `l2_ttl_seconds` - TTL for L2 cache entries in seconds
     /// * `key_prefix` - L2 key prefix (e.g., "synctv:room:")
     pub fn new(
         l2: Arc<dyn CacheL2Backend>,
         l1_max_capacity: u64,
-        l1_ttl_minutes: u64,
+        l1_ttl_seconds: u64,
         l2_ttl_seconds: u64,
         key_prefix: String,
     ) -> Result<Self> {
         let inner = TieredCache::new(
             l2,
             l1_max_capacity,
-            l1_ttl_minutes,
+            l1_ttl_seconds,
             l2_ttl_seconds,
             key_prefix,
             "room".to_string(),

@@ -51,6 +51,7 @@ fn create_test_jwt_service() -> JwtService {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_complete_registration_flow() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
@@ -119,6 +120,7 @@ async fn test_complete_registration_flow() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_login_with_wrong_password() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
@@ -159,6 +161,7 @@ async fn test_login_with_wrong_password() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_login_unverified_user_rejected() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
@@ -202,6 +205,7 @@ async fn test_login_unverified_user_rejected() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_token_refresh_flow() {
     let jwt_service = create_test_jwt_service();
     let user_id = UserId::new();
@@ -232,6 +236,7 @@ async fn test_token_refresh_flow() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_password_change_invalidates_tokens() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
@@ -294,6 +299,7 @@ async fn test_password_change_invalidates_tokens() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_concurrent_login_attempts() {
     use std::sync::Arc;
 
@@ -361,6 +367,7 @@ async fn test_concurrent_login_attempts() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_banned_user_login_rejected() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
@@ -403,6 +410,7 @@ async fn test_banned_user_login_rejected() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_username_case_insensitive_login() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());

@@ -31,6 +31,7 @@ async fn start_redis() -> (testcontainers::ContainerAsync<Redis>, Arc<redis::Cli
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_redis_verification_code_store_and_verify_roundtrip() {
     let (_container, client) = start_redis().await;
     let store = RedisVerificationCodeStore::new(client, 10);
@@ -55,6 +56,7 @@ async fn test_redis_verification_code_store_and_verify_roundtrip() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_redis_verification_code_attempt_counting() {
     let (_container, client) = start_redis().await;
     let store = RedisVerificationCodeStore::new(client, 10);
@@ -83,6 +85,7 @@ async fn test_redis_verification_code_attempt_counting() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_redis_verification_code_ttl_expiry() {
     let (_container, client) = start_redis().await;
     // Use 1-minute TTL for the store (Redis SET EX uses this)
@@ -111,6 +114,7 @@ async fn test_redis_verification_code_ttl_expiry() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_redis_email_service_with_redis_roundtrip() {
     let (_container, client) = start_redis().await;
 

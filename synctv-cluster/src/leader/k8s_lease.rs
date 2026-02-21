@@ -18,7 +18,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use k8s_openapi::api::coordination::v1::Lease;
-use kube::api::{Api, Patch, PatchParams, PostParams};
+use kube::api::{Api, PostParams};
 use kube::Client;
 use tokio::sync::broadcast;
 use tokio_util::sync::CancellationToken;
@@ -336,26 +336,21 @@ impl K8sLeaderElector {
                 }
             };
 
-            let resource_version = current_lease
-                .metadata
-                .resource_version
-                .as_deref()
-                .unwrap_or("");
             let now = chrono::Utc::now();
-            let patch = serde_json::json!({
-                "metadata": {
-                    "resourceVersion": resource_version,
-                },
-                "spec": {
-                    "renewTime": k8s_openapi::apimachinery::pkg::apis::meta::v1::MicroTime(now),
-                }
-            });
+
+            // LS-4: Use replace() instead of Patch::Merge to enforce
+            // resourceVersion optimistic locking. The API server rejects
+            // the request with 409 if the resourceVersion doesn't match.
+            let mut updated_lease = current_lease.clone();
+            if let Some(ref mut spec) = updated_lease.spec {
+                spec.renew_time = Some(k8s_openapi::apimachinery::pkg::apis::meta::v1::MicroTime(now));
+            }
 
             match leases
-                .patch(
+                .replace(
                     &self.lease_name,
-                    &PatchParams::default(),
-                    &Patch::Merge(&patch),
+                    &PostParams::default(),
+                    &updated_lease,
                 )
                 .await
             {
@@ -476,29 +471,23 @@ impl K8sLeaderElector {
                 return;
             }
 
-            let resource_version = current_lease
-                .metadata
-                .resource_version
-                .as_deref()
-                .unwrap_or("");
             let now = chrono::Utc::now();
-            let patch = serde_json::json!({
-                "metadata": {
-                    "resourceVersion": resource_version,
-                },
-                "spec": {
-                    "holderIdentity": self.identity,
-                    "leaseDurationSeconds": self.lease_duration_secs,
-                    "acquireTime": k8s_openapi::apimachinery::pkg::apis::meta::v1::MicroTime(now),
-                    "renewTime": k8s_openapi::apimachinery::pkg::apis::meta::v1::MicroTime(now),
-                }
-            });
+
+            // LS-4: Use replace() instead of Patch::Merge to enforce
+            // resourceVersion optimistic locking on acquisition.
+            let mut updated_lease = current_lease.clone();
+            if let Some(ref mut spec) = updated_lease.spec {
+                spec.holder_identity = Some(self.identity.clone());
+                spec.lease_duration_seconds = Some(self.lease_duration_secs);
+                spec.acquire_time = Some(k8s_openapi::apimachinery::pkg::apis::meta::v1::MicroTime(now));
+                spec.renew_time = Some(k8s_openapi::apimachinery::pkg::apis::meta::v1::MicroTime(now));
+            }
 
             match leases
-                .patch(
+                .replace(
                     &self.lease_name,
-                    &PatchParams::default(),
-                    &Patch::Merge(&patch),
+                    &PostParams::default(),
+                    &updated_lease,
                 )
                 .await
             {
@@ -591,26 +580,17 @@ impl K8sLeaderElector {
             return;
         }
 
-        let resource_version = current_lease
-            .metadata
-            .resource_version
-            .as_deref()
-            .unwrap_or("");
-
-        let patch = serde_json::json!({
-            "metadata": {
-                "resourceVersion": resource_version,
-            },
-            "spec": {
-                "holderIdentity": serde_json::Value::Null,
-            }
-        });
+        // LS-4: Use replace() for resign as well, to enforce resourceVersion.
+        let mut updated_lease = current_lease;
+        if let Some(ref mut spec) = updated_lease.spec {
+            spec.holder_identity = None;
+        }
 
         if let Err(e) = leases
-            .patch(
+            .replace(
                 &self.lease_name,
-                &PatchParams::default(),
-                &Patch::Merge(&patch),
+                &PostParams::default(),
+                &updated_lease,
             )
             .await
         {

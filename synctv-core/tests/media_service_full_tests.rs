@@ -115,6 +115,7 @@ async fn get_root_playlist(pool: &PgPool, room_id: &synctv_core::models::RoomId)
 // ========== add_media: ADD_MEDIA permission check ==========
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_add_media_without_permission_denied() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
@@ -160,6 +161,7 @@ async fn test_add_media_without_permission_denied() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_add_media_with_permission_succeeds() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
@@ -194,6 +196,7 @@ async fn test_add_media_with_permission_succeeds() {
 // ========== add_media: cross-room playlist authorization ==========
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_add_media_cross_room_playlist_rejected() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
@@ -233,6 +236,7 @@ async fn test_add_media_cross_room_playlist_rejected() {
 // ========== add_media_batch: size limit (>100 items rejected) ==========
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_add_media_batch_over_100_rejected() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
@@ -275,6 +279,7 @@ async fn test_add_media_batch_over_100_rejected() {
 // ========== add_media_batch: empty slice returns empty vec ==========
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_add_media_batch_empty_returns_empty() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
@@ -302,6 +307,7 @@ async fn test_add_media_batch_empty_returns_empty() {
 // ========== add_media_batch: exactly 100 accepted ==========
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_add_media_batch_exactly_100_accepted() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
@@ -339,6 +345,7 @@ async fn test_add_media_batch_exactly_100_accepted() {
 // ========== edit_media: optimistic lock retry exhaustion ==========
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_edit_media_optimistic_lock_retry_exhaustion() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());

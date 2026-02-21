@@ -40,6 +40,7 @@ fn room_id(id: &str) -> RoomId {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_redis_ticket_create_and_validate_roundtrip() {
     let (_container, conn) = start_redis().await;
     let service = WsTicketService::with_redis(conn, Some(30));
@@ -56,6 +57,7 @@ async fn test_redis_ticket_create_and_validate_roundtrip() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_redis_ticket_one_time_use() {
     let (_container, conn) = start_redis().await;
     let service = WsTicketService::with_redis(conn, Some(30));
@@ -75,6 +77,7 @@ async fn test_redis_ticket_one_time_use() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_redis_ticket_room_mismatch_rejected() {
     let (_container, conn) = start_redis().await;
     let service = WsTicketService::with_redis(conn, Some(30));
@@ -91,6 +94,7 @@ async fn test_redis_ticket_room_mismatch_rejected() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_redis_ticket_ttl_expiry() {
     let (_container, conn) = start_redis().await;
     // 1-second TTL
@@ -109,6 +113,7 @@ async fn test_redis_ticket_ttl_expiry() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_redis_ticket_concurrent_consumption() {
     let (_container, conn) = start_redis().await;
     let service = WsTicketService::with_redis(conn, Some(30));

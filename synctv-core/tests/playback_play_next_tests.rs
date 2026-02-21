@@ -150,6 +150,7 @@ async fn insert_media(pool: &PgPool, playlist_id: &PlaylistId, room_id: &RoomId,
 // ========== Sequential Mode Tests ==========
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_sequential_advance_to_next() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
@@ -178,6 +179,7 @@ async fn test_sequential_advance_to_next() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_sequential_end_of_playlist_returns_none() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
@@ -202,6 +204,7 @@ async fn test_sequential_end_of_playlist_returns_none() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_sequential_deleted_current_falls_back_to_first() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
@@ -239,6 +242,7 @@ async fn test_sequential_deleted_current_falls_back_to_first() {
 // ========== RepeatOne Mode Tests ==========
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_repeat_one_replays_current() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
@@ -267,6 +271,7 @@ async fn test_repeat_one_replays_current() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_repeat_one_deleted_current_falls_back_to_first() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
@@ -304,6 +309,7 @@ async fn test_repeat_one_deleted_current_falls_back_to_first() {
 // ========== RepeatAll Mode Tests ==========
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_repeat_all_wraps_around_at_end() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
@@ -333,6 +339,7 @@ async fn test_repeat_all_wraps_around_at_end() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_repeat_all_middle_advances_to_next() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
@@ -363,6 +370,7 @@ async fn test_repeat_all_middle_advances_to_next() {
 // ========== Shuffle Mode Tests ==========
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_shuffle_returns_different_item() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
@@ -406,6 +414,7 @@ async fn test_shuffle_returns_different_item() {
 // ========== Auto-Play Disabled ==========
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_auto_play_disabled_returns_none() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
@@ -440,6 +449,7 @@ async fn test_auto_play_disabled_returns_none() {
 // ========== Legacy Field Mapping Tests ==========
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_legacy_loop_playlist_maps_to_repeat_all() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
@@ -471,6 +481,7 @@ async fn test_legacy_loop_playlist_maps_to_repeat_all() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_legacy_shuffle_playlist_maps_to_shuffle() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
@@ -503,6 +514,7 @@ async fn test_legacy_shuffle_playlist_maps_to_shuffle() {
 // ========== Empty Playlist ==========
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_empty_playlist_returns_none() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
@@ -525,6 +537,7 @@ async fn test_empty_playlist_returns_none() {
 // ========== No Currently Playing Media ==========
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_no_current_media_plays_first() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());

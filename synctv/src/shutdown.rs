@@ -162,6 +162,26 @@ impl ShutdownHook for AuditFlushHook {
     }
 }
 
+/// Stops the `CacheInvalidationService` (signals shutdown, trims Redis stream).
+pub struct CacheInvalidationStopHook {
+    pub service: Arc<synctv_core::cache::CacheInvalidationService>,
+}
+
+impl ShutdownHook for CacheInvalidationStopHook {
+    fn name(&self) -> &'static str {
+        "cache_invalidation_stop"
+    }
+    fn timeout(&self) -> Duration {
+        Duration::from_secs(10)
+    }
+    fn run(self: Box<Self>) -> Pin<Box<dyn Future<Output = ()> + Send>> {
+        Box::pin(async move {
+            self.service.stop().await;
+            info!("Cache invalidation service stopped");
+        })
+    }
+}
+
 /// Joins the `PostgreSQL` LISTEN settings task before the pool is closed.
 pub struct SettingsListenHook {
     pub task: Arc<Mutex<Option<JoinHandle<()>>>>,

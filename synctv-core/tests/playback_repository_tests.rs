@@ -85,6 +85,7 @@ fn make_room(name: &str, owner: &UserId) -> Room {
 // ========== create_or_get idempotency ==========
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_create_or_get_idempotent() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
@@ -110,6 +111,7 @@ async fn test_create_or_get_idempotent() {
 // ========== update optimistic lock ==========
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_update_optimistic_lock_conflict() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
@@ -140,6 +142,7 @@ async fn test_update_optimistic_lock_conflict() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_update_concurrent_tasks_one_gets_conflict() {
     use std::sync::Arc;
     use tokio::sync::Barrier;

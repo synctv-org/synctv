@@ -1694,13 +1694,17 @@ impl RoomService {
         &self.notification_service
     }
 
-    /// Broadcast a room cache invalidation message to other replicas.
+    /// Invalidate room cache locally and broadcast to other replicas.
     ///
     /// Best-effort: logs a warning on failure but does not propagate the error,
     /// since cache invalidation is not critical to the mutation itself.
+    ///
+    /// Uses `invalidate_and_broadcast_room` to ensure the originating node also
+    /// clears its own local cache (the Redis subscriber skips self-originated
+    /// messages, so `broadcast_remote` alone would leave local caches stale).
     async fn notify_room_invalidation(&self, room_id: &RoomId) {
         if let Some(ref service) = self.cache_invalidation {
-            if let Err(e) = service.invalidate_room(room_id).await {
+            if let Err(e) = service.invalidate_and_broadcast_room(room_id).await {
                 tracing::warn!(
                     error = %e,
                     room_id = %room_id.as_str(),

@@ -100,6 +100,7 @@ fn make_member(room_id: RoomId, user_id: UserId) -> RoomMember {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_concurrent_member_role_updates_isolated() {
     let (_container, pool) = create_test_pool().await;
 
@@ -205,6 +206,7 @@ async fn test_concurrent_member_role_updates_isolated() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_serializable_isolation_prevents_phantom_reads() {
     let (_container, pool) = create_test_pool().await;
 

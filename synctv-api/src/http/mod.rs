@@ -136,9 +136,12 @@ pub fn create_router_from_config(config: RouterConfig) -> axum::Router {
 
 /// Build `AppState` from `RouterConfig`, creating the shared API implementation layers.
 fn build_app_state(config: RouterConfig) -> AppState {
-    // Create shared security pipeline for post-JWT checks (password version, user status)
+    // Create shared security pipeline for post-JWT checks (password version, user status, access token blacklist)
     let security_pipeline = Arc::new(synctv_core::service::SecurityPipeline::new(
         config.user_service.clone(),
+    ).with_token_blacklist(
+        config.user_service.token_blacklist_store(),
+        config.user_service.key_builder().clone(),
     ));
 
     let client_api = Arc::new(crate::impls::ClientApiImpl::new(

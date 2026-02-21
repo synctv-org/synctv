@@ -42,6 +42,7 @@ fn make_state(instance_name: &str) -> OAuth2State {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_redis_oauth_state_store_and_consume() {
     let (_container, conn) = start_redis().await;
     let store = RedisOAuthStateStore::new(conn);
@@ -69,6 +70,7 @@ async fn test_redis_oauth_state_store_and_consume() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_redis_oauth_state_consume_is_atomic() {
     let (_container, conn) = start_redis().await;
     let store = Arc::new(RedisOAuthStateStore::new(conn));
@@ -109,6 +111,7 @@ async fn test_redis_oauth_state_consume_is_atomic() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_redis_oauth_state_ttl_expiry() {
     let (_container, conn) = start_redis().await;
     let store = RedisOAuthStateStore::new(conn);

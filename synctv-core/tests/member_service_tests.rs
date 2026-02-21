@@ -107,6 +107,7 @@ fn make_user(username: &str) -> User {
 // ========== Max Members Test ==========
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_add_member_respects_max_members() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
@@ -147,6 +148,7 @@ async fn test_add_member_respects_max_members() {
 // ========== Kick Member Role Hierarchy Tests ==========
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_kick_member_role_hierarchy() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
@@ -195,6 +197,7 @@ async fn test_kick_member_role_hierarchy() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_kick_member_creator_can_kick_admin() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
@@ -242,6 +245,7 @@ async fn test_kick_member_creator_can_kick_admin() {
 // ========== Ban / Unban Tests ==========
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_ban_sets_status_and_banned_at() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
@@ -280,6 +284,7 @@ async fn test_ban_sets_status_and_banned_at() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_unban_clears_status() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
@@ -332,6 +337,7 @@ async fn test_unban_clears_status() {
 // ========== Permission Grant/Revoke Tests ==========
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_grant_permission_bitwise_or() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
@@ -381,6 +387,7 @@ async fn test_grant_permission_bitwise_or() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_revoke_permission() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());

@@ -100,6 +100,7 @@ fn make_playlist(room_id: &RoomId, name: &str, parent_id: Option<&PlaylistId>, p
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_create_root_playlist() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
@@ -120,6 +121,7 @@ async fn test_create_root_playlist() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_create_nested_playlists() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
@@ -150,6 +152,7 @@ async fn test_create_nested_playlists() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_position_sorting() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
@@ -175,6 +178,7 @@ async fn test_position_sorting() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_position_uniqueness_constraint() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
@@ -194,6 +198,7 @@ async fn test_position_uniqueness_constraint() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_cycle_prevention_trigger() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
@@ -224,6 +229,7 @@ async fn test_cycle_prevention_trigger() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_cascade_delete_parent_playlist() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
@@ -248,6 +254,7 @@ async fn test_cascade_delete_parent_playlist() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_auto_position_computation() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
@@ -270,6 +277,7 @@ async fn test_auto_position_computation() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_unique_name_constraint() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());

@@ -97,6 +97,7 @@ async fn setup_room(pool: &PgPool, username: &str, room_name: &str) -> (User, Ro
 // ─── CAS: insert with version=0 ─────────────────────────────────────
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_set_settings_with_version_initial_insert() {
     let (_container, pool) = create_test_pool().await;
     let settings_repo = RoomSettingsRepository::new(pool.clone());
@@ -118,6 +119,7 @@ async fn test_set_settings_with_version_initial_insert() {
 // ─── CAS: concurrent insert race ────────────────────────────────────
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_set_settings_with_version_concurrent_insert_race() {
     let (_container, pool) = create_test_pool().await;
     let settings_repo = RoomSettingsRepository::new(pool.clone());
@@ -144,6 +146,7 @@ async fn test_set_settings_with_version_concurrent_insert_race() {
 // ─── CAS: stale version update ──────────────────────────────────────
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_set_settings_with_version_stale_update() {
     let (_container, pool) = create_test_pool().await;
     let settings_repo = RoomSettingsRepository::new(pool.clone());
@@ -183,6 +186,7 @@ async fn test_set_settings_with_version_stale_update() {
 // ─── get_batch silent JSON deserialization drop ──────────────────────
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_get_batch_drops_invalid_json() {
     let (_container, pool) = create_test_pool().await;
     let settings_repo = RoomSettingsRepository::new(pool.clone());
@@ -218,6 +222,7 @@ async fn test_get_batch_drops_invalid_json() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_get_batch_empty_input() {
     let (_container, pool) = create_test_pool().await;
     let settings_repo = RoomSettingsRepository::new(pool.clone());

@@ -115,6 +115,7 @@ fn make_room(creator_id: UserId) -> Room {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_deadlock_detection_opposite_lock_order() {
     let infra = create_test_pool().await;
     let pool = &infra.pool;
@@ -249,6 +250,7 @@ async fn test_deadlock_detection_opposite_lock_order() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_deadlock_with_for_update_nowait() {
     let infra = create_test_pool().await;
     let pool = &infra.pool;
@@ -352,6 +354,7 @@ async fn test_deadlock_with_for_update_nowait() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_deadlock_avoidance_with_ordered_locks() {
     let infra = create_test_pool().await;
     let pool = &infra.pool;
@@ -473,6 +476,7 @@ async fn test_deadlock_avoidance_with_ordered_locks() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_transaction_timeout_prevents_indefinite_wait() {
     let infra = create_test_pool().await;
     let pool = &infra.pool;

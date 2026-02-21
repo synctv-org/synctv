@@ -59,6 +59,7 @@ async fn create_test_pool() -> (ContainerAsync<Postgres>, PgPool) {
 // ========== Zero retention skips all tasks ==========
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_zero_retention_skips_all_tasks() {
     let (_container, pool) = create_test_pool().await;
 
@@ -95,6 +96,7 @@ async fn test_zero_retention_skips_all_tasks() {
 // the config-level skip and verify NeverLeader compiles and works.
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_non_leader_periodic_skips() {
     let (_container, pool) = create_test_pool().await;
 
@@ -132,6 +134,7 @@ fn test_cleanup_config_defaults() {
 // ========== run_all with default config on empty database ==========
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_run_all_on_empty_database() {
     let (_container, pool) = create_test_pool().await;
 
@@ -149,6 +152,7 @@ async fn test_run_all_on_empty_database() {
 // ========== Partial config: only some tasks enabled ==========
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_partial_config_only_some_tasks_enabled() {
     let (_container, pool) = create_test_pool().await;
 

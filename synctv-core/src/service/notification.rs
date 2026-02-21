@@ -243,11 +243,21 @@ impl NotificationService {
         // Send to broadcast channel (for local subscribers)
         let _ = self.event_tx.send((room_id.clone(), event.clone()));
 
-        // Broadcast via broadcaster implementation
+        // Broadcast via broadcaster implementation (local WebSocket connections)
         let sent_count = self.broadcaster.broadcast_to_room(room_id, &event).await?;
 
+        // Broadcast to cluster (Redis Pub/Sub) so other nodes deliver the event
+        if let Err(e) = self.broadcaster.broadcast_to_cluster(room_id, &event).await {
+            tracing::warn!(
+                "Failed to broadcast event {} to cluster for room {}: {}",
+                event.event_type(),
+                room_id.as_str(),
+                e
+            );
+        }
+
         tracing::debug!(
-            "Broadcast event {} to room {}: {} recipients",
+            "Broadcast event {} to room {}: {} local recipients",
             event.event_type(),
             room_id.as_str(),
             sent_count

@@ -106,6 +106,7 @@ fn make_user(username: &str) -> User {
 // ========== Seek Validation Tests ==========
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_seek_negative_rejected() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
@@ -143,6 +144,7 @@ async fn test_seek_negative_rejected() {
 // ========== Speed Validation Tests ==========
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_speed_zero_rejected() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
@@ -178,6 +180,7 @@ async fn test_speed_zero_rejected() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_speed_above_max_rejected() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
@@ -215,6 +218,7 @@ async fn test_speed_above_max_rejected() {
 // ========== Switch Media Tests ==========
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_switch_media_resets_position() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
@@ -281,6 +285,7 @@ async fn test_switch_media_resets_position() {
 // ========== Optimistic Lock Concurrent Test ==========
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_playback_optimistic_lock_concurrent() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());

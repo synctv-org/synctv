@@ -70,6 +70,7 @@ fn make_user(username: &str) -> User {
 // ========== update with stale version -> OptimisticLockConflict ==========
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_update_stale_version_returns_optimistic_lock_conflict() {
     let (_container, pool) = create_test_pool().await;
     let repo = UserRepository::new(pool.clone());
@@ -98,6 +99,7 @@ async fn test_update_stale_version_returns_optimistic_lock_conflict() {
 // ========== update on soft-deleted user -> NotFound ==========
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_update_soft_deleted_user_returns_not_found() {
     let (_container, pool) = create_test_pool().await;
     let repo = UserRepository::new(pool.clone());
@@ -123,6 +125,7 @@ async fn test_update_soft_deleted_user_returns_not_found() {
 // ========== update_password on deleted user -> NotFound ==========
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_update_password_deleted_user_returns_not_found() {
     let (_container, pool) = create_test_pool().await;
     let repo = UserRepository::new(pool.clone());
@@ -143,6 +146,7 @@ async fn test_update_password_deleted_user_returns_not_found() {
 // ========== get_by_ids with mixed existing/soft-deleted IDs ==========
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_get_by_ids_mixed_existing_and_deleted() {
     let (_container, pool) = create_test_pool().await;
     let repo = UserRepository::new(pool.clone());
@@ -167,6 +171,7 @@ async fn test_get_by_ids_mixed_existing_and_deleted() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_get_by_ids_all_deleted() {
     let (_container, pool) = create_test_pool().await;
     let repo = UserRepository::new(pool.clone());
@@ -184,6 +189,7 @@ async fn test_get_by_ids_all_deleted() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_get_by_ids_empty_input() {
     let (_container, pool) = create_test_pool().await;
     let repo = UserRepository::new(pool.clone());

@@ -218,6 +218,15 @@ impl KeyBuilder {
         format!("{}:auth:rt_blacklist:{}", self.prefix, jti)
     }
 
+    /// Blacklisted access token JTI (used on logout to invalidate access tokens)
+    ///
+    /// Type: String + TTL (remaining token lifetime)
+    /// Value: "1" (presence check only)
+    #[must_use]
+    pub fn access_token_blacklist(&self, jti: &str) -> String {
+        format!("{}:auth:at_blacklist:{}", self.prefix, jti)
+    }
+
     /// Refresh token family revocation key (per `user_id`)
     ///
     /// Type: String + TTL (max refresh token lifetime)

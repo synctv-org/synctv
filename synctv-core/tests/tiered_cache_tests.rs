@@ -45,10 +45,12 @@ fn make_cached_user(id: &str, username: &str) -> CachedUser {
         chrono::Utc::now(),
         chrono::Utc::now(),
         0,
+        false,
     )
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_tiered_cache_l2_set_and_get() {
     let (_container, conn) = start_redis().await;
     let l2 = Arc::new(RedisCacheL2::new(conn));
@@ -73,6 +75,7 @@ async fn test_tiered_cache_l2_set_and_get() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_tiered_cache_l2_invalidate_removes_from_redis() {
     let (_container, conn) = start_redis().await;
     let l2 = Arc::new(RedisCacheL2::new(conn));
@@ -103,6 +106,7 @@ async fn test_tiered_cache_l2_invalidate_removes_from_redis() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_tiered_cache_clear_removes_all() {
     let (_container, conn) = start_redis().await;
     let l2 = Arc::new(RedisCacheL2::new(conn));

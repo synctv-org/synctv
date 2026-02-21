@@ -489,15 +489,17 @@ impl MediaRepository {
         let id2_str: String = rows[1].try_get("id")?;
         let pos2: i32 = rows[1].try_get("position")?;
 
-        // Phase 1: Move both to negative sentinel positions
+        // Phase 1: Move both to negative sentinel positions.
+        // M-6: Use i32::MIN + offset to avoid collisions with normal
+        // positions (which could be negative near -1000).
         sqlx::query("UPDATE media SET position = $2 WHERE id = $1")
             .bind(&id1_str)
-            .bind(-1000 - pos1)
+            .bind(i32::MIN.wrapping_add(1))
             .execute(&mut **tx)
             .await?;
         sqlx::query("UPDATE media SET position = $2 WHERE id = $1")
             .bind(&id2_str)
-            .bind(-1000 - pos2)
+            .bind(i32::MIN.wrapping_add(2))
             .execute(&mut **tx)
             .await?;
 

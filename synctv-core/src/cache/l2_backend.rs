@@ -56,14 +56,39 @@ pub trait CacheL2Backend: Send + Sync {
 // ============================================================================
 
 /// Redis-backed L2 cache backend.
+///
+/// In Sentinel mode, the inner connection is hot-swapped on failover via
+/// the shared `Arc<RwLock<ConnectionManager>>`. Each operation reads the
+/// latest connection handle, so it automatically follows Sentinel failover.
+///
+/// In standalone mode (or when constructed with a plain `ConnectionManager`),
+/// the `RwLock` always holds the same handle, and `ConnectionManager` handles
+/// transient reconnections internally.
 pub struct RedisCacheL2 {
-    conn: redis::aio::ConnectionManager,
+    conn: std::sync::Arc<tokio::sync::RwLock<redis::aio::ConnectionManager>>,
 }
 
 impl RedisCacheL2 {
-    #[must_use] 
-    pub const fn new(conn: redis::aio::ConnectionManager) -> Self {
+    /// Create from a shared, hot-swappable connection (recommended for Sentinel mode).
+    #[must_use]
+    pub fn new_shared(conn: std::sync::Arc<tokio::sync::RwLock<redis::aio::ConnectionManager>>) -> Self {
         Self { conn }
+    }
+
+    /// Create from a plain `ConnectionManager` snapshot.
+    ///
+    /// Wraps it in an `Arc<RwLock<>>` internally for API uniformity. Suitable
+    /// for standalone mode where the connection is never hot-swapped.
+    #[must_use]
+    pub fn new(conn: redis::aio::ConnectionManager) -> Self {
+        Self {
+            conn: std::sync::Arc::new(tokio::sync::RwLock::new(conn)),
+        }
+    }
+
+    /// Get a clone of the current `ConnectionManager` for use in an operation.
+    async fn conn(&self) -> redis::aio::ConnectionManager {
+        self.conn.read().await.clone()
     }
 }
 
@@ -71,7 +96,7 @@ impl RedisCacheL2 {
 impl CacheL2Backend for RedisCacheL2 {
     async fn get(&self, key: &str) -> Result<Option<String>> {
         use redis::AsyncCommands;
-        let mut conn = self.conn.clone();
+        let mut conn = self.conn().await;
         let json: Option<String> = conn
             .get(key)
             .await
@@ -81,7 +106,7 @@ impl CacheL2Backend for RedisCacheL2 {
 
     async fn set(&self, key: &str, json: &str, ttl_secs: u64) -> Result<()> {
         use redis::AsyncCommands;
-        let mut conn = self.conn.clone();
+        let mut conn = self.conn().await;
         let _: () = conn
             .set_ex(key, json, ttl_secs)
             .await
@@ -91,7 +116,7 @@ impl CacheL2Backend for RedisCacheL2 {
 
     async fn delete(&self, key: &str) -> Result<()> {
         use redis::AsyncCommands;
-        let mut conn = self.conn.clone();
+        let mut conn = self.conn().await;
         let _: () = conn.del(key).await
             .map_err(|e| Error::Internal(format!("Failed to delete from L2 cache: {e}")))?;
         Ok(())
@@ -100,7 +125,7 @@ impl CacheL2Backend for RedisCacheL2 {
     async fn delete_with_retry(&self, key: &str, max_retries: u32, cache_type: &str) -> Result<()> {
         use redis::AsyncCommands;
         for attempt in 0..max_retries {
-            let mut conn = self.conn.clone();
+            let mut conn = self.conn().await;
             match conn.del::<_, ()>(key).await {
                 Ok(()) => return Ok(()),
                 Err(e) => {
@@ -137,7 +162,7 @@ impl CacheL2Backend for RedisCacheL2 {
     }
 
     async fn get_batch(&self, keys: &[String]) -> Result<Vec<Option<String>>> {
-        let mut conn = self.conn.clone();
+        let mut conn = self.conn().await;
         let mut pipe = redis::pipe();
         for key in keys {
             pipe.get(key);
@@ -150,7 +175,7 @@ impl CacheL2Backend for RedisCacheL2 {
     }
 
     async fn set_if_newer(&self, key: &str, json: &str, ttl_secs: u64, new_ts_iso: &str) -> Result<bool> {
-        let mut conn = self.conn.clone();
+        let mut conn = self.conn().await;
 
         // Lua script: atomically GET existing JSON, parse its updated_at inside
         // Lua via cjson, compare with the new timestamp, and SET only if newer.
@@ -188,7 +213,7 @@ impl CacheL2Backend for RedisCacheL2 {
 
     async fn delete_by_prefix(&self, prefix: &str) -> Result<()> {
         use redis::AsyncCommands;
-        let mut conn = self.conn.clone();
+        let mut conn = self.conn().await;
 
         // Use SCAN to iterate keys matching the prefix pattern, then DEL in batches.
         // This avoids blocking Redis with KEYS * on large keyspaces.

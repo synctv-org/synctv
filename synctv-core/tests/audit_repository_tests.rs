@@ -77,6 +77,7 @@ async fn insert_audit_log(
 // ─── list filter tests ───────────────────────────────────────────────
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_list_filter_by_actor_id() {
     let (_container, pool) = create_test_pool().await;
     let repo = AuditLogRepository::new(pool.clone());
@@ -100,6 +101,7 @@ async fn test_list_filter_by_actor_id() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_list_filter_by_action() {
     let (_container, pool) = create_test_pool().await;
     let repo = AuditLogRepository::new(pool.clone());
@@ -120,6 +122,7 @@ async fn test_list_filter_by_action() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_list_filter_by_target_type_and_target_id() {
     let (_container, pool) = create_test_pool().await;
     let repo = AuditLogRepository::new(pool.clone());
@@ -142,6 +145,7 @@ async fn test_list_filter_by_target_type_and_target_id() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_list_filter_by_time_range() {
     let (_container, pool) = create_test_pool().await;
     let repo = AuditLogRepository::new(pool.clone());
@@ -165,6 +169,7 @@ async fn test_list_filter_by_time_range() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_list_all_filters_combined() {
     let (_container, pool) = create_test_pool().await;
     let repo = AuditLogRepository::new(pool.clone());
@@ -208,6 +213,7 @@ async fn test_list_all_filters_combined() {
 // ─── get_by_id 365-day visibility ────────────────────────────────────
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_get_by_id_within_365_days() {
     let (_container, pool) = create_test_pool().await;
     let repo = AuditLogRepository::new(pool.clone());
@@ -221,6 +227,7 @@ async fn test_get_by_id_within_365_days() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_get_by_id_older_than_365_days_returns_none() {
     let (_container, pool) = create_test_pool().await;
     let repo = AuditLogRepository::new(pool.clone());
@@ -234,6 +241,7 @@ async fn test_get_by_id_older_than_365_days_returns_none() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_get_by_id_nonexistent() {
     let (_container, pool) = create_test_pool().await;
     let repo = AuditLogRepository::new(pool.clone());

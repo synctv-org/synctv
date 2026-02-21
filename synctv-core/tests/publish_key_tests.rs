@@ -60,6 +60,7 @@ async fn test_validate_expired_token_rejected() {
 // ============================================================================
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_in_memory_jti_store_first_claim_succeeds() {
     let store = InMemoryJtiStore::new(300);
     let result = store.try_claim("jti_1", 300).await.unwrap();
@@ -67,6 +68,7 @@ async fn test_in_memory_jti_store_first_claim_succeeds() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_in_memory_jti_store_duplicate_returns_false() {
     let store = InMemoryJtiStore::new(300);
 
@@ -78,6 +80,7 @@ async fn test_in_memory_jti_store_duplicate_returns_false() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_in_memory_jti_store_different_jti_independent() {
     let store = InMemoryJtiStore::new(300);
 
@@ -89,6 +92,7 @@ async fn test_in_memory_jti_store_different_jti_independent() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_in_memory_jti_store_is_claimed() {
     let store = InMemoryJtiStore::new(300);
 
@@ -103,6 +107,7 @@ async fn test_in_memory_jti_store_is_claimed() {
 // ============================================================================
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_publish_key_single_use() {
     let service = create_service();
     let room_id = RoomId::new();
@@ -131,6 +136,7 @@ async fn test_publish_key_single_use() {
 // ============================================================================
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_redis_jti_store_cross_service_dedup() {
     use synctv_core::service::publish_key::RedisJtiStore;
     use testcontainers::core::ImageExt;
@@ -165,6 +171,7 @@ async fn test_redis_jti_store_cross_service_dedup() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_publish_key_service_with_redis_full_lifecycle() {
     use synctv_core::service::publish_key::PublishKeyService;
     use synctv_core::service::auth::JwtService;

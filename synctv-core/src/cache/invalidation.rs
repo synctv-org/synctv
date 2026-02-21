@@ -360,6 +360,11 @@ impl CacheInvalidationService {
         None
     }
 
+    /// Maximum delivery attempts for a malformed message before it is
+    /// acknowledged and discarded. Prevents unprocessable entries from
+    /// accumulating indefinitely in the Redis Stream PEL.
+    const MAX_DELIVERY_ATTEMPTS: u32 = 3;
+
     /// Run the Redis subscriber loop using Streams with catch-up on reconnection
     ///
     /// The subscriber has two phases:
@@ -383,6 +388,11 @@ impl CacheInvalidationService {
             .await
             .map_err(|e| Error::Internal(format!("Failed to get Redis connection: {e}")))?;
 
+        // Track delivery attempts for malformed messages so they can be
+        // discarded after MAX_DELIVERY_ATTEMPTS to prevent PEL accumulation.
+        let mut failed_delivery_counts: std::collections::HashMap<String, u32> =
+            std::collections::HashMap::new();
+
         info!(
             node_id = %node_id,
             stream = %stream_key,
@@ -394,6 +404,7 @@ impl CacheInvalidationService {
         // not acknowledged before the last disconnect.
         let catchup_count = Self::process_pending_messages(
             &mut conn, local_sender, node_id, stream_key, consumer_group,
+            &mut failed_delivery_counts,
         ).await?;
 
         if catchup_count > 0 {
@@ -437,6 +448,7 @@ impl CacheInvalidationService {
                 Ok(reply) => {
                     Self::process_stream_reply(
                         &mut conn, local_sender, node_id, stream_key, consumer_group, &reply,
+                        &mut failed_delivery_counts,
                     ).await;
                 }
                 Err(e) => {
@@ -458,6 +470,7 @@ impl CacheInvalidationService {
         node_id: &str,
         stream_key: &str,
         consumer_group: &str,
+        failed_delivery_counts: &mut std::collections::HashMap<String, u32>,
     ) -> Result<usize> {
         let mut total = 0;
         loop {
@@ -486,6 +499,7 @@ impl CacheInvalidationService {
                             batch_count += 1;
                             Self::process_single_entry(
                                 conn, local_sender, node_id, stream_key, consumer_group, entry,
+                                failed_delivery_counts,
                             ).await;
                         }
                     }
@@ -512,17 +526,23 @@ impl CacheInvalidationService {
         stream_key: &str,
         consumer_group: &str,
         reply: &redis::streams::StreamReadReply,
+        failed_delivery_counts: &mut std::collections::HashMap<String, u32>,
     ) {
         for sk in &reply.keys {
             for entry in &sk.ids {
                 Self::process_single_entry(
                     conn, local_sender, node_id, stream_key, consumer_group, entry,
+                    failed_delivery_counts,
                 ).await;
             }
         }
     }
 
-    /// Process a single stream entry: deserialize, filter, broadcast, and acknowledge
+    /// Process a single stream entry: deserialize, filter, broadcast, and acknowledge.
+    ///
+    /// Malformed entries that cannot be parsed are tracked in `failed_delivery_counts`.
+    /// After `MAX_DELIVERY_ATTEMPTS`, the entry is acknowledged and discarded to
+    /// prevent indefinite PEL accumulation.
     async fn process_single_entry(
         conn: &mut redis::aio::MultiplexedConnection,
         local_sender: &broadcast::Sender<InvalidationMessage>,
@@ -530,6 +550,7 @@ impl CacheInvalidationService {
         stream_key: &str,
         consumer_group: &str,
         entry: &redis::streams::StreamId,
+        failed_delivery_counts: &mut std::collections::HashMap<String, u32>,
     ) {
         // Check origin node to skip self-originated messages
         if let Some(origin_value) = entry.map.get("origin") {
@@ -546,6 +567,7 @@ impl CacheInvalidationService {
                     .arg(&entry.id)
                     .query_async(conn)
                     .await;
+                failed_delivery_counts.remove(&entry.id);
                 return;
             }
         }
@@ -558,12 +580,32 @@ impl CacheInvalidationService {
         });
 
         let Some(payload_str) = payload_str else {
-            // No payload field - malformed entry. Do NOT acknowledge so Redis
-            // keeps it in the pending entry list for redelivery or manual inspection.
-            warn!(
-                message_id = %entry.id,
-                "Cache invalidation message has no payload field; skipping XACK (will be redelivered)"
-            );
+            // No payload field - malformed entry. Track delivery count and
+            // discard after MAX_DELIVERY_ATTEMPTS to prevent PEL accumulation.
+            let count = failed_delivery_counts.entry(entry.id.clone()).or_insert(0);
+            *count += 1;
+            if *count >= Self::MAX_DELIVERY_ATTEMPTS {
+                warn!(
+                    message_id = %entry.id,
+                    attempts = *count,
+                    "Cache invalidation message has no payload field after {} attempts; acknowledging to prevent PEL accumulation",
+                    Self::MAX_DELIVERY_ATTEMPTS
+                );
+                let _: redis::RedisResult<()> = redis::cmd("XACK")
+                    .arg(stream_key)
+                    .arg(consumer_group)
+                    .arg(&entry.id)
+                    .query_async(conn)
+                    .await;
+                failed_delivery_counts.remove(&entry.id);
+            } else {
+                warn!(
+                    message_id = %entry.id,
+                    attempt = *count,
+                    max_attempts = Self::MAX_DELIVERY_ATTEMPTS,
+                    "Cache invalidation message has no payload field; skipping XACK (will retry)"
+                );
+            }
             return;
         };
 
@@ -580,19 +622,41 @@ impl CacheInvalidationService {
                 if let Err(e) = local_sender.send(invalidation) {
                     warn!(error = %e, "Failed to broadcast invalidation locally");
                 }
+
+                // Clear any previous failure tracking for this message
+                failed_delivery_counts.remove(&entry.id);
             }
             Err(e) => {
-                // Parse failed. Do NOT acknowledge - keep the message in the
-                // pending entry list so Redis can redeliver it (e.g. after a
-                // schema fix or schema migration). Malformed messages will
-                // remain in the PEL until either explicitly deleted (XDEL) or
-                // the stream is trimmed (XTRIM).
-                warn!(
-                    error = %e,
-                    message_id = %entry.id,
-                    json = %payload_str,
-                    "Failed to parse cache invalidation message; skipping XACK (will be redelivered)"
-                );
+                // Parse failed. Track delivery count and discard after
+                // MAX_DELIVERY_ATTEMPTS to prevent PEL accumulation.
+                let count = failed_delivery_counts.entry(entry.id.clone()).or_insert(0);
+                *count += 1;
+                if *count >= Self::MAX_DELIVERY_ATTEMPTS {
+                    warn!(
+                        error = %e,
+                        message_id = %entry.id,
+                        json = %payload_str,
+                        attempts = *count,
+                        "Failed to parse cache invalidation message after {} attempts; acknowledging to prevent PEL accumulation",
+                        Self::MAX_DELIVERY_ATTEMPTS
+                    );
+                    let _: redis::RedisResult<()> = redis::cmd("XACK")
+                        .arg(stream_key)
+                        .arg(consumer_group)
+                        .arg(&entry.id)
+                        .query_async(conn)
+                        .await;
+                    failed_delivery_counts.remove(&entry.id);
+                } else {
+                    warn!(
+                        error = %e,
+                        message_id = %entry.id,
+                        json = %payload_str,
+                        attempt = *count,
+                        max_attempts = Self::MAX_DELIVERY_ATTEMPTS,
+                        "Failed to parse cache invalidation message; skipping XACK (will retry)"
+                    );
+                }
                 return;
             }
         }
@@ -839,6 +903,90 @@ impl CacheInvalidationService {
         self.broadcast_remote(InvalidationMessage::All).await
     }
 
+    // -- Convenience methods: local invalidation + remote broadcast --------
+    //
+    // These ensure the originating node's local caches are invalidated
+    // BEFORE (or concurrently with) broadcasting to remote replicas,
+    // preventing a stale-read window on the originating node.
+
+    /// Invalidate user cache locally and broadcast to other replicas.
+    ///
+    /// Use this instead of calling `invalidate_user()` directly to ensure
+    /// the originating node also clears its local cache.
+    pub async fn invalidate_and_broadcast_user(
+        &self,
+        user_id: &crate::models::UserId,
+    ) -> Result<()> {
+        // Broadcast locally so that CacheManager's listener picks it up
+        // and invalidates the local L1 + L2 cache entry.
+        let msg = InvalidationMessage::User {
+            user_id: user_id.as_str().to_string(),
+        };
+        if let Err(e) = self.local_sender.send(msg.clone()) {
+            warn!(error = %e, "Failed to broadcast user invalidation locally");
+        }
+        // Then broadcast to remote replicas
+        self.broadcast_remote(msg).await
+    }
+
+    /// Invalidate room cache locally and broadcast to other replicas.
+    pub async fn invalidate_and_broadcast_room(
+        &self,
+        room_id: &RoomId,
+    ) -> Result<()> {
+        let msg = InvalidationMessage::Room {
+            room_id: room_id.as_str().to_string(),
+        };
+        if let Err(e) = self.local_sender.send(msg.clone()) {
+            warn!(error = %e, "Failed to broadcast room invalidation locally");
+        }
+        self.broadcast_remote(msg).await
+    }
+
+    /// Invalidate username cache locally and broadcast to other replicas.
+    pub async fn invalidate_and_broadcast_username(
+        &self,
+        user_id: &crate::models::UserId,
+    ) -> Result<()> {
+        let msg = InvalidationMessage::Username {
+            user_id: user_id.as_str().to_string(),
+        };
+        if let Err(e) = self.local_sender.send(msg.clone()) {
+            warn!(error = %e, "Failed to broadcast username invalidation locally");
+        }
+        self.broadcast_remote(msg).await
+    }
+
+    /// Invalidate user permission cache locally and broadcast to other replicas.
+    pub async fn invalidate_and_broadcast_user_permission(
+        &self,
+        room_id: &RoomId,
+        user_id: &crate::models::UserId,
+    ) -> Result<()> {
+        let msg = InvalidationMessage::UserPermission {
+            room_id: room_id.as_str().to_string(),
+            user_id: user_id.as_str().to_string(),
+        };
+        if let Err(e) = self.local_sender.send(msg.clone()) {
+            warn!(error = %e, "Failed to broadcast user permission invalidation locally");
+        }
+        self.broadcast_remote(msg).await
+    }
+
+    /// Invalidate room permission cache locally and broadcast to other replicas.
+    pub async fn invalidate_and_broadcast_room_permission(
+        &self,
+        room_id: &RoomId,
+    ) -> Result<()> {
+        let msg = InvalidationMessage::RoomPermission {
+            room_id: room_id.as_str().to_string(),
+        };
+        if let Err(e) = self.local_sender.send(msg.clone()) {
+            warn!(error = %e, "Failed to broadcast room permission invalidation locally");
+        }
+        self.broadcast_remote(msg).await
+    }
+
     /// Broadcast bloom filter updates to other replicas
     ///
     /// When a new entity is created on this replica, call this so that other
@@ -851,6 +999,12 @@ impl CacheInvalidationService {
         self.broadcast_remote(InvalidationMessage::BloomFilterUpdate { keys }).await
     }
 
+    /// Minimum interval between lag-triggered flushes.
+    ///
+    /// Matches the rate-limiting in `CacheManager::start_invalidation_listener`
+    /// to prevent sustained lag storms from cascading into continuous DB stampedes.
+    const LAG_FLUSH_MIN_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5);
+
     /// Spawn a named invalidation listener that subscribes to this service's
     /// broadcast channel and dispatches messages to a user-provided handler.
     ///
@@ -860,8 +1014,11 @@ impl CacheInvalidationService {
     /// 1. Subscribe to the broadcast channel
     /// 2. Spawn a monitored task that loops on `recv()`
     /// 3. On `Ok(msg)` -> call `handler(msg)`
-    /// 4. On `Lagged(n)` -> call `on_lagged()` to flush caches
+    /// 4. On `Lagged(n)` -> call `on_lagged()` to flush caches (rate-limited)
     /// 5. On `Closed` -> break
+    ///
+    /// The `on_lagged` handler is rate-limited to at most once every 5 seconds
+    /// to prevent continuous cache flush cascades under sustained lag.
     ///
     /// # Arguments
     /// * `name` - Task name for monitoring (e.g., "`room_settings_invalidation_listener`")
@@ -882,6 +1039,11 @@ impl CacheInvalidationService {
         let mut receiver = self.subscribe();
 
         crate::spawn::spawn_monitored(name, async move {
+            // Rate-limit lag-triggered flushes to at most once per interval.
+            let mut last_lag_flush = std::time::Instant::now()
+                .checked_sub(Self::LAG_FLUSH_MIN_INTERVAL)
+                .unwrap_or_else(std::time::Instant::now);
+
             loop {
                 match receiver.recv().await {
                     Ok(msg) => {
@@ -892,11 +1054,25 @@ impl CacheInvalidationService {
                         break;
                     }
                     Err(broadcast::error::RecvError::Lagged(n)) => {
-                        warn!(
-                            lagged_messages = n,
-                            "{name}: invalidation listener lagged, triggering flush"
-                        );
-                        on_lagged(n).await;
+                        let now = std::time::Instant::now();
+                        let elapsed = now.duration_since(last_lag_flush);
+                        if elapsed >= Self::LAG_FLUSH_MIN_INTERVAL {
+                            warn!(
+                                lagged_messages = n,
+                                "{name}: invalidation listener lagged, triggering flush (rate-limited to once per {}s)",
+                                Self::LAG_FLUSH_MIN_INTERVAL.as_secs()
+                            );
+                            on_lagged(n).await;
+                            crate::metrics::cache::CACHE_LAG_FLUSH_TOTAL
+                                .with_label_values(&[name])
+                                .inc();
+                            last_lag_flush = now;
+                        } else {
+                            warn!(
+                                lagged_messages = n,
+                                "{name}: invalidation listener lagged, skipping flush (rate-limited)"
+                            );
+                        }
                     }
                 }
             }

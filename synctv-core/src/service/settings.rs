@@ -154,6 +154,10 @@ impl SettingsService {
         // trigger (settings_change_trigger on the settings table). No manual
         // notification is needed here; the trigger fires on UPDATE automatically.
 
+        // Notify SettingsStorage subscribers so their inner HashMap stays in sync
+        // immediately, without waiting for the PG NOTIFY round-trip.
+        let _ = self.reload_sender.send((key.to_string(), Some(setting.value.clone())));
+
         // Notify local listeners
         let json_value: serde_json::Value = value.parse().unwrap_or_else(|_| serde_json::json!(value));
         self.notify_listeners(key, &json_value).await;
@@ -168,6 +172,9 @@ impl SettingsService {
     /// All updates are committed together or rolled back if any write fails, so the
     /// settings table is never left in a partially-updated state. Cache and local
     /// listeners are updated only after the transaction commits successfully.
+    ///
+    /// Cross-validates contradictory settings before writing (e.g.,
+    /// `room_must_need_pwd` and `room_must_no_need_pwd` cannot both be true).
     pub async fn update_batch(
         &self,
         updates: impl IntoIterator<Item = (String, String)>,
@@ -175,6 +182,41 @@ impl SettingsService {
         let updates: Vec<(String, String)> = updates.into_iter().collect();
         if updates.is_empty() {
             return Ok(vec![]);
+        }
+
+        // Cross-validate contradictory room password settings.
+        // Build effective values: use the batch value if present, otherwise fall back to cache.
+        {
+            let batch_map: std::collections::HashMap<&str, &str> = updates
+                .iter()
+                .map(|(k, v)| (k.as_str(), v.as_str()))
+                .collect();
+
+            let must_need_pwd = batch_map
+                .get("room.room_must_need_pwd")
+                .map(|v| *v == "true")
+                .unwrap_or_else(|| {
+                    self.cache
+                        .get("room.room_must_need_pwd")
+                        .map(|s| s.value == "true")
+                        .unwrap_or(false)
+                });
+
+            let must_no_need_pwd = batch_map
+                .get("room.room_must_no_need_pwd")
+                .map(|v| *v == "true")
+                .unwrap_or_else(|| {
+                    self.cache
+                        .get("room.room_must_no_need_pwd")
+                        .map(|s| s.value == "true")
+                        .unwrap_or(false)
+                });
+
+            if must_need_pwd && must_no_need_pwd {
+                return Err(Error::InvalidInput(
+                    "room_must_need_pwd and room_must_no_need_pwd cannot both be true".into(),
+                ));
+            }
         }
 
         let mut tx = self.pool.begin().await
@@ -215,6 +257,11 @@ impl SettingsService {
         // Update cache and notify listeners only after the transaction committed.
         for setting in &updated {
             self.cache.insert(setting.key.clone(), setting.clone());
+
+            // Notify SettingsStorage subscribers so their inner HashMap stays in sync
+            // immediately, without waiting for the PG NOTIFY round-trip.
+            let _ = self.reload_sender.send((setting.key.clone(), Some(setting.value.clone())));
+
             let json_value: serde_json::Value = setting.value.parse()
                 .unwrap_or_else(|_| serde_json::json!(&setting.value));
             self.notify_listeners(&setting.key, &json_value).await;

@@ -493,6 +493,15 @@ pub async fn list_or_get_rooms(
     let limit: i32 = params.get("limit").and_then(|s| s.parse().ok()).unwrap_or(50).clamp(1, 100);
     let offset: i32 = params.get("offset").and_then(|s| s.parse().ok()).unwrap_or(0).max(0);
 
+    // R-8: Validate that offset is aligned to limit to prevent incorrect page
+    // calculations. Non-aligned offsets would silently round down and return
+    // the wrong page of results.
+    if offset % limit != 0 {
+        return Err(super::AppError::bad_request(
+            format!("offset ({offset}) must be a multiple of limit ({limit})")
+        ));
+    }
+
     let request = ListRoomsRequest {
         page: (offset / limit) + 1,
         page_size: limit,

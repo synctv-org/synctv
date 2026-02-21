@@ -30,7 +30,12 @@ CREATE TABLE playlists (
 
     -- Constraints
     CONSTRAINT valid_parent CHECK (parent_id IS NULL OR parent_id != id),
-    CONSTRAINT unique_playlist_name UNIQUE (room_id, parent_id, name),
+    -- NOTE: No UNIQUE(room_id, parent_id, name) constraint here because PostgreSQL
+    -- treats NULLs as distinct in UNIQUE constraints, so it cannot enforce uniqueness
+    -- when parent_id IS NULL. Instead, uniqueness is handled by two partial indexes:
+    --   idx_playlists_unique_root_name  (WHERE parent_id IS NULL)
+    --   unique_playlist_name on the table itself only covers non-NULL parent_id rows
+    -- See the partial indexes below for the actual enforcement.
     CONSTRAINT valid_name CHECK (
         (parent_id IS NULL AND name = '')
         OR
@@ -56,11 +61,16 @@ CREATE INDEX idx_playlists_creator ON playlists(creator_id);
 CREATE INDEX idx_playlists_source_provider ON playlists(source_provider) WHERE source_provider IS NOT NULL;
 CREATE INDEX idx_playlists_created_at ON playlists(created_at DESC);
 
+-- Partial unique index for non-root playlists (parent_id IS NOT NULL).
+-- Ensures no duplicate names within the same parent directory.
+CREATE UNIQUE INDEX idx_playlists_unique_child_name
+    ON playlists(room_id, parent_id, name)
+    WHERE parent_id IS NOT NULL;
+
 -- Partial unique index for root playlists (parent_id IS NULL).
--- The UNIQUE constraint unique_playlist_name on (room_id, parent_id, name)
--- does not prevent duplicates when parent_id IS NULL because PostgreSQL
--- treats NULLs as distinct in UNIQUE constraints. This partial index
--- ensures at most one root playlist per room with a given name.
+-- PostgreSQL treats NULLs as distinct in UNIQUE constraints, so a table-level
+-- UNIQUE(room_id, parent_id, name) cannot prevent duplicate root names.
+-- This partial index ensures at most one root playlist per room with a given name.
 CREATE UNIQUE INDEX idx_playlists_unique_root_name
     ON playlists(room_id, name)
     WHERE parent_id IS NULL;
@@ -86,7 +96,6 @@ COMMENT ON COLUMN playlists.position IS 'Sort position in parent directory';
 COMMENT ON COLUMN playlists.source_provider IS 'Media provider type name (NULL=static folder, non-NULL=dynamic folder, e.g., "alist", "emby")';
 COMMENT ON COLUMN playlists.source_config IS 'Media provider configuration (required for dynamic folders)';
 COMMENT ON COLUMN playlists.provider_instance_name IS 'Recommended media provider backend instance name (optional)';
-COMMENT ON CONSTRAINT unique_playlist_name ON playlists IS 'No duplicate names in same directory';
 COMMENT ON CONSTRAINT valid_name ON playlists IS 'Name validation: root directory must be empty string, non-root cannot be empty/spaces, forbids / character';
 COMMENT ON CONSTRAINT valid_dynamic_folder ON playlists IS 'Dynamic folder constraint: source_provider/source_config must either both exist or both be NULL';
 

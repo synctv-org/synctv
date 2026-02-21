@@ -106,6 +106,7 @@ fn make_user(username: &str) -> User {
 // ========== Room Creation Tests ==========
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_create_room_with_password_stores_hash() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
@@ -142,6 +143,7 @@ async fn test_create_room_with_password_stores_hash() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_create_room_without_password() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
@@ -174,6 +176,7 @@ async fn test_create_room_without_password() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_create_room_creates_root_playlist() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
@@ -207,6 +210,7 @@ async fn test_create_room_creates_root_playlist() {
 // ========== Room Join Tests ==========
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_join_room_correct_password() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
@@ -238,6 +242,7 @@ async fn test_join_room_correct_password() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_join_room_wrong_password_rejected() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
@@ -271,6 +276,7 @@ async fn test_join_room_wrong_password_rejected() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_join_room_password_required_not_provided() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
@@ -307,6 +313,7 @@ async fn test_join_room_password_required_not_provided() {
 // ========== Room Leave Tests ==========
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_leave_room_creator_cannot_leave() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
@@ -339,6 +346,7 @@ async fn test_leave_room_creator_cannot_leave() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_leave_room_member_succeeds() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
@@ -381,6 +389,7 @@ async fn test_leave_room_member_succeeds() {
 // ========== Room Delete Tests ==========
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_delete_room_sets_deleted_at() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
@@ -428,6 +437,7 @@ async fn test_delete_room_sets_deleted_at() {
 // ========== CAS Exhaustion Test (B6 fix verification) ==========
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_settings_cas_exhaustion_returns_internal() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
@@ -497,6 +507,7 @@ async fn test_settings_cas_exhaustion_returns_internal() {
 // ========== Banned User Cannot Rejoin (S10) ==========
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_banned_user_cannot_rejoin_room() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
@@ -555,6 +566,7 @@ async fn test_banned_user_cannot_rejoin_room() {
 // ========== Room Description Validation Tests ==========
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_room_description_unicode_500_chars_accepted() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
@@ -583,6 +595,7 @@ async fn test_room_description_unicode_500_chars_accepted() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_room_description_over_500_rejected() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());

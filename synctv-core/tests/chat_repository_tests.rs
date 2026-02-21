@@ -100,6 +100,7 @@ fn make_chat_message(room_id: &RoomId, user_id: &UserId, content: &str) -> ChatM
 // ─── list_by_room_cursor pagination ──────────────────────────────────
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_list_by_room_cursor_pagination() {
     let (_container, pool) = create_test_pool().await;
     let chat_repo = ChatRepository::new(pool.clone());
@@ -151,6 +152,7 @@ async fn test_list_by_room_cursor_pagination() {
 // ─── get_by_id 90-day limit ─────────────────────────────────────────
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_get_by_id_within_90_days() {
     let (_container, pool) = create_test_pool().await;
     let chat_repo = ChatRepository::new(pool.clone());
@@ -165,6 +167,7 @@ async fn test_get_by_id_within_90_days() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_get_by_id_older_than_90_days_returns_none() {
     let (_container, pool) = create_test_pool().await;
     let chat_repo = ChatRepository::new(pool.clone());
@@ -193,6 +196,7 @@ async fn test_get_by_id_older_than_90_days_returns_none() {
 // ─── cleanup_old_messages keep_count=0 no-op ─────────────────────────
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_cleanup_old_messages_keep_count_zero_is_noop() {
     let (_container, pool) = create_test_pool().await;
     let chat_repo = ChatRepository::new(pool.clone());
@@ -216,6 +220,7 @@ async fn test_cleanup_old_messages_keep_count_zero_is_noop() {
 // ─── cleanup_all_rooms activity_window_minutes=0 ─────────────────────
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_cleanup_all_rooms_activity_window_zero() {
     let (_container, pool) = create_test_pool().await;
     let chat_repo = ChatRepository::new(pool.clone());
@@ -240,6 +245,7 @@ async fn test_cleanup_all_rooms_activity_window_zero() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_cleanup_all_rooms_keep_count_zero_is_noop() {
     let (_container, pool) = create_test_pool().await;
     let chat_repo = ChatRepository::new(pool.clone());

@@ -105,6 +105,7 @@ fn make_user(username: &str) -> User {
 // ========== Creator Permissions Test ==========
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_creator_has_all_permissions() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
@@ -144,6 +145,7 @@ async fn test_creator_has_all_permissions() {
 // ========== Admin Permissions Test ==========
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_admin_default_bits() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
@@ -191,6 +193,7 @@ async fn test_admin_default_bits() {
 // ========== Member Permissions Test ==========
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_member_default_bits() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
@@ -231,6 +234,7 @@ async fn test_member_default_bits() {
 // ========== Guest Permissions Test ==========
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_guest_default_no_permissions() {
     // This test verifies that guests get minimal permissions.
     // Guests by default can only VIEW_PLAYLIST (from DEFAULT_GUEST).
@@ -259,6 +263,7 @@ async fn test_guest_default_no_permissions() {
 // ========== Allow Override Test ==========
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_allow_override_role_default() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
@@ -312,6 +317,7 @@ async fn test_allow_override_role_default() {
 // ========== Deny Override Test ==========
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_deny_override_role_default() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
@@ -365,6 +371,7 @@ async fn test_deny_override_role_default() {
 // ========== check_permissions batch (S11) ==========
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_check_permissions_batch_all_present() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
@@ -398,6 +405,7 @@ async fn test_check_permissions_batch_all_present() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_check_permissions_batch_one_missing_fails() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
@@ -439,6 +447,7 @@ async fn test_check_permissions_batch_one_missing_fails() {
 // ========== check_role (S11) ==========
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_check_role_creator_passes() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
@@ -467,6 +476,7 @@ async fn test_check_role_creator_passes() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_check_role_member_not_creator_fails() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
@@ -503,6 +513,7 @@ async fn test_check_role_member_not_creator_fails() {
 // ========== is_admin_or_creator (S11) ==========
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_is_admin_or_creator_for_creator() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
@@ -528,6 +539,7 @@ async fn test_is_admin_or_creator_for_creator() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_is_admin_or_creator_for_regular_member() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
@@ -559,6 +571,7 @@ async fn test_is_admin_or_creator_for_regular_member() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_is_admin_or_creator_for_non_member() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());

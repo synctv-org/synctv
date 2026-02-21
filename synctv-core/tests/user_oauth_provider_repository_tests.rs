@@ -79,6 +79,7 @@ async fn create_user(pool: &PgPool, username: &str) -> User {
 // ─── upsert with different user_id (OAuth identity update) ───────────
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_upsert_different_user_id_updates_mapping() {
     let (_container, pool) = create_test_pool().await;
     let oauth_repo = UserOAuthProviderRepository::new(pool.clone());
@@ -133,6 +134,7 @@ async fn test_upsert_different_user_id_updates_mapping() {
 // ─── transaction executor path ───────────────────────────────────────
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_upsert_with_executor_in_transaction() {
     let (_container, pool) = create_test_pool().await;
     let oauth_repo = UserOAuthProviderRepository::new(pool.clone());
@@ -167,6 +169,7 @@ async fn test_upsert_with_executor_in_transaction() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_find_by_provider_with_executor_in_transaction() {
     let (_container, pool) = create_test_pool().await;
     let oauth_repo = UserOAuthProviderRepository::new(pool.clone());
@@ -202,6 +205,7 @@ async fn test_find_by_provider_with_executor_in_transaction() {
 // ─── delete_all_for_user_with_executor ───────────────────────────────
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_delete_all_for_user_with_executor() {
     let (_container, pool) = create_test_pool().await;
     let oauth_repo = UserOAuthProviderRepository::new(pool.clone());
@@ -253,6 +257,7 @@ async fn test_delete_all_for_user_with_executor() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_delete_all_for_user_with_executor_no_mappings() {
     let (_container, pool) = create_test_pool().await;
     let oauth_repo = UserOAuthProviderRepository::new(pool.clone());

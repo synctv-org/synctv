@@ -108,6 +108,12 @@ impl RoomSettingsService {
             let mut receiver = inv_service.subscribe();
             let cancel = cancel.unwrap_or_default();
             crate::spawn::spawn_monitored("room_settings_invalidation_listener", async move {
+                // Rate-limit lag-triggered flushes (consistent with CacheManager)
+                const LAG_FLUSH_MIN_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5);
+                let mut last_lag_flush = std::time::Instant::now()
+                    .checked_sub(LAG_FLUSH_MIN_INTERVAL)
+                    .unwrap_or_else(std::time::Instant::now);
+
                 loop {
                     tokio::select! {
                         () = cancel.cancelled() => {
@@ -136,11 +142,24 @@ impl RoomSettingsService {
                                     break;
                                 }
                                 Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
-                                    tracing::warn!(
-                                        lagged_messages = n,
-                                        "Room settings invalidation listener lagged, flushing all cache"
-                                    );
-                                    cache_clone.invalidate_all();
+                                    let now = std::time::Instant::now();
+                                    let elapsed = now.duration_since(last_lag_flush);
+                                    if elapsed >= LAG_FLUSH_MIN_INTERVAL {
+                                        tracing::warn!(
+                                            lagged_messages = n,
+                                            "Room settings invalidation listener lagged, flushing all cache (rate-limited)"
+                                        );
+                                        cache_clone.invalidate_all();
+                                        crate::metrics::cache::CACHE_LAG_FLUSH_TOTAL
+                                            .with_label_values(&["room_settings"])
+                                            .inc();
+                                        last_lag_flush = now;
+                                    } else {
+                                        tracing::warn!(
+                                            lagged_messages = n,
+                                            "Room settings invalidation listener lagged, skipping flush (rate-limited)"
+                                        );
+                                    }
                                 }
                             }
                         }

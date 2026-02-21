@@ -127,6 +127,7 @@ fn make_claims(user_id: &UserId, pv: Option<i32>) -> Claims {
 // ============================================================================
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_cache_miss_falls_through_to_db() {
     let (_container, pool) = create_test_pool().await;
     let user = insert_user(&pool, &make_user(UserStatus::Active, 0)).await;
@@ -141,6 +142,7 @@ async fn test_cache_miss_falls_through_to_db() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_db_error_propagates_not_swallowed() {
     // B3 fix: When get_user returns a non-NotFound error, it should propagate
     // instead of being swallowed as Authentication("User not found").
@@ -185,6 +187,7 @@ async fn test_db_error_propagates_not_swallowed() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_banned_user_rejected_via_db() {
     let (_container, pool) = create_test_pool().await;
     let user = insert_user(&pool, &make_user(UserStatus::Banned, 0)).await;
@@ -198,6 +201,7 @@ async fn test_banned_user_rejected_via_db() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_deleted_user_rejected() {
     let (_container, pool) = create_test_pool().await;
     let user = insert_user(&pool, &make_user(UserStatus::Active, 0)).await;
@@ -217,6 +221,7 @@ async fn test_deleted_user_rejected() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_legacy_token_iat_before_password_change_rejected() {
     let (_container, pool) = create_test_pool().await;
     let user = make_user(UserStatus::Active, 1);
@@ -243,6 +248,7 @@ async fn test_legacy_token_iat_before_password_change_rejected() {
 // ============================================================================
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_cache_hit_active_user_passes() {
     let (_container, pool) = create_test_pool().await;
     let user = insert_user(&pool, &make_user(UserStatus::Active, 0)).await;
@@ -261,6 +267,7 @@ async fn test_cache_hit_active_user_passes() {
         user.created_at,
         user.updated_at,
         0,
+        false,
     );
     user_cache.set(&user.id, cached).await.unwrap();
 
@@ -272,6 +279,7 @@ async fn test_cache_hit_active_user_passes() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_cache_hit_outdated_password_version_rejected() {
     let (_container, pool) = create_test_pool().await;
     let user = insert_user(&pool, &make_user(UserStatus::Active, 5)).await;
@@ -290,6 +298,7 @@ async fn test_cache_hit_outdated_password_version_rejected() {
         user.created_at,
         user.updated_at,
         5,
+        false,
     );
     user_cache.set(&user.id, cached).await.unwrap();
 
@@ -307,6 +316,7 @@ async fn test_cache_hit_outdated_password_version_rejected() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_cache_hit_banned_user_rejected() {
     let (_container, pool) = create_test_pool().await;
     let user = insert_user(&pool, &make_user(UserStatus::Banned, 0)).await;
@@ -324,6 +334,7 @@ async fn test_cache_hit_banned_user_rejected() {
         user.created_at,
         user.updated_at,
         0,
+        false,
     );
     user_cache.set(&user.id, cached).await.unwrap();
 
@@ -340,6 +351,7 @@ async fn test_cache_hit_banned_user_rejected() {
 // ============================================================================
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_pending_user_rejected_via_db() {
     let (_container, pool) = create_test_pool().await;
     let user = insert_user(&pool, &make_user(UserStatus::Pending, 0)).await;
@@ -356,6 +368,7 @@ async fn test_pending_user_rejected_via_db() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_cache_hit_pending_user_rejected() {
     let (_container, pool) = create_test_pool().await;
     let user = insert_user(&pool, &make_user(UserStatus::Pending, 0)).await;
@@ -374,6 +387,7 @@ async fn test_cache_hit_pending_user_rejected() {
         user.created_at,
         user.updated_at,
         0,
+        false,
     );
     user_cache.set(&user.id, cached).await.unwrap();
 
@@ -393,6 +407,7 @@ async fn test_cache_hit_pending_user_rejected() {
 // ============================================================================
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_cache_populated_with_correct_password_version_after_db_miss() {
     let (_container, pool) = create_test_pool().await;
     let password_version = 3;
@@ -435,6 +450,7 @@ async fn test_cache_populated_with_correct_password_version_after_db_miss() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_cache_populated_then_subsequent_check_uses_cache() {
     let (_container, pool) = create_test_pool().await;
     let user = insert_user(&pool, &make_user(UserStatus::Active, 0)).await;

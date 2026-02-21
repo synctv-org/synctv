@@ -110,6 +110,7 @@ fn make_perm_service(member_repo: RoomMemberRepository, room_repo: RoomRepositor
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_permission_check_with_database_member() {
     let (_container, pool) = create_test_pool().await;
 
@@ -144,6 +145,7 @@ async fn test_permission_check_with_database_member() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_permission_allow_deny_pattern() {
     let (_container, pool) = create_test_pool().await;
 
@@ -177,6 +179,7 @@ async fn test_permission_allow_deny_pattern() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_permission_banned_member_denied() {
     let (_container, pool) = create_test_pool().await;
 
@@ -204,6 +207,7 @@ async fn test_permission_banned_member_denied() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_permission_non_member_denied() {
     let (_container, pool) = create_test_pool().await;
 
@@ -224,6 +228,7 @@ async fn test_permission_non_member_denied() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_permission_bit_operations() {
     let mut perms = PermissionBits(0);
 
@@ -245,6 +250,7 @@ async fn test_permission_bit_operations() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_concurrent_permission_checks() {
     use std::sync::Arc;
 

@@ -10,7 +10,7 @@ CREATE TABLE IF NOT EXISTS notifications (
     data JSONB DEFAULT '{}', -- Additional metadata (room_id, etc.)
     is_read BOOLEAN DEFAULT FALSE,
     created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
-    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
     PRIMARY KEY (id, created_at)  -- Partition key must be in PK
 ) PARTITION BY RANGE (created_at);
 

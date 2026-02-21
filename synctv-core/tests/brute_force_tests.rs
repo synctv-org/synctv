@@ -73,6 +73,7 @@ async fn test_brute_force_below_threshold_allowed() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_brute_force_at_tier1_threshold_locked() {
     let protection = BruteForceProtection::in_memory("test".to_string());
     let ip = Some(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)));
@@ -95,6 +96,7 @@ async fn test_brute_force_at_tier1_threshold_locked() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_brute_force_tier1_expired_window_unlocks() {
     // This test uses the InMemoryAttemptTracker directly to simulate
     // time passing (by setting last_failure_at far in the past).
@@ -121,6 +123,7 @@ async fn test_brute_force_tier1_expired_window_unlocks() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_brute_force_ip_lockout() {
     let protection = BruteForceProtection::in_memory("test".to_string());
     let ip = Some(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 100)));
@@ -137,6 +140,7 @@ async fn test_brute_force_ip_lockout() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_brute_force_reset_unlocks() {
     let protection = BruteForceProtection::in_memory("test".to_string());
 
@@ -187,6 +191,7 @@ async fn start_redis() -> (testcontainers::ContainerAsync<Redis>, redis::aio::Co
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_redis_tracker_record_and_get() {
     let (_container, conn) = start_redis().await;
     let tracker = RedisAttemptTracker::new(conn, 50_000, 900);
@@ -208,6 +213,7 @@ async fn test_redis_tracker_record_and_get() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_redis_tracker_reset() {
     let (_container, conn) = start_redis().await;
     let tracker = RedisAttemptTracker::new(conn, 50_000, 900);
@@ -234,6 +240,7 @@ async fn test_redis_tracker_reset() {
 // ============================================================================
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_brute_force_with_redis_e2e_lockout_and_reset() {
     let (_container, conn) = start_redis().await;
     let protection = BruteForceProtection::with_redis(conn, "test_e2e:".to_string());
@@ -264,6 +271,7 @@ async fn test_brute_force_with_redis_e2e_lockout_and_reset() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_brute_force_with_redis_ip_lockout_and_reset() {
     let (_container, conn) = start_redis().await;
     let protection = BruteForceProtection::with_redis(conn, "test_ip_e2e:".to_string());

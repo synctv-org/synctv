@@ -140,8 +140,12 @@ pub async fn init_services(
     let redis_client: Option<redis::Client> = redis_handles.as_ref().map(|h| h.client.clone());
 
     // Create L2 cache backend (Redis or Noop)
-    let cache_l2: Arc<dyn CacheL2Backend> = if let Some(ref conn) = redis_conn_plain {
-        Arc::new(RedisCacheL2::new(conn.clone()))
+    //
+    // In Sentinel mode, use the shared Arc<RwLock<ConnectionManager>> so that
+    // the L2 backend automatically follows Sentinel failover without holding a
+    // stale snapshot.
+    let cache_l2: Arc<dyn CacheL2Backend> = if let Some(ref rh) = redis_handles {
+        Arc::new(RedisCacheL2::new_shared(rh.conn.clone()))
     } else {
         Arc::new(NoopCacheL2)
     };
@@ -158,15 +162,12 @@ pub async fn init_services(
     info!("Username cache initialized (capacity={}, ttl={}s)",
         config.cache.username_cache_capacity, config.cache.username_cache_ttl_seconds);
 
-    // L1 TTL is configured in seconds but the TieredCache constructor expects minutes
-    let l1_ttl_minutes = config.cache.l1_ttl_seconds / 60;
-
     // Initialize user and room L1/L2 caches (using config values)
     let user_cache = Arc::new(
         UserCache::new(
             cache_l2.clone(),
             config.cache.l1_capacity,
-            l1_ttl_minutes,
+            config.cache.l1_ttl_seconds,
             config.cache.l2_ttl_seconds,
             format!("{}user:", config.redis.key_prefix),
         )?
@@ -175,13 +176,16 @@ pub async fn init_services(
         RoomCache::new(
             cache_l2.clone(),
             config.cache.l1_capacity,
-            l1_ttl_minutes,
+            config.cache.l1_ttl_seconds,
             config.cache.l2_ttl_seconds,
             format!("{}room:", config.redis.key_prefix),
         )?
     );
     info!("User and room caches initialized (l1_capacity={}, l1_ttl={}s, l2_ttl={}s)",
         config.cache.l1_capacity, config.cache.l1_ttl_seconds, config.cache.l2_ttl_seconds);
+
+    // Determine if cluster mode is active (used for startup warnings below)
+    let cluster_mode = config.cluster.enabled || !config.server.cluster_secret.is_empty();
 
     // Initialize brute-force protection
     let brute_force = if let Some(ref conn) = redis_conn_plain {
@@ -195,22 +199,26 @@ pub async fn init_services(
         let bf = crate::service::BruteForceProtection::in_memory(
             config.redis.key_prefix.clone(),
         );
+        if cluster_mode {
+            warn!(
+                "Brute-force protection is using in-memory counters but cluster mode is active. \
+                 Login attempt counters will NOT be shared across replicas, reducing brute-force \
+                 protection effectiveness. Configure Redis to fix this."
+            );
+        }
         info!("Brute-force protection initialized (in-memory)");
         bf
     };
 
     // Initialize token blacklist store
-    let refresh_ttl = jwt_service.refresh_token_duration_seconds();
     let token_blacklist: Arc<dyn crate::service::TokenBlacklistStore> = if let Some(ref conn) = redis_conn_plain {
         Arc::new(crate::service::RedisTokenBlacklistStore::new(conn.clone()))
     } else {
-        Arc::new(crate::service::InMemoryTokenBlacklistStore::new(
-            100_000,
-            refresh_ttl,
-            refresh_ttl.saturating_add(3600),
-        ))
+        // Use PostgreSQL-backed store for durability when Redis is unavailable.
+        // This ensures blacklisted JTIs survive restarts in standalone mode.
+        Arc::new(crate::service::PgTokenBlacklistStore::new(pool.clone()))
     };
-    info!("Token blacklist store initialized ({})", if redis_conn_plain.is_some() { "Redis" } else { "in-memory" });
+    info!("Token blacklist store initialized ({})", if redis_conn_plain.is_some() { "Redis" } else { "PostgreSQL" });
 
     // Initialize UserService
     let key_builder = crate::cache::KeyBuilder::from_config(config);
@@ -334,6 +342,14 @@ pub async fn init_services(
         None
     };
     if oauth2_service.is_some() {
+        if redis_conn_plain.is_none() && cluster_mode {
+            warn!(
+                "OAuth2 is configured but Redis is unavailable. OAuth2 state (CSRF tokens) \
+                 is stored in-memory and will NOT be shared across replicas. Users may \
+                 experience login failures if the callback hits a different replica. \
+                 Configure Redis to fix this."
+            );
+        }
         info!("OAuth2 service initialized");
     } else {
         info!("OAuth2 service not configured (no OAuth2 providers in config)");
@@ -363,7 +379,7 @@ pub async fn init_services(
     info!("Settings registry initialized");
 
     // Initialize Email service (optional - requires SMTP configuration)
-    let email_service = init_email_service(config);
+    let email_service = init_email_service(config, redis_client.as_ref());
     if email_service.is_some() {
         info!("Email service initialized");
     } else {
@@ -600,7 +616,10 @@ fn init_credential_encryption() -> Option<crate::service::CredentialEncryption> 
 }
 
 /// Initialize Email service (optional - requires SMTP configuration)
-fn init_email_service(config: &Config) -> Option<Arc<EmailService>> {
+///
+/// When `redis_client` is provided, uses Redis-backed verification code storage
+/// for multi-node safety. Otherwise falls back to in-memory storage.
+fn init_email_service(config: &Config, redis_client: Option<&redis::Client>) -> Option<Arc<EmailService>> {
     // Check if SMTP host is configured
     if config.email.smtp_host.is_empty() {
         return None;
@@ -616,7 +635,23 @@ fn init_email_service(config: &Config) -> Option<Arc<EmailService>> {
         use_tls: config.email.use_tls,
     };
 
-    match EmailService::new(Some(email_config)) {
+    let cluster_mode = config.cluster.enabled || !config.server.cluster_secret.is_empty();
+
+    let result = if let Some(client) = redis_client {
+        info!("Email verification code store: Redis (multi-node safe)");
+        EmailService::with_redis(Some(email_config), Arc::new(client.clone()))
+    } else {
+        if cluster_mode {
+            warn!(
+                "Email verification codes are stored in-memory but cluster mode is active. \
+                 Verification codes will NOT be shared across replicas. \
+                 Configure Redis to fix this."
+            );
+        }
+        EmailService::new(Some(email_config))
+    };
+
+    match result {
         Ok(service) => Some(Arc::new(service)),
         Err(e) => {
             error!("Failed to initialize email service: {}", e);

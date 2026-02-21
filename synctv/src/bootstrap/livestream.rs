@@ -114,7 +114,7 @@ pub async fn init_livestream(
             },
             gop_cache_max_memory_mb: config.livestream.gop_cache_max_memory_mb,
             grpc_address: config.advertise_grpc_address(),
-            hls_memory_max_mb: 0,
+            hls_memory_max_mb: config.livestream.hls_memory_max_mb,
         },
         publisher_registry,
         user_stream_tracker,

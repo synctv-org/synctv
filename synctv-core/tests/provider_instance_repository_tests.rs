@@ -79,6 +79,7 @@ fn make_instance(name: &str, jwt_secret: Option<&str>, custom_ca: Option<&str>) 
 // ─── migrate_plaintext_to_encrypted: idempotency ─────────────────────
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_migrate_plaintext_to_encrypted_idempotent() {
     let (_container, pool) = create_test_pool().await;
     let enc = CredentialEncryption::new(&test_key()).unwrap();
@@ -107,6 +108,7 @@ async fn test_migrate_plaintext_to_encrypted_idempotent() {
 // ─── migrate_plaintext_to_encrypted: None fields ─────────────────────
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_migrate_plaintext_to_encrypted_none_fields() {
     let (_container, pool) = create_test_pool().await;
     let enc = CredentialEncryption::new(&test_key()).unwrap();
@@ -131,6 +133,7 @@ async fn test_migrate_plaintext_to_encrypted_none_fields() {
 // ─── migrate_plaintext_to_encrypted: rollback (no encryption) ────────
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_migrate_without_encryption_returns_error() {
     let (_container, pool) = create_test_pool().await;
     let repo = ProviderInstanceRepository::new(pool.clone());
@@ -142,6 +145,7 @@ async fn test_migrate_without_encryption_returns_error() {
 // ─── encryption prefix edge case ─────────────────────────────────────
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_encryption_prefix_edge_case() {
     let (_container, pool) = create_test_pool().await;
     let enc = CredentialEncryption::new(&test_key()).unwrap();
@@ -162,6 +166,7 @@ async fn test_encryption_prefix_edge_case() {
 // ─── create and read with encryption ─────────────────────────────────
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_create_and_read_with_encryption() {
     let (_container, pool) = create_test_pool().await;
     let enc = CredentialEncryption::new(&test_key()).unwrap();

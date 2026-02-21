@@ -290,6 +290,9 @@ pub async fn serve(grpc_config: GrpcServerConfig<'_>) -> anyhow::Result<()> {
     // pass through without security checks.
     let security_pipeline = synctv_core::service::SecurityPipeline::new(
         user_service.clone(),
+    ).with_token_blacklist(
+        user_service.token_blacklist_store(),
+        user_service.key_builder().clone(),
     );
     let blacklist_layer = blacklist_layer::BlacklistCheckLayer::new(
         jwt_service,
@@ -502,6 +505,9 @@ pub async fn serve(grpc_config: GrpcServerConfig<'_>) -> anyhow::Result<()> {
             jwt_validator: provider_jwt_validator,
             security_pipeline: Arc::new(synctv_core::service::SecurityPipeline::new(
                 user_service.clone(),
+            ).with_token_blacklist(
+                user_service.token_blacklist_store(),
+                user_service.key_builder().clone(),
             )),
             client_api: client_api.clone(),
             admin_api: None,

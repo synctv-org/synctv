@@ -13,13 +13,13 @@
 use std::sync::Arc;
 
 use crate::{
-    cache::UserCache,
+    cache::{KeyBuilder, UserCache},
     models::{UserId, UserStatus},
     service::UserService,
     Error, Result,
 };
 
-use super::Claims;
+use super::{Claims, TokenBlacklistStore};
 
 /// Outcome of a successful security pipeline check.
 #[derive(Debug, Clone)]
@@ -43,6 +43,10 @@ pub struct SecurityPipeline {
     user_service: Arc<UserService>,
     /// Optional user cache for fast path lookups (avoids DB query on cache hit).
     user_cache: Option<Arc<UserCache>>,
+    /// Optional access token blacklist store for checking revoked access tokens.
+    token_blacklist: Option<Arc<dyn TokenBlacklistStore>>,
+    /// Optional key builder for constructing blacklist keys.
+    key_builder: Option<KeyBuilder>,
 }
 
 impl SecurityPipeline {
@@ -52,6 +56,8 @@ impl SecurityPipeline {
         Self {
             user_service,
             user_cache: None,
+            token_blacklist: None,
+            key_builder: None,
         }
     }
 
@@ -63,6 +69,17 @@ impl SecurityPipeline {
     #[must_use]
     pub fn with_user_cache(mut self, user_cache: Arc<UserCache>) -> Self {
         self.user_cache = Some(user_cache);
+        self
+    }
+
+    /// Attach a [`TokenBlacklistStore`] and [`KeyBuilder`] to this pipeline.
+    ///
+    /// When set, [`check`] will verify that the access token's JTI has not
+    /// been blacklisted (e.g. via logout) before allowing the request.
+    #[must_use]
+    pub fn with_token_blacklist(mut self, store: Arc<dyn TokenBlacklistStore>, key_builder: KeyBuilder) -> Self {
+        self.token_blacklist = Some(store);
+        self.key_builder = Some(key_builder);
         self
     }
 
@@ -108,9 +125,12 @@ impl SecurityPipeline {
                 // Active status can be trusted to not be deleted. If this
                 // invariant is ever broken (e.g. a code path deletes without
                 // invalidation), the DB slow path below will still catch it.
-                if cached.status() == UserStatus::Banned || cached.status() == UserStatus::Pending {
+                if cached.status() == UserStatus::Banned || cached.status() == UserStatus::Pending || cached.is_deleted() {
                     return Err(Error::Authentication("Authentication failed".to_string()));
                 }
+
+                // Check access token JTI blacklist (e.g. logout)
+                self.check_access_token_blacklist(claims).await?;
 
                 return Ok(AuthenticatedToken {
                     user_id,
@@ -152,6 +172,9 @@ impl SecurityPipeline {
             ));
         }
 
+        // Check access token JTI blacklist (e.g. logout)
+        self.check_access_token_blacklist(claims).await?;
+
         // Populate the cache after a successful DB lookup so future requests
         // for this user are served from the cache.
         if let Some(cache) = &self.user_cache {
@@ -163,6 +186,7 @@ impl SecurityPipeline {
                 user.created_at,
                 user.updated_at,
                 user.password_version,
+                user.is_deleted(),
             );
             // Best-effort: log but do not fail the request if the cache write errors.
             if let Err(e) = cache.set(&user_id, cached_user).await {
@@ -178,6 +202,21 @@ impl SecurityPipeline {
             user_id,
             claims: claims.clone(),
         })
+    }
+
+    /// Check if the access token's JTI has been blacklisted (e.g. via logout).
+    ///
+    /// This is a no-op if no [`TokenBlacklistStore`] has been configured.
+    async fn check_access_token_blacklist(&self, claims: &Claims) -> Result<()> {
+        if let (Some(store), Some(kb)) = (&self.token_blacklist, &self.key_builder) {
+            if !claims.jti.is_empty() {
+                let key = kb.access_token_blacklist(&claims.jti);
+                if store.is_blacklisted(&key).await {
+                    return Err(Error::Authentication("Authentication failed".to_string()));
+                }
+            }
+        }
+        Ok(())
     }
 }
 

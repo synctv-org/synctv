@@ -31,7 +31,7 @@ use crate::bootstrap::node_id::generate_node_id;
 use crate::bootstrap::webrtc::init_webrtc;
 use crate::cluster_bridge::ClusterPlaybackBroadcaster;
 use crate::server::{LivestreamState, Services, SyncTvServer};
-use crate::shutdown::{AuditFlushHook, SettingsListenHook, ShutdownCoordinator};
+use crate::shutdown::{AuditFlushHook, CacheInvalidationStopHook, SettingsListenHook, ShutdownCoordinator};
 
 /// Infrastructure: Redis (optional), Database, `NodeID`.
 struct Infrastructure {
@@ -245,6 +245,9 @@ impl Application {
 
         // Track settings cancellation token and listen task in shutdown coordinator
         shutdown.track_token("settings", synctv_services.settings_cancel.clone());
+        shutdown.register_hook(CacheInvalidationStopHook {
+            service: cache_invalidation.clone(),
+        });
         shutdown.register_hook(AuditFlushHook {
             handle: synctv_services.audit_flush_handle.clone(),
         });

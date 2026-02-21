@@ -89,6 +89,7 @@ fn make_notif_request(user_id: &UserId, title: &str) -> CreateNotificationReques
 // ─── mark_as_read cross-user guard ───────────────────────────────────
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_mark_as_read_cross_user_guard() {
     let (_container, pool) = create_test_pool().await;
     let notif_repo = NotificationRepository::new(pool.clone());
@@ -127,6 +128,7 @@ async fn test_mark_as_read_cross_user_guard() {
 // ─── mark_all_as_read with before parameter ──────────────────────────
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_mark_all_as_read_before_parameter() {
     let (_container, pool) = create_test_pool().await;
     let notif_repo = NotificationRepository::new(pool.clone());
@@ -166,6 +168,7 @@ async fn test_mark_all_as_read_before_parameter() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_mark_all_as_read_without_before() {
     let (_container, pool) = create_test_pool().await;
     let notif_repo = NotificationRepository::new(pool.clone());
@@ -191,6 +194,7 @@ async fn test_mark_all_as_read_without_before() {
 // ─── delete_older_than boundary ──────────────────────────────────────
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_delete_older_than_boundary() {
     let (_container, pool) = create_test_pool().await;
     let notif_repo = NotificationRepository::new(pool.clone());
@@ -225,6 +229,7 @@ async fn test_delete_older_than_boundary() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_delete_older_than_zero_days_deletes_all() {
     let (_container, pool) = create_test_pool().await;
     let notif_repo = NotificationRepository::new(pool.clone());
@@ -247,6 +252,7 @@ async fn test_delete_older_than_zero_days_deletes_all() {
 // ─── list_by_user_with_count empty total_count=0 ─────────────────────
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_list_by_user_with_count_empty_returns_zero() {
     let (_container, pool) = create_test_pool().await;
     let notif_repo = NotificationRepository::new(pool.clone());
@@ -269,6 +275,7 @@ async fn test_list_by_user_with_count_empty_returns_zero() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_list_by_user_with_count_returns_correct_total() {
     let (_container, pool) = create_test_pool().await;
     let notif_repo = NotificationRepository::new(pool.clone());

@@ -408,6 +408,13 @@ pub async fn websocket_handler(
         return Err(AppError::forbidden("This room is closed and not accepting new connections"));
     }
 
+    // R-5: Verify ClusterManager is available BEFORE upgrading. Without it the
+    // WebSocket handler cannot function, so reject early with HTTP 503 instead
+    // of silently dropping the connection inside handle_socket.
+    if state.cluster_manager.is_none() {
+        return Err(AppError::service_unavailable());
+    }
+
     // Authentication and membership verified, upgrade to WebSocket
     // Limit max message size to 64KB (default is 64MB which is excessive for signaling)
     Ok(ws.max_message_size(64 * 1024)

@@ -426,7 +426,7 @@ impl UserService {
             let family_revoked_at = self.token_blacklist.get_family_revoked_at(&family_key).await;
             if let Some(revoked_at) = family_revoked_at {
                 // Reject any refresh token issued before the family revocation timestamp
-                if claims.iat <= revoked_at {
+                if claims.iat < revoked_at {
                     tracing::warn!(
                         user_id = %user_id.as_str(),
                         jti = %old_jti,
@@ -590,7 +590,7 @@ impl UserService {
     /// Fail-closed: if the blacklist store is unavailable this returns an error
     /// so callers can choose whether to abort or warn-and-continue.
     pub async fn blacklist_access_token(&self, jti: &str, ttl_secs: u64) -> Result<()> {
-        let key = self.key_builder.refresh_token_blacklist(jti);
+        let key = self.key_builder.access_token_blacklist(jti);
         self.token_blacklist.blacklist(&key, ttl_secs).await
     }
 
@@ -868,6 +868,18 @@ impl UserService {
         &self.username_cache
     }
 
+    /// Get the token blacklist store (for configuring SecurityPipeline)
+    #[must_use]
+    pub fn token_blacklist_store(&self) -> Arc<dyn crate::service::auth::TokenBlacklistStore> {
+        Arc::clone(&self.token_blacklist)
+    }
+
+    /// Get the key builder (for configuring SecurityPipeline)
+    #[must_use]
+    pub fn key_builder(&self) -> &KeyBuilder {
+        &self.key_builder
+    }
+
     /// Health check - verify database connectivity
     ///
     /// Executes a simple query to verify the database connection is working.
@@ -885,13 +897,17 @@ impl UserService {
         Ok(())
     }
 
-    /// Broadcast a user cache invalidation message to other replicas.
+    /// Invalidate user cache locally and broadcast to other replicas.
     ///
     /// Best-effort: logs a warning on failure but does not propagate the error,
     /// since cache invalidation is not critical to the mutation itself.
+    ///
+    /// Uses `invalidate_and_broadcast_user` to ensure the originating node also
+    /// clears its own local cache (the Redis subscriber skips self-originated
+    /// messages, so `broadcast_remote` alone would leave local caches stale).
     async fn notify_user_invalidation(&self, user_id: &UserId) {
         if let Some(ref service) = self.cache_invalidation {
-            if let Err(e) = service.invalidate_user(user_id).await {
+            if let Err(e) = service.invalidate_and_broadcast_user(user_id).await {
                 tracing::warn!(
                     error = %e,
                     user_id = %user_id.as_str(),

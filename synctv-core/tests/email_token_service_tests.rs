@@ -72,6 +72,7 @@ fn make_user(username: &str) -> User {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_service_generate_and_validate_lifecycle() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
@@ -95,6 +96,7 @@ async fn test_service_generate_and_validate_lifecycle() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_service_expired_token_fails() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
@@ -124,6 +126,7 @@ async fn test_service_expired_token_fails() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_service_wrong_type_fails() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
@@ -152,6 +155,7 @@ async fn test_service_wrong_type_fails() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_service_invalidate_user_tokens() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
@@ -193,6 +197,7 @@ async fn test_service_invalidate_user_tokens() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_service_concurrent_single_use() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());

@@ -44,6 +44,9 @@ pub struct CachedUser {
     updated_at: chrono::DateTime<chrono::Utc>,
     /// Password version counter for JWT invalidation
     password_version: i32,
+    /// Whether the user has been soft-deleted (`deleted_at` IS NOT NULL)
+    #[serde(default)]
+    is_deleted: bool,
 }
 
 impl CachedUser {
@@ -65,6 +68,7 @@ impl CachedUser {
             created_at,
             updated_at: chrono::Utc::now(),
             password_version,
+            is_deleted: false,
         }
     }
 
@@ -78,8 +82,9 @@ impl CachedUser {
         created_at: chrono::DateTime<chrono::Utc>,
         updated_at: chrono::DateTime<chrono::Utc>,
         password_version: i32,
+        is_deleted: bool,
     ) -> Self {
-        Self { id, username, role, status, created_at, updated_at, password_version }
+        Self { id, username, role, status, created_at, updated_at, password_version, is_deleted }
     }
 
     /// Get the user's role
@@ -105,6 +110,12 @@ impl CachedUser {
     pub const fn password_version(&self) -> i32 {
         self.password_version
     }
+
+    /// Check if the user has been soft-deleted
+    #[must_use]
+    pub const fn is_deleted(&self) -> bool {
+        self.is_deleted
+    }
 }
 
 impl Timestamped for CachedUser {
@@ -119,20 +130,20 @@ impl UserCache {
     /// # Arguments
     /// * `l2` - L2 cache backend (e.g. `RedisCacheL2` or `NoopCacheL2`)
     /// * `l1_max_capacity` - Maximum number of entries in L1 cache
-    /// * `l1_ttl_minutes` - TTL for L1 cache entries in minutes
+    /// * `l1_ttl_seconds` - TTL for L1 cache entries in seconds
     /// * `l2_ttl_seconds` - TTL for L2 cache entries in seconds
     /// * `key_prefix` - L2 key prefix (e.g., "synctv:user:")
     pub fn new(
         l2: Arc<dyn CacheL2Backend>,
         l1_max_capacity: u64,
-        l1_ttl_minutes: u64,
+        l1_ttl_seconds: u64,
         l2_ttl_seconds: u64,
         key_prefix: String,
     ) -> Result<Self> {
         let inner = TieredCache::new(
             l2,
             l1_max_capacity,
-            l1_ttl_minutes,
+            l1_ttl_seconds,
             l2_ttl_seconds,
             key_prefix,
             "user".to_string(),
@@ -227,6 +238,7 @@ mod tests {
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
             password_version: 0,
+            is_deleted: false,
         }
     }
 

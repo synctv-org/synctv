@@ -35,6 +35,7 @@ async fn start_redis() -> (testcontainers::ContainerAsync<Redis>, redis::aio::Co
 // ============================================================================
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_set_if_newer_absent_key() {
     let (_container, conn) = start_redis().await;
     let l2 = RedisCacheL2::new(conn);
@@ -53,6 +54,7 @@ async fn test_set_if_newer_absent_key() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_set_if_newer_newer_wins() {
     let (_container, conn) = start_redis().await;
     let l2 = RedisCacheL2::new(conn);
@@ -75,6 +77,7 @@ async fn test_set_if_newer_newer_wins() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_set_if_newer_older_rejected() {
     let (_container, conn) = start_redis().await;
     let l2 = RedisCacheL2::new(conn);
@@ -98,6 +101,7 @@ async fn test_set_if_newer_older_rejected() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_set_if_newer_concurrent() {
     let (_container, conn) = start_redis().await;
     let l2 = std::sync::Arc::new(RedisCacheL2::new(conn));
@@ -138,6 +142,7 @@ async fn test_set_if_newer_concurrent() {
 // ============================================================================
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_delete_by_prefix_100_plus_keys() {
     let (_container, conn) = start_redis().await;
     let l2 = RedisCacheL2::new(conn.clone());
@@ -168,6 +173,7 @@ async fn test_delete_by_prefix_100_plus_keys() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_delete_by_prefix_isolation() {
     let (_container, conn) = start_redis().await;
     let l2 = RedisCacheL2::new(conn.clone());

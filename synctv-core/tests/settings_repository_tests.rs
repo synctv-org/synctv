@@ -46,6 +46,7 @@ async fn create_test_pool() -> (ContainerAsync<Postgres>, PgPool) {
 // ─── get non-existent key ────────────────────────────────────────────
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_get_nonexistent_key_returns_error() {
     let (_container, pool) = create_test_pool().await;
     let repo = SettingsRepository::new(pool.clone());
@@ -60,6 +61,7 @@ async fn test_get_nonexistent_key_returns_error() {
 // ─── get_all ordering ────────────────────────────────────────────────
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_get_all_ordering_by_group_name() {
     let (_container, pool) = create_test_pool().await;
     let repo = SettingsRepository::new(pool.clone());
@@ -110,6 +112,7 @@ async fn test_get_all_ordering_by_group_name() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_get_all_returns_empty_when_no_settings() {
     let (_container, pool) = create_test_pool().await;
     let repo = SettingsRepository::new(pool.clone());
@@ -125,6 +128,7 @@ async fn test_get_all_returns_empty_when_no_settings() {
 }
 
 #[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_get_and_update_round_trip() {
     let (_container, pool) = create_test_pool().await;
     let repo = SettingsRepository::new(pool.clone());

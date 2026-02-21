@@ -53,7 +53,7 @@ pub fn load_config() -> Result<Config> {
                 }
                 eprintln!("Failed to load {path}: {e}");
                 eprintln!("Falling back to environment variables");
-                Config::from_env().unwrap_or_default()
+                Config::from_env()?
             }
         }
     } else if let Some(ref explicit_path) = explicit_config_path {
@@ -63,11 +63,7 @@ pub fn load_config() -> Result<Config> {
         ));
     } else {
         eprintln!("No config file found, using environment variables");
-        Config::from_env().unwrap_or_else(|e| {
-            eprintln!("Failed to load config: {e}");
-            eprintln!("Using default configuration");
-            Config::default()
-        })
+        Config::from_env()?
     };
 
     // Validate configuration (fail fast on misconfigurations)

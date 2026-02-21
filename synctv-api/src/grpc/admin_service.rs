@@ -2,6 +2,7 @@ use std::sync::Arc;
 use tonic::{Request, Response, Status};
 
 use synctv_core::service::UserService;
+use crate::impls::admin::RequestContext;
 
 // Use synctv_proto for all gRPC types to avoid duplication
 use crate::proto::admin_service_server::AdminService;
@@ -32,6 +33,17 @@ use crate::proto::admin::{
 use crate::impls::AdminApiImpl;
 
 use super::map_api_error;
+
+/// Extract IP address and User-Agent from a gRPC request for audit logging.
+fn grpc_request_context<T: std::fmt::Debug>(request: &Request<T>) -> RequestContext {
+    let ip_address = request.remote_addr().map(|addr| addr.ip().to_string());
+    let user_agent = request
+        .metadata()
+        .get("user-agent")
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.to_string());
+    RequestContext { ip_address, user_agent }
+}
 
 /// `AdminService` gRPC implementation.
 ///
@@ -170,8 +182,9 @@ impl AdminService for AdminServiceImpl {
         request: Request<UpdateSettingsRequest>,
     ) -> Result<Response<UpdateSettingsResponse>, Status> {
         let validated = self.check_admin_get_validated(&request).await?;
+        let ctx = grpc_request_context(&request);
         let req = request.into_inner();
-        let resp = self.admin_api.update_settings(req, &validated.user_id).await.map_err(map_api_error)?;
+        let resp = self.admin_api.update_settings(req, &validated.user_id, &ctx).await.map_err(map_api_error)?;
         Ok(Response::new(resp))
     }
 
@@ -204,8 +217,10 @@ impl AdminService for AdminServiceImpl {
         request: Request<AddProviderInstanceRequest>,
     ) -> Result<Response<AddProviderInstanceResponse>, Status> {
         self.check_admin(&request).await?;
+        let admin_user_id = super::interceptors::extract_user_id(&request)?;
+        let ctx = grpc_request_context(&request);
         let req = request.into_inner();
-        let resp = self.admin_api.add_provider_instance(req).await.map_err(map_api_error)?;
+        let resp = self.admin_api.add_provider_instance(req, &admin_user_id, &ctx).await.map_err(map_api_error)?;
         Ok(Response::new(resp))
     }
 
@@ -214,8 +229,10 @@ impl AdminService for AdminServiceImpl {
         request: Request<UpdateProviderInstanceRequest>,
     ) -> Result<Response<UpdateProviderInstanceResponse>, Status> {
         self.check_admin(&request).await?;
+        let admin_user_id = super::interceptors::extract_user_id(&request)?;
+        let ctx = grpc_request_context(&request);
         let req = request.into_inner();
-        let resp = self.admin_api.update_provider_instance(req).await.map_err(map_api_error)?;
+        let resp = self.admin_api.update_provider_instance(req, &admin_user_id, &ctx).await.map_err(map_api_error)?;
         Ok(Response::new(resp))
     }
 
@@ -224,8 +241,10 @@ impl AdminService for AdminServiceImpl {
         request: Request<DeleteProviderInstanceRequest>,
     ) -> Result<Response<DeleteProviderInstanceResponse>, Status> {
         self.check_admin(&request).await?;
+        let admin_user_id = super::interceptors::extract_user_id(&request)?;
+        let ctx = grpc_request_context(&request);
         let req = request.into_inner();
-        let resp = self.admin_api.delete_provider_instance(req).await.map_err(map_api_error)?;
+        let resp = self.admin_api.delete_provider_instance(req, &admin_user_id, &ctx).await.map_err(map_api_error)?;
         Ok(Response::new(resp))
     }
 
@@ -274,8 +293,10 @@ impl AdminService for AdminServiceImpl {
         } else {
             self.check_admin_get_role(&request).await?
         };
+        let admin_user_id = super::interceptors::extract_user_id(&request)?;
+        let ctx = grpc_request_context(&request);
         let req = request.into_inner();
-        let resp = self.admin_api.create_user(req, caller_role).await.map_err(map_api_error)?;
+        let resp = self.admin_api.create_user(req, caller_role, &admin_user_id, &ctx).await.map_err(map_api_error)?;
         Ok(Response::new(resp))
     }
 
@@ -284,8 +305,10 @@ impl AdminService for AdminServiceImpl {
         request: Request<DeleteUserRequest>,
     ) -> Result<Response<DeleteUserResponse>, Status> {
         self.check_root(&request).await?;
+        let admin_user_id = super::interceptors::extract_user_id(&request)?;
+        let ctx = grpc_request_context(&request);
         let req = request.into_inner();
-        let resp = self.admin_api.delete_user(req).await.map_err(map_api_error)?;
+        let resp = self.admin_api.delete_user(req, &admin_user_id, &ctx).await.map_err(map_api_error)?;
         Ok(Response::new(resp))
     }
 
@@ -314,8 +337,9 @@ impl AdminService for AdminServiceImpl {
         request: Request<UpdateUserPasswordRequest>,
     ) -> Result<Response<UpdateUserPasswordResponse>, Status> {
         let validated = self.check_admin_get_validated(&request).await?;
+        let ctx = grpc_request_context(&request);
         let req = request.into_inner();
-        let resp = self.admin_api.update_user_password(req, validated.user_id, validated.role).await.map_err(map_api_error)?;
+        let resp = self.admin_api.update_user_password(req, validated.user_id, validated.role, &ctx).await.map_err(map_api_error)?;
         Ok(Response::new(resp))
     }
 
@@ -325,8 +349,9 @@ impl AdminService for AdminServiceImpl {
     ) -> Result<Response<UpdateUserUsernameResponse>, Status> {
         self.check_admin(&request).await?;
         let admin_user_id = super::interceptors::extract_user_id(&request)?;
+        let ctx = grpc_request_context(&request);
         let req = request.into_inner();
-        let resp = self.admin_api.update_user_username(req, &admin_user_id).await.map_err(map_api_error)?;
+        let resp = self.admin_api.update_user_username(req, &admin_user_id, &ctx).await.map_err(map_api_error)?;
         Ok(Response::new(resp))
     }
 
@@ -342,8 +367,9 @@ impl AdminService for AdminServiceImpl {
             self.check_admin_get_role(&request).await?
         };
         let admin_user_id = super::interceptors::extract_user_id(&request)?;
+        let ctx = grpc_request_context(&request);
         let req = request.into_inner();
-        let resp = self.admin_api.update_user_role(req, &admin_user_id, caller_role).await.map_err(map_api_error)?;
+        let resp = self.admin_api.update_user_role(req, &admin_user_id, caller_role, &ctx).await.map_err(map_api_error)?;
         Ok(Response::new(resp))
     }
 
@@ -353,8 +379,9 @@ impl AdminService for AdminServiceImpl {
     ) -> Result<Response<BanUserResponse>, Status> {
         let caller_role = self.check_admin_get_role(&request).await?;
         let admin_user_id = super::interceptors::extract_user_id(&request)?;
+        let ctx = grpc_request_context(&request);
         let req = request.into_inner();
-        let resp = self.admin_api.ban_user(req, &admin_user_id, caller_role).await.map_err(map_api_error)?;
+        let resp = self.admin_api.ban_user(req, &admin_user_id, caller_role, &ctx).await.map_err(map_api_error)?;
         Ok(Response::new(resp))
     }
 
@@ -364,8 +391,9 @@ impl AdminService for AdminServiceImpl {
     ) -> Result<Response<UnbanUserResponse>, Status> {
         self.check_admin(&request).await?;
         let admin_user_id = super::interceptors::extract_user_id(&request)?;
+        let ctx = grpc_request_context(&request);
         let req = request.into_inner();
-        let resp = self.admin_api.unban_user(req, &admin_user_id).await.map_err(map_api_error)?;
+        let resp = self.admin_api.unban_user(req, &admin_user_id, &ctx).await.map_err(map_api_error)?;
         Ok(Response::new(resp))
     }
 
@@ -385,8 +413,9 @@ impl AdminService for AdminServiceImpl {
     ) -> Result<Response<ApproveUserResponse>, Status> {
         self.check_admin(&request).await?;
         let admin_user_id = super::interceptors::extract_user_id(&request)?;
+        let ctx = grpc_request_context(&request);
         let req = request.into_inner();
-        let resp = self.admin_api.approve_user(req, &admin_user_id).await.map_err(map_api_error)?;
+        let resp = self.admin_api.approve_user(req, &admin_user_id, &ctx).await.map_err(map_api_error)?;
         Ok(Response::new(resp))
     }
 
@@ -419,8 +448,10 @@ impl AdminService for AdminServiceImpl {
         request: Request<UpdateRoomPasswordRequest>,
     ) -> Result<Response<UpdateRoomPasswordResponse>, Status> {
         self.check_admin(&request).await?;
+        let admin_user_id = super::interceptors::extract_user_id(&request)?;
+        let ctx = grpc_request_context(&request);
         let req = request.into_inner();
-        let resp = self.admin_api.update_room_password(req).await.map_err(map_api_error)?;
+        let resp = self.admin_api.update_room_password(req, &admin_user_id, &ctx).await.map_err(map_api_error)?;
         Ok(Response::new(resp))
     }
 
@@ -430,8 +461,9 @@ impl AdminService for AdminServiceImpl {
     ) -> Result<Response<DeleteRoomResponse>, Status> {
         let validated = self.check_admin_get_validated(&request).await?;
         let admin_user_id = validated.user_id;
+        let ctx = grpc_request_context(&request);
         let req = request.into_inner();
-        let resp = self.admin_api.delete_room(req, &admin_user_id).await.map_err(map_api_error)?;
+        let resp = self.admin_api.delete_room(req, &admin_user_id, &ctx).await.map_err(map_api_error)?;
         Ok(Response::new(resp))
     }
 
@@ -441,8 +473,9 @@ impl AdminService for AdminServiceImpl {
     ) -> Result<Response<BanRoomResponse>, Status> {
         let validated = self.check_admin_get_validated(&request).await?;
         let admin_user_id = validated.user_id;
+        let ctx = grpc_request_context(&request);
         let req = request.into_inner();
-        let resp = self.admin_api.ban_room(req, &admin_user_id).await.map_err(map_api_error)?;
+        let resp = self.admin_api.ban_room(req, &admin_user_id, &ctx).await.map_err(map_api_error)?;
         Ok(Response::new(resp))
     }
 
@@ -452,8 +485,9 @@ impl AdminService for AdminServiceImpl {
     ) -> Result<Response<UnbanRoomResponse>, Status> {
         let validated = self.check_admin_get_validated(&request).await?;
         let admin_user_id = validated.user_id;
+        let ctx = grpc_request_context(&request);
         let req = request.into_inner();
-        let resp = self.admin_api.unban_room(req, &admin_user_id).await.map_err(map_api_error)?;
+        let resp = self.admin_api.unban_room(req, &admin_user_id, &ctx).await.map_err(map_api_error)?;
         Ok(Response::new(resp))
     }
 
@@ -461,9 +495,11 @@ impl AdminService for AdminServiceImpl {
         &self,
         request: Request<ApproveRoomRequest>,
     ) -> Result<Response<ApproveRoomResponse>, Status> {
-        self.check_admin(&request).await?;
+        let validated = self.check_admin_get_validated(&request).await?;
+        let admin_user_id = validated.user_id;
+        let ctx = grpc_request_context(&request);
         let req = request.into_inner();
-        let resp = self.admin_api.approve_room(req).await.map_err(map_api_error)?;
+        let resp = self.admin_api.approve_room(req, &admin_user_id, &ctx).await.map_err(map_api_error)?;
         Ok(Response::new(resp))
     }
 
@@ -487,8 +523,9 @@ impl AdminService for AdminServiceImpl {
     ) -> Result<Response<AddAdminResponse>, Status> {
         self.check_root(&request).await?;
         let admin_user_id = super::interceptors::extract_user_id(&request)?;
+        let ctx = grpc_request_context(&request);
         let req = request.into_inner();
-        let resp = self.admin_api.add_admin(req, &admin_user_id).await.map_err(map_api_error)?;
+        let resp = self.admin_api.add_admin(req, &admin_user_id, &ctx).await.map_err(map_api_error)?;
         Ok(Response::new(resp))
     }
 
@@ -498,8 +535,9 @@ impl AdminService for AdminServiceImpl {
     ) -> Result<Response<RemoveAdminResponse>, Status> {
         self.check_root(&request).await?;
         let admin_user_id = super::interceptors::extract_user_id(&request)?;
+        let ctx = grpc_request_context(&request);
         let req = request.into_inner();
-        let resp = self.admin_api.remove_admin(req, &admin_user_id).await.map_err(map_api_error)?;
+        let resp = self.admin_api.remove_admin(req, &admin_user_id, &ctx).await.map_err(map_api_error)?;
         Ok(Response::new(resp))
     }
 

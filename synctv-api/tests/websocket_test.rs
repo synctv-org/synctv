@@ -829,6 +829,9 @@ mod websocket_e2e {
             jwt_validator,
             security_pipeline: Arc::new(synctv_core::service::SecurityPipeline::new(
                 user_service.clone(),
+            ).with_token_blacklist(
+                user_service.token_blacklist_store(),
+                user_service.key_builder().clone(),
             )),
             client_api,
             admin_api: None,

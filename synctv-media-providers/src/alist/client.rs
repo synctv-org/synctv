@@ -12,14 +12,25 @@ use super::error::{AlistError, check_response, json_with_limit};
 use super::types::{AlistResp, LoginData, HttpFsGetResp, HttpFsListResp, HttpFsOtherResp, HttpMeResp, HttpFsSearchResp};
 use crate::error::with_retry;
 
-/// Validate that a path does not contain traversal components (`..`).
+/// Validate that a path does not contain traversal components (`..` or `.`).
 /// Rejects paths that attempt directory traversal to escape the intended root.
+/// URL-encoded paths are decoded before validation to prevent encoded bypass attempts.
 fn validate_path(path: &str) -> Result<(), AlistError> {
-    for component in path.split('/') {
-        if component == ".." {
-            return Err(AlistError::InvalidConfig(
-                "Path traversal detected: '..' components are not allowed".to_string(),
-            ));
+    // Decode URL encoding first to catch encoded traversal attempts
+    // Manual decoding of common URL-encoded traversal patterns
+    let decoded = path
+        .replace("%2e", ".")
+        .replace("%2E", ".")
+        .replace("%2f", "/")
+        .replace("%2F", "/");
+
+    // Check for directory traversal components
+    for component in decoded.split('/') {
+        if component == ".." || component == "." {
+            return Err(AlistError::InvalidConfig(format!(
+                "Path traversal detected: '{}' components are not allowed",
+                component
+            )));
         }
     }
     Ok(())

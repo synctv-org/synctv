@@ -4,7 +4,7 @@ CREATE TABLE IF NOT EXISTS room_playback_state (
     playing_media_id CHAR(12) NULL REFERENCES media(id) ON DELETE SET NULL,
     playing_playlist_id CHAR(12) NULL REFERENCES playlists(id) ON DELETE SET NULL,
     relative_path TEXT NOT NULL DEFAULT '',
-    current_time DOUBLE PRECISION NOT NULL DEFAULT 0.0,
+    "current_time" DOUBLE PRECISION NOT NULL DEFAULT 0.0,
     speed DOUBLE PRECISION NOT NULL DEFAULT 1.0,
     is_playing BOOLEAN NOT NULL DEFAULT FALSE,
     updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -23,7 +23,7 @@ CREATE TRIGGER update_room_playback_state_updated_at
 
 -- Add check constraints
 ALTER TABLE room_playback_state ADD CONSTRAINT playback_current_time_check
-    CHECK (current_time >= 0);
+    CHECK ("current_time" >= 0);
 ALTER TABLE room_playback_state ADD CONSTRAINT playback_speed_check
     CHECK (speed > 0 AND speed <= 16.0);
 

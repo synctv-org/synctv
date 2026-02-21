@@ -17,10 +17,14 @@ use synctv_cluster::sync::redis_pubsub::RedisPubSub;
 use synctv_core::cache::{CacheInvalidationService, InvalidationMessage};
 use synctv_core::models::id::{MediaId, RoomId, UserId};
 use synctv_core::models::playback::RoomPlaybackState;
+use testcontainers::core::ImageExt;
 use testcontainers::runners::AsyncRunner;
 use testcontainers::ContainerAsync;
 use testcontainers_modules::redis::Redis;
 use tokio::sync::broadcast;
+
+/// Default Redis version for test containers
+const REDIS_VERSION: &str = "7-alpine";
 
 /// Redis test infrastructure that manages a single Redis container.
 /// The container is automatically stopped when this struct is dropped.
@@ -32,6 +36,7 @@ struct TestRedis {
 impl TestRedis {
     async fn start() -> Self {
         let redis_container = Redis::default()
+            .with_tag(REDIS_VERSION)
             .start()
             .await
             .expect("Failed to start Redis container");
@@ -513,9 +518,9 @@ async fn test_cross_replica_room_deleted() {
     assert_eq!(received.event_type(), "room_deleted");
 
     // After RoomDeleted dispatch, the room should be cleaned up on node A
-    // (the dispatch_event handler calls remove_room).
-    // Give a tiny bit of time for cleanup.
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    // (the dispatch_event handler calls remove_room after a 100ms drain delay).
+    // Wait long enough for the drain delay plus cleanup to complete.
+    tokio::time::sleep(Duration::from_millis(300)).await;
 
     let metrics = node_a.metrics();
     assert_eq!(
@@ -862,19 +867,26 @@ async fn test_critical_events_high_priority() {
 
     tokio::time::sleep(Duration::from_millis(500)).await;
 
-    // Send a critical event (PlaybackStateChanged is marked as critical)
-    let critical_event = ClusterEvent::PlaybackStateChanged {
+    // Send a critical event (PermissionChanged is marked as critical)
+    let critical_event = ClusterEvent::PermissionChanged {
         event_id: nanoid::nanoid!(16),
         room_id: room_id.clone(),
-        user_id: UserId::from_string("controller".to_string()),
-        username: "controller".to_string(),
-        state: RoomPlaybackState::new(room_id.clone()),
+        target_user_id: user_id.clone(),
+        target_username: "listener".to_string(),
+        changed_by: UserId::from_string("admin".to_string()),
+        changed_by_username: "admin".to_string(),
+        new_permissions: synctv_core::models::PermissionBits(
+            synctv_core::models::PermissionBits::DEFAULT_MEMBER,
+        ),
+        role: 2, // Member role
+        added_permissions: synctv_core::models::PermissionBits::empty(),
+        removed_permissions: synctv_core::models::PermissionBits::empty(),
         timestamp: Utc::now(),
     };
 
     assert!(
         critical_event.is_critical(),
-        "PlaybackStateChanged should be critical"
+        "PermissionChanged should be critical"
     );
 
     let result = node_b.broadcast(critical_event);
@@ -889,7 +901,7 @@ async fn test_critical_events_high_priority() {
         .expect("Timed out waiting for critical event")
         .expect("Channel closed");
 
-    assert_eq!(received.event_type(), "playback_state_changed");
+    assert_eq!(received.event_type(), "permission_changed");
 
     node_a.unsubscribe(&conn_id);
     node_a.shutdown().await;
@@ -906,8 +918,12 @@ async fn test_node_discovery_three_nodes() {
 
     let redis = TestRedis::start().await;
 
+    let redis_client_a = redis::Client::open(redis.redis_url.clone()).expect("Failed to create Redis client A");
+    let redis_client_b = redis::Client::open(redis.redis_url.clone()).expect("Failed to create Redis client B");
+    let redis_client_c = redis::Client::open(redis.redis_url.clone()).expect("Failed to create Redis client C");
+
     let registry_a = NodeRegistry::new(
-        redis.redis_url.clone(),
+        redis_client_a,
         "node_a".to_string(),
         30,
         "synctv:",
@@ -915,7 +931,7 @@ async fn test_node_discovery_three_nodes() {
     .expect("Failed to create registry A");
 
     let registry_b = NodeRegistry::new(
-        redis.redis_url.clone(),
+        redis_client_b,
         "node_b".to_string(),
         30,
         "synctv:",
@@ -923,7 +939,7 @@ async fn test_node_discovery_three_nodes() {
     .expect("Failed to create registry B");
 
     let registry_c = NodeRegistry::new(
-        redis.redis_url.clone(),
+        redis_client_c,
         "node_c".to_string(),
         30,
         "synctv:",
@@ -1029,8 +1045,10 @@ async fn test_node_epoch_fencing() {
 
     let redis = TestRedis::start().await;
 
+    let redis_client = redis::Client::open(redis.redis_url.clone()).expect("Failed to create Redis client");
+
     let registry = NodeRegistry::new(
-        redis.redis_url.clone(),
+        redis_client,
         "fencing_node".to_string(),
         30,
         "synctv:",

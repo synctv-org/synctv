@@ -1391,10 +1391,15 @@ impl BilibiliClient {
         crate::grpc::validation::validate_host_with_dns(&validation_url).await
             .map_err(|e| BilibiliError::InvalidConfig(format!("Danmaku WebSocket URL blocked by SSRF check: {}", e.message())))?;
 
-        // Connect to WebSocket
-        let (ws_stream, _) = connect_async(&ws_url).await.map_err(|e| {
-            BilibiliError::Parse(format!("Failed to connect to danmaku WebSocket: {e}"))
-        })?;
+        // Connect to WebSocket with timeout
+        let ws_connect_timeout = Duration::from_secs(10);
+        let (ws_stream, _) = tokio::time::timeout(
+            ws_connect_timeout,
+            connect_async(&ws_url)
+        )
+        .await
+        .map_err(|_| BilibiliError::Network("WebSocket connection timeout".to_string()))?
+        .map_err(|e| BilibiliError::Parse(format!("Failed to connect to danmaku WebSocket: {e}")))?;
 
         let (mut write, read) = ws_stream.split();
 

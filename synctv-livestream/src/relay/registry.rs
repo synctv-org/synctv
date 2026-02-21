@@ -764,17 +764,47 @@ impl StreamRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use testcontainers::core::ImageExt;
+    use testcontainers::runners::AsyncRunner;
+    use testcontainers_modules::redis::Redis;
+
+    /// Default Redis version for test containers
+    const REDIS_VERSION: &str = "7-alpine";
+
+    /// Type alias for the Redis container type
+    type RedisContainer = testcontainers::ContainerAsync<Redis>;
+
+    async fn setup_redis() -> (RedisContainer, redis::Client, RedisConnectionManager) {
+        let redis_container = Redis::default()
+            .with_tag(REDIS_VERSION)
+            .start()
+            .await
+            .expect("Failed to start Redis container");
+
+        let redis_host = redis_container.get_host().await.expect("Failed to get Redis host");
+        let redis_port = redis_container
+            .get_host_port_ipv4(6379)
+            .await
+            .expect("Failed to get Redis port");
+
+        let redis_url = format!("redis://{}:{}", redis_host, redis_port);
+        let redis_client = redis::Client::open(redis_url.as_str()).expect("Failed to create Redis client");
+        let conn_mgr = RedisConnectionManager::new(redis_client.clone())
+            .await
+            .expect("Failed to create ConnectionManager");
+
+        (redis_container, redis_client, conn_mgr)
+    }
 
     #[tokio::test]
-    #[ignore = "Requires Redis server"]
+    #[ignore = "Requires Docker"]
     async fn test_register_publisher_success() {
-        let redis_client = redis::Client::open("redis://localhost:6379").unwrap();
-        let redis = RedisConnectionManager::new(redis_client).await.unwrap();
+        let (_container, _client, redis) = setup_redis().await;
         let registry = StreamRegistry::new(redis);
 
-        // First registration should succeed
+        // First registration should succeed (use with_user variant with grpc_address)
         let registered = registry
-            .register_publisher("room123", "media456", "node1", "live")
+            .try_register_publisher_with_user("room123", "media456", "node1", "user1", "localhost:50051")
             .await
             .unwrap();
         assert!(registered);
@@ -785,29 +815,28 @@ mod tests {
 
         let pub_info = publisher.unwrap();
         assert_eq!(pub_info.node_id, "node1");
-        assert_eq!(pub_info.app_name, "live");
+        assert_eq!(pub_info.grpc_address, "localhost:50051");
 
         // Cleanup
         registry.unregister_publisher("room123", "media456").await.unwrap();
     }
 
     #[tokio::test]
-    #[ignore = "Requires Redis server"]
+    #[ignore = "Requires Docker"]
     async fn test_register_publisher_duplicate() {
-        let redis_client = redis::Client::open("redis://localhost:6379").unwrap();
-        let redis = RedisConnectionManager::new(redis_client).await.unwrap();
+        let (_container, _client, redis) = setup_redis().await;
         let registry = StreamRegistry::new(redis);
 
         // First registration should succeed
         let registered = registry
-            .register_publisher("room123", "media456", "node1", "live")
+            .try_register_publisher_with_user("room123", "media456", "node1", "user1", "localhost:50051")
             .await
             .unwrap();
         assert!(registered);
 
         // Second registration should fail (already exists)
         let registered = registry
-            .register_publisher("room123", "media456", "node2", "live")
+            .try_register_publisher_with_user("room123", "media456", "node2", "user2", "localhost:50052")
             .await
             .unwrap();
         assert!(!registered);
@@ -817,18 +846,23 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "Requires Redis server"]
+    #[ignore = "Requires Docker"]
     async fn test_try_register_publisher() {
-        let redis_client = redis::Client::open("redis://localhost:6379").unwrap();
-        let redis = RedisConnectionManager::new(redis_client).await.unwrap();
+        let (_container, _client, redis) = setup_redis().await;
         let registry = StreamRegistry::new(redis);
 
         // First try_register should succeed
-        let result = registry.try_register_publisher("room123", "media456", "node1").await.unwrap();
+        let result = registry
+            .try_register_publisher_with_user("room123", "media456", "node1", "user1", "localhost:50051")
+            .await
+            .unwrap();
         assert!(result);
 
         // Second try_register should return false (already exists)
-        let result = registry.try_register_publisher("room123", "media456", "node2").await.unwrap();
+        let result = registry
+            .try_register_publisher_with_user("room123", "media456", "node2", "user2", "localhost:50052")
+            .await
+            .unwrap();
         assert!(!result);
 
         // Cleanup
@@ -836,15 +870,14 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "Requires Redis server"]
+    #[ignore = "Requires Docker"]
     async fn test_unregister_publisher() {
-        let redis_client = redis::Client::open("redis://localhost:6379").unwrap();
-        let redis = RedisConnectionManager::new(redis_client).await.unwrap();
+        let (_container, _client, redis) = setup_redis().await;
         let registry = StreamRegistry::new(redis);
 
         // Register publisher
         registry
-            .register_publisher("room123", "media456", "node1", "live")
+            .try_register_publisher_with_user("room123", "media456", "node1", "user1", "localhost:50051")
             .await
             .unwrap();
 
@@ -859,10 +892,9 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "Requires Redis server"]
+    #[ignore = "Requires Docker"]
     async fn test_get_publisher_not_found() {
-        let redis_client = redis::Client::open("redis://localhost:6379").unwrap();
-        let redis = RedisConnectionManager::new(redis_client).await.unwrap();
+        let (_container, _client, redis) = setup_redis().await;
         let registry = StreamRegistry::new(redis);
 
         // Non-existent publisher should return None
@@ -871,19 +903,18 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "Requires Redis server"]
+    #[ignore = "Requires Docker"]
     async fn test_list_active_streams() {
-        let redis_client = redis::Client::open("redis://localhost:6379").unwrap();
-        let redis = RedisConnectionManager::new(redis_client).await.unwrap();
+        let (_container, _client, redis) = setup_redis().await;
         let registry = StreamRegistry::new(redis);
 
         // Register multiple publishers
         registry
-            .register_publisher("room1", "media1", "node1", "live")
+            .try_register_publisher_with_user("room1", "media1", "node1", "user1", "localhost:50051")
             .await
             .unwrap();
         registry
-            .register_publisher("room2", "media2", "node1", "live")
+            .try_register_publisher_with_user("room2", "media2", "node1", "user1", "localhost:50051")
             .await
             .unwrap();
 
@@ -899,15 +930,14 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "Requires Redis server"]
+    #[ignore = "Requires Docker"]
     async fn test_publisher_info_serialization() {
-        let redis_client = redis::Client::open("redis://localhost:6379").unwrap();
-        let redis = RedisConnectionManager::new(redis_client).await.unwrap();
+        let (_container, _client, redis) = setup_redis().await;
         let registry = StreamRegistry::new(redis);
 
         // Register publisher
         registry
-            .register_publisher("room123", "media456", "node1", "live")
+            .try_register_publisher_with_user("room123", "media456", "node1", "user1", "localhost:50051")
             .await
             .unwrap();
 
@@ -915,7 +945,7 @@ mod tests {
         let publisher = registry.get_publisher("room123", "media456").await.unwrap().unwrap();
 
         assert_eq!(publisher.node_id, "node1");
-        assert_eq!(publisher.app_name, "live");
+        assert_eq!(publisher.grpc_address, "localhost:50051");
         assert!(publisher.started_at <= chrono::Utc::now());
 
         // Cleanup

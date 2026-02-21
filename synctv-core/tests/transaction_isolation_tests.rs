@@ -8,15 +8,19 @@
 //! Requires Docker for testcontainers.
 
 use synctv_core::{
-    models::{Room, RoomId, RoomMember, RoomRole, RoomStatus, UserId, MemberStatus},
-    repository::{RoomRepository, RoomMemberRepository},
+    models::{Room, RoomId, RoomMember, RoomRole, RoomStatus, UserId, MemberStatus, User, UserStatus, SignupMethod},
+    repository::{RoomRepository, RoomMemberRepository, UserRepository},
 };
 use sqlx::PgPool;
+use testcontainers::core::ImageExt;
 use testcontainers::runners::AsyncRunner;
 use testcontainers::ContainerAsync;
 use testcontainers_modules::postgres::Postgres;
 use std::sync::Arc;
 use tokio::sync::Barrier;
+
+/// Default PostgreSQL version for test containers
+const POSTGRES_VERSION: &str = "16-alpine";
 
 /// Helper to create a test database pool with proper schema
 async fn create_test_pool() -> (ContainerAsync<Postgres>, PgPool) {
@@ -24,6 +28,7 @@ async fn create_test_pool() -> (ContainerAsync<Postgres>, PgPool) {
         .with_db_name("synctv_test")
         .with_user("synctv")
         .with_password("synctv_test")
+        .with_tag(POSTGRES_VERSION)
         .start()
         .await
         .expect("Failed to start Postgres container");
@@ -52,6 +57,29 @@ async fn create_test_pool() -> (ContainerAsync<Postgres>, PgPool) {
     (postgres, pool)
 }
 
+/// Create a test user in the database (required for FK constraints)
+async fn create_test_user(pool: &PgPool, user_id: &UserId) {
+    let username = format!("test_user_{}", user_id.as_str());
+    let user = User {
+        id: user_id.clone(),
+        username,
+        email: Some(format!("{}@test.com", user_id.as_str())),
+        password_hash: "test_hash".to_string(),
+        signup_method: Some(SignupMethod::Email),
+        role: synctv_core::models::UserRole::User,
+        status: UserStatus::Active,
+        created_at: chrono::Utc::now(),
+        updated_at: chrono::Utc::now(),
+        password_changed_at: chrono::Utc::now(),
+        password_version: 0,
+        version: 0,
+        deleted_at: None,
+        email_verified: true,
+    };
+    let user_repo = UserRepository::new(pool.clone());
+    user_repo.create(&user).await.expect("Failed to create test user");
+}
+
 fn make_member(room_id: RoomId, user_id: UserId) -> RoomMember {
     RoomMember {
         room_id,
@@ -78,8 +106,9 @@ async fn test_concurrent_member_role_updates_isolated() {
     let room_repo = RoomRepository::new(pool.clone());
     let member_repo = RoomMemberRepository::new(pool.clone());
 
-    // Create a test room
+    // Create a test room (need to create user first for FK constraint)
     let creator_id = UserId::new();
+    create_test_user(&pool, &creator_id).await;
     let room = Room {
         id: RoomId::new(),
         name: "Test Room".to_string(),
@@ -93,9 +122,11 @@ async fn test_concurrent_member_role_updates_isolated() {
     };
     room_repo.create(&room).await.expect("Failed to create room");
 
-    // Create test members
+    // Create test members (need to create users first for FK constraint)
     let user1 = UserId::new();
     let user2 = UserId::new();
+    create_test_user(&pool, &user1).await;
+    create_test_user(&pool, &user2).await;
 
     let member1 = make_member(room.id.clone(), user1.clone());
     let member2 = make_member(room.id.clone(), user2.clone());
@@ -179,8 +210,9 @@ async fn test_serializable_isolation_prevents_phantom_reads() {
 
     let room_repo = RoomRepository::new(pool.clone());
 
-    // Create test room
+    // Create test room (need to create user first for FK constraint)
     let creator_id = UserId::new();
+    create_test_user(&pool, &creator_id).await;
     let room = Room {
         id: RoomId::new(),
         name: "Test Room".to_string(),
@@ -231,6 +263,8 @@ async fn test_serializable_isolation_prevents_phantom_reads() {
     let pool2 = pool.clone();
     let room_id2 = room.id.clone();
     let user_id = UserId::new();
+    // Create the user first for FK constraint
+    create_test_user(&pool, &user_id).await;
     let handle2 = tokio::spawn(async move {
         let member = make_member(room_id2, user_id);
         let member_repo = RoomMemberRepository::new(pool2);

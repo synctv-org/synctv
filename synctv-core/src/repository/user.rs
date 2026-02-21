@@ -165,8 +165,8 @@ impl UserRepository {
             r"
             UPDATE users
             SET username = $2, email = $3, password_hash = $4, role = $5, status = $6,
-                updated_at = $7, version = version + 1
-            WHERE id = $1 AND deleted_at IS NULL AND version = $8
+                email_verified = $7, updated_at = $8, version = version + 1
+            WHERE id = $1 AND deleted_at IS NULL AND version = $9
             RETURNING id, username, email, password_hash, signup_method, role, status, created_at, updated_at, password_changed_at, password_version, version, deleted_at, email_verified
             ",
         )
@@ -176,6 +176,7 @@ impl UserRepository {
         .bind(&user.password_hash)
         .bind(user.role)
         .bind(user.status)
+        .bind(user.email_verified)
         .bind(Utc::now())
         .bind(old_version)
         .fetch_optional(&self.pool)
@@ -491,7 +492,7 @@ mod tests {
     // ========== Integration Tests (Require DB via testcontainers) ==========
 
     #[tokio::test]
-    #[ignore = "Requires Docker (PostgreSQL/Redis)"]
+    #[ignore = "Requires Docker"]
     async fn test_create_user() {
         let infra = crate::test_helpers::containers::TestInfra::postgres_only().await;
         let repo = UserRepository::new(infra.pool.clone());
@@ -502,7 +503,7 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "Requires Docker (PostgreSQL/Redis)"]
+    #[ignore = "Requires Docker"]
     async fn test_create_user_duplicate_username_returns_already_exists() {
         let infra = crate::test_helpers::containers::TestInfra::postgres_only().await;
         let repo = UserRepository::new(infra.pool.clone());
@@ -514,7 +515,7 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "Requires Docker (PostgreSQL/Redis)"]
+    #[ignore = "Requires Docker"]
     async fn test_soft_delete_user() {
         let infra = crate::test_helpers::containers::TestInfra::postgres_only().await;
         let repo = UserRepository::new(infra.pool.clone());

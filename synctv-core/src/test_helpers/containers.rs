@@ -4,10 +4,16 @@
 //! runs migrations, and provides ready-to-use connections.
 
 use sqlx::PgPool;
+use testcontainers::core::ImageExt;
 use testcontainers::runners::AsyncRunner;
 use testcontainers::ContainerAsync;
 use testcontainers_modules::postgres::Postgres;
 use testcontainers_modules::redis::Redis;
+
+/// Default PostgreSQL version for test containers
+const POSTGRES_VERSION: &str = "16-alpine";
+/// Default Redis version for test containers
+const REDIS_VERSION: &str = "7-alpine";
 
 /// Test infrastructure that manages Postgres and Redis containers.
 ///
@@ -33,13 +39,19 @@ impl TestInfra {
     /// Start Postgres and Redis containers, run migrations, and return connections.
     pub async fn new() -> Self {
         // Start containers in parallel
+        // Use PostgreSQL 16-alpine which has gen_random_uuid() built-in and supports
+        // BEFORE ROW triggers on partitioned tables
+        // Use Redis 7-alpine for modern features and performance
         let (pg_container, redis_container) = tokio::join!(
             Postgres::default()
                 .with_db_name("synctv_test")
                 .with_user("synctv")
                 .with_password("synctv_test")
+                .with_tag(POSTGRES_VERSION)
                 .start(),
-            Redis::default().start(),
+            Redis::default()
+                .with_tag(REDIS_VERSION)
+                .start(),
         );
 
         let pg_container = pg_container.expect("Failed to start Postgres container");
@@ -109,10 +121,13 @@ impl TestInfra {
 
     /// Start only Postgres (no Redis). Useful for DB-only tests.
     pub async fn postgres_only() -> TestPostgres {
+        // Use PostgreSQL 16-alpine which has gen_random_uuid() built-in and supports
+        // BEFORE ROW triggers on partitioned tables
         let pg_container = Postgres::default()
             .with_db_name("synctv_test")
             .with_user("synctv")
             .with_password("synctv_test")
+            .with_tag(POSTGRES_VERSION)
             .start()
             .await
             .expect("Failed to start Postgres container");
@@ -145,7 +160,9 @@ impl TestInfra {
 
     /// Start only Redis (no Postgres). Useful for Redis-only tests.
     pub async fn redis_only() -> TestRedis {
+        // Use Redis 7-alpine for modern features and performance
         let redis_container = Redis::default()
+            .with_tag(REDIS_VERSION)
             .start()
             .await
             .expect("Failed to start Redis container");
@@ -183,6 +200,11 @@ pub struct TestRedis {
 }
 
 impl TestRedis {
+    /// Start only Redis (no Postgres). Alias for `TestInfra::redis_only()`.
+    pub async fn new() -> Self {
+        TestInfra::redis_only().await
+    }
+
     /// Create a Redis `ConnectionManager` for use with services that require one.
     pub async fn connection_manager(&self) -> redis::aio::ConnectionManager {
         redis::aio::ConnectionManager::new(self.redis_client.clone())

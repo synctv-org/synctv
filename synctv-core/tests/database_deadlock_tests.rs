@@ -6,18 +6,79 @@
 //! Requires Docker for testcontainers.
 
 use synctv_core::{
-    models::{Room, RoomId, RoomMember, RoomRole, UserId, MemberStatus},
-    repository::{RoomRepository, RoomMemberRepository},
-    test_helpers::containers::TestPostgres,
+    models::{Room, RoomId, RoomMember, RoomRole, UserId, MemberStatus, UserStatus, User, SignupMethod},
+    repository::{RoomRepository, RoomMemberRepository, UserRepository},
 };
 use sqlx::PgPool;
 use std::sync::Arc;
 use tokio::sync::Barrier;
+use testcontainers::core::ImageExt;
+use testcontainers::runners::AsyncRunner;
+use testcontainers_modules::postgres::Postgres;
 
-async fn create_test_pool() -> (TestPostgres, PgPool) {
-    let infra = synctv_core::test_helpers::containers::TestInfra::postgres_only().await;
-    let pool = infra.pool.clone();
-    (infra, pool)
+/// Default PostgreSQL version for test containers
+const POSTGRES_VERSION: &str = "16-alpine";
+
+/// Test container wrapper for Postgres
+pub struct TestPostgres {
+    pub pool: PgPool,
+    _container: testcontainers::ContainerAsync<Postgres>,
+}
+
+async fn create_test_pool() -> TestPostgres {
+    let container = Postgres::default()
+        .with_db_name("synctv_test")
+        .with_user("synctv")
+        .with_password("synctv_test")
+        .with_tag(POSTGRES_VERSION)
+        .start()
+        .await
+        .expect("Failed to start Postgres container");
+
+    let host = container.get_host().await.expect("Failed to get host");
+    let port = container.get_host_port_ipv4(5432).await.expect("Failed to get port");
+
+    let database_url = format!(
+        "postgres://synctv:synctv_test@{}:{}/synctv_test",
+        host, port
+    );
+
+    let pool = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(5)
+        .connect(&database_url)
+        .await
+        .expect("Failed to connect to database");
+
+    // Run migrations
+    sqlx::migrate!("../migrations")
+        .run(&pool)
+        .await
+        .expect("Failed to run migrations");
+
+    TestPostgres { pool, _container: container }
+}
+
+/// Create a test user in the database (required for FK constraints)
+async fn create_test_user(pool: &PgPool, user_id: &UserId) {
+    let username = format!("test_user_{}", user_id.as_str());
+    let user = User {
+        id: user_id.clone(),
+        username,
+        email: Some(format!("{}@test.com", user_id.as_str())),
+        password_hash: "test_hash".to_string(),
+        signup_method: Some(SignupMethod::Email),
+        role: synctv_core::models::UserRole::User,
+        status: UserStatus::Active,
+        created_at: chrono::Utc::now(),
+        updated_at: chrono::Utc::now(),
+        password_changed_at: chrono::Utc::now(),
+        password_version: 0,
+        version: 0,
+        deleted_at: None,
+        email_verified: true,
+    };
+    let user_repo = UserRepository::new(pool.clone());
+    user_repo.create(&user).await.expect("Failed to create test user");
 }
 
 fn make_member(room_id: RoomId, user_id: UserId) -> RoomMember {
@@ -55,17 +116,21 @@ fn make_room(creator_id: UserId) -> Room {
 
 #[tokio::test]
 async fn test_deadlock_detection_opposite_lock_order() {
-    let (_container, pool) = create_test_pool().await;
+    let infra = create_test_pool().await;
+    let pool = &infra.pool;
 
     let room_repo = RoomRepository::new(pool.clone());
     let member_repo = RoomMemberRepository::new(pool.clone());
 
     let creator_id = UserId::new();
+    create_test_user(pool, &creator_id).await;
     let room = make_room(creator_id);
     room_repo.create(&room).await.expect("Failed to create room");
 
     let user1 = UserId::new();
     let user2 = UserId::new();
+    create_test_user(pool, &user1).await;
+    create_test_user(pool, &user2).await;
 
     let member1 = make_member(room.id.clone(), user1.clone());
     let member2 = make_member(room.id.clone(), user2.clone());
@@ -185,16 +250,19 @@ async fn test_deadlock_detection_opposite_lock_order() {
 
 #[tokio::test]
 async fn test_deadlock_with_for_update_nowait() {
-    let (_container, pool) = create_test_pool().await;
+    let infra = create_test_pool().await;
+    let pool = &infra.pool;
 
     let room_repo = RoomRepository::new(pool.clone());
     let member_repo = RoomMemberRepository::new(pool.clone());
 
     let creator_id = UserId::new();
+    create_test_user(pool, &creator_id).await;
     let room = make_room(creator_id);
     room_repo.create(&room).await.expect("Failed to create room");
 
     let user_id = UserId::new();
+    create_test_user(pool, &user_id).await;
     let member = make_member(room.id.clone(), user_id.clone());
     member_repo.add(&member).await.expect("Failed to create member");
 
@@ -285,17 +353,21 @@ async fn test_deadlock_with_for_update_nowait() {
 
 #[tokio::test]
 async fn test_deadlock_avoidance_with_ordered_locks() {
-    let (_container, pool) = create_test_pool().await;
+    let infra = create_test_pool().await;
+    let pool = &infra.pool;
 
     let room_repo = RoomRepository::new(pool.clone());
     let member_repo = RoomMemberRepository::new(pool.clone());
 
     let creator_id = UserId::new();
+    create_test_user(pool, &creator_id).await;
     let room = make_room(creator_id);
     room_repo.create(&room).await.expect("Failed to create room");
 
     let user1 = UserId::new();
     let user2 = UserId::new();
+    create_test_user(pool, &user1).await;
+    create_test_user(pool, &user2).await;
 
     // Ensure consistent ordering
     let (first_user, second_user) = if user1.as_str() < user2.as_str() {
@@ -402,16 +474,19 @@ async fn test_deadlock_avoidance_with_ordered_locks() {
 
 #[tokio::test]
 async fn test_transaction_timeout_prevents_indefinite_wait() {
-    let (_container, pool) = create_test_pool().await;
+    let infra = create_test_pool().await;
+    let pool = &infra.pool;
 
     let room_repo = RoomRepository::new(pool.clone());
     let member_repo = RoomMemberRepository::new(pool.clone());
 
     let creator_id = UserId::new();
+    create_test_user(pool, &creator_id).await;
     let room = make_room(creator_id);
     room_repo.create(&room).await.expect("Failed to create room");
 
     let user_id = UserId::new();
+    create_test_user(pool, &user_id).await;
     let member = make_member(room.id.clone(), user_id.clone());
     member_repo.add(&member).await.expect("Failed to create member");
 

@@ -1004,14 +1004,14 @@ mod tests {
     // ========== Integration Tests (Require DB) ==========
 
     #[tokio::test]
-    #[ignore = "Requires database"]
     async fn test_log_audit_event() {
-        // Integration test placeholder
+        // Integration test placeholder for AuditService::log_event
+        // Would require TestInfra with PostgreSQL
     }
 
     #[tokio::test]
-    #[ignore = "Requires database"]
     async fn test_log_with_params() {
-        // Integration test placeholder
+        // Integration test placeholder for AuditService::log_with_params
+        // Would require TestInfra with PostgreSQL
     }
 }

@@ -106,6 +106,9 @@ hostname.workspace = true
 # STUN server (turn-rs with STUN-only config)
 turn-server.workspace = true
 
+[features]
+default = []
+
 [lints]
 workspace = true
 

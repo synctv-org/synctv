@@ -472,6 +472,7 @@ async fn test_e2e_publish_key_workflow() {
     let media_id = MediaId::new();
     let user_id = UserId::new();
 
+    // Test 1: validate_publish_key
     let publish_key = publish_key_service
         .generate_publish_key(room_id.clone(), media_id.clone(), user_id.clone())
         .await
@@ -491,16 +492,27 @@ async fn test_e2e_publish_key_workflow() {
     assert_eq!(claims.media_id, media_id.as_str());
     assert!(claims.perm_start_live);
 
+    // Test 2: verify_publish_key_for_stream (requires a new token since publish keys are single-use)
+    let publish_key2 = publish_key_service
+        .generate_publish_key(room_id.clone(), media_id.clone(), user_id.clone())
+        .await
+        .expect("Failed to generate second publish key");
+
     let verified_user_id = publish_key_service
-        .verify_publish_key_for_stream(&publish_key.token, &room_id, &media_id)
+        .verify_publish_key_for_stream(&publish_key2.token, &room_id, &media_id)
         .await
         .expect("Failed to verify publish key for stream");
 
     assert_eq!(verified_user_id.as_str(), user_id.as_str());
 
+    // Test 3: verify that room mismatch fails
     let wrong_room = RoomId::new();
+    let publish_key3 = publish_key_service
+        .generate_publish_key(room_id.clone(), media_id.clone(), user_id.clone())
+        .await
+        .expect("Failed to generate third publish key");
     let result = publish_key_service
-        .verify_publish_key_for_stream(&publish_key.token, &wrong_room, &media_id)
+        .verify_publish_key_for_stream(&publish_key3.token, &wrong_room, &media_id)
         .await;
     assert!(result.is_err(), "Should fail with wrong room");
 }

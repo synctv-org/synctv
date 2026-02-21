@@ -721,8 +721,48 @@ mod tests {
 
     #[tokio::test]
     async fn test_cluster_client_no_remote_nodes() {
+        use testcontainers::core::ImageExt;
+        use testcontainers::runners::AsyncRunner;
+        use testcontainers_modules::redis::Redis;
+
+        /// Default Redis version for test containers
+        const REDIS_VERSION: &str = "7-alpine";
+
+        let redis_container = Redis::default()
+            .with_tag(REDIS_VERSION)
+            .start()
+            .await
+            .expect("Failed to start Redis container");
+
+        let redis_host = redis_container.get_host().await.expect("Failed to get Redis host");
+        let redis_port = redis_container
+            .get_host_port_ipv4(6379)
+            .await
+            .expect("Failed to get Redis port");
+
+        let redis_url = format!("redis://{}:{}", redis_host, redis_port);
+        let redis_client = redis::Client::open(redis_url.as_str()).expect("Failed to create Redis client");
+
+        // Verify Redis is reachable with retry logic
+        // The container may report ready but TCP might not be fully established yet
+        let mut conn = {
+            let mut retries = 0;
+            loop {
+                match redis_client.get_multiplexed_async_connection().await {
+                    Ok(conn) => break conn,
+                    Err(_) if retries < 10 => {
+                        retries += 1;
+                        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+                    }
+                    Err(e) => panic!("Redis connection failed after {} retries: {}", retries, e),
+                }
+            }
+        };
+        let _: () = redis::cmd("PING").query_async(&mut conn).await.expect("Redis PING failed");
+        drop(conn);
+
         let registry = Arc::new(
-            NodeRegistry::new(redis::Client::open("redis://localhost:6379").unwrap(), "self_node".to_string(), 30, "synctv:").unwrap(),
+            NodeRegistry::new(redis_client, "self_node".to_string(), 30, "synctv:").unwrap(),
         );
         // Populate local cache directly (no Redis connection needed)
         {
@@ -760,5 +800,8 @@ mod tests {
         assert_eq!(result.nodes_succeeded, 0);
         assert_eq!(result.nodes_failed, 0);
         assert!(result.is_complete());
+
+        // Explicitly drop the container at the end of the test
+        drop(redis_container);
     }
 }

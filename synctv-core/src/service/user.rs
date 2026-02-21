@@ -1,4 +1,3 @@
-use chrono::Utc;
 use sqlx::PgPool;
 use std::collections::HashMap;
 

@@ -682,7 +682,7 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "Requires Docker (PostgreSQL/Redis)"]
+    #[ignore = "Requires Docker"]
     async fn test_create_room() {
         use crate::test_helpers::{UserFixture, RoomFixture};
         use crate::repository::user::UserRepository;

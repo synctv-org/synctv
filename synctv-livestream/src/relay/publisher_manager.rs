@@ -57,7 +57,8 @@ const MAX_CONSECUTIVE_REDIS_UNREACHABLE: u32 = 10;
 /// (see `ACTIVITY_RECORD_INTERVAL`), so the effective minimum useful timeout is
 /// ~2× the throttle interval.  Set to 5 minutes to comfortably exceed any
 /// realistic broadcast lag window while still detecting truly frozen encoders.
-const SILENT_PUBLISHER_TIMEOUT_SECS: u64 = 300;
+/// Reduced from 300s to 60s for faster detection of crashed encoders.
+const SILENT_PUBLISHER_TIMEOUT_SECS: u64 = 60;
 
 /// Tracked publisher state including activity timestamp and registration info.
 struct PublisherEntry {

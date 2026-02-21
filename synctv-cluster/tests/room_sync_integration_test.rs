@@ -11,9 +11,13 @@ use std::time::Duration;
 
 use synctv_cluster::sync::room_hub::{RoomLifecycleEvent, RoomMessageHub};
 use synctv_core::models::id::{RoomId, UserId};
+use testcontainers::core::ImageExt;
 use testcontainers::runners::AsyncRunner;
 use testcontainers::ContainerAsync;
 use testcontainers_modules::redis::Redis;
+
+/// Default Redis version for test containers
+const REDIS_VERSION: &str = "7-alpine";
 
 /// Redis test infrastructure (shared with integration_test.rs pattern).
 struct TestRedis {
@@ -24,6 +28,7 @@ struct TestRedis {
 impl TestRedis {
     async fn start() -> Self {
         let redis_container = Redis::default()
+            .with_tag(REDIS_VERSION)
             .start()
             .await
             .expect("Failed to start Redis container");

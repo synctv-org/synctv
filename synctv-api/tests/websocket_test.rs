@@ -612,12 +612,18 @@ mod websocket_e2e {
     };
 
     use sqlx::PgPool;
+    use testcontainers::core::ImageExt;
     use testcontainers::runners::AsyncRunner;
     use testcontainers::ContainerAsync;
     use testcontainers_modules::postgres::Postgres;
     use testcontainers_modules::redis::Redis;
 
     const TEST_JWT_SECRET: &str = "this-is-a-test-secret-with-enough-entropy-for-jwt-signing-32chars";
+
+    /// Default PostgreSQL version for test containers
+    const POSTGRES_VERSION: &str = "16-alpine";
+    /// Default Redis version for test containers
+    const REDIS_VERSION: &str = "7-alpine";
 
     /// Lightweight test infrastructure for E2E tests.
     /// Starts Postgres and Redis containers, runs migrations, and provides connections.
@@ -635,8 +641,11 @@ mod websocket_e2e {
                     .with_db_name("synctv_test")
                     .with_user("synctv")
                     .with_password("synctv_test")
+                    .with_tag(POSTGRES_VERSION)
                     .start(),
-                Redis::default().start(),
+                Redis::default()
+                    .with_tag(REDIS_VERSION)
+                    .start(),
             );
             let pg_container = pg_container.expect("Failed to start Postgres");
             let redis_container = redis_container.expect("Failed to start Redis");
@@ -687,17 +696,27 @@ mod websocket_e2e {
 
         // Create services
         let jwt_service = JwtService::new(TEST_JWT_SECRET).expect("JwtService");
-        let username_cache = UsernameCache::new(None, "test_un:".to_string(), 100, 300);
         let redis_client = redis::Client::open(infra.redis_url.as_str()).expect("Redis client");
-        let redis_conn = redis::aio::ConnectionManager::new(redis_client).await.expect("Redis ConnectionManager");
+        let redis_conn = redis::aio::ConnectionManager::new(redis_client.clone()).await.expect("Redis ConnectionManager");
+
+        // UsernameCache with Redis L2 backend
+        let l2_backend = Arc::new(synctv_core::cache::l2_backend::RedisCacheL2::new(redis_conn.clone()));
+        let username_cache = UsernameCache::new(l2_backend, "test_un:".to_string(), 100, 300);
+
         let key_builder = synctv_core::cache::KeyBuilder::new("test:".to_string());
-        let brute_force = synctv_core::service::auth::BruteForceProtection::new(redis_conn.clone(), "test:".to_string());
+
+        // BruteForceProtection with Redis backend
+        let brute_force = synctv_core::service::auth::BruteForceProtection::with_redis(redis_conn.clone(), "test:".to_string());
+
+        // Token blacklist with Redis backend
+        let token_blacklist = Arc::new(synctv_core::service::RedisTokenBlacklistStore::new(redis_conn));
+
         let user_service = Arc::new(UserService::new(
             pool.clone(),
             jwt_service.clone(),
             username_cache,
             PasswordComplexityConfig::default(),
-            redis_conn,
+            token_blacklist,
             key_builder,
             brute_force,
         ));
@@ -945,7 +964,7 @@ mod websocket_e2e {
     // ========================================================================
 
     #[tokio::test]
-    #[ignore = "Requires Docker (PostgreSQL/Redis)"]
+    #[ignore = "Disabled: CI timeout"]
     async fn test_ws_handshake_and_initial_user_joined() {
         let infra = TestInfra::new().await;
         let server = setup_e2e_server(&infra).await;
@@ -980,7 +999,7 @@ mod websocket_e2e {
     // ========================================================================
 
     #[tokio::test]
-    #[ignore = "Requires Docker (PostgreSQL/Redis)"]
+    #[ignore = "Disabled: CI timeout"]
     async fn test_ws_heartbeat_ping_pong() {
         let infra = TestInfra::new().await;
         let server = setup_e2e_server(&infra).await;
@@ -1025,7 +1044,7 @@ mod websocket_e2e {
     // ========================================================================
 
     #[tokio::test]
-    #[ignore = "Requires Docker (PostgreSQL/Redis)"]
+    #[ignore = "Disabled: CI timeout"]
     async fn test_ws_graceful_disconnect() {
         let infra = TestInfra::new().await;
         let server = setup_e2e_server(&infra).await;
@@ -1076,7 +1095,7 @@ mod websocket_e2e {
     // ========================================================================
 
     #[tokio::test]
-    #[ignore = "Requires Docker (PostgreSQL/Redis)"]
+    #[ignore = "Disabled: CI timeout"]
     async fn test_ws_unauthenticated_rejected() {
         let infra = TestInfra::new().await;
         let server = setup_e2e_server(&infra).await;
@@ -1094,7 +1113,7 @@ mod websocket_e2e {
     // ========================================================================
 
     #[tokio::test]
-    #[ignore = "Requires Docker (PostgreSQL/Redis)"]
+    #[ignore = "Disabled: CI timeout"]
     async fn test_ws_invalid_token_rejected() {
         let infra = TestInfra::new().await;
         let server = setup_e2e_server(&infra).await;
@@ -1110,7 +1129,7 @@ mod websocket_e2e {
     // ========================================================================
 
     #[tokio::test]
-    #[ignore = "Requires Docker (PostgreSQL/Redis)"]
+    #[ignore = "Disabled: CI timeout"]
     async fn test_ws_non_member_rejected() {
         let infra = TestInfra::new().await;
         let server = setup_e2e_server(&infra).await;
@@ -1139,7 +1158,7 @@ mod websocket_e2e {
     // ========================================================================
 
     #[tokio::test]
-    #[ignore = "Requires Docker (PostgreSQL/Redis)"]
+    #[ignore = "Disabled: CI timeout"]
     async fn test_ws_multi_client_room_sync() {
         let infra = TestInfra::new().await;
         let server = setup_e2e_server(&infra).await;
@@ -1202,7 +1221,7 @@ mod websocket_e2e {
     // ========================================================================
 
     #[tokio::test]
-    #[ignore = "Requires Docker (PostgreSQL/Redis)"]
+    #[ignore = "Disabled: CI timeout"]
     async fn test_ws_chat_message_broadcast() {
         let infra = TestInfra::new().await;
         let server = setup_e2e_server(&infra).await;
@@ -1275,7 +1294,7 @@ mod websocket_e2e {
     // ========================================================================
 
     #[tokio::test]
-    #[ignore = "Requires Docker (PostgreSQL/Redis)"]
+    #[ignore = "Disabled: CI timeout"]
     async fn test_ws_multiple_heartbeats() {
         let infra = TestInfra::new().await;
         let server = setup_e2e_server(&infra).await;
@@ -1316,7 +1335,7 @@ mod websocket_e2e {
     // ========================================================================
 
     #[tokio::test]
-    #[ignore = "Requires Docker (PostgreSQL/Redis)"]
+    #[ignore = "Disabled: CI timeout"]
     async fn test_ws_user_left_on_disconnect() {
         let infra = TestInfra::new().await;
         let server = setup_e2e_server(&infra).await;
@@ -1373,7 +1392,7 @@ mod websocket_e2e {
     // ========================================================================
 
     #[tokio::test]
-    #[ignore = "Requires Docker (PostgreSQL/Redis)"]
+    #[ignore = "Disabled: CI timeout"]
     async fn test_ws_room_isolation() {
         let infra = TestInfra::new().await;
         let server = setup_e2e_server(&infra).await;
@@ -1447,7 +1466,7 @@ mod websocket_e2e {
     // ========================================================================
 
     #[tokio::test]
-    #[ignore = "Requires Docker (PostgreSQL/Redis)"]
+    #[ignore = "Disabled: CI timeout"]
     async fn test_ws_reconnect_after_disconnect() {
         let infra = TestInfra::new().await;
         let server = setup_e2e_server(&infra).await;
@@ -1511,7 +1530,7 @@ mod websocket_e2e {
     // ========================================================================
 
     #[tokio::test]
-    #[ignore = "Requires Docker (PostgreSQL/Redis)"]
+    #[ignore = "Disabled: CI timeout"]
     async fn test_ws_forced_disconnect_via_kick() {
         let infra = TestInfra::new().await;
         let server = setup_e2e_server(&infra).await;
@@ -1568,7 +1587,7 @@ mod websocket_e2e {
     // ========================================================================
 
     #[tokio::test]
-    #[ignore = "Requires Docker (PostgreSQL/Redis)"]
+    #[ignore = "Disabled: CI timeout"]
     async fn test_ws_cross_replica_chat_via_redis() {
         let infra = TestInfra::new().await;
 
@@ -1642,7 +1661,7 @@ mod websocket_e2e {
     // ========================================================================
 
     #[tokio::test]
-    #[ignore = "Requires Docker (PostgreSQL/Redis)"]
+    #[ignore = "Disabled: CI timeout"]
     async fn test_ws_rate_limiter_blocks_excess_chat() {
         let infra = TestInfra::new().await;
         let server = setup_e2e_server(&infra).await;
@@ -1715,7 +1734,7 @@ mod websocket_e2e {
     // ========================================================================
 
     #[tokio::test]
-    #[ignore = "Requires Docker (PostgreSQL/Redis)"]
+    #[ignore = "Disabled: CI timeout"]
     async fn test_ws_content_filter_strips_xss() {
         let infra = TestInfra::new().await;
         let server = setup_e2e_server(&infra).await;
@@ -1793,7 +1812,7 @@ mod websocket_e2e {
     // ========================================================================
 
     #[tokio::test]
-    #[ignore = "Requires Docker (PostgreSQL/Redis)"]
+    #[ignore = "Disabled: CI timeout"]
     async fn test_ws_connection_cleanup_on_tcp_drop() {
         let infra = TestInfra::new().await;
         let server = setup_e2e_server(&infra).await;
@@ -1849,7 +1868,7 @@ mod websocket_e2e {
     // ========================================================================
 
     #[tokio::test]
-    #[ignore = "Requires Docker (PostgreSQL/Redis)"]
+    #[ignore = "Disabled: CI timeout"]
     async fn test_ws_connection_manager_state_consistency() {
         let infra = TestInfra::new().await;
         let server = setup_e2e_server(&infra).await;
@@ -1906,7 +1925,7 @@ mod websocket_e2e {
     // ========================================================================
 
     #[tokio::test]
-    #[ignore = "Requires Docker (PostgreSQL/Redis)"]
+    #[ignore = "Disabled: CI timeout"]
     async fn test_ws_empty_chat_rejected() {
         let infra = TestInfra::new().await;
         let server = setup_e2e_server(&infra).await;
@@ -1962,7 +1981,7 @@ mod websocket_e2e {
     // ========================================================================
 
     #[tokio::test]
-    #[ignore = "Requires Docker (PostgreSQL/Redis)"]
+    #[ignore = "Disabled: CI timeout"]
     async fn test_ws_danmaku_broadcast() {
         let infra = TestInfra::new().await;
         let server = setup_e2e_server(&infra).await;
@@ -2045,7 +2064,7 @@ mod websocket_e2e {
     // ========================================================================
 
     #[tokio::test]
-    #[ignore = "Requires Docker (PostgreSQL/Redis)"]
+    #[ignore = "Disabled: CI timeout"]
     async fn test_ws_concurrent_connections_same_user() {
         let infra = TestInfra::new().await;
         let server = setup_e2e_server(&infra).await;
@@ -2112,7 +2131,7 @@ mod websocket_e2e {
     // ========================================================================
 
     #[tokio::test]
-    #[ignore = "Requires Docker (PostgreSQL/Redis)"]
+    #[ignore = "Disabled: CI timeout"]
     async fn test_ws_invalid_ticket_rejected() {
         let infra = TestInfra::new().await;
         let server = setup_e2e_server(&infra).await;
@@ -2136,7 +2155,7 @@ mod websocket_e2e {
     // ========================================================================
 
     #[tokio::test]
-    #[ignore = "Requires Docker (PostgreSQL/Redis)"]
+    #[ignore = "Disabled: CI timeout"]
     async fn test_ws_expired_ticket_rejected() {
         // The WsTicketService is NOT configured in our test setup (ws_ticket_service: None).
         // Any ?ticket= value will therefore be rejected with "ticket service not configured"
@@ -2167,7 +2186,7 @@ mod websocket_e2e {
     // ========================================================================
 
     #[tokio::test]
-    #[ignore = "Requires Docker (PostgreSQL/Redis)"]
+    #[ignore = "Disabled: CI timeout"]
     async fn test_ws_valid_token_query_auth_succeeds() {
         let infra = TestInfra::new().await;
         let server = setup_e2e_server(&infra).await;
@@ -2211,7 +2230,7 @@ mod websocket_e2e {
     // ========================================================================
 
     #[tokio::test]
-    #[ignore = "Requires Docker (PostgreSQL/Redis)"]
+    #[ignore = "Disabled: CI timeout"]
     async fn test_ws_invalid_message_format_returns_error() {
         let infra = TestInfra::new().await;
         let server = setup_e2e_server(&infra).await;
@@ -2306,7 +2325,7 @@ mod websocket_e2e {
     // ========================================================================
 
     #[tokio::test]
-    #[ignore = "Requires Docker (PostgreSQL/Redis)"]
+    #[ignore = "Disabled: CI timeout"]
     async fn test_ws_heartbeat_receives_ack() {
         let infra = TestInfra::new().await;
         let server = setup_e2e_server(&infra).await;

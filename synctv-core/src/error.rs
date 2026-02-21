@@ -75,7 +75,15 @@ impl From<sqlx::Error> for Error {
 
 impl From<anyhow::Error> for Error {
     fn from(err: anyhow::Error) -> Self {
-        Self::Internal(err.to_string())
+        // Preserve error chain information for better debugging
+        let mut msg = String::new();
+        for (i, cause) in err.chain().enumerate() {
+            if i > 0 {
+                msg.push_str(": ");
+            }
+            msg.push_str(&cause.to_string());
+        }
+        Self::Internal(msg)
     }
 }
 

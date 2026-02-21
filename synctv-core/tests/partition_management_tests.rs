@@ -14,15 +14,20 @@ use synctv_core::{
 };
 use chrono::{Utc, Duration};
 use sqlx::PgPool;
+use testcontainers::core::ImageExt;
 use testcontainers::runners::AsyncRunner;
 use testcontainers::ContainerAsync;
 use testcontainers_modules::postgres::Postgres;
+
+/// Default PostgreSQL version for test containers
+const POSTGRES_VERSION: &str = "16-alpine";
 
 async fn create_test_pool() -> (ContainerAsync<Postgres>, PgPool) {
     let postgres = Postgres::default()
         .with_db_name("synctv_test")
         .with_user("synctv")
         .with_password("synctv_test")
+        .with_tag(POSTGRES_VERSION)
         .start()
         .await
         .expect("Failed to start Postgres container");
@@ -59,6 +64,7 @@ fn make_user(username: &str) -> User {
         updated_at: now,
         password_changed_at: now,
         password_version: 0,
+        version: 0,
         deleted_at: None,
     }
 }
@@ -117,14 +123,14 @@ async fn test_create_chat_message_partitions_function() {
     let (_container, pool) = create_test_pool().await;
 
     // Call the partition creation function for 5 days ahead
-    let result: serde_json::Value = sqlx::query_scalar(
+    let result: String = sqlx::query_scalar(
         "SELECT create_chat_message_partitions(5)::TEXT"
     )
     .fetch_one(&pool)
     .await
     .unwrap();
 
-    let parsed: serde_json::Value = serde_json::from_str(&result.as_str().unwrap_or("{}")).unwrap_or_default();
+    let parsed: serde_json::Value = serde_json::from_str(&result).unwrap_or_default();
     assert_eq!(parsed["status"], "completed");
 
     // Verify partitions exist

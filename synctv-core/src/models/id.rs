@@ -46,10 +46,10 @@ impl From<String> for UserId {
     }
 }
 
-// Database mapping: UserId <-> TEXT (transparent wrapper around String)
+// Database mapping: UserId <-> CHAR(12) (using bpchar for fixed-length strings)
 impl sqlx::Type<sqlx::Postgres> for UserId {
     fn type_info() -> sqlx::postgres::PgTypeInfo {
-        <String as sqlx::Type<sqlx::Postgres>>::type_info()
+        sqlx::postgres::PgTypeInfo::with_name("bpchar")
     }
 }
 
@@ -106,10 +106,10 @@ impl From<String> for RoomId {
     }
 }
 
-// Database mapping: RoomId <-> TEXT (transparent wrapper around String)
+// Database mapping: RoomId <-> CHAR(12) (using bpchar for fixed-length strings)
 impl sqlx::Type<sqlx::Postgres> for RoomId {
     fn type_info() -> sqlx::postgres::PgTypeInfo {
-        <String as sqlx::Type<sqlx::Postgres>>::type_info()
+        sqlx::postgres::PgTypeInfo::with_name("bpchar")
     }
 }
 
@@ -166,10 +166,10 @@ impl From<String> for MediaId {
     }
 }
 
-// Database mapping: MediaId <-> TEXT (transparent wrapper around String)
+// Database mapping: MediaId <-> CHAR(12) (using bpchar for fixed-length strings)
 impl sqlx::Type<sqlx::Postgres> for MediaId {
     fn type_info() -> sqlx::postgres::PgTypeInfo {
-        <String as sqlx::Type<sqlx::Postgres>>::type_info()
+        sqlx::postgres::PgTypeInfo::with_name("bpchar")
     }
 }
 
@@ -226,10 +226,10 @@ impl From<String> for PlaylistId {
     }
 }
 
-// Database mapping: PlaylistId <-> TEXT (transparent wrapper around String)
+// Database mapping: PlaylistId <-> CHAR(12) (using bpchar for fixed-length strings)
 impl sqlx::Type<sqlx::Postgres> for PlaylistId {
     fn type_info() -> sqlx::postgres::PgTypeInfo {
-        <String as sqlx::Type<sqlx::Postgres>>::type_info()
+        sqlx::postgres::PgTypeInfo::with_name("bpchar")
     }
 }
 

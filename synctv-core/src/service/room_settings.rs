@@ -445,8 +445,8 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "Requires database"]
     async fn test_cache_invalidation() {
-        // Integration test
+        // Placeholder: integration test for RoomSettingsService cache invalidation
+        // would require a full TestInfra with PostgreSQL
     }
 }

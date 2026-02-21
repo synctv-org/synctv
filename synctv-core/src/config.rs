@@ -1078,6 +1078,24 @@ impl Config {
             );
         }
 
+        // Validate Redis Sentinel mode required fields
+        if self.redis.deployment_mode == RedisDeploymentMode::Sentinel {
+            if self.redis.sentinel_master_name.is_none()
+                || self.redis.sentinel_master_name.as_ref().map_or(true, |s| s.is_empty())
+            {
+                errors.push(
+                    "redis.sentinel_master_name is required when deployment_mode is 'sentinel'"
+                        .to_string(),
+                );
+            }
+            if self.redis.sentinel_addresses.is_empty() {
+                errors.push(
+                    "redis.sentinel_addresses cannot be empty when deployment_mode is 'sentinel'"
+                        .to_string(),
+                );
+            }
+        }
+
         // Validate Redis requirement based on deployment mode
         if self.redis.url.is_empty() {
             if self.cluster.enabled {
@@ -1104,6 +1122,24 @@ impl Config {
         }
         if self.connection_limits.max_total == 0 {
             errors.push("connection_limits.max_total must be greater than 0".to_string());
+        }
+        if self.connection_limits.max_per_user > self.connection_limits.max_total {
+            errors.push(format!(
+                "connection_limits.max_per_user ({}) must not exceed connection_limits.max_total ({})",
+                self.connection_limits.max_per_user, self.connection_limits.max_total
+            ));
+        }
+        if self.connection_limits.max_per_room > self.connection_limits.max_total {
+            errors.push(format!(
+                "connection_limits.max_per_room ({}) must not exceed connection_limits.max_total ({})",
+                self.connection_limits.max_per_room, self.connection_limits.max_total
+            ));
+        }
+        if self.connection_limits.idle_timeout_seconds > 0 && self.connection_limits.idle_timeout_seconds < 10 {
+            errors.push("connection_limits.idle_timeout_seconds must be at least 10 seconds".to_string());
+        }
+        if self.connection_limits.ws_message_rate_limit_per_second == 0 {
+            errors.push("connection_limits.ws_message_rate_limit_per_second must be greater than 0".to_string());
         }
 
         // Validate livestream config
@@ -2055,6 +2091,8 @@ mod tests {
     fn test_validate_redis_sentinel_mode_allowed() {
         let mut config = valid_prod_config();
         config.redis.deployment_mode = RedisDeploymentMode::Sentinel;
+        config.redis.sentinel_master_name = Some("mymaster".to_string());
+        config.redis.sentinel_addresses = vec!["127.0.0.1:26379".to_string()];
         assert!(config.validate().is_ok());
     }
 

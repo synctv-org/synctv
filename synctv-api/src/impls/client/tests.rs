@@ -141,6 +141,7 @@ fn make_test_user(role: UserRole, status: UserStatus) -> synctv_core::models::Us
         deleted_at: None,
         password_changed_at: chrono::Utc::now(),
         password_version: 0,
+        version: 0,
     }
 }
 

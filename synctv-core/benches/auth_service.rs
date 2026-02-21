@@ -50,10 +50,12 @@ fn bench_password_hash(c: &mut Criterion) {
     group.measurement_time(Duration::from_secs(20));
 
     group.bench_function("hash_password", |b| {
-        b.to_async(&rt).iter(|| async {
-            let hash = hash_password(black_box("bench_password_123!"))
-                .await
-                .expect("hash failed");
+        b.iter(|| {
+            let hash = rt.block_on(async {
+                hash_password(black_box("bench_password_123!"))
+                    .await
+                    .expect("hash failed")
+            });
             black_box(hash);
         })
     });
@@ -76,14 +78,13 @@ fn bench_password_verify(c: &mut Criterion) {
     group.measurement_time(Duration::from_secs(20));
 
     group.bench_function("verify_password", |b| {
-        b.to_async(&rt).iter(|| {
-            let hash = hash.clone();
-            async move {
-                let result = verify_password(black_box("bench_password_123!"), black_box(&hash))
+        b.iter(|| {
+            let result = rt.block_on(async {
+                verify_password(black_box("bench_password_123!"), black_box(&hash))
                     .await
-                    .expect("verify failed");
-                black_box(result);
-            }
+                    .expect("verify failed")
+            });
+            black_box(result);
         })
     });
 
@@ -105,9 +106,8 @@ fn bench_concurrent_token_generation(c: &mut Criterion) {
             BenchmarkId::from_parameter(num_concurrent),
             num_concurrent,
             |b, &num_concurrent| {
-                b.to_async(&rt).iter(|| {
-                    let jwt_service = jwt_service.clone();
-                    async move {
+                b.iter(|| {
+                    rt.block_on(async {
                         let mut tasks = Vec::new();
                         for i in 0..num_concurrent {
                             let jwt_service = jwt_service.clone();
@@ -123,7 +123,7 @@ fn bench_concurrent_token_generation(c: &mut Criterion) {
                         for task in tasks {
                             task.await.unwrap();
                         }
-                    }
+                    });
                 })
             },
         );

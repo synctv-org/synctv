@@ -187,16 +187,15 @@ where
         .when(|e: &ProviderClientError| e.is_retryable())
         .notify(move |e: &ProviderClientError, dur: std::time::Duration| {
             // If the server sent a Retry-After header, honor it by sleeping
-            // for the additional time beyond what the backoff already provides.
+            // for the total time requested by the server.
             if let ProviderClientError::Http { retry_after_secs: Some(secs), .. } = e {
                 let retry_after = std::time::Duration::from_secs(*secs);
                 if retry_after > dur {
-                    let extra = retry_after - dur;
                     tracing::info!(
-                        "Honoring Retry-After: sleeping extra {extra:?} (server requested {secs}s, backoff was {dur:?})"
+                        "Honoring Retry-After: sleeping {retry_after:?} (server requested {secs}s, backoff was {dur:?})"
                     );
                     if let Ok(mut guard) = extra_sleep_notify.lock() {
-                        *guard = Some(dur + extra);
+                        *guard = Some(retry_after);
                     }
                     return;
                 }

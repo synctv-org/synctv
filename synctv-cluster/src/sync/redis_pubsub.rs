@@ -1799,35 +1799,83 @@ mod tests {
 
     // Integration tests require Redis running
     #[tokio::test]
-    #[ignore = "Requires Redis server"]
     async fn test_pubsub_integration() {
-        let redis_url = "redis://127.0.0.1:6379";
-        let redis_client = RedisClient::open(redis_url).unwrap();
+        use testcontainers::core::ImageExt;
+        use testcontainers::runners::AsyncRunner;
+        use testcontainers_modules::redis::Redis;
+
+        /// Default Redis version for test containers
+        const REDIS_VERSION: &str = "7-alpine";
+
+        let redis_container = Redis::default()
+            .with_tag(REDIS_VERSION)
+            .start()
+            .await
+            .expect("Failed to start Redis container");
+
+        let redis_host = redis_container.get_host().await.expect("Failed to get Redis host");
+        let redis_port = redis_container
+            .get_host_port_ipv4(6379)
+            .await
+            .expect("Failed to get Redis port");
+
+        let redis_url = format!("redis://{}:{}", redis_host, redis_port);
+        let redis_client = RedisClient::open(redis_url.as_str()).unwrap();
+
+        // Verify Redis is reachable with retry logic
+        // The container may report ready but TCP might not be fully established yet
+        let mut conn = {
+            let mut retries = 0;
+            loop {
+                match redis_client.get_multiplexed_async_connection().await {
+                    Ok(conn) => break conn,
+                    Err(e) if retries < 10 => {
+                        retries += 1;
+                        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+                    }
+                    Err(e) => panic!("Redis connection failed after {} retries: {}", retries, e),
+                }
+            }
+        };
+        let _: () = redis::cmd("PING").query_async(&mut conn).await.expect("Redis PING failed");
+        drop(conn);
+
         let message_hub = Arc::new(RoomMessageHub::new());
 
         let (admin_tx, _) = broadcast::channel(256);
 
         // Create two PubSub instances simulating different nodes
+        // Note: Each RedisPubSub subscribes to lifecycle events from the message_hub internally
         let dedup1 = Arc::new(MessageDeduplicator::with_defaults());
         let dedup2 = Arc::new(MessageDeduplicator::with_defaults());
         let pubsub1 = Arc::new(
             RedisPubSub::new(redis_client.clone(), message_hub.clone(), "node1".to_string(), admin_tx.clone(), None, None, dedup1).unwrap(),
         );
         let pubsub2 = Arc::new(
-            RedisPubSub::new(redis_client, message_hub.clone(), "node2".to_string(), admin_tx.clone(), None, None, dedup2).unwrap(),
+            RedisPubSub::new(redis_client.clone(), message_hub.clone(), "node2".to_string(), admin_tx.clone(), None, None, dedup2).unwrap(),
         );
 
-        // Start both
-        let publish_tx1 = pubsub1.start(10_000).await.unwrap();
-        let _publish_tx2 = pubsub2.start(10_000).await.unwrap();
+        // Start both - this subscribes to lifecycle events from message_hub
+        let (publish_tx1, _) = pubsub1.start(10_000).await.unwrap();
+        let (_publish_tx2, _) = pubsub2.start(10_000).await.unwrap();
 
-        // Wait for connections to establish
-        tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+        // Wait for subscriber loops to be ready and lifecycle subscriptions established.
+        // The subscriber tasks need to: connect to Redis, subscribe to admin pattern,
+        // then set up lifecycle subscription. This can take several hundred ms.
+        tokio::time::sleep(tokio::time::Duration::from_millis(1000)).await;
 
-        // Subscribe a client to the room
+        // Subscribe a client to the room - this triggers RoomLifecycleEvent::RoomActivated
+        // which is received by both pubsub1 and pubsub2, causing them to subscribe to
+        // the Redis room channel.
+        // IMPORTANT: subscribe() is async and must be awaited to actually register
+        // the subscription and send the lifecycle event.
         let room_id = RoomId::from_string("test_room".to_string());
         let user_id = UserId::from_string("test_user".to_string());
-        let rx = message_hub.subscribe(room_id.clone(), user_id.clone(), "conn1".to_string());
+        let mut rx = message_hub.subscribe(room_id.clone(), user_id.clone(), "conn1".to_string()).await;
+
+        // Wait for Redis room channel subscription to complete in both pubsub instances.
+        // The lifecycle event triggers async Redis SUBSCRIBE which takes time.
+        tokio::time::sleep(tokio::time::Duration::from_millis(1000)).await;
 
         // Publish event from node1
         let event = ClusterEvent::ChatMessage {
@@ -1849,15 +1897,19 @@ mod tests {
             .unwrap();
 
         // Wait for event propagation
-        tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+        tokio::time::sleep(tokio::time::Duration::from_millis(1000)).await;
 
         // Client should receive the event
-        let mut rx = rx.await;
-        let received = tokio::time::timeout(tokio::time::Duration::from_secs(2), rx.recv())
+        let received = tokio::time::timeout(tokio::time::Duration::from_secs(5), rx.recv())
             .await
-            .unwrap()
-            .unwrap();
+            .expect("timeout waiting for message")
+            .expect("channel closed unexpectedly");
 
         assert_eq!(received.event_type(), "chat_message");
+
+        // The container will be dropped at the end of the test, which will
+        // cause Redis connections to fail and the spawned tasks to terminate.
+        // The JoinHandle returned by start() is dropped here (via _publish_tx2),
+        // but the tasks run until cancelled via the cancel_token or Redis disconnects.
     }
 }

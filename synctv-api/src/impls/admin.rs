@@ -1874,6 +1874,7 @@ mod tests {
             deleted_at: None,
             password_changed_at: chrono::Utc::now(),
             password_version: 0,
+            version: 0,
         }
     }
 

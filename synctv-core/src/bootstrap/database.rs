@@ -94,7 +94,17 @@ pub async fn init_database_with_cancel(
 
 /// Mask credentials in a database URL for safe logging.
 /// Turns `postgres://user:pass@host:5432/db` into `postgres://***:***@host:5432/db`
+///
+/// This function uses multiple strategies to ensure credentials are never leaked:
+/// 1. Standard URL parsing and masking when possible
+/// 2. Manual fallback for malformed URLs
+/// 3. Safe placeholders for completely invalid URLs
 fn mask_database_url(url: &str) -> String {
+    // Early validation: check for URL scheme
+    if !url.contains("://") {
+        return "<url-missing-scheme>".to_string();
+    }
+
     match url::Url::parse(url) {
         Ok(mut parsed) => {
             if !parsed.username().is_empty() {
@@ -105,6 +115,19 @@ fn mask_database_url(url: &str) -> String {
             }
             parsed.to_string()
         }
-        Err(_) => "<invalid-url>".to_string(),
+        Err(_) => {
+            // Parsing failed - attempt manual masking to prevent credential leakage
+            // This handles edge cases where URL is malformed but contains credentials
+            if let Some(at_pos) = url.rfind('@') {
+                if let Some(scheme_end) = url.find("://") {
+                    // Found scheme and @ symbol, reconstruct safely masked URL
+                    let scheme = &url[..scheme_end + 3];
+                    let host_part = &url[at_pos..];
+                    return format!("{}***:***{}", scheme, host_part);
+                }
+            }
+            // Completely unparseable URL - return safe placeholder
+            "<invalid-url>".to_string()
+        }
     }
 }

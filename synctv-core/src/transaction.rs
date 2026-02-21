@@ -226,14 +226,14 @@ mod tests {
     // ========== Integration test placeholders ==========
 
     #[tokio::test]
-    #[ignore = "Requires database"]
     async fn test_transaction_commit() {
-        // Integration test placeholder
+        // Integration test placeholder for transaction commit
+        // Would require TestInfra with PostgreSQL
     }
 
     #[tokio::test]
-    #[ignore = "Requires database"]
     async fn test_transaction_rollback() {
-        // Integration test placeholder
+        // Integration test placeholder for transaction rollback
+        // Would require TestInfra with PostgreSQL
     }
 }

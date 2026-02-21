@@ -74,12 +74,12 @@ impl PageParams {
     /// ```
     /// use synctv_core::models::PageParams;
     ///
-    /// // Page 1001 with page_size 100 -> offset 100_000 -- rejected
-    /// let params = PageParams::new(Some(1001), Some(100));
+    /// // Page 1002 with page_size 100 -> offset 100_100 -- rejected (exceeds MAX_OFFSET of 100_000)
+    /// let params = PageParams::new(Some(1002), Some(100));
     /// assert!(params.validate().is_err());
     ///
-    /// // Page 1000 with page_size 100 -> offset 99_900 -- accepted
-    /// let params = PageParams::new(Some(1000), Some(100));
+    /// // Page 1001 with page_size 100 -> offset 100_000 -- accepted (equals MAX_OFFSET)
+    /// let params = PageParams::new(Some(1001), Some(100));
     /// assert!(params.validate().is_ok());
     /// ```
     pub fn validate(&self) -> Result<()> {

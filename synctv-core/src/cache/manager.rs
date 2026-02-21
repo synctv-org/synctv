@@ -4,7 +4,6 @@
 //! Supports cross-replica cache invalidation via `CacheInvalidationService`.
 
 use super::{
-    bloom_filter::ProtectedCache,
     username_cache::UsernameCache,
     user_cache::UserCache,
     room_cache::RoomCache,
@@ -28,8 +27,6 @@ pub struct CacheManager {
     pub user_cache: Arc<UserCache>,
     pub room_cache: Arc<RoomCache>,
     pub username_cache: Option<Arc<UsernameCache>>,
-    /// Optional protected cache (bloom filter) for cross-replica sync
-    protected_cache: Option<Arc<ProtectedCache>>,
 }
 
 impl CacheManager {
@@ -40,7 +37,6 @@ impl CacheManager {
             user_cache,
             room_cache,
             username_cache: None,
-            protected_cache: None,
         }
     }
 
@@ -48,13 +44,6 @@ impl CacheManager {
     #[must_use]
     pub fn with_username_cache(mut self, username_cache: Arc<UsernameCache>) -> Self {
         self.username_cache = Some(username_cache);
-        self
-    }
-
-    /// Set the protected cache (bloom filter) for cross-replica sync
-    #[must_use]
-    pub fn with_protected_cache(mut self, protected_cache: Arc<ProtectedCache>) -> Self {
-        self.protected_cache = Some(protected_cache);
         self
     }
 
@@ -71,7 +60,6 @@ impl CacheManager {
         let user_cache = self.user_cache.clone();
         let room_cache = self.room_cache.clone();
         let username_cache = self.username_cache.clone();
-        let protected_cache = self.protected_cache.clone();
         let mut receiver = invalidation_service.subscribe();
 
         crate::spawn::spawn_monitored("cache_invalidation_listener", async move {
@@ -107,16 +95,6 @@ impl CacheManager {
                                     room_id = %room_id,
                                     "Room cache invalidated (cross-replica)"
                                 );
-                            }
-                            InvalidationMessage::BloomFilterUpdate { ref keys } => {
-                                if let Some(ref pc) = protected_cache {
-                                    let key_refs: Vec<&str> = keys.iter().map(String::as_str).collect();
-                                    pc.mark_many_exists(&key_refs).await;
-                                    debug!(
-                                        count = keys.len(),
-                                        "Bloom filter updated (cross-replica)"
-                                    );
-                                }
                             }
                             InvalidationMessage::All => {
                                 user_cache.clear_l1().await;

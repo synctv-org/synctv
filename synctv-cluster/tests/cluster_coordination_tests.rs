@@ -5,7 +5,7 @@
 //!
 //! Run with: cargo test --test cluster_coordination_tests
 
-use synctv_cluster::discovery::{NodeInfo, NodeRegistry, HealthMonitor, NodeHealth, LoadBalancer, LoadBalancingStrategy};
+use synctv_cluster::discovery::{NodeInfo, NodeRegistry, HealthMonitor, LoadBalancer, LoadBalancingStrategy};
 use std::collections::HashSet;
 use std::sync::Arc;
 

@@ -87,6 +87,12 @@ impl MediaService {
         }
     }
 
+    /// Get a reference to the providers manager
+    #[must_use]
+    pub fn providers_manager(&self) -> &Arc<ProvidersManager> {
+        &self.providers_manager
+    }
+
     /// Set the notification service for broadcasting media changes to local WebSocket clients
     pub fn set_notification_service(&mut self, service: NotificationService) {
         self.notification_service = Some(service);

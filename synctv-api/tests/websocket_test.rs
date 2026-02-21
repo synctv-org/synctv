@@ -708,8 +708,8 @@ mod websocket_e2e {
         // BruteForceProtection with Redis backend
         let brute_force = synctv_core::service::auth::BruteForceProtection::with_redis(redis_conn.clone(), "test:".to_string());
 
-        // Token blacklist with Redis backend
-        let token_blacklist = Arc::new(synctv_core::service::RedisTokenBlacklistStore::new(redis_conn));
+        // Token blacklist with in-memory backend (sufficient for tests)
+        let token_blacklist: Arc<dyn synctv_core::service::TokenBlacklistStore> = Arc::new(synctv_core::service::InMemoryTokenBlacklistStore::new(10_000, 3600, 86400));
 
         let user_service = Arc::new(UserService::new(
             pool.clone(),

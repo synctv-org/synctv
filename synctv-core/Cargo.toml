@@ -41,7 +41,6 @@ serde_json.workspace = true
 # Caching
 moka.workspace = true
 dashmap.workspace = true
-growable-bloom-filter.workspace = true
 async_singleflight.workspace = true
 
 # IDs & Crypto

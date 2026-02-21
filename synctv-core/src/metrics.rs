@@ -243,16 +243,6 @@ pub mod cache {
         ).expect("Failed to register INVALIDATION_LATENCY")
     });
 
-    /// Bloom filter false positive counter
-    pub static BLOOM_FALSE_POSITIVES: std::sync::LazyLock<CounterVec> = std::sync::LazyLock::new(|| {
-        register_counter_vec_with_registry!(
-            "cache_bloom_false_positives_total",
-            "Total number of Bloom filter false positives",
-            &["cache_type"],
-            REGISTRY.clone()
-        ).expect("Failed to register BLOOM_FALSE_POSITIVES")
-    });
-
     /// Total cache invalidations, labeled by cache type.
     pub static CACHE_INVALIDATIONS: std::sync::LazyLock<CounterVec> = std::sync::LazyLock::new(|| {
         register_counter_vec_with_registry!(

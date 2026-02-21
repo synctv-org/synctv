@@ -1915,18 +1915,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "growable-bloom-filter"
-version = "2.1.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d174ccb4ba660d431329e7f0797870d0a4281e36353ec4b4a3c5eab6c2cfb6f1"
-dependencies = [
- "serde",
- "serde_bytes",
- "serde_derive",
- "xxhash-rust",
-]
-
-[[package]]
 name = "h2"
 version = "0.4.13"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4769,16 +4757,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "serde_bytes"
-version = "0.11.19"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a5d440709e79d88e51ac01c4b72fc6cb7314017bb7da9eeff678aa94c10e3ea8"
-dependencies = [
- "serde",
- "serde_core",
-]
-
-[[package]]
 name = "serde_core"
 version = "1.0.228"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5501,7 +5479,6 @@ dependencies = [
  "futures",
  "futures-util",
  "governor",
- "growable-bloom-filter",
  "handlebars",
  "hex",
  "hmac",

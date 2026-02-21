@@ -112,6 +112,16 @@ async fn get_root_playlist(pool: &PgPool, room_id: &synctv_core::models::RoomId)
         .expect("Root playlist should exist")
 }
 
+/// Register a "direct_url" provider instance so add_media tests can reference it.
+async fn register_direct_url_provider(room_service: &RoomService) {
+    room_service
+        .media_service()
+        .providers_manager()
+        .create_provider("direct_url", "direct_url", &serde_json::json!({}))
+        .await
+        .expect("Failed to register direct_url provider");
+}
+
 // ========== add_media: ADD_MEDIA permission check ==========
 
 #[tokio::test]
@@ -130,6 +140,7 @@ async fn test_add_media_without_permission_denied() {
         .unwrap();
 
     room_service.join_room(room.id.clone(), member.id.clone(), None).await.unwrap();
+    register_direct_url_provider(&room_service).await;
 
     // Revoke ADD_MOVIE from member
     room_service.member_service().revoke_permission(
@@ -173,6 +184,7 @@ async fn test_add_media_with_permission_succeeds() {
         .create_room("Add Media OK Room".to_string(), String::new(), creator.id.clone(), None, None)
         .await
         .unwrap();
+    register_direct_url_provider(&room_service).await;
 
     let playlist = get_root_playlist(&pool, &room.id).await;
     let media_service = room_service.media_service();
@@ -214,6 +226,8 @@ async fn test_add_media_cross_room_playlist_rejected() {
         .await
         .unwrap();
 
+    register_direct_url_provider(&room_service).await;
+
     // Get playlist from room B
     let playlist_b = get_root_playlist(&pool, &room_b.id).await;
     let media_service = room_service.media_service();
@@ -249,6 +263,7 @@ async fn test_add_media_batch_over_100_rejected() {
         .await
         .unwrap();
 
+    register_direct_url_provider(&room_service).await;
     let playlist = get_root_playlist(&pool, &room.id).await;
     let media_service = room_service.media_service();
 
@@ -320,6 +335,7 @@ async fn test_add_media_batch_exactly_100_accepted() {
         .await
         .unwrap();
 
+    register_direct_url_provider(&room_service).await;
     let playlist = get_root_playlist(&pool, &room.id).await;
     let media_service = room_service.media_service();
 
@@ -358,6 +374,7 @@ async fn test_edit_media_optimistic_lock_retry_exhaustion() {
         .await
         .unwrap();
 
+    register_direct_url_provider(&*room_service).await;
     let playlist = get_root_playlist(&pool, &room.id).await;
     let media_service = room_service.media_service();
 

@@ -88,7 +88,7 @@ fn make_room_service(pool: PgPool) -> RoomService {
     RoomService::new(pool, user_service)
 }
 
-fn make_chat_service(pool: PgPool) -> ChatService {
+fn make_chat_service(pool: PgPool) -> (ChatService, UsernameCache) {
     let chat_repo = Arc::new(ChatRepository::new(pool.clone()));
     let rate_limiter = RateLimiter::new(None, "test:chat:".to_string());
     let rate_limit_config = RateLimitConfig::default();
@@ -119,15 +119,16 @@ fn make_chat_service(pool: PgPool) -> ChatService {
         None,
     );
 
-    ChatService::new(
+    let service = ChatService::new(
         chat_repo,
         rate_limiter,
         rate_limit_config,
         content_filter,
-        username_cache,
+        username_cache.clone(),
         permission_service,
         room_settings_service,
-    )
+    );
+    (service, username_cache)
 }
 
 fn make_user(username: &str) -> User {
@@ -158,10 +159,12 @@ async fn test_send_message_without_send_chat_permission_denied() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
     let room_service = make_room_service(pool.clone());
-    let chat_service = make_chat_service(pool.clone());
+    let (chat_service, username_cache) = make_chat_service(pool.clone());
 
     let creator = user_repo.create(&make_user("chat_perm_creator")).await.unwrap();
     let member = user_repo.create(&make_user("chat_perm_member")).await.unwrap();
+    username_cache.set(&creator.id, &creator.username).await.unwrap();
+    username_cache.set(&member.id, &member.username).await.unwrap();
 
     let (room, _) = room_service
         .create_room("Chat Perm Room".to_string(), String::new(), creator.id.clone(), None, None)
@@ -198,9 +201,10 @@ async fn test_send_message_chat_disabled_rejected() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
     let room_service = make_room_service(pool.clone());
-    let chat_service = make_chat_service(pool.clone());
+    let (chat_service, username_cache) = make_chat_service(pool.clone());
 
     let creator = user_repo.create(&make_user("chatdis_creator")).await.unwrap();
+    username_cache.set(&creator.id, &creator.username).await.unwrap();
 
     // Create room with chat disabled
     let mut settings = RoomSettings::default();
@@ -251,6 +255,7 @@ async fn test_send_message_rate_limit_triggers() {
     let content_filter = ContentFilter::new();
     let l2 = Arc::new(NoopCacheL2);
     let username_cache = UsernameCache::new(l2, "test:username:".to_string(), 100, 60);
+    username_cache.set(&creator.id, &creator.username).await.unwrap();
 
     let member_repo = RoomMemberRepository::new(pool.clone());
     let room_repo = RoomRepository::new(pool.clone());
@@ -308,9 +313,10 @@ async fn test_send_danmaku_disabled_rejected() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
     let room_service = make_room_service(pool.clone());
-    let chat_service = make_chat_service(pool.clone());
+    let (chat_service, username_cache) = make_chat_service(pool.clone());
 
     let creator = user_repo.create(&make_user("danmakudis_creator")).await.unwrap();
+    username_cache.set(&creator.id, &creator.username).await.unwrap();
 
     // Create room with danmaku disabled
     let mut settings = RoomSettings::default();
@@ -348,9 +354,10 @@ async fn test_delete_message_owner_can_delete_own() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
     let room_service = make_room_service(pool.clone());
-    let chat_service = make_chat_service(pool.clone());
+    let (chat_service, username_cache) = make_chat_service(pool.clone());
 
     let creator = user_repo.create(&make_user("delmsg_owner")).await.unwrap();
+    username_cache.set(&creator.id, &creator.username).await.unwrap();
 
     let (room, _) = room_service
         .create_room("Del Msg Room".to_string(), String::new(), creator.id.clone(), None, None)
@@ -379,10 +386,12 @@ async fn test_delete_message_non_owner_requires_delete_chat_permission() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
     let room_service = make_room_service(pool.clone());
-    let chat_service = make_chat_service(pool.clone());
+    let (chat_service, username_cache) = make_chat_service(pool.clone());
 
     let creator = user_repo.create(&make_user("delmsg_creator")).await.unwrap();
     let member = user_repo.create(&make_user("delmsg_member")).await.unwrap();
+    username_cache.set(&creator.id, &creator.username).await.unwrap();
+    username_cache.set(&member.id, &member.username).await.unwrap();
 
     let (room, _) = room_service
         .create_room("Del Msg Perm Room".to_string(), String::new(), creator.id.clone(), None, None)
@@ -417,10 +426,12 @@ async fn test_delete_message_non_owner_with_delete_chat_succeeds() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
     let room_service = make_room_service(pool.clone());
-    let chat_service = make_chat_service(pool.clone());
+    let (chat_service, username_cache) = make_chat_service(pool.clone());
 
     let creator = user_repo.create(&make_user("delmsg2_creator")).await.unwrap();
     let admin = user_repo.create(&make_user("delmsg2_admin")).await.unwrap();
+    username_cache.set(&creator.id, &creator.username).await.unwrap();
+    username_cache.set(&admin.id, &admin.username).await.unwrap();
 
     let (room, _) = room_service
         .create_room("Del Msg Admin Room".to_string(), String::new(), creator.id.clone(), None, None)

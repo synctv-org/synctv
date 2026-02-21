@@ -62,10 +62,6 @@ pub enum InvalidationMessage {
         room_id: String,
         state: crate::models::RoomPlaybackState,
     },
-    /// Update bloom filter: mark keys as existing on all replicas
-    BloomFilterUpdate {
-        keys: Vec<String>,
-    },
     /// Invalidate room settings cache for a specific room
     RoomSettings {
         room_id: String,
@@ -985,18 +981,6 @@ impl CacheInvalidationService {
             warn!(error = %e, "Failed to broadcast room permission invalidation locally");
         }
         self.broadcast_remote(msg).await
-    }
-
-    /// Broadcast bloom filter updates to other replicas
-    ///
-    /// When a new entity is created on this replica, call this so that other
-    /// replicas mark the key as existing in their bloom filters, preventing
-    /// false "definitely not exists" responses.
-    pub async fn broadcast_bloom_filter_update(&self, keys: Vec<String>) -> Result<()> {
-        if keys.is_empty() {
-            return Ok(());
-        }
-        self.broadcast_remote(InvalidationMessage::BloomFilterUpdate { keys }).await
     }
 
     /// Minimum interval between lag-triggered flushes.

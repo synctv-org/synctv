@@ -210,15 +210,15 @@ pub async fn init_services(
         bf
     };
 
-    // Initialize token blacklist store
-    let token_blacklist: Arc<dyn crate::service::TokenBlacklistStore> = if let Some(ref conn) = redis_conn_plain {
-        Arc::new(crate::service::RedisTokenBlacklistStore::new(conn.clone()))
-    } else {
-        // Use PostgreSQL-backed store for durability when Redis is unavailable.
-        // This ensures blacklisted JTIs survive restarts in standalone mode.
-        Arc::new(crate::service::PgTokenBlacklistStore::new(pool.clone()))
-    };
-    info!("Token blacklist store initialized ({})", if redis_conn_plain.is_some() { "Redis" } else { "PostgreSQL" });
+    // Initialize token blacklist store (tiered: L1 moka + optional L2 Redis + PG primary)
+    let token_blacklist: Arc<dyn crate::service::TokenBlacklistStore> = Arc::new(
+        crate::service::TieredTokenBlacklistStore::new(
+            crate::service::PgTokenBlacklistStore::new(pool.clone()),
+            redis_conn_plain.clone(),
+            config.redis.key_prefix.clone(),
+        )
+    );
+    info!("Token blacklist store initialized (tiered: PG primary{})", if redis_conn_plain.is_some() { " + Redis L2" } else { "" });
 
     // Initialize UserService
     let key_builder = crate::cache::KeyBuilder::from_config(config);
@@ -240,24 +240,11 @@ pub async fn init_services(
     room_service.set_playback_cache_invalidation(cache_invalidation.clone());
     info!("RoomService initialized");
 
-    // Initialize protected cache (bloom filter) for cache penetration protection.
-    //
-    // Warm-up strategy: The bloom filter starts empty and warms up organically as
-    // cache lookups occur. Each successful database hit calls `mark_exists()`, which
-    // populates the filter. This avoids coupling the cache layer to specific database
-    // queries and prevents a slow startup scan of the entire database. The periodic
-    // reset (every 24 hours) clears the filter to bound memory, after which it
-    // re-warms naturally through normal traffic.
-    let protected_cache = Arc::new(crate::cache::ProtectedCache::with_defaults());
-    protected_cache.start_periodic_reset(std::time::Duration::from_hours(24)).await;
-    info!("Protected cache (bloom filter) initialized with organic warm-up strategy");
-
     // Initialize CacheManager and start cross-replica invalidation listener
     let cache_manager = CacheManager::new(user_cache.clone(), room_cache.clone())
-        .with_username_cache(Arc::new(username_cache.clone()))
-        .with_protected_cache(protected_cache);
+        .with_username_cache(Arc::new(username_cache.clone()));
     cache_manager.start_invalidation_listener(&cache_invalidation);
-    info!("CacheManager initialized with invalidation listener and bloom filter protection");
+    info!("CacheManager initialized with invalidation listener");
 
     // Initialize credential encryption (shared by both repositories and media providers)
     let credential_encryption = init_credential_encryption();

@@ -8,7 +8,7 @@
 //!
 //! The recommended pattern for transactions is:
 //!
-//! ```rust,ignore
+//! ```text
 //! let mut tx = pool.begin().await?;
 //!
 //! // Perform multiple operations
@@ -30,7 +30,7 @@
 //! - **Early exit without error**: When rolling back is the intended behavior
 //!
 //! Example (CAS retry):
-//! ```rust,ignore
+//! ```text
 //! for attempt in 0..MAX_RETRIES {
 //!     let mut tx = pool.begin().await?;
 //!
@@ -75,7 +75,7 @@ impl std::error::Error for TransactionError {}
 /// ## When NOT to Use
 ///
 /// For simple, localized transactions, prefer the standard pattern:
-/// ```rust,ignore
+/// ```text
 /// let mut tx = pool.begin().await?;
 /// // ... operations
 /// tx.commit().await?;
@@ -83,7 +83,7 @@ impl std::error::Error for TransactionError {}
 ///
 /// ## Example
 ///
-/// ```rust,ignore
+/// ```text
 /// let mut uow = UnitOfWork::begin(&pool).await?;
 /// let tx = uow.transaction()?;
 ///

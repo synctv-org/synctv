@@ -5628,6 +5628,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "url",
+ "wiremock",
 ]
 
 [[package]]
@@ -5650,6 +5651,7 @@ dependencies = [
  "anyhow",
  "axum",
  "futures",
+ "http-body-util",
  "percent-encoding",
  "reqwest 0.13.2",
  "synctv-media-providers",
@@ -5657,6 +5659,7 @@ dependencies = [
  "tokio",
  "tracing",
  "url",
+ "wiremock",
 ]
 
 [[package]]

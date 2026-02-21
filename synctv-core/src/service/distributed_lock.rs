@@ -40,7 +40,7 @@
 //!
 //! ## Usage Pattern
 //!
-//! ```ignore
+//! ```text
 //! let (lock_value, fencing_token) = lock.acquire_with_token("resource", 10).await?;
 //! if let Some((value, token)) = lock_value {
 //!     // Pass fencing_token to database write as CAS condition
@@ -283,7 +283,7 @@ impl DistributedLock {
     /// * `ttl_seconds` - Lock expiration time in seconds
     ///
     /// # Example
-    /// ```ignore
+    /// ```text
     /// let lock_value = lock.acquire("create_room:user123", 10).await?;
     /// if let Some(value) = lock_value {
     ///     // Lock acquired, perform operation
@@ -313,7 +313,7 @@ impl DistributedLock {
     /// * `None` if lock is already held by another process
     ///
     /// # Example
-    /// ```ignore
+    /// ```text
     /// match lock.acquire_with_token("create_room:user123", 10).await? {
     ///     Some((lock_value, fencing_token)) => {
     ///         // Pass fencing_token to protected operation for CAS validation
@@ -450,7 +450,7 @@ impl DistributedLock {
     /// * `Err(...)` if operation failed
     ///
     /// # Example
-    /// ```ignore
+    /// ```text
     /// let result = lock.with_lock("create_room:user123", 10, || async {
     ///     // This code runs with lock held
     ///     room_service.create_room(request).await
@@ -496,7 +496,7 @@ impl DistributedLock {
     /// Returns None if lock is already held, Some(T) if operation succeeded
     ///
     /// # Example
-    /// ```ignore
+    /// ```text
     /// match lock.try_with_lock("update_settings:room123", 10, || async {
     ///     room_service.update_settings(settings).await
     /// }).await? {
@@ -552,7 +552,7 @@ impl DistributedLock {
     /// * `operation` - Async function that receives the fencing token
     ///
     /// # Example
-    /// ```ignore
+    /// ```text
     /// let result = lock.with_lock_token("create_room:user123", 10, |token| async move {
     ///     // Pass token to database write for CAS validation
     ///     room_service.create_room_with_token(request, token).await
@@ -600,7 +600,7 @@ impl DistributedLock {
     /// Same as `try_with_lock` but passes the fencing token to the operation.
     ///
     /// # Example
-    /// ```ignore
+    /// ```text
     /// match lock.try_with_lock_token("update_settings:room123", 10, |token| async move {
     ///     room_service.update_settings_with_token(settings, token).await
     /// }).await? {
@@ -689,7 +689,7 @@ impl DistributedLock {
 /// the oneshot send is non-blocking.
 ///
 /// # Example
-/// ```ignore
+/// ```text
 /// let guard = LockGuard::new(&lock, "create_room:user123".to_string(), 10).await?;
 /// // Lock is held
 /// let result = room_service.create_room(request).await;

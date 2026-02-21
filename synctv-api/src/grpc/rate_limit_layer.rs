@@ -255,22 +255,13 @@ fn room_service_tier(method: Option<&str>) -> GrpcRateLimitTier {
 /// the SHA-256 digest (64 bits of collision resistance — sufficient for a
 /// rate limit key namespace).
 fn token_rate_limit_key(token: &str) -> String {
-    use std::hash::Hash;
-    // Use DefaultHasher for a fast, non-cryptographic but stable hash.
-    // We combine two seeds to produce a 128-bit-equivalent hex string
-    // that avoids hash flooding while keeping this dependency-free.
-    // For additional security we XOR with the token length.
-    let mut h1 = std::collections::hash_map::DefaultHasher::new();
-    token.hash(&mut h1);
-    let v1 = std::hash::Hasher::finish(&mut h1);
-
-    let mut h2 = std::collections::hash_map::DefaultHasher::new();
-    token.len().hash(&mut h2);
-    // Feed a salt derived from the token's suffix to differentiate h2 from h1
-    token.chars().rev().take(8).for_each(|c| c.hash(&mut h2));
-    let v2 = std::hash::Hasher::finish(&mut h2);
-
-    format!("token:{v1:016x}{v2:016x}")
+    use sha2::{Sha256, Digest};
+    let mut hasher = Sha256::new();
+    hasher.update(token.as_bytes());
+    let result = hasher.finalize();
+    // Use first 8 bytes (16 hex chars) for 64 bits of collision resistance.
+    let hex: String = result[..8].iter().map(|b| format!("{b:02x}")).collect();
+    format!("token:{hex}")
 }
 
 /// Extract a stable client identifier from HTTP headers.

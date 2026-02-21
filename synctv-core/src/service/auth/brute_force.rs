@@ -261,8 +261,10 @@ impl AttemptTracker for RedisAttemptTracker {
         self.fallback.remove(key).await;
 
         let mut conn = self.conn.clone();
-        if let Err(e) = tokio::time::timeout(REDIS_OPERATION_TIMEOUT, conn.del::<_, ()>(key)).await {
-            tracing::warn!(key = %key, error = %e, "Redis timeout in reset, fallback already cleared");
+        match tokio::time::timeout(REDIS_OPERATION_TIMEOUT, conn.del::<_, ()>(key)).await {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => tracing::warn!(key = %key, error = %e, "Redis error in reset"),
+            Err(e) => tracing::warn!(key = %key, error = %e, "Redis timeout in reset"),
         }
     }
 }

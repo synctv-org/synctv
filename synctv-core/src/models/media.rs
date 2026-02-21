@@ -96,7 +96,7 @@ impl Media {
     /// * `provider_instance_name` - Instance name for lookup (e.g., "`bilibili_main`")
     ///
     /// # Example
-    /// ```rust,ignore
+    /// ```text
     /// let provider = providers_manager.get_provider("bilibili_main").await?;
     /// let media = Media::from_provider(..., provider.name(), "bilibili_main", ...);
     /// ```

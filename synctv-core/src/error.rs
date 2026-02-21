@@ -115,13 +115,13 @@ pub type Result<T> = std::result::Result<T, Error>;
 /// # Examples
 ///
 /// Before:
-/// ```ignore
+/// ```text
 /// serde_json::to_string(&data)
 ///     .map_err(|e| Error::Internal(format!("Failed to serialize: {e}")))?
 /// ```
 ///
 /// After:
-/// ```ignore
+/// ```text
 /// serde_json::to_string(&data).internal("Failed to serialize")?
 /// ```
 pub trait InternalExt<T> {

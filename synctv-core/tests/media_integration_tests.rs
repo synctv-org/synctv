@@ -275,14 +275,7 @@ async fn test_media_cascade_delete_with_playlist() {
     assert!(fetched.is_none(), "Media should be cascade-deleted when playlist is deleted");
 }
 
-// NOTE: This test is currently ignored because the CTE-based swap_positions
-// implementation triggers a unique constraint violation on (playlist_id, position).
-// PostgreSQL validates constraints after each row update even within a single statement,
-// so swapping positions 0 and 1 creates an intermediate state where both rows
-// temporarily have the same position value before the swap completes.
-// TODO: Implement a two-phase swap using negative positions as sentinel values.
 #[tokio::test]
-#[ignore]
 async fn test_media_swap_positions() {
     let ctx = setup_test_context("9").await;
     let media_repo = MediaRepository::new(ctx.pool.clone());
@@ -329,4 +322,358 @@ async fn test_media_batch_delete() {
     assert!(media_repo.get_by_id(&m1.id).await.unwrap().is_none());
     assert!(media_repo.get_by_id(&m2.id).await.unwrap().is_none());
     assert!(media_repo.get_by_id(&m3.id).await.unwrap().is_some());
+}
+
+// ============================================================================
+// Bug B1: get_next_position_with_tx tests
+// ============================================================================
+
+#[tokio::test]
+async fn test_get_next_position_with_tx_empty_playlist_returns_zero() {
+    let ctx = setup_test_context("next_pos_empty").await;
+    let media_repo = MediaRepository::new(ctx.pool.clone());
+
+    let mut tx = ctx.pool.begin().await.unwrap();
+    let next_pos = media_repo
+        .get_next_position_with_tx(&ctx.root_playlist.id, &mut tx)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+
+    assert_eq!(next_pos, 0, "Next position for an empty playlist should be 0");
+}
+
+#[tokio::test]
+async fn test_get_next_position_with_tx_existing_items() {
+    let ctx = setup_test_context("next_pos_existing").await;
+    let media_repo = MediaRepository::new(ctx.pool.clone());
+
+    media_repo
+        .create(&make_media(&ctx.root_playlist.id, &ctx.room.id, "a.mp4", 0))
+        .await
+        .unwrap();
+    media_repo
+        .create(&make_media(&ctx.root_playlist.id, &ctx.room.id, "b.mp4", 1))
+        .await
+        .unwrap();
+    media_repo
+        .create(&make_media(&ctx.root_playlist.id, &ctx.room.id, "c.mp4", 5))
+        .await
+        .unwrap();
+
+    let mut tx = ctx.pool.begin().await.unwrap();
+    let next_pos = media_repo
+        .get_next_position_with_tx(&ctx.root_playlist.id, &mut tx)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+
+    assert_eq!(next_pos, 6, "Next position should be max(position)+1 = 6");
+}
+
+// ============================================================================
+// Bug B2: swap_positions_no_constraint_violation test
+// ============================================================================
+
+#[tokio::test]
+async fn test_swap_positions_no_constraint_violation() {
+    let ctx = setup_test_context("swap_fix").await;
+    let media_repo = MediaRepository::new(ctx.pool.clone());
+
+    let m1 = media_repo
+        .create(&make_media(&ctx.root_playlist.id, &ctx.room.id, "swap_a.mp4", 0))
+        .await
+        .unwrap();
+    let m2 = media_repo
+        .create(&make_media(&ctx.root_playlist.id, &ctx.room.id, "swap_b.mp4", 1))
+        .await
+        .unwrap();
+
+    // This should NOT trigger a unique constraint violation
+    media_repo.swap_positions(&m1.id, &m2.id).await.unwrap();
+
+    let updated_m1 = media_repo.get_by_id(&m1.id).await.unwrap().unwrap();
+    let updated_m2 = media_repo.get_by_id(&m2.id).await.unwrap().unwrap();
+
+    assert_eq!(updated_m1.position, 1, "m1 should now be at position 1");
+    assert_eq!(updated_m2.position, 0, "m2 should now be at position 0");
+}
+
+// ============================================================================
+// Optimistic locking: update_if_unchanged tests
+// ============================================================================
+
+#[tokio::test]
+async fn test_update_if_unchanged_succeeds_when_row_unchanged() {
+    let ctx = setup_test_context("opt_lock_ok").await;
+    let media_repo = MediaRepository::new(ctx.pool.clone());
+
+    let m = media_repo
+        .create(&make_media(&ctx.root_playlist.id, &ctx.room.id, "opt.mp4", 0))
+        .await
+        .unwrap();
+
+    let old_name = m.name.clone();
+    let old_position = m.position;
+
+    let mut updated = m.clone();
+    updated.name = "opt_renamed.mp4".to_string();
+
+    let result = media_repo
+        .update_if_unchanged(&updated, &old_name, old_position)
+        .await
+        .unwrap();
+
+    assert!(result.is_some(), "Update should succeed when row is unchanged");
+    let result = result.unwrap();
+    assert_eq!(result.name, "opt_renamed.mp4");
+}
+
+#[tokio::test]
+async fn test_update_if_unchanged_returns_none_when_changed_concurrently() {
+    let ctx = setup_test_context("opt_lock_conflict").await;
+    let media_repo = MediaRepository::new(ctx.pool.clone());
+
+    let m = media_repo
+        .create(&make_media(&ctx.root_playlist.id, &ctx.room.id, "conflict.mp4", 0))
+        .await
+        .unwrap();
+
+    let old_name = m.name.clone();
+    let old_position = m.position;
+
+    // Simulate a concurrent update
+    let mut concurrent = m.clone();
+    concurrent.name = "concurrently_changed.mp4".to_string();
+    media_repo.update(&concurrent).await.unwrap();
+
+    // Now try update_if_unchanged with the stale old_name/old_position
+    let mut my_update = m.clone();
+    my_update.name = "my_change.mp4".to_string();
+
+    let result = media_repo
+        .update_if_unchanged(&my_update, &old_name, old_position)
+        .await
+        .unwrap();
+
+    assert!(
+        result.is_none(),
+        "Update should return None when row has been changed concurrently"
+    );
+
+    // Verify the concurrent change is still in place
+    let current = media_repo.get_by_id(&m.id).await.unwrap().unwrap();
+    assert_eq!(current.name, "concurrently_changed.mp4");
+}
+
+// ============================================================================
+// reorder_batch tests
+// ============================================================================
+
+#[tokio::test]
+async fn test_reorder_batch_with_tx_swaps_positions() {
+    let ctx = setup_test_context("reorder_swap").await;
+    let media_repo = MediaRepository::new(ctx.pool.clone());
+
+    let m1 = media_repo
+        .create(&make_media(&ctx.root_playlist.id, &ctx.room.id, "reorder_a.mp4", 0))
+        .await
+        .unwrap();
+    let m2 = media_repo
+        .create(&make_media(&ctx.root_playlist.id, &ctx.room.id, "reorder_b.mp4", 1))
+        .await
+        .unwrap();
+
+    // Swap positions [0,1] -> [1,0]
+    media_repo
+        .reorder_batch(&[(m1.id.clone(), 1), (m2.id.clone(), 0)])
+        .await
+        .unwrap();
+
+    let updated_m1 = media_repo.get_by_id(&m1.id).await.unwrap().unwrap();
+    let updated_m2 = media_repo.get_by_id(&m2.id).await.unwrap().unwrap();
+
+    assert_eq!(updated_m1.position, 1);
+    assert_eq!(updated_m2.position, 0);
+}
+
+#[tokio::test]
+async fn test_reorder_batch_with_tx_empty_list_noop() {
+    let ctx = setup_test_context("reorder_empty").await;
+    let media_repo = MediaRepository::new(ctx.pool.clone());
+
+    // Empty reorder should succeed as a no-op
+    media_repo.reorder_batch(&[]).await.unwrap();
+}
+
+// ============================================================================
+// create_batch_chunked test
+// ============================================================================
+
+#[tokio::test]
+async fn test_create_batch_chunked_inserts_all() {
+    let ctx = setup_test_context("batch_create").await;
+    let media_repo = MediaRepository::new(ctx.pool.clone());
+
+    let items: Vec<Media> = (0..5)
+        .map(|i| make_media(&ctx.root_playlist.id, &ctx.room.id, &format!("batch_{}.mp4", i), i))
+        .collect();
+
+    let results = media_repo.create_batch(&items).await.unwrap();
+    assert_eq!(results.len(), 5);
+
+    let playlist_items = media_repo.get_by_playlist(&ctx.root_playlist.id).await.unwrap();
+    assert_eq!(playlist_items.len(), 5);
+    for (i, item) in playlist_items.iter().enumerate() {
+        assert_eq!(item.position, i as i32);
+    }
+}
+
+// ============================================================================
+// count_by_playlists_batch tests
+// ============================================================================
+
+#[tokio::test]
+async fn test_count_by_playlists_batch_multiple_playlists() {
+    let ctx = setup_test_context("batch_count").await;
+    let playlist_repo = PlaylistRepository::new(ctx.pool.clone());
+    let media_repo = MediaRepository::new(ctx.pool.clone());
+
+    // Create a second playlist
+    let pl2 = playlist_repo
+        .create(&Playlist {
+            id: PlaylistId::new(),
+            room_id: ctx.room.id.clone(),
+            creator_id: None,
+            name: "Second PL".to_string(),
+            parent_id: Some(ctx.root_playlist.id.clone()),
+            position: 0,
+            source_provider: None,
+            source_config: None,
+            provider_instance_name: None,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        })
+        .await
+        .unwrap();
+
+    // Add 3 items to root, 2 to pl2
+    for i in 0..3 {
+        media_repo
+            .create(&make_media(
+                &ctx.root_playlist.id,
+                &ctx.room.id,
+                &format!("root_{}.mp4", i),
+                i,
+            ))
+            .await
+            .unwrap();
+    }
+    for i in 0..2 {
+        media_repo
+            .create(&make_media(
+                &pl2.id,
+                &ctx.room.id,
+                &format!("pl2_{}.mp4", i),
+                i,
+            ))
+            .await
+            .unwrap();
+    }
+
+    let counts = media_repo
+        .count_by_playlists_batch(&[ctx.root_playlist.id.as_str(), pl2.id.as_str()])
+        .await
+        .unwrap();
+
+    assert_eq!(
+        counts.get(ctx.root_playlist.id.as_str().trim()),
+        Some(&3),
+        "Root playlist should have 3 items"
+    );
+    assert_eq!(
+        counts.get(pl2.id.as_str().trim()),
+        Some(&2),
+        "Second playlist should have 2 items"
+    );
+}
+
+#[tokio::test]
+async fn test_count_by_playlists_batch_empty_input() {
+    let ctx = setup_test_context("batch_count_empty").await;
+    let media_repo = MediaRepository::new(ctx.pool.clone());
+
+    let counts = media_repo.count_by_playlists_batch(&[]).await.unwrap();
+    assert!(counts.is_empty(), "Empty input should return empty map");
+}
+
+// ============================================================================
+// get_by_ids test
+// ============================================================================
+
+#[tokio::test]
+async fn test_get_by_ids_partial_returns_subset() {
+    let ctx = setup_test_context("get_by_ids").await;
+    let media_repo = MediaRepository::new(ctx.pool.clone());
+
+    let m1 = media_repo
+        .create(&make_media(&ctx.root_playlist.id, &ctx.room.id, "ids_a.mp4", 0))
+        .await
+        .unwrap();
+    let m2 = media_repo
+        .create(&make_media(&ctx.root_playlist.id, &ctx.room.id, "ids_b.mp4", 1))
+        .await
+        .unwrap();
+    let _m3 = media_repo
+        .create(&make_media(&ctx.root_playlist.id, &ctx.room.id, "ids_c.mp4", 2))
+        .await
+        .unwrap();
+
+    // Ask for only m1 and m2 (not m3), plus a nonexistent ID
+    let nonexistent = MediaId::new();
+    let results = media_repo
+        .get_by_ids(&[m1.id.clone(), m2.id.clone(), nonexistent])
+        .await
+        .unwrap();
+
+    assert_eq!(results.len(), 2, "Should return only the 2 existing items");
+    let result_ids: std::collections::HashSet<String> = results
+        .iter()
+        .map(|m| m.id.as_str().to_string())
+        .collect();
+    assert!(result_ids.contains(m1.id.as_str()));
+    assert!(result_ids.contains(m2.id.as_str()));
+}
+
+// ============================================================================
+// delete_by_playlist test
+// ============================================================================
+
+#[tokio::test]
+async fn test_delete_by_playlist_removes_all() {
+    let ctx = setup_test_context("del_by_pl").await;
+    let media_repo = MediaRepository::new(ctx.pool.clone());
+
+    media_repo
+        .create(&make_media(&ctx.root_playlist.id, &ctx.room.id, "del_a.mp4", 0))
+        .await
+        .unwrap();
+    media_repo
+        .create(&make_media(&ctx.root_playlist.id, &ctx.room.id, "del_b.mp4", 1))
+        .await
+        .unwrap();
+    media_repo
+        .create(&make_media(&ctx.root_playlist.id, &ctx.room.id, "del_c.mp4", 2))
+        .await
+        .unwrap();
+
+    assert_eq!(media_repo.count_by_playlist(&ctx.root_playlist.id).await.unwrap(), 3);
+
+    let deleted = media_repo
+        .delete_by_playlist(&ctx.root_playlist.id)
+        .await
+        .unwrap();
+    assert_eq!(deleted, 3);
+
+    assert_eq!(media_repo.count_by_playlist(&ctx.root_playlist.id).await.unwrap(), 0);
 }

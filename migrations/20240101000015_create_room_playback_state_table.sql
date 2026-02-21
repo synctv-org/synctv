@@ -32,6 +32,6 @@ COMMENT ON TABLE room_playback_state IS 'Current playback state for each room';
 COMMENT ON COLUMN room_playback_state.playing_media_id IS 'Currently playing media item';
 COMMENT ON COLUMN room_playback_state.playing_playlist_id IS 'Currently playing playlist';
 COMMENT ON COLUMN room_playback_state.relative_path IS 'Relative path within dynamic folder (empty for static playlists)';
-COMMENT ON COLUMN room_playback_state.current_time IS 'Playback position in seconds';
+COMMENT ON COLUMN room_playback_state."current_time" IS 'Playback position in seconds';
 COMMENT ON COLUMN room_playback_state.speed IS 'Playback speed (0.5, 1.0, 1.5, 2.0, etc.)';
 COMMENT ON COLUMN room_playback_state.version IS 'Optimistic locking version';

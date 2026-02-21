@@ -5,7 +5,7 @@
 //!
 //! # Usage
 //!
-//! ```rust,ignore
+//! ```text
 //! use synctv_core::service::global_settings::*;
 //!
 //! // Initialize during app startup

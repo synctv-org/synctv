@@ -7,7 +7,7 @@
 //!
 //! # Examples
 //!
-//! ```rust,ignore
+//! ```text
 //! // Define a setting - auto-registers on first use!
 //! room_setting!(ChatEnabled, bool, "chat_enabled", true);
 //!
@@ -160,7 +160,7 @@ pub trait RoomSetting: Sized + Send + Sync + 'static {
 ///
 /// # Examples
 ///
-/// ```rust,ignore
+/// ```text
 /// // Without validator
 /// room_setting!(ChatEnabled, bool, "chat_enabled", true);
 ///

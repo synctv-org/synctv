@@ -576,7 +576,7 @@ impl RoomService {
     ///
     /// # Arguments
     /// * `room_id` - Room ID to check
-    /// * `settings_registry` - Optional global settings registry (if None, guest mode is allowed)
+    /// * `settings_registry` - Optional global settings registry (if None, guests are denied -- fail-closed)
     ///
     /// # Returns
     /// * `Ok(())` if guests are allowed
@@ -586,13 +586,21 @@ impl RoomService {
         room_id: &RoomId,
         settings_registry: Option<&crate::service::SettingsRegistry>,
     ) -> Result<()> {
-        // Check global enable_guest setting
-        if let Some(registry) = settings_registry {
-            let enable_guest = registry.enable_guest.get().unwrap_or(true);
-            if !enable_guest {
-                tracing::debug!(room_id = %room_id, "Guest access denied: global guest mode disabled");
+        // Check global enable_guest setting (fail-closed: deny when registry unavailable)
+        match settings_registry {
+            Some(registry) => {
+                let enable_guest = registry.enable_guest.get().unwrap_or(true);
+                if !enable_guest {
+                    tracing::debug!(room_id = %room_id, "Guest access denied: global guest mode disabled");
+                    return Err(Error::Authorization(
+                        "Guest mode is disabled globally".to_string(),
+                    ));
+                }
+            }
+            None => {
+                tracing::debug!(room_id = %room_id, "Guest access denied: settings registry unavailable (fail-closed)");
                 return Err(Error::Authorization(
-                    "Guest mode is disabled globally".to_string(),
+                    "Guest mode is not available".to_string(),
                 ));
             }
         }
@@ -744,11 +752,15 @@ impl RoomService {
 
                     return Ok(room);
                 }
-                Err(Error::OptimisticLockConflict) if attempt + 1 < Self::MAX_RETRIES => {
-                    let backoff = Self::BACKOFF_BASE_MS * (1 << attempt);
-                    let jitter = rand::rng().random_range(0..Self::BACKOFF_BASE_MS);
-                    tokio::time::sleep(std::time::Duration::from_millis(backoff + jitter)).await;
-                    continue;
+                Err(Error::OptimisticLockConflict) => {
+                    if attempt + 1 < Self::MAX_RETRIES {
+                        let backoff = Self::BACKOFF_BASE_MS * (1 << attempt);
+                        let jitter = rand::rng().random_range(0..Self::BACKOFF_BASE_MS);
+                        tokio::time::sleep(std::time::Duration::from_millis(backoff + jitter)).await;
+                        continue;
+                    } else {
+                        return Err(Error::Internal("Settings update failed after maximum retry attempts".to_string()));
+                    }
                 }
                 Err(e) => return Err(e),
             }
@@ -838,11 +850,15 @@ impl RoomService {
                     final_settings = Some(settings);
                     break;
                 }
-                Err(Error::OptimisticLockConflict) if attempt + 1 < Self::MAX_RETRIES => {
-                    let backoff = Self::BACKOFF_BASE_MS * (1 << attempt);
-                    let jitter = rand::rng().random_range(0..Self::BACKOFF_BASE_MS);
-                    tokio::time::sleep(std::time::Duration::from_millis(backoff + jitter)).await;
-                    continue;
+                Err(Error::OptimisticLockConflict) => {
+                    if attempt + 1 < Self::MAX_RETRIES {
+                        let backoff = Self::BACKOFF_BASE_MS * (1 << attempt);
+                        let jitter = rand::rng().random_range(0..Self::BACKOFF_BASE_MS);
+                        tokio::time::sleep(std::time::Duration::from_millis(backoff + jitter)).await;
+                        continue;
+                    } else {
+                        return Err(Error::Internal("Settings update failed after maximum retry attempts".to_string()));
+                    }
                 }
                 Err(e) => return Err(e),
             }
@@ -1449,7 +1465,7 @@ impl RoomService {
         }
 
         let message = ChatMessage {
-            id: nanoid::nanoid!(21),
+            id: nanoid::nanoid!(12),
             room_id,
             user_id,
             content,

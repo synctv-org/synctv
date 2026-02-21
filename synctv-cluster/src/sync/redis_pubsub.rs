@@ -1799,6 +1799,7 @@ mod tests {
 
     // Integration tests require Redis running
     #[tokio::test]
+    #[ignore = "Requires Docker (testcontainers)"]
     async fn test_pubsub_integration() {
         use testcontainers::core::ImageExt;
         use testcontainers::runners::AsyncRunner;

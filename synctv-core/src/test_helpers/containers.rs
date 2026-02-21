@@ -21,7 +21,7 @@ const REDIS_VERSION: &str = "7-alpine";
 ///
 /// # Example
 ///
-/// ```ignore
+/// ```text
 /// let infra = TestInfra::new().await;
 /// let pool = &infra.pool;
 /// // use pool for database operations...

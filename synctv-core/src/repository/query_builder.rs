@@ -26,7 +26,7 @@ enum Condition {
 ///
 /// # Usage
 ///
-/// ```ignore
+/// ```text
 /// let mut wb = WhereClauseBuilder::new();
 /// wb.push_literal("r.deleted_at IS NULL");
 /// if has_search {

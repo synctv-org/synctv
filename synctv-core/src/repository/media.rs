@@ -449,43 +449,69 @@ impl MediaRepository {
 
     /// Swap positions of two media using a provided transaction.
     ///
-    /// Uses a single CTE-based UPDATE to atomically swap both positions,
-    /// avoiding intermediate states that would violate the UNIQUE(playlist_id, position) constraint.
+    /// Uses a two-phase sentinel approach to avoid violating the
+    /// UNIQUE(playlist_id, position) constraint. PostgreSQL evaluates UNIQUE
+    /// constraints per-row during multi-row UPDATEs, so a single-statement
+    /// CTE swap can trigger a violation. Instead:
+    ///   1. Lock both rows with FOR UPDATE (ordered by id to prevent deadlocks).
+    ///   2. Move both to negative sentinel positions (clearing the constraint space).
+    ///   3. Set them to their swapped final positions.
     pub async fn swap_positions_with_tx(
         &self,
         media_id1: &MediaId,
         media_id2: &MediaId,
         tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     ) -> Result<()> {
-        sqlx::query(
+        // Lock both rows in id order to prevent deadlocks
+        let rows = sqlx::query(
             r"
-            WITH locked AS (
-                SELECT id, position
-                FROM media
-                WHERE id IN ($1, $2)
-                ORDER BY id
-                FOR UPDATE
-            ),
-            swap AS (
-                SELECT
-                    a.id AS id_a, a.position AS pos_a,
-                    b.id AS id_b, b.position AS pos_b
-                FROM locked a, locked b
-                WHERE a.id = $1 AND b.id = $2
-            )
-            UPDATE media m
-            SET position = CASE m.id
-                WHEN s.id_a THEN s.pos_b
-                WHEN s.id_b THEN s.pos_a
-            END
-            FROM swap s
-            WHERE m.id IN (s.id_a, s.id_b)
+            SELECT id, position
+            FROM media
+            WHERE id IN ($1, $2)
+            ORDER BY id
+            FOR UPDATE
             "
         )
         .bind(media_id1.as_str())
         .bind(media_id2.as_str())
-        .execute(&mut **tx)
+        .fetch_all(&mut **tx)
         .await?;
+
+        if rows.len() != 2 {
+            return Err(crate::Error::NotFound(
+                "One or both media items not found for swap".to_string(),
+            ));
+        }
+
+        use sqlx::Row;
+        let id1_str: String = rows[0].try_get("id")?;
+        let pos1: i32 = rows[0].try_get("position")?;
+        let id2_str: String = rows[1].try_get("id")?;
+        let pos2: i32 = rows[1].try_get("position")?;
+
+        // Phase 1: Move both to negative sentinel positions
+        sqlx::query("UPDATE media SET position = $2 WHERE id = $1")
+            .bind(&id1_str)
+            .bind(-1000 - pos1)
+            .execute(&mut **tx)
+            .await?;
+        sqlx::query("UPDATE media SET position = $2 WHERE id = $1")
+            .bind(&id2_str)
+            .bind(-1000 - pos2)
+            .execute(&mut **tx)
+            .await?;
+
+        // Phase 2: Set swapped final positions
+        sqlx::query("UPDATE media SET position = $2 WHERE id = $1")
+            .bind(&id1_str)
+            .bind(pos2)
+            .execute(&mut **tx)
+            .await?;
+        sqlx::query("UPDATE media SET position = $2 WHERE id = $1")
+            .bind(&id2_str)
+            .bind(pos1)
+            .execute(&mut **tx)
+            .await?;
 
         Ok(())
     }
@@ -575,9 +601,11 @@ impl MediaRepository {
 
     /// Get the next available position in a playlist within a transaction.
     ///
-    /// Uses `SELECT ... FOR UPDATE` to lock the rows, preventing concurrent
-    /// inserts from assigning duplicate positions. The lock is held until the
-    /// caller commits or rolls back the transaction.
+    /// Locks all rows in the playlist with `FOR UPDATE` via a subquery, then
+    /// computes `MAX(position) + 1` over the locked set. This avoids the
+    /// PostgreSQL restriction that forbids `FOR UPDATE` with aggregate functions
+    /// while still preventing concurrent inserts from assigning duplicate positions.
+    /// The lock is held until the caller commits or rolls back the transaction.
     pub async fn get_next_position_with_tx(
         &self,
         playlist_id: &PlaylistId,
@@ -586,8 +614,7 @@ impl MediaRepository {
         let next_pos: i32 = sqlx::query_scalar(
             r"
             SELECT COALESCE(MAX(position), -1) + 1
-            FROM media
-            WHERE playlist_id = $1            FOR UPDATE
+            FROM (SELECT position FROM media WHERE playlist_id = $1 FOR UPDATE) sub
             "
         )
         .bind(playlist_id.as_str())

@@ -50,6 +50,7 @@ impl StreamRegistryTrait for InMemoryStreamRegistry {
         media_id: &str,
         node_id: &str,
         app_name: &str,
+        grpc_address: &str,
     ) -> Result<bool> {
         let mut publishers = self.publishers.lock().await;
         let mut epoch_counters = self.epoch_counters.lock().await;
@@ -63,7 +64,7 @@ impl StreamRegistryTrait for InMemoryStreamRegistry {
 
             publishers.insert(key, PublisherInfo {
                 node_id: node_id.to_string(),
-                grpc_address: String::new(),
+                grpc_address: grpc_address.to_string(),
                 app_name: app_name.to_string(),
                 user_id: String::new(),
                 started_at: Utc::now(),

@@ -3,7 +3,7 @@
 //! Uses trait from synctv-media-providers directly, with thin wrappers for gRPC clients.
 //!
 //! Architecture:
-//! ```ignore
+//! ```text
 //! AlistProvider
 //!     ↓
 //! Arc<dyn AlistInterface>  (from synctv-media-providers)

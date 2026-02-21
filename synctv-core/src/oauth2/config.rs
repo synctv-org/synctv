@@ -56,7 +56,7 @@ impl ConfigLoader {
     ///
     /// # Example
     ///
-    /// ```ignore
+    /// ```text
     /// let github_config: GitHubConfig = loader.load_section("oauth2.github")?;
     /// ```
     pub fn load_section<T: DeserializeOwned>(&self, section_key: &str) -> Result<T> {

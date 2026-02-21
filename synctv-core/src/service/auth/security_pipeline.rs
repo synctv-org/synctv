@@ -102,8 +102,12 @@ impl SecurityPipeline {
                 }
 
                 // Step 3: Status check.
-                // Deleted users have their cache entry invalidated on deletion, so a
-                // cached entry with Active status can be trusted to not be deleted.
+                // INVARIANT: CachedUser does not store `deleted_at` (to keep
+                // the cache entry compact). Instead, `UserService::soft_delete`
+                // invalidates the cache entry on deletion, so a cache HIT with
+                // Active status can be trusted to not be deleted. If this
+                // invariant is ever broken (e.g. a code path deletes without
+                // invalidation), the DB slow path below will still catch it.
                 if cached.status() == UserStatus::Banned || cached.status() == UserStatus::Pending {
                     return Err(Error::Authentication("Authentication failed".to_string()));
                 }
@@ -121,7 +125,10 @@ impl SecurityPipeline {
             .user_service
             .get_user(&user_id)
             .await
-            .map_err(|_| Error::Authentication("User not found".to_string()))?;
+            .map_err(|e| match &e {
+                Error::NotFound(_) => Error::Authentication("User not found".to_string()),
+                _ => e,
+            })?;
 
         // Step 2: Password version check
         if let Some(token_pv) = claims.pv {

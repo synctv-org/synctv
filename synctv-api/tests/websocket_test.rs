@@ -768,8 +768,10 @@ mod websocket_e2e {
             provider_instance_manager.clone(),
         ));
 
-        // Config
-        let config = Arc::new(synctv_core::Config::default());
+        // Config — enable ?token= query parameter for test convenience
+        let mut config = synctv_core::Config::default();
+        config.server.disable_ws_token_query = false;
+        let config = Arc::new(config);
 
         // ClientApiImpl
         let client_api = Arc::new(synctv_api::impls::ClientApiImpl::new(
@@ -948,6 +950,44 @@ mod websocket_e2e {
         None
     }
 
+    /// Drain all pending server messages until a quiet period (no message within `quiet_ms`).
+    /// Returns the collected messages for optional inspection.
+    async fn drain_until_quiet(
+        ws: &mut (impl StreamExt<Item = Result<tungstenite::Message, tungstenite::Error>> + Unpin),
+        quiet_ms: u64,
+    ) -> Vec<ServerMessage> {
+        let mut collected = Vec::new();
+        loop {
+            match tokio::time::timeout(
+                std::time::Duration::from_millis(quiet_ms),
+                recv_server_message(ws),
+            )
+            .await
+            {
+                Ok(Some(msg)) => collected.push(msg),
+                _ => break,
+            }
+        }
+        collected
+    }
+
+    /// Read the next server message, skipping UserJoined and UserLeft events.
+    /// Useful after draining initial messages when you want to read a specific
+    /// event type (Chat, HeartbeatAck, etc.) without being tripped up by
+    /// membership notifications that arrive at unpredictable times.
+    async fn recv_server_message_skip_membership(
+        ws: &mut (impl StreamExt<Item = Result<tungstenite::Message, tungstenite::Error>> + Unpin),
+    ) -> Option<ServerMessage> {
+        loop {
+            let msg = recv_server_message(ws).await?;
+            match &msg.message {
+                Some(server_message::Message::UserJoined(_)) => continue,
+                Some(server_message::Message::UserLeft(_)) => continue,
+                _ => return Some(msg),
+            }
+        }
+    }
+
     /// Encode a ClientMessage and send it as binary over the WebSocket.
     async fn send_client_message(
         ws: &mut (impl SinkExt<tungstenite::Message, Error = tungstenite::Error> + Unpin),
@@ -1009,11 +1049,8 @@ mod websocket_e2e {
 
         let mut ws = ws_connect(&server.addr, &room_id, &token).await;
 
-        // Consume the initial UserJoined message
-        let _ = tokio::time::timeout(std::time::Duration::from_secs(5), recv_server_message(&mut ws))
-            .await
-            .expect("timeout")
-            .expect("no initial msg");
+        // Drain initial membership events
+        drain_until_quiet(&mut ws, 2000).await;
 
         // Send a heartbeat ClientMessage
         let heartbeat = ClientMessage {
@@ -1024,7 +1061,7 @@ mod websocket_e2e {
         send_client_message(&mut ws, &heartbeat).await;
 
         // Expect a HeartbeatAck response
-        let ack = tokio::time::timeout(std::time::Duration::from_secs(5), recv_server_message(&mut ws))
+        let ack = tokio::time::timeout(std::time::Duration::from_secs(5), recv_server_message_skip_membership(&mut ws))
             .await
             .expect("timeout waiting for heartbeat ack")
             .expect("stream ended");
@@ -1054,9 +1091,8 @@ mod websocket_e2e {
 
         let mut ws = ws_connect(&server.addr, &room_id, &token).await;
 
-        // Consume initial message
-        let _ = tokio::time::timeout(std::time::Duration::from_secs(5), recv_server_message(&mut ws))
-            .await;
+        // Drain initial membership events
+        drain_until_quiet(&mut ws, 2000).await;
 
         // Send a Close frame
         ws.close(Some(tungstenite::protocol::CloseFrame {
@@ -1179,28 +1215,31 @@ mod websocket_e2e {
 
         // Connect user1
         let mut ws1 = ws_connect(&server.addr, &room_id, &user1_token).await;
-        // Consume user1's own UserJoined message
-        let _ = tokio::time::timeout(std::time::Duration::from_secs(5), recv_server_message(&mut ws1))
-            .await
-            .expect("timeout")
-            .expect("no initial msg for user1");
+        // Drain all initial messages for user1
+        drain_until_quiet(&mut ws1, 2000).await;
 
         // Connect user2
         let mut ws2 = ws_connect(&server.addr, &room_id, &user2_token).await;
-        // Consume user2's own UserJoined message
-        let _ = tokio::time::timeout(std::time::Duration::from_secs(5), recv_server_message(&mut ws2))
-            .await
-            .expect("timeout")
-            .expect("no initial msg for user2");
+        // Drain user2's initial messages
+        drain_until_quiet(&mut ws2, 2000).await;
 
         // user1 should receive a UserJoined event for user2 (via cluster broadcast)
+        // Read messages from ws1 until we find UserJoined with user2's ID
         let user2_join_event = tokio::time::timeout(
             std::time::Duration::from_secs(5),
-            recv_server_message(&mut ws1),
+            async {
+                loop {
+                    let msg = recv_server_message(&mut ws1).await.expect("stream ended");
+                    if let Some(server_message::Message::UserJoined(ref joined)) = msg.message {
+                        if joined.member.as_ref().map(|m| m.user_id.as_str()) == Some(user2_id.as_str()) {
+                            return msg;
+                        }
+                    }
+                }
+            },
         )
         .await
-        .expect("timeout waiting for user2 join event on ws1")
-        .expect("stream ended");
+        .expect("timeout waiting for user2 join event on ws1");
 
         match user2_join_event.message {
             Some(server_message::Message::UserJoined(joined)) => {
@@ -1244,16 +1283,14 @@ mod websocket_e2e {
         let mut ws1 = ws_connect(&server.addr, &room_id, &user1_token).await;
         let mut ws2 = ws_connect(&server.addr, &room_id, &user2_token).await;
 
-        // Drain initial UserJoined messages from both connections
-        // ws1 gets its own UserJoined
-        let _ = tokio::time::timeout(std::time::Duration::from_secs(5), recv_server_message(&mut ws1)).await;
-        // ws2 gets its own UserJoined
-        let _ = tokio::time::timeout(std::time::Duration::from_secs(5), recv_server_message(&mut ws2)).await;
-        // ws1 may also get user2's UserJoined - drain it
-        let _ = tokio::time::timeout(std::time::Duration::from_secs(2), recv_server_message(&mut ws1)).await;
+        // Drain all initial messages on both connections (parallel)
+        tokio::join!(
+            drain_until_quiet(&mut ws1, 1500),
+            drain_until_quiet(&mut ws2, 1500),
+        );
 
-        // Small delay to let subscriptions settle
-        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        // Let subscriptions settle
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
 
         // user1 sends a chat message
         let chat_msg = ClientMessage {
@@ -1267,10 +1304,10 @@ mod websocket_e2e {
         };
         send_client_message(&mut ws1, &chat_msg).await;
 
-        // user2 should receive the chat broadcast
+        // user2 should receive the chat broadcast (skip any membership events)
         let received = tokio::time::timeout(
-            std::time::Duration::from_secs(5),
-            recv_server_message(&mut ws2),
+            std::time::Duration::from_secs(10),
+            recv_server_message_skip_membership(&mut ws2),
         )
         .await
         .expect("timeout waiting for chat message on ws2")
@@ -1304,8 +1341,8 @@ mod websocket_e2e {
 
         let mut ws = ws_connect(&server.addr, &room_id, &token).await;
 
-        // Consume initial UserJoined
-        let _ = tokio::time::timeout(std::time::Duration::from_secs(5), recv_server_message(&mut ws)).await;
+        // Drain all initial messages (UserJoined, PlaybackState, etc.)
+        drain_until_quiet(&mut ws, 2000).await;
 
         // Send 3 heartbeats and expect 3 acks
         for i in 0..3 {
@@ -1316,10 +1353,13 @@ mod websocket_e2e {
             };
             send_client_message(&mut ws, &heartbeat).await;
 
-            let ack = tokio::time::timeout(std::time::Duration::from_secs(5), recv_server_message(&mut ws))
-                .await
-                .expect("timeout waiting for heartbeat ack")
-                .expect("stream ended");
+            let ack = tokio::time::timeout(
+                std::time::Duration::from_secs(5),
+                recv_server_message_skip_membership(&mut ws),
+            )
+            .await
+            .expect("timeout waiting for heartbeat ack")
+            .expect("stream ended");
 
             assert!(
                 matches!(ack.message, Some(server_message::Message::HeartbeatAck(_))),
@@ -1358,23 +1398,27 @@ mod websocket_e2e {
         let mut ws1 = ws_connect(&server.addr, &room_id, &user1_token).await;
         let mut ws2 = ws_connect(&server.addr, &room_id, &user2_token).await;
 
-        // Drain initial messages
-        let _ = tokio::time::timeout(std::time::Duration::from_secs(5), recv_server_message(&mut ws1)).await;
-        let _ = tokio::time::timeout(std::time::Duration::from_secs(5), recv_server_message(&mut ws2)).await;
-        // ws1 gets user2's UserJoined
-        let _ = tokio::time::timeout(std::time::Duration::from_secs(2), recv_server_message(&mut ws1)).await;
+        // Drain all initial messages on both connections (parallel)
+        tokio::join!(
+            drain_until_quiet(&mut ws1, 1500),
+            drain_until_quiet(&mut ws2, 1500),
+        );
 
         // user2 disconnects
         ws2.close(None).await.expect("close ws2");
 
         // user1 should receive UserLeft for user2
-        let left_event = tokio::time::timeout(
-            std::time::Duration::from_secs(5),
-            recv_server_message(&mut ws1),
-        )
+        // Read messages, skipping any stale UserJoined that may still be in flight
+        let left_event = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                let msg = recv_server_message(&mut ws1).await.expect("stream ended");
+                if matches!(&msg.message, Some(server_message::Message::UserLeft(_))) {
+                    return msg;
+                }
+            }
+        })
         .await
-        .expect("timeout waiting for UserLeft event")
-        .expect("stream ended");
+        .expect("timeout waiting for UserLeft event");
 
         match left_event.message {
             Some(server_message::Message::UserLeft(left)) => {
@@ -1505,6 +1549,9 @@ mod websocket_e2e {
             other => panic!("Expected UserJoined on reconnect, got: {other:?}"),
         }
 
+        // Drain any remaining initial messages before sending heartbeat
+        drain_until_quiet(&mut ws2, 500).await;
+
         // Verify heartbeat still works after reconnection
         let heartbeat = ClientMessage {
             message: Some(client_message::Message::Heartbeat(HeartbeatMessage {
@@ -1513,10 +1560,13 @@ mod websocket_e2e {
         };
         send_client_message(&mut ws2, &heartbeat).await;
 
-        let ack = tokio::time::timeout(std::time::Duration::from_secs(5), recv_server_message(&mut ws2))
-            .await
-            .expect("timeout on heartbeat after reconnect")
-            .expect("no ack");
+        let ack = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            recv_server_message_skip_membership(&mut ws2),
+        )
+        .await
+        .expect("timeout on heartbeat after reconnect")
+        .expect("no ack");
         assert!(
             matches!(ack.message, Some(server_message::Message::HeartbeatAck(_))),
             "Expected HeartbeatAck after reconnect"
@@ -1614,11 +1664,11 @@ mod websocket_e2e {
         // user2 connects to replica_2
         let mut ws2 = ws_connect(&server2.addr, &room_id, &user2_token).await;
 
-        // Drain initial events
-        let _ = tokio::time::timeout(std::time::Duration::from_secs(5), recv_server_message(&mut ws1)).await;
-        let _ = tokio::time::timeout(std::time::Duration::from_secs(5), recv_server_message(&mut ws2)).await;
-        // Drain any UserJoined cross-notifications
-        let _ = tokio::time::timeout(std::time::Duration::from_secs(2), recv_server_message(&mut ws1)).await;
+        // Drain all initial events on both connections (parallel)
+        tokio::join!(
+            drain_until_quiet(&mut ws1, 1500),
+            drain_until_quiet(&mut ws2, 1500),
+        );
 
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
@@ -1634,10 +1684,10 @@ mod websocket_e2e {
         };
         send_client_message(&mut ws1, &chat_msg).await;
 
-        // user2 on replica_2 should receive it via Redis Pub/Sub
+        // user2 on replica_2 should receive it via Redis Pub/Sub (skip membership events)
         let received = tokio::time::timeout(
             std::time::Duration::from_secs(10),
-            recv_server_message(&mut ws2),
+            recv_server_message_skip_membership(&mut ws2),
         )
         .await
         .expect("timeout waiting for cross-replica chat message")
@@ -1672,8 +1722,8 @@ mod websocket_e2e {
 
         let mut ws = ws_connect(&server.addr, &room_id, &token).await;
 
-        // Consume initial UserJoined
-        let _ = tokio::time::timeout(std::time::Duration::from_secs(5), recv_server_message(&mut ws)).await;
+        // Drain initial membership events
+        drain_until_quiet(&mut ws, 2000).await;
 
         // Send many chat messages rapidly (default rate limit is 10/sec)
         // We send 15 to exceed the limit
@@ -1758,12 +1808,13 @@ mod websocket_e2e {
         let mut ws1 = ws_connect(&server.addr, &room_id, &user1_token).await;
         let mut ws2 = ws_connect(&server.addr, &room_id, &user2_token).await;
 
-        // Drain initial UserJoined messages
-        let _ = tokio::time::timeout(std::time::Duration::from_secs(5), recv_server_message(&mut ws1)).await;
-        let _ = tokio::time::timeout(std::time::Duration::from_secs(5), recv_server_message(&mut ws2)).await;
-        let _ = tokio::time::timeout(std::time::Duration::from_secs(2), recv_server_message(&mut ws1)).await;
+        // Drain all initial messages (parallel)
+        tokio::join!(
+            drain_until_quiet(&mut ws1, 1500),
+            drain_until_quiet(&mut ws2, 1500),
+        );
 
-        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
 
         // user1 sends a message with XSS payload
         let xss_msg = ClientMessage {
@@ -1777,10 +1828,10 @@ mod websocket_e2e {
         };
         send_client_message(&mut ws1, &xss_msg).await;
 
-        // user2 should receive the sanitized chat
+        // user2 should receive the sanitized chat (skip membership events)
         let received = tokio::time::timeout(
-            std::time::Duration::from_secs(5),
-            recv_server_message(&mut ws2),
+            std::time::Duration::from_secs(10),
+            recv_server_message_skip_membership(&mut ws2),
         )
         .await
         .expect("timeout waiting for sanitized chat")
@@ -1832,25 +1883,28 @@ mod websocket_e2e {
 
         // Connect user1 (stays connected)
         let mut ws1 = ws_connect(&server.addr, &room_id, &user1_token).await;
-        let _ = tokio::time::timeout(std::time::Duration::from_secs(5), recv_server_message(&mut ws1)).await;
+        drain_until_quiet(&mut ws1, 2000).await;
 
         // Connect user2 (will be dropped)
         let ws2 = ws_connect(&server.addr, &room_id, &user2_token).await;
 
-        // Drain user2's initial message and user1's notification of user2 join
-        let _ = tokio::time::timeout(std::time::Duration::from_secs(2), recv_server_message(&mut ws1)).await;
+        // Drain user1's notification of user2 join
+        drain_until_quiet(&mut ws1, 2000).await;
 
         // Abruptly drop user2's WebSocket (simulate TCP disconnect without Close frame)
         drop(ws2);
 
         // user1 should receive UserLeft for user2 (server detects the drop)
-        let left_event = tokio::time::timeout(
-            std::time::Duration::from_secs(10),
-            recv_server_message(&mut ws1),
-        )
+        let left_event = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            loop {
+                let msg = recv_server_message(&mut ws1).await.expect("stream ended");
+                if matches!(&msg.message, Some(server_message::Message::UserLeft(_))) {
+                    return msg;
+                }
+            }
+        })
         .await
-        .expect("timeout waiting for UserLeft after TCP drop")
-        .expect("stream ended");
+        .expect("timeout waiting for UserLeft after TCP drop");
 
         match left_event.message {
             Some(server_message::Message::UserLeft(left)) => {
@@ -1881,8 +1935,8 @@ mod websocket_e2e {
         for cycle in 0..3 {
             let mut ws = ws_connect(&server.addr, &room_id, &token).await;
 
-            // Consume initial UserJoined
-            let _ = tokio::time::timeout(std::time::Duration::from_secs(5), recv_server_message(&mut ws)).await;
+            // Drain all initial/stale messages (UserJoined, UserLeft from previous cycle, etc.)
+            drain_until_quiet(&mut ws, 2000).await;
 
             // Send a heartbeat to verify the connection is fully functional
             let heartbeat = ClientMessage {
@@ -1894,7 +1948,7 @@ mod websocket_e2e {
 
             let ack = tokio::time::timeout(
                 std::time::Duration::from_secs(5),
-                recv_server_message(&mut ws),
+                recv_server_message_skip_membership(&mut ws),
             )
             .await
             .expect(&format!("timeout on heartbeat in cycle {cycle}"))
@@ -1936,8 +1990,8 @@ mod websocket_e2e {
 
         let mut ws = ws_connect(&server.addr, &room_id, &token).await;
 
-        // Consume initial UserJoined
-        let _ = tokio::time::timeout(std::time::Duration::from_secs(5), recv_server_message(&mut ws)).await;
+        // Drain initial membership events
+        drain_until_quiet(&mut ws, 2000).await;
 
         // Send empty chat message
         let empty_msg = ClientMessage {
@@ -1962,7 +2016,7 @@ mod websocket_e2e {
 
         let ack = tokio::time::timeout(
             std::time::Duration::from_secs(5),
-            recv_server_message(&mut ws),
+            recv_server_message_skip_membership(&mut ws),
         )
         .await
         .expect("timeout waiting for heartbeat ack after empty msg")
@@ -2005,12 +2059,13 @@ mod websocket_e2e {
         let mut ws1 = ws_connect(&server.addr, &room_id, &user1_token).await;
         let mut ws2 = ws_connect(&server.addr, &room_id, &user2_token).await;
 
-        // Drain initial messages
-        let _ = tokio::time::timeout(std::time::Duration::from_secs(5), recv_server_message(&mut ws1)).await;
-        let _ = tokio::time::timeout(std::time::Duration::from_secs(5), recv_server_message(&mut ws2)).await;
-        let _ = tokio::time::timeout(std::time::Duration::from_secs(2), recv_server_message(&mut ws1)).await;
+        // Drain all initial messages (parallel)
+        tokio::join!(
+            drain_until_quiet(&mut ws1, 1500),
+            drain_until_quiet(&mut ws2, 1500),
+        );
 
-        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
 
         // user1 sends a danmaku (chat with position)
         let danmaku_msg = ClientMessage {
@@ -2024,10 +2079,10 @@ mod websocket_e2e {
         };
         send_client_message(&mut ws1, &danmaku_msg).await;
 
-        // user2 should receive the danmaku with position and color
+        // user2 should receive the danmaku with position and color (skip membership events)
         let received = tokio::time::timeout(
             std::time::Duration::from_secs(5),
-            recv_server_message(&mut ws2),
+            recv_server_message_skip_membership(&mut ws2),
         )
         .await
         .expect("timeout waiting for danmaku")
@@ -2241,8 +2296,8 @@ mod websocket_e2e {
 
         let mut ws = ws_connect(&server.addr, &room_id, &token).await;
 
-        // Consume the initial UserJoined
-        let _ = tokio::time::timeout(std::time::Duration::from_secs(5), recv_server_message(&mut ws)).await;
+        // Drain initial membership events
+        drain_until_quiet(&mut ws, 2000).await;
 
         // Send garbage bytes that cannot be decoded as a valid protobuf ClientMessage
         let garbage = vec![0xFF, 0xFE, 0xFD, 0xFC, 0xFB, 0xFA, 0x01, 0x02];
@@ -2336,8 +2391,8 @@ mod websocket_e2e {
 
         let mut ws = ws_connect(&server.addr, &room_id, &token).await;
 
-        // Drain initial UserJoined
-        let _ = tokio::time::timeout(std::time::Duration::from_secs(5), recv_server_message(&mut ws)).await;
+        // Drain initial membership events
+        drain_until_quiet(&mut ws, 2000).await;
 
         let now_ms = chrono::Utc::now().timestamp_millis();
         let heartbeat = ClientMessage {
@@ -2349,7 +2404,7 @@ mod websocket_e2e {
 
         let ack = tokio::time::timeout(
             std::time::Duration::from_secs(5),
-            recv_server_message(&mut ws),
+            recv_server_message_skip_membership(&mut ws),
         )
         .await
         .expect("timeout waiting for HeartbeatAck")

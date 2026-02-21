@@ -267,7 +267,7 @@ impl SettingsService {
     /// A `JoinHandle` for the background task
     ///
     /// # Example
-    /// ```ignore
+    /// ```text
     /// let settings_service = SettingsService::new(repo, pool);
     /// settings_service.initialize().await?;
     /// let cancel = tokio_util::sync::CancellationToken::new();

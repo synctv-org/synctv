@@ -47,7 +47,7 @@ const fn role_level(role: &RoomRole) -> u8 {
 ///
 /// # Examples
 ///
-/// ```rust,ignore
+/// ```text
 /// // Default options (all checks enabled)
 /// let options = AddMemberOptions::new();
 ///

@@ -639,18 +639,24 @@ impl PlaybackService {
                     self.broadcast_state_change(&saved_state).await;
                     return Ok(Some(saved_state));
                 }
-                Err(Error::OptimisticLockConflict) if attempt + 1 < Self::MAX_RETRIES => {
-                    let backoff = Self::BACKOFF_BASE_MS * (1 << attempt);
-                    let jitter = rand::rng().random_range(0..Self::BACKOFF_BASE_MS);
-                    let delay = backoff + jitter;
-                    tracing::debug!(
-                        room_id = %room_id.as_str(),
-                        attempt = attempt + 1,
-                        delay_ms = delay,
-                        "play_next version conflict, re-fetching state and retrying"
-                    );
-                    tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
-                    continue;
+                Err(Error::OptimisticLockConflict) => {
+                    if attempt + 1 < Self::MAX_RETRIES {
+                        let backoff = Self::BACKOFF_BASE_MS * (1 << attempt);
+                        let jitter = rand::rng().random_range(0..Self::BACKOFF_BASE_MS);
+                        let delay = backoff + jitter;
+                        tracing::debug!(
+                            room_id = %room_id.as_str(),
+                            attempt = attempt + 1,
+                            delay_ms = delay,
+                            "play_next version conflict, re-fetching state and retrying"
+                        );
+                        tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
+                        continue;
+                    } else {
+                        return Err(Error::Internal(
+                            "play_next failed after maximum retry attempts".to_string(),
+                        ));
+                    }
                 }
                 Err(e) => return Err(e),
             }
@@ -802,19 +808,25 @@ impl PlaybackService {
 
                     return Ok(updated_state);
                 }
-                Err(Error::OptimisticLockConflict) if attempt + 1 < Self::MAX_RETRIES => {
-                    // Exponential backoff with jitter: base * 2^attempt + random(0..base)
-                    let backoff = Self::BACKOFF_BASE_MS * (1 << attempt);
-                    let jitter = rand::rng().random_range(0..Self::BACKOFF_BASE_MS);
-                    let delay = backoff + jitter;
-                    tracing::debug!(
-                        room_id = %room_id.as_str(),
-                        attempt = attempt + 1,
-                        delay_ms = delay,
-                        "Playback state version conflict, retrying with backoff"
-                    );
-                    tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
-                    continue;
+                Err(Error::OptimisticLockConflict) => {
+                    if attempt + 1 < Self::MAX_RETRIES {
+                        // Exponential backoff with jitter: base * 2^attempt + random(0..base)
+                        let backoff = Self::BACKOFF_BASE_MS * (1 << attempt);
+                        let jitter = rand::rng().random_range(0..Self::BACKOFF_BASE_MS);
+                        let delay = backoff + jitter;
+                        tracing::debug!(
+                            room_id = %room_id.as_str(),
+                            attempt = attempt + 1,
+                            delay_ms = delay,
+                            "Playback state version conflict, retrying with backoff"
+                        );
+                        tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
+                        continue;
+                    } else {
+                        return Err(Error::Internal(
+                            "Playback state update failed after maximum retry attempts".to_string(),
+                        ));
+                    }
                 }
                 Err(e) => return Err(e),
             }

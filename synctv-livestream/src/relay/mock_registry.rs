@@ -44,6 +44,7 @@ impl StreamRegistryTrait for MockStreamRegistry {
         media_id: &str,
         node_id: &str,
         app_name: &str,
+        grpc_address: &str,
     ) -> Result<bool> {
         let mut publishers = self.publishers.lock().await;
         let mut epoch_counters = self.epoch_counters.lock().await;
@@ -58,7 +59,7 @@ impl StreamRegistryTrait for MockStreamRegistry {
 
             publishers.insert(key, PublisherInfo {
                 node_id: node_id.to_string(),
-                grpc_address: String::new(),
+                grpc_address: grpc_address.to_string(),
                 app_name: app_name.to_string(),
                 user_id: String::new(),
                 started_at: Utc::now(),
@@ -177,7 +178,7 @@ mod tests {
 
         // First registration should succeed
         let registered = registry
-            .register_publisher("room123", "media456", "node1", "live")
+            .register_publisher("room123", "media456", "node1", "live", "localhost:50051")
             .await
             .unwrap();
         assert!(registered);
@@ -197,14 +198,14 @@ mod tests {
 
         // First registration should succeed
         let registered = registry
-            .register_publisher("room123", "media456", "node1", "live")
+            .register_publisher("room123", "media456", "node1", "live", "localhost:50051")
             .await
             .unwrap();
         assert!(registered);
 
         // Second registration should fail (already exists)
         let registered = registry
-            .register_publisher("room123", "media456", "node2", "live")
+            .register_publisher("room123", "media456", "node2", "live", "localhost:50052")
             .await
             .unwrap();
         assert!(!registered);
@@ -229,7 +230,7 @@ mod tests {
 
         // Register publisher
         registry
-            .register_publisher("room123", "media456", "node1", "live")
+            .register_publisher("room123", "media456", "node1", "live", "localhost:50051")
             .await
             .unwrap();
 
@@ -258,11 +259,11 @@ mod tests {
 
         // Register multiple publishers
         registry
-            .register_publisher("room1", "media1", "node1", "live")
+            .register_publisher("room1", "media1", "node1", "live", "localhost:50051")
             .await
             .unwrap();
         registry
-            .register_publisher("room2", "media2", "node1", "live")
+            .register_publisher("room2", "media2", "node1", "live", "localhost:50051")
             .await
             .unwrap();
 
@@ -301,7 +302,7 @@ mod tests {
         let registry = MockStreamRegistry::new();
 
         // First registration should have epoch 1
-        registry.register_publisher("room1", "media1", "node1", "live").await.unwrap();
+        registry.register_publisher("room1", "media1", "node1", "live", "localhost:50051").await.unwrap();
         let info = registry.get_publisher("room1", "media1").await.unwrap().unwrap();
         assert_eq!(info.epoch, 1);
 
@@ -309,7 +310,7 @@ mod tests {
         registry.unregister_publisher("room1", "media1").await.unwrap();
 
         // Second registration should have epoch 2
-        registry.register_publisher("room1", "media1", "node2", "live").await.unwrap();
+        registry.register_publisher("room1", "media1", "node2", "live", "localhost:50052").await.unwrap();
         let info = registry.get_publisher("room1", "media1").await.unwrap().unwrap();
         assert_eq!(info.epoch, 2);
     }
@@ -319,7 +320,7 @@ mod tests {
         let registry = MockStreamRegistry::new();
 
         // Register publisher with epoch 1
-        registry.register_publisher("room1", "media1", "node1", "live").await.unwrap();
+        registry.register_publisher("room1", "media1", "node1", "live", "localhost:50051").await.unwrap();
         let info = registry.get_publisher("room1", "media1").await.unwrap().unwrap();
 
         // Validate with correct epoch
@@ -340,9 +341,9 @@ mod tests {
         let registry = MockStreamRegistry::new();
 
         // Register publishers on different nodes
-        registry.register_publisher("room1", "media1", "node1", "live").await.unwrap();
-        registry.register_publisher("room1", "media2", "node1", "live").await.unwrap();
-        registry.register_publisher("room2", "media1", "node2", "live").await.unwrap();
+        registry.register_publisher("room1", "media1", "node1", "live", "localhost:50051").await.unwrap();
+        registry.register_publisher("room1", "media2", "node1", "live", "localhost:50051").await.unwrap();
+        registry.register_publisher("room2", "media1", "node2", "live", "localhost:50052").await.unwrap();
 
         // Verify all exist
         assert!(registry.is_stream_active("room1", "media1").await.unwrap());

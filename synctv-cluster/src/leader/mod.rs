@@ -13,7 +13,7 @@
 //!
 //! # Usage
 //!
-//! ```ignore
+//! ```text
 //! // Redis-based (any deployment):
 //! let elector = LeaderElector::new(redis_conn, node_id, "synctv:");
 //! elector.start(cancel_token.clone());
@@ -391,7 +391,10 @@ impl LeaderElector {
 
     /// Main election loop: try to acquire or renew the lock periodically.
     async fn run_loop(&self, cancel_token: CancellationToken) {
-        let interval = Duration::from_secs(self.renew_interval_secs);
+        let mut ticker = tokio::time::interval(Duration::from_secs(self.renew_interval_secs));
+        // The first tick fires immediately, ensuring the first election attempt
+        // happens without waiting for `renew_interval_secs`.
+        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
         info!(
             identity = %self.identity,
@@ -407,7 +410,7 @@ impl LeaderElector {
                     self.resign().await;
                     break;
                 }
-                () = tokio::time::sleep(interval) => {
+                _ = ticker.tick() => {
                     self.try_acquire_or_renew().await;
                 }
             }

@@ -720,6 +720,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "Requires Docker (testcontainers)"]
     async fn test_cluster_client_no_remote_nodes() {
         use testcontainers::core::ImageExt;
         use testcontainers::runners::AsyncRunner;

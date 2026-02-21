@@ -2539,4 +2539,68 @@ mod tests {
         let resp: types::NavResp = serde_json::from_str(json).unwrap();
         assert!(resp.data.wbi_img.is_none());
     }
+
+    // === is_wbi_stale_error Tests ===
+
+    #[test]
+    fn test_is_wbi_stale_error_minus_352() {
+        let err = BilibiliError::Api { code: -352, message: "signature error".to_string() };
+        assert!(BilibiliClient::is_wbi_stale_error(&err));
+    }
+
+    #[test]
+    fn test_is_wbi_stale_error_minus_401() {
+        let err = BilibiliError::Api { code: -401, message: "unauthorized".to_string() };
+        assert!(BilibiliClient::is_wbi_stale_error(&err));
+    }
+
+    #[test]
+    fn test_is_wbi_stale_error_other_codes() {
+        let err = BilibiliError::Api { code: -101, message: "not logged in".to_string() };
+        assert!(!BilibiliClient::is_wbi_stale_error(&err));
+
+        let err = BilibiliError::Api { code: 0, message: "success".to_string() };
+        assert!(!BilibiliClient::is_wbi_stale_error(&err));
+
+        let err = BilibiliError::Network("timeout".to_string());
+        assert!(!BilibiliClient::is_wbi_stale_error(&err));
+
+        let err = BilibiliError::Parse("bad json".to_string());
+        assert!(!BilibiliClient::is_wbi_stale_error(&err));
+    }
+
+    // === build_cookie_header Tests ===
+
+    #[test]
+    fn test_build_cookie_header_empty_returns_none() {
+        let client = BilibiliClient::new().unwrap();
+        assert!(client.build_cookie_header().is_none());
+    }
+
+    #[test]
+    fn test_build_cookie_header_multiple_joined() {
+        let mut cookies = HashMap::new();
+        cookies.insert("SESSDATA".to_string(), "abc123".to_string());
+        cookies.insert("bili_jct".to_string(), "token456".to_string());
+        let client = BilibiliClient::with_cookies(cookies).unwrap();
+
+        let header = client.build_cookie_header().unwrap();
+        // Should contain both cookies joined by "; "
+        assert!(header.contains("SESSDATA=abc123"));
+        assert!(header.contains("bili_jct=token456"));
+        assert!(header.contains("; "));
+    }
+
+    #[test]
+    fn test_build_cookie_header_sanitizes_crlf() {
+        let mut cookies = HashMap::new();
+        cookies.insert("evil\r\nkey".to_string(), "evil\r\nvalue".to_string());
+        let client = BilibiliClient::with_cookies(cookies).unwrap();
+
+        let header = client.build_cookie_header().unwrap();
+        // CRLF characters should be stripped
+        assert!(!header.contains('\r'));
+        assert!(!header.contains('\n'));
+        assert!(header.contains("evilkey=evilvalue"));
+    }
 }

@@ -12,7 +12,7 @@
 //!
 //! Use `with_validator` to add custom validation logic:
 //!
-//! ```rust,ignore
+//! ```text
 //! use synctv_core::service::settings_vars::*;
 //!
 //! let max_rooms = setting!(i64, "server.max_rooms", storage, 10)
@@ -58,7 +58,7 @@ pub trait SettingProvider: Send + Sync {
 ///
 /// # Example
 ///
-/// ```rust,ignore
+/// ```text
 /// let signup_enabled = setting!(bool, "server.signup_enabled", storage, true);
 /// let max_rooms = setting!(i64, "server.max_rooms", storage, 10);
 /// let max_rooms_with_validator = setting!(i64, "server.max_rooms", storage, 10, |v| {
@@ -280,7 +280,7 @@ where
     ///
     /// # Example
     ///
-    /// ```rust,ignore
+    /// ```text
     /// let max_rooms = setting!(i64, "server.max_rooms", storage, 10)
     ///     .with_validator(|v| {
     ///         if *v > 0 && *v <= 1000 {

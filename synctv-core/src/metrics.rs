@@ -1050,7 +1050,7 @@ pub mod hot_paths {
 /// Use the #[instrument] macro from tracing crate for automatic span creation.
 ///
 /// Example usage:
-/// ```ignore
+/// ```text
 /// use tracing::instrument;
 ///
 /// #[instrument(skip(db), fields(room_id = %room_id))]

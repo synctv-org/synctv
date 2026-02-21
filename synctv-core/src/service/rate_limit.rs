@@ -210,14 +210,14 @@ impl RedisRateLimitBackend {
 #[async_trait]
 impl RateLimitBackend for RedisRateLimitBackend {
     async fn check(&self, key: &str, max_requests: u32, window_seconds: u64) -> std::result::Result<(), RateLimitError> {
-        use redis::AsyncCommands;
-
         let mut conn = self.conn.clone();
         let redis_key = format!("{}{}", self.key_prefix, key);
         let now = current_timestamp_millis();
         let window_start = now.saturating_sub(window_seconds * 1000);
         let expire_seconds = (window_seconds + 1) as i64;
 
+        // Lua script returns both current_count and oldest_score atomically,
+        // eliminating the TOCTOU window from a separate ZRANGE command.
         let script = redis::Script::new(
             r"
             redis.call('ZREMRANGEBYSCORE', KEYS[1], 0, ARGV[1])
@@ -227,19 +227,27 @@ impl RateLimitBackend for RedisRateLimitBackend {
             local count = redis.call('ZCARD', KEYS[1])
             redis.call('EXPIRE', KEYS[1], ARGV[3])
             redis.call('EXPIRE', KEYS[1] .. ':seq', ARGV[3])
-            return count
+            local oldest = 0
+            if count > tonumber(ARGV[4]) then
+                local entries = redis.call('ZRANGE', KEYS[1], 0, 0, 'WITHSCORES')
+                if #entries >= 2 then
+                    oldest = tonumber(entries[2]) or 0
+                end
+            end
+            return {count, oldest}
             "
         );
 
-        let current_count: u32 = match script
+        let result: Vec<i64> = match script
             .key(&redis_key)
             .arg(window_start as i64)
             .arg(now)
             .arg(expire_seconds)
+            .arg(max_requests)
             .invoke_async(&mut conn)
             .await
         {
-            Ok(count) => count,
+            Ok(vals) => vals,
             Err(e) => {
                 tracing::warn!(
                     "Redis rate limiter unavailable, falling back to in-memory: {}",
@@ -259,15 +267,12 @@ impl RateLimitBackend for RedisRateLimitBackend {
             }
         };
 
-        if current_count > max_requests {
-            let oldest: Option<u64> = conn
-                .zrange_withscores(&redis_key, 0, 0)
-                .await
-                .ok()
-                .and_then(|entries: Vec<(String, u64)>| entries.first().map(|(_, ts)| *ts));
+        let current_count = result.first().copied().unwrap_or(0) as u32;
+        let oldest_score = result.get(1).copied().unwrap_or(0) as u64;
 
-            let retry_after_seconds = if let Some(oldest_ts) = oldest {
-                let time_since_oldest = now.saturating_sub(oldest_ts);
+        if current_count > max_requests {
+            let retry_after_seconds = if oldest_score > 0 {
+                let time_since_oldest = now.saturating_sub(oldest_score);
                 let remaining_window = (window_seconds * 1000).saturating_sub(time_since_oldest);
                 (remaining_window / 1000).max(1)
             } else {

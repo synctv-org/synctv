@@ -209,7 +209,7 @@ impl HealthMonitor {
     ///
     /// The caller is responsible for fetching nodes from the registry and
     /// handling errors (with backoff). This function only processes results.
-    async fn process_heartbeats(
+    pub async fn process_heartbeats(
         health_status: &Arc<RwLock<std::collections::HashMap<String, NodeHealth>>>,
         nodes: &[super::node_registry::NodeInfo],
         timeout_secs: i64,
@@ -231,8 +231,12 @@ impl HealthMonitor {
                     );
                 }
                 status.insert(node.node_id.clone(), NodeHealth::Unhealthy);
+            } else if !status.contains_key(&node.node_id) {
+                // Fresh heartbeat and no existing status - mark healthy so newly
+                // discovered nodes start in a known-good state.
+                status.insert(node.node_id.clone(), NodeHealth::Healthy);
             }
-            // If heartbeat is alive, don't override - let probes decide
+            // If heartbeat is alive and status already exists, don't override - let probes decide
         }
 
         // Remove nodes that are no longer in registry

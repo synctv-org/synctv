@@ -699,7 +699,10 @@ impl StreamMessage for GrpcStreamMessage {
     async fn recv(&mut self) -> Option<Result<ClientMessage, String>> {
         match self.client_stream.message().await {
             Ok(Some(msg)) => Some(Ok(msg)),
-            Ok(None) => None, // Stream ended gracefully
+            Ok(None) => {
+                self.alive.store(false, std::sync::atomic::Ordering::Relaxed);
+                None
+            }
             Err(e) => {
                 self.alive.store(false, std::sync::atomic::Ordering::Relaxed);
                 Some(Err(format!("gRPC stream error: {e}")))

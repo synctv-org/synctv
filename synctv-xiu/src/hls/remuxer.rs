@@ -68,7 +68,7 @@ impl StreamProcessorState {
     /// * `gen_ts_url` - Closure that takes TS name and returns full URL (can add auth tokens)
     ///
     /// # Example
-    /// ```ignore
+    /// ```text
     /// let m3u8 = state.generate_m3u8(|ts_name| {
     ///     format!("/api/room/live/hls/data/{}/{}/{}?token={}", room_id, movie_id, ts_name, token)
     /// });

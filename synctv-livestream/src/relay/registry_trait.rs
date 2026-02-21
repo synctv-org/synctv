@@ -17,6 +17,7 @@ pub trait StreamRegistryTrait: Send + Sync {
         media_id: &str,
         node_id: &str,
         app_name: &str,
+        grpc_address: &str,
     ) -> Result<bool>;
 
     /// Try to register as publisher (atomic operation)
@@ -85,8 +86,9 @@ impl StreamRegistryTrait for StreamRegistry {
         media_id: &str,
         node_id: &str,
         app_name: &str,
+        grpc_address: &str,
     ) -> Result<bool> {
-        Self::register_publisher(self, room_id, media_id, node_id, app_name).await
+        Self::register_publisher(self, room_id, media_id, node_id, app_name, grpc_address).await
     }
 
     async fn try_register_publisher(

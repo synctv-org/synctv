@@ -109,8 +109,9 @@ impl StreamRegistry {
         media_id: &str,
         node_id: &str,
         _app_name: &str,
+        grpc_address: &str,
     ) -> anyhow::Result<bool> {
-        self.try_register_publisher_with_user(room_id, media_id, node_id, "", "").await
+        self.try_register_publisher_with_user(room_id, media_id, node_id, "", grpc_address).await
     }
 
     /// Try to register as publisher (simplified version for `PublisherManager`)
@@ -120,8 +121,9 @@ impl StreamRegistry {
         room_id: &str,
         media_id: &str,
         node_id: &str,
+        grpc_address: &str,
     ) -> anyhow::Result<bool> {
-        self.try_register_publisher_with_user(room_id, media_id, node_id, "", "").await
+        self.try_register_publisher_with_user(room_id, media_id, node_id, "", grpc_address).await
     }
 
     /// Try to register as publisher with `user_id`

@@ -53,7 +53,7 @@ impl NotificationRepository {
     /// Get notification by ID
     ///
     /// The notifications table is partitioned by `created_at`. Querying by `id`
-    /// alone forces PostgreSQL to scan every partition. Adding a `created_at`
+    /// alone forces `PostgreSQL` to scan every partition. Adding a `created_at`
     /// range filter (last year to now) lets the planner prune irrelevant
     /// partitions and use a targeted index scan instead.
     pub async fn get_by_id(&self, notification_id: Uuid) -> Result<Option<Notification>> {

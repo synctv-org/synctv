@@ -316,7 +316,7 @@ pub async fn check_room(
     Ok(Json(response))
 }
 
-/// Maximum allowed page size for list_rooms to prevent DB overload and OOM.
+/// Maximum allowed page size for `list_rooms` to prevent DB overload and OOM.
 const LIST_ROOMS_MAX_PAGE_SIZE: i32 = 200;
 
 /// List rooms (requires authentication to prevent anonymous enumeration)

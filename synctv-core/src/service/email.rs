@@ -118,7 +118,8 @@ pub struct RedisVerificationCodeStore {
 }
 
 impl RedisVerificationCodeStore {
-    pub fn new(redis: Arc<redis::Client>, ttl_minutes: i64) -> Self {
+    #[must_use] 
+    pub const fn new(redis: Arc<redis::Client>, ttl_minutes: i64) -> Self {
         Self { redis, ttl_minutes }
     }
 }
@@ -215,6 +216,7 @@ pub struct InMemoryVerificationCodeStore {
 }
 
 impl InMemoryVerificationCodeStore {
+    #[must_use] 
     pub fn new(ttl_minutes: i64) -> Self {
         Self {
             cache: moka::sync::Cache::builder()

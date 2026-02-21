@@ -65,17 +65,14 @@ impl EmailApiImpl {
             .await
             .map_err(|e| ApiError::Internal(format!("Database error: {e}")))?;
 
-        let user = match user {
-            Some(u) => u,
-            None => {
-                // Add random delay to prevent timing side-channel that leaks
-                // whether an account exists based on response time differences.
-                let delay_ms = rand::random_range(100u64..500u64);
-                tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
-                return Ok(SendVerificationResult {
-                    message: generic_message,
-                });
-            }
+        let user = if let Some(u) = user { u } else {
+            // Add random delay to prevent timing side-channel that leaks
+            // whether an account exists based on response time differences.
+            let delay_ms = rand::random_range(100u64..500u64);
+            tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+            return Ok(SendVerificationResult {
+                message: generic_message,
+            });
         };
 
         let _token = self

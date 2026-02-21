@@ -85,6 +85,7 @@ async fn create_node(redis_url: &str, node_id: &str) -> ClusterManager {
 // ============================================================================
 
 #[tokio::test]
+#[ignore = "requires Docker"]
 async fn test_cross_replica_kick_user() {
     let redis = TestRedis::start().await;
 
@@ -147,6 +148,7 @@ async fn test_cross_replica_kick_user() {
 // ============================================================================
 
 #[tokio::test]
+#[ignore = "requires Docker"]
 async fn test_cross_replica_room_event_propagation() {
     let redis = TestRedis::start().await;
 
@@ -202,6 +204,7 @@ async fn test_cross_replica_room_event_propagation() {
 // ============================================================================
 
 #[tokio::test]
+#[ignore = "requires Docker"]
 async fn test_cross_replica_kick_publisher() {
     let redis = TestRedis::start().await;
 
@@ -254,6 +257,7 @@ async fn test_cross_replica_kick_publisher() {
 // ============================================================================
 
 #[tokio::test]
+#[ignore = "requires Docker"]
 async fn test_cross_replica_cache_invalidation() {
     let redis = TestRedis::start().await;
 
@@ -344,6 +348,7 @@ async fn test_cross_replica_cache_invalidation() {
 // ============================================================================
 
 #[tokio::test]
+#[ignore = "requires Docker"]
 async fn test_redis_pubsub_no_message_loss() {
     let redis = TestRedis::start().await;
 
@@ -424,6 +429,7 @@ async fn test_redis_pubsub_no_message_loss() {
 // ============================================================================
 
 #[tokio::test]
+#[ignore = "requires Docker"]
 async fn test_cross_replica_deduplication() {
     let redis = TestRedis::start().await;
 
@@ -480,6 +486,7 @@ async fn test_cross_replica_deduplication() {
 // ============================================================================
 
 #[tokio::test]
+#[ignore = "requires Docker"]
 async fn test_cross_replica_room_deleted() {
     let redis = TestRedis::start().await;
 
@@ -541,6 +548,7 @@ async fn test_cross_replica_room_deleted() {
 // ============================================================================
 
 #[tokio::test]
+#[ignore = "requires Docker"]
 async fn test_event_propagation_latency() {
     let redis = TestRedis::start().await;
 
@@ -593,6 +601,7 @@ async fn test_event_propagation_latency() {
 // ============================================================================
 
 #[tokio::test]
+#[ignore = "requires Docker"]
 async fn test_multiple_rooms_cross_replica() {
     let redis = TestRedis::start().await;
 
@@ -685,6 +694,7 @@ async fn test_multiple_rooms_cross_replica() {
 // ============================================================================
 
 #[tokio::test]
+#[ignore = "requires Docker"]
 async fn test_three_node_cluster() {
     let redis = TestRedis::start().await;
 
@@ -753,6 +763,7 @@ async fn test_three_node_cluster() {
 // ============================================================================
 
 #[tokio::test]
+#[ignore = "requires Docker"]
 async fn test_redis_stream_catchup() {
     let redis = TestRedis::start().await;
 
@@ -854,6 +865,7 @@ async fn test_redis_stream_catchup() {
 // ============================================================================
 
 #[tokio::test]
+#[ignore = "requires Docker"]
 async fn test_critical_events_high_priority() {
     let redis = TestRedis::start().await;
 
@@ -913,6 +925,7 @@ async fn test_critical_events_high_priority() {
 // ============================================================================
 
 #[tokio::test]
+#[ignore = "requires Docker"]
 async fn test_node_discovery_three_nodes() {
     use synctv_cluster::NodeRegistry;
 
@@ -1040,6 +1053,7 @@ async fn test_node_discovery_three_nodes() {
 // ============================================================================
 
 #[tokio::test]
+#[ignore = "requires Docker"]
 async fn test_node_epoch_fencing() {
     use synctv_cluster::NodeRegistry;
 
@@ -1094,6 +1108,7 @@ async fn test_node_epoch_fencing() {
 // ============================================================================
 
 #[tokio::test]
+#[ignore = "requires Docker"]
 async fn test_leader_election_single_leader() {
     use synctv_cluster::leader::{LeaderElector, LeaderElectorConfig};
     use tokio_util::sync::CancellationToken;
@@ -1212,6 +1227,7 @@ async fn test_leader_election_single_leader() {
 // ============================================================================
 
 #[tokio::test]
+#[ignore = "requires Docker"]
 async fn test_cross_replica_permission_changed() {
     let redis = TestRedis::start().await;
 
@@ -1288,6 +1304,7 @@ async fn test_cross_replica_permission_changed() {
 // ============================================================================
 
 #[tokio::test]
+#[ignore = "requires Docker"]
 async fn test_cross_replica_permission_cache_invalidation_via_cache_service() {
     let redis = TestRedis::start().await;
 
@@ -1510,6 +1527,7 @@ async fn test_rapid_subscribe_unsubscribe_no_leak() {
 // ============================================================================
 
 #[tokio::test]
+#[ignore = "requires Docker"]
 async fn test_cross_replica_room_settings_changed() {
     let redis = TestRedis::start().await;
 

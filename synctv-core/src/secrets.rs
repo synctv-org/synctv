@@ -197,7 +197,7 @@ impl SecretLoader {
 /// println!("Password loaded: {}", mask_secret(password)); // "Password loaded: [SECRET:redacted]"
 /// ```
 #[must_use]
-pub fn mask_secret(_secret: &str) -> &'static str {
+pub const fn mask_secret(_secret: &str) -> &'static str {
     "[SECRET:redacted]"
 }
 

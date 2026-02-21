@@ -494,6 +494,64 @@ async fn test_settings_cas_exhaustion_returns_internal() {
     }
 }
 
+// ========== Banned User Cannot Rejoin (S10) ==========
+
+#[tokio::test]
+async fn test_banned_user_cannot_rejoin_room() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let room_service = make_room_service(pool.clone());
+
+    let creator = user_repo.create(&make_user("ban_rejoin_creator")).await.unwrap();
+    let target = user_repo.create(&make_user("ban_rejoin_target")).await.unwrap();
+
+    let (room, _) = room_service
+        .create_room(
+            "Ban Rejoin Room".to_string(),
+            String::new(),
+            creator.id.clone(),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+    // Join first
+    room_service
+        .join_room(room.id.clone(), target.id.clone(), None)
+        .await
+        .unwrap();
+
+    // Ban the member
+    let member_service = room_service.member_service();
+    member_service
+        .ban_member(
+            room.id.clone(),
+            creator.id.clone(),
+            target.id.clone(),
+            Some("Spamming".to_string()),
+        )
+        .await
+        .unwrap();
+
+    // Attempt to rejoin -- should fail because user is banned
+    let result = room_service
+        .join_room(room.id.clone(), target.id.clone(), None)
+        .await;
+
+    assert!(result.is_err(), "Banned user should not be able to rejoin");
+    match result.unwrap_err() {
+        Error::Authorization(msg) => {
+            assert!(
+                msg.contains("banned") || msg.contains("ban"),
+                "Error should mention ban: {}",
+                msg
+            );
+        }
+        other => panic!("Expected Authorization error, got: {:?}", other),
+    }
+}
+
 // ========== Room Description Validation Tests ==========
 
 #[tokio::test]

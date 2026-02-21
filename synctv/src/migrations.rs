@@ -9,15 +9,15 @@ const MIGRATION_LOCK_TTL: u64 = 300;
 const MIGRATION_POLL_INTERVAL: Duration = Duration::from_secs(2);
 const MIGRATION_MAX_WAIT: Duration = Duration::from_mins(5);
 
-/// Maximum time to wait for the PostgreSQL advisory lock in the Redis-fallback
+/// Maximum time to wait for the `PostgreSQL` advisory lock in the Redis-fallback
 /// path before giving up with an error.
-const PG_ADVISORY_LOCK_MAX_WAIT: Duration = Duration::from_secs(60);
+const PG_ADVISORY_LOCK_MAX_WAIT: Duration = Duration::from_mins(1);
 /// Initial backoff before the first retry of `pg_try_advisory_lock`.
 const PG_ADVISORY_LOCK_INITIAL_BACKOFF: Duration = Duration::from_millis(500);
 /// Maximum per-retry backoff for `pg_try_advisory_lock`.
 const PG_ADVISORY_LOCK_MAX_BACKOFF: Duration = Duration::from_secs(8);
 /// Stable integer key used with `pg_try_advisory_lock` / `pg_advisory_unlock`.
-/// Hash of "synctv_migration" kept in sync with `PgAdvisoryMigrationLock`.
+/// Hash of "`synctv_migration`" kept in sync with `PgAdvisoryMigrationLock`.
 const PG_ADVISORY_LOCK_KEY: i64 = 0x73796E63_74766D69_u64 as i64;
 
 /// Run database migrations using a distributed lock for multi-replica
@@ -25,10 +25,10 @@ const PG_ADVISORY_LOCK_KEY: i64 = 0x73796E63_74766D69_u64 as i64;
 ///
 /// The caller supplies a `MigrationLock` implementation (e.g.
 /// `DistributedLock` backed by Redis). If the lock cannot be acquired due
-/// to an infrastructure error, falls back to a PostgreSQL advisory lock.
+/// to an infrastructure error, falls back to a `PostgreSQL` advisory lock.
 ///
 /// `key_prefix` is the configured Redis key prefix (e.g., "synctv:") used to
-/// namespace the migration lock key, avoiding conflicts when multiple SyncTV
+/// namespace the migration lock key, avoiding conflicts when multiple `SyncTV`
 /// instances share the same Redis.
 pub async fn run_migrations(pool: &PgPool, lock: &dyn MigrationLock, key_prefix: &str) -> Result<()> {
     info!("Running database migrations...");
@@ -77,7 +77,7 @@ async fn migrations_already_applied(pool: &PgPool) -> bool {
 /// Run migrations under a distributed lock so that only one replica in a
 /// cluster performs the migration. Other replicas wait and verify completion.
 async fn run_migrations_with_lock(pool: &PgPool, lock: &dyn MigrationLock, key_prefix: &str) -> Result<()> {
-    let migration_lock_key = format!("{}migration", key_prefix);
+    let migration_lock_key = format!("{key_prefix}migration");
 
     match lock.acquire(&migration_lock_key, MIGRATION_LOCK_TTL).await {
         Ok(Some(lock_value)) => {
@@ -98,7 +98,7 @@ async fn run_migrations_with_lock(pool: &PgPool, lock: &dyn MigrationLock, key_p
     }
 }
 
-/// Run migrations under a PostgreSQL advisory lock with exponential backoff.
+/// Run migrations under a `PostgreSQL` advisory lock with exponential backoff.
 ///
 /// Used as a fallback when Redis is unavailable at startup, to prevent
 /// multiple replicas from running migrations concurrently and causing

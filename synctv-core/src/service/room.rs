@@ -324,7 +324,7 @@ impl RoomService {
 
         // 4. Add creator as member with full permissions
         let member = RoomMember::new(created_room.id.clone(), created_by.clone(), RoomRole::Creator);
-        let created_member = self.member_repo.add_with_executor(&member, &mut *tx).await?;
+        let created_member = self.member_repo.add_with_executor(&member, &mut tx).await?;
 
         // 5. Create root playlist
         let root_playlist = Playlist {
@@ -343,7 +343,7 @@ impl RoomService {
         self.playlist_repo.create_with_executor(&root_playlist, &mut *tx).await?;
 
         // 6. Initialize playback state
-        self.playback_repo.create_or_get_with_executor(&created_room.id, &mut *tx).await?;
+        self.playback_repo.create_or_get_with_executor(&created_room.id, &mut tx).await?;
 
         // Commit — all or nothing
         tx.commit().await?;
@@ -587,22 +587,19 @@ impl RoomService {
         settings_registry: Option<&crate::service::SettingsRegistry>,
     ) -> Result<()> {
         // Check global enable_guest setting (fail-closed: deny when registry unavailable)
-        match settings_registry {
-            Some(registry) => {
-                let enable_guest = registry.enable_guest.get().unwrap_or(true);
-                if !enable_guest {
-                    tracing::debug!(room_id = %room_id, "Guest access denied: global guest mode disabled");
-                    return Err(Error::Authorization(
-                        "Guest mode is disabled globally".to_string(),
-                    ));
-                }
-            }
-            None => {
-                tracing::debug!(room_id = %room_id, "Guest access denied: settings registry unavailable (fail-closed)");
+        if let Some(registry) = settings_registry {
+            let enable_guest = registry.enable_guest.get().unwrap_or(true);
+            if !enable_guest {
+                tracing::debug!(room_id = %room_id, "Guest access denied: global guest mode disabled");
                 return Err(Error::Authorization(
-                    "Guest mode is not available".to_string(),
+                    "Guest mode is disabled globally".to_string(),
                 ));
             }
+        } else {
+            tracing::debug!(room_id = %room_id, "Guest access denied: settings registry unavailable (fail-closed)");
+            return Err(Error::Authorization(
+                "Guest mode is not available".to_string(),
+            ));
         }
 
         // Get room settings
@@ -758,9 +755,8 @@ impl RoomService {
                         let jitter = rand::rng().random_range(0..Self::BACKOFF_BASE_MS);
                         tokio::time::sleep(std::time::Duration::from_millis(backoff + jitter)).await;
                         continue;
-                    } else {
-                        return Err(Error::Internal("Settings update failed after maximum retry attempts".to_string()));
                     }
+                    return Err(Error::Internal("Settings update failed after maximum retry attempts".to_string()));
                 }
                 Err(e) => return Err(e),
             }
@@ -856,9 +852,8 @@ impl RoomService {
                         let jitter = rand::rng().random_range(0..Self::BACKOFF_BASE_MS);
                         tokio::time::sleep(std::time::Duration::from_millis(backoff + jitter)).await;
                         continue;
-                    } else {
-                        return Err(Error::Internal("Settings update failed after maximum retry attempts".to_string()));
                     }
+                    return Err(Error::Internal("Settings update failed after maximum retry attempts".to_string()));
                 }
                 Err(e) => return Err(e),
             }

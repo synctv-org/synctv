@@ -47,6 +47,7 @@ impl UserNotificationService {
     /// Returns a receiver that will emit `NotificationCreatedEvent` whenever
     /// a new notification is created. Used by the messaging layer to push
     /// notifications to connected WebSocket clients.
+    #[must_use] 
     pub fn subscribe_events(&self) -> tokio::sync::broadcast::Receiver<NotificationCreatedEvent> {
         self.event_tx.subscribe()
     }

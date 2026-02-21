@@ -168,7 +168,7 @@ const MAX_PAGE_SIZE: i32 = 200;
 // ID validation helper
 // ------------------------------------------------------------------
 
-/// Validate a path-parameter ID (user_id, room_id, media_id, etc.).
+/// Validate a path-parameter ID (`user_id`, `room_id`, `media_id`, etc.).
 ///
 /// Returns `Err(AppError)` with a 400 status when the ID is empty, too long,
 /// or contains characters outside `[a-zA-Z0-9_-]`.

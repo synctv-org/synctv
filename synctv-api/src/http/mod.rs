@@ -77,7 +77,7 @@ pub struct RouterConfig {
     /// Resolved built-in STUN URL (e.g. "stun:203.0.113.1:3478") from a successfully started
     /// STUN server. When `None`, the built-in STUN entry is omitted from ICE server lists.
     pub builtin_stun_url: Option<String>,
-    /// Credential encryption for protecting sensitive data in source_config
+    /// Credential encryption for protecting sensitive data in `source_config`
     pub credential_encryption: Option<synctv_core::service::CredentialEncryption>,
 }
 

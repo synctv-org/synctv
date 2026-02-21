@@ -15,7 +15,7 @@ pub const MAX_PAGE_SIZE: u32 = 100;
 /// Minimum page number (1-indexed)
 pub const MIN_PAGE: u32 = 1;
 
-/// Maximum allowed offset to prevent full-scan DoS attacks.
+/// Maximum allowed offset to prevent full-scan `DoS` attacks.
 ///
 /// Requests with `page * page_size > MAX_OFFSET` are rejected with an error.
 /// At `MAX_PAGE_SIZE = 100` items per page this allows up to 1000 pages (100k items).
@@ -68,7 +68,7 @@ impl PageParams {
     /// Validate that the computed offset is within the safe range.
     ///
     /// Returns `Err(Error::InvalidInput)` when `(page - 1) * page_size > MAX_OFFSET`
-    /// to prevent expensive full-scan DoS attacks via extremely large page numbers.
+    /// to prevent expensive full-scan `DoS` attacks via extremely large page numbers.
     ///
     /// # Examples
     /// ```

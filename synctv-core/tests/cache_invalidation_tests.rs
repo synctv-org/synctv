@@ -254,6 +254,67 @@ async fn test_cache_invalidation_without_redis() {
 }
 
 #[tokio::test]
+async fn test_cache_invalidation_self_origin_not_received() {
+    // Messages originating from a node's own node_id should NOT be delivered
+    // to that node's local subscriber (the subscriber filters them out).
+    let (_container, redis_url) = start_redis().await;
+    let redis_client = redis::Client::open(redis_url).expect("Failed to create Redis client");
+
+    let service = Arc::new(CacheInvalidationService::new(
+        Some(redis_client),
+        "self_node".to_string(),
+        "test:cache:self_origin".to_string(),
+    ));
+
+    service.start().await.expect("Failed to start service");
+
+    let mut receiver = service.subscribe();
+
+    // Broadcast from the SAME node (self-origin)
+    let room_id = RoomId::new();
+    service.invalidate_room(&room_id).await.expect("Failed to broadcast");
+
+    // The subscriber should NOT receive the self-originated message.
+    // Use a short timeout to verify nothing arrives.
+    let result = tokio::time::timeout(
+        tokio::time::Duration::from_secs(2),
+        receiver.recv(),
+    ).await;
+
+    assert!(
+        result.is_err(),
+        "Self-originated message should NOT be delivered to the same node's subscriber"
+    );
+}
+
+#[tokio::test]
+async fn test_cache_invalidation_broadcast_local() {
+    // broadcast_local should deliver to local subscribers without using Redis
+    let service = CacheInvalidationService::new(
+        None,
+        "local_node".to_string(),
+        "test:cache:local_only".to_string(),
+    );
+
+    let mut receiver = service.subscribe();
+
+    let msg = InvalidationMessage::User {
+        user_id: "user_local_test".to_string(),
+    };
+    service.broadcast_local(msg.clone()).expect("broadcast_local should succeed");
+
+    tokio::select! {
+        received = receiver.recv() => {
+            let received = received.expect("Should receive local broadcast");
+            assert_eq!(received, msg);
+        }
+        _ = tokio::time::sleep(tokio::time::Duration::from_secs(2)) => {
+            panic!("Timeout waiting for local broadcast message");
+        }
+    }
+}
+
+#[tokio::test]
 async fn test_cache_invalidation_playback_state() {
     let (_container, redis_url) = start_redis().await;
     let redis_client = redis::Client::open(redis_url).expect("Failed to create Redis client");

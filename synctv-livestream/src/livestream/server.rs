@@ -29,7 +29,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
 use synctv_xiu::streamhub::StreamsHub;
 
-/// Maximum number of StreamHub automatic restart attempts before giving up.
+/// Maximum number of `StreamHub` automatic restart attempts before giving up.
 /// Used to size the stop-streams notification channel to prevent signal loss
 /// under rapid consecutive restarts.
 const HUB_MAX_RESTARTS: u32 = 10;
@@ -87,7 +87,7 @@ impl LivestreamHandle {
     ///
     /// Tasks with cancellation tokens (HLS remuxer) are signaled gracefully first,
     /// then waited on with a timeout. Other tasks (cleanup loops, publisher manager,
-    /// StreamHub) are aborted directly since they lack graceful shutdown signals.
+    /// `StreamHub`) are aborted directly since they lack graceful shutdown signals.
     ///
     /// # Arguments
     /// * `timeout_secs` - Maximum seconds to wait for graceful tasks to complete

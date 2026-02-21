@@ -133,7 +133,7 @@ async fn init_sentinel(
             loop {
                 if let Some(ref token) = cancel {
                     tokio::select! {
-                        _ = token.cancelled() => {
+                        () = token.cancelled() => {
                             tracing::info!("Sentinel health check cancelled");
                             return;
                         }

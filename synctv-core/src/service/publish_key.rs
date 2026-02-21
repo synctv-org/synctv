@@ -89,6 +89,7 @@ pub struct RedisJtiStore {
 }
 
 impl RedisJtiStore {
+    #[must_use] 
     pub fn new(conn: redis::aio::ConnectionManager, key_prefix: String, cache_ttl_secs: u64) -> Self {
         Self {
             conn,
@@ -171,6 +172,7 @@ pub struct InMemoryJtiStore {
 }
 
 impl InMemoryJtiStore {
+    #[must_use] 
     pub fn new(cache_ttl_secs: u64) -> Self {
         Self {
             cache: moka::future::Cache::builder()

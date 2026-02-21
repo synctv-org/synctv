@@ -76,7 +76,7 @@ mod inner {
             })
         }
 
-        /// Get full object key: {base_path}{app}/{stream}/{name}
+        /// Get full object key: {`base_path}{app}/{stream}/{name`}
         fn get_object_key(&self, app: &str, stream: &str, name: &str) -> String {
             if self.config.base_path.is_empty() {
                 format!("{app}/{stream}/{name}")
@@ -103,7 +103,7 @@ mod inner {
             }
         }
 
-        /// Delete all objects matching a prefix using OpenDAL lister.
+        /// Delete all objects matching a prefix using `OpenDAL` lister.
         async fn delete_by_prefix_internal(&self, prefix: &str) -> Result<usize> {
             let lister = self.operator
                 .lister(prefix)
@@ -226,12 +226,11 @@ mod inner {
                     .map_err(|e| Error::other(format!("OSS stat failed for {path}: {e}")))?;
 
                 if let Some(last_modified) = metadata.last_modified() {
-                    if last_modified < cutoff_time {
-                        if self.operator.delete(path).await.is_ok() {
+                    if last_modified < cutoff_time
+                        && self.operator.delete(path).await.is_ok() {
                             deleted += 1;
                             tracing::trace!("Deleted expired OSS object: {}", path);
                         }
-                    }
                 }
             }
 

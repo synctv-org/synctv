@@ -182,17 +182,14 @@ impl UserRepository {
         .fetch_optional(&self.pool)
         .await?;
 
-        match u {
-            Some(updated) => Ok(updated),
-            None => {
-                // Check if the user exists at all to distinguish
-                // "not found" from "concurrent modification"
-                let exists = self.get_by_id(&user.id).await?.is_some();
-                if exists {
-                    Err(Error::OptimisticLockConflict)
-                } else {
-                    Err(Error::NotFound(format!("User {} not found", user.id.as_str())))
-                }
+        if let Some(updated) = u { Ok(updated) } else {
+            // Check if the user exists at all to distinguish
+            // "not found" from "concurrent modification"
+            let exists = self.get_by_id(&user.id).await?.is_some();
+            if exists {
+                Err(Error::OptimisticLockConflict)
+            } else {
+                Err(Error::NotFound(format!("User {} not found", user.id.as_str())))
             }
         }
     }

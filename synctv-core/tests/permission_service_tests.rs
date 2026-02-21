@@ -361,3 +361,225 @@ async fn test_deny_override_role_default() {
     assert!(perms_after.has(PermissionBits::ADD_MOVIE),
         "Member should still have ADD_MOVIE");
 }
+
+// ========== check_permissions batch (S11) ==========
+
+#[tokio::test]
+async fn test_check_permissions_batch_all_present() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let room_service = make_room_service(pool.clone());
+
+    let creator = user_repo.create(&make_user("batch_perm_creator")).await.unwrap();
+
+    let (room, _) = room_service
+        .create_room(
+            "Batch Perm Room".to_string(),
+            String::new(),
+            creator.id.clone(),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+    let perm_service = room_service.permission_service();
+
+    // Creator should have all these permissions
+    let result = perm_service
+        .check_permissions(
+            &room.id,
+            &creator.id,
+            &[PermissionBits::SEND_CHAT, PermissionBits::ADD_MOVIE, PermissionBits::DELETE_ROOM],
+        )
+        .await;
+
+    assert!(result.is_ok(), "Creator should have all checked permissions");
+}
+
+#[tokio::test]
+async fn test_check_permissions_batch_one_missing_fails() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let room_service = make_room_service(pool.clone());
+
+    let creator = user_repo.create(&make_user("batch_miss_creator")).await.unwrap();
+    let member = user_repo.create(&make_user("batch_miss_member")).await.unwrap();
+
+    let (room, _) = room_service
+        .create_room(
+            "Batch Miss Room".to_string(),
+            String::new(),
+            creator.id.clone(),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+    room_service
+        .join_room(room.id.clone(), member.id.clone(), None)
+        .await
+        .unwrap();
+
+    let perm_service = room_service.permission_service();
+
+    // Member should have SEND_CHAT but NOT DELETE_ROOM
+    let result = perm_service
+        .check_permissions(
+            &room.id,
+            &member.id,
+            &[PermissionBits::SEND_CHAT, PermissionBits::DELETE_ROOM],
+        )
+        .await;
+
+    assert!(result.is_err(), "Should fail when any one permission is missing");
+}
+
+// ========== check_role (S11) ==========
+
+#[tokio::test]
+async fn test_check_role_creator_passes() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let room_service = make_room_service(pool.clone());
+
+    let creator = user_repo.create(&make_user("checkrole_creator")).await.unwrap();
+
+    let (room, _) = room_service
+        .create_room(
+            "Check Role Room".to_string(),
+            String::new(),
+            creator.id.clone(),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+    let perm_service = room_service.permission_service();
+
+    let result = perm_service
+        .check_role(&room.id, &creator.id, RoomRole::Creator)
+        .await;
+
+    assert!(result.is_ok(), "Creator should pass check_role for Creator");
+}
+
+#[tokio::test]
+async fn test_check_role_member_not_creator_fails() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let room_service = make_room_service(pool.clone());
+
+    let creator = user_repo.create(&make_user("checkrole2_creator")).await.unwrap();
+    let member = user_repo.create(&make_user("checkrole2_member")).await.unwrap();
+
+    let (room, _) = room_service
+        .create_room(
+            "Check Role 2 Room".to_string(),
+            String::new(),
+            creator.id.clone(),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+    room_service
+        .join_room(room.id.clone(), member.id.clone(), None)
+        .await
+        .unwrap();
+
+    let perm_service = room_service.permission_service();
+
+    let result = perm_service
+        .check_role(&room.id, &member.id, RoomRole::Creator)
+        .await;
+
+    assert!(result.is_err(), "Member should NOT pass check_role for Creator");
+}
+
+// ========== is_admin_or_creator (S11) ==========
+
+#[tokio::test]
+async fn test_is_admin_or_creator_for_creator() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let room_service = make_room_service(pool.clone());
+
+    let creator = user_repo.create(&make_user("isadmin_creator")).await.unwrap();
+
+    let (room, _) = room_service
+        .create_room(
+            "Is Admin Room".to_string(),
+            String::new(),
+            creator.id.clone(),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+    let perm_service = room_service.permission_service();
+    let result = perm_service.is_admin_or_creator(&room.id, &creator.id).await.unwrap();
+
+    assert!(result, "Creator should be admin_or_creator");
+}
+
+#[tokio::test]
+async fn test_is_admin_or_creator_for_regular_member() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let room_service = make_room_service(pool.clone());
+
+    let creator = user_repo.create(&make_user("isadmin2_creator")).await.unwrap();
+    let member = user_repo.create(&make_user("isadmin2_member")).await.unwrap();
+
+    let (room, _) = room_service
+        .create_room(
+            "Is Admin 2 Room".to_string(),
+            String::new(),
+            creator.id.clone(),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+    room_service
+        .join_room(room.id.clone(), member.id.clone(), None)
+        .await
+        .unwrap();
+
+    let perm_service = room_service.permission_service();
+    let result = perm_service.is_admin_or_creator(&room.id, &member.id).await.unwrap();
+
+    assert!(!result, "Regular member should NOT be admin_or_creator");
+}
+
+#[tokio::test]
+async fn test_is_admin_or_creator_for_non_member() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let room_service = make_room_service(pool.clone());
+
+    let creator = user_repo.create(&make_user("isadmin3_creator")).await.unwrap();
+    let outsider = user_repo.create(&make_user("isadmin3_outsider")).await.unwrap();
+
+    let (room, _) = room_service
+        .create_room(
+            "Is Admin 3 Room".to_string(),
+            String::new(),
+            creator.id.clone(),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+    let perm_service = room_service.permission_service();
+    let result = perm_service.is_admin_or_creator(&room.id, &outsider.id).await.unwrap();
+
+    assert!(!result, "Non-member should NOT be admin_or_creator");
+}

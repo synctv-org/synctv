@@ -5,13 +5,16 @@
 //!
 //! Run with: cargo test --test jwt_security_tests
 
+use std::sync::Arc;
+
 use synctv_core::{
     models::UserId,
-    service::auth::{jwt::JwtService, TokenType},
+    service::auth::{jwt::JwtService, TokenType, JwtValidator},
 };
 use jsonwebtoken::{Algorithm, Header, EncodingKey};
 use serde::{Serialize, Deserialize};
 use base64::{Engine as _, engine::general_purpose};
+use tonic::metadata::MetadataMap;
 
 fn create_test_jwt_service() -> JwtService {
     JwtService::new("test-secret-key-for-integration-tests-minimum-length-32-chars")
@@ -360,4 +363,210 @@ async fn test_jwt_concurrent_token_generation() {
     // All JTIs should be unique
     let unique_jtis: HashSet<_> = jtis.iter().collect();
     assert_eq!(jtis.len(), unique_jtis.len(), "All JTIs should be unique");
+}
+
+// ============================================================================
+// SEC8: JwtValidator edge cases
+// ============================================================================
+
+#[tokio::test]
+async fn test_jwt_validator_non_ascii_grpc_metadata() {
+    let jwt_service = Arc::new(create_test_jwt_service());
+    let validator = JwtValidator::new(jwt_service);
+
+    // gRPC metadata with non-ASCII characters in the authorization header
+    // MetadataMap::insert only accepts ASCII header values. Non-ASCII values
+    // should cause the metadata parsing to fail with an error.
+    let metadata = MetadataMap::new();
+    // No authorization header at all -- should get "Missing authorization header"
+    let result = validator.validate_grpc(&metadata);
+    assert!(result.is_err(), "Missing auth header should fail");
+
+    // Binary metadata values (non-ASCII) are stored with "-bin" suffix in gRPC.
+    // The "authorization" key is ASCII-only, so inserting non-ASCII causes a parse
+    // error at the tonic level. We verify the validator handles this gracefully.
+    let mut metadata_bad = MetadataMap::new();
+    // Insert a binary metadata value under the "authorization-bin" key
+    // (non-ASCII metadata must use -bin suffix in gRPC)
+    let binary_value = tonic::metadata::MetadataValue::from_bytes(b"\x80\x81\x82");
+    metadata_bad.insert_bin("authorization-bin", binary_value);
+
+    // Attempting to validate gRPC without proper "authorization" key should fail
+    let result = validator.validate_grpc(&metadata_bad);
+    assert!(
+        result.is_err(),
+        "Non-ASCII gRPC metadata (binary key) should cause validation failure"
+    );
+}
+
+#[tokio::test]
+async fn test_jwt_validator_empty_bearer_token_after_prefix() {
+    let jwt_service = Arc::new(create_test_jwt_service());
+    let validator = JwtValidator::new(jwt_service);
+
+    // "Bearer " with nothing after it -- the extracted token is empty string
+    let result = JwtValidator::extract_bearer_token("Bearer ");
+    // The implementation checks len() <= 7 and "Bearer " is 7 chars,
+    // so "Bearer " (with trailing space) has len = 7, which is <= 7.
+    // Actually "Bearer " has 7 chars, so len <= 7 means it fails.
+    assert!(
+        result.is_err(),
+        "Bearer with empty token after prefix should be rejected"
+    );
+
+    // Slightly different: "Bearer" without the trailing space
+    let result2 = JwtValidator::extract_bearer_token("Bearer");
+    assert!(
+        result2.is_err(),
+        "'Bearer' without space should be rejected"
+    );
+
+    // "Bearer  " (with extra space) -- extracts " " which is invalid JWT
+    let result3 = JwtValidator::extract_bearer_token("Bearer  ");
+    // This extracts " " as the token, which is technically 8 chars > 7 so passes extraction
+    // but the token " " will fail JWT verification
+    if let Ok(token) = result3 {
+        let verify_result = validator.validate_token(&token);
+        assert!(verify_result.is_err(), "Whitespace-only token should fail verification");
+    }
+
+    // HTTP: "Bearer " + empty should fail
+    let result4 = validator.validate_http("Bearer ");
+    assert!(
+        result4.is_err(),
+        "HTTP validation with empty bearer should fail"
+    );
+}
+
+#[tokio::test]
+async fn test_jwt_validator_grpc_as_status_returns_unauthenticated() {
+    let jwt_service = Arc::new(create_test_jwt_service());
+    let validator = JwtValidator::new(jwt_service);
+
+    // Missing auth metadata
+    let metadata = MetadataMap::new();
+    let result = validator.validate_grpc_as_status(&metadata);
+    assert!(result.is_err());
+    let status = result.unwrap_err();
+    assert_eq!(status.code(), tonic::Code::Unauthenticated);
+
+    // Invalid token in metadata
+    let mut metadata2 = MetadataMap::new();
+    metadata2.insert("authorization", "Bearer invalid.token".parse().unwrap());
+    let result2 = validator.validate_grpc_as_status(&metadata2);
+    assert!(result2.is_err());
+    assert_eq!(
+        result2.unwrap_err().code(),
+        tonic::Code::Unauthenticated
+    );
+}
+
+// ============================================================================
+// SEC9: JwtService::verify_custom skips issuer/audience
+// ============================================================================
+
+#[tokio::test]
+async fn test_verify_custom_skips_issuer_validation() {
+    // Create a JWT service that expects issuer and audience
+    let jwt_service = JwtService::with_durations_and_claims(
+        "test-secret-key-for-integration-tests-minimum-length-32-chars",
+        1, 30, 4, 60,
+        Some("synctv".to_string()),
+        Some("synctv-api".to_string()),
+    )
+    .unwrap();
+
+    // Sign a custom token WITHOUT issuer/audience
+    let custom_claims = serde_json::json!({
+        "sub": "custom_subject",
+        "custom_field": "custom_value",
+    });
+    let token = jwt_service.sign_custom(&custom_claims).unwrap();
+
+    // verify_custom should succeed (it skips issuer/audience checks)
+    let result = jwt_service.verify_custom(&token);
+    assert!(
+        result.is_ok(),
+        "verify_custom should skip issuer/audience validation: {:?}",
+        result.err()
+    );
+
+    let verified = result.unwrap();
+    assert_eq!(verified["sub"], "custom_subject");
+    assert_eq!(verified["custom_field"], "custom_value");
+
+    // In contrast, verify_token should FAIL for a custom token without proper issuer
+    // (because verify_token validates issuer/audience when configured)
+    // We can't easily test this since sign_custom doesn't include iss/aud in claims,
+    // but verify_token requires them when configured. Let's verify that by trying
+    // to parse it as standard Claims with verify_token.
+
+    // First, sign a regular token (which includes iss/aud)
+    let user_id = UserId::new();
+    let regular_token = jwt_service
+        .sign_token(&user_id, TokenType::Access, 0)
+        .unwrap();
+
+    // Regular token should pass verify_token (has correct issuer/audience)
+    assert!(jwt_service.verify_token(&regular_token).is_ok());
+
+    // Regular token (which contains aud/iss claims) will FAIL verify_custom
+    // because jsonwebtoken's default Validation expects `aud` to be validated
+    // when present in the token, but verify_custom doesn't set expected audiences.
+    // This documents that verify_custom is intended for custom tokens only, NOT
+    // for regular tokens that carry standard iss/aud claims.
+    let custom_on_regular = jwt_service.verify_custom(&regular_token);
+    assert!(
+        custom_on_regular.is_err(),
+        "verify_custom should fail on tokens with aud claim (no expected aud configured)"
+    );
+}
+
+#[tokio::test]
+async fn test_verify_custom_still_validates_expiry() {
+    let jwt_service = create_test_jwt_service();
+    let secret = "test-secret-key-for-integration-tests-minimum-length-32-chars";
+
+    // Create an expired custom token
+    let now = chrono::Utc::now().timestamp();
+    let expired_claims = serde_json::json!({
+        "sub": "expired_custom",
+        "exp": now - 3600,  // expired 1 hour ago
+        "iat": now - 7200,
+    });
+
+    // Sign it manually (can't use sign_custom since it adds a valid exp)
+    let encoding_key = EncodingKey::from_secret(secret.as_bytes());
+    let token = jsonwebtoken::encode(
+        &Header::new(Algorithm::HS256),
+        &expired_claims,
+        &encoding_key,
+    )
+    .unwrap();
+
+    // verify_custom should still reject expired tokens
+    let result = jwt_service.verify_custom(&token);
+    assert!(
+        result.is_err(),
+        "verify_custom should still validate expiry"
+    );
+}
+
+#[tokio::test]
+async fn test_verify_custom_validates_signature() {
+    let jwt_service1 = create_test_jwt_service();
+    let jwt_service2 =
+        JwtService::new("DIFFERENT-secret-key-for-custom-token-tests-1234567890!@#")
+            .unwrap();
+
+    // Sign custom token with service 1
+    let claims = serde_json::json!({"sub": "test", "data": 42});
+    let token = jwt_service1.sign_custom(&claims).unwrap();
+
+    // verify_custom with different secret should fail
+    let result = jwt_service2.verify_custom(&token);
+    assert!(
+        result.is_err(),
+        "verify_custom should reject tokens signed with different secret"
+    );
 }

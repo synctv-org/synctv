@@ -270,3 +270,227 @@ async fn test_list_active_streams() {
     assert!(streams.contains(&("room1".to_string(), "media1".to_string())));
     assert!(streams.contains(&("room2".to_string(), "media2".to_string())));
 }
+
+// ============================================================================
+// LS8: Concurrent InMemoryStreamRegistry tests
+// ============================================================================
+
+#[tokio::test]
+async fn test_concurrent_register_same_stream() {
+    let registry = std::sync::Arc::new(InMemoryStreamRegistry::new());
+
+    let mut handles = Vec::new();
+    for i in 0..10 {
+        let reg = registry.clone();
+        let node = format!("node{i}");
+        let user = format!("user{i}");
+        handles.push(tokio::spawn(async move {
+            reg.try_register_publisher("room1", "media1", &node, &user, "localhost:50051")
+                .await
+                .unwrap()
+        }));
+    }
+
+    let results: Vec<bool> = futures::future::join_all(handles)
+        .await
+        .into_iter()
+        .map(|r| r.unwrap())
+        .collect();
+
+    // Exactly one should succeed (first-come-first-served)
+    let success_count = results.iter().filter(|&&r| r).count();
+    assert_eq!(
+        success_count, 1,
+        "Exactly one concurrent registration should succeed, got {success_count}"
+    );
+
+    // The publisher should exist
+    let info = registry
+        .get_publisher("room1", "media1")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(info.epoch, 1);
+}
+
+#[tokio::test]
+async fn test_concurrent_register_different_streams() {
+    let registry = std::sync::Arc::new(InMemoryStreamRegistry::new());
+
+    let mut handles = Vec::new();
+    for i in 0..10 {
+        let reg = registry.clone();
+        let room = format!("room{i}");
+        let media = format!("media{i}");
+        handles.push(tokio::spawn(async move {
+            reg.try_register_publisher(&room, &media, "node1", "user1", "localhost:50051")
+                .await
+                .unwrap()
+        }));
+    }
+
+    let results: Vec<bool> = futures::future::join_all(handles)
+        .await
+        .into_iter()
+        .map(|r| r.unwrap())
+        .collect();
+
+    // All should succeed (different streams)
+    assert!(
+        results.iter().all(|&r| r),
+        "All registrations for different streams should succeed"
+    );
+
+    let streams = registry.list_active_streams().await.unwrap();
+    assert_eq!(streams.len(), 10);
+}
+
+#[tokio::test]
+async fn test_concurrent_register_and_unregister() {
+    let registry = std::sync::Arc::new(InMemoryStreamRegistry::new());
+
+    // First register some publishers
+    for i in 0..5 {
+        let room = format!("room{i}");
+        let media = format!("media{i}");
+        registry
+            .try_register_publisher(&room, &media, "node1", "user1", "localhost:50051")
+            .await
+            .unwrap();
+    }
+
+    // Concurrently unregister some and register others
+    let mut handles = Vec::new();
+    for i in 0..5 {
+        let reg = registry.clone();
+        let room = format!("room{i}");
+        let media = format!("media{i}");
+        handles.push(tokio::spawn(async move {
+            reg.unregister_publisher(&room, &media).await.unwrap();
+        }));
+    }
+    for i in 5..10 {
+        let reg = registry.clone();
+        let room = format!("room{i}");
+        let media = format!("media{i}");
+        handles.push(tokio::spawn(async move {
+            reg.try_register_publisher(&room, &media, "node1", "user1", "localhost:50051")
+                .await
+                .unwrap();
+        }));
+    }
+
+    futures::future::join_all(handles).await;
+
+    // The first 5 should be gone, the next 5 should exist
+    for i in 0..5 {
+        let room = format!("room{i}");
+        let media = format!("media{i}");
+        assert!(
+            !registry.is_stream_active(&room, &media).await.unwrap(),
+            "room{i} should be unregistered"
+        );
+    }
+    for i in 5..10 {
+        let room = format!("room{i}");
+        let media = format!("media{i}");
+        assert!(
+            registry.is_stream_active(&room, &media).await.unwrap(),
+            "room{i} should be registered"
+        );
+    }
+}
+
+#[tokio::test]
+async fn test_concurrent_cleanup_all_for_node() {
+    let registry = std::sync::Arc::new(InMemoryStreamRegistry::new());
+
+    // Register on multiple nodes
+    for i in 0..5 {
+        let room = format!("room{i}");
+        registry
+            .try_register_publisher(&room, "media1", "node1", "user1", "localhost:50051")
+            .await
+            .unwrap();
+    }
+    for i in 5..10 {
+        let room = format!("room{i}");
+        registry
+            .try_register_publisher(&room, "media1", "node2", "user2", "localhost:50052")
+            .await
+            .unwrap();
+    }
+
+    // Concurrently cleanup both nodes
+    let reg1 = registry.clone();
+    let reg2 = registry.clone();
+    let h1 = tokio::spawn(async move {
+        reg1.cleanup_all_publishers_for_node("node1").await.unwrap();
+    });
+    let h2 = tokio::spawn(async move {
+        reg2.cleanup_all_publishers_for_node("node2").await.unwrap();
+    });
+
+    h1.await.unwrap();
+    h2.await.unwrap();
+
+    // All should be cleaned up
+    let streams = registry.list_active_streams().await.unwrap();
+    assert!(
+        streams.is_empty(),
+        "All publishers should be cleaned up, got: {:?}",
+        streams
+    );
+}
+
+#[tokio::test]
+async fn test_concurrent_user_publishers() {
+    let registry = std::sync::Arc::new(InMemoryStreamRegistry::new());
+
+    // Register multiple publishers for same user concurrently
+    let mut handles = Vec::new();
+    for i in 0..5 {
+        let reg = registry.clone();
+        let room = format!("room{i}");
+        let media = format!("media{i}");
+        handles.push(tokio::spawn(async move {
+            reg.try_register_publisher(&room, &media, "node1", "user1", "localhost:50051")
+                .await
+                .unwrap()
+        }));
+    }
+
+    futures::future::join_all(handles).await;
+
+    let user_pubs = registry.get_user_publishers("user1").await.unwrap();
+    assert_eq!(user_pubs.len(), 5);
+
+    // Unregister all for user concurrently
+    registry.unregister_all_user_publishers("user1").await.unwrap();
+
+    let user_pubs = registry.get_user_publishers("user1").await.unwrap();
+    assert!(user_pubs.is_empty());
+}
+
+#[tokio::test]
+async fn test_refresh_publisher_ttl_no_error() {
+    let registry = InMemoryStreamRegistry::new();
+
+    registry
+        .try_register_publisher("room1", "media1", "node1", "user1", "localhost:50051")
+        .await
+        .unwrap();
+
+    // refresh_publisher_ttl should succeed (no-op for in-memory)
+    let result = registry.refresh_publisher_ttl("room1", "media1", "user1").await;
+    assert!(result.is_ok());
+}
+
+#[tokio::test]
+async fn test_refresh_publisher_ttl_nonexistent() {
+    let registry = InMemoryStreamRegistry::new();
+
+    // Should not error even for non-existent publishers
+    let result = registry.refresh_publisher_ttl("nonexistent", "media", "user").await;
+    assert!(result.is_ok());
+}

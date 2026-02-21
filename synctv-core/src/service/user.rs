@@ -317,7 +317,7 @@ impl UserService {
     /// authenticated via `OAuth2`. Unlike `login()`, this skips password verification.
     ///
     /// Per-IP brute-force protection is applied before token issuance. The provider
-    /// user ID is used as the per-account key (instead of username) since OAuth2 users
+    /// user ID is used as the per-account key (instead of username) since `OAuth2` users
     /// may not have a locally-assigned username yet at the time of lookup.
     pub async fn login_oauth2(
         &self,

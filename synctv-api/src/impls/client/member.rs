@@ -120,9 +120,7 @@ impl ClientApiImpl {
             .ok_or_else(|| ApiError::NotFound("Member not found".to_string()))?;
 
         // Fetch username for the target user
-        let username = self.user_service.get_user(&target_uid).await
-            .map(|u| u.username)
-            .unwrap_or_else(|_| format!("user_{}", target_uid.as_str()));
+        let username = self.user_service.get_user(&target_uid).await.map_or_else(|_| format!("user_{}", target_uid.as_str()), |u| u.username);
 
         let member_with_user = synctv_core::models::RoomMemberWithUser {
             room_id: member.room_id,

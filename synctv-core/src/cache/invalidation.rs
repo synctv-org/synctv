@@ -268,7 +268,7 @@ impl CacheInvalidationService {
         }
     }
 
-    /// Clean up a stale consumer group left by a previous process with the same node_id.
+    /// Clean up a stale consumer group left by a previous process with the same `node_id`.
     ///
     /// Uses `XINFO GROUPS` to check if a consumer group matching this node's
     /// `consumer_group` name already exists. If found, it is destroyed so that a

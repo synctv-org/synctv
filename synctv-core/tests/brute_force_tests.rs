@@ -228,3 +228,70 @@ async fn test_redis_tracker_reset() {
     let (count, _) = tracker.get_attempts(key).await;
     assert_eq!(count, 0, "Reset should clear the Redis key");
 }
+
+// ============================================================================
+// BruteForceProtection::with_redis E2E tests
+// ============================================================================
+
+#[tokio::test]
+async fn test_brute_force_with_redis_e2e_lockout_and_reset() {
+    let (_container, conn) = start_redis().await;
+    let protection = BruteForceProtection::with_redis(conn, "test_e2e:".to_string());
+    let ip = Some(IpAddr::V4(Ipv4Addr::new(10, 1, 0, 1)));
+
+    // Record 5 failures to trigger tier1 lockout
+    for _ in 0..5 {
+        protection.record_failure("redis_user", ip).await.unwrap();
+    }
+
+    // Should be locked out
+    let result = protection.check_allowed("redis_user", ip).await;
+    assert!(result.is_err(), "5 failures via Redis should trigger lockout");
+    let err_msg = result.unwrap_err().to_string();
+    assert!(
+        err_msg.contains("Too many failed login attempts"),
+        "Error should mention lockout: {err_msg}"
+    );
+
+    // Reset should unlock
+    protection.reset("redis_user").await.unwrap();
+
+    let result = protection.check_allowed("redis_user", ip).await;
+    assert!(
+        result.is_ok(),
+        "Reset should unlock the account via Redis"
+    );
+}
+
+#[tokio::test]
+async fn test_brute_force_with_redis_ip_lockout_and_reset() {
+    let (_container, conn) = start_redis().await;
+    let protection = BruteForceProtection::with_redis(conn, "test_ip_e2e:".to_string());
+    let ip = IpAddr::V4(Ipv4Addr::new(192, 168, 50, 1));
+
+    // Record 20 failures from the same IP across different usernames
+    for i in 0..20 {
+        let username = format!("ip_user_{i}");
+        protection
+            .record_failure(&username, Some(ip))
+            .await
+            .unwrap();
+    }
+
+    // IP should be locked out even for a brand-new username
+    let result = protection.check_allowed("brand_new_ip_user", Some(ip)).await;
+    assert!(
+        result.is_err(),
+        "IP with 20 failures should be locked out via Redis"
+    );
+
+    // Reset the IP
+    protection.reset_ip(&ip).await.unwrap();
+
+    // IP should be unlocked now
+    let result = protection.check_allowed("brand_new_ip_user", Some(ip)).await;
+    assert!(
+        result.is_ok(),
+        "reset_ip should unlock the IP via Redis"
+    );
+}

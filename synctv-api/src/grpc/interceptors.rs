@@ -286,7 +286,7 @@ impl GrpcRateLimitTier {
     /// The async `GrpcRateLimitLayer` (tower middleware) uses a Redis-backed
     /// distributed limiter that shares a single counter across all replicas,
     /// so the configured value IS the global limit.
-    pub(crate) fn max_requests(self, config: &synctv_core::GrpcRateLimitConfig) -> u32 {
+    pub(crate) const fn max_requests(self, config: &synctv_core::GrpcRateLimitConfig) -> u32 {
         match self {
             Self::Auth => config.auth_max_requests,
             Self::Email => config.email_max_requests,
@@ -298,7 +298,7 @@ impl GrpcRateLimitTier {
     }
 
     /// Window duration in seconds for this tier, read from config.
-    pub(crate) fn window_seconds(self, config: &synctv_core::GrpcRateLimitConfig) -> u64 {
+    pub(crate) const fn window_seconds(self, config: &synctv_core::GrpcRateLimitConfig) -> u64 {
         match self {
             Self::Auth => config.auth_window_seconds,
             Self::Email => config.email_window_seconds,

@@ -241,7 +241,7 @@ impl RemoteProviderManager {
         // Parse timeout
         let timeout = config
             .parse_timeout()
-            .map_err(|e| crate::Error::Internal(e))?;
+            .map_err(crate::Error::Internal)?;
 
         // Create endpoint
         let mut endpoint = Endpoint::from_shared(config.endpoint.clone())

@@ -88,7 +88,8 @@ pub struct RedisTicketStore {
 }
 
 impl RedisTicketStore {
-    pub fn new(conn: redis::aio::ConnectionManager) -> Self {
+    #[must_use] 
+    pub const fn new(conn: redis::aio::ConnectionManager) -> Self {
         Self { conn }
     }
 }
@@ -166,6 +167,7 @@ pub struct InMemoryTicketStore {
 }
 
 impl InMemoryTicketStore {
+    #[must_use] 
     pub fn new(ttl_secs: u64) -> Self {
         Self {
             cache: moka::future::Cache::builder()

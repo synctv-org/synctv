@@ -44,7 +44,7 @@ impl GrpcRateLimitLayer {
     /// Create a new distributed rate limit layer.
     ///
     /// The tier is determined per-request from the gRPC service path.
-    /// Rate limit values (max_requests, window_seconds) are read from
+    /// Rate limit values (`max_requests`, `window_seconds`) are read from
     /// `config.grpc_rate_limits` per tier.
     #[must_use]
     pub fn new(rate_limiter: RateLimiter, config: Arc<Config>) -> Self {
@@ -133,48 +133,45 @@ async fn extract_grpc_status_from_response(
     // Collect the body and trailers.
     let collected = body.collect().await;
 
-    match collected {
-        Ok(collected) => {
-            // Extract trailers as owned data before consuming `collected` for bytes.
-            // `collected.trailers()` returns `Option<&HeaderMap>`, so we clone eagerly.
-            let trailer_map: Option<axum::http::HeaderMap> =
-                collected.trailers().cloned();
+    if let Ok(collected) = collected {
+        // Extract trailers as owned data before consuming `collected` for bytes.
+        // `collected.trailers()` returns `Option<&HeaderMap>`, so we clone eagerly.
+        let trailer_map: Option<axum::http::HeaderMap> =
+            collected.trailers().cloned();
 
-            // Check trailers first (correct gRPC location per protocol spec).
-            let status_label = if let Some(status_val) =
-                trailer_map.as_ref().and_then(|t| t.get("grpc-status"))
-            {
-                grpc_status_code_to_label(status_val.to_str().unwrap_or(""))
-            } else if let Some(status_val) = parts.headers.get("grpc-status") {
-                // Fall back to headers for the rare case tonic puts status there
-                // (e.g. immediate error responses like resource_exhausted).
-                grpc_status_code_to_label(status_val.to_str().unwrap_or(""))
-            } else if parts.status.is_success() {
-                "ok"
-            } else {
-                "error"
-            };
+        // Check trailers first (correct gRPC location per protocol spec).
+        let status_label = if let Some(status_val) =
+            trailer_map.as_ref().and_then(|t| t.get("grpc-status"))
+        {
+            grpc_status_code_to_label(status_val.to_str().unwrap_or(""))
+        } else if let Some(status_val) = parts.headers.get("grpc-status") {
+            // Fall back to headers for the rare case tonic puts status there
+            // (e.g. immediate error responses like resource_exhausted).
+            grpc_status_code_to_label(status_val.to_str().unwrap_or(""))
+        } else if parts.status.is_success() {
+            "ok"
+        } else {
+            "error"
+        };
 
-            // Inline trailer headers into the response parts so that tonic
-            // downstream processing continues to see the gRPC status values.
-            if let Some(ref tm) = trailer_map {
-                for (name, value) in tm {
-                    parts.headers.insert(name, value.clone());
-                }
+        // Inline trailer headers into the response parts so that tonic
+        // downstream processing continues to see the gRPC status values.
+        if let Some(ref tm) = trailer_map {
+            for (name, value) in tm {
+                parts.headers.insert(name, value.clone());
             }
+        }
 
-            // Reconstruct the response with the collected bytes.
-            let bytes = collected.to_bytes();
-            let new_body = TonicBody::new(http_body_util::Full::new(bytes));
-            let new_resp = http::Response::from_parts(parts, new_body);
-            (new_resp, status_label)
-        }
-        Err(_) => {
-            // Body collection failed; reconstruct with empty body and report error.
-            let new_body = TonicBody::empty();
-            let new_resp = http::Response::from_parts(parts, new_body);
-            (new_resp, "error")
-        }
+        // Reconstruct the response with the collected bytes.
+        let bytes = collected.to_bytes();
+        let new_body = TonicBody::new(http_body_util::Full::new(bytes));
+        let new_resp = http::Response::from_parts(parts, new_body);
+        (new_resp, status_label)
+    } else {
+        // Body collection failed; reconstruct with empty body and report error.
+        let new_body = TonicBody::empty();
+        let new_resp = http::Response::from_parts(parts, new_body);
+        (new_resp, "error")
     }
 }
 
@@ -183,7 +180,7 @@ async fn extract_grpc_status_from_response(
 /// gRPC paths follow the format `/<package>.<ServiceName>/<MethodName>`.
 /// Maps known service names (and specific methods) to their corresponding rate limit tiers.
 ///
-/// For UserService and RoomService, read-only RPCs are classified as Read tier
+/// For `UserService` and `RoomService`, read-only RPCs are classified as Read tier
 /// while mutation RPCs remain at Write tier.
 fn tier_from_path(path: &str) -> Option<GrpcRateLimitTier> {
     // gRPC path format: /synctv.client.AuthService/Login
@@ -214,7 +211,7 @@ fn tier_from_path(path: &str) -> Option<GrpcRateLimitTier> {
     }
 }
 
-/// Classify UserService methods into Read or Write tiers.
+/// Classify `UserService` methods into Read or Write tiers.
 ///
 /// Read-only methods use the more permissive Read tier. All other methods
 /// (mutations) default to Write tier.
@@ -227,10 +224,10 @@ fn user_service_tier(method: Option<&str>) -> GrpcRateLimitTier {
     }
 }
 
-/// Classify RoomService methods into Read or Write tiers.
+/// Classify `RoomService` methods into Read or Write tiers.
 ///
 /// Read-only methods use the more permissive Read tier. All other methods
-/// (CreateRoom, JoinRoom, etc.) default to Write tier.
+/// (`CreateRoom`, `JoinRoom`, etc.) default to Write tier.
 fn room_service_tier(method: Option<&str>) -> GrpcRateLimitTier {
     match method {
         Some(

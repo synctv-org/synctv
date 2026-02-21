@@ -50,10 +50,15 @@ impl std::str::FromStr for NotificationType {
     }
 }
 
-// Database mapping: NotificationType <-> TEXT
+// Database mapping: NotificationType <-> VARCHAR
 impl sqlx::Type<sqlx::Postgres> for NotificationType {
     fn type_info() -> sqlx::postgres::PgTypeInfo {
-        <String as sqlx::Type<sqlx::Postgres>>::type_info()
+        sqlx::postgres::PgTypeInfo::with_name("varchar")
+    }
+
+    fn compatible(ty: &sqlx::postgres::PgTypeInfo) -> bool {
+        *ty == Self::type_info()
+            || *ty == <String as sqlx::Type<sqlx::Postgres>>::type_info()
     }
 }
 

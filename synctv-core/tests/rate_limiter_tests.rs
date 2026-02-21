@@ -130,7 +130,6 @@ async fn create_redis_connection_manager() -> (redis::aio::ConnectionManager, te
 }
 
 #[tokio::test]
-#[ignore = "Requires Docker"]
 async fn test_redis_rate_limiter_allows_under_limit() {
     let (conn, _container) = create_redis_connection_manager().await;
     let limiter = RateLimiter::new(Some(conn), "redis_allow:".to_string());
@@ -147,7 +146,6 @@ async fn test_redis_rate_limiter_allows_under_limit() {
 }
 
 #[tokio::test]
-#[ignore = "Requires Docker"]
 async fn test_redis_rate_limiter_blocks_over_limit() {
     let (conn, _container) = create_redis_connection_manager().await;
     let limiter = RateLimiter::new(Some(conn), "redis_block:".to_string());
@@ -170,7 +168,6 @@ async fn test_redis_rate_limiter_blocks_over_limit() {
 }
 
 #[tokio::test]
-#[ignore = "Requires Docker"]
 async fn test_redis_rate_limiter_concurrent_requests() {
     let (conn, _container) = create_redis_connection_manager().await;
     let limiter = RateLimiter::new(Some(conn), "redis_conc:".to_string());
@@ -198,4 +195,40 @@ async fn test_redis_rate_limiter_concurrent_requests() {
 
     assert_eq!(successes, 10, "Only 10 of 20 concurrent requests should succeed");
     assert_eq!(failures, 10, "10 requests should be rate limited");
+}
+
+#[tokio::test]
+async fn test_redis_rate_limiter_strict_enforcement() {
+    let (conn, _container) = create_redis_connection_manager().await;
+    let limiter = RateLimiter::new(Some(conn), "redis_strict:".to_string());
+
+    let key = "user:redis_strict:auth";
+    limiter.reset(key).await.unwrap();
+
+    // Strict check should work within limits
+    for i in 0..5 {
+        limiter
+            .check_rate_limit_distributed(key, 5, 1)
+            .await
+            .unwrap_or_else(|_| panic!("Strict request {i} should succeed within limit"));
+    }
+
+    // Should be blocked after exhausting limit
+    let result = limiter.check_rate_limit_distributed(key, 5, 1).await;
+    assert!(
+        matches!(result, Err(RateLimitError::RateLimitExceeded { .. })),
+        "6th strict request should be rate limited via Redis"
+    );
+}
+
+#[tokio::test]
+async fn test_redis_rate_limiter_fail_closed_without_redis() {
+    // In-memory-only limiter should fail closed on distributed check
+    let limiter = RateLimiter::in_memory_only("redis_fc:".to_string());
+
+    let result = limiter.check_rate_limit_distributed("key", 10, 1).await;
+    assert!(
+        matches!(result, Err(RateLimitError::RateLimitExceeded { retry_after_seconds: 1 })),
+        "Distributed check without Redis should fail closed"
+    );
 }

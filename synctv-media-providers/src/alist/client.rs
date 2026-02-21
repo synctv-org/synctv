@@ -28,8 +28,7 @@ fn validate_path(path: &str) -> Result<(), AlistError> {
     for component in decoded.split('/') {
         if component == ".." || component == "." {
             return Err(AlistError::InvalidConfig(format!(
-                "Path traversal detected: '{}' components are not allowed",
-                component
+                "Path traversal detected: '{component}' components are not allowed"
             )));
         }
     }

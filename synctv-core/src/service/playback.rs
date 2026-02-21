@@ -518,19 +518,16 @@ impl PlaybackService {
                     // Loop back to start.
                     // If current media was deleted, fall back to the first item.
                     if let Some(ref current_id) = state.playing_media_id {
-                        match playlist.iter().position(|m| &m.id == current_id) {
-                            Some(pos) => {
-                                let next_pos = (pos + 1) % playlist.len();
-                                Some(&playlist[next_pos])
-                            }
-                            None => {
-                                tracing::warn!(
-                                    room_id = %room_id.as_str(),
-                                    media_id = %current_id.as_str(),
-                                    "RepeatAll: currently-playing media not found in playlist (deleted?), falling back to first item"
-                                );
-                                playlist.first()
-                            }
+                        if let Some(pos) = playlist.iter().position(|m| &m.id == current_id) {
+                            let next_pos = (pos + 1) % playlist.len();
+                            Some(&playlist[next_pos])
+                        } else {
+                            tracing::warn!(
+                                room_id = %room_id.as_str(),
+                                media_id = %current_id.as_str(),
+                                "RepeatAll: currently-playing media not found in playlist (deleted?), falling back to first item"
+                            );
+                            playlist.first()
                         }
                     } else {
                         playlist.first()
@@ -582,9 +579,7 @@ impl PlaybackService {
             updated_state.relative_path = next
                 .source_config
                 .get("path")
-                .and_then(|v| v.as_str())
-                .map(String::from)
-                .unwrap_or_else(|| next.name.clone());
+                .and_then(|v| v.as_str()).map_or_else(|| next.name.clone(), String::from);
             updated_state.current_time = 0.0;
             updated_state.is_playing = true;
             updated_state.updated_at = chrono::Utc::now();
@@ -652,11 +647,10 @@ impl PlaybackService {
                         );
                         tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
                         continue;
-                    } else {
-                        return Err(Error::Internal(
-                            "play_next failed after maximum retry attempts".to_string(),
-                        ));
                     }
+                    return Err(Error::Internal(
+                        "play_next failed after maximum retry attempts".to_string(),
+                    ));
                 }
                 Err(e) => return Err(e),
             }
@@ -822,11 +816,10 @@ impl PlaybackService {
                         );
                         tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
                         continue;
-                    } else {
-                        return Err(Error::Internal(
-                            "Playback state update failed after maximum retry attempts".to_string(),
-                        ));
                     }
+                    return Err(Error::Internal(
+                        "Playback state update failed after maximum retry attempts".to_string(),
+                    ));
                 }
                 Err(e) => return Err(e),
             }

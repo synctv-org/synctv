@@ -72,9 +72,9 @@ pub enum AuthMethod {
 /// The `room_id` parameter is required for ticket validation (Issue #65): tickets are
 /// room-scoped and must be checked against the room the connection targets.
 ///
-/// For JWT-based paths (header and ?token=), the SecurityPipeline is invoked after
+/// For JWT-based paths (header and ?token=), the `SecurityPipeline` is invoked after
 /// signature verification to enforce password-version, banned, and deleted checks
-/// (parity with the HTTP AuthUser extractor). For the ticket path, the user status
+/// (parity with the HTTP `AuthUser` extractor). For the ticket path, the user status
 /// is checked explicitly since tickets don't carry JWT claims.
 async fn extract_user_id(
     state: &AppState,
@@ -230,7 +230,7 @@ impl StreamMessage for WebSocketStream {
 struct WebSocketMessageSender {
     sender: tokio::sync::mpsc::Sender<axum::extract::ws::Message>,
     /// Count of consecutive message drops (channel full). When this exceeds
-    /// SLOW_CLIENT_DROP_THRESHOLD the send() method returns an error to trigger
+    /// `SLOW_CLIENT_DROP_THRESHOLD` the `send()` method returns an error to trigger
     /// a graceful disconnect for the slow client.
     consecutive_drops: Arc<AtomicU32>,
 }
@@ -257,7 +257,7 @@ impl WebSocketMessageSender {
 /// MUST be delivered (playback state changes, kick/ban notifications, room
 /// deletion). Critical messages use a blocking send with timeout so they are
 /// not silently dropped.
-fn is_critical_message(message: &ServerMessage) -> bool {
+const fn is_critical_message(message: &ServerMessage) -> bool {
     use crate::proto::client::server_message::Message;
     match &message.message {
         Some(Message::PlaybackState(_)) => true,
@@ -282,7 +282,7 @@ impl crate::impls::messaging::MessageSender for WebSocketMessageSender {
             // after the timeout we disconnect the slow client.
             let sender = self.sender.clone();
             // try_send first (fast path, no syscall)
-            match sender.try_send(ws_msg.clone()) {
+            match sender.try_send(ws_msg) {
                 Ok(()) => {
                     // Reset drop counter on success
                     self.consecutive_drops.store(0, Ordering::Relaxed);

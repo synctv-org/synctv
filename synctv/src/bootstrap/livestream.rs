@@ -52,7 +52,7 @@ pub async fn init_livestream(
     // When a publisher crashes without a clean on_unpublish, secondary indexes
     // can retain orphaned references. This background task cleans them up.
     let tracker_cleanup_handle = user_stream_tracker.start_periodic_cleanup(
-        std::time::Duration::from_secs(60),
+        std::time::Duration::from_mins(1),
     );
     background_handles.push(tracker_cleanup_handle);
 

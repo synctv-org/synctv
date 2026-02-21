@@ -140,7 +140,7 @@ impl OAuthStateStore for RedisOAuthStateStore {
 /// via stored expiry timestamps; expired entries are swept on every `store()`
 /// and `consume()` call to bound memory usage.
 pub struct InMemoryOAuthStateStore {
-    /// Map of token_id -> (state, expiry_instant)
+    /// Map of `token_id` -> (state, `expiry_instant`)
     states: std::sync::Mutex<HashMap<String, (OAuth2State, std::time::Instant)>>,
 }
 

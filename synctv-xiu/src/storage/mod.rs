@@ -61,8 +61,8 @@ pub trait HlsStorage: Send + Sync {
     /// Write data to storage
     ///
     /// # Arguments
-    /// * `app` - Application name (e.g., room_id)
-    /// * `stream` - Stream name (e.g., media_id)
+    /// * `app` - Application name (e.g., `room_id`)
+    /// * `stream` - Stream name (e.g., `media_id`)
     /// * `name` - Segment name (e.g., "a1b2c3d4e5f6")
     /// * `data` - Binary data to store
     async fn write(&self, app: &str, stream: &str, name: &str, data: Bytes) -> Result<()>;

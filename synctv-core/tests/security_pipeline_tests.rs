@@ -334,3 +334,131 @@ async fn test_cache_hit_banned_user_rejected() {
     assert!(result.is_err(), "Banned user should be rejected via cache");
     assert!(matches!(result.unwrap_err(), Error::Authentication(_)));
 }
+
+// ============================================================================
+// SEC4: Pending user rejected (DB and cache paths)
+// ============================================================================
+
+#[tokio::test]
+async fn test_pending_user_rejected_via_db() {
+    let (_container, pool) = create_test_pool().await;
+    let user = insert_user(&pool, &make_user(UserStatus::Pending, 0)).await;
+    let user_service = Arc::new(create_user_service(pool));
+    let pipeline = SecurityPipeline::new(user_service);
+
+    let claims = make_claims(&user.id, Some(0));
+    let result = pipeline.check(&claims).await;
+    assert!(result.is_err(), "Pending user should be rejected via DB");
+    assert!(
+        matches!(result.unwrap_err(), Error::Authentication(_)),
+        "Should be an Authentication error"
+    );
+}
+
+#[tokio::test]
+async fn test_cache_hit_pending_user_rejected() {
+    let (_container, pool) = create_test_pool().await;
+    let user = insert_user(&pool, &make_user(UserStatus::Pending, 0)).await;
+    let user_service = Arc::new(create_user_service(pool));
+
+    let user_cache = Arc::new(
+        UserCache::new(Arc::new(NoopCacheL2), 100, 5, 0, "test:user:".to_string()).unwrap(),
+    );
+
+    // Pre-populate cache with Pending status
+    let cached = CachedUser::with_updated_at(
+        user.id.as_str().to_string(),
+        user.username.clone(),
+        user.role,
+        UserStatus::Pending,
+        user.created_at,
+        user.updated_at,
+        0,
+    );
+    user_cache.set(&user.id, cached).await.unwrap();
+
+    let pipeline = SecurityPipeline::new(user_service).with_user_cache(user_cache);
+    let claims = make_claims(&user.id, Some(0));
+
+    let result = pipeline.check(&claims).await;
+    assert!(
+        result.is_err(),
+        "Pending user should be rejected via cache fast path"
+    );
+    assert!(matches!(result.unwrap_err(), Error::Authentication(_)));
+}
+
+// ============================================================================
+// SEC5: Cache population after DB miss
+// ============================================================================
+
+#[tokio::test]
+async fn test_cache_populated_with_correct_password_version_after_db_miss() {
+    let (_container, pool) = create_test_pool().await;
+    let password_version = 3;
+    let user = insert_user(&pool, &make_user(UserStatus::Active, password_version)).await;
+    let user_service = Arc::new(create_user_service(pool));
+
+    let user_cache = Arc::new(
+        UserCache::new(Arc::new(NoopCacheL2), 100, 5, 0, "test:user:".to_string()).unwrap(),
+    );
+
+    // Cache is empty -- no entry for this user
+    assert!(
+        user_cache.get(&user.id).await.unwrap().is_none(),
+        "Cache should be empty initially"
+    );
+
+    let pipeline = SecurityPipeline::new(user_service).with_user_cache(user_cache.clone());
+    let claims = make_claims(&user.id, Some(password_version));
+
+    // This call should fall through to DB and then populate the cache
+    let result = pipeline.check(&claims).await;
+    assert!(result.is_ok(), "Active user should pass: {:?}", result.err());
+
+    // Verify the cache was populated
+    let cached = user_cache
+        .get(&user.id)
+        .await
+        .unwrap()
+        .expect("Cache should be populated after DB lookup");
+    assert_eq!(
+        cached.password_version(),
+        password_version,
+        "Cached password_version should match the DB value"
+    );
+    assert_eq!(
+        cached.status(),
+        UserStatus::Active,
+        "Cached status should match the DB value"
+    );
+}
+
+#[tokio::test]
+async fn test_cache_populated_then_subsequent_check_uses_cache() {
+    let (_container, pool) = create_test_pool().await;
+    let user = insert_user(&pool, &make_user(UserStatus::Active, 0)).await;
+    let user_service = Arc::new(create_user_service(pool.clone()));
+
+    let user_cache = Arc::new(
+        UserCache::new(Arc::new(NoopCacheL2), 100, 5, 0, "test:user:".to_string()).unwrap(),
+    );
+
+    let pipeline = SecurityPipeline::new(user_service).with_user_cache(user_cache.clone());
+    let claims = make_claims(&user.id, Some(0));
+
+    // First check: DB hit, populates cache
+    let result1 = pipeline.check(&claims).await;
+    assert!(result1.is_ok());
+
+    // Close the pool to prove the second check uses the cache, not DB
+    pool.close().await;
+
+    // Second check: should succeed from cache even though DB is closed
+    let result2 = pipeline.check(&claims).await;
+    assert!(
+        result2.is_ok(),
+        "Second check should succeed from cache even with DB closed: {:?}",
+        result2.err()
+    );
+}

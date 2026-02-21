@@ -139,7 +139,7 @@ impl IntoResponse for AppError {
     }
 }
 
-/// Convert `ProviderError` to HTTP errors with standard AppError format.
+/// Convert `ProviderError` to HTTP errors with standard `AppError` format.
 ///
 /// This replaces the old `error_response(parse_provider_error(...))` pattern
 /// which used string matching and returned a non-standard JSON format.

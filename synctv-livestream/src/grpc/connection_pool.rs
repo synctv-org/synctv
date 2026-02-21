@@ -207,14 +207,14 @@ impl GrpcConnectionPool {
             // Stale or unhealthy -- drop the read guard and remove below
             drop(entry);
             self.connections.remove(address);
-            if !age_ok {
-                debug!(address = address, "Evicted stale gRPC connection from pool");
-            } else {
+            if age_ok {
                 debug!(
                     address = address,
                     consecutive_errors = errors,
                     "Evicted unhealthy gRPC connection from pool (error threshold exceeded)"
                 );
+            } else {
+                debug!(address = address, "Evicted stale gRPC connection from pool");
             }
         }
 

@@ -136,7 +136,7 @@ pub struct PublisherManager {
     lag_event_count: AtomicU64,
     /// Duration of inactivity before a publisher is considered silent
     silent_timeout_secs: u64,
-    /// Flag to suppress silent-publisher cleanup during StreamHub restart.
+    /// Flag to suppress silent-publisher cleanup during `StreamHub` restart.
     /// Set before restart, cleared after re-registration completes.
     is_restarting: Arc<AtomicBool>,
 }
@@ -159,9 +159,9 @@ impl PublisherManager {
         }
     }
 
-    /// Create a new PublisherManager with a shared restarting flag.
+    /// Create a new `PublisherManager` with a shared restarting flag.
     ///
-    /// This allows external code (e.g., StreamHub restart loop) to share the
+    /// This allows external code (e.g., `StreamHub` restart loop) to share the
     /// restarting flag and set it before cleanup operations begin, preventing
     /// false silent-publisher detections during the restart window.
     pub fn with_restarting_flag(
@@ -184,7 +184,7 @@ impl PublisherManager {
 
     /// Get a clone of the restarting flag for external coordination.
     ///
-    /// This allows external code (e.g., StreamHub restart loop) to set the
+    /// This allows external code (e.g., `StreamHub` restart loop) to set the
     /// restarting flag before cleanup operations begin, preventing false
     /// silent-publisher detections during the restart window.
     pub fn restarting_flag(&self) -> Arc<AtomicBool> {
@@ -200,7 +200,7 @@ impl PublisherManager {
     }
 
     /// Mark the manager as restarting to suppress silent-publisher cleanup
-    /// during the StreamHub restart window.
+    /// during the `StreamHub` restart window.
     pub fn set_restarting(&self) {
         self.is_restarting.store(true, Ordering::Release);
     }
@@ -767,7 +767,7 @@ impl PublisherManager {
                             break;
                         }
                         Err(e) => {
-                            last_error = Some(e.into());
+                            last_error = Some(e);
                             if attempt < MAX_HEARTBEAT_RETRIES - 1 {
                                 let delay_ms = HEARTBEAT_RETRY_BASE_DELAY_MS * (1 << attempt);
                                 warn!(
@@ -807,7 +807,7 @@ impl PublisherManager {
                     //
                     // Use structured redis::ErrorKind matching instead of string comparison
                     // to avoid brittle matching against error message text.
-                    let is_redis_unreachable = last_error.as_ref().map_or(false, |e| {
+                    let is_redis_unreachable = last_error.as_ref().is_some_and(|e| {
                         if let Some(redis_err) = e.downcast_ref::<redis::RedisError>() {
                             matches!(
                                 redis_err.kind(),

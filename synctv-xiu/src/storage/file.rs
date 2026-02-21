@@ -25,7 +25,7 @@ impl FileStorage {
         }
     }
 
-    /// Get full file path from structured components: base_path/app/stream/name
+    /// Get full file path from structured components: `base_path/app/stream/name`
     fn get_path(&self, app: &str, stream: &str, name: &str) -> PathBuf {
         self.base_path.join(app).join(stream).join(name)
     }
@@ -100,11 +100,10 @@ impl HlsStorage for FileStorage {
                 Ok(ft) => ft,
                 Err(_) => continue,
             };
-            if ft.is_file() {
-                if fs::remove_file(entry.path()).await.is_ok() {
+            if ft.is_file()
+                && fs::remove_file(entry.path()).await.is_ok() {
                     deleted += 1;
                 }
-            }
         }
 
         // Remove empty stream dir, then try removing empty app dir
@@ -143,11 +142,10 @@ impl HlsStorage for FileStorage {
                     Ok(ft) => ft,
                     Err(_) => continue,
                 };
-                if ft.is_file() {
-                    if fs::remove_file(entry.path()).await.is_ok() {
+                if ft.is_file()
+                    && fs::remove_file(entry.path()).await.is_ok() {
                         deleted += 1;
                     }
-                }
             }
             let _ = fs::remove_dir(&stream_dir).await;
         }
@@ -200,12 +198,11 @@ impl HlsStorage for FileStorage {
                     }
                     if let Ok(metadata) = fs::metadata(&path).await {
                         if let Ok(modified) = metadata.modified() {
-                            if modified < cutoff_time {
-                                if fs::remove_file(&path).await.is_ok() {
+                            if modified < cutoff_time
+                                && fs::remove_file(&path).await.is_ok() {
                                     deleted += 1;
                                     tracing::trace!("Deleted expired file: {:?}", path);
                                 }
-                            }
                         }
                     }
                 }

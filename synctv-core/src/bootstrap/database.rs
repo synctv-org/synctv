@@ -65,7 +65,7 @@ pub async fn init_database_with_cancel(
         loop {
             if let Some(ref token) = cancel {
                 tokio::select! {
-                    _ = token.cancelled() => {
+                    () = token.cancelled() => {
                         tracing::debug!("DB pool metrics task cancelled");
                         break;
                     }
@@ -105,29 +105,26 @@ fn mask_database_url(url: &str) -> String {
         return "<url-missing-scheme>".to_string();
     }
 
-    match url::Url::parse(url) {
-        Ok(mut parsed) => {
-            if !parsed.username().is_empty() {
-                let _ = parsed.set_username("***");
-            }
-            if parsed.password().is_some() {
-                let _ = parsed.set_password(Some("***"));
-            }
-            parsed.to_string()
+    if let Ok(mut parsed) = url::Url::parse(url) {
+        if !parsed.username().is_empty() {
+            let _ = parsed.set_username("***");
         }
-        Err(_) => {
-            // Parsing failed - attempt manual masking to prevent credential leakage
-            // This handles edge cases where URL is malformed but contains credentials
-            if let Some(at_pos) = url.rfind('@') {
-                if let Some(scheme_end) = url.find("://") {
-                    // Found scheme and @ symbol, reconstruct safely masked URL
-                    let scheme = &url[..scheme_end + 3];
-                    let host_part = &url[at_pos..];
-                    return format!("{}***:***{}", scheme, host_part);
-                }
-            }
-            // Completely unparseable URL - return safe placeholder
-            "<invalid-url>".to_string()
+        if parsed.password().is_some() {
+            let _ = parsed.set_password(Some("***"));
         }
+        parsed.to_string()
+    } else {
+        // Parsing failed - attempt manual masking to prevent credential leakage
+        // This handles edge cases where URL is malformed but contains credentials
+        if let Some(at_pos) = url.rfind('@') {
+            if let Some(scheme_end) = url.find("://") {
+                // Found scheme and @ symbol, reconstruct safely masked URL
+                let scheme = &url[..scheme_end + 3];
+                let host_part = &url[at_pos..];
+                return format!("{scheme}***:***{host_part}");
+            }
+        }
+        // Completely unparseable URL - return safe placeholder
+        "<invalid-url>".to_string()
     }
 }

@@ -393,7 +393,7 @@ where
             // Build a stable singleflight key from the sorted missing key IDs.
             // Sorting ensures that {"a","b"} and {"b","a"} resolve to the same
             // in-flight request, deduplicating concurrent batch stampedes.
-            let mut sf_key_parts: Vec<&str> = missing_keys.iter().map(|k| k.as_str()).collect();
+            let mut sf_key_parts: Vec<&str> = missing_keys.iter().map(CacheKey::as_str).collect();
             sf_key_parts.sort_unstable();
             let sf_key = format!("batch:{}:{}", self.cache_type, sf_key_parts.join(","));
 

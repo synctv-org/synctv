@@ -24,7 +24,7 @@ use synctv_core::{
 use crate::proto::client::{ClientMessage, ServerMessage};
 
 /// Convert a `RoomRole` from the core models to the proto `RoomMemberRole` as i32.
-fn room_role_to_proto(role: synctv_core::models::RoomRole) -> i32 {
+const fn room_role_to_proto(role: synctv_core::models::RoomRole) -> i32 {
     match role {
         synctv_core::models::RoomRole::Creator => {
             synctv_proto::common::RoomMemberRole::Creator as i32
@@ -115,7 +115,7 @@ pub struct StreamMessageHandler {
     /// Global per-connection WebSocket message rate limit (messages per second)
     ws_message_rate_limit: u32,
     /// Tracks whether this connection has an active WebRTC session.
-    /// Used by cleanup() to decrement WEBRTC_PEERS_ACTIVE on ungraceful disconnect.
+    /// Used by `cleanup()` to decrement `WEBRTC_PEERS_ACTIVE` on ungraceful disconnect.
     has_webrtc_session: Arc<std::sync::atomic::AtomicBool>,
 }
 
@@ -1134,7 +1134,7 @@ impl StreamMessageHandler {
                 let jitter_secs = heartbeat_user_id
                     .as_str()
                     .bytes()
-                    .fold(0u64, |a, b| a.wrapping_add(b as u64))
+                    .fold(0u64, |a, b| a.wrapping_add(u64::from(b)))
                     % 11; // 0..=10
                 let period = std::time::Duration::from_secs(25 + jitter_secs);
                 let mut interval = tokio::time::interval(period);

@@ -66,6 +66,7 @@ async fn create_hub(redis_url: &str, key_prefix: &str) -> RoomMessageHub {
 // ============================================================================
 
 #[tokio::test]
+#[ignore = "requires Docker"]
 async fn test_cross_replica_subscription_visibility() {
     let redis = TestRedis::start().await;
 
@@ -114,6 +115,7 @@ async fn test_cross_replica_subscription_visibility() {
 // ============================================================================
 
 #[tokio::test]
+#[ignore = "requires Docker"]
 async fn test_cross_replica_unsubscribe_removes_redis_state() {
     let redis = TestRedis::start().await;
 
@@ -155,6 +157,7 @@ async fn test_cross_replica_unsubscribe_removes_redis_state() {
 // ============================================================================
 
 #[tokio::test]
+#[ignore = "requires Docker"]
 async fn test_cross_replica_multiple_subscribers_distributed_count() {
     let redis = TestRedis::start().await;
 
@@ -241,6 +244,7 @@ async fn test_cross_replica_multiple_subscribers_distributed_count() {
 // ============================================================================
 
 #[tokio::test]
+#[ignore = "requires Docker"]
 async fn test_room_lifecycle_events_across_replicas() {
     let redis = TestRedis::start().await;
 
@@ -313,6 +317,7 @@ async fn test_room_lifecycle_events_across_replicas() {
 // ============================================================================
 
 #[tokio::test]
+#[ignore = "requires Docker"]
 async fn test_audit_redis_subscriptions_reports_without_local_populate() {
     let redis = TestRedis::start().await;
 
@@ -381,6 +386,7 @@ async fn test_audit_redis_subscriptions_reports_without_local_populate() {
 // ============================================================================
 
 #[tokio::test]
+#[ignore = "requires Docker"]
 async fn test_concurrent_cross_replica_subscribe_unsubscribe() {
     let redis = TestRedis::start().await;
 

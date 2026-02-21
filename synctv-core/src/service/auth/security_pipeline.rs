@@ -48,7 +48,7 @@ pub struct SecurityPipeline {
 impl SecurityPipeline {
     /// Create a new security pipeline.
     #[must_use]
-    pub fn new(user_service: Arc<UserService>) -> Self {
+    pub const fn new(user_service: Arc<UserService>) -> Self {
         Self {
             user_service,
             user_cache: None,

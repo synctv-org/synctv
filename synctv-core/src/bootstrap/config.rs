@@ -73,7 +73,7 @@ pub fn load_config() -> Result<Config> {
     // Validate configuration (fail fast on misconfigurations)
     if let Err(errors) = config.validate() {
         for error in &errors {
-            eprintln!("Config validation error: {}", error);
+            eprintln!("Config validation error: {error}");
         }
         return Err(anyhow::anyhow!(
             "Configuration validation failed with {} error(s): {}",

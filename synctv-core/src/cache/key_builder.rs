@@ -218,7 +218,7 @@ impl KeyBuilder {
         format!("{}:auth:rt_blacklist:{}", self.prefix, jti)
     }
 
-    /// Refresh token family revocation key (per user_id)
+    /// Refresh token family revocation key (per `user_id`)
     ///
     /// Type: String + TTL (max refresh token lifetime)
     /// Value: Unix timestamp when the family was revoked

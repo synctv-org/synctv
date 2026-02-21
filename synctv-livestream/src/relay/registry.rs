@@ -148,8 +148,7 @@ impl StreamRegistry {
         // This ensures publishers cannot register without a valid gRPC address
         if grpc_address.trim().is_empty() {
             return Err(anyhow!(
-                "Cannot register publisher for node={} with empty grpc_address (room={}, media={})",
-                node_id, room_id, media_id
+                "Cannot register publisher for node={node_id} with empty grpc_address (room={room_id}, media={media_id})"
             ));
         }
 
@@ -181,7 +180,7 @@ impl StreamRegistry {
         // Returns: {registered (1 or 0), epoch}
         //   - registered=1: new publisher registered; epoch is the new epoch value.
         //   - registered=0: another publisher already exists; epoch is the current epoch.
-        let lua_script = r#"
+        let lua_script = r"
             local epoch_key = KEYS[1]
             local hash_key = KEYS[2]
             local info_json_template = ARGV[1]
@@ -224,7 +223,7 @@ impl StreamRegistry {
             end
 
             return {1, epoch}
-        "#;
+        ";
 
         let user_key = if user_id.is_empty() {
             String::new()

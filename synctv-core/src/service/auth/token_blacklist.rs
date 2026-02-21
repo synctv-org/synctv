@@ -62,7 +62,7 @@ pub trait TokenBlacklistStore: Send + Sync {
 pub struct InMemoryTokenBlacklistStore {
     /// JTI -> expiry Instant (presence + non-expired = blacklisted)
     jti_blacklist: Arc<moka::future::Cache<String, Instant>>,
-    /// user_key -> (revoked_at timestamp, expiry Instant)
+    /// `user_key` -> (`revoked_at` timestamp, expiry Instant)
     family_revoked: Arc<moka::future::Cache<String, (i64, Instant)>>,
 }
 
@@ -139,7 +139,7 @@ pub struct RedisTokenBlacklistStore {
 impl RedisTokenBlacklistStore {
     /// Create a new Redis-backed token blacklist store.
     #[must_use]
-    pub fn new(conn: redis::aio::ConnectionManager) -> Self {
+    pub const fn new(conn: redis::aio::ConnectionManager) -> Self {
         Self { conn }
     }
 }

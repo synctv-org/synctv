@@ -225,8 +225,7 @@ impl RoomMemberRepository {
                         "Room is full, rejecting join"
                     );
                     return Err(Error::InvalidInput(format!(
-                        "Room is full ({}/{} members)",
-                        count, max_members
+                        "Room is full ({count}/{max_members} members)"
                     )));
                 }
             }

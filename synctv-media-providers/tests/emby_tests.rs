@@ -170,3 +170,211 @@ async fn test_emby_client_jellyfin_detection() {
     assert_eq!(token, "jellyfin-token");
     assert_eq!(user_id, "jf-user-1");
 }
+
+// ============================================================================
+// MP5: Emby playback reporting wiremock tests
+// ============================================================================
+
+#[tokio::test]
+async fn test_emby_report_playback_start_success() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("POST"))
+        .and(path("/emby/Sessions/Playing"))
+        .respond_with(ResponseTemplate::new(204))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let client =
+        EmbyClient::with_credentials(&server.uri(), "token123", "user-uuid-123").unwrap();
+    let result = client
+        .report_playback_start("item-abc", "session-1", Some("source-1"), 0)
+        .await;
+    assert!(result.is_ok(), "Playback start should succeed: {result:?}");
+}
+
+#[tokio::test]
+async fn test_emby_report_playback_stop_success() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("POST"))
+        .and(path("/emby/Sessions/Playing/Stopped"))
+        .respond_with(ResponseTemplate::new(204))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let client =
+        EmbyClient::with_credentials(&server.uri(), "token123", "user-uuid-123").unwrap();
+    let result = client
+        .report_playback_stop("item-abc", "session-1", 50000)
+        .await;
+    assert!(result.is_ok(), "Playback stop should succeed: {result:?}");
+}
+
+#[tokio::test]
+async fn test_emby_report_playback_progress_success() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("POST"))
+        .and(path("/emby/Sessions/Playing/Progress"))
+        .respond_with(ResponseTemplate::new(204))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let client =
+        EmbyClient::with_credentials(&server.uri(), "token123", "user-uuid-123").unwrap();
+    let result = client
+        .report_playback_progress("item-abc", "session-1", Some("source-1"), 25000, false)
+        .await;
+    assert!(
+        result.is_ok(),
+        "Playback progress should succeed: {result:?}"
+    );
+}
+
+#[tokio::test]
+async fn test_emby_report_playback_progress_paused() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("POST"))
+        .and(path("/emby/Sessions/Playing/Progress"))
+        .respond_with(ResponseTemplate::new(204))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let client =
+        EmbyClient::with_credentials(&server.uri(), "token123", "user-uuid-123").unwrap();
+    let result = client
+        .report_playback_progress("item-abc", "session-1", None, 25000, true)
+        .await;
+    assert!(
+        result.is_ok(),
+        "Playback progress (paused) should succeed: {result:?}"
+    );
+}
+
+#[tokio::test]
+async fn test_emby_delete_active_encodings_success() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("DELETE"))
+        .respond_with(ResponseTemplate::new(204))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let client =
+        EmbyClient::with_credentials(&server.uri(), "token123", "user-uuid-123").unwrap();
+    let result = client.delete_active_encodings("session-1").await;
+    assert!(
+        result.is_ok(),
+        "Delete active encodings should succeed: {result:?}"
+    );
+}
+
+#[tokio::test]
+async fn test_emby_report_playback_start_validates_item_id() {
+    let client =
+        EmbyClient::with_credentials("https://emby.example.com", "token123", "user-uuid-123")
+            .unwrap();
+    // Empty item_id should be rejected
+    let result = client
+        .report_playback_start("", "session-1", None, 0)
+        .await;
+    assert!(result.is_err());
+    let err_msg = result.unwrap_err().to_string();
+    assert!(
+        err_msg.contains("must not be empty"),
+        "Empty item_id should be rejected, got: {err_msg}"
+    );
+}
+
+#[tokio::test]
+async fn test_emby_report_playback_start_rejects_traversal() {
+    let client =
+        EmbyClient::with_credentials("https://emby.example.com", "token123", "user-uuid-123")
+            .unwrap();
+    let result = client
+        .report_playback_start("../etc/passwd", "session-1", None, 0)
+        .await;
+    assert!(result.is_err());
+    let err_msg = result.unwrap_err().to_string();
+    assert!(
+        err_msg.contains("invalid characters"),
+        "Traversal item_id should be rejected, got: {err_msg}"
+    );
+}
+
+#[tokio::test]
+async fn test_emby_get_playback_info_success() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("POST"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "MediaSources": [
+                    {
+                        "Id": "source-1",
+                        "Name": "1080P",
+                        "Path": "/media/movie.mkv",
+                        "Container": "mkv",
+                        "Size": 5000000000_u64,
+                        "Bitrate": 8000000,
+                        "RunTimeTicks": 72000000000_i64,
+                        "MediaStreams": [
+                            {
+                                "Type": "Video",
+                                "Codec": "h264",
+                                "Width": 1920,
+                                "Height": 1080
+                            },
+                            {
+                                "Type": "Audio",
+                                "Codec": "aac",
+                                "Channels": 6,
+                                "Language": "eng"
+                            }
+                        ],
+                        "SupportsTranscoding": true,
+                        "SupportsDirectPlay": true,
+                        "SupportsDirectStream": true
+                    }
+                ],
+                "PlaySessionId": "play-session-abc"
+            })),
+        )
+        .mount(&server)
+        .await;
+
+    let client =
+        EmbyClient::with_credentials(&server.uri(), "token123", "user-uuid-123").unwrap();
+    let resp = client
+        .get_playback_info("item-1", None, None, None, None)
+        .await
+        .unwrap();
+    assert_eq!(resp.play_session_id, "play-session-abc");
+    assert_eq!(resp.media_sources.len(), 1);
+    assert_eq!(resp.media_sources[0].id, "source-1");
+    assert_eq!(resp.media_sources[0].container, "mkv");
+}
+
+#[tokio::test]
+async fn test_emby_logout_success() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("POST"))
+        .and(path("/emby/Sessions/Logout"))
+        .respond_with(ResponseTemplate::new(204))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let client =
+        EmbyClient::with_credentials(&server.uri(), "token123", "user-uuid-123").unwrap();
+    let result = client.logout().await;
+    assert!(result.is_ok(), "Logout should succeed: {result:?}");
+}

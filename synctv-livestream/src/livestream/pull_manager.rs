@@ -88,7 +88,7 @@ impl PullStreamManager {
         self
     }
 
-    /// Set a shared gRPC connection pool (for sharing with HlsProxyClient etc.).
+    /// Set a shared gRPC connection pool (for sharing with `HlsProxyClient` etc.).
     #[must_use]
     pub fn with_connection_pool(mut self, pool: GrpcConnectionPool) -> Self {
         self.connection_pool = pool;

@@ -83,19 +83,19 @@ pub trait MigrationLock: Send + Sync {
 #[async_trait::async_trait]
 impl MigrationLock for DistributedLock {
     async fn acquire(&self, key: &str, ttl_secs: u64) -> anyhow::Result<Option<String>> {
-        DistributedLock::acquire(self, key, ttl_secs)
+        Self::acquire(self, key, ttl_secs)
             .await
             .map_err(|e| anyhow::anyhow!("{e}"))
     }
 
     async fn release(&self, key: &str, lock_value: &str) -> anyhow::Result<bool> {
-        DistributedLock::release(self, key, lock_value)
+        Self::release(self, key, lock_value)
             .await
             .map_err(|e| anyhow::anyhow!("{e}"))
     }
 }
 
-/// PostgreSQL advisory lock-based `MigrationLock`.
+/// `PostgreSQL` advisory lock-based `MigrationLock`.
 ///
 /// Used as a fallback when the Redis lock fails. Uses `pg_try_advisory_lock`
 /// with a retry loop, mirroring the existing behaviour in `migrations.rs`.
@@ -107,10 +107,11 @@ pub struct PgAdvisoryMigrationLock {
     lock_conn: tokio::sync::Mutex<Option<sqlx::pool::PoolConnection<sqlx::Postgres>>>,
 }
 
-/// Stable advisory lock key for migration coordination (hash of "synctv_migration").
+/// Stable advisory lock key for migration coordination (hash of "`synctv_migration`").
 const PG_ADVISORY_LOCK_KEY: i64 = 0x73796E63_74766D69_u64 as i64;
 
 impl PgAdvisoryMigrationLock {
+    #[must_use] 
     pub fn new(pool: sqlx::PgPool) -> Self {
         Self {
             pool,
@@ -204,7 +205,7 @@ impl DistributedLock {
     /// If `redis_url` is provided, checks whether it uses Sentinel (contains
     /// "sentinel" in the URL) and emits a startup warning about lock safety.
     #[must_use]
-    pub fn new(redis: RedisConnectionManager) -> Self {
+    pub const fn new(redis: RedisConnectionManager) -> Self {
         Self {
             redis,
         }
@@ -721,20 +722,17 @@ impl LockGuard {
     fn spawn_drop_task(lock: DistributedLock) -> tokio::sync::oneshot::Sender<(String, String)> {
         let (tx, rx) = tokio::sync::oneshot::channel::<(String, String)>();
         tokio::spawn(async move {
-            match rx.await {
-                Ok((key, value)) => {
-                    if let Err(e) = lock.release(&key, &value).await {
-                        tracing::error!(
-                            key = %key,
-                            error = %e,
-                            "Background task failed to release lock"
-                        );
-                    }
+            if let Ok((key, value)) = rx.await {
+                if let Err(e) = lock.release(&key, &value).await {
+                    tracing::error!(
+                        key = %key,
+                        error = %e,
+                        "Background task failed to release lock"
+                    );
                 }
-                Err(_) => {
-                    // Sender was dropped without sending — lock was already
-                    // released explicitly via release(). Nothing to do.
-                }
+            } else {
+                // Sender was dropped without sending — lock was already
+                // released explicitly via release(). Nothing to do.
             }
         });
         tx

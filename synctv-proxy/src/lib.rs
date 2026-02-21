@@ -538,6 +538,7 @@ pub fn rewrite_m3u8(m3u8: &str, source_url: &str, proxy_base: &str) -> String {
 }
 
 /// Resolve a possibly-relative URL to absolute using the given base URL.
+#[must_use] 
 pub fn make_absolute(raw: &str, base: Option<&url::Url>) -> String {
     if raw.starts_with("http://") || raw.starts_with("https://") {
         return raw.to_string();
@@ -552,6 +553,7 @@ pub fn make_absolute(raw: &str, base: Option<&url::Url>) -> String {
 
 /// Rewrite any `URI="..."` values found in an M3U8 tag line.
 /// Returns the rewritten line and the count of URLs rewritten.
+#[must_use] 
 pub fn rewrite_uri_attribute_with_count(line: &str, base: Option<&url::Url>, proxy_base: &str) -> (String, usize) {
     let pattern = "URI=\"";
     let mut result = String::with_capacity(line.len());

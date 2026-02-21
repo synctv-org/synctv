@@ -218,7 +218,7 @@ impl ChatRepository {
     /// historical partitions.
     ///
     /// The redundant `created_at > NOW() - INTERVAL '90 days'` filter on the
-    /// outer DELETE ensures PostgreSQL can apply partition pruning at the
+    /// outer DELETE ensures `PostgreSQL` can apply partition pruning at the
     /// top-level query without relying on constraint exclusion from the subquery.
     pub async fn cleanup_old_messages(&self, room_id: &RoomId, keep_count: i32) -> Result<u64> {
         if keep_count <= 0 {

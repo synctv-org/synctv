@@ -96,8 +96,7 @@ impl DirectUrlProvider {
             let lower = key.to_lowercase();
             if Self::FORBIDDEN_HEADERS.contains(&lower.as_str()) {
                 return Err(ProviderError::InvalidConfig(format!(
-                    "DirectUrl header '{}' is forbidden for security reasons",
-                    key
+                    "DirectUrl header '{key}' is forbidden for security reasons"
                 )));
             }
         }

@@ -165,8 +165,8 @@ pub trait ManagedStream: Send + Sync + 'static {
 /// Creation lock entry with last access time for cleanup
 struct CreationLockEntry {
     lock: Arc<tokio::sync::Mutex<()>>,
-    /// Unix timestamp seconds stored as AtomicU64.
-    /// AtomicUsize would overflow on 32-bit targets in 2038.
+    /// Unix timestamp seconds stored as `AtomicU64`.
+    /// `AtomicUsize` would overflow on 32-bit targets in 2038.
     last_accessed: AtomicU64,
 }
 

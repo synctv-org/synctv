@@ -1,4 +1,4 @@
-//! L2 cache backend trait for TieredCache.
+//! L2 cache backend trait for `TieredCache`.
 //!
 //! Provides pluggable L2 storage behind the L1 Moka in-memory cache.
 //!
@@ -61,7 +61,8 @@ pub struct RedisCacheL2 {
 }
 
 impl RedisCacheL2 {
-    pub fn new(conn: redis::aio::ConnectionManager) -> Self {
+    #[must_use] 
+    pub const fn new(conn: redis::aio::ConnectionManager) -> Self {
         Self { conn }
     }
 }
@@ -234,7 +235,7 @@ impl CacheL2Backend for RedisCacheL2 {
 
 /// No-op L2 backend. All reads return `None`, all writes are no-ops.
 ///
-/// Used when Redis is not configured — TieredCache runs in L1-only mode.
+/// Used when Redis is not configured — `TieredCache` runs in L1-only mode.
 pub struct NoopCacheL2;
 
 #[async_trait]

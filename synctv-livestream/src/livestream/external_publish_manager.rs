@@ -75,7 +75,7 @@ impl ExternalPublishManager {
     ///
     /// Default: `DEFAULT_MAX_CONCURRENT_STREAMS` (100).
     #[must_use]
-    pub fn with_max_streams(mut self, max: usize) -> Self {
+    pub const fn with_max_streams(mut self, max: usize) -> Self {
         self.max_concurrent_streams = max;
         self
     }

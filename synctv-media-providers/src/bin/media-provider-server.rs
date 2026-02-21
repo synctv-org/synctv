@@ -125,7 +125,7 @@ struct CircuitBreakerLayer {
 }
 
 impl CircuitBreakerLayer {
-    fn new(circuit_breaker: Arc<CircuitBreaker>, service_name: &'static str) -> Self {
+    const fn new(circuit_breaker: Arc<CircuitBreaker>, service_name: &'static str) -> Self {
         Self { circuit_breaker, service_name }
     }
 }

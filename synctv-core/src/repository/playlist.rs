@@ -104,14 +104,14 @@ impl PlaylistRepository {
     /// Create a new playlist
     ///
     /// If `playlist.position` is negative, the position is computed within a
-    /// transaction using a PostgreSQL advisory lock to prevent concurrent inserts
+    /// transaction using a `PostgreSQL` advisory lock to prevent concurrent inserts
     /// from computing the same position. Pass a non-negative position to use
     /// an explicit value (e.g., when the caller already holds a lock).
     ///
     /// `SELECT MAX(position) FOR UPDATE` cannot protect empty tables because
     /// there are no rows to lock when the table is empty. Two concurrent inserts
     /// can both see `MAX = NULL` and both compute `position = 0`, producing a
-    /// UNIQUE constraint violation. An advisory lock on (room_id, parent_id)
+    /// UNIQUE constraint violation. An advisory lock on (`room_id`, `parent_id`)
     /// serializes position computation regardless of whether rows exist.
     pub async fn create(&self, playlist: &Playlist) -> Result<Playlist> {
         if playlist.position < 0 {

@@ -180,12 +180,9 @@ impl AttemptTracker for RedisAttemptTracker {
         )
         .await;
 
-        let redis_result = match redis_result {
-            Ok(inner) => inner,
-            Err(_) => {
-                tracing::warn!(key = %key, "Redis timeout in brute-force check, using fallback");
-                return self.fallback.get(key).await.unwrap_or((0, 0));
-            }
+        let redis_result = if let Ok(inner) = redis_result { inner } else {
+            tracing::warn!(key = %key, "Redis timeout in brute-force check, using fallback");
+            return self.fallback.get(key).await.unwrap_or((0, 0));
         };
 
         match redis_result {

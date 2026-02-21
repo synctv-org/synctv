@@ -1,6 +1,6 @@
 //! Application lifecycle management.
 //!
-//! `Application` encapsulates the entire SyncTV startup sequence as a series
+//! `Application` encapsulates the entire `SyncTV` startup sequence as a series
 //! of named phases, each producing a typed output. This replaces the
 //! monolithic `main()` function with a readable, maintainable structure.
 
@@ -33,7 +33,7 @@ use crate::cluster_bridge::ClusterPlaybackBroadcaster;
 use crate::server::{LivestreamState, Services, SyncTvServer};
 use crate::shutdown::{AuditFlushHook, SettingsListenHook, ShutdownCoordinator};
 
-/// Infrastructure: Redis (optional), Database, NodeID.
+/// Infrastructure: Redis (optional), Database, `NodeID`.
 struct Infrastructure {
     config: Config,
     pool: PgPool,
@@ -188,9 +188,8 @@ impl Application {
                 warn!("Existing users found, continuing startup");
             } else {
                 return Err(anyhow::anyhow!(
-                    "Failed to bootstrap root user on first deployment (no users exist): {}. \
-                     The system cannot operate without at least one user.",
-                    e
+                    "Failed to bootstrap root user on first deployment (no users exist): {e}. \
+                     The system cannot operate without at least one user."
                 ));
             }
         }
@@ -623,7 +622,7 @@ impl Application {
             load_balancer: cluster.load_balancer,
             redis_client: infra.redis_handles.as_ref().map(|h| h.client.clone()),
             redis_conn: core.services.redis_conn.clone(),  // already Option
-            credential_encryption: core.services.credential_encryption.clone(),
+            credential_encryption: core.services.credential_encryption,
         };
 
         Self {

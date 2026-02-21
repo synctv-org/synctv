@@ -47,9 +47,7 @@ pub async fn request_id_middleware(
             // Validate: non-empty, max 64 chars, alphanumeric + hyphens/underscores only.
             let len = s.len();
             len > 0 && len <= 64 && s.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
-        })
-        .map(str::to_owned)
-        .unwrap_or_else(|| nanoid::nanoid!(12));
+        }).map_or_else(|| nanoid::nanoid!(12), str::to_owned);
 
     // Record in current tracing span for log correlation.
     tracing::Span::current().record("request_id", request_id.as_str());

@@ -327,7 +327,7 @@ pub async fn init_services(
     // In cluster mode, Redis is required (validated at config level).
     // In standalone mode, uses in-memory state store when Redis is not available.
     let oauth2_configured = config.oauth2.providers.as_object()
-        .map_or(false, |m| !m.is_empty());
+        .is_some_and(|m| !m.is_empty());
     let oauth2_service = if oauth2_configured {
         init_oauth2_service(pool.clone(), config, redis_conn_plain.clone()).await?
     } else {

@@ -237,7 +237,7 @@ impl BilibiliSourceConfig {
     }
 
     /// Get a reference to the cookies from any variant
-    fn cookies(&self) -> &HashMap<String, String> {
+    const fn cookies(&self) -> &HashMap<String, String> {
         match self {
             Self::Video { cookies, .. }
             | Self::Pgc { cookies, .. }
@@ -256,14 +256,12 @@ impl BilibiliSourceConfig {
             }
             if key.chars().any(|c| c.is_control() || c == ';' || c == '=' || c == ' ') {
                 return Err(ProviderError::InvalidConfig(format!(
-                    "Bilibili cookie key '{}' contains invalid characters (control chars, ';', '=', or spaces)",
-                    key
+                    "Bilibili cookie key '{key}' contains invalid characters (control chars, ';', '=', or spaces)"
                 )));
             }
             if value.chars().any(|c| c.is_control() || c == ';') {
                 return Err(ProviderError::InvalidConfig(format!(
-                    "Bilibili cookie value for key '{}' contains invalid characters (control chars or ';')",
-                    key
+                    "Bilibili cookie value for key '{key}' contains invalid characters (control chars or ';')"
                 )));
             }
         }
@@ -290,7 +288,7 @@ impl BilibiliSourceConfig {
 }
 
 impl BilibiliSourceConfig {
-    /// Encrypt the cookies field in a source_config JSON value using the provided encryption.
+    /// Encrypt the cookies field in a `source_config` JSON value using the provided encryption.
     ///
     /// Replaces the plaintext `cookies` map with an encrypted string value.
     /// If cookies are empty or encryption is not available, returns the value unchanged.
@@ -314,7 +312,7 @@ impl BilibiliSourceConfig {
         Ok(config)
     }
 
-    /// Decrypt the cookies field in a source_config JSON value if it was encrypted.
+    /// Decrypt the cookies field in a `source_config` JSON value if it was encrypted.
     ///
     /// If the `cookies` field is a string starting with `enc:`, decrypt it back to
     /// a map. Otherwise, return the value unchanged (backward compatible with plaintext).

@@ -718,7 +718,19 @@ impl ClientApiImpl {
         // (avoids O(N) scans and nanoid ordering issues).
         // Cursor format: "<rfc3339_created_at>|<id>"
         // Otherwise fall back to the legacy timestamp-based pagination for backward compat.
-        let (messages, next_cursor_str) = if !req.cursor.is_empty() {
+        let (messages, next_cursor_str) = if req.cursor.is_empty() {
+            // Legacy path: timestamp-based pagination
+            let before = if req.before > 0 {
+                chrono::DateTime::from_timestamp(req.before, 0)
+            } else {
+                None
+            };
+            let msgs = self.room_service.get_chat_history(&rid, before, limit).await
+                .map_err(ApiError::from)?;
+            // Derive a cursor from the oldest message so callers can switch to cursor pagination
+            let cursor = msgs.last().map(|m| format!("{}|{}", m.created_at.to_rfc3339(), m.id));
+            (msgs, cursor)
+        } else {
             let cursor = if let Some((ts_str, id)) = req.cursor.split_once('|') {
                 let ts = chrono::DateTime::parse_from_rfc3339(ts_str)
                     .map(|dt| dt.with_timezone(&chrono::Utc))
@@ -733,18 +745,6 @@ impl ClientApiImpl {
                 .map_err(ApiError::from)?;
             let next_str = next.map(|(ts, id)| format!("{}|{}", ts.to_rfc3339(), id));
             (msgs, next_str)
-        } else {
-            // Legacy path: timestamp-based pagination
-            let before = if req.before > 0 {
-                chrono::DateTime::from_timestamp(req.before, 0)
-            } else {
-                None
-            };
-            let msgs = self.room_service.get_chat_history(&rid, before, limit).await
-                .map_err(ApiError::from)?;
-            // Derive a cursor from the oldest message so callers can switch to cursor pagination
-            let cursor = msgs.last().map(|m| format!("{}|{}", m.created_at.to_rfc3339(), m.id));
-            (msgs, cursor)
         };
 
         // Collect unique user IDs to batch fetch usernames

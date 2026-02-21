@@ -297,7 +297,7 @@ impl BilibiliInterface for BilibiliService {
 ///
 /// Extracted as a standalone function so it can be unit-tested without
 /// needing an actual HTTP response.
-pub(crate) fn map_qr_status(raw: u32) -> i32 {
+pub(crate) const fn map_qr_status(raw: u32) -> i32 {
     match raw {
         0 => 4,     // SUCCESS
         86038 => 1, // EXPIRED

@@ -228,3 +228,62 @@ async fn test_unbuffered_service_dropped_count_zero() {
     let service = AuditService::new_unbuffered(pool);
     assert_eq!(service.dropped_count(), 0);
 }
+
+// ========== S12: Buffer-full drops events ==========
+
+#[tokio::test]
+async fn test_buffer_full_increments_dropped_count() {
+    // Create a buffered service with a very small capacity (2)
+    // The fake pool means the background flush task will fail to write to DB,
+    // and when the buffer is full, try_send will fail and the fallback sync write
+    // also fails (fake pool), so dropped_count should be incremented.
+    let pool = sqlx::PgPool::connect_lazy("postgresql://fake").unwrap();
+    let (service, _handle) = AuditService::with_capacity(pool, 2);
+
+    // The background task starts consuming from the channel, but because the pool
+    // is fake, the flush will fail. We need to fill the channel faster than it drains.
+    // With capacity 2, we need to send enough events to overflow.
+    // The flush task accumulates events every 5 seconds or 100 events, so the
+    // channel should back up quickly.
+
+    // Send many events rapidly to fill the buffer
+    let mut error_count = 0;
+    for i in 0..100 {
+        let result = service
+            .log(
+                format!("actor_{}", i),
+                "admin".to_string(),
+                AuditAction::UserCreated,
+                AuditTargetType::User,
+                Some(format!("user_{}", i)),
+                serde_json::json!({}),
+                None,
+                None,
+            )
+            .await;
+
+        // Once buffer is full, the fallback sync write to fake pool will fail,
+        // incrementing dropped_count
+        if result.is_ok() {
+            // Event was either buffered or the sync fallback succeeded (unlikely with fake pool)
+        } else {
+            error_count += 1;
+        }
+    }
+
+    // Give the background task a moment to process (and fail)
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+    // Either events were dropped due to buffer overflow + sync fallback failure,
+    // or the background task processed some but failed to flush to fake DB
+    let dropped = service.dropped_count();
+
+    // With capacity 2 and 100 rapid sends, we expect at least some drops
+    // The exact number depends on timing, but should be > 0
+    assert!(
+        dropped > 0 || error_count > 0,
+        "With capacity 2 and 100 events, should have dropped events or errors. dropped={}, errors={}",
+        dropped,
+        error_count
+    );
+}

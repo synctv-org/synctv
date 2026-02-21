@@ -30,7 +30,7 @@ pub struct ProviderContext<'a> {
     /// Redis connection manager (optional)
     pub redis: Option<&'a redis::aio::ConnectionManager>,
 
-    /// Credential encryption for protecting sensitive data in source_config (optional)
+    /// Credential encryption for protecting sensitive data in `source_config` (optional)
     pub credential_encryption: Option<&'a CredentialEncryption>,
 }
 
@@ -84,7 +84,7 @@ impl<'a> ProviderContext<'a> {
         self
     }
 
-    /// Set credential encryption for protecting sensitive data in source_config
+    /// Set credential encryption for protecting sensitive data in `source_config`
     #[must_use]
     pub const fn with_credential_encryption(mut self, enc: &'a CredentialEncryption) -> Self {
         self.credential_encryption = Some(enc);

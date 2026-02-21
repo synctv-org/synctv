@@ -94,7 +94,7 @@ impl MediaRepository {
 
     /// Internal: insert a single chunk of media items (max 1000).
     ///
-    /// Each row occupies 10 bind parameters. PostgreSQL's hard limit is 65535
+    /// Each row occupies 10 bind parameters. `PostgreSQL`'s hard limit is 65535
     /// parameters per statement, giving a safe ceiling of 6553 rows. We enforce
     /// a tighter 1000-row limit so callers of `create_batch_with_executor`
     /// receive a clear error rather than a cryptic protocol failure in production.
@@ -450,7 +450,7 @@ impl MediaRepository {
     /// Swap positions of two media using a provided transaction.
     ///
     /// Uses a two-phase sentinel approach to avoid violating the
-    /// UNIQUE(playlist_id, position) constraint. PostgreSQL evaluates UNIQUE
+    /// `UNIQUE(playlist_id`, position) constraint. `PostgreSQL` evaluates UNIQUE
     /// constraints per-row during multi-row UPDATEs, so a single-statement
     /// CTE swap can trigger a violation. Instead:
     ///   1. Lock both rows with FOR UPDATE (ordered by id to prevent deadlocks).
@@ -531,7 +531,7 @@ impl MediaRepository {
     /// Sorts updates by `media_id` before acquiring FOR UPDATE locks to prevent
     /// deadlocks when concurrent transactions lock the same rows in different order.
     /// Uses a two-phase approach (sentinel then final values) to avoid violating
-    /// the UNIQUE(playlist_id, position) constraint during intermediate states.
+    /// the `UNIQUE(playlist_id`, position) constraint during intermediate states.
     pub async fn reorder_batch_with_tx(
         &self,
         updates: &[(MediaId, i32)],
@@ -603,7 +603,7 @@ impl MediaRepository {
     ///
     /// Locks all rows in the playlist with `FOR UPDATE` via a subquery, then
     /// computes `MAX(position) + 1` over the locked set. This avoids the
-    /// PostgreSQL restriction that forbids `FOR UPDATE` with aggregate functions
+    /// `PostgreSQL` restriction that forbids `FOR UPDATE` with aggregate functions
     /// while still preventing concurrent inserts from assigning duplicate positions.
     /// The lock is held until the caller commits or rolls back the transaction.
     pub async fn get_next_position_with_tx(

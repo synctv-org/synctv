@@ -51,7 +51,7 @@ impl Gop {
     /// heap-allocated fields (e.g., `String`s).  Currently `MediaInfo` has no
     /// heap data, so `heap_size()` returns 0, but using this pattern ensures
     /// correctness if fields are added in the future.
-    pub(crate) fn frame_memory_size(data: &FrameData) -> usize {
+    pub(crate) const fn frame_memory_size(data: &FrameData) -> usize {
         match data {
             FrameData::Video { data, .. } => data.len(),
             FrameData::Audio { data, .. } => data.len(),

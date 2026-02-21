@@ -131,7 +131,6 @@ async fn test_publish_key_single_use() {
 // ============================================================================
 
 #[tokio::test]
-#[ignore = "Requires Docker"]
 async fn test_redis_jti_store_cross_service_dedup() {
     use synctv_core::service::publish_key::RedisJtiStore;
     use testcontainers::core::ImageExt;
@@ -163,4 +162,56 @@ async fn test_redis_jti_store_cross_service_dedup() {
     // Same JTI on store2 should fail (cross-replica dedup via Redis)
     let result2 = store2.try_claim("cross_jti", 300).await.unwrap();
     assert!(!result2, "Same JTI on store2 should fail (cross-replica dedup)");
+}
+
+#[tokio::test]
+async fn test_publish_key_service_with_redis_full_lifecycle() {
+    use synctv_core::service::publish_key::PublishKeyService;
+    use synctv_core::service::auth::JwtService;
+    use testcontainers::core::ImageExt;
+    use testcontainers::runners::AsyncRunner;
+    use testcontainers_modules::redis::Redis;
+
+    let container = Redis::default()
+        .with_tag("7-alpine")
+        .start()
+        .await
+        .expect("Failed to start Redis container");
+
+    let host = container.get_host().await.expect("Failed to get Redis host");
+    let port = container.get_host_port_ipv4(6379).await.expect("Failed to get Redis port");
+    let redis_url = format!("redis://{}:{}", host, port);
+    let client = redis::Client::open(redis_url.as_str()).expect("Failed to create Redis client");
+    let conn = redis::aio::ConnectionManager::new(client)
+        .await
+        .expect("Failed to create Redis ConnectionManager");
+
+    let jwt = JwtService::new("test-secret-key-for-publish-key-tests-long-enough-1234567890").unwrap();
+    let service = PublishKeyService::with_redis(jwt, 24, conn, "test_pk:".to_string());
+
+    let room_id = RoomId::new();
+    let media_id = MediaId::new();
+    let user_id = UserId::new();
+
+    let key = service
+        .generate_publish_key(room_id, media_id, user_id)
+        .await
+        .unwrap();
+
+    // First validation should succeed
+    let result = service.validate_publish_key(&key.token).await;
+    assert!(result.is_ok(), "First validation with Redis JTI store should succeed");
+
+    // Second validation should fail (single-use via Redis SETNX)
+    let result = service.validate_publish_key(&key.token).await;
+    assert!(
+        result.is_err(),
+        "Second validation should fail (single-use via Redis)"
+    );
+    if let Err(synctv_core::Error::Authentication(msg)) = result {
+        assert!(
+            msg.contains("single-use"),
+            "Expected single-use error, got: {msg}"
+        );
+    }
 }

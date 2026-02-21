@@ -126,53 +126,49 @@ pub struct AuditFlushHook {
 }
 
 impl ShutdownHook for AuditFlushHook {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "audit_flush"
     }
     fn timeout(&self) -> Duration {
-        Duration::from_secs(60)
+        Duration::from_mins(1)
     }
     fn run(self: Box<Self>) -> Pin<Box<dyn Future<Output = ()> + Send>> {
         Box::pin(async move {
             let mut guard = self.handle.lock().await;
             if let Some(flush_handle) = guard.take() {
                 let progress_interval = Duration::from_secs(10);
-                let flush_timeout = Duration::from_secs(60);
+                let flush_timeout = Duration::from_mins(1);
                 let mut elapsed = Duration::ZERO;
                 let flush_fut = flush_handle.shutdown();
                 tokio::pin!(flush_fut);
                 loop {
-                    match tokio::time::timeout(progress_interval, &mut flush_fut).await {
-                        Ok(()) => {
-                            info!("Audit service buffer flushed successfully");
-                            return;
-                        }
-                        Err(_) => {
-                            elapsed += progress_interval;
-                            if elapsed >= flush_timeout {
-                                warn!("Audit service flush timed out; some buffered events may be lost");
-                                return;
-                            }
-                            info!(
-                                "Audit service flush still in progress ({}/{}s elapsed)...",
-                                elapsed.as_secs(),
-                                flush_timeout.as_secs()
-                            );
-                        }
+                    if tokio::time::timeout(progress_interval, &mut flush_fut).await == Ok(()) {
+                        info!("Audit service buffer flushed successfully");
+                        return;
                     }
+                    elapsed += progress_interval;
+                    if elapsed >= flush_timeout {
+                        warn!("Audit service flush timed out; some buffered events may be lost");
+                        return;
+                    }
+                    info!(
+                        "Audit service flush still in progress ({}/{}s elapsed)...",
+                        elapsed.as_secs(),
+                        flush_timeout.as_secs()
+                    );
                 }
             }
         })
     }
 }
 
-/// Joins the PostgreSQL LISTEN settings task before the pool is closed.
+/// Joins the `PostgreSQL` LISTEN settings task before the pool is closed.
 pub struct SettingsListenHook {
     pub task: Arc<Mutex<Option<JoinHandle<()>>>>,
 }
 
 impl ShutdownHook for SettingsListenHook {
-    fn name(&self) -> &str {
+    fn name(&self) -> &'static str {
         "settings_listen_task"
     }
     fn timeout(&self) -> Duration {

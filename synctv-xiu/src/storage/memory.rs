@@ -341,7 +341,7 @@ impl HlsStorage for MemoryStorage {
             .take_while(|(&seq, _)| {
                 inner.data
                     .get(inner.time_index.get(&seq).map_or("", |k| k.as_str()))
-                    .map_or(false, |entry| entry.write_time < cutoff)
+                    .is_some_and(|entry| entry.write_time < cutoff)
             })
             .map(|(&seq, _)| seq)
             .collect();

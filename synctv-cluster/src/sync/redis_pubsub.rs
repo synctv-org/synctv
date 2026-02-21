@@ -17,7 +17,10 @@ const REDIS_TIMEOUT_SECS: u64 = 5;
 /// read-only or is still loading data — both symptoms of a Sentinel failover in
 /// progress.  When detected, callers should drop the connection and reconnect
 /// immediately rather than treating the error as a retryable publish failure.
-fn is_sentinel_failover_error(e: &anyhow::Error) -> bool {
+/// Returns `true` if the Redis error looks like a Sentinel failover.
+///
+/// Public for testing. Production code already uses this internally.
+pub fn is_sentinel_failover_error(e: &anyhow::Error) -> bool {
     let msg = e.to_string();
     msg.contains("READONLY") || msg.contains("LOADING")
 }

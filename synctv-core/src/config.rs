@@ -1081,7 +1081,7 @@ impl Config {
         // Validate Redis Sentinel mode required fields
         if self.redis.deployment_mode == RedisDeploymentMode::Sentinel {
             if self.redis.sentinel_master_name.is_none()
-                || self.redis.sentinel_master_name.as_ref().map_or(true, |s| s.is_empty())
+                || self.redis.sentinel_master_name.as_ref().is_none_or(std::string::String::is_empty)
             {
                 errors.push(
                     "redis.sentinel_master_name is required when deployment_mode is 'sentinel'"
@@ -1708,19 +1708,19 @@ impl Default for HttpRateLimitConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct GrpcRateLimitConfig {
-    /// Authentication endpoints (Login, Register, RefreshToken)
+    /// Authentication endpoints (Login, Register, `RefreshToken`)
     pub auth_max_requests: u32,
     pub auth_window_seconds: u64,
 
-    /// Email endpoints (SendVerification, PasswordReset)
+    /// Email endpoints (`SendVerification`, `PasswordReset`)
     pub email_max_requests: u32,
     pub email_window_seconds: u64,
 
-    /// Media mutation endpoints (AddMedia, RemoveMedia, BatchAdd)
+    /// Media mutation endpoints (`AddMedia`, `RemoveMedia`, `BatchAdd`)
     pub media_max_requests: u32,
     pub media_window_seconds: u64,
 
-    /// Write endpoints (CreateRoom, UpdateRoom, JoinRoom, SendChat)
+    /// Write endpoints (`CreateRoom`, `UpdateRoom`, `JoinRoom`, `SendChat`)
     pub write_max_requests: u32,
     pub write_window_seconds: u64,
 
@@ -1728,7 +1728,7 @@ pub struct GrpcRateLimitConfig {
     pub admin_max_requests: u32,
     pub admin_window_seconds: u64,
 
-    /// Read endpoints (GetRoom, ListRooms, GetUser, GetPlaylist)
+    /// Read endpoints (`GetRoom`, `ListRooms`, `GetUser`, `GetPlaylist`)
     pub read_max_requests: u32,
     pub read_window_seconds: u64,
 }

@@ -139,3 +139,29 @@ async fn test_redis_family_revoked_roundtrip() {
     let revoked_at = store.get_family_revoked_at(key).await;
     assert_eq!(revoked_at, Some(timestamp));
 }
+
+#[tokio::test]
+async fn test_redis_family_revoked_ttl_expiry() {
+    let (_container, conn) = start_redis().await;
+    let store = RedisTokenBlacklistStore::new(conn);
+
+    let key = "test:bl:family_ttl_expiry";
+    let timestamp = chrono::Utc::now().timestamp();
+
+    // Set with 1-second TTL
+    store.set_family_revoked(key, timestamp, 1).await;
+
+    // Should be retrievable immediately
+    let revoked_at = store.get_family_revoked_at(key).await;
+    assert_eq!(revoked_at, Some(timestamp));
+
+    // Wait for TTL expiry
+    tokio::time::sleep(tokio::time::Duration::from_millis(1500)).await;
+
+    // Should be gone after TTL
+    let revoked_at = store.get_family_revoked_at(key).await;
+    assert!(
+        revoked_at.is_none(),
+        "Family revocation should expire after TTL"
+    );
+}

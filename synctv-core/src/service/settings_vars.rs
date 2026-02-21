@@ -146,7 +146,7 @@ impl SettingsStorage {
         crate::spawn::spawn_monitored("settings_reload_listener", async move {
             loop {
                 let recv_result = tokio::select! {
-                    _ = cancel.cancelled() => {
+                    () = cancel.cancelled() => {
                         debug!("SettingsStorage reload listener cancelled");
                         break;
                     }

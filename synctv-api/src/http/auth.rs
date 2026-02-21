@@ -12,6 +12,7 @@ use crate::proto::client::{RegisterRequest, RegisterResponse, LoginRequest, Logi
 /// Only trusts `X-Forwarded-For` / `X-Real-IP` headers when the direct
 /// connection comes from a configured trusted proxy. This prevents
 /// attackers from forging their IP to bypass per-IP brute-force protection.
+#[must_use] 
 pub fn extract_client_ip(
     config: &synctv_core::Config,
     socket_addr: std::net::SocketAddr,

@@ -58,7 +58,7 @@ pub struct MediaService {
     providers_manager: Arc<ProvidersManager>,
     /// Optional notification service for broadcasting media changes to local WebSocket clients
     notification_service: Option<NotificationService>,
-    /// Optional credential encryption for protecting sensitive data in source_config
+    /// Optional credential encryption for protecting sensitive data in `source_config`
     credential_encryption: Option<crate::service::CredentialEncryption>,
 }
 
@@ -92,7 +92,7 @@ impl MediaService {
         self.notification_service = Some(service);
     }
 
-    /// Set credential encryption for protecting sensitive data in source_config
+    /// Set credential encryption for protecting sensitive data in `source_config`
     pub fn set_credential_encryption(&mut self, encryption: crate::service::CredentialEncryption) {
         self.credential_encryption = Some(encryption);
     }

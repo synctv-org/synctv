@@ -170,7 +170,7 @@ pub trait RateLimitBackend: Send + Sync {
     /// Strict distributed check. Fails closed when Redis is unavailable.
     async fn check_strict(&self, key: &str, max_requests: u32, window_seconds: u64) -> std::result::Result<(), RateLimitError>;
 
-    /// Get remaining quota: (remaining_requests, reset_time_seconds).
+    /// Get remaining quota: (`remaining_requests`, `reset_time_seconds`).
     async fn get_quota(&self, key: &str, max_requests: u32, window_seconds: u64) -> Result<(u32, u64)>;
 
     /// Reset rate limit for a key.
@@ -198,6 +198,7 @@ pub struct RedisRateLimitBackend {
 }
 
 impl RedisRateLimitBackend {
+    #[must_use] 
     pub fn new(conn: redis::aio::ConnectionManager, key_prefix: String) -> Self {
         Self {
             conn,
@@ -409,6 +410,7 @@ pub struct InMemoryRateLimitBackend {
 }
 
 impl InMemoryRateLimitBackend {
+    #[must_use] 
     pub fn new(key_prefix: String) -> Self {
         Self {
             key_prefix,
@@ -563,6 +565,7 @@ impl RateLimiter {
     }
 
     /// Return the backend name.
+    #[must_use] 
     pub fn backend_name(&self) -> &'static str {
         self.backend.backend_name()
     }

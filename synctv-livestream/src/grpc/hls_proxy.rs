@@ -330,6 +330,42 @@ impl HlsProxyClient {
         );
     }
 
+    /// Invalidate all cached segments and playlists after a delay.
+    ///
+    /// This is the preferred method when invalidating due to epoch changes.
+    /// The delay allows the new publisher time to generate fresh HLS segments
+    /// before we invalidate the old cache entries, avoiding a window where
+    /// viewers might request segments that don't exist yet.
+    ///
+    /// # Arguments
+    /// * `room_id` - Room identifier
+    /// * `media_id` - Media/stream identifier
+    /// * `delay` - Duration to wait before invalidating (typically 2-3 seconds)
+    pub fn invalidate_stream_cache_delayed(&self, room_id: String, media_id: String, delay: Duration) {
+        let prefix = format!("{room_id}:{media_id}:");
+        let segment_cache = self.segment_cache.clone();
+        let playlist_cache = self.playlist_cache.clone();
+
+        tokio::spawn(async move {
+            tokio::time::sleep(delay).await;
+
+            let playlist_prefix = prefix.clone();
+            playlist_cache
+                .invalidate_entries_if(move |key: &String, _| key.starts_with(&playlist_prefix))
+                .ok();
+
+            segment_cache
+                .invalidate_entries_if(move |key: &String, _| key.starts_with(&prefix))
+                .ok();
+
+            debug!(
+                room_id = room_id,
+                media_id = media_id,
+                "Delayed HLS cache invalidation completed"
+            );
+        });
+    }
+
     /// Attach cluster authentication secret to a gRPC request.
     fn attach_auth<T>(&self, request: &mut Request<T>) -> anyhow::Result<()> {
         if let Some(secret) = &self.cluster_secret {

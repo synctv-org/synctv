@@ -17,6 +17,64 @@ use synctv_core::service::PublishKeyService;
 use tracing::{debug, info, warn};
 use crate::relay::registry_trait::StreamRegistryTrait;
 
+/// Guard to ensure Redis publisher entry is cleaned up on early return or panic.
+///
+/// When dropped, if not disarmed, it will unregister the publisher from Redis.
+/// This ensures that if authentication succeeds but a later step fails,
+/// the Redis entry is cleaned up immediately rather than waiting for TTL expiry.
+struct PublisherGuard {
+    registry: Arc<dyn StreamRegistryTrait>,
+    room_id: String,
+    media_id: String,
+    armed: bool,
+}
+
+impl PublisherGuard {
+    fn new(
+        registry: Arc<dyn StreamRegistryTrait>,
+        room_id: String,
+        media_id: String,
+    ) -> Self {
+        Self {
+            registry,
+            room_id,
+            media_id,
+            armed: true,
+        }
+    }
+
+    /// Disarm the guard so it won't cleanup on drop.
+    fn disarm(mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for PublisherGuard {
+    fn drop(&mut self) {
+        if self.armed {
+            // Spawn a task to cleanup since Drop can't be async
+            let registry = Arc::clone(&self.registry);
+            let room_id = self.room_id.clone();
+            let media_id = self.media_id.clone();
+            tokio::spawn(async move {
+                warn!(
+                    room_id = %room_id,
+                    media_id = %media_id,
+                    "Cleaning up publisher registration due to auth failure"
+                );
+                if let Err(e) = registry.unregister_publisher(&room_id, &media_id).await {
+                    warn!(
+                        room_id = %room_id,
+                        media_id = %media_id,
+                        error = %e,
+                        "Failed to cleanup publisher registration"
+                    );
+                }
+            });
+        }
+    }
+}
+
 pub struct RtmpAuthCallbackImpl {
     publish_key_service: Arc<PublishKeyService>,
     /// Optional stream tracker for cleanup on unpublish.
@@ -126,7 +184,10 @@ impl AuthCallback for RtmpAuthCallbackImpl {
         // Atomic registration in Redis BEFORE StreamHub Publish event.
         // This ensures the publisher is discoverable by other nodes as soon as
         // the stream starts, with no window where it's active but unregistered.
-        if let Some(ref registry) = self.registry {
+        //
+        // Use a guard to ensure cleanup if subsequent steps fail.
+        // The guard will be disarmed when the function returns successfully.
+        let registry_guard = if let Some(ref registry) = self.registry {
             let registered = registry
                 .try_register_publisher(
                     &claims.room_id,
@@ -150,7 +211,16 @@ impl AuthCallback for RtmpAuthCallbackImpl {
                 "Publisher registered atomically in auth phase: room={}, media={}, node={}",
                 claims.room_id, claims.media_id, self.node_id
             );
-        }
+
+            // Create guard that will unregister if not disarmed
+            Some(PublisherGuard::new(
+                Arc::clone(registry),
+                claims.room_id.clone(),
+                claims.media_id.clone(),
+            ))
+        } else {
+            None
+        };
 
         // Register in stream tracker so kick_user/room_publishers can find this publisher
         if let Some(tracker) = &self.stream_tracker {
@@ -161,6 +231,11 @@ impl AuthCallback for RtmpAuthCallbackImpl {
                 app_name,
                 stream_name,
             );
+        }
+
+        // All operations succeeded - disarm the guard so it won't cleanup on drop.
+        if let Some(guard) = registry_guard {
+            guard.disarm();
         }
 
         // Return rewrite so StreamHub uses canonical (room_id, media_id)

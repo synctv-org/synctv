@@ -264,8 +264,14 @@ impl PullStream {
                     } => {
                         // Epoch became stale during streaming — invalidate HLS cache
                         // so viewers don't see stale segments for up to 90s TTL.
+                        // Use delayed invalidation to give the new publisher time to
+                        // generate fresh HLS segments before we clear the old cache.
                         if let Some(ref hls_proxy) = hls_proxy {
-                            hls_proxy.invalidate_stream_cache(&room_id, &media_id).await;
+                            hls_proxy.invalidate_stream_cache_delayed(
+                                room_id.clone(),
+                                media_id.clone(),
+                                std::time::Duration::from_secs(3),
+                            );
                         }
                         timer.observe_duration();
                         synctv_core::metrics::stream::ACTIVE_RELAY_STREAMS.dec();

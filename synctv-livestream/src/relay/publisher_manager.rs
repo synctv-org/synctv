@@ -158,6 +158,38 @@ impl PublisherManager {
         }
     }
 
+    /// Create a new PublisherManager with a shared restarting flag.
+    ///
+    /// This allows external code (e.g., StreamHub restart loop) to share the
+    /// restarting flag and set it before cleanup operations begin, preventing
+    /// false silent-publisher detections during the restart window.
+    pub fn with_restarting_flag(
+        registry: Arc<dyn StreamRegistryTrait>,
+        local_node_id: String,
+        hub_event_sender: StreamHubEventSender,
+        is_restarting: Arc<AtomicBool>,
+    ) -> Self {
+        Self {
+            registry,
+            local_node_id,
+            local_grpc_address: String::new(),
+            active_publishers: Arc::new(DashMap::new()),
+            hub_event_sender,
+            lag_event_count: AtomicU64::new(0),
+            silent_timeout_secs: SILENT_PUBLISHER_TIMEOUT_SECS,
+            is_restarting,
+        }
+    }
+
+    /// Get a clone of the restarting flag for external coordination.
+    ///
+    /// This allows external code (e.g., StreamHub restart loop) to set the
+    /// restarting flag before cleanup operations begin, preventing false
+    /// silent-publisher detections during the restart window.
+    pub fn restarting_flag(&self) -> Arc<AtomicBool> {
+        Arc::clone(&self.is_restarting)
+    }
+
     /// Set the advertised gRPC address for this node.
     /// Used during re-registration after `StreamHub` restart (L-05).
     #[must_use]
@@ -557,6 +589,7 @@ impl PublisherManager {
 
         if snapshot.is_empty() {
             debug!("No active publishers to re-register after StreamHub restart");
+            self.clear_restarting();
             return;
         }
 

@@ -41,6 +41,20 @@ pub struct WsTicketData {
     pub room_id: String,
     /// When the ticket was created (Unix timestamp)
     pub created_at: u64,
+    /// Password version at ticket creation time.
+    ///
+    /// Used to invalidate tickets when the user changes their password.
+    /// This provides parity with JWT authentication's `pv` claim check.
+    pub password_version: i32,
+}
+
+/// Outcome of a successful ticket validation.
+#[derive(Debug, Clone)]
+pub struct ValidatedTicket {
+    /// User ID associated with the ticket
+    pub user_id: UserId,
+    /// Password version at ticket creation time
+    pub password_version: i32,
 }
 
 // ============================================================================
@@ -302,7 +316,10 @@ impl WsTicketService {
     /// Returns a ticket string that can be used once for WebSocket authentication.
     /// The ticket expires after `ticket_ttl_secs` seconds and is only valid for
     /// the supplied `room_id` (Issue #65).
-    pub async fn create_ticket(&self, user_id: &UserId, room_id: &RoomId) -> Result<String> {
+    ///
+    /// The `password_version` is stored in the ticket and validated during consumption
+    /// to ensure tickets are invalidated when the user changes their password.
+    pub async fn create_ticket(&self, user_id: &UserId, room_id: &RoomId, password_version: i32) -> Result<String> {
         let ticket = Self::generate_ticket();
 
         let ticket_data = WsTicketData {
@@ -312,6 +329,7 @@ impl WsTicketService {
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap_or_default()
                 .as_secs(),
+            password_version,
         };
 
         self.store.store(&ticket, &ticket_data, self.ticket_ttl_secs).await?;
@@ -328,11 +346,15 @@ impl WsTicketService {
 
     /// Validate and consume a ticket.
     ///
-    /// Returns the user ID associated with the ticket if valid and the ticket's
-    /// `room_id` matches the expected `room_id`. The ticket is deleted after use
-    /// (one-time use). Passing a ticket for a different room returns an error so that
-    /// tickets cannot be replayed across rooms (Issue #65).
-    pub async fn validate_and_consume(&self, ticket: &str, expected_room_id: &RoomId) -> Result<UserId> {
+    /// Returns [`ValidatedTicket`] containing the user ID and password version if valid
+    /// and the ticket's `room_id` matches the expected `room_id`. The ticket is deleted
+    /// after use (one-time use). Passing a ticket for a different room returns an error
+    /// so that tickets cannot be replayed across rooms (Issue #65).
+    ///
+    /// The caller is responsible for checking that the `password_version` in the returned
+    /// [`ValidatedTicket`] matches the current user's password version to ensure the ticket
+    /// is invalidated if the user changed their password after the ticket was issued.
+    pub async fn validate_and_consume(&self, ticket: &str, expected_room_id: &RoomId) -> Result<ValidatedTicket> {
         let mode = self.store.backend_name();
 
         let Some(ticket_data) = self.store.consume(ticket).await? else {
@@ -358,7 +380,10 @@ impl WsTicketService {
             "WebSocket ticket validated and consumed"
         );
 
-        Ok(UserId::from_string(ticket_data.user_id))
+        Ok(ValidatedTicket {
+            user_id: UserId::from_string(ticket_data.user_id),
+            password_version: ticket_data.password_version,
+        })
     }
 
     /// Generate a secure random ticket string
@@ -419,6 +444,7 @@ mod tests {
             user_id: "user123".to_string(),
             room_id: "room456".to_string(),
             created_at: 1234567890,
+            password_version: 5,
         };
 
         let json = serde_json::to_string(&data).unwrap();
@@ -427,6 +453,7 @@ mod tests {
         assert_eq!(data.user_id, decoded.user_id);
         assert_eq!(data.room_id, decoded.room_id);
         assert_eq!(data.created_at, decoded.created_at);
+        assert_eq!(data.password_version, decoded.password_version);
     }
 
     #[tokio::test]
@@ -435,12 +462,14 @@ mod tests {
         let user_id = create_test_user_id("user1");
         let room_id = create_test_room_id("room1");
 
-        let ticket = service.create_ticket(&user_id, &room_id).await;
+        let ticket = service.create_ticket(&user_id, &room_id, 0).await;
         assert!(ticket.is_ok());
 
         let result = service.validate_and_consume(&ticket.unwrap(), &room_id).await;
         assert!(result.is_ok());
-        assert_eq!(result.unwrap().as_str(), "user1");
+        let validated = result.unwrap();
+        assert_eq!(validated.user_id.as_str(), "user1");
+        assert_eq!(validated.password_version, 0);
     }
 
     #[tokio::test]
@@ -449,7 +478,7 @@ mod tests {
         let user_id = create_test_user_id("user1");
         let room_id = create_test_room_id("room1");
 
-        let ticket = service.create_ticket(&user_id, &room_id).await.unwrap();
+        let ticket = service.create_ticket(&user_id, &room_id, 0).await.unwrap();
 
         let result1 = service.validate_and_consume(&ticket, &room_id).await;
         assert!(result1.is_ok());
@@ -465,7 +494,7 @@ mod tests {
         let room_a = create_test_room_id("room-a");
         let room_b = create_test_room_id("room-b");
 
-        let ticket = service.create_ticket(&user_id, &room_a).await.unwrap();
+        let ticket = service.create_ticket(&user_id, &room_a, 0).await.unwrap();
 
         let result = service.validate_and_consume(&ticket, &room_b).await;
         assert!(result.is_err(), "Ticket for room A should not be valid for room B");
@@ -477,7 +506,7 @@ mod tests {
         let user_id = create_test_user_id("user1");
         let room_id = create_test_room_id("room1");
 
-        let ticket = service.create_ticket(&user_id, &room_id).await.unwrap();
+        let ticket = service.create_ticket(&user_id, &room_id, 0).await.unwrap();
 
         tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
 

@@ -596,7 +596,15 @@ impl SSRFValidator {
         });
 
         let addr_str = format!("{host}:{port}");
-        let addrs = lookup_host(&addr_str).await.map_err(|e| ValidationError::SSRF(
+        let addrs = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            lookup_host(&addr_str)
+        )
+        .await
+        .map_err(|_| ValidationError::SSRF(
+            format!("DNS resolution timeout for {host}")
+        ))?
+        .map_err(|e| ValidationError::SSRF(
             format!("DNS resolution failed for {host}: {e}")
         ))?;
 

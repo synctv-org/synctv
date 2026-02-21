@@ -1102,6 +1102,10 @@ impl ConnectionManager {
     /// Also refreshes TTLs on connection metadata keys (`conn_mgr:conn:*`,
     /// `conn_mgr:user:*`, `conn_mgr:room:*`) to prevent them from expiring
     /// while the connection is still active.
+    ///
+    /// Additionally, synchronizes local connection counts to Redis counters to handle
+    /// cases where Redis was temporarily unavailable during connection registration.
+    /// This ensures eventual consistency between local and distributed counters.
     async fn refresh_distributed_counter_ttls(&self) {
         let Some(ref conn) = self.redis_conn else {
             return;
@@ -1217,6 +1221,169 @@ impl ConnectionManager {
                 metadata_keys = metadata_keys.len(),
                 failures = failure_count,
                 "Refreshed TTLs on distributed counters and connection metadata"
+            );
+        }
+
+        // Synchronize local connection counts to Redis counters.
+        // This handles cases where Redis was temporarily unavailable during
+        // connection registration, ensuring eventual consistency.
+        self.sync_local_counts_to_redis(&mut conn).await;
+    }
+
+    /// Synchronize local connection counts to Redis distributed counters.
+    ///
+    /// This method compares local connection counts with Redis counter values
+    /// and corrects any discrepancies. This is important for recovering from
+    /// situations where Redis was temporarily unavailable during connection
+    /// registration or unregistration.
+    ///
+    /// The synchronization uses a Lua script that atomically sets the counter
+    /// to the correct value if a discrepancy is detected, preventing race
+    /// conditions with concurrent connection operations.
+    async fn sync_local_counts_to_redis(&self, conn: &mut redis::aio::ConnectionManager) {
+        // Collect local counts first (avoid holding locks during Redis operations)
+        let mut user_counts: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+        for entry in self.user_connections.iter() {
+            let count = entry.value().len();
+            if count > 0 {
+                let key = format!("{}connections:user:{}", self.redis_key_prefix, entry.key().as_str());
+                user_counts.insert(key, count);
+            }
+        }
+
+        let mut room_counts: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+        for entry in self.room_connections.iter() {
+            let count = entry.value().len();
+            if count > 0 {
+                let key = format!("{}connections:room:{}", self.redis_key_prefix, entry.key().as_str());
+                room_counts.insert(key, count);
+            }
+        }
+
+        let local_total = self.connection_count();
+        let total_key = format!("{}connections:total", self.redis_key_prefix);
+
+        // Lua script to atomically set a counter if it differs from expected value.
+        // Returns the old value (or 0 if key didn't exist) and whether it was changed (1 or 0).
+        let sync_script = redis::Script::new(
+            r"local current = redis.call('GET', KEYS[1])
+              local current_num = 0
+              if current ~= false then
+                current_num = tonumber(current)
+              end
+              if current_num ~= tonumber(ARGV[1]) then
+                redis.call('SET', KEYS[1], ARGV[1])
+                redis.call('EXPIRE', KEYS[1], ARGV[2])
+                return {current_num, 1}
+              end
+              return {current_num, 0}"
+        );
+
+        let mut sync_count = 0u64;
+        let mut sync_errors = 0u64;
+
+        // Sync user counters
+        for (key, local_count) in &user_counts {
+            let script_result: Result<Vec<i64>, _> = sync_script
+                .key(key)
+                .arg(*local_count as i64)
+                .arg(DISTRIBUTED_COUNTER_TTL_SECONDS)
+                .invoke_async(conn)
+                .await;
+            match script_result {
+                Ok(result) if result.len() >= 2 => {
+                    let old_value = result[0];
+                    let was_changed = result[1];
+                    if was_changed == 1 {
+                        sync_count += 1;
+                        debug!(
+                            key = %key,
+                            old_value = old_value,
+                            new_value = *local_count,
+                            "Synchronized user connection counter to Redis"
+                        );
+                    }
+                }
+                Ok(_) => {
+                    // Unexpected result format
+                    warn!(key = %key, "Unexpected result format from Redis sync script");
+                }
+                Err(e) => {
+                    sync_errors += 1;
+                    warn!(key = %key, error = %e, "Failed to sync user counter to Redis");
+                }
+            }
+        }
+
+        // Sync room counters
+        for (key, local_count) in &room_counts {
+            let script_result: Result<Vec<i64>, _> = sync_script
+                .key(key)
+                .arg(*local_count as i64)
+                .arg(DISTRIBUTED_COUNTER_TTL_SECONDS)
+                .invoke_async(conn)
+                .await;
+            match script_result {
+                Ok(result) if result.len() >= 2 => {
+                    let old_value = result[0];
+                    let was_changed = result[1];
+                    if was_changed == 1 {
+                        sync_count += 1;
+                        debug!(
+                            key = %key,
+                            old_value = old_value,
+                            new_value = *local_count,
+                            "Synchronized room connection counter to Redis"
+                        );
+                    }
+                }
+                Ok(_) => {
+                    warn!(key = %key, "Unexpected result format from Redis sync script");
+                }
+                Err(e) => {
+                    sync_errors += 1;
+                    warn!(key = %key, error = %e, "Failed to sync room counter to Redis");
+                }
+            }
+        }
+
+        // Sync total counter (only if we have local connections)
+        if local_total > 0 {
+            let script_result: Result<Vec<i64>, _> = sync_script
+                .key(&total_key)
+                .arg(local_total as i64)
+                .arg(DISTRIBUTED_COUNTER_TTL_SECONDS)
+                .invoke_async(conn)
+                .await;
+            match script_result {
+                Ok(result) if result.len() >= 2 => {
+                    let old_value = result[0];
+                    let was_changed = result[1];
+                    if was_changed == 1 {
+                        sync_count += 1;
+                        warn!(
+                            key = %total_key,
+                            old_value = old_value,
+                            new_value = local_total,
+                            "Synchronized total connection counter to Redis (was out of sync)"
+                        );
+                    }
+                }
+                Ok(_) => {
+                    warn!(key = %total_key, "Unexpected result format from Redis sync script");
+                }
+                Err(e) => {
+                    sync_errors += 1;
+                    warn!(key = %total_key, error = %e, "Failed to sync total counter to Redis");
+                }
+            }
+        }
+
+        if sync_count > 0 || sync_errors > 0 {
+            info!(
+                counters_synced = sync_count,
+                sync_errors = sync_errors,
+                "Completed distributed counter synchronization"
             );
         }
     }

@@ -172,6 +172,21 @@ impl ExternalPublishManager {
             return Ok(stream);
         }
 
+        // Issue #56: Pre-check max concurrent streams BEFORE acquiring creation lock.
+        // This provides fast rejection when the limit is already reached, avoiding
+        // unnecessary lock contention. The check is repeated inside the lock for correctness.
+        if self.pool.streams.len() >= self.max_concurrent_streams {
+            warn!(
+                "Max concurrent pull streams ({}) reached for {}/{}. \
+                 Rejecting new stream request to prevent memory exhaustion (pre-check).",
+                self.max_concurrent_streams, room_id, media_id
+            );
+            return Err(crate::error::StreamError::InvalidState(format!(
+                "Max concurrent pull streams ({}) reached. Try again later.",
+                self.max_concurrent_streams
+            )));
+        }
+
         // L-6: If get_existing returned None, the stream may be unhealthy.
         // Explicitly remove any unhealthy entry from the pool before acquiring
         // the creation lock. This ensures the stale entry is gone so the new
@@ -203,12 +218,15 @@ impl ExternalPublishManager {
             return Ok(stream);
         }
 
-        // Issue #56: Enforce max concurrent pull streams to prevent memory exhaustion.
+        // Issue #56: Second check inside the lock to prevent race condition.
+        // Multiple requests for DIFFERENT streams may have passed the pre-check
+        // concurrently, but only one can create at a time per-key. Re-check here
+        // ensures we don't exceed the limit when multiple creations race.
         let current_count = self.pool.streams.len();
         if current_count >= self.max_concurrent_streams {
             warn!(
                 "Max concurrent pull streams ({}) reached for {}/{}. \
-                 Rejecting new stream request to prevent memory exhaustion.",
+                 Rejecting new stream request to prevent memory exhaustion (lock-internal check).",
                 self.max_concurrent_streams, room_id, media_id
             );
             return Err(crate::error::StreamError::InvalidState(format!(

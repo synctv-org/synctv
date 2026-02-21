@@ -92,6 +92,10 @@ static PRAGMA: LazyLock<axum::http::HeaderName> = LazyLock::new(|| {
 #[derive(Debug, Clone)]
 pub struct AuthUser {
     pub user_id: UserId,
+    /// Password version from JWT claims.
+    /// Used when creating WebSocket tickets to ensure tickets are invalidated
+    /// when the user changes their password.
+    pub password_version: i32,
 }
 
 impl<S> FromRequestParts<S> for AuthUser
@@ -131,7 +135,10 @@ where
             .await
             .map_err(|e| AppError::unauthorized(format!("{e}")))?;
 
-        Ok(Self { user_id: authenticated.user_id })
+        // Extract password version from claims, defaulting to 0 for legacy tokens
+        let password_version = authenticated.claims.pv.unwrap_or(0);
+
+        Ok(Self { user_id: authenticated.user_id, password_version })
     }
 }
 

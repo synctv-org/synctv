@@ -1009,7 +1009,55 @@ impl Config {
         }
 
         // Validate trusted_proxies CIDR format
+        // List of dangerous CIDR ranges that should never be trusted
+        const DANGEROUS_CIDR_RANGES: &[&str] = &[
+            "0.0.0.0/0",       // All IPv4 addresses
+            "::/0",            // All IPv6 addresses
+            "0.0.0.0/0,::/0",  // Combined IPv4+IPv6 (sometimes seen in configs)
+        ];
+
         for (i, proxy) in self.server.trusted_proxies.iter().enumerate() {
+            // Check for dangerous overly-broad CIDR ranges first
+            let proxy_normalized = proxy.replace(' ', "").to_lowercase();
+            for dangerous in DANGEROUS_CIDR_RANGES {
+                if proxy_normalized == dangerous.replace(' ', "").to_lowercase() {
+                    errors.push(format!(
+                        "server.trusted_proxies[{i}] '{proxy}' is a dangerous configuration \
+                         that trusts ALL IP addresses. This allows IP spoofing attacks via \
+                         X-Forwarded-For headers. Use specific IP ranges (e.g., '10.0.0.0/8', \
+                         '172.16.0.0/12', '192.168.0.0/16') for your trusted proxies/_load balancers."
+                    ));
+                    continue;
+                }
+            }
+
+            // Also check if a CIDR covers all addresses (e.g., "0.0.0.0/0" parsed)
+            if let Ok(network) = proxy.parse::<ipnet::IpNet>() {
+                // Check if the network covers all possible addresses
+                match network {
+                    ipnet::IpNet::V4(v4) => {
+                        if v4.prefix_len() == 0 {
+                            errors.push(format!(
+                                "server.trusted_proxies[{i}] '{proxy}' covers all IPv4 addresses (/{prefix}). \
+                                 This allows IP spoofing attacks via X-Forwarded-For headers. \
+                                 Use specific IP ranges for your trusted proxies/load balancers.",
+                                prefix = v4.prefix_len()
+                            ));
+                        }
+                    }
+                    ipnet::IpNet::V6(v6) => {
+                        if v6.prefix_len() == 0 {
+                            errors.push(format!(
+                                "server.trusted_proxies[{i}] '{proxy}' covers all IPv6 addresses (/{prefix}). \
+                                 This allows IP spoofing attacks via X-Forwarded-For headers. \
+                                 Use specific IP ranges for your trusted proxies/load balancers.",
+                                prefix = v6.prefix_len()
+                            ));
+                        }
+                    }
+                }
+            }
+
             // Each entry must be a valid CIDR notation or IP address
             if proxy.parse::<ipnet::IpNet>().is_err()
                 && proxy.parse::<std::net::IpAddr>().is_err()
@@ -1186,6 +1234,26 @@ impl Config {
             tracing::warn!(
                 "server.cors_allowed_origins is empty. \
                  CORS requests will be rejected. Set allowed origins."
+            );
+        }
+
+        // SECURITY: Warn if metrics endpoint is enabled without authentication
+        // The /metrics endpoint exposes sensitive operational data including:
+        // - Request rates and latencies
+        // - Internal service topology
+        // - Database connection pool states
+        // - Memory and CPU usage patterns
+        // Without authentication, anyone who can reach the endpoint can access this data.
+        if self.server.metrics_enabled && self.server.metrics_bearer_token.is_empty() {
+            tracing::warn!(
+                "SECURITY WARNING: server.metrics_enabled=true but server.metrics_bearer_token is empty. \
+                 The /metrics endpoint is COMPLETELY OPEN to anyone who can reach it. \
+                 This exposes sensitive operational data (request rates, internal topology, \
+                 resource usage) that could aid attackers in reconnaissance. \
+                 STRONGLY RECOMMENDED: Set SYNCTV_SERVER_METRICS_BEARER_TOKEN to a secure random value \
+                 (e.g., output of `openssl rand -hex 32`). \
+                 Only leave this empty if the /metrics endpoint is protected at the network level \
+                 (e.g., Kubernetes NetworkPolicy restricting access to monitoring pods only)."
             );
         }
 
@@ -1703,6 +1771,7 @@ mod tests {
                 http_port: 8080,
                 enable_reflection: true,
                 metrics_enabled: false,
+                metrics_bearer_token: String::new(),
                 trusted_proxies: Vec::new(),
                 cors_allowed_origins: Vec::new(),
                 cluster_secret: String::new(),
@@ -1741,6 +1810,7 @@ mod tests {
                 grpc_port: 50051,
                 http_port: 8080,
                 metrics_enabled: false,
+                metrics_bearer_token: String::new(),
                 enable_reflection: false,
                 trusted_proxies: Vec::new(),
                 cors_allowed_origins: Vec::new(),

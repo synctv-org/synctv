@@ -109,17 +109,21 @@ async fn extract_user_id(
     // The ticket is validated against the target room to prevent cross-room replay (Issue #65).
     if let Some(ref ticket) = query.ticket {
         if let Some(ref ws_ticket_service) = state.ws_ticket_service {
-            let user_id = ws_ticket_service
+            let validated = ws_ticket_service
                 .validate_and_consume(ticket, room_id)
                 .await
                 .map_err(|e| AppError::unauthorized(format!("Invalid or expired ticket: {e}")))?;
 
-            // Ticket path: verify user status (banned/deleted) since tickets don't carry JWT claims
+            // Ticket path: verify user status and password version since tickets don't carry JWT claims.
+            // We check password_version to ensure tickets are invalidated if the user changes
+            // their password after the ticket was issued. This provides parity with JWT
+            // authentication which uses the SecurityPipeline.
             let user = state
                 .user_service
-                .get_user(&user_id)
+                .get_user(&validated.user_id)
                 .await
                 .map_err(|_| AppError::unauthorized("User not found"))?;
+
             if user.is_deleted()
                 || user.status == synctv_core::models::UserStatus::Banned
                 || user.status == synctv_core::models::UserStatus::Pending
@@ -127,7 +131,14 @@ async fn extract_user_id(
                 return Err(AppError::unauthorized("Authentication failed"));
             }
 
-            return Ok((user_id, AuthMethod::Ticket));
+            // Check password version: if the user's current password_version is higher than
+            // the version stored in the ticket, the password was changed after the ticket
+            // was issued, and the ticket should be rejected.
+            if validated.password_version < user.password_version {
+                return Err(AppError::unauthorized("Authentication failed"));
+            }
+
+            return Ok((validated.user_id, AuthMethod::Ticket));
         }
         return Err(AppError::internal_server_error(
             "WebSocket ticket service not configured (Redis required)",

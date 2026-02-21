@@ -871,6 +871,15 @@ pub mod livestream {
             REGISTRY.clone()
         ).expect("Failed to register GOP_CACHE_MEMORY_BYTES")
     });
+
+    /// Total FLV stream terminations due to slow client (exceeded consecutive frame drops).
+    pub static LIVESTREAM_FLV_SLOW_CLIENT_TERMINATIONS_TOTAL: std::sync::LazyLock<IntCounter> = std::sync::LazyLock::new(|| {
+        register_int_counter_with_registry!(
+            "livestream_flv_slow_client_terminations_total",
+            "Total FLV stream terminations due to slow client",
+            REGISTRY.clone()
+        ).expect("Failed to register LIVESTREAM_FLV_SLOW_CLIENT_TERMINATIONS_TOTAL")
+    });
 }
 
 /// Helper macro to record HTTP request metrics

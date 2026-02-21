@@ -70,6 +70,7 @@ async fn test_complete_registration_flow() {
         updated_at: chrono::Utc::now(),
         password_changed_at: chrono::Utc::now(),
         password_version: 0,
+        version: 0,
         deleted_at: None,
     };
 
@@ -135,6 +136,7 @@ async fn test_login_with_wrong_password() {
         updated_at: chrono::Utc::now(),
         password_changed_at: chrono::Utc::now(),
         password_version: 0,
+        version: 0,
         deleted_at: None,
     };
 
@@ -174,6 +176,7 @@ async fn test_login_unverified_user_rejected() {
         updated_at: chrono::Utc::now(),
         password_changed_at: chrono::Utc::now(),
         password_version: 0,
+        version: 0,
         deleted_at: None,
     };
 
@@ -247,6 +250,7 @@ async fn test_password_change_invalidates_tokens() {
         updated_at: chrono::Utc::now(),
         password_changed_at: chrono::Utc::now(),
         password_version: 0,
+        version: 0,
         deleted_at: None,
     };
 
@@ -310,6 +314,7 @@ async fn test_concurrent_login_attempts() {
         updated_at: chrono::Utc::now(),
         password_changed_at: chrono::Utc::now(),
         password_version: 0,
+        version: 0,
         deleted_at: None,
     };
 
@@ -373,6 +378,7 @@ async fn test_banned_user_login_rejected() {
         updated_at: chrono::Utc::now(),
         password_changed_at: chrono::Utc::now(),
         password_version: 0,
+        version: 0,
         deleted_at: None,
     };
 
@@ -414,6 +420,7 @@ async fn test_username_case_insensitive_login() {
         updated_at: chrono::Utc::now(),
         password_changed_at: chrono::Utc::now(),
         password_version: 0,
+        version: 0,
         deleted_at: None,
     };
 

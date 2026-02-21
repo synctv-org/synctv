@@ -36,6 +36,7 @@ pub use synctv_core::metrics::livestream::{
     LIVESTREAM_BYTES_TOTAL,
     LIVESTREAM_STREAM_DURATION_SECONDS,
     LIVESTREAM_PULL_ERRORS_TOTAL,
+    LIVESTREAM_FLV_SLOW_CLIENT_TERMINATIONS_TOTAL,
 };
 
 // Re-export cache metrics from core

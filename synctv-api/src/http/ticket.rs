@@ -95,8 +95,9 @@ pub async fn create_ticket(
     })?;
 
     // Create a new room-bound ticket for this user (Issue #65)
+    // Include password_version so tickets are invalidated on password change
     let ticket = ws_ticket_service
-        .create_ticket(&auth.user_id, &room_id)
+        .create_ticket(&auth.user_id, &room_id, auth.password_version)
         .await
         .map_err(|e| {
             AppError::internal_server_error(format!("Failed to create WebSocket ticket: {e}"))

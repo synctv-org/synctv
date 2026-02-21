@@ -129,6 +129,11 @@ impl StreamRegistry {
     ///
     /// FIXED: P0.5 - Uses atomic Lua script to prevent epoch race condition
     /// The script ensures INCR + HSETNX are atomic - if HSETNX fails, epoch is rolled back
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `grpc_address` is empty, as cross-node proxying requires
+    /// a valid gRPC address.
     pub async fn try_register_publisher_with_user(
         &self,
         room_id: &str,
@@ -137,6 +142,15 @@ impl StreamRegistry {
         user_id: &str,
         grpc_address: &str,
     ) -> anyhow::Result<bool> {
+        // Validate grpc_address at registration time (not usage time)
+        // This ensures publishers cannot register without a valid gRPC address
+        if grpc_address.trim().is_empty() {
+            return Err(anyhow!(
+                "Cannot register publisher for node={} with empty grpc_address (room={}, media={})",
+                node_id, room_id, media_id
+            ));
+        }
+
         let key = format!("stream:publisher:{room_id}:{media_id}");
         let epoch_key = format!("{EPOCH_KEY_PREFIX}:{room_id}:{media_id}");
         let mut conn = self.redis.clone();

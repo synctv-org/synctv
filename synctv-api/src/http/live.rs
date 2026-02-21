@@ -25,6 +25,7 @@ use tokio_stream::wrappers::ReceiverStream;
 use tracing::{debug, info, warn};
 
 use crate::http::{AppError, AppResult, AppState};
+use crate::observability::metrics::LIVESTREAM_FLV_SLOW_CLIENT_TERMINATIONS_TOTAL;
 use synctv_core::models::id::RoomId;
 use synctv_livestream::api::{FlvStreamingApi, HlsStreamingApi};
 
@@ -173,6 +174,7 @@ async fn handle_flv_stream(
                                         "FLV stream terminated: slow client exceeded {} consecutive frame drops",
                                         MAX_CONSECUTIVE_DROPS
                                     );
+                                    LIVESTREAM_FLV_SLOW_CLIENT_TERMINATIONS_TOTAL.inc();
                                     break;
                                 }
                             }

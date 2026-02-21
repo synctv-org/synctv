@@ -11,16 +11,31 @@
 //! - All logic encapsulated in `StreamMessageHandler` (rate limiting, filtering, permissions)
 //! - Complete IO abstraction via `StreamMessage` trait for both sending and receiving
 
-use std::sync::Arc;
 use prost::Message;
-use synctv_core::{
-    models::{RoomId, UserId, PermissionBits},
-    service::{ContentFilter, RateLimitConfig, RateLimiter, RoomService},
-};
+use rand::RngExt;
+use std::sync::Arc;
 use synctv_cluster::sync::{ClusterEvent, ClusterManager, ConnectionManager};
 use synctv_core::spawn::spawn_monitored;
+use synctv_core::{
+    models::{PermissionBits, RoomId, UserId},
+    service::{ContentFilter, RateLimitConfig, RateLimiter, RoomService},
+};
 
 use crate::proto::client::{ClientMessage, ServerMessage};
+
+/// Convert a `RoomRole` from the core models to the proto `RoomMemberRole` as i32.
+fn room_role_to_proto(role: synctv_core::models::RoomRole) -> i32 {
+    match role {
+        synctv_core::models::RoomRole::Creator => {
+            synctv_proto::common::RoomMemberRole::Creator as i32
+        }
+        synctv_core::models::RoomRole::Admin => synctv_proto::common::RoomMemberRole::Admin as i32,
+        synctv_core::models::RoomRole::Member => {
+            synctv_proto::common::RoomMemberRole::Member as i32
+        }
+        synctv_core::models::RoomRole::Guest => synctv_proto::common::RoomMemberRole::Guest as i32,
+    }
+}
 
 /// Trait for sending server messages to clients
 ///
@@ -28,6 +43,18 @@ use crate::proto::client::{ClientMessage, ServerMessage};
 pub trait MessageSender: Send + Sync {
     /// Send a server message to the client
     fn send(&self, message: ServerMessage) -> Result<(), String>;
+
+    /// Check if connection is still alive.
+    /// Default implementation returns true (connection assumed alive).
+    fn is_alive(&self) -> bool {
+        true
+    }
+
+    /// Send a ping to check connection liveness.
+    /// Default implementation is a no-op (gRPC uses HTTP/2 PING automatically).
+    fn ping(&self) -> Result<(), String> {
+        Ok(())
+    }
 }
 
 /// Unified IO abstraction for bidirectional messaging
@@ -170,30 +197,37 @@ impl StreamMessageHandler {
         let room_id_str = self.room_id.as_str().to_string();
 
         // Register connection with connection manager
-        if let Err(e) = self.connection_manager.register(
-            self.connection_id.clone(),
-            self.user_id.clone(),
-        ).await {
+        if let Err(e) = self
+            .connection_manager
+            .register(self.connection_id.clone(), self.user_id.clone())
+            .await
+        {
             tracing::warn!("Failed to register connection: {}", e);
             return Err(e);
         }
 
         // Associate connection with the room (enforces per-room connection limit)
-        if let Err(e) = self.connection_manager.join_room(
-            &self.connection_id,
-            self.room_id.clone(),
-        ).await {
+        if let Err(e) = self
+            .connection_manager
+            .join_room(&self.connection_id, self.room_id.clone())
+            .await
+        {
             // Roll back the registration since we can't join the room
-            self.connection_manager.unregister(&self.connection_id).await;
+            self.connection_manager
+                .unregister(&self.connection_id)
+                .await;
             return Err(e);
         }
 
         // Subscribe to cluster events using the same connection_id as ConnectionManager
-        let (mut event_rx, _connection_id) = self.cluster_manager.subscribe_with_id(
-            self.room_id.clone(),
-            self.user_id.clone(),
-            self.connection_id.clone(),
-        ).await;
+        let (mut event_rx, _connection_id) = self
+            .cluster_manager
+            .subscribe_with_id(
+                self.room_id.clone(),
+                self.user_id.clone(),
+                self.connection_id.clone(),
+            )
+            .await;
 
         // Subscribe to disconnect signals
         let mut disconnect_rx = self.connection_manager.subscribe_disconnect();
@@ -215,7 +249,7 @@ impl StreamMessageHandler {
         // Add random jitter (±5 s around the 30 s base) so that 1000 concurrent
         // connections do not all fire their DB membership checks in the same
         // one-second window (thundering-herd protection).
-        let heartbeat_jitter_secs = nanoid::nanoid!(4).bytes().fold(0u64, |a, b| a.wrapping_add(b as u64)) % 11; // 0..=10
+        let heartbeat_jitter_secs = rand::rng().random_range(0u64..=10); // 0..=10
         let heartbeat_period = std::time::Duration::from_secs(25 + heartbeat_jitter_secs);
         let mut heartbeat_interval = tokio::time::interval(heartbeat_period);
         heartbeat_interval.tick().await; // Skip the immediate first tick
@@ -558,34 +592,36 @@ impl StreamMessageHandler {
         use synctv_proto::common::RoomMember;
 
         // Fetch the actual role and permissions from the membership record
-        let (role_proto, permissions, added, removed, admin_added, admin_removed) =
-            match self.room_service.member_service().get_member(&self.room_id, &self.user_id).await {
-                Ok(Some(member)) => {
-                    let effective = member.effective_permissions(member.role.permissions());
-                    let role = match member.role {
-                        synctv_core::models::RoomRole::Creator => synctv_proto::common::RoomMemberRole::Creator as i32,
-                        synctv_core::models::RoomRole::Admin => synctv_proto::common::RoomMemberRole::Admin as i32,
-                        synctv_core::models::RoomRole::Member => synctv_proto::common::RoomMemberRole::Member as i32,
-                        synctv_core::models::RoomRole::Guest => synctv_proto::common::RoomMemberRole::Guest as i32,
-                    };
-                    (
-                        role,
-                        effective.0,
-                        member.added_permissions,
-                        member.removed_permissions,
-                        member.admin_added_permissions,
-                        member.admin_removed_permissions,
-                    )
-                }
-                _ => {
-                    // Fallback: if we can't fetch membership, use Member defaults
-                    (
-                        synctv_proto::common::RoomMemberRole::Member as i32,
-                        synctv_core::models::PermissionBits::DEFAULT_MEMBER,
-                        0, 0, 0, 0,
-                    )
-                }
-            };
+        let (role_proto, permissions, added, removed, admin_added, admin_removed) = match self
+            .room_service
+            .member_service()
+            .get_member(&self.room_id, &self.user_id)
+            .await
+        {
+            Ok(Some(member)) => {
+                let effective = member.effective_permissions(member.role.permissions());
+                let role = room_role_to_proto(member.role);
+                (
+                    role,
+                    effective.0,
+                    member.added_permissions,
+                    member.removed_permissions,
+                    member.admin_added_permissions,
+                    member.admin_removed_permissions,
+                )
+            }
+            _ => {
+                // Fallback: if we can't fetch membership, use Member defaults
+                (
+                    synctv_proto::common::RoomMemberRole::Member as i32,
+                    synctv_core::models::PermissionBits::DEFAULT_MEMBER,
+                    0,
+                    0,
+                    0,
+                    0,
+                )
+            }
+        };
 
         ServerMessage {
             message: Some(Message::UserJoined(UserJoinedRoom {
@@ -610,26 +646,27 @@ impl StreamMessageHandler {
     /// Broadcast `UserJoined` event to cluster replicas
     async fn broadcast_user_joined(&self) {
         // Fetch the actual role and permissions from the membership record
-        let (role_proto, permissions) =
-            match self.room_service.member_service().get_member(&self.room_id, &self.user_id).await {
-                Ok(Some(member)) => {
-                    let effective = member.effective_permissions(member.role.permissions());
-                    let role = match member.role {
-                        synctv_core::models::RoomRole::Creator => synctv_proto::common::RoomMemberRole::Creator as i32,
-                        synctv_core::models::RoomRole::Admin => synctv_proto::common::RoomMemberRole::Admin as i32,
-                        synctv_core::models::RoomRole::Member => synctv_proto::common::RoomMemberRole::Member as i32,
-                        synctv_core::models::RoomRole::Guest => synctv_proto::common::RoomMemberRole::Guest as i32,
-                    };
-                    (role, effective)
-                }
-                _ => {
-                    // Fallback: if we can't fetch membership, use Member defaults
-                    (
-                        synctv_proto::common::RoomMemberRole::Member as i32,
-                        synctv_core::models::PermissionBits(synctv_core::models::PermissionBits::DEFAULT_MEMBER),
-                    )
-                }
-            };
+        let (role_proto, permissions) = match self
+            .room_service
+            .member_service()
+            .get_member(&self.room_id, &self.user_id)
+            .await
+        {
+            Ok(Some(member)) => {
+                let effective = member.effective_permissions(member.role.permissions());
+                let role = room_role_to_proto(member.role);
+                (role, effective)
+            }
+            _ => {
+                // Fallback: if we can't fetch membership, use Member defaults
+                (
+                    synctv_proto::common::RoomMemberRole::Member as i32,
+                    synctv_core::models::PermissionBits(
+                        synctv_core::models::PermissionBits::DEFAULT_MEMBER,
+                    ),
+                )
+            }
+        };
 
         let event = ClusterEvent::UserJoined {
             event_id: nanoid::nanoid!(16),
@@ -654,12 +691,19 @@ impl StreamMessageHandler {
     async fn cleanup(&self, room_id: &str) {
         // RT-2: If this connection had an active WebRTC session, decrement the
         // metric and broadcast WebRtcLeave so other peers can clean up.
-        if self.has_webrtc_session.swap(false, std::sync::atomic::Ordering::Relaxed) {
+        // Use Acquire ordering to synchronize with the Release store in handle_webrtc_join/leave.
+        if self
+            .has_webrtc_session
+            .swap(false, std::sync::atomic::Ordering::Acquire)
+        {
             synctv_core::metrics::http::WEBRTC_PEERS_ACTIVE.dec();
 
             // Mark the connection as no longer RTC-joined in the connection manager
             self.connection_manager.mark_rtc_joined(
-                &self.room_id, &self.user_id, &self.connection_id, false,
+                &self.room_id,
+                &self.user_id,
+                &self.connection_id,
+                false,
             );
 
             // Broadcast WebRtcLeave so other peers know this user dropped
@@ -695,16 +739,82 @@ impl StreamMessageHandler {
         let result = self.cluster_manager.broadcast(event);
 
         if result.local_sent == 0 && !result.redis_sent {
+            // Critical UserLeft event failed to reach any destination.
+            // This can happen when Redis is temporarily unavailable.
+            // Spawn a background task to retry the broadcast with exponential backoff.
+            let cluster_manager = self.cluster_manager.clone();
+            let room_id = self.room_id.clone();
+            let user_id = self.user_id.clone();
+            let username = self.username.clone();
+            let connection_id = self.connection_id.clone();
+
             tracing::warn!(
-                user = %self.username,
-                room = %room_id,
-                connection = %self.connection_id,
-                "UserLeft broadcast reached no subscribers; hub may have stale state"
+                user = %username,
+                room = %room_id.as_str(),
+                connection = %connection_id,
+                "UserLeft broadcast reached no subscribers; starting retry task"
             );
+
+            spawn_monitored("userleft_retry", async move {
+                const MAX_RETRIES: u32 = 5;
+                const INITIAL_DELAY_MS: u64 = 100;
+                const MAX_DELAY_MS: u64 = 5000;
+
+                let mut delay_ms = INITIAL_DELAY_MS;
+
+                for attempt in 1..=MAX_RETRIES {
+                    tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+
+                    let retry_event = ClusterEvent::UserLeft {
+                        event_id: nanoid::nanoid!(16),
+                        room_id: room_id.clone(),
+                        user_id: user_id.clone(),
+                        username: username.clone(),
+                        timestamp: chrono::Utc::now(),
+                    };
+
+                    let retry_result = cluster_manager.broadcast(retry_event);
+
+                    if retry_result.local_sent > 0 || retry_result.redis_sent {
+                        tracing::info!(
+                            user = %username,
+                            room = %room_id.as_str(),
+                            connection = %connection_id,
+                            attempt = attempt,
+                            local_sent = retry_result.local_sent,
+                            redis_sent = retry_result.redis_sent,
+                            "UserLeft retry succeeded"
+                        );
+                        return;
+                    }
+
+                    tracing::warn!(
+                        user = %username,
+                        room = %room_id.as_str(),
+                        connection = %connection_id,
+                        attempt = attempt,
+                        max_retries = MAX_RETRIES,
+                        "UserLeft retry attempt failed"
+                    );
+
+                    // Exponential backoff with cap
+                    delay_ms = std::cmp::min(delay_ms * 2, MAX_DELAY_MS);
+                }
+
+                tracing::error!(
+                    user = %username,
+                    room = %room_id.as_str(),
+                    connection = %connection_id,
+                    "UserLeft event permanently lost after {} retry attempts; other replicas may have stale user state",
+                    MAX_RETRIES
+                );
+            });
         }
 
         // Now unregister from connection manager after broadcast has been sent
-        self.connection_manager.unregister(&self.connection_id).await;
+        self.connection_manager
+            .unregister(&self.connection_id)
+            .await;
 
         tracing::info!(
             "Cleanup complete for user {} in room {} (connection: {})",
@@ -727,19 +837,27 @@ impl StreamMessageHandler {
     /// spawned tasks and trigger cleanup (unregister, unsubscribe).
     pub async fn start(
         &self,
-    ) -> Result<(tokio::sync::mpsc::Sender<ClientMessage>, tokio_util::sync::CancellationToken), String> {
+    ) -> Result<
+        (
+            tokio::sync::mpsc::Sender<ClientMessage>,
+            tokio_util::sync::CancellationToken,
+        ),
+        String,
+    > {
         // Register connection with connection manager
-        self.connection_manager.register(
-            self.connection_id.clone(),
-            self.user_id.clone(),
-        ).await?;
+        self.connection_manager
+            .register(self.connection_id.clone(), self.user_id.clone())
+            .await?;
 
         // Associate connection with the room (enforces per-room connection limit)
-        if let Err(e) = self.connection_manager.join_room(
-            &self.connection_id,
-            self.room_id.clone(),
-        ).await {
-            self.connection_manager.unregister(&self.connection_id).await;
+        if let Err(e) = self
+            .connection_manager
+            .join_room(&self.connection_id, self.room_id.clone())
+            .await
+        {
+            self.connection_manager
+                .unregister(&self.connection_id)
+                .await;
             return Err(e);
         }
 
@@ -764,9 +882,10 @@ impl StreamMessageHandler {
         let room_id_str = room_id.as_str().to_string();
         let event_connection_id = self.connection_id.clone();
         let event_user_id = self.user_id.clone();
-        let (mut rx_events, _connection_id) = self.cluster_manager.subscribe_with_id(
-            room_id, user_id, self.connection_id.clone(),
-        ).await;
+        let (mut rx_events, _connection_id) = self
+            .cluster_manager
+            .subscribe_with_id(room_id, user_id, self.connection_id.clone())
+            .await;
         let sender = self.sender.clone();
 
         let event_token = cancel_token.clone();
@@ -1008,10 +1127,15 @@ impl StreamMessageHandler {
             let heartbeat_room_id = self.room_id.clone();
             let heartbeat_user_id = self.user_id.clone();
             let heartbeat_room_service = Arc::clone(&self.room_service);
+            let heartbeat_sender = Arc::clone(&self.sender);
             spawn_monitored("messaging_heartbeat", async move {
                 // Derive jitter from the user_id bytes so each connection gets a
                 // stable-but-different offset within the 25–35 s window.
-                let jitter_secs = heartbeat_user_id.as_str().bytes().fold(0u64, |a, b| a.wrapping_add(b as u64)) % 11; // 0..=10
+                let jitter_secs = heartbeat_user_id
+                    .as_str()
+                    .bytes()
+                    .fold(0u64, |a, b| a.wrapping_add(b as u64))
+                    % 11; // 0..=10
                 let period = std::time::Duration::from_secs(25 + jitter_secs);
                 let mut interval = tokio::time::interval(period);
                 interval.tick().await; // Skip the immediate first tick
@@ -1019,6 +1143,18 @@ impl StreamMessageHandler {
                     tokio::select! {
                         () = heartbeat_token.cancelled() => break,
                         _ = interval.tick() => {
+                            // Check connection liveness first (mirrors run() behavior)
+                            if !heartbeat_sender.is_alive() {
+                                tracing::info!("start() connection no longer alive");
+                                heartbeat_token.cancel();
+                                break;
+                            }
+                            if let Err(e) = heartbeat_sender.ping() {
+                                tracing::info!("start() ping failed, connection dead: {}", e);
+                                heartbeat_token.cancel();
+                                break;
+                            }
+
                             match heartbeat_room_service.member_service().get_member(&heartbeat_room_id, &heartbeat_user_id).await {
                                 Ok(Some(member)) => {
                                     if member.status == synctv_core::models::MemberStatus::Banned {
@@ -1076,7 +1212,9 @@ impl StreamMessageHandler {
                 if chat_msg.content.is_empty() {
                     return Err("Chat message cannot be empty".to_string());
                 }
-                if chat_msg.content.chars().count() > synctv_core::service::chat::MAX_CHAT_MESSAGE_CHARS {
+                if chat_msg.content.chars().count()
+                    > synctv_core::service::chat::MAX_CHAT_MESSAGE_CHARS
+                {
                     return Err(format!(
                         "Chat message too long (max {} characters)",
                         synctv_core::service::chat::MAX_CHAT_MESSAGE_CHARS,
@@ -1087,7 +1225,8 @@ impl StreamMessageHandler {
                 let is_danmaku = chat_msg.position.is_some();
 
                 // Check if chat/danmaku is enabled in room settings
-                let room_settings = self.room_service
+                let room_settings = self
+                    .room_service
                     .get_room_settings(&self.room_id)
                     .await
                     .map_err(|e| e.to_string())?;
@@ -1104,9 +1243,17 @@ impl StreamMessageHandler {
                 // per-room: a user spamming in one room is not throttled in
                 // other rooms they belong to.
                 let rate_limit_key = if is_danmaku {
-                    format!("room:{}:user:{}:danmaku", self.room_id.as_str(), self.user_id.as_str())
+                    format!(
+                        "room:{}:user:{}:danmaku",
+                        self.room_id.as_str(),
+                        self.user_id.as_str()
+                    )
                 } else {
-                    format!("room:{}:user:{}:chat", self.room_id.as_str(), self.user_id.as_str())
+                    format!(
+                        "room:{}:user:{}:chat",
+                        self.room_id.as_str(),
+                        self.user_id.as_str()
+                    )
                 };
 
                 let rate_limit = if is_danmaku {
@@ -1147,7 +1294,8 @@ impl StreamMessageHandler {
                         &sanitized_content,
                         chat_msg.position.unwrap_or(0.0),
                         chat_msg.color.clone(),
-                    ).await?;
+                    )
+                    .await?;
                 } else {
                     self.handle_chat_message(&sanitized_content).await?;
                 }
@@ -1250,7 +1398,12 @@ impl StreamMessageHandler {
     /// They are broadcast to all connected clients for real-time display but
     /// are not saved for later retrieval. This is consistent with how major
     /// danmaku platforms (Bilibili, Niconico) treat live/real-time danmaku.
-    async fn handle_danmaku(&self, content: &str, position: f64, color: Option<String>) -> Result<(), String> {
+    async fn handle_danmaku(
+        &self,
+        content: &str,
+        position: f64,
+        color: Option<String>,
+    ) -> Result<(), String> {
         let event = ClusterEvent::ChatMessage {
             event_id: nanoid::nanoid!(16),
             room_id: self.room_id.clone(),
@@ -1277,7 +1430,10 @@ impl StreamMessageHandler {
 
     // ==================== WebRTC Message Handlers ====================
 
-    async fn handle_webrtc_offer(&self, offer: &crate::proto::client::WebRtcOffer) -> Result<(), String> {
+    async fn handle_webrtc_offer(
+        &self,
+        offer: &crate::proto::client::WebRtcOffer,
+    ) -> Result<(), String> {
         // Check permission
         self.room_service
             .check_permission(&self.room_id, &self.user_id, PermissionBits::USE_WEBRTC)
@@ -1285,7 +1441,8 @@ impl StreamMessageHandler {
             .map_err(|e| format!("WebRTC permission denied: {e}"))?;
 
         // Get connection ID from ConnectionManager
-        let conn_id = self.connection_manager
+        let conn_id = self
+            .connection_manager
             .get_connection_id(&self.room_id, &self.user_id)
             .ok_or_else(|| "Connection not found".to_string())?;
 
@@ -1293,13 +1450,19 @@ impl StreamMessageHandler {
         // are rejected early rather than silently dropped.
         // The 'to' field is formatted as "user_id:conn_id"; we parse the conn_id part.
         if let Some((_target_user, target_conn)) = offer.to.rsplit_once(':') {
-            if self.connection_manager.get_connection(target_conn).is_none() {
+            if self
+                .connection_manager
+                .get_connection(target_conn)
+                .is_none()
+            {
                 tracing::warn!(
                     room_id = %self.room_id.as_str(),
                     target_conn = %target_conn,
                     "WebRTC offer target conn_id is stale (peer reconnected?), dropping offer"
                 );
-                return Err("Target connection is no longer active (peer may have reconnected)".to_string());
+                return Err(
+                    "Target connection is no longer active (peer may have reconnected)".to_string(),
+                );
             }
         } else {
             // 'to' contains only a user_id without a conn_id qualifier.
@@ -1335,7 +1498,10 @@ impl StreamMessageHandler {
         Ok(())
     }
 
-    async fn handle_webrtc_answer(&self, answer: &crate::proto::client::WebRtcAnswer) -> Result<(), String> {
+    async fn handle_webrtc_answer(
+        &self,
+        answer: &crate::proto::client::WebRtcAnswer,
+    ) -> Result<(), String> {
         // Check permission
         self.room_service
             .check_permission(&self.room_id, &self.user_id, PermissionBits::USE_WEBRTC)
@@ -1343,7 +1509,8 @@ impl StreamMessageHandler {
             .map_err(|e| format!("WebRTC permission denied: {e}"))?;
 
         // Get connection ID
-        let conn_id = self.connection_manager
+        let conn_id = self
+            .connection_manager
             .get_connection_id(&self.room_id, &self.user_id)
             .ok_or_else(|| "Connection not found".to_string())?;
 
@@ -1370,7 +1537,10 @@ impl StreamMessageHandler {
         Ok(())
     }
 
-    async fn handle_webrtc_ice_candidate(&self, candidate: &crate::proto::client::WebRtcIceCandidate) -> Result<(), String> {
+    async fn handle_webrtc_ice_candidate(
+        &self,
+        candidate: &crate::proto::client::WebRtcIceCandidate,
+    ) -> Result<(), String> {
         // Check permission
         self.room_service
             .check_permission(&self.room_id, &self.user_id, PermissionBits::USE_WEBRTC)
@@ -1378,7 +1548,8 @@ impl StreamMessageHandler {
             .map_err(|e| format!("WebRTC permission denied: {e}"))?;
 
         // Get connection ID
-        let conn_id = self.connection_manager
+        let conn_id = self
+            .connection_manager
             .get_connection_id(&self.room_id, &self.user_id)
             .ok_or_else(|| "Connection not found".to_string())?;
 
@@ -1405,7 +1576,10 @@ impl StreamMessageHandler {
         Ok(())
     }
 
-    async fn handle_webrtc_join(&self, _join: &crate::proto::client::WebRtcJoin) -> Result<(), String> {
+    async fn handle_webrtc_join(
+        &self,
+        _join: &crate::proto::client::WebRtcJoin,
+    ) -> Result<(), String> {
         // Check permission
         self.room_service
             .check_permission(&self.room_id, &self.user_id, PermissionBits::USE_WEBRTC)
@@ -1413,7 +1587,8 @@ impl StreamMessageHandler {
             .map_err(|e| format!("WebRTC permission denied: {e}"))?;
 
         // Get connection ID
-        let conn_id = self.connection_manager
+        let conn_id = self
+            .connection_manager
             .get_connection_id(&self.room_id, &self.user_id)
             .ok_or_else(|| "Connection not found".to_string())?;
 
@@ -1422,8 +1597,12 @@ impl StreamMessageHandler {
             .mark_rtc_joined(&self.room_id, &self.user_id, &conn_id, true);
 
         // Track WebRTC peer metrics and session state for cleanup()
-        self.has_webrtc_session.store(true, std::sync::atomic::Ordering::Relaxed);
+        // Order matters: increment metric FIRST, then set the flag.
+        // This prevents race condition where cleanup() sees the flag but metric
+        // hasn't been incremented yet, which would cause undercount on dec().
         synctv_core::metrics::http::WEBRTC_PEERS_ACTIVE.inc();
+        self.has_webrtc_session
+            .store(true, std::sync::atomic::Ordering::Release);
 
         // Broadcast Join event to all RTC-joined users in the room
         let event = ClusterEvent::WebRTCJoin {
@@ -1448,9 +1627,13 @@ impl StreamMessageHandler {
         Ok(())
     }
 
-    async fn handle_webrtc_leave(&self, _leave: &crate::proto::client::WebRtcLeave) -> Result<(), String> {
+    async fn handle_webrtc_leave(
+        &self,
+        _leave: &crate::proto::client::WebRtcLeave,
+    ) -> Result<(), String> {
         // Get connection ID
-        let conn_id = self.connection_manager
+        let conn_id = self
+            .connection_manager
             .get_connection_id(&self.room_id, &self.user_id)
             .ok_or_else(|| "Connection not found".to_string())?;
 
@@ -1459,7 +1642,11 @@ impl StreamMessageHandler {
             .mark_rtc_joined(&self.room_id, &self.user_id, &conn_id, false);
 
         // Track WebRTC peer metrics and session state for cleanup()
-        self.has_webrtc_session.store(false, std::sync::atomic::Ordering::Relaxed);
+        // Order matters: clear the flag FIRST, then decrement metric.
+        // This prevents race condition where cleanup() might also try to dec()
+        // after we've already decremented, which would cause undercount.
+        self.has_webrtc_session
+            .store(false, std::sync::atomic::Ordering::Release);
         synctv_core::metrics::http::WEBRTC_PEERS_ACTIVE.dec();
 
         // Broadcast Leave event to all RTC-joined users in the room
@@ -1572,7 +1759,9 @@ impl StreamMessageHandler {
                         state: updated_state,
                         timestamp: chrono::Utc::now(),
                     };
-                    self.cluster_manager.message_hub().broadcast(&self.room_id, event);
+                    self.cluster_manager
+                        .message_hub()
+                        .broadcast(&self.room_id, event);
                 }
                 Err(e) => {
                     tracing::debug!(
@@ -1662,13 +1851,13 @@ impl StreamMessageHandler {
     }
 
     /// Get room ID
-    #[must_use] 
+    #[must_use]
     pub const fn get_room_id(&self) -> &RoomId {
         &self.room_id
     }
 
     /// Get user ID
-    #[must_use] 
+    #[must_use]
     pub fn get_user_id(&self) -> UserId {
         self.user_id.clone()
     }
@@ -1680,103 +1869,127 @@ fn cluster_event_to_server_message(
     room_id: &str,
 ) -> Option<ServerMessage> {
     use crate::proto::client::server_message::Message;
-    use crate::proto::client::{ServerMessage, ChatMessageReceive, PlaybackStateChanged, PlaybackState, UserJoinedRoom, UserLeftRoom, RoomSettingsChanged, ErrorMessage};
-    use synctv_proto::common::RoomMember;
+    use crate::proto::client::{
+        ChatMessageReceive, ErrorMessage, PlaybackState, PlaybackStateChanged, RoomSettingsChanged,
+        ServerMessage, UserJoinedRoom, UserLeftRoom,
+    };
     use synctv_cluster::sync::ClusterEvent;
+    use synctv_proto::common::RoomMember;
 
     match event {
-        ClusterEvent::ChatMessage { user_id, username, message, timestamp, position, color, .. } => {
-            Some(ServerMessage {
-                message: Some(Message::Chat(ChatMessageReceive {
-                    id: nanoid::nanoid!(12),
+        ClusterEvent::ChatMessage {
+            user_id,
+            username,
+            message,
+            timestamp,
+            position,
+            color,
+            ..
+        } => Some(ServerMessage {
+            message: Some(Message::Chat(ChatMessageReceive {
+                id: nanoid::nanoid!(12),
+                room_id: room_id.to_string(),
+                user_id: user_id.as_str().to_string(),
+                username: username.clone(),
+                content: message.clone(),
+                timestamp: timestamp.timestamp_micros(),
+                position: *position,
+                color: color.clone(),
+            })),
+        }),
+        ClusterEvent::PlaybackStateChanged { state, .. } => Some(ServerMessage {
+            message: Some(Message::PlaybackState(PlaybackStateChanged {
+                room_id: room_id.to_string(),
+                state: Some(PlaybackState {
+                    room_id: state.room_id.as_str().to_string(),
+                    playing_media_id: state
+                        .playing_media_id
+                        .as_ref()
+                        .map(|id| id.as_str().to_string())
+                        .unwrap_or_default(),
+                    current_time: state.current_time,
+                    speed: state.speed,
+                    is_playing: state.is_playing,
+                    updated_at: state.updated_at.timestamp(),
+                    version: state.version as i32,
+                    playing_playlist_id: state
+                        .playing_playlist_id
+                        .as_ref()
+                        .map(|id| id.as_str().to_string())
+                        .unwrap_or_default(),
+                    relative_path: state.relative_path.clone(),
+                }),
+            })),
+        }),
+        ClusterEvent::UserJoined {
+            user_id,
+            username,
+            permissions,
+            role,
+            ..
+        } => Some(ServerMessage {
+            message: Some(Message::UserJoined(UserJoinedRoom {
+                room_id: room_id.to_string(),
+                member: Some(RoomMember {
                     room_id: room_id.to_string(),
                     user_id: user_id.as_str().to_string(),
                     username: username.clone(),
-                    content: message.clone(),
-                    timestamp: timestamp.timestamp_micros(),
-                    position: *position,
-                    color: color.clone(),
-                })),
-            })
-        }
-        ClusterEvent::PlaybackStateChanged { state, .. } => {
-            Some(ServerMessage {
-                message: Some(Message::PlaybackState(PlaybackStateChanged {
-                    room_id: room_id.to_string(),
-                    state: Some(PlaybackState {
-                        room_id: state.room_id.as_str().to_string(),
-                        playing_media_id: state
-                            .playing_media_id
-                            .as_ref()
-                            .map(|id| id.as_str().to_string())
-                            .unwrap_or_default(),
-                        current_time: state.current_time,
-                        speed: state.speed,
-                        is_playing: state.is_playing,
-                        updated_at: state.updated_at.timestamp(),
-                        version: state.version as i32,
-                        playing_playlist_id: state
-                            .playing_playlist_id
-                            .as_ref()
-                            .map(|id| id.as_str().to_string())
-                            .unwrap_or_default(),
-                        relative_path: state.relative_path.clone(),
-                    }),
-                })),
-            })
-        }
-        ClusterEvent::UserJoined { user_id, username, permissions, role, .. } => {
-            Some(ServerMessage {
-                message: Some(Message::UserJoined(UserJoinedRoom {
-                    room_id: room_id.to_string(),
-                    member: Some(RoomMember {
-                        room_id: room_id.to_string(),
-                        user_id: user_id.as_str().to_string(),
-                        username: username.clone(),
-                        role: *role,
-                        permissions: permissions.0,
-                        added_permissions: 0,
-                        removed_permissions: 0,
-                        admin_added_permissions: 0,
-                        admin_removed_permissions: 0,
-                        joined_at: chrono::Utc::now().timestamp(),
-                        is_online: true,
-                    }),
-                })),
-            })
-        }
-        ClusterEvent::UserLeft { user_id, .. } => {
-            Some(ServerMessage {
-                message: Some(Message::UserLeft(UserLeftRoom {
-                    room_id: room_id.to_string(),
-                    user_id: user_id.as_str().to_string(),
-                })),
-            })
-        }
-        ClusterEvent::MediaAdded { media_id, media_title, user_id, username, .. } => {
-            Some(ServerMessage {
-                message: Some(Message::MediaAdded(crate::proto::client::MediaAdded {
-                    room_id: room_id.to_string(),
-                    media_id: media_id.as_str().to_string(),
-                    title: media_title.clone(),
-                    added_by: username.clone(),
-                    added_by_user_id: user_id.as_str().to_string(),
-                })),
-            })
-        }
-        ClusterEvent::MediaRemoved { media_id, user_id, username, .. } => {
-            Some(ServerMessage {
-                message: Some(Message::MediaRemoved(crate::proto::client::MediaRemoved {
-                    room_id: room_id.to_string(),
-                    media_id: media_id.as_str().to_string(),
-                    removed_by: username.clone(),
-                    removed_by_user_id: user_id.as_str().to_string(),
-                })),
-            })
-        }
-        ClusterEvent::PermissionChanged { target_user_id, new_permissions, role, added_permissions, removed_permissions, changed_by_username, .. } => {
-            Some(ServerMessage {
-                message: Some(Message::PermissionChanged(crate::proto::client::PermissionChanged {
+                    role: *role,
+                    permissions: permissions.0,
+                    added_permissions: 0,
+                    removed_permissions: 0,
+                    admin_added_permissions: 0,
+                    admin_removed_permissions: 0,
+                    joined_at: chrono::Utc::now().timestamp(),
+                    is_online: true,
+                }),
+            })),
+        }),
+        ClusterEvent::UserLeft { user_id, .. } => Some(ServerMessage {
+            message: Some(Message::UserLeft(UserLeftRoom {
+                room_id: room_id.to_string(),
+                user_id: user_id.as_str().to_string(),
+            })),
+        }),
+        ClusterEvent::MediaAdded {
+            media_id,
+            media_title,
+            user_id,
+            username,
+            ..
+        } => Some(ServerMessage {
+            message: Some(Message::MediaAdded(crate::proto::client::MediaAdded {
+                room_id: room_id.to_string(),
+                media_id: media_id.as_str().to_string(),
+                title: media_title.clone(),
+                added_by: username.clone(),
+                added_by_user_id: user_id.as_str().to_string(),
+            })),
+        }),
+        ClusterEvent::MediaRemoved {
+            media_id,
+            user_id,
+            username,
+            ..
+        } => Some(ServerMessage {
+            message: Some(Message::MediaRemoved(crate::proto::client::MediaRemoved {
+                room_id: room_id.to_string(),
+                media_id: media_id.as_str().to_string(),
+                removed_by: username.clone(),
+                removed_by_user_id: user_id.as_str().to_string(),
+            })),
+        }),
+        ClusterEvent::PermissionChanged {
+            target_user_id,
+            new_permissions,
+            role,
+            added_permissions,
+            removed_permissions,
+            changed_by_username,
+            ..
+        } => Some(ServerMessage {
+            message: Some(Message::PermissionChanged(
+                crate::proto::client::PermissionChanged {
                     room_id: room_id.to_string(),
                     user_id: target_user_id.as_str().to_string(),
                     role: *role,
@@ -1786,18 +1999,22 @@ fn cluster_event_to_server_message(
                     admin_added_permissions: 0,
                     admin_removed_permissions: 0,
                     updated_by: changed_by_username.clone(),
-                })),
-            })
-        }
-        ClusterEvent::RoomSettingsChanged { settings_json, .. } => {
-            Some(ServerMessage {
-                message: Some(Message::RoomSettings(RoomSettingsChanged {
-                    room_id: room_id.to_string(),
-                    settings: settings_json.clone(),
-                })),
-            })
-        }
-        ClusterEvent::WebRTCSignaling { message_type, from, to, data, .. } => {
+                },
+            )),
+        }),
+        ClusterEvent::RoomSettingsChanged { settings_json, .. } => Some(ServerMessage {
+            message: Some(Message::RoomSettings(RoomSettingsChanged {
+                room_id: room_id.to_string(),
+                settings: settings_json.clone(),
+            })),
+        }),
+        ClusterEvent::WebRTCSignaling {
+            message_type,
+            from,
+            to,
+            data,
+            ..
+        } => {
             // Convert to appropriate proto message based on message_type
             match message_type.as_str() {
                 "offer" => Some(ServerMessage {
@@ -1815,23 +2032,28 @@ fn cluster_event_to_server_message(
                     })),
                 }),
                 "ice_candidate" => Some(ServerMessage {
-                    message: Some(Message::WebrtcIceCandidate(crate::proto::client::WebRtcIceCandidate {
-                        from: from.clone(),
-                        to: to.clone(),
-                        data: data.clone(),
-                    })),
+                    message: Some(Message::WebrtcIceCandidate(
+                        crate::proto::client::WebRtcIceCandidate {
+                            from: from.clone(),
+                            to: to.clone(),
+                            data: data.clone(),
+                        },
+                    )),
                 }),
                 "sfu_migration_offer" => {
                     // Parse the migration offer data (contains migration_id + sdp)
                     match serde_json::from_str::<serde_json::Value>(data) {
                         Ok(parsed) => {
-                            let migration_id = parsed["migration_id"].as_str().unwrap_or("").to_string();
+                            let migration_id =
+                                parsed["migration_id"].as_str().unwrap_or("").to_string();
                             let sdp = parsed["sdp"].as_str().unwrap_or("").to_string();
                             Some(ServerMessage {
-                                message: Some(Message::SfuMigrationOffer(crate::proto::client::SfuMigrationOffer {
-                                    migration_id,
-                                    data: sdp,
-                                })),
+                                message: Some(Message::SfuMigrationOffer(
+                                    crate::proto::client::SfuMigrationOffer {
+                                        migration_id,
+                                        data: sdp,
+                                    },
+                                )),
                             })
                         }
                         Err(e) => {
@@ -1844,19 +2066,23 @@ fn cluster_event_to_server_message(
                     // Parse the migration status data
                     match serde_json::from_str::<serde_json::Value>(data) {
                         Ok(parsed) => {
-                            let migration_id = parsed["migration_id"].as_str().unwrap_or("").to_string();
+                            let migration_id =
+                                parsed["migration_id"].as_str().unwrap_or("").to_string();
                             let state = parsed["state"].as_i64().unwrap_or(0) as i32;
                             let total_peers = parsed["total_peers"].as_i64().unwrap_or(0) as i32;
-                            let completed_peers = parsed["completed_peers"].as_i64().unwrap_or(0) as i32;
+                            let completed_peers =
+                                parsed["completed_peers"].as_i64().unwrap_or(0) as i32;
                             let failed_peers = parsed["failed_peers"].as_i64().unwrap_or(0) as i32;
                             Some(ServerMessage {
-                                message: Some(Message::SfuMigrationStatus(crate::proto::client::SfuMigrationStatus {
-                                    migration_id,
-                                    state,
-                                    total_peers,
-                                    completed_peers,
-                                    failed_peers,
-                                })),
+                                message: Some(Message::SfuMigrationStatus(
+                                    crate::proto::client::SfuMigrationStatus {
+                                        migration_id,
+                                        state,
+                                        total_peers,
+                                        completed_peers,
+                                        failed_peers,
+                                    },
+                                )),
                             })
                         }
                         Err(e) => {
@@ -1871,23 +2097,26 @@ fn cluster_event_to_server_message(
                 }
             }
         }
-        ClusterEvent::WebRTCJoin { user_id, conn_id, username, .. } => {
-            Some(ServerMessage {
-                message: Some(Message::WebrtcJoin(crate::proto::client::WebRtcJoin {
-                    user_id: user_id.as_str().to_string(),
-                    conn_id: conn_id.clone(),
-                    username: username.clone(),
-                })),
-            })
-        }
-        ClusterEvent::WebRTCLeave { user_id, conn_id, .. } => {
-            Some(ServerMessage {
-                message: Some(Message::WebrtcLeave(crate::proto::client::WebRtcLeave {
-                    user_id: user_id.as_str().to_string(),
-                    conn_id: conn_id.clone(),
-                })),
-            })
-        }
+        ClusterEvent::WebRTCJoin {
+            user_id,
+            conn_id,
+            username,
+            ..
+        } => Some(ServerMessage {
+            message: Some(Message::WebrtcJoin(crate::proto::client::WebRtcJoin {
+                user_id: user_id.as_str().to_string(),
+                conn_id: conn_id.clone(),
+                username: username.clone(),
+            })),
+        }),
+        ClusterEvent::WebRTCLeave {
+            user_id, conn_id, ..
+        } => Some(ServerMessage {
+            message: Some(Message::WebrtcLeave(crate::proto::client::WebRtcLeave {
+                user_id: user_id.as_str().to_string(),
+                conn_id: conn_id.clone(),
+            })),
+        }),
         ClusterEvent::SystemNotification { message, .. } => {
             Some(ServerMessage {
                 message: Some(Message::Error(ErrorMessage {
@@ -1907,9 +2136,11 @@ fn cluster_event_to_server_message(
                 })),
             })
         }
-        ClusterEvent::KickPublisher { .. } | ClusterEvent::KickUser { .. }
+        ClusterEvent::KickPublisher { .. }
+        | ClusterEvent::KickUser { .. }
         | ClusterEvent::KickUserFromRoom { .. }
-        | ClusterEvent::RoomCreated { .. } | ClusterEvent::CacheInvalidate { .. }
+        | ClusterEvent::RoomCreated { .. }
+        | ClusterEvent::CacheInvalidate { .. }
         | ClusterEvent::UserNotification { .. } => {
             // Admin/internal events are handled by other channels,
             // not forwarded to WebSocket clients via the room event path
@@ -1929,8 +2160,7 @@ impl ProtoCodec {
 
     /// Decode `ClientMessage` from binary
     pub fn decode_client_message(data: &[u8]) -> Result<ClientMessage, String> {
-        ClientMessage::decode(data)
-            .map_err(|e| format!("Failed to decode message: {e}"))
+        ClientMessage::decode(data).map_err(|e| format!("Failed to decode message: {e}"))
     }
 
     /// Encode `ServerMessage` to binary
@@ -1940,22 +2170,29 @@ impl ProtoCodec {
 
     /// Decode `ServerMessage` from binary
     pub fn decode_server_message(data: &[u8]) -> Result<ServerMessage, String> {
-        ServerMessage::decode(data)
-            .map_err(|e| format!("Failed to decode message: {e}"))
+        ServerMessage::decode(data).map_err(|e| format!("Failed to decode message: {e}"))
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use synctv_cluster::sync::{ClusterEvent, NotificationLevel};
-    use synctv_core::models::{RoomId, UserId, MediaId, PermissionBits, RoomPlaybackState};
     use crate::proto::client::server_message::Message;
+    use synctv_cluster::sync::{ClusterEvent, NotificationLevel};
+    use synctv_core::models::{MediaId, PermissionBits, RoomId, RoomPlaybackState, UserId};
 
-    fn room_id() -> RoomId { RoomId("room_test".to_string()) }
-    fn user_id() -> UserId { UserId("user_test".to_string()) }
-    fn media_id() -> MediaId { MediaId::from_string("media_test".to_string()) }
-    fn now() -> chrono::DateTime<chrono::Utc> { chrono::Utc::now() }
+    fn room_id() -> RoomId {
+        RoomId("room_test".to_string())
+    }
+    fn user_id() -> UserId {
+        UserId("user_test".to_string())
+    }
+    fn media_id() -> MediaId {
+        MediaId::from_string("media_test".to_string())
+    }
+    fn now() -> chrono::DateTime<chrono::Utc> {
+        chrono::Utc::now()
+    }
 
     // ========== cluster_event_to_server_message Tests ==========
 

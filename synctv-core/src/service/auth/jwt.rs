@@ -36,6 +36,12 @@ pub struct Claims {
     /// Tokens with a `pv` lower than the user's current `password_version` are rejected.
     #[serde(default)]
     pub pv: Option<i32>,
+    /// Issuer - identifies the service that issued the token
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub iss: Option<String>,
+    /// Audience - identifies the intended recipients of the token
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub aud: Option<String>,
 }
 
 impl Claims {
@@ -80,6 +86,12 @@ pub struct GuestClaims {
     pub iat: i64,
     /// Expiration time (Unix timestamp)
     pub exp: i64,
+    /// Issuer - identifies the service that issued the token
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub iss: Option<String>,
+    /// Audience - identifies the intended recipients of the token
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub aud: Option<String>,
 }
 
 impl GuestClaims {
@@ -112,6 +124,10 @@ pub struct JwtService {
     refresh_token_duration_days: u64,
     guest_token_duration_hours: u64,
     clock_skew_leeway_secs: u64,
+    /// Expected issuer for token validation. If set, tokens must have matching `iss` claim.
+    issuer: Option<String>,
+    /// Expected audience for token validation. If set, tokens must have matching `aud` claim.
+    audience: Option<String>,
 }
 
 impl std::fmt::Debug for JwtService {
@@ -165,6 +181,36 @@ impl JwtService {
         guest_token_duration_hours: u64,
         clock_skew_leeway_secs: u64,
     ) -> Result<Self> {
+        Self::with_durations_and_claims(
+            secret,
+            access_token_duration_hours,
+            refresh_token_duration_days,
+            guest_token_duration_hours,
+            clock_skew_leeway_secs,
+            None,
+            None,
+        )
+    }
+
+    /// Create a new JWT service with custom token durations and issuer/audience
+    ///
+    /// # Arguments
+    /// * `secret` - Secret string for HMAC signing
+    /// * `access_token_duration_hours` - Access token lifetime in hours
+    /// * `refresh_token_duration_days` - Refresh token lifetime in days
+    /// * `guest_token_duration_hours` - Guest token lifetime in hours
+    /// * `clock_skew_leeway_secs` - Allowed clock skew in seconds
+    /// * `issuer` - Optional issuer identifier (e.g., "synctv")
+    /// * `audience` - Optional audience identifier (e.g., "synctv-api")
+    pub fn with_durations_and_claims(
+        secret: &str,
+        access_token_duration_hours: u64,
+        refresh_token_duration_days: u64,
+        guest_token_duration_hours: u64,
+        clock_skew_leeway_secs: u64,
+        issuer: Option<String>,
+        audience: Option<String>,
+    ) -> Result<Self> {
         if secret.is_empty() {
             return Err(Error::Internal("JWT secret cannot be empty".to_string()));
         }
@@ -183,6 +229,8 @@ impl JwtService {
             refresh_token_duration_days,
             guest_token_duration_hours,
             clock_skew_leeway_secs,
+            issuer,
+            audience,
         })
     }
 
@@ -274,6 +322,8 @@ impl JwtService {
             iat: now.timestamp(),
             exp: (now + duration).timestamp(),
             pv: Some(password_version),
+            iss: self.issuer.clone(),
+            aud: self.audience.clone(),
         };
 
         let header = Header::new(self.algorithm);
@@ -285,11 +335,27 @@ impl JwtService {
     ///
     /// # Arguments
     /// * `token` - JWT token string
+    ///
+    /// # Validation
+    /// - Signature verification
+    /// - Expiration time check
+    /// - Issuer validation (if configured)
+    /// - Audience validation (if configured)
     pub fn verify_token(&self, token: &str) -> Result<Claims> {
         let mut validation = Validation::new(self.algorithm);
         validation.validate_exp = true;
         validation.validate_nbf = false;
         validation.leeway = self.clock_skew_leeway_secs;
+
+        // Configure issuer validation if expected issuer is set
+        if let Some(ref expected_iss) = self.issuer {
+            validation.set_issuer(&[expected_iss]);
+        }
+
+        // Configure audience validation if expected audience is set
+        if let Some(ref expected_aud) = self.audience {
+            validation.set_audience(&[expected_aud]);
+        }
 
         let token_data: TokenData<Claims> = decode(token, &self.decoding_key, &validation)
             .map_err(|e| map_jwt_error(e, "Token"))?;
@@ -343,6 +409,8 @@ impl JwtService {
             typ: "guest".to_string(),
             iat: now.timestamp(),
             exp: (now + duration).timestamp(),
+            iss: self.issuer.clone(),
+            aud: self.audience.clone(),
         };
 
         let header = Header::new(self.algorithm);
@@ -357,11 +425,27 @@ impl JwtService {
     ///
     /// # Returns
     /// * Guest claims with room ID and session ID
+    ///
+    /// # Validation
+    /// - Signature verification
+    /// - Expiration time check
+    /// - Issuer validation (if configured)
+    /// - Audience validation (if configured)
     pub fn verify_guest_token(&self, token: &str) -> Result<GuestClaims> {
         let mut validation = Validation::new(self.algorithm);
         validation.validate_exp = true;
         validation.validate_nbf = false;
         validation.leeway = self.clock_skew_leeway_secs;
+
+        // Configure issuer validation if expected issuer is set
+        if let Some(ref expected_iss) = self.issuer {
+            validation.set_issuer(&[expected_iss]);
+        }
+
+        // Configure audience validation if expected audience is set
+        if let Some(ref expected_aud) = self.audience {
+            validation.set_audience(&[expected_aud]);
+        }
 
         let token_data: TokenData<GuestClaims> = decode(token, &self.decoding_key, &validation)
             .map_err(|e| map_jwt_error(e, "Guest token"))?;
@@ -639,17 +723,17 @@ mod tests {
 
     #[test]
     fn test_claims_type_predicates() {
-        let access = Claims { sub: "u1".into(), typ: "access".into(), jti: String::new(), iat: 0, exp: 0, pv: None };
+        let access = Claims { sub: "u1".into(), typ: "access".into(), jti: String::new(), iat: 0, exp: 0, pv: None, iss: None, aud: None };
         assert!(access.is_access_token());
         assert!(!access.is_refresh_token());
         assert!(!access.is_guest_token());
 
-        let refresh = Claims { sub: "u1".into(), typ: "refresh".into(), jti: String::new(), iat: 0, exp: 0, pv: None };
+        let refresh = Claims { sub: "u1".into(), typ: "refresh".into(), jti: String::new(), iat: 0, exp: 0, pv: None, iss: None, aud: None };
         assert!(!refresh.is_access_token());
         assert!(refresh.is_refresh_token());
         assert!(!refresh.is_guest_token());
 
-        let guest = Claims { sub: "u1".into(), typ: "guest".into(), jti: String::new(), iat: 0, exp: 0, pv: None };
+        let guest = Claims { sub: "u1".into(), typ: "guest".into(), jti: String::new(), iat: 0, exp: 0, pv: None, iss: None, aud: None };
         assert!(!guest.is_access_token());
         assert!(!guest.is_refresh_token());
         assert!(guest.is_guest_token());
@@ -686,6 +770,8 @@ mod tests {
             typ: "guest".into(),
             iat: 0,
             exp: 0,
+            iss: None,
+            aud: None,
         };
         assert!(!claims.is_guest());
     }
@@ -748,6 +834,8 @@ mod tests {
             iat: (past - Duration::hours(3)).timestamp(),
             exp: past.timestamp(), // expired 2 hours ago
             pv: None,
+            iss: None,
+            aud: None,
         };
         let token = encode(
             &Header::new(Algorithm::HS256),
@@ -826,5 +914,110 @@ mod tests {
         let token = jwt1.sign_custom(&claims).unwrap();
         let result = jwt2.verify_custom(&token);
         assert!(result.is_err());
+    }
+
+    // ========== Issuer and Audience Validation ==========
+
+    #[test]
+    fn test_token_with_issuer_and_audience() {
+        let jwt = JwtService::with_durations_and_claims(
+            "secret-with-issuer-aud-LONG-ENOUGH-1234567890!@#$%",
+            1, 30, 4, 60,
+            Some("synctv".to_string()),
+            Some("synctv-api".to_string()),
+        ).unwrap();
+
+        let user_id = UserId::new();
+        let token = jwt.sign_token(&user_id, TokenType::Access, 0).unwrap();
+        let claims = jwt.verify_token(&token).unwrap();
+
+        assert_eq!(claims.iss.as_deref(), Some("synctv"));
+        assert_eq!(claims.aud.as_deref(), Some("synctv-api"));
+    }
+
+    #[test]
+    fn test_token_without_issuer_accepted_when_no_issuer_expected() {
+        // Service without issuer validation
+        let jwt = JwtService::new("secret-no-issuer-validation-LONG-ENOUGH-1234567890").unwrap();
+        let user_id = UserId::new();
+        let token = jwt.sign_token(&user_id, TokenType::Access, 0).unwrap();
+        let result = jwt.verify_token(&token);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_token_with_wrong_issuer_rejected() {
+        // Service that expects "synctv" as issuer
+        let jwt_expected = JwtService::with_durations_and_claims(
+            "secret-issuer-check-LONG-ENOUGH-1234567890!@#$%",
+            1, 30, 4, 60,
+            Some("synctv".to_string()),
+            None,
+        ).unwrap();
+
+        // Service that signs tokens with different issuer
+        let jwt_other = JwtService::with_durations_and_claims(
+            "secret-issuer-check-LONG-ENOUGH-1234567890!@#$%",
+            1, 30, 4, 60,
+            Some("other-service".to_string()),
+            None,
+        ).unwrap();
+
+        let user_id = UserId::new();
+        let token = jwt_other.sign_token(&user_id, TokenType::Access, 0).unwrap();
+        let result = jwt_expected.verify_token(&token);
+
+        assert!(result.is_err(), "Token with wrong issuer should be rejected");
+    }
+
+    #[test]
+    fn test_token_with_wrong_audience_rejected() {
+        // Service that expects "synctv-api" as audience
+        let jwt_expected = JwtService::with_durations_and_claims(
+            "secret-aud-check-LONG-ENOUGH-1234567890!@#$%",
+            1, 30, 4, 60,
+            None,
+            Some("synctv-api".to_string()),
+        ).unwrap();
+
+        // Service that signs tokens with different audience
+        let jwt_other = JwtService::with_durations_and_claims(
+            "secret-aud-check-LONG-ENOUGH-1234567890!@#$%",
+            1, 30, 4, 60,
+            None,
+            Some("other-audience".to_string()),
+        ).unwrap();
+
+        let user_id = UserId::new();
+        let token = jwt_other.sign_token(&user_id, TokenType::Access, 0).unwrap();
+        let result = jwt_expected.verify_token(&token);
+
+        assert!(result.is_err(), "Token with wrong audience should be rejected");
+    }
+
+    #[test]
+    fn test_guest_token_with_issuer_and_audience() {
+        let jwt = JwtService::with_durations_and_claims(
+            "guest-issuer-aud-secret-LONG-ENOUGH-1234567890!@#$%",
+            1, 30, 4, 60,
+            Some("synctv".to_string()),
+            Some("synctv-guest".to_string()),
+        ).unwrap();
+
+        let room_id = RoomId::new();
+        let token = jwt.sign_guest_token(&room_id).unwrap();
+        let claims = jwt.verify_guest_token(&token).unwrap();
+
+        assert_eq!(claims.iss.as_deref(), Some("synctv"));
+        assert_eq!(claims.aud.as_deref(), Some("synctv-guest"));
+    }
+
+    #[test]
+    fn test_guest_token_without_issuer_accepted_when_no_issuer_expected() {
+        let jwt = JwtService::new("guest-no-issuer-secret-LONG-ENOUGH-1234567890!@#").unwrap();
+        let room_id = RoomId::new();
+        let token = jwt.sign_guest_token(&room_id).unwrap();
+        let result = jwt.verify_guest_token(&token);
+        assert!(result.is_ok());
     }
 }

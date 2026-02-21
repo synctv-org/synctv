@@ -21,6 +21,7 @@ use crate::{
 use synctv_xiu::rtmp::auth::AuthCallback;
 use synctv_xiu::storage::MemoryStorage;
 use dashmap::DashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
@@ -205,6 +206,9 @@ impl LivestreamServer {
         // Uses Notify instead of mpsc channel so signals are never lost even if
         // multiple restarts occur before the listener wakes up.
         let reregister_notify = Arc::new(tokio::sync::Notify::new());
+        // Shared flag to suppress silent-publisher detection during StreamHub restart.
+        // Set before cleanup begins, cleared after re-registration completes.
+        let is_restarting_flag = Arc::new(AtomicBool::new(false));
         // Channel to notify pull/external managers to stop all streams before StreamHub restart.
         // This ensures zombie streams (still connected to the old hub) are cleaned up.
         // Capacity matches HUB_MAX_RESTARTS so rapid consecutive restarts never drop signals
@@ -230,6 +234,7 @@ impl LivestreamServer {
         let rtmp_auth = self.auth.clone();
         let rtmp_event_sender = event_sender.clone();
         let reregister_notify_for_hub = Arc::clone(&reregister_notify);
+        let is_restarting_for_hub = Arc::clone(&is_restarting_flag);
 
         // 2. Spawn StreamHub event loop with automatic recovery
         let hub_handle = tokio::spawn(async move {
@@ -326,6 +331,12 @@ impl LivestreamServer {
 
                 info!("Cancelled all active RTMP sessions due to StreamHub restart");
 
+                // Set the restarting flag BEFORE cleanup to suppress silent-publisher
+                // detection during the restart window. This prevents false cleanup of
+                // publishers that are temporarily missing from Redis during the
+                // cleanup -> re-register cycle.
+                is_restarting_for_hub.store(true, Ordering::Release);
+
                 // Stop all managed pull/external-publish streams BEFORE restart.
                 // These streams hold channels to the old StreamHub instance and would
                 // become zombies (still running but unable to deliver frames) if not
@@ -338,7 +349,9 @@ impl LivestreamServer {
                     error!("Failed to cleanup publishers on StreamHub restart: {}", e);
                 }
 
-                // Notify PublisherManager to re-register all active publishers immediately
+                // Notify PublisherManager to re-register all active publishers immediately.
+                // The reregister_all_publishers() method will clear the is_restarting flag
+                // after re-registration completes.
                 reregister_notify_for_hub.notify_one();
 
                 if restart_count >= HUB_MAX_RESTARTS {
@@ -390,11 +403,16 @@ impl LivestreamServer {
 
         // Create PublisherManager early so the activity callback can be wired to the HLS remuxer.
         // The manager itself is started later (step 7) after all components are created.
-        let publisher_manager = Arc::new(PublisherManager::new(
-            self.publisher_registry.clone(),
-            self.config.node_id.clone(),
-            event_sender.clone(),
-        ).with_grpc_address(self.config.grpc_address.clone()));
+        // Use with_restarting_flag to share the is_restarting flag with the StreamHub restart loop.
+        let publisher_manager = Arc::new(
+            PublisherManager::with_restarting_flag(
+                self.publisher_registry.clone(),
+                self.config.node_id.clone(),
+                event_sender.clone(),
+                Arc::clone(&is_restarting_flag),
+            )
+            .with_grpc_address(self.config.grpc_address.clone())
+        );
 
         // Create activity callback for the HLS remuxer to record publisher data activity.
         // This prevents the silent publisher detection from incorrectly timing out active publishers.

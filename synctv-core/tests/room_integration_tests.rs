@@ -190,6 +190,9 @@ async fn test_soft_delete_room() {
 #[tokio::test]
 #[ignore = "Requires Docker"]
 async fn test_cascade_delete_user_deletes_rooms() {
+    // The `rooms.created_by` FK uses ON DELETE RESTRICT (not CASCADE), so
+    // deleting a user who still owns rooms must fail.  The correct application
+    // flow is: delete/transfer rooms first, then delete the user.
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
     let room_repo = RoomRepository::new(pool.clone());
@@ -203,25 +206,44 @@ async fn test_cascade_delete_user_deletes_rooms() {
     assert!(room_repo.exists(&room1.id).await.unwrap());
     assert!(room_repo.exists(&room2.id).await.unwrap());
 
-    // Hard delete the user (triggers CASCADE)
+    // Attempting to delete the user while rooms still exist should fail
+    // because of ON DELETE RESTRICT on rooms.created_by.
+    let delete_result = sqlx::query("DELETE FROM users WHERE id = $1")
+        .bind(owner.id.as_str())
+        .execute(&pool)
+        .await;
+    assert!(
+        delete_result.is_err(),
+        "Deleting a user with owned rooms should fail due to FK RESTRICT"
+    );
+
+    // Delete rooms first, then the user should succeed.
+    room_repo.delete(&room1.id).await.unwrap();
+    room_repo.delete(&room2.id).await.unwrap();
+
+    // Now that rooms are soft-deleted, hard-delete the rows so the FK is clear.
+    sqlx::query("DELETE FROM rooms WHERE id = $1 OR id = $2")
+        .bind(room1.id.as_str())
+        .bind(room2.id.as_str())
+        .execute(&pool)
+        .await
+        .unwrap();
+
     sqlx::query("DELETE FROM users WHERE id = $1")
         .bind(owner.id.as_str())
         .execute(&pool)
         .await
         .unwrap();
 
-    // Both rooms should be cascade-deleted
-    // Use raw query since get_by_id filters on deleted_at IS NULL
-    let count: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM rooms WHERE id = $1 OR id = $2"
+    // User should be gone
+    let user_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM users WHERE id = $1"
     )
-    .bind(room1.id.as_str())
-    .bind(room2.id.as_str())
+    .bind(owner.id.as_str())
     .fetch_one(&pool)
     .await
     .unwrap();
-
-    assert_eq!(count, 0, "Rooms should be cascade-deleted when owner is deleted");
+    assert_eq!(user_count, 0, "User should be deleted after rooms are removed");
 }
 
 #[tokio::test]

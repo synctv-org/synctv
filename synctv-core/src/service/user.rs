@@ -425,8 +425,10 @@ impl UserService {
             let family_key = self.key_builder.refresh_token_family_revoked(user_id.as_str());
             let family_revoked_at = self.token_blacklist.get_family_revoked_at(&family_key).await;
             if let Some(revoked_at) = family_revoked_at {
-                // Reject any refresh token issued before the family revocation timestamp
-                if claims.iat < revoked_at {
+                // Reject any refresh token issued at or before the family revocation timestamp.
+                // Using <= ensures tokens issued in the same second as revocation are blocked,
+                // since sub-second precision is lost in Unix timestamps.
+                if claims.iat <= revoked_at {
                     tracing::warn!(
                         user_id = %user_id.as_str(),
                         jti = %old_jti,

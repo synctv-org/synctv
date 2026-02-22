@@ -411,7 +411,15 @@ async fn test_cache_hit_pending_user_rejected() {
 async fn test_cache_populated_with_correct_password_version_after_db_miss() {
     let (_container, pool) = create_test_pool().await;
     let password_version = 3;
+    // UserRepository::create doesn't insert password_version (DB defaults to 0),
+    // so we insert the user first and then update password_version via raw SQL.
     let user = insert_user(&pool, &make_user(UserStatus::Active, password_version)).await;
+    sqlx::query("UPDATE users SET password_version = $1 WHERE id = $2")
+        .bind(password_version)
+        .bind(user.id.as_str())
+        .execute(&pool)
+        .await
+        .expect("Failed to set password_version");
     let user_service = Arc::new(create_user_service(pool));
 
     let user_cache = Arc::new(

@@ -27,7 +27,22 @@ async fn start_redis() -> (testcontainers::ContainerAsync<Redis>, Arc<redis::Cli
         .expect("Failed to get port");
     let redis_url = format!("redis://{}:{}", host, port);
     let client = Arc::new(redis::Client::open(redis_url).expect("Failed to create Redis client"));
-    (container, client)
+
+    // Wait for Redis to be ready to accept connections (container port mapping
+    // may be available before Redis is actually listening).
+    for _ in 0..50 {
+        if let Ok(mut conn) = client.get_multiplexed_async_connection().await {
+            if redis::cmd("PING")
+                .query_async::<String>(&mut conn)
+                .await
+                .is_ok()
+            {
+                return (container, client);
+            }
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    panic!("Redis container did not become ready in time");
 }
 
 #[tokio::test]

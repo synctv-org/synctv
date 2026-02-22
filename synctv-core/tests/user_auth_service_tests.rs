@@ -292,8 +292,8 @@ async fn test_refresh_token_banned_user_rejected() {
         panic!("Expected tokens");
     };
 
-    // Ban the user via raw SQL
-    sqlx::query("UPDATE users SET status = 'banned' WHERE id = $1")
+    // Ban the user via raw SQL (status column is SMALLINT: 3=Banned)
+    sqlx::query("UPDATE users SET status = 3 WHERE id = $1")
         .bind(user.id.as_str())
         .execute(&pool)
         .await
@@ -411,8 +411,8 @@ async fn test_login_banned_user_rejected() {
         .await
         .expect("Registration should succeed");
 
-    // Ban
-    sqlx::query("UPDATE users SET status = 'banned' WHERE id = $1")
+    // Ban (status column is SMALLINT: 3=Banned)
+    sqlx::query("UPDATE users SET status = 3 WHERE id = $1")
         .bind(user.id.as_str())
         .execute(&pool)
         .await
@@ -443,8 +443,8 @@ async fn test_login_pending_user_rejected() {
         .await
         .expect("Registration should succeed");
 
-    // Set pending status
-    sqlx::query("UPDATE users SET status = 'pending' WHERE id = $1")
+    // Set pending status (status column is SMALLINT: 2=Pending)
+    sqlx::query("UPDATE users SET status = 2 WHERE id = $1")
         .bind(user.id.as_str())
         .execute(&pool)
         .await

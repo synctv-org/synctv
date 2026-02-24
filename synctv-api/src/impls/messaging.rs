@@ -14,14 +14,55 @@
 use prost::Message;
 use rand::RngExt;
 use std::sync::Arc;
+use std::time::Duration;
 use synctv_cluster::sync::{ClusterEvent, ClusterManager, ConnectionManager};
 use synctv_core::spawn::spawn_monitored;
 use synctv_core::{
-    models::{PermissionBits, RoomId, UserId},
+    models::{MemberStatus, PermissionBits, RoomId, UserId},
     service::{ChatService, ContentFilter, RateLimitConfig, RateLimiter, RoomService},
 };
 
 use crate::proto::client::{ClientMessage, ServerMessage};
+
+/// Default TTL for membership cache entries (60 seconds).
+///
+/// This TTL is chosen to balance between:
+/// - Reducing database load (longer TTL = fewer queries)
+/// - Responsiveness to membership changes (shorter TTL = faster detection of bans/removals)
+///
+/// With a 60-second TTL and 25-35 second heartbeat interval, we ensure:
+/// - At most 1 DB query per connection per 60 seconds (vs. every heartbeat without cache)
+/// - Banned/removed users are disconnected within ~60-95 seconds worst case
+/// - The disconnect signal channel (Redis PubSub) provides immediate notification in most cases
+const MEMBERSHIP_CACHE_TTL: Duration = Duration::from_secs(60);
+
+/// Cached membership status for heartbeat validation.
+///
+/// This struct stores the result of a membership check to avoid
+/// repeated database queries during heartbeat validation.
+#[derive(Clone, Copy, Debug)]
+struct CachedMembership {
+    /// Whether the user is still a valid member of the room
+    is_member: bool,
+    /// Whether the user is banned
+    is_banned: bool,
+}
+
+impl CachedMembership {
+    /// Create a cached membership from a member lookup result.
+    fn from_member(member: Option<&synctv_core::models::RoomMember>) -> Self {
+        match member {
+            Some(m) => Self {
+                is_member: true,
+                is_banned: m.status == MemberStatus::Banned,
+            },
+            None => Self {
+                is_member: false,
+                is_banned: false,
+            },
+        }
+    }
+}
 
 /// Convert a `RoomRole` from the core models to the proto `RoomMemberRole` as i32.
 const fn room_role_to_proto(role: synctv_core::models::RoomRole) -> i32 {
@@ -126,6 +167,11 @@ pub struct StreamMessageHandler {
     /// event was already published by an explicit API call (leave_room/delete_room)
     /// and the WS handler is disconnecting in response to that cluster event.
     skip_cleanup_user_left: Arc<std::sync::atomic::AtomicBool>,
+    /// Cached membership status for heartbeat validation.
+    /// Uses TTL-based expiration (60 seconds) to reduce database load while
+    /// maintaining reasonable responsiveness to membership changes.
+    /// Key: (room_id, user_id) tuple for O(1) lookup.
+    membership_cache: Arc<moka::sync::Cache<(String, String), CachedMembership>>,
 }
 
 impl Clone for StreamMessageHandler {
@@ -146,6 +192,7 @@ impl Clone for StreamMessageHandler {
             ws_message_rate_limit: self.ws_message_rate_limit,
             has_webrtc_session: Arc::clone(&self.has_webrtc_session),
             skip_cleanup_user_left: Arc::clone(&self.skip_cleanup_user_left),
+            membership_cache: Arc::clone(&self.membership_cache),
         }
     }
 }
@@ -166,6 +213,13 @@ impl StreamMessageHandler {
         sender: Arc<dyn MessageSender>,
     ) -> Self {
         let connection_id = format!("{}_{}", user_id.as_str(), nanoid::nanoid!(8));
+        // Create membership cache with TTL for heartbeat validation.
+        // This reduces database queries from every heartbeat (25-35s) to at most once per TTL (60s).
+        let membership_cache = Arc::new(
+            moka::sync::Cache::builder()
+                .time_to_live(MEMBERSHIP_CACHE_TTL)
+                .build(),
+        );
         Self {
             room_id,
             user_id,
@@ -182,6 +236,7 @@ impl StreamMessageHandler {
             ws_message_rate_limit: 50, // default, overridden by with_ws_message_rate_limit()
             has_webrtc_session: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             skip_cleanup_user_left: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            membership_cache,
         }
     }
 

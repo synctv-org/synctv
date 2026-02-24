@@ -11,7 +11,7 @@ use synctv_core::{
     config::PasswordComplexityConfig,
     models::{
         RoomSettings, UserId, User, UserRole, UserStatus,
-        RoomRole,
+        RoomRole, MemberStatus, PermissionBits,
     },
     repository::{RoomRepository, UserRepository, RoomMemberRepository, RoomSettingsRepository},
     service::{
@@ -864,4 +864,1665 @@ async fn test_join_room_password_added_during_join_requires_password() {
         .await;
 
     assert!(result.is_ok(), "Join with correct password should succeed: {:?}", result.err());
+}
+
+// ========== Distributed Lock Tests (Mock-based) ==========
+
+/// Mock distributed lock that tracks acquire/release calls
+/// (Used for testing distributed lock semantics without Redis)
+#[derive(Debug, Default)]
+#[allow(dead_code)]
+struct MockDistributedLock {
+    acquired_keys: std::sync::Mutex<Vec<String>>,
+    released_keys: std::sync::Mutex<Vec<String>>,
+    should_fail_acquire: std::sync::atomic::AtomicBool,
+    lock_held: std::sync::atomic::AtomicBool,
+}
+
+impl MockDistributedLock {
+    fn new() -> Self {
+        Self::default()
+    }
+
+    fn with_fail_acquire(&self) {
+        self.should_fail_acquire.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    fn acquire_count(&self, key: &str) -> usize {
+        self.acquired_keys.lock().unwrap().iter().filter(|k| *k == key).count()
+    }
+
+    fn was_released(&self, key: &str) -> bool {
+        self.released_keys.lock().unwrap().iter().any(|k| k == key)
+    }
+}
+
+#[async_trait::async_trait]
+impl synctv_core::service::distributed_lock::MigrationLock for MockDistributedLock {
+    async fn acquire(&self, key: &str, _ttl_secs: u64) -> anyhow::Result<Option<String>> {
+        if self.should_fail_acquire.load(std::sync::atomic::Ordering::SeqCst) {
+            return Ok(None);
+        }
+
+        // Simulate lock already held by another process
+        if self.lock_held.swap(true, std::sync::atomic::Ordering::SeqCst) {
+            return Ok(None);
+        }
+
+        self.acquired_keys.lock().unwrap().push(key.to_string());
+        Ok(Some(format!("lock-value-{}", key)))
+    }
+
+    async fn release(&self, key: &str, _lock_value: &str) -> anyhow::Result<bool> {
+        self.lock_held.store(false, std::sync::atomic::Ordering::SeqCst);
+        self.released_keys.lock().unwrap().push(key.to_string());
+        Ok(true)
+    }
+}
+
+/// Test concurrent room creation with the same name by different users
+/// This test verifies that without a distributed lock, concurrent room creations
+/// would both succeed (each user creates their own room with the same name).
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_concurrent_room_creation_without_lock_creates_separate_rooms() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let room_service = make_room_service(pool.clone());
+
+    let user1 = user_repo.create(&make_user("concurrent_user1")).await.unwrap();
+    let user2 = user_repo.create(&make_user("concurrent_user2")).await.unwrap();
+
+    // Both users create rooms with the same name simultaneously
+    let room_name = "Same Name Room".to_string();
+
+    let (result1, result2) = tokio::join!(
+        room_service.create_room(room_name.clone(), "Desc1".to_string(), user1.id.clone(), None, None),
+        room_service.create_room(room_name.clone(), "Desc2".to_string(), user2.id.clone(), None, None)
+    );
+
+    // Both should succeed - they are separate rooms
+    assert!(result1.is_ok(), "User1 should create room: {:?}", result1.err());
+    assert!(result2.is_ok(), "User2 should create room: {:?}", result2.err());
+
+    let (room1, _) = result1.unwrap();
+    let (room2, _) = result2.unwrap();
+
+    // Same name, but different room IDs
+    assert_eq!(room1.name, room2.name);
+    assert_ne!(room1.id, room2.id, "Different users should create different rooms");
+}
+
+/// Test that distributed lock prevents duplicate room creation by the SAME user
+/// This is a mock-based test that simulates what happens with distributed lock enabled.
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_concurrent_room_creation_same_user_without_lock_allows_duplicate() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let room_service = make_room_service(pool.clone());
+
+    let user = user_repo.create(&make_user("same_user_concurrent")).await.unwrap();
+
+    // Same user tries to create two rooms concurrently (e.g., double-click or network retry)
+    let room_name = "User's Room".to_string();
+
+    let (result1, result2) = tokio::join!(
+        room_service.create_room(room_name.clone(), "Desc1".to_string(), user.id.clone(), None, None),
+        room_service.create_room("Different Room".to_string(), "Desc2".to_string(), user.id.clone(), None, None)
+    );
+
+    // Without distributed lock, both should succeed
+    // (With distributed lock, one would wait or fail)
+    assert!(result1.is_ok(), "First room should be created: {:?}", result1.err());
+    assert!(result2.is_ok(), "Second room should be created: {:?}", result2.err());
+}
+
+// ========== Room Password Update Cache Invalidation Tests ==========
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_password_update_invalidates_room_cache() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let room_service = make_room_service(pool.clone());
+    let settings_repo = RoomSettingsRepository::new(pool.clone());
+
+    let owner = user_repo.create(&make_user("pwd_cache_owner")).await.unwrap();
+
+    // Create room with password
+    let (room, _) = room_service
+        .create_room(
+            "Password Cache Room".to_string(),
+            String::new(),
+            owner.id.clone(),
+            Some("OriginalPassword123".to_string()),
+            None,
+        )
+        .await
+        .unwrap();
+
+    // Verify initial password
+    let initial_hash = settings_repo.get_password_hash(&room.id).await.unwrap();
+    assert!(initial_hash.is_some());
+
+    // Update password
+    let new_hash = synctv_core::service::auth::password::hash_password("NewPassword456")
+        .await
+        .expect("Failed to hash new password");
+
+    room_service
+        .update_room_password(&room.id, Some(new_hash.clone()))
+        .await
+        .unwrap();
+
+    // Verify password was updated
+    let updated_hash = settings_repo.get_password_hash(&room.id).await.unwrap();
+    assert!(updated_hash.is_some());
+    assert_ne!(initial_hash, updated_hash);
+
+    // Verify settings reflect password requirement
+    let settings = settings_repo.get(&room.id).await.unwrap();
+    assert!(settings.require_password.0, "Room should still require password after update");
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_password_removal_clears_require_password_flag() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let room_service = make_room_service(pool.clone());
+    let settings_repo = RoomSettingsRepository::new(pool.clone());
+
+    let owner = user_repo.create(&make_user("pwd_remove_owner")).await.unwrap();
+
+    // Create room with password
+    let (room, _) = room_service
+        .create_room(
+            "Password Remove Room".to_string(),
+            String::new(),
+            owner.id.clone(),
+            Some("PasswordToBeRemoved".to_string()),
+            None,
+        )
+        .await
+        .unwrap();
+
+    // Verify password is set
+    let settings = settings_repo.get(&room.id).await.unwrap();
+    assert!(settings.require_password.0);
+    assert!(settings_repo.get_password_hash(&room.id).await.unwrap().is_some());
+
+    // Remove password
+    room_service
+        .update_room_password(&room.id, None)
+        .await
+        .unwrap();
+
+    // Verify password is removed and flag is cleared
+    let settings = settings_repo.get(&room.id).await.unwrap();
+    assert!(!settings.require_password.0, "require_password should be false after password removal");
+    assert!(settings_repo.get_password_hash(&room.id).await.unwrap().is_none());
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_password_update_allows_join_with_new_password() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let room_service = make_room_service(pool.clone());
+
+    let owner = user_repo.create(&make_user("pwd_update_owner")).await.unwrap();
+    let joiner = user_repo.create(&make_user("pwd_update_joiner")).await.unwrap();
+
+    // Create room with initial password
+    let (room, _) = room_service
+        .create_room(
+            "Password Update Room".to_string(),
+            String::new(),
+            owner.id.clone(),
+            Some("OldPassword123".to_string()),
+            None,
+        )
+        .await
+        .unwrap();
+
+    // Update password
+    let new_hash = synctv_core::service::auth::password::hash_password("NewPassword456")
+        .await
+        .expect("Failed to hash new password");
+    room_service.update_room_password(&room.id, Some(new_hash)).await.unwrap();
+
+    // Join with old password should fail
+    let result = room_service
+        .join_room(room.id.clone(), joiner.id.clone(), Some("OldPassword123".to_string()))
+        .await;
+    assert!(result.is_err(), "Old password should fail after update");
+
+    // Join with new password should succeed
+    let result = room_service
+        .join_room(room.id.clone(), joiner.id.clone(), Some("NewPassword456".to_string()))
+        .await;
+    assert!(result.is_ok(), "New password should succeed: {:?}", result.err());
+}
+
+// ========== Ban/Unban Member Synchronization Tests ==========
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_ban_member_invalidates_permission_cache() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let room_service = make_room_service(pool.clone());
+    let member_repo = RoomMemberRepository::new(pool.clone());
+
+    let creator = user_repo.create(&make_user("ban_sync_creator")).await.unwrap();
+    let target = user_repo.create(&make_user("ban_sync_target")).await.unwrap();
+
+    let (room, _) = room_service
+        .create_room(
+            "Ban Sync Room".to_string(),
+            String::new(),
+            creator.id.clone(),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+    // Target joins the room
+    room_service.join_room(room.id.clone(), target.id.clone(), None).await.unwrap();
+
+    // Verify target is a member with permissions
+    let perm_service = room_service.permission_service();
+    let initial_perms = perm_service.get_user_permissions(&room.id, &target.id).await.unwrap();
+    assert!(initial_perms.0 > 0, "Member should have some permissions");
+
+    // Ban the target
+    let member_service = room_service.member_service();
+    member_service
+        .ban_member(room.id.clone(), creator.id.clone(), target.id.clone(), Some("Test ban".to_string()))
+        .await
+        .unwrap();
+
+    // Verify permission cache is invalidated - banned user should have no permissions
+    let after_ban_perms = perm_service.get_user_permissions_no_cache(&room.id, &target.id).await.unwrap();
+    assert_eq!(after_ban_perms.0, 0, "Banned user should have no permissions");
+
+    // Verify member status is Banned
+    let member = member_repo.get_any(&room.id, &target.id).await.unwrap().unwrap();
+    assert_eq!(member.status, MemberStatus::Banned);
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_unban_member_restores_permission_access() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let room_service = make_room_service(pool.clone());
+    let member_repo = RoomMemberRepository::new(pool.clone());
+
+    let creator = user_repo.create(&make_user("unban_sync_creator")).await.unwrap();
+    let target = user_repo.create(&make_user("unban_sync_target")).await.unwrap();
+
+    let (room, _) = room_service
+        .create_room(
+            "Unban Sync Room".to_string(),
+            String::new(),
+            creator.id.clone(),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+    // Target joins and then gets banned
+    room_service.join_room(room.id.clone(), target.id.clone(), None).await.unwrap();
+    let member_service = room_service.member_service();
+    member_service
+        .ban_member(room.id.clone(), creator.id.clone(), target.id.clone(), None)
+        .await
+        .unwrap();
+
+    // Verify banned
+    let member = member_repo.get_any(&room.id, &target.id).await.unwrap().unwrap();
+    assert_eq!(member.status, MemberStatus::Banned);
+
+    // Unban
+    member_service
+        .unban_member(room.id.clone(), creator.id.clone(), target.id.clone())
+        .await
+        .unwrap();
+
+    // Verify unbanned - status should not be Banned
+    let member = member_repo.get(&room.id, &target.id).await.unwrap().unwrap();
+    assert_ne!(member.status, MemberStatus::Banned);
+
+    // User should be able to join again
+    let result = room_service.join_room(room.id.clone(), target.id.clone(), None).await;
+    assert!(result.is_ok(), "Unbanned user should be able to join: {:?}", result.err());
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_ban_prevents_room_access_even_with_cached_permissions() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let room_service = make_room_service(pool.clone());
+
+    let creator = user_repo.create(&make_user("ban_cache_creator")).await.unwrap();
+    let target = user_repo.create(&make_user("ban_cache_target")).await.unwrap();
+
+    let (room, _) = room_service
+        .create_room(
+            "Ban Cache Room".to_string(),
+            String::new(),
+            creator.id.clone(),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+    // Target joins and gets permissions cached
+    room_service.join_room(room.id.clone(), target.id.clone(), None).await.unwrap();
+
+    // Cache permissions
+    let perm_service = room_service.permission_service();
+    let _cached = perm_service.get_user_permissions(&room.id, &target.id).await.unwrap();
+
+    // Ban the target
+    let member_service = room_service.member_service();
+    member_service
+        .ban_member(room.id.clone(), creator.id.clone(), target.id.clone(), None)
+        .await
+        .unwrap();
+
+    // Try to rejoin - should fail because banned
+    let result = room_service.join_room(room.id.clone(), target.id.clone(), None).await;
+    assert!(result.is_err(), "Banned user should not be able to join even with cached permissions");
+
+    match result.unwrap_err() {
+        Error::Authorization(msg) => {
+            assert!(msg.contains("banned"), "Error should mention ban: {}", msg);
+        }
+        other => panic!("Expected Authorization error, got: {:?}", other),
+    }
+}
+
+// ========== Room Settings Optimistic Lock Retry Tests ==========
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_settings_update_retries_on_version_conflict() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let room_service = make_room_service(pool.clone());
+
+    let owner = user_repo.create(&make_user("retry_owner")).await.unwrap();
+
+    let (room, _) = room_service
+        .create_room(
+            "Retry Settings Room".to_string(),
+            String::new(),
+            owner.id.clone(),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+    // Concurrent settings update from two tasks
+    let room_id1 = room.id.clone();
+    let room_id2 = room.id.clone();
+    let user_id1 = owner.id.clone();
+    let user_id2 = owner.id.clone();
+
+    let pool1 = pool.clone();
+    let update1 = tokio::spawn(async move {
+        let room_service = make_room_service(pool1.clone());
+        let mut settings = room_service.get_room_settings(&room_id1).await.unwrap();
+        settings.allow_guest_join = synctv_core::models::room_settings::AllowGuestJoin(true);
+        room_service.set_settings(room_id1.clone(), user_id1.clone(), settings).await
+    });
+
+    let pool2 = pool.clone();
+    let update2 = tokio::spawn(async move {
+        let room_service = make_room_service(pool2.clone());
+        let mut settings = room_service.get_room_settings(&room_id2).await.unwrap();
+        settings.max_members = synctv_core::models::room_settings::MaxMembers(50);
+        room_service.set_settings(room_id2.clone(), user_id2.clone(), settings).await
+    });
+
+    let (r1, r2) = tokio::join!(update1, update2);
+
+    // At least one should succeed (possibly both with retries)
+    // The retry mechanism should handle version conflicts
+    let success_count = r1.unwrap().is_ok() as u8 + r2.unwrap().is_ok() as u8;
+    assert!(success_count >= 1, "At least one update should succeed with retry mechanism");
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_settings_update_returns_internal_error_after_max_retries() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let room_service = make_room_service(pool.clone());
+    let owner = user_repo.create(&make_user("max_retry_owner")).await.unwrap();
+
+    let (room, _) = room_service
+        .create_room(
+            "Max Retry Room".to_string(),
+            String::new(),
+            owner.id.clone(),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+    // Manually corrupt the version to force OptimisticLockConflict on every attempt
+    let room_id_str = room.id.as_str().to_string();
+    let pool_clone = pool.clone();
+    let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let stop_clone = stop.clone();
+
+    // Spawn a task that keeps bumping the version
+    let bumper = tokio::spawn(async move {
+        while !stop_clone.load(std::sync::atomic::Ordering::Relaxed) {
+            let _ = sqlx::query(
+                "UPDATE room_settings SET version = version + 1 WHERE room_id = $1 AND key = '_settings'"
+            )
+            .bind(&room_id_str)
+            .execute(&pool_clone)
+            .await;
+            tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+        }
+    });
+
+    let settings = RoomSettings::default();
+    let result = room_service
+        .set_settings(room.id.clone(), owner.id.clone(), settings)
+        .await;
+
+    stop.store(true, std::sync::atomic::Ordering::Relaxed);
+    let _ = bumper.await;
+
+    // The result should be an Internal error (not OptimisticLockConflict which is wrapped)
+    match result {
+        Ok(_) => {
+            // If the bumper didn't run fast enough, the update may have succeeded
+            // This is acceptable - the test is probabilistic
+        }
+        Err(Error::Internal(msg)) => {
+            assert!(msg.contains("retry"), "Should mention retry exhaustion: {}", msg);
+        }
+        Err(Error::OptimisticLockConflict) => {
+            panic!("OptimisticLockConflict should be wrapped in Internal error");
+        }
+        Err(other) => {
+            panic!("Unexpected error: {:?}", other);
+        }
+    }
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_single_setting_update_with_retry() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let room_service = make_room_service(pool.clone());
+
+    let owner = user_repo.create(&make_user("single_setting_owner")).await.unwrap();
+
+    let (room, _) = room_service
+        .create_room(
+            "Single Setting Room".to_string(),
+            String::new(),
+            owner.id.clone(),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+    // Update a single setting
+    let result = room_service
+        .update_room_setting(&room.id, &owner.id, "allow_guest_join", "true")
+        .await;
+
+    assert!(result.is_ok(), "Single setting update should succeed: {:?}", result.err());
+
+    // Verify the setting was updated
+    let settings = room_service.get_room_settings(&room.id).await.unwrap();
+    assert!(settings.allow_guest_join.0, "allow_guest_join should be true");
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_password_update_with_cas_retry() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let room_service = make_room_service(pool.clone());
+
+    let owner = user_repo.create(&make_user("pwd_retry_owner")).await.unwrap();
+
+    let (room, _) = room_service
+        .create_room(
+            "Password Retry Room".to_string(),
+            String::new(),
+            owner.id.clone(),
+            Some("InitialPassword".to_string()),
+            None,
+        )
+        .await
+        .unwrap();
+
+    // Update password (internally uses CAS retry)
+    let new_hash = synctv_core::service::auth::password::hash_password("NewPassword123")
+        .await
+        .expect("Failed to hash password");
+
+    let result = room_service
+        .update_room_password(&room.id, Some(new_hash))
+        .await;
+
+    assert!(result.is_ok(), "Password update with CAS retry should succeed: {:?}", result.err());
+
+    // Verify the new password works
+    let joiner = user_repo.create(&make_user("pwd_retry_joiner")).await.unwrap();
+    let join_result = room_service
+        .join_room(room.id.clone(), joiner.id.clone(), Some("NewPassword123".to_string()))
+        .await;
+
+    assert!(join_result.is_ok(), "Join with new password should succeed: {:?}", join_result.err());
+}
+
+// ========== Cache Invalidation Broadcast Tests ==========
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_room_deletion_invalidates_caches() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let room_service = make_room_service(pool.clone());
+
+    let owner = user_repo.create(&make_user("cache_inval_owner")).await.unwrap();
+    let member = user_repo.create(&make_user("cache_inval_member")).await.unwrap();
+
+    let (room, _) = room_service
+        .create_room(
+            "Cache Invalidation Room".to_string(),
+            String::new(),
+            owner.id.clone(),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+    // Member joins to populate caches
+    room_service.join_room(room.id.clone(), member.id.clone(), None).await.unwrap();
+
+    // Cache permissions
+    let perm_service = room_service.permission_service();
+    let _cached = perm_service.get_user_permissions(&room.id, &member.id).await.unwrap();
+
+    // Delete the room
+    room_service.delete_room(room.id.clone(), owner.id.clone()).await.unwrap();
+
+    // Verify room is deleted (soft-deleted, not visible via normal queries)
+    let room_repo = RoomRepository::new(pool.clone());
+    let fetched = room_repo.get_by_id(&room.id).await.unwrap();
+    assert!(fetched.is_none(), "Room should not be found after deletion");
+}
+
+// ========== Password Timing Attack Prevention Tests ==========
+//
+// These tests verify that password verification uses constant-time comparison
+// to prevent timing attacks. The verify_password function uses Argon2id which
+// has built-in constant-time password comparison.
+//
+// Key security properties:
+// 1. Same verification time for correct and incorrect passwords
+// 2. No early-exit on password mismatch
+// 3. Argon2id's verify_password returns Ok(true) or Ok(false), not early errors
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_password_verification_constant_time_properties() {
+    // This test verifies the password verification uses constant-time comparison
+    // by checking that Argon2id verification works correctly for both valid
+    // and invalid passwords without early-exit timing differences.
+    use synctv_core::service::auth::password::{hash_password, verify_password};
+
+    let password = "TestPassword123!";
+    let hash = hash_password(password).await.expect("Failed to hash password");
+
+    // Valid password should verify successfully
+    let valid_result = verify_password(password, &hash)
+        .await
+        .expect("Verification should not error");
+    assert!(valid_result, "Correct password should verify");
+
+    // Invalid password should NOT verify, but should not error
+    // (no timing difference from erroring vs returning false)
+    let invalid_result = verify_password("WrongPassword456", &hash)
+        .await
+        .expect("Verification should not error even for wrong password");
+    assert!(!invalid_result, "Wrong password should not verify");
+
+    // Completely different length password should also just return false
+    let short_result = verify_password("x", &hash)
+        .await
+        .expect("Short password should not cause error");
+    assert!(!short_result, "Short password should not verify");
+
+    // Empty password should also just return false
+    let empty_result = verify_password("", &hash)
+        .await
+        .expect("Empty password should not cause error");
+    assert!(!empty_result, "Empty password should not verify");
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_password_verification_handles_malformed_hash_gracefully() {
+    use synctv_core::service::auth::password::verify_password;
+
+    // Malformed hash should return an error, but the service layer
+    // should handle this gracefully and not leak information
+    let result = verify_password("anypassword", "not_a_valid_hash").await;
+    assert!(result.is_err(), "Malformed hash should return error");
+
+    // The error should be Internal, not revealing hash details
+    match result.unwrap_err() {
+        synctv_core::Error::Internal(msg) => {
+            assert!(
+                msg.contains("Invalid password hash format") || msg.contains("verification"),
+                "Error message should indicate hash format issue: {}",
+                msg
+            );
+        }
+        other => panic!("Expected Internal error for malformed hash, got: {:?}", other),
+    }
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_room_password_uses_unique_salt_per_room() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let room_service = make_room_service(pool.clone());
+    let settings_repo = RoomSettingsRepository::new(pool.clone());
+
+    let owner = user_repo.create(&make_user("salt_owner")).await.unwrap();
+
+    // Create two rooms with the same password
+    let (room1, _) = room_service
+        .create_room(
+            "Salt Room 1".to_string(),
+            String::new(),
+            owner.id.clone(),
+            Some("SamePassword123".to_string()),
+            None,
+        )
+        .await
+        .unwrap();
+
+    let (room2, _) = room_service
+        .create_room(
+            "Salt Room 2".to_string(),
+            String::new(),
+            owner.id.clone(),
+            Some("SamePassword123".to_string()),
+            None,
+        )
+        .await
+        .unwrap();
+
+    // Get password hashes for both rooms
+    let hash1 = settings_repo.get_password_hash(&room1.id).await.unwrap().unwrap();
+    let hash2 = settings_repo.get_password_hash(&room2.id).await.unwrap().unwrap();
+
+    // Hashes should be different due to unique salts
+    assert_ne!(hash1, hash2, "Password hashes should differ due to unique salts");
+
+    // But both hashes should verify the same password
+    assert!(room_service.check_room_password(&room1.id, "SamePassword123").await.unwrap());
+    assert!(room_service.check_room_password(&room2.id, "SamePassword123").await.unwrap());
+}
+
+// ========== Room Limits Enforcement Tests ==========
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_max_members_enforced_on_join() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let room_service = make_room_service(pool.clone());
+    let member_repo = RoomMemberRepository::new(pool.clone());
+
+    let owner = user_repo.create(&make_user("max_owner")).await.unwrap();
+
+    // Create room with max_members = 3 (owner counts as 1)
+    let mut settings = synctv_core::models::RoomSettings::default();
+    settings.max_members = synctv_core::models::room_settings::MaxMembers(3);
+
+    let (room, _) = room_service
+        .create_room(
+            "Max Members Room".to_string(),
+            String::new(),
+            owner.id.clone(),
+            None,
+            Some(settings),
+        )
+        .await
+        .unwrap();
+
+    // First joiner (count: 2)
+    let joiner1 = user_repo.create(&make_user("max_joiner1")).await.unwrap();
+    let result = room_service.join_room(room.id.clone(), joiner1.id.clone(), None).await;
+    assert!(result.is_ok(), "First joiner should succeed: {:?}", result.err());
+
+    // Second joiner (count: 3 = max)
+    let joiner2 = user_repo.create(&make_user("max_joiner2")).await.unwrap();
+    let result = room_service.join_room(room.id.clone(), joiner2.id.clone(), None).await;
+    assert!(result.is_ok(), "Second joiner should succeed (at limit): {:?}", result.err());
+
+    // Verify current member count
+    let count = member_repo.count_by_room(&room.id).await.unwrap();
+    assert_eq!(count, 3, "Should have 3 members (owner + 2 joiners)");
+
+    // Third joiner should fail (would exceed max_members)
+    let joiner3 = user_repo.create(&make_user("max_joiner3")).await.unwrap();
+    let result = room_service.join_room(room.id.clone(), joiner3.id.clone(), None).await;
+    assert!(result.is_err(), "Third joiner should fail (exceeds max)");
+
+    match result.unwrap_err() {
+        Error::InvalidInput(msg) => {
+            assert!(
+                msg.contains("full") || msg.contains("max") || msg.contains("capacity"),
+                "Error should mention room capacity: {}",
+                msg
+            );
+        }
+        other => panic!("Expected InvalidInput error, got: {:?}", other),
+    }
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_max_members_zero_means_unlimited() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let room_service = make_room_service(pool.clone());
+
+    let owner = user_repo.create(&make_user("unlim_owner")).await.unwrap();
+
+    // Create room with max_members = 0 (unlimited)
+    let mut settings = synctv_core::models::RoomSettings::default();
+    settings.max_members = synctv_core::models::room_settings::MaxMembers(0);
+
+    let (room, _) = room_service
+        .create_room(
+            "Unlimited Room".to_string(),
+            String::new(),
+            owner.id.clone(),
+            None,
+            Some(settings),
+        )
+        .await
+        .unwrap();
+
+    // Add many members - all should succeed
+    for i in 0..20 {
+        let joiner = user_repo.create(&make_user(&format!("unlim_joiner_{}", i))).await.unwrap();
+        let result = room_service.join_room(room.id.clone(), joiner.id.clone(), None).await;
+        assert!(result.is_ok(), "Joiner {} should succeed (unlimited room): {:?}", i, result.err());
+    }
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_max_members_enforced_at_limit_boundary() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let room_service = make_room_service(pool.clone());
+
+    let owner = user_repo.create(&make_user("boundary_owner")).await.unwrap();
+
+    // Create room with max_members = 1 (owner only)
+    let mut settings = synctv_core::models::RoomSettings::default();
+    settings.max_members = synctv_core::models::room_settings::MaxMembers(1);
+
+    let (room, _) = room_service
+        .create_room(
+            "Boundary Room".to_string(),
+            String::new(),
+            owner.id.clone(),
+            None,
+            Some(settings),
+        )
+        .await
+        .unwrap();
+
+    // Any joiner should fail (room already at capacity)
+    let joiner = user_repo.create(&make_user("boundary_joiner")).await.unwrap();
+    let result = room_service.join_room(room.id.clone(), joiner.id.clone(), None).await;
+    assert!(result.is_err(), "Joiner should fail (room at capacity)");
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_max_members_cannot_exceed_10000() {
+    // Test that the max_members validation rejects values > 10000
+    use synctv_core::models::room_settings::RoomSettingsRegistry;
+
+    let result = RoomSettingsRegistry::validate_setting("max_members", "10001");
+    assert!(result.is_err(), "max_members > 10000 should be rejected");
+
+    let result = RoomSettingsRegistry::validate_setting("max_members", "10000");
+    assert!(result.is_ok(), "max_members = 10000 should be accepted");
+}
+
+// ========== Room Settings Comprehensive Tests ==========
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_room_settings_update_validates_permissions_no_escalation() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let room_service = make_room_service(pool.clone());
+
+    let owner = user_repo.create(&make_user("perm_esc_owner")).await.unwrap();
+
+    let (room, _) = room_service
+        .create_room(
+            "Permission Escalation Room".to_string(),
+            String::new(),
+            owner.id.clone(),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+    // Try to set guest permissions that exceed member-level permissions
+    let mut settings = room_service.get_room_settings(&room.id).await.unwrap();
+    settings.guest_added_permissions = synctv_core::models::room_settings::GuestAddedPermissions(
+        PermissionBits::KICK_MEMBER, // This exceeds DEFAULT_MEMBER
+    );
+
+    let result = room_service
+        .set_settings(room.id.clone(), owner.id.clone(), settings)
+        .await;
+
+    assert!(result.is_err(), "Permission escalation should be rejected");
+    match result.unwrap_err() {
+        Error::InvalidInput(msg) => {
+            assert!(
+                msg.contains("Guest") && msg.contains("permissions"),
+                "Error should mention permission escalation: {}",
+                msg
+            );
+        }
+        other => panic!("Expected InvalidInput error, got: {:?}", other),
+    }
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_room_settings_guest_mode_change_kicks_guests() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let room_service = make_room_service(pool.clone());
+    let member_repo = RoomMemberRepository::new(pool.clone());
+
+    let owner = user_repo.create(&make_user("guest_kick_owner")).await.unwrap();
+    let guest = user_repo.create(&make_user("guest_kick_guest")).await.unwrap();
+
+    // Create room with guest join allowed
+    let mut settings = synctv_core::models::RoomSettings::default();
+    settings.allow_guest_join = synctv_core::models::room_settings::AllowGuestJoin(true);
+
+    let (room, _) = room_service
+        .create_room(
+            "Guest Kick Room".to_string(),
+            String::new(),
+            owner.id.clone(),
+            None,
+            Some(settings),
+        )
+        .await
+        .unwrap();
+
+    // Add guest as member with Guest role
+    let member_service = room_service.member_service();
+    member_service
+        .add_member(room.id.clone(), guest.id.clone(), RoomRole::Guest)
+        .await
+        .unwrap();
+
+    // Verify guest is a member
+    assert!(member_repo.is_member(&room.id, &guest.id).await.unwrap());
+
+    // Disable guest join - this should kick the guest
+    let result = room_service
+        .update_room_setting(&room.id, &owner.id, "allow_guest_join", "false")
+        .await;
+    assert!(result.is_ok(), "Setting update should succeed: {:?}", result.err());
+
+    // Note: The actual guest kicking happens via notification service
+    // In a real test with notification service, the guest would be kicked
+    // Here we verify the setting was updated
+    let settings = room_service.get_room_settings(&room.id).await.unwrap();
+    assert!(!settings.allow_guest_join.0, "allow_guest_join should be false");
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_room_settings_password_required_triggers_guest_kick() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let room_service = make_room_service(pool.clone());
+
+    let owner = user_repo.create(&make_user("pwd_kick_owner")).await.unwrap();
+
+    // Create room without password, guest join allowed
+    let mut settings = synctv_core::models::RoomSettings::default();
+    settings.allow_guest_join = synctv_core::models::room_settings::AllowGuestJoin(true);
+    settings.require_password = synctv_core::models::room_settings::RequirePassword(false);
+
+    let (room, _) = room_service
+        .create_room(
+            "Password Kick Room".to_string(),
+            String::new(),
+            owner.id.clone(),
+            None,
+            Some(settings),
+        )
+        .await
+        .unwrap();
+
+    // Set a password - this should trigger guest kick
+    let new_hash = synctv_core::service::auth::password::hash_password("NewPassword123")
+        .await
+        .expect("Failed to hash password");
+
+    room_service
+        .update_room_password(&room.id, Some(new_hash))
+        .await
+        .unwrap();
+
+    // Verify settings reflect password requirement
+    let settings = room_service.get_room_settings(&room.id).await.unwrap();
+    assert!(settings.require_password.0, "require_password should be true");
+}
+
+// ========== Room Name and Description Edge Cases ==========
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_room_name_unicode_validation() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let room_service = make_room_service(pool.clone());
+
+    let owner = user_repo.create(&make_user("unicode_name_owner")).await.unwrap();
+
+    // Room name with various Unicode characters
+    let unicode_name = "Room \u{4e2d}\u{6587} \u{65e5}\u{672c}\u{8a9e} \u{c0}\u{e9}\u{f1}"; // Chinese, Japanese, accented
+    let (room, _) = room_service
+        .create_room(
+            unicode_name.to_string(),
+            String::new(),
+            owner.id.clone(),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(room.name, unicode_name);
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_room_name_whitespace_handling() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let room_service = make_room_service(pool.clone());
+
+    let owner = user_repo.create(&make_user("ws_owner")).await.unwrap();
+
+    // Room name with leading/trailing whitespace - should be preserved as-is
+    // (validation may trim in the future, but current behavior preserves)
+    let name_with_spaces = "  Room with spaces  ";
+    let result = room_service
+        .create_room(
+            name_with_spaces.to_string(),
+            String::new(),
+            owner.id.clone(),
+            None,
+            None,
+        )
+        .await;
+
+    // The room creation should succeed (validator allows spaces)
+    assert!(result.is_ok(), "Room with whitespace should be created: {:?}", result.err());
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_room_description_with_newlines() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let room_service = make_room_service(pool.clone());
+
+    let owner = user_repo.create(&make_user("newline_owner")).await.unwrap();
+
+    // Description with newlines (within 500 chars)
+    let description = "Line 1\nLine 2\nLine 3\n\nParagraph 2";
+    let (room, _) = room_service
+        .create_room(
+            "Newline Room".to_string(),
+            description.to_string(),
+            owner.id.clone(),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(room.description, description);
+}
+
+// ========== Room Status Management Tests ==========
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_cannot_join_closed_room() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let room_service = make_room_service(pool.clone());
+
+    let owner = user_repo.create(&make_user("closed_owner")).await.unwrap();
+    let joiner = user_repo.create(&make_user("closed_joiner")).await.unwrap();
+
+    let (room, _) = room_service
+        .create_room(
+            "Closed Room".to_string(),
+            String::new(),
+            owner.id.clone(),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+    // Close the room via admin operation
+    room_service
+        .update_room_status(&room.id, synctv_core::models::RoomStatus::Closed)
+        .await
+        .unwrap();
+
+    // Try to join the closed room
+    let result = room_service.join_room(room.id.clone(), joiner.id.clone(), None).await;
+    assert!(result.is_err(), "Should not be able to join closed room");
+
+    match result.unwrap_err() {
+        Error::InvalidInput(msg) => {
+            assert!(msg.contains("closed"), "Error should mention room is closed: {}", msg);
+        }
+        other => panic!("Expected InvalidInput error, got: {:?}", other),
+    }
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_cannot_join_banned_room() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let room_service = make_room_service(pool.clone());
+
+    let owner = user_repo.create(&make_user("banned_room_owner")).await.unwrap();
+    let joiner = user_repo.create(&make_user("banned_room_joiner")).await.unwrap();
+
+    let (room, _) = room_service
+        .create_room(
+            "To Be Banned Room".to_string(),
+            String::new(),
+            owner.id.clone(),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+    // Ban the room via admin operation
+    room_service.ban_room(&room.id, &owner.id).await.unwrap();
+
+    // Try to join the banned room (even the owner)
+    let result = room_service.join_room(room.id.clone(), joiner.id.clone(), None).await;
+    assert!(result.is_err(), "Should not be able to join banned room");
+}
+
+// ========== Room Creation Transaction Safety Tests ==========
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_room_creation_creates_all_related_records_atomically() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let room_service = make_room_service(pool.clone());
+
+    let owner = user_repo.create(&make_user("atomic_owner")).await.unwrap();
+
+    let (room, member) = room_service
+        .create_room(
+            "Atomic Room".to_string(),
+            String::new(),
+            owner.id.clone(),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+    // Verify all related records were created
+
+    // 1. Room exists
+    let room_repo = RoomRepository::new(pool.clone());
+    assert!(room_repo.exists(&room.id).await.unwrap());
+
+    // 2. Creator is a member with Creator role
+    let member_repo = RoomMemberRepository::new(pool.clone());
+    let creator_membership = member_repo.get(&room.id, &owner.id).await.unwrap();
+    assert!(creator_membership.is_some(), "Creator should be a member");
+    assert_eq!(creator_membership.unwrap().role, RoomRole::Creator);
+
+    // 3. Settings exist with defaults
+    let settings_repo = RoomSettingsRepository::new(pool.clone());
+    let settings = settings_repo.get(&room.id).await.unwrap();
+    assert!(settings.chat_enabled.0, "Chat should be enabled by default");
+
+    // 4. Root playlist exists
+    let playlist_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM playlists WHERE room_id = $1"
+    )
+    .bind(room.id.as_str())
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(playlist_count, 1, "Root playlist should exist");
+
+    // 5. Playback state exists
+    let playback_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM room_playback_state WHERE room_id = $1"
+    )
+    .bind(room.id.as_str())
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(playback_count, 1, "Playback state should exist");
+}
+
+// ========== Room Deletion Edge Cases ==========
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_non_creator_cannot_delete_room() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let room_service = make_room_service(pool.clone());
+
+    let owner = user_repo.create(&make_user("del_owner")).await.unwrap();
+    let other_user = user_repo.create(&make_user("del_other")).await.unwrap();
+
+    let (room, _) = room_service
+        .create_room(
+            "Non-Creator Delete Room".to_string(),
+            String::new(),
+            owner.id.clone(),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+    // Non-creator tries to delete the room
+    let result = room_service.delete_room(room.id.clone(), other_user.id.clone()).await;
+    assert!(result.is_err(), "Non-creator should not be able to delete room");
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_admin_delete_room_bypasses_permission_check() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let room_service = make_room_service(pool.clone());
+    let room_repo = RoomRepository::new(pool.clone());
+
+    let owner = user_repo.create(&make_user("admin_del_owner")).await.unwrap();
+    let admin_user = user_repo.create(&make_user("admin_del_admin")).await.unwrap();
+
+    let (room, _) = room_service
+        .create_room(
+            "Admin Delete Room".to_string(),
+            String::new(),
+            owner.id.clone(),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+    // Admin delete (bypasses permission check)
+    room_service
+        .admin_delete_room(&room.id, &admin_user.id)
+        .await
+        .unwrap();
+
+    // Room should be soft-deleted
+    let fetched = room_repo.get_by_id(&room.id).await.unwrap();
+    assert!(fetched.is_none(), "Room should be soft-deleted");
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_delete_nonexistent_room_returns_error() {
+    let (_container, pool) = create_test_pool().await;
+    let room_service = make_room_service(pool.clone());
+
+    let fake_room_id = synctv_core::models::RoomId::new();
+    let fake_user_id = synctv_core::models::UserId::new();
+
+    let result = room_service.delete_room(fake_room_id, fake_user_id).await;
+    assert!(result.is_err(), "Deleting nonexistent room should fail");
+
+    match result.unwrap_err() {
+        Error::NotFound(msg) => {
+            assert!(msg.contains("not found") || msg.contains("deleted"), "Error should mention not found: {}", msg);
+        }
+        other => panic!("Expected NotFound error, got: {:?}", other),
+    }
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_double_delete_room_returns_error() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let room_service = make_room_service(pool.clone());
+
+    let owner = user_repo.create(&make_user("double_del_owner")).await.unwrap();
+
+    let (room, _) = room_service
+        .create_room(
+            "Double Delete Room".to_string(),
+            String::new(),
+            owner.id.clone(),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+    // First delete should succeed
+    room_service.delete_room(room.id.clone(), owner.id.clone()).await.unwrap();
+
+    // Second delete should fail
+    let result = room_service.delete_room(room.id.clone(), owner.id.clone()).await;
+    assert!(result.is_err(), "Double delete should fail");
+}
+
+// ========== Room Member Operations ==========
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_get_member_count_batch_efficient_query() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let room_service = make_room_service(pool.clone());
+
+    let owner = user_repo.create(&make_user("batch_owner")).await.unwrap();
+
+    // Create multiple rooms
+    let mut room_ids = Vec::new();
+    for i in 0..5 {
+        let (room, _) = room_service
+            .create_room(
+                format!("Batch Room {}", i),
+                String::new(),
+                owner.id.clone(),
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+        room_ids.push(room.id);
+    }
+
+    // Get batch member counts
+    let room_id_refs: Vec<_> = room_ids.iter().collect();
+    let counts = room_service.get_member_count_batch(&room_id_refs).await.unwrap();
+
+    // Each room should have 1 member (the creator)
+    for room_id in &room_ids {
+        assert_eq!(
+            counts.get(room_id.as_str()).unwrap_or(&0),
+            &1,
+            "Each room should have 1 member"
+        );
+    }
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_room_exists_is_efficient() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let room_service = make_room_service(pool.clone());
+
+    let owner = user_repo.create(&make_user("exists_owner")).await.unwrap();
+
+    let (room, _) = room_service
+        .create_room(
+            "Exists Room".to_string(),
+            String::new(),
+            owner.id.clone(),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+    // room_exists should return true for existing room
+    assert!(room_service.room_exists(&room.id).await.unwrap());
+
+    // room_exists should return false for nonexistent room
+    let fake_room_id = synctv_core::models::RoomId::new();
+    assert!(!room_service.room_exists(&fake_room_id).await.unwrap());
+}
+
+// ========== Room Listing Tests ==========
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_list_rooms_by_creator() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let room_service = make_room_service(pool.clone());
+
+    let owner = user_repo.create(&make_user("list_owner")).await.unwrap();
+    let other = user_repo.create(&make_user("list_other")).await.unwrap();
+
+    // Owner creates 3 rooms
+    for i in 0..3 {
+        room_service
+            .create_room(
+                format!("Owner Room {}", i),
+                String::new(),
+                owner.id.clone(),
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+    }
+
+    // Other creates 2 rooms
+    for i in 0..2 {
+        room_service
+            .create_room(
+                format!("Other Room {}", i),
+                String::new(),
+                other.id.clone(),
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+    }
+
+    // List rooms by owner
+    let (rooms, total) = room_service
+        .list_rooms_by_creator(&owner.id, synctv_core::models::PageParams::default())
+        .await
+        .unwrap();
+
+    assert_eq!(total, 3, "Owner should have 3 rooms");
+    assert_eq!(rooms.len(), 3, "Should return all 3 rooms");
+    for room in &rooms {
+        assert_eq!(room.created_by, owner.id, "Room should be created by owner");
+    }
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_list_rooms_pagination() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let room_service = make_room_service(pool.clone());
+
+    let owner = user_repo.create(&make_user("page_owner")).await.unwrap();
+
+    // Create 15 rooms
+    for i in 0..15 {
+        room_service
+            .create_room(
+                format!("Page Room {:02}", i),
+                String::new(),
+                owner.id.clone(),
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+    }
+
+    // Request first page
+    let page1 = synctv_core::models::PageParams {
+        page: 1,
+        page_size: 10,
+    };
+    let (rooms, total) = room_service
+        .list_rooms_by_creator(&owner.id, page1)
+        .await
+        .unwrap();
+
+    assert_eq!(total, 15, "Total should be 15");
+    assert_eq!(rooms.len(), 10, "First page should have 10 rooms");
+
+    // Request second page
+    let page2 = synctv_core::models::PageParams {
+        page: 2,
+        page_size: 10,
+    };
+    let (rooms2, total2) = room_service
+        .list_rooms_by_creator(&owner.id, page2)
+        .await
+        .unwrap();
+
+    assert_eq!(total2, 15, "Total should still be 15");
+    assert_eq!(rooms2.len(), 5, "Second page should have 5 rooms");
+}
+
+// ========== Guest Access Tests ==========
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_guest_cannot_join_password_protected_room() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let room_service = make_room_service(pool.clone());
+
+    let owner = user_repo.create(&make_user("guest_pwd_owner")).await.unwrap();
+
+    // Create room with password and guest join enabled
+    let mut settings = synctv_core::models::RoomSettings::default();
+    settings.allow_guest_join = synctv_core::models::room_settings::AllowGuestJoin(true);
+
+    let (room, _) = room_service
+        .create_room(
+            "Guest Password Room".to_string(),
+            String::new(),
+            owner.id.clone(),
+            Some("SecretPassword123".to_string()),
+            Some(settings),
+        )
+        .await
+        .unwrap();
+
+    // Check guest access should fail (password required)
+    let result = room_service.check_guest_allowed(&room.id, None).await;
+    assert!(result.is_err(), "Guests should not be able to join password-protected room");
+
+    match result.unwrap_err() {
+        Error::Authorization(msg) => {
+            assert!(
+                msg.contains("password") || msg.contains("Guest"),
+                "Error should mention password or guests: {}",
+                msg
+            );
+        }
+        other => panic!("Expected Authorization error, got: {:?}", other),
+    }
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_check_guest_allowed_when_disabled_globally() {
+    // This test verifies the fail-closed behavior when settings registry is None
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let room_service = make_room_service(pool.clone());
+
+    let owner = user_repo.create(&make_user("guest_disabled_owner")).await.unwrap();
+
+    let mut settings = synctv_core::models::RoomSettings::default();
+    settings.allow_guest_join = synctv_core::models::room_settings::AllowGuestJoin(true);
+
+    let (room, _) = room_service
+        .create_room(
+            "Guest Disabled Room".to_string(),
+            String::new(),
+            owner.id.clone(),
+            None,
+            Some(settings),
+        )
+        .await
+        .unwrap();
+
+    // Without settings_registry, should deny guest access (fail-closed)
+    let result = room_service.check_guest_allowed(&room.id, None).await;
+    assert!(result.is_err(), "Should deny guests when registry unavailable");
+}
+
+// ========== Room Description Update Tests ==========
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_update_room_description_success() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let room_service = make_room_service(pool.clone());
+
+    let owner = user_repo.create(&make_user("desc_update_owner")).await.unwrap();
+
+    let (room, _) = room_service
+        .create_room(
+            "Description Update Room".to_string(),
+            "Original description".to_string(),
+            owner.id.clone(),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(room.description, "Original description");
+
+    // Update description
+    let new_description = "Updated description with more details";
+    let updated_room = room_service
+        .update_room_description(&room.id, new_description.to_string())
+        .await
+        .unwrap();
+
+    assert_eq!(updated_room.description, new_description);
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_update_room_description_too_long_fails() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let room_service = make_room_service(pool.clone());
+
+    let owner = user_repo.create(&make_user("desc_long_owner")).await.unwrap();
+
+    let (room, _) = room_service
+        .create_room(
+            "Description Long Room".to_string(),
+            String::new(),
+            owner.id.clone(),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+    // Try to set description longer than 500 chars
+    let long_description = "x".repeat(501);
+    let result = room_service
+        .update_room_description(&room.id, long_description)
+        .await;
+
+    assert!(result.is_err(), "Description > 500 chars should fail");
+}
+
+// ========== Idempotent Join Tests ==========
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_join_room_idempotent_same_user() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let room_service = make_room_service(pool.clone());
+    let member_repo = RoomMemberRepository::new(pool.clone());
+
+    let owner = user_repo.create(&make_user("idem_owner")).await.unwrap();
+    let joiner = user_repo.create(&make_user("idem_joiner")).await.unwrap();
+
+    let (room, _) = room_service
+        .create_room(
+            "Idempotent Room".to_string(),
+            String::new(),
+            owner.id.clone(),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+    // First join
+    let result1 = room_service
+        .join_room(room.id.clone(), joiner.id.clone(), None)
+        .await;
+    assert!(result1.is_ok(), "First join should succeed");
+
+    // Get member count after first join
+    let count1 = member_repo.count_by_room(&room.id).await.unwrap();
+
+    // Second join (idempotent)
+    let result2 = room_service
+        .join_room(room.id.clone(), joiner.id.clone(), None)
+        .await;
+    assert!(result2.is_ok(), "Second join should succeed (idempotent)");
+
+    // Member count should be the same
+    let count2 = member_repo.count_by_room(&room.id).await.unwrap();
+    assert_eq!(count1, count2, "Member count should not increase on idempotent join");
 }

@@ -78,6 +78,9 @@ clap.workspace = true
 regex.workspace = true
 ammonia.workspace = true
 
+# Caching
+moka.workspace = true
+
 [lints]
 workspace = true
 

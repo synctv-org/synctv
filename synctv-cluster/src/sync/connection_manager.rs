@@ -132,6 +132,13 @@ impl Default for ConnectionLimits {
 /// long-lived WebSocket connections (which can last 24+ hours).
 const DISTRIBUTED_COUNTER_TTL_SECONDS: i64 = 180; // 3x TTL refresh interval (60s)
 
+/// Maximum number of keys to refresh in a single batch during TTL refresh.
+///
+/// This prevents memory and network pressure when there are many connections.
+/// With 10,000 connections, we'll have ~30,000 keys (counter + metadata per connection),
+/// which will be processed in ~30 batches of 1000 keys each.
+const TTL_REFRESH_BATCH_SIZE: usize = 1000;
+
 /// TTL for connection metadata keys in Redis (seconds).
 /// Set to max_duration (24h) + buffer (1h) so metadata auto-expires if a node
 /// crashes without calling unregister(). The TTL refresh task keeps active
@@ -1106,6 +1113,12 @@ impl ConnectionManager {
     /// Additionally, synchronizes local connection counts to Redis counters to handle
     /// cases where Redis was temporarily unavailable during connection registration.
     /// This ensures eventual consistency between local and distributed counters.
+    ///
+    /// # Performance
+    ///
+    /// Uses a Lua script to batch refresh TTLs in groups of `TTL_REFRESH_BATCH_SIZE`
+    /// keys at a time, reducing memory pressure and network round-trips compared to
+    /// refreshing all keys at once.
     async fn refresh_distributed_counter_ttls(&self) {
         let Some(ref conn) = self.redis_conn else {
             return;
@@ -1162,28 +1175,29 @@ impl ConnectionManager {
             counter_keys.insert(total_key);
         }
 
+        let total_keys = counter_keys.len() + metadata_keys.len();
+        if total_keys == 0 {
+            return;
+        }
+
         let mut failure_count = 0u64;
         let mut success_count = 0u64;
 
-        // Batch all EXPIRE commands into a single Redis pipeline round-trip
-        let total_commands = counter_keys.len() + metadata_keys.len();
-        if total_commands > 0 {
-            let mut pipe = redis::pipe();
-            for key in &counter_keys {
-                pipe.expire(key, DISTRIBUTED_COUNTER_TTL_SECONDS).ignore();
+        // Use batched Lua script for efficient TTL refresh
+        // This reduces network round-trips compared to individual EXPIRE commands
+        let result = self.batch_refresh_ttls_with_lua(
+            &mut conn,
+            &counter_keys,
+            &metadata_keys,
+        ).await;
+
+        match result {
+            Ok(refreshed) => {
+                success_count = refreshed as u64;
             }
-            for key in &metadata_keys {
-                pipe.expire(key, CONNECTION_METADATA_TTL_SECONDS).ignore();
-            }
-            let result: Result<(), redis::RedisError> = pipe.query_async(&mut conn).await;
-            match result {
-                Ok(()) => {
-                    success_count = total_commands as u64;
-                }
-                Err(e) => {
-                    failure_count = total_commands as u64;
-                    warn!("Failed to refresh TTLs via pipeline ({total_commands} keys): {e}");
-                }
+            Err(e) => {
+                failure_count = total_keys as u64;
+                warn!("Failed to refresh TTLs via Lua script ({total_keys} keys): {e}");
             }
         }
 
@@ -1228,6 +1242,107 @@ impl ConnectionManager {
         // This handles cases where Redis was temporarily unavailable during
         // connection registration, ensuring eventual consistency.
         self.sync_local_counts_to_redis(&mut conn).await;
+    }
+
+    /// Batch refresh TTLs using a Lua script for efficiency.
+    ///
+    /// Processes keys in batches of `TTL_REFRESH_BATCH_SIZE` to avoid
+    /// excessive memory usage and network payload sizes.
+    async fn batch_refresh_ttls_with_lua(
+        &self,
+        conn: &mut redis::aio::ConnectionManager,
+        counter_keys: &std::collections::HashSet<String>,
+        metadata_keys: &std::collections::HashSet<String>,
+    ) -> Result<usize, redis::RedisError> {
+        // Lua script that refreshes TTLs for multiple keys in a single call.
+        // Takes key prefixes and TTL values, returns number of keys refreshed.
+        let lua_script = redis::Script::new(
+            r#"
+            local counter_ttl = tonumber(ARGV[1])
+            local metadata_ttl = tonumber(ARGV[2])
+            local refreshed = 0
+
+            -- Refresh counter keys (KEYS[1] to KEYS[N] where N = #counter_keys)
+            local num_counter_keys = tonumber(ARGV[3])
+            for i = 1, num_counter_keys do
+                local key = KEYS[i]
+                if redis.call("EXISTS", key) == 1 then
+                    redis.call("EXPIRE", key, counter_ttl)
+                    refreshed = refreshed + 1
+                end
+            end
+
+            -- Refresh metadata keys
+            local num_metadata_keys = tonumber(ARGV[4])
+            for i = 1, num_metadata_keys do
+                local key = KEYS[num_counter_keys + i]
+                if redis.call("EXISTS", key) == 1 then
+                    redis.call("EXPIRE", key, metadata_ttl)
+                    refreshed = refreshed + 1
+                end
+            end
+
+            return refreshed
+            "#
+        );
+
+        let counter_keys_vec: Vec<&String> = counter_keys.iter().collect();
+        let metadata_keys_vec: Vec<&String> = metadata_keys.iter().collect();
+        let total_keys = counter_keys_vec.len() + metadata_keys_vec.len();
+        let mut total_refreshed = 0usize;
+
+        // Process in batches to avoid oversized Lua script payloads
+        let mut counter_offset = 0usize;
+        let mut metadata_offset = 0usize;
+
+        while counter_offset < counter_keys_vec.len() || metadata_offset < metadata_keys_vec.len() {
+            // Collect a batch of keys
+            let mut batch_keys: Vec<&String> = Vec::with_capacity(TTL_REFRESH_BATCH_SIZE);
+            let mut batch_counter_count = 0usize;
+            let mut batch_metadata_count = 0usize;
+
+            // Add counter keys to batch
+            while counter_offset < counter_keys_vec.len() && batch_keys.len() < TTL_REFRESH_BATCH_SIZE {
+                batch_keys.push(&counter_keys_vec[counter_offset]);
+                batch_counter_count += 1;
+                counter_offset += 1;
+            }
+
+            // Add metadata keys to batch
+            while metadata_offset < metadata_keys_vec.len() && batch_keys.len() < TTL_REFRESH_BATCH_SIZE {
+                batch_keys.push(&metadata_keys_vec[metadata_offset]);
+                batch_metadata_count += 1;
+                metadata_offset += 1;
+            }
+
+            if batch_keys.is_empty() {
+                break;
+            }
+
+            // Build and execute the Lua script for this batch
+            let mut script_invocation = lua_script.prepare_invoke();
+            for key in &batch_keys {
+                script_invocation.key(*key);
+            }
+            script_invocation
+                .arg(DISTRIBUTED_COUNTER_TTL_SECONDS)
+                .arg(CONNECTION_METADATA_TTL_SECONDS)
+                .arg(batch_counter_count as i64)
+                .arg(batch_metadata_count as i64);
+
+            let refreshed: i64 = script_invocation.invoke_async(conn).await?;
+            total_refreshed += refreshed as usize;
+
+            debug!(
+                batch_size = batch_keys.len(),
+                refreshed = refreshed,
+                total_refreshed = total_refreshed,
+                remaining = total_keys.saturating_sub(total_refreshed),
+                "Batch TTL refresh completed"
+            );
+        }
+
+        Ok(total_refreshed)
     }
 
     /// Synchronize local connection counts to Redis distributed counters.
@@ -1614,6 +1729,16 @@ impl ConnectionManager {
             .await
             .map_err(|e| format!("Redis atomic DECR script failed: {e}"))?;
         Ok(())
+    }
+
+    /// Test-only accessor for `refresh_distributed_counter_ttls`.
+    ///
+    /// **WARNING**: This method is for internal testing only. Do not use in production code.
+    /// It exposes the internal TTL refresh mechanism for integration tests that verify
+    /// the distributed counter TTL refresh behavior.
+    #[doc(hidden)]
+    pub async fn test_refresh_distributed_counter_ttls(&self) {
+        self.refresh_distributed_counter_ttls().await;
     }
 }
 

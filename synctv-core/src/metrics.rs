@@ -546,6 +546,38 @@ pub mod cluster {
         ).expect("Failed to register LEADER_ELECTION_STATE")
     });
 
+    /// Leader election epoch (fencing token), incremented on each leadership acquisition.
+    /// Used to detect split-brain scenarios: if two nodes report the same epoch,
+    /// or if a node performs singleton tasks with an outdated epoch.
+    pub static LEADER_ELECTION_EPOCH: std::sync::LazyLock<IntGauge> = std::sync::LazyLock::new(|| {
+        register_int_gauge_with_registry!(
+            "synctv_cluster_leader_election_epoch",
+            "Leader election epoch (fencing token), incremented on each leadership acquisition",
+            REGISTRY.clone()
+        ).expect("Failed to register LEADER_ELECTION_EPOCH")
+    });
+
+    /// Leader election consecutive failures counter.
+    /// High values indicate prolonged leader vacancy (network partition, Redis/K8s outage).
+    /// Alert threshold: > 3 consecutive failures for > 30 seconds.
+    pub static LEADER_ELECTION_CONSECUTIVE_FAILURES: std::sync::LazyLock<IntGauge> = std::sync::LazyLock::new(|| {
+        register_int_gauge_with_registry!(
+            "synctv_cluster_leader_election_consecutive_failures",
+            "Consecutive leader election failures (network partition or backend outage detection)",
+            REGISTRY.clone()
+        ).expect("Failed to register LEADER_ELECTION_CONSECUTIVE_FAILURES")
+    });
+
+    /// Leader election mode (0 = standalone/always_leader, 1 = redis, 2 = k8s_lease).
+    /// Helps operators understand the active election strategy at a glance.
+    pub static LEADER_ELECTION_MODE: std::sync::LazyLock<IntGauge> = std::sync::LazyLock::new(|| {
+        register_int_gauge_with_registry!(
+            "synctv_cluster_leader_election_mode",
+            "Leader election mode (0=standalone, 1=redis, 2=k8s_lease)",
+            REGISTRY.clone()
+        ).expect("Failed to register LEADER_ELECTION_MODE")
+    });
+
     /// Redis pub/sub connection health (1 = connected, 0 = disconnected).
     pub static REDIS_PUBSUB_HEALTH: std::sync::LazyLock<IntGauge> = std::sync::LazyLock::new(|| {
         register_int_gauge_with_registry!(

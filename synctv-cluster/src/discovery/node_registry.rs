@@ -129,6 +129,8 @@ pub enum HeartbeatResult {
     NeedReregistration,
     /// Epoch mismatch detected -- the remote epoch is returned
     EpochMismatch(u64),
+    /// Cannot re-register because local cache has empty address(es)
+    EmptyAddress,
 }
 
 /// Cluster operating mode, reflecting current Redis connectivity.
@@ -670,14 +672,16 @@ impl NodeRegistry {
             let result = op_result?;
 
             if result == -1 {
+                // Check for empty addresses before attempting re-registration
                 if grpc_addr.is_empty() || http_addr.is_empty() {
                     tracing::error!(
                         node_id = %self.node_id,
                         grpc_address = %grpc_addr,
                         http_address = %http_addr,
-                        "Heartbeat auto-re-registration has empty address(es); \
-                         node will be unreachable by peers until next restart"
+                        "Heartbeat auto-re-registration skipped: empty address(es); \
+                         node will be unreachable by peers until addresses are recovered"
                     );
+                    return Ok(HeartbeatResult::EmptyAddress);
                 }
                 tracing::warn!(
                     node_id = %self.node_id,
@@ -700,14 +704,16 @@ impl NodeRegistry {
             } else if result <= -1000 {
                 // Lua returns -(1000 + remote_epoch) on epoch mismatch
                 let remote_epoch = ((-result) - 1000) as u64;
+                // Check for empty addresses before attempting re-registration
                 if grpc_addr.is_empty() || http_addr.is_empty() {
                     tracing::error!(
                         node_id = %self.node_id,
                         grpc_address = %grpc_addr,
                         http_address = %http_addr,
-                        "Heartbeat auto-re-registration has empty address(es); \
-                         node will be unreachable by peers until next restart"
+                        "Heartbeat auto-re-registration skipped: empty address(es); \
+                         node will be unreachable by peers until addresses are recovered"
                     );
+                    return Ok(HeartbeatResult::EmptyAddress);
                 }
                 tracing::warn!(
                     node_id = %self.node_id,
@@ -1499,5 +1505,130 @@ mod tests {
         // Original registration should be preserved (not overwritten)
         let nodes = registry.local_nodes.read().await;
         assert_eq!(nodes["self"].grpc_address, "10.0.0.1:50051");
+    }
+
+    #[test]
+    fn test_heartbeat_result_variants() {
+        // Test that HeartbeatResult variants exist and can be matched
+        let ok = HeartbeatResult::Ok;
+        let need_rereg = HeartbeatResult::NeedReregistration;
+        let epoch_mismatch = HeartbeatResult::EpochMismatch(42);
+        let empty_addr = HeartbeatResult::EmptyAddress;
+
+        match ok {
+            HeartbeatResult::Ok => {}
+            HeartbeatResult::NeedReregistration => panic!("wrong variant"),
+            HeartbeatResult::EpochMismatch(_) => panic!("wrong variant"),
+            HeartbeatResult::EmptyAddress => panic!("wrong variant"),
+        }
+
+        match need_rereg {
+            HeartbeatResult::Ok => panic!("wrong variant"),
+            HeartbeatResult::NeedReregistration => {}
+            HeartbeatResult::EpochMismatch(_) => panic!("wrong variant"),
+            HeartbeatResult::EmptyAddress => panic!("wrong variant"),
+        }
+
+        match epoch_mismatch {
+            HeartbeatResult::Ok => panic!("wrong variant"),
+            HeartbeatResult::NeedReregistration => panic!("wrong variant"),
+            HeartbeatResult::EpochMismatch(e) => assert_eq!(e, 42),
+            HeartbeatResult::EmptyAddress => panic!("wrong variant"),
+        }
+
+        match empty_addr {
+            HeartbeatResult::Ok => panic!("wrong variant"),
+            HeartbeatResult::NeedReregistration => panic!("wrong variant"),
+            HeartbeatResult::EpochMismatch(_) => panic!("wrong variant"),
+            HeartbeatResult::EmptyAddress => {}
+        }
+    }
+
+    #[tokio::test]
+    async fn test_node_info_empty_address_detection() {
+        // Test that we can detect empty addresses in NodeInfo
+        let node_with_empty_grpc = NodeInfo::new(
+            "test".to_string(),
+            String::new(), // empty grpc_address
+            "localhost:8080".to_string(),
+        );
+        assert!(node_with_empty_grpc.grpc_address.is_empty());
+        assert!(!node_with_empty_grpc.http_address.is_empty());
+
+        let node_with_empty_http = NodeInfo::new(
+            "test".to_string(),
+            "localhost:50051".to_string(),
+            String::new(), // empty http_address
+        );
+        assert!(!node_with_empty_http.grpc_address.is_empty());
+        assert!(node_with_empty_http.http_address.is_empty());
+
+        let node_with_both_empty = NodeInfo::new(
+            "test".to_string(),
+            String::new(),
+            String::new(),
+        );
+        assert!(node_with_both_empty.grpc_address.is_empty());
+        assert!(node_with_both_empty.http_address.is_empty());
+
+        let node_with_both_valid = NodeInfo::new(
+            "test".to_string(),
+            "localhost:50051".to_string(),
+            "localhost:8080".to_string(),
+        );
+        assert!(!node_with_both_valid.grpc_address.is_empty());
+        assert!(!node_with_both_valid.http_address.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_local_cache_empty_address_scenario() {
+        // Test that when local cache has empty addresses, we can detect it
+        let registry = NodeRegistry::new(
+            redis::Client::open("redis://localhost:6379").unwrap(),
+            "test_node".to_string(),
+            30,
+            "synctv:",
+        )
+        .unwrap();
+
+        // Simulate a scenario where local cache has empty addresses
+        // (e.g., node was registered with empty addresses due to a bug)
+        {
+            let mut nodes = registry.local_nodes.write().await;
+            nodes.insert(
+                "test_node".to_string(),
+                NodeInfo::new(
+                    "test_node".to_string(),
+                    String::new(), // empty grpc_address
+                    String::new(), // empty http_address
+                ),
+            );
+        }
+
+        // Verify we can read back and detect the empty addresses
+        {
+            let nodes = registry.local_nodes.read().await;
+            let info = nodes.get("test_node").unwrap();
+            assert!(info.grpc_address.is_empty());
+            assert!(info.http_address.is_empty());
+        }
+    }
+
+    #[tokio::test]
+    async fn test_local_cache_missing_scenario() {
+        // Test that when local cache is missing, we can detect it
+        let registry = NodeRegistry::new(
+            redis::Client::open("redis://localhost:6379").unwrap(),
+            "test_node".to_string(),
+            30,
+            "synctv:",
+        )
+        .unwrap();
+
+        // Don't insert anything into local cache, simulating a missing entry
+        {
+            let nodes = registry.local_nodes.read().await;
+            assert!(!nodes.contains_key("test_node"));
+        }
     }
 }

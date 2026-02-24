@@ -11,6 +11,7 @@ pub mod stream_registry;
 pub use cluster_manager::{BroadcastResult, ClusterConfig, ClusterManager, ClusterMetrics};
 pub use connection_manager::{
     ConnectionInfo, ConnectionLimits, ConnectionManager, ConnectionMetrics, DisconnectSignal,
+    DisconnectSignalMetrics,
 };
 pub use dedup::{DedupKey, MessageDeduplicator};
 pub use events::{CacheTarget, ClusterEvent, NotificationLevel};

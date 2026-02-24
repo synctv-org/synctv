@@ -96,6 +96,11 @@ pub struct ServerConfig {
     /// (e.g. inside a Kubernetes cluster with no external ingress).
     /// Set via `SYNCTV_SERVER_METRICS_BEARER_TOKEN` env var or config file.
     pub metrics_bearer_token: String,
+    /// Maximum gRPC message size in bytes for both incoming (decoding) and
+    /// outgoing (encoding) messages. Prevents OOM attacks from oversized messages.
+    /// Default: 16777216 (16 MB). Minimum: 1048576 (1 MB).
+    /// Set via `SYNCTV_SERVER_GRPC_MAX_MESSAGE_SIZE_BYTES` env var or config file.
+    pub grpc_max_message_size_bytes: usize,
 }
 
 impl Default for ServerConfig {
@@ -113,6 +118,7 @@ impl Default for ServerConfig {
             shutdown_drain_timeout_seconds: 30,
             disable_ws_token_query: true,
             metrics_bearer_token: String::new(),
+            grpc_max_message_size_bytes: 16 * 1024 * 1024, // 16 MB default
         }
     }
 }
@@ -421,6 +427,19 @@ pub struct LivestreamConfig {
     /// trigger a stronger warning in cluster mode even when `hls_shared_storage=true`.
     /// If empty, the default in-memory storage is used.
     pub hls_storage_path: String,
+    /// Maximum HTTP-FLV connection duration in seconds.
+    ///
+    /// Prevents slow-client DoS attacks by enforcing a maximum connection lifetime.
+    /// Set to 0 for no limit (not recommended for production).
+    /// Default: 86400 (24 hours).
+    pub flv_max_connection_duration_seconds: u64,
+    /// HTTP-FLV write timeout in seconds.
+    ///
+    /// Maximum time to wait for a client to accept data before terminating the connection.
+    /// This protects against slow clients that read data very slowly.
+    /// Set to 0 to disable (not recommended for production).
+    /// Default: 30 seconds.
+    pub flv_write_timeout_seconds: u64,
 }
 
 impl Default for LivestreamConfig {
@@ -438,6 +457,8 @@ impl Default for LivestreamConfig {
             hls_memory_max_mb: 0,
             hls_shared_storage: false,
             hls_storage_path: String::new(),
+            flv_max_connection_duration_seconds: 86400, // 24 hours
+            flv_write_timeout_seconds: 30,
         }
     }
 }
@@ -774,6 +795,7 @@ impl Config {
         env_override_parse("SYNCTV_SERVER_SHUTDOWN_DRAIN_TIMEOUT_SECONDS", &mut self.server.shutdown_drain_timeout_seconds);
         env_override_bool("SYNCTV_SERVER_DISABLE_WS_TOKEN_QUERY", &mut self.server.disable_ws_token_query);
         env_override_str("SYNCTV_SERVER_METRICS_BEARER_TOKEN", &mut self.server.metrics_bearer_token);
+        env_override_parse("SYNCTV_SERVER_GRPC_MAX_MESSAGE_SIZE_BYTES", &mut self.server.grpc_max_message_size_bytes);
 
         // -- Database --
         env_override_str("SYNCTV_DATABASE_URL", &mut self.database.url);
@@ -1009,6 +1031,22 @@ impl Config {
             errors.push(format!(
                 "livestream.rtmp_port ({}) and server.grpc_port ({}) must be different",
                 self.livestream.rtmp_port, self.server.grpc_port
+            ));
+        }
+
+        // Validate gRPC max message size (prevent OOM attacks)
+        const MIN_GRPC_MESSAGE_SIZE: usize = 1024 * 1024; // 1 MB minimum
+        const MAX_GRPC_MESSAGE_SIZE: usize = 1024 * 1024 * 1024; // 1 GB maximum
+        if self.server.grpc_max_message_size_bytes < MIN_GRPC_MESSAGE_SIZE {
+            errors.push(format!(
+                "server.grpc_max_message_size_bytes ({}) must be at least {} (1 MB)",
+                self.server.grpc_max_message_size_bytes, MIN_GRPC_MESSAGE_SIZE
+            ));
+        }
+        if self.server.grpc_max_message_size_bytes > MAX_GRPC_MESSAGE_SIZE {
+            errors.push(format!(
+                "server.grpc_max_message_size_bytes ({}) must be at most {} (1 GB)",
+                self.server.grpc_max_message_size_bytes, MAX_GRPC_MESSAGE_SIZE
             ));
         }
 
@@ -1801,6 +1839,35 @@ mod tests {
         assert!(config.server.http_port > 0);
         assert!(config.webrtc.enable_builtin_stun);
         assert!(config.bootstrap.create_root_user);
+        // Default gRPC message size limit is 16 MB
+        assert_eq!(config.server.grpc_max_message_size_bytes, 16 * 1024 * 1024);
+    }
+
+    #[test]
+    fn test_grpc_message_size_validation() {
+        let mut config = valid_prod_config();
+
+        // Valid: within range
+        config.server.grpc_max_message_size_bytes = 8 * 1024 * 1024; // 8 MB
+        assert!(config.validate().is_ok());
+
+        // Valid: minimum (1 MB)
+        config.server.grpc_max_message_size_bytes = 1024 * 1024;
+        assert!(config.validate().is_ok());
+
+        // Valid: maximum (1 GB)
+        config.server.grpc_max_message_size_bytes = 1024 * 1024 * 1024;
+        assert!(config.validate().is_ok());
+
+        // Invalid: below minimum
+        config.server.grpc_max_message_size_bytes = 1024 * 1024 - 1; // Just under 1 MB
+        let errors = config.validate().unwrap_err();
+        assert!(errors.iter().any(|e| e.contains("grpc_max_message_size_bytes") && e.contains("1 MB")));
+
+        // Invalid: above maximum
+        config.server.grpc_max_message_size_bytes = 1024 * 1024 * 1024 + 1; // Just over 1 GB
+        let errors = config.validate().unwrap_err();
+        assert!(errors.iter().any(|e| e.contains("grpc_max_message_size_bytes") && e.contains("1 GB")));
     }
 
     #[test]
@@ -1813,6 +1880,7 @@ mod tests {
                 enable_reflection: true,
                 metrics_enabled: false,
                 metrics_bearer_token: String::new(),
+                grpc_max_message_size_bytes: 16 * 1024 * 1024,
                 trusted_proxies: Vec::new(),
                 cors_allowed_origins: Vec::new(),
                 cluster_secret: String::new(),
@@ -1852,6 +1920,7 @@ mod tests {
                 http_port: 8080,
                 metrics_enabled: false,
                 metrics_bearer_token: String::new(),
+                grpc_max_message_size_bytes: 16 * 1024 * 1024,
                 enable_reflection: false,
                 trusted_proxies: Vec::new(),
                 cors_allowed_origins: Vec::new(),

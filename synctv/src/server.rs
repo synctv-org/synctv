@@ -445,24 +445,18 @@ impl SyncTvServer {
             },
         );
 
+        // Parse and bind HTTP address before spawning the task to propagate errors properly
+        let http_addr: std::net::SocketAddr = http_address.parse().map_err(|e| {
+            anyhow::anyhow!("Invalid HTTP address '{}': {}", http_address, e)
+        })?;
+
+        let listener = tokio::net::TcpListener::bind(http_addr)
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to bind HTTP address {}: {}", http_addr, e))?;
+
+        info!("HTTP server listening on {}", http_addr);
+
         let handle = tokio::spawn(async move {
-            let http_addr: std::net::SocketAddr = match http_address.parse() {
-                Ok(addr) => addr,
-                Err(e) => {
-                    error!("Invalid HTTP address '{}': {}", http_address, e);
-                    return;
-                }
-            };
-
-            let listener = match tokio::net::TcpListener::bind(http_addr).await {
-                Ok(listener) => listener,
-                Err(e) => {
-                    error!("Failed to bind HTTP address {}: {}", http_addr, e);
-                    return;
-                }
-            };
-
-            info!("HTTP server listening on {}", http_addr);
 
             let mut rx = shutdown_rx;
             let graceful = async move {
@@ -518,5 +512,85 @@ async fn shutdown_signal() {
     tokio::select! {
         () = ctrl_c => { info!("Received Ctrl+C"); }
         () = terminate => { info!("Received SIGTERM"); }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Test that invalid HTTP address format returns an error
+    #[test]
+    fn test_invalid_http_address_returns_error() {
+        // Test various invalid address formats
+        let invalid_addresses = vec![
+            "not a valid address",
+            "256.256.256.256:8080", // Invalid IP
+            ":invalid_port",
+            "localhost:notaport",
+            "",
+        ];
+
+        for addr in invalid_addresses {
+            let result: Result<std::net::SocketAddr, _> = addr.parse();
+            assert!(
+                result.is_err(),
+                "Expected '{}' to be invalid, but it parsed successfully",
+                addr
+            );
+        }
+    }
+
+    /// Test that valid HTTP address formats parse correctly
+    #[test]
+    fn test_valid_http_address_parses() {
+        let valid_addresses = vec![
+            "127.0.0.1:8080",
+            "0.0.0.0:80",
+            "[::1]:8080",
+            "[::]:80",
+            "192.168.1.1:3000",
+        ];
+
+        for addr in valid_addresses {
+            let result: Result<std::net::SocketAddr, _> = addr.parse();
+            assert!(
+                result.is_ok(),
+                "Expected '{}' to be valid, but it failed to parse",
+                addr
+            );
+        }
+    }
+
+    /// Test binding to an already-bound port fails
+    #[tokio::test]
+    async fn test_bind_to_already_bound_port_fails() {
+        // Bind to a port first
+        let addr: std::net::SocketAddr = "127.0.0.1:0".parse().unwrap();
+        let listener1 = tokio::net::TcpListener::bind(addr).await.unwrap();
+        let bound_addr = listener1.local_addr().unwrap();
+
+        // Attempting to bind to the same address should fail
+        let result = tokio::net::TcpListener::bind(bound_addr).await;
+        assert!(
+            result.is_err(),
+            "Expected binding to already-bound port {} to fail",
+            bound_addr
+        );
+
+        // Clean up
+        drop(listener1);
+    }
+
+    /// Test that binding to an available port succeeds
+    #[tokio::test]
+    async fn test_bind_to_available_port_succeeds() {
+        // Binding to port 0 lets the OS assign an available port
+        let addr: std::net::SocketAddr = "127.0.0.1:0".parse().unwrap();
+        let result = tokio::net::TcpListener::bind(addr).await;
+        assert!(
+            result.is_ok(),
+            "Expected binding to port 0 (OS-assigned) to succeed"
+        );
     }
 }

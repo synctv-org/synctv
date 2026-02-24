@@ -5,7 +5,81 @@
 //! `SSRFValidator`. By living here, the logic exists in exactly one place and
 //! cannot diverge.
 
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
+use std::sync::Arc;
+
+/// Custom DNS resolver that checks resolved IPs against SSRF blocklists
+/// at connection time, preventing DNS rebinding TOCTOU attacks.
+///
+/// This resolver filters out private/reserved IP addresses from DNS responses,
+/// ensuring that HTTP clients cannot be tricked into connecting to internal
+/// network resources even if an attacker controls DNS responses.
+///
+/// # Security
+///
+/// - Blocks all private IPv4 ranges (RFC1918): 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16
+/// - Blocks loopback addresses: 127.0.0.0/8, ::1
+/// - Blocks link-local addresses: 169.254.0.0/16, fe80::/10
+/// - Blocks CGNAT range: 100.64.0.0/10
+/// - Blocks multicast: 224.0.0.0/4, ff00::/8
+/// - Blocks IPv6 unique local: fc00::/7
+/// - Blocks tunneling protocols: Teredo (2001::/32), 6to4 (2002::/16)
+///
+/// # Example
+///
+/// ```ignore
+/// use reqwest::Client;
+/// use std::sync::Arc;
+///
+/// let client = Client::builder()
+///     .dns_resolver(Arc::new(SsrfSafeDnsResolver))
+///     .build()?;
+/// ```
+#[derive(Clone, Debug, Default)]
+pub struct SsrfSafeDnsResolver;
+
+impl reqwest::dns::Resolve for SsrfSafeDnsResolver {
+    fn resolve(&self, name: reqwest::dns::Name) -> reqwest::dns::Resolving {
+        Box::pin(async move {
+            let host = name.as_str();
+            let addrs: Vec<SocketAddr> = tokio::net::lookup_host((host, 0))
+                .await
+                .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> {
+                    Box::new(std::io::Error::other(
+                        format!("DNS lookup failed for {host}: {e}"),
+                    ))
+                })?
+                .collect();
+
+            if addrs.is_empty() {
+                return Err(Box::new(std::io::Error::other(
+                    format!("DNS lookup for {host} returned no addresses"),
+                )) as Box<dyn std::error::Error + Send + Sync>);
+            }
+
+            let safe_addrs: Vec<SocketAddr> = addrs
+                .into_iter()
+                .filter(|addr| !is_blocked_ip(addr.ip()))
+                .collect();
+
+            if safe_addrs.is_empty() {
+                return Err(Box::new(std::io::Error::other(
+                    format!("All resolved IPs for {host} are private/reserved (SSRF blocked)"),
+                )) as Box<dyn std::error::Error + Send + Sync>);
+            }
+
+            Ok(Box::new(safe_addrs.into_iter()) as reqwest::dns::Addrs)
+        })
+    }
+}
+
+/// Create an `Arc<SsrfSafeDnsResolver>` for use with reqwest Client.
+///
+/// Convenience function since `Arc::new(SsrfSafeDnsResolver)` is verbose.
+#[must_use]
+pub fn ssrf_safe_dns_resolver() -> Arc<SsrfSafeDnsResolver> {
+    Arc::new(SsrfSafeDnsResolver)
+}
 
 /// Blocked private/internal hostnames (case-insensitive check).
 const BLOCKED_HOSTNAMES: &[&str] = &[
@@ -284,5 +358,101 @@ mod tests {
     fn test_check_url_allowed() {
         assert!(check_url("https://example.com").is_ok());
         assert!(check_url("http://8.8.8.8").is_ok());
+    }
+
+    // ========================================================================
+    // SsrfSafeDnsResolver unit tests
+    // ========================================================================
+
+    #[test]
+    fn test_ssrf_safe_dns_resolver_creation() {
+        let _resolver = SsrfSafeDnsResolver;
+        let _arc_resolver = ssrf_safe_dns_resolver();
+    }
+
+    #[test]
+    fn test_ssrf_safe_dns_resolver_clone() {
+        let resolver = SsrfSafeDnsResolver;
+        let _cloned = resolver.clone();
+    }
+
+    #[test]
+    fn test_ssrf_safe_dns_resolver_default() {
+        let _resolver = SsrfSafeDnsResolver::default();
+    }
+
+    #[test]
+    fn test_ssrf_safe_dns_resolver_debug() {
+        let resolver = SsrfSafeDnsResolver;
+        let debug_str = format!("{resolver:?}");
+        assert!(debug_str.contains("SsrfSafeDnsResolver"));
+    }
+
+    #[test]
+    fn test_ssrf_safe_dns_resolver_arc_creation() {
+        use std::sync::Arc;
+        let resolver: Arc<SsrfSafeDnsResolver> = ssrf_safe_dns_resolver();
+        assert!(Arc::strong_count(&resolver) >= 1);
+    }
+
+    #[test]
+    fn test_is_blocked_ip_with_socket_addr_filtering() {
+        // Test that the filtering logic used in SsrfSafeDnsResolver works correctly
+        let public_ipv4 = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8)), 443);
+        let private_ipv4 = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)), 443);
+        let loopback_ipv4 = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 443);
+        let public_ipv6 = SocketAddr::new(
+            IpAddr::V6(Ipv6Addr::new(0x2606, 0x4700, 0x4700, 0, 0, 0, 0, 0x1111)),
+            443,
+        );
+        let loopback_ipv6 = SocketAddr::new(IpAddr::V6(Ipv6Addr::LOCALHOST), 443);
+
+        // Simulate filtering as done in the resolver
+        let addrs: Vec<SocketAddr> = vec![public_ipv4, private_ipv4, loopback_ipv4, public_ipv6, loopback_ipv6];
+        let safe_addrs: Vec<SocketAddr> = addrs
+            .into_iter()
+            .filter(|addr| !is_blocked_ip(addr.ip()))
+            .collect();
+
+        // Only public IPs should remain
+        assert_eq!(safe_addrs.len(), 2);
+        assert!(safe_addrs.iter().any(|a| a.ip() == IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8))));
+        assert!(safe_addrs.iter().any(|a| matches!(a.ip(), IpAddr::V6(ip) if ip.segments()[0] == 0x2606)));
+    }
+
+    #[test]
+    fn test_is_blocked_ip_all_private_filtered() {
+        // Test case where all IPs are private - should result in empty list
+        let addrs: Vec<SocketAddr> = vec![
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 443),
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(172, 16, 0, 1)), 443),
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)), 443),
+        ];
+        let safe_addrs: Vec<SocketAddr> = addrs
+            .into_iter()
+            .filter(|addr| !is_blocked_ip(addr.ip()))
+            .collect();
+
+        assert!(safe_addrs.is_empty(), "All private IPs should be filtered out");
+    }
+
+    #[test]
+    fn test_is_blocked_ip_mixed_addresses() {
+        // Test mixed public and private addresses
+        let addrs: Vec<SocketAddr> = vec![
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 443),      // private
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8)), 443),        // public
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 443),      // loopback
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(1, 1, 1, 1)), 443),        // public
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(169, 254, 1, 1)), 443),    // link-local
+        ];
+        let safe_addrs: Vec<SocketAddr> = addrs
+            .into_iter()
+            .filter(|addr| !is_blocked_ip(addr.ip()))
+            .collect();
+
+        assert_eq!(safe_addrs.len(), 2);
+        assert!(safe_addrs.iter().any(|a| a.ip() == IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8))));
+        assert!(safe_addrs.iter().any(|a| a.ip() == IpAddr::V4(Ipv4Addr::new(1, 1, 1, 1))));
     }
 }

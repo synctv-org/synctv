@@ -32,6 +32,10 @@ pub mod limits {
     pub const OAUTH2_REDIRECT_URL_MAX: usize = 2048;
     /// Maximum OAuth2 provider user ID length
     pub const OAUTH2_PROVIDER_USER_ID_MAX: usize = 256;
+    /// OAuth2 state token length (nanoid generates 32 chars)
+    pub const OAUTH2_STATE_LENGTH: usize = 32;
+    /// OAuth2 authorization code max length
+    pub const OAUTH2_CODE_MAX: usize = 256;
 }
 
 /// Regex patterns for validation
@@ -546,6 +550,69 @@ pub fn validate_oauth2_provider_user_id(id: Option<&str>) -> ValidationResult<Op
     Ok(Some(sanitized.into_owned()))
 }
 
+/// Validate OAuth2 state token (required for CSRF protection)
+///
+/// State tokens are generated using nanoid with 32 characters from the
+/// URL-safe alphabet: A-Za-z0-9_-
+///
+/// This validation ensures:
+/// - State is not empty
+/// - State has exactly the expected length
+/// - State only contains valid characters
+pub fn validate_oauth2_state(state: &str) -> ValidationResult<String> {
+    let sanitized = sanitize_string(state);
+
+    if sanitized.is_empty() {
+        return Err(ValidationError::Required("state"));
+    }
+
+    let len = sanitized.len();
+    if len != limits::OAUTH2_STATE_LENGTH {
+        return Err(ValidationError::InvalidFormat { field: "state" });
+    }
+
+    // Validate characters: nanoid uses URL-safe alphabet (A-Za-z0-9_-)
+    if !sanitized
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+    {
+        return Err(ValidationError::InvalidFormat { field: "state" });
+    }
+
+    Ok(sanitized.into_owned())
+}
+
+/// Validate OAuth2 authorization code (required)
+///
+/// Authorization codes are provider-specific but should be reasonably
+/// sized alphanumeric strings.
+pub fn validate_oauth2_code(code: &str) -> ValidationResult<String> {
+    let sanitized = sanitize_string(code);
+
+    if sanitized.is_empty() {
+        return Err(ValidationError::Required("code"));
+    }
+
+    let len = sanitized.len();
+    if len > limits::OAUTH2_CODE_MAX {
+        return Err(ValidationError::TooLong {
+            field: "code",
+            max: limits::OAUTH2_CODE_MAX,
+            actual: len,
+        });
+    }
+
+    // Authorization codes should be alphanumeric (may include - and _)
+    if !sanitized
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-' || c == '.' || c == '+')
+    {
+        return Err(ValidationError::InvalidFormat { field: "code" });
+    }
+
+    Ok(sanitized.into_owned())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -779,5 +846,89 @@ mod tests {
         // Valid: exactly at max length
         let exact_id = "a".repeat(limits::OAUTH2_PROVIDER_USER_ID_MAX);
         assert!(validate_oauth2_provider_user_id(Some(&exact_id)).is_ok());
+    }
+
+    #[test]
+    fn test_validate_oauth2_state() {
+        // Valid state: 32 chars, URL-safe alphabet
+        let valid_state = "AbCdEfGh1234567890_-aBcDeFgHiJkL";
+        assert_eq!(valid_state.len(), limits::OAUTH2_STATE_LENGTH);
+        assert!(validate_oauth2_state(valid_state).is_ok());
+
+        // Another valid state with different characters
+        let valid_state2 = "abcdefghijklmnopqrstuvwxyz123456";
+        assert_eq!(valid_state2.len(), limits::OAUTH2_STATE_LENGTH);
+        assert!(validate_oauth2_state(valid_state2).is_ok());
+
+        // Empty state is invalid
+        assert!(validate_oauth2_state("").is_err());
+
+        // Whitespace-only is invalid after trim
+        assert!(validate_oauth2_state("   ").is_err());
+
+        // Too short
+        assert!(validate_oauth2_state("abc123").is_err());
+
+        // Too long
+        let long_state = "a".repeat(limits::OAUTH2_STATE_LENGTH + 1);
+        assert!(validate_oauth2_state(&long_state).is_err());
+
+        // Invalid characters
+        assert!(validate_oauth2_state("AbCdEfGh1234567890aBcDeFgHiJkLm!@").is_err()); // Special chars
+        assert!(validate_oauth2_state("AbCdEfGh1234567890 aBcDeFgHiJkLmN").is_err()); // Space
+
+        // State with control characters should be sanitized and fail
+        assert!(validate_oauth2_state("AbCdEfGh1234567890\x00aBcDeFgHiJ").is_err());
+    }
+
+    #[test]
+    fn test_validate_oauth2_state_csrf_protection() {
+        // This test documents the CSRF protection requirements for OAuth2 state
+
+        // 1. State must be exactly 32 characters (prevents length manipulation)
+        let short_state = "abc";
+        assert!(validate_oauth2_state(short_state).is_err());
+
+        let exact_state = "abcdefghijklmnopqrstuvwxyz123456";
+        assert_eq!(exact_state.len(), 32);
+        assert!(validate_oauth2_state(exact_state).is_ok());
+
+        // 2. State must only contain URL-safe characters (prevents injection)
+        let injection_attempt = "abc;DROP TABLE users;123456789012345678";
+        assert!(validate_oauth2_state(injection_attempt).is_err());
+
+        // 3. State must not contain unicode (prevents encoding attacks)
+        let unicode_attempt = "abc日本語12345678901234567890ab";
+        assert!(validate_oauth2_state(unicode_attempt).is_err());
+    }
+
+    #[test]
+    fn test_validate_oauth2_code() {
+        // Valid authorization codes
+        assert!(validate_oauth2_code("abc123").is_ok());
+        assert!(validate_oauth2_code("AbCdEfGh12345678").is_ok());
+        assert!(validate_oauth2_code("code_with_underscores").is_ok());
+        assert!(validate_oauth2_code("code-with-hyphens-123").is_ok());
+        assert!(validate_oauth2_code("code.with.dots").is_ok());
+        assert!(validate_oauth2_code("code+with+plus").is_ok());
+
+        // Empty code is invalid
+        assert!(validate_oauth2_code("").is_err());
+
+        // Whitespace-only is invalid after trim
+        assert!(validate_oauth2_code("   ").is_err());
+
+        // Too long
+        let long_code = "a".repeat(limits::OAUTH2_CODE_MAX + 1);
+        assert!(validate_oauth2_code(&long_code).is_err());
+
+        // Invalid characters
+        assert!(validate_oauth2_code("code with spaces").is_err());
+        assert!(validate_oauth2_code("code!special").is_err());
+        assert!(validate_oauth2_code("code@symbol").is_err());
+
+        // Exactly at max length is valid
+        let exact_code = "a".repeat(limits::OAUTH2_CODE_MAX);
+        assert!(validate_oauth2_code(&exact_code).is_ok());
     }
 }

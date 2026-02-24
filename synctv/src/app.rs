@@ -283,12 +283,29 @@ impl Application {
         shutdown: &mut ShutdownCoordinator,
     ) -> Result<LeaderState> {
         // Without Redis, use AlwaysLeader (single node = always the leader)
+        // This is safe because without Redis, cluster mode is disabled and
+        // there's only one node.
         let Some(ref redis_conn) = core.services.redis_conn else {
             info!("No Redis configured — using AlwaysLeader (single node)");
+            // Set metrics: standalone mode (0), always leader
+            synctv_core::metrics::cluster::LEADER_ELECTION_MODE.set(0);
+            synctv_core::metrics::cluster::LEADER_ELECTION_STATE.set(1);
+            synctv_core::metrics::cluster::LEADER_ELECTION_EPOCH.set(0);
+            synctv_core::metrics::cluster::LEADER_ELECTION_CONSECUTIVE_FAILURES.set(0);
             return Ok(LeaderState {
                 leader_check: Arc::new(synctv_core::service::AlwaysLeader),
             });
         };
+
+        // With Redis configured, cluster mode may be active.
+        // Leader election failure in this scenario would be catastrophic:
+        // multiple nodes could all believe they are the leader and run
+        // singleton tasks (partition management, cleanup) simultaneously,
+        // causing database corruption or inconsistent state.
+        //
+        // Therefore, we MUST NOT silently fall back to AlwaysLeader here.
+        // Instead, we require a working leader elector and fail fast if
+        // initialization fails.
 
         let leader_cancel = shutdown.register_token("leader_election");
 
@@ -298,6 +315,8 @@ impl Application {
                 #[cfg(feature = "k8s")]
                 "k8s_lease" => {
                     info!("Using K8s Lease-based leader election");
+                    // Set metrics: K8s mode (2)
+                    synctv_core::metrics::cluster::LEADER_ELECTION_MODE.set(2);
                     let pod_name =
                         std::env::var("POD_NAME").unwrap_or_else(|_| infra.node_id.clone());
                     let namespace =
@@ -323,23 +342,53 @@ impl Application {
                             )
                         }
                         Err(e) => {
-                            error!("Failed to initialize K8s leader election: {}", e);
+                            // CRITICAL: Do not fall back to AlwaysLeader here!
+                            // In cluster mode, this would cause split-brain.
+                            // Instead, fail fast and let the operator fix the issue.
                             error!(
-                                "Ensure POD_NAME and POD_NAMESPACE env vars are set and RBAC is configured"
+                                error = %e,
+                                pod_name = %pod_name,
+                                namespace = %namespace,
+                                "CRITICAL: K8s leader election initialization failed"
                             );
-                            (None, None)
+                            error!(
+                                "Required env vars: POD_NAME={}, POD_NAMESPACE={}",
+                                std::env::var("POD_NAME").unwrap_or_else(|_| "<not set>".to_string()),
+                                std::env::var("POD_NAMESPACE").unwrap_or_else(|_| "<not set>".to_string()),
+                            );
+                            error!(
+                                "Ensure the service account has RBAC permissions: \
+                                 verbs [get,create,update] on resource 'leases' in group 'coordination.k8s.io'"
+                            );
+                            error!(
+                                "Refusing to start with AlwaysLeader fallback to prevent split-brain. \
+                                 Fix the K8s configuration or switch to 'redis' leader election mode."
+                            );
+                            return Err(anyhow::anyhow!(
+                                "K8s leader election initialization failed: {}. \
+                                 Cannot safely continue in cluster mode. \
+                                 Either fix K8s RBAC/env vars or set cluster.leader_election_mode='redis'",
+                                e
+                            ));
                         }
                     }
                 }
                 #[cfg(not(feature = "k8s"))]
                 "k8s_lease" => {
+                    // CRITICAL: Feature not compiled in, cannot proceed.
+                    // This is a configuration error that must be fixed.
                     error!(
-                        "K8s Lease-based leader election requires the 'k8s' feature. \
-                         Rebuild with: cargo build --features k8s"
+                        "K8s Lease-based leader election requested but the 'k8s' feature \
+                         was not compiled in. Rebuild with: cargo build --features k8s"
                     );
-                    (None, None)
+                    return Err(anyhow::anyhow!(
+                        "K8s leader election mode 'k8s_lease' requires the 'k8s' feature. \
+                         Rebuild with: cargo build --features k8s, or set cluster.leader_election_mode='redis'"
+                    ));
                 }
                 _ => {
+                    // Set metrics: Redis mode (1)
+                    synctv_core::metrics::cluster::LEADER_ELECTION_MODE.set(1);
                     if leader_mode != "redis" {
                         warn!(
                             leader_election_mode = %leader_mode,
@@ -371,9 +420,17 @@ impl Application {
             shutdown.register_task("leader_election", handle);
         }
 
+        // leader_elector is guaranteed to be Some here because we return early on error.
+        // This eliminates the unsafe AlwaysLeader fallback that could cause split-brain.
         let leader_check: Arc<dyn synctv_core::service::LeaderCheck> = match &leader_elector {
             Some(elector) => Arc::new(elector.clone()),
-            None => Arc::new(synctv_core::service::AlwaysLeader),
+            None => {
+                // This branch should never be reached because we return early on error.
+                // But if it does (due to a logic bug), fail rather than risk split-brain.
+                unreachable!(
+                    "leader_elector is None after successful initialization - this is a bug"
+                );
+            }
         };
 
         Ok(LeaderState { leader_check })

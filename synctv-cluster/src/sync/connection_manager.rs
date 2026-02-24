@@ -178,6 +178,19 @@ pub struct ConnectionManager {
     /// Broadcast channel for disconnect signals
     disconnect_tx: Arc<broadcast::Sender<DisconnectSignal>>,
 
+    /// Pending disconnect signals that failed to send (channel full).
+    /// These are retried by a background task to ensure reliable delivery.
+    pending_disconnects: Arc<DashMap<u64, (DisconnectSignal, Instant)>>,
+
+    /// Counter for generating unique IDs for pending disconnect signals
+    pending_disconnect_id: Arc<AtomicU64>,
+
+    /// Counter for tracking dropped disconnect signals (monitoring)
+    dropped_disconnect_signals: Arc<AtomicU64>,
+
+    /// Counter for tracking retried disconnect signals (monitoring)
+    retried_disconnect_signals: Arc<AtomicU64>,
+
     /// Optional Redis connection for distributed connection counting.
     /// When present, per-user and per-room limits are enforced across all replicas.
     /// When absent, limits are per-node only (fallback).
@@ -189,6 +202,10 @@ pub struct ConnectionManager {
     /// Cancellation token for the auto-spawned TTL refresh task.
     /// Cancelled on shutdown to stop the background task.
     ttl_refresh_cancel: Arc<tokio_util::sync::CancellationToken>,
+
+    /// Cancellation token for the disconnect signal retry task.
+    /// Cancelled on shutdown to stop the background task.
+    disconnect_retry_cancel: Arc<tokio_util::sync::CancellationToken>,
 
     /// Channel for queuing failed Redis counter operations for background retry.
     /// When a Redis INCR/DECR fails during register/unregister, the operation is
@@ -216,6 +233,12 @@ pub struct ConnectionManager {
 /// are lost.
 const PENDING_RETRY_QUEUE_CAPACITY: usize = 10_000;
 
+/// Maximum capacity of the pending disconnect signals queue.
+/// When the broadcast channel is full (lagging receivers), disconnect signals
+/// are stored here for retry. This ensures kick/ban operations are not lost
+/// even under high load.
+const PENDING_DISCONNECT_QUEUE_CAPACITY: usize = 10_000;
+
 impl ConnectionManager {
     /// Create a new `ConnectionManager`
     #[must_use]
@@ -226,9 +249,13 @@ impl ConnectionManager {
         // re-validation backstop to handle the rare case where a signal is lost.
         let (disconnect_tx, _) = broadcast::channel(10_000);
         let (pending_retries_tx, pending_retries_rx) = mpsc::channel(PENDING_RETRY_QUEUE_CAPACITY);
+
+        // Create the disconnect retry cancellation token
+        let disconnect_retry_cancel = tokio_util::sync::CancellationToken::new();
+
         // Store the receiver so it is not dropped here. with_redis() will take it
         // and hand it to spawn_pending_retries_task when Redis is configured.
-        Self {
+        let mgr = Self {
             connections: Arc::new(DashMap::new()),
             user_connections: Arc::new(DashMap::new()),
             room_connections: Arc::new(DashMap::new()),
@@ -237,12 +264,22 @@ impl ConnectionManager {
             total_connections_ever: Arc::new(AtomicU64::new(0)),
             total_messages: Arc::new(AtomicU64::new(0)),
             disconnect_tx: Arc::new(disconnect_tx),
+            pending_disconnects: Arc::new(DashMap::new()),
+            pending_disconnect_id: Arc::new(AtomicU64::new(0)),
+            dropped_disconnect_signals: Arc::new(AtomicU64::new(0)),
+            retried_disconnect_signals: Arc::new(AtomicU64::new(0)),
             redis_conn: None,
             redis_key_prefix: String::new(),
             ttl_refresh_cancel: Arc::new(tokio_util::sync::CancellationToken::new()),
+            disconnect_retry_cancel: Arc::new(disconnect_retry_cancel.clone()),
             pending_retries_tx,
             pending_retries_rx: Arc::new(tokio::sync::Mutex::new(Some(pending_retries_rx))),
-        }
+        };
+
+        // Spawn the disconnect signal retry task
+        mgr.spawn_disconnect_retry_task(disconnect_retry_cancel);
+
+        mgr
     }
 
     /// Enable distributed connection counting via Redis.
@@ -378,11 +415,148 @@ impl ConnectionManager {
         }
     }
 
-    /// Cancel the auto-spawned TTL refresh task.
+    /// Spawn a background task that retries pending disconnect signals.
     ///
-    /// Should be called during graceful shutdown to stop the background task.
+    /// This task periodically checks for disconnect signals that failed to send
+    /// (because the broadcast channel was full) and retries them. This ensures
+    /// that kick/ban operations are not lost even under high load.
+    fn spawn_disconnect_retry_task(&self, cancel: tokio_util::sync::CancellationToken) {
+        let pending_disconnects = self.pending_disconnects.clone();
+        let disconnect_tx = self.disconnect_tx.clone();
+        let dropped_count = self.dropped_disconnect_signals.clone();
+        let retried_count = self.retried_disconnect_signals.clone();
+
+        tokio::spawn(async move {
+            /// Interval between retry sweeps for pending disconnect signals.
+            const RETRY_INTERVAL: Duration = Duration::from_millis(100);
+            /// Maximum age of a pending disconnect signal before it's dropped (5 seconds).
+            const MAX_SIGNAL_AGE: Duration = Duration::from_secs(5);
+            /// Maximum retry attempts per signal.
+            const MAX_RETRIES: u32 = 50; // 50 * 100ms = 5 seconds
+
+            let mut ticker = tokio::time::interval(RETRY_INTERVAL);
+            // Skip the first immediate tick
+            ticker.tick().await;
+
+            loop {
+                tokio::select! {
+                    () = cancel.cancelled() => {
+                        info!("Disconnect signal retry task shutting down");
+                        return;
+                    }
+                    _ = ticker.tick() => {
+                        let now = Instant::now();
+                        let mut to_remove = Vec::new();
+                        let mut retry_count = 0u64;
+
+                        for entry in pending_disconnects.iter() {
+                            let id = *entry.key();
+                            let (signal, created_at) = entry.value();
+                            let age = now.duration_since(*created_at);
+
+                            // Check if signal is too old
+                            if age > MAX_SIGNAL_AGE {
+                                to_remove.push(id);
+                                dropped_count.fetch_add(1, Ordering::Relaxed);
+                                warn!(
+                                    signal = ?signal,
+                                    age_ms = age.as_millis(),
+                                    "Dropping old disconnect signal after max retries"
+                                );
+                                continue;
+                            }
+
+                            // Try to resend the signal
+                            match disconnect_tx.send(signal.clone()) {
+                                Ok(_) => {
+                                    to_remove.push(id);
+                                    retry_count += 1;
+                                    debug!(
+                                        signal = ?signal,
+                                        age_ms = age.as_millis(),
+                                        "Successfully retried disconnect signal"
+                                    );
+                                }
+                                Err(_) => {
+                                    // Channel still full, will retry next tick
+                                    // The signal remains in pending_disconnects
+                                }
+                            }
+                        }
+
+                        // Remove processed signals
+                        for id in to_remove {
+                            pending_disconnects.remove(&id);
+                        }
+
+                        if retry_count > 0 {
+                            retried_count.fetch_add(retry_count, Ordering::Relaxed);
+                        }
+                    }
+                }
+            }
+        });
+    }
+
+    /// Send a disconnect signal, storing it for retry if the channel is full.
+    ///
+    /// This method ensures that disconnect signals are not lost even when the
+    /// broadcast channel is temporarily full. If the send fails, the signal
+    /// is stored in `pending_disconnects` and will be retried by the background
+    /// task spawned in `new()`.
+    fn send_disconnect_signal(&self, signal: DisconnectSignal) {
+        // First try to send directly
+        match self.disconnect_tx.send(signal.clone()) {
+            Ok(_) => {
+                // Signal sent successfully
+                return;
+            }
+            Err(_) => {
+                // Channel might be full or have no receivers
+                // Check if there are any subscribers by trying to get receiver count
+                let receiver_count = self.disconnect_tx.receiver_count();
+
+                if receiver_count == 0 {
+                    // No receivers - this is not an error, just log at debug level
+                    debug!(
+                        signal = ?signal,
+                        "Disconnect signal has no receivers (no active connections)"
+                    );
+                    return;
+                }
+
+                // Channel is full - store for retry
+                if self.pending_disconnects.len() >= PENDING_DISCONNECT_QUEUE_CAPACITY {
+                    // Queue is full, have to drop the signal
+                    self.dropped_disconnect_signals.fetch_add(1, Ordering::Relaxed);
+                    warn!(
+                        signal = ?signal,
+                        queue_size = self.pending_disconnects.len(),
+                        "Disconnect signal queue full, dropping signal. \
+                         This indicates severe system overload."
+                    );
+                    return;
+                }
+
+                // Store signal for retry
+                let id = self.pending_disconnect_id.fetch_add(1, Ordering::Relaxed);
+                self.pending_disconnects.insert(id, (signal.clone(), Instant::now()));
+
+                warn!(
+                    signal = ?signal,
+                    pending_count = self.pending_disconnects.len(),
+                    "Disconnect signal queued for retry (broadcast channel full)"
+                );
+            }
+        }
+    }
+
+    /// Cancel the auto-spawned background tasks.
+    ///
+    /// Should be called during graceful shutdown to stop the background tasks.
     pub fn shutdown(&self) {
         self.ttl_refresh_cancel.cancel();
+        self.disconnect_retry_cancel.cancel();
     }
 
     /// Subscribe to disconnect signals
@@ -396,23 +570,20 @@ impl ConnectionManager {
 
     /// Force disconnect a specific connection
     ///
-    /// Sends a signal to the connection to close immediately
+    /// Sends a signal to the connection to close immediately.
+    /// If the broadcast channel is full, the signal is queued for retry.
     pub fn disconnect_connection(&self, connection_id: &str) {
         info!(
             connection_id = %connection_id,
             "Forcing connection disconnect"
         );
-        if self.disconnect_tx.send(DisconnectSignal::Connection(connection_id.to_string())).is_err() {
-            warn!(
-                connection_id = %connection_id,
-                "Failed to send disconnect signal: no active receivers"
-            );
-        }
+        self.send_disconnect_signal(DisconnectSignal::Connection(connection_id.to_string()));
     }
 
     /// Force disconnect all connections for a user
     ///
-    /// Used when a user is banned or kicked from all rooms
+    /// Used when a user is banned or kicked from all rooms.
+    /// If the broadcast channel is full, the signal is queued for retry.
     pub fn disconnect_user(&self, user_id: &UserId) {
         let conn_count = self.user_connection_count(user_id);
         info!(
@@ -420,17 +591,13 @@ impl ConnectionManager {
             connection_count = conn_count,
             "Forcing disconnect of all user connections"
         );
-        if self.disconnect_tx.send(DisconnectSignal::User(user_id.clone())).is_err() {
-            warn!(
-                user_id = %user_id.as_str(),
-                "Failed to send user disconnect signal: no active receivers"
-            );
-        }
+        self.send_disconnect_signal(DisconnectSignal::User(user_id.clone()));
     }
 
     /// Force disconnect all connections in a room
     ///
-    /// Used when a room is deleted or all users need to be removed
+    /// Used when a room is deleted or all users need to be removed.
+    /// If the broadcast channel is full, the signal is queued for retry.
     pub fn disconnect_room(&self, room_id: &RoomId) {
         let conn_count = self.room_connection_count(room_id);
         info!(
@@ -438,33 +605,23 @@ impl ConnectionManager {
             connection_count = conn_count,
             "Forcing disconnect of all room connections"
         );
-        if self.disconnect_tx.send(DisconnectSignal::Room(room_id.clone())).is_err() {
-            warn!(
-                room_id = %room_id.as_str(),
-                "Failed to send room disconnect signal: no active receivers"
-            );
-        }
+        self.send_disconnect_signal(DisconnectSignal::Room(room_id.clone()));
     }
 
     /// Force disconnect a specific user from a specific room
     ///
-    /// Used when kicking a member from a room (not banning globally)
+    /// Used when kicking a member from a room (not banning globally).
+    /// If the broadcast channel is full, the signal is queued for retry.
     pub fn disconnect_user_from_room(&self, user_id: &UserId, room_id: &RoomId) {
         info!(
             user_id = %user_id.as_str(),
             room_id = %room_id.as_str(),
             "Forcing disconnect of user from room"
         );
-        if self.disconnect_tx.send(DisconnectSignal::UserFromRoom {
+        self.send_disconnect_signal(DisconnectSignal::UserFromRoom {
             user_id: user_id.clone(),
             room_id: room_id.clone(),
-        }).is_err() {
-            warn!(
-                user_id = %user_id.as_str(),
-                room_id = %room_id.as_str(),
-                "Failed to send user-from-room disconnect signal: no active receivers"
-            );
-        }
+        });
     }
 
     /// Register a new connection
@@ -1096,6 +1253,21 @@ impl ConnectionManager {
             total_messages: self.total_messages(),
             active_users: self.user_connections.len(),
             active_rooms: self.room_connections.len(),
+        }
+    }
+
+    /// Get disconnect signal reliability metrics.
+    ///
+    /// Returns metrics for monitoring the disconnect signal retry mechanism:
+    /// - `pending_count`: Number of signals currently queued for retry
+    /// - `dropped_count`: Total signals dropped due to queue overflow or timeout
+    /// - `retried_count`: Total signals successfully retried
+    #[must_use]
+    pub fn disconnect_signal_metrics(&self) -> DisconnectSignalMetrics {
+        DisconnectSignalMetrics {
+            pending_count: self.pending_disconnects.len(),
+            dropped_count: self.dropped_disconnect_signals.load(Ordering::Relaxed),
+            retried_count: self.retried_disconnect_signals.load(Ordering::Relaxed),
         }
     }
 
@@ -1756,6 +1928,17 @@ pub struct ConnectionMetrics {
     pub total_messages: u64,
     pub active_users: usize,
     pub active_rooms: usize,
+}
+
+/// Disconnect signal reliability metrics
+#[derive(Debug, Clone)]
+pub struct DisconnectSignalMetrics {
+    /// Number of disconnect signals currently pending retry
+    pub pending_count: usize,
+    /// Total number of disconnect signals dropped due to queue overflow or timeout
+    pub dropped_count: u64,
+    /// Total number of disconnect signals successfully retried
+    pub retried_count: u64,
 }
 
 #[cfg(test)]

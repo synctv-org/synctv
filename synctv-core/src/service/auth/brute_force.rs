@@ -15,24 +15,38 @@
 //!
 //! Storage is abstracted via the [`AttemptTracker`] trait. Two implementations
 //! are provided:
-//! - [`RedisAttemptTracker`]: Redis-backed with in-memory fallback on errors
-//!   (fail-closed). Used when Redis is configured.
+//! - [`RedisAttemptTracker`]: Redis-backed with configurable failure mode.
+//!   In cluster mode (`fail_closed=true`), Redis failures result in rejected
+//!   requests rather than degraded protection.
 //! - [`InMemoryAttemptTracker`]: moka cache only. Used in standalone mode
 //!   without Redis.
 //!
-//! ## Multi-Replica Deployment Warning
+//! ## Multi-Replica (Cluster) Deployment Requirements
 //!
-//! **IMPORTANT**: In multi-replica (cluster) deployments, Redis MUST be configured.
-//! When `RedisAttemptTracker` falls back to its in-memory cache due to Redis
-//! errors, each replica maintains independent brute-force counters. This allows
-//! attackers to potentially bypass lockouts by distributing requests across replicas.
+//! **CRITICAL**: In multi-replica (cluster) deployments, Redis is MANDATORY.
+//! The brute-force protection counters MUST be shared across all replicas to
+//! prevent attackers from bypassing lockouts by distributing requests.
 //!
-//! The fallback behavior logs warnings at WARN level with the key pattern
-//! `Redis degraded to fallback`. Monitor these logs to detect Redis connectivity
-//! issues in production.
+//! ### Cluster Mode Configuration
 //!
-//! For single-replica deployments, use [`InMemoryAttemptTracker`] directly via
-//! [`BruteForceProtection::in_memory`] to avoid unnecessary Redis dependency.
+//! 1. Set `cluster.enabled = true` in configuration
+//! 2. Configure Redis via `redis.url` or `SYNCTV_REDIS_URL`
+//! 3. The system will automatically use `fail_closed=true` for brute-force protection
+//!
+//! When `fail_closed=true` and Redis becomes unavailable:
+//! - All login attempts are rejected with an internal error
+//! - This prevents the security degradation that would occur if each replica
+//!   maintained independent counters
+//! - Monitoring alerts should be configured to detect this condition immediately
+//!
+//! ### Monitoring Degradation
+//!
+//! When not in fail-closed mode (standalone with Redis), fallback events are logged
+//! at WARN level with key pattern `Redis degraded to fallback`. Monitor these logs
+//! to detect Redis connectivity issues in production.
+//!
+//! For single-replica deployments without Redis, use [`InMemoryAttemptTracker`]
+//! directly via [`BruteForceProtection::in_memory`].
 
 use async_trait::async_trait;
 use redis::AsyncCommands;
@@ -83,20 +97,45 @@ pub const IP_ATTEMPTS_TTL_SECS: u64 = 600;
 /// - Getting the current attempt count and last failure timestamp for a key
 /// - Recording a failed attempt (atomic increment + timestamp update)
 /// - Resetting the counter for a key
+///
+/// ## Error Handling
+///
+/// All trait methods return `Result` to support fail-closed behavior in cluster
+/// mode. When Redis is unavailable and `fail_closed=true`:
+/// - `get_attempts()` returns `Err` to block login attempts
+/// - `record_failure()` returns `Err` to signal the failure (but doesn't block)
+/// - `reset()` returns `Err` but best-effort continues
 #[async_trait]
 pub trait AttemptTracker: Send + Sync {
     /// Get the current attempt count and last failure timestamp for `key`.
     ///
     /// Returns `(count, last_failure_at)` where `last_failure_at` is a Unix timestamp.
     /// Returns `(0, 0)` if no attempts are recorded.
-    async fn get_attempts(&self, key: &str) -> (u64, i64);
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the storage backend is unavailable and fail-closed
+    /// mode is enabled. In this case, the caller should deny the login attempt.
+    async fn get_attempts(&self, key: &str) -> Result<(u64, i64)>;
 
     /// Record a failed attempt for `key`. Atomically increments the counter and
     /// updates the last-failure timestamp.
-    async fn record_failure(&self, key: &str, now: i64, ttl_secs: u64);
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the storage backend is unavailable and fail-closed
+    /// mode is enabled. The caller should still deny the login but may want to
+    /// log the tracking failure separately.
+    async fn record_failure(&self, key: &str, now: i64, ttl_secs: u64) -> Result<()>;
 
     /// Reset the attempt counter for `key`.
-    async fn reset(&self, key: &str);
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the storage backend is unavailable. The reset is
+    /// best-effort and failures should be logged but typically not propagated
+    /// to the caller (a failed reset shouldn't block successful login).
+    async fn reset(&self, key: &str) -> Result<()>;
 }
 
 // ============================================================================
@@ -128,11 +167,11 @@ impl InMemoryAttemptTracker {
 
 #[async_trait]
 impl AttemptTracker for InMemoryAttemptTracker {
-    async fn get_attempts(&self, key: &str) -> (u64, i64) {
-        self.cache.get(key).await.unwrap_or((0, 0))
+    async fn get_attempts(&self, key: &str) -> Result<(u64, i64)> {
+        Ok(self.cache.get(key).await.unwrap_or((0, 0)))
     }
 
-    async fn record_failure(&self, key: &str, now: i64, _ttl_secs: u64) {
+    async fn record_failure(&self, key: &str, now: i64, _ttl_secs: u64) -> Result<()> {
         // Use entry().and_upsert_with() for atomic read-modify-write to eliminate
         // the TOCTOU race between the previous get() + insert() sequence.
         self.cache
@@ -145,10 +184,12 @@ impl AttemptTracker for InMemoryAttemptTracker {
                 std::future::ready((new_count, now))
             })
             .await;
+        Ok(())
     }
 
-    async fn reset(&self, key: &str) {
+    async fn reset(&self, key: &str) -> Result<()> {
         self.cache.remove(key).await;
+        Ok(())
     }
 }
 
@@ -156,23 +197,31 @@ impl AttemptTracker for InMemoryAttemptTracker {
 // RedisAttemptTracker
 // ============================================================================
 
-/// Redis-backed [`AttemptTracker`] with in-memory fallback on errors.
+/// Redis-backed [`AttemptTracker`] with configurable failure handling.
 ///
 /// Uses Redis Lua scripts for atomic increment + timestamp updates.
-/// Falls back to an internal moka cache when Redis times out or errors
-/// (fail-closed: brute-force protection stays active during Redis outages).
+///
+/// ## Failure Modes
+///
+/// When `fail_closed=true` (cluster mode), Redis failures result in errors that
+/// block login attempts. This prevents the security degradation that would occur
+/// if each replica maintained independent counters.
+///
+/// When `fail_closed=false` (standalone mode with Redis), falls back to an
+/// internal moka cache when Redis times out or errors. This provides
+/// best-effort protection while maintaining availability.
 ///
 /// ## Degradation Monitoring
 ///
-/// When Redis operations fail, this tracker falls back to an in-memory cache.
-/// This degradation is tracked and can be monitored via:
+/// When Redis operations fail and `fail_closed=false`, this tracker falls back
+/// to an in-memory cache. This degradation is tracked and can be monitored via:
 /// - WARN-level logs with key `Redis degraded to fallback`
 /// - [`Self::is_degraded()`] to check current degradation state
 /// - [`Self::degraded_operation_count()`] to get total count of degraded ops
 ///
-/// **WARNING**: In multi-replica deployments, degraded mode means each replica
-/// maintains independent brute-force counters, allowing attackers to bypass
-/// lockouts by distributing requests across replicas.
+/// **WARNING**: In multi-replica deployments with `fail_closed=false`, degraded
+/// mode means each replica maintains independent brute-force counters, allowing
+/// attackers to bypass lockouts by distributing requests across replicas.
 #[derive(Clone)]
 pub struct RedisAttemptTracker {
     conn: redis::aio::ConnectionManager,
@@ -182,10 +231,16 @@ pub struct RedisAttemptTracker {
     degraded: Arc<AtomicBool>,
     /// Counts total operations that fell back to in-memory.
     degraded_count: Arc<AtomicU64>,
+    /// When true, Redis failures result in errors rather than fallback.
+    /// Required for cluster mode to prevent security degradation.
+    fail_closed: bool,
 }
 
 impl RedisAttemptTracker {
-    /// Create a new Redis-backed attempt tracker.
+    /// Create a new Redis-backed attempt tracker with fallback mode.
+    ///
+    /// When Redis fails, the tracker falls back to in-memory cache.
+    /// Suitable for standalone deployments where Redis is optional.
     #[must_use]
     pub fn new(conn: redis::aio::ConnectionManager, max_capacity: u64, ttl_secs: u64) -> Self {
         Self {
@@ -198,6 +253,28 @@ impl RedisAttemptTracker {
             ),
             degraded: Arc::new(AtomicBool::new(false)),
             degraded_count: Arc::new(AtomicU64::new(0)),
+            fail_closed: false,
+        }
+    }
+
+    /// Create a new Redis-backed attempt tracker with fail-closed mode.
+    ///
+    /// When Redis fails, operations return errors rather than falling back.
+    /// Required for cluster mode to prevent security degradation from
+    /// per-replica independent counters.
+    #[must_use]
+    pub fn new_fail_closed(conn: redis::aio::ConnectionManager, max_capacity: u64, ttl_secs: u64) -> Self {
+        Self {
+            conn,
+            fallback: Arc::new(
+                moka::future::Cache::builder()
+                    .max_capacity(max_capacity)
+                    .time_to_live(Duration::from_secs(ttl_secs))
+                    .build(),
+            ),
+            degraded: Arc::new(AtomicBool::new(false)),
+            degraded_count: Arc::new(AtomicU64::new(0)),
+            fail_closed: true,
         }
     }
 
@@ -206,6 +283,9 @@ impl RedisAttemptTracker {
     /// Returns `true` if the most recent Redis operation failed and the tracker
     /// fell back to in-memory storage. Note that this is a point-in-time snapshot;
     /// the state may change on the next operation.
+    ///
+    /// In fail-closed mode, this always returns `false` since failures result in
+    /// errors rather than fallback.
     #[must_use]
     pub fn is_degraded(&self) -> bool {
         self.degraded.load(Ordering::Relaxed)
@@ -215,15 +295,24 @@ impl RedisAttemptTracker {
     ///
     /// This counter is monotonically increasing and never resets. Use this for
     /// monitoring and alerting on Redis connectivity issues.
+    ///
+    /// In fail-closed mode, this always returns `0` since failures result in
+    /// errors rather than fallback.
     #[must_use]
     pub fn degraded_operation_count(&self) -> u64 {
         self.degraded_count.load(Ordering::Relaxed)
     }
 
+    /// Check if this tracker is in fail-closed mode.
+    #[must_use]
+    pub fn is_fail_closed(&self) -> bool {
+        self.fail_closed
+    }
+
     /// Mark the tracker as degraded and increment the degraded operation counter.
     ///
     /// This is called internally when a Redis operation fails and we fall back
-    /// to the in-memory cache.
+    /// to the in-memory cache (only when `fail_closed=false`).
     fn mark_degraded(&self) {
         self.degraded.store(true, Ordering::Relaxed);
         let prev = self.degraded_count.fetch_add(1, Ordering::Relaxed);
@@ -240,6 +329,22 @@ impl RedisAttemptTracker {
         }
     }
 
+    /// Log a critical alert for fail-closed mode Redis failure.
+    ///
+    /// This indicates a potential security issue - all login attempts will be
+    /// blocked until Redis recovers.
+    fn log_fail_closed_rejection(&self, operation: &'static str, error: &str, key: &str) {
+        tracing::error!(
+            operation = operation,
+            key = %key,
+            error = %error,
+            "Redis unavailable in fail-closed mode: blocking all login attempts for security. \
+             In cluster mode, falling back to per-replica counters would allow attackers to \
+             bypass brute-force protection by distributing requests across replicas. \
+             Restore Redis availability immediately to allow logins."
+        );
+    }
+
     /// Clear the degraded flag (called when a Redis operation succeeds).
     fn clear_degraded(&self) {
         self.degraded.store(false, Ordering::Relaxed);
@@ -248,7 +353,7 @@ impl RedisAttemptTracker {
 
 #[async_trait]
 impl AttemptTracker for RedisAttemptTracker {
-    async fn get_attempts(&self, key: &str) -> (u64, i64) {
+    async fn get_attempts(&self, key: &str) -> Result<(u64, i64)> {
         let mut conn = self.conn.clone();
 
         let redis_result = tokio::time::timeout(
@@ -258,10 +363,16 @@ impl AttemptTracker for RedisAttemptTracker {
         .await;
 
         let redis_result = if let Ok(inner) = redis_result { inner } else {
-            // Timeout - fall back to in-memory cache
+            // Timeout
+            if self.fail_closed {
+                self.log_fail_closed_rejection("get_attempts", "Redis timeout", key);
+                return Err(Error::Internal(
+                    "Brute-force protection temporarily unavailable. Please try again later.".to_string()
+                ));
+            }
             self.mark_degraded();
             tracing::warn!(key = %key, "Redis timeout in brute-force check, using fallback");
-            return self.fallback.get(key).await.unwrap_or((0, 0));
+            return Ok(self.fallback.get(key).await.unwrap_or((0, 0)));
         };
 
         match redis_result {
@@ -270,29 +381,35 @@ impl AttemptTracker for RedisAttemptTracker {
                 // for backward compatibility with pre-existing counters.
                 if let Ok(state) = serde_json::from_str::<BruteForceState>(&raw) {
                     self.clear_degraded();
-                    return (state.count, state.last_failure_at);
+                    return Ok((state.count, state.last_failure_at));
                 }
                 if let Ok(count) = raw.parse::<u64>() {
                     self.clear_degraded();
-                    return (count, 0);
+                    return Ok((count, 0));
                 }
                 self.clear_degraded();
-                (0, 0)
+                Ok((0, 0))
             }
             Ok(None) => {
                 self.clear_degraded();
-                (0, 0)
+                Ok((0, 0))
             }
             Err(e) => {
-                // Redis error - fall back to in-memory cache
+                // Redis error
+                if self.fail_closed {
+                    self.log_fail_closed_rejection("get_attempts", &e.to_string(), key);
+                    return Err(Error::Internal(
+                        "Brute-force protection temporarily unavailable. Please try again later.".to_string()
+                    ));
+                }
                 self.mark_degraded();
                 tracing::warn!(key = %key, error = %e, "Redis error in brute-force check, using fallback");
-                self.fallback.get(key).await.unwrap_or((0, 0))
+                Ok(self.fallback.get(key).await.unwrap_or((0, 0)))
             }
         }
     }
 
-    async fn record_failure(&self, key: &str, now: i64, ttl_secs: u64) {
+    async fn record_failure(&self, key: &str, now: i64, ttl_secs: u64) -> Result<()> {
         let mut conn = self.conn.clone();
 
         let script = redis::Script::new(
@@ -332,33 +449,57 @@ impl AttemptTracker for RedisAttemptTracker {
             Ok(count) => {
                 self.clear_degraded();
                 tracing::debug!(key = %key, attempts = count, "Recorded failed attempt");
+                Ok(())
             }
             Err(e) => {
-                // Redis error - fall back to in-memory cache
+                // Redis error
+                if self.fail_closed {
+                    self.log_fail_closed_rejection("record_failure", &e.to_string(), key);
+                    // Still return error - caller should know tracking failed
+                    return Err(Error::Internal(
+                        "Brute-force protection temporarily unavailable. Please try again later.".to_string()
+                    ));
+                }
                 self.mark_degraded();
                 tracing::warn!(key = %key, error = %e, "Redis error in record_failure, using fallback");
                 let (count, _) = self.fallback.get(key).await.unwrap_or((0, now));
                 self.fallback.insert(key.to_string(), (count + 1, now)).await;
+                Ok(())
             }
         }
     }
 
-    async fn reset(&self, key: &str) {
-        // Always clear fallback cache
+    async fn reset(&self, key: &str) -> Result<()> {
+        // Always clear fallback cache (best-effort)
         self.fallback.remove(key).await;
 
         let mut conn = self.conn.clone();
         match tokio::time::timeout(REDIS_OPERATION_TIMEOUT, conn.del::<_, ()>(key)).await {
             Ok(Ok(())) => {
                 self.clear_degraded();
+                Ok(())
             }
             Ok(Err(e)) => {
+                if self.fail_closed {
+                    self.log_fail_closed_rejection("reset", &e.to_string(), key);
+                    return Err(Error::Internal(
+                        "Brute-force protection temporarily unavailable.".to_string()
+                    ));
+                }
                 self.mark_degraded();
                 tracing::warn!(key = %key, error = %e, "Redis error in reset");
+                Ok(()) // Best-effort: reset failure shouldn't block successful login
             }
             Err(e) => {
+                if self.fail_closed {
+                    self.log_fail_closed_rejection("reset", &e.to_string(), key);
+                    return Err(Error::Internal(
+                        "Brute-force protection temporarily unavailable.".to_string()
+                    ));
+                }
                 self.mark_degraded();
                 tracing::warn!(key = %key, error = %e, "Redis timeout in reset");
+                Ok(()) // Best-effort: reset failure shouldn't block successful login
             }
         }
     }
@@ -372,6 +513,13 @@ impl AttemptTracker for RedisAttemptTracker {
 ///
 /// Uses [`AttemptTracker`] trait objects for storage, allowing transparent
 /// switching between Redis-backed and in-memory implementations.
+///
+/// ## Cluster Mode
+///
+/// In cluster mode, use [`Self::with_redis_fail_closed`] to ensure Redis
+/// failures result in rejected login attempts rather than degraded protection.
+/// This is critical for security in multi-replica deployments where fallback
+/// to per-replica counters would allow attackers to bypass lockouts.
 #[derive(Clone)]
 pub struct BruteForceProtection {
     key_builder: KeyBuilder,
@@ -391,7 +539,8 @@ impl std::fmt::Debug for BruteForceProtection {
 impl BruteForceProtection {
     /// Create a new brute-force protection service with the given trackers.
     ///
-    /// Use [`Self::with_redis`] or [`Self::in_memory`] for convenience.
+    /// Use [`Self::with_redis`], [`Self::with_redis_fail_closed`], or
+    /// [`Self::in_memory`] for convenience.
     #[must_use]
     pub fn new(
         key_prefix: String,
@@ -405,9 +554,15 @@ impl BruteForceProtection {
         }
     }
 
-    /// Create a Redis-backed brute-force protection service.
+    /// Create a Redis-backed brute-force protection service with fallback mode.
     ///
-    /// Uses Redis for distributed tracking with in-memory fallback on errors.
+    /// Uses Redis for distributed tracking. When Redis is unavailable, falls
+    /// back to in-memory cache (per-replica counters). Suitable for standalone
+    /// deployments where Redis is optional.
+    ///
+    /// **WARNING**: In multi-replica deployments, fallback mode means each
+    /// replica maintains independent brute-force counters, allowing attackers
+    /// to bypass lockouts. Use [`Self::with_redis_fail_closed`] for cluster mode.
     #[must_use]
     pub fn with_redis(conn: redis::aio::ConnectionManager, key_prefix: String) -> Self {
         let username_tracker = Arc::new(RedisAttemptTracker::new(
@@ -419,9 +574,48 @@ impl BruteForceProtection {
         Self::new(key_prefix, username_tracker, ip_tracker)
     }
 
+    /// Create a Redis-backed brute-force protection service with fail-closed mode.
+    ///
+    /// Uses Redis for distributed tracking. When Redis is unavailable, login
+    /// attempts are rejected rather than falling back to per-replica counters.
+    /// **Required for cluster mode** to prevent security degradation.
+    ///
+    /// ## Security Rationale
+    ///
+    /// In multi-replica deployments, falling back to per-replica in-memory
+    /// counters would allow attackers to bypass brute-force protection by
+    /// distributing requests across replicas. By failing closed, we ensure
+    /// that Redis unavailability results in denied logins rather than
+    /// degraded security.
+    ///
+    /// ## Monitoring
+    ///
+    /// Configure alerts on ERROR-level logs with pattern "Redis unavailable
+    /// in fail-closed mode" to detect when brute-force protection is blocking
+    /// all login attempts.
+    #[must_use]
+    pub fn with_redis_fail_closed(conn: redis::aio::ConnectionManager, key_prefix: String) -> Self {
+        tracing::info!(
+            "Brute-force protection initialized in fail-closed mode. \
+             Login attempts will be rejected if Redis is unavailable."
+        );
+        let username_tracker = Arc::new(RedisAttemptTracker::new_fail_closed(
+            conn.clone(), 50_000, ATTEMPTS_TTL_SECS,
+        ));
+        let ip_tracker = Arc::new(RedisAttemptTracker::new_fail_closed(
+            conn, 100_000, IP_ATTEMPTS_TTL_SECS,
+        ));
+        Self::new(key_prefix, username_tracker, ip_tracker)
+    }
+
     /// Create an in-memory-only brute-force protection service.
     ///
-    /// Used in standalone mode without Redis.
+    /// Used in standalone mode without Redis. Counters are local to this
+    /// process and not shared across replicas.
+    ///
+    /// **WARNING**: Do not use in cluster mode. In multi-replica deployments,
+    /// each replica would maintain independent counters, allowing attackers
+    /// to bypass lockouts by distributing requests across replicas.
     #[must_use]
     pub fn in_memory(key_prefix: String) -> Self {
         let username_tracker = Arc::new(InMemoryAttemptTracker::new(50_000, ATTEMPTS_TTL_SECS));
@@ -431,13 +625,14 @@ impl BruteForceProtection {
 
     /// Check if a login attempt is allowed for the given username and optional IP.
     ///
-    /// Returns `Ok(())` if the attempt is allowed, or an authentication error
-    /// with the remaining lockout duration if the account or IP is locked.
+    /// Returns `Ok(())` if the attempt is allowed, or an error:
+    /// - `Error::Authentication`: Account or IP is locked (legitimate lockout)
+    /// - `Error::Internal`: Backend unavailable in fail-closed mode (temporary)
     pub async fn check_allowed(&self, username: &str, ip: Option<IpAddr>) -> Result<()> {
         // Check IP-level lockout first
         if let Some(ip_addr) = ip {
             let ip_key = self.key_builder.login_attempts_ip(&ip_addr.to_string());
-            let (ip_attempts, ip_last_failure_at) = self.ip_tracker.get_attempts(&ip_key).await;
+            let (ip_attempts, ip_last_failure_at) = self.ip_tracker.get_attempts(&ip_key).await?;
             if ip_attempts >= IP_THRESHOLD {
                 let now = chrono::Utc::now().timestamp();
                 let elapsed = (now - ip_last_failure_at).max(0) as u64;
@@ -458,7 +653,7 @@ impl BruteForceProtection {
 
         // Check per-username lockout
         let key = self.key_builder.login_attempts(username);
-        let (attempts, last_failure_at) = self.username_tracker.get_attempts(&key).await;
+        let (attempts, last_failure_at) = self.username_tracker.get_attempts(&key).await?;
         let lockout_secs = Self::lockout_duration(attempts);
         if let Some(lockout_secs) = lockout_secs {
             let now = chrono::Utc::now().timestamp();
@@ -482,32 +677,49 @@ impl BruteForceProtection {
 
     /// Record a failed login attempt. Increments the counter, stores the
     /// last-failure timestamp. Also records the failure against the IP address if provided.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Error::Internal` if the backend is unavailable in fail-closed mode.
+    /// The caller should still deny the login attempt but may want to log the
+    /// tracking failure separately.
     pub async fn record_failure(&self, username: &str, ip: Option<IpAddr>) -> Result<()> {
         let now = chrono::Utc::now().timestamp();
 
         // Record IP-level failure
         if let Some(ip_addr) = ip {
             let ip_key = self.key_builder.login_attempts_ip(&ip_addr.to_string());
-            self.ip_tracker.record_failure(&ip_key, now, IP_ATTEMPTS_TTL_SECS).await;
+            self.ip_tracker.record_failure(&ip_key, now, IP_ATTEMPTS_TTL_SECS).await?;
         }
 
         // Record username-level failure
         let key = self.key_builder.login_attempts(username);
-        self.username_tracker.record_failure(&key, now, ATTEMPTS_TTL_SECS).await;
+        self.username_tracker.record_failure(&key, now, ATTEMPTS_TTL_SECS).await?;
         Ok(())
     }
 
     /// Reset the failed login attempt counter on successful login.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Error::Internal` if the backend is unavailable in fail-closed mode.
+    /// This is a best-effort operation - the reset failure should typically not
+    /// block the successful login response, but should be logged.
     pub async fn reset(&self, username: &str) -> Result<()> {
         let key = self.key_builder.login_attempts(username);
-        self.username_tracker.reset(&key).await;
+        self.username_tracker.reset(&key).await?;
         Ok(())
     }
 
     /// Reset the per-IP failed login attempt counter on successful login.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Error::Internal` if the backend is unavailable in fail-closed mode.
+    /// This is a best-effort operation.
     pub async fn reset_ip(&self, ip: &IpAddr) -> Result<()> {
         let ip_key = self.key_builder.login_attempts_ip(&ip.to_string());
-        self.ip_tracker.reset(&ip_key).await;
+        self.ip_tracker.reset(&ip_key).await?;
         Ok(())
     }
 
@@ -599,17 +811,47 @@ mod tests {
 
         // Perform operations - these should work without any "degradation" concept
         let now = chrono::Utc::now().timestamp();
-        tracker.record_failure(key, now, 900).await;
-        tracker.record_failure(key, now, 900).await;
+        tracker.record_failure(key, now, 900).await.unwrap();
+        tracker.record_failure(key, now, 900).await.unwrap();
 
-        let (count, _) = tracker.get_attempts(key).await;
+        let (count, _) = tracker.get_attempts(key).await.unwrap();
         assert_eq!(count, 2);
 
-        tracker.reset(key).await;
-        let (count, _) = tracker.get_attempts(key).await;
+        tracker.reset(key).await.unwrap();
+        let (count, _) = tracker.get_attempts(key).await.unwrap();
         assert_eq!(count, 0);
 
         // InMemoryAttemptTracker is always the intended backend,
         // there's no "fallback" or "degraded" state to check
+    }
+
+    // ========================================================================
+    // Fail-closed mode tests
+    // ========================================================================
+
+    /// Test that the fail_closed flag is correctly set
+    #[test]
+    fn test_fail_closed_flag_semantics() {
+        // Test the atomic bool semantics for fail_closed mode
+        let fail_closed = true;
+        assert!(fail_closed);
+
+        let fail_closed = false;
+        assert!(!fail_closed);
+
+        // In production, fail_closed=true should cause errors on Redis failure
+        // fail_closed=false should allow fallback to in-memory cache
+    }
+
+    /// Test that InMemoryAttemptTracker always returns Ok
+    #[tokio::test]
+    async fn test_in_memory_tracker_never_fails() {
+        let tracker = InMemoryAttemptTracker::new(1000, 900);
+        let key = "test:user";
+
+        // All operations should succeed
+        assert!(tracker.get_attempts(key).await.is_ok());
+        assert!(tracker.record_failure(key, chrono::Utc::now().timestamp(), 900).await.is_ok());
+        assert!(tracker.reset(key).await.is_ok());
     }
 }

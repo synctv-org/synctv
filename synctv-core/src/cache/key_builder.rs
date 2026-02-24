@@ -236,6 +236,26 @@ impl KeyBuilder {
         format!("{}:auth:rt_family_revoked:{}", self.prefix, user_id)
     }
 
+    // ==================== Guest Token Blacklist ====================
+
+    /// Blacklisted guest token JTI (for revoking guest access)
+    ///
+    /// Type: String + TTL (remaining token lifetime)
+    /// Value: "1" (presence check only)
+    #[must_use]
+    pub fn guest_token_blacklist(&self, jti: &str) -> String {
+        format!("{}:auth:guest_blacklist:{}", self.prefix, jti)
+    }
+
+    /// Room guest version key (for revoking all guest tokens in a room)
+    ///
+    /// Type: String + TTL (max guest token lifetime)
+    /// Value: Monotonically increasing version number
+    #[must_use]
+    pub fn room_guest_version(&self, room_id: &str) -> String {
+        format!("{}:room:{}:guest_version", self.prefix, room_id)
+    }
+
     // ==================== WebSocket Ticket ====================
 
     /// WebSocket ticket (one-time use)
@@ -356,6 +376,24 @@ mod tests {
         assert_eq!(
             builder.ws_ticket("ticket_abc"),
             "synctv:ws_ticket:ticket_abc"
+        );
+    }
+
+    #[test]
+    fn test_guest_token_blacklist_key() {
+        let builder = KeyBuilder::default();
+        assert_eq!(
+            builder.guest_token_blacklist("jti_abc123"),
+            "synctv:auth:guest_blacklist:jti_abc123"
+        );
+    }
+
+    #[test]
+    fn test_room_guest_version_key() {
+        let builder = KeyBuilder::default();
+        assert_eq!(
+            builder.room_guest_version("room_xyz789"),
+            "synctv:room:room_xyz789:guest_version"
         );
     }
 }

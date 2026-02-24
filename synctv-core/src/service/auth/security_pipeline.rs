@@ -29,15 +29,31 @@ pub struct BlacklistEnforcement {
     /// is not configured. This ensures that revoked access tokens cannot
     /// bypass the blacklist check.
     ///
-    /// When false (default), a missing blacklist store is logged as a warning
-    /// but the request is allowed to proceed (for backward compatibility).
+    /// When false, a missing blacklist store is logged as a warning
+    /// but the request is allowed to proceed (for development/testing only).
+    ///
+    /// Default is true for production safety. Set to false only in
+    /// development environments where token blacklist is not needed.
     pub require_blacklist: bool,
 }
 
 impl BlacklistEnforcement {
     /// Create a new BlacklistEnforcement with default values.
+    ///
+    /// By default, `require_blacklist` is true to ensure logout tokens
+    /// are properly invalidated in production deployments.
     #[must_use]
     pub const fn new() -> Self {
+        Self {
+            require_blacklist: true,
+        }
+    }
+
+    /// Create a BlacklistEnforcement that allows requests without blacklist store.
+    ///
+    /// Use this only for development/testing where token blacklist is not needed.
+    #[must_use]
+    pub const fn permissive() -> Self {
         Self {
             require_blacklist: false,
         }
@@ -452,9 +468,21 @@ mod tests {
     // ========================================================================
 
     #[test]
-    fn blacklist_enforcement_default_is_false() {
-        // By default, require_blacklist should be false for backward compatibility
+    fn blacklist_enforcement_default_is_true() {
+        // By default, require_blacklist should be true for production safety
         let enforcement = BlacklistEnforcement::default();
+        assert!(enforcement.require_blacklist);
+    }
+
+    #[test]
+    fn blacklist_enforcement_new_is_true() {
+        let enforcement = BlacklistEnforcement::new();
+        assert!(enforcement.require_blacklist);
+    }
+
+    #[test]
+    fn blacklist_enforcement_permissive_is_false() {
+        let enforcement = BlacklistEnforcement::permissive();
         assert!(!enforcement.require_blacklist);
     }
 

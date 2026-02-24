@@ -232,15 +232,29 @@ impl RedisPubSub {
         /// sustained outages.
         const MAX_RETRY_BUFFER: usize = 10000;
 
+        /// Maximum number of critical events to buffer separately.
+        /// Critical events (kick/ban) are never dropped - this buffer has no limit
+        /// but a warning is logged if it exceeds this threshold.
+        const CRITICAL_BUFFER_WARN_THRESHOLD: usize = 1000;
+
+        /// Warning threshold for normal buffer (80% of MAX_RETRY_BUFFER)
+        const BUFFER_WARN_THRESHOLD: usize = (MAX_RETRY_BUFFER as f64 * 0.8) as usize;
+
         // Spawn task to handle publishing with reconnection logic.
         // The handle is returned to the caller so shutdown() can await completion.
         let publisher_handle = tokio::spawn(async move {
             let mut backoff_secs = INITIAL_BACKOFF_SECS;
-            // Buffer for retrying failed publishes after reconnection.
+            // Buffer for retrying failed non-critical publishes after reconnection.
             // Using a Vec instead of Option<PublishRequest> ensures that multiple
             // events that fail during a connection interruption window are all
             // preserved for retry, not just the last one.
             let mut retry_buffer: Vec<PublishRequest> = Vec::new();
+            // Separate buffer for critical events (kick/ban) that must NEVER be dropped.
+            // This ensures user access control events are always delivered even during
+            // prolonged Redis outages.
+            let mut critical_retry_buffer: Vec<PublishRequest> = Vec::new();
+            // Track whether we've already logged a warning about buffer approaching capacity
+            let mut buffer_warn_logged = false;
 
             loop {
                 let conn = match timeout(
@@ -277,23 +291,24 @@ impl RedisPubSub {
                 info!("Redis publisher task (re)connected");
                 let mut conn = conn;
 
-                // Retry all buffered failed publish requests
-                if !retry_buffer.is_empty() {
-                    let buffered = std::mem::take(&mut retry_buffer);
-                    info!(
-                        buffered_count = buffered.len(),
-                        "Retrying buffered events after reconnection"
-                    );
-                    let mut retry_failed = false;
-                    for req in buffered {
-                        if retry_failed {
-                            // Connection broke mid-retry; keep remaining events
-                            retry_buffer.push(req);
-                            continue;
-                        }
+                // Reset buffer warning flag on successful reconnection
+                buffer_warn_logged = false;
+
+                // Helper function to retry a batch of events, returning failed ones
+                async fn retry_batch(
+                    batch: Vec<PublishRequest>,
+                    conn: &mut redis::aio::MultiplexedConnection,
+                    node_id: &str,
+                    key_prefix: &str,
+                    stream_max_length: usize,
+                ) -> (Vec<PublishRequest>, usize) {
+                    let mut failed = Vec::new();
+                    let mut success_count = 0;
+                    for req in batch {
                         let event_type = req.event.event_type();
-                        match Self::publish_event(&mut conn, &node_id, &key_prefix, req.event.clone(), stream_max_length).await {
+                        match RedisPubSub::publish_event(conn, node_id, key_prefix, req.event.clone(), stream_max_length).await {
                             Ok(subscribers) => {
+                                success_count += 1;
                                 debug!(
                                     event_type = event_type,
                                     subscribers = subscribers,
@@ -306,12 +321,43 @@ impl RedisPubSub {
                                     event_type = event_type,
                                     "Retry publish failed, will retry after next reconnect"
                                 );
-                                retry_buffer.push(req);
-                                retry_failed = true;
+                                failed.push(req);
                             }
                         }
                     }
-                    if !retry_buffer.is_empty() {
+                    (failed, success_count)
+                }
+
+                // CRITICAL EVENTS: Always retry first (highest priority)
+                if !critical_retry_buffer.is_empty() {
+                    let critical_batch = std::mem::take(&mut critical_retry_buffer);
+                    info!(
+                        critical_count = critical_batch.len(),
+                        "Retrying critical events after reconnection"
+                    );
+                    let (failed, _success_count) = retry_batch(critical_batch, &mut conn, &node_id, &key_prefix, stream_max_length).await;
+                    if !failed.is_empty() {
+                        warn!(
+                            failed_count = failed.len(),
+                            "Some critical events failed to retry, keeping in buffer"
+                        );
+                        critical_retry_buffer = failed;
+                        tokio::time::sleep(Duration::from_secs(backoff_secs)).await;
+                        backoff_secs = (backoff_secs * 2).min(MAX_BACKOFF_SECS);
+                        continue;
+                    }
+                }
+
+                // NORMAL EVENTS: Retry after critical events
+                if !retry_buffer.is_empty() {
+                    let buffered = std::mem::take(&mut retry_buffer);
+                    info!(
+                        buffered_count = buffered.len(),
+                        "Retrying buffered events after reconnection"
+                    );
+                    let (failed, _success_count) = retry_batch(buffered, &mut conn, &node_id, &key_prefix, stream_max_length).await;
+                    if !failed.is_empty() {
+                        retry_buffer = failed;
                         tokio::time::sleep(Duration::from_secs(backoff_secs)).await;
                         backoff_secs = (backoff_secs * 2).min(MAX_BACKOFF_SECS);
                         continue;
@@ -328,19 +374,38 @@ impl RedisPubSub {
                             // Flush retry_buffer first, then drain channel
                             info!(
                                 retry_buffer_len = retry_buffer.len(),
-                                "Redis publisher task cancelled, flushing retry buffer and draining remaining events"
+                                critical_buffer_len = critical_retry_buffer.len(),
+                                "Redis publisher task cancelled, flushing buffers and draining remaining events"
                             );
                             let mut flush_failed = false;
-                            // Flush retry_buffer (events from previous failed publishes)
+                            // CRITICAL: Flush critical_retry_buffer FIRST (highest priority)
+                            for req in std::mem::take(&mut critical_retry_buffer) {
+                                if flush_failed {
+                                    error!(
+                                        event_type = req.event.event_type(),
+                                        "CRITICAL event lost during shutdown (connection broken)"
+                                    );
+                                    continue;
+                                }
+                                let event_type = req.event.event_type();
+                                match Self::publish_event(&mut conn, &node_id, &key_prefix, req.event.clone(), stream_max_length).await {
+                                    Ok(_) => {
+                                        debug!(event_type = event_type, "Critical buffer event flushed on shutdown");
+                                    }
+                                    Err(e) => {
+                                        error!(error = %e, event_type = event_type, "Failed to flush CRITICAL event on shutdown");
+                                        flush_failed = true;
+                                    }
+                                }
+                            }
+                            // Then flush normal retry_buffer (events from previous failed publishes)
                             for req in std::mem::take(&mut retry_buffer) {
                                 if flush_failed {
-                                    // Connection broken; skip remaining events
-                                    if req.event.is_critical() {
-                                        warn!(
-                                            event_type = req.event.event_type(),
-                                            "Critical retry_buffer event lost during shutdown (connection broken)"
-                                        );
-                                    }
+                                    // Connection broken; skip remaining events (these are non-critical)
+                                    debug!(
+                                        event_type = req.event.event_type(),
+                                        "Non-critical retry_buffer event skipped during shutdown (connection broken)"
+                                    );
                                     continue;
                                 }
                                 let event_type = req.event.event_type();
@@ -354,15 +419,39 @@ impl RedisPubSub {
                                     }
                                 }
                             }
-                            // Then drain remaining events from channel
+                            // Finally drain remaining events from channel, prioritizing critical
+                            let mut critical_drain = Vec::new();
+                            let mut normal_drain = Vec::new();
                             while let Ok(req) = publish_rx.try_recv() {
+                                if req.event.is_critical() {
+                                    critical_drain.push(req);
+                                } else {
+                                    normal_drain.push(req);
+                                }
+                            }
+                            // Flush critical drained events first
+                            for req in critical_drain {
                                 if flush_failed {
-                                    if req.event.is_critical() {
-                                        warn!(
-                                            event_type = req.event.event_type(),
-                                            "Critical drained event lost during shutdown (connection broken)"
-                                        );
+                                    error!(
+                                        event_type = req.event.event_type(),
+                                        "CRITICAL drained event lost during shutdown (connection broken)"
+                                    );
+                                    continue;
+                                }
+                                let event_type = req.event.event_type();
+                                match Self::publish_event(&mut conn, &node_id, &key_prefix, req.event.clone(), stream_max_length).await {
+                                    Ok(_) => {
+                                        debug!(event_type = event_type, "Critical drained event published");
                                     }
+                                    Err(e) => {
+                                        error!(error = %e, event_type = event_type, "Failed to publish CRITICAL drained event");
+                                        flush_failed = true;
+                                    }
+                                }
+                            }
+                            // Then flush normal drained events
+                            for req in normal_drain {
+                                if flush_failed {
                                     continue;
                                 }
                                 let event_type = req.event.event_type();
@@ -409,37 +498,56 @@ impl RedisPubSub {
                                         "Failed to publish event, buffering for retry after reconnect"
                                     );
                                 }
-                                // Buffer failed request for retry after reconnection
-                                retry_buffer.push(req);
+                                // Route failed request to appropriate buffer based on criticality
+                                if req.event.is_critical() {
+                                    critical_retry_buffer.push(req);
+                                } else {
+                                    retry_buffer.push(req);
+                                }
 
-                                // Drain remaining events from channel into retry buffer
+                                // Drain remaining events from channel into appropriate buffers
                                 // (connection is broken, no point trying to publish more)
                                 while let Ok(req) = publish_rx.try_recv() {
-                                    if retry_buffer.len() >= MAX_RETRY_BUFFER {
-                                        let event_type = req.event.event_type();
-                                        let is_critical = req.event.is_critical();
-                                        if is_critical {
-                                            error!(
-                                                max = MAX_RETRY_BUFFER,
-                                                event_type = event_type,
-                                                "CRITICAL EVENT DROPPED: retry buffer full, dropping critical event"
+                                    let is_critical = req.event.is_critical();
+                                    let event_type = req.event.event_type();
+
+                                    if is_critical {
+                                        // CRITICAL events are NEVER dropped - always buffered
+                                        critical_retry_buffer.push(req);
+
+                                        // Warn if critical buffer is growing large
+                                        if critical_retry_buffer.len() == CRITICAL_BUFFER_WARN_THRESHOLD {
+                                            warn!(
+                                                critical_buffer_len = critical_retry_buffer.len(),
+                                                "Critical event buffer approaching high threshold during outage"
                                             );
-                                            synctv_core::metrics::cluster::CLUSTER_EVENTS_DROPPED
-                                                .with_label_values(&["critical_retry_buffer_full"])
-                                                .inc();
-                                        } else {
+                                        }
+                                    } else {
+                                        // Normal events: check buffer limit
+                                        if retry_buffer.len() >= MAX_RETRY_BUFFER {
                                             warn!(
                                                 max = MAX_RETRY_BUFFER,
                                                 event_type = event_type,
-                                                "Retry buffer full, dropping event"
+                                                "Retry buffer full, dropping non-critical event"
                                             );
+                                            synctv_core::metrics::cluster::CLUSTER_EVENTS_DROPPED
+                                                .with_label_values(&["retry_buffer_full"])
+                                                .inc();
+                                            continue; // Continue draining, don't break - critical events still need to be collected
                                         }
-                                        synctv_core::metrics::cluster::CLUSTER_EVENTS_DROPPED
-                                            .with_label_values(&["retry_buffer_full"])
-                                            .inc();
-                                        break;
+                                        retry_buffer.push(req);
                                     }
-                                    retry_buffer.push(req);
+
+                                    // Warn once when normal buffer approaches capacity (80%)
+                                    if !buffer_warn_logged && retry_buffer.len() >= BUFFER_WARN_THRESHOLD {
+                                        buffer_warn_logged = true;
+                                        warn!(
+                                            buffer_len = retry_buffer.len(),
+                                            max = MAX_RETRY_BUFFER,
+                                            threshold_pct = 80,
+                                            "Retry buffer approaching capacity, non-critical events may be dropped soon"
+                                        );
+                                    }
                                 }
                                 break;
                             }

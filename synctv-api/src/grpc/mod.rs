@@ -23,6 +23,57 @@ pub use interceptors::{
     AuthInterceptor, ClusterAuthInterceptor, LoggingInterceptor,
 };
 
+/// Trait to apply gRPC message size limits to tonic service servers.
+///
+/// This trait provides a unified interface for setting max decoding/encoding
+/// message sizes on tonic-generated service servers, protecting against OOM
+/// attacks from oversized messages.
+pub trait GrpcServiceExt: Sized {
+    /// Apply message size limits (both decoding and encoding) to the service.
+    /// Returns the service with limits configured.
+    fn with_message_size_limit(self, max_size: usize) -> Self {
+        self.with_decoding_limit(max_size)
+            .with_encoding_limit(max_size)
+    }
+
+    /// Apply maximum decoding (incoming) message size limit.
+    fn with_decoding_limit(self, limit: usize) -> Self;
+
+    /// Apply maximum encoding (outgoing) message size limit.
+    fn with_encoding_limit(self, limit: usize) -> Self;
+}
+
+// Implement GrpcServiceExt for all tonic-generated server types that support
+// max_decoding_message_size and max_encoding_message_size methods.
+// These implementations use the generated methods directly.
+
+macro_rules! impl_grpc_service_ext {
+    (<$T:ident> $server_type:ty) => {
+        impl<$T> GrpcServiceExt for $server_type {
+            fn with_decoding_limit(self, limit: usize) -> Self {
+                self.max_decoding_message_size(limit)
+            }
+            fn with_encoding_limit(self, limit: usize) -> Self {
+                self.max_encoding_message_size(limit)
+            }
+        }
+    };
+}
+
+// Apply the macro to all gRPC service server types used in this crate
+impl_grpc_service_ext!(<T> crate::proto::client::auth_service_server::AuthServiceServer<T>);
+impl_grpc_service_ext!(<T> crate::proto::client::user_service_server::UserServiceServer<T>);
+impl_grpc_service_ext!(<T> crate::proto::client::room_service_server::RoomServiceServer<T>);
+impl_grpc_service_ext!(<T> crate::proto::client::media_service_server::MediaServiceServer<T>);
+impl_grpc_service_ext!(<T> crate::proto::client::public_service_server::PublicServiceServer<T>);
+impl_grpc_service_ext!(<T> crate::proto::client::email_service_server::EmailServiceServer<T>);
+impl_grpc_service_ext!(<T> crate::proto::client::notification_service_server::NotificationServiceServer<T>);
+impl_grpc_service_ext!(<T> crate::proto::client::o_auth2_service_server::OAuth2ServiceServer<T>);
+impl_grpc_service_ext!(<T> crate::proto::admin_service_server::AdminServiceServer<T>);
+impl_grpc_service_ext!(<T> synctv_proto::providers::alist::alist_provider_service_server::AlistProviderServiceServer<T>);
+impl_grpc_service_ext!(<T> synctv_proto::providers::bilibili::bilibili_provider_service_server::BilibiliProviderServiceServer<T>);
+impl_grpc_service_ext!(<T> synctv_proto::providers::emby::emby_provider_service_server::EmbyProviderServiceServer<T>);
+
 /// Log an internal error and return a generic gRPC status to avoid leaking details.
 ///
 /// Shared across all gRPC service implementations.
@@ -317,6 +368,14 @@ pub async fn serve(grpc_config: GrpcServerConfig<'_>) -> anyhow::Result<()> {
         .layer(blacklist_layer)
         .layer(distributed_rate_limit_layer);
 
+    // Get the configured max message size (prevents OOM from oversized messages)
+    let max_message_size = config.server.grpc_max_message_size_bytes;
+    tracing::info!(
+        max_message_size_bytes = max_message_size,
+        max_message_size_mb = max_message_size / (1024 * 1024),
+        "gRPC message size limit configured"
+    );
+
     // Clone interceptors for different services
     let user_interceptor = auth_interceptor.clone();
     let admin_interceptor = auth_interceptor.clone();
@@ -327,6 +386,7 @@ pub async fn serve(grpc_config: GrpcServerConfig<'_>) -> anyhow::Result<()> {
     // server level (above). Per-service interceptors only handle auth concerns.
 
     // Build router - register all client services with auth interceptors
+    // All services have message size limits applied to prevent OOM attacks
     let client_service_clone1 = client_service.clone();
     let client_service_clone2 = client_service.clone();
     let client_service_clone3 = client_service.clone();
@@ -335,29 +395,30 @@ pub async fn serve(grpc_config: GrpcServerConfig<'_>) -> anyhow::Result<()> {
 
     let mut router = server_builder
         // AuthService (public: register, login, refresh_token)
-        .add_service(AuthServiceServer::new(client_service))
+        .add_service(AuthServiceServer::new(client_service).with_message_size_limit(max_message_size))
         // UserService - JWT authentication (inject UserContext)
-        .add_service(UserServiceServer::with_interceptor(
-            client_service_clone1,
+        // Use tonic::codegen::InterceptedService::new to preserve message size limits set on the service
+        .add_service(tonic::codegen::InterceptedService::new(
+            UserServiceServer::new(client_service_clone1).with_message_size_limit(max_message_size),
             move |req| user_interceptor.inject_user(req),
         ))
         // RoomService - JWT + room_id (inject RoomContext)
-        .add_service(RoomServiceServer::with_interceptor(
-            client_service_clone2,
+        .add_service(tonic::codegen::InterceptedService::new(
+            RoomServiceServer::new(client_service_clone2).with_message_size_limit(max_message_size),
             move |req| room_interceptor1.inject_room(req),
         ))
         // MediaService - JWT + room_id (inject RoomContext)
-        .add_service(MediaServiceServer::with_interceptor(
-            client_service_clone3,
+        .add_service(tonic::codegen::InterceptedService::new(
+            MediaServiceServer::new(client_service_clone3).with_message_size_limit(max_message_size),
             move |req| room_interceptor2.inject_room(req),
         ))
         // PublicService (public room discovery)
-        .add_service(PublicServiceServer::new(client_service_clone4))
+        .add_service(PublicServiceServer::new(client_service_clone4).with_message_size_limit(max_message_size))
         // EmailService (send codes, confirm with token)
-        .add_service(EmailServiceServer::new(client_service_clone5))
+        .add_service(EmailServiceServer::new(client_service_clone5).with_message_size_limit(max_message_size))
         // AdminService - JWT authentication (inject UserContext)
-        .add_service(AdminServiceServer::with_interceptor(
-            admin_service,
+        .add_service(tonic::codegen::InterceptedService::new(
+            AdminServiceServer::new(admin_service).with_message_size_limit(max_message_size),
             move |req| admin_interceptor.inject_user(req),
         ));
 
@@ -366,8 +427,8 @@ pub async fn serve(grpc_config: GrpcServerConfig<'_>) -> anyhow::Result<()> {
         let notification_interceptor = auth_interceptor.clone();
         let notification_api = Arc::new(crate::impls::NotificationApiImpl::new(notif_svc.clone()));
         let notif_impl = NotificationServiceImpl::new(notification_api);
-        router = router.add_service(NotificationServiceServer::with_interceptor(
-            notif_impl,
+        router = router.add_service(tonic::codegen::InterceptedService::new(
+            NotificationServiceServer::new(notif_impl).with_message_size_limit(max_message_size),
             move |req| notification_interceptor.inject_user(req),
         ));
         tracing::info!("NotificationService gRPC registered");
@@ -452,7 +513,7 @@ pub async fn serve(grpc_config: GrpcServerConfig<'_>) -> anyhow::Result<()> {
         let oauth2_impl = oauth2_service::OAuth2GrpcService::new(oauth2_api, oauth2_auth_interceptor);
         // No global interceptor: public endpoints are unauthenticated,
         // private endpoints call require_auth() inline.
-        router = router.add_service(OAuth2ServiceServer::new(oauth2_impl));
+        router = router.add_service(OAuth2ServiceServer::new(oauth2_impl).with_message_size_limit(max_message_size));
         tracing::info!("OAuth2Service gRPC registered (public + authenticated split)");
     }
 
@@ -535,6 +596,8 @@ pub async fn serve(grpc_config: GrpcServerConfig<'_>) -> anyhow::Result<()> {
         let provider_interceptor2 = auth_interceptor.clone();
         let provider_interceptor3 = auth_interceptor.clone();
 
+        // Register provider services with interceptors
+        // Note: Message size limits must be applied via server-wide config, not per-service here
         router = router.add_service(AlistProviderServiceServer::with_interceptor(
             providers::alist::AlistProviderGrpcService::new(app_state.clone()),
             move |req| provider_interceptor1.inject_user(req),

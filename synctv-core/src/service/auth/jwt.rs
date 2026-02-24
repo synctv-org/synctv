@@ -86,6 +86,11 @@ pub struct GuestClaims {
     pub iat: i64,
     /// Expiration time (Unix timestamp)
     pub exp: i64,
+    /// Room guest version at time of token issuance.
+    /// Tokens with a `gv` lower than the room's current guest_version are rejected.
+    /// This allows revoking all guest tokens for a room by incrementing the version.
+    #[serde(default)]
+    pub gv: i64,
     /// Issuer - identifies the service that issued the token
     #[serde(skip_serializing_if = "Option::is_none")]
     pub iss: Option<String>,
@@ -397,6 +402,21 @@ impl JwtService {
     /// # Returns
     /// * Guest JWT token string
     pub fn sign_guest_token(&self, room_id: &RoomId) -> Result<String> {
+        self.sign_guest_token_with_version(room_id, 0)
+    }
+
+    /// Sign a guest token with a specific room guest version
+    ///
+    /// This allows embedding the room's current guest version in the token,
+    /// enabling room-level revocation by incrementing the room's guest version.
+    ///
+    /// # Arguments
+    /// * `room_id` - Room ID the guest is joining
+    /// * `room_guest_version` - Current room guest version for revocation support
+    ///
+    /// # Returns
+    /// * Guest JWT token string
+    pub fn sign_guest_token_with_version(&self, room_id: &RoomId, room_guest_version: i64) -> Result<String> {
         let now = Utc::now();
         let duration = Duration::hours(self.guest_token_duration_hours as i64);
         let session_id = nanoid::nanoid!(16); // Generate random session ID
@@ -409,6 +429,7 @@ impl JwtService {
             typ: "guest".to_string(),
             iat: now.timestamp(),
             exp: (now + duration).timestamp(),
+            gv: room_guest_version,
             iss: self.issuer.clone(),
             aud: self.audience.clone(),
         };
@@ -770,6 +791,7 @@ mod tests {
             typ: "guest".into(),
             iat: 0,
             exp: 0,
+            gv: 0,
             iss: None,
             aud: None,
         };

@@ -32,15 +32,15 @@ async fn test_in_memory_tracker_record_and_get() {
     let now = chrono::Utc::now().timestamp();
 
     // Initially no attempts
-    let (count, _ts) = tracker.get_attempts(key).await;
+    let (count, _ts) = tracker.get_attempts(key).await.unwrap();
     assert_eq!(count, 0);
 
     // Record failures
-    tracker.record_failure(key, now, 900).await;
-    tracker.record_failure(key, now + 1, 900).await;
-    tracker.record_failure(key, now + 2, 900).await;
+    tracker.record_failure(key, now, 900).await.unwrap();
+    tracker.record_failure(key, now + 1, 900).await.unwrap();
+    tracker.record_failure(key, now + 2, 900).await.unwrap();
 
-    let (count, last_ts) = tracker.get_attempts(key).await;
+    let (count, last_ts) = tracker.get_attempts(key).await.unwrap();
     assert_eq!(count, 3);
     assert_eq!(last_ts, now + 2);
 }
@@ -51,15 +51,15 @@ async fn test_in_memory_tracker_reset_clears() {
     let key = "user:bob";
     let now = chrono::Utc::now().timestamp();
 
-    tracker.record_failure(key, now, 900).await;
-    tracker.record_failure(key, now, 900).await;
+    tracker.record_failure(key, now, 900).await.unwrap();
+    tracker.record_failure(key, now, 900).await.unwrap();
 
-    let (count, _) = tracker.get_attempts(key).await;
+    let (count, _) = tracker.get_attempts(key).await.unwrap();
     assert_eq!(count, 2);
 
-    tracker.reset(key).await;
+    tracker.reset(key).await.unwrap();
 
-    let (count, _) = tracker.get_attempts(key).await;
+    let (count, _) = tracker.get_attempts(key).await.unwrap();
     assert_eq!(count, 0);
 }
 
@@ -124,7 +124,7 @@ async fn test_brute_force_tier1_expired_window_unlocks() {
     let past = chrono::Utc::now().timestamp() - 120; // 2 minutes ago
     let key = "test:auth:login_attempts:charlie";
     for i in 0..5 {
-        username_tracker.record_failure(key, past + i, 900).await;
+        username_tracker.record_failure(key, past + i, 900).await.unwrap();
     }
 
     // Lockout should have expired (60s window, 120s ago)
@@ -210,14 +210,14 @@ async fn test_redis_tracker_record_and_get() {
     let now = chrono::Utc::now().timestamp();
 
     // Initially no attempts
-    let (count, _) = tracker.get_attempts(key).await;
+    let (count, _) = tracker.get_attempts(key).await.unwrap();
     assert_eq!(count, 0);
 
     // Record failures
-    tracker.record_failure(key, now, 900).await;
-    tracker.record_failure(key, now + 1, 900).await;
+    tracker.record_failure(key, now, 900).await.unwrap();
+    tracker.record_failure(key, now + 1, 900).await.unwrap();
 
-    let (count, last_ts) = tracker.get_attempts(key).await;
+    let (count, last_ts) = tracker.get_attempts(key).await.unwrap();
     assert_eq!(count, 2);
     assert_eq!(last_ts, now + 1);
 }
@@ -231,17 +231,17 @@ async fn test_redis_tracker_reset() {
     let key = "test:bf:redis_reset:bob";
     let now = chrono::Utc::now().timestamp();
 
-    tracker.record_failure(key, now, 900).await;
-    tracker.record_failure(key, now, 900).await;
-    tracker.record_failure(key, now, 900).await;
+    tracker.record_failure(key, now, 900).await.unwrap();
+    tracker.record_failure(key, now, 900).await.unwrap();
+    tracker.record_failure(key, now, 900).await.unwrap();
 
-    let (count, _) = tracker.get_attempts(key).await;
+    let (count, _) = tracker.get_attempts(key).await.unwrap();
     assert_eq!(count, 3);
 
     // Reset clears both Redis and fallback (verifies B5 fix: handles both Ok/Err)
-    tracker.reset(key).await;
+    tracker.reset(key).await.unwrap();
 
-    let (count, _) = tracker.get_attempts(key).await;
+    let (count, _) = tracker.get_attempts(key).await.unwrap();
     assert_eq!(count, 0, "Reset should clear the Redis key");
 }
 
@@ -333,11 +333,11 @@ async fn test_redis_tracker_degradation_tracking() {
     let now = chrono::Utc::now().timestamp();
 
     // Successful operation should keep tracker in non-degraded state
-    tracker.record_failure(key, now, 900).await;
+    tracker.record_failure(key, now, 900).await.unwrap();
     assert!(!tracker.is_degraded(), "After successful operation, should not be degraded");
     assert_eq!(tracker.degraded_operation_count(), 0, "No degraded operations after success");
 
-    let (count, _) = tracker.get_attempts(key).await;
+    let (count, _) = tracker.get_attempts(key).await.unwrap();
     assert_eq!(count, 1);
     assert!(!tracker.is_degraded(), "After successful get, should not be degraded");
 }
@@ -367,7 +367,7 @@ async fn test_redis_tracker_counter_is_monotonically_increasing() {
     let key = "test:monotonic:user";
     let now = chrono::Utc::now().timestamp();
     for _ in 0..5 {
-        tracker.record_failure(key, now, 900).await;
+        tracker.record_failure(key, now, 900).await.unwrap();
     }
 
     // Counter should still be at initial (no failures)
@@ -399,7 +399,7 @@ async fn test_redis_tracker_success_clears_degraded_flag() {
         );
     }
 
-    let (count, ts) = tracker.get_attempts(key).await;
+    let (count, ts) = tracker.get_attempts(key).await.unwrap();
     assert_eq!(count, 3);
     assert_eq!(ts, now + 3);
     assert!(!tracker.is_degraded(), "After successful get_attempts, should not be degraded");
@@ -408,7 +408,7 @@ async fn test_redis_tracker_success_clears_degraded_flag() {
     tracker.reset(key).await;
     assert!(!tracker.is_degraded(), "After successful reset, should not be degraded");
 
-    let (count, _) = tracker.get_attempts(key).await;
+    let (count, _) = tracker.get_attempts(key).await.unwrap();
     assert_eq!(count, 0);
 }
 
@@ -426,12 +426,12 @@ async fn test_redis_tracker_fallback_not_used_when_redis_healthy() {
     let now = chrono::Utc::now().timestamp();
 
     // Record failures - should go to Redis, not fallback
-    tracker.record_failure(key, now, 900).await;
+    tracker.record_failure(key, now, 900).await.unwrap();
     tracker.record_failure(key, now + 1, 900).await;
     tracker.record_failure(key, now + 2, 900).await;
 
     // Read back - should get data from Redis
-    let (count, ts) = tracker.get_attempts(key).await;
+    let (count, ts) = tracker.get_attempts(key).await.unwrap();
     assert_eq!(count, 3, "Should read from Redis, not fallback");
     assert_eq!(ts, now + 2);
 

@@ -91,10 +91,9 @@ fn make_room_service(pool: PgPool) -> RoomService {
     RoomService::new(pool, user_service)
 }
 
-fn make_chat_service(pool: PgPool) -> (ChatService, UsernameCache) {
+fn make_chat_service_with_config(pool: PgPool, rate_limit_config: RateLimitConfig) -> (ChatService, UsernameCache) {
     let chat_repo = Arc::new(ChatRepository::new(pool.clone()));
     let rate_limiter = RateLimiter::new(None, "test:chat:".to_string());
-    let rate_limit_config = RateLimitConfig::default();
     let content_filter = ContentFilter::new();
     let l2 = Arc::new(NoopCacheL2);
     let username_cache = UsernameCache::new(l2, "test:username:".to_string(), 100, 60);
@@ -132,6 +131,10 @@ fn make_chat_service(pool: PgPool) -> (ChatService, UsernameCache) {
         room_settings_service,
     );
     (service, username_cache)
+}
+
+fn make_chat_service(pool: PgPool) -> (ChatService, UsernameCache) {
+    make_chat_service_with_config(pool, RateLimitConfig::default())
 }
 
 fn make_user(username: &str) -> User {
@@ -829,7 +832,13 @@ async fn test_get_history_limit_capped_at_100() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
     let room_service = make_room_service(pool.clone());
-    let (chat_service, username_cache) = make_chat_service(pool.clone());
+    // Use a high rate limit config to avoid hitting rate limits during bulk insert
+    let rate_limit_config = RateLimitConfig {
+        chat_per_second: 200,
+        danmaku_per_second: 50,
+        window_seconds: 1,
+    };
+    let (chat_service, username_cache) = make_chat_service_with_config(pool.clone(), rate_limit_config);
 
     let creator = user_repo.create(&make_user("limit_cap_user")).await.unwrap();
     username_cache.set(&creator.id, &creator.username).await.unwrap();

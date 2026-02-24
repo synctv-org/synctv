@@ -654,8 +654,13 @@ impl K8sLeaderElector {
     /// Update leader status with logging on transitions.
     /// Notifies observers when leadership is lost.
     /// Increments consecutive loss counter for exponential backoff.
+    /// Updates Prometheus metrics for monitoring.
     fn set_leader(&self, leader: bool) {
         let was_leader = self.is_leader.swap(leader, Ordering::AcqRel);
+
+        // Update metrics
+        synctv_core::metrics::cluster::LEADER_ELECTION_STATE.set(if leader { 1 } else { 0 });
+
         if was_leader && !leader {
             // Increment consecutive losses for exponential backoff
             let losses = self.consecutive_losses.fetch_add(1, Ordering::AcqRel) + 1;
@@ -667,6 +672,8 @@ impl K8sLeaderElector {
                 "Lost K8s lease leadership"
             );
             *self.leadership_lost_at.lock() = Some(tokio::time::Instant::now());
+            // Update metrics for monitoring
+            synctv_core::metrics::cluster::LEADER_ELECTION_CONSECUTIVE_FAILURES.set(losses as i64);
             // Notify observers of leadership loss
             let _ = self.event_tx.send(LeadershipEvent::Lost);
         }
@@ -674,6 +681,7 @@ impl K8sLeaderElector {
 
     /// Record leadership gain: increment epoch, clear grace period, and reset losses.
     /// Notifies observers when leadership is gained.
+    /// Updates Prometheus metrics for monitoring.
     ///
     /// Ordering: (1) store is_leader=true, (2) SeqCst fence, (3) increment epoch,
     /// (4) log, (5) send Gained event. This ensures observers always see
@@ -699,6 +707,11 @@ impl K8sLeaderElector {
             previous_consecutive_losses = previous_losses,
             "Gained K8s lease leadership"
         );
+
+        // Update metrics for monitoring
+        synctv_core::metrics::cluster::LEADER_ELECTION_STATE.set(1);
+        synctv_core::metrics::cluster::LEADER_ELECTION_EPOCH.set(epoch as i64);
+        synctv_core::metrics::cluster::LEADER_ELECTION_CONSECUTIVE_FAILURES.set(0);
 
         // Step 5: Notify observers of leadership gain (after is_leader and epoch are set).
         let _ = self.event_tx.send(LeadershipEvent::Gained { epoch });

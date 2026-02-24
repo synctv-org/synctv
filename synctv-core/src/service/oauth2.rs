@@ -296,9 +296,25 @@ impl OAuth2Service {
     ///
     /// Uses the configured [`OAuthStateStore`] to ensure single-use consumption
     /// and prevent CSRF replay attacks.
+    ///
+    /// Also performs an additional expiry check on `created_at` as a defense-in-depth
+    /// measure, even though the storage layer should have already enforced TTL.
     async fn consume_state(&self, state_token: &str) -> Result<OAuth2State> {
         match self.state_store.consume(state_token).await? {
             Some(state) => {
+                // Defense-in-depth: verify state has not expired based on created_at timestamp.
+                // This provides an additional layer of protection even if the storage backend
+                // fails to properly enforce TTL (e.g., Redis downgraded to in-memory store).
+                let age = chrono::Utc::now().signed_duration_since(state.created_at);
+                if age.num_seconds() > OAUTH2_STATE_TTL_SECONDS as i64 {
+                    debug!(
+                        "OAuth2 state expired based on created_at (age: {}s, max: {}s)",
+                        age.num_seconds(),
+                        OAUTH2_STATE_TTL_SECONDS
+                    );
+                    return Err(Error::Authentication("Invalid or expired OAuth2 state".to_string()));
+                }
+
                 debug!(
                     "Retrieved OAuth2 state for token {}",
                     &state_token[..8.min(state_token.len())]
@@ -1860,5 +1876,155 @@ mod tests {
         // Token 2 is consumed, should fail
         let result = service.consume_state("isolated_token_2").await;
         assert!(result.is_err());
+    }
+
+    // ========================================================================
+    // Tests: CSRF Protection - Defense in Depth
+    // ========================================================================
+
+    /// Test that state tokens with expired created_at timestamps are rejected
+    /// even if they somehow persist in the store (defense-in-depth).
+    #[tokio::test]
+    async fn test_state_expired_created_at_rejected() {
+        let service = create_test_service();
+
+        // Create a state with a created_at timestamp that is already expired
+        // (6 minutes ago, which exceeds the 5-minute TTL)
+        let expired_time = chrono::Utc::now() - chrono::Duration::seconds(360);
+        let state = OAuth2State {
+            instance_name: "github".to_string(),
+            redirect_url: None,
+            created_at: expired_time,
+            bind_user_id: None,
+            pkce_verifier: "expired_verifier".to_string(),
+        };
+
+        // Store the state directly (bypassing normal TTL enforcement)
+        service.store_state("expired_token", &state).await.unwrap();
+
+        // Consumption should fail due to created_at check, even though token exists
+        let result = service.consume_state("expired_token").await;
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            matches!(&err, Error::Authentication(msg) if msg.contains("Invalid or expired")),
+            "Expected authentication error for expired state, got: {err}"
+        );
+    }
+
+    /// Test that state tokens just within the TTL are accepted
+    #[tokio::test]
+    async fn test_state_within_ttl_accepted() {
+        let service = create_test_service();
+
+        // Create a state with a created_at timestamp that is just within TTL
+        // (4 minutes ago, which is less than the 5-minute TTL)
+        let within_ttl_time = chrono::Utc::now() - chrono::Duration::seconds(240);
+        let state = OAuth2State {
+            instance_name: "github".to_string(),
+            redirect_url: None,
+            created_at: within_ttl_time,
+            bind_user_id: None,
+            pkce_verifier: "valid_verifier".to_string(),
+        };
+
+        service.store_state("within_ttl_token", &state).await.unwrap();
+
+        // Consumption should succeed
+        let result = service.consume_state("within_ttl_token").await;
+        assert!(result.is_ok());
+        let retrieved = result.unwrap();
+        assert_eq!(retrieved.pkce_verifier, "valid_verifier");
+    }
+
+    /// Test that state tokens at the exact TTL boundary are handled correctly
+    #[tokio::test]
+    async fn test_state_at_ttl_boundary() {
+        let service = create_test_service();
+
+        // Create a state just past the TTL boundary (TTL + 1 second ago)
+        // This ensures the test is deterministic regardless of execution timing
+        let past_boundary_time = chrono::Utc::now() - chrono::Duration::seconds(OAUTH2_STATE_TTL_SECONDS as i64 + 1);
+        let state = OAuth2State {
+            instance_name: "github".to_string(),
+            redirect_url: None,
+            created_at: past_boundary_time,
+            bind_user_id: None,
+            pkce_verifier: "boundary_verifier".to_string(),
+        };
+
+        service.store_state("boundary_token", &state).await.unwrap();
+
+        // Past TTL seconds, the state should be rejected (> TTL)
+        let result = service.consume_state("boundary_token").await;
+        assert!(result.is_err());
+    }
+
+    /// Test that verify_state includes the created_at expiry check
+    #[tokio::test]
+    async fn test_verify_state_checks_created_at_expiry() {
+        let service = create_test_service();
+        service
+            .register_provider(
+                "github".to_string(),
+                OAuth2Provider::GitHub,
+                Box::new(MockOAuth2Provider::new()),
+            )
+            .await;
+
+        // Manually create an expired state
+        let expired_time = chrono::Utc::now() - chrono::Duration::seconds(360);
+        let state = OAuth2State {
+            instance_name: "github".to_string(),
+            redirect_url: None,
+            created_at: expired_time,
+            bind_user_id: None,
+            pkce_verifier: "expired".to_string(),
+        };
+
+        service.store_state("verify_expired_token", &state).await.unwrap();
+
+        // verify_state should also reject expired tokens
+        let result = service.verify_state("verify_expired_token").await;
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            matches!(&err, Error::Authentication(msg) if msg.contains("Invalid or expired")),
+            "Expected authentication error for expired state in verify_state, got: {err}"
+        );
+    }
+
+    /// Test that provider mismatch is detected during code exchange
+    #[tokio::test]
+    async fn test_csrf_protection_provider_mismatch_detected() {
+        let service = create_test_service();
+        service
+            .register_provider(
+                "github".to_string(),
+                OAuth2Provider::GitHub,
+                Box::new(MockOAuth2Provider::new()),
+            )
+            .await;
+        service
+            .register_provider(
+                "google".to_string(),
+                OAuth2Provider::Google,
+                Box::new(MockOAuth2Provider::new()),
+            )
+            .await;
+
+        // Generate state for github
+        let (_, state_token) = service
+            .get_authorization_url("github", None)
+            .await
+            .unwrap();
+
+        // Verify the state contains github as provider
+        let state = service.verify_state(&state_token).await.unwrap();
+        assert_eq!(state.instance_name, "github");
+
+        // In the API layer, if attacker tries to use github's state with google provider,
+        // the provider mismatch check in exchange_authorization_code will catch it.
+        // This test verifies the state contains the correct instance_name.
     }
 }

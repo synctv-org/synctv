@@ -565,6 +565,8 @@ impl LeaderElector {
     /// (e.g., pause singleton tasks, report degraded status).
     fn record_election_failure(&self) {
         let failures = self.consecutive_failures.fetch_add(1, Ordering::Relaxed) + 1;
+        // Update metrics for monitoring
+        synctv_core::metrics::cluster::LEADER_ELECTION_CONSECUTIVE_FAILURES.set(failures as i64);
         if failures == LEADER_VACANCY_THRESHOLD {
             warn!(
                 identity = %self.identity,
@@ -606,9 +608,20 @@ impl LeaderElector {
     }
 
     /// Update the is_leader flag and log transitions.
-    /// Notifies observers of leadership changes.
+    /// Notifies observers of leadership changes and updates metrics.
     fn set_leader(&self, leader: bool, gained_epoch: Option<u64>) {
         let was_leader = self.is_leader.swap(leader, Ordering::AcqRel);
+
+        // Update metrics
+        synctv_core::metrics::cluster::LEADER_ELECTION_STATE.set(if leader { 1 } else { 0 });
+        if let Some(epoch) = gained_epoch {
+            synctv_core::metrics::cluster::LEADER_ELECTION_EPOCH.set(epoch as i64);
+        }
+        // Reset consecutive failures on successful leadership (gain or maintained)
+        if leader {
+            synctv_core::metrics::cluster::LEADER_ELECTION_CONSECUTIVE_FAILURES.set(0);
+        }
+
         if was_leader && !leader {
             info!(identity = %self.identity, "Lost leadership");
             // Notify observers of leadership loss

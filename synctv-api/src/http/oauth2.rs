@@ -103,6 +103,15 @@ pub async fn exchange_authorization_code(
         super::AppError::bad_request("OAuth2 is not configured on this server")
     })?;
 
+    // Validate state parameter format (CSRF protection)
+    // State must be exactly 32 characters from the URL-safe alphabet
+    let validated_state = validation::validate_oauth2_state(&req.state)
+        .map_err(|e| super::AppError::bad_request(format!("Invalid state parameter: {}", e)))?;
+
+    // Validate authorization code format
+    let validated_code = validation::validate_oauth2_code(&req.code)
+        .map_err(|e| super::AppError::bad_request(format!("Invalid authorization code: {}", e)))?;
+
     let current_user_id = maybe_auth.as_ref().map(|a| &a.user_id);
 
     // Extract client IP for brute-force protection (Issue #24)
@@ -125,7 +134,7 @@ pub async fn exchange_authorization_code(
     };
 
     let result = oauth2_api
-        .exchange_authorization_code(&provider, &req.code, &req.state, current_user_id, Some(client_ip))
+        .exchange_authorization_code(&provider, &validated_code, &validated_state, current_user_id, Some(client_ip))
         .await
         .map_err(|e| {
             error!("Failed to exchange authorization code: {}", e);

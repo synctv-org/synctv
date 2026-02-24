@@ -165,8 +165,9 @@ where
 
         // Check L1 (in-memory) cache first
         if let Some(value) = self.l1_cache.get(key).await {
+            let l1 = String::from("l1");
             crate::metrics::cache::CACHE_HITS
-                .with_label_values(&[&self.cache_type, "l1"])
+                .with_label_values(&[&self.cache_type, &l1])
                 .inc();
             crate::metrics::cache::CACHE_OPERATION_DURATION
                 .with_label_values(&["get"])
@@ -217,8 +218,9 @@ where
             ).await.map_err(Error::Internal)?;
 
             if let Some(ref value) = result {
+                let l2 = String::from("l2");
                 crate::metrics::cache::CACHE_HITS
-                    .with_label_values(&[&self.cache_type, "l2"])
+                    .with_label_values(&[&self.cache_type, &l2])
                     .inc();
                 tracing::debug!(
                     key = %key,
@@ -252,8 +254,9 @@ where
             }
         }
 
+        let l1_l2 = String::from("l1_l2");
         crate::metrics::cache::CACHE_MISSES
-            .with_label_values(&[&self.cache_type, "l1_l2"])
+            .with_label_values(&[&self.cache_type, &l1_l2])
             .inc();
         crate::metrics::cache::CACHE_OPERATION_DURATION
             .with_label_values(&["get"])
@@ -368,8 +371,9 @@ where
             // Use best-effort retry for cross-replica invalidation
             // Don't panic if L2 is temporarily unavailable
             if let Err(e) = self.l2.delete_with_retry(&redis_key, 2, &self.cache_type).await {
+                let cross_replica = String::from("cross_replica_invalidate");
                 crate::metrics::cache::CACHE_ERRORS
-                    .with_label_values(&[&self.cache_type, "cross_replica_invalidate"])
+                    .with_label_values(&[&self.cache_type, &cross_replica])
                     .inc();
                 tracing::error!(
                     id = %id,

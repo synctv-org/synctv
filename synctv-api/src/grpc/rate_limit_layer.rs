@@ -389,14 +389,16 @@ where
                 match inner.call(req).await {
                     Ok(resp) => {
                         let (resp, status) = extract_grpc_status_from_response(resp).await;
+                        let status_str = status.to_string();
                         synctv_core::metrics::grpc::GRPC_REQUESTS_TOTAL
-                            .with_label_values(&[&service_label, &method_label, status])
+                            .with_label_values(&[&service_label, &method_label, &status_str])
                             .inc();
                         Ok(resp)
                     }
                     Err(e) => {
+                        let error_str = "error".to_string();
                         synctv_core::metrics::grpc::GRPC_REQUESTS_TOTAL
-                            .with_label_values(&[&service_label, &method_label, "error"])
+                            .with_label_values(&[&service_label, &method_label, &error_str])
                             .inc();
                         Err(e)
                     }
@@ -425,8 +427,9 @@ where
                     path = %path,
                     "gRPC distributed rate limit exceeded"
                 );
+                let resource_exhausted = String::from("resource_exhausted");
                 synctv_core::metrics::grpc::GRPC_REQUESTS_TOTAL
-                    .with_label_values(&[&service_label, &method_label, "resource_exhausted"])
+                    .with_label_values(&[&service_label, &method_label, &resource_exhausted])
                     .inc();
                 let response = tonic::Status::resource_exhausted(
                     "Rate limit exceeded. Please retry later.",
@@ -441,14 +444,16 @@ where
                     // The async helper consumes the body, extracts the trailer, and reconstructs
                     // the response so downstream processing continues normally.
                     let (resp, status) = extract_grpc_status_from_response(resp).await;
+                    let status_str = status.to_string();
                     synctv_core::metrics::grpc::GRPC_REQUESTS_TOTAL
-                        .with_label_values(&[&service_label, &method_label, status])
+                        .with_label_values(&[&service_label, &method_label, &status_str])
                         .inc();
                     Ok(resp)
                 }
                 Err(e) => {
+                    let error_str = String::from("error");
                     synctv_core::metrics::grpc::GRPC_REQUESTS_TOTAL
-                        .with_label_values(&[&service_label, &method_label, "error"])
+                        .with_label_values(&[&service_label, &method_label, &error_str])
                         .inc();
                     Err(e)
                 }

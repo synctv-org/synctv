@@ -376,6 +376,16 @@ impl ClusterManager {
                                     "Epoch mismatch during heartbeat, internal auto-registration failed; will retry on next heartbeat"
                                 );
                             }
+                            Ok(HeartbeatResult::EmptyAddress) => {
+                                // Cannot re-register because local cache has empty addresses.
+                                // This typically happens when the node was never successfully
+                                // registered or the local cache was cleared. The node will
+                                // remain unreachable until addresses are recovered.
+                                error!(
+                                    "Heartbeat skipped: local cache has empty address(es); \
+                                     node cannot be reached by peers until addresses are recovered"
+                                );
+                            }
                             Err(e) => {
                                 // Increment independent failure counter for business logic
                                 let failures = failure_count.fetch_add(1, Ordering::Relaxed) + 1;

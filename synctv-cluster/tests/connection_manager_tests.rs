@@ -16,6 +16,99 @@ fn rid(s: &str) -> RoomId {
 }
 
 // ============================================================================
+// Test: disconnect signal retry mechanism - signals queued when channel full
+// ============================================================================
+
+#[tokio::test]
+async fn test_disconnect_signal_queued_when_no_receiver() {
+    use synctv_cluster::sync::DisconnectSignal;
+
+    let mgr = ConnectionManager::default();
+    let user = uid("u1");
+
+    mgr.register("c1".to_string(), user.clone()).await.unwrap();
+
+    // Disconnect without subscribing first - signal should be handled gracefully
+    // The signal won't be queued since there are no receivers (receiver_count == 0)
+    mgr.disconnect_connection("c1");
+
+    // Give the retry task a moment to process
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    // Check metrics - should have no pending signals (no receivers case)
+    let metrics = mgr.disconnect_signal_metrics();
+    assert_eq!(metrics.pending_count, 0, "No pending signals when no receivers");
+}
+
+#[tokio::test]
+async fn test_disconnect_signal_metrics_initial_state() {
+    let mgr = ConnectionManager::default();
+
+    // Initial metrics should all be zero
+    let metrics = mgr.disconnect_signal_metrics();
+    assert_eq!(metrics.pending_count, 0);
+    assert_eq!(metrics.dropped_count, 0);
+    assert_eq!(metrics.retried_count, 0);
+}
+
+#[tokio::test]
+async fn test_disconnect_user_from_room_signal() {
+    use synctv_cluster::sync::DisconnectSignal;
+
+    let mgr = ConnectionManager::default();
+    let user = uid("u1");
+    let room = rid("r1");
+
+    mgr.register("c1".to_string(), user.clone()).await.unwrap();
+    mgr.join_room("c1", room.clone()).await.unwrap();
+
+    // Subscribe before sending signal
+    let mut rx = mgr.subscribe_disconnect();
+
+    // Disconnect user from room
+    mgr.disconnect_user_from_room(&user, &room);
+
+    let sig = rx.recv().await.unwrap();
+    assert!(
+        matches!(sig, DisconnectSignal::UserFromRoom { ref user_id, ref room_id }
+            if user_id == &user && room_id == &room),
+        "Expected UserFromRoom signal"
+    );
+}
+
+#[tokio::test]
+async fn test_disconnect_signal_reliability_under_load() {
+    use synctv_cluster::sync::DisconnectSignal;
+
+    let mgr = ConnectionManager::default();
+
+    // Register multiple connections
+    for i in 0..10 {
+        let user = uid(&format!("u{}", i));
+        mgr.register(format!("c{}", i), user.clone()).await.unwrap();
+    }
+
+    // Subscribe to receive signals
+    let mut rx = mgr.subscribe_disconnect();
+
+    // Send multiple disconnect signals rapidly
+    for i in 0..10 {
+        mgr.disconnect_connection(&format!("c{}", i));
+    }
+
+    // All signals should be received (broadcast channel should handle this)
+    let mut received_count = 0;
+    for _ in 0..10 {
+        match rx.recv().await {
+            Ok(_) => received_count += 1,
+            Err(_) => break,
+        }
+    }
+
+    assert_eq!(received_count, 10, "All disconnect signals should be received");
+}
+
+// ============================================================================
 // Test 1: join_room is idempotent
 // ============================================================================
 

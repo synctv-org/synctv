@@ -14,6 +14,7 @@ use futures_util::{SinkExt, StreamExt};
 use super::error::{BilibiliError, check_response, json_with_limit};
 use super::types::{self as types, VideoInfo, Quality, PlayUrlInfo, DurlItem, AnimeInfo};
 use crate::error::with_retry;
+use crate::ssrf::ssrf_safe_dns_resolver;
 
 // Pre-compiled regexes using std::sync::LazyLock (no external crate needed).
 // These patterns are compile-time constants; Regex::new cannot fail on them.
@@ -27,9 +28,12 @@ const REFERER: &str = "https://www.bilibili.com";
 
 /// Shared HTTP client for all Bilibili requests (connection pooling)
 /// Redirects are disabled to prevent SSRF via redirect to private IPs.
+/// Uses SsrfSafeDnsResolver to check resolved IPs at connection time,
+/// preventing DNS rebinding attacks.
 static SHARED_CLIENT: LazyLock<Client> = LazyLock::new(|| {
     Client::builder()
         .user_agent(USER_AGENT)
+        .dns_resolver(ssrf_safe_dns_resolver())
         .connect_timeout(Duration::from_secs(10))
         .timeout(Duration::from_secs(30))
         .pool_max_idle_per_host(10)

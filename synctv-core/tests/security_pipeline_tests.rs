@@ -13,8 +13,8 @@ use synctv_core::{
     models::{User, UserId, UserRole, UserStatus, SignupMethod},
     repository::UserRepository,
     service::{
-        auth::{jwt::JwtService, Claims, SecurityPipeline},
-        BruteForceProtection, InMemoryTokenBlacklistStore, UserService,
+        auth::{jwt::JwtService, Claims, SecurityPipeline, BlacklistEnforcement, SecurityPipelineBuilder},
+        BruteForceProtection, InMemoryTokenBlacklistStore, UserService, TokenBlacklistStore,
     },
     Error, KeyBuilder,
 };
@@ -133,7 +133,9 @@ async fn test_cache_miss_falls_through_to_db() {
     let user = insert_user(&pool, &make_user(UserStatus::Active, 0)).await;
     let user_service = Arc::new(create_user_service(pool));
 
-    let pipeline = SecurityPipeline::new(user_service);
+    // Use permissive mode for tests without blacklist store
+    let pipeline = SecurityPipeline::new(user_service)
+        .with_blacklist_enforcement(BlacklistEnforcement::permissive());
     let claims = make_claims(&user.id, Some(0));
 
     let result = pipeline.check(&claims).await;
@@ -148,7 +150,8 @@ async fn test_db_error_propagates_not_swallowed() {
     // instead of being swallowed as Authentication("User not found").
     let (_container, pool) = create_test_pool().await;
     let user_service = Arc::new(create_user_service(pool.clone()));
-    let pipeline = SecurityPipeline::new(user_service);
+    let pipeline = SecurityPipeline::new(user_service)
+        .with_blacklist_enforcement(BlacklistEnforcement::permissive());
 
     // Use a user_id that doesn't exist -> get_user returns NotFound,
     // which should be mapped to Authentication error
@@ -172,7 +175,8 @@ async fn test_db_error_propagates_not_swallowed() {
     let user_service2 = Arc::new(create_user_service(
         PgPool::connect_lazy("postgresql://invalid:invalid@127.0.0.1:1/invalid").unwrap(),
     ));
-    let pipeline2 = SecurityPipeline::new(user_service2);
+    let pipeline2 = SecurityPipeline::new(user_service2)
+        .with_blacklist_enforcement(BlacklistEnforcement::permissive());
 
     let result2 = pipeline2.check(&claims2).await;
     assert!(result2.is_err());
@@ -192,7 +196,8 @@ async fn test_banned_user_rejected_via_db() {
     let (_container, pool) = create_test_pool().await;
     let user = insert_user(&pool, &make_user(UserStatus::Banned, 0)).await;
     let user_service = Arc::new(create_user_service(pool));
-    let pipeline = SecurityPipeline::new(user_service);
+    let pipeline = SecurityPipeline::new(user_service)
+        .with_blacklist_enforcement(BlacklistEnforcement::permissive());
 
     let claims = make_claims(&user.id, Some(0));
     let result = pipeline.check(&claims).await;
@@ -212,7 +217,8 @@ async fn test_deleted_user_rejected() {
         .await
         .expect("Failed to soft-delete user");
     let user_service = Arc::new(create_user_service(pool));
-    let pipeline = SecurityPipeline::new(user_service);
+    let pipeline = SecurityPipeline::new(user_service)
+        .with_blacklist_enforcement(BlacklistEnforcement::permissive());
 
     let claims = make_claims(&user.id, Some(0));
     let result = pipeline.check(&claims).await;
@@ -228,7 +234,8 @@ async fn test_legacy_token_iat_before_password_change_rejected() {
     // password_changed_at is "now"
     let user = insert_user(&pool, &user).await;
     let user_service = Arc::new(create_user_service(pool));
-    let pipeline = SecurityPipeline::new(user_service);
+    let pipeline = SecurityPipeline::new(user_service)
+        .with_blacklist_enforcement(BlacklistEnforcement::permissive());
 
     // Legacy token: no pv, iat BEFORE password_changed_at
     let mut claims = make_claims(&user.id, None);
@@ -271,7 +278,9 @@ async fn test_cache_hit_active_user_passes() {
     );
     user_cache.set(&user.id, cached).await.unwrap();
 
-    let pipeline = SecurityPipeline::new(user_service).with_user_cache(user_cache);
+    let pipeline = SecurityPipeline::new(user_service)
+        .with_user_cache(user_cache)
+        .with_blacklist_enforcement(BlacklistEnforcement::permissive());
     let claims = make_claims(&user.id, Some(0));
 
     let result = pipeline.check(&claims).await;
@@ -302,7 +311,9 @@ async fn test_cache_hit_outdated_password_version_rejected() {
     );
     user_cache.set(&user.id, cached).await.unwrap();
 
-    let pipeline = SecurityPipeline::new(user_service).with_user_cache(user_cache);
+    let pipeline = SecurityPipeline::new(user_service)
+        .with_user_cache(user_cache)
+        .with_blacklist_enforcement(BlacklistEnforcement::permissive());
 
     // Token has pv=3 < cached pv=5 -> should be rejected
     let claims = make_claims(&user.id, Some(3));
@@ -338,7 +349,9 @@ async fn test_cache_hit_banned_user_rejected() {
     );
     user_cache.set(&user.id, cached).await.unwrap();
 
-    let pipeline = SecurityPipeline::new(user_service).with_user_cache(user_cache);
+    let pipeline = SecurityPipeline::new(user_service)
+        .with_user_cache(user_cache)
+        .with_blacklist_enforcement(BlacklistEnforcement::permissive());
     let claims = make_claims(&user.id, Some(0));
 
     let result = pipeline.check(&claims).await;
@@ -356,7 +369,8 @@ async fn test_pending_user_rejected_via_db() {
     let (_container, pool) = create_test_pool().await;
     let user = insert_user(&pool, &make_user(UserStatus::Pending, 0)).await;
     let user_service = Arc::new(create_user_service(pool));
-    let pipeline = SecurityPipeline::new(user_service);
+    let pipeline = SecurityPipeline::new(user_service)
+        .with_blacklist_enforcement(BlacklistEnforcement::permissive());
 
     let claims = make_claims(&user.id, Some(0));
     let result = pipeline.check(&claims).await;
@@ -391,7 +405,9 @@ async fn test_cache_hit_pending_user_rejected() {
     );
     user_cache.set(&user.id, cached).await.unwrap();
 
-    let pipeline = SecurityPipeline::new(user_service).with_user_cache(user_cache);
+    let pipeline = SecurityPipeline::new(user_service)
+        .with_user_cache(user_cache)
+        .with_blacklist_enforcement(BlacklistEnforcement::permissive());
     let claims = make_claims(&user.id, Some(0));
 
     let result = pipeline.check(&claims).await;
@@ -432,7 +448,9 @@ async fn test_cache_populated_with_correct_password_version_after_db_miss() {
         "Cache should be empty initially"
     );
 
-    let pipeline = SecurityPipeline::new(user_service).with_user_cache(user_cache.clone());
+    let pipeline = SecurityPipeline::new(user_service)
+        .with_user_cache(user_cache.clone())
+        .with_blacklist_enforcement(BlacklistEnforcement::permissive());
     let claims = make_claims(&user.id, Some(password_version));
 
     // This call should fall through to DB and then populate the cache
@@ -468,7 +486,9 @@ async fn test_cache_populated_then_subsequent_check_uses_cache() {
         UserCache::new(Arc::new(NoopCacheL2), 100, 5, 0, "test:user:".to_string()).unwrap(),
     );
 
-    let pipeline = SecurityPipeline::new(user_service).with_user_cache(user_cache.clone());
+    let pipeline = SecurityPipeline::new(user_service)
+        .with_user_cache(user_cache.clone())
+        .with_blacklist_enforcement(BlacklistEnforcement::permissive());
     let claims = make_claims(&user.id, Some(0));
 
     // First check: DB hit, populates cache
@@ -485,4 +505,203 @@ async fn test_cache_populated_then_subsequent_check_uses_cache() {
         "Second check should succeed from cache even with DB closed: {:?}",
         result2.err()
     );
+}
+
+// ============================================================================
+// Access Token Blacklist tests (logout token invalidation)
+// ============================================================================
+
+/// Test that a blacklisted access token is rejected by the security pipeline.
+///
+/// This simulates the logout flow:
+/// 1. User has a valid access token
+/// 2. User logs out, token JTI is added to blacklist
+/// 3. Subsequent requests with that token should be rejected
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_blacklisted_access_token_rejected() {
+    let (_container, pool) = create_test_pool().await;
+    let user = insert_user(&pool, &make_user(UserStatus::Active, 0)).await;
+
+    let token_blacklist = Arc::new(InMemoryTokenBlacklistStore::new(10_000, 3600, 86400));
+    let key_builder = KeyBuilder::new("test");
+    let user_service = Arc::new(create_user_service_with_blacklist(
+        pool,
+        token_blacklist.clone(),
+        key_builder.clone(),
+    ));
+
+    let pipeline = SecurityPipeline::new(user_service)
+        .with_token_blacklist(token_blacklist.clone(), key_builder.clone());
+
+    let claims = make_claims(&user.id, Some(0));
+
+    // First check: token should be valid
+    let result1 = pipeline.check(&claims).await;
+    assert!(result1.is_ok(), "Token should be valid before blacklisting");
+
+    // Blacklist the token (simulating logout)
+    let blacklist_key = key_builder.access_token_blacklist(&claims.jti);
+    token_blacklist.blacklist(&blacklist_key, 3600).await.unwrap();
+
+    // Second check: token should be rejected
+    let result2 = pipeline.check(&claims).await;
+    assert!(result2.is_err(), "Blacklisted token should be rejected");
+    let err = result2.unwrap_err();
+    assert!(
+        matches!(&err, Error::Authentication(_)),
+        "Should be an Authentication error, got: {err}"
+    );
+}
+
+/// Test that access token blacklist check works with cached user data.
+///
+/// This ensures the fast path (cache hit) also checks the blacklist.
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_blacklisted_access_token_rejected_via_cache_path() {
+    let (_container, pool) = create_test_pool().await;
+    let user = insert_user(&pool, &make_user(UserStatus::Active, 0)).await;
+
+    let token_blacklist = Arc::new(InMemoryTokenBlacklistStore::new(10_000, 3600, 86400));
+    let key_builder = KeyBuilder::new("test");
+    let user_service = Arc::new(create_user_service_with_blacklist(
+        pool,
+        token_blacklist.clone(),
+        key_builder.clone(),
+    ));
+
+    let user_cache = Arc::new(
+        UserCache::new(Arc::new(NoopCacheL2), 100, 5, 0, "test:user:".to_string()).unwrap(),
+    );
+
+    // Pre-populate cache
+    let cached = CachedUser::with_updated_at(
+        user.id.as_str().to_string(),
+        user.username.clone(),
+        user.role,
+        UserStatus::Active,
+        user.created_at,
+        user.updated_at,
+        0,
+        false,
+    );
+    user_cache.set(&user.id, cached).await.unwrap();
+
+    let pipeline = SecurityPipeline::new(user_service)
+        .with_user_cache(user_cache)
+        .with_token_blacklist(token_blacklist.clone(), key_builder.clone());
+
+    let claims = make_claims(&user.id, Some(0));
+
+    // First check: cache hit, token should be valid
+    let result1 = pipeline.check(&claims).await;
+    assert!(result1.is_ok(), "Token should be valid before blacklisting");
+
+    // Blacklist the token (simulating logout)
+    let blacklist_key = key_builder.access_token_blacklist(&claims.jti);
+    token_blacklist.blacklist(&blacklist_key, 3600).await.unwrap();
+
+    // Second check: cache hit, but token should still be rejected
+    let result2 = pipeline.check(&claims).await;
+    assert!(result2.is_err(), "Blacklisted token should be rejected via cache path");
+}
+
+/// Test that non-blacklisted tokens are allowed through.
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_non_blacklisted_access_token_allowed() {
+    let (_container, pool) = create_test_pool().await;
+    let user = insert_user(&pool, &make_user(UserStatus::Active, 0)).await;
+
+    let token_blacklist = Arc::new(InMemoryTokenBlacklistStore::new(10_000, 3600, 86400));
+    let key_builder = KeyBuilder::new("test");
+    let user_service = Arc::new(create_user_service_with_blacklist(
+        pool,
+        token_blacklist.clone(),
+        key_builder.clone(),
+    ));
+
+    let pipeline = SecurityPipeline::new(user_service)
+        .with_token_blacklist(token_blacklist.clone(), key_builder.clone());
+
+    let claims = make_claims(&user.id, Some(0));
+
+    // Token not in blacklist should be allowed
+    let result = pipeline.check(&claims).await;
+    assert!(result.is_ok(), "Non-blacklisted token should be allowed");
+}
+
+/// Test that when require_blacklist is true and no blacklist store is configured,
+/// the pipeline rejects requests.
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_require_blacklist_true_rejects_without_store() {
+    let (_container, pool) = create_test_pool().await;
+    let user = insert_user(&pool, &make_user(UserStatus::Active, 0)).await;
+    let user_service = Arc::new(create_user_service(pool));
+
+    // Try to build a pipeline with require_blacklist=true but no blacklist store
+    let result = SecurityPipelineBuilder::new(user_service)
+        .with_blacklist_enforcement(BlacklistEnforcement::new())
+        .build();
+
+    assert!(
+        result.is_err(),
+        "Should fail to build pipeline without blacklist store when require_blacklist=true"
+    );
+
+    let err = result.unwrap_err();
+    assert!(
+        matches!(&err, Error::Internal(msg) if msg.contains("require_blacklist")),
+        "Error should mention require_blacklist, got: {err}"
+    );
+}
+
+/// Test that when require_blacklist is false, requests pass even without blacklist store.
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_require_blacklist_false_allows_without_store() {
+    let (_container, pool) = create_test_pool().await;
+    let user = insert_user(&pool, &make_user(UserStatus::Active, 0)).await;
+    let user_service = Arc::new(create_user_service(pool));
+
+    // Build pipeline with require_blacklist=false and no blacklist store
+    let pipeline = SecurityPipeline::new(user_service)
+        .with_blacklist_enforcement(BlacklistEnforcement::permissive());
+
+    let claims = make_claims(&user.id, Some(0));
+
+    // Request should be allowed
+    let result = pipeline.check(&claims).await;
+    assert!(
+        result.is_ok(),
+        "Request should be allowed without blacklist store when require_blacklist=false"
+    );
+}
+
+// Helper function to create UserService with custom blacklist store
+fn create_user_service_with_blacklist(
+    pool: PgPool,
+    token_blacklist: Arc<InMemoryTokenBlacklistStore>,
+    key_builder: KeyBuilder,
+) -> UserService {
+    let jwt_service = create_jwt_service();
+    let username_cache = cache::UsernameCache::new(
+        Arc::new(NoopCacheL2),
+        "test:username:".to_string(),
+        1000,
+        0,
+    );
+    let brute_force = BruteForceProtection::in_memory("test".to_string());
+
+    UserService::new(
+        pool,
+        jwt_service,
+        username_cache,
+        PasswordComplexityConfig::default(),
+        token_blacklist,
+        key_builder,
+        brute_force,
+    )
 }

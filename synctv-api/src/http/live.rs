@@ -94,6 +94,10 @@ async fn handle_hls_segment_with_disguise(
 /// Creates a lazy-load pull stream on first request.
 /// Supports disconnect signals for forced termination (ban/kick).
 ///
+/// # Timeouts
+/// - Max connection duration: Configured via `livestream.flv_max_connection_duration_seconds`
+/// - Write timeout: Configured via `livestream.flv_write_timeout_seconds`
+///
 /// # Response
 /// Returns streaming FLV data with `video/x-flv` content type.
 async fn handle_flv_stream(
@@ -131,6 +135,14 @@ async fn handle_flv_stream(
     let mut disconnect_rx = state.connection_manager.subscribe_disconnect();
     let room_id = RoomId::from_string(room_id_str.clone());
 
+    // Get timeout configuration
+    let max_connection_duration = std::time::Duration::from_secs(
+        state.config.livestream.flv_max_connection_duration_seconds
+    );
+    let write_timeout = std::time::Duration::from_secs(
+        state.config.livestream.flv_write_timeout_seconds
+    );
+
     // Create bounded channel wrapper that monitors disconnect signals
     // Match FLV_RESPONSE_CHANNEL_CAPACITY from synctv-xiu (512 entries ≈ 4MB)
     let (tx, rx_wrapped) = tokio::sync::mpsc::channel(512);
@@ -151,32 +163,51 @@ async fn handle_flv_stream(
         // Periodic re-authentication interval (30s, matching WebSocket heartbeat frequency)
         let mut reauth_interval = tokio::time::interval(std::time::Duration::from_secs(30));
         reauth_interval.tick().await; // consume the immediate first tick
+
+        // Max connection duration start time
+        let start_time = std::time::Instant::now();
+
         loop {
+            // Check max connection duration before each select iteration
+            if max_connection_duration.as_secs() > 0 && start_time.elapsed() >= max_connection_duration {
+                info!(
+                    user_id = %user_id_clone.as_str(),
+                    room_id = %room_id_clone.as_str(),
+                    max_duration_secs = max_connection_duration.as_secs(),
+                    "FLV stream terminated: max connection duration exceeded"
+                );
+                break;
+            }
+
             tokio::select! {
                 // Forward FLV data from source
                 data = rx.recv() => {
                     if let Some(chunk) = data {
-                        match tx.try_send(chunk) {
-                            Ok(()) => {
-                                consecutive_drops = 0;
-                            }
-                            Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
-                                debug!("FLV client disconnected");
+                        // Apply write timeout for slow clients
+                        let send_success = if write_timeout.as_secs() > 0 {
+                            tokio::time::timeout(write_timeout, tx.send(chunk)).await.is_ok()
+                        } else {
+                            // No write timeout, use try_send for backpressure
+                            tx.try_send(chunk).is_ok()
+                        };
+
+                        if send_success {
+                            consecutive_drops = 0;
+                        } else {
+                            // Write timeout or channel full - client too slow
+                            consecutive_drops += 1;
+                            if consecutive_drops >= MAX_CONSECUTIVE_DROPS {
+                                warn!(
+                                    user_id = %user_id_clone.as_str(),
+                                    room_id = %room_id_clone.as_str(),
+                                    consecutive_drops = consecutive_drops,
+                                    write_timeout_secs = write_timeout.as_secs(),
+                                    "FLV stream terminated: slow client exceeded {} consecutive write failures ({}s timeout)",
+                                    MAX_CONSECUTIVE_DROPS,
+                                    write_timeout.as_secs()
+                                );
+                                LIVESTREAM_FLV_SLOW_CLIENT_TERMINATIONS_TOTAL.inc();
                                 break;
-                            }
-                            Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
-                                consecutive_drops += 1;
-                                if consecutive_drops >= MAX_CONSECUTIVE_DROPS {
-                                    warn!(
-                                        user_id = %user_id_clone.as_str(),
-                                        room_id = %room_id_clone.as_str(),
-                                        consecutive_drops = consecutive_drops,
-                                        "FLV stream terminated: slow client exceeded {} consecutive frame drops",
-                                        MAX_CONSECUTIVE_DROPS
-                                    );
-                                    LIVESTREAM_FLV_SLOW_CLIENT_TERMINATIONS_TOTAL.inc();
-                                    break;
-                                }
                             }
                         }
                     } else {

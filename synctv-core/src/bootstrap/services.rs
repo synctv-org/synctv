@@ -188,14 +188,40 @@ pub async fn init_services(
     let cluster_mode = config.cluster.enabled || !config.server.cluster_secret.is_empty();
 
     // Initialize brute-force protection
+    //
+    // In cluster mode, use fail-closed mode to prevent security degradation.
+    // When Redis is unavailable, login attempts will be rejected rather than
+    // falling back to per-replica independent counters.
+    //
+    // In standalone mode with Redis, use fallback mode for better availability.
+    // In standalone mode without Redis, use in-memory tracker.
     let brute_force = if let Some(ref conn) = redis_conn_plain {
-        let bf = crate::service::BruteForceProtection::with_redis(
-            conn.clone(),
-            config.redis.key_prefix.clone(),
-        );
-        info!("Brute-force protection initialized (Redis-backed)");
-        bf
+        if cluster_mode {
+            let bf = crate::service::BruteForceProtection::with_redis_fail_closed(
+                conn.clone(),
+                config.redis.key_prefix.clone(),
+            );
+            info!("Brute-force protection initialized (Redis-backed, fail-closed for cluster mode)");
+            bf
+        } else {
+            let bf = crate::service::BruteForceProtection::with_redis(
+                conn.clone(),
+                config.redis.key_prefix.clone(),
+            );
+            info!("Brute-force protection initialized (Redis-backed with fallback)");
+            bf
+        }
     } else {
+        // No Redis available
+        if cluster_mode {
+            // This should have been caught by config validation, but double-check
+            error!(
+                "CRITICAL: Cluster mode is enabled but Redis is not available. \
+                 Brute-force protection will use in-memory counters, which are NOT \
+                 shared across replicas. This is a security risk. Configure Redis \
+                 immediately."
+            );
+        }
         let bf = crate::service::BruteForceProtection::in_memory(
             config.redis.key_prefix.clone(),
         );

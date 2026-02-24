@@ -11,6 +11,7 @@ use serde_json::json;
 use super::error::{AlistError, check_response, json_with_limit};
 use super::types::{AlistResp, LoginData, HttpFsGetResp, HttpFsListResp, HttpFsOtherResp, HttpMeResp, HttpFsSearchResp};
 use crate::error::with_retry;
+use crate::ssrf::ssrf_safe_dns_resolver;
 
 /// Validate that a path does not contain traversal components (`..` or `.`).
 /// Rejects paths that attempt directory traversal to escape the intended root.
@@ -35,53 +36,13 @@ fn validate_path(path: &str) -> Result<(), AlistError> {
     Ok(())
 }
 
-/// Custom DNS resolver that checks resolved IPs against SSRF blocklists
-/// at connection time, preventing DNS rebinding TOCTOU attacks.
-#[derive(Clone)]
-struct SsrfSafeDnsResolver;
-
-impl reqwest::dns::Resolve for SsrfSafeDnsResolver {
-    fn resolve(&self, name: reqwest::dns::Name) -> reqwest::dns::Resolving {
-        Box::pin(async move {
-            let host = name.as_str();
-            let addrs: Vec<std::net::SocketAddr> = tokio::net::lookup_host((host, 0))
-                .await
-                .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> {
-                    Box::new(std::io::Error::other(
-                        format!("DNS lookup failed for {host}: {e}"),
-                    ))
-                })?
-                .collect();
-
-            if addrs.is_empty() {
-                return Err(Box::new(std::io::Error::other(
-                    format!("DNS lookup for {host} returned no addresses"),
-                )) as Box<dyn std::error::Error + Send + Sync>);
-            }
-
-            let safe_addrs: Vec<std::net::SocketAddr> = addrs
-                .into_iter()
-                .filter(|addr| !crate::ssrf::is_blocked_ip(addr.ip()))
-                .collect();
-
-            if safe_addrs.is_empty() {
-                return Err(Box::new(std::io::Error::other(
-                    format!("All resolved IPs for {host} are private/reserved (SSRF blocked)"),
-                )) as Box<dyn std::error::Error + Send + Sync>);
-            }
-
-            Ok(Box::new(safe_addrs.into_iter()) as reqwest::dns::Addrs)
-        })
-    }
-}
-
 /// Shared HTTP client for all Alist requests (connection pooling)
 /// Redirects are disabled to prevent SSRF via redirect to private IPs.
 /// Uses SsrfSafeDnsResolver to check resolved IPs at connection time,
 /// preventing DNS rebinding attacks.
 static SHARED_CLIENT: LazyLock<Client> = LazyLock::new(|| {
     Client::builder()
-        .dns_resolver(std::sync::Arc::new(SsrfSafeDnsResolver))
+        .dns_resolver(ssrf_safe_dns_resolver())
         .connect_timeout(Duration::from_secs(10))
         .timeout(Duration::from_secs(30))
         .pool_max_idle_per_host(10)

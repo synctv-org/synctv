@@ -11,7 +11,7 @@ use crate::{
     cache::UsernameCache,
     models::{ChatMessage, PermissionBits, RoomId, SendDanmakuRequest, UserId},
     repository::ChatRepository,
-    service::{ContentFilter, PermissionService, RateLimitConfig, RateLimiter, RoomSettingsService},
+    service::{ContentFilter, PermissionService, RateLimitConfig, RateLimiter, RoomSettingsService, notification::NotificationService},
     Error, Result,
 };
 
@@ -29,6 +29,8 @@ pub struct ChatService {
     username_cache: UsernameCache,
     permission_service: PermissionService,
     room_settings_service: RoomSettingsService,
+    /// Optional notification service for broadcasting chat messages to room members
+    notification_service: Option<NotificationService>,
 }
 
 impl std::fmt::Debug for ChatService {
@@ -58,7 +60,13 @@ impl ChatService {
             username_cache,
             permission_service,
             room_settings_service,
+            notification_service: None,
         }
+    }
+
+    /// Set the notification service for broadcasting chat messages to room members
+    pub fn set_notification_service(&mut self, service: NotificationService) {
+        self.notification_service = Some(service);
     }
 
     /// Send a chat message
@@ -109,7 +117,7 @@ impl ChatService {
         }
 
         // Get username
-        let _username = self
+        let username = self
             .username_cache
             .get(&user_id)
             .await?
@@ -122,7 +130,7 @@ impl ChatService {
             .map_err(|e| Error::InvalidInput(format!("Content filter error: {e}")))?;
 
         // Create message
-        let message = ChatMessage::new(room_id.clone(), user_id.clone(), filtered_content);
+        let message = ChatMessage::new(room_id.clone(), user_id.clone(), filtered_content.clone());
 
         // Persist to database
         let created_message = self.chat_repository.create(&message).await?;
@@ -134,26 +142,54 @@ impl ChatService {
             "Chat message sent"
         );
 
+        // Broadcast chat message to room members
+        if let Some(ref notification_service) = self.notification_service {
+            if let Err(e) = notification_service
+                .notify_chat_message(
+                    &room_id,
+                    &created_message.id,
+                    &user_id,
+                    &username,
+                    &filtered_content,
+                )
+                .await
+            {
+                error!(
+                    room_id = room_id.as_str(),
+                    user_id = user_id.as_str(),
+                    message_id = %created_message.id,
+                    error = %e,
+                    "Failed to broadcast chat message to room members"
+                );
+            }
+        }
+
         Ok(created_message)
     }
 
-    /// Get chat history for a room
+    /// Get chat history for a room using cursor-based pagination.
+    ///
+    /// Uses keyset (cursor) pagination with `(created_at, id)` composite cursor
+    /// for efficient pagination, avoiding O(N) OFFSET scans when multiple messages
+    /// share the same timestamp.
     ///
     /// # Arguments
     /// * `room_id` - Room ID
-    /// * `before` - Optional timestamp to get messages before
+    /// * `cursor` - Optional cursor `(created_at, id)` to get messages before this point
     /// * `limit` - Maximum number of messages to return (max 100)
     ///
     /// # Returns
-    /// List of chat messages in reverse chronological order
+    /// Tuple of (messages, next_cursor) where messages are in reverse chronological order
+    /// (newest first), and next_cursor is the `(created_at, id)` of the oldest message
+    /// in this page to be used in the next call, or `None` when no more messages exist.
     pub async fn get_history(
         &self,
         room_id: &RoomId,
-        before: Option<chrono::DateTime<Utc>>,
+        cursor: Option<(chrono::DateTime<Utc>, &str)>,
         limit: i32,
-    ) -> Result<Vec<ChatMessage>> {
+    ) -> Result<(Vec<ChatMessage>, Option<(chrono::DateTime<Utc>, String)>)> {
         self.chat_repository
-            .list_by_room(room_id, before, limit)
+            .list_by_room_cursor(room_id, cursor, limit)
             .await
     }
 

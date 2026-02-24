@@ -211,9 +211,12 @@ impl LivestreamServer {
         let is_restarting_flag = Arc::new(AtomicBool::new(false));
         // Channel to notify pull/external managers to stop all streams before StreamHub restart.
         // This ensures zombie streams (still connected to the old hub) are cleaned up.
+        // The oneshot sender allows the restart loop to wait for stop_all() completion
+        // before proceeding with re-registration, preventing the race condition where
+        // active streams are stopped while re-registration is already happening.
         // Capacity matches HUB_MAX_RESTARTS so rapid consecutive restarts never drop signals
         // when the receiver is momentarily busy processing a previous stop_all().
-        let (stop_streams_tx, mut stop_streams_rx) = mpsc::channel::<()>(HUB_MAX_RESTARTS as usize);
+        let (stop_streams_tx, mut stop_streams_rx) = mpsc::channel::<tokio::sync::oneshot::Sender<()>>(HUB_MAX_RESTARTS as usize);
 
         // Compute per-stream GOP cache memory limit from config (0 means use default).
         let per_stream_max_bytes: Option<usize> = if self.config.gop_cache_max_memory_mb > 0 {
@@ -341,7 +344,39 @@ impl LivestreamServer {
                 // These streams hold channels to the old StreamHub instance and would
                 // become zombies (still running but unable to deliver frames) if not
                 // cleaned up. The receiver task calls stop_all() on both managers.
-                let _ = stop_streams_tx.try_send(());
+                //
+                // Two-phase cleanup: create a oneshot channel to receive confirmation
+                // when stop_all() completes. This ensures we wait for streams to fully
+                // stop before proceeding with Redis cleanup and re-registration.
+                let (stop_done_tx, stop_done_rx) = tokio::sync::oneshot::channel::<()>();
+                match stop_streams_tx.try_send(stop_done_tx) {
+                    Ok(()) => {
+                        // Wait for stop_all() to complete with a timeout.
+                        // The timeout ensures we don't block indefinitely if the
+                        // receiver task is stuck. 100ms is enough time for most
+                        // stream cleanup operations to complete.
+                        match tokio::time::timeout(
+                            std::time::Duration::from_millis(100),
+                            stop_done_rx,
+                        ).await {
+                            Ok(Ok(())) => {
+                                info!("StreamHub restart: stop_all() completed, proceeding with cleanup");
+                            }
+                            Ok(Err(_)) => {
+                                warn!("StreamHub restart: stop_done sender dropped, proceeding anyway");
+                            }
+                            Err(_) => {
+                                warn!("StreamHub restart: stop_all() timed out after 100ms, proceeding anyway");
+                            }
+                        }
+                    }
+                    Err(mpsc::error::TrySendError::Full(_)) => {
+                        warn!("StreamHub restart: stop_streams channel full, previous stop still pending");
+                    }
+                    Err(mpsc::error::TrySendError::Closed(_)) => {
+                        warn!("StreamHub restart: stop_streams channel closed, receiver task exited");
+                    }
+                }
 
                 // Clean up all local publisher registrations from Redis
                 // This ensures stale state doesn't persist after restart
@@ -505,16 +540,24 @@ impl LivestreamServer {
         // 6b. Spawn listener that stops all managed streams on StreamHub restart.
         // This ensures zombie streams (connected to the old hub) are cleaned up
         // before the new hub starts accepting events.
+        //
+        // Two-phase cleanup protocol:
+        // 1. Receive stop request with oneshot sender
+        // 2. Call stop_all() on both managers
+        // 3. Send confirmation via oneshot sender
+        // This allows the restart loop to wait for completion before re-registration.
         {
             let pm = Arc::clone(&pull_manager);
             let epm = Arc::clone(&external_publish_manager);
             tokio::spawn(async move {
-                while stop_streams_rx.recv().await.is_some() {
+                while let Some(stop_done_tx) = stop_streams_rx.recv().await {
                     info!("StreamHub restart: stopping all managed pull streams...");
                     pm.stop_all().await;
                     info!("StreamHub restart: stopping all managed external publish streams...");
                     epm.stop_all().await;
                     info!("StreamHub restart: all managed streams stopped");
+                    // Signal completion to the restart loop
+                    let _ = stop_done_tx.send(());
                 }
             });
         }

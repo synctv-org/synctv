@@ -22,6 +22,8 @@ use crate::service::RemoteProviderManager;
 /// Holds a reference to `RemoteProviderManager` to select appropriate provider instance.
 pub struct BilibiliProvider {
     provider_instance_manager: Arc<RemoteProviderManager>,
+    /// Optional timeout for API requests (in seconds)
+    timeout_seconds: Option<u64>,
 }
 
 /// Bilibili video info
@@ -45,11 +47,27 @@ pub struct BilibiliPageInfo {
 
 impl BilibiliProvider {
     /// Create a new `BilibiliProvider` with `RemoteProviderManager`
-    #[must_use] 
+    #[must_use]
     pub const fn new(provider_instance_manager: Arc<RemoteProviderManager>) -> Self {
         Self {
             provider_instance_manager,
+            timeout_seconds: None,
         }
+    }
+
+    /// Create a new `BilibiliProvider` with custom timeout configuration
+    #[must_use]
+    pub fn with_timeout(provider_instance_manager: Arc<RemoteProviderManager>, timeout_seconds: u64) -> Self {
+        Self {
+            provider_instance_manager,
+            timeout_seconds: Some(timeout_seconds),
+        }
+    }
+
+    /// Get the configured timeout in seconds (if any)
+    #[must_use]
+    pub const fn timeout_seconds(&self) -> Option<u64> {
+        self.timeout_seconds
     }
 
     /// Get Bilibili client for the given instance name (remote if available, local fallback)
@@ -615,12 +633,28 @@ impl MediaProvider for BilibiliProvider {
                     ));
                 }
                 // Validate bvid format to prevent injection via crafted identifiers.
-                // Valid BV IDs are alphanumeric (e.g. "BV1xx411c7mD").
+                // Valid BV IDs:
+                // - Start with "BV" prefix
+                // - Are exactly 12 characters long
+                // - Contain only alphanumeric characters
+                // Example: "BV1xx411c7mD"
                 if let Some(bv) = bvid.as_ref() {
-                    if !bv.is_empty() && !bv.chars().all(|c| c.is_ascii_alphanumeric()) {
-                        return Err(ProviderError::InvalidConfig(
-                            "Bilibili bvid must contain only alphanumeric characters".to_string(),
-                        ));
+                    if !bv.is_empty() {
+                        if !bv.starts_with("BV") {
+                            return Err(ProviderError::InvalidConfig(
+                                "Bilibili bvid must start with 'BV'".to_string(),
+                            ));
+                        }
+                        if bv.len() != 12 {
+                            return Err(ProviderError::InvalidConfig(
+                                "Bilibili bvid must be exactly 12 characters long".to_string(),
+                            ));
+                        }
+                        if !bv.chars().all(|c| c.is_ascii_alphanumeric()) {
+                            return Err(ProviderError::InvalidConfig(
+                                "Bilibili bvid must contain only alphanumeric characters".to_string(),
+                            ));
+                        }
                     }
                 }
                 if *cid == 0 {
@@ -735,10 +769,22 @@ mod tests {
                     ));
                 }
                 if let Some(bv) = bvid.as_ref() {
-                    if !bv.is_empty() && !bv.chars().all(|c| c.is_ascii_alphanumeric()) {
-                        return Err(ProviderError::InvalidConfig(
-                            "Bilibili bvid must contain only alphanumeric characters".to_string(),
-                        ));
+                    if !bv.is_empty() {
+                        if !bv.starts_with("BV") {
+                            return Err(ProviderError::InvalidConfig(
+                                "Bilibili bvid must start with 'BV'".to_string(),
+                            ));
+                        }
+                        if bv.len() != 12 {
+                            return Err(ProviderError::InvalidConfig(
+                                "Bilibili bvid must be exactly 12 characters long".to_string(),
+                            ));
+                        }
+                        if !bv.chars().all(|c| c.is_ascii_alphanumeric()) {
+                            return Err(ProviderError::InvalidConfig(
+                                "Bilibili bvid must contain only alphanumeric characters".to_string(),
+                            ));
+                        }
                     }
                 }
                 if *cid == 0 {
@@ -875,6 +921,68 @@ mod tests {
             "cid": 12345
         });
         assert!(validate_bilibili(config).is_err());
+    }
+
+    #[test]
+    fn test_video_config_bvid_without_bv_prefix_rejected() {
+        let config = json!({
+            "type": "video",
+            "bvid": "1xx411c7mD12",
+            "cid": 12345
+        });
+        assert!(validate_bilibili(config).is_err());
+    }
+
+    #[test]
+    fn test_video_config_bvid_with_lowercase_bv_prefix_rejected() {
+        let config = json!({
+            "type": "video",
+            "bvid": "bv1xx411c7mD",
+            "cid": 12345
+        });
+        assert!(validate_bilibili(config).is_err());
+    }
+
+    #[test]
+    fn test_video_config_bvid_too_short_rejected() {
+        let config = json!({
+            "type": "video",
+            "bvid": "BV1xx411c7m",
+            "cid": 12345
+        });
+        assert!(validate_bilibili(config).is_err());
+    }
+
+    #[test]
+    fn test_video_config_bvid_too_long_rejected() {
+        let config = json!({
+            "type": "video",
+            "bvid": "BV1xx411c7mDxx",
+            "cid": 12345
+        });
+        assert!(validate_bilibili(config).is_err());
+    }
+
+    #[test]
+    fn test_video_config_bvid_exactly_12_chars_accepted() {
+        let config = json!({
+            "type": "video",
+            "bvid": "BV1GJ411x7gL",
+            "cid": 12345
+        });
+        assert!(validate_bilibili(config).is_ok());
+    }
+
+    #[test]
+    fn test_video_config_empty_bvid_uses_aid() {
+        // Empty bvid should be allowed when aid is provided
+        let config = json!({
+            "type": "video",
+            "bvid": "",
+            "aid": 12345,
+            "cid": 67890
+        });
+        assert!(validate_bilibili(config).is_ok());
     }
 
     #[test]

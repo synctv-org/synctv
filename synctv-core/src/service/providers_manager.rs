@@ -77,27 +77,57 @@ impl ProvidersManager {
 
     /// Register all built-in provider factories
     fn register_builtin_providers(&mut self) {
-        // Alist factory
+        // Alist factory - reads optional timeout from config
         self.register_factory(
             "alist",
-            Box::new(|_instance_id, _config, instance_manager| {
-                Ok(Arc::new(AlistProvider::new(instance_manager)))
+            Box::new(|_instance_id, config, instance_manager| {
+                // Read optional timeout from config (in seconds)
+                let timeout_seconds = config
+                    .get("timeout_seconds")
+                    .and_then(|v| v.as_u64());
+
+                let provider = if let Some(secs) = timeout_seconds {
+                    AlistProvider::with_timeout(instance_manager, secs)
+                } else {
+                    AlistProvider::new(instance_manager)
+                };
+                Ok(Arc::new(provider))
             }),
         );
 
-        // Bilibili factory
+        // Bilibili factory - reads optional timeout from config
         self.register_factory(
             "bilibili",
-            Box::new(|_instance_id, _config, instance_manager| {
-                Ok(Arc::new(BilibiliProvider::new(instance_manager)))
+            Box::new(|_instance_id, config, instance_manager| {
+                // Read optional timeout from config (in seconds)
+                let timeout_seconds = config
+                    .get("timeout_seconds")
+                    .and_then(|v| v.as_u64());
+
+                let provider = if let Some(secs) = timeout_seconds {
+                    BilibiliProvider::with_timeout(instance_manager, secs)
+                } else {
+                    BilibiliProvider::new(instance_manager)
+                };
+                Ok(Arc::new(provider))
             }),
         );
 
-        // Emby factory
+        // Emby factory - reads optional timeout from config
         self.register_factory(
             "emby",
-            Box::new(|_instance_id, _config, instance_manager| {
-                Ok(Arc::new(EmbyProvider::new(instance_manager)))
+            Box::new(|_instance_id, config, instance_manager| {
+                // Read optional timeout from config (in seconds)
+                let timeout_seconds = config
+                    .get("timeout_seconds")
+                    .and_then(|v| v.as_u64());
+
+                let provider = if let Some(secs) = timeout_seconds {
+                    EmbyProvider::with_timeout(instance_manager, secs)
+                } else {
+                    EmbyProvider::new(instance_manager)
+                };
+                Ok(Arc::new(provider))
             }),
         );
 
@@ -355,5 +385,142 @@ mod tests {
         assert!(types.contains(&"bilibili".to_string()));
         assert!(types.contains(&"live_proxy".to_string()));
         assert_eq!(types.len(), 6); // alist, bilibili, emby, rtmp, direct_url, live_proxy
+    }
+
+    #[tokio::test]
+    async fn test_provider_config_without_timeout() {
+        // Test that provider can be created without timeout config (backward compatible)
+        let pool = PgPool::connect_lazy("postgresql://test").unwrap();
+        let repo = Arc::new(ProviderInstanceRepository::new(pool));
+        let instance_manager = Arc::new(RemoteProviderManager::new(repo, None, None));
+        let manager = ProvidersManager::new(instance_manager);
+
+        // Create provider with empty config (no timeout)
+        let config = serde_json::json!({});
+        let provider = manager.create_provider("alist", "test_alist", &config).await;
+        assert!(provider.is_ok());
+
+        // Verify the provider was stored
+        let stored = manager.get("test_alist").await;
+        assert!(stored.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_provider_config_with_timeout() {
+        // Test that provider reads timeout from config
+        let pool = PgPool::connect_lazy("postgresql://test").unwrap();
+        let repo = Arc::new(ProviderInstanceRepository::new(pool));
+        let instance_manager = Arc::new(RemoteProviderManager::new(repo, None, None));
+        let manager = ProvidersManager::new(instance_manager);
+
+        // Create provider with timeout config
+        let config = serde_json::json!({
+            "timeout_seconds": 30
+        });
+        let provider = manager.create_provider("alist", "test_alist_timeout", &config).await;
+        assert!(provider.is_ok());
+
+        // Verify the provider was stored
+        let stored = manager.get("test_alist_timeout").await;
+        assert!(stored.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_bilibili_provider_config_with_timeout() {
+        // Test that Bilibili provider reads timeout from config
+        let pool = PgPool::connect_lazy("postgresql://test").unwrap();
+        let repo = Arc::new(ProviderInstanceRepository::new(pool));
+        let instance_manager = Arc::new(RemoteProviderManager::new(repo, None, None));
+        let manager = ProvidersManager::new(instance_manager);
+
+        // Create provider with timeout config
+        let config = serde_json::json!({
+            "timeout_seconds": 45
+        });
+        let provider = manager.create_provider("bilibili", "test_bilibili_timeout", &config).await;
+        assert!(provider.is_ok());
+
+        // Verify the provider was stored
+        let stored = manager.get("test_bilibili_timeout").await;
+        assert!(stored.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_emby_provider_config_with_timeout() {
+        // Test that Emby provider reads timeout from config
+        let pool = PgPool::connect_lazy("postgresql://test").unwrap();
+        let repo = Arc::new(ProviderInstanceRepository::new(pool));
+        let instance_manager = Arc::new(RemoteProviderManager::new(repo, None, None));
+        let manager = ProvidersManager::new(instance_manager);
+
+        // Create provider with timeout config
+        let config = serde_json::json!({
+            "timeout_seconds": 60
+        });
+        let provider = manager.create_provider("emby", "test_emby_timeout", &config).await;
+        assert!(provider.is_ok());
+
+        // Verify the provider was stored
+        let stored = manager.get("test_emby_timeout").await;
+        assert!(stored.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_provider_config_invalid_timeout_ignored() {
+        // Test that invalid timeout values are gracefully handled
+        let pool = PgPool::connect_lazy("postgresql://test").unwrap();
+        let repo = Arc::new(ProviderInstanceRepository::new(pool));
+        let instance_manager = Arc::new(RemoteProviderManager::new(repo, None, None));
+        let manager = ProvidersManager::new(instance_manager);
+
+        // Create provider with invalid timeout type (string instead of number)
+        let config = serde_json::json!({
+            "timeout_seconds": "invalid"
+        });
+        let provider = manager.create_provider("alist", "test_alist_invalid", &config).await;
+        // Should still succeed, just ignore the invalid timeout
+        assert!(provider.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_rtmp_provider_requires_base_url() {
+        // Test that RTMP provider still requires base_url (existing behavior)
+        let pool = PgPool::connect_lazy("postgresql://test").unwrap();
+        let repo = Arc::new(ProviderInstanceRepository::new(pool));
+        let instance_manager = Arc::new(RemoteProviderManager::new(repo, None, None));
+        let manager = ProvidersManager::new(instance_manager);
+
+        // Create RTMP provider without base_url - should fail
+        let config = serde_json::json!({});
+        let provider = manager.create_provider("rtmp", "test_rtmp", &config).await;
+        assert!(provider.is_err());
+
+        // Create RTMP provider with base_url - should succeed
+        let config = serde_json::json!({
+            "base_url": "rtmp://localhost/live"
+        });
+        let provider = manager.create_provider("rtmp", "test_rtmp_valid", &config).await;
+        assert!(provider.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_live_proxy_provider_requires_base_url() {
+        // Test that live_proxy provider still requires base_url (existing behavior)
+        let pool = PgPool::connect_lazy("postgresql://test").unwrap();
+        let repo = Arc::new(ProviderInstanceRepository::new(pool));
+        let instance_manager = Arc::new(RemoteProviderManager::new(repo, None, None));
+        let manager = ProvidersManager::new(instance_manager);
+
+        // Create live_proxy provider without base_url - should fail
+        let config = serde_json::json!({});
+        let provider = manager.create_provider("live_proxy", "test_live_proxy", &config).await;
+        assert!(provider.is_err());
+
+        // Create live_proxy provider with base_url - should succeed
+        let config = serde_json::json!({
+            "base_url": "http://localhost:8080"
+        });
+        let provider = manager.create_provider("live_proxy", "test_live_proxy_valid", &config).await;
+        assert!(provider.is_ok());
     }
 }

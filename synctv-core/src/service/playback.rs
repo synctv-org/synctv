@@ -121,11 +121,53 @@ impl PlaybackService {
                             // Write the updated state directly into the L1 cache,
                             // avoiding the stale-read window between invalidation
                             // and the next DB fetch.
-                            cache.insert(room_id.clone(), state).await;
-                            tracing::debug!(
-                                room_id = %room_id,
-                                "Playback state cache updated directly (cross-replica)"
-                            );
+                            //
+                            // CAS (Compare-And-Set) semantics: Only update if the incoming
+                            // state has a higher version than the current cached state.
+                            // This prevents out-of-order or delayed messages from
+                            // overwriting newer state.
+                            let new_version = state.version;
+                            let new_state = state;
+                            cache
+                                .entry(room_id.clone())
+                                .and_upsert_with(|maybe_entry| {
+                                    let result = match maybe_entry {
+                                        Some(entry) => {
+                                            let current = entry.into_value();
+                                            let current_version = current.version;
+                                            if new_version > current_version {
+                                                // New state is newer, update the cache
+                                                tracing::debug!(
+                                                    room_id = %room_id,
+                                                    new_version,
+                                                    current_version,
+                                                    "Playback state cache updated (cross-replica, version upgrade)"
+                                                );
+                                                new_state.clone()
+                                            } else {
+                                                // Current cached state is same or newer, keep it
+                                                tracing::debug!(
+                                                    room_id = %room_id,
+                                                    new_version,
+                                                    current_version,
+                                                    "Playback state cache not updated (cross-replica, stale or duplicate version)"
+                                                );
+                                                current
+                                            }
+                                        }
+                                        None => {
+                                            // No cached entry, insert the new state
+                                            tracing::debug!(
+                                                room_id = %room_id,
+                                                new_version,
+                                                "Playback state cache inserted (cross-replica, no prior entry)"
+                                            );
+                                            new_state.clone()
+                                        }
+                                    };
+                                    std::future::ready(result)
+                                })
+                                .await;
                         }
                         InvalidationMessage::PlaybackState { room_id } => {
                             cache.invalidate(&room_id).await;
@@ -1047,5 +1089,261 @@ mod tests {
     fn test_update_state_constants() {
         assert_eq!(PlaybackService::MAX_RETRIES, 5);
         assert_eq!(PlaybackService::BACKOFF_BASE_MS, 5);
+    }
+
+    /// Tests for playback state cache version checking (CAS semantics)
+    mod version_check_tests {
+        use super::*;
+
+        /// Helper to create a playback state with a specific version
+        fn make_state(room_id: &str, version: i64, current_time: f64) -> RoomPlaybackState {
+            RoomPlaybackState {
+                room_id: RoomId::from_string(room_id.to_string()),
+                playing_media_id: None,
+                playing_playlist_id: None,
+                relative_path: String::new(),
+                current_time,
+                speed: 1.0,
+                is_playing: false,
+                updated_at: chrono::Utc::now(),
+                version,
+            }
+        }
+
+        /// Test: When cache is empty, incoming state should be inserted
+        #[tokio::test]
+        async fn test_cache_insert_when_empty() {
+            let cache: Arc<moka::future::Cache<String, RoomPlaybackState>> =
+                Arc::new(moka::future::Cache::new(100));
+
+            let room_id = "room_001";
+            let new_state = make_state(room_id, 5, 100.0);
+
+            // Simulate the CAS logic from the invalidation handler
+            cache
+                .entry(room_id.to_string())
+                .and_upsert_with(|maybe_entry| {
+                    let result = match maybe_entry {
+                        Some(entry) => {
+                            let current = entry.into_value();
+                            if new_state.version > current.version {
+                                new_state.clone()
+                            } else {
+                                current
+                            }
+                        }
+                        None => new_state.clone(),
+                    };
+                    std::future::ready(result)
+                })
+                .await;
+
+            let cached = cache.get(room_id).await.expect("should have entry");
+            assert_eq!(cached.version, 5);
+            assert!((cached.current_time - 100.0).abs() < f64::EPSILON);
+        }
+
+        /// Test: When incoming version is higher, cache should be updated
+        #[tokio::test]
+        async fn test_cache_update_when_version_higher() {
+            let cache: Arc<moka::future::Cache<String, RoomPlaybackState>> =
+                Arc::new(moka::future::Cache::new(100));
+
+            let room_id = "room_002";
+
+            // Insert initial state with version 3
+            let initial_state = make_state(room_id, 3, 50.0);
+            cache.insert(room_id.to_string(), initial_state).await;
+
+            // Verify initial state
+            let cached = cache.get(room_id).await.expect("should have entry");
+            assert_eq!(cached.version, 3);
+
+            // Try to update with version 7 (higher)
+            let new_state = make_state(room_id, 7, 150.0);
+            cache
+                .entry(room_id.to_string())
+                .and_upsert_with(|maybe_entry| {
+                    let result = match maybe_entry {
+                        Some(entry) => {
+                            let current = entry.into_value();
+                            if new_state.version > current.version {
+                                new_state.clone()
+                            } else {
+                                current
+                            }
+                        }
+                        None => new_state.clone(),
+                    };
+                    std::future::ready(result)
+                })
+                .await;
+
+            // Cache should now have version 7
+            let cached = cache.get(room_id).await.expect("should have entry");
+            assert_eq!(cached.version, 7);
+            assert!((cached.current_time - 150.0).abs() < f64::EPSILON);
+        }
+
+        /// Test: When incoming version is lower, cache should NOT be updated
+        #[tokio::test]
+        async fn test_cache_not_updated_when_version_lower() {
+            let cache: Arc<moka::future::Cache<String, RoomPlaybackState>> =
+                Arc::new(moka::future::Cache::new(100));
+
+            let room_id = "room_003";
+
+            // Insert initial state with version 10
+            let initial_state = make_state(room_id, 10, 200.0);
+            cache.insert(room_id.to_string(), initial_state).await;
+
+            // Try to update with version 5 (lower - simulates delayed/out-of-order message)
+            let old_state = make_state(room_id, 5, 100.0);
+            cache
+                .entry(room_id.to_string())
+                .and_upsert_with(|maybe_entry| {
+                    let result = match maybe_entry {
+                        Some(entry) => {
+                            let current = entry.into_value();
+                            if old_state.version > current.version {
+                                old_state.clone()
+                            } else {
+                                current
+                            }
+                        }
+                        None => old_state.clone(),
+                    };
+                    std::future::ready(result)
+                })
+                .await;
+
+            // Cache should still have version 10 (not downgraded to 5)
+            let cached = cache.get(room_id).await.expect("should have entry");
+            assert_eq!(cached.version, 10);
+            assert!((cached.current_time - 200.0).abs() < f64::EPSILON);
+        }
+
+        /// Test: When versions are equal, cache should NOT be updated (idempotent)
+        #[tokio::test]
+        async fn test_cache_not_updated_when_version_equal() {
+            let cache: Arc<moka::future::Cache<String, RoomPlaybackState>> =
+                Arc::new(moka::future::Cache::new(100));
+
+            let room_id = "room_004";
+
+            // Insert initial state with version 5
+            let initial_state = make_state(room_id, 5, 200.0);
+            cache.insert(room_id.to_string(), initial_state).await;
+
+            // Try to update with same version 5 but different content
+            let duplicate_state = make_state(room_id, 5, 999.0);
+            cache
+                .entry(room_id.to_string())
+                .and_upsert_with(|maybe_entry| {
+                    let result = match maybe_entry {
+                        Some(entry) => {
+                            let current = entry.into_value();
+                            if duplicate_state.version > current.version {
+                                duplicate_state.clone()
+                            } else {
+                                current
+                            }
+                        }
+                        None => duplicate_state.clone(),
+                    };
+                    std::future::ready(result)
+                })
+                .await;
+
+            // Cache should still have original content (not overwritten)
+            let cached = cache.get(room_id).await.expect("should have entry");
+            assert_eq!(cached.version, 5);
+            assert!((cached.current_time - 200.0).abs() < f64::EPSILON);
+        }
+
+        /// Test: Sequential updates should only keep the highest version
+        #[tokio::test]
+        async fn test_sequential_updates_keep_highest_version() {
+            let cache: Arc<moka::future::Cache<String, RoomPlaybackState>> =
+                Arc::new(moka::future::Cache::new(100));
+
+            let room_id = "room_005";
+
+            // Apply updates in non-monotonic order: v1, v5, v3, v7, v2
+            let versions = [1i64, 5, 3, 7, 2];
+            for v in versions {
+                let state = make_state(room_id, v, v as f64 * 10.0);
+                cache
+                    .entry(room_id.to_string())
+                    .and_upsert_with(|maybe_entry| {
+                        let result = match maybe_entry {
+                            Some(entry) => {
+                                let current = entry.into_value();
+                                if state.version > current.version {
+                                    state.clone()
+                                } else {
+                                    current
+                                }
+                            }
+                            None => state.clone(),
+                        };
+                        std::future::ready(result)
+                    })
+                    .await;
+            }
+
+            // Cache should have version 7 (the highest)
+            let cached = cache.get(room_id).await.expect("should have entry");
+            assert_eq!(cached.version, 7);
+            assert!((cached.current_time - 70.0).abs() < f64::EPSILON);
+        }
+
+        /// Test: Concurrent updates should be serialized and result in highest version
+        #[tokio::test]
+        async fn test_concurrent_updates_serialized() {
+            let cache: Arc<moka::future::Cache<String, RoomPlaybackState>> =
+                Arc::new(moka::future::Cache::new(100));
+
+            let room_id = Arc::new("room_006".to_string());
+            let cache_clone = cache.clone();
+
+            // Spawn 10 concurrent tasks, each trying to insert a different version
+            let handles: Vec<_> = (1..=10)
+                .map(|v| {
+                    let room_id = room_id.clone();
+                    let cache = cache_clone.clone();
+                    tokio::spawn(async move {
+                        let state = make_state(&room_id, v, v as f64 * 10.0);
+                        cache
+                            .entry(room_id.to_string())
+                            .and_upsert_with(|maybe_entry| {
+                                let result = match maybe_entry {
+                                    Some(entry) => {
+                                        let current = entry.into_value();
+                                        if state.version > current.version {
+                                            state.clone()
+                                        } else {
+                                            current
+                                        }
+                                    }
+                                    None => state.clone(),
+                                };
+                                std::future::ready(result)
+                            })
+                            .await
+                    })
+                })
+                .collect();
+
+            // Wait for all tasks to complete
+            for handle in handles {
+                handle.await.expect("task should complete");
+            }
+
+            // Cache should have version 10 (the highest)
+            let cached = cache.get(&*room_id).await.expect("should have entry");
+            assert_eq!(cached.version, 10);
+            assert!((cached.current_time - 100.0).abs() < f64::EPSILON);
+        }
     }
 }

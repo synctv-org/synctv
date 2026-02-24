@@ -226,6 +226,13 @@ impl ClusterManager {
             (hub, Some(tx), Some(critical_tx), Some(redis_pubsub), Some(publisher_handle))
         } else {
             warn!("Redis not provided, running in single-node mode");
+            if cache_invalidation.is_some() {
+                warn!(
+                    "cache_invalidation service provided but Redis is not available; \
+                     cache invalidation will be local-only (no cross-replica invalidation). \
+                     In a multi-replica deployment, this may lead to stale caches on other nodes."
+                );
+            }
             let hub = Arc::new(RoomMessageHub::new());
             (hub, None, None, None, None)
         };
@@ -829,5 +836,125 @@ mod tests {
         let r2 = rx2.recv().await.unwrap();
         assert_eq!(r1.event_type(), "kick_publisher");
         assert_eq!(r2.event_type(), "kick_publisher");
+    }
+
+    /// Test that ClusterManager handles the non-cluster mode degradation gracefully
+    /// when a CacheInvalidationService is provided but Redis is not available.
+    ///
+    /// This verifies:
+    /// 1. ClusterManager::new() succeeds even when cache_invalidation is provided without Redis
+    /// 2. The service logs an appropriate warning about local-only invalidation
+    /// 3. The ClusterManager operates normally in single-node mode
+    #[tokio::test]
+    async fn test_non_cluster_mode_with_cache_invalidation_service() {
+        // Create a CacheInvalidationService without Redis (local-only mode)
+        let cache_invalidation = synctv_core::cache::CacheInvalidationService::new(
+            None, // No Redis client
+            "test_node".to_string(),
+            "synctv:test:cache:invalidate".to_string(),
+        );
+
+        let config = ClusterConfig {
+            redis_client: None,
+            redis_conn: None, // No Redis - triggers non-cluster mode
+            node_id: "test_node_cache".to_string(),
+            dedup_window: Duration::from_secs(1),
+            cleanup_interval: Duration::from_secs(1),
+            critical_channel_capacity: 1000,
+            publish_channel_capacity: 10_000,
+            key_prefix: "synctv:".to_string(),
+            catchup_window_secs: 300,
+            stream_max_length: 10_000,
+        };
+
+        // Create ClusterManager with cache_invalidation but no Redis
+        // This should succeed with a warning logged
+        let manager = ClusterManager::new(
+            config,
+            None,
+            Some(cache_invalidation),
+        )
+        .await
+        .expect("ClusterManager::new should succeed with cache_invalidation but no Redis");
+
+        // Verify the manager operates normally in single-node mode
+        let room_id = RoomId::from_string("room1".to_string());
+        let user_id = UserId::from_string("user1".to_string());
+        let (mut rx, conn_id) = manager.subscribe(room_id.clone(), user_id.clone()).await;
+
+        // Broadcast should work locally
+        let event = ClusterEvent::ChatMessage {
+            event_id: nanoid::nanoid!(16),
+            room_id: room_id.clone(),
+            user_id: user_id.clone(),
+            username: "user1".to_string(),
+            message: "Hello local!".to_string(),
+            timestamp: Utc::now(),
+            position: None,
+            color: None,
+        };
+
+        let result = manager.broadcast(event.clone());
+        assert_eq!(result.local_sent, 1, "Local broadcast should work in non-cluster mode");
+        assert!(!result.redis_sent, "Redis should not be used in non-cluster mode");
+
+        // Verify message received locally
+        let received = rx.recv().await.expect("Should receive local message");
+        assert_eq!(received.event_type(), "chat_message");
+
+        // Cleanup
+        manager.unsubscribe(&conn_id);
+
+        // Verify metrics show single-node mode
+        let metrics = manager.metrics();
+        assert!(!metrics.redis_enabled, "Metrics should show Redis is not enabled");
+    }
+
+    /// Test that ClusterManager works correctly when both Redis and
+    /// CacheInvalidationService are not provided (pure single-node mode).
+    #[tokio::test]
+    async fn test_non_cluster_mode_without_cache_invalidation_service() {
+        let config = ClusterConfig {
+            redis_client: None,
+            redis_conn: None,
+            node_id: "test_node_no_cache".to_string(),
+            dedup_window: Duration::from_secs(1),
+            cleanup_interval: Duration::from_secs(1),
+            critical_channel_capacity: 1000,
+            publish_channel_capacity: 10_000,
+            key_prefix: "synctv:".to_string(),
+            catchup_window_secs: 300,
+            stream_max_length: 10_000,
+        };
+
+        // Create ClusterManager without cache_invalidation and without Redis
+        let manager = ClusterManager::new(config, None, None)
+            .await
+            .expect("ClusterManager::new should succeed without cache_invalidation and Redis");
+
+        // Verify normal operation
+        let room_id = RoomId::from_string("room2".to_string());
+        let user_id = UserId::from_string("user2".to_string());
+        let (mut rx, conn_id) = manager.subscribe(room_id.clone(), user_id.clone()).await;
+
+        let event = ClusterEvent::ChatMessage {
+            event_id: nanoid::nanoid!(16),
+            room_id: room_id.clone(),
+            user_id: user_id.clone(),
+            username: "user2".to_string(),
+            message: "Hello!".to_string(),
+            timestamp: Utc::now(),
+            position: None,
+            color: None,
+        };
+
+        let result = manager.broadcast(event);
+        assert_eq!(result.local_sent, 1);
+        assert!(!result.redis_sent);
+
+        let received = rx.recv().await.expect("Should receive message");
+        assert_eq!(received.event_type(), "chat_message");
+
+        manager.unsubscribe(&conn_id);
     }
 }

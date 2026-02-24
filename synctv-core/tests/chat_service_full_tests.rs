@@ -6,6 +6,7 @@
 //!
 //! Run with: cargo test -p synctv-core --test chat_service_full_tests -- --nocapture
 
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use synctv_core::{
@@ -13,7 +14,7 @@ use synctv_core::{
     config::PasswordComplexityConfig,
     models::{
         UserId, User, UserRole, UserStatus,
-        PermissionBits, RoomSettings,
+        PermissionBits, RoomSettings, RoomId,
         room_settings::{ChatEnabled, DanmakuEnabled},
         SendDanmakuRequest, DanmakuPosition,
     },
@@ -22,10 +23,12 @@ use synctv_core::{
         ChatService, RoomService, UserService, InMemoryTokenBlacklistStore,
         ContentFilter, RateLimiter, RateLimitConfig, PermissionService,
         RoomSettingsService, NotificationService,
+        notification::{EventBroadcaster, RoomEvent},
         auth::{JwtService, BruteForceProtection},
     },
-    Error,
+    Result, Error,
 };
+use async_trait::async_trait;
 use chrono::Utc;
 use sqlx::PgPool;
 use testcontainers::core::ImageExt;
@@ -460,4 +463,446 @@ async fn test_delete_message_non_owner_with_delete_chat_succeeds() {
         .await;
 
     assert!(result.is_ok(), "Non-owner with DELETE_CHAT should be able to delete");
+}
+
+// ========== send_message: notification broadcast ==========
+
+/// Mock broadcaster that tracks broadcast calls
+struct CountingMockBroadcaster {
+    broadcast_count: AtomicUsize,
+    last_room_id: std::sync::Mutex<Option<String>>,
+    last_event_type: std::sync::Mutex<Option<String>>,
+}
+
+impl CountingMockBroadcaster {
+    fn new() -> Self {
+        Self {
+            broadcast_count: AtomicUsize::new(0),
+            last_room_id: std::sync::Mutex::new(None),
+            last_event_type: std::sync::Mutex::new(None),
+        }
+    }
+
+    fn get_broadcast_count(&self) -> usize {
+        self.broadcast_count.load(Ordering::SeqCst)
+    }
+
+    fn get_last_room_id(&self) -> Option<String> {
+        self.last_room_id.lock().unwrap().clone()
+    }
+
+    fn get_last_event_type(&self) -> Option<String> {
+        self.last_event_type.lock().unwrap().clone()
+    }
+}
+
+#[async_trait]
+impl EventBroadcaster for CountingMockBroadcaster {
+    async fn broadcast_to_room(&self, room_id: &RoomId, event: &RoomEvent) -> Result<usize> {
+        self.broadcast_count.fetch_add(1, Ordering::SeqCst);
+        *self.last_room_id.lock().unwrap() = Some(room_id.as_str().to_string());
+        *self.last_event_type.lock().unwrap() = Some(event.event_type().to_string());
+        Ok(1)
+    }
+
+    async fn send_to_user(&self, _room_id: &RoomId, _user_id: &UserId, _event: &RoomEvent) -> Result<bool> {
+        Ok(true)
+    }
+
+    async fn broadcast_to_cluster(&self, _room_id: &RoomId, _event: &RoomEvent) -> Result<()> {
+        Ok(())
+    }
+}
+
+/// Helper function to create ChatService with a counting mock broadcaster
+#[allow(dead_code)]
+fn make_chat_service_with_broadcaster(pool: PgPool, broadcaster: Arc<CountingMockBroadcaster>) -> (ChatService, UsernameCache) {
+    let chat_repo = Arc::new(ChatRepository::new(pool.clone()));
+    let rate_limiter = RateLimiter::new(None, "test:chat:".to_string());
+    let rate_limit_config = RateLimitConfig::default();
+    let content_filter = ContentFilter::new();
+    let l2 = Arc::new(NoopCacheL2);
+    let username_cache = UsernameCache::new(l2, "test:username:".to_string(), 100, 60);
+
+    let member_repo = RoomMemberRepository::new(pool.clone());
+    let room_repo = RoomRepository::new(pool.clone());
+    let room_settings_repo = RoomSettingsRepository::new(pool.clone());
+
+    let mut permission_service = PermissionService::new(
+        member_repo,
+        room_repo,
+        None,
+        PermissionService::DEFAULT_CACHE_SIZE,
+        PermissionService::DEFAULT_CACHE_TTL_SECS,
+    );
+    permission_service.set_room_settings_repo(room_settings_repo.clone());
+
+    // Create NotificationService with the counting broadcaster
+    let notification_service = NotificationService::new(broadcaster as Arc<dyn EventBroadcaster>);
+    let room_settings_service = RoomSettingsService::new(
+        room_settings_repo,
+        None,
+        Arc::new(notification_service.clone()),
+        None,
+        None,
+        None,
+    );
+
+    let mut chat_service = ChatService::new(
+        chat_repo,
+        rate_limiter,
+        rate_limit_config,
+        content_filter,
+        username_cache.clone(),
+        permission_service,
+        room_settings_service,
+    );
+
+    // Set the notification service for broadcasting chat messages
+    chat_service.set_notification_service(notification_service);
+
+    (chat_service, username_cache)
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_send_message_broadcasts_to_room_members() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let room_service = make_room_service(pool.clone());
+
+    let creator = user_repo.create(&make_user("chat_broadcast_creator")).await.unwrap();
+
+    // Create a counting mock broadcaster
+    let broadcaster = Arc::new(CountingMockBroadcaster::new());
+
+    // Build chat service with the counting broadcaster
+    let chat_repo = Arc::new(ChatRepository::new(pool.clone()));
+    let rate_limiter = RateLimiter::new(None, "test:chat_broadcast:".to_string());
+    let rate_limit_config = RateLimitConfig::default();
+    let content_filter = ContentFilter::new();
+    let l2 = Arc::new(NoopCacheL2);
+    let username_cache = UsernameCache::new(l2, "test:username:".to_string(), 100, 60);
+    username_cache.set(&creator.id, &creator.username).await.unwrap();
+
+    let member_repo = RoomMemberRepository::new(pool.clone());
+    let room_repo = RoomRepository::new(pool.clone());
+    let room_settings_repo = RoomSettingsRepository::new(pool.clone());
+
+    let mut permission_service = PermissionService::new(
+        member_repo,
+        room_repo,
+        None,
+        PermissionService::DEFAULT_CACHE_SIZE,
+        PermissionService::DEFAULT_CACHE_TTL_SECS,
+    );
+    permission_service.set_room_settings_repo(room_settings_repo.clone());
+
+    // Create NotificationService with the counting broadcaster
+    let notification_service = NotificationService::new(broadcaster.clone() as Arc<dyn EventBroadcaster>);
+    let room_settings_service = RoomSettingsService::new(
+        room_settings_repo,
+        None,
+        Arc::new(notification_service.clone()),
+        None,
+        None,
+        None,
+    );
+
+    let mut chat_service = ChatService::new(
+        chat_repo,
+        rate_limiter,
+        rate_limit_config,
+        content_filter,
+        username_cache,
+        permission_service,
+        room_settings_service,
+    );
+
+    // Set the notification service for broadcasting chat messages
+    chat_service.set_notification_service(notification_service);
+
+    // Create a room
+    let (room, _) = room_service
+        .create_room("Broadcast Test Room".to_string(), String::new(), creator.id.clone(), None, None)
+        .await
+        .unwrap();
+
+    // Verify no broadcasts before sending
+    assert_eq!(broadcaster.get_broadcast_count(), 0, "No broadcasts should have occurred yet");
+
+    // Send a message
+    let msg = chat_service
+        .send_message(room.id.clone(), creator.id.clone(), "Hello, world!".to_string())
+        .await
+        .expect("send_message should succeed");
+
+    // Verify broadcast was triggered
+    assert_eq!(broadcaster.get_broadcast_count(), 1, "One broadcast should have been triggered");
+
+    // Verify broadcast was sent to the correct room
+    let last_room_id = broadcaster.get_last_room_id().expect("Should have a room ID");
+    assert_eq!(last_room_id, room.id.as_str(), "Broadcast should be sent to the correct room");
+
+    // Verify broadcast was a chat message event
+    let last_event_type = broadcaster.get_last_event_type().expect("Should have an event type");
+    assert_eq!(last_event_type, "chat_message", "Event type should be chat_message");
+
+    // Verify the message was persisted
+    assert!(!msg.id.is_empty(), "Message should have an ID");
+    assert_eq!(msg.content, "Hello, world!", "Message content should match");
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_send_message_without_notification_service_still_persists() {
+    // This test verifies that when notification_service is not set,
+    // the message is still persisted (the broadcast just silently does nothing)
+
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let room_service = make_room_service(pool.clone());
+    let (chat_service, username_cache) = make_chat_service(pool.clone());
+
+    let creator = user_repo.create(&make_user("chat_no_notify")).await.unwrap();
+    username_cache.set(&creator.id, &creator.username).await.unwrap();
+
+    // Create a room
+    let (room, _) = room_service
+        .create_room("No Notify Room".to_string(), String::new(), creator.id.clone(), None, None)
+        .await
+        .unwrap();
+
+    // Note: The default ChatService from make_chat_service does NOT have
+    // notification_service set (it's None), so broadcast will be skipped
+
+    // Send a message - should still succeed even without notification service
+    let msg = chat_service
+        .send_message(room.id.clone(), creator.id.clone(), "Message without broadcast".to_string())
+        .await
+        .expect("send_message should succeed even without notification service");
+
+    // Verify the message was persisted
+    assert!(!msg.id.is_empty(), "Message should have an ID");
+    assert_eq!(msg.content, "Message without broadcast", "Message content should match");
+
+    // Verify we can retrieve the message from history
+    let (history, next_cursor) = chat_service
+        .get_history(&room.id, None, 10)
+        .await
+        .expect("get_history should succeed");
+
+    assert_eq!(history.len(), 1, "Should have one message in history");
+    assert_eq!(history[0].content, "Message without broadcast", "History message content should match");
+    assert!(next_cursor.is_none(), "No next cursor when all messages fit in one page");
+}
+
+// ========== get_history: cursor pagination behavior ==========
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_get_history_cursor_pagination_basic() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let room_service = make_room_service(pool.clone());
+    let (chat_service, username_cache) = make_chat_service(pool.clone());
+
+    let creator = user_repo.create(&make_user("cursor_user")).await.unwrap();
+    username_cache.set(&creator.id, &creator.username).await.unwrap();
+
+    let (room, _) = room_service
+        .create_room("Cursor Pagination Room".to_string(), String::new(), creator.id.clone(), None, None)
+        .await
+        .unwrap();
+
+    // Send 5 messages with slight delays to ensure distinct timestamps
+    let mut sent_messages = Vec::new();
+    for i in 0..5 {
+        let msg = chat_service
+            .send_message(room.id.clone(), creator.id.clone(), format!("message_{}", i))
+            .await
+            .unwrap();
+        sent_messages.push(msg);
+        // Small delay to ensure ordering by timestamp
+        tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
+    }
+
+    // Page 1: Get first 2 messages (newest first, no cursor)
+    let (page1, cursor1) = chat_service
+        .get_history(&room.id, None, 2)
+        .await
+        .expect("get_history page 1 should succeed");
+
+    assert_eq!(page1.len(), 2, "Page 1 should have 2 messages");
+    assert!(cursor1.is_some(), "Should have next cursor when more messages exist");
+    // Newest messages first: message_4, message_3
+    assert_eq!(page1[0].content, "message_4", "First message should be newest");
+    assert_eq!(page1[1].content, "message_3", "Second message should be second newest");
+
+    // Page 2: Get next 2 messages using cursor
+    let cursor1_val = cursor1.unwrap();
+    let (page2, cursor2) = chat_service
+        .get_history(&room.id, Some((cursor1_val.0, &cursor1_val.1)), 2)
+        .await
+        .expect("get_history page 2 should succeed");
+
+    assert_eq!(page2.len(), 2, "Page 2 should have 2 messages");
+    assert!(cursor2.is_some(), "Should have next cursor (1 more message)");
+    assert_eq!(page2[0].content, "message_2", "Page 2 first message");
+    assert_eq!(page2[1].content, "message_1", "Page 2 second message");
+
+    // Page 3: Get last message
+    let cursor2_val = cursor2.unwrap();
+    let (page3, cursor3) = chat_service
+        .get_history(&room.id, Some((cursor2_val.0, &cursor2_val.1)), 2)
+        .await
+        .expect("get_history page 3 should succeed");
+
+    assert_eq!(page3.len(), 1, "Page 3 should have 1 message (last page)");
+    assert!(cursor3.is_none(), "No next cursor on last page");
+    assert_eq!(page3[0].content, "message_0", "Page 3 should have oldest message");
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_get_history_empty_room() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let room_service = make_room_service(pool.clone());
+    let (chat_service, _username_cache) = make_chat_service(pool.clone());
+
+    let creator = user_repo.create(&make_user("empty_room_user")).await.unwrap();
+
+    let (room, _) = room_service
+        .create_room("Empty Chat Room".to_string(), String::new(), creator.id.clone(), None, None)
+        .await
+        .unwrap();
+
+    // Get history from room with no messages
+    let (history, cursor) = chat_service
+        .get_history(&room.id, None, 10)
+        .await
+        .expect("get_history should succeed for empty room");
+
+    assert!(history.is_empty(), "History should be empty for room with no messages");
+    assert!(cursor.is_none(), "No cursor when room is empty");
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_get_history_single_page() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let room_service = make_room_service(pool.clone());
+    let (chat_service, username_cache) = make_chat_service(pool.clone());
+
+    let creator = user_repo.create(&make_user("single_page_user")).await.unwrap();
+    username_cache.set(&creator.id, &creator.username).await.unwrap();
+
+    let (room, _) = room_service
+        .create_room("Single Page Room".to_string(), String::new(), creator.id.clone(), None, None)
+        .await
+        .unwrap();
+
+    // Send 3 messages
+    for i in 0..3 {
+        chat_service
+            .send_message(room.id.clone(), creator.id.clone(), format!("msg_{}", i))
+            .await
+            .unwrap();
+        tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
+    }
+
+    // Get history with limit larger than message count
+    let (history, cursor) = chat_service
+        .get_history(&room.id, None, 100)
+        .await
+        .expect("get_history should succeed");
+
+    assert_eq!(history.len(), 3, "Should get all 3 messages");
+    assert!(cursor.is_none(), "No cursor when all messages fit in one page");
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_get_history_limit_capped_at_100() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let room_service = make_room_service(pool.clone());
+    let (chat_service, username_cache) = make_chat_service(pool.clone());
+
+    let creator = user_repo.create(&make_user("limit_cap_user")).await.unwrap();
+    username_cache.set(&creator.id, &creator.username).await.unwrap();
+
+    let (room, _) = room_service
+        .create_room("Limit Cap Room".to_string(), String::new(), creator.id.clone(), None, None)
+        .await
+        .unwrap();
+
+    // Send 105 messages
+    for i in 0..105 {
+        chat_service
+            .send_message(room.id.clone(), creator.id.clone(), format!("msg_{}", i))
+            .await
+            .unwrap();
+    }
+
+    // Request with limit=200, should be capped at 100
+    let (history, cursor) = chat_service
+        .get_history(&room.id, None, 200)
+        .await
+        .expect("get_history should succeed");
+
+    assert_eq!(history.len(), 100, "Should be capped at 100 messages");
+    assert!(cursor.is_some(), "Should have cursor since there are more messages");
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_get_history_messages_from_correct_room() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let room_service = make_room_service(pool.clone());
+    let (chat_service, username_cache) = make_chat_service(pool.clone());
+
+    let creator = user_repo.create(&make_user("room_isolation_user")).await.unwrap();
+    username_cache.set(&creator.id, &creator.username).await.unwrap();
+
+    // Create two rooms
+    let (room1, _) = room_service
+        .create_room("Room 1".to_string(), String::new(), creator.id.clone(), None, None)
+        .await
+        .unwrap();
+    let (room2, _) = room_service
+        .create_room("Room 2".to_string(), String::new(), creator.id.clone(), None, None)
+        .await
+        .unwrap();
+
+    // Send messages to each room
+    chat_service
+        .send_message(room1.id.clone(), creator.id.clone(), "room1_message".to_string())
+        .await
+        .unwrap();
+    chat_service
+        .send_message(room2.id.clone(), creator.id.clone(), "room2_message".to_string())
+        .await
+        .unwrap();
+
+    // Get history from room1 should only return room1 messages
+    let (history1, _) = chat_service
+        .get_history(&room1.id, None, 10)
+        .await
+        .expect("get_history for room1 should succeed");
+
+    assert_eq!(history1.len(), 1, "Room1 should have 1 message");
+    assert_eq!(history1[0].content, "room1_message", "Room1 history should only contain room1 messages");
+
+    // Get history from room2 should only return room2 messages
+    let (history2, _) = chat_service
+        .get_history(&room2.id, None, 10)
+        .await
+        .expect("get_history for room2 should succeed");
+
+    assert_eq!(history2.len(), 1, "Room2 should have 1 message");
+    assert_eq!(history2[0].content, "room2_message", "Room2 history should only contain room2 messages");
 }

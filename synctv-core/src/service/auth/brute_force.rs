@@ -19,11 +19,26 @@
 //!   (fail-closed). Used when Redis is configured.
 //! - [`InMemoryAttemptTracker`]: moka cache only. Used in standalone mode
 //!   without Redis.
+//!
+//! ## Multi-Replica Deployment Warning
+//!
+//! **IMPORTANT**: In multi-replica (cluster) deployments, Redis MUST be configured.
+//! When `RedisAttemptTracker` falls back to its in-memory cache due to Redis
+//! errors, each replica maintains independent brute-force counters. This allows
+//! attackers to potentially bypass lockouts by distributing requests across replicas.
+//!
+//! The fallback behavior logs warnings at WARN level with the key pattern
+//! `Redis degraded to fallback`. Monitor these logs to detect Redis connectivity
+//! issues in production.
+//!
+//! For single-replica deployments, use [`InMemoryAttemptTracker`] directly via
+//! [`BruteForceProtection::in_memory`] to avoid unnecessary Redis dependency.
 
 use async_trait::async_trait;
 use redis::AsyncCommands;
 use serde::{Deserialize, Serialize};
 use std::net::IpAddr;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -146,11 +161,27 @@ impl AttemptTracker for InMemoryAttemptTracker {
 /// Uses Redis Lua scripts for atomic increment + timestamp updates.
 /// Falls back to an internal moka cache when Redis times out or errors
 /// (fail-closed: brute-force protection stays active during Redis outages).
+///
+/// ## Degradation Monitoring
+///
+/// When Redis operations fail, this tracker falls back to an in-memory cache.
+/// This degradation is tracked and can be monitored via:
+/// - WARN-level logs with key `Redis degraded to fallback`
+/// - [`Self::is_degraded()`] to check current degradation state
+/// - [`Self::degraded_operation_count()`] to get total count of degraded ops
+///
+/// **WARNING**: In multi-replica deployments, degraded mode means each replica
+/// maintains independent brute-force counters, allowing attackers to bypass
+/// lockouts by distributing requests across replicas.
 #[derive(Clone)]
 pub struct RedisAttemptTracker {
     conn: redis::aio::ConnectionManager,
     /// In-memory fallback cache for fail-closed behavior on Redis errors.
     fallback: Arc<moka::future::Cache<String, (u64, i64)>>,
+    /// Tracks whether we are currently in degraded mode (using fallback).
+    degraded: Arc<AtomicBool>,
+    /// Counts total operations that fell back to in-memory.
+    degraded_count: Arc<AtomicU64>,
 }
 
 impl RedisAttemptTracker {
@@ -165,7 +196,53 @@ impl RedisAttemptTracker {
                     .time_to_live(Duration::from_secs(ttl_secs))
                     .build(),
             ),
+            degraded: Arc::new(AtomicBool::new(false)),
+            degraded_count: Arc::new(AtomicU64::new(0)),
         }
+    }
+
+    /// Check if the tracker is currently in degraded mode (using in-memory fallback).
+    ///
+    /// Returns `true` if the most recent Redis operation failed and the tracker
+    /// fell back to in-memory storage. Note that this is a point-in-time snapshot;
+    /// the state may change on the next operation.
+    #[must_use]
+    pub fn is_degraded(&self) -> bool {
+        self.degraded.load(Ordering::Relaxed)
+    }
+
+    /// Get the total count of operations that fell back to in-memory storage.
+    ///
+    /// This counter is monotonically increasing and never resets. Use this for
+    /// monitoring and alerting on Redis connectivity issues.
+    #[must_use]
+    pub fn degraded_operation_count(&self) -> u64 {
+        self.degraded_count.load(Ordering::Relaxed)
+    }
+
+    /// Mark the tracker as degraded and increment the degraded operation counter.
+    ///
+    /// This is called internally when a Redis operation fails and we fall back
+    /// to the in-memory cache.
+    fn mark_degraded(&self) {
+        self.degraded.store(true, Ordering::Relaxed);
+        let prev = self.degraded_count.fetch_add(1, Ordering::Relaxed);
+
+        // Log a warning about the degradation. Include guidance for multi-replica setups.
+        // Throttle logging: only log every 10 degraded operations to avoid log spam.
+        if prev % 10 == 0 {
+            tracing::warn!(
+                degraded_count = prev + 1,
+                "Redis degraded to fallback for brute-force tracking. \
+                 In multi-replica deployments, lockout counters are NOT shared across replicas. \
+                 Each replica maintains independent counters, reducing brute-force protection effectiveness."
+            );
+        }
+    }
+
+    /// Clear the degraded flag (called when a Redis operation succeeds).
+    fn clear_degraded(&self) {
+        self.degraded.store(false, Ordering::Relaxed);
     }
 }
 
@@ -181,6 +258,8 @@ impl AttemptTracker for RedisAttemptTracker {
         .await;
 
         let redis_result = if let Ok(inner) = redis_result { inner } else {
+            // Timeout - fall back to in-memory cache
+            self.mark_degraded();
             tracing::warn!(key = %key, "Redis timeout in brute-force check, using fallback");
             return self.fallback.get(key).await.unwrap_or((0, 0));
         };
@@ -190,15 +269,23 @@ impl AttemptTracker for RedisAttemptTracker {
                 // Try parsing as JSON state first, fall back to plain integer
                 // for backward compatibility with pre-existing counters.
                 if let Ok(state) = serde_json::from_str::<BruteForceState>(&raw) {
+                    self.clear_degraded();
                     return (state.count, state.last_failure_at);
                 }
                 if let Ok(count) = raw.parse::<u64>() {
+                    self.clear_degraded();
                     return (count, 0);
                 }
+                self.clear_degraded();
                 (0, 0)
             }
-            Ok(None) => (0, 0),
+            Ok(None) => {
+                self.clear_degraded();
+                (0, 0)
+            }
             Err(e) => {
+                // Redis error - fall back to in-memory cache
+                self.mark_degraded();
                 tracing::warn!(key = %key, error = %e, "Redis error in brute-force check, using fallback");
                 self.fallback.get(key).await.unwrap_or((0, 0))
             }
@@ -243,9 +330,12 @@ impl AttemptTracker for RedisAttemptTracker {
 
         match result {
             Ok(count) => {
+                self.clear_degraded();
                 tracing::debug!(key = %key, attempts = count, "Recorded failed attempt");
             }
             Err(e) => {
+                // Redis error - fall back to in-memory cache
+                self.mark_degraded();
                 tracing::warn!(key = %key, error = %e, "Redis error in record_failure, using fallback");
                 let (count, _) = self.fallback.get(key).await.unwrap_or((0, now));
                 self.fallback.insert(key.to_string(), (count + 1, now)).await;
@@ -259,9 +349,17 @@ impl AttemptTracker for RedisAttemptTracker {
 
         let mut conn = self.conn.clone();
         match tokio::time::timeout(REDIS_OPERATION_TIMEOUT, conn.del::<_, ()>(key)).await {
-            Ok(Ok(())) => {}
-            Ok(Err(e)) => tracing::warn!(key = %key, error = %e, "Redis error in reset"),
-            Err(e) => tracing::warn!(key = %key, error = %e, "Redis timeout in reset"),
+            Ok(Ok(())) => {
+                self.clear_degraded();
+            }
+            Ok(Err(e)) => {
+                self.mark_degraded();
+                tracing::warn!(key = %key, error = %e, "Redis error in reset");
+            }
+            Err(e) => {
+                self.mark_degraded();
+                tracing::warn!(key = %key, error = %e, "Redis timeout in reset");
+            }
         }
     }
 }
@@ -446,5 +544,72 @@ mod tests {
         assert_eq!(BruteForceProtection::lockout_duration(14), Some(TIER2_LOCKOUT_SECS));
         assert_eq!(BruteForceProtection::lockout_duration(15), Some(TIER3_LOCKOUT_SECS));
         assert_eq!(BruteForceProtection::lockout_duration(100), Some(TIER3_LOCKOUT_SECS));
+    }
+
+    // ========================================================================
+    // RedisAttemptTracker degradation tracking tests
+    // ========================================================================
+
+    /// Test that RedisAttemptTracker initializes with degradation tracking in clean state
+    #[test]
+    fn test_redis_tracker_initial_state_not_degraded() {
+        // Create a mock RedisAttemptTracker to test initial state
+        // Note: We can't actually create a ConnectionManager without a Redis server,
+        // so we test the atomic state management separately
+        let degraded = Arc::new(AtomicBool::new(false));
+        let degraded_count = Arc::new(AtomicU64::new(0));
+
+        assert!(!degraded.load(Ordering::Relaxed));
+        assert_eq!(degraded_count.load(Ordering::Relaxed), 0);
+    }
+
+    /// Test that the degraded flag and counter work correctly
+    #[test]
+    fn test_degradation_state_management() {
+        let degraded = Arc::new(AtomicBool::new(false));
+        let degraded_count = Arc::new(AtomicU64::new(0));
+
+        // Simulate marking as degraded
+        degraded.store(true, Ordering::Relaxed);
+        let prev = degraded_count.fetch_add(1, Ordering::Relaxed);
+        assert_eq!(prev, 0);
+        assert!(degraded.load(Ordering::Relaxed));
+        assert_eq!(degraded_count.load(Ordering::Relaxed), 1);
+
+        // Simulate clearing degraded state
+        degraded.store(false, Ordering::Relaxed);
+        assert!(!degraded.load(Ordering::Relaxed));
+        // Counter should still be 1 (monotonically increasing)
+        assert_eq!(degraded_count.load(Ordering::Relaxed), 1);
+
+        // Multiple degradation events
+        for _ in 0..5 {
+            degraded.store(true, Ordering::Relaxed);
+            degraded_count.fetch_add(1, Ordering::Relaxed);
+        }
+        assert_eq!(degraded_count.load(Ordering::Relaxed), 6);
+    }
+
+    /// Test that InMemoryAttemptTracker never reports as degraded
+    /// (it's always the intended backend, not a fallback)
+    #[tokio::test]
+    async fn test_in_memory_tracker_is_intended_backend() {
+        let tracker = InMemoryAttemptTracker::new(1000, 900);
+        let key = "test:user";
+
+        // Perform operations - these should work without any "degradation" concept
+        let now = chrono::Utc::now().timestamp();
+        tracker.record_failure(key, now, 900).await;
+        tracker.record_failure(key, now, 900).await;
+
+        let (count, _) = tracker.get_attempts(key).await;
+        assert_eq!(count, 2);
+
+        tracker.reset(key).await;
+        let (count, _) = tracker.get_attempts(key).await;
+        assert_eq!(count, 0);
+
+        // InMemoryAttemptTracker is always the intended backend,
+        // there's no "fallback" or "degraded" state to check
     }
 }

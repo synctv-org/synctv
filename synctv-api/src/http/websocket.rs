@@ -260,11 +260,41 @@ impl WebSocketMessageSender {
 const fn is_critical_message(message: &ServerMessage) -> bool {
     use crate::proto::client::server_message::Message;
     match &message.message {
-        Some(Message::PlaybackState(_)) => true,
-        Some(Message::Error(_)) => true,     // kick/ban/room deleted arrive as Error
-        Some(Message::PermissionChanged(_)) => true,
-        Some(Message::RoomSettings(_)) => true,
+        Some(Message::PlaybackState(_)) => true,     // Playback state sync
+        Some(Message::PlayingChanged(_)) => true,    // Playing media changed
+        Some(Message::Error(_)) => true,             // kick/ban/room deleted arrive as Error
+        Some(Message::PermissionChanged(_)) => true, // Permission changes must be delivered
+        Some(Message::RoomSettings(_)) => true,      // Room settings sync
         _ => false,
+    }
+}
+
+/// Returns a human-readable message type name for logging purposes.
+fn message_type_name(message: &ServerMessage) -> &'static str {
+    use crate::proto::client::server_message::Message;
+    match &message.message {
+        Some(Message::Chat(_)) => "Chat",
+        Some(Message::PlaybackState(_)) => "PlaybackState",
+        Some(Message::UserJoined(_)) => "UserJoined",
+        Some(Message::UserLeft(_)) => "UserLeft",
+        Some(Message::RoomSettings(_)) => "RoomSettings",
+        Some(Message::HeartbeatAck(_)) => "HeartbeatAck",
+        Some(Message::Error(_)) => "Error",
+        Some(Message::MediaAdded(_)) => "MediaAdded",
+        Some(Message::MediaRemoved(_)) => "MediaRemoved",
+        Some(Message::PermissionChanged(_)) => "PermissionChanged",
+        Some(Message::PlaylistCreated(_)) => "PlaylistCreated",
+        Some(Message::PlaylistUpdated(_)) => "PlaylistUpdated",
+        Some(Message::PlaylistDeleted(_)) => "PlaylistDeleted",
+        Some(Message::PlayingChanged(_)) => "PlayingChanged",
+        Some(Message::WebrtcOffer(_)) => "WebrtcOffer",
+        Some(Message::WebrtcAnswer(_)) => "WebrtcAnswer",
+        Some(Message::WebrtcIceCandidate(_)) => "WebrtcIceCandidate",
+        Some(Message::WebrtcJoin(_)) => "WebrtcJoin",
+        Some(Message::WebrtcLeave(_)) => "WebrtcLeave",
+        Some(Message::SfuMigrationOffer(_)) => "SfuMigrationOffer",
+        Some(Message::SfuMigrationStatus(_)) => "SfuMigrationStatus",
+        None => "None",
     }
 }
 
@@ -294,8 +324,10 @@ impl crate::impls::messaging::MessageSender for WebSocketMessageSender {
                 Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
                     // Critical: increment drop counter and return error to disconnect
                     let drops = self.consecutive_drops.fetch_add(1, Ordering::Relaxed) + 1;
+                    let msg_type = message_type_name(&message);
                     warn!(
                         consecutive_drops = drops,
+                        message_type = msg_type,
                         "Critical WebSocket message dropped: channel full (slow client)"
                     );
                     synctv_core::metrics::http::WEBSOCKET_ERRORS_TOTAL
@@ -304,7 +336,7 @@ impl crate::impls::messaging::MessageSender for WebSocketMessageSender {
                     // For critical messages, always signal an error so the caller can
                     // decide to disconnect the client.
                     return Err(format!(
-                        "Critical message dropped: channel full after {drops} consecutive drops (slow client)"
+                        "Critical message (type={msg_type}) dropped: channel full after {drops} consecutive drops (slow client)"
                     ));
                 }
             }
@@ -319,8 +351,10 @@ impl crate::impls::messaging::MessageSender for WebSocketMessageSender {
             }
             Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
                 let drops = self.consecutive_drops.fetch_add(1, Ordering::Relaxed) + 1;
+                let msg_type = message_type_name(&message);
                 warn!(
                     consecutive_drops = drops,
+                    message_type = msg_type,
                     "WebSocket message dropped: channel full (slow client)"
                 );
                 synctv_core::metrics::http::WEBSOCKET_ERRORS_TOTAL
@@ -329,10 +363,13 @@ impl crate::impls::messaging::MessageSender for WebSocketMessageSender {
                 if drops >= SLOW_CLIENT_DROP_THRESHOLD {
                     // Too many consecutive drops: disconnect the slow client gracefully
                     Err(format!(
-                        "Slow client disconnected: {drops} consecutive message drops"
+                        "Slow client disconnected: {drops} consecutive message drops (last dropped: {msg_type})"
                     ))
                 } else {
-                    // Still within threshold: silently drop the non-critical message
+                    // Still within threshold: log and drop the non-critical message
+                    // Note: Non-critical messages (chat, user join/leave, etc.) can be dropped
+                    // but this log helps diagnose sync issues. If playback state seems out of
+                    // sync, check for frequent "message dropped" warnings.
                     Ok(())
                 }
             }

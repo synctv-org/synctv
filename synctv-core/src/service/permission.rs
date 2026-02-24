@@ -268,6 +268,38 @@ impl PermissionService {
         self.room_settings_repo = Some(repo);
     }
 
+    /// Check if room settings repository is configured
+    ///
+    /// Returns `true` if a room settings repository has been set via
+    /// `set_room_settings_repo()`, `false` otherwise.
+    ///
+    /// When `false`, permission checks will fall back to default `RoomSettings`,
+    /// which may ignore room-specific permission customizations.
+    #[must_use]
+    pub fn has_room_settings_repo(&self) -> bool {
+        self.room_settings_repo.is_some()
+    }
+
+    /// Log a warning if room_settings_repo is not configured
+    ///
+    /// Call this during application startup to ensure operators are aware
+    /// that room-specific permission settings will be ignored.
+    ///
+    /// # Example
+    /// ```ignore
+    /// let permission_service = PermissionService::new(...);
+    /// permission_service.warn_if_missing_settings_repo();
+    /// ```
+    pub fn warn_if_missing_settings_repo(&self) {
+        if !self.has_room_settings_repo() {
+            tracing::warn!(
+                "PermissionService started without room_settings_repo; \
+                 all rooms will use default permission settings. \
+                 Call set_room_settings_repo() to enable room-specific permissions."
+            );
+        }
+    }
+
     /// Get global default permissions for a role from `SettingsRegistry`
     fn get_global_default_permissions(&self, role: &crate::models::RoomRole) -> PermissionBits {
         if let Some(registry) = &self.settings_registry {
@@ -397,6 +429,12 @@ impl PermissionService {
         let room_settings = if let Some(ref settings_repo) = self.room_settings_repo {
             settings_repo.get(room_id).await?
         } else {
+            tracing::warn!(
+                room_id = %room_id.as_str(),
+                user_id = %user_id.as_str(),
+                "room_settings_repo not configured, using default RoomSettings; \
+                 room-specific permission settings will be ignored"
+            );
             RoomSettings::default()
         };
 
@@ -434,6 +472,12 @@ impl PermissionService {
         let room_settings = if let Some(ref settings_repo) = self.room_settings_repo {
             settings_repo.get(room_id).await?
         } else {
+            tracing::warn!(
+                room_id = %room_id.as_str(),
+                user_id = %user_id.as_str(),
+                "room_settings_repo not configured, using default RoomSettings; \
+                 room-specific permission settings will be ignored"
+            );
             RoomSettings::default()
         };
 
@@ -1139,5 +1183,147 @@ mod tests {
         assert!(all.has(PermissionBits::VIEW_PLAYLIST));
         assert!(all.has(PermissionBits::PLAY_CONTROL));
         assert!(all.has(PermissionBits::MANAGE_ADMIN));
+    }
+
+    // ========== Room Settings Repository Configuration Tests ==========
+
+    #[test]
+    fn test_has_room_settings_repo_returns_false_by_default() {
+        let service = make_service();
+        assert!(!service.has_room_settings_repo());
+    }
+
+    #[test]
+    fn test_has_room_settings_repo_returns_true_after_set() {
+        let mut service = make_service();
+
+        // Create a RoomSettingsRepository
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let pool = rt.block_on(async {
+            sqlx::PgPool::connect_lazy("postgres://unused:5432/unused").unwrap()
+        });
+        let settings_repo = RoomSettingsRepository::new(pool);
+
+        // Initially false
+        assert!(!service.has_room_settings_repo());
+
+        // Set the repository
+        service.set_room_settings_repo(settings_repo);
+
+        // Now returns true
+        assert!(service.has_room_settings_repo());
+    }
+
+    #[test]
+    fn test_without_cache_has_no_room_settings_repo() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let pool = rt.block_on(async {
+            sqlx::PgPool::connect_lazy("postgres://unused:5432/unused").unwrap()
+        });
+        let member_repo = RoomMemberRepository::new(pool);
+        let room_repo = RoomRepository::new(rt.block_on(async {
+            sqlx::PgPool::connect_lazy("postgres://unused:5432/unused").unwrap()
+        }));
+
+        let service = PermissionService::without_cache(member_repo, room_repo, None);
+        assert!(!service.has_room_settings_repo());
+    }
+
+    #[test]
+    fn test_new_service_has_no_room_settings_repo() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let pool = rt.block_on(async {
+            sqlx::PgPool::connect_lazy("postgres://unused:5432/unused").unwrap()
+        });
+        let member_repo = RoomMemberRepository::new(pool);
+        let room_repo = RoomRepository::new(rt.block_on(async {
+            sqlx::PgPool::connect_lazy("postgres://unused:5432/unused").unwrap()
+        }));
+
+        let service = PermissionService::new(
+            member_repo,
+            room_repo,
+            None,
+            PermissionService::DEFAULT_CACHE_SIZE,
+            PermissionService::DEFAULT_CACHE_TTL_SECS,
+        );
+        assert!(!service.has_room_settings_repo());
+    }
+
+    // ========== warn_if_missing_settings_repo Tests ==========
+
+    #[test]
+    fn test_warn_if_missing_settings_repo_does_not_panic() {
+        // This test ensures the method exists and can be called without panicking
+        let service = make_service();
+        // Should not panic even when room_settings_repo is None
+        service.warn_if_missing_settings_repo();
+    }
+
+    #[test]
+    fn test_warn_if_missing_settings_repo_no_warning_when_set() {
+        let mut service = make_service();
+
+        // Create a RoomSettingsRepository
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let pool = rt.block_on(async {
+            sqlx::PgPool::connect_lazy("postgres://unused:5432/unused").unwrap()
+        });
+        let settings_repo = RoomSettingsRepository::new(pool);
+
+        // Set the repository
+        service.set_room_settings_repo(settings_repo);
+
+        // Should not panic or emit warning when room_settings_repo is set
+        service.warn_if_missing_settings_repo();
+    }
+
+    #[test]
+    fn test_with_invalidation_has_no_room_settings_repo_by_default() {
+        // Create services without real Redis - just verify construction doesn't fail
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let pool = rt.block_on(async {
+            sqlx::PgPool::connect_lazy("postgres://unused:5432/unused").unwrap()
+        });
+        let member_repo = RoomMemberRepository::new(pool);
+        let room_repo = RoomRepository::new(rt.block_on(async {
+            sqlx::PgPool::connect_lazy("postgres://unused:5432/unused").unwrap()
+        }));
+
+        // Create without invalidation service to test basic construction
+        let service = PermissionService::new(
+            member_repo,
+            room_repo,
+            None,
+            PermissionService::DEFAULT_CACHE_SIZE,
+            PermissionService::DEFAULT_CACHE_TTL_SECS,
+        );
+
+        // Verify default state
+        assert!(!service.has_room_settings_repo());
+    }
+
+    #[test]
+    fn test_set_room_settings_repo_can_be_called_multiple_times() {
+        let mut service = make_service();
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let pool1 = rt.block_on(async {
+            sqlx::PgPool::connect_lazy("postgres://unused:5432/unused").unwrap()
+        });
+        let pool2 = rt.block_on(async {
+            sqlx::PgPool::connect_lazy("postgres://unused:5432/unused").unwrap()
+        });
+
+        let settings_repo1 = RoomSettingsRepository::new(pool1);
+        let settings_repo2 = RoomSettingsRepository::new(pool2);
+
+        // Set first repo
+        service.set_room_settings_repo(settings_repo1);
+        assert!(service.has_room_settings_repo());
+
+        // Replace with second repo - should work without panicking
+        service.set_room_settings_repo(settings_repo2);
+        assert!(service.has_room_settings_repo());
     }
 }

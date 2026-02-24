@@ -280,6 +280,11 @@ pub async fn serve(grpc_config: GrpcServerConfig<'_>) -> anyhow::Result<()> {
     // Create auth interceptor for authenticated services (clone jwt_service for blacklist layer)
     let auth_interceptor = AuthInterceptor::new(jwt_service.clone());
 
+    // Create JwtValidator for rate limiting layer (needs to verify JWT to extract user_id)
+    let jwt_validator_for_rate_limit = synctv_core::service::auth::JwtValidator::new(
+        std::sync::Arc::new(jwt_service.clone()),
+    );
+
     // Create server builder with the security checking tower layer.
     // This layer extracts the raw JWT bearer token from the HTTP Authorization
     // header and performs async security checks via the shared SecurityPipeline:
@@ -301,9 +306,12 @@ pub async fn serve(grpc_config: GrpcServerConfig<'_>) -> anyhow::Result<()> {
     // Distributed rate limiting layer: uses Redis when available (shared across
     // replicas), falls back to in-memory governor when Redis is unavailable.
     // Determines tier per-request from the gRPC service path.
+    // Uses verified user_id from JWT claims as rate limit key to ensure all tokens
+    // belonging to the same user share a single quota.
     let distributed_rate_limit_layer = rate_limit_layer::GrpcRateLimitLayer::new(
         rate_limiter_for_layer,
         Arc::new(config.clone()),
+        jwt_validator_for_rate_limit,
     );
     let mut server_builder = Server::builder()
         .layer(blacklist_layer)

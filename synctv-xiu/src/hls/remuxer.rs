@@ -59,6 +59,10 @@ pub struct StreamProcessorState {
     pub is_ended: bool,
     /// Creation timestamp used to detect if this entry was replaced by a new handler
     pub created_at: Instant,
+    /// When set, this stream's segments can be cleaned up immediately.
+    /// Set when the stream handler ends to allow memory-conscious cleanup
+    /// rather than waiting for the 60-second grace period to elapse.
+    pub marked_for_cleanup: bool,
 }
 
 impl StreamProcessorState {
@@ -462,6 +466,7 @@ impl StreamHandler {
             segments: VecDeque::new(),
             is_ended: false,
             created_at: handler_created_at,
+            marked_for_cleanup: false,
         }));
         self.stream_registry.insert(registry_key.clone(), state.clone());
 
@@ -492,6 +497,16 @@ impl StreamHandler {
 
         // Unsubscribe when done
         self.unsubscribe_from_stream_hub().await?;
+
+        // Mark the stream state as eligible for immediate cleanup.
+        // This allows the background cleanup task to free memory based on
+        // memory pressure rather than waiting for the full 60-second delay.
+        // This fixes the memory spike issue when a new publisher starts
+        // while an old handler is still in its grace period.
+        {
+            let mut state_guard = state.write();
+            state_guard.marked_for_cleanup = true;
+        }
 
         // Remove from registry after some delay (allow clients to finish).
         // We capture handler_created_at before sleeping so that when the timer fires
@@ -1047,6 +1062,7 @@ mod tests {
             segments: VecDeque::new(),
             is_ended: false,
             created_at: Instant::now(),
+            marked_for_cleanup: false,
         };
 
         // Add some segments
@@ -1086,6 +1102,7 @@ mod tests {
             segments: VecDeque::new(),
             is_ended: false,
             created_at: Instant::now(),
+            marked_for_cleanup: false,
         };
 
         // Add segment with discontinuity
@@ -1112,6 +1129,7 @@ mod tests {
             segments: VecDeque::new(),
             is_ended: true,
             created_at: Instant::now(),
+            marked_for_cleanup: false,
         };
 
         // Add a segment
@@ -1138,6 +1156,7 @@ mod tests {
             segments: VecDeque::new(),
             is_ended: false,
             created_at: Instant::now(),
+            marked_for_cleanup: false,
         };
 
         // Add segment

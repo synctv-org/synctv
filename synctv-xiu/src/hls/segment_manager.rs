@@ -45,6 +45,15 @@ pub struct SegmentManager {
     config: CleanupConfig,
 }
 
+/// Trait for checking which streams are marked for cleanup.
+/// Implemented by the stream registry to allow SegmentManager
+/// to query cleanup eligibility without tight coupling.
+pub trait StreamCleanupChecker: Send + Sync {
+    /// Returns list of (app_name, stream_name) tuples for streams
+    /// that are marked for cleanup (handler ended, grace period started).
+    fn get_streams_marked_for_cleanup(&self) -> Vec<(String, String)>;
+}
+
 impl SegmentManager {
     /// Create new segment manager
     pub fn new(storage: Arc<dyn HlsStorage>, config: CleanupConfig) -> Self {
@@ -58,12 +67,33 @@ impl SegmentManager {
     pub fn start_cleanup_task(self: Arc<Self>, shutdown_token: CancellationToken) {
         let manager = Arc::clone(&self);
         tokio::spawn(async move {
-            manager.run_cleanup_loop(shutdown_token).await;
+            manager.run_cleanup_loop(shutdown_token, None).await;
+        });
+    }
+
+    /// Start periodic cleanup task with stream registry for priority cleanup.
+    ///
+    /// The stream registry is used to identify streams marked for cleanup
+    /// (handler ended but still in grace period). These streams can be
+    /// cleaned up earlier based on memory pressure rather than waiting
+    /// for the full grace period.
+    pub fn start_cleanup_task_with_registry(
+        self: Arc<Self>,
+        shutdown_token: CancellationToken,
+        registry: Arc<dyn StreamCleanupChecker>,
+    ) {
+        let manager = Arc::clone(&self);
+        tokio::spawn(async move {
+            manager.run_cleanup_loop(shutdown_token, Some(registry)).await;
         });
     }
 
     /// Run the cleanup loop until cancelled.
-    async fn run_cleanup_loop(&self, shutdown_token: CancellationToken) {
+    async fn run_cleanup_loop(
+        &self,
+        shutdown_token: CancellationToken,
+        registry: Option<Arc<dyn StreamCleanupChecker>>,
+    ) {
         let mut interval = time::interval(self.config.interval);
 
         tracing::info!(
@@ -81,6 +111,32 @@ impl SegmentManager {
                 }
             }
 
+            // First, clean up streams marked for cleanup (priority cleanup)
+            // This helps reduce memory usage when handlers end but are still
+            // in the 60-second grace period
+            if let Some(ref registry) = registry {
+                let marked_streams = registry.get_streams_marked_for_cleanup();
+                for (app_name, stream_name) in marked_streams {
+                    match self.cleanup_stream(&app_name, &stream_name).await {
+                        Ok(deleted) => {
+                            if deleted > 0 {
+                                tracing::info!(
+                                    "Priority cleanup: deleted {} segments for marked stream {}/{}",
+                                    deleted, app_name, stream_name
+                                );
+                            }
+                        }
+                        Err(e) => {
+                            tracing::warn!(
+                                "Priority cleanup failed for {}/{}: {}",
+                                app_name, stream_name, e
+                            );
+                        }
+                    }
+                }
+            }
+
+            // Then, clean up expired segments by time
             match self.storage.cleanup(self.config.retention).await {
                 Ok(deleted) => {
                     if deleted > 0 {

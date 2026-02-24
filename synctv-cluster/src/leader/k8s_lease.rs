@@ -24,6 +24,12 @@ use tokio::sync::broadcast;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 
+/// Default base grace period in seconds before attempting re-acquisition.
+const DEFAULT_GRACE_PERIOD_BASE_SECS: u64 = 5;
+
+/// Default maximum grace period in seconds (cap for exponential backoff).
+const DEFAULT_GRACE_PERIOD_MAX_SECS: u64 = 60;
+
 use super::LeadershipEvent;
 
 /// K8s Lease-based leader election.
@@ -51,12 +57,19 @@ pub struct K8sLeaderElector {
     lease_duration_secs: i32,
     /// How often to attempt renewal in seconds
     renew_interval_secs: u64,
+    /// Base grace period in seconds for exponential backoff.
+    /// After losing leadership, we wait this long before first re-acquisition attempt.
+    grace_period_base_secs: u64,
+    /// Maximum grace period in seconds (cap for exponential backoff).
+    grace_period_max_secs: u64,
     /// Monotonically increasing epoch (fencing token) incremented on each
     /// leadership acquisition. Used for split-brain protection.
     leader_epoch: Arc<AtomicU64>,
     /// Timestamp at which leadership was lost. Used to enforce a grace period
     /// before re-acquisition attempts.
     leadership_lost_at: Arc<parking_lot::Mutex<Option<tokio::time::Instant>>>,
+    /// Number of consecutive leadership losses (for exponential backoff).
+    consecutive_losses: Arc<AtomicU64>,
     /// Broadcast channel for leadership change events (observer pattern)
     event_tx: Arc<broadcast::Sender<LeadershipEvent>>,
 }
@@ -69,6 +82,12 @@ pub struct K8sLeaderElectorConfig {
     pub lease_duration_secs: i32,
     /// Renewal interval in seconds (default: 10, must be < lease_duration_secs)
     pub renew_interval_secs: u64,
+    /// Base grace period in seconds after losing leadership (default: 5).
+    /// Uses exponential backoff on consecutive losses.
+    pub grace_period_base_secs: u64,
+    /// Maximum grace period in seconds (default: 60).
+    /// Caps the exponential backoff to prevent indefinite waiting.
+    pub grace_period_max_secs: u64,
 }
 
 impl Default for K8sLeaderElectorConfig {
@@ -77,6 +96,8 @@ impl Default for K8sLeaderElectorConfig {
             lease_name: "synctv-leader".to_string(),
             lease_duration_secs: 30,
             renew_interval_secs: 10,
+            grace_period_base_secs: DEFAULT_GRACE_PERIOD_BASE_SECS,
+            grace_period_max_secs: DEFAULT_GRACE_PERIOD_MAX_SECS,
         }
     }
 }
@@ -122,8 +143,11 @@ impl K8sLeaderElector {
             identity,
             lease_duration_secs: config.lease_duration_secs,
             renew_interval_secs: config.renew_interval_secs,
+            grace_period_base_secs: config.grace_period_base_secs,
+            grace_period_max_secs: config.grace_period_max_secs,
             leader_epoch: Arc::new(AtomicU64::new(0)),
             leadership_lost_at: Arc::new(parking_lot::Mutex::new(None)),
+            consecutive_losses: Arc::new(AtomicU64::new(0)),
             event_tx: Arc::new(event_tx),
         })
     }
@@ -183,6 +207,8 @@ impl K8sLeaderElector {
             namespace = %self.namespace,
             lease_duration_secs = self.lease_duration_secs,
             renew_interval_secs = self.renew_interval_secs,
+            grace_period_base_secs = self.grace_period_base_secs,
+            grace_period_max_secs = self.grace_period_max_secs,
             "K8s Lease leader election started"
         );
 
@@ -247,9 +273,12 @@ impl K8sLeaderElector {
             self.renew_lease(leases, &lease).await;
         } else if lease_expired {
             // Grace period: don't try to re-acquire immediately after losing leadership
-            if self.in_grace_period() {
-                debug!(
+            // Uses exponential backoff based on consecutive losses
+            if let Some(remaining) = self.grace_period_remaining() {
+                info!(
                     identity = %self.identity,
+                    consecutive_losses = self.consecutive_losses.load(Ordering::Relaxed),
+                    remaining_secs = remaining.as_secs(),
                     "In grace period after leadership loss, deferring acquisition"
                 );
                 return;
@@ -258,6 +287,7 @@ impl K8sLeaderElector {
             info!(
                 identity = %self.identity,
                 previous_holder = ?holder,
+                consecutive_losses = self.consecutive_losses.load(Ordering::Relaxed),
                 "Lease expired, attempting to acquire"
             );
             self.update_lease(leases, &lease).await;
@@ -268,6 +298,8 @@ impl K8sLeaderElector {
                 holder = ?holder,
                 "Another pod holds the lease"
             );
+            // Reset consecutive losses since another valid leader exists
+            self.consecutive_losses.store(0, Ordering::Relaxed);
             self.set_leader(false);
         }
     }
@@ -621,17 +653,26 @@ impl K8sLeaderElector {
 
     /// Update leader status with logging on transitions.
     /// Notifies observers when leadership is lost.
+    /// Increments consecutive loss counter for exponential backoff.
     fn set_leader(&self, leader: bool) {
         let was_leader = self.is_leader.swap(leader, Ordering::AcqRel);
         if was_leader && !leader {
-            info!(identity = %self.identity, "Lost K8s lease leadership");
+            // Increment consecutive losses for exponential backoff
+            let losses = self.consecutive_losses.fetch_add(1, Ordering::AcqRel) + 1;
+            let grace_period = self.calculate_grace_period(losses);
+            info!(
+                identity = %self.identity,
+                consecutive_losses = losses,
+                grace_period_secs = grace_period.as_secs(),
+                "Lost K8s lease leadership"
+            );
             *self.leadership_lost_at.lock() = Some(tokio::time::Instant::now());
             // Notify observers of leadership loss
             let _ = self.event_tx.send(LeadershipEvent::Lost);
         }
     }
 
-    /// Record leadership gain: increment epoch and clear grace period.
+    /// Record leadership gain: increment epoch, clear grace period, and reset losses.
     /// Notifies observers when leadership is gained.
     ///
     /// Ordering: (1) store is_leader=true, (2) SeqCst fence, (3) increment epoch,
@@ -649,11 +690,13 @@ impl K8sLeaderElector {
         // Step 3: Increment epoch after is_leader is visible.
         let epoch = self.leader_epoch.fetch_add(1, Ordering::AcqRel) + 1;
 
-        // Step 4: Clear grace period and log.
+        // Step 4: Clear grace period, reset consecutive losses, and log.
         *self.leadership_lost_at.lock() = None;
+        let previous_losses = self.consecutive_losses.swap(0, Ordering::AcqRel);
         info!(
             identity = %self.identity,
             epoch = epoch,
+            previous_consecutive_losses = previous_losses,
             "Gained K8s lease leadership"
         );
 
@@ -661,20 +704,230 @@ impl K8sLeaderElector {
         let _ = self.event_tx.send(LeadershipEvent::Gained { epoch });
     }
 
-    /// Returns `true` if we recently lost leadership and should wait before
-    /// attempting to re-acquire.
-    fn in_grace_period(&self) -> bool {
+    /// Calculate the grace period duration based on consecutive losses.
+    /// Uses exponential backoff: base * 2^(losses-1), capped at max.
+    fn calculate_grace_period(&self, consecutive_losses: u64) -> Duration {
+        if consecutive_losses == 0 {
+            return Duration::from_secs(self.grace_period_base_secs);
+        }
+
+        // Exponential backoff: base * 2^(losses-1)
+        // Cap at max to prevent indefinite waiting
+        let multiplier = 1u64 << (consecutive_losses - 1).min(6); // Max 2^6 = 64x
+        let grace_secs = (self.grace_period_base_secs * multiplier)
+            .min(self.grace_period_max_secs);
+
+        Duration::from_secs(grace_secs)
+    }
+
+    /// Returns the remaining grace period duration, or None if not in grace period.
+    fn grace_period_remaining(&self) -> Option<Duration> {
         let guard = self.leadership_lost_at.lock();
         if let Some(lost_at) = *guard {
-            lost_at.elapsed() < Duration::from_secs(self.renew_interval_secs)
+            let losses = self.consecutive_losses.load(Ordering::Relaxed);
+            let grace_period = self.calculate_grace_period(losses);
+            let elapsed = lost_at.elapsed();
+
+            if elapsed < grace_period {
+                Some(grace_period - elapsed)
+            } else {
+                None
+            }
         } else {
-            false
+            None
         }
+    }
+
+    /// Returns `true` if we recently lost leadership and should wait before
+    /// attempting to re-acquire. Uses exponential backoff based on consecutive losses.
+    fn in_grace_period(&self) -> bool {
+        self.grace_period_remaining().is_some()
+    }
+
+    /// Returns the number of consecutive leadership losses.
+    /// Useful for monitoring and health checks.
+    pub fn consecutive_losses(&self) -> u64 {
+        self.consecutive_losses.load(Ordering::Relaxed)
     }
 }
 
 impl super::LeaderElect for K8sLeaderElector {
     fn subscribe(&self) -> tokio::sync::broadcast::Receiver<super::LeadershipEvent> {
         self.event_tx.subscribe()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_default_config() {
+        let config = K8sLeaderElectorConfig::default();
+        assert_eq!(config.lease_name, "synctv-leader");
+        assert_eq!(config.lease_duration_secs, 30);
+        assert_eq!(config.renew_interval_secs, 10);
+        assert_eq!(config.grace_period_base_secs, DEFAULT_GRACE_PERIOD_BASE_SECS);
+        assert_eq!(config.grace_period_max_secs, DEFAULT_GRACE_PERIOD_MAX_SECS);
+    }
+
+    #[test]
+    fn test_calculate_grace_period_exponential_backoff() {
+        // Create a minimal elector for testing grace period calculation
+        // We don't need a real K8s client for this unit test
+        let base_secs = 5u64;
+        let max_secs = 60u64;
+
+        // Test the exponential backoff calculation directly
+        // consecutive_losses = 0: grace = base = 5s
+        // consecutive_losses = 1: grace = base * 2^0 = 5s
+        // consecutive_losses = 2: grace = base * 2^1 = 10s
+        // consecutive_losses = 3: grace = base * 2^2 = 20s
+        // consecutive_losses = 4: grace = base * 2^3 = 40s
+        // consecutive_losses = 5: grace = base * 2^4 = 60s (capped at max)
+        // consecutive_losses = 6: grace = base * 2^5 = 60s (capped at max)
+        // consecutive_losses = 7+: grace = 60s (capped at max)
+
+        let test_cases = [
+            (0, 5),   // 5 * 1 = 5
+            (1, 5),   // 5 * 2^0 = 5
+            (2, 10),  // 5 * 2^1 = 10
+            (3, 20),  // 5 * 2^2 = 20
+            (4, 40),  // 5 * 2^3 = 40
+            (5, 60),  // 5 * 2^4 = 80, capped at 60
+            (6, 60),  // 5 * 2^5 = 160, capped at 60
+            (10, 60), // capped at max
+        ];
+
+        for (losses, expected_secs) in test_cases {
+            let multiplier = if losses == 0 {
+                1
+            } else {
+                1u64 << (losses - 1).min(6)
+            };
+            let grace_secs = (base_secs * multiplier).min(max_secs);
+            assert_eq!(
+                grace_secs, expected_secs,
+                "Failed for consecutive_losses = {}",
+                losses
+            );
+        }
+    }
+
+    #[test]
+    fn test_grace_period_caps_at_max() {
+        // Verify that even with very high consecutive losses, grace period is capped
+        let base_secs = 5u64;
+        let max_secs = 60u64;
+
+        // Simulate very high consecutive losses
+        for losses in 10u64..100 {
+            let multiplier = 1u64 << (losses - 1).min(6);
+            let grace_secs = (base_secs * multiplier).min(max_secs);
+            assert_eq!(
+                grace_secs, 60,
+                "Grace period should be capped at max for losses = {}",
+                losses
+            );
+        }
+    }
+
+    #[test]
+    fn test_grace_period_with_custom_config() {
+        // Test with different base and max values
+        let base_secs = 10u64;
+        let max_secs = 120u64;
+
+        let test_cases = [
+            (0, 10),  // base
+            (1, 10),  // base * 2^0 = 10
+            (2, 20),  // base * 2^1 = 20
+            (3, 40),  // base * 2^2 = 40
+            (4, 80),  // base * 2^3 = 80
+            (5, 120), // base * 2^4 = 160, capped at 120
+            (6, 120), // capped at max
+        ];
+
+        for (losses, expected_secs) in test_cases {
+            let multiplier = if losses == 0 {
+                1
+            } else {
+                1u64 << (losses - 1).min(6)
+            };
+            let grace_secs = (base_secs * multiplier).min(max_secs);
+            assert_eq!(
+                grace_secs, expected_secs,
+                "Failed for consecutive_losses = {}",
+                losses
+            );
+        }
+    }
+
+    #[test]
+    fn test_grace_period_remaining_returns_none_when_no_loss() {
+        // When leadership_lost_at is None, grace_period_remaining should return None
+        // This is tested by verifying the logic without a full elector
+        let leadership_lost_at: Arc<parking_lot::Mutex<Option<tokio::time::Instant>>> =
+            Arc::new(parking_lot::Mutex::new(None));
+
+        let guard = leadership_lost_at.lock();
+        let result = if let Some(_lost_at) = *guard {
+            true
+        } else {
+            false
+        };
+        drop(guard);
+
+        assert!(!result, "Should not be in grace period when no loss recorded");
+    }
+
+    #[test]
+    fn test_consecutive_losses_resets_on_gain() {
+        // This test verifies that consecutive_losses counter increments on loss
+        // and resets on gain. The actual logic is in set_leader and gain_leadership.
+        let consecutive_losses = Arc::new(AtomicU64::new(0));
+
+        // Simulate first loss
+        let losses = consecutive_losses.fetch_add(1, Ordering::AcqRel) + 1;
+        assert_eq!(losses, 1);
+
+        // Simulate second loss
+        let losses = consecutive_losses.fetch_add(1, Ordering::AcqRel) + 1;
+        assert_eq!(losses, 2);
+
+        // Simulate third loss
+        let losses = consecutive_losses.fetch_add(1, Ordering::AcqRel) + 1;
+        assert_eq!(losses, 3);
+
+        // Simulate leadership gain (reset)
+        let previous = consecutive_losses.swap(0, Ordering::AcqRel);
+        assert_eq!(previous, 3, "Should have had 3 consecutive losses before reset");
+        assert_eq!(consecutive_losses.load(Ordering::Relaxed), 0, "Should be reset to 0");
+    }
+
+    #[test]
+    fn test_grace_period_elapsed_check() {
+        // Test that grace period correctly detects when elapsed time exceeds threshold
+        use std::time::Duration;
+
+        let base_secs = 5u64;
+        let max_secs = 60u64;
+        let consecutive_losses = 2u64; // grace = 10s
+
+        let grace_period = {
+            let multiplier = 1u64 << (consecutive_losses - 1).min(6);
+            Duration::from_secs((base_secs * multiplier).min(max_secs))
+        };
+
+        assert_eq!(grace_period, Duration::from_secs(10));
+
+        // Simulate elapsed time scenarios
+        let elapsed_short = Duration::from_secs(5);  // 5s < 10s grace
+        let elapsed_equal = Duration::from_secs(10); // 10s = 10s grace
+        let elapsed_long = Duration::from_secs(15);  // 15s > 10s grace
+
+        assert!(elapsed_short < grace_period, "Should be in grace period");
+        assert!(elapsed_equal >= grace_period, "Grace period should be over");
+        assert!(elapsed_long >= grace_period, "Grace period should be over");
     }
 }

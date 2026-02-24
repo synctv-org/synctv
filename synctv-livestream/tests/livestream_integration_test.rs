@@ -157,8 +157,10 @@ async fn test_complete_hls_workflow() {
         stream_name: "test_media".to_string(),
         segments,
         is_ended: false,
-            created_at: std::time::Instant::now(),
+        created_at: std::time::Instant::now(),
+        marked_for_cleanup: false,
     }));
+
 
     if let Some(registry) = &infrastructure.hls_stream_registry {
         registry.insert("test_room/test_media".to_string(), state);
@@ -257,7 +259,8 @@ async fn test_registry_key_format_consistency() {
         stream_name: "media456".to_string(),
         segments: VecDeque::new(),
         is_ended: false,
-            created_at: std::time::Instant::now(),
+        created_at: std::time::Instant::now(),
+        marked_for_cleanup: false,
     }));
 
     if let Some(registry) = &infrastructure.hls_stream_registry {
@@ -295,7 +298,8 @@ async fn test_hls_url_generation_with_custom_callback() {
         stream_name: "media456".to_string(),
         segments,
         is_ended: false,
-            created_at: std::time::Instant::now(),
+        created_at: std::time::Instant::now(),
+        marked_for_cleanup: false,
     }));
 
     if let Some(registry) = &infrastructure.hls_stream_registry {
@@ -416,7 +420,8 @@ async fn test_hls_playlist_with_discontinuity() {
         stream_name: "media1".to_string(),
         segments,
         is_ended: false,
-            created_at: std::time::Instant::now(),
+        created_at: std::time::Instant::now(),
+        marked_for_cleanup: false,
     }));
 
     if let Some(registry) = &infrastructure.hls_stream_registry {
@@ -451,8 +456,9 @@ async fn test_hls_playlist_ended_stream() {
         app_name: "room1".to_string(),
         stream_name: "media1".to_string(),
         segments,
-        is_ended: true,  // Stream ended
+        is_ended: true,
         created_at: std::time::Instant::now(),
+        marked_for_cleanup: false,
     }));
 
     if let Some(registry) = &infrastructure.hls_stream_registry {

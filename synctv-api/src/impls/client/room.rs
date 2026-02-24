@@ -411,6 +411,13 @@ impl ClientApiImpl {
     /// Enforces per-IP per-room rate limiting to prevent brute-force attacks.
     /// After 5 failed attempts within a 5-minute window, further attempts are
     /// temporarily blocked.
+    ///
+    /// # Timing Attack Protection
+    ///
+    /// This method includes a fixed delay to prevent timing attacks that could
+    /// leak information about password validity through response time differences.
+    /// The delay ensures that both successful and failed password checks take
+    /// approximately the same amount of time.
     pub async fn check_room_password(
         &self,
         room_id: &str,
@@ -444,6 +451,9 @@ impl ClientApiImpl {
         self.room_service.get_room(&rid).await
             .map_err(|e| ApiError::NotFound(format!("Room not found: {e}")))?;
 
+        // Record start time for timing attack protection
+        let start = std::time::Instant::now();
+
         let valid = self.room_service
             .check_room_password(&rid, &req.password)
             .await
@@ -455,6 +465,19 @@ impl ClientApiImpl {
                 room_id = %room_id,
                 "Failed room password check attempt"
             );
+        }
+
+        // --- Timing attack protection: fixed minimum delay ---
+        // Ensure the total time is at least MIN_PASSWORD_CHECK_DELAY_MS regardless of
+        // whether the password was correct or not. This prevents attackers from
+        // distinguishing between valid and invalid passwords based on response time.
+        // Using 250ms to provide robust protection against network-based timing attacks
+        // while keeping response times acceptable for legitimate users.
+        const MIN_PASSWORD_CHECK_DELAY_MS: u64 = 250;
+        let elapsed = start.elapsed();
+        let min_delay = std::time::Duration::from_millis(MIN_PASSWORD_CHECK_DELAY_MS);
+        if elapsed < min_delay {
+            tokio::time::sleep(min_delay - elapsed).await;
         }
 
         Ok(crate::proto::client::CheckRoomPasswordResponse { valid })

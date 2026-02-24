@@ -624,3 +624,244 @@ async fn test_room_description_over_500_rejected() {
         other => panic!("Expected InvalidInput error, got: {:?}", other),
     }
 }
+
+// ========== Password Re-verification Race Condition Tests ==========
+//
+// These tests verify that the password is re-verified under the distributed lock
+// to prevent a race condition where:
+// 1. User passes password verification with a valid password
+// 2. While waiting for lock, room password is changed
+// 3. User joins with old (now invalid) password
+//
+// The fix ensures password is re-verified inside the lock with fresh data.
+
+/// Helper to directly update room password in database, simulating an admin change
+async fn direct_update_room_password(pool: &PgPool, room_id: &synctv_core::models::RoomId, new_password_hash: &str) {
+    // Update the password hash directly
+    sqlx::query(
+        "UPDATE room_settings SET value = $1 WHERE room_id = $2 AND key = 'password'"
+    )
+    .bind(new_password_hash)
+    .bind(room_id.as_str())
+    .execute(pool)
+    .await
+    .expect("Failed to update password hash");
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_join_room_password_changed_during_join_with_correct_old_password_fails() {
+    // This test simulates the race condition scenario:
+    // 1. User starts join with correct password
+    // 2. Password is changed in DB before lock is acquired (simulated)
+    // 3. Join should fail because password is re-verified under lock with fresh hash
+    //
+    // NOTE: Without a distributed lock configured, this test verifies baseline behavior.
+    // With a distributed lock, the re-verification inside the lock catches this.
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let room_service = make_room_service(pool.clone());
+
+    let owner = user_repo.create(&make_user("race_owner")).await.unwrap();
+    let joiner = user_repo.create(&make_user("race_joiner")).await.unwrap();
+
+    // Create room with initial password
+    let (room, _) = room_service
+        .create_room(
+            "Race Test Room".to_string(),
+            String::new(),
+            owner.id.clone(),
+            Some("OriginalPassword123".to_string()),
+            None,
+        )
+        .await
+        .unwrap();
+
+    // Hash a new password to simulate the password being changed
+    let new_hash = synctv_core::service::auth::password::hash_password("NewPassword456")
+        .await
+        .expect("Failed to hash new password");
+
+    // Directly change the password in the database (simulating admin change)
+    direct_update_room_password(&pool, &room.id, &new_hash).await;
+
+    // Now try to join with the OLD password
+    // This should fail because the password hash in DB has changed
+    // (With distributed lock, the re-verification inside lock will catch this)
+    let result = room_service
+        .join_room(room.id.clone(), joiner.id.clone(), Some("OriginalPassword123".to_string()))
+        .await;
+
+    assert!(result.is_err(), "Join with old password should fail after password change");
+    match result.unwrap_err() {
+        Error::Authorization(msg) => {
+            assert!(
+                msg.contains("Invalid password") || msg.contains("password"),
+                "Error should mention password: {}",
+                msg
+            );
+        }
+        other => panic!("Expected Authorization error, got: {:?}", other),
+    }
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_join_room_password_changed_during_join_with_correct_new_password_succeeds() {
+    // This test verifies that if password is changed during join,
+    // using the NEW password should succeed
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let room_service = make_room_service(pool.clone());
+
+    let owner = user_repo.create(&make_user("race_new_owner")).await.unwrap();
+    let joiner = user_repo.create(&make_user("race_new_joiner")).await.unwrap();
+
+    // Create room with initial password
+    let (room, _) = room_service
+        .create_room(
+            "Race New Password Room".to_string(),
+            String::new(),
+            owner.id.clone(),
+            Some("OriginalPassword123".to_string()),
+            None,
+        )
+        .await
+        .unwrap();
+
+    // Hash a new password
+    let new_hash = synctv_core::service::auth::password::hash_password("NewPassword456")
+        .await
+        .expect("Failed to hash new password");
+
+    // Directly change the password in the database
+    direct_update_room_password(&pool, &room.id, &new_hash).await;
+
+    // Join with the NEW password - should succeed
+    let result = room_service
+        .join_room(room.id.clone(), joiner.id.clone(), Some("NewPassword456".to_string()))
+        .await;
+
+    assert!(result.is_ok(), "Join with new password should succeed after password change: {:?}", result.err());
+    let (joined_room, member, _members) = result.unwrap();
+    assert_eq!(joined_room.id, room.id);
+    assert_eq!(member.user_id, joiner.id);
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_join_room_password_not_required_password_cleared_during_join() {
+    // This test verifies that if require_password is set to false during join
+    // (password removed from room), the join should succeed without password check
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let room_service = make_room_service(pool.clone());
+
+    let owner = user_repo.create(&make_user("pwd_cleared_owner")).await.unwrap();
+    let joiner = user_repo.create(&make_user("pwd_cleared_joiner")).await.unwrap();
+
+    // Create room with initial password
+    let (room, _) = room_service
+        .create_room(
+            "Password Cleared Room".to_string(),
+            String::new(),
+            owner.id.clone(),
+            Some("OriginalPassword123".to_string()),
+            None,
+        )
+        .await
+        .unwrap();
+
+    // Directly remove password requirement from room settings
+    sqlx::query(
+        "UPDATE room_settings SET value = jsonb_set(value, '{require_password}', 'false') WHERE room_id = $1 AND key = '_settings'"
+    )
+    .bind(room.id.as_str())
+    .execute(&pool)
+    .await
+    .expect("Failed to update require_password");
+
+    // Join should now succeed even with wrong password (password no longer required)
+    // Actually, since password is no longer required, we can join without password
+    let result = room_service
+        .join_room(room.id.clone(), joiner.id.clone(), None)
+        .await;
+
+    assert!(result.is_ok(), "Join should succeed when password is no longer required: {:?}", result.err());
+    let (joined_room, member, _members) = result.unwrap();
+    assert_eq!(joined_room.id, room.id);
+    assert_eq!(member.user_id, joiner.id);
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_join_room_password_added_during_join_requires_password() {
+    // This test verifies that if password requirement is added during join
+    // (room was originally public, now requires password), join without password fails
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let room_service = make_room_service(pool.clone());
+
+    let owner = user_repo.create(&make_user("pwd_added_owner")).await.unwrap();
+    let joiner = user_repo.create(&make_user("pwd_added_joiner")).await.unwrap();
+
+    // Create room without password
+    let (room, _) = room_service
+        .create_room(
+            "Password Added Room".to_string(),
+            String::new(),
+            owner.id.clone(),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+    // Add password requirement to room
+    let new_hash = synctv_core::service::auth::password::hash_password("NewPassword123")
+        .await
+        .expect("Failed to hash password");
+
+    // Insert password hash
+    sqlx::query(
+        "INSERT INTO room_settings (room_id, key, value, version) VALUES ($1, 'password', $2, 1)"
+    )
+    .bind(room.id.as_str())
+    .bind(&new_hash)
+    .execute(&pool)
+    .await
+    .expect("Failed to insert password");
+
+    // Update require_password setting
+    sqlx::query(
+        "UPDATE room_settings SET value = jsonb_set(value, '{require_password}', 'true') WHERE room_id = $1 AND key = '_settings'"
+    )
+    .bind(room.id.as_str())
+    .execute(&pool)
+    .await
+    .expect("Failed to update require_password");
+
+    // Join without password should fail
+    let result = room_service
+        .join_room(room.id.clone(), joiner.id.clone(), None)
+        .await;
+
+    assert!(result.is_err(), "Join without password should fail when password is added");
+    match result.unwrap_err() {
+        Error::Authorization(msg) => {
+            assert!(
+                msg.contains("Password required") || msg.contains("password"),
+                "Error should mention password required: {}",
+                msg
+            );
+        }
+        other => panic!("Expected Authorization error, got: {:?}", other),
+    }
+
+    // Join with correct password should succeed
+    let result = room_service
+        .join_room(room.id.clone(), joiner.id.clone(), Some("NewPassword123".to_string()))
+        .await;
+
+    assert!(result.is_ok(), "Join with correct password should succeed: {:?}", result.err());
+}

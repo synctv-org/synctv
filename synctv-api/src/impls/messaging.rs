@@ -18,7 +18,7 @@ use synctv_cluster::sync::{ClusterEvent, ClusterManager, ConnectionManager};
 use synctv_core::spawn::spawn_monitored;
 use synctv_core::{
     models::{PermissionBits, RoomId, UserId},
-    service::{ContentFilter, RateLimitConfig, RateLimiter, RoomService},
+    service::{ChatService, ContentFilter, RateLimitConfig, RateLimiter, RoomService},
 };
 
 use crate::proto::client::{ClientMessage, ServerMessage};
@@ -106,6 +106,11 @@ pub struct StreamMessageHandler {
     username: String,
     connection_id: String,
     room_service: Arc<RoomService>,
+    /// Optional ChatService for proper chat message handling with business logic.
+    /// When set, chat messages are processed through ChatService::send_message()
+    /// which handles permission checks, content filtering, rate limiting, and persistence.
+    /// When not set, falls back to direct persistence via room_service.save_chat_message().
+    chat_service: Option<Arc<ChatService>>,
     cluster_manager: Arc<ClusterManager>,
     connection_manager: ConnectionManager,
     rate_limiter: Arc<RateLimiter>,
@@ -131,6 +136,7 @@ impl Clone for StreamMessageHandler {
             username: self.username.clone(),
             connection_id: self.connection_id.clone(),
             room_service: Arc::clone(&self.room_service),
+            chat_service: self.chat_service.clone(),
             cluster_manager: Arc::clone(&self.cluster_manager),
             connection_manager: self.connection_manager.clone(),
             rate_limiter: Arc::clone(&self.rate_limiter),
@@ -166,6 +172,7 @@ impl StreamMessageHandler {
             username,
             connection_id,
             room_service,
+            chat_service: None, // Can be set via with_chat_service()
             cluster_manager,
             connection_manager,
             rate_limiter,

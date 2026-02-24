@@ -37,7 +37,7 @@ use synctv_proto::client::{
     GetLinkedProvidersResponse,
 };
 
-use super::{middleware::AuthUser, AppResult, AppState, error::map_api_error};
+use super::{middleware::AuthUser, AppResult, AppState, error::map_api_error, validation};
 
 /// Query params for get authorization URL (converted to proto request)
 #[derive(Debug, Deserialize)]
@@ -63,8 +63,12 @@ pub async fn get_authorize_url(
         super::AppError::bad_request("OAuth2 is not configured on this server")
     })?;
 
+    // Validate redirect_url length and format
+    let redirect_url = validation::validate_oauth2_redirect_url(params.redirect_url.as_deref())
+        .map_err(|e| super::AppError::bad_request(format!("Invalid redirect_url: {}", e)))?;
+
     let (authorization_url, state_token) = oauth2_api
-        .get_authorization_url(&provider, params.redirect_url)
+        .get_authorization_url(&provider, redirect_url)
         .await
         .map_err(|e| {
             error!("Failed to get authorization URL: {}", e);
@@ -159,8 +163,12 @@ pub async fn get_bind_authorize_url(
         super::AppError::bad_request("OAuth2 is not configured on this server")
     })?;
 
+    // Validate redirect_url length and format
+    let redirect_url = validation::validate_oauth2_redirect_url(params.redirect_url.as_deref())
+        .map_err(|e| super::AppError::bad_request(format!("Invalid redirect_url: {}", e)))?;
+
     let (authorization_url, state_token) = oauth2_api
-        .get_authorization_url_for_bind(&auth.user_id, &provider, params.redirect_url)
+        .get_authorization_url_for_bind(&auth.user_id, &provider, redirect_url)
         .await
         .map_err(|e| {
             error!("Failed to get authorization URL for bind: {}", e);
@@ -192,8 +200,12 @@ pub async fn unlink_provider(
         super::AppError::bad_request("OAuth2 is not configured on this server")
     })?;
 
+    // Validate provider_user_id length
+    let provider_user_id = validation::validate_oauth2_provider_user_id(params.provider_user_id.as_deref())
+        .map_err(|e| super::AppError::bad_request(format!("Invalid provider_user_id: {}", e)))?;
+
     let result = oauth2_api
-        .unlink_provider(&auth.user_id, &provider, params.provider_user_id.as_deref())
+        .unlink_provider(&auth.user_id, &provider, provider_user_id.as_deref())
         .await
         .map_err(|e| {
             error!("Failed to unlink OAuth2 provider: {}", e);
@@ -276,4 +288,107 @@ pub async fn get_linked_providers(
     Ok(Json(GetLinkedProvidersResponse {
         providers: response,
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_validate_oauth2_redirect_url() {
+        // None is valid
+        assert!(validation::validate_oauth2_redirect_url(None).is_ok());
+        assert_eq!(validation::validate_oauth2_redirect_url(None).unwrap(), None);
+
+        // Empty string is treated as None
+        assert!(validation::validate_oauth2_redirect_url(Some("")).is_ok());
+        assert_eq!(validation::validate_oauth2_redirect_url(Some("")).unwrap(), None);
+
+        // Valid HTTP URL
+        let result = validation::validate_oauth2_redirect_url(Some("http://example.com/callback"));
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), Some("http://example.com/callback".to_string()));
+
+        // Valid HTTPS URL
+        let result = validation::validate_oauth2_redirect_url(Some("https://example.com/callback?state=abc"));
+        assert!(result.is_ok());
+
+        // Invalid: not http/https
+        assert!(validation::validate_oauth2_redirect_url(Some("ftp://example.com")).is_err());
+        assert!(validation::validate_oauth2_redirect_url(Some("javascript:alert(1)")).is_err());
+        assert!(validation::validate_oauth2_redirect_url(Some("data:text/html,<script>")).is_err());
+
+        // Invalid: too long
+        let long_url = "https://example.com/".to_string() + &"a".repeat(validation::limits::OAUTH2_REDIRECT_URL_MAX);
+        assert!(validation::validate_oauth2_redirect_url(Some(&long_url)).is_err());
+
+        // Valid: exactly at max length
+        let exact_url = "https://example.com/".to_string() + &"a".repeat(validation::limits::OAUTH2_REDIRECT_URL_MAX - 20);
+        assert!(validation::validate_oauth2_redirect_url(Some(&exact_url)).is_ok());
+    }
+
+    #[test]
+    fn test_validate_oauth2_provider_user_id() {
+        // None is valid
+        assert!(validation::validate_oauth2_provider_user_id(None).is_ok());
+        assert_eq!(validation::validate_oauth2_provider_user_id(None).unwrap(), None);
+
+        // Empty string is treated as None
+        assert!(validation::validate_oauth2_provider_user_id(Some("")).is_ok());
+        assert_eq!(validation::validate_oauth2_provider_user_id(Some("")).unwrap(), None);
+
+        // Valid provider user IDs
+        assert!(validation::validate_oauth2_provider_user_id(Some("12345")).is_ok());
+        assert!(validation::validate_oauth2_provider_user_id(Some("user@example.com")).is_ok());
+        assert!(validation::validate_oauth2_provider_user_id(Some("github-user-123")).is_ok());
+
+        // Invalid: too long
+        let long_id = "a".repeat(validation::limits::OAUTH2_PROVIDER_USER_ID_MAX + 1);
+        assert!(validation::validate_oauth2_provider_user_id(Some(&long_id)).is_err());
+
+        // Valid: exactly at max length
+        let exact_id = "a".repeat(validation::limits::OAUTH2_PROVIDER_USER_ID_MAX);
+        assert!(validation::validate_oauth2_provider_user_id(Some(&exact_id)).is_ok());
+    }
+
+    #[test]
+    fn test_redirect_url_validation_rejects_javascript_protocol() {
+        // Security: should reject javascript: URLs to prevent XSS
+        assert!(validation::validate_oauth2_redirect_url(Some("javascript:alert(document.cookie)")).is_err());
+        assert!(validation::validate_oauth2_redirect_url(Some("JAVASCRIPT:alert(1)")).is_err());
+        assert!(validation::validate_oauth2_redirect_url(Some("javascript:void(0)")).is_err());
+    }
+
+    #[test]
+    fn test_redirect_url_validation_rejects_data_protocol() {
+        // Security: should reject data: URLs
+        assert!(validation::validate_oauth2_redirect_url(Some("data:text/html,<script>alert(1)</script>")).is_err());
+        assert!(validation::validate_oauth2_redirect_url(Some("data:text/html;base64,PHNjcmlwdD5hbGVydCgxKTwvc2NyaXB0Pg==")).is_err());
+    }
+
+    #[test]
+    fn test_provider_user_id_sanitization() {
+        // Control characters should be removed
+        let result = validation::validate_oauth2_provider_user_id(Some("user\x00123"));
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), Some("user123".to_string()));
+
+        // Whitespace should be trimmed
+        let result = validation::validate_oauth2_provider_user_id(Some("  user123  "));
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), Some("user123".to_string()));
+    }
+
+    #[test]
+    fn test_redirect_url_sanitization() {
+        // Control characters should be removed
+        let result = validation::validate_oauth2_redirect_url(Some("https://example.com/callback\x00"));
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), Some("https://example.com/callback".to_string()));
+
+        // Whitespace should be trimmed
+        let result = validation::validate_oauth2_redirect_url(Some("  https://example.com/callback  "));
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), Some("https://example.com/callback".to_string()));
+    }
 }

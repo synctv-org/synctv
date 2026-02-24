@@ -28,6 +28,10 @@ pub mod limits {
     pub const EMAIL_MAX: usize = 254;
     /// Maximum ID length (`room_id`, `user_id`, `media_id`)
     pub const ID_MAX: usize = 64;
+    /// Maximum OAuth2 redirect URL length
+    pub const OAUTH2_REDIRECT_URL_MAX: usize = 2048;
+    /// Maximum OAuth2 provider user ID length
+    pub const OAUTH2_PROVIDER_USER_ID_MAX: usize = 256;
 }
 
 /// Regex patterns for validation
@@ -482,6 +486,66 @@ pub fn validate_id(id: &str, field_name: &'static str) -> ValidationResult<Strin
     Ok(sanitized.into_owned())
 }
 
+/// Validate OAuth2 redirect URL (optional field)
+///
+/// This is a lenient validation that only checks length if the URL is provided.
+/// The actual URL format validation is done by the OAuth2 service.
+pub fn validate_oauth2_redirect_url(url: Option<&str>) -> ValidationResult<Option<String>> {
+    let Some(url) = url else {
+        return Ok(None);
+    };
+
+    let sanitized = sanitize_string(url);
+
+    // Empty string is treated as None
+    if sanitized.is_empty() {
+        return Ok(None);
+    }
+
+    let len = sanitized.len();
+    if len > limits::OAUTH2_REDIRECT_URL_MAX {
+        return Err(ValidationError::TooLong {
+            field: "redirect_url",
+            max: limits::OAUTH2_REDIRECT_URL_MAX,
+            actual: len,
+        });
+    }
+
+    // Only allow http/https URLs to prevent javascript: and data: attacks
+    if !sanitized.starts_with("http://") && !sanitized.starts_with("https://") {
+        return Err(ValidationError::InvalidFormat { field: "redirect_url" });
+    }
+
+    Ok(Some(sanitized.into_owned()))
+}
+
+/// Validate OAuth2 provider user ID (optional field)
+///
+/// This is a lenient validation that only checks length if the ID is provided.
+pub fn validate_oauth2_provider_user_id(id: Option<&str>) -> ValidationResult<Option<String>> {
+    let Some(id) = id else {
+        return Ok(None);
+    };
+
+    let sanitized = sanitize_string(id);
+
+    // Empty string is treated as None
+    if sanitized.is_empty() {
+        return Ok(None);
+    }
+
+    let len = sanitized.len();
+    if len > limits::OAUTH2_PROVIDER_USER_ID_MAX {
+        return Err(ValidationError::TooLong {
+            field: "provider_user_id",
+            max: limits::OAUTH2_PROVIDER_USER_ID_MAX,
+            actual: len,
+        });
+    }
+
+    Ok(Some(sanitized.into_owned()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -650,5 +714,70 @@ mod tests {
         assert!(validate_id("user_123", "user_id").is_ok());
         assert!(validate_id("user@123", "user_id").is_err()); // Invalid character
         assert!(validate_id("", "user_id").is_err()); // Empty
+    }
+
+    #[test]
+    fn test_validate_oauth2_redirect_url() {
+        // None is valid
+        assert!(validate_oauth2_redirect_url(None).is_ok());
+        assert_eq!(validate_oauth2_redirect_url(None).unwrap(), None);
+
+        // Empty string is treated as None
+        assert!(validate_oauth2_redirect_url(Some("")).is_ok());
+        assert_eq!(validate_oauth2_redirect_url(Some("")).unwrap(), None);
+
+        // Whitespace-only is treated as None
+        assert!(validate_oauth2_redirect_url(Some("   ")).is_ok());
+        assert_eq!(validate_oauth2_redirect_url(Some("   ")).unwrap(), None);
+
+        // Valid HTTP URL
+        let result = validate_oauth2_redirect_url(Some("http://example.com/callback"));
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), Some("http://example.com/callback".to_string()));
+
+        // Valid HTTPS URL
+        let result = validate_oauth2_redirect_url(Some("https://example.com/callback?state=abc"));
+        assert!(result.is_ok());
+
+        // Invalid: not http/https
+        assert!(validate_oauth2_redirect_url(Some("ftp://example.com")).is_err());
+        assert!(validate_oauth2_redirect_url(Some("javascript:alert(1)")).is_err());
+        assert!(validate_oauth2_redirect_url(Some("data:text/html,<script>")).is_err());
+
+        // Invalid: too long
+        let long_url = "https://example.com/".to_string() + &"a".repeat(limits::OAUTH2_REDIRECT_URL_MAX);
+        assert!(validate_oauth2_redirect_url(Some(&long_url)).is_err());
+
+        // Valid: exactly at max length
+        let exact_url = "https://example.com/".to_string() + &"a".repeat(limits::OAUTH2_REDIRECT_URL_MAX - 20);
+        assert!(validate_oauth2_redirect_url(Some(&exact_url)).is_ok());
+    }
+
+    #[test]
+    fn test_validate_oauth2_provider_user_id() {
+        // None is valid
+        assert!(validate_oauth2_provider_user_id(None).is_ok());
+        assert_eq!(validate_oauth2_provider_user_id(None).unwrap(), None);
+
+        // Empty string is treated as None
+        assert!(validate_oauth2_provider_user_id(Some("")).is_ok());
+        assert_eq!(validate_oauth2_provider_user_id(Some("")).unwrap(), None);
+
+        // Whitespace-only is treated as None
+        assert!(validate_oauth2_provider_user_id(Some("   ")).is_ok());
+        assert_eq!(validate_oauth2_provider_user_id(Some("   ")).unwrap(), None);
+
+        // Valid provider user IDs
+        assert!(validate_oauth2_provider_user_id(Some("12345")).is_ok());
+        assert!(validate_oauth2_provider_user_id(Some("user@example.com")).is_ok());
+        assert!(validate_oauth2_provider_user_id(Some("github-user-123")).is_ok());
+
+        // Invalid: too long
+        let long_id = "a".repeat(limits::OAUTH2_PROVIDER_USER_ID_MAX + 1);
+        assert!(validate_oauth2_provider_user_id(Some(&long_id)).is_err());
+
+        // Valid: exactly at max length
+        let exact_id = "a".repeat(limits::OAUTH2_PROVIDER_USER_ID_MAX);
+        assert!(validate_oauth2_provider_user_id(Some(&exact_id)).is_ok());
     }
 }

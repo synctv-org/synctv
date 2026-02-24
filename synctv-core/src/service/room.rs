@@ -412,12 +412,12 @@ impl RoomService {
         // Check password if required (CPU-intensive bcrypt, done before lock)
         if ctx.settings.require_password.0 {
             if let Some(ref hash) = ctx.password_hash {
-                let provided_password = password.ok_or_else(|| {
+                let provided_password = password.as_ref().ok_or_else(|| {
                     tracing::warn!(room_id = %room_id, user_id = %user_id, "Password required but not provided");
                     Error::Authorization("Password required".to_string())
                 })?;
 
-                if !verify_password(&provided_password, hash).await? {
+                if !verify_password(provided_password, hash).await? {
                     tracing::warn!(room_id = %room_id, user_id = %user_id, "Invalid password provided");
                     return Err(Error::Authorization("Invalid password".to_string()));
                 }
@@ -439,7 +439,7 @@ impl RoomService {
             return lock.with_lock(&lock_key, 10, || {
                 let room_id = room_id.clone();
                 let user_id = user_id.clone();
-                let room = ctx.room.clone();
+                let password = password.clone();
                 async move {
                     // Re-validate state under lock to catch changes that occurred
                     // between the initial check and lock acquisition
@@ -456,7 +456,30 @@ impl RoomService {
                         return Err(Error::Authorization("You are banned from this room".to_string()));
                     }
 
-                    self.do_join_room(room, room_id, user_id).await
+                    // Re-verify password under lock to prevent race condition where
+                    // the password was changed between the initial verification and
+                    // lock acquisition. This ensures the provided password is still
+                    // valid against the current password hash.
+                    if fresh_ctx.settings.require_password.0 {
+                        if let Some(ref hash) = fresh_ctx.password_hash {
+                            let provided_password = password.ok_or_else(|| {
+                                tracing::warn!(room_id = %room_id, user_id = %user_id, "Password required but not provided under lock");
+                                Error::Authorization("Password required".to_string())
+                            })?;
+
+                            if !verify_password(&provided_password, hash).await? {
+                                tracing::warn!(room_id = %room_id, user_id = %user_id, "Invalid password provided under lock (password changed during join)");
+                                return Err(Error::Authorization("Invalid password".to_string()));
+                            }
+                            tracing::debug!(room_id = %room_id, user_id = %user_id, "Password re-verified successfully under lock");
+                        } else {
+                            // Room requires password but none is configured -- reject join
+                            tracing::warn!(room_id = %room_id, "Room requires password but none is set under lock");
+                            return Err(Error::Authorization("Invalid password".to_string()));
+                        }
+                    }
+
+                    self.do_join_room(fresh_ctx.room, room_id, user_id).await
                 }
             }).await;
         }

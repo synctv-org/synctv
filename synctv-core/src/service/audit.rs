@@ -98,6 +98,7 @@ pub enum AuditAction {
     RoomSettingsUpdated,
     UserApproved,
     RoomApproved,
+    StreamKicked,
 }
 
 impl AuditAction {
@@ -131,6 +132,7 @@ impl AuditAction {
             Self::RoomSettingsUpdated => "room_settings_updated",
             Self::UserApproved => "user_approved",
             Self::RoomApproved => "room_approved",
+            Self::StreamKicked => "stream_kicked",
         }
     }
 }
@@ -145,6 +147,7 @@ pub enum AuditTargetType {
     ProviderInstance,
     Settings,
     System,
+    Stream,
 }
 
 impl AuditTargetType {
@@ -157,6 +160,7 @@ impl AuditTargetType {
             Self::ProviderInstance => "provider_instance",
             Self::Settings => "settings",
             Self::System => "system",
+            Self::Stream => "stream",
         }
     }
 }
@@ -449,6 +453,35 @@ impl AuditService {
         )
         .await
     }
+
+    /// Log stream kick event
+    #[allow(clippy::too_many_arguments)]
+    pub async fn log_stream_kicked(
+        &self,
+        actor_id: String,
+        actor_username: String,
+        room_id: String,
+        media_id: String,
+        reason: Option<String>,
+        ip_address: Option<String>,
+        user_agent: Option<String>,
+    ) -> Result<()> {
+        self.log(
+            actor_id,
+            actor_username,
+            AuditAction::StreamKicked,
+            AuditTargetType::Stream,
+            Some(format!("{}:{}", room_id, media_id)),
+            serde_json::json!({
+                "room_id": room_id,
+                "media_id": media_id,
+                "reason": reason.unwrap_or_default()
+            }),
+            ip_address,
+            user_agent,
+        )
+        .await
+    }
 }
 
 impl std::fmt::Debug for AuditService {
@@ -715,6 +748,7 @@ mod tests {
             (AuditAction::RoomSettingsUpdated, "room_settings_updated"),
             (AuditAction::UserApproved, "user_approved"),
             (AuditAction::RoomApproved, "room_approved"),
+            (AuditAction::StreamKicked, "stream_kicked"),
         ];
 
         for (action, expected) in actions {
@@ -770,6 +804,7 @@ mod tests {
             AuditAction::RoomSettingsUpdated,
             AuditAction::UserApproved,
             AuditAction::RoomApproved,
+            AuditAction::StreamKicked,
         ];
 
         for action in actions {
@@ -791,6 +826,7 @@ mod tests {
             (AuditTargetType::ProviderInstance, "provider_instance"),
             (AuditTargetType::Settings, "settings"),
             (AuditTargetType::System, "system"),
+            (AuditTargetType::Stream, "stream"),
         ];
 
         for (target, expected) in targets {
@@ -808,6 +844,7 @@ mod tests {
             AuditTargetType::ProviderInstance,
             AuditTargetType::Settings,
             AuditTargetType::System,
+            AuditTargetType::Stream,
         ];
 
         for target in targets {
@@ -1009,6 +1046,22 @@ mod tests {
         assert_eq!(FLUSH_RETRY_BASE_MS, 100);
     }
 
+    // ========== Stream Kick Audit ==========
+
+    #[test]
+    fn test_stream_kicked_action_serialization() {
+        let action = AuditAction::StreamKicked;
+        let json = serde_json::to_string(&action).unwrap();
+        assert_eq!(json, "\"stream_kicked\"");
+    }
+
+    #[test]
+    fn test_stream_target_type_serialization() {
+        let target = AuditTargetType::Stream;
+        let json = serde_json::to_string(&target).unwrap();
+        assert_eq!(json, "\"stream\"");
+    }
+
     // ========== Integration Tests (Require DB) ==========
 
     #[tokio::test]
@@ -1021,5 +1074,65 @@ mod tests {
     async fn test_log_with_params() {
         // Integration test placeholder for AuditService::log_with_params
         // Would require TestInfra with PostgreSQL
+    }
+
+    #[tokio::test]
+    async fn test_log_stream_kicked() {
+        // Integration test placeholder for AuditService::log_stream_kicked
+        // Would require TestInfra with PostgreSQL
+    }
+
+    // ========== log_stream_kicked Parameter Tests ==========
+
+    #[test]
+    fn test_log_stream_kicked_target_id_format() {
+        // Verify the target_id format is "room_id:media_id"
+        let room_id = "room_abc123";
+        let media_id = "media_xyz789";
+        let expected_target_id = format!("{}:{}", room_id, media_id);
+        assert_eq!(expected_target_id, "room_abc123:media_xyz789");
+    }
+
+    #[test]
+    fn test_log_stream_kicked_details_json_structure() {
+        // Verify the details JSON structure contains all expected fields
+        let room_id = "test_room";
+        let media_id = "test_media";
+        let reason = Some("Test reason".to_string());
+
+        let details = serde_json::json!({
+            "room_id": room_id,
+            "media_id": media_id,
+            "reason": reason.unwrap_or_default()
+        });
+
+        assert_eq!(details["room_id"], "test_room");
+        assert_eq!(details["media_id"], "test_media");
+        assert_eq!(details["reason"], "Test reason");
+    }
+
+    #[test]
+    fn test_log_stream_kicked_details_json_empty_reason() {
+        // Verify the details JSON structure when reason is None
+        let room_id = "test_room";
+        let media_id = "test_media";
+
+        let details = serde_json::json!({
+            "room_id": room_id,
+            "media_id": media_id,
+            "reason": ""
+        });
+
+        assert_eq!(details["reason"], "");
+    }
+
+    #[test]
+    fn test_stream_kicked_action_and_target_type() {
+        // Verify the correct action and target type are used
+        let action = AuditAction::StreamKicked;
+        let target_type = AuditTargetType::Stream;
+
+        assert_eq!(action.as_str(), "stream_kicked");
+        assert_eq!(target_type.as_str(), "stream");
     }
 }

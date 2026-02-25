@@ -229,6 +229,185 @@ async fn test_unbuffered_service_dropped_count_zero() {
     assert_eq!(service.dropped_count(), 0);
 }
 
+// ========== Stream Kick Audit Tests (Docker required) ==========
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_log_stream_kicked_writes_audit_log() {
+    let (pool, _container) = create_test_pool().await;
+
+    let service = AuditService::new_unbuffered(pool.clone());
+
+    // Log a stream kick event
+    service
+        .log_stream_kicked(
+            "admin_001".to_string(),
+            "superadmin".to_string(),
+            "room_abc123".to_string(),
+            "media_xyz789".to_string(),
+            Some("Inappropriate content".to_string()),
+            Some("192.168.1.100".to_string()),
+            Some("Mozilla/5.0 AdminPanel/1.0".to_string()),
+        )
+        .await
+        .expect("log_stream_kicked should succeed");
+
+    // Verify the audit log was written correctly
+    let row: (String, Option<String>, Option<String>, Option<String>, Option<String>, Option<String>) = sqlx::query_as(
+        r#"
+        SELECT action, target_type, target_id, ip_address, user_agent, details::text
+        FROM audit_logs
+        WHERE actor_id = 'admin_001' AND action = 'stream_kicked'
+        "#,
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("Query should succeed");
+
+    assert_eq!(row.0, "stream_kicked", "Action should be stream_kicked");
+    assert_eq!(row.1, Some("stream".to_string()), "Target type should be stream");
+    assert_eq!(row.2, Some("room_abc123:media_xyz789".to_string()), "Target ID should be room_id:media_id");
+    assert_eq!(row.3, Some("192.168.1.100".to_string()), "IP address should be recorded");
+    assert_eq!(row.4, Some("Mozilla/5.0 AdminPanel/1.0".to_string()), "User-Agent should be recorded");
+
+    // Verify details JSON contains room_id, media_id, and reason
+    let details: serde_json::Value = serde_json::from_str(&row.5.unwrap_or_default()).unwrap();
+    assert_eq!(details["room_id"], "room_abc123");
+    assert_eq!(details["media_id"], "media_xyz789");
+    assert_eq!(details["reason"], "Inappropriate content");
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_log_stream_kicked_without_reason() {
+    let (pool, _container) = create_test_pool().await;
+
+    let service = AuditService::new_unbuffered(pool.clone());
+
+    // Log a stream kick event without a reason
+    service
+        .log_stream_kicked(
+            "admin_002".to_string(),
+            "moderator".to_string(),
+            "room_def456".to_string(),
+            "media_uvw321".to_string(),
+            None, // No reason provided
+            None,
+            None,
+        )
+        .await
+        .expect("log_stream_kicked should succeed");
+
+    // Verify the audit log was written correctly
+    let row: (String, Option<String>) = sqlx::query_as(
+        r#"
+        SELECT action, details::text
+        FROM audit_logs
+        WHERE actor_id = 'admin_002' AND action = 'stream_kicked'
+        "#,
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("Query should succeed");
+
+    assert_eq!(row.0, "stream_kicked", "Action should be stream_kicked");
+
+    // Verify details JSON contains empty reason
+    let details: serde_json::Value = serde_json::from_str(&row.1.unwrap_or_default()).unwrap();
+    assert_eq!(details["room_id"], "room_def456");
+    assert_eq!(details["media_id"], "media_uvw321");
+    assert_eq!(details["reason"], "", "Reason should be empty string when None is provided");
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_log_stream_kicked_records_actor_username() {
+    let (pool, _container) = create_test_pool().await;
+
+    let service = AuditService::new_unbuffered(pool.clone());
+
+    // Log a stream kick event
+    service
+        .log_stream_kicked(
+            "admin_003".to_string(),
+            "test_admin_user".to_string(),
+            "room_test".to_string(),
+            "media_test".to_string(),
+            Some("Test reason".to_string()),
+            None,
+            None,
+        )
+        .await
+        .expect("log_stream_kicked should succeed");
+
+    // Verify actor_username was recorded
+    let row: (String,) = sqlx::query_as(
+        "SELECT actor_username FROM audit_logs WHERE actor_id = 'admin_003' AND action = 'stream_kicked'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("Query should succeed");
+
+    assert_eq!(row.0, "test_admin_user", "Actor username should be recorded");
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_log_stream_kicked_multiple_kicks_are_logged_separately() {
+    let (pool, _container) = create_test_pool().await;
+
+    let service = AuditService::new_unbuffered(pool.clone());
+
+    // Log multiple stream kick events
+    service
+        .log_stream_kicked(
+            "admin_004".to_string(),
+            "admin".to_string(),
+            "room_1".to_string(),
+            "media_1".to_string(),
+            Some("Reason 1".to_string()),
+            None,
+            None,
+        )
+        .await
+        .expect("First log_stream_kicked should succeed");
+
+    service
+        .log_stream_kicked(
+            "admin_004".to_string(),
+            "admin".to_string(),
+            "room_2".to_string(),
+            "media_2".to_string(),
+            Some("Reason 2".to_string()),
+            None,
+            None,
+        )
+        .await
+        .expect("Second log_stream_kicked should succeed");
+
+    // Verify both events were logged
+    let count: (i64,) = sqlx::query_as(
+        "SELECT COUNT(*) FROM audit_logs WHERE actor_id = 'admin_004' AND action = 'stream_kicked'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("Query should succeed");
+
+    assert_eq!(count.0, 2, "Both stream kick events should be logged");
+
+    // Verify they have different target_ids
+    let targets: Vec<(String,)> = sqlx::query_as(
+        "SELECT target_id FROM audit_logs WHERE actor_id = 'admin_004' AND action = 'stream_kicked' ORDER BY target_id",
+    )
+    .fetch_all(&pool)
+    .await
+    .expect("Query should succeed");
+
+    assert_eq!(targets.len(), 2);
+    assert_eq!(targets[0].0, "room_1:media_1");
+    assert_eq!(targets[1].0, "room_2:media_2");
+}
+
 // ========== S12: Buffer-full drops events ==========
 
 #[tokio::test]

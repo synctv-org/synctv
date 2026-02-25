@@ -69,8 +69,8 @@ pub async fn list_notifications(
 
     Ok(Json(ListNotificationsResponse {
         notifications: result.notifications.into_iter().map(notification_to_proto).collect(),
-        total: result.total,
-        unread_count: result.unread_count,
+        total: result.total as i32,
+        unread_count: result.unread_count as i32,
     }))
 }
 

@@ -554,7 +554,7 @@ struct PaginationQuery {
 pub struct ListRoomsQuery {
     pub page: Option<i32>,
     pub page_size: Option<i32>,
-    pub status: Option<String>,
+    pub status: Option<i32>,
     pub search: Option<String>,
     pub creator_id: Option<String>,
     pub is_banned: Option<bool>,
@@ -570,7 +570,7 @@ async fn list_rooms(
         .list_rooms(admin::ListRoomsRequest {
             page: q.page.unwrap_or(1),
             page_size: q.page_size.unwrap_or(20).clamp(1, MAX_PAGE_SIZE),
-            status: q.status.unwrap_or_default(),
+            status: q.status.unwrap_or(0),
             search: q.search.unwrap_or_default(),
             creator_id: q.creator_id.unwrap_or_default(),
             is_banned: q.is_banned,
@@ -767,6 +767,7 @@ async fn add_provider(
     State(state): State<AppState>,
     Json(req): Json<admin::AddProviderInstanceRequest>,
 ) -> AppResult<Json<admin::AddProviderInstanceResponse>> {
+    validate_path_id(&req.name, "name")?;
     let api = require_admin_api(&state)?;
     let resp = api
         .add_provider_instance(req, &auth.user_id, &rctx.0)
@@ -782,6 +783,7 @@ async fn update_provider(
     Path(name): Path<String>,
     Json(mut req): Json<admin::UpdateProviderInstanceRequest>,
 ) -> AppResult<Json<admin::UpdateProviderInstanceResponse>> {
+    validate_path_id(&name, "name")?;
     req.name = name;
     let api = require_admin_api(&state)?;
     let resp = api
@@ -797,6 +799,7 @@ async fn delete_provider(
     State(state): State<AppState>,
     Path(name): Path<String>,
 ) -> AppResult<Json<admin::DeleteProviderInstanceResponse>> {
+    validate_path_id(&name, "name")?;
     let api = require_admin_api(&state)?;
     let resp = api
         .delete_provider_instance(admin::DeleteProviderInstanceRequest { name }, &auth.user_id, &rctx.0)
@@ -810,6 +813,7 @@ async fn reconnect_provider(
     State(state): State<AppState>,
     Path(name): Path<String>,
 ) -> AppResult<Json<admin::ReconnectProviderInstanceResponse>> {
+    validate_path_id(&name, "name")?;
     let api = require_admin_api(&state)?;
     let resp = api
         .reconnect_provider_instance(admin::ReconnectProviderInstanceRequest { name })
@@ -823,6 +827,7 @@ async fn enable_provider(
     State(state): State<AppState>,
     Path(name): Path<String>,
 ) -> AppResult<Json<admin::EnableProviderInstanceResponse>> {
+    validate_path_id(&name, "name")?;
     let api = require_admin_api(&state)?;
     let resp = api
         .enable_provider_instance(admin::EnableProviderInstanceRequest { name })
@@ -836,6 +841,7 @@ async fn disable_provider(
     State(state): State<AppState>,
     Path(name): Path<String>,
 ) -> AppResult<Json<admin::DisableProviderInstanceResponse>> {
+    validate_path_id(&name, "name")?;
     let api = require_admin_api(&state)?;
     let resp = api
         .disable_provider_instance(admin::DisableProviderInstanceRequest { name })
@@ -868,7 +874,8 @@ async fn list_streams(
 }
 
 async fn kick_stream(
-    _auth: AuthAdmin,
+    auth: AuthAdmin,
+    rctx: ReqCtx,
     State(state): State<AppState>,
     Json(req): Json<admin::KickStreamRequest>,
 ) -> AppResult<Json<admin::KickStreamResponse>> {
@@ -877,7 +884,7 @@ async fn kick_stream(
     }
 
     let api = require_admin_api(&state)?;
-    api.kick_stream(&req.room_id, &req.media_id, &req.reason)
+    api.kick_stream(&req.room_id, &req.media_id, &req.reason, &auth.user_id, &rctx.0)
         .await
         .map_err(|e| admin_err_to_app_error(crate::impls::ApiError::Internal(e.to_string())))?;
     Ok(Json(admin::KickStreamResponse {}))
@@ -1030,11 +1037,11 @@ mod tests {
 
     #[test]
     fn test_list_rooms_query_deserialization() {
-        let json = r#"{"page":1,"page_size":10,"status":"active","search":"room","creator_id":"user1","is_banned":false}"#;
+        let json = r#"{"page":1,"page_size":10,"status":1,"search":"room","creator_id":"user1","is_banned":false}"#;
         let query: ListRoomsQuery = serde_json::from_str(json).expect("deserialize");
         assert_eq!(query.page, Some(1));
         assert_eq!(query.page_size, Some(10));
-        assert_eq!(query.status.as_deref(), Some("active"));
+        assert_eq!(query.status, Some(1));
         assert_eq!(query.search.as_deref(), Some("room"));
         assert_eq!(query.creator_id.as_deref(), Some("user1"));
         assert_eq!(query.is_banned, Some(false));
@@ -1183,6 +1190,74 @@ mod tests {
         assert_eq!(clamped, 100);
     }
 
+    // ========== Provider Name Validation Tests ==========
+
+    #[test]
+    fn test_provider_name_validation_empty() {
+        // Empty name should fail validation
+        let result = validate_path_id("", "name");
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert_eq!(err.status, axum::http::StatusCode::BAD_REQUEST);
+        assert!(err.message.contains("Invalid name"));
+    }
+
+    #[test]
+    fn test_provider_name_validation_too_long() {
+        // Name exceeding ID_MAX (128) should fail
+        let long_name = "a".repeat(129);
+        let result = validate_path_id(&long_name, "name");
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert_eq!(err.status, axum::http::StatusCode::BAD_REQUEST);
+        assert!(err.message.contains("Invalid name"));
+    }
+
+    #[test]
+    fn test_provider_name_validation_special_characters() {
+        // Name with special characters should fail
+        let invalid_names = vec![
+            "test<script>",     // HTML tags
+            "test>alert",       // > character
+            "test\"quote",      // Quote character
+            "test'apostrophe",  // Apostrophe
+            "test space",       // Space
+            "test/slash",       // Slash
+            "test\\backslash",  // Backslash
+            "test;drop",        // Semicolon
+            "test& amp",        // Ampersand
+        ];
+        for invalid_name in invalid_names {
+            let result = validate_path_id(invalid_name, "name");
+            assert!(result.is_err(), "Expected '{}' to be invalid", invalid_name);
+        }
+    }
+
+    #[test]
+    fn test_provider_name_validation_valid() {
+        // Valid names should pass
+        let valid_names = vec![
+            "provider1",
+            "my-provider",
+            "my_provider",
+            "Provider123",
+            "abc",
+            "test_provider-123",
+        ];
+        for valid_name in valid_names {
+            let result = validate_path_id(valid_name, "name");
+            assert!(result.is_ok(), "Expected '{}' to be valid", valid_name);
+        }
+    }
+
+    #[test]
+    fn test_provider_name_max_length_valid() {
+        // Name at exactly ID_MAX (64) should be valid
+        let max_length_name = "a".repeat(64);
+        let result = validate_path_id(&max_length_name, "name");
+        assert!(result.is_ok());
+    }
+
     // ========== Kick Stream Validation Tests ==========
 
     #[test]
@@ -1208,5 +1283,59 @@ mod tests {
             reason: "test".to_string(),
         };
         assert!(!valid.room_id.is_empty() && !valid.media_id.is_empty());
+    }
+
+    // ========== Add Provider Name Validation Tests ==========
+
+    #[test]
+    fn test_add_provider_name_validation_empty_in_body() {
+        // Empty name in request body should fail validation
+        let req = admin::AddProviderInstanceRequest {
+            name: String::new(),
+            endpoint: "http://localhost:50051".to_string(),
+            comment: String::new(),
+            timeout_seconds: 10,
+            tls: false,
+            insecure_tls: false,
+            providers: vec![],
+            config: vec![],
+        };
+        // Validation is done by validate_path_id in the handler
+        let result = validate_path_id(&req.name, "name");
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert_eq!(err.status, axum::http::StatusCode::BAD_REQUEST);
+        assert!(err.message.contains("Invalid name"));
+    }
+
+    #[test]
+    fn test_add_provider_name_validation_malicious_in_body() {
+        // Malicious name in request body should fail validation
+        // Note: control chars like \x00 are sanitized away by sanitize_string,
+        // so "test\x00null" becomes "testnull" which is valid - not tested here.
+        let malicious_names = vec![
+            "<script>alert(1)</script>",
+            "test; DROP TABLE providers;",
+            "../../../etc/passwd",
+        ];
+        for malicious_name in malicious_names {
+            let result = validate_path_id(malicious_name, "name");
+            assert!(result.is_err(), "Expected '{}' to be rejected", malicious_name);
+        }
+    }
+
+    #[test]
+    fn test_add_provider_name_validation_valid_in_body() {
+        // Valid name in request body should pass validation
+        let valid_names = vec![
+            "alist_main",
+            "bilibili-prod",
+            "emby_server_1",
+            "provider123",
+        ];
+        for valid_name in valid_names {
+            let result = validate_path_id(valid_name, "name");
+            assert!(result.is_ok(), "Expected '{}' to be valid", valid_name);
+        }
     }
 }

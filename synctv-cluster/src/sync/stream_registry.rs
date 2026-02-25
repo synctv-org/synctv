@@ -91,6 +91,10 @@ pub struct StreamRegistry {
 
     /// This replica's ID
     replica_id: String,
+
+    /// Flag to simulate Redis failure for testing
+    #[cfg(test)]
+    redis_failing: bool,
 }
 
 impl StreamRegistry {
@@ -102,6 +106,8 @@ impl StreamRegistry {
             redis_conn: None,
             redis_key_prefix: String::new(),
             replica_id,
+            #[cfg(test)]
+            redis_failing: false,
         }
     }
 
@@ -116,9 +122,20 @@ impl StreamRegistry {
         self
     }
 
+    /// Test-only: Simulate a failing Redis connection.
+    #[cfg(test)]
+    #[must_use]
+    pub fn with_redis_failing(mut self) -> Self {
+        self.redis_failing = true;
+        self
+    }
+
     /// Register a published stream
     ///
     /// Stores the stream in local cache and persists to Redis for cross-replica visibility.
+    ///
+    /// **Consistency guarantee**: Redis is updated first. Local cache is only updated
+    /// after Redis succeeds. This ensures that if Redis fails, local state remains unchanged.
     pub async fn register_stream(
         &self,
         identifier: &str,
@@ -136,12 +153,17 @@ impl StreamRegistry {
             publisher_addr,
         };
 
-        // Store in local cache
-        self.local_streams.insert(identifier.to_string(), metadata.clone());
-
-        // Persist to Redis atomically using a Lua script.
+        // Persist to Redis atomically using a Lua script FIRST.
         // A single script execution ensures that SADD + SETEX happen together;
         // a crash between them can no longer leave an orphaned active-set entry.
+        // Only update local cache after Redis succeeds to maintain consistency.
+
+        // Test-only: simulate Redis failure if flag is set
+        #[cfg(test)]
+        if self.redis_failing {
+            return Err("Simulated Redis failure".to_string());
+        }
+
         if let Some(ref conn) = self.redis_conn {
             let active_key = format!("{}streams:active", self.redis_key_prefix);
             let meta_key = format!("{}streams:meta:{}", self.redis_key_prefix, identifier);
@@ -163,8 +185,13 @@ impl StreamRegistry {
                 .await
             {
                 warn!("Failed to register stream in Redis (atomic script): {e}");
+                // Return error without updating local cache - maintains consistency
+                return Err(format!("Failed to register stream in Redis: {e}"));
             }
         }
+
+        // Store in local cache ONLY after Redis succeeds (or if Redis is not configured)
+        self.local_streams.insert(identifier.to_string(), metadata);
 
         info!(
             stream = %identifier,
@@ -501,5 +528,44 @@ mod tests {
 
         let streams = registry.get_local_streams();
         assert_eq!(streams.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_register_stream_without_redis_succeeds() {
+        // Test: When Redis is not configured, register_stream should succeed
+        // and only update local cache
+        let registry = StreamRegistry::new("replica1".to_string());
+
+        let result = registry
+            .register_stream("test_app/test_stream", "rtmp", None)
+            .await;
+
+        // Should succeed
+        assert!(result.is_ok());
+        // Local cache should contain the stream
+        assert!(registry.is_local_stream("test_app/test_stream"));
+    }
+
+    #[tokio::test]
+    async fn test_register_stream_redis_failure_rolls_back_local() {
+        // Test: When Redis operation fails, local cache should NOT contain the stream
+        // This uses a with_redis_failing method that simulates a failing Redis connection
+        let registry = StreamRegistry::new("replica1".to_string())
+            .with_redis_failing();
+
+        let result = registry
+            .register_stream("test_app/test_stream", "rtmp", None)
+            .await;
+
+        // The operation should fail with Redis failure
+        assert!(result.is_err(), "register_stream should fail when Redis fails");
+
+        // Key invariant: local cache should be consistent
+        // If Redis fails, local cache should NOT have the stream
+        // (because we only update local after Redis succeeds)
+        assert!(
+            !registry.is_local_stream("test_app/test_stream"),
+            "Local cache should not contain stream when Redis fails"
+        );
     }
 }

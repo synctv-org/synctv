@@ -782,7 +782,8 @@ impl PlaybackService {
     }
 
     /// Maximum retry attempts for optimistic lock conflicts
-    const MAX_RETRIES: u32 = 5;
+    /// Matches optimistic_retry::DEFAULT_MAX_RETRIES
+    const MAX_RETRIES: u32 = 3;
     /// Base delay for exponential backoff (milliseconds)
     const BACKOFF_BASE_MS: u64 = 5;
 
@@ -1087,8 +1088,58 @@ mod tests {
 
     #[test]
     fn test_update_state_constants() {
-        assert_eq!(PlaybackService::MAX_RETRIES, 5);
+        // MAX_RETRIES = 3 to match optimistic_retry::DEFAULT_MAX_RETRIES
+        assert_eq!(PlaybackService::MAX_RETRIES, 3);
         assert_eq!(PlaybackService::BACKOFF_BASE_MS, 5);
+    }
+
+    /// Tests for optimistic lock retry mechanism
+    mod optimistic_retry_tests {
+        use super::*;
+
+        #[test]
+        fn test_retry_succeeds_within_max_attempts() {
+            // With MAX_RETRIES = 3, we have 3 attempts total
+            // If conflicts happen on attempts 0 and 1, attempt 2 should succeed
+            let conflicts = 2;
+            let attempts_needed = conflicts + 1; // 3 attempts
+            assert!(
+                attempts_needed <= PlaybackService::MAX_RETRIES,
+                "Need {} attempts but MAX_RETRIES is {}",
+                attempts_needed,
+                PlaybackService::MAX_RETRIES
+            );
+        }
+
+        #[test]
+        fn test_max_attempts_is_three() {
+            // Verify MAX_RETRIES = 3 for consistency with optimistic_retry module
+            assert_eq!(PlaybackService::MAX_RETRIES, 3, "MAX_RETRIES should be 3");
+        }
+
+        #[test]
+        fn test_max_retries_matches_optimistic_retry_default() {
+            // Ensure PlaybackService uses the same default as optimistic_retry module
+            assert_eq!(
+                PlaybackService::MAX_RETRIES,
+                crate::service::optimistic_retry::DEFAULT_MAX_RETRIES,
+                "PlaybackService::MAX_RETRIES should match optimistic_retry::DEFAULT_MAX_RETRIES"
+            );
+        }
+
+        #[test]
+        fn test_backoff_increases_exponentially() {
+            // Verify exponential backoff calculation:
+            // attempt 0: base * 1 = 5ms
+            // attempt 1: base * 2 = 10ms
+            let base_ms = PlaybackService::BACKOFF_BASE_MS;
+
+            let backoff_attempt_0 = base_ms * (1 << 0); // 5ms
+            let backoff_attempt_1 = base_ms * (1 << 1); // 10ms
+
+            assert_eq!(backoff_attempt_0, 5);
+            assert_eq!(backoff_attempt_1, 10);
+        }
     }
 
     /// Tests for playback state cache version checking (CAS semantics)

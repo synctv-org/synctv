@@ -91,7 +91,7 @@ fn test_bilibili_http_403_to_permission_denied() {
 }
 
 #[test]
-fn test_bilibili_http_429_to_internal() {
+fn test_bilibili_http_429_to_resource_exhausted() {
     use synctv_media_providers::bilibili::BilibiliError;
     let err = BilibiliError::Http {
         status: reqwest::StatusCode::TOO_MANY_REQUESTS,
@@ -99,9 +99,9 @@ fn test_bilibili_http_429_to_internal() {
         retry_after_secs: Some(30),
         body: String::new(),
     };
-    // 429 is not in [401,403,404,5xx] -> falls through to internal
+    // HTTP 429 Too Many Requests -> ResourceExhausted
     let status = map_provider_error("bilibili_api", &err);
-    assert_eq!(status.code(), tonic::Code::Internal);
+    assert_eq!(status.code(), tonic::Code::ResourceExhausted);
 }
 
 #[test]

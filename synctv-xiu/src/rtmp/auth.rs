@@ -86,4 +86,31 @@ pub trait AuthCallback: Send + Sync {
     ) {
         // Default: no-op
     }
+
+    /// Called when `on_publish` succeeded but a later step (e.g. `StreamHub` publish) failed.
+    ///
+    /// This is a fire-and-forget callback — errors are logged, not propagated.
+    /// Used to rollback any state changes made during `on_publish`, such as
+    /// unregistering a publisher from a cluster registry.
+    ///
+    /// # Arguments
+    /// * `app_name` - RTMP application name (e.g. `room_id`)
+    /// * `stream_name` - Stream name (e.g. `media_id`), after any rewrite
+    /// * `query` - Optional query string from the RTMP URL
+    ///
+    /// # When Called
+    /// This method is called when:
+    /// 1. `on_publish` returned `Ok(...)` (authentication succeeded)
+    /// 2. A subsequent step in the publish flow failed (e.g. `publish_to_stream_hub`)
+    ///
+    /// This ensures that any registration done in `on_publish` is cleaned up
+    /// immediately rather than waiting for TTL expiry or `on_unpublish`.
+    async fn on_publish_rollback(
+        &self,
+        _app_name: &str,
+        _stream_name: &str,
+        _query: Option<&str>,
+    ) {
+        // Default: no-op
+    }
 }

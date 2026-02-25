@@ -563,4 +563,104 @@ mod tests {
         let service = result.unwrap();
         assert_eq!(service.store.backend_name(), "memory");
     }
+
+    // ============================================================================
+    // Cluster mode Redis dependency tests (TDD)
+    // ============================================================================
+
+    /// Test: cluster mode without Redis returns a descriptive error.
+    /// This is the core issue - in cluster mode, tickets created on replica A
+    /// cannot be validated on replica B without shared Redis storage.
+    #[test]
+    fn test_cluster_mode_without_redis_returns_error() {
+        let result = WsTicketService::new(None, Some(30), true);
+
+        assert!(
+            result.is_err(),
+            "Cluster mode without Redis should return an error"
+        );
+
+        let err = result.unwrap_err();
+        let err_msg = err.to_string();
+
+        // Error message should be descriptive and mention the core issue
+        assert!(
+            err_msg.contains("Redis is required"),
+            "Error should mention Redis is required; got: {err_msg}"
+        );
+        assert!(
+            err_msg.contains("cluster mode") || err_msg.contains("cluster"),
+            "Error should mention cluster mode; got: {err_msg}"
+        );
+        assert!(
+            err_msg.contains("replica") || err_msg.contains("replicas"),
+            "Error should explain the replica visibility issue; got: {err_msg}"
+        );
+    }
+
+    /// Test: cluster mode error message provides actionable guidance.
+    /// Users should know how to fix the configuration.
+    #[test]
+    fn test_cluster_mode_error_message_is_actionable() {
+        let result = WsTicketService::new(None, None, true);
+        let err_msg = result.unwrap_err().to_string();
+
+        // Should suggest configuring Redis
+        assert!(
+            err_msg.contains("Configure Redis"),
+            "Error should suggest configuring Redis; got: {err_msg}"
+        );
+    }
+
+    /// Test: cluster mode with custom TTL still requires Redis.
+    /// TTL configuration should not bypass the Redis requirement.
+    #[test]
+    fn test_cluster_mode_with_custom_ttl_still_requires_redis() {
+        let result = WsTicketService::new(None, Some(60), true);
+
+        assert!(
+            result.is_err(),
+            "Cluster mode should require Redis regardless of TTL setting"
+        );
+    }
+
+    /// Test: cluster mode with zero TTL still requires Redis.
+    #[test]
+    fn test_cluster_mode_with_zero_ttl_still_requires_redis() {
+        let result = WsTicketService::new(None, Some(0), true);
+
+        assert!(
+            result.is_err(),
+            "Cluster mode should require Redis even with zero TTL"
+        );
+    }
+
+    /// Test: non-cluster mode without Redis works but logs warning.
+    /// Single-replica deployments should still function without Redis.
+    #[test]
+    fn test_non_cluster_mode_without_redis_succeeds() {
+        let result = WsTicketService::new(None, Some(30), false);
+
+        assert!(
+            result.is_ok(),
+            "Non-cluster mode should work without Redis"
+        );
+
+        let service = result.unwrap();
+        assert_eq!(
+            service.backend_name(),
+            "memory",
+            "Non-cluster mode without Redis should use memory backend"
+        );
+    }
+
+    /// Test: from_store allows custom backends for testing purposes.
+    #[test]
+    fn test_from_store_allows_custom_backend() {
+        let store = Arc::new(InMemoryTicketStore::new(30));
+        let service = WsTicketService::from_store(store, Some(45));
+
+        assert_eq!(service.backend_name(), "memory");
+        assert_eq!(service.ticket_ttl_secs(), 45);
+    }
 }

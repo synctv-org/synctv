@@ -417,6 +417,7 @@ impl HlsStreamingApi {
                     room_id,
                     media_id,
                     &segment_url_base,
+                    publisher_info.epoch,
                 )
                 .await?;
 
@@ -520,6 +521,7 @@ impl HlsStreamingApi {
                     room_id,
                     media_id,
                     segment_name,
+                    publisher_info.epoch,
                 )
                 .await?;
 

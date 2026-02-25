@@ -22,6 +22,7 @@ use crate::error::ProviderClientError;
 /// - Auth errors -> `UNAUTHENTICATED`
 /// - HTTP 401/403 -> `PERMISSION_DENIED`
 /// - HTTP 404 -> `NOT_FOUND`
+/// - HTTP 429 -> `RESOURCE_EXHAUSTED`
 /// - HTTP 5xx -> `UNAVAILABLE`
 /// - Network errors -> `UNAVAILABLE`
 /// - Parse errors -> `INTERNAL`
@@ -38,6 +39,7 @@ pub fn map_provider_error(context: &str, e: &ProviderClientError) -> Status {
         ProviderClientError::Http { status, .. } => match status.as_u16() {
             401 | 403 => Status::permission_denied(format!("{context}: access denied")),
             404 => Status::not_found(format!("{context}: resource not found")),
+            429 => Status::resource_exhausted(format!("{context}: rate limited")),
             s if s >= 500 => Status::unavailable(format!("{context}: upstream server error")),
             _ => Status::internal(format!("{context}: request failed")),
         },
@@ -155,5 +157,17 @@ mod tests {
         let err = ProviderClientError::NotImplemented("feature X".to_string());
         let status = map_provider_error("call", &err);
         assert_eq!(status.code(), tonic::Code::Unimplemented);
+    }
+
+    #[test]
+    fn http_429_maps_to_resource_exhausted() {
+        let err = ProviderClientError::Http {
+            status: reqwest::StatusCode::TOO_MANY_REQUESTS,
+            url: "https://example.com".to_string(),
+            retry_after_secs: Some(60),
+            body: String::new(),
+        };
+        let status = map_provider_error("get_video_url", &err);
+        assert_eq!(status.code(), tonic::Code::ResourceExhausted);
     }
 }

@@ -1,11 +1,13 @@
 //! Token blacklist tests
 //!
-//! Tests the InMemoryTokenBlacklistStore.
+//! Tests the InMemoryTokenBlacklistStore and FallbackTokenBlacklistStore.
 //!
 //! Run with: cargo test --test token_blacklist_tests -- --nocapture
 
+use std::sync::Arc;
 use synctv_core::service::{
-    InMemoryTokenBlacklistStore, TokenBlacklistStore,
+    FallbackTokenBlacklistStore, InMemoryTokenBlacklistStore,
+    TokenBlacklistStore,
 };
 
 // ============================================================================
@@ -64,4 +66,554 @@ async fn test_in_memory_family_revoked_set_and_get() {
     // Should be retrievable
     let revoked_at = store.get_family_revoked_at(key).await;
     assert_eq!(revoked_at, Some(timestamp));
+}
+
+#[tokio::test]
+async fn test_in_memory_family_ttl_expiry() {
+    let store = InMemoryTokenBlacklistStore::new(10_000, 3600, 86400);
+
+    let key = "family:ttl_test";
+    let timestamp = chrono::Utc::now().timestamp();
+
+    store.set_family_revoked(key, timestamp, 1).await;
+    assert_eq!(store.get_family_revoked_at(key).await, Some(timestamp));
+
+    // Wait for expiry
+    tokio::time::sleep(tokio::time::Duration::from_millis(1100)).await;
+    assert!(
+        store.get_family_revoked_at(key).await.is_none(),
+        "Family revocation should expire after TTL"
+    );
+}
+
+// ============================================================================
+// FallbackTokenBlacklistStore tests
+// ============================================================================
+
+#[tokio::test]
+async fn test_fallback_blacklist_roundtrip() {
+    // Use InMemory as both primary and fallback (simulating working primary)
+    let primary =
+        std::sync::Arc::new(InMemoryTokenBlacklistStore::new(10_000, 3600, 86400))
+            as std::sync::Arc<dyn TokenBlacklistStore>;
+    let fallback = FallbackTokenBlacklistStore::with_defaults(primary);
+
+    let key = "jti:fallback_test";
+    assert!(!fallback.is_blacklisted(key).await);
+
+    fallback.blacklist(key, 3600).await.unwrap();
+    assert!(fallback.is_blacklisted(key).await);
+}
+
+#[tokio::test]
+async fn test_fallback_family_roundtrip() {
+    let primary =
+        std::sync::Arc::new(InMemoryTokenBlacklistStore::new(10_000, 3600, 86400))
+            as std::sync::Arc<dyn TokenBlacklistStore>;
+    let fallback = FallbackTokenBlacklistStore::with_defaults(primary);
+
+    let key = "family:fallback_test";
+    let timestamp = chrono::Utc::now().timestamp();
+
+    assert!(fallback.get_family_revoked_at(key).await.is_none());
+
+    fallback.set_family_revoked(key, timestamp, 86400).await;
+    assert_eq!(fallback.get_family_revoked_at(key).await, Some(timestamp));
+}
+
+#[tokio::test]
+async fn test_fallback_ttl_expiry() {
+    let primary =
+        std::sync::Arc::new(InMemoryTokenBlacklistStore::new(10_000, 3600, 86400))
+            as std::sync::Arc<dyn TokenBlacklistStore>;
+    let fallback = FallbackTokenBlacklistStore::with_defaults(primary);
+
+    let key = "jti:fallback_ttl_test";
+
+    fallback.blacklist(key, 1).await.unwrap();
+    assert!(fallback.is_blacklisted(key).await);
+
+    // Wait for expiry
+    tokio::time::sleep(tokio::time::Duration::from_millis(1100)).await;
+
+    assert!(
+        !fallback.is_blacklisted(key).await,
+        "Token should no longer be blacklisted after TTL expiry"
+    );
+}
+
+#[tokio::test]
+async fn test_fallback_family_ttl_expiry() {
+    let primary =
+        std::sync::Arc::new(InMemoryTokenBlacklistStore::new(10_000, 3600, 86400))
+            as std::sync::Arc<dyn TokenBlacklistStore>;
+    let fallback = FallbackTokenBlacklistStore::with_defaults(primary);
+
+    let key = "family:fallback_ttl_test";
+    let timestamp = chrono::Utc::now().timestamp();
+
+    fallback.set_family_revoked(key, timestamp, 1).await;
+    assert_eq!(fallback.get_family_revoked_at(key).await, Some(timestamp));
+
+    // Wait for expiry
+    tokio::time::sleep(tokio::time::Duration::from_millis(1100)).await;
+
+    assert!(
+        fallback.get_family_revoked_at(key).await.is_none(),
+        "Family revocation should expire after TTL"
+    );
+}
+
+/// Mock store that always fails - for testing fallback behavior
+struct FailingStore;
+
+#[async_trait::async_trait]
+impl TokenBlacklistStore for FailingStore {
+    async fn is_blacklisted(&self, _key: &str) -> bool {
+        false
+    }
+
+    async fn blacklist(&self, _key: &str, _ttl_secs: u64) -> synctv_core::Result<()> {
+        Err(synctv_core::Error::Internal("Primary store failed".to_string()))
+    }
+
+    async fn get_family_revoked_at(&self, _key: &str) -> Option<i64> {
+        None
+    }
+
+    async fn set_family_revoked(&self, _key: &str, _timestamp: i64, _ttl_secs: u64) {
+        // Do nothing (simulates failure)
+    }
+}
+
+#[tokio::test]
+async fn test_fallback_with_failing_primary_still_tracks_blacklist() {
+    // Use a failing store as primary
+    let primary = std::sync::Arc::new(FailingStore) as std::sync::Arc<dyn TokenBlacklistStore>;
+    let fallback = FallbackTokenBlacklistStore::with_defaults(primary);
+
+    let key = "jti:failing_primary_test";
+
+    // Blacklist should succeed (written to fallback even if primary fails)
+    let result = fallback.blacklist(key, 3600).await;
+    assert!(result.is_ok(), "Blacklist should succeed via fallback");
+
+    // Should be blacklisted (via fallback)
+    assert!(
+        fallback.is_blacklisted(key).await,
+        "Token should be blacklisted via fallback"
+    );
+}
+
+#[tokio::test]
+async fn test_fallback_with_failing_primary_still_tracks_family() {
+    let primary = std::sync::Arc::new(FailingStore) as std::sync::Arc<dyn TokenBlacklistStore>;
+    let fallback = FallbackTokenBlacklistStore::with_defaults(primary);
+
+    let key = "family:failing_primary_test";
+    let timestamp = chrono::Utc::now().timestamp();
+
+    // Set family revocation (should succeed via fallback)
+    fallback.set_family_revoked(key, timestamp, 86400).await;
+
+    // Should be retrievable (via fallback)
+    assert_eq!(
+        fallback.get_family_revoked_at(key).await,
+        Some(timestamp),
+        "Family revocation should be retrievable via fallback"
+    );
+}
+
+// ============================================================================
+// Memory Fallback with Sync Tests (Task #18)
+// ============================================================================
+
+/// Mock store that can be toggled between failing and working states.
+/// This simulates Redis becoming unavailable and then recovering.
+struct ToggleableStore {
+    /// When true, all operations fail
+    failing: std::sync::atomic::AtomicBool,
+    /// Track blacklist calls
+    blacklist_calls: std::sync::atomic::AtomicU64,
+    /// Track set_family_revoked calls
+    family_calls: std::sync::atomic::AtomicU64,
+}
+
+impl ToggleableStore {
+    fn new() -> Self {
+        Self {
+            failing: std::sync::atomic::AtomicBool::new(true),
+            blacklist_calls: std::sync::atomic::AtomicU64::new(0),
+            family_calls: std::sync::atomic::AtomicU64::new(0),
+        }
+    }
+
+    fn set_failing(&self, failing: bool) {
+        self.failing.store(
+            failing,
+            std::sync::atomic::Ordering::SeqCst,
+        );
+    }
+
+    fn blacklist_call_count(&self) -> u64 {
+        self.blacklist_calls.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    fn family_call_count(&self) -> u64 {
+        self.family_calls.load(std::sync::atomic::Ordering::SeqCst)
+    }
+}
+
+#[async_trait::async_trait]
+impl TokenBlacklistStore for ToggleableStore {
+    async fn is_blacklisted(&self, _key: &str) -> bool {
+        false
+    }
+
+    async fn blacklist(&self, _key: &str, _ttl_secs: u64) -> synctv_core::Result<()> {
+        self.blacklist_calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        if self.failing.load(std::sync::atomic::Ordering::SeqCst) {
+            Err(synctv_core::Error::Internal("Store is unavailable".to_string()))
+        } else {
+            Ok(())
+        }
+    }
+
+    async fn get_family_revoked_at(&self, _key: &str) -> Option<i64> {
+        None
+    }
+
+    async fn set_family_revoked(&self, _key: &str, _timestamp: i64, _ttl_secs: u64) {
+        self.family_calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        // Like the real implementation, this is fire-and-forget
+    }
+}
+
+/// Test 1: Memory fallback when primary (simulating Redis) is unavailable
+#[tokio::test]
+async fn test_memory_fallback_when_primary_unavailable() {
+    // Create a failing primary store (simulating Redis being down)
+    let primary = Arc::new(ToggleableStore::new()) as Arc<dyn TokenBlacklistStore>;
+    let fallback = FallbackTokenBlacklistStore::with_defaults(primary.clone());
+
+    let key = "jti:redis_down_test";
+
+    // Blacklist should succeed even though primary fails
+    let result = fallback.blacklist(key, 3600).await;
+    assert!(result.is_ok(), "Blacklist should succeed via memory fallback");
+
+    // Token should be blacklisted (via fallback memory)
+    assert!(
+        fallback.is_blacklisted(key).await,
+        "Token should be blacklisted in memory fallback"
+    );
+}
+
+/// Test 2: Multiple blacklist operations accumulate in memory fallback during outage
+#[tokio::test]
+async fn test_multiple_blacklists_during_outage() {
+    let primary = Arc::new(ToggleableStore::new()) as Arc<dyn TokenBlacklistStore>;
+    let fallback = FallbackTokenBlacklistStore::with_defaults(primary.clone());
+
+    // Blacklist multiple tokens while primary is down
+    for i in 0..10 {
+        let key = format!("jti:outage_{i}");
+        let result = fallback.blacklist(&key, 3600).await;
+        assert!(result.is_ok(), "Blacklist {} should succeed via fallback", i);
+    }
+
+    // All tokens should be blacklisted in fallback
+    for i in 0..10 {
+        let key = format!("jti:outage_{i}");
+        assert!(
+            fallback.is_blacklisted(&key).await,
+            "Token {} should be blacklisted in memory fallback",
+            i
+        );
+    }
+}
+
+/// Test 3: Family revocations work during outage
+#[tokio::test]
+async fn test_family_revocation_during_outage() {
+    let primary = Arc::new(ToggleableStore::new()) as Arc<dyn TokenBlacklistStore>;
+    let fallback = FallbackTokenBlacklistStore::with_defaults(primary.clone());
+
+    let key = "family:outage_user";
+    let timestamp = chrono::Utc::now().timestamp();
+
+    // Set family revocation while primary is down
+    fallback.set_family_revoked(key, timestamp, 86400).await;
+
+    // Should be retrievable from memory fallback
+    assert_eq!(
+        fallback.get_family_revoked_at(key).await,
+        Some(timestamp),
+        "Family revocation should be retrievable from memory fallback"
+    );
+}
+
+/// Test 4: Verify that fallback persists data independently of primary state
+#[tokio::test]
+async fn test_fallback_persists_independently() {
+    let toggleable = Arc::new(ToggleableStore::new());
+    let primary = toggleable.clone() as Arc<dyn TokenBlacklistStore>;
+    let fallback = FallbackTokenBlacklistStore::with_defaults(primary);
+
+    // Blacklist while primary is down
+    let key_down = "jti:while_down";
+    fallback.blacklist(key_down, 3600).await.unwrap();
+
+    // Verify it's blacklisted
+    assert!(fallback.is_blacklisted(key_down).await);
+
+    // Now simulate primary recovering
+    toggleable.set_failing(false);
+
+    // Blacklist a new token while primary is up
+    let key_up = "jti:while_up";
+    fallback.blacklist(key_up, 3600).await.unwrap();
+
+    // Both tokens should still be blacklisted
+    assert!(
+        fallback.is_blacklisted(key_down).await,
+        "Token blacklisted during outage should still be blacklisted"
+    );
+    assert!(
+        fallback.is_blacklisted(key_up).await,
+        "Token blacklisted after recovery should be blacklisted"
+    );
+}
+
+/// Test 5: Memory fallback with TTL expiry during extended outage
+#[tokio::test]
+async fn test_fallback_ttl_during_extended_outage() {
+    let primary = Arc::new(ToggleableStore::new()) as Arc<dyn TokenBlacklistStore>;
+    let fallback = FallbackTokenBlacklistStore::with_defaults(primary);
+
+    let key_short = "jti:short_ttl_outage";
+    let key_long = "jti:long_ttl_outage";
+
+    // Blacklist with different TTLs
+    fallback.blacklist(key_short, 1).await.unwrap(); // 1 second
+    fallback.blacklist(key_long, 3600).await.unwrap(); // 1 hour
+
+    // Both should be blacklisted initially
+    assert!(fallback.is_blacklisted(key_short).await);
+    assert!(fallback.is_blacklisted(key_long).await);
+
+    // Wait for short TTL to expire
+    tokio::time::sleep(tokio::time::Duration::from_millis(1100)).await;
+
+    // Short TTL should be expired, long TTL should still be valid
+    assert!(
+        !fallback.is_blacklisted(key_short).await,
+        "Short TTL token should be expired"
+    );
+    assert!(
+        fallback.is_blacklisted(key_long).await,
+        "Long TTL token should still be blacklisted"
+    );
+}
+
+/// Test 6: Verify primary is called even when fallback holds the data
+/// This tests that the system tries to maintain consistency with primary
+#[tokio::test]
+async fn test_primary_called_even_with_fallback() {
+    let toggleable = Arc::new(ToggleableStore::new());
+    let primary = toggleable.clone() as Arc<dyn TokenBlacklistStore>;
+    let fallback = FallbackTokenBlacklistStore::with_defaults(primary);
+
+    // Make primary work
+    toggleable.set_failing(false);
+
+    let key = "jti:primary_called";
+
+    // Blacklist should write to both primary and fallback
+    fallback.blacklist(key, 3600).await.unwrap();
+
+    // Primary should have been called
+    assert_eq!(
+        toggleable.blacklist_call_count(),
+        1,
+        "Primary should have been called once"
+    );
+
+    // Now make primary fail
+    toggleable.set_failing(true);
+
+    // Blacklist another key - should succeed via fallback
+    let key2 = "jti:primary_failing";
+    let result = fallback.blacklist(key2, 3600).await;
+    assert!(result.is_ok());
+
+    // Primary was called (and failed)
+    assert_eq!(
+        toggleable.blacklist_call_count(),
+        2,
+        "Primary should have been attempted even though it failed"
+    );
+}
+
+// ============================================================================
+// Sync to Redis on Recovery Tests (Task #18)
+// ============================================================================
+
+use synctv_core::service::RedisSyncableTokenBlacklistStore;
+
+/// Test 7: Pending writes are synced when Redis recovers
+#[tokio::test]
+async fn test_sync_pending_writes_on_recovery() {
+    let toggleable = Arc::new(ToggleableStore::new());
+    let primary = toggleable.clone() as Arc<dyn TokenBlacklistStore>;
+    let fallback = RedisSyncableTokenBlacklistStore::with_defaults(primary);
+
+    // Blacklist tokens while primary is down
+    fallback.blacklist("jti:sync_test_1", 3600).await.unwrap();
+    fallback.blacklist("jti:sync_test_2", 3600).await.unwrap();
+
+    // Primary should have failed both times
+    assert_eq!(toggleable.blacklist_call_count(), 2);
+
+    // Now simulate primary recovering
+    toggleable.set_failing(false);
+
+    // Trigger sync of pending writes
+    let sync_result = fallback.sync_pending_writes().await;
+    assert!(sync_result.is_ok(), "Sync should succeed");
+
+    // Primary should have been called for both pending writes
+    assert_eq!(
+        toggleable.blacklist_call_count(),
+        4,
+        "Primary should have been called 2 more times for sync"
+    );
+}
+
+/// Test 8: Sync only attempts non-expired entries
+#[tokio::test]
+async fn test_sync_skips_expired_entries() {
+    let toggleable = Arc::new(ToggleableStore::new());
+    let primary = toggleable.clone() as Arc<dyn TokenBlacklistStore>;
+    let fallback = RedisSyncableTokenBlacklistStore::with_defaults(primary);
+
+    // Blacklist with very short TTL
+    fallback.blacklist("jti:expired_sync", 1).await.unwrap();
+    fallback.blacklist("jti:valid_sync", 3600).await.unwrap();
+
+    // Wait for short TTL to expire
+    tokio::time::sleep(tokio::time::Duration::from_millis(1100)).await;
+
+    // Recover primary
+    toggleable.set_failing(false);
+
+    // Sync pending writes
+    let sync_result = fallback.sync_pending_writes().await;
+    assert!(sync_result.is_ok());
+
+    // Only the valid entry should have been synced (2 initial + 1 sync)
+    assert_eq!(
+        toggleable.blacklist_call_count(),
+        3,
+        "Only valid (non-expired) entry should be synced"
+    );
+}
+
+/// Test 9: Family revocations are also synced
+#[tokio::test]
+async fn test_sync_family_revocations() {
+    let toggleable = Arc::new(ToggleableStore::new());
+    let primary = toggleable.clone() as Arc<dyn TokenBlacklistStore>;
+    let fallback = RedisSyncableTokenBlacklistStore::with_defaults(primary);
+
+    let timestamp = chrono::Utc::now().timestamp();
+
+    // Set family revocation while primary is down
+    fallback.set_family_revoked("family:sync_test", timestamp, 86400).await;
+
+    // Recover primary
+    toggleable.set_failing(false);
+
+    // Sync pending writes
+    let sync_result = fallback.sync_pending_writes().await;
+    assert!(sync_result.is_ok());
+
+    // Family revocation should have been synced
+    assert_eq!(
+        toggleable.family_call_count(),
+        2,
+        "Family revocation should have been synced (initial + sync)"
+    );
+}
+
+/// Test 10: Clear pending writes after successful sync
+#[tokio::test]
+async fn test_pending_cleared_after_sync() {
+    let toggleable = Arc::new(ToggleableStore::new());
+    let primary = toggleable.clone() as Arc<dyn TokenBlacklistStore>;
+    let fallback = RedisSyncableTokenBlacklistStore::with_defaults(primary);
+
+    // Blacklist while primary is down
+    fallback.blacklist("jti:clear_test", 3600).await.unwrap();
+
+    // Should have pending writes
+    assert_eq!(fallback.pending_write_count(), 1);
+
+    // Recover and sync
+    toggleable.set_failing(false);
+    fallback.sync_pending_writes().await.unwrap();
+
+    // Pending should be cleared
+    assert_eq!(
+        fallback.pending_write_count(),
+        0,
+        "Pending writes should be cleared after sync"
+    );
+}
+
+/// Test 11: Sync handles partial failures gracefully
+#[tokio::test]
+async fn test_sync_handles_partial_failures() {
+    // This test simulates a scenario where some sync operations fail
+    // The sync should continue and report which ones failed
+    let toggleable = Arc::new(ToggleableStore::new());
+    let primary = toggleable.clone() as Arc<dyn TokenBlacklistStore>;
+    let fallback = RedisSyncableTokenBlacklistStore::with_defaults(primary);
+
+    // Blacklist multiple tokens while primary is down
+    fallback.blacklist("jti:partial_1", 3600).await.unwrap();
+    fallback.blacklist("jti:partial_2", 3600).await.unwrap();
+    fallback.blacklist("jti:partial_3", 3600).await.unwrap();
+
+    // Keep primary failing - sync will fail
+    let _sync_result = fallback.sync_pending_writes().await;
+    // Sync should still return Ok but with 0 synced (all failed)
+    // Pending count should remain the same
+    assert_eq!(fallback.pending_write_count(), 3);
+}
+
+/// Test 12: Duplicate syncs are idempotent
+#[tokio::test]
+async fn test_sync_is_idempotent() {
+    let toggleable = Arc::new(ToggleableStore::new());
+    let primary = toggleable.clone() as Arc<dyn TokenBlacklistStore>;
+    let fallback = RedisSyncableTokenBlacklistStore::with_defaults(primary);
+
+    // Blacklist while primary is down
+    fallback.blacklist("jti:idempotent", 3600).await.unwrap();
+
+    // Recover primary
+    toggleable.set_failing(false);
+
+    // Sync multiple times
+    fallback.sync_pending_writes().await.unwrap();
+    let count_after_first = toggleable.blacklist_call_count();
+
+    // Second sync should do nothing (pending already cleared)
+    fallback.sync_pending_writes().await.unwrap();
+    assert_eq!(
+        toggleable.blacklist_call_count(),
+        count_after_first,
+        "Second sync should not call primary again"
+    );
 }

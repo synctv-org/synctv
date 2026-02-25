@@ -132,14 +132,14 @@ impl AdminApiImpl {
         let page = if req.page > 0 { req.page } else { 1 };
         let page_size = if req.page_size > 0 { req.page_size } else { 50 };
 
-        // Parse status filter (None = show all statuses for admin)
-        let status = if req.status.is_empty() {
+        // Parse status filter (0/Unspecified = show all statuses for admin)
+        let status = if req.status == 0 {
             None
         } else {
-            Some(match req.status.as_str() {
-                "active" => synctv_core::models::RoomStatus::Active,
-                "pending" => synctv_core::models::RoomStatus::Pending,
-                "closed" => synctv_core::models::RoomStatus::Closed,
+            Some(match synctv_proto::common::RoomStatus::try_from(req.status) {
+                Ok(synctv_proto::common::RoomStatus::Active) => synctv_core::models::RoomStatus::Active,
+                Ok(synctv_proto::common::RoomStatus::Pending) => synctv_core::models::RoomStatus::Pending,
+                Ok(synctv_proto::common::RoomStatus::Closed) => synctv_core::models::RoomStatus::Closed,
                 _ => synctv_core::models::RoomStatus::Active,
             })
         };
@@ -1931,7 +1931,14 @@ impl AdminApiImpl {
     }
 
     /// Kick an active stream
-    pub async fn kick_stream(&self, room_id: &str, media_id: &str, reason: &str) -> anyhow::Result<()> {
+    pub async fn kick_stream(
+        &self,
+        room_id: &str,
+        media_id: &str,
+        reason: &str,
+        admin_user_id: &UserId,
+        ctx: &RequestContext,
+    ) -> anyhow::Result<()> {
         let infrastructure = self
             .live_streaming_infrastructure
             .as_ref()
@@ -1941,10 +1948,37 @@ impl AdminApiImpl {
             room_id = %room_id,
             media_id = %media_id,
             reason = %reason,
+            admin_user_id = %admin_user_id.as_str(),
             "Admin kicking stream"
         );
 
-        infrastructure.kick_stream(room_id, media_id).await
+        infrastructure.kick_stream(room_id, media_id).await?;
+
+        // Audit log: kick_stream is a critical operation
+        {
+            let admin_username = self.user_service.get_user(admin_user_id).await
+                .map_or_else(|_| admin_user_id.as_str().to_string(), |u| u.username);
+            if let Err(e) = self.audit_service.log_stream_kicked(
+                admin_user_id.as_str().to_string(),
+                admin_username.clone(),
+                room_id.to_string(),
+                media_id.to_string(),
+                if reason.is_empty() { None } else { Some(reason.to_string()) },
+                ctx.ip_address.clone(),
+                ctx.user_agent.clone(),
+            ).await {
+                tracing::error!(
+                    error = %e,
+                    admin_user_id = %admin_user_id.as_str(),
+                    admin_username = %admin_username,
+                    room_id = %room_id,
+                    media_id = %media_id,
+                    "AUDIT LOG FAILURE: failed to record stream kick. Manual review required."
+                );
+            }
+        }
+
+        Ok(())
     }
 }
 

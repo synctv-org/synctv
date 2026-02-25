@@ -32,6 +32,7 @@ pub fn random_room_id() -> RoomId {
 pub struct UserFixture {
     id: UserId,
     username: String,
+    email: Option<String>,
     password_hash: String,
     role: UserRole,
     status: UserStatus,
@@ -42,6 +43,7 @@ impl UserFixture {
         Self {
             id: random_user_id(),
             username: "test_user".to_string(),
+            email: None, // Will be auto-generated in build()
             password_hash: "hash".to_string(),
             role: UserRole::User,
             status: UserStatus::Active,
@@ -68,12 +70,21 @@ impl UserFixture {
         self
     }
 
+    pub fn with_email(mut self, email: &str) -> Self {
+        self.email = Some(email.to_string());
+        self
+    }
+
     pub fn build(self) -> crate::models::User {
         let now = Utc::now();
+        // Generate unique email if not provided to avoid unique constraint violations in parallel tests
+        let email = self.email.unwrap_or_else(|| {
+            format!("test_{}@example.com", nanoid::nanoid!(8))
+        });
         crate::models::User {
             id: self.id,
             username: self.username,
-            email: Some("test@example.com".to_string()),
+            email: Some(email),
             password_hash: self.password_hash,
             role: self.role,
             status: self.status,
@@ -222,13 +233,32 @@ pub struct PlaylistFixture {
 }
 
 impl PlaylistFixture {
+    /// Create a root playlist fixture (empty name, no parent)
+    ///
+    /// Per the database constraint, root playlists must have an empty name.
+    /// Use `new_child()` to create a playlist with a non-empty name.
     pub fn new() -> Self {
         Self {
             id: PlaylistId::new(),
             room_id: random_room_id(),
             creator_id: None,
-            name: "Test Playlist".to_string(),
+            name: String::new(), // Root playlists must have empty name per constraint
             parent_id: None,
+            position: 0,
+        }
+    }
+
+    /// Create a child playlist fixture with a non-empty name and parent
+    ///
+    /// Per the database constraint, non-root playlists must have a non-empty name
+    /// without '/' characters, and must have a parent_id.
+    pub fn new_child(parent_id: PlaylistId) -> Self {
+        Self {
+            id: PlaylistId::new(),
+            room_id: random_room_id(),
+            creator_id: None,
+            name: format!("playlist_{}", nanoid::nanoid!(8)), // Unique non-empty name
+            parent_id: Some(parent_id),
             position: 0,
         }
     }
@@ -248,6 +278,11 @@ impl PlaylistFixture {
         self
     }
 
+    /// Set the playlist name
+    ///
+    /// WARNING: If you set a non-empty name, you MUST also set a parent_id
+    /// using `with_parent()`, otherwise the playlist will violate the database
+    /// constraint. Root playlists must have empty names.
     pub fn with_name(mut self, name: &str) -> Self {
         self.name = name.to_string();
         self
@@ -285,6 +320,42 @@ impl Default for PlaylistFixture {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// Helper to create a valid playlist hierarchy for media tests.
+///
+/// Creates a root playlist (empty name, no parent) and a child playlist
+/// with the given name. Returns the child playlist for use in tests.
+///
+/// This is needed because the database constraint requires:
+/// - Root playlists (parent_id IS NULL) must have empty names
+/// - Child playlists (parent_id IS NOT NULL) must have non-empty names
+///
+/// # Example
+/// ```ignore
+/// let (root, child) = create_media_playlist_hierarchy(&playlist_repo, room.id.clone(), "Videos").await;
+/// // Use child playlist for media items
+/// let media = Media::new(child.id.clone(), ...);
+/// ```
+pub async fn create_media_playlist_hierarchy(
+    playlist_repo: &crate::repository::playlist::PlaylistRepository,
+    room_id: RoomId,
+    child_name: &str,
+) -> (crate::models::Playlist, crate::models::Playlist) {
+    // Create root playlist (must have empty name per constraint)
+    let root = PlaylistFixture::new()
+        .with_room_id(room_id.clone())
+        .build();
+    let root = playlist_repo.create(&root).await.expect("Failed to create root playlist");
+
+    // Create child playlist with the desired name (must have parent per constraint)
+    let child = PlaylistFixture::new_child(root.id.clone())
+        .with_room_id(room_id)
+        .with_name(child_name)
+        .build();
+    let child = playlist_repo.create(&child).await.expect("Failed to create child playlist");
+
+    (root, child)
 }
 
 /// Async test wrapper with timeout

@@ -340,7 +340,7 @@ impl PullStream {
                                     epoch, room_id, media_id
                                 );
                                 if let Some(ref hls_proxy) = hls_proxy {
-                                    hls_proxy.invalidate_stream_cache(&room_id, &media_id).await;
+                                    hls_proxy.invalidate_stream_cache_sync(&room_id, &media_id).await;
                                 }
                                 break Err(anyhow::anyhow!(
                                     "Stale epoch on reconnect: publisher changed for {room_id} / {media_id}"

@@ -13,6 +13,11 @@
 //! AlistService    GrpcAlistClient
 //! (complete impl)  (thin gRPC wrapper)
 //! ```
+//!
+//! ## Dependency Injection
+//!
+//! Local clients are managed by `ProviderClientManager` rather than global statics.
+//! This enables proper sharing across the application and testability.
 
 use super::ProviderError;
 use async_trait::async_trait;
@@ -67,24 +72,171 @@ macro_rules! impl_grpc_method {
 }
 
 // ============================================================================
+// ProviderClientManager - Dependency Injection for Local Clients
+// ============================================================================
+
+/// Manager for provider clients that supports dependency injection.
+///
+/// In a multi-replica architecture, local clients should be managed through
+/// this struct rather than global statics. This enables:
+/// - Proper sharing of client instances across the application
+/// - Testability through mock injection
+/// - Consistent behavior across replicas
+///
+/// # Example
+///
+/// ```
+/// use synctv_core::provider::provider_client::ProviderClientManager;
+/// use std::sync::Arc;
+///
+/// let manager = ProviderClientManager::new();
+///
+/// // Get local Alist client
+/// let alist_client = manager.local_alist_client();
+///
+/// // Get local Bilibili client
+/// let bilibili_client = manager.local_bilibili_client();
+///
+/// // Get local Emby client
+/// let emby_client = manager.local_emby_client();
+/// ```
+#[derive(Clone)]
+pub struct ProviderClientManager {
+    /// Local Alist client (singleton within this manager)
+    local_alist: AlistClientArc,
+    /// Local Bilibili client (singleton within this manager)
+    local_bilibili: BilibiliClientArc,
+    /// Local Emby client (singleton within this manager)
+    local_emby: EmbyClientArc,
+}
+
+impl std::fmt::Debug for ProviderClientManager {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ProviderClientManager")
+            .field("local_alist", &"AlistClientArc")
+            .field("local_bilibili", &"BilibiliClientArc")
+            .field("local_emby", &"EmbyClientArc")
+            .finish()
+    }
+}
+
+impl Default for ProviderClientManager {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl ProviderClientManager {
+    /// Create a new `ProviderClientManager` with default local clients.
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            local_alist: Arc::new(synctv_media_providers::alist::AlistService::new()),
+            local_bilibili: Arc::new(synctv_media_providers::bilibili::BilibiliService::new()),
+            local_emby: Arc::new(synctv_media_providers::emby::EmbyService::new()),
+        }
+    }
+
+    /// Create a new `ProviderClientManager` with custom local clients.
+    ///
+    /// This is useful for testing with mock clients.
+    #[must_use]
+    pub fn with_custom_clients(
+        local_alist: AlistClientArc,
+        local_bilibili: BilibiliClientArc,
+        local_emby: EmbyClientArc,
+    ) -> Self {
+        Self {
+            local_alist,
+            local_bilibili,
+            local_emby,
+        }
+    }
+
+    /// Get the local Alist client.
+    #[must_use]
+    pub fn local_alist_client(&self) -> AlistClientArc {
+        self.local_alist.clone()
+    }
+
+    /// Get the local Bilibili client.
+    #[must_use]
+    pub fn local_bilibili_client(&self) -> BilibiliClientArc {
+        self.local_bilibili.clone()
+    }
+
+    /// Get the local Emby client.
+    #[must_use]
+    pub fn local_emby_client(&self) -> EmbyClientArc {
+        self.local_emby.clone()
+    }
+
+    /// Resolve an Alist client: use remote if channel provided, otherwise local.
+    ///
+    /// This is the preferred method for obtaining an Alist client.
+    pub fn resolve_alist_client(&self, remote_channel: Option<tonic::transport::Channel>) -> AlistClientArc {
+        match remote_channel {
+            Some(channel) => create_remote_alist_client(channel),
+            None => self.local_alist_client(),
+        }
+    }
+
+    /// Resolve a Bilibili client: use remote if channel provided, otherwise local.
+    ///
+    /// This is the preferred method for obtaining a Bilibili client.
+    pub fn resolve_bilibili_client(&self, remote_channel: Option<tonic::transport::Channel>) -> BilibiliClientArc {
+        match remote_channel {
+            Some(channel) => create_remote_bilibili_client(channel),
+            None => self.local_bilibili_client(),
+        }
+    }
+
+    /// Resolve an Emby client: use remote if channel provided, otherwise local.
+    ///
+    /// This is the preferred method for obtaining an Emby client.
+    pub fn resolve_emby_client(&self, remote_channel: Option<tonic::transport::Channel>) -> EmbyClientArc {
+        match remote_channel {
+            Some(channel) => create_remote_emby_client(channel),
+            None => self.local_emby_client(),
+        }
+    }
+}
+
+// ============================================================================
+// Global ProviderClientManager (for backward compatibility)
+// ============================================================================
+
+/// Global default `ProviderClientManager` instance.
+///
+/// This is used by `load_local_xxx_client()` functions for backward compatibility.
+/// New code should prefer creating a `ProviderClientManager` explicitly and
+/// passing it through the dependency injection system.
+static GLOBAL_CLIENT_MANAGER: std::sync::LazyLock<ProviderClientManager> = std::sync::LazyLock::new(ProviderClientManager::new);
+
+/// Get the global `ProviderClientManager` instance.
+///
+/// Prefer using dependency injection over this function.
+#[must_use]
+pub fn global_client_manager() -> &'static ProviderClientManager {
+    &GLOBAL_CLIENT_MANAGER
+}
+
+// ============================================================================
 // Alist Client
 // ============================================================================
 
 /// Type alias for Alist client
 pub type AlistClientArc = Arc<dyn AlistInterface>;
 
-/// Singleton local Alist client
-static LOCAL_ALIST_CLIENT: std::sync::LazyLock<AlistClientArc> = std::sync::LazyLock::new(|| {
-    Arc::new(synctv_media_providers::alist::AlistService::new())
-});
-
-/// Load local Alist client (singleton)
+/// Load local Alist client (from global manager).
+///
+/// Prefer using `ProviderClientManager::local_alist_client()` with dependency injection.
 pub fn load_local_alist_client() -> AlistClientArc {
-    LOCAL_ALIST_CLIENT.clone()
+    GLOBAL_CLIENT_MANAGER.local_alist_client()
 }
 
 /// Create remote Alist client (thin wrapper around gRPC client)
-#[must_use] 
+#[must_use]
 pub fn create_remote_alist_client(channel: tonic::transport::Channel) -> AlistClientArc {
     Arc::new(GrpcAlistClient::new(channel))
 }
@@ -268,18 +420,15 @@ use synctv_media_providers::bilibili::{BilibiliError, BilibiliInterface};
 /// Type alias for Bilibili client
 pub type BilibiliClientArc = Arc<dyn BilibiliInterface>;
 
-/// Singleton local Bilibili client
-static LOCAL_BILIBILI_CLIENT: std::sync::LazyLock<BilibiliClientArc> = std::sync::LazyLock::new(|| {
-    Arc::new(synctv_media_providers::bilibili::BilibiliService::new())
-});
-
-/// Load local Bilibili client (singleton)
+/// Load local Bilibili client (from global manager).
+///
+/// Prefer using `ProviderClientManager::local_bilibili_client()` with dependency injection.
 pub fn load_local_bilibili_client() -> BilibiliClientArc {
-    LOCAL_BILIBILI_CLIENT.clone()
+    GLOBAL_CLIENT_MANAGER.local_bilibili_client()
 }
 
 /// Create remote Bilibili client (thin wrapper around gRPC client)
-#[must_use] 
+#[must_use]
 pub fn create_remote_bilibili_client(channel: tonic::transport::Channel) -> BilibiliClientArc {
     Arc::new(GrpcBilibiliClient::new(channel))
 }
@@ -333,18 +482,15 @@ use synctv_media_providers::emby::{EmbyError, EmbyInterface};
 /// Type alias for Emby client
 pub type EmbyClientArc = Arc<dyn EmbyInterface>;
 
-/// Singleton local Emby client
-static LOCAL_EMBY_CLIENT: std::sync::LazyLock<EmbyClientArc> = std::sync::LazyLock::new(|| {
-    Arc::new(synctv_media_providers::emby::EmbyService::new())
-});
-
-/// Load local Emby client (singleton)
+/// Load local Emby client (from global manager).
+///
+/// Prefer using `ProviderClientManager::local_emby_client()` with dependency injection.
 pub fn load_local_emby_client() -> EmbyClientArc {
-    LOCAL_EMBY_CLIENT.clone()
+    GLOBAL_CLIENT_MANAGER.local_emby_client()
 }
 
 /// Create remote Emby client (thin wrapper around gRPC client)
-#[must_use] 
+#[must_use]
 pub fn create_remote_emby_client(channel: tonic::transport::Channel) -> EmbyClientArc {
     Arc::new(GrpcEmbyClient::new(channel))
 }
@@ -375,5 +521,161 @@ impl EmbyInterface for GrpcEmbyClient {
     impl_grpc_method!(synctv_media_providers::grpc::emby::emby_client, EmbyClient, EmbyError, report_playback_start, synctv_media_providers::grpc::emby::ReportPlaybackStartReq, synctv_media_providers::grpc::emby::Empty);
     impl_grpc_method!(synctv_media_providers::grpc::emby::emby_client, EmbyClient, EmbyError, report_playback_stop, synctv_media_providers::grpc::emby::ReportPlaybackStopReq, synctv_media_providers::grpc::emby::Empty);
     impl_grpc_method!(synctv_media_providers::grpc::emby::emby_client, EmbyClient, EmbyError, report_playback_progress, synctv_media_providers::grpc::emby::ReportPlaybackProgressReq, synctv_media_providers::grpc::emby::Empty);
+}
+
+// ============================================================================
+// Tests
+// ============================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Test that ProviderClientManager can be created with default clients
+    #[test]
+    fn test_provider_client_manager_new() {
+        let manager = ProviderClientManager::new();
+
+        // Verify we can get clients
+        let _alist = manager.local_alist_client();
+        let _bilibili = manager.local_bilibili_client();
+        let _emby = manager.local_emby_client();
+    }
+
+    /// Test that ProviderClientManager implements Clone
+    #[test]
+    fn test_provider_client_manager_clone() {
+        let manager = ProviderClientManager::new();
+        let cloned = manager.clone();
+
+        // Both managers should return the same client instances (Arc clone)
+        let client1 = manager.local_alist_client();
+        let client2 = cloned.local_alist_client();
+
+        // Arc::ptr_eq checks if they point to the same allocation
+        assert!(Arc::ptr_eq(&client1, &client2));
+    }
+
+    /// Test that ProviderClientManager::default() works
+    #[test]
+    fn test_provider_client_manager_default() {
+        let manager = ProviderClientManager::default();
+        let _ = manager.local_alist_client();
+    }
+
+    /// Test that resolve_alist_client returns local client when no channel is provided
+    #[test]
+    fn test_resolve_alist_client_returns_local_when_no_channel() {
+        let manager = ProviderClientManager::new();
+        let local_client = manager.local_alist_client();
+        let resolved_client = manager.resolve_alist_client(None);
+
+        assert!(Arc::ptr_eq(&local_client, &resolved_client));
+    }
+
+    /// Test that resolve_bilibili_client returns local client when no channel is provided
+    #[test]
+    fn test_resolve_bilibili_client_returns_local_when_no_channel() {
+        let manager = ProviderClientManager::new();
+        let local_client = manager.local_bilibili_client();
+        let resolved_client = manager.resolve_bilibili_client(None);
+
+        assert!(Arc::ptr_eq(&local_client, &resolved_client));
+    }
+
+    /// Test that resolve_emby_client returns local client when no channel is provided
+    #[test]
+    fn test_resolve_emby_client_returns_local_when_no_channel() {
+        let manager = ProviderClientManager::new();
+        let local_client = manager.local_emby_client();
+        let resolved_client = manager.resolve_emby_client(None);
+
+        assert!(Arc::ptr_eq(&local_client, &resolved_client));
+    }
+
+    /// Test that global client manager provides consistent clients
+    #[test]
+    fn test_global_client_manager_consistency() {
+        let client1 = load_local_alist_client();
+        let client2 = load_local_alist_client();
+
+        // Both calls should return the same client (from global manager)
+        assert!(Arc::ptr_eq(&client1, &client2));
+    }
+
+    /// Test that global_client_manager returns a valid reference
+    #[test]
+    fn test_global_client_manager_returns_valid_reference() {
+        let manager = global_client_manager();
+        let _ = manager.local_alist_client();
+        let _ = manager.local_bilibili_client();
+        let _ = manager.local_emby_client();
+    }
+
+    /// Test that multiple calls to global_client_manager return the same instance
+    #[test]
+    fn test_global_client_manager_singleton() {
+        let manager1 = global_client_manager() as *const ProviderClientManager;
+        let manager2 = global_client_manager() as *const ProviderClientManager;
+
+        assert_eq!(manager1, manager2);
+    }
+
+    /// Test backward compatibility: load_local_xxx_client functions work
+    #[test]
+    fn test_backward_compatibility_load_functions() {
+        // These functions should work as before
+        let _alist = load_local_alist_client();
+        let _bilibili = load_local_bilibili_client();
+        let _emby = load_local_emby_client();
+    }
+
+    /// Test that create_remote_xxx_client functions work
+    #[test]
+    fn test_create_remote_client_functions() {
+        // Note: We can't actually test with a real channel here, but we can
+        // verify the function signatures compile correctly
+        fn _test_alist(channel: tonic::transport::Channel) -> AlistClientArc {
+            create_remote_alist_client(channel)
+        }
+        fn _test_bilibili(channel: tonic::transport::Channel) -> BilibiliClientArc {
+            create_remote_bilibili_client(channel)
+        }
+        fn _test_emby(channel: tonic::transport::Channel) -> EmbyClientArc {
+            create_remote_emby_client(channel)
+        }
+        // Just verify they exist and compile
+        assert!(true);
+    }
+
+    /// Test that ProviderClientManager::with_custom_clients allows mock injection
+    #[test]
+    fn test_custom_clients_injection() {
+        // Create custom clients
+        let custom_alist: AlistClientArc = Arc::new(synctv_media_providers::alist::AlistService::new());
+        let custom_bilibili: BilibiliClientArc = Arc::new(synctv_media_providers::bilibili::BilibiliService::new());
+        let custom_emby: EmbyClientArc = Arc::new(synctv_media_providers::emby::EmbyService::new());
+
+        // Store Arc pointers for comparison
+        let alist_ptr = Arc::as_ptr(&custom_alist);
+        let bilibili_ptr = Arc::as_ptr(&custom_bilibili);
+        let emby_ptr = Arc::as_ptr(&custom_emby);
+
+        // Create manager with custom clients
+        let manager = ProviderClientManager::with_custom_clients(
+            custom_alist,
+            custom_bilibili,
+            custom_emby,
+        );
+
+        // Verify the manager uses the custom clients
+        let alist = manager.local_alist_client();
+        let bilibili = manager.local_bilibili_client();
+        let emby = manager.local_emby_client();
+
+        assert_eq!(Arc::as_ptr(&alist), alist_ptr);
+        assert_eq!(Arc::as_ptr(&bilibili), bilibili_ptr);
+        assert_eq!(Arc::as_ptr(&emby), emby_ptr);
+    }
 }
 

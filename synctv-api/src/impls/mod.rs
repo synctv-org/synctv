@@ -106,6 +106,8 @@ pub mod error_codes {
     // Resource errors (2xxx)
     pub const NOT_FOUND: i32 = 2000;
     pub const ALREADY_EXISTS: i32 = 2001;
+    /// System resource exhausted (backpressure/overload protection)
+    pub const RESOURCE_EXHAUSTED: i32 = 2002;
 
     // Validation errors (3xxx)
     pub const INVALID_ARGUMENT: i32 = 3000;

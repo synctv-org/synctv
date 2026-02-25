@@ -15,6 +15,9 @@ pub mod error;
 // SSRF protection primitives (shared with synctv-core)
 pub mod ssrf;
 
+// Credential storage (trait and implementations)
+pub mod credential;
+
 // HTTP clients (no MediaProvider dependency)
 pub mod alist;
 pub mod bilibili;
@@ -31,3 +34,12 @@ pub use bilibili::error::BilibiliError;
 pub use emby::EmbyClient;
 pub use emby::error::EmbyError;
 pub use error::ProviderClientError;
+
+// Re-export credential types
+pub use credential::{
+    CredentialData, CredentialStorage, CredentialStorageError, InMemoryCredentialStorage,
+    ProviderType, Result as CredentialResult, StoredCredential,
+};
+
+#[cfg(feature = "postgres")]
+pub use credential::PostgresCredentialStorage;

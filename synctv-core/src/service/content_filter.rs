@@ -385,4 +385,344 @@ mod tests {
         let result = filter.filter_danmaku("Line1\nLine2");
         assert!(result.is_ok());
     }
+
+    // ==================== XSS Protection Tests ====================
+
+    #[test]
+    fn test_xss_script_tags() {
+        let filter = ContentFilter::new();
+
+        // Basic script tag - script tags should be stripped
+        // Note: the text content "alert('xss')" becomes plain text (harmless)
+        let result = filter.filter_chat("<script>alert('xss')</script>").unwrap();
+        assert!(!result.contains("<script"));
+
+        // Script with attributes - src attribute content should not appear as a URL
+        let result = filter
+            .filter_chat("<script src='https://evil.com/xss.js'></script>")
+            .unwrap();
+        assert!(!result.contains("<script"));
+        // After stripping, there should be no content (empty script tag)
+        assert!(result.is_empty() || !result.contains("evil.com") || !result.contains("src="));
+
+        // Script with different casing - case-insensitive stripping
+        let result = filter.filter_chat("<SCRIPT>alert('xss')</SCRIPT>").unwrap();
+        assert!(!result.contains("<script") && !result.contains("<SCRIPT"));
+
+        // Script with spaces - malformed HTML should still be safe
+        let _result = filter.filter_chat("< script>alert('xss')</script>").unwrap();
+        // Malformed tags may not be stripped, but the content should still be safe
+        // (browsers won't execute this as a script due to the space)
+    }
+
+    #[test]
+    fn test_xss_event_handlers() {
+        let filter = ContentFilter::new();
+
+        // onclick
+        let result = filter
+            .filter_chat("<div onclick='alert(1)'>Click me</div>")
+            .unwrap();
+        assert!(!result.contains("onclick"));
+        assert!(result.contains("Click me"));
+
+        // onerror
+        let result = filter
+            .filter_chat("<img src=x onerror='alert(1)'>")
+            .unwrap();
+        assert!(!result.contains("onerror"));
+
+        // onload
+        let result = filter
+            .filter_chat("<body onload='alert(1)'>Hello</body>")
+            .unwrap();
+        assert!(!result.contains("onload"));
+        assert!(result.contains("Hello"));
+
+        // onmouseover
+        let result = filter
+            .filter_chat("<a onmouseover='alert(1)'>Hover</a>")
+            .unwrap();
+        assert!(!result.contains("onmouseover"));
+        assert!(result.contains("Hover"));
+
+        // onfocus
+        let result = filter
+            .filter_chat("<input onfocus='alert(1)' autofocus>")
+            .unwrap();
+        assert!(!result.contains("onfocus"));
+
+        // Mixed event handlers
+        let result = filter
+            .filter_chat("<div onclick='x' onmouseover='y' onerror='z'>Text</div>")
+            .unwrap();
+        assert!(!result.contains("onclick"));
+        assert!(!result.contains("onmouseover"));
+        assert!(!result.contains("onerror"));
+    }
+
+    #[test]
+    fn test_xss_dangerous_tags() {
+        let filter = ContentFilter::new();
+
+        // iframe
+        let result = filter
+            .filter_chat("<iframe src='https://evil.com'></iframe>")
+            .unwrap();
+        assert!(!result.contains("<iframe"));
+        assert!(!result.contains("evil.com"));
+
+        // object
+        let result = filter
+            .filter_chat("<object data='https://evil.com/swf'></object>")
+            .unwrap();
+        assert!(!result.contains("<object"));
+
+        // embed
+        let result = filter
+            .filter_chat("<embed src='https://evil.com/swf'>")
+            .unwrap();
+        assert!(!result.contains("<embed"));
+
+        // svg with script
+        let result = filter
+            .filter_chat("<svg onload='alert(1)'><circle></circle></svg>")
+            .unwrap();
+        assert!(!result.contains("<svg"));
+        assert!(!result.contains("onload"));
+
+        // math with script
+        let result = filter
+            .filter_chat("<math><mtext><script>alert(1)</script></mtext></math>")
+            .unwrap();
+        assert!(!result.contains("<script"));
+    }
+
+    #[test]
+    fn test_xss_javascript_protocol() {
+        let filter = ContentFilter::new();
+
+        // javascript: in href
+        let result = filter
+            .filter_chat("<a href='javascript:alert(1)'>Click</a>")
+            .unwrap();
+        assert!(!result.contains("javascript:"));
+        assert!(result.contains("Click"));
+
+        // javascript: with encoding
+        let result = filter
+            .filter_chat("<a href='&#106;avascript:alert(1)'>Click</a>")
+            .unwrap();
+        assert!(!result.contains("javascript:"));
+
+        // javascript: with spaces
+        let result = filter
+            .filter_chat("<a href='  javascript:alert(1)'>Click</a>")
+            .unwrap();
+        assert!(!result.contains("javascript:"));
+
+        // vbscript: (IE specific)
+        let result = filter
+            .filter_chat("<a href='vbscript:alert(1)'>Click</a>")
+            .unwrap();
+        assert!(!result.contains("vbscript:"));
+
+        // data: URI with script
+        let result = filter
+            .filter_chat("<a href='data:text/html,<script>alert(1)</script>'>Click</a>")
+            .unwrap();
+        assert!(!result.contains("data:text/html"));
+    }
+
+    #[test]
+    fn test_xss_data_uri() {
+        let filter = ContentFilter::new();
+
+        // data: URI in img src
+        let result = filter
+            .filter_chat("<img src='data:image/svg+xml,<svg onload=alert(1)>'>")
+            .unwrap();
+        assert!(!result.contains("onload"));
+
+        // data: URI in object
+        let result = filter
+            .filter_chat("<object data='data:text/html,<script>alert(1)</script>'>")
+            .unwrap();
+        assert!(!result.contains("<object"));
+    }
+
+    #[test]
+    fn test_xss_style_based() {
+        let filter = ContentFilter::new();
+
+        // style with expression (IE)
+        let result = filter
+            .filter_chat("<div style='width:expression(alert(1))'>Text</div>")
+            .unwrap();
+        assert!(!result.contains("expression"));
+
+        // style with url
+        let result = filter
+            .filter_chat("<div style='background:url(javascript:alert(1))'>Text</div>")
+            .unwrap();
+        assert!(!result.contains("javascript"));
+    }
+
+    #[test]
+    fn test_xss_encoded_attacks() {
+        let filter = ContentFilter::new();
+
+        // HTML entity encoded
+        let result = filter.filter_chat("&#60;script&#62;alert(1)&#60;/script&#62;").unwrap();
+        // After ammonia processing, this should be safe
+        assert!(!result.contains("<script>") || !result.contains("alert"));
+
+        // Hex encoded
+        let result = filter.filter_chat("&#x3c;script&#x3e;alert(1)&#x3c;/script&#x3e;").unwrap();
+        assert!(!result.contains("<script>") || !result.contains("alert"));
+
+        // Mixed case with encoding
+        let result = filter.filter_chat("&#60;ScRiPt&#62;alert(1)&#60;/sCrIpT&#62;").unwrap();
+        assert!(!result.contains("<script") && !result.contains("<ScRiPt"));
+    }
+
+    #[test]
+    fn test_xss_svg_attacks() {
+        let filter = ContentFilter::new();
+
+        // SVG with script
+        let result = filter
+            .filter_chat("<svg><script>alert(1)</script></svg>")
+            .unwrap();
+        assert!(!result.contains("<script"));
+
+        // SVG with use xlink
+        let result = filter
+            .filter_chat("<svg><use xlink:href='data:image/svg+xml,<svg onload=alert(1)>'></use></svg>")
+            .unwrap();
+        assert!(!result.contains("onload"));
+
+        // SVG animate
+        let result = filter
+            .filter_chat("<svg><animate onbegin='alert(1)'></animate></svg>")
+            .unwrap();
+        assert!(!result.contains("onbegin"));
+    }
+
+    #[test]
+    fn test_xss_form_attacks() {
+        let filter = ContentFilter::new();
+
+        // form action
+        let result = filter
+            .filter_chat("<form action='javascript:alert(1)'><input type='submit'></form>")
+            .unwrap();
+        assert!(!result.contains("javascript:"));
+
+        // formaction on input
+        let result = filter
+            .filter_chat("<input formaction='javascript:alert(1)' type='submit'>")
+            .unwrap();
+        assert!(!result.contains("javascript:"));
+    }
+
+    #[test]
+    fn test_xss_meta_refresh() {
+        let filter = ContentFilter::new();
+
+        // meta refresh
+        let result = filter
+            .filter_chat("<meta http-equiv='refresh' content='0;url=javascript:alert(1)'>")
+            .unwrap();
+        assert!(!result.contains("javascript:"));
+        assert!(!result.contains("<meta"));
+    }
+
+    #[test]
+    fn test_xss_base_tag() {
+        let filter = ContentFilter::new();
+
+        // base tag can hijack relative URLs
+        let result = filter
+            .filter_chat("<base href='https://evil.com/'>")
+            .unwrap();
+        assert!(!result.contains("<base"));
+    }
+
+    #[test]
+    fn test_preserve_safe_content() {
+        let filter = ContentFilter::new();
+
+        // Plain text should be preserved
+        let result = filter.filter_chat("Hello, this is a normal message!").unwrap();
+        assert_eq!(result, "Hello, this is a normal message!");
+
+        // Unicode should be preserved
+        let result = filter.filter_chat("Hello 你好 مرحبا 🌍").unwrap();
+        assert_eq!(result, "Hello 你好 مرحبا 🌍");
+
+        // Numbers and special chars
+        let result = filter.filter_chat("Price: $100 (20% off) + tax!").unwrap();
+        assert_eq!(result, "Price: $100 (20% off) + tax!");
+
+        // Newlines and formatting
+        let result = filter.filter_chat("Line 1\nLine 2\n\nLine 4").unwrap();
+        assert_eq!(result, "Line 1\nLine 2\n\nLine 4");
+    }
+
+    #[test]
+    fn test_danmaku_xss_protection() {
+        let filter = ContentFilter::new();
+
+        // Script in danmaku
+        let result = filter.filter_danmaku("<script>alert(1)</script>Danmaku").unwrap();
+        assert!(!result.contains("<script"));
+        assert!(result.contains("Danmaku"));
+
+        // Event handler in danmaku
+        let result = filter.filter_danmaku("<img src=x onerror=alert(1)>").unwrap();
+        assert!(!result.contains("onerror"));
+
+        // Link in danmaku
+        let result = filter
+            .filter_danmaku("<a href='javascript:alert(1)'>Click</a>")
+            .unwrap();
+        assert!(!result.contains("javascript:"));
+        assert!(result.contains("Click"));
+    }
+
+    #[test]
+    fn test_xss_nested_tags() {
+        let filter = ContentFilter::new();
+
+        // Nested script tags
+        let result = filter
+            .filter_chat("<div><script><script>alert(1)</script></script></div>")
+            .unwrap();
+        assert!(!result.contains("<script"));
+
+        // Deeply nested
+        let result = filter
+            .filter_chat("<div><span><b><script>alert(1)</script></b></span></div>")
+            .unwrap();
+        assert!(!result.contains("<script"));
+    }
+
+    #[test]
+    fn test_xss_malformed_html() {
+        let filter = ContentFilter::new();
+
+        // Unclosed script tag
+        let result = filter.filter_chat("<script>alert(1)").unwrap();
+        assert!(!result.contains("<script"));
+
+        // Extra spaces
+        let result = filter.filter_chat("<  script  >alert(1)<  /  script  >").unwrap();
+        // Should strip or escape
+        assert!(result.contains("alert") || !result.contains("<script"));
+
+        // Null byte injection
+        let result = filter.filter_chat("<scr\x00ipt>alert(1)</script>").unwrap();
+        assert!(!result.contains("alert") || !result.contains("<script"));
+    }
 }

@@ -171,3 +171,46 @@ impl RoomStatus {
         }
     }
 }
+/// Error codes for ErrorMessage
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum ErrorCode {
+    Unspecified = 0,
+    Unauthorized = 1,
+    Forbidden = 2,
+    NotFound = 3,
+    RateLimited = 4,
+    ValidationFailed = 5,
+    Internal = 6,
+}
+impl ErrorCode {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "ERROR_CODE_UNSPECIFIED",
+            Self::Unauthorized => "ERROR_CODE_UNAUTHORIZED",
+            Self::Forbidden => "ERROR_CODE_FORBIDDEN",
+            Self::NotFound => "ERROR_CODE_NOT_FOUND",
+            Self::RateLimited => "ERROR_CODE_RATE_LIMITED",
+            Self::ValidationFailed => "ERROR_CODE_VALIDATION_FAILED",
+            Self::Internal => "ERROR_CODE_INTERNAL",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "ERROR_CODE_UNSPECIFIED" => Some(Self::Unspecified),
+            "ERROR_CODE_UNAUTHORIZED" => Some(Self::Unauthorized),
+            "ERROR_CODE_FORBIDDEN" => Some(Self::Forbidden),
+            "ERROR_CODE_NOT_FOUND" => Some(Self::NotFound),
+            "ERROR_CODE_RATE_LIMITED" => Some(Self::RateLimited),
+            "ERROR_CODE_VALIDATION_FAILED" => Some(Self::ValidationFailed),
+            "ERROR_CODE_INTERNAL" => Some(Self::Internal),
+            _ => None,
+        }
+    }
+}

@@ -862,7 +862,7 @@ message RoomSettingsChanged {
 
 message ErrorMessage {
     string message = 1;
-    int32 code = 2;    // Application-level error code for programmatic handling (0 = unspecified)
+    synctv.common.ErrorCode code = 2; // Application-level error code for programmatic handling
     string detail = 3; // Optional detailed/debug info (may be empty in production)
 }
 
@@ -1305,8 +1305,8 @@ message ListNotificationsRequest {
 
 message ListNotificationsResponse {
     repeated NotificationProto notifications = 1;
-    int64 total = 2;
-    int64 unread_count = 3;
+    int32 total = 2;
+    int32 unread_count = 3;
 }
 
 message GetNotificationRequest {

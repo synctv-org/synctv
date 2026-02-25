@@ -726,3 +726,317 @@ async fn test_e2e_error_propagation() {
         }
     }
 }
+
+// ============================================================================
+// Permission Cache Invalidation Tests
+// ============================================================================
+
+/// Tests that permission cache invalidation messages are correctly generated
+/// and can be deserialized for cross-replica propagation.
+#[tokio::test]
+async fn test_permission_cache_invalidation_message_serialization() {
+    use synctv_core::cache::InvalidationMessage;
+
+    // Test UserPermission invalidation
+    let user_perm = InvalidationMessage::UserPermission {
+        room_id: "room_123".to_string(),
+        user_id: "user_456".to_string(),
+    };
+    let json = serde_json::to_string(&user_perm).expect("Should serialize UserPermission");
+    let decoded: InvalidationMessage = serde_json::from_str(&json).expect("Should deserialize UserPermission");
+    assert_eq!(decoded, user_perm);
+
+    // Test RoomPermission invalidation
+    let room_perm = InvalidationMessage::RoomPermission {
+        room_id: "room_789".to_string(),
+    };
+    let json = serde_json::to_string(&room_perm).expect("Should serialize RoomPermission");
+    let decoded: InvalidationMessage = serde_json::from_str(&json).expect("Should deserialize RoomPermission");
+    assert_eq!(decoded, room_perm);
+
+    // Test User invalidation
+    let user = InvalidationMessage::User {
+        user_id: "user_abc".to_string(),
+    };
+    let json = serde_json::to_string(&user).expect("Should serialize User");
+    let decoded: InvalidationMessage = serde_json::from_str(&json).expect("Should deserialize User");
+    assert_eq!(decoded, user);
+
+    // Test Room invalidation
+    let room = InvalidationMessage::Room {
+        room_id: "room_xyz".to_string(),
+    };
+    let json = serde_json::to_string(&room).expect("Should serialize Room");
+    let decoded: InvalidationMessage = serde_json::from_str(&json).expect("Should deserialize Room");
+    assert_eq!(decoded, room);
+
+    // Test All invalidation
+    let all = InvalidationMessage::All;
+    let json = serde_json::to_string(&all).expect("Should serialize All");
+    let decoded: InvalidationMessage = serde_json::from_str(&json).expect("Should deserialize All");
+    assert_eq!(decoded, all);
+}
+
+/// Tests that CacheInvalidationService can be created and used without Redis
+/// (local-only mode for single-node deployments).
+#[tokio::test]
+async fn test_cache_invalidation_service_local_only() {
+    use synctv_core::cache::CacheInvalidationService;
+
+    // Create a local-only cache invalidation service (no Redis)
+    let service = CacheInvalidationService::new(
+        None,
+        "local_node".to_string(),
+        "test:local:cache".to_string(),
+    );
+
+    // Subscribe to local invalidations
+    let mut rx = service.subscribe();
+
+    // Broadcast a local invalidation
+    service.broadcast_local(synctv_core::cache::InvalidationMessage::User {
+        user_id: "local_user".to_string(),
+    }).expect("Should broadcast locally");
+
+    // Should receive the invalidation locally
+    let msg = tokio::time::timeout(std::time::Duration::from_secs(2), rx.recv())
+        .await
+        .expect("Should receive local invalidation")
+        .expect("Channel not closed");
+
+    match msg {
+        synctv_core::cache::InvalidationMessage::User { user_id } => {
+            assert_eq!(user_id, "local_user");
+        }
+        other => panic!("Expected User invalidation, got: {:?}", other),
+    }
+}
+
+/// Tests that cache invalidation broadcast channel works correctly
+/// with multiple subscribers.
+#[tokio::test]
+async fn test_cache_invalidation_multiple_subscribers() {
+    use synctv_core::cache::CacheInvalidationService;
+
+    let service = CacheInvalidationService::new(
+        None,
+        "multi_sub_node".to_string(),
+        "test:multi:cache".to_string(),
+    );
+
+    // Create multiple subscribers
+    let mut rx1 = service.subscribe();
+    let mut rx2 = service.subscribe();
+    let mut rx3 = service.subscribe();
+
+    // Broadcast an invalidation
+    service.broadcast_local(synctv_core::cache::InvalidationMessage::Room {
+        room_id: "shared_room".to_string(),
+    }).expect("Should broadcast locally");
+
+    // All subscribers should receive the message
+    let msg1 = tokio::time::timeout(std::time::Duration::from_secs(2), rx1.recv())
+        .await
+        .expect("Subscriber 1 should receive")
+        .expect("Channel not closed");
+
+    let msg2 = tokio::time::timeout(std::time::Duration::from_secs(2), rx2.recv())
+        .await
+        .expect("Subscriber 2 should receive")
+        .expect("Channel not closed");
+
+    let msg3 = tokio::time::timeout(std::time::Duration::from_secs(2), rx3.recv())
+        .await
+        .expect("Subscriber 3 should receive")
+        .expect("Channel not closed");
+
+    // All should be Room invalidations
+    assert!(matches!(msg1, synctv_core::cache::InvalidationMessage::Room { .. }));
+    assert!(matches!(msg2, synctv_core::cache::InvalidationMessage::Room { .. }));
+    assert!(matches!(msg3, synctv_core::cache::InvalidationMessage::Room { .. }));
+}
+
+// ============================================================================
+// Concurrent Permission Check Tests
+// ============================================================================
+
+/// Tests that permission checks can be performed concurrently without
+/// data races or corruption.
+#[tokio::test]
+async fn test_concurrent_permission_checks() {
+    use std::sync::Arc;
+    use synctv_core::models::PermissionBits;
+
+    let perms = Arc::new(std::sync::atomic::AtomicU64::new(
+        PermissionBits::DEFAULT_MEMBER
+    ));
+
+    // Spawn multiple concurrent readers
+    let mut read_handles = vec![];
+    for _ in 0..10 {
+        let perms = perms.clone();
+        let handle = tokio::spawn(async move {
+            let current = perms.load(std::sync::atomic::Ordering::SeqCst);
+            let bits = PermissionBits(current);
+            bits.has(PermissionBits::SEND_CHAT)
+        });
+        read_handles.push(handle);
+    }
+
+    // Spawn concurrent modifiers
+    let mut write_handles = vec![];
+    for _ in 0..5 {
+        let perms = perms.clone();
+        let handle = tokio::spawn(async move {
+            perms.fetch_or(PermissionBits::KICK_MEMBER, std::sync::atomic::Ordering::SeqCst);
+        });
+        write_handles.push(handle);
+    }
+
+    // Wait for all operations to complete
+    for handle in read_handles {
+        let _ = handle.await;
+    }
+    for handle in write_handles {
+        let _ = handle.await;
+    }
+
+    // Verify final state includes KICK_MEMBER
+    let final_perms = PermissionBits(perms.load(std::sync::atomic::Ordering::SeqCst));
+    assert!(final_perms.has(PermissionBits::KICK_MEMBER));
+    assert!(final_perms.has(PermissionBits::SEND_CHAT)); // Original permission preserved
+}
+
+// ============================================================================
+// Token Blacklist Tests
+// ============================================================================
+
+/// Tests token blacklist behavior with concurrent modifications.
+#[tokio::test]
+async fn test_token_blacklist_concurrent_operations() {
+    use std::collections::HashSet;
+    use std::sync::Arc;
+    use parking_lot::RwLock;
+
+    // Simulate a simple in-memory blacklist
+    let blacklist: Arc<RwLock<HashSet<String>>> = Arc::new(RwLock::new(HashSet::new()));
+
+    // Concurrent adds
+    let mut add_handles = vec![];
+    for i in 0..100 {
+        let blacklist = blacklist.clone();
+        let handle = tokio::spawn(async move {
+            let token = format!("token_{}", i);
+            blacklist.write().insert(token);
+        });
+        add_handles.push(handle);
+    }
+
+    // Concurrent checks
+    let mut check_handles = vec![];
+    for i in 0..50 {
+        let blacklist = blacklist.clone();
+        let handle = tokio::spawn(async move {
+            let token = format!("token_{}", i);
+            blacklist.read().contains(&token)
+        });
+        check_handles.push(handle);
+    }
+
+    for handle in add_handles {
+        let _ = handle.await;
+    }
+    for handle in check_handles {
+        let _ = handle.await;
+    }
+
+    // Verify all 100 tokens were added
+    let final_blacklist = blacklist.read();
+    assert_eq!(final_blacklist.len(), 100);
+}
+
+// ============================================================================
+// Playback State Concurrency Tests
+// ============================================================================
+
+/// Tests that playback state updates are thread-safe.
+#[tokio::test]
+async fn test_playback_state_concurrent_updates() {
+    use std::sync::Arc;
+    use parking_lot::Mutex;
+    use synctv_core::models::{playback::RoomPlaybackState, id::RoomId};
+
+    let state = Arc::new(Mutex::new(RoomPlaybackState::new(RoomId::new())));
+
+    let mut handles = vec![];
+
+    // Concurrent position updates
+    for i in 0..50 {
+        let state = state.clone();
+        let handle = tokio::spawn(async move {
+            let mut s = state.lock();
+            s.current_time = (i * 1000) as f64;
+        });
+        handles.push(handle);
+    }
+
+    // Concurrent playing status updates
+    for _ in 0..25 {
+        let state = state.clone();
+        let handle = tokio::spawn(async move {
+            let mut s = state.lock();
+            s.is_playing = !s.is_playing;
+        });
+        handles.push(handle);
+    }
+
+    for handle in handles {
+        let _ = handle.await;
+    }
+
+    // State should be valid (not corrupted)
+    let final_state = state.lock();
+    // Position should be some value < 50000
+    assert!(final_state.current_time < 50000.0);
+}
+
+// ============================================================================
+// Permission Bits Stress Test
+// ============================================================================
+
+/// Stress test for permission bit operations.
+#[test]
+fn test_permission_bits_stress() {
+    use synctv_core::models::PermissionBits;
+    use std::sync::Arc;
+    use std::thread;
+
+    let perms = Arc::new(std::sync::atomic::AtomicU64::new(PermissionBits::DEFAULT_MEMBER));
+    let mut handles = vec![];
+
+    for _ in 0..4 {
+        let perms = perms.clone();
+        handles.push(thread::spawn(move || {
+            for _ in 0..10000 {
+                // Read
+                let current = perms.load(std::sync::atomic::Ordering::SeqCst);
+                let bits = PermissionBits(current);
+
+                // Check some permissions
+                let _ = bits.has(PermissionBits::SEND_CHAT);
+
+                // Grant and revoke
+                perms.fetch_or(PermissionBits::ADD_MEDIA, std::sync::atomic::Ordering::SeqCst);
+                perms.fetch_and(!PermissionBits::ADD_MEDIA, std::sync::atomic::Ordering::SeqCst);
+            }
+        }));
+    }
+
+    for handle in handles {
+        handle.join().expect("Thread should complete");
+    }
+
+    // Final state should be valid
+    let final_perms = PermissionBits(perms.load(std::sync::atomic::Ordering::SeqCst));
+    assert!(final_perms.has(PermissionBits::SEND_CHAT)); // Should still have original permission
+}

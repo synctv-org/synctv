@@ -1200,8 +1200,8 @@ pub struct RoomSettingsChanged {
 pub struct ErrorMessage {
     #[prost(string, tag = "1")]
     pub message: ::prost::alloc::string::String,
-    /// Application-level error code for programmatic handling (0 = unspecified)
-    #[prost(int32, tag = "2")]
+    /// Application-level error code for programmatic handling
+    #[prost(enumeration = "super::common::ErrorCode", tag = "2")]
     pub code: i32,
     /// Optional detailed/debug info (may be empty in production)
     #[prost(string, tag = "3")]
@@ -1872,10 +1872,10 @@ pub struct ListNotificationsRequest {
 pub struct ListNotificationsResponse {
     #[prost(message, repeated, tag = "1")]
     pub notifications: ::prost::alloc::vec::Vec<NotificationProto>,
-    #[prost(int64, tag = "2")]
-    pub total: i64,
-    #[prost(int64, tag = "3")]
-    pub unread_count: i64,
+    #[prost(int32, tag = "2")]
+    pub total: i32,
+    #[prost(int32, tag = "3")]
+    pub unread_count: i32,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]

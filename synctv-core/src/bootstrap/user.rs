@@ -108,9 +108,11 @@ mod tests {
     #[test]
     fn test_bootstrap_config_defaults() {
         let config = BootstrapConfig::default();
-        assert!(config.create_root_user);
+        // Default is false for security - operators must explicitly enable root creation
+        assert!(!config.create_root_user);
         assert_eq!(config.root_username, "root");
-        assert_eq!(config.root_password, "root");
+        // Default password is empty for security
+        assert!(config.root_password.is_empty());
     }
 
     #[test]

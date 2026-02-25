@@ -834,7 +834,7 @@ impl RoomMemberRepository {
             r"
             SELECT
                 r.id, r.name, r.description, r.created_by, r.status,
-                r.is_banned, r.created_at, r.updated_at, r.deleted_at,
+                r.is_banned, r.created_at, r.updated_at, r.deleted_at, r.version,
                 rm.role as user_role,
                 rm.status as user_status,
                 COUNT(rm2.user_id)::int as member_count,
@@ -844,7 +844,7 @@ impl RoomMemberRepository {
             LEFT JOIN room_members rm2 ON r.id = rm2.room_id AND rm2.left_at IS NULL
             WHERE rm.user_id = $1 AND rm.left_at IS NULL AND r.deleted_at IS NULL
             GROUP BY r.id, r.name, r.description, r.created_by, r.status,
-                     r.is_banned, r.created_at, r.updated_at, r.deleted_at,
+                     r.is_banned, r.created_at, r.updated_at, r.deleted_at, r.version,
                      rm.role, rm.status, rm.joined_at
             ORDER BY rm.joined_at DESC
             LIMIT $2 OFFSET $3

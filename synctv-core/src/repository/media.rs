@@ -879,12 +879,12 @@ mod tests {
             .build();
         let room = room_repo.create(&room).await.unwrap();
 
-        // Create playlist
-        let playlist = PlaylistFixture::new()
-            .with_room_id(room.id.clone())
-            .with_name("Test Playlist")
-            .build();
-        let playlist = playlist_repo.create(&playlist).await.unwrap();
+        // Create playlist hierarchy (root + child with name)
+        let (_, playlist) = crate::test_helpers::create_media_playlist_hierarchy(
+            &playlist_repo,
+            room.id.clone(),
+            "Test Playlist",
+        ).await;
 
         // Create media
         let media = Media::from_provider(
@@ -934,11 +934,12 @@ mod tests {
             .build();
         let room = room_repo.create(&room).await.unwrap();
 
-        let playlist = PlaylistFixture::new()
-            .with_room_id(room.id.clone())
-            .with_name("Test Playlist")
-            .build();
-        let playlist = playlist_repo.create(&playlist).await.unwrap();
+        // Create playlist hierarchy (root + child with name)
+        let (_, playlist) = crate::test_helpers::create_media_playlist_hierarchy(
+            &playlist_repo,
+            room.id.clone(),
+            "Test Playlist",
+        ).await;
 
         let media = Media::from_provider(
             playlist.id.clone(),
@@ -987,11 +988,12 @@ mod tests {
             .build();
         let room = room_repo.create(&room).await.unwrap();
 
-        let playlist = PlaylistFixture::new()
-            .with_room_id(room.id.clone())
-            .with_name("Test Playlist")
-            .build();
-        let playlist = playlist_repo.create(&playlist).await.unwrap();
+        // Create playlist hierarchy (root + child with name)
+        let (_, playlist) = crate::test_helpers::create_media_playlist_hierarchy(
+            &playlist_repo,
+            room.id.clone(),
+            "Test Playlist",
+        ).await;
 
         let media = Media::from_provider(
             playlist.id.clone(),
@@ -1043,11 +1045,12 @@ mod tests {
             .build();
         let room = room_repo.create(&room).await.unwrap();
 
-        let playlist = PlaylistFixture::new()
-            .with_room_id(room.id.clone())
-            .with_name("Batch Playlist")
-            .build();
-        let playlist = playlist_repo.create(&playlist).await.unwrap();
+        // Create playlist hierarchy (root + child with name)
+        let (_, playlist) = crate::test_helpers::create_media_playlist_hierarchy(
+            &playlist_repo,
+            room.id.clone(),
+            "Batch Playlist",
+        ).await;
 
         // Create batch
         let items: Vec<Media> = (0..5)
@@ -1098,11 +1101,12 @@ mod tests {
             .build();
         let room = room_repo.create(&room).await.unwrap();
 
-        let playlist = PlaylistFixture::new()
-            .with_room_id(room.id.clone())
-            .with_name("Chunk Playlist")
-            .build();
-        let playlist = playlist_repo.create(&playlist).await.unwrap();
+        // Create playlist hierarchy (root + child with name)
+        let (_, playlist) = crate::test_helpers::create_media_playlist_hierarchy(
+            &playlist_repo,
+            room.id.clone(),
+            "Chunk Playlist",
+        ).await;
 
         // Create batch that exceeds chunk limit (1001 items)
         let items: Vec<Media> = (0..1001)
@@ -1152,11 +1156,12 @@ mod tests {
             .build();
         let room = room_repo.create(&room).await.unwrap();
 
-        let playlist = PlaylistFixture::new()
-            .with_room_id(room.id.clone())
-            .with_name("Optimistic Playlist")
-            .build();
-        let playlist = playlist_repo.create(&playlist).await.unwrap();
+        // Create playlist hierarchy (root + child with name)
+        let (_, playlist) = crate::test_helpers::create_media_playlist_hierarchy(
+            &playlist_repo,
+            room.id.clone(),
+            "Optimistic Playlist",
+        ).await;
 
         let media = Media::from_provider(
             playlist.id.clone(),
@@ -1220,11 +1225,12 @@ mod tests {
             .build();
         let room = room_repo.create(&room).await.unwrap();
 
-        let playlist = PlaylistFixture::new()
-            .with_room_id(room.id.clone())
-            .with_name("Swap Playlist")
-            .build();
-        let playlist = playlist_repo.create(&playlist).await.unwrap();
+        // Create playlist hierarchy (root + child with name)
+        let (_, playlist) = crate::test_helpers::create_media_playlist_hierarchy(
+            &playlist_repo,
+            room.id.clone(),
+            "Swap Playlist",
+        ).await;
 
         // Create two media items
         let media1 = Media::from_provider(
@@ -1293,11 +1299,12 @@ mod tests {
             .build();
         let room = room_repo.create(&room).await.unwrap();
 
-        let playlist = PlaylistFixture::new()
-            .with_room_id(room.id.clone())
-            .with_name("Count Playlist")
-            .build();
-        let playlist = playlist_repo.create(&playlist).await.unwrap();
+        // Create playlist hierarchy (root + child with name)
+        let (_, playlist) = crate::test_helpers::create_media_playlist_hierarchy(
+            &playlist_repo,
+            room.id.clone(),
+            "Count Playlist",
+        ).await;
 
         // Initially empty
         let count = media_repo.count_by_playlist(&playlist.id).await.unwrap();
@@ -1347,11 +1354,12 @@ mod tests {
             .build();
         let room = room_repo.create(&room).await.unwrap();
 
-        let playlist = PlaylistFixture::new()
-            .with_room_id(room.id.clone())
-            .with_name("Paginate Playlist")
-            .build();
-        let playlist = playlist_repo.create(&playlist).await.unwrap();
+        // Create playlist hierarchy (root + child with name)
+        let (_, playlist) = crate::test_helpers::create_media_playlist_hierarchy(
+            &playlist_repo,
+            room.id.clone(),
+            "Paginate Playlist",
+        ).await;
 
         // Create 15 items
         for i in 0..15 {
@@ -1412,11 +1420,12 @@ mod tests {
             .build();
         let room = room_repo.create(&room).await.unwrap();
 
-        let playlist = PlaylistFixture::new()
-            .with_room_id(room.id.clone())
-            .with_name("Batch Delete Playlist")
-            .build();
-        let playlist = playlist_repo.create(&playlist).await.unwrap();
+        // Create playlist hierarchy (root + child with name)
+        let (_, playlist) = crate::test_helpers::create_media_playlist_hierarchy(
+            &playlist_repo,
+            room.id.clone(),
+            "Batch Delete Playlist",
+        ).await;
 
         // Create 5 items
         let mut ids: Vec<MediaId> = Vec::new();
@@ -1469,11 +1478,12 @@ mod tests {
             .build();
         let room = room_repo.create(&room).await.unwrap();
 
-        let playlist = PlaylistFixture::new()
-            .with_room_id(room.id.clone())
-            .with_name("Get IDs Playlist")
-            .build();
-        let playlist = playlist_repo.create(&playlist).await.unwrap();
+        // Create playlist hierarchy (root + child with name)
+        let (_, playlist) = crate::test_helpers::create_media_playlist_hierarchy(
+            &playlist_repo,
+            room.id.clone(),
+            "Get IDs Playlist",
+        ).await;
 
         // Create 3 items
         let mut ids: Vec<MediaId> = Vec::new();

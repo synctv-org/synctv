@@ -36,7 +36,7 @@ pub mod ws_ticket;
 pub use auth::{hash_password, verify_password, JwtService, TokenType, Claims, GuestClaims, BruteForceProtection, SecurityPipeline, AuthenticatedToken, TokenBlacklistStore};
 pub use auth::security_pipeline::{BlacklistEnforcement, SecurityPipelineBuilder, SecurityPipelineBuildError};
 pub use auth::brute_force::{AttemptTracker, InMemoryAttemptTracker, RedisAttemptTracker};
-pub use auth::token_blacklist::{InMemoryTokenBlacklistStore, PgTokenBlacklistStore, TieredTokenBlacklistStore};
+pub use auth::token_blacklist::{FallbackTokenBlacklistStore, InMemoryTokenBlacklistStore, PgTokenBlacklistStore, TieredTokenBlacklistStore, RedisSyncableTokenBlacklistStore, SyncStats};
 pub use auth::guest_validator::GuestTokenValidator;
 pub use chat::ChatService;
 pub use email_token::{EmailTokenService, EmailTokenType};

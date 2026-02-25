@@ -992,7 +992,9 @@ impl Config {
 
         // Validate root credentials
         if self.bootstrap.create_root_user {
-                if self.bootstrap.root_password == "root" {
+                if self.bootstrap.root_password.is_empty() {
+                    errors.push("Root password is empty. Set SYNCTV_BOOTSTRAP_ROOT_PASSWORD environment variable".to_string());
+                } else if self.bootstrap.root_password == "root" {
                     errors.push("Root password is set to default value 'root'. Set SYNCTV_BOOTSTRAP_ROOT_PASSWORD environment variable".to_string());
                 }
                 if self.bootstrap.root_username.len() < 3 {
@@ -1496,9 +1498,9 @@ pub struct BootstrapConfig {
 impl Default for BootstrapConfig {
     fn default() -> Self {
         Self {
-            create_root_user: true,
+            create_root_user: false,
             root_username: "root".to_string(),
-            root_password: "root".to_string(),
+            root_password: String::new(),
         }
     }
 }
@@ -1838,7 +1840,8 @@ mod tests {
         assert!(config.server.grpc_port > 0);
         assert!(config.server.http_port > 0);
         assert!(config.webrtc.enable_builtin_stun);
-        assert!(config.bootstrap.create_root_user);
+        // Default is false for security - operators must explicitly enable root creation
+        assert!(!config.bootstrap.create_root_user);
         // Default gRPC message size limit is 16 MB
         assert_eq!(config.server.grpc_max_message_size_bytes, 16 * 1024 * 1024);
     }

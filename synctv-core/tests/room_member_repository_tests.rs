@@ -626,3 +626,67 @@ async fn test_diagnose_add_conflict_left_user() {
     assert_eq!(rejoined.status, MemberStatus::Active);
     assert!(rejoined.left_at.is_none());
 }
+
+// ========== banned_by ON DELETE SET NULL constraint tests ==========
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_banned_by_set_null_on_user_delete() {
+    // Test that deleting a user who banned someone sets banned_by to NULL
+    // instead of blocking the delete (ON DELETE SET NULL constraint)
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let room_repo = RoomRepository::new(pool.clone());
+    let member_repo = RoomMemberRepository::new(pool.clone());
+
+    // Create room owner (cannot delete this user due to rooms.created_by ON DELETE RESTRICT)
+    let owner = user_repo.create(&make_user("owner_banned_by")).await.unwrap();
+    let room = room_repo.create(&make_room("Room BannedBy", &owner.id)).await.unwrap();
+
+    // Add owner as creator
+    member_repo.add(&make_member(room.id.clone(), owner.id.clone(), RoomRole::Creator)).await.unwrap();
+
+    // Create a separate admin who will ban someone (this user can be deleted)
+    let admin = user_repo.create(&make_user("admin_banned_by")).await.unwrap();
+    member_repo.add(&make_member(room.id.clone(), admin.id.clone(), RoomRole::Admin)).await.unwrap();
+
+    // Create and add a member who will be banned
+    let banned_user = user_repo.create(&make_user("banned_by_user")).await.unwrap();
+    member_repo.add(&make_member(room.id.clone(), banned_user.id.clone(), RoomRole::Member)).await.unwrap();
+
+    // Admin bans the member
+    member_repo.ban_member(&room.id, &banned_user.id, &admin.id, Some("test banned_by constraint".to_string())).await.unwrap();
+
+    // Verify banned_by is set
+    let banned_member: Option<(Option<String>,)> = sqlx::query_as(
+        "SELECT banned_by FROM room_members WHERE room_id = $1 AND user_id = $2",
+    )
+    .bind(room.id.as_str())
+    .bind(banned_user.id.as_str())
+    .fetch_optional(&pool)
+    .await
+    .unwrap();
+    assert!(banned_member.is_some());
+    assert_eq!(banned_member.unwrap().0, Some(admin.id.to_string()));
+
+    // Now delete the admin user - this should succeed because of ON DELETE SET NULL
+    // The admin is not the room creator, so rooms.created_by won't block
+    let delete_result = sqlx::query("DELETE FROM users WHERE id = $1")
+        .bind(admin.id.as_str())
+        .execute(&pool)
+        .await;
+
+    assert!(delete_result.is_ok(), "Deleting user who banned someone should succeed with ON DELETE SET NULL");
+
+    // Verify banned_by is now NULL
+    let banned_member_after: Option<(Option<String>,)> = sqlx::query_as(
+        "SELECT banned_by FROM room_members WHERE room_id = $1 AND user_id = $2",
+    )
+    .bind(room.id.as_str())
+    .bind(banned_user.id.as_str())
+    .fetch_optional(&pool)
+    .await
+    .unwrap();
+    assert!(banned_member_after.is_some());
+    assert_eq!(banned_member_after.unwrap().0, None, "banned_by should be NULL after admin user is deleted");
+}

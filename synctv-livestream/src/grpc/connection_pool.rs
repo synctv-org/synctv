@@ -338,9 +338,18 @@ impl GrpcConnectionPool {
     }
 
     /// Whether the pool is empty.
-    #[must_use] 
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.connections.is_empty()
+    }
+
+    /// Get the consecutive error count for a connection (for testing/monitoring).
+    ///
+    /// Returns `None` if the address is not in the pool, otherwise returns
+    /// the current consecutive error count.
+    #[must_use]
+    pub fn get_error_count(&self, address: &str) -> Option<u32> {
+        self.connections.get(address).map(|e| e.consecutive_errors.load(Ordering::Acquire))
     }
 }
 

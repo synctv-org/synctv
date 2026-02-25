@@ -222,11 +222,15 @@ mod tests {
         use crate::test_helpers::{RoomFixture, UserFixture};
         use crate::repository::user::UserRepository;
         use crate::repository::room::RoomRepository;
-        use crate::models::id::MediaId;
+        use crate::repository::playlist::PlaylistRepository;
+        use crate::repository::media::MediaRepository;
+        use crate::models::Media;
 
         let infra = crate::test_helpers::containers::TestInfra::postgres_only().await;
         let user_repo = UserRepository::new(infra.pool.clone());
         let room_repo = RoomRepository::new(infra.pool.clone());
+        let playlist_repo = PlaylistRepository::new(infra.pool.clone());
+        let media_repo = MediaRepository::new(infra.pool.clone());
         let playback_repo = RoomPlaybackStateRepository::new(infra.pool.clone());
 
         // Create owner and room
@@ -239,14 +243,34 @@ mod tests {
             .build();
         let room = room_repo.create(&room).await.unwrap();
 
+        // Create playlist hierarchy (root + child with name)
+        let (_, playlist) = crate::test_helpers::create_media_playlist_hierarchy(
+            &playlist_repo,
+            room.id.clone(),
+            "Playback Playlist",
+        ).await;
+
+        // Create media for playback reference (required by FK constraint)
+        let media = Media::from_provider(
+            playlist.id.clone(),
+            room.id.clone(),
+            Some(owner.id.clone()),
+            "Test Video".to_string(),
+            serde_json::json!({"url": "https://example.com/video.mp4"}),
+            "direct_url",
+            "default".to_string(),
+            0,
+        );
+        let media = media_repo.create(&media).await.unwrap();
+
         // Create playback state
         let mut state = playback_repo.create_or_get(&room.id).await.unwrap();
 
-        // Update state
+        // Update state with valid media_id reference
         state.current_time = 120.5;
         state.speed = 1.5;
         state.is_playing = true;
-        state.playing_media_id = Some(MediaId::from_string("media123".to_string()));
+        state.playing_media_id = Some(media.id.clone());
 
         let updated = playback_repo.update(&state).await.unwrap();
         assert!((updated.current_time - 120.5).abs() < f64::EPSILON);

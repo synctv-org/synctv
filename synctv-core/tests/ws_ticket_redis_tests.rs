@@ -3,6 +3,10 @@
 //! Tests the RedisTicketStore backend via testcontainers:
 //! roundtrip, one-time use, room mismatch, TTL expiry, concurrent consumption.
 //!
+//! Also tests cluster mode Redis dependency:
+//! - cluster mode with Redis should work correctly
+//! - cluster mode without Redis should return an error (tested in unit tests)
+//!
 //! Run with: cargo test --test ws_ticket_redis_tests
 
 use synctv_core::models::{RoomId, UserId};
@@ -145,4 +149,103 @@ async fn test_redis_ticket_concurrent_consumption() {
 
     assert_eq!(successes, 1, "Exactly 1 of 10 concurrent consumers should succeed");
     assert_eq!(failures, 9, "9 consumers should fail");
+}
+
+// ============================================================================
+// Cluster mode Redis dependency tests (TDD)
+// ============================================================================
+
+/// Test: cluster mode with Redis works correctly.
+/// This is the main fix - in cluster mode with Redis, tickets should work
+/// because they are stored in shared Redis storage visible to all replicas.
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_cluster_mode_with_redis_succeeds() {
+    let (_container, conn) = start_redis().await;
+
+    // Use WsTicketService::new with cluster_mode=true and Redis provided
+    let result = WsTicketService::new(Some(conn), Some(30), true);
+
+    assert!(
+        result.is_ok(),
+        "Cluster mode with Redis should succeed"
+    );
+
+    let service = result.unwrap();
+    assert_eq!(
+        service.backend_name(),
+        "redis",
+        "Cluster mode with Redis should use Redis backend"
+    );
+}
+
+/// Test: cluster mode with Redis allows ticket creation and validation.
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_cluster_mode_with_redis_roundtrip() {
+    let (_container, conn) = start_redis().await;
+
+    let service = WsTicketService::new(Some(conn), Some(30), true).unwrap();
+
+    let uid = user_id("cluster_user_1");
+    let rid = room_id("cluster_room_1");
+
+    let ticket = service.create_ticket(&uid, &rid, 0).await.unwrap();
+    assert!(!ticket.is_empty());
+
+    let validated = service.validate_and_consume(&ticket, &rid).await.unwrap();
+    assert_eq!(validated.user_id.as_str(), "cluster_user_1");
+    assert_eq!(validated.password_version, 0);
+}
+
+/// Test: cluster mode with Redis custom TTL works.
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_cluster_mode_with_redis_custom_ttl() {
+    let (_container, conn) = start_redis().await;
+
+    let service = WsTicketService::new(Some(conn), Some(60), true).unwrap();
+
+    assert_eq!(service.ticket_ttl_secs(), 60);
+}
+
+/// Test: WsTicketService::with_redis always creates a Redis-backed service
+/// regardless of cluster mode flag (which is only checked in ::new).
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_with_redis_creates_redis_backend() {
+    let (_container, conn) = start_redis().await;
+
+    let service = WsTicketService::with_redis(conn, Some(30));
+
+    assert_eq!(service.backend_name(), "redis");
+}
+
+/// Test: simulate multi-replica scenario - ticket created on "replica A"
+/// can be validated on "replica B" when using Redis.
+/// This simulates the core problem that the fix addresses.
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_cluster_mode_simulated_multi_replica_roundtrip() {
+    let (_container, conn) = start_redis().await;
+
+    // Clone the connection for the second "replica"
+    let conn_clone = conn.clone();
+
+    // "Replica A" creates the ticket
+    let service_a = WsTicketService::new(Some(conn), Some(30), true).unwrap();
+    let uid = user_id("multi_replica_user");
+    let rid = room_id("multi_replica_room");
+
+    let ticket = service_a.create_ticket(&uid, &rid, 0).await.unwrap();
+
+    // "Replica B" (different service instance, same Redis) validates the ticket
+    let service_b = WsTicketService::new(Some(conn_clone), Some(30), true).unwrap();
+
+    let validated = service_b.validate_and_consume(&ticket, &rid).await.unwrap();
+    assert_eq!(validated.user_id.as_str(), "multi_replica_user");
+
+    // Ticket should be consumed (one-time use)
+    let result = service_a.validate_and_consume(&ticket, &rid).await;
+    assert!(result.is_err(), "Ticket should already be consumed");
 }

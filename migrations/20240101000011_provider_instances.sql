@@ -28,7 +28,9 @@ CREATE TABLE media_provider_instances (
 
     -- Constraints
     CONSTRAINT valid_name CHECK (length(trim(name)) > 0 AND length(name) <= 64),
-    CONSTRAINT valid_endpoint CHECK (length(trim(endpoint)) > 0)
+    CONSTRAINT valid_endpoint CHECK (length(trim(endpoint)) > 0),
+    CONSTRAINT valid_jwt_secret_format CHECK (jwt_secret IS NULL OR jwt_secret LIKE 'enc:%'),
+    CONSTRAINT valid_custom_ca_format CHECK (custom_ca IS NULL OR custom_ca LIKE 'enc:%')
 );
 
 -- Indexes

@@ -621,7 +621,8 @@ impl AdminService for AdminServiceImpl {
         &self,
         request: Request<KickStreamRequest>,
     ) -> Result<Response<KickStreamResponse>, Status> {
-        self.check_admin(&request).await?;
+        let validated = self.check_admin_get_validated(&request).await?;
+        let ctx = grpc_request_context(&request);
         let req = request.into_inner();
 
         if req.room_id.is_empty() || req.media_id.is_empty() {
@@ -629,7 +630,7 @@ impl AdminService for AdminServiceImpl {
         }
 
         self.admin_api
-            .kick_stream(&req.room_id, &req.media_id, &req.reason)
+            .kick_stream(&req.room_id, &req.media_id, &req.reason, &validated.user_id, &ctx)
             .await
             .map_err(|e| map_api_error(crate::impls::ApiError::Internal(e.to_string())))?;
 

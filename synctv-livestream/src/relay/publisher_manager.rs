@@ -60,6 +60,18 @@ const MAX_CONSECUTIVE_REDIS_UNREACHABLE: u32 = 10;
 /// Reduced from 300s to 60s for faster detection of crashed encoders.
 const SILENT_PUBLISHER_TIMEOUT_SECS: u64 = 60;
 
+/// Interval for periodic registry-local consistency sync (Task #39).
+///
+/// This sync ensures local tracking state matches the registry, detecting and
+/// repairing inconsistencies caused by:
+/// - Network partitions where registry state changed but local didn't notice
+/// - Missed broadcast events (though these also trigger immediate reconciliation)
+/// - Registry entries taken over by other nodes
+///
+/// Set to 5 minutes as a balance between consistency and registry load.
+/// Reconciliation also runs on broadcast lag events, so this is a safety net.
+const PERIODIC_SYNC_INTERVAL_SECS: u64 = 300;
+
 /// Tracked publisher state including activity timestamp and registration info.
 struct PublisherEntry {
     /// Unix timestamp (seconds) of last observed data activity.
@@ -284,6 +296,12 @@ impl PublisherManager {
             heartbeat_manager.maintain_heartbeats().await;
         });
 
+        // Task #39: Start periodic sync task for registry-local consistency
+        let sync_manager = Arc::clone(&self);
+        let sync_handle = tokio::spawn(async move {
+            sync_manager.run_periodic_sync().await;
+        });
+
         // Listen to broadcast events
         loop {
             match event_receiver.recv().await {
@@ -312,7 +330,9 @@ impl PublisherManager {
 
         // Abort heartbeat task on exit to prevent leaked background work
         heartbeat_handle.abort();
+        sync_handle.abort();
         let _ = heartbeat_handle.await;
+        let _ = sync_handle.await;
         warn!("Publisher manager stopped");
     }
 
@@ -568,6 +588,39 @@ impl PublisherManager {
                 added,
                 self.active_publishers.len()
             );
+        }
+    }
+
+    /// Task #39: Run periodic synchronization between local tracking and registry.
+    ///
+    /// This is a background task that runs at `PERIODIC_SYNC_INTERVAL_SECS` intervals
+    /// to ensure local-registry consistency. It catches inconsistencies that may
+    /// occur due to:
+    /// - Network partitions where registry state changed
+    /// - Missed broadcast events that didn't trigger immediate reconciliation
+    /// - Registry entries taken over by other nodes
+    ///
+    /// The sync is bidirectional:
+    /// 1. Remove local entries that no longer exist in registry or changed ownership
+    /// 2. Add registry entries that belong to this node but are missing locally
+    async fn run_periodic_sync(&self) {
+        let mut sync_interval = interval(Duration::from_secs(PERIODIC_SYNC_INTERVAL_SECS));
+
+        // Skip the first immediate tick - we don't need to sync right at startup
+        // since startup cleanup and reconciliation already happened.
+        sync_interval.tick().await;
+
+        loop {
+            sync_interval.tick().await;
+
+            debug!(
+                "Running periodic registry-local sync (interval={}s)",
+                PERIODIC_SYNC_INTERVAL_SECS
+            );
+
+            // Bidirectional reconciliation
+            self.reconcile_with_registry().await;
+            self.reconcile_missing_from_registry().await;
         }
     }
 

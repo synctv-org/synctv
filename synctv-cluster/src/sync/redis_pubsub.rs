@@ -185,6 +185,18 @@ impl RedisPubSub {
         format!("{}room:*", self.key_prefix)
     }
 
+    /// Generate a Redis Stream ID representing `catchup_window_ms` ago.
+    /// This is used to limit how far back we read from a stream when
+    /// no valid cursor is available (e.g., cursor is "0" on reconnect).
+    fn catchup_start_id(&self) -> String {
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis();
+        let start_ms = now_ms.saturating_sub(self.catchup_window_ms);
+        format!("{start_ms}-0")
+    }
+
     /// Extract room_id from a channel name (e.g., "synctv:room:abc" -> Some("abc"))
     fn extract_room_id_from_channel<'a>(&self, channel: &'a str) -> Option<&'a str> {
         let room_prefix = format!("{}room:", self.key_prefix);
@@ -910,15 +922,19 @@ impl RedisPubSub {
                 *key == admin_sk || active_stream_keys_set.contains(key)
             });
 
-            // Ensure admin stream is always included
+            // Ensure admin stream is always included.
+            // When no cursor exists, use catchup_start_id instead of "0" to avoid
+            // reading all historical events from the stream.
+            let catchup_start = self.catchup_start_id();
             if !stream_cursors.contains_key(&admin_sk) {
-                stream_cursors.insert(admin_sk.clone(), "0".to_string());
+                stream_cursors.insert(admin_sk.clone(), catchup_start.clone());
             }
 
-            // Add cursors for any new rooms that appeared while disconnected
+            // Add cursors for any new rooms that appeared while disconnected.
+            // Use catchup_start_id for new rooms to avoid reading all history.
             for rid in &active_rooms {
                 let key = self.room_stream_key(rid.as_str());
-                stream_cursors.entry(key).or_insert_with(|| "0".to_string());
+                stream_cursors.entry(key).or_insert_with(|| catchup_start.clone());
             }
 
             // Build the set of streams to catch up from (active rooms + admin)
@@ -934,7 +950,8 @@ impl RedisPubSub {
             let mut total_caught_up = 0usize;
             let mut total_skipped = 0usize;
             for stream_key in &active_stream_keys {
-                let cursor = stream_cursors.get(stream_key).cloned().unwrap_or_else(|| "0".to_string());
+                // Use catchup_start as fallback to avoid reading all history from "0"
+                let cursor = stream_cursors.get(stream_key).cloned().unwrap_or_else(|| catchup_start.clone());
                 match self.read_missed_events_from(stream_key, &cursor).await {
                     Ok(events) => {
                         for (stream_id, channel, event) in events {
@@ -2023,5 +2040,97 @@ mod tests {
         // cause Redis connections to fail and the spawned tasks to terminate.
         // The JoinHandle returned by start() is dropped here (via _publish_tx2),
         // but the tasks run until cancelled via the cancel_token or Redis disconnects.
+    }
+
+    /// Test that catchup_start_id generates a valid Redis Stream ID format.
+    /// The ID should be in the format "{timestamp_ms}-{seq}" where seq is 0.
+    #[test]
+    fn test_catchup_start_id_format() {
+        let message_hub = Arc::new(RoomMessageHub::new());
+        let (admin_tx, _) = broadcast::channel(256);
+        let dedup = Arc::new(MessageDeduplicator::with_defaults());
+        let redis_client = RedisClient::open("redis://127.0.0.1:6379").unwrap();
+
+        // Create with 300 second (5 minute) catchup window
+        let pubsub = RedisPubSub::with_key_prefix(
+            redis_client,
+            message_hub,
+            "test-node".to_string(),
+            "synctv:",
+            admin_tx,
+            None,
+            None,
+            dedup,
+            300,  // 5 minutes
+            1000,
+        ).unwrap();
+
+        let catchup_id = pubsub.catchup_start_id();
+
+        // Verify format: "{timestamp_ms}-0"
+        assert!(catchup_id.ends_with("-0"), "catchup_start_id should end with '-0', got: {}", catchup_id);
+
+        // Parse and verify timestamp is within expected range
+        let parts: Vec<&str> = catchup_id.split('-').collect();
+        assert_eq!(parts.len(), 2, "ID should have 2 parts separated by '-', got: {}", catchup_id);
+
+        let timestamp_ms: u64 = parts[0].parse().expect("timestamp should be a valid u64");
+
+        // Should be approximately 5 minutes ago (300 seconds = 300000 ms)
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64;
+
+        let expected_start = now_ms.saturating_sub(300_000);
+        let diff = if timestamp_ms > expected_start {
+            timestamp_ms - expected_start
+        } else {
+            expected_start - timestamp_ms
+        };
+
+        // Allow 1 second tolerance for test execution time
+        assert!(diff < 1000, "catchup_start_id timestamp should be ~5 minutes ago, diff: {}ms", diff);
+    }
+
+    /// Test that catchup_start_id respects the configured catchup_window_secs.
+    #[test]
+    fn test_catchup_start_id_respects_window() {
+        let message_hub = Arc::new(RoomMessageHub::new());
+        let (admin_tx, _) = broadcast::channel(256);
+        let dedup = Arc::new(MessageDeduplicator::with_defaults());
+        let redis_client = RedisClient::open("redis://127.0.0.1:6379").unwrap();
+
+        // Create with 60 second catchup window
+        let pubsub = RedisPubSub::with_key_prefix(
+            redis_client,
+            message_hub,
+            "test-node".to_string(),
+            "synctv:",
+            admin_tx,
+            None,
+            None,
+            dedup,
+            60,  // 1 minute
+            1000,
+        ).unwrap();
+
+        let catchup_id = pubsub.catchup_start_id();
+        let timestamp_ms: u64 = catchup_id.split('-').next().unwrap().parse().unwrap();
+
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64;
+
+        let expected_start = now_ms.saturating_sub(60_000);
+        let diff = if timestamp_ms > expected_start {
+            timestamp_ms - expected_start
+        } else {
+            expected_start - timestamp_ms
+        };
+
+        // Allow 1 second tolerance
+        assert!(diff < 1000, "catchup_start_id should use 60s window, diff: {}ms", diff);
     }
 }

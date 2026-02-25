@@ -35,6 +35,7 @@ pub mod live_proxy;
 pub use config::*;
 pub use context::*;
 pub use error::*;
+pub use provider_client::{ProviderClientManager, global_client_manager};
 pub use registry::*;
 pub use traits::*;
 

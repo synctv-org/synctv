@@ -102,35 +102,7 @@ pub struct ExternalStreamPuller {
 }
 
 impl ExternalStreamPuller {
-    pub fn new(
-        room_id: String,
-        media_id: String,
-        source_url: String,
-        stream_hub_event_sender: StreamHubEventSender,
-    ) -> Result<Self> {
-        let source_type = ExternalSourceType::from_url(&source_url)
-            .ok_or_else(|| anyhow::anyhow!(
-                "Unsupported source URL format: {source_url}. Expected rtmp:// or *.flv"
-            ))?;
-
-        // SSRF validation: block private IPs, loopback, link-local, metadata endpoints
-        SSRFValidator::new().validate_url(&source_url)
-            .map_err(|e| anyhow::anyhow!("SSRF protection blocked URL: {e}"))?;
-
-        Ok(Self {
-            room_id,
-            media_id,
-            source_url,
-            source_type,
-            stream_hub_event_sender,
-            confirm_tx: None,
-            http_client: None,
-            resolved_addr: None,
-            cancel_token: CancellationToken::new(),
-        })
-    }
-
-    /// Create with async DNS-resolved SSRF validation (preferred for production use).
+    /// Create with async DNS-resolved SSRF validation (required for all production use).
     /// Resolves the hostname and validates all resolved IPs against blocklists.
     pub async fn new_async(
         room_id: String,
@@ -859,12 +831,12 @@ mod tests {
     async fn test_external_puller_creation_rtmp() {
         let (sender, _) = tokio::sync::mpsc::channel(64);
 
-        let puller = ExternalStreamPuller::new(
+        let puller = ExternalStreamPuller::new_async(
             "room123".to_string(),
             "media456".to_string(),
-            "rtmp://live.example.com/app/stream".to_string(),
+            "rtmp://example.com/app/stream".to_string(),
             sender,
-        );
+        ).await;
 
         assert!(puller.is_ok());
         let puller = puller.unwrap();
@@ -877,12 +849,12 @@ mod tests {
     async fn test_external_puller_creation_flv() {
         let (sender, _) = tokio::sync::mpsc::channel(64);
 
-        let puller = ExternalStreamPuller::new(
+        let puller = ExternalStreamPuller::new_async(
             "room123".to_string(),
             "media456".to_string(),
-            "http://live.example.com/app/stream.flv".to_string(),
+            "http://example.com/app/stream.flv".to_string(),
             sender,
-        );
+        ).await;
 
         assert!(puller.is_ok());
         assert!(matches!(puller.unwrap().source_type, ExternalSourceType::HttpFlv));
@@ -892,12 +864,12 @@ mod tests {
     async fn test_external_puller_invalid_url() {
         let (sender, _) = tokio::sync::mpsc::channel(64);
 
-        let puller = ExternalStreamPuller::new(
+        let puller = ExternalStreamPuller::new_async(
             "room123".to_string(),
             "media456".to_string(),
             "http://example.com/video.mp4".to_string(),
             sender,
-        );
+        ).await;
 
         assert!(puller.is_err());
     }
@@ -906,13 +878,68 @@ mod tests {
     async fn test_external_puller_m3u8_rejected() {
         let (sender, _) = tokio::sync::mpsc::channel(64);
 
-        let puller = ExternalStreamPuller::new(
+        let puller = ExternalStreamPuller::new_async(
             "room123".to_string(),
             "media456".to_string(),
             "https://live.example.com/app/stream/index.m3u8".to_string(),
             sender,
-        );
+        ).await;
 
         assert!(puller.is_err());
+    }
+
+    /// Test that new_async() properly resolves DNS and sets resolved_addr.
+    /// This test uses a real external hostname that should resolve.
+    #[tokio::test]
+    async fn test_external_puller_async_sets_resolved_addr() {
+        let (sender, _) = tokio::sync::mpsc::channel(64);
+
+        // Use example.com which is a real domain that resolves
+        let puller = ExternalStreamPuller::new_async(
+            "room123".to_string(),
+            "media456".to_string(),
+            "rtmp://example.com/app/stream".to_string(),
+            sender,
+        ).await;
+
+        // The URL should parse correctly
+        assert!(puller.is_ok(), "new_async should succeed for valid URL");
+        let puller = puller.unwrap();
+
+        // resolved_addr should be set (DNS resolution was successful)
+        assert!(puller.resolved_addr.is_some(), "resolved_addr should be set by new_async");
+    }
+
+    /// Test that new_async() rejects SSRF-protected URLs (private IPs, localhost, etc.)
+    #[tokio::test]
+    async fn test_external_puller_async_ssrf_protection() {
+        let (sender, _) = tokio::sync::mpsc::channel(64);
+
+        // Localhost should be blocked
+        let puller = ExternalStreamPuller::new_async(
+            "room123".to_string(),
+            "media456".to_string(),
+            "rtmp://localhost/app/stream".to_string(),
+            sender.clone(),
+        ).await;
+        assert!(puller.is_err(), "localhost should be blocked by SSRF protection");
+
+        // 127.0.0.1 should be blocked
+        let puller = ExternalStreamPuller::new_async(
+            "room123".to_string(),
+            "media456".to_string(),
+            "http://127.0.0.1/stream.flv".to_string(),
+            sender.clone(),
+        ).await;
+        assert!(puller.is_err(), "127.0.0.1 should be blocked by SSRF protection");
+
+        // Private IP should be blocked
+        let puller = ExternalStreamPuller::new_async(
+            "room123".to_string(),
+            "media456".to_string(),
+            "rtmp://192.168.1.1/app/stream".to_string(),
+            sender.clone(),
+        ).await;
+        assert!(puller.is_err(), "192.168.1.1 should be blocked by SSRF protection");
     }
 }

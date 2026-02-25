@@ -7,3 +7,12 @@ CREATE TABLE IF NOT EXISTS token_blacklist (
 );
 
 CREATE INDEX idx_token_blacklist_expires ON token_blacklist(expires_at);
+
+-- Cleanup function to remove expired token blacklist entries.
+-- Call this periodically to prevent unbounded table growth.
+CREATE OR REPLACE FUNCTION cleanup_expired_token_blacklist()
+RETURNS void AS $$
+BEGIN
+    DELETE FROM token_blacklist WHERE expires_at < CURRENT_TIMESTAMP;
+END;
+$$ LANGUAGE plpgsql;

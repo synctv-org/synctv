@@ -27,7 +27,7 @@ CREATE TABLE IF NOT EXISTS room_members (
 
     -- Banned info
     banned_at TIMESTAMPTZ,
-    banned_by CHAR(12) REFERENCES users(id) ON DELETE RESTRICT,
+    banned_by CHAR(12) REFERENCES users(id) ON DELETE SET NULL,
     banned_reason TEXT,
 
     PRIMARY KEY (room_id, user_id)

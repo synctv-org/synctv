@@ -479,8 +479,8 @@ pub struct ListRoomsRequest {
     #[prost(int32, tag = "2")]
     pub page_size: i32,
     /// Optional filter: active, closed, pending (use is_banned for ban filter)
-    #[prost(string, tag = "3")]
-    pub status: ::prost::alloc::string::String,
+    #[prost(enumeration = "super::common::RoomStatus", tag = "3")]
+    pub status: i32,
     /// Search by name
     #[prost(string, tag = "4")]
     pub search: ::prost::alloc::string::String,

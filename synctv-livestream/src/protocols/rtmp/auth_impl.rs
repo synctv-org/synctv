@@ -303,6 +303,46 @@ impl AuthCallback for RtmpAuthCallbackImpl {
             stream_name
         );
     }
+
+    /// Rollback publisher registration when StreamHub publish fails after auth success.
+    ///
+    /// This is critical for maintaining consistency: `on_publish` registers the publisher
+    /// in Redis BEFORE StreamHub, so if StreamHub fails, we must clean up Redis immediately.
+    async fn on_publish_rollback(
+        &self,
+        app_name: &str,
+        stream_name: &str,
+        _query: Option<&str>,
+    ) {
+        // Only cleanup if we have a registry configured
+        if let Some(ref registry) = self.registry {
+            warn!(
+                room_id = %app_name,
+                media_id = %stream_name,
+                "Rolling back publisher registration due to StreamHub failure"
+            );
+
+            if let Err(e) = registry.unregister_publisher(app_name, stream_name).await {
+                warn!(
+                    room_id = %app_name,
+                    media_id = %stream_name,
+                    error = %e,
+                    "Failed to rollback publisher registration"
+                );
+            }
+
+            info!(
+                room_id = %app_name,
+                media_id = %stream_name,
+                "Publisher registration rolled back successfully"
+            );
+        }
+
+        // Also clean up stream tracker entry if present
+        if let Some(tracker) = &self.stream_tracker {
+            tracker.remove_by_app_stream(app_name, stream_name);
+        }
+    }
 }
 
 /// Extract token from query string (e.g. "token=xxx&foo=bar" -> "xxx")

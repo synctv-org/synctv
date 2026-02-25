@@ -959,10 +959,15 @@ impl ServerSession {
             query
         );
 
-        // Helper closure for cleanup on error
+        // Helper closure for cleanup on error - use rollback for proper Redis cleanup
         let cleanup_auth = || async {
             if let Some(auth) = &self.auth {
-                auth.on_unpublish(
+                // Use on_publish_rollback instead of on_unpublish because:
+                // 1. on_publish registered the publisher in Redis
+                // 2. on_unpublish intentionally does NOT clean up Redis (PublisherManager does)
+                // 3. When StreamHub fails, PublisherManager never gets called
+                // 4. So we need rollback to clean up Redis immediately
+                auth.on_publish_rollback(
                     &self.app_name,
                     &self.stream_name,
                     self.query.as_deref(),

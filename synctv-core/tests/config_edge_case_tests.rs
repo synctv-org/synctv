@@ -6,7 +6,7 @@
 //! Run with: cargo test --test config_edge_case_tests
 
 use synctv_core::config::{
-    Config, ServerConfig, DatabaseConfig, RedisConfig, RedisDeploymentMode,
+    BootstrapConfig, Config, ServerConfig, DatabaseConfig, RedisConfig, RedisDeploymentMode,
 };
 use std::net::IpAddr;
 
@@ -186,4 +186,42 @@ fn test_config_debug_redacts_secrets() {
     let debug = format!("{config:?}");
     // Config Debug impl should redact database and jwt
     assert!(debug.contains("<redacted>"), "Secrets should be redacted in Config Debug output");
+}
+
+// ============================================================================
+// BootstrapConfig security tests
+// ============================================================================
+
+#[test]
+fn test_bootstrap_config_default_does_not_create_root_user() {
+    // Security: default should NOT create root user automatically
+    let config = BootstrapConfig::default();
+    assert!(!config.create_root_user, "create_root_user should default to false for security");
+}
+
+#[test]
+fn test_bootstrap_config_default_has_empty_password() {
+    // Security: default password should be empty, not "root"
+    let config = BootstrapConfig::default();
+    assert!(config.root_password.is_empty(), "root_password should default to empty string for security");
+}
+
+#[test]
+fn test_bootstrap_config_default_username_is_root() {
+    // Username can still be "root" as it's not sensitive
+    let config = BootstrapConfig::default();
+    assert_eq!(config.root_username, "root");
+}
+
+#[test]
+fn test_config_validate_rejects_empty_root_password_when_creating_root() {
+    // When create_root_user is true, empty password should be rejected
+    let mut config = Config::default();
+    config.bootstrap.create_root_user = true;
+    config.bootstrap.root_password = String::new();
+
+    let result = config.validate();
+    assert!(result.is_err(), "Validation should fail with empty root password");
+    let errors = result.unwrap_err();
+    assert!(errors.iter().any(|e| e.to_lowercase().contains("root password")), "Error should mention root password");
 }

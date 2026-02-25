@@ -84,18 +84,16 @@ async fn test_migrate_plaintext_to_encrypted_idempotent() {
     let (_container, pool) = create_test_pool().await;
     let enc = CredentialEncryption::new(&test_key()).unwrap();
 
-    // Create an instance with plaintext secrets
-    let no_enc_repo = ProviderInstanceRepository::new(pool.clone());
-    let instance = make_instance("idempotent_test", Some("my_secret"), Some("my_ca_cert"));
-    no_enc_repo.create(&instance).await.unwrap();
-
+    // Create an instance with encrypted secrets (using the repository with encryption)
     let enc_repo = ProviderInstanceRepository::new_with_encryption(pool.clone(), enc.clone());
+    let instance = make_instance("idempotent_test", Some("my_secret"), Some("my_ca_cert"));
+    enc_repo.create(&instance).await.unwrap();
 
-    // First migration should migrate 1 instance
+    // First migration should migrate 0 instances (already encrypted)
     let count1 = enc_repo.migrate_plaintext_to_encrypted().await.unwrap();
-    assert_eq!(count1, 1);
+    assert_eq!(count1, 0, "First migration should find no plaintext to migrate");
 
-    // Second migration should migrate 0 (already encrypted)
+    // Second migration should also migrate 0 (idempotent)
     let count2 = enc_repo.migrate_plaintext_to_encrypted().await.unwrap();
     assert_eq!(count2, 0, "Second migration should be idempotent");
 
@@ -161,6 +159,136 @@ async fn test_encryption_prefix_edge_case() {
     // (it looks like an already-encrypted value)
     let count = enc_repo.migrate_plaintext_to_encrypted().await.unwrap();
     assert_eq!(count, 0, "Value starting with 'enc:' should be treated as already encrypted");
+}
+
+// ─── CHECK constraint: plaintext jwt_secret rejected ─────────────────
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_plaintext_jwt_secret_rejected_by_check_constraint() {
+    let (_container, pool) = create_test_pool().await;
+
+    // Attempt to insert plaintext jwt_secret (without enc: prefix) should fail
+    let result = sqlx::query(
+        "INSERT INTO media_provider_instances (name, endpoint, jwt_secret, timeout, tls, insecure_tls, providers, enabled) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
+    )
+    .bind("constraint_test_jwt")
+    .bind("grpc://localhost:50051")
+    .bind("plaintext_secret") // NOT enc: prefixed
+    .bind("10s")
+    .bind(false)
+    .bind(false)
+    .bind(&vec!["bilibili"] as &[&str])
+    .bind(true)
+    .execute(&pool)
+    .await;
+
+    assert!(
+        result.is_err(),
+        "Plaintext jwt_secret should be rejected by CHECK constraint"
+    );
+    let err_msg = result.unwrap_err().to_string();
+    assert!(
+        err_msg.contains("valid_jwt_secret_format") || err_msg.contains("check"),
+        "Error should mention CHECK constraint, got: {}",
+        err_msg
+    );
+}
+
+// ─── CHECK constraint: plaintext custom_ca rejected ───────────────────
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_plaintext_custom_ca_rejected_by_check_constraint() {
+    let (_container, pool) = create_test_pool().await;
+
+    // Attempt to insert plaintext custom_ca (without enc: prefix) should fail
+    let result = sqlx::query(
+        "INSERT INTO media_provider_instances (name, endpoint, custom_ca, timeout, tls, insecure_tls, providers, enabled) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
+    )
+    .bind("constraint_test_ca")
+    .bind("grpc://localhost:50051")
+    .bind("-----BEGIN CERTIFICATE-----\nplaintext_cert\n-----END CERTIFICATE-----") // NOT enc: prefixed
+    .bind("10s")
+    .bind(false)
+    .bind(false)
+    .bind(&vec!["bilibili"] as &[&str])
+    .bind(true)
+    .execute(&pool)
+    .await;
+
+    assert!(
+        result.is_err(),
+        "Plaintext custom_ca should be rejected by CHECK constraint"
+    );
+    let err_msg = result.unwrap_err().to_string();
+    assert!(
+        err_msg.contains("valid_custom_ca_format") || err_msg.contains("check"),
+        "Error should mention CHECK constraint, got: {}",
+        err_msg
+    );
+}
+
+// ─── CHECK constraint: NULL secrets allowed ────────────────────────────
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_null_secrets_allowed_by_check_constraint() {
+    let (_container, pool) = create_test_pool().await;
+
+    // NULL secrets should be allowed
+    let result = sqlx::query(
+        "INSERT INTO media_provider_instances (name, endpoint, jwt_secret, custom_ca, timeout, tls, insecure_tls, providers, enabled) \
+         VALUES ($1, $2, NULL, NULL, $3, $4, $5, $6, $7)",
+    )
+    .bind("constraint_test_null")
+    .bind("grpc://localhost:50051")
+    .bind("10s")
+    .bind(false)
+    .bind(false)
+    .bind(&vec!["bilibili"] as &[&str])
+    .bind(true)
+    .execute(&pool)
+    .await;
+
+    assert!(
+        result.is_ok(),
+        "NULL secrets should be allowed, got error: {:?}",
+        result.err()
+    );
+}
+
+// ─── CHECK constraint: enc: prefixed secrets allowed ───────────────────
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_enc_prefixed_secrets_allowed_by_check_constraint() {
+    let (_container, pool) = create_test_pool().await;
+
+    // enc: prefixed secrets should be allowed
+    let result = sqlx::query(
+        "INSERT INTO media_provider_instances (name, endpoint, jwt_secret, custom_ca, timeout, tls, insecure_tls, providers, enabled) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
+    )
+    .bind("constraint_test_enc")
+    .bind("grpc://localhost:50051")
+    .bind("enc:encrypted_jwt_secret_data")
+    .bind("enc:encrypted_custom_ca_data")
+    .bind("10s")
+    .bind(false)
+    .bind(false)
+    .bind(&vec!["bilibili"] as &[&str])
+    .bind(true)
+    .execute(&pool)
+    .await;
+
+    assert!(
+        result.is_ok(),
+        "enc: prefixed secrets should be allowed, got error: {:?}",
+        result.err()
+    );
 }
 
 // ─── create and read with encryption ─────────────────────────────────

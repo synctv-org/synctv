@@ -39,6 +39,7 @@ url.workspace = true
 subtle.workspace = true
 sha2.workspace = true
 md-5.workspace = true
+uuid.workspace = true
 
 # Compression
 flate2.workspace = true
@@ -49,6 +50,17 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 backon.workspace = true
 
+# Utilities
+nanoid.workspace = true
+
+# Database (optional, for PostgreSQL storage)
+sqlx = { workspace = true, optional = true }
+chrono = { workspace = true, optional = true }
+
+[features]
+default = []
+postgres = ["dep:sqlx", "dep:chrono"]
+
 [lints]
 workspace = true
 
@@ -58,3 +70,4 @@ tonic-prost-build.workspace = true
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }
 wiremock = { workspace = true }
+futures = "0.3"

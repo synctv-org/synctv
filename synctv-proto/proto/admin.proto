@@ -363,7 +363,7 @@ message ApproveUserResponse {
 message ListRoomsRequest {
     int32 page = 1; // Validation: >= 1
     int32 page_size = 2; // Validation: max 100, default 20
-    string status = 3; // Optional filter: active, closed, pending (use is_banned for ban filter)
+    synctv.common.RoomStatus status = 3; // Optional filter: active, closed, pending (use is_banned for ban filter)
     string search = 4; // Search by name
     string creator_id = 5; // Optional filter by creator
     optional bool is_banned = 6; // Optional filter by ban status (true = banned only, false = not banned, absent = all)

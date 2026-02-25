@@ -5584,9 +5584,12 @@ dependencies = [
  "async-trait",
  "backon",
  "brotli",
+ "chrono",
  "flate2",
+ "futures",
  "futures-util",
  "md-5",
+ "nanoid",
  "prost",
  "prost-types",
  "regex",
@@ -5594,6 +5597,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "sqlx",
  "subtle",
  "thiserror 2.0.18",
  "tokio",
@@ -5606,6 +5610,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "url",
+ "uuid",
  "wiremock",
 ]
 

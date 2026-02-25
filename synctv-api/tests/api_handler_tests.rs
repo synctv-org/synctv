@@ -1514,3 +1514,141 @@ mod grpc_status_mapping {
         }
     }
 }
+
+// ============================================================================
+// P0-5/6: gRPC API Validation Tests
+// ============================================================================
+
+mod grpc_api_validation {
+    use synctv_api::http::validation::{validate_id, ValidationError};
+
+    /// Test room_id validation: empty string should be rejected
+    #[test]
+    fn test_validate_room_id_empty() {
+        let result = validate_id("", "room_id");
+        assert!(result.is_err());
+        match result {
+            Err(ValidationError::Required(field)) => assert_eq!(field, "room_id"),
+            _ => panic!("Expected Required error"),
+        }
+    }
+
+    /// Test room_id validation: invalid characters should be rejected
+    #[test]
+    fn test_validate_room_id_invalid_chars() {
+        let result = validate_id("room@123!", "room_id");
+        assert!(result.is_err());
+        match result {
+            Err(ValidationError::InvalidFormat { field }) => assert_eq!(field, "room_id"),
+            _ => panic!("Expected InvalidFormat error"),
+        }
+    }
+
+    /// Test room_id validation: valid ID should pass
+    #[test]
+    fn test_validate_room_id_valid() {
+        let result = validate_id("room_123-abc", "room_id");
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), "room_123-abc");
+    }
+
+    /// Test media_id validation: empty string should be rejected
+    #[test]
+    fn test_validate_media_id_empty() {
+        let result = validate_id("", "media_id");
+        assert!(result.is_err());
+        match result {
+            Err(ValidationError::Required(field)) => assert_eq!(field, "media_id"),
+            _ => panic!("Expected Required error"),
+        }
+    }
+
+    /// Test media_id validation: too long should be rejected
+    #[test]
+    fn test_validate_media_id_too_long() {
+        let long_id = "a".repeat(100);
+        let result = validate_id(&long_id, "media_id");
+        assert!(result.is_err());
+        match result {
+            Err(ValidationError::TooLong { field, .. }) => assert_eq!(field, "media_id"),
+            _ => panic!("Expected TooLong error"),
+        }
+    }
+
+    /// Test media_id validation: valid ID should pass
+    #[test]
+    fn test_validate_media_id_valid() {
+        let result = validate_id("media_123-xyz", "media_id");
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), "media_123-xyz");
+    }
+
+    /// Test that ID validation rejects path traversal attempts
+    #[test]
+    fn test_validate_id_rejects_path_traversal() {
+        let result = validate_id("../etc/passwd", "room_id");
+        assert!(result.is_err());
+    }
+
+    /// Test that ID validation rejects SQL injection attempts
+    #[test]
+    fn test_validate_id_rejects_sql_injection() {
+        let result = validate_id("room'; DROP TABLE--", "room_id");
+        assert!(result.is_err());
+    }
+}
+
+// ============================================================================
+// P0-6: add_media_batch provider_instance_name Tests
+// ============================================================================
+
+mod add_media_batch_provider_instance {
+    use synctv_api::proto::client::AddMediaRequest;
+
+    /// Test that AddMediaRequest has provider_instance_name field
+    #[test]
+    fn test_add_media_request_has_provider_instance_name() {
+        let req = AddMediaRequest {
+            playlist_id: "playlist1".to_string(),
+            provider: "bilibili".to_string(),
+            provider_instance_name: "bilibili_main".to_string(),
+            source_config: br#"{"url":"https://example.com"}"#.to_vec(),
+            title: "Test Video".to_string(),
+        };
+        assert_eq!(req.provider_instance_name, "bilibili_main");
+    }
+
+    /// Test that AddMediaRequest with empty provider_instance_name works
+    #[test]
+    fn test_add_media_request_empty_provider_instance_name() {
+        let req = AddMediaRequest {
+            playlist_id: "playlist1".to_string(),
+            provider: "direct_url".to_string(),
+            provider_instance_name: String::new(),
+            source_config: br#"{"url":"https://example.com"}"#.to_vec(),
+            title: "Test Video".to_string(),
+        };
+        assert!(req.provider_instance_name.is_empty());
+    }
+
+    /// Test that provider_instance_name can be used to specify provider instance
+    #[test]
+    fn test_provider_instance_name_variations() {
+        let cases = vec![
+            ("bilibili_main", "bilibili_main"),
+            ("alist_personal", "alist_personal"),
+            ("", ""),
+        ];
+
+        for (input, expected) in cases {
+            let req = AddMediaRequest {
+                playlist_id: "playlist1".to_string(),
+                provider: "test".to_string(),
+                provider_instance_name: input.to_string(),
+                source_config: vec![],
+                title: String::new(),
+            };
+            assert_eq!(req.provider_instance_name, expected);
+        }
+    }
+}

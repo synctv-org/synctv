@@ -10,16 +10,19 @@ use std::sync::Arc;
 use synctv_core::{
     cache::{KeyBuilder, UsernameCache, NoopCacheL2},
     config::PasswordComplexityConfig,
+    repository::UserRepository,
     service::{
         UserService, InMemoryTokenBlacklistStore,
         auth::{JwtService, BruteForceProtection},
     },
+    Error,
 };
 use sqlx::PgPool;
 use testcontainers::core::ImageExt;
 use testcontainers::runners::AsyncRunner;
 use testcontainers::ContainerAsync;
 use testcontainers_modules::postgres::Postgres;
+use tokio::sync::Barrier;
 
 const POSTGRES_VERSION: &str = "16-alpine";
 
@@ -184,4 +187,108 @@ fn test_password_validation() {
     assert!(validator.validate("StrongPass1").is_ok());
     assert!(validator.validate("weak").is_err());
     assert!(validator.validate("nouppercase1").is_err());
+}
+
+// ============================================================================
+// Delete User Transaction Tests
+// ============================================================================
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_delete_user_already_deleted_returns_error() {
+    let (_container, pool) = create_test_pool().await;
+    let service = create_user_service(pool.clone());
+
+    // Register a user
+    let (user, _, _) = service
+        .register(
+            "delete_test_user".to_string(),
+            Some("delete@example.com".to_string()),
+            "StrongPass1".to_string(),
+            None,
+        )
+        .await
+        .expect("Registration should succeed");
+
+    let user_id = user.id.clone();
+
+    // First delete should succeed
+    let result = service.delete_user(&user_id).await;
+    assert!(result.is_ok(), "First delete should succeed: {result:?}");
+
+    // Second delete should fail with "already deleted" error
+    let result = service.delete_user(&user_id).await;
+    assert!(result.is_err(), "Second delete should fail");
+    match result {
+        Err(Error::InvalidInput(msg)) => {
+            assert!(
+                msg.contains("already deleted"),
+                "Error message should mention 'already deleted': {msg}"
+            );
+        }
+        Err(e) => panic!("Expected InvalidInput error, got: {e:?}"),
+        Ok(_) => panic!("Expected error, got Ok"),
+    }
+}
+
+/// Test that concurrent delete_user calls maintain atomicity - only one should succeed
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_delete_user_concurrent_deletion_atomicity() {
+    let (_container, pool) = create_test_pool().await;
+    let service = create_user_service(pool.clone());
+
+    // Register a user
+    let (user, _, _) = service
+        .register(
+            "concurrent_delete_user".to_string(),
+            Some("concurrent@example.com".to_string()),
+            "StrongPass1".to_string(),
+            None,
+        )
+        .await
+        .expect("Registration should succeed");
+
+    let user_id = user.id.clone();
+
+    // Use a barrier to synchronize both delete attempts
+    let barrier = Arc::new(Barrier::new(2));
+    let service1 = service.clone();
+    let service2 = service.clone();
+    let user_id1 = user_id.clone();
+    let user_id2 = user_id.clone();
+    let barrier1 = barrier.clone();
+    let barrier2 = barrier.clone();
+
+    let handle1 = tokio::spawn(async move {
+        barrier1.wait().await;
+        service1.delete_user(&user_id1).await
+    });
+
+    let handle2 = tokio::spawn(async move {
+        barrier2.wait().await;
+        service2.delete_user(&user_id2).await
+    });
+
+    let result1 = handle1.await.expect("Task 1 panicked");
+    let result2 = handle2.await.expect("Task 2 panicked");
+
+    // Exactly one of the two should succeed
+    let success_count = [result1.is_ok(), result2.is_ok()]
+        .iter()
+        .filter(|&&x| x)
+        .count();
+    assert_eq!(
+        success_count, 1,
+        "Exactly one delete should succeed, but got {} successes. Results: {:?}, {:?}",
+        success_count, result1, result2
+    );
+
+    // Verify user is deleted in the database
+    let user_repo = UserRepository::new(pool);
+    let user_after = user_repo.get_by_id(&user_id).await.expect("Query should work");
+    assert!(
+        user_after.is_none(),
+        "User should be soft-deleted (not found via get_by_id)"
+    );
 }

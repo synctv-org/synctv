@@ -418,6 +418,7 @@ fn make_test_room(status: RoomStatus) -> synctv_core::models::Room {
         created_at: chrono::Utc::now(),
         updated_at: chrono::Utc::now(),
         deleted_at: None,
+        version: 1,
     }
 }
 

@@ -169,7 +169,7 @@ fn test_settings_group_serialization_round_trip() {
     let json = serde_json::to_string(&group).unwrap();
     let deserialized: SettingsGroup = serde_json::from_str(&json).unwrap();
 
-    assert_eq!(deserialized.group, group.group);
+    assert_eq!(deserialized.group_name, group.group_name);
     assert_eq!(deserialized.key, group.key);
     assert_eq!(deserialized.value, group.value);
 }

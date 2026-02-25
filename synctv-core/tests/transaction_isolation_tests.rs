@@ -120,6 +120,7 @@ async fn test_concurrent_member_role_updates_isolated() {
         created_at: chrono::Utc::now(),
         updated_at: chrono::Utc::now(),
         deleted_at: None,
+        version: 0,
     };
     room_repo.create(&room).await.expect("Failed to create room");
 
@@ -225,6 +226,7 @@ async fn test_serializable_isolation_prevents_phantom_reads() {
         created_at: chrono::Utc::now(),
         updated_at: chrono::Utc::now(),
         deleted_at: None,
+        version: 0,
     };
     room_repo.create(&room).await.expect("Failed to create room");
 

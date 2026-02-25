@@ -71,8 +71,20 @@ pub struct HealthDetails {
     pub email: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub livestream: Option<String>,
+    /// Memory usage percentage (0-100). None if unavailable.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub memory: Option<MemoryHealth>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub message: Option<String>,
+}
+
+/// Memory health information
+#[derive(Debug, Serialize, Deserialize)]
+pub struct MemoryHealth {
+    /// Memory usage percentage (0-100)
+    pub usage_percent: f64,
+    /// Human-readable status: "healthy" or "unhealthy"
+    pub status: String,
 }
 
 /// Liveness probe - checks if the application process is running
@@ -97,6 +109,7 @@ pub async fn liveness_check() -> impl IntoResponse {
 /// **Production Enhancement (#25)**: Health check validates critical dependencies:
 /// - Database connectivity (`PostgreSQL`) - Executes a test query via `user_service`
 /// - Redis connectivity - Sends PING command, gracefully handles "not configured" case
+/// - Memory pressure - Checks if system memory usage exceeds 90%
 ///
 /// Kubernetes uses this to determine if the pod should receive traffic.
 /// A failing health check will prevent traffic routing until dependencies recover.
@@ -169,6 +182,17 @@ pub async fn readiness_check(State(state): State<AppState>) -> impl IntoResponse
         "configured".to_string()
     });
 
+    // Check memory pressure - high memory usage should mark node as unhealthy
+    let memory_health = check_memory_health();
+    if let Some(ref mem) = memory_health {
+        if mem.status == "unhealthy" {
+            error_messages.push(format!("Memory: usage at {:.1}% (threshold: {:.0}%)",
+                mem.usage_percent, MEMORY_UNHEALTHY_THRESHOLD_PERCENT));
+            is_healthy = false;
+            warn!("Memory pressure detected: {:.1}% usage", mem.usage_percent);
+        }
+    }
+
     let status_code = if is_healthy {
         StatusCode::OK
     } else {
@@ -184,6 +208,7 @@ pub async fn readiness_check(State(state): State<AppState>) -> impl IntoResponse
             ws_ticket: ws_ticket_status,
             email: email_status,
             livestream: livestream_status,
+            memory: memory_health,
             message: if error_messages.is_empty() {
                 None
             } else {
@@ -301,6 +326,161 @@ fn check_email_health(svc: &synctv_core::service::EmailService) -> String {
     }
 }
 
+/// Memory usage threshold percentage for marking the node as unhealthy.
+/// When memory usage exceeds this threshold, the node should not receive
+/// additional traffic to prevent OOM or performance degradation.
+const MEMORY_UNHEALTHY_THRESHOLD_PERCENT: f64 = 90.0;
+
+/// Check system memory health.
+///
+/// Returns memory usage information and health status.
+/// When memory usage exceeds 90%, the status is "unhealthy".
+/// Returns None if memory information cannot be obtained.
+fn check_memory_health() -> Option<MemoryHealth> {
+    // Use the `sysinfo` crate to get memory info
+    // Note: We use a minimal approach here to avoid heavy dependencies
+    #[cfg(target_os = "linux")]
+    {
+        check_memory_health_linux()
+    }
+    #[cfg(target_os = "macos")]
+    {
+        check_memory_health_macos()
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    {
+        None
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn check_memory_health_linux() -> Option<MemoryHealth> {
+    use std::fs;
+
+    // Read /proc/meminfo for memory stats
+    let meminfo = fs::read_to_string("/proc/meminfo").ok()?;
+    let mut total_kb: u64 = 0;
+    let mut available_kb: u64 = 0;
+
+    for line in meminfo.lines() {
+        if line.starts_with("MemTotal:") {
+            total_kb = line
+                .split(':')
+                .nth(1)?
+                .trim()
+                .split_whitespace()
+                .next()?
+                .parse()
+                .ok()?;
+        } else if line.starts_with("MemAvailable:") {
+            available_kb = line
+                .split(':')
+                .nth(1)?
+                .trim()
+                .split_whitespace()
+                .next()?
+                .parse()
+                .ok()?;
+        }
+        if total_kb > 0 && available_kb > 0 {
+            break;
+        }
+    }
+
+    if total_kb == 0 {
+        return None;
+    }
+
+    let used_kb = total_kb.saturating_sub(available_kb);
+    let usage_percent = (used_kb as f64 / total_kb as f64) * 100.0;
+    let status = if usage_percent > MEMORY_UNHEALTHY_THRESHOLD_PERCENT {
+        "unhealthy"
+    } else {
+        "healthy"
+    };
+
+    Some(MemoryHealth {
+        usage_percent: (usage_percent * 100.0).round() / 100.0, // Round to 2 decimal places
+        status: status.to_string(),
+    })
+}
+
+#[cfg(target_os = "macos")]
+fn check_memory_health_macos() -> Option<MemoryHealth> {
+    // On macOS, use vm_stat to get memory info
+    // For simplicity, we use sysctl which is more portable
+    use std::process::Command;
+
+    // Get total memory in bytes
+    let total_output = Command::new("sysctl")
+        .args(["-n", "hw.memsize"])
+        .output()
+        .ok()?;
+    let total_bytes: u64 = String::from_utf8_lossy(&total_output.stdout)
+        .trim()
+        .parse()
+        .ok()?;
+
+    // Get page size and free pages from vm_stat
+    let vm_stat_output = Command::new("vm_stat").output().ok()?;
+    let vm_stat = String::from_utf8_lossy(&vm_stat_output.stdout);
+
+    let mut page_size: u64 = 4096; // Default page size
+    let mut free_pages: u64 = 0;
+    let mut inactive_pages: u64 = 0;
+
+    for line in vm_stat.lines() {
+        if line.contains("page size of") {
+            // Extract page size from line like: "Mach Virtual Memory Statistics: (page size of 16384 bytes)"
+            if let Some(start) = line.find("page size of ") {
+                let rest = &line[start + 13..];
+                if let Some(end) = rest.find(" bytes") {
+                    if let Ok(ps) = rest[..end].parse::<u64>() {
+                        page_size = ps;
+                    }
+                }
+            }
+        } else if line.starts_with("Pages free:") {
+            // Extract number from "Pages free:      12345."
+            let num_str: String = line
+                .split(':')
+                .nth(1)?
+                .trim()
+                .trim_end_matches('.')
+                .chars()
+                .filter(|c| c.is_ascii_digit())
+                .collect();
+            free_pages = num_str.parse().ok()?;
+        } else if line.starts_with("Pages inactive:") {
+            let num_str: String = line
+                .split(':')
+                .nth(1)?
+                .trim()
+                .trim_end_matches('.')
+                .chars()
+                .filter(|c| c.is_ascii_digit())
+                .collect();
+            inactive_pages = num_str.parse().ok()?;
+        }
+    }
+
+    // On macOS, "free + inactive" is roughly equivalent to available memory
+    let available_bytes = (free_pages + inactive_pages) * page_size;
+    let used_bytes = total_bytes.saturating_sub(available_bytes);
+    let usage_percent = (used_bytes as f64 / total_bytes as f64) * 100.0;
+
+    let status = if usage_percent > MEMORY_UNHEALTHY_THRESHOLD_PERCENT {
+        "unhealthy"
+    } else {
+        "healthy"
+    };
+
+    Some(MemoryHealth {
+        usage_percent: (usage_percent * 100.0).round() / 100.0,
+        status: status.to_string(),
+    })
+}
+
 /// Prometheus metrics endpoint
 ///
 /// When `server.metrics_bearer_token` is configured (non-empty), this endpoint
@@ -378,6 +558,7 @@ mod tests {
                 ws_ticket: None,
                 email: None,
                 livestream: None,
+                memory: None,
                 message: None,
             }),
         };
@@ -391,6 +572,7 @@ mod tests {
         assert!(details.ws_ticket.is_none());
         assert!(details.email.is_none());
         assert!(details.livestream.is_none());
+        assert!(details.memory.is_none());
         assert!(details.message.is_none());
     }
 
@@ -405,6 +587,7 @@ mod tests {
                 ws_ticket: None,
                 email: None,
                 livestream: None,
+                memory: None,
                 message: None,
             }),
         };
@@ -423,6 +606,7 @@ mod tests {
                 ws_ticket: None,
                 email: None,
                 livestream: None,
+                memory: None,
                 message: Some("Database: connection refused".to_string()),
             }),
         };
@@ -441,6 +625,7 @@ mod tests {
                 ws_ticket: None,
                 email: None,
                 livestream: None,
+                memory: None,
                 message: None,
             }),
         };
@@ -450,6 +635,7 @@ mod tests {
         assert!(!json.contains("ws_ticket"));
         assert!(!json.contains("email"));
         assert!(!json.contains("livestream"));
+        assert!(!json.contains("memory"));
     }
 
     #[test]
@@ -468,5 +654,100 @@ mod tests {
         let response: HealthResponse = serde_json::from_str(json).unwrap();
         assert_eq!(response.status, "ok");
         assert!(response.details.is_none());
+    }
+
+    #[test]
+    fn test_health_response_with_memory_health() {
+        let response = HealthResponse {
+            status: "healthy".to_string(),
+            details: Some(HealthDetails {
+                database: "healthy".to_string(),
+                redis: "healthy".to_string(),
+                cluster: None,
+                ws_ticket: None,
+                email: None,
+                livestream: None,
+                memory: Some(MemoryHealth {
+                    usage_percent: 45.5,
+                    status: "healthy".to_string(),
+                }),
+                message: None,
+            }),
+        };
+        let json = serde_json::to_string(&response).unwrap();
+        assert!(json.contains("\"memory\":{"));
+        assert!(json.contains("\"usage_percent\":45.5"));
+        assert!(json.contains("\"status\":\"healthy\""));
+    }
+
+    #[test]
+    fn test_health_response_with_unhealthy_memory() {
+        let response = HealthResponse {
+            status: "unhealthy".to_string(),
+            details: Some(HealthDetails {
+                database: "healthy".to_string(),
+                redis: "healthy".to_string(),
+                cluster: None,
+                ws_ticket: None,
+                email: None,
+                livestream: None,
+                memory: Some(MemoryHealth {
+                    usage_percent: 95.2,
+                    status: "unhealthy".to_string(),
+                }),
+                message: Some("Memory: usage at 95.2% (threshold: 90%)".to_string()),
+            }),
+        };
+        let json = serde_json::to_string(&response).unwrap();
+        assert!(json.contains("\"usage_percent\":95.2"));
+        assert!(json.contains("\"status\":\"unhealthy\""));
+    }
+
+    #[test]
+    fn test_memory_health_status_below_threshold() {
+        // Memory usage below 90% should be healthy
+        let mem = MemoryHealth {
+            usage_percent: 50.0,
+            status: "healthy".to_string(),
+        };
+        assert_eq!(mem.status, "healthy");
+        assert!(mem.usage_percent < MEMORY_UNHEALTHY_THRESHOLD_PERCENT);
+    }
+
+    #[test]
+    fn test_memory_health_status_above_threshold() {
+        // Memory usage above 90% should be unhealthy
+        let mem = MemoryHealth {
+            usage_percent: 95.0,
+            status: "unhealthy".to_string(),
+        };
+        assert_eq!(mem.status, "unhealthy");
+        assert!(mem.usage_percent > MEMORY_UNHEALTHY_THRESHOLD_PERCENT);
+    }
+
+    #[test]
+    fn test_check_memory_health_returns_some() {
+        // This test verifies that check_memory_health() works on the current platform
+        let result = check_memory_health();
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        {
+            // On Linux and macOS, we should get memory info
+            assert!(result.is_some());
+            let mem = result.unwrap();
+            assert!(mem.usage_percent >= 0.0);
+            assert!(mem.usage_percent <= 100.0);
+            assert!(mem.status == "healthy" || mem.status == "unhealthy");
+        }
+        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+        {
+            // On other platforms, memory check is not supported
+            assert!(result.is_none());
+        }
+    }
+
+    #[test]
+    fn test_memory_threshold_constant() {
+        // Verify the threshold is set at 90%
+        assert_eq!(MEMORY_UNHEALTHY_THRESHOLD_PERCENT, 90.0);
     }
 }

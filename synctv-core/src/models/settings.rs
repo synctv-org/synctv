@@ -69,7 +69,9 @@ pub mod content_moderation {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SettingsGroup {
     pub key: String,
-    pub group: String,
+    /// Settings group name (maps to `group_name` column in database and `group` in JSON)
+    #[serde(rename = "group")]
+    pub group_name: String,
     pub value: String,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
@@ -77,11 +79,11 @@ pub struct SettingsGroup {
 
 impl SettingsGroup {
     /// Create a new settings group
-    #[must_use] 
-    pub fn new(group: String, value: String) -> Self {
+    #[must_use]
+    pub fn new(group_name: String, value: String) -> Self {
         Self {
-            key: format!("{group}.default"),
-            group,
+            key: format!("{group_name}.default"),
+            group_name,
             value,
             created_at: Utc::now(),
             updated_at: Utc::now(),
@@ -226,7 +228,7 @@ mod tests {
     fn test_settings_group_new_auto_key() {
         let sg = SettingsGroup::new("email".to_string(), "{}".to_string());
         assert_eq!(sg.key, "email.default");
-        assert_eq!(sg.group, "email");
+        assert_eq!(sg.group_name, "email");
         assert_eq!(sg.value, "{}");
     }
 
@@ -236,8 +238,38 @@ mod tests {
         let json = serde_json::to_value(&sg).unwrap();
         let deserialized: SettingsGroup = serde_json::from_value(json).unwrap();
         assert_eq!(deserialized.key, sg.key);
-        assert_eq!(deserialized.group, sg.group);
+        assert_eq!(deserialized.group_name, sg.group_name);
         assert_eq!(deserialized.value, sg.value);
+    }
+
+    #[test]
+    fn test_settings_group_json_field_name_is_group() {
+        // Verify that JSON serialization uses "group" field name (backward compatibility)
+        // even though the Rust struct field is "group_name" (matching database column)
+        let sg = SettingsGroup::new("email".to_string(), r#"{"enabled":true}"#.to_string());
+        let json = serde_json::to_value(&sg).unwrap();
+
+        // JSON should contain "group" not "group_name"
+        assert!(json.get("group").is_some(), "JSON should contain 'group' field");
+        assert_eq!(json.get("group").unwrap(), "email");
+        assert!(json.get("group_name").is_none(), "JSON should not contain 'group_name' field");
+    }
+
+    #[test]
+    fn test_settings_group_deserialize_from_group_field() {
+        // Verify that JSON deserialization accepts "group" field name (backward compatibility)
+        let json = serde_json::json!({
+            "key": "server.default",
+            "group": "server",
+            "value": "{\"test\": true}",
+            "created_at": "2024-01-01T00:00:00Z",
+            "updated_at": "2024-01-01T00:00:00Z"
+        });
+
+        let sg: SettingsGroup = serde_json::from_value(json).unwrap();
+        assert_eq!(sg.key, "server.default");
+        assert_eq!(sg.group_name, "server");
+        assert_eq!(sg.value, "{\"test\": true}");
     }
 
     // ==================== Parse Errors ====================

@@ -43,6 +43,13 @@ pub enum AnyLeaderElector {
     /// Kubernetes Lease-based leader election (K8s only, requires `k8s` feature)
     #[cfg(feature = "k8s")]
     K8s(K8sLeaderElector),
+    /// Disabled leader election (non-cluster mode).
+    ///
+    /// Used when running in standalone mode without Redis.
+    /// `is_leader()` always returns `false`, meaning this node never runs
+    /// cluster-wide singleton tasks. In standalone mode, each node runs
+    /// its own local tasks without coordination.
+    Disabled,
 }
 
 impl AnyLeaderElector {
@@ -52,6 +59,7 @@ impl AnyLeaderElector {
             AnyLeaderElector::Redis(e) => e.is_leader(),
             #[cfg(feature = "k8s")]
             AnyLeaderElector::K8s(e) => e.is_leader(),
+            AnyLeaderElector::Disabled => false,
         }
     }
 
@@ -71,6 +79,7 @@ impl AnyLeaderElector {
                     None
                 }
             }
+            AnyLeaderElector::Disabled => None,
         }
     }
 
@@ -86,6 +95,7 @@ impl AnyLeaderElector {
             AnyLeaderElector::Redis(e) => e.leader_epoch(),
             #[cfg(feature = "k8s")]
             AnyLeaderElector::K8s(e) => e.leader_epoch(),
+            AnyLeaderElector::Disabled => 0,
         }
     }
 
@@ -99,6 +109,14 @@ impl AnyLeaderElector {
             AnyLeaderElector::Redis(e) => e.subscribe(),
             #[cfg(feature = "k8s")]
             AnyLeaderElector::K8s(e) => e.subscribe(),
+            AnyLeaderElector::Disabled => {
+                // Create a closed channel that never sends events.
+                // Since the Disabled elector never becomes leader,
+                // subscribers will only see channel closure when dropped.
+                let (tx, rx) = broadcast::channel(1);
+                drop(tx); // Close immediately
+                rx
+            }
         }
     }
 
@@ -111,6 +129,13 @@ impl AnyLeaderElector {
             AnyLeaderElector::Redis(e) => e.start(cancel_token),
             #[cfg(feature = "k8s")]
             AnyLeaderElector::K8s(e) => e.start(cancel_token),
+            AnyLeaderElector::Disabled => {
+                // No-op: Disabled elector doesn't run any background task.
+                // Return a handle that completes immediately when cancelled.
+                tokio::spawn(async move {
+                    cancel_token.cancelled().await;
+                })
+            }
         }
     }
 
@@ -122,6 +147,12 @@ impl LeaderElect for AnyLeaderElector {
             AnyLeaderElector::Redis(e) => e.event_tx.subscribe(),
             #[cfg(feature = "k8s")]
             AnyLeaderElector::K8s(e) => e.subscribe(),
+            AnyLeaderElector::Disabled => {
+                // Create a closed channel that never sends events.
+                let (tx, rx) = broadcast::channel(1);
+                drop(tx);
+                rx
+            }
         }
     }
 }
@@ -666,6 +697,98 @@ mod tests {
             "renew_interval_secs ({}) must be less than lease_duration_secs ({})",
             config.renew_interval_secs,
             config.lease_duration_secs
+        );
+    }
+
+    // ============================================================================
+    // Tests for Disabled variant
+    // ============================================================================
+
+    #[test]
+    fn test_disabled_is_leader_returns_false() {
+        let elector = AnyLeaderElector::Disabled;
+        assert!(
+            !elector.is_leader(),
+            "Disabled elector should never be leader"
+        );
+    }
+
+    #[test]
+    fn test_disabled_current_leader_identity_returns_none() {
+        let elector = AnyLeaderElector::Disabled;
+        assert_eq!(
+            elector.current_leader_identity(),
+            None,
+            "Disabled elector should have no leader identity"
+        );
+    }
+
+    #[test]
+    fn test_disabled_leader_epoch_returns_zero() {
+        let elector = AnyLeaderElector::Disabled;
+        assert_eq!(
+            elector.leader_epoch(),
+            0,
+            "Disabled elector should have epoch 0"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_disabled_subscribe_returns_closed_channel() {
+        let elector = AnyLeaderElector::Disabled;
+        let mut rx = elector.subscribe();
+
+        // Channel should be closed (no sender)
+        use broadcast::error::TryRecvError;
+        let result = rx.try_recv();
+        assert!(
+            matches!(result, Err(TryRecvError::Closed)),
+            "Disabled elector should have a closed subscription channel"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_disabled_start_returns_task_that_completes_on_cancel() {
+        let elector = AnyLeaderElector::Disabled;
+        let cancel_token = CancellationToken::new();
+
+        let handle = elector.start(cancel_token.clone());
+
+        // Task should be running (waiting for cancel)
+        tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
+        assert!(!handle.is_finished(), "Task should be running while not cancelled");
+
+        // Cancel and wait for completion
+        cancel_token.cancel();
+        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+        assert!(handle.is_finished(), "Task should complete after cancellation");
+
+        // Clean up
+        handle.abort();
+    }
+
+    #[test]
+    fn test_disabled_leader_check_trait() {
+        use synctv_core::service::LeaderCheck;
+        let elector = AnyLeaderElector::Disabled;
+        assert!(!LeaderCheck::is_leader(&elector));
+    }
+
+    #[tokio::test]
+    async fn test_disabled_leader_guard_cancelled_on_channel_close() {
+        // The leader_guard creates a CancellationToken and spawns a task
+        // that watches the subscription channel. When the channel closes,
+        // the guard should be cancelled.
+        let elector = AnyLeaderElector::Disabled;
+        let guard = elector.leader_guard();
+
+        // The subscription channel is already closed, so the spawned task
+        // should cancel the guard almost immediately.
+        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+
+        assert!(
+            guard.is_cancelled(),
+            "Guard should be cancelled because Disabled elector has closed channel"
         );
     }
 }

@@ -103,8 +103,8 @@ async fn test_get_all_ordering_by_group_name() {
     // Filter to just our test keys
     let our_groups: Vec<String> = all
         .iter()
-        .filter(|s| s.group == "a_group" || s.group == "m_group" || s.group == "z_group")
-        .map(|s| s.group.clone())
+        .filter(|s| s.group_name == "a_group" || s.group_name == "m_group" || s.group_name == "z_group")
+        .map(|s| s.group_name.clone())
         .collect();
 
     // Verify they appear in alphabetical order by group_name
@@ -147,7 +147,7 @@ async fn test_get_and_update_round_trip() {
     // Read it
     let setting = repo.get("roundtrip_key").await.unwrap();
     assert_eq!(setting.value, "original_value");
-    assert_eq!(setting.group, "test_group");
+    assert_eq!(setting.group_name, "test_group");
 
     // Update it
     let updated = repo.update("roundtrip_key", "new_value").await.unwrap();

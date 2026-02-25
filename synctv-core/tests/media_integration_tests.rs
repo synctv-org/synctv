@@ -97,6 +97,7 @@ async fn setup_test_context(suffix: &str) -> TestContext {
             created_at: now,
             updated_at: now,
             deleted_at: None,
+            version: 0,
         }
     }).await.unwrap();
 

@@ -10,7 +10,8 @@ CREATE TABLE IF NOT EXISTS rooms (
     is_banned BOOLEAN NOT NULL DEFAULT FALSE,  -- Independent ban flag, set by global admin only
     created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    deleted_at TIMESTAMPTZ NULL
+    deleted_at TIMESTAMPTZ NULL,
+    version INTEGER NOT NULL DEFAULT 0  -- Optimistic locking version, incremented on each UPDATE
 );
 
 -- Create indexes
@@ -47,6 +48,7 @@ COMMENT ON COLUMN rooms.id IS '12-character nanoid';
 COMMENT ON COLUMN rooms.description IS 'Room description, max 500 characters';
 COMMENT ON COLUMN rooms.status IS 'Room lifecycle status: 1=active, 2=pending, 3=closed';
 COMMENT ON COLUMN rooms.is_banned IS 'Ban flag set by global admin. Room retains its status when banned/unbanned.';
+COMMENT ON COLUMN rooms.version IS 'Monotonically increasing integer for optimistic locking. Incremented on each UPDATE.';
 
 
 

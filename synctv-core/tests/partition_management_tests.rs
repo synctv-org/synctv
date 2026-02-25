@@ -90,6 +90,7 @@ async fn test_chat_message_default_partition_routing() {
             created_at: now,
             updated_at: now,
             deleted_at: None,
+            version: 0,
         }
     }).await.unwrap();
 

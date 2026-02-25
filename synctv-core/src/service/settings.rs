@@ -76,7 +76,7 @@ impl SettingsService {
         for setting in settings {
             debug!(
                 "Loaded setting '{}.{}' = '{}'",
-                setting.group, setting.key, setting.value
+                setting.group_name, setting.key, setting.value
             );
             self.cache.insert(setting.key.clone(), setting);
         }
@@ -91,7 +91,7 @@ impl SettingsService {
     /// Get all settings groups
     pub async fn get_all(&self) -> Result<Vec<SettingsGroup>, Error> {
         let mut groups: Vec<_> = self.cache.iter().map(|entry| entry.value().clone()).collect();
-        groups.sort_by(|a, b| a.group.cmp(&b.group));
+        groups.sort_by(|a, b| a.group_name.cmp(&b.group_name));
         Ok(groups)
     }
 
@@ -239,7 +239,7 @@ impl SettingsService {
             let setting = crate::models::settings::SettingsGroup {
                 key: row.try_get("key")
                     .map_err(|e| Error::Internal(format!("Failed to read setting key: {e}")))?,
-                group: row.try_get("group_name")
+                group_name: row.try_get("group_name")
                     .map_err(|e| Error::Internal(format!("Failed to read setting group: {e}")))?,
                 value: row.try_get("value")
                     .map_err(|e| Error::Internal(format!("Failed to read setting value: {e}")))?,
@@ -554,7 +554,7 @@ mod tests {
             r#"{"allow_registration": true}"#.to_string(),
         );
 
-        assert_eq!(group.group, "server");
+        assert_eq!(group.group_name, "server");
         assert_eq!(group.key, "server.default");
         assert_eq!(group.value, r#"{"allow_registration": true}"#);
     }
@@ -626,7 +626,7 @@ mod tests {
         let json = serde_json::to_string(&group).unwrap();
         let deserialized: SettingsGroup = serde_json::from_str(&json).unwrap();
 
-        assert_eq!(deserialized.group, group.group);
+        assert_eq!(deserialized.group_name, group.group_name);
         assert_eq!(deserialized.key, group.key);
         assert_eq!(deserialized.value, group.value);
     }

@@ -80,6 +80,7 @@ fn make_room(name: &str, owner: &UserId) -> Room {
         created_at: now,
         updated_at: now,
         deleted_at: None,
+        version: 0,
     }
 }
 

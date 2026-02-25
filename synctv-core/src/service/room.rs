@@ -1516,7 +1516,8 @@ impl RoomService {
 
     /// Update room directly (admin use, bypasses permission checks)
     pub async fn admin_update_room(&self, room: &Room) -> Result<Room> {
-        let updated = self.room_repo.update(room).await?;
+        let old_version = room.version;
+        let updated = self.room_repo.update(room, old_version).await?;
         self.notify_room_invalidation(&room.id).await;
         Ok(updated)
     }

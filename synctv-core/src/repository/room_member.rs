@@ -875,6 +875,7 @@ impl RoomMemberRepository {
                     created_at: row.try_get("created_at")?,
                     updated_at: row.try_get("updated_at")?,
                     deleted_at: row.try_get("deleted_at")?,
+                    version: row.try_get("version")?,
                 };
 
                 let role: RoomRole = row.try_get("user_role")?;

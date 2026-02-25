@@ -13,14 +13,29 @@ impl ClientApiImpl {
         room_id: &str,
         req: crate::proto::client::CreatePublishKeyRequest,
     ) -> Result<crate::proto::client::CreatePublishKeyResponse, ApiError> {
+        // Validate room_id format
+        crate::http::validation::validate_id(room_id, "room_id")
+            .map_err(|e| ApiError::InvalidInput(format!("Invalid room_id: {e}")))?;
+
+        // Validate media ID format
+        crate::http::validation::validate_id(&req.id, "media_id")
+            .map_err(|e| ApiError::InvalidInput(format!("Invalid media_id: {e}")))?;
+
         let uid = UserId::from_string(user_id.to_string());
         let rid = RoomId::from_string(room_id.to_string());
-
-        // Validate media ID
-        if req.id.is_empty() {
-            return Err(ApiError::InvalidInput("Media ID is required".to_string()));
-        }
         let media_id = synctv_core::models::MediaId::from_string(req.id.clone());
+
+        // Verify media exists and belongs to this room
+        let media = self.room_service.media_service()
+            .get_media(&media_id).await
+            .map_err(|e| ApiError::Internal(format!("Failed to get media: {e}")))?
+            .ok_or_else(|| ApiError::NotFound(format!("Media {} not found", req.id)))?;
+
+        if media.room_id.as_str() != room_id {
+            return Err(ApiError::InvalidInput(
+                "Media does not belong to this room".to_string()
+            ));
+        }
 
         // Check room exists
         let _room = self.room_service.get_room(&rid).await

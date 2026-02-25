@@ -565,7 +565,7 @@ impl AdminApiImpl {
 
         let group_list: Vec<_> = groups.into_iter().map(|g| {
             crate::proto::admin::SettingsGroup {
-                name: g.group.clone(),
+                name: g.group_name.clone(),
                 settings: g.value.into_bytes(),
             }
         }).collect();
@@ -584,7 +584,7 @@ impl AdminApiImpl {
 
         Ok(crate::proto::admin::GetSettingsGroupResponse {
             group: Some(crate::proto::admin::SettingsGroup {
-                name: group.group.clone(),
+                name: group.group_name.clone(),
                 settings: group.value.into_bytes(),
             }),
         })
@@ -2109,6 +2109,7 @@ mod tests {
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
             deleted_at: None,
+            version: 1,
         }
     }
 

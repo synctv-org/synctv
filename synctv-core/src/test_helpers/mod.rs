@@ -5,7 +5,7 @@
 
 pub mod containers;
 
-use crate::models::{RoomId, UserId, UserRole, UserStatus};
+use crate::models::{RoomId, UserId, UserRole, UserStatus, PlaylistId};
 use chrono::Utc;
 
 /// Create a test user ID
@@ -144,6 +144,7 @@ impl RoomFixture {
             created_at: Utc::now(),
             updated_at: Utc::now(),
             deleted_at: None,
+            version: 0,
         }
     }
 }
@@ -205,6 +206,82 @@ impl ChatMessageFixture {
 }
 
 impl Default for ChatMessageFixture {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Test fixture builder for Playlist
+pub struct PlaylistFixture {
+    id: PlaylistId,
+    room_id: RoomId,
+    creator_id: Option<UserId>,
+    name: String,
+    parent_id: Option<PlaylistId>,
+    position: i32,
+}
+
+impl PlaylistFixture {
+    pub fn new() -> Self {
+        Self {
+            id: PlaylistId::new(),
+            room_id: random_room_id(),
+            creator_id: None,
+            name: "Test Playlist".to_string(),
+            parent_id: None,
+            position: 0,
+        }
+    }
+
+    pub fn with_id(mut self, id: PlaylistId) -> Self {
+        self.id = id;
+        self
+    }
+
+    pub fn with_room_id(mut self, room_id: RoomId) -> Self {
+        self.room_id = room_id;
+        self
+    }
+
+    pub fn with_creator(mut self, creator_id: UserId) -> Self {
+        self.creator_id = Some(creator_id);
+        self
+    }
+
+    pub fn with_name(mut self, name: &str) -> Self {
+        self.name = name.to_string();
+        self
+    }
+
+    pub fn with_parent(mut self, parent_id: PlaylistId) -> Self {
+        self.parent_id = Some(parent_id);
+        self
+    }
+
+    pub fn with_position(mut self, position: i32) -> Self {
+        self.position = position;
+        self
+    }
+
+    pub fn build(self) -> crate::models::Playlist {
+        let now = Utc::now();
+        crate::models::Playlist {
+            id: self.id,
+            room_id: self.room_id,
+            creator_id: self.creator_id,
+            name: self.name,
+            parent_id: self.parent_id,
+            position: self.position,
+            source_provider: None,
+            source_config: None,
+            provider_instance_name: None,
+            created_at: now,
+            updated_at: now,
+        }
+    }
+}
+
+impl Default for PlaylistFixture {
     fn default() -> Self {
         Self::new()
     }

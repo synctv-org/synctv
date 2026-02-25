@@ -36,7 +36,7 @@ impl SettingsRepository {
             .map(|row| {
                 Ok(SettingsGroup {
                     key: row.try_get("key")?,
-                    group: row.try_get("group_name")?,
+                    group_name: row.try_get("group_name")?,
                     value: row.try_get("value")?,
                     created_at: row.try_get("created_at")?,
                     updated_at: row.try_get("updated_at")?,
@@ -63,7 +63,7 @@ impl SettingsRepository {
 
         Ok(SettingsGroup {
             key: row.try_get("key")?,
-            group: row.try_get("group_name")?,
+            group_name: row.try_get("group_name")?,
             value: row.try_get("value")?,
             created_at: row.try_get("created_at")?,
             updated_at: row.try_get("updated_at")?,
@@ -94,7 +94,7 @@ impl SettingsRepository {
         debug!("Updated setting '{}'", key);
         Ok(SettingsGroup {
             key: row.try_get("key")?,
-            group: row.try_get("group_name")?,
+            group_name: row.try_get("group_name")?,
             value: row.try_get("value")?,
             created_at: row.try_get("created_at")?,
             updated_at: row.try_get("updated_at")?,

@@ -620,16 +620,17 @@ impl UserService {
     /// **Token Invalidation**: Tokens are invalidated implicitly because the
     /// security pipeline checks for deleted users (`deleted_at` IS NOT NULL).
     pub async fn delete_user(&self, user_id: &UserId) -> Result<()> {
-        let user = self.get_user(user_id).await?;
-        if user.deleted_at.is_some() {
-            return Err(Error::InvalidInput("User is already deleted".to_string()));
-        }
-
         // 1. Soft-delete + OAuth2 cleanup in a single transaction
+        // All checks are performed atomically within the transaction to prevent TOCTOU
         let pool = self.repository.pool();
         let mut tx = pool.begin().await?;
 
-        self.repository.delete_with_executor(user_id, &mut *tx).await?;
+        // delete_with_executor returns false if user was already deleted
+        // (WHERE deleted_at IS NULL condition)
+        let deleted = self.repository.delete_with_executor(user_id, &mut *tx).await?;
+        if !deleted {
+            return Err(Error::InvalidInput("User is already deleted".to_string()));
+        }
 
         let oauth_repo = UserOAuthProviderRepository::new(pool.clone());
         oauth_repo.delete_all_for_user_with_executor(user_id, &mut *tx).await?;

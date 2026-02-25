@@ -700,3 +700,191 @@ async fn test_kick_member_also_broadcasts_kick_event() {
     let is_member = member_repo.is_member(&room.id, &member.id).await.unwrap();
     assert!(!is_member, "Kicked member should no longer be an active member");
 }
+
+// ========== Remove Member TOCTOU Race Condition Tests ==========
+
+/// Test that remove_member handles the case atomically where a member is removed
+/// concurrently. The operation should return NotFound if the member doesn't exist
+/// or was already removed, rather than proceeding with cache invalidation etc.
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_remove_member_returns_not_found_for_non_member() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let room_service = make_room_service(pool.clone());
+
+    let creator = user_repo.create(&make_user("remove_nf_creator")).await.unwrap();
+    let non_member = user_repo.create(&make_user("remove_nf_non_member")).await.unwrap();
+
+    let (room, _) = room_service
+        .create_room(
+            "Remove NotFound Room".to_string(),
+            String::new(),
+            creator.id.clone(),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+    // non_member never joined, so remove_member should return NotFound
+    let member_service = room_service.member_service();
+    let result = member_service
+        .remove_member(room.id.clone(), non_member.id.clone())
+        .await;
+
+    assert!(result.is_err(), "remove_member should fail for non-member");
+    match result.unwrap_err() {
+        Error::NotFound(msg) => {
+            assert!(
+                msg.contains("Not a member") || msg.contains("not found"),
+                "Error should indicate member not found: {}",
+                msg
+            );
+        }
+        other => panic!("Expected NotFound error, got: {:?}", other),
+    }
+}
+
+/// Test that remove_member is idempotent-safe: calling it twice should return
+/// NotFound on the second call (member was already removed).
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_remove_member_idempotent_not_found_after_removal() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let room_service = make_room_service(pool.clone());
+    let member_repo = RoomMemberRepository::new(pool.clone());
+
+    let creator = user_repo.create(&make_user("remove_idem_creator")).await.unwrap();
+    let member = user_repo.create(&make_user("remove_idem_member")).await.unwrap();
+
+    let (room, _) = room_service
+        .create_room(
+            "Remove Idempotent Room".to_string(),
+            String::new(),
+            creator.id.clone(),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+    // Member joins
+    room_service
+        .join_room(room.id.clone(), member.id.clone(), None)
+        .await
+        .unwrap();
+
+    // Verify member exists
+    assert!(
+        member_repo.is_member(&room.id, &member.id).await.unwrap(),
+        "Member should exist before removal"
+    );
+
+    // First remove should succeed
+    let member_service = room_service.member_service();
+    let result = member_service
+        .remove_member(room.id.clone(), member.id.clone())
+        .await;
+    assert!(result.is_ok(), "First remove_member should succeed");
+
+    // Verify member is removed
+    assert!(
+        !member_repo.is_member(&room.id, &member.id).await.unwrap(),
+        "Member should not exist after removal"
+    );
+
+    // Second remove should return NotFound (atomic check + remove)
+    let result = member_service
+        .remove_member(room.id.clone(), member.id.clone())
+        .await;
+    assert!(
+        result.is_err(),
+        "Second remove_member should fail for already-removed member"
+    );
+    match result.unwrap_err() {
+        Error::NotFound(msg) => {
+            assert!(
+                msg.contains("Not a member") || msg.contains("not found"),
+                "Error should indicate member not found: {}",
+                msg
+            );
+        }
+        other => panic!("Expected NotFound error, got: {:?}", other),
+    }
+}
+
+/// Test concurrent remove_member calls: both should complete without errors,
+/// and the member should be removed (only one should actually do the removal).
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_remove_member_concurrent_no_race() {
+    use std::sync::atomic::{AtomicU32, Ordering};
+    use std::sync::Arc;
+
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let room_service = make_room_service(pool.clone());
+    let member_repo = RoomMemberRepository::new(pool.clone());
+
+    let creator = user_repo.create(&make_user("remove_conc_creator")).await.unwrap();
+    let member = user_repo.create(&make_user("remove_conc_member")).await.unwrap();
+
+    let (room, _) = room_service
+        .create_room(
+            "Remove Concurrent Room".to_string(),
+            String::new(),
+            creator.id.clone(),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+    // Member joins
+    room_service
+        .join_room(room.id.clone(), member.id.clone(), None)
+        .await
+        .unwrap();
+
+    let member_service = room_service.member_service();
+    let success_count = Arc::new(AtomicU32::new(0));
+    let notfound_count = Arc::new(AtomicU32::new(0));
+
+    // Spawn concurrent remove_member calls
+    let mut handles = vec![];
+    for _ in 0..5 {
+        let ms = member_service.clone();
+        let room_id = room.id.clone();
+        let user_id = member.id.clone();
+        let sc = success_count.clone();
+        let nc = notfound_count.clone();
+
+        handles.push(tokio::spawn(async move {
+            match ms.remove_member(room_id, user_id).await {
+                Ok(()) => sc.fetch_add(1, Ordering::SeqCst),
+                Err(Error::NotFound(_)) => nc.fetch_add(1, Ordering::SeqCst),
+                Err(e) => panic!("Unexpected error: {:?}", e),
+            }
+        }));
+    }
+
+    // Wait for all to complete
+    for handle in handles {
+        handle.await.unwrap();
+    }
+
+    // Exactly one should succeed, rest should get NotFound
+    let successes = success_count.load(Ordering::SeqCst);
+    let notfounds = notfound_count.load(Ordering::SeqCst);
+
+    assert_eq!(successes, 1, "Exactly one remove should succeed");
+    assert_eq!(notfounds, 4, "Four removes should get NotFound");
+
+    // Member should no longer exist
+    assert!(
+        !member_repo.is_member(&room.id, &member.id).await.unwrap(),
+        "Member should be removed after concurrent operations"
+    );
+}

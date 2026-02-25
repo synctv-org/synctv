@@ -170,6 +170,10 @@ pub struct Room {
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     pub deleted_at: Option<DateTime<Utc>>,
+    /// Monotonically increasing integer for optimistic locking.
+    /// Incremented on each UPDATE. Used by compare-and-increment to detect concurrent modifications.
+    #[serde(default)]
+    pub version: i32,
 }
 
 impl Room {
@@ -186,6 +190,7 @@ impl Room {
             created_at: now,
             updated_at: now,
             deleted_at: None,
+            version: 0,
         }
     }
 
@@ -203,6 +208,7 @@ impl Room {
             created_at: now,
             updated_at: now,
             deleted_at: None,
+            version: 0,
         }
     }
 

@@ -321,7 +321,8 @@ impl ClientApiImpl {
             } else {
                 item.title.clone()
             };
-            items.push((String::new(), source_config, title));
+            // Use provider_instance_name from the request item
+            items.push((item.provider_instance_name.clone(), source_config, title));
         }
 
         let media_list = self.room_service.add_media_batch(rid.clone(), uid.clone(), items)

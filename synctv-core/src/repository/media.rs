@@ -664,3 +664,847 @@ impl MediaRepository {
 
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::models::id::{MediaId, PlaylistId, RoomId, UserId};
+
+    /// Unit test: Media builder pattern
+    #[test]
+    fn test_media_from_provider() {
+        let playlist_id = PlaylistId::new();
+        let room_id = RoomId::new();
+        let creator_id = UserId::new();
+
+        let media = Media::from_provider(
+            playlist_id.clone(),
+            room_id.clone(),
+            Some(creator_id.clone()),
+            "Test Video".to_string(),
+            serde_json::json!({"url": "https://example.com/video.mp4"}),
+            "direct_url",
+            "default".to_string(),
+            0,
+        );
+
+        assert_eq!(media.name, "Test Video");
+        assert_eq!(media.position, 0);
+        assert_eq!(media.source_provider, "direct_url");
+        assert!(media.is_direct());
+    }
+
+    /// Unit test: is_direct() check
+    #[test]
+    fn test_media_is_direct() {
+        let playlist_id = PlaylistId::new();
+        let room_id = RoomId::new();
+
+        let direct_media = Media::from_provider(
+            playlist_id.clone(),
+            room_id.clone(),
+            None,
+            "Direct Video".to_string(),
+            serde_json::json!({}),
+            "direct_url",
+            "default".to_string(),
+            0,
+        );
+        assert!(direct_media.is_direct());
+
+        let bilibili_media = Media::from_provider(
+            playlist_id,
+            room_id,
+            None,
+            "Bilibili Video".to_string(),
+            serde_json::json!({"bvid": "BV1234567890"}),
+            "bilibili",
+            "bilibili_main".to_string(),
+            1,
+        );
+        assert!(!bilibili_media.is_direct());
+    }
+
+    /// Unit test: Media::from_direct_single_mode
+    #[test]
+    fn test_media_from_direct_single_mode() {
+        let playlist_id = PlaylistId::new();
+        let room_id = RoomId::new();
+        let creator_id = UserId::new();
+
+        let playback_info = crate::models::media::PlaybackInfo::single_url(
+            "https://example.com/video.mp4".to_string(),
+            "1080P".to_string(),
+        );
+
+        let media = Media::from_direct_single_mode(
+            playlist_id.clone(),
+            room_id.clone(),
+            Some(creator_id.clone()),
+            "Single Mode Video".to_string(),
+            "direct",
+            playback_info,
+            5,
+        );
+
+        assert_eq!(media.name, "Single Mode Video");
+        assert_eq!(media.position, 5);
+        assert!(media.is_direct());
+        assert!(media.source_config.get("playback_infos").is_some());
+    }
+
+    /// Unit test: Media::from_direct_multimode
+    #[test]
+    fn test_media_from_direct_multimode() {
+        let playlist_id = PlaylistId::new();
+        let room_id = RoomId::new();
+
+        let mut playback_infos = std::collections::HashMap::new();
+        playback_infos.insert(
+            "direct".to_string(),
+            crate::models::media::PlaybackInfo::single_url(
+                "https://example.com/video.mp4".to_string(),
+                "1080P".to_string(),
+            ),
+        );
+        playback_infos.insert(
+            "proxied".to_string(),
+            crate::models::media::PlaybackInfo::single_url(
+                "https://proxy.example.com/video.mp4".to_string(),
+                "720P".to_string(),
+            ),
+        );
+
+        let mut metadata = std::collections::HashMap::new();
+        metadata.insert("duration".to_string(), serde_json::json!(3600));
+
+        let media = Media::from_direct_multimode(
+            playlist_id,
+            room_id,
+            None,
+            "Multimode Video".to_string(),
+            playback_infos,
+            "direct".to_string(),
+            metadata,
+            10,
+        );
+
+        assert_eq!(media.name, "Multimode Video");
+        assert_eq!(media.position, 10);
+        assert!(media.is_direct());
+        assert!(media.source_config.get("playback_infos").is_some());
+        assert!(media.source_config.get("metadata").is_some());
+    }
+
+    /// Unit test: get_playback_result for direct media
+    #[test]
+    fn test_get_playback_result_direct() {
+        let playlist_id = PlaylistId::new();
+        let room_id = RoomId::new();
+
+        let playback_info = crate::models::media::PlaybackInfo::single_url(
+            "https://example.com/video.mp4".to_string(),
+            "1080P".to_string(),
+        );
+
+        let media = Media::from_direct_single_mode(
+            playlist_id,
+            room_id,
+            None,
+            "Test Video".to_string(),
+            "direct",
+            playback_info,
+            0,
+        );
+
+        let result = media.get_playback_result();
+        assert!(result.is_some());
+
+        let playback = result.unwrap();
+        assert_eq!(playback.name, "Test Video");
+        assert!(playback.playback_infos.contains_key("direct"));
+    }
+
+    /// Unit test: get_playback_result returns None for non-direct media
+    #[test]
+    fn test_get_playback_result_non_direct() {
+        let playlist_id = PlaylistId::new();
+        let room_id = RoomId::new();
+
+        let media = Media::from_provider(
+            playlist_id,
+            room_id,
+            None,
+            "Bilibili Video".to_string(),
+            serde_json::json!({"bvid": "BV1234567890"}),
+            "bilibili",
+            "bilibili_main".to_string(),
+            0,
+        );
+
+        let result = media.get_playback_result();
+        assert!(result.is_none());
+    }
+
+    /// Unit test: Repository constructor
+    #[test]
+    fn test_repository_new() {
+        fn _assert_const_new(pool: PgPool) -> MediaRepository {
+            MediaRepository::new(pool)
+        }
+        // Compilation test only - cannot create PgPool without database
+    }
+
+    /// Integration test: Create and get media
+    #[tokio::test]
+    #[ignore = "Requires Docker"]
+    async fn test_create_and_get_media() {
+        use crate::test_helpers::{RoomFixture, UserFixture, PlaylistFixture};
+        use crate::repository::user::UserRepository;
+        use crate::repository::room::RoomRepository;
+        use crate::repository::playlist::PlaylistRepository;
+
+        let infra = crate::test_helpers::containers::TestInfra::postgres_only().await;
+        let user_repo = UserRepository::new(infra.pool.clone());
+        let room_repo = RoomRepository::new(infra.pool.clone());
+        let playlist_repo = PlaylistRepository::new(infra.pool.clone());
+        let media_repo = MediaRepository::new(infra.pool.clone());
+
+        // Create owner and room
+        let owner = UserFixture::new().with_username("media_owner").build();
+        let owner = user_repo.create(&owner).await.unwrap();
+
+        let room = RoomFixture::new()
+            .with_name("Media Test Room")
+            .with_owner(owner.id.clone())
+            .build();
+        let room = room_repo.create(&room).await.unwrap();
+
+        // Create playlist
+        let playlist = PlaylistFixture::new()
+            .with_room_id(room.id.clone())
+            .with_name("Test Playlist")
+            .build();
+        let playlist = playlist_repo.create(&playlist).await.unwrap();
+
+        // Create media
+        let media = Media::from_provider(
+            playlist.id.clone(),
+            room.id.clone(),
+            Some(owner.id.clone()),
+            "Test Video".to_string(),
+            serde_json::json!({"url": "https://example.com/video.mp4"}),
+            "direct_url",
+            "default".to_string(),
+            0,
+        );
+
+        let created = media_repo.create(&media).await.unwrap();
+        assert_eq!(created.name, "Test Video");
+        assert_eq!(created.position, 0);
+
+        // Get by ID
+        let fetched = media_repo.get_by_id(&created.id).await.unwrap();
+        assert!(fetched.is_some());
+        let fetched = fetched.unwrap();
+        assert_eq!(fetched.name, "Test Video");
+    }
+
+    /// Integration test: Update media
+    #[tokio::test]
+    #[ignore = "Requires Docker"]
+    async fn test_update_media() {
+        use crate::test_helpers::{RoomFixture, UserFixture, PlaylistFixture};
+        use crate::repository::user::UserRepository;
+        use crate::repository::room::RoomRepository;
+        use crate::repository::playlist::PlaylistRepository;
+
+        let infra = crate::test_helpers::containers::TestInfra::postgres_only().await;
+        let user_repo = UserRepository::new(infra.pool.clone());
+        let room_repo = RoomRepository::new(infra.pool.clone());
+        let playlist_repo = PlaylistRepository::new(infra.pool.clone());
+        let media_repo = MediaRepository::new(infra.pool.clone());
+
+        // Setup
+        let owner = UserFixture::new().with_username("media_update_owner").build();
+        let owner = user_repo.create(&owner).await.unwrap();
+
+        let room = RoomFixture::new()
+            .with_name("Media Update Room")
+            .with_owner(owner.id.clone())
+            .build();
+        let room = room_repo.create(&room).await.unwrap();
+
+        let playlist = PlaylistFixture::new()
+            .with_room_id(room.id.clone())
+            .with_name("Test Playlist")
+            .build();
+        let playlist = playlist_repo.create(&playlist).await.unwrap();
+
+        let media = Media::from_provider(
+            playlist.id.clone(),
+            room.id.clone(),
+            Some(owner.id.clone()),
+            "Original Name".to_string(),
+            serde_json::json!({}),
+            "direct_url",
+            "default".to_string(),
+            0,
+        );
+        let created = media_repo.create(&media).await.unwrap();
+
+        // Update
+        let mut updated = created.clone();
+        updated.name = "Updated Name".to_string();
+        updated.position = 5;
+
+        let result = media_repo.update(&updated).await.unwrap();
+        assert_eq!(result.name, "Updated Name");
+        assert_eq!(result.position, 5);
+    }
+
+    /// Integration test: Delete media
+    #[tokio::test]
+    #[ignore = "Requires Docker"]
+    async fn test_delete_media() {
+        use crate::test_helpers::{RoomFixture, UserFixture, PlaylistFixture};
+        use crate::repository::user::UserRepository;
+        use crate::repository::room::RoomRepository;
+        use crate::repository::playlist::PlaylistRepository;
+
+        let infra = crate::test_helpers::containers::TestInfra::postgres_only().await;
+        let user_repo = UserRepository::new(infra.pool.clone());
+        let room_repo = RoomRepository::new(infra.pool.clone());
+        let playlist_repo = PlaylistRepository::new(infra.pool.clone());
+        let media_repo = MediaRepository::new(infra.pool.clone());
+
+        // Setup
+        let owner = UserFixture::new().with_username("media_delete_owner").build();
+        let owner = user_repo.create(&owner).await.unwrap();
+
+        let room = RoomFixture::new()
+            .with_name("Media Delete Room")
+            .with_owner(owner.id.clone())
+            .build();
+        let room = room_repo.create(&room).await.unwrap();
+
+        let playlist = PlaylistFixture::new()
+            .with_room_id(room.id.clone())
+            .with_name("Test Playlist")
+            .build();
+        let playlist = playlist_repo.create(&playlist).await.unwrap();
+
+        let media = Media::from_provider(
+            playlist.id.clone(),
+            room.id.clone(),
+            Some(owner.id.clone()),
+            "To Delete".to_string(),
+            serde_json::json!({}),
+            "direct_url",
+            "default".to_string(),
+            0,
+        );
+        let created = media_repo.create(&media).await.unwrap();
+
+        // Delete
+        let deleted = media_repo.delete(&created.id).await.unwrap();
+        assert!(deleted);
+
+        // Verify deleted
+        let fetched = media_repo.get_by_id(&created.id).await.unwrap();
+        assert!(fetched.is_none());
+
+        // Delete non-existent returns false
+        let deleted_again = media_repo.delete(&created.id).await.unwrap();
+        assert!(!deleted_again);
+    }
+
+    /// Integration test: Batch create media
+    #[tokio::test]
+    #[ignore = "Requires Docker"]
+    async fn test_create_batch() {
+        use crate::test_helpers::{RoomFixture, UserFixture, PlaylistFixture};
+        use crate::repository::user::UserRepository;
+        use crate::repository::room::RoomRepository;
+        use crate::repository::playlist::PlaylistRepository;
+
+        let infra = crate::test_helpers::containers::TestInfra::postgres_only().await;
+        let user_repo = UserRepository::new(infra.pool.clone());
+        let room_repo = RoomRepository::new(infra.pool.clone());
+        let playlist_repo = PlaylistRepository::new(infra.pool.clone());
+        let media_repo = MediaRepository::new(infra.pool.clone());
+
+        // Setup
+        let owner = UserFixture::new().with_username("batch_owner").build();
+        let owner = user_repo.create(&owner).await.unwrap();
+
+        let room = RoomFixture::new()
+            .with_name("Batch Room")
+            .with_owner(owner.id.clone())
+            .build();
+        let room = room_repo.create(&room).await.unwrap();
+
+        let playlist = PlaylistFixture::new()
+            .with_room_id(room.id.clone())
+            .with_name("Batch Playlist")
+            .build();
+        let playlist = playlist_repo.create(&playlist).await.unwrap();
+
+        // Create batch
+        let items: Vec<Media> = (0..5)
+            .map(|i| {
+                Media::from_provider(
+                    playlist.id.clone(),
+                    room.id.clone(),
+                    Some(owner.id.clone()),
+                    format!("Video {}", i),
+                    serde_json::json!({"url": format!("https://example.com/{}.mp4", i)}),
+                    "direct_url",
+                    "default".to_string(),
+                    i,
+                )
+            })
+            .collect();
+
+        let created = media_repo.create_batch(&items).await.unwrap();
+        assert_eq!(created.len(), 5);
+
+        // Verify all created
+        let fetched = media_repo.get_by_playlist(&playlist.id).await.unwrap();
+        assert_eq!(fetched.len(), 5);
+    }
+
+    /// Integration test: Create batch exceeds limit
+    #[tokio::test]
+    #[ignore = "Requires Docker"]
+    async fn test_create_batch_chunk_too_large() {
+        use crate::test_helpers::{RoomFixture, UserFixture, PlaylistFixture};
+        use crate::repository::user::UserRepository;
+        use crate::repository::room::RoomRepository;
+        use crate::repository::playlist::PlaylistRepository;
+
+        let infra = crate::test_helpers::containers::TestInfra::postgres_only().await;
+        let user_repo = UserRepository::new(infra.pool.clone());
+        let room_repo = RoomRepository::new(infra.pool.clone());
+        let playlist_repo = PlaylistRepository::new(infra.pool.clone());
+        let media_repo = MediaRepository::new(infra.pool.clone());
+
+        // Setup
+        let owner = UserFixture::new().with_username("chunk_owner").build();
+        let owner = user_repo.create(&owner).await.unwrap();
+
+        let room = RoomFixture::new()
+            .with_name("Chunk Room")
+            .with_owner(owner.id.clone())
+            .build();
+        let room = room_repo.create(&room).await.unwrap();
+
+        let playlist = PlaylistFixture::new()
+            .with_room_id(room.id.clone())
+            .with_name("Chunk Playlist")
+            .build();
+        let playlist = playlist_repo.create(&playlist).await.unwrap();
+
+        // Create batch that exceeds chunk limit (1001 items)
+        let items: Vec<Media> = (0..1001)
+            .map(|i| {
+                Media::from_provider(
+                    playlist.id.clone(),
+                    room.id.clone(),
+                    Some(owner.id.clone()),
+                    format!("Video {}", i),
+                    serde_json::json!({"url": format!("https://example.com/{}.mp4", i)}),
+                    "direct_url",
+                    "default".to_string(),
+                    i,
+                )
+            })
+            .collect();
+
+        // create_batch_chunk should fail
+        // Note: create_batch will succeed because it uses chunking internally
+        let result = media_repo.create_batch(&items).await;
+        assert!(result.is_ok()); // Should succeed with automatic chunking
+        assert_eq!(result.unwrap().len(), 1001);
+    }
+
+    /// Integration test: update_if_unchanged (optimistic locking)
+    #[tokio::test]
+    #[ignore = "Requires Docker"]
+    async fn test_update_if_unchanged() {
+        use crate::test_helpers::{RoomFixture, UserFixture, PlaylistFixture};
+        use crate::repository::user::UserRepository;
+        use crate::repository::room::RoomRepository;
+        use crate::repository::playlist::PlaylistRepository;
+
+        let infra = crate::test_helpers::containers::TestInfra::postgres_only().await;
+        let user_repo = UserRepository::new(infra.pool.clone());
+        let room_repo = RoomRepository::new(infra.pool.clone());
+        let playlist_repo = PlaylistRepository::new(infra.pool.clone());
+        let media_repo = MediaRepository::new(infra.pool.clone());
+
+        // Setup
+        let owner = UserFixture::new().with_username("optimistic_owner").build();
+        let owner = user_repo.create(&owner).await.unwrap();
+
+        let room = RoomFixture::new()
+            .with_name("Optimistic Room")
+            .with_owner(owner.id.clone())
+            .build();
+        let room = room_repo.create(&room).await.unwrap();
+
+        let playlist = PlaylistFixture::new()
+            .with_room_id(room.id.clone())
+            .with_name("Optimistic Playlist")
+            .build();
+        let playlist = playlist_repo.create(&playlist).await.unwrap();
+
+        let media = Media::from_provider(
+            playlist.id.clone(),
+            room.id.clone(),
+            Some(owner.id.clone()),
+            "Original".to_string(),
+            serde_json::json!({}),
+            "direct_url",
+            "default".to_string(),
+            0,
+        );
+        let created = media_repo.create(&media).await.unwrap();
+
+        // Update with correct old values
+        let mut updated = created.clone();
+        updated.name = "Updated".to_string();
+        updated.position = 5;
+
+        let result = media_repo
+            .update_if_unchanged(&updated, "Original", 0)
+            .await
+            .unwrap();
+        assert!(result.is_some());
+        let result = result.unwrap();
+        assert_eq!(result.name, "Updated");
+        assert_eq!(result.position, 5);
+
+        // Try update with stale old values (should return None)
+        let mut stale = created.clone();
+        stale.name = "Stale Update".to_string();
+
+        let result = media_repo
+            .update_if_unchanged(&stale, "Original", 0) // Old name and position
+            .await
+            .unwrap();
+        assert!(result.is_none()); // Conflict detected
+    }
+
+    /// Integration test: Swap positions
+    #[tokio::test]
+    #[ignore = "Requires Docker"]
+    async fn test_swap_positions() {
+        use crate::test_helpers::{RoomFixture, UserFixture, PlaylistFixture};
+        use crate::repository::user::UserRepository;
+        use crate::repository::room::RoomRepository;
+        use crate::repository::playlist::PlaylistRepository;
+
+        let infra = crate::test_helpers::containers::TestInfra::postgres_only().await;
+        let user_repo = UserRepository::new(infra.pool.clone());
+        let room_repo = RoomRepository::new(infra.pool.clone());
+        let playlist_repo = PlaylistRepository::new(infra.pool.clone());
+        let media_repo = MediaRepository::new(infra.pool.clone());
+
+        // Setup
+        let owner = UserFixture::new().with_username("swap_owner").build();
+        let owner = user_repo.create(&owner).await.unwrap();
+
+        let room = RoomFixture::new()
+            .with_name("Swap Room")
+            .with_owner(owner.id.clone())
+            .build();
+        let room = room_repo.create(&room).await.unwrap();
+
+        let playlist = PlaylistFixture::new()
+            .with_room_id(room.id.clone())
+            .with_name("Swap Playlist")
+            .build();
+        let playlist = playlist_repo.create(&playlist).await.unwrap();
+
+        // Create two media items
+        let media1 = Media::from_provider(
+            playlist.id.clone(),
+            room.id.clone(),
+            Some(owner.id.clone()),
+            "Video 1".to_string(),
+            serde_json::json!({}),
+            "direct_url",
+            "default".to_string(),
+            0,
+        );
+        let media2 = Media::from_provider(
+            playlist.id.clone(),
+            room.id.clone(),
+            Some(owner.id.clone()),
+            "Video 2".to_string(),
+            serde_json::json!({}),
+            "direct_url",
+            "default".to_string(),
+            1,
+        );
+
+        let created1 = media_repo.create(&media1).await.unwrap();
+        let created2 = media_repo.create(&media2).await.unwrap();
+
+        assert_eq!(created1.position, 0);
+        assert_eq!(created2.position, 1);
+
+        // Swap positions
+        media_repo
+            .swap_positions(&created1.id, &created2.id)
+            .await
+            .unwrap();
+
+        // Verify swap
+        let fetched1 = media_repo.get_by_id(&created1.id).await.unwrap().unwrap();
+        let fetched2 = media_repo.get_by_id(&created2.id).await.unwrap().unwrap();
+
+        assert_eq!(fetched1.position, 1);
+        assert_eq!(fetched2.position, 0);
+    }
+
+    /// Integration test: Count by playlist
+    #[tokio::test]
+    #[ignore = "Requires Docker"]
+    async fn test_count_by_playlist() {
+        use crate::test_helpers::{RoomFixture, UserFixture, PlaylistFixture};
+        use crate::repository::user::UserRepository;
+        use crate::repository::room::RoomRepository;
+        use crate::repository::playlist::PlaylistRepository;
+
+        let infra = crate::test_helpers::containers::TestInfra::postgres_only().await;
+        let user_repo = UserRepository::new(infra.pool.clone());
+        let room_repo = RoomRepository::new(infra.pool.clone());
+        let playlist_repo = PlaylistRepository::new(infra.pool.clone());
+        let media_repo = MediaRepository::new(infra.pool.clone());
+
+        // Setup
+        let owner = UserFixture::new().with_username("count_owner").build();
+        let owner = user_repo.create(&owner).await.unwrap();
+
+        let room = RoomFixture::new()
+            .with_name("Count Room")
+            .with_owner(owner.id.clone())
+            .build();
+        let room = room_repo.create(&room).await.unwrap();
+
+        let playlist = PlaylistFixture::new()
+            .with_room_id(room.id.clone())
+            .with_name("Count Playlist")
+            .build();
+        let playlist = playlist_repo.create(&playlist).await.unwrap();
+
+        // Initially empty
+        let count = media_repo.count_by_playlist(&playlist.id).await.unwrap();
+        assert_eq!(count, 0);
+
+        // Add 3 items
+        for i in 0..3 {
+            let media = Media::from_provider(
+                playlist.id.clone(),
+                room.id.clone(),
+                Some(owner.id.clone()),
+                format!("Video {}", i),
+                serde_json::json!({}),
+                "direct_url",
+                "default".to_string(),
+                i,
+            );
+            media_repo.create(&media).await.unwrap();
+        }
+
+        let count = media_repo.count_by_playlist(&playlist.id).await.unwrap();
+        assert_eq!(count, 3);
+    }
+
+    /// Integration test: Get playlist paginated
+    #[tokio::test]
+    #[ignore = "Requires Docker"]
+    async fn test_get_playlist_paginated() {
+        use crate::test_helpers::{RoomFixture, UserFixture, PlaylistFixture};
+        use crate::repository::user::UserRepository;
+        use crate::repository::room::RoomRepository;
+        use crate::repository::playlist::PlaylistRepository;
+
+        let infra = crate::test_helpers::containers::TestInfra::postgres_only().await;
+        let user_repo = UserRepository::new(infra.pool.clone());
+        let room_repo = RoomRepository::new(infra.pool.clone());
+        let playlist_repo = PlaylistRepository::new(infra.pool.clone());
+        let media_repo = MediaRepository::new(infra.pool.clone());
+
+        // Setup
+        let owner = UserFixture::new().with_username("paginate_owner").build();
+        let owner = user_repo.create(&owner).await.unwrap();
+
+        let room = RoomFixture::new()
+            .with_name("Paginate Room")
+            .with_owner(owner.id.clone())
+            .build();
+        let room = room_repo.create(&room).await.unwrap();
+
+        let playlist = PlaylistFixture::new()
+            .with_room_id(room.id.clone())
+            .with_name("Paginate Playlist")
+            .build();
+        let playlist = playlist_repo.create(&playlist).await.unwrap();
+
+        // Create 15 items
+        for i in 0..15 {
+            let media = Media::from_provider(
+                playlist.id.clone(),
+                room.id.clone(),
+                Some(owner.id.clone()),
+                format!("Video {}", i),
+                serde_json::json!({}),
+                "direct_url",
+                "default".to_string(),
+                i,
+            );
+            media_repo.create(&media).await.unwrap();
+        }
+
+        // Page 1 (limit 10, offset 0)
+        let page1 = PageParams::new(Some(1), Some(10));
+        let (items, total) = media_repo
+            .get_playlist_paginated(&playlist.id, page1)
+            .await
+            .unwrap();
+        assert_eq!(items.len(), 10);
+        assert_eq!(total, 15);
+
+        // Page 2 (limit 10, offset 10)
+        let page2 = PageParams::new(Some(2), Some(10));
+        let (items, total) = media_repo
+            .get_playlist_paginated(&playlist.id, page2)
+            .await
+            .unwrap();
+        assert_eq!(items.len(), 5);
+        assert_eq!(total, 15);
+    }
+
+    /// Integration test: Delete batch
+    #[tokio::test]
+    #[ignore = "Requires Docker"]
+    async fn test_delete_batch() {
+        use crate::test_helpers::{RoomFixture, UserFixture, PlaylistFixture};
+        use crate::repository::user::UserRepository;
+        use crate::repository::room::RoomRepository;
+        use crate::repository::playlist::PlaylistRepository;
+
+        let infra = crate::test_helpers::containers::TestInfra::postgres_only().await;
+        let user_repo = UserRepository::new(infra.pool.clone());
+        let room_repo = RoomRepository::new(infra.pool.clone());
+        let playlist_repo = PlaylistRepository::new(infra.pool.clone());
+        let media_repo = MediaRepository::new(infra.pool.clone());
+
+        // Setup
+        let owner = UserFixture::new().with_username("batch_delete_owner").build();
+        let owner = user_repo.create(&owner).await.unwrap();
+
+        let room = RoomFixture::new()
+            .with_name("Batch Delete Room")
+            .with_owner(owner.id.clone())
+            .build();
+        let room = room_repo.create(&room).await.unwrap();
+
+        let playlist = PlaylistFixture::new()
+            .with_room_id(room.id.clone())
+            .with_name("Batch Delete Playlist")
+            .build();
+        let playlist = playlist_repo.create(&playlist).await.unwrap();
+
+        // Create 5 items
+        let mut ids: Vec<MediaId> = Vec::new();
+        for i in 0..5 {
+            let media = Media::from_provider(
+                playlist.id.clone(),
+                room.id.clone(),
+                Some(owner.id.clone()),
+                format!("Video {}", i),
+                serde_json::json!({}),
+                "direct_url",
+                "default".to_string(),
+                i,
+            );
+            let created = media_repo.create(&media).await.unwrap();
+            ids.push(created.id);
+        }
+
+        // Delete 3 items
+        let deleted = media_repo.delete_batch(&ids[0..3]).await.unwrap();
+        assert_eq!(deleted, 3);
+
+        // Verify remaining
+        let remaining = media_repo.get_by_playlist(&playlist.id).await.unwrap();
+        assert_eq!(remaining.len(), 2);
+    }
+
+    /// Integration test: Get by IDs
+    #[tokio::test]
+    #[ignore = "Requires Docker"]
+    async fn test_get_by_ids() {
+        use crate::test_helpers::{RoomFixture, UserFixture, PlaylistFixture};
+        use crate::repository::user::UserRepository;
+        use crate::repository::room::RoomRepository;
+        use crate::repository::playlist::PlaylistRepository;
+
+        let infra = crate::test_helpers::containers::TestInfra::postgres_only().await;
+        let user_repo = UserRepository::new(infra.pool.clone());
+        let room_repo = RoomRepository::new(infra.pool.clone());
+        let playlist_repo = PlaylistRepository::new(infra.pool.clone());
+        let media_repo = MediaRepository::new(infra.pool.clone());
+
+        // Setup
+        let owner = UserFixture::new().with_username("get_ids_owner").build();
+        let owner = user_repo.create(&owner).await.unwrap();
+
+        let room = RoomFixture::new()
+            .with_name("Get IDs Room")
+            .with_owner(owner.id.clone())
+            .build();
+        let room = room_repo.create(&room).await.unwrap();
+
+        let playlist = PlaylistFixture::new()
+            .with_room_id(room.id.clone())
+            .with_name("Get IDs Playlist")
+            .build();
+        let playlist = playlist_repo.create(&playlist).await.unwrap();
+
+        // Create 3 items
+        let mut ids: Vec<MediaId> = Vec::new();
+        for i in 0..3 {
+            let media = Media::from_provider(
+                playlist.id.clone(),
+                room.id.clone(),
+                Some(owner.id.clone()),
+                format!("Video {}", i),
+                serde_json::json!({}),
+                "direct_url",
+                "default".to_string(),
+                i,
+            );
+            let created = media_repo.create(&media).await.unwrap();
+            ids.push(created.id);
+        }
+
+        // Get by IDs
+        let fetched = media_repo.get_by_ids(&ids).await.unwrap();
+        assert_eq!(fetched.len(), 3);
+
+        // Get with non-existent ID
+        let mut mixed_ids = ids.clone();
+        mixed_ids.push(MediaId::new());
+        let fetched = media_repo.get_by_ids(&mixed_ids).await.unwrap();
+        assert_eq!(fetched.len(), 3); // Only existing ones returned
+
+        // Empty IDs returns empty
+        let fetched = media_repo.get_by_ids(&[]).await.unwrap();
+        assert!(fetched.is_empty());
+    }
+}
+

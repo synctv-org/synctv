@@ -468,6 +468,7 @@ mod health_types {
                 ws_ticket: None,
                 email: None,
                 livestream: None,
+                memory: None,
                 message: None,
             }),
         };
@@ -490,6 +491,7 @@ mod health_types {
                 ws_ticket: None,
                 email: None,
                 livestream: None,
+                memory: None,
                 message: Some("Database: connection refused".to_string()),
             }),
         };

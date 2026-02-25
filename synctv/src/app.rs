@@ -102,7 +102,7 @@ impl Application {
         Self::start_singleton_tasks(&infra, &core, &leader, &mut shutdown);
 
         // Phase 6: Cluster infrastructure
-        let cluster = Self::init_cluster(&infra, &core, &mut shutdown).await;
+        let cluster = Self::init_cluster(&infra, &core, &mut shutdown).await?;
 
         // Phase 7: Server components (livestream, WebRTC, providers)
         let servers = Self::init_servers(&infra, &core, &mut shutdown).await?;
@@ -230,7 +230,17 @@ impl Application {
         // invalidation event to avoid dropped messages during initialization.
         if infra.redis_handles.is_some() {
             if let Err(e) = cache_invalidation.start().await {
-                warn!("Failed to start cache invalidation listener: {}", e);
+                // When cluster mode is explicitly enabled, cache invalidation failure
+                // is a fatal error - the cluster cannot maintain cache consistency without it.
+                // In standalone mode, we can continue with local-only caching.
+                if infra.config.cluster.enabled {
+                    return Err(anyhow::anyhow!(
+                        "Failed to start cache invalidation listener (cluster mode): {}. \
+                         Cache consistency is required when cluster.enabled=true.",
+                        e
+                    ));
+                }
+                warn!("Failed to start cache invalidation listener (continuing in standalone mode): {}", e);
             }
         }
 
@@ -495,7 +505,7 @@ impl Application {
         infra: &Infrastructure,
         core: &CoreState,
         shutdown: &mut ShutdownCoordinator,
-    ) -> ClusterState {
+    ) -> Result<ClusterState> {
         // Connection manager
         let connection_limits = ConnectionLimits {
             max_per_user: infra.config.connection_limits.max_per_user,
@@ -543,6 +553,16 @@ impl Application {
                     Some(Arc::new(manager))
                 }
                 Err(e) => {
+                    // When cluster mode is explicitly enabled, ClusterManager failure
+                    // is a fatal error - the cluster cannot operate without it.
+                    // In standalone mode, we can continue without cluster features.
+                    if infra.config.cluster.enabled {
+                        return Err(anyhow::anyhow!(
+                            "Failed to create ClusterManager (cluster mode): {}. \
+                             ClusterManager is required when cluster.enabled=true.",
+                            e
+                        ));
+                    }
                     error!("Failed to create ClusterManager: {}", e);
                     error!("Continuing in single-node mode");
                     None
@@ -586,14 +606,14 @@ impl Application {
             .as_ref()
             .and_then(|cm| cm.redis_publish_tx().cloned());
 
-        ClusterState {
+        Ok(ClusterState {
             cluster_manager,
             connection_manager,
             redis_publish_tx,
             node_registry,
             health_monitor,
             load_balancer,
-        }
+        })
     }
 
     // -- Phase 7: Server components ---------------------------------------------

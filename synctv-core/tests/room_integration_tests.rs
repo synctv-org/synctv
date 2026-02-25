@@ -80,6 +80,7 @@ fn make_room(name: &str, description: &str, owner: &UserId) -> Room {
         created_at: now,
         updated_at: now,
         deleted_at: None,
+        version: 0,
     }
 }
 
@@ -134,11 +135,12 @@ async fn test_update_room_settings() {
     let mut updated_room = created.clone();
     updated_room.name = "Updated Name".to_string();
     updated_room.description = "updated desc".to_string();
-    let updated = room_repo.update(&updated_room).await.unwrap();
+    let updated = room_repo.update(&updated_room, created.version).await.unwrap();
 
     assert_eq!(updated.name, "Updated Name");
     assert_eq!(updated.description, "updated desc");
     assert!(updated.updated_at >= created.updated_at);
+    assert_eq!(updated.version, created.version + 1);
 }
 
 #[tokio::test]
@@ -378,4 +380,83 @@ async fn test_room_ban_status() {
     let unbanned = room_repo.update_ban_status(&room.id, false).await.unwrap();
     assert!(!unbanned.is_banned);
     assert!(room_repo.is_accessible(&room.id).await.unwrap());
+}
+
+// ========== Optimistic Lock Tests ==========
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_update_stale_version_returns_optimistic_lock_conflict() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let room_repo = RoomRepository::new(pool.clone());
+
+    let owner = user_repo.create(&make_user("optimistic_owner")).await.unwrap();
+    let room = make_room("Optimistic Room", "original", &owner.id);
+    let created = room_repo.create(&room).await.unwrap();
+    let original_version = created.version;
+
+    // First update succeeds
+    let mut updated_room = created.clone();
+    updated_room.name = "Updated Name V1".to_string();
+    updated_room.description = "updated v1".to_string();
+    let v1 = room_repo.update(&updated_room, original_version).await.unwrap();
+    assert_eq!(v1.version, original_version + 1);
+    assert_eq!(v1.name, "Updated Name V1");
+
+    // Second update with stale version (original_version) -> should get OptimisticLockConflict
+    let mut stale_room = created.clone();
+    stale_room.name = "Updated Name V2".to_string();
+    stale_room.description = "updated v2".to_string();
+    let err = room_repo.update(&stale_room, original_version).await.unwrap_err();
+    assert!(
+        matches!(err, synctv_core::Error::OptimisticLockConflict),
+        "Expected OptimisticLockConflict, got: {:?}", err
+    );
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_update_soft_deleted_room_returns_not_found() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let room_repo = RoomRepository::new(pool.clone());
+
+    let owner = user_repo.create(&make_user("softdel_owner")).await.unwrap();
+    let room = make_room("Soft Delete Room", "", &owner.id);
+    let created = room_repo.create(&room).await.unwrap();
+    let version = created.version;
+
+    // Soft delete the room
+    let deleted = room_repo.delete(&created.id).await.unwrap();
+    assert!(deleted);
+
+    // Trying to update the deleted room should return NotFound (not OptimisticLockConflict)
+    let mut updated = created.clone();
+    updated.name = "Updated Soft Deleted".to_string();
+    let err = room_repo.update(&updated, version).await.unwrap_err();
+    assert!(
+        matches!(err, synctv_core::Error::NotFound(_)),
+        "Expected NotFound for soft-deleted room, got: {:?}", err
+    );
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_update_nonexistent_room_returns_not_found() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let room_repo = RoomRepository::new(pool.clone());
+
+    let owner = user_repo.create(&make_user("nonexistent_owner")).await.unwrap();
+
+    // Create a room model but never persist it
+    let room = make_room("Nonexistent Room", "", &owner.id);
+
+    // Trying to update should return NotFound
+    let err = room_repo.update(&room, 0).await.unwrap_err();
+    assert!(
+        matches!(err, synctv_core::Error::NotFound(_)),
+        "Expected NotFound for nonexistent room, got: {:?}", err
+    );
 }

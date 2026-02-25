@@ -13,6 +13,8 @@ use sqlx::PgPool;
 use super::storage::{CredentialStorage, CredentialStorageError, Result, StoredCredential};
 #[cfg(feature = "postgres")]
 use super::types::{CredentialData, ProviderType};
+#[cfg(feature = "postgres")]
+use crate::ssrf::check_url;
 
 /// PostgreSQL-backed credential storage
 #[cfg(feature = "postgres")]
@@ -115,6 +117,26 @@ impl CredentialStorage for PostgresCredentialStorage {
         provider_instance_name: Option<&str>,
         data: CredentialData,
     ) -> Result<StoredCredential> {
+        // SSRF validation: Check host URL for Alist and Emby credentials
+        let host_url = match &data {
+            CredentialData::Alist { host, .. } => Some(host.as_str()),
+            CredentialData::Emby { host, .. } => Some(host.as_str()),
+            CredentialData::Bilibili { .. } => None, // Bilibili has no host URL
+        };
+
+        if let Some(url) = host_url {
+            let ssrf_result = check_url(url);
+            if !ssrf_result.is_ok() {
+                return Err(CredentialStorageError::InvalidData(format!(
+                    "SSRF validation failed: {}",
+                    match ssrf_result {
+                        crate::ssrf::SsrfCheckResult::Blocked(reason) => reason,
+                        crate::ssrf::SsrfCheckResult::Ok => unreachable!(),
+                    }
+                )));
+            }
+        }
+
         let provider = data.provider_type();
         let server_id = data.server_id();
         let credential_data = serde_json::to_value(&data)?;

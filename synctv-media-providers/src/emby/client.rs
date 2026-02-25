@@ -426,10 +426,7 @@ impl EmbyClient {
             .send()
             .await?;
 
-        if !resp.status().is_success() {
-            tracing::warn!(status = %resp.status(), "Emby logout request failed");
-        }
-
+        check_response(resp).await?;
         Ok(())
     }
 
@@ -509,10 +506,7 @@ impl EmbyClient {
             .send()
             .await?;
 
-        if !resp.status().is_success() {
-            tracing::warn!(status = %resp.status(), "Emby delete_active_encodings request failed");
-        }
-
+        check_response(resp).await?;
         Ok(())
     }
 
@@ -546,10 +540,7 @@ impl EmbyClient {
             .send()
             .await?;
 
-        if !resp.status().is_success() {
-            tracing::warn!(status = %resp.status(), "Emby report_playback_start request failed");
-        }
-
+        check_response(resp).await?;
         Ok(())
     }
 
@@ -578,10 +569,7 @@ impl EmbyClient {
             .send()
             .await?;
 
-        if !resp.status().is_success() {
-            tracing::warn!(status = %resp.status(), "Emby report_playback_stop request failed");
-        }
-
+        check_response(resp).await?;
         Ok(())
     }
 
@@ -617,10 +605,7 @@ impl EmbyClient {
             .send()
             .await?;
 
-        if !resp.status().is_success() {
-            tracing::warn!(status = %resp.status(), "Emby report_playback_progress request failed");
-        }
-
+        check_response(resp).await?;
         Ok(())
     }
 

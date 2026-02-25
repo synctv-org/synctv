@@ -27,8 +27,49 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 /// Overall request timeout for outbound proxy requests.
 const REQUEST_TIMEOUT: Duration = Duration::from_mins(1);
 
+/// Check if an HTTP status code is retryable.
+///
+/// Only specific 5xx errors that indicate transient issues should be retried:
+/// - 500 Internal Server Error: Generic server error, often transient
+/// - 502 Bad Gateway: Upstream server issue, may resolve quickly
+/// - 503 Service Unavailable: Temporary overload, likely to recover
+/// - 504 Gateway Timeout: Upstream timeout, may succeed on retry
+///
+/// Status codes like 501 (Not Implemented) and 505 (HTTP Version Not Supported)
+/// are permanent errors and should NOT be retried.
+#[must_use]
+pub fn is_retryable_status(status: StatusCode) -> bool {
+    RETRYABLE_STATUS_CODES.contains(&status.as_u16())
+}
+
+/// Calculate a random delay for retry attempts.
+///
+/// Returns a duration between RETRY_DELAY_MIN_MS and RETRY_DELAY_MAX_MS.
+/// Using random delay helps prevent thundering herd when multiple clients
+/// retry simultaneously.
+fn calculate_retry_delay() -> Duration {
+    use std::sync::atomic::{AtomicU32, Ordering};
+    // Simple pseudo-random delay using a counter for basic jitter
+    // This is sufficient for retry delay purposes without requiring full RNG
+    static COUNTER: AtomicU32 = AtomicU32::new(0);
+    let count = COUNTER.fetch_add(1, Ordering::Relaxed);
+    let range = RETRY_DELAY_MAX_MS - RETRY_DELAY_MIN_MS;
+    let jitter = (count as u64 * 17) % range; // Simple linear congruential step
+    Duration::from_millis(RETRY_DELAY_MIN_MS + jitter)
+}
+
 /// Timeout for reading the response body after headers are received.
 const BODY_READ_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Minimum delay before retrying a failed request (100ms).
+const RETRY_DELAY_MIN_MS: u64 = 100;
+
+/// Maximum delay before retrying a failed request (500ms).
+const RETRY_DELAY_MAX_MS: u64 = 500;
+
+/// HTTP status codes that are retryable (transient server errors).
+/// These indicate temporary issues that may resolve on retry.
+const RETRYABLE_STATUS_CODES: &[u16] = &[500, 502, 503, 504];
 
 /// Shared HTTP client for proxy requests.
 ///
@@ -258,14 +299,19 @@ async fn proxy_fetch_and_forward_inner(cfg: ProxyConfig<'_>) -> Result<Response,
 
     let proxy_result = send_with_redirect_validation(request).await?;
 
-    // Retry on 5xx server errors: build a fresh request and retry once.
+    // Retry only on specific retryable 5xx server errors (500, 502, 503, 504).
     // We only retry once to avoid excessive latency for the client.
-    let (proxy_response, followed_redirects) = if proxy_result.response.status().is_server_error() {
+    // A delay is added before retry to avoid hammering struggling upstream servers.
+    let (proxy_response, followed_redirects) = if is_retryable_status(proxy_result.response.status()) {
+        let retry_delay = calculate_retry_delay();
         tracing::warn!(
             status = %proxy_result.response.status(),
             url = %cfg.url,
-            "Upstream returned server error, retrying once"
+            retry_delay_ms = retry_delay.as_millis(),
+            "Upstream returned retryable server error, retrying once after delay"
         );
+        tokio::time::sleep(retry_delay).await;
+
         let mut retry_req = PROXY_CLIENT.get(cfg.url);
         for (name, value) in cfg.client_headers {
             if matches!(
@@ -307,12 +353,14 @@ async fn proxy_fetch_and_forward_inner(cfg: ProxyConfig<'_>) -> Result<Response,
     // Additionally, when redirects were followed the body has been fully
     // consumed and re-requested at the final URL; in that case we strip
     // content-encoding unconditionally because the body is already decoded.
+    // Use contains() to handle multiple encodings like "gzip, deflate" or "br, gzip".
+    // This correctly handles cases where servers return multiple encodings.
     let reqwest_auto_decompressed = followed_redirects || response_headers
         .get("content-encoding")
         .and_then(|v| v.to_str().ok())
         .is_some_and(|ce| {
             let ce_lower = ce.to_lowercase();
-            ce_lower == "gzip" || ce_lower == "deflate" || ce_lower == "br"
+            ce_lower.contains("gzip") || ce_lower.contains("deflate") || ce_lower.contains("br")
         });
 
     let mut builder = Response::builder().status(status);
@@ -464,6 +512,10 @@ pub async fn proxy_m3u8_and_rewrite(
 /// Returns CORS headers as defense-in-depth. The global `CorsLayer` middleware
 /// handles standard preflight requests before they reach routes, but this
 /// ensures correct headers if the middleware is bypassed or misconfigured.
+///
+/// **Security Note**: This function uses `Access-Control-Allow-Origin: *` for
+/// backward compatibility. For production use, prefer `proxy_options_preflight_with_cors`
+/// with an explicit allowed origins list.
 #[allow(clippy::unused_async)]
 pub async fn proxy_options_preflight() -> impl IntoResponse {
     (
@@ -475,6 +527,274 @@ pub async fn proxy_options_preflight() -> impl IntoResponse {
             ("Access-Control-Max-Age", "86400"),
         ],
     )
+}
+
+// ------------------------------------------------------------------
+// Rate limiting
+// ------------------------------------------------------------------
+
+/// A simple in-memory rate limiter based on source IP addresses.
+///
+/// Uses a sliding window algorithm with configurable limit and window duration.
+/// Each IP address gets its own counter that resets after the window expires.
+///
+/// # Thread Safety
+///
+/// This implementation is thread-safe and can be shared across multiple handlers.
+/// Uses `DashMap` internally for concurrent access without global locking.
+///
+/// # Example
+///
+/// ```
+/// use std::time::Duration;
+/// use synctv_proxy::RateLimiter;
+///
+/// let limiter = RateLimiter::new(100, Duration::from_secs(60));
+///
+/// // Check if a request from this IP should be allowed
+/// if limiter.check("192.168.1.1") {
+///     // Request allowed
+/// } else {
+///     // Rate limit exceeded
+/// }
+/// ```
+pub struct RateLimiter {
+    /// Maximum requests allowed per window per IP.
+    limit: usize,
+    /// Window duration for rate limiting.
+    window: Duration,
+    /// Map of IP addresses to (count, window_start).
+    /// Uses DashMap for concurrent access.
+    counters: std::sync::Arc<
+        dashmap::DashMap<String, (usize, std::time::Instant)>
+    >,
+}
+
+impl RateLimiter {
+    /// Create a new rate limiter with the given limit and window.
+    ///
+    /// # Arguments
+    ///
+    /// * `limit` - Maximum number of requests allowed per window per IP.
+    /// * `window` - Duration of the rate limiting window.
+    #[must_use]
+    pub fn new(limit: usize, window: Duration) -> Self {
+        Self {
+            limit,
+            window,
+            counters: std::sync::Arc::new(dashmap::DashMap::new()),
+        }
+    }
+
+    /// Check if a request from the given IP should be allowed.
+    ///
+    /// Returns `true` if the request is within the rate limit,
+    /// `false` if the limit has been exceeded.
+    ///
+    /// This method is thread-safe and can be called from multiple threads.
+    pub fn check(&self, ip: &str) -> bool {
+        let now = std::time::Instant::now();
+
+        // Try to get existing entry
+        if let Some(mut entry) = self.counters.get_mut(ip) {
+            let (count, window_start) = *entry.value();
+
+            // Check if window has expired
+            if now.duration_since(window_start) > self.window {
+                // Reset the window
+                *entry.value_mut() = (1, now);
+                return true;
+            }
+
+            // Check if within limit
+            if count < self.limit {
+                *entry.value_mut() = (count + 1, window_start);
+                return true;
+            }
+
+            // Over limit
+            return false;
+        }
+
+        // New entry
+        self.counters.insert(ip.to_string(), (1, now));
+        true
+    }
+
+    /// Get the current count for an IP (for testing/debugging).
+    #[cfg(test)]
+    pub fn get_count(&self, ip: &str) -> Option<usize> {
+        self.counters.get(ip).map(|e| e.value().0)
+    }
+}
+
+/// Preflight handler with rate limiting based on source IP.
+///
+/// Returns 429 Too Many Requests if the rate limit is exceeded,
+/// otherwise returns standard CORS preflight headers.
+///
+/// # Arguments
+///
+/// * `client_ip` - The client's IP address (extracted from connection or X-Forwarded-For).
+/// * `limiter` - The rate limiter to use.
+#[allow(clippy::unused_async)]
+pub async fn proxy_options_preflight_rate_limited(
+    client_ip: Option<&str>,
+    limiter: std::sync::Arc<RateLimiter>,
+) -> Response {
+    let ip_key = client_ip.unwrap_or("unknown");
+
+    if !limiter.check(ip_key) {
+        return Response::builder()
+            .status(StatusCode::TOO_MANY_REQUESTS)
+            .header("Content-Type", "text/plain")
+            .header("Retry-After", "60")
+            .body(Body::from("Rate limit exceeded"))
+            .expect("Failed to build rate limit response");
+    }
+
+    Response::builder()
+        .status(StatusCode::NO_CONTENT)
+        .header("Access-Control-Allow-Origin", "*")
+        .header("Access-Control-Allow-Methods", "GET, OPTIONS")
+        .header("Access-Control-Allow-Headers", "Authorization, Content-Type, Accept, Range")
+        .header("Access-Control-Max-Age", "86400")
+        .body(Body::empty())
+        .expect("Failed to build preflight response")
+}
+
+// ------------------------------------------------------------------
+// CORS configuration
+// ------------------------------------------------------------------
+
+/// CORS configuration for the proxy.
+///
+/// Controls which origins are allowed to access the proxy endpoints.
+/// By default, no origins are allowed (secure by default).
+#[derive(Clone, Default)]
+pub struct CorsConfig {
+    /// List of allowed origins. Empty means no origins allowed.
+    allowed_origins: Vec<String>,
+    /// If true, allow all origins (wildcard mode).
+    wildcard: bool,
+}
+
+impl CorsConfig {
+    /// Create a new CORS config with the given allowed origins.
+    ///
+    /// # Arguments
+    ///
+    /// * `allowed_origins` - List of origin URLs that are allowed to access the proxy.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use synctv_proxy::CorsConfig;
+    ///
+    /// let config = CorsConfig::new(vec![
+    ///     "https://example.com".to_string(),
+    ///     "https://app.example.com".to_string(),
+    /// ]);
+    /// ```
+    #[must_use]
+    pub fn new(allowed_origins: Vec<String>) -> Self {
+        Self {
+            allowed_origins,
+            wildcard: false,
+        }
+    }
+
+    /// Create a CORS config that allows all origins (wildcard mode).
+    ///
+    /// **Warning**: This is less secure than explicit origin lists.
+    /// Use only in development or when you intentionally want to allow all origins.
+    #[must_use]
+    pub fn new_wildcard() -> Self {
+        Self {
+            allowed_origins: vec![],
+            wildcard: true,
+        }
+    }
+
+    /// Check if an origin is allowed.
+    fn is_allowed(&self, origin: &str) -> bool {
+        if self.wildcard {
+            return true;
+        }
+        self.allowed_origins.iter().any(|o| o == origin)
+    }
+
+    /// Check if wildcard mode is enabled.
+    #[cfg(test)]
+    pub fn is_wildcard(&self) -> bool {
+        self.wildcard
+    }
+}
+
+/// Preflight handler with explicit CORS origin validation.
+///
+/// Returns 403 Forbidden if the origin is not in the allowed list,
+/// otherwise returns proper CORS headers echoing the origin back.
+///
+/// # Arguments
+///
+/// * `origin` - The Origin header value from the request.
+/// * `config` - The CORS configuration.
+///
+/// # Security
+///
+/// - Origins not in the allowed list receive 403 Forbidden.
+/// - When the allowed list is empty, all origins are rejected (secure default).
+/// - The `Vary: Origin` header is included for proper caching.
+#[allow(clippy::unused_async)]
+pub async fn proxy_options_preflight_with_cors(
+    origin: Option<&str>,
+    config: std::sync::Arc<CorsConfig>,
+) -> Response {
+    // Handle wildcard mode
+    if config.wildcard {
+        return Response::builder()
+            .status(StatusCode::NO_CONTENT)
+            .header("Access-Control-Allow-Origin", "*")
+            .header("Access-Control-Allow-Methods", "GET, OPTIONS")
+            .header("Access-Control-Allow-Headers", "Authorization, Content-Type, Accept, Range")
+            .header("Access-Control-Max-Age", "86400")
+            .body(Body::empty())
+            .expect("Failed to build wildcard CORS response");
+    }
+
+    // Check if origin is provided
+    let Some(origin) = origin else {
+        // No origin header - return minimal response without CORS headers
+        return Response::builder()
+            .status(StatusCode::NO_CONTENT)
+            .header("Access-Control-Allow-Methods", "GET, OPTIONS")
+            .header("Access-Control-Allow-Headers", "Authorization, Content-Type, Accept, Range")
+            .header("Access-Control-Max-Age", "86400")
+            .body(Body::empty())
+            .expect("Failed to build no-origin CORS response");
+    };
+
+    // Check if origin is allowed
+    if !config.is_allowed(origin) {
+        return Response::builder()
+            .status(StatusCode::FORBIDDEN)
+            .header("Content-Type", "text/plain")
+            .body(Body::from("Origin not allowed"))
+            .expect("Failed to build forbidden CORS response");
+    }
+
+    // Origin is allowed - return proper CORS headers
+    Response::builder()
+        .status(StatusCode::NO_CONTENT)
+        .header("Access-Control-Allow-Origin", origin)
+        .header("Access-Control-Allow-Methods", "GET, OPTIONS")
+        .header("Access-Control-Allow-Headers", "Authorization, Content-Type, Accept, Range")
+        .header("Access-Control-Allow-Credentials", "true")
+        .header("Access-Control-Max-Age", "86400")
+        .header("Vary", "Origin")
+        .body(Body::empty())
+        .expect("Failed to build allowed CORS response")
 }
 
 // ------------------------------------------------------------------
@@ -702,40 +1022,22 @@ async fn send_with_redirect_validation(
 
 /// Validate that a URL is safe to proxy (not targeting internal services).
 ///
-/// Performs DNS resolution to guard against DNS rebinding attacks where a
-/// hostname passes string-level checks but resolves to a private IP.
+/// This function performs static URL validation only (scheme, hostname blocklist,
+/// literal IP checks). DNS-based SSRF protection is handled by `SsrfSafeDnsResolver`
+/// at connection time, which checks resolved IPs against the blocklist before
+/// establishing TCP connections.
+///
+/// This split approach provides:
+/// 1. Early rejection of obviously malicious URLs (private IPs, localhost, etc.)
+/// 2. Protection against DNS rebinding at connection time via the custom resolver
+/// 3. Avoids duplicate DNS lookups (previously this function and the resolver both did DNS)
 ///
 /// Delegates to `synctv_media_providers::ssrf` as the single source of truth
 /// for SSRF validation logic.
 pub async fn validate_proxy_url(raw: &str) -> Result<(), anyhow::Error> {
-    // Static string-level checks (scheme, hostname blocklist, literal IP)
+    // Static string-level checks only (scheme, hostname blocklist, literal IP)
+    // DNS-based SSRF protection is handled by SsrfSafeDnsResolver at connection time
     validate_proxy_url_static(raw)?;
-
-    // Resolve hostname and check all resolved IPs to prevent DNS rebinding
-    let parsed = url::Url::parse(raw)?;
-    let host = parsed.host_str().unwrap_or("");
-    // Only resolve if the host is NOT already a literal IP (already checked above)
-    if host.parse::<std::net::IpAddr>().is_err() {
-        let port = parsed.port().unwrap_or(if parsed.scheme() == "https" { 443 } else { 80 });
-        let addrs = tokio::net::lookup_host((host, port))
-            .await
-            .map_err(|e| anyhow::anyhow!("DNS lookup failed for {host}: {e}"))?;
-
-        let mut found = false;
-        for addr in addrs {
-            if ssrf::is_blocked_ip(addr.ip()) {
-                return Err(anyhow::anyhow!(
-                    "Hostname {host} resolves to private/reserved IP {}",
-                    addr.ip()
-                ));
-            }
-            found = true;
-        }
-        if !found {
-            return Err(anyhow::anyhow!("Hostname {host} resolved to no addresses"));
-        }
-    }
-
     Ok(())
 }
 

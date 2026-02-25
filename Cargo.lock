@@ -5633,6 +5633,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "axum",
+ "dashmap",
  "futures",
  "http-body-util",
  "percent-encoding",
@@ -5640,6 +5641,7 @@ dependencies = [
  "synctv-media-providers",
  "synctv-proto",
  "tokio",
+ "tower",
  "tracing",
  "url",
  "wiremock",

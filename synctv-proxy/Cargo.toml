@@ -19,6 +19,7 @@ tokio = { workspace = true, features = ["time"] }
 tracing.workspace = true
 synctv-proto.workspace = true
 synctv-media-providers.workspace = true
+dashmap.workspace = true
 
 [dev-dependencies]
 wiremock = { workspace = true }
@@ -26,3 +27,4 @@ tokio = { workspace = true, features = ["test-util", "macros", "rt-multi-thread"
 reqwest = { workspace = true }
 http-body-util = { workspace = true }
 axum = { workspace = true }
+tower = { workspace = true }

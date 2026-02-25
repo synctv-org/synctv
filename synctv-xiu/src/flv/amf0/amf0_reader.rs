@@ -6,15 +6,44 @@ use {
     indexmap::IndexMap,
 };
 
+/// Maximum nesting depth for AMF0 objects and arrays
+pub const MAX_DEPTH: usize = 32;
+
+/// Maximum number of keys in an AMF0 object or ECMA array
+pub const MAX_KEYS: usize = 1000;
+
 pub struct Amf0Reader {
     reader: BytesReader,
+    depth: usize,
 }
 
 impl Amf0Reader {
-    #[must_use] 
+    #[must_use]
     pub const fn new(reader: BytesReader) -> Self {
-        Self { reader }
+        Self { reader, depth: 0 }
     }
+
+    fn check_depth(&self) -> Result<(), Amf0ReadError> {
+        if self.depth > MAX_DEPTH {
+            return Err(Amf0ReadError {
+                value: Amf0ReadErrorValue::DepthLimitExceeded {
+                    depth: self.depth,
+                    max: MAX_DEPTH,
+                },
+            });
+        }
+        Ok(())
+    }
+
+    fn enter_nested(&mut self) -> Result<(), Amf0ReadError> {
+        self.depth += 1;
+        self.check_depth()
+    }
+
+    fn exit_nested(&mut self) {
+        self.depth = self.depth.saturating_sub(1);
+    }
+
     pub fn read_all(&mut self) -> Result<Vec<Amf0ValueType>, Amf0ReadError> {
         let mut results = vec![];
 
@@ -121,6 +150,13 @@ impl Amf0Reader {
     }
 
     pub fn read_object(&mut self) -> Result<Amf0ValueType, Amf0ReadError> {
+        self.enter_nested()?;
+        let result = self.read_object_inner();
+        self.exit_nested();
+        result
+    }
+
+    fn read_object_inner(&mut self) -> Result<Amf0ValueType, Amf0ReadError> {
         let mut properties = IndexMap::new();
 
         loop {
@@ -128,6 +164,16 @@ impl Amf0Reader {
 
             if is_eof {
                 break;
+            }
+
+            // Check key count limit
+            if properties.len() >= MAX_KEYS {
+                return Err(Amf0ReadError {
+                    value: Amf0ReadErrorValue::KeyLimitExceeded {
+                        count: properties.len() + 1,
+                        max: MAX_KEYS,
+                    },
+                });
             }
 
             let key = self.read_raw_string()?;
@@ -140,6 +186,13 @@ impl Amf0Reader {
     }
 
     pub fn read_ecma_array(&mut self) -> Result<Amf0ValueType, Amf0ReadError> {
+        self.enter_nested()?;
+        let result = self.read_ecma_array_inner();
+        self.exit_nested();
+        result
+    }
+
+    fn read_ecma_array_inner(&mut self) -> Result<Amf0ValueType, Amf0ReadError> {
         let len = self.reader.read_u32::<BigEndian>()?;
 
         let mut properties = IndexMap::new();
@@ -147,6 +200,16 @@ impl Amf0Reader {
         //here we do not use length to traverse the map, because in some
         //other media server, the length is 0 which is not correct.
         while !self.is_read_object_eof()? {
+            // Check key count limit
+            if properties.len() >= MAX_KEYS {
+                return Err(Amf0ReadError {
+                    value: Amf0ReadErrorValue::KeyLimitExceeded {
+                        count: properties.len() + 1,
+                        max: MAX_KEYS,
+                    },
+                });
+            }
+
             let key = self.read_raw_string()?;
             let val = self.read_any()?;
             properties.insert(key, val);

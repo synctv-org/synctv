@@ -15,6 +15,10 @@ pub enum Amf0ReadErrorValue {
     WrongType,
     #[error("string length {length} exceeds maximum {max}")]
     StringTooLong { length: usize, max: usize },
+    #[error("object nesting depth {depth} exceeds maximum {max}")]
+    DepthLimitExceeded { depth: usize, max: usize },
+    #[error("object key count {count} exceeds maximum {max}")]
+    KeyLimitExceeded { count: usize, max: usize },
 }
 
 #[derive(Debug, thiserror::Error)]

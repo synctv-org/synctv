@@ -337,11 +337,20 @@ impl std::fmt::Debug for SecurityPipeline {
 /// # Example
 ///
 /// ```ignore
-/// let pipeline = SecurityPipelineBuilder::new(user_service)
-///     .with_user_cache(user_cache)
-///     .with_token_blacklist(blacklist_store, key_builder)
-///     .with_blacklist_enforcement(BlacklistEnforcement { require_blacklist: true })
-///     .build()?;
+/// // This example is ignored because SecurityPipelineBuilder requires multiple dependencies.
+/// // In practice, use your dependency injection framework to construct the pipeline.
+/// use std::sync::Arc;
+/// use synctv_core::service::auth::{SecurityPipelineBuilder, BlacklistEnforcement};
+///
+/// // Assuming you have:
+/// // - user_service: Arc<UserService>
+/// // - blacklist_store: Arc<dyn TokenBlacklistStore>
+/// // - key_builder: KeyBuilder
+///
+/// // let pipeline = SecurityPipelineBuilder::new(user_service)
+/// //     .with_token_blacklist(blacklist_store, key_builder)
+/// //     .with_blacklist_enforcement(BlacklistEnforcement { require_blacklist: true })
+/// //     .build()?;
 /// ```
 pub struct SecurityPipelineBuilder {
     user_service: Arc<UserService>,

@@ -164,16 +164,23 @@ impl std::fmt::Display for ClusterMode {
 /// Type alias for our failsafe circuit breaker
 type RedisCircuitBreaker = failsafe::StateMachine<failure_policy::ConsecutiveFailures<backoff::Exponential>, ()>;
 
+/// Initial backoff duration for re-registration after heartbeat failure
+const INITIAL_REREGISTER_BACKOFF_SECS: u64 = 1;
+/// Maximum backoff duration for re-registration
+const MAX_REREGISTER_BACKOFF_SECS: u64 = 60;
+/// Backoff multiplier for exponential growth
+const REREGISTER_BACKOFF_MULTIPLIER: u64 = 2;
+
 /// Redis-based node registry
 ///
 /// Tracks active nodes in the cluster using Redis key expiration.
 /// Uses epoch-based fencing tokens to prevent split-brain scenarios.
 ///
-/// **Redis is required.** All cluster coordination relies on Redis for
-/// distributed state. If Redis is not configured, the application should
-/// fail at startup (enforced in `main.rs`).
+/// For non-cluster deployments, use [`new_local_only`] to create a registry
+/// that operates without Redis, using only local in-memory node discovery.
 pub struct NodeRegistry {
-    redis_client: redis::Client,
+    /// Redis client (None in local-only mode)
+    redis_client: Option<redis::Client>,
     /// Cached multiplexed connection, reused across operations
     cached_conn: tokio::sync::Mutex<Option<redis::aio::MultiplexedConnection>>,
     /// Timestamp of last successful connection health check (Unix seconds)
@@ -184,7 +191,7 @@ pub struct NodeRegistry {
     /// Current epoch for this node (incremented on each registration)
     current_epoch: Arc<AtomicU64>,
     /// Circuit breaker for Redis operations (failsafe crate)
-    circuit_breaker: RedisCircuitBreaker,
+    circuit_breaker: Option<RedisCircuitBreaker>,
     /// Short-lived cache for `get_all_nodes()`. See [`NODES_CACHE_TTL_SECS`] for
     /// staleness trade-off documentation.
     nodes_cache: moka::future::Cache<(), Vec<NodeInfo>>,
@@ -200,6 +207,12 @@ pub struct NodeRegistry {
     last_refreshed: Arc<AtomicU64>,
     /// Cancellation token for graceful shutdown of background tasks (health probe).
     cancel_token: CancellationToken,
+    /// Timestamp of last re-registration attempt (Unix milliseconds)
+    last_reregister_attempt: AtomicU64,
+    /// Current backoff duration for re-registration (milliseconds)
+    reregister_backoff_ms: AtomicU64,
+    /// Whether we're in local-only mode (no Redis)
+    local_only: bool,
 }
 
 impl NodeRegistry {
@@ -218,20 +231,61 @@ impl NodeRegistry {
             .build();
 
         Ok(Self {
-            redis_client,
+            redis_client: Some(redis_client),
             cached_conn: tokio::sync::Mutex::new(None),
             last_health_check: AtomicU64::new(0),
             node_id,
             heartbeat_timeout_secs,
             local_nodes: Arc::new(RwLock::new(HashMap::new())),
             current_epoch: Arc::new(AtomicU64::new(1)),
-            circuit_breaker: create_redis_circuit_breaker(),
+            circuit_breaker: Some(create_redis_circuit_breaker()),
             nodes_cache,
             key_prefix: format!("{}cluster:nodes", key_prefix),
             health_probe_running: Arc::new(AtomicBool::new(false)),
             cluster_mode: Arc::new(parking_lot::RwLock::new(ClusterMode::Normal)),
             last_refreshed: Arc::new(AtomicU64::new(0)),
             cancel_token: CancellationToken::new(),
+            last_reregister_attempt: AtomicU64::new(0),
+            reregister_backoff_ms: AtomicU64::new(INITIAL_REREGISTER_BACKOFF_SECS * 1000),
+            local_only: false,
+        })
+    }
+
+    /// Create a new node registry in local-only mode without Redis.
+    ///
+    /// This is useful for non-cluster deployments where Redis is not available
+    /// or not needed. In local-only mode:
+    /// - Node discovery operates purely from local in-memory cache
+    /// - The registry starts in `ClusterMode::Standalone` mode
+    /// - Operations that require Redis (register, heartbeat to Redis, etc.) will
+    ///   work with local cache only
+    /// - Use `merge_dns_peers` or `test_insert_local` to populate the local cache
+    ///
+    /// This supports the architecture where "non-cluster mode can work without Redis".
+    pub fn new_local_only(node_id: String, heartbeat_timeout_secs: i64, key_prefix: &str) -> Result<Self> {
+        let nodes_cache = moka::future::Cache::builder()
+            .time_to_live(std::time::Duration::from_secs(NODES_CACHE_TTL_SECS))
+            .max_capacity(1)
+            .build();
+
+        Ok(Self {
+            redis_client: None,
+            cached_conn: tokio::sync::Mutex::new(None),
+            last_health_check: AtomicU64::new(0),
+            node_id,
+            heartbeat_timeout_secs,
+            local_nodes: Arc::new(RwLock::new(HashMap::new())),
+            current_epoch: Arc::new(AtomicU64::new(1)),
+            circuit_breaker: None,
+            nodes_cache,
+            key_prefix: format!("{}cluster:nodes", key_prefix),
+            health_probe_running: Arc::new(AtomicBool::new(false)),
+            cluster_mode: Arc::new(parking_lot::RwLock::new(ClusterMode::Standalone)),
+            last_refreshed: Arc::new(AtomicU64::new(0)),
+            cancel_token: CancellationToken::new(),
+            last_reregister_attempt: AtomicU64::new(0),
+            reregister_backoff_ms: AtomicU64::new(INITIAL_REREGISTER_BACKOFF_SECS * 1000),
+            local_only: true,
         })
     }
 
@@ -240,8 +294,17 @@ impl NodeRegistry {
     /// `MultiplexedConnection` handles concurrent requests internally and
     /// reconnects automatically, so we reuse a single instance.
     /// Every 30 seconds, we PING the connection to detect stale connections early.
+    ///
+    /// Returns an error in local-only mode (no Redis client configured).
     async fn get_conn(&self) -> Result<redis::aio::MultiplexedConnection> {
-        let client = &self.redis_client;
+        let client = match &self.redis_client {
+            Some(c) => c,
+            None => {
+                return Err(Error::Database(
+                    "Redis not configured (local-only mode)".to_string(),
+                ));
+            }
+        };
         const HEALTH_CHECK_INTERVAL_SECS: u64 = 30;
 
         let mut guard = self.cached_conn.lock().await;
@@ -308,9 +371,9 @@ impl NodeRegistry {
     }
 
     /// Check the circuit breaker and get a Redis connection.
-    /// Returns `Err` if the circuit breaker is open. Records connection
-    /// failure in the circuit breaker, but does NOT record success --
-    /// callers must call `record_operation_result()` after the full
+    /// Returns `Err` if the circuit breaker is open or in local-only mode.
+    /// Records connection failure in the circuit breaker, but does NOT record
+    /// success -- callers must call `record_operation_result()` after the full
     /// operation (connection + command) completes.
     ///
     /// **Background health probe**: When the circuit breaker is open (after 3
@@ -319,7 +382,23 @@ impl NodeRegistry {
     /// to half-open (allowing the next operation to attempt). The probe task
     /// stops when the circuit closes or when the NodeRegistry is dropped.
     async fn get_conn_with_breaker(&self) -> Result<redis::aio::MultiplexedConnection> {
-        if !self.circuit_breaker.is_call_permitted() {
+        // In local-only mode, return error
+        if self.local_only {
+            return Err(Error::Database(
+                "Redis not configured (local-only mode)".to_string(),
+            ));
+        }
+
+        let circuit_breaker = match &self.circuit_breaker {
+            Some(cb) => cb,
+            None => {
+                return Err(Error::Database(
+                    "Circuit breaker not configured (local-only mode)".to_string(),
+                ));
+            }
+        };
+
+        if !circuit_breaker.is_call_permitted() {
             // Circuit is open - switch to Degraded mode and spawn background health probe
             {
                 let mut mode = self.cluster_mode.write();
@@ -328,7 +407,9 @@ impl NodeRegistry {
                     *mode = ClusterMode::Degraded;
                 }
             }
-            self.maybe_start_health_probe(self.redis_client.clone());
+            if let Some(client) = self.redis_client.clone() {
+                self.maybe_start_health_probe(client);
+            }
             return Err(Error::Database(
                 "Redis circuit breaker is open, request rejected".to_string(),
             ));
@@ -336,7 +417,9 @@ impl NodeRegistry {
         let result = self.get_conn().await;
         if result.is_err() {
             *self.cached_conn.lock().await = None;
-            self.circuit_breaker.on_error();
+            if let Some(ref cb) = self.circuit_breaker {
+                cb.on_error();
+            }
         }
         result
     }
@@ -348,8 +431,13 @@ impl NodeRegistry {
     /// The probe task automatically stops when the circuit closes, the
     /// `CancellationToken` is cancelled, or the NodeRegistry is dropped.
     fn maybe_start_health_probe(&self, client: redis::Client) {
+        let circuit_breaker = match &self.circuit_breaker {
+            Some(cb) => cb,
+            None => return, // No circuit breaker in local-only mode
+        };
+
         // Check if circuit is open before spawning
-        if self.circuit_breaker.is_call_permitted() {
+        if circuit_breaker.is_call_permitted() {
             return; // Circuit is not open, no need for probe
         }
 
@@ -365,7 +453,7 @@ impl NodeRegistry {
 
         // Spawn a detached health probe task.
         // The guard is reset to `false` when the task exits (success, circuit close, or drop).
-        let breaker = self.circuit_breaker.clone();
+        let breaker = circuit_breaker.clone();
         let probe_guard = self.health_probe_running.clone();
         let cancel = self.cancel_token.clone();
         tokio::spawn(async move {
@@ -426,8 +514,15 @@ impl NodeRegistry {
     /// Record the result of a complete Redis operation (connection + command).
     /// Also detects Sentinel failover errors and clears the cached connection.
     fn record_operation_result<T: std::fmt::Debug>(&self, result: &std::result::Result<T, impl std::fmt::Display>) {
+        // Skip circuit breaker operations in local-only mode
+        if self.local_only {
+            return;
+        }
+
         if result.is_ok() {
-            self.circuit_breaker.on_success();
+            if let Some(ref cb) = self.circuit_breaker {
+                cb.on_success();
+            }
             // Transition back to Normal mode on successful operation
             let mut mode = self.cluster_mode.write();
             if *mode != ClusterMode::Normal {
@@ -451,7 +546,9 @@ impl NodeRegistry {
                 }
                 self.last_health_check.store(0, Ordering::Relaxed);
             }
-            self.circuit_breaker.on_error();
+            if let Some(ref cb) = self.circuit_breaker {
+                cb.on_error();
+            }
         }
     }
 
@@ -472,7 +569,36 @@ impl NodeRegistry {
     /// 3. Write new registration with TTL
     ///
     /// This prevents race conditions when multiple instances register concurrently.
+    ///
+    /// In local-only mode, this only updates the local cache without Redis.
     pub async fn register(&self, grpc_address: String, http_address: String) -> Result<()> {
+        // In local-only mode, just update local cache
+        if self.local_only {
+            let local_epoch = self.current_epoch.load(Ordering::SeqCst);
+            let new_epoch = local_epoch + 1;
+            self.current_epoch.store(new_epoch, Ordering::SeqCst);
+
+            let mut node_info = NodeInfo::new(self.node_id.clone(), grpc_address, http_address);
+            node_info.epoch = new_epoch;
+            node_info.last_heartbeat = Utc::now();
+            node_info.metadata.insert("local_epoch".to_string(), local_epoch.to_string());
+            node_info.metadata.insert("registered_at".to_string(), chrono::Utc::now().timestamp().to_string());
+
+            let mut nodes = self.local_nodes.write().await;
+            nodes.insert(self.node_id.clone(), node_info);
+
+            // Reset backoff on successful registration
+            self.reset_reregister_backoff();
+
+            tracing::debug!(
+                node_id = %self.node_id,
+                epoch = new_epoch,
+                "Node registered in local-only mode"
+            );
+
+            return Ok(());
+        }
+
         let mut conn = self.get_conn_with_breaker().await?;
 
         let key = self.node_key(&self.node_id);
@@ -554,6 +680,9 @@ impl NodeRegistry {
         let mut nodes = self.local_nodes.write().await;
         nodes.insert(self.node_id.clone(), node_info);
 
+        // Reset backoff on successful registration
+        self.reset_reregister_backoff();
+
         tracing::debug!(
             node_id = %self.node_id,
             epoch = new_epoch,
@@ -574,7 +703,21 @@ impl NodeRegistry {
     /// automatically attempts re-registration once (to recover from transient Redis issues
     /// or key expiry). Subsequent heartbeat calls will detect if the auto-registration
     /// succeeded.
+    ///
+    /// **Backoff**: When re-registration fails, an exponential backoff is applied to
+    /// prevent hammering Redis during outages. The backoff starts at 1s and doubles
+    /// with each consecutive failure, up to a maximum of 60s. A successful heartbeat
+    /// or registration resets the backoff.
     pub async fn heartbeat(&self) -> Result<HeartbeatResult> {
+        // In local-only mode, just update local cache and return success
+        if self.local_only {
+            let mut nodes = self.local_nodes.write().await;
+            if let Some(node) = nodes.get_mut(&self.node_id) {
+                node.last_heartbeat = Utc::now();
+            }
+            return Ok(HeartbeatResult::Ok);
+        }
+
         {
             let mut conn = self.get_conn_with_breaker().await?;
 
@@ -683,6 +826,17 @@ impl NodeRegistry {
                     );
                     return Ok(HeartbeatResult::EmptyAddress);
                 }
+
+                // Check if we're in backoff period
+                if self.is_in_reregister_backoff_sync() {
+                    tracing::debug!(
+                        node_id = %self.node_id,
+                        backoff_ms = self.reregister_backoff_ms.load(Ordering::Relaxed),
+                        "Heartbeat: skipping re-registration due to backoff"
+                    );
+                    return Ok(HeartbeatResult::NeedReregistration);
+                }
+
                 tracing::warn!(
                     node_id = %self.node_id,
                     "Heartbeat failed: key not found, auto-registering"
@@ -694,8 +848,12 @@ impl NodeRegistry {
                         error = %e,
                         "Auto-registration after heartbeat failure failed"
                     );
+                    // Apply backoff on failure
+                    self.apply_reregister_backoff();
                     return Ok(HeartbeatResult::NeedReregistration);
                 }
+                // Reset backoff on success
+                self.reset_reregister_backoff();
                 tracing::info!(
                     node_id = %self.node_id,
                     "Auto-registration after heartbeat failure succeeded"
@@ -715,6 +873,17 @@ impl NodeRegistry {
                     );
                     return Ok(HeartbeatResult::EmptyAddress);
                 }
+
+                // Check if we're in backoff period
+                if self.is_in_reregister_backoff_sync() {
+                    tracing::debug!(
+                        node_id = %self.node_id,
+                        backoff_ms = self.reregister_backoff_ms.load(Ordering::Relaxed),
+                        "Heartbeat: skipping re-registration due to backoff (epoch mismatch)"
+                    );
+                    return Ok(HeartbeatResult::EpochMismatch(remote_epoch));
+                }
+
                 tracing::warn!(
                     node_id = %self.node_id,
                     local_epoch = current_epoch,
@@ -728,8 +897,12 @@ impl NodeRegistry {
                         error = %e,
                         "Auto-registration after epoch mismatch failed"
                     );
+                    // Apply backoff on failure
+                    self.apply_reregister_backoff();
                     return Ok(HeartbeatResult::EpochMismatch(remote_epoch));
                 }
+                // Reset backoff on success
+                self.reset_reregister_backoff();
                 tracing::info!(
                     node_id = %self.node_id,
                     new_epoch = self.current_epoch.load(Ordering::SeqCst),
@@ -744,6 +917,9 @@ impl NodeRegistry {
         if let Some(node) = nodes.get_mut(&self.node_id) {
             node.last_heartbeat = Utc::now();
         }
+
+        // Reset backoff on successful heartbeat
+        self.reset_reregister_backoff();
 
         Ok(HeartbeatResult::Ok)
     }
@@ -1334,6 +1510,104 @@ impl NodeRegistry {
     #[doc(hidden)]
     pub async fn test_get_local(&self, node_id: &str) -> Option<NodeInfo> {
         self.get_node_local(node_id).await
+    }
+
+    // ============ Re-registration backoff methods ============
+
+    /// Check if we're currently in a backoff period for re-registration.
+    ///
+    /// Returns `true` if the time since the last re-registration attempt is
+    /// less than the current backoff duration.
+    fn is_in_reregister_backoff_sync(&self) -> bool {
+        let last_attempt = self.last_reregister_attempt.load(Ordering::Relaxed);
+        if last_attempt == 0 {
+            return false; // No previous attempt, not in backoff
+        }
+
+        let backoff_ms = self.reregister_backoff_ms.load(Ordering::Relaxed);
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u64;
+
+        let elapsed_ms = now_ms.saturating_sub(last_attempt);
+        elapsed_ms < backoff_ms
+    }
+
+    /// Apply exponential backoff after a failed re-registration.
+    ///
+    /// Updates the last attempt timestamp and increases the backoff duration
+    /// by the multiplier (2x), up to the maximum.
+    fn apply_reregister_backoff(&self) {
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u64;
+
+        self.last_reregister_attempt.store(now_ms, Ordering::Relaxed);
+
+        // Increase backoff exponentially, up to max
+        let current_backoff = self.reregister_backoff_ms.load(Ordering::Relaxed);
+        let new_backoff = std::cmp::min(
+            current_backoff * REREGISTER_BACKOFF_MULTIPLIER,
+            MAX_REREGISTER_BACKOFF_SECS * 1000,
+        );
+        self.reregister_backoff_ms.store(new_backoff, Ordering::Relaxed);
+
+        tracing::debug!(
+            previous_backoff_ms = current_backoff,
+            new_backoff_ms = new_backoff,
+            "Increased re-registration backoff"
+        );
+    }
+
+    /// Reset the re-registration backoff after a successful operation.
+    ///
+    /// Called after successful heartbeat or registration to clear the backoff
+    /// state, allowing immediate re-registration on the next failure.
+    fn reset_reregister_backoff(&self) {
+        let current_backoff = self.reregister_backoff_ms.load(Ordering::Relaxed);
+        if current_backoff > INITIAL_REREGISTER_BACKOFF_SECS * 1000 {
+            tracing::debug!(
+                previous_backoff_ms = current_backoff,
+                "Resetting re-registration backoff to initial value"
+            );
+        }
+        self.reregister_backoff_ms
+            .store(INITIAL_REREGISTER_BACKOFF_SECS * 1000, Ordering::Relaxed);
+        // Reset last_reregister_attempt so next failure won't be in backoff
+        self.last_reregister_attempt.store(0, Ordering::Relaxed);
+    }
+
+    /// Check if currently in re-registration backoff period (async wrapper for tests).
+    #[doc(hidden)]
+    pub async fn is_in_reregister_backoff(&self) -> bool {
+        self.is_in_reregister_backoff_sync()
+    }
+
+    /// Get the current re-registration backoff duration.
+    #[doc(hidden)]
+    pub async fn current_reregister_backoff(&self) -> std::time::Duration {
+        std::time::Duration::from_millis(self.reregister_backoff_ms.load(Ordering::Relaxed))
+    }
+
+    /// Get the timestamp of the last re-registration attempt (for tests).
+    #[doc(hidden)]
+    pub async fn last_reregister_attempt(&self) -> u64 {
+        self.last_reregister_attempt.load(Ordering::Relaxed)
+    }
+
+    /// Set a specific backoff duration for testing purposes.
+    #[doc(hidden)]
+    pub async fn set_reregister_backoff_for_test(&self, duration: std::time::Duration) {
+        self.reregister_backoff_ms
+            .store(duration.as_millis() as u64, Ordering::Relaxed);
+        // Set last attempt to now so the backoff is active
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u64;
+        self.last_reregister_attempt.store(now_ms, Ordering::Relaxed);
     }
 }
 

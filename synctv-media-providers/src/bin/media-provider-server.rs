@@ -69,12 +69,12 @@ impl CircuitBreaker {
 
     /// Check whether a request should be allowed through.
     fn allow_request(&self) -> bool {
-        let failures = self.consecutive_failures.load(Ordering::Relaxed);
+        let failures = self.consecutive_failures.load(Ordering::SeqCst);
         if failures < CIRCUIT_BREAKER_THRESHOLD {
             return true; // Closed
         }
         // Circuit is open — check if the half-open timeout has elapsed
-        let opened_at = self.opened_at.load(Ordering::Relaxed);
+        let opened_at = self.opened_at.load(Ordering::SeqCst);
         if opened_at < 0 {
             return true;
         }
@@ -86,20 +86,20 @@ impl CircuitBreaker {
 
     /// Record a successful request: reset failure counter.
     fn record_success(&self) {
-        self.consecutive_failures.store(0, Ordering::Relaxed);
-        self.opened_at.store(-1, Ordering::Relaxed);
+        self.consecutive_failures.store(0, Ordering::SeqCst);
+        self.opened_at.store(-1, Ordering::SeqCst);
     }
 
     /// Record a failure: increment counter and open circuit if threshold reached.
     fn record_failure(&self, service: &str) {
-        let prev = self.consecutive_failures.fetch_add(1, Ordering::Relaxed);
+        let prev = self.consecutive_failures.fetch_add(1, Ordering::SeqCst);
         if prev + 1 >= CIRCUIT_BREAKER_THRESHOLD {
             let now = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map_or(0, |d| d.as_secs() as i64);
             // Only update opened_at when transitioning to Open
             if prev + 1 == CIRCUIT_BREAKER_THRESHOLD {
-                self.opened_at.store(now, Ordering::Relaxed);
+                self.opened_at.store(now, Ordering::SeqCst);
                 error!(
                     service = %service,
                     threshold = CIRCUIT_BREAKER_THRESHOLD,

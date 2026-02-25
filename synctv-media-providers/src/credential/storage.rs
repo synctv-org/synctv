@@ -9,6 +9,8 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
+use crate::ssrf::check_url;
+
 /// Error type for credential storage operations
 #[derive(Debug, thiserror::Error)]
 pub enum CredentialStorageError {
@@ -173,6 +175,26 @@ impl CredentialStorage for InMemoryCredentialStorage {
         provider_instance_name: Option<&str>,
         data: CredentialData,
     ) -> Result<StoredCredential> {
+        // SSRF validation: Check host URL for Alist and Emby credentials
+        let host_url = match &data {
+            CredentialData::Alist { host, .. } => Some(host.as_str()),
+            CredentialData::Emby { host, .. } => Some(host.as_str()),
+            CredentialData::Bilibili { .. } => None, // Bilibili has no host URL
+        };
+
+        if let Some(url) = host_url {
+            let ssrf_result = check_url(url);
+            if !ssrf_result.is_ok() {
+                return Err(CredentialStorageError::InvalidData(format!(
+                    "SSRF validation failed: {}",
+                    match ssrf_result {
+                        crate::ssrf::SsrfCheckResult::Blocked(reason) => reason,
+                        crate::ssrf::SsrfCheckResult::Ok => unreachable!(),
+                    }
+                )));
+            }
+        }
+
         let provider = data.provider_type();
         let server_id = data.server_id();
         let key = Self::make_key(user_id, provider, &server_id);

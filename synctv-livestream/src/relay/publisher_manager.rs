@@ -630,10 +630,19 @@ impl PublisherManager {
     /// with the local `active_publishers` map. Without this, publishers
     /// that were cleaned up from Redis would remain stale until TTL expiry.
     ///
+    /// This method also cleans up zombie entries (local entries that no longer
+    /// exist in the registry) to prevent memory leaks when UnPublish events are lost.
+    ///
     /// Sets `is_restarting` before re-registration and clears it after,
     /// suppressing silent-publisher cleanup during the restart window.
     pub async fn reregister_all_publishers(&self) {
         self.set_restarting();
+
+        // Memory leak fix: First reconcile with registry to remove zombie entries
+        // (local entries that no longer exist in registry or were taken over).
+        // This prevents memory leaks when UnPublish events are lost.
+        self.reconcile_with_registry().await;
+
         // L-05: Snapshot both key and entry to access stored user_id for re-registration
         let snapshot: Vec<(String, Arc<PublisherEntry>)> = self
             .active_publishers
@@ -663,7 +672,9 @@ impl PublisherManager {
 
         for (publisher_key, entry) in &snapshot {
             if let Some((room_id, media_id)) = publisher_key.split_once(':') {
-                // L-05: Use stored user_id and node's grpc_address instead of empty strings
+                // Try to register the publisher in registry.
+                // After reconcile_with_registry, only entries owned by us remain,
+                // so we just need to refresh TTL or re-register if expired.
                 match self
                     .registry
                     .try_register_publisher(
@@ -682,11 +693,25 @@ impl PublisherManager {
                         );
                     }
                     Ok(false) => {
-                        warn!(
-                            "Could not re-register publisher for room {} / media {} (another node took over)",
-                            room_id, media_id
-                        );
-                        self.active_publishers.remove(publisher_key);
+                        // Entry exists in registry - refresh TTL instead
+                        match self
+                            .registry
+                            .refresh_publisher_ttl(room_id, media_id, &entry.user_id)
+                            .await
+                        {
+                            Ok(()) => {
+                                info!(
+                                    "Refreshed TTL for publisher room {} / media {}",
+                                    room_id, media_id
+                                );
+                            }
+                            Err(e) => {
+                                error!(
+                                    "Failed to refresh TTL for publisher room {} / media {}: {}",
+                                    room_id, media_id, e
+                                );
+                            }
+                        }
                     }
                     Err(e) => {
                         error!(
@@ -1144,5 +1169,215 @@ mod tests {
 
         // Should not panic when recording activity for a publisher that doesn't exist
         manager.record_publisher_activity("nonexistent", "publisher");
+    }
+
+    // ========================================================================
+    // Memory leak tests: reregister_all_publishers should clean up zombie entries
+    // ========================================================================
+
+    /// Test that reregister_all_publishers cleans up stale entries from local DashMap
+    /// when the registry entry no longer exists.
+    ///
+    /// Scenario:
+    /// 1. Publisher is tracked locally (entry in DashMap)
+    /// 2. Registry entry expires or is removed (e.g., TTL, external cleanup)
+    /// 3. UnPublish event is lost - handle_unpublish never called
+    /// 4. reregister_all_publishers is called
+    ///
+    /// Expected: The stale entry should be removed from DashMap.
+    #[tokio::test]
+    async fn test_reregister_removes_stale_entry_when_registry_entry_gone() {
+        let registry = Arc::new(MockStreamRegistry::new());
+        let (manager, _rx) = test_manager(registry.clone(), "test-node");
+
+        // 1. Register a publisher
+        registry
+            .try_register_publisher("room1", "media1", "test-node", "user1", "localhost:50051")
+            .await
+            .unwrap();
+
+        // 2. Track it locally (simulating Publish event)
+        insert_entry(&manager, "room1:media1");
+
+        // 3. Verify the entry is in DashMap
+        assert_eq!(manager.active_publishers.len(), 1);
+
+        // 4. Simulate registry entry being removed (TTL expiry, external cleanup)
+        //    but UnPublish event is lost
+        registry.unregister_publisher("room1", "media1").await.unwrap();
+
+        // 5. Call reregister_all_publishers - this should remove the stale entry
+        manager.reregister_all_publishers().await;
+
+        // 6. Verify the stale entry is removed
+        assert!(
+            manager.active_publishers.is_empty(),
+            "Stale entry should be removed from DashMap after reregister"
+        );
+    }
+
+    /// Test that reregister_all_publishers removes local entry when
+    /// the publisher is now owned by another node.
+    #[tokio::test]
+    async fn test_reregister_removes_entry_taken_over_by_other_node() {
+        let registry = Arc::new(MockStreamRegistry::new());
+        let (manager, _rx) = test_manager(registry.clone(), "test-node");
+
+        // 1. Register a publisher
+        registry
+            .try_register_publisher("room1", "media1", "test-node", "user1", "localhost:50051")
+            .await
+            .unwrap();
+
+        // 2. Track it locally
+        insert_entry(&manager, "room1:media1");
+
+        // 3. Verify tracking
+        assert_eq!(manager.active_publishers.len(), 1);
+
+        // 4. Simulate takeover by another node (ownership change)
+        registry.unregister_publisher("room1", "media1").await.unwrap();
+        registry
+            .try_register_publisher("room1", "media1", "other-node", "user1", "other:50051")
+            .await
+            .unwrap();
+
+        // 5. reregister should remove our local entry since we no longer own it
+        manager.reregister_all_publishers().await;
+
+        // 6. Local tracking should be empty
+        assert!(
+            manager.active_publishers.is_empty(),
+            "Entry should be removed since other node took over"
+        );
+    }
+
+    /// Test that reregister_all_publishers keeps entries that are still
+    /// owned by this node in the registry.
+    #[tokio::test]
+    async fn test_reregister_keeps_entries_owned_by_this_node() {
+        let registry = Arc::new(MockStreamRegistry::new());
+        let (manager, _rx) = test_manager(registry.clone(), "test-node");
+
+        // 1. Register a publisher
+        registry
+            .try_register_publisher("room1", "media1", "test-node", "user1", "localhost:50051")
+            .await
+            .unwrap();
+
+        // 2. Track it locally
+        insert_entry(&manager, "room1:media1");
+
+        // 3. Verify tracking
+        assert_eq!(manager.active_publishers.len(), 1);
+
+        // 4. reregister should keep this entry since we still own it
+        manager.reregister_all_publishers().await;
+
+        // 5. Entry should still be tracked
+        assert_eq!(
+            manager.active_publishers.len(),
+            1,
+            "Entry should still be tracked since we own it"
+        );
+    }
+
+    /// Test that reregister correctly handles a mix of:
+    /// - Publishers still owned by this node (keep)
+    /// - Publishers taken over by other nodes (remove)
+    /// - Publishers no longer in registry (remove)
+    #[tokio::test]
+    async fn test_reregister_partial_cleanup() {
+        let registry = Arc::new(MockStreamRegistry::new());
+        let (manager, _rx) = test_manager(registry.clone(), "test-node");
+
+        // 1. Register three publishers
+        registry
+            .try_register_publisher("room1", "media1", "test-node", "user1", "localhost:50051")
+            .await
+            .unwrap();
+        registry
+            .try_register_publisher("room2", "media2", "test-node", "user1", "localhost:50051")
+            .await
+            .unwrap();
+        registry
+            .try_register_publisher("room3", "media3", "test-node", "user1", "localhost:50051")
+            .await
+            .unwrap();
+
+        // 2. Track all three locally
+        insert_entry(&manager, "room1:media1");
+        insert_entry(&manager, "room2:media2");
+        insert_entry(&manager, "room3:media3");
+
+        // 3. Verify all tracked
+        assert_eq!(manager.active_publishers.len(), 3);
+
+        // 4. Remove room2 from registry (TTL expired)
+        registry.unregister_publisher("room2", "media2").await.unwrap();
+
+        // 5. Transfer room3 to another node
+        registry.unregister_publisher("room3", "media3").await.unwrap();
+        registry
+            .try_register_publisher("room3", "media3", "other-node", "user1", "other:50051")
+            .await
+            .unwrap();
+
+        // 6. reregister should:
+        //    - Keep room1 (we still own it)
+        //    - Remove room2 (not in registry)
+        //    - Remove room3 (owned by other node)
+        manager.reregister_all_publishers().await;
+
+        // 7. Only room1 should remain
+        assert_eq!(manager.active_publishers.len(), 1, "Only room1 should remain");
+        assert!(
+            manager.active_publishers.contains_key("room1:media1"),
+            "room1:media1 should still be tracked"
+        );
+    }
+
+    /// Regression test for the DashMap memory leak.
+    ///
+    /// This test simulates the exact scenario that causes the memory leak:
+    /// 1. Multiple publishers are tracked locally
+    /// 2. All registry entries expire or are removed
+    /// 3. UnPublish events are lost (e.g., broadcast channel lag)
+    /// 4. Without the fix, entries would remain in DashMap forever
+    /// 5. With the fix, reregister_all_publishers cleans them up
+    #[tokio::test]
+    async fn test_memory_leak_regression_zombie_cleanup() {
+        let registry = Arc::new(MockStreamRegistry::new());
+        let (manager, _rx) = test_manager(registry.clone(), "test-node");
+
+        // 1. Create 10 publishers
+        for i in 0..10 {
+            let room = format!("room{i}");
+            let media = format!("media{i}");
+            registry
+                .try_register_publisher(&room, &media, "test-node", "user1", "localhost:50051")
+                .await
+                .unwrap();
+            insert_entry(&manager, &format!("{room}:{media}"));
+        }
+
+        // 2. Verify all 10 are tracked
+        assert_eq!(manager.active_publishers.len(), 10);
+
+        // 3. Remove all from registry (simulating mass TTL expiry)
+        for i in 0..10 {
+            let room = format!("room{i}");
+            let media = format!("media{i}");
+            registry.unregister_publisher(&room, &media).await.unwrap();
+        }
+
+        // 4. reregister should clean up all zombie entries
+        manager.reregister_all_publishers().await;
+
+        // 5. Verify DashMap is empty (no memory leak)
+        assert!(
+            manager.active_publishers.is_empty(),
+            "All zombie entries should be cleaned up - no memory leak"
+        );
     }
 }

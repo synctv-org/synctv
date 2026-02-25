@@ -286,9 +286,14 @@ impl PermissionService {
     /// that room-specific permission settings will be ignored.
     ///
     /// # Example
+    ///
     /// ```ignore
-    /// let permission_service = PermissionService::new(...);
-    /// permission_service.warn_if_missing_settings_repo();
+    /// // This example is ignored because PermissionService requires multiple dependencies.
+    /// // In practice, use your dependency injection framework to construct the service.
+    /// use synctv_core::service::PermissionService;
+    ///
+    /// // Assuming you have a properly constructed PermissionService:
+    /// // permission_service.warn_if_missing_settings_repo();
     /// ```
     pub fn warn_if_missing_settings_repo(&self) {
         if !self.has_room_settings_repo() {

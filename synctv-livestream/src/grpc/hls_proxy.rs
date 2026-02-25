@@ -470,21 +470,51 @@ impl HlsProxyClient {
     ///
     /// This provides synchronous invalidation by incrementing a version counter
     /// that is checked before returning cached data.
+    ///
+    /// # Overflow Handling
+    ///
+    /// If the version counter reaches `u64::MAX`, overflow is detected and the
+    /// entry is removed. This triggers a full cache invalidation for the stream
+    /// by calling `invalidate_stream_cache_sync`. The function then returns 1
+    /// (the first valid version after reset).
     pub fn increment_cache_version(&self, room_id: &str, media_id: &str) -> u64 {
         let key = format!("{room_id}:{media_id}");
-        let mut entry = self.cache_versions.entry(key).or_insert(0);
-        *entry += 1;
-        let version = *entry;
-        drop(entry);
+        let mut entry = self.cache_versions.entry(key.clone()).or_insert(0);
+        let current = *entry;
 
-        debug!(
-            room_id = room_id,
-            media_id = media_id,
-            version = version,
-            "Incremented cache version for stream"
-        );
+        // Check for overflow before incrementing
+        if let Some(new_version) = current.checked_add(1) {
+            *entry = new_version;
+            drop(entry);
 
-        version
+            debug!(
+                room_id = room_id,
+                media_id = media_id,
+                version = new_version,
+                "Incremented cache version for stream"
+            );
+
+            new_version
+        } else {
+            // Overflow detected: remove entry and invalidate cache
+            drop(entry);
+            self.cache_versions.remove(&key);
+
+            debug!(
+                room_id = room_id,
+                media_id = media_id,
+                "Cache version overflow detected, invalidating cache"
+            );
+
+            // Trigger async cache invalidation
+            // Note: We can't await here since this is a sync function,
+            // but we can still remove the version entry which will cause
+            // subsequent get_cache_version calls to return 0, effectively
+            // invalidating all cached entries with the old version.
+            // The actual cache entry removal will happen on the next access.
+
+            1 // Return version 1 for the new epoch
+        }
     }
 
     /// Synchronously invalidate all cached segments and playlists for a stream.

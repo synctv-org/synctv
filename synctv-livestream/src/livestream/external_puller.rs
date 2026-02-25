@@ -333,14 +333,17 @@ impl ExternalStreamPuller {
                     return Ok(());
                 }
                 Err(e) => {
-                    // Reset retry counter if the connection was up for a meaningful duration
+                    // Reset retry counters if the connection was up for a meaningful duration
+                    // This prevents accumulating transient failures that were followed by
+                    // successful long-lived connections from triggering GLOBAL_MAX_ATTEMPTS
                     if stream_duration > MIN_SUCCESSFUL_DURATION {
                         info!(
                             room_id = %self.room_id,
                             duration_secs = stream_duration.as_secs(),
-                            "Resetting retry counter after successful long connection"
+                            "Resetting retry counters after successful long connection"
                         );
                         attempt = 0;
+                        global_attempt_count = 0;
                     }
 
                     if attempt >= MAX_RETRIES {

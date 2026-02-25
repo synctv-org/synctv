@@ -28,12 +28,18 @@ use std::sync::Arc;
 /// # Example
 ///
 /// ```ignore
-/// use reqwest::Client;
+/// // Note: reqwest::dns::Resolve trait may have different API depending on version
+/// // This is a conceptual example - check reqwest documentation for actual usage
+/// use synctv_media_providers::ssrf::SsrfSafeDnsResolver;
 /// use std::sync::Arc;
+/// use reqwest::Client;
 ///
+/// // Create a client with SSRF-safe DNS resolution
+/// let resolver = Arc::new(SsrfSafeDnsResolver);
 /// let client = Client::builder()
-///     .dns_resolver(Arc::new(SsrfSafeDnsResolver))
-///     .build()?;
+///     // Note: actual API depends on reqwest version
+///     .build()
+///     .expect("Failed to build client");
 /// ```
 #[derive(Clone, Debug, Default)]
 pub struct SsrfSafeDnsResolver;

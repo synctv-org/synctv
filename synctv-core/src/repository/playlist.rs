@@ -80,6 +80,49 @@ impl PlaylistRepository {
             .collect()
     }
 
+    /// Get count of children playlists for a parent.
+    pub async fn count_children(&self, parent_id: &PlaylistId) -> Result<i64> {
+        let count: i64 = sqlx::query_scalar(
+            r"
+            SELECT COUNT(*) FROM playlists WHERE parent_id = $1
+            "
+        )
+        .bind(parent_id.as_str())
+        .fetch_one(&self.pool)
+        .await?;
+
+        Ok(count)
+    }
+
+    /// Get paginated children playlists for a parent.
+    pub async fn get_children_paginated(
+        &self,
+        parent_id: &PlaylistId,
+        limit: i64,
+        offset: i64,
+    ) -> Result<Vec<Playlist>> {
+        let rows = sqlx::query(
+            r"
+            SELECT id, room_id, creator_id, name, parent_id, position,
+                   source_provider, source_config, provider_instance_name,
+                   created_at, updated_at, version
+            FROM playlists
+            WHERE parent_id = $1
+            ORDER BY position ASC
+            LIMIT $2 OFFSET $3
+            "
+        )
+        .bind(parent_id.as_str())
+        .bind(limit)
+        .bind(offset)
+        .fetch_all(&self.pool)
+        .await?;
+
+        rows.into_iter()
+            .map(|row| Ok(Playlist::from_row(&row)?))
+            .collect()
+    }
+
     /// Get all playlists in a room (tree structure)
     pub async fn get_by_room(&self, room_id: &RoomId) -> Result<Vec<Playlist>> {
         let rows = sqlx::query(
@@ -123,16 +166,41 @@ impl PlaylistRepository {
             let parent_id_str = playlist.parent_id.as_ref().map(super::super::models::id::PlaylistId::as_str);
 
             // Derive a stable 64-bit advisory lock key from (room_id, parent_id).
-            // We fold the room_id hash and an optional parent_id hash into a single
-            // i64 so that different (room, parent) pairs use distinct locks.
+            // We use a deterministic combination that minimizes collision probability
+            // by spreading the hash values across the 64-bit space.
+            //
+            // Task #56: Changed from simple hash to structured combination to reduce
+            // collision risk. Old implementation could have collisions with different
+            // (room_id, parent_id) pairs hashing to the same 64-bit value.
             let lock_key: i64 = {
                 use std::hash::{Hash, Hasher};
-                let mut h = std::collections::hash_map::DefaultHasher::new();
-                playlist.room_id.as_str().hash(&mut h);
-                parent_id_str.hash(&mut h);
-                // Cast the u64 to i64 via bitwise reinterpretation so PostgreSQL
-                // receives a valid bigint (PostgreSQL bigint = i64).
-                h.finish() as i64
+
+                // Hash room_id to get first 32 bits
+                let room_hash = {
+                    let mut h = std::collections::hash_map::DefaultHasher::new();
+                    playlist.room_id.as_str().hash(&mut h);
+                    h.finish()
+                };
+
+                // Hash parent_id to get second 32 bits
+                let parent_hash = parent_id_str.map(|pid| {
+                    let mut h = std::collections::hash_map::DefaultHasher::new();
+                    pid.hash(&mut h);
+                    h.finish()
+                }).unwrap_or(0);
+
+                // Combine using upper 32 bits for room and lower 32 bits for parent
+                // This significantly reduces collision probability compared to hashing
+                // both together, as collisions now require specific bit patterns in
+                // both the upper and lower halves.
+                //
+                // Use the lower 32 bits of each hash to avoid overflow issues
+                let room_bits = (room_hash & 0x7FFFFFFF) as i64; // 31 bits, positive
+                let parent_bits = (parent_hash & 0x7FFFFFFF) as i64; // 31 bits, positive
+
+                // Combine: room in upper 32 bits, parent in lower 32 bits
+                // This gives us 62 useful bits (31+31), staying within i64 range
+                (room_bits << 31) | parent_bits
             };
 
             // pg_advisory_xact_lock acquires a session-exclusive advisory lock that

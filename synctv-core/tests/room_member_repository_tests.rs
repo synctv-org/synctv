@@ -690,3 +690,118 @@ async fn test_banned_by_set_null_on_user_delete() {
     assert!(banned_member_after.is_some());
     assert_eq!(banned_member_after.unwrap().0, None, "banned_by should be NULL after admin user is deleted");
 }
+
+// ========== Task #30: update_permissions left_at validation ==========
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_update_permissions_after_member_left_should_fail() {
+    // CRITICAL: update_permissions should not allow updating permissions for
+    // members who have left the room (left_at IS NOT NULL).
+    //
+    // BUG: Currently update_permissions doesn't check left_at, allowing
+    // "ghost" permission updates on departed members.
+
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let room_repo = RoomRepository::new(pool.clone());
+    let member_repo = RoomMemberRepository::new(pool.clone());
+
+    // Create owner and member
+    let owner = user_repo.create(&make_user("owner_permissions_test")).await.unwrap();
+    let member_user = user_repo.create(&make_user("member_left_test")).await.unwrap();
+
+    // Create room
+    let room = room_repo.create(&make_room("Permissions Test Room", &owner.id)).await.unwrap();
+
+    // Add member with no permissions
+    let new_member = make_member(room.id.clone(), member_user.id.clone(), RoomRole::Member);
+    let member = member_repo
+        .add_with_options(&new_member, &AddMemberOptions::new())
+        .await
+        .unwrap();
+
+    // Member leaves the room - set left_at directly via SQL
+    sqlx::query(
+        "UPDATE room_members SET left_at = CURRENT_TIMESTAMP, status = $3 \
+         WHERE room_id = $1 AND user_id = $2"
+    )
+    .bind(room.id.as_str())
+    .bind(member_user.id.as_str())
+    .bind(MemberStatus::Left)
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    // Get the updated member (use get_any because get only returns active members)
+    let left_member = member_repo.get_any(&room.id, &member_user.id).await.unwrap().unwrap();
+    assert!(left_member.left_at.is_some(), "Member should have left_at set");
+
+    // BUG ATTEMPT: Try to update permissions for departed member
+    // This should fail with OptimisticLockConflict but currently succeeds (BUG)
+    let result = member_repo
+        .update_permissions(
+            &room.id,
+            &member_user.id,
+            0b00000001, // Add permission bit 0
+            0,          // Remove nothing
+            left_member.version,
+        )
+        .await;
+
+    assert!(
+        result.is_err(),
+        "update_permissions should fail for departed member (left_at IS NOT NULL)"
+    );
+
+    match result {
+        Err(Error::OptimisticLockConflict) => { /* Expected */ }
+        Err(e) => panic!("Expected OptimisticLockConflict, got: {:?}", e),
+        Ok(_) => panic!("update_permissions should not succeed for departed member"),
+    }
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_update_permissions_for_active_member_should_succeed() {
+    // Verify that update_permissions still works for active members (the valid case)
+
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let room_repo = RoomRepository::new(pool.clone());
+    let member_repo = RoomMemberRepository::new(pool.clone());
+
+    let owner = user_repo.create(&make_user("owner_active_perm")).await.unwrap();
+    let member_user = user_repo.create(&make_user("member_active")).await.unwrap();
+
+    let room = room_repo.create(&make_room("Active Permissions Test", &owner.id)).await.unwrap();
+
+    // Add active member
+    let new_member = make_member(room.id.clone(), member_user.id.clone(), RoomRole::Member);
+    let member = member_repo
+        .add_with_options(&new_member, &AddMemberOptions::new())
+        .await
+        .unwrap();
+
+    assert!(member.left_at.is_none(), "Active member should have left_at = NULL");
+
+    // Update permissions for active member - this should succeed
+    let updated = member_repo
+        .update_permissions(
+            &room.id,
+            &member_user.id,
+            0b00000001, // Add permission bit 0
+            0,          // Remove nothing
+            member.version,
+        )
+        .await;
+
+    assert!(
+        updated.is_ok(),
+        "update_permissions should succeed for active member"
+    );
+
+    let updated_member = updated.unwrap();
+    assert_eq!(updated_member.added_permissions, 0b00000001);
+    assert_eq!(updated_member.version, member.version + 1);
+}

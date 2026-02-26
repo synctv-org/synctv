@@ -211,6 +211,28 @@ impl SsrfCheckResult {
 /// }
 /// ```
 pub fn check_url_with_policy(url: &str, policy: Policy) -> SsrfCheckResult {
+    // Parse URL to check host for additional IP ranges not covered by url_jail
+    if let Ok(parsed) = url::Url::parse(url) {
+        if let Some(host) = parsed.host_str() {
+            // Handle IPv6 addresses with brackets
+            let host_str = if host.starts_with('[') && host.ends_with(']') {
+                &host[1..host.len() - 1]
+            } else {
+                host
+            };
+
+            // Check if host is an IP address that needs additional blocking
+            if let Ok(ip) = host_str.parse::<IpAddr>() {
+                // Check for CGNAT, multicast, and reserved ranges
+                if is_blocked_ip(ip) {
+                    return SsrfCheckResult::Blocked(format!(
+                        "IP {ip} is in blocked range"
+                    ));
+                }
+            }
+        }
+    }
+
     // Use url_jail's synchronous validation
     match url_jail::validate_sync(url, policy) {
         Ok(_) => SsrfCheckResult::Ok,

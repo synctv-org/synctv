@@ -1,6 +1,7 @@
 //! Data cleanup service for periodic maintenance tasks
 //!
 //! Coordinates cleanup of:
+//! - Rooms past room_ttl threshold (soft-delete)
 //! - Soft-deleted records (users, rooms) past retention period
 //! - Expired email verification tokens
 //! - Expired media provider credentials
@@ -20,6 +21,8 @@ use super::LeaderCheck;
 /// Configuration for data cleanup retention periods
 #[derive(Debug, Clone)]
 pub struct CleanupConfig {
+    /// Room TTL in seconds (0 = never expire). Rooms with updated_at older than this are soft-deleted.
+    pub room_ttl_seconds: i64,
     /// Days to retain soft-deleted users before permanent deletion (0 = never purge)
     pub soft_delete_retention_days: u32,
     /// Days to retain soft-deleted rooms before permanent deletion (0 = never purge)
@@ -39,6 +42,7 @@ pub struct CleanupConfig {
 impl Default for CleanupConfig {
     fn default() -> Self {
         Self {
+            room_ttl_seconds: 172800, // 48 hours in seconds (matches global settings default)
             soft_delete_retention_days: 90,
             room_soft_delete_retention_days: 90,
             expired_token_retention_days: 7,
@@ -57,6 +61,8 @@ pub struct CleanupResult {
     pub users_purged: u64,
     /// Number of soft-deleted rooms permanently deleted
     pub rooms_purged: u64,
+    /// Number of rooms soft-deleted due to room_ttl expiration
+    pub rooms_expired: u64,
     /// Number of expired email tokens deleted
     pub tokens_deleted: u64,
     /// Number of expired credentials deleted
@@ -90,6 +96,19 @@ impl CleanupService {
     /// Returns a summary of what was cleaned up.
     pub async fn run_all(&self) -> CleanupResult {
         let mut result = CleanupResult::default();
+
+        // 0. Soft-delete rooms past room_ttl threshold
+        if self.config.room_ttl_seconds > 0 {
+            match self.soft_delete_expired_rooms().await {
+                Ok(count) => {
+                    result.rooms_expired = count;
+                    if count > 0 {
+                        info!(count, "Soft-deleted expired rooms (past room_ttl)");
+                    }
+                }
+                Err(e) => warn!(error = %e, "Failed to soft-delete expired rooms"),
+            }
+        }
 
         // 1. Purge soft-deleted users
         if self.config.soft_delete_retention_days > 0 {
@@ -183,6 +202,31 @@ impl CleanupService {
         }
 
         result
+    }
+
+    /// Soft-delete rooms that have exceeded the room_ttl threshold.
+    ///
+    /// Rooms with `updated_at` older than `room_ttl_seconds` ago are soft-deleted
+    /// by setting `deleted_at = CURRENT_TIMESTAMP`. This prevents unbounded room
+    /// growth and ensures inactive rooms are eventually cleaned up.
+    ///
+    /// Only affects rooms that are not already soft-deleted.
+    async fn soft_delete_expired_rooms(&self) -> Result<u64> {
+        let ttl_seconds = self.config.room_ttl_seconds;
+        let result = sqlx::query(
+            r"
+            UPDATE rooms
+            SET deleted_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
+            WHERE deleted_at IS NULL
+              AND updated_at < CURRENT_TIMESTAMP - ($1 || ' seconds')::INTERVAL
+            ",
+        )
+        .bind(ttl_seconds)
+        .execute(&self.pool)
+        .await
+        .internal_with_err("Failed to soft-delete expired rooms")?;
+
+        Ok(result.rows_affected())
     }
 
     /// Permanently delete users that were soft-deleted beyond the retention period
@@ -370,6 +414,7 @@ impl CleanupService {
                 }
 
                 info!(
+                    room_ttl_seconds = service.config.room_ttl_seconds,
                     room_retention_days = service.config.room_soft_delete_retention_days,
                     user_retention_days = service.config.soft_delete_retention_days,
                     "Starting periodic data cleanup"
@@ -378,6 +423,7 @@ impl CleanupService {
 
                 let total = result.users_purged
                     + result.rooms_purged
+                    + result.rooms_expired
                     + result.tokens_deleted
                     + result.credentials_deleted
                     + result.notifications_deleted
@@ -386,7 +432,8 @@ impl CleanupService {
                 if total > 0 {
                     info!(
                         users = result.users_purged,
-                        rooms = result.rooms_purged,
+                        rooms_purged = result.rooms_purged,
+                        rooms_expired = result.rooms_expired,
                         tokens = result.tokens_deleted,
                         credentials = result.credentials_deleted,
                         notifications = result.notifications_deleted,
@@ -409,6 +456,7 @@ mod tests {
     #[test]
     fn test_cleanup_config_default() {
         let config = CleanupConfig::default();
+        assert_eq!(config.room_ttl_seconds, 172800); // 48 hours
         assert_eq!(config.soft_delete_retention_days, 90);
         assert_eq!(config.room_soft_delete_retention_days, 90);
         assert_eq!(config.expired_token_retention_days, 7);
@@ -423,6 +471,7 @@ mod tests {
         let result = CleanupResult::default();
         assert_eq!(result.users_purged, 0);
         assert_eq!(result.rooms_purged, 0);
+        assert_eq!(result.rooms_expired, 0);
         assert_eq!(result.tokens_deleted, 0);
         assert_eq!(result.credentials_deleted, 0);
         assert_eq!(result.notifications_deleted, 0);
@@ -432,6 +481,7 @@ mod tests {
     #[test]
     fn test_cleanup_config_custom() {
         let config = CleanupConfig {
+            room_ttl_seconds: 3600, // 1 hour
             soft_delete_retention_days: 30,
             room_soft_delete_retention_days: 60,
             expired_token_retention_days: 3,
@@ -440,6 +490,7 @@ mod tests {
             notification_max_retention_days: 60,
             chat_max_messages_per_room: 1000,
         };
+        assert_eq!(config.room_ttl_seconds, 3600);
         assert_eq!(config.soft_delete_retention_days, 30);
         assert_eq!(config.room_soft_delete_retention_days, 60);
         assert_eq!(config.expired_token_retention_days, 3);
@@ -452,6 +503,7 @@ mod tests {
     #[test]
     fn test_cleanup_config_zero_disables() {
         let config = CleanupConfig {
+            room_ttl_seconds: 0, // disabled
             soft_delete_retention_days: 0,
             room_soft_delete_retention_days: 0,
             expired_token_retention_days: 0,
@@ -461,6 +513,7 @@ mod tests {
             chat_max_messages_per_room: 0,
         };
         // All zero means all cleanup is disabled
+        assert_eq!(config.room_ttl_seconds, 0);
         assert_eq!(config.soft_delete_retention_days, 0);
         assert_eq!(config.expired_credential_buffer_hours, 0);
         assert_eq!(config.notification_max_retention_days, 0);
@@ -472,6 +525,7 @@ mod tests {
         let result = CleanupResult {
             users_purged: 5,
             rooms_purged: 3,
+            rooms_expired: 10,
             tokens_deleted: 20,
             credentials_deleted: 15,
             notifications_deleted: 50,
@@ -479,10 +533,11 @@ mod tests {
         };
         let total = result.users_purged
             + result.rooms_purged
+            + result.rooms_expired
             + result.tokens_deleted
             + result.credentials_deleted
             + result.notifications_deleted
             + result.chat_messages_deleted;
-        assert_eq!(total, 193);
+        assert_eq!(total, 203);
     }
 }

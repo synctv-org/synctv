@@ -429,6 +429,36 @@ impl MediaRepository {
         Ok((items, total))
     }
 
+    /// Get media items from a playlist with limit and offset (no count query).
+    ///
+    /// This is a simpler version of `get_playlist_paginated` that doesn't return
+    /// the total count, useful when you only need the items.
+    pub async fn get_by_playlist_limit_offset(
+        &self,
+        playlist_id: &PlaylistId,
+        limit: i64,
+        offset: i64,
+    ) -> Result<Vec<Media>> {
+        let rows = sqlx::query(
+            r"
+            SELECT id, playlist_id, room_id, creator_id, name, position,
+                   source_provider, source_config, provider_instance_name,
+                   added_at, version
+             FROM media
+             WHERE playlist_id = $1
+             ORDER BY position ASC
+             LIMIT $2 OFFSET $3
+            "
+        )
+        .bind(playlist_id.as_str())
+        .bind(limit)
+        .bind(offset)
+        .fetch_all(&self.pool)
+        .await?;
+
+        rows.into_iter().map(|row| Ok(Media::from_row(&row)?)).collect()
+    }
+
     /// Delete media from playlist
     pub async fn delete(&self, media_id: &MediaId) -> Result<bool> {
         let result = sqlx::query(

@@ -112,6 +112,8 @@ pub struct RoomFixture {
     name: String,
     description: String,
     created_by: UserId,
+    created_at: Option<chrono::DateTime<chrono::Utc>>,
+    updated_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
 impl RoomFixture {
@@ -121,6 +123,8 @@ impl RoomFixture {
             name: "Test Room".to_string(),
             description: String::new(),
             created_by: random_user_id(),
+            created_at: None,
+            updated_at: None,
         }
     }
 
@@ -144,7 +148,20 @@ impl RoomFixture {
         self
     }
 
+    /// Set the created_at timestamp for testing room_ttl enforcement
+    pub fn with_created_at(mut self, created_at: chrono::DateTime<chrono::Utc>) -> Self {
+        self.created_at = Some(created_at);
+        self
+    }
+
+    /// Set the updated_at timestamp for testing room_ttl enforcement
+    pub fn with_updated_at(mut self, updated_at: chrono::DateTime<chrono::Utc>) -> Self {
+        self.updated_at = Some(updated_at);
+        self
+    }
+
     pub fn build(self) -> crate::models::Room {
+        let now = Utc::now();
         crate::models::Room {
             id: self.id,
             name: self.name,
@@ -152,8 +169,8 @@ impl RoomFixture {
             created_by: self.created_by,
             status: crate::models::RoomStatus::Active,
             is_banned: false,
-            created_at: Utc::now(),
-            updated_at: Utc::now(),
+            created_at: self.created_at.unwrap_or(now),
+            updated_at: self.updated_at.unwrap_or(now),
             deleted_at: None,
             version: 0,
         }

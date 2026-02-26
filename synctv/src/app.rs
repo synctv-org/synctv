@@ -479,7 +479,10 @@ impl Application {
 
         let cleanup_service = synctv_core::service::CleanupService::new(
             infra.pool.clone(),
-            synctv_core::service::CleanupConfig::default(),
+            synctv_core::service::cleanup::CleanupConfig {
+                room_ttl_seconds: core.services.settings_registry.room_ttl.get().unwrap_or(172800),
+                ..synctv_core::service::cleanup::CleanupConfig::default()
+            },
             leader.leader_check.clone(),
         );
         shutdown.register_task(

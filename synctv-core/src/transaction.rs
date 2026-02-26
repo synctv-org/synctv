@@ -43,6 +43,86 @@
 //!     tx.rollback().await?;
 //! }
 //! ```
+//!
+//! ## Deadlock Prevention
+//!
+//! When updating multiple rows across different tables in a transaction, deadlocks can occur
+//! if concurrent transactions lock rows in different orders. PostgreSQL detects deadlocks
+//! and will abort one transaction with error code 40P01.
+//!
+//! ### Lock Ordering Rules
+//!
+//! To prevent deadlocks, **always acquire locks in a consistent order**:
+//!
+//! 1. **Lock parent entities before child entities** (e.g., room before room_members)
+//! 2. **Lock by ID in ascending order** when updating multiple rows of the same table
+//! 3. **Use FOR UPDATE explicitly** when reading before updating
+//!
+//! ### Examples
+//!
+//! **CORRECT: Lock room first, then members**
+//! ```text
+//! // Transaction A: Update room and its members
+//! let room = sqlx::query("SELECT * FROM rooms WHERE id = $1 FOR UPDATE")
+//!     .bind(room_id)
+//!     .fetch_one(&mut *tx).await?;
+//!
+//! let members = sqlx::query("SELECT * FROM room_members WHERE room_id = $1 FOR UPDATE")
+//!     .bind(room_id)
+//!     .fetch_all(&mut *tx).await?;
+//! ```
+//!
+//! **INCORRECT: Inconsistent ordering causes deadlock**
+//! ```text
+//! // Transaction A: Updates room 1, then room 2
+//! // Transaction B: Updates room 2, then room 1
+//! // DEADLOCK: A waits for B's lock on room 2, B waits for A's lock on room 1
+//! ```
+//!
+//! **CORRECT: Always lock rooms in ID order**
+//! ```text
+//! let room_ids = vec!["room_1", "room_2"];
+//! let mut sorted_ids = room_ids.clone();
+//! sorted_ids.sort(); // Consistent ordering
+//!
+//! for id in sorted_ids {
+//!     sqlx::query("SELECT * FROM rooms WHERE id = $1 FOR UPDATE")
+//!         .bind(id)
+//!         .fetch_one(&mut *tx).await?;
+//! }
+//! ```
+//!
+//! ### Retry Strategy
+//!
+//! When a deadlock occurs (error code 40P01), the operation should be retried:
+//!
+//! ```text
+//! const MAX_RETRIES: u32 = 3;
+//! for attempt in 0..MAX_RETRIES {
+//!     match do_operation(&pool).await {
+//!         Ok(result) => return Ok(result),
+//!         Err(sqlx::Error::Database(e)) if e.code().as_deref() == Some("40P01") => {
+//!             // Deadlock detected, retry with fresh transaction
+//!             tokio::time::sleep(Duration::from_millis(10 * (1 << attempt))).await;
+//!             continue;
+//!         }
+//!         Err(e) => return Err(e.into()),
+//!     }
+//! }
+//! ```
+//!
+//! ### Entity Lock Hierarchy
+//!
+//! For this codebase, use the following lock ordering:
+//!
+//! 1. Users (highest priority - lock first)
+//! 2. Rooms
+//! 3. Room Members
+//! 4. Playlists
+//! 5. Media
+//! 6. Playback State (lowest priority - lock last)
+//!
+//! When locking multiple entities of the same type, sort by ID (lexicographically for string IDs).
 
 use sqlx::{PgPool, Postgres, Transaction};
 

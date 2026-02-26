@@ -305,54 +305,8 @@ impl BilibiliSourceConfig {
     }
 }
 
-impl BilibiliSourceConfig {
-    /// Encrypt the cookies field in a `source_config` JSON value using the provided encryption.
-    ///
-    /// Replaces the plaintext `cookies` map with an encrypted string value.
-    /// If cookies are empty or encryption is not available, returns the value unchanged.
-    fn encrypt_cookies_in_value(
-        source_config: &Value,
-        encryption: &crate::service::CredentialEncryption,
-    ) -> Result<Value, ProviderError> {
-        let mut config = source_config.clone();
-        if let Some(obj) = config.as_object_mut() {
-            if let Some(cookies_value) = obj.get("cookies") {
-                // Only encrypt if cookies is a non-empty object (not already encrypted string)
-                if let Some(cookies_map) = cookies_value.as_object() {
-                    if !cookies_map.is_empty() {
-                        let encrypted = encryption.encrypt(cookies_value)
-                            .map_err(|e| ProviderError::ApiError(format!("Failed to encrypt Bilibili cookies: {e}")))?;
-                        obj.insert("cookies".to_string(), Value::String(encrypted));
-                    }
-                }
-            }
-        }
-        Ok(config)
-    }
-
-    /// Decrypt the cookies field in a `source_config` JSON value if it was encrypted.
-    ///
-    /// If the `cookies` field is a string starting with `enc:`, decrypt it back to
-    /// a map. Otherwise, return the value unchanged (backward compatible with plaintext).
-    fn decrypt_cookies_in_value(
-        source_config: &Value,
-        encryption: &crate::service::CredentialEncryption,
-    ) -> Result<Value, ProviderError> {
-        let mut config = source_config.clone();
-        if let Some(obj) = config.as_object_mut() {
-            if let Some(cookies_value) = obj.get("cookies") {
-                if let Some(encrypted_str) = cookies_value.as_str() {
-                    if encrypted_str.starts_with("enc:") {
-                        let decrypted = encryption.decrypt(encrypted_str)
-                            .map_err(|e| ProviderError::ApiError(format!("Failed to decrypt Bilibili cookies: {e}")))?;
-                        obj.insert("cookies".to_string(), decrypted);
-                    }
-                }
-            }
-        }
-        Ok(config)
-    }
-}
+// Use shared credential encryption utilities from crypto_utils module
+use super::crypto_utils::{encrypt_field_in_value, decrypt_field_in_value};
 
 impl TryFrom<&Value> for BilibiliSourceConfig {
     type Error = ProviderError;
@@ -375,7 +329,7 @@ impl MediaProvider for BilibiliProvider {
     ) -> Result<PlaybackResult, ProviderError> {
         // Decrypt cookies if encryption is configured (handles both encrypted and plaintext)
         let decrypted_config = if let Some(enc) = _ctx.credential_encryption {
-            BilibiliSourceConfig::decrypt_cookies_in_value(source_config, enc)?
+            decrypt_field_in_value(source_config, enc, "cookies", "Bilibili")?
         } else {
             source_config.clone()
         };
@@ -698,7 +652,7 @@ impl MediaProvider for BilibiliProvider {
     ) -> Result<Value, ProviderError> {
         // Encrypt cookies in source_config before storage if encryption is available
         if let Some(enc) = _ctx.credential_encryption {
-            BilibiliSourceConfig::encrypt_cookies_in_value(&source_config, enc)
+            encrypt_field_in_value(&source_config, enc, "cookies", "Bilibili")
         } else {
             Ok(source_config)
         }
@@ -707,7 +661,7 @@ impl MediaProvider for BilibiliProvider {
     fn cache_key(&self, ctx: &ProviderContext<'_>, source_config: &Value) -> String {
         // Decrypt cookies if encrypted before hashing for consistent cache keys
         let decrypted = if let Some(enc) = ctx.credential_encryption {
-            BilibiliSourceConfig::decrypt_cookies_in_value(source_config, enc)
+            decrypt_field_in_value(source_config, enc, "cookies", "Bilibili")
                 .unwrap_or_else(|_| source_config.clone())
         } else {
             source_config.clone()
@@ -741,9 +695,9 @@ impl MediaProvider for BilibiliProvider {
                     .chars().take(16).collect::<String>()
             };
             let full_id = format!("{identifier}:{user_hash}");
-            format!("{}:playback:bilibili:{:x}", ctx.key_prefix, Sha256::digest(full_id.as_bytes()))
+            super::build_playback_cache_key(&ctx.key_prefix, "bilibili", &full_id)
         } else {
-            format!("{}:playback:bilibili:unknown", ctx.key_prefix)
+            super::build_unknown_cache_key(&ctx.key_prefix, "bilibili")
         }
     }
 }

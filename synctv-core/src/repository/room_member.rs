@@ -488,6 +488,10 @@ impl RoomMemberRepository {
     }
 
     /// Update member Allow/Deny permissions with optimistic locking
+    ///
+    /// Only updates members that are still active (`left_at IS NULL`). Members
+    /// who have left the room will not have their permissions modified; the call
+    /// returns `OptimisticLockConflict` in that case (same as a version mismatch).
     pub async fn update_permissions(
         &self,
         room_id: &RoomId,
@@ -502,7 +506,7 @@ impl RoomMemberRepository {
                 added_permissions = $3,
                 removed_permissions = $4,
                 version = version + 1
-             WHERE room_id = $1 AND user_id = $2 AND version = $5
+             WHERE room_id = $1 AND user_id = $2 AND version = $5 AND left_at IS NULL
              RETURNING
                 room_id, user_id, role, status,
                 added_permissions, removed_permissions,

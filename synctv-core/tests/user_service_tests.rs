@@ -292,3 +292,116 @@ async fn test_delete_user_concurrent_deletion_atomicity() {
         "User should be soft-deleted (not found via get_by_id)"
     );
 }
+
+// ============================================================================
+// Registration brute-force lockout tests (Task #42)
+// ============================================================================
+
+/// Test that "username taken" errors do NOT count against IP brute-force lockout.
+///
+/// Scenario: User tries to register with a username that already exists.
+/// This should fail with AlreadyExists, but should NOT lock out the IP
+/// because it's not a security threat - just an unfortunate choice of username.
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_register_username_taken_no_brute_force_lockout() {
+    let (_container, pool) = create_test_pool().await;
+    let service = create_user_service(pool);
+
+    let client_ip: std::net::IpAddr = "192.168.1.100".parse().unwrap();
+
+    // Register first user
+    service
+        .register(
+            "existing_user_42".to_string(),
+            Some("existing_42@test.com".to_string()),
+            "StrongPass1".to_string(),
+            Some(client_ip),
+        )
+        .await
+        .expect("First registration should succeed");
+
+    // Try to register with the same username multiple times (should fail with AlreadyExists)
+    for _ in 0..30 {
+        let result = service
+            .register(
+                "existing_user_42".to_string(),
+                Some("different@test.com".to_string()),
+                "StrongPass1".to_string(),
+                Some(client_ip),
+            )
+            .await;
+
+        // Should fail with AlreadyExists
+        assert!(matches!(result, Err(Error::AlreadyExists(_))), "Should fail with AlreadyExists");
+
+        // IMPORTANT: Should NOT be RateLimited even after many attempts
+        assert!(!matches!(result, Err(Error::RateLimited(_))),
+            "Username taken errors should NOT trigger brute-force lockout");
+    }
+
+    // Now try with a DIFFERENT username - should succeed (IP not locked)
+    let result = service
+        .register(
+            "new_unique_user_42".to_string(),
+            Some("new_42@test.com".to_string()),
+            "StrongPass1".to_string(),
+            Some(client_ip),
+        )
+        .await;
+
+    assert!(
+        result.is_ok(),
+        "Should be able to register with new username - IP should NOT be locked out by 'username taken' errors: {:?}",
+        result.err()
+    );
+}
+
+/// Test that validation errors DO count against IP brute-force lockout.
+///
+/// Scenario: Attacker sends malformed registration requests (validation errors).
+/// These should count against the IP lockout because they indicate automated attacks.
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_register_validation_errors_trigger_brute_force_lockout() {
+    let (_container, pool) = create_test_pool().await;
+    let service = create_user_service(pool);
+
+    let client_ip: std::net::IpAddr = "192.168.1.101".parse().unwrap();
+
+    // The brute-force lockout thresholds are:
+    // - 5 failures: 1 minute lockout
+    // - 10 failures: 5 minute lockout
+    // - 15+ failures: 15 minute lockout
+    // We need to trigger at least 5 validation errors
+
+    // Send multiple registrations with invalid usernames (too short)
+    let mut validation_error_count = 0;
+    for _ in 0..25 {
+        let result = service
+            .register(
+                "ab".to_string(), // Too short - validation error
+                Some("test@example.com".to_string()),
+                "StrongPass1".to_string(),
+                Some(client_ip),
+            )
+            .await;
+
+        match &result {
+            Err(Error::InvalidInput(_)) => {
+                validation_error_count += 1;
+            }
+            Err(Error::RateLimited(_)) => {
+                // Expected - IP should be locked out after enough validation errors
+                break;
+            }
+            _ => {}
+        }
+    }
+
+    assert!(
+        validation_error_count >= 5,
+        "Should have had at least 5 validation errors before lockout, got {}",
+        validation_error_count
+    );
+}

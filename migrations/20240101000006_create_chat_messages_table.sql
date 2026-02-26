@@ -59,6 +59,15 @@ BEGIN
     );
     index_count := index_count + 1;
 
+    -- Index 3: Time-based queries and partition pruning (Task #18)
+    -- Supports DELETE WHERE created_at <= NOW() - INTERVAL '90 days'
+    -- and other time-range queries without room_id filter
+    EXECUTE format(
+        'CREATE INDEX IF NOT EXISTS %I ON %I(created_at DESC)',
+        partition_name || '_idx_created_at', partition_name
+    );
+    index_count := index_count + 1;
+
     RETURN json_build_object(
         'partition_name', partition_name,
         'start_date', start_date,

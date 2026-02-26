@@ -9,10 +9,9 @@
 use super::{
     MediaProvider, PlaybackResult, ProviderContext, ProviderError,
 };
-use crate::validation::{validate_url_for_ssrf, ValidationError};
+use crate::validation::{validate_rtmp_url_host_with_dns, validate_url_for_ssrf, ValidationError};
 use async_trait::async_trait;
 use serde_json::{json, Value};
-use std::net::IpAddr;
 
 /// `LiveProxy` `MediaProvider`
 ///
@@ -126,8 +125,8 @@ impl MediaProvider for LiveProxyProvider {
 /// Supports `rtmp://`, `http://`, and `https://` schemes.
 /// For HTTP(S) URLs, delegates to the shared `validate_url_for_ssrf` which covers
 /// hostname blocklists, IP range checks, and cloud metadata endpoints.
-/// For RTMP URLs (not parseable by `url::Url`), extracts the host manually and
-/// performs static + DNS resolution checks.
+/// For RTMP URLs, delegates to `validate_rtmp_url_host_with_dns` which performs
+/// static checks plus DNS resolution to prevent DNS rebinding attacks.
 async fn validate_source_url_host(raw: &str) -> Result<(), ProviderError> {
     // For HTTP(S) URLs, use the shared comprehensive SSRF validator
     if raw.starts_with("http://") || raw.starts_with("https://") {
@@ -139,77 +138,17 @@ async fn validate_source_url_host(raw: &str) -> Result<(), ProviderError> {
         });
     }
 
-    // For RTMP URLs, extract host and port from rtmp://host:port/app/stream format
-    let (host_str, port) = if let Some(rest) = raw.strip_prefix("rtmp://") {
-        let authority = rest.split('/').next().unwrap_or(rest);
-        if let Some((host, port_str)) = authority.rsplit_once(':') {
-            (host, port_str.parse::<u16>().unwrap_or(1935))
-        } else {
-            (authority, 1935u16)
-        }
-    } else {
-        return Err(ProviderError::InvalidConfig(format!("Cannot parse URL: {raw}")));
-    };
-
-    check_host_not_internal(host_str)?;
-    resolve_and_check_dns(host_str, port).await
-}
-
-/// Check a hostname/IP against the shared SSRF blocklists.
-///
-/// Uses `synctv_media_providers::ssrf` (via `crate::validation`) for comprehensive
-/// hostname and IP range checks including cloud metadata endpoints.
-fn check_host_not_internal(host: &str) -> Result<(), ProviderError> {
-    // Check IP addresses against private ranges using the authoritative SSRF validator
-    if let Ok(ip) = host.parse::<IpAddr>() {
-        if crate::validation::is_private_ip(&ip) {
-            return Err(ProviderError::InvalidConfig(
-                "Source URL targets a private IP address".to_string(),
-            ));
-        }
-        return Ok(());
+    // For RTMP URLs, use the shared async validator with DNS resolution
+    if raw.starts_with("rtmp://") || raw.starts_with("rtmps://") {
+        return validate_rtmp_url_host_with_dns(raw).await.map_err(|e| match e {
+            ValidationError::SSRF(msg) => {
+                ProviderError::InvalidConfig(format!("SSRF protection: {msg}"))
+            }
+            _ => ProviderError::InvalidConfig(e.to_string()),
+        });
     }
 
-    // Check hostnames against shared blocklist (covers localhost, metadata endpoints, etc.)
-    use synctv_media_providers::ssrf::{check_hostname, SsrfCheckResult};
-    match check_hostname(host) {
-        SsrfCheckResult::Ok => Ok(()),
-        SsrfCheckResult::Blocked(reason) => Err(ProviderError::InvalidConfig(
-            format!("Source URL targets a blocked host: {reason}"),
-        )),
-    }
-}
-
-/// Perform async DNS resolution and reject any address that resolves to a private IP.
-///
-/// This prevents DNS rebinding attacks where a domain passes static hostname
-/// checks but resolves to a private/internal IP address at query time.
-async fn resolve_and_check_dns(host: &str, port: u16) -> Result<(), ProviderError> {
-    // Skip DNS resolution for literal IP addresses (already validated above)
-    if host.parse::<IpAddr>().is_ok() {
-        return Ok(());
-    }
-
-    let addrs = tokio::net::lookup_host((host, port))
-        .await
-        .map_err(|e| ProviderError::InvalidConfig(format!("DNS lookup failed for {host}: {e}")))?;
-
-    let mut found = false;
-    for addr in addrs {
-        if crate::validation::is_private_ip(&addr.ip()) {
-            return Err(ProviderError::InvalidConfig(format!(
-                "Hostname {host} resolves to private/reserved IP {}",
-                addr.ip()
-            )));
-        }
-        found = true;
-    }
-
-    if !found {
-        return Err(ProviderError::InvalidConfig(format!(
-            "Hostname {host} resolved to no addresses"
-        )));
-    }
-
-    Ok(())
+    Err(ProviderError::InvalidConfig(format!(
+        "Unsupported URL scheme: {raw}"
+    )))
 }

@@ -10,8 +10,13 @@ use crate::{
     models::oauth2_client::OAuth2Provider,
     repository::{UserRepository, UserOAuthProviderRepository},
     service::auth::{hash_password, verify_password, JwtService, TokenType, BruteForceProtection, TokenBlacklistStore},
+    service::rate_limit::RateLimiter,
     Error, Result,
 };
+
+/// Default refresh token rate limit: 10 requests per minute per user
+const REFRESH_RATE_LIMIT_REQUESTS: u32 = 10;
+const REFRESH_RATE_LIMIT_WINDOW_SECS: u64 = 60;
 
 /// User service for business logic
 #[derive(Clone)]
@@ -31,6 +36,8 @@ pub struct UserService {
     token_blacklist: Arc<dyn TokenBlacklistStore>,
     /// Key builder for Redis keys
     key_builder: KeyBuilder,
+    /// Rate limiter for refresh token endpoint (prevents abuse/stolen token DoS)
+    refresh_rate_limiter: RateLimiter,
 }
 
 impl std::fmt::Debug for UserService {
@@ -52,6 +59,11 @@ impl UserService {
         key_builder: KeyBuilder,
         brute_force: BruteForceProtection,
     ) -> Self {
+        // Create in-memory rate limiter for refresh token endpoint
+        // Uses in-memory only since refresh rate limiting is per-instance
+        // (global enforcement is not critical for this use case)
+        let refresh_rate_limiter = RateLimiter::in_memory_only("synctv".to_string());
+
         Self {
             repository: UserRepository::new(pool),
             jwt_service,
@@ -62,6 +74,7 @@ impl UserService {
             email_verification_required: false,
             token_blacklist,
             key_builder,
+            refresh_rate_limiter,
         }
     }
 
@@ -100,12 +113,27 @@ impl UserService {
         // bypassing per-account lockout by varying the username on each attempt.
         self.brute_force.check_allowed("__registration__", client_ip).await?;
 
-        // Validate input
-        self.validate_username(&username)?;
-        if let Some(ref email) = email {
-            self.validate_email(email)?;
+        // Validate input - record failures for validation errors (potential attacks)
+        if let Err(e) = self.validate_username(&username) {
+            if let Err(err) = self.brute_force.record_failure("__registration__", client_ip).await {
+                tracing::warn!(error = %err, "Failed to record registration brute-force failure");
+            }
+            return Err(e);
         }
-        self.validate_password(&password)?;
+        if let Some(ref email) = email {
+            if let Err(e) = self.validate_email(email) {
+                if let Err(err) = self.brute_force.record_failure("__registration__", client_ip).await {
+                    tracing::warn!(error = %err, "Failed to record registration brute-force failure");
+                }
+                return Err(e);
+            }
+        }
+        if let Err(e) = self.validate_password(&password) {
+            if let Err(err) = self.brute_force.record_failure("__registration__", client_ip).await {
+                tracing::warn!(error = %err, "Failed to record registration brute-force failure");
+            }
+            return Err(e);
+        }
 
         // Hash password
         let password_hash = hash_password(&password).await?;
@@ -123,8 +151,25 @@ impl UserService {
         // Create user with email signup method.
         // The database UNIQUE constraints on username and email will reject
         // duplicates atomically -- no separate existence check needed.
+        //
+        // IMPORTANT: AlreadyExists errors (username/email taken) are NOT recorded
+        // as brute-force failures. A legitimate user trying to register with a
+        // common username shouldn't be locked out - they just need to pick another.
         let user = User::new_with_status(username.clone(), email.clone(), password_hash, Some(SignupMethod::Email), initial_status);
-        let created_user = self.repository.create(&user).await?;
+        let created_user = match self.repository.create(&user).await {
+            Ok(user) => user,
+            Err(Error::AlreadyExists(_)) => {
+                // Don't record failure for AlreadyExists - user just picked a taken username
+                return Err(Error::AlreadyExists("Username or email already taken".to_string()));
+            }
+            Err(e) => {
+                // Record failure for other database errors (could indicate attack)
+                if let Err(err) = self.brute_force.record_failure("__registration__", client_ip).await {
+                    tracing::warn!(error = %err, "Failed to record registration brute-force failure");
+                }
+                return Err(e);
+            }
+        };
 
         // Populate username cache
         self.username_cache.set(&created_user.id, &username).await?;
@@ -282,9 +327,19 @@ impl UserService {
             return Err(Error::Authentication("Authentication failed".to_string()));
         }
 
-        // Check email verification when email service is configured (generic message
-        // to prevent leaking account existence via distinct error messages)
-        if self.email_verification_required && user.email.is_some() && !user.email_verified {
+        // Check email verification when required (generic message to prevent
+        // account enumeration via different error responses).
+        //
+        // IMPORTANT: We check !email_verified directly without checking email.is_some()
+        // to prevent account enumeration. If we only checked users WITH email,
+        // attackers could distinguish:
+        // - Login fails → account has email configured
+        // - Login succeeds → OAuth2-only account (no email)
+        //
+        // By checking email_verified for ALL users, both types are handled uniformly:
+        // - Email users with unverified email: blocked
+        // - OAuth2 users (no email, email_verified=false): blocked
+        if self.email_verification_required && !user.email_verified {
             return Err(Error::Authentication(
                 "Authentication failed".to_string(),
             ));
@@ -381,6 +436,25 @@ impl UserService {
         let claims = self.jwt_service.verify_refresh_token(&refresh_token)?;
         let user_id = UserId::from_string(claims.sub.clone());
 
+        // Rate limit per-user refresh requests to prevent abuse.
+        // An attacker with a stolen token could otherwise:
+        // 1. Rapidly call refresh_token to exhaust server resources
+        // 2. Trigger family revocation, locking out the legitimate user
+        //
+        // Rate limit key is per-user: "refresh:<user_id>"
+        let rate_limit_key = format!("refresh:{}", user_id.as_str());
+        self.refresh_rate_limiter
+            .check_rate_limit(&rate_limit_key, REFRESH_RATE_LIMIT_REQUESTS, REFRESH_RATE_LIMIT_WINDOW_SECS)
+            .await
+            .map_err(|e| {
+                tracing::warn!(
+                    user_id = %user_id.as_str(),
+                    error = %e,
+                    "Refresh token rate limit exceeded"
+                );
+                Error::from(e)
+            })?;
+
         // Get user to ensure they still exist and are active
         let user = self
             .repository
@@ -398,9 +472,12 @@ impl UserService {
 
         // Re-check email verification: if the requirement was enabled after the token was
         // issued (or the user's email was un-verified by an admin), deny the refresh.
-        if self.email_verification_required && user.email.is_some() && !user.email_verified {
+        //
+        // IMPORTANT: Same logic as login() - check email_verified without email.is_some()
+        // to prevent account enumeration. Use generic error message for consistency.
+        if self.email_verification_required && !user.email_verified {
             return Err(Error::Authentication(
-                "Email verification required".to_string(),
+                "Authentication failed".to_string(),
             ));
         }
 

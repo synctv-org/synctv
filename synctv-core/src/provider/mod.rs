@@ -19,6 +19,7 @@
 // Core traits and types
 pub mod config;
 pub mod context;
+pub mod crypto_utils;
 pub mod error;
 pub mod provider_client;
 pub mod registry;
@@ -142,6 +143,50 @@ pub fn bilibili_headers() -> std::collections::HashMap<String, String> {
     headers
 }
 
+/// Build a cache key for provider playback results.
+///
+/// Uses SHA256 to create a deterministic cache key from the key prefix,
+/// provider name, and content identifier. This ensures consistent cache keys
+/// across different provider implementations.
+///
+/// # Arguments
+///
+/// * `key_prefix` - The cache key prefix (e.g., from `ProviderContext::key_prefix`)
+/// * `provider_name` - The provider name (e.g., "bilibili", "alist", "emby")
+/// * `identifier` - A unique identifier for the content (e.g., "host:token:path")
+///
+/// # Returns
+///
+/// A cache key string in the format: `{key_prefix}:playback:{provider}:{sha256_hash}`
+#[must_use]
+pub fn build_playback_cache_key(key_prefix: &str, provider_name: &str, identifier: &str) -> String {
+    use sha2::{Sha256, Digest};
+    format!(
+        "{}:playback:{}:{:x}",
+        key_prefix,
+        provider_name,
+        Sha256::digest(identifier.as_bytes())
+    )
+}
+
+/// Build a fallback cache key for unknown/invalid provider configurations.
+///
+/// Returns a cache key that won't match any valid configuration but still
+/// follows the expected format.
+///
+/// # Arguments
+///
+/// * `key_prefix` - The cache key prefix
+/// * `provider_name` - The provider name
+///
+/// # Returns
+///
+/// A cache key string: `{key_prefix}:playback:{provider}:unknown`
+#[must_use]
+pub fn build_unknown_cache_key(key_prefix: &str, provider_name: &str) -> String {
+    format!("{}:playback:{}:unknown", key_prefix, provider_name)
+}
+
 /// Credential field names that must never be included in API responses.
 ///
 /// These fields are stripped from `source_config` before serialization to
@@ -178,6 +223,60 @@ pub fn strip_source_config_credentials(source_config: &serde_json::Value) -> ser
             serde_json::Value::Array(arr.iter().map(strip_source_config_credentials).collect())
         }
         other => other.clone(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_build_playback_cache_key_produces_consistent_format() {
+        let key = build_playback_cache_key("synctv:test", "bilibili", "video:BV123:12345:userhash");
+        assert!(key.starts_with("synctv:test:playback:bilibili:"));
+        // Should contain a hex hash (64 characters for SHA256)
+        let parts: Vec<&str> = key.split(':').collect();
+        assert_eq!(parts.len(), 5);
+        assert_eq!(parts[4].len(), 64); // SHA256 hex digest length
+    }
+
+    #[test]
+    fn test_build_playback_cache_key_same_input_same_output() {
+        let key1 = build_playback_cache_key("prefix", "alist", "host:token:path");
+        let key2 = build_playback_cache_key("prefix", "alist", "host:token:path");
+        assert_eq!(key1, key2);
+    }
+
+    #[test]
+    fn test_build_playback_cache_key_different_input_different_output() {
+        let key1 = build_playback_cache_key("prefix", "alist", "host:token1:path");
+        let key2 = build_playback_cache_key("prefix", "alist", "host:token2:path");
+        assert_ne!(key1, key2);
+    }
+
+    #[test]
+    fn test_build_playback_cache_key_different_provider_different_output() {
+        let identifier = "same:identifier";
+        let key1 = build_playback_cache_key("prefix", "alist", identifier);
+        let key2 = build_playback_cache_key("prefix", "emby", identifier);
+        assert_ne!(key1, key2);
+        assert!(key1.contains(":alist:"));
+        assert!(key2.contains(":emby:"));
+    }
+
+    #[test]
+    fn test_build_unknown_cache_key_format() {
+        let key = build_unknown_cache_key("synctv:test", "bilibili");
+        assert_eq!(key, "synctv:test:playback:bilibili:unknown");
+    }
+
+    #[test]
+    fn test_build_unknown_cache_key_different_providers() {
+        let key1 = build_unknown_cache_key("prefix", "alist");
+        let key2 = build_unknown_cache_key("prefix", "emby");
+        assert_ne!(key1, key2);
+        assert!(key1.ends_with(":alist:unknown"));
+        assert!(key2.ends_with(":emby:unknown"));
     }
 }
 

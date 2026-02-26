@@ -40,7 +40,13 @@ CREATE INDEX idx_room_members_joined_at ON room_members(joined_at);
 CREATE INDEX idx_room_members_room_active ON room_members(room_id) WHERE left_at IS NULL;
 
 -- Performance optimization indexes (covering indexes to avoid table lookups)
-CREATE INDEX idx_room_members_user_active ON room_members(user_id, room_id, role, joined_at DESC)
+-- Task #57: Covering index for list_by_user_with_details query
+-- Supports: WHERE user_id = ? AND left_at IS NULL
+--           JOIN on room_id
+--           SELECT role, status, joined_at
+--           ORDER BY joined_at DESC
+-- This index allows the query to be satisfied entirely from the index without table lookups
+CREATE INDEX idx_room_members_user_active ON room_members(user_id, room_id, role, status, joined_at DESC)
     WHERE left_at IS NULL;
 CREATE INDEX idx_room_members_room_count ON room_members(room_id)
     WHERE left_at IS NULL;

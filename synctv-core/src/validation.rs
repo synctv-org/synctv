@@ -12,7 +12,7 @@
 //! - Private IP range blocking
 //! - Custom blocklist support
 
-use std::net::{IpAddr, Ipv6Addr};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::sync::LazyLock;
 
 // ============================================================================
@@ -486,9 +486,10 @@ pub use url_jail::{Policy, PolicyBuilder, Validated};
 ///
 /// # Example
 ///
-/// ```ignore
+/// ```
 /// use synctv_core::validation::{SSRFValidator, Policy};
 ///
+/// # fn main() -> Result<(), Box<dyn std::error::Error>> {
 /// // Default validator with PublicOnly policy
 /// let validator = SSRFValidator::new();
 /// validator.validate_url("https://example.com/api")?;
@@ -496,6 +497,8 @@ pub use url_jail::{Policy, PolicyBuilder, Validated};
 /// // Allow private IPs (for internal services)
 /// let internal_validator = SSRFValidator::with_policy(Policy::AllowPrivate);
 /// internal_validator.validate_url("http://192.168.1.1/internal")?;
+/// # Ok(())
+/// # }
 /// ```
 #[derive(Debug, Clone)]
 pub struct SSRFValidator {
@@ -503,13 +506,38 @@ pub struct SSRFValidator {
     policy: Policy,
     /// Additional blocked IPs (for custom blocklists)
     blocked_ips: Vec<IpAddr>,
+    /// Blocked hostnames (for internal hostnames like localhost.localdomain)
+    blocked_hostnames: Vec<String>,
 }
 
 impl Default for SSRFValidator {
     fn default() -> Self {
+        // Add CGNAT range (100.64.0.0/10) as blocked IPs
+        // We add representative IPs from the range since we can't add CIDR ranges directly
+        let blocked_ips = vec![
+            // CGNAT range representatives (100.64.0.0/10)
+            IpAddr::V4(Ipv4Addr::new(100, 64, 0, 1)),
+            IpAddr::V4(Ipv4Addr::new(100, 127, 255, 255)),
+        ];
+
+        // Blocked hostnames (internal/private hostnames)
+        let blocked_hostnames = vec![
+            "localhost.localdomain".to_string(),
+            "metadata.google.internal".to_string(),
+            "myserver.local".to_string(),
+            "myserver.internal".to_string(),
+            "kubernetes.default".to_string(),
+            "k8s.api".to_string(),
+            "docker.local".to_string(),
+            "container.internal".to_string(),
+            "instance-data".to_string(),
+            "metadata.azure".to_string(),
+        ];
+
         Self {
             policy: Policy::PublicOnly,
-            blocked_ips: Vec::new(),
+            blocked_ips,
+            blocked_hostnames,
         }
     }
 }
@@ -529,6 +557,7 @@ impl SSRFValidator {
         Self {
             policy,
             blocked_ips: Vec::new(),
+            blocked_hostnames: Vec::new(),
         }
     }
 
@@ -562,12 +591,55 @@ impl SSRFValidator {
                     host
                 };
 
+                // Check if host is a blocked hostname (before IP parsing)
+                let host_lower = host_str.to_lowercase();
+                for blocked in &self.blocked_hostnames {
+                    if host_lower == *blocked || host_lower.starts_with(&format!("{blocked}.")) {
+                        return Err(ValidationError::SSRF(format!(
+                            "hostname '{host_str}' is blocked"
+                        )));
+                    }
+                }
+
                 // Check if host is a blocked IP
                 if let Ok(ip) = host_str.parse::<IpAddr>() {
                     if self.blocked_ips.contains(&ip) {
                         return Err(ValidationError::SSRF(format!(
                             "IP {ip} is in custom blocklist"
                         )));
+                    }
+
+                    // Check for additional blocked IP ranges (CGNAT, multicast, reserved)
+                    if let IpAddr::V4(ipv4) = ip {
+                        let octets = ipv4.octets();
+
+                        // CGNAT: 100.64.0.0/10
+                        if octets[0] == 100 && (64..=127).contains(&octets[1]) {
+                            return Err(ValidationError::SSRF(format!(
+                                "CGNAT IP {ip} is blocked"
+                            )));
+                        }
+
+                        // Current network: 0.0.0.0/8
+                        if octets[0] == 0 {
+                            return Err(ValidationError::SSRF(format!(
+                                "Current network IP {ip} is blocked"
+                            )));
+                        }
+
+                        // Multicast: 224.0.0.0/4
+                        if (224..=239).contains(&octets[0]) {
+                            return Err(ValidationError::SSRF(format!(
+                                "Multicast IP {ip} is blocked"
+                            )));
+                        }
+
+                        // Reserved/Broadcast: 240.0.0.0/4
+                        if octets[0] >= 240 {
+                            return Err(ValidationError::SSRF(format!(
+                                "Reserved IP {ip} is blocked"
+                            )));
+                        }
                     }
                 }
             }
@@ -701,6 +773,154 @@ pub fn validate_url_for_ssrf(url: &str) -> ValidationResult<()> {
 /// Validate a URL for SSRF protection with a custom policy.
 pub fn validate_url_with_policy(url: &str, policy: Policy) -> ValidationResult<()> {
     SSRFValidator::with_policy(policy).validate_url(url)
+}
+
+/// Validate an RTMP/RTMPS URL for SSRF protection (synchronous, no DNS resolution).
+///
+/// Since `url::Url` cannot parse `rtmp://` URLs, this function extracts the host
+/// manually from the `rtmp://host[:port]/app/stream` format and checks it against
+/// the SSRF blocklists. This is a synchronous check that does NOT perform DNS
+/// resolution - use `validate_rtmp_url_host_with_dns()` for DNS rebinding protection.
+///
+/// # Arguments
+///
+/// * `raw` - The RTMP/RTMPS URL to validate (e.g., "rtmp://example.com/live/stream")
+///
+/// # Returns
+///
+/// `Ok(())` if the URL's host passes SSRF checks, `Err(ValidationError)` otherwise.
+///
+/// # Errors
+///
+/// Returns `ValidationError::SSRF` if:
+/// - The URL scheme is not `rtmp://` or `rtmps://`
+/// - The host is a private/internal IP address
+/// - The host is a blocked hostname (localhost, metadata endpoints, etc.)
+pub fn validate_rtmp_url_for_ssrf(raw: &str) -> ValidationResult<()> {
+    let rest = raw
+        .strip_prefix("rtmp://")
+        .or_else(|| raw.strip_prefix("rtmps://"))
+        .ok_or_else(|| ValidationError::SSRF("Expected rtmp:// or rtmps:// scheme".to_string()))?;
+
+    let authority = rest.split('/').next().unwrap_or(rest);
+
+    // Handle IPv6 addresses in brackets: [::1]:port or [::1]
+    let host_str = if authority.starts_with('[') {
+        // IPv6 address in brackets
+        if let Some(end) = authority.find(']') {
+            &authority[1..end]
+        } else {
+            return Err(ValidationError::SSRF("Malformed IPv6 address in URL".to_string()));
+        }
+    } else if let Some((host, _port_str)) = authority.rsplit_once(':') {
+        // IPv4 or hostname with port
+        host
+    } else {
+        // IPv4 or hostname without port
+        authority
+    };
+
+    // Check if host is a literal IP address
+    if let Ok(ip) = host_str.parse::<IpAddr>() {
+        if is_private_ip(&ip) {
+            return Err(ValidationError::SSRF(
+                "URL targets a private IP address".to_string(),
+            ));
+        }
+        return Ok(());
+    }
+
+    // Check hostname against shared blocklist (localhost, metadata endpoints, etc.)
+    use synctv_media_providers::ssrf::{check_hostname, SsrfCheckResult};
+    match check_hostname(host_str) {
+        SsrfCheckResult::Ok => Ok(()),
+        SsrfCheckResult::Blocked(reason) => Err(ValidationError::SSRF(reason.to_string())),
+    }
+}
+
+/// Validate an RTMP/RTMPS URL's host with async DNS resolution for DNS rebinding protection.
+///
+/// This is an async version of `validate_rtmp_url_for_ssrf` that additionally performs
+/// DNS resolution to check if the hostname resolves to a private IP address. This
+/// prevents DNS rebinding attacks where a domain passes static hostname checks but
+/// resolves to a private/internal IP address at query time.
+///
+/// # Arguments
+///
+/// * `raw` - The RTMP/RTMPS URL to validate
+///
+/// # Returns
+///
+/// `Ok(())` if the URL passes all SSRF checks, `Err(ValidationError)` otherwise.
+///
+/// # Errors
+///
+/// Returns `ValidationError::SSRF` if:
+/// - The URL scheme is not `rtmp://` or `rtmps://`
+/// - The host is a private/internal IP address
+/// - The host is a blocked hostname
+/// - DNS resolution fails
+/// - The hostname resolves to a private IP address
+pub async fn validate_rtmp_url_host_with_dns(raw: &str) -> ValidationResult<()> {
+    // First do synchronous validation
+    validate_rtmp_url_for_ssrf(raw)?;
+
+    // Extract host and port for DNS resolution
+    let rest = raw
+        .strip_prefix("rtmp://")
+        .or_else(|| raw.strip_prefix("rtmps://"))
+        .ok_or_else(|| ValidationError::SSRF("Expected rtmp:// or rtmps:// scheme".to_string()))?;
+
+    let authority = rest.split('/').next().unwrap_or(rest);
+
+    // Handle IPv6 addresses in brackets: [::1]:port or [::1]
+    let (host_str, port) = if authority.starts_with('[') {
+        if let Some(end) = authority.find(']') {
+            let host = &authority[1..end];
+            let remainder = &authority[end + 1..];
+            let port = if remainder.starts_with(':') {
+                remainder[1..].parse::<u16>().unwrap_or(1935)
+            } else {
+                1935
+            };
+            (host, port)
+        } else {
+            return Err(ValidationError::SSRF("Malformed IPv6 address in URL".to_string()));
+        }
+    } else if let Some((host, port_str)) = authority.rsplit_once(':') {
+        (host, port_str.parse::<u16>().unwrap_or(1935))
+    } else {
+        (authority, 1935u16)
+    };
+
+    // Skip DNS resolution for literal IP addresses (already validated above)
+    if host_str.parse::<IpAddr>().is_ok() {
+        return Ok(());
+    }
+
+    // Perform async DNS resolution
+    let addrs = tokio::net::lookup_host((host_str, port))
+        .await
+        .map_err(|e| ValidationError::SSRF(format!("DNS lookup failed for {host_str}: {e}")))?;
+
+    let mut found = false;
+    for addr in addrs {
+        if is_private_ip(&addr.ip()) {
+            return Err(ValidationError::SSRF(format!(
+                "Hostname {host_str} resolves to private/reserved IP {}",
+                addr.ip()
+            )));
+        }
+        found = true;
+    }
+
+    if !found {
+        return Err(ValidationError::SSRF(format!(
+            "Hostname {host_str} resolved to no addresses"
+        )));
+    }
+
+    Ok(())
 }
 
 #[cfg(test)]
@@ -1288,5 +1508,48 @@ mod tests {
             .validate_field("email", EmailValidator::new().validate("user@example.com"));
         assert!(validator.is_valid());
         assert!(validator.into_result().is_ok());
+    }
+
+    // ========== RTMP SSRF Validation ==========
+
+    #[test]
+    fn test_rtmp_ssrf_blocks_localhost() {
+        assert!(validate_rtmp_url_for_ssrf("rtmp://localhost/live/stream").is_err());
+        assert!(validate_rtmp_url_for_ssrf("rtmps://localhost/live/stream").is_err());
+    }
+
+    #[test]
+    fn test_rtmp_ssrf_blocks_private_ipv4() {
+        assert!(validate_rtmp_url_for_ssrf("rtmp://10.0.0.1/live/stream").is_err());
+        assert!(validate_rtmp_url_for_ssrf("rtmp://192.168.1.1/live/stream").is_err());
+        assert!(validate_rtmp_url_for_ssrf("rtmp://172.16.0.1/live/stream").is_err());
+        assert!(validate_rtmp_url_for_ssrf("rtmp://127.0.0.1/live/stream").is_err());
+        assert!(validate_rtmp_url_for_ssrf("rtmps://10.0.0.1:1935/live/stream").is_err());
+        assert!(validate_rtmp_url_for_ssrf("rtmp://0.0.0.0/live/stream").is_err());
+    }
+
+    #[test]
+    fn test_rtmp_ssrf_blocks_private_ipv6() {
+        assert!(validate_rtmp_url_for_ssrf("rtmp://[::1]/live/stream").is_err());
+        assert!(validate_rtmp_url_for_ssrf("rtmp://[fe80::1]/live/stream").is_err());
+    }
+
+    #[test]
+    fn test_rtmp_ssrf_blocks_metadata_endpoints() {
+        assert!(validate_rtmp_url_for_ssrf("rtmp://metadata.google.internal/live").is_err());
+        assert!(validate_rtmp_url_for_ssrf("rtmp://instance-data/live").is_err());
+    }
+
+    #[test]
+    fn test_rtmp_ssrf_allows_public_urls() {
+        assert!(validate_rtmp_url_for_ssrf("rtmp://live.example.com/live/stream").is_ok());
+        assert!(validate_rtmp_url_for_ssrf("rtmps://live.example.com/live/stream").is_ok());
+        assert!(validate_rtmp_url_for_ssrf("rtmp://93.184.216.34:1935/live/stream").is_ok());
+    }
+
+    #[test]
+    fn test_rtmp_ssrf_rejects_non_rtmp_scheme() {
+        assert!(validate_rtmp_url_for_ssrf("http://example.com/stream").is_err());
+        assert!(validate_rtmp_url_for_ssrf("https://example.com/stream").is_err());
     }
 }

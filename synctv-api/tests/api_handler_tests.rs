@@ -456,10 +456,10 @@ mod create_ticket_validation {
 
         assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
         let json = body_json(resp).await;
-        assert!(json["error"]
-            .as_str()
-            .unwrap()
-            .contains("ticket service not configured"));
+        // For 5xx errors, the actual message is replaced with generic "Internal server error"
+        // to avoid leaking sensitive information (see AppError::into_response)
+        assert_eq!(json["error"], "Internal server error");
+        assert_eq!(json["status"], 500);
     }
 
     /// Empty room_id should produce 400

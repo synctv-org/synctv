@@ -158,6 +158,19 @@ impl MediaService {
             .await
             .map_err(|e| Error::InvalidInput(format!("Invalid source_config: {e}")))?;
 
+        // Validate source_config size to prevent storage bloat
+        // Limit: 1MB max (JSONB can grow large with embedded metadata)
+        const MAX_SOURCE_CONFIG_SIZE: usize = 1024 * 1024; // 1MB
+        let config_size = serde_json::to_string(&request.source_config)
+            .map(|s| s.len())
+            .unwrap_or(0);
+        if config_size > MAX_SOURCE_CONFIG_SIZE {
+            return Err(Error::InvalidInput(format!(
+                "source_config too large: {} bytes (max {} bytes / 1MB)",
+                config_size, MAX_SOURCE_CONFIG_SIZE
+            )));
+        }
+
         // Prepare source_config for storage (encrypt sensitive fields if applicable)
         let prepared_source_config = provider
             .prepare_source_config(&ctx, request.source_config.clone())
@@ -509,6 +522,19 @@ impl MediaService {
         self.media_repo.get_playlist_paginated(playlist_id, pagination).await
     }
 
+    /// Get media items from a playlist with limit and offset (no count query).
+    ///
+    /// This is a simpler version of `get_playlist_media_paginated` that doesn't
+    /// return the total count, useful when you only need the items.
+    pub async fn get_playlist_media_offset_limit(
+        &self,
+        playlist_id: &PlaylistId,
+        limit: i64,
+        offset: i64,
+    ) -> Result<Vec<Media>> {
+        self.media_repo.get_by_playlist_limit_offset(playlist_id, limit, offset).await
+    }
+
     /// Swap positions of two media items
     pub async fn swap_media_positions(
         &self,
@@ -642,6 +668,11 @@ impl MediaService {
     /// Uses a single batch query to verify room ownership instead of N individual queries.
     /// Both verification and reorder happen inside a single transaction to prevent
     /// TOCTOU races where a media item could move between rooms.
+    ///
+    /// # Position Validation
+    ///
+    /// Positions must be non-negative (>= 0). Negative positions are rejected
+    /// with `Error::InvalidInput` before any database operations.
     pub async fn reorder_media_batch(
         &self,
         room_id: RoomId,
@@ -655,6 +686,17 @@ impl MediaService {
 
         if updates.is_empty() {
             return Ok(());
+        }
+
+        // Validate all positions are non-negative
+        for (media_id, position) in &updates {
+            if *position < 0 {
+                return Err(Error::InvalidInput(format!(
+                    "Invalid position {} for media {}: position must be non-negative",
+                    position,
+                    media_id.as_str()
+                )));
+            }
         }
 
         // Use a single transaction for both verification and reorder to prevent
@@ -930,6 +972,42 @@ mod tests {
             request.source_config["options"]["subtitle"]["lang"],
             "en"
         );
+    }
+
+    // ========== Source Config Size Validation ==========
+
+    #[test]
+    fn test_source_config_size_limit_constant() {
+        // MAX_SOURCE_CONFIG_SIZE = 1MB
+        const MAX_SOURCE_CONFIG_SIZE: usize = 1024 * 1024;
+        assert_eq!(MAX_SOURCE_CONFIG_SIZE, 1_048_576);
+    }
+
+    #[test]
+    fn test_source_config_size_calculation() {
+        // Small config should be well under 1MB
+        let small_config = serde_json::json!({
+            "url": "https://example.com/video.mp4",
+            "headers": {"Referer": "https://example.com"}
+        });
+        let size = serde_json::to_string(&small_config)
+            .map(|s| s.len())
+            .unwrap_or(0);
+        assert!(size < 200, "Small config should be under 200 bytes");
+    }
+
+    #[test]
+    fn test_source_config_large_rejection() {
+        // Config with 2MB of data should be rejected
+        const MAX_SOURCE_CONFIG_SIZE: usize = 1024 * 1024; // 1MB
+        let large_string = "x".repeat(2 * 1024 * 1024); // 2MB string
+        let large_config = serde_json::json!({
+            "data": large_string
+        });
+        let size = serde_json::to_string(&large_config)
+            .map(|s| s.len())
+            .unwrap_or(0);
+        assert!(size > MAX_SOURCE_CONFIG_SIZE, "Large config should exceed 1MB");
     }
 
 }

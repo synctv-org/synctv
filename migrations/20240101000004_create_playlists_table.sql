@@ -180,3 +180,59 @@ CREATE TRIGGER trigger_prevent_playlist_cycle
 COMMENT ON TRIGGER trigger_prevent_playlist_cycle ON playlists IS
 'Prevent circular references in playlist tree. Validates that parent_id does not create a cycle (max depth: 50).';
 
+-- ============================================================================
+-- Cross-Room Parent Validation (Task #17)
+-- ============================================================================
+
+-- Function: Validate that parent playlist belongs to the same room
+-- This enforces room isolation - a playlist cannot have a parent from another room
+CREATE OR REPLACE FUNCTION validate_parent_same_room()
+RETURNS TRIGGER AS $$
+DECLARE
+    parent_room_id CHAR(12);
+BEGIN
+    -- If parent_id is NULL (root playlist), no validation needed
+    IF NEW.parent_id IS NULL THEN
+        RETURN NEW;
+    END IF;
+
+    -- On UPDATE, only check if parent_id is being changed
+    IF TG_OP = 'UPDATE' AND NEW.parent_id IS NOT DISTINCT FROM OLD.parent_id THEN
+        RETURN NEW;
+    END IF;
+
+    -- Get the room_id of the parent playlist
+    SELECT room_id INTO parent_room_id
+    FROM playlists
+    WHERE id = NEW.parent_id;
+
+    -- Parent must exist (FK will catch this, but check anyway)
+    IF parent_room_id IS NULL THEN
+        RAISE EXCEPTION 'Parent playlist % does not exist', NEW.parent_id
+            USING ERRCODE = '23503';  -- foreign_key_violation
+    END IF;
+
+    -- Validate that parent belongs to the same room
+    IF parent_room_id != NEW.room_id THEN
+        RAISE EXCEPTION 'Cross-room parent_id violation: playlist % in room % cannot have parent % from room %',
+            NEW.id, NEW.room_id, NEW.parent_id, parent_room_id
+            USING ERRCODE = '23514',  -- check_violation
+                  HINT = 'Parent playlist must belong to the same room';
+    END IF;
+
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+COMMENT ON FUNCTION validate_parent_same_room() IS
+'Enforce room isolation for playlist parent_id. A playlist cannot have a parent from a different room.';
+
+-- Trigger: Validate cross-room parent before INSERT/UPDATE
+CREATE TRIGGER trigger_validate_parent_same_room
+    BEFORE INSERT OR UPDATE OF parent_id, room_id ON playlists
+    FOR EACH ROW
+    EXECUTE FUNCTION validate_parent_same_room();
+
+COMMENT ON TRIGGER trigger_validate_parent_same_room ON playlists IS
+'Prevent cross-room parent_id references. Ensures parent playlist belongs to the same room as child.';
+

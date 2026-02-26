@@ -16,7 +16,7 @@ fn create_context() -> ProviderContext<'static> {
 // SSRF Protection: base_url validation at provider creation time
 // ============================================================================
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_rtmp_provider_rejects_private_ip_base_url() {
     // RtmpProvider should reject base_url pointing to private IP addresses
     let private_ips = vec![
@@ -43,7 +43,7 @@ async fn test_rtmp_provider_rejects_private_ip_base_url() {
     }
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_rtmp_provider_rejects_localhost_base_url() {
     // RtmpProvider should reject base_url with localhost
     let localhost_urls = vec![
@@ -61,7 +61,7 @@ async fn test_rtmp_provider_rejects_localhost_base_url() {
     }
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_rtmp_provider_rejects_link_local_base_url() {
     // RtmpProvider should reject link-local addresses (169.254.0.0/16)
     let link_local_urls = vec![
@@ -78,7 +78,7 @@ async fn test_rtmp_provider_rejects_link_local_base_url() {
     }
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_rtmp_provider_rejects_cloud_metadata_hostnames() {
     // RtmpProvider should reject hostnames that could resolve to cloud metadata endpoints
     let metadata_hostnames = vec![
@@ -96,7 +96,7 @@ async fn test_rtmp_provider_rejects_cloud_metadata_hostnames() {
     }
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_rtmp_provider_accepts_public_base_url() {
     // RtmpProvider should accept base_url pointing to public addresses
     let public_urls = vec![
@@ -120,7 +120,7 @@ async fn test_rtmp_provider_accepts_public_base_url() {
 // SSRF Protection: validate_source_config should not accept external URLs
 // ============================================================================
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_rtmp_provider_validate_source_config_rejects_url_field() {
     // RtmpProvider's source_config should NOT accept external URLs
     // If a URL field is present, it should be rejected to prevent SSRF
@@ -166,7 +166,7 @@ async fn test_rtmp_provider_validate_source_config_rejects_url_field() {
     }
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_rtmp_provider_validate_source_config_accepts_valid_fields() {
     // RtmpProvider should accept source_config with only room_id and media_id
     let provider = RtmpProvider::new("https://example.com");
@@ -189,7 +189,7 @@ async fn test_rtmp_provider_validate_source_config_accepts_valid_fields() {
 // SSRF Protection: IPv6 addresses
 // ============================================================================
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_rtmp_provider_rejects_ipv6_loopback_base_url() {
     // RtmpProvider should reject IPv6 loopback
     let ipv6_loopback_urls = vec![
@@ -206,7 +206,7 @@ async fn test_rtmp_provider_rejects_ipv6_loopback_base_url() {
     }
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_rtmp_provider_rejects_ipv6_unique_local_base_url() {
     // RtmpProvider should reject IPv6 unique local addresses (fc00::/7)
     let ipv6_ula_urls = vec![
@@ -223,7 +223,7 @@ async fn test_rtmp_provider_rejects_ipv6_unique_local_base_url() {
     }
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_rtmp_provider_accepts_ipv6_public_base_url() {
     // RtmpProvider should accept public IPv6 addresses
     let ipv6_public_urls = vec![
@@ -245,7 +245,7 @@ async fn test_rtmp_provider_accepts_ipv6_public_base_url() {
 // SSRF Protection: IPv4-mapped IPv6 addresses
 // ============================================================================
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_rtmp_provider_rejects_ipv4_mapped_private_base_url() {
     // RtmpProvider should detect and reject IPv4-mapped IPv6 private addresses
     let ipv4_mapped_urls = vec![
@@ -267,7 +267,7 @@ async fn test_rtmp_provider_rejects_ipv4_mapped_private_base_url() {
 // SSRF Protection: CGNAT range (100.64.0.0/10)
 // ============================================================================
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_rtmp_provider_rejects_cgnat_base_url() {
     // RtmpProvider should reject CGNAT range (100.64.0.0/10)
     let cgnat_urls = vec![

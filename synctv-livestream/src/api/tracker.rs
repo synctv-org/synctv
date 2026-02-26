@@ -394,6 +394,31 @@ impl StreamTracker {
         inner.by_stream.is_empty()
     }
 
+    /// Clear all tracking entries.
+    ///
+    /// Called during StreamHub restart cleanup to ensure stale entries
+    /// don't persist after Redis publishers are cleaned up.
+    /// Without this, the tracker retains entries for publishers that
+    /// no longer exist in Redis, causing incorrect stream lookups.
+    pub fn clear(&self) {
+        let mut inner = self.inner.write();
+
+        // Calculate how many streams we're removing for metrics
+        let stream_count = inner.by_stream.len();
+
+        inner.by_user.clear();
+        inner.by_room.clear();
+        inner.by_stream.clear();
+        inner.by_rtmp.clear();
+        inner.rtmp_reverse.clear();
+
+        // Decrement stream count for all removed streams
+        if stream_count > 0 {
+            synctv_core::metrics::http::STREAMS_ACTIVE.sub(stream_count as i64);
+            info!(removed = stream_count, "Cleared all stream tracker entries");
+        }
+    }
+
     /// Remove stale index entries that are orphaned from the primary `by_stream` map.
     ///
     /// When a publisher crashes without a clean `on_unpublish`, secondary indexes
@@ -474,5 +499,134 @@ impl StreamTracker {
                 tracker.cleanup_stale_entries();
             }
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_clear_removes_all_entries() {
+        let tracker = StreamTracker::new();
+
+        // Insert some entries
+        tracker.insert(
+            "user1".to_string(),
+            "room1".to_string(),
+            "media1".to_string(),
+            "room1",
+            "token1",
+        );
+        tracker.insert(
+            "user2".to_string(),
+            "room2".to_string(),
+            "media2".to_string(),
+            "room2",
+            "token2",
+        );
+
+        // Verify entries exist
+        assert!(!tracker.is_empty());
+        assert_eq!(tracker.len(), 2);
+
+        // Clear the tracker
+        tracker.clear();
+
+        // Verify all entries are removed
+        assert!(tracker.is_empty());
+        assert_eq!(tracker.len(), 0);
+        assert!(tracker.get_user_streams("user1").is_empty());
+        assert!(tracker.get_user_streams("user2").is_empty());
+        assert!(tracker.get_room_streams("room1").is_empty());
+        assert!(tracker.get_room_streams("room2").is_empty());
+    }
+
+    #[test]
+    fn test_clear_on_empty_tracker() {
+        let tracker = StreamTracker::new();
+
+        // Clear on empty tracker should not panic
+        tracker.clear();
+        assert!(tracker.is_empty());
+    }
+
+    #[test]
+    fn test_clear_allows_new_entries() {
+        let tracker = StreamTracker::new();
+
+        // Insert and clear
+        tracker.insert(
+            "user1".to_string(),
+            "room1".to_string(),
+            "media1".to_string(),
+            "room1",
+            "token1",
+        );
+        tracker.clear();
+
+        // Insert new entries after clear
+        tracker.insert(
+            "user2".to_string(),
+            "room2".to_string(),
+            "media2".to_string(),
+            "room2",
+            "token2",
+        );
+
+        // Verify new entry exists
+        assert_eq!(tracker.len(), 1);
+        let user_streams = tracker.get_user_streams("user2");
+        assert_eq!(user_streams.len(), 1);
+        assert_eq!(user_streams[0], ("room2".to_string(), "media2".to_string()));
+    }
+
+    /// Test that clear properly handles StreamHub restart scenario
+    #[test]
+    fn test_clear_streamhub_restart_scenario() {
+        let tracker = Arc::new(StreamTracker::new());
+
+        // Simulate multiple publishers from different users/rooms
+        tracker.insert(
+            "user1".to_string(),
+            "room1".to_string(),
+            "media1".to_string(),
+            "room1",
+            "jwt_token_1",
+        );
+        tracker.insert(
+            "user2".to_string(),
+            "room1".to_string(),
+            "media2".to_string(),
+            "room1",
+            "jwt_token_2",
+        );
+        tracker.insert(
+            "user3".to_string(),
+            "room2".to_string(),
+            "media3".to_string(),
+            "room2",
+            "jwt_token_3",
+        );
+
+        assert_eq!(tracker.len(), 3);
+
+        // Simulate StreamHub restart: clear tracker
+        tracker.clear();
+
+        // All entries should be gone
+        assert!(tracker.is_empty());
+        assert_eq!(tracker.len(), 0);
+
+        // Verify all indexes are cleared
+        assert!(tracker.get_user_streams("user1").is_empty());
+        assert!(tracker.get_user_streams("user2").is_empty());
+        assert!(tracker.get_user_streams("user3").is_empty());
+        assert!(tracker.get_room_streams("room1").is_empty());
+        assert!(tracker.get_room_streams("room2").is_empty());
+        assert!(tracker.get_stream_user("room1", "media1").is_none());
+        assert!(tracker.get_stream_user("room1", "media2").is_none());
+        assert!(tracker.get_stream_user("room2", "media3").is_none());
+        assert!(tracker.get_rtmp_identifiers("room1", "jwt_token_1").is_none());
     }
 }

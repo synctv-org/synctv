@@ -10,7 +10,7 @@ use synctv_core::{
     cache::{KeyBuilder, UsernameCache, NoopCacheL2},
     config::PasswordComplexityConfig,
     models::{
-        RoomSettings, UserId, User, UserRole, UserStatus,
+        RoomSettings, RoomId, UserId, User, UserRole, UserStatus,
         RoomRole, MemberStatus, PermissionBits,
     },
     repository::{RoomRepository, UserRepository, RoomMemberRepository, RoomSettingsRepository},
@@ -2762,4 +2762,402 @@ async fn test_max_members_zero_in_settings_means_unlimited() {
             result.err()
         );
     }
+}
+
+// ========== Soft-Delete Cleanup Tests ==========
+//
+// These tests verify the optimized soft-delete cleanup strategy.
+// Problem: Soft-deleted rooms and related data consume resources for up to 90 days.
+// Fix: Clean up playlists/media immediately on soft-delete, keep only audit data.
+//
+
+/// Test that soft-delete immediately cleans up non-critical data (playlists, media, members).
+///
+/// This test verifies the optimized soft-delete strategy:
+/// 1. Room row gets deleted_at set (soft-delete)
+/// 2. Non-critical data (playlists, media, playback state, members, settings) is immediately deleted
+/// 3. Only audit log entries are preserved
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_soft_delete_immediately_cleans_up_non_critical_data() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let room_service = make_room_service(pool.clone());
+
+    let owner = user_repo.create(&make_user("cleanup_owner")).await.unwrap();
+    let member1 = user_repo.create(&make_user("cleanup_member1")).await.unwrap();
+
+    // Create room
+    let (room, _) = room_service
+        .create_room(
+            "Cleanup Test Room".to_string(),
+            String::new(),
+            owner.id.clone(),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+    // Add a member
+    room_service.join_room(room.id.clone(), member1.id.clone(), None).await.unwrap();
+
+    // Get the root playlist (created automatically when room was created)
+    let playlist_repo = synctv_core::repository::PlaylistRepository::new(pool.clone());
+    let media_repo = synctv_core::repository::MediaRepository::new(pool.clone());
+    let root_playlist = playlist_repo.get_root_playlist(&room.id).await.expect("Root playlist should exist");
+
+    // Create a child playlist under root
+    let playlist = synctv_core::models::Playlist {
+        id: synctv_core::models::PlaylistId::new(),
+        room_id: room.id.clone(),
+        parent_id: Some(root_playlist.id.clone()),
+        name: "Test Playlist".to_string(),
+        position: 0,
+        creator_id: Some(owner.id.clone()),
+        source_provider: None,
+        source_config: None,
+        provider_instance_name: None,
+        created_at: chrono::Utc::now(),
+        updated_at: chrono::Utc::now(),
+        version: 0,
+    };
+    playlist_repo.create(&playlist).await.unwrap();
+
+    let media = synctv_core::models::Media {
+        id: synctv_core::models::MediaId::new(),
+        playlist_id: playlist.id.clone(),
+        room_id: room.id.clone(),
+        name: "Test Media".to_string(),
+        position: 0,
+        source_provider: "direct_url".to_string(),
+        source_config: serde_json::json!({}),
+        provider_instance_name: None,
+        creator_id: Some(owner.id.clone()),
+        added_at: chrono::Utc::now(),
+        version: 0,
+    };
+    media_repo.create(&media).await.unwrap();
+
+    // Verify related data exists before deletion
+    let member_count_before: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM room_members WHERE room_id = $1"
+    )
+    .bind(room.id.as_str())
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(member_count_before, 2, "Owner and member1 should be in room");
+
+    let playlist_count_before: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM playlists WHERE room_id = $1"
+    )
+    .bind(room.id.as_str())
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert!(playlist_count_before > 0, "Should have playlists");
+
+    let media_count_before: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM media WHERE room_id = $1"
+    )
+    .bind(room.id.as_str())
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert!(media_count_before > 0, "Should have media");
+
+    let settings_count_before: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM room_settings WHERE room_id = $1"
+    )
+    .bind(room.id.as_str())
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert!(settings_count_before > 0, "Should have settings");
+
+    let playback_count_before: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM room_playback_state WHERE room_id = $1"
+    )
+    .bind(room.id.as_str())
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(playback_count_before, 1, "Should have playback state");
+
+    // Soft-delete the room
+    room_service
+        .delete_room(room.id.clone(), owner.id.clone())
+        .await
+        .unwrap();
+
+    // Verify room row exists but is soft-deleted
+    let deleted_at: Option<chrono::DateTime<Utc>> = sqlx::query_scalar(
+        "SELECT deleted_at FROM rooms WHERE id = $1"
+    )
+    .bind(room.id.as_str())
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert!(deleted_at.is_some(), "Room should be soft-deleted");
+
+    // VERIFY NON-CRITICAL DATA IS IMMEDIATELY DELETED
+    // This is the key optimization - these should be gone, not waiting 90 days
+
+    // Members should be immediately deleted
+    let member_count_after: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM room_members WHERE room_id = $1"
+    )
+    .bind(room.id.as_str())
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(member_count_after, 0, "Members should be immediately cleaned up");
+
+    // Playlists should be immediately deleted (cascade to media via FK)
+    let playlist_count_after: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM playlists WHERE room_id = $1"
+    )
+    .bind(room.id.as_str())
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(playlist_count_after, 0, "Playlists should be immediately cleaned up");
+
+    // Media should be immediately deleted
+    let media_count_after: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM media WHERE room_id = $1"
+    )
+    .bind(room.id.as_str())
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(media_count_after, 0, "Media should be immediately cleaned up");
+
+    // Settings should be immediately deleted
+    let settings_count_after: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM room_settings WHERE room_id = $1"
+    )
+    .bind(room.id.as_str())
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(settings_count_after, 0, "Settings should be immediately cleaned up");
+
+    // Playback state should be immediately deleted
+    let playback_count_after: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM room_playback_state WHERE room_id = $1"
+    )
+    .bind(room.id.as_str())
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(playback_count_after, 0, "Playback state should be immediately cleaned up");
+
+    // Chat messages should be immediately deleted
+    let chat_count_after: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM chat_messages WHERE room_id = $1"
+    )
+    .bind(room.id.as_str())
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(chat_count_after, 0, "Chat messages should be immediately cleaned up");
+
+    // Verify room row still exists (soft-deleted, not hard-deleted)
+    let room_exists: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM rooms WHERE id = $1)"
+    )
+    .bind(room.id.as_str())
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert!(room_exists, "Room row should still exist (soft-deleted)");
+
+    // NOTE: Audit logs are not tested here because the test RoomService
+    // does not have an audit service configured. Audit functionality is
+    // tested separately in audit service tests.
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_admin_delete_orphaned_room_creator_soft_deleted() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let user_service = make_user_service(pool.clone());
+    let room_service = make_room_service(pool.clone());
+    let room_repo = RoomRepository::new(pool.clone());
+
+    // Create a user who will be the creator
+    let creator = user_repo.create(&make_user("orphan_creator_1")).await.unwrap();
+
+    // Create a room as this creator
+    let (room, _) = room_service
+        .create_room(
+            "Orphaned Room 1".to_string(),
+            String::new(),
+            creator.id.clone(),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+    // Create an admin user
+    let admin = user_repo.create(&make_user("admin_orphan_1")).await.unwrap();
+
+    // Soft-delete the creator (simulating user deletion)
+    user_service.delete_user(&creator.id).await.unwrap();
+
+    // Verify the creator is soft-deleted
+    let deleted_creator = user_repo.get_by_id(&creator.id).await.unwrap();
+    assert!(deleted_creator.unwrap().deleted_at.is_some());
+
+    // Now admin should be able to delete the orphaned room
+    room_service
+        .admin_delete_orphaned_room(&room.id, &admin.id)
+        .await
+        .unwrap();
+
+    // Room should be soft-deleted
+    let fetched = room_repo.get_by_id(&room.id).await.unwrap();
+    assert!(fetched.is_none(), "Orphaned room should be soft-deleted by admin");
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_admin_delete_orphaned_room_creator_banned() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let room_service = make_room_service(pool.clone());
+    let room_repo = RoomRepository::new(pool.clone());
+
+    // Create a user who will be banned
+    let creator = user_repo.create(&make_user("banned_creator")).await.unwrap();
+
+    // Create a room as this creator
+    let (room, _) = room_service
+        .create_room(
+            "Banned Creator Room".to_string(),
+            String::new(),
+            creator.id.clone(),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+    // Create an admin user
+    let admin = user_repo.create(&make_user("admin_banned")).await.unwrap();
+
+    // Ban the creator by setting status to Banned (3)
+    sqlx::query(
+        "UPDATE users SET status = 3 WHERE id = $1"
+    )
+    .bind(creator.id.as_str())
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    // Now admin should be able to delete the orphaned room
+    room_service
+        .admin_delete_orphaned_room(&room.id, &admin.id)
+        .await
+        .unwrap();
+
+    // Room should be soft-deleted
+    let fetched = room_repo.get_by_id(&room.id).await.unwrap();
+    assert!(fetched.is_none(), "Orphaned room with banned creator should be soft-deleted");
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_admin_delete_orphaned_room_rejects_active_creator() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let room_service = make_room_service(pool.clone());
+
+    // Create an active creator
+    let creator = user_repo.create(&make_user("active_creator")).await.unwrap();
+
+    // Create a room
+    let (room, _) = room_service
+        .create_room(
+            "Active Creator Room".to_string(),
+            String::new(),
+            creator.id.clone(),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+    // Create an admin
+    let admin = user_repo.create(&make_user("admin_active")).await.unwrap();
+
+    // Trying to use admin_delete_orphaned_room should fail
+    let result = room_service
+        .admin_delete_orphaned_room(&room.id, &admin.id)
+        .await;
+
+    assert!(result.is_err(), "Should reject orphaned deletion for active creator");
+
+    // Room should still exist
+    let room_repo = RoomRepository::new(pool.clone());
+    let fetched = room_repo.get_by_id(&room.id).await.unwrap();
+    assert!(fetched.is_some(), "Room should still exist when creator is active");
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_admin_delete_orphaned_room_already_deleted_room() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let user_service = make_user_service(pool.clone());
+    let room_service = make_room_service(pool.clone());
+
+    // Create and delete a creator
+    let creator = user_repo.create(&make_user("orphan_already_del")).await.unwrap();
+    let (room, _) = room_service
+        .create_room(
+            "Already Deleted Room".to_string(),
+            String::new(),
+            creator.id.clone(),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+    let admin = user_repo.create(&make_user("admin_already")).await.unwrap();
+
+    // Delete the creator first
+    user_service.delete_user(&creator.id).await.unwrap();
+
+    // Delete the room normally
+    room_service.admin_delete_room(&room.id, &admin.id).await.unwrap();
+
+    // Trying to delete again should fail
+    let result = room_service
+        .admin_delete_orphaned_room(&room.id, &admin.id)
+        .await;
+
+    assert!(result.is_err(), "Should reject double deletion");
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_admin_delete_orphaned_room_nonexistent_room() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let room_service = make_room_service(pool.clone());
+
+    let admin = user_repo.create(&make_user("admin_nonexistent")).await.unwrap();
+    let fake_room_id = RoomId::from_string(nanoid::nanoid!(12));
+
+    let result = room_service
+        .admin_delete_orphaned_room(&fake_room_id, &admin.id)
+        .await;
+
+    assert!(result.is_err(), "Should reject deletion of nonexistent room");
 }

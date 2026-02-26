@@ -107,19 +107,20 @@ impl<'r> sqlx::Decode<'r, sqlx::Postgres> for UserRole {
 /// A user can be Active/Pending/Banned regardless of their Role.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
+#[repr(i16)]
 pub enum UserStatus {
     /// Normal active state
     /// - Can login and use all features
-    Active,
+    Active = 1,
 
     /// Pending approval
     /// - Can login but cannot create or join rooms
-    Pending,
+    Pending = 2,
 
     /// Banned state
     /// - Cannot login
     /// - All operations forbidden
-    Banned,
+    Banned = 3,
 }
 
 impl UserStatus {

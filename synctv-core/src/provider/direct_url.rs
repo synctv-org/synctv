@@ -3,12 +3,11 @@
 //! Provides direct playback for HTTP(S) URLs
 
 use super::{MediaProvider, PlaybackInfo, PlaybackResult, ProviderContext, ProviderError};
-use crate::validation::{validate_url_for_ssrf, ValidationError};
+use crate::validation::{validate_rtmp_url_for_ssrf, validate_url_for_ssrf, ValidationError};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::HashMap;
-use std::net::IpAddr;
 
 /// Direct URL `MediaProvider`
 pub struct DirectUrlProvider {}
@@ -33,40 +32,14 @@ impl DirectUrlProvider {
 
     /// Validate that an RTMP/RTMPS URL does not target internal/private network addresses.
     ///
-    /// Since `url::Url` cannot parse rtmp:// URLs, the host is extracted manually
-    /// from the `rtmp://host[:port]/app/stream` format and checked against the
-    /// SSRF blocklists (same approach as `LiveProxyProvider::validate_source_url_host`).
+    /// Delegates to the shared `validate_rtmp_url_for_ssrf` function from the validation module.
     fn validate_rtmp_url_not_internal(raw: &str) -> Result<(), ProviderError> {
-        let rest = raw
-            .strip_prefix("rtmp://")
-            .or_else(|| raw.strip_prefix("rtmps://"))
-            .ok_or_else(|| ProviderError::InvalidUrl("Expected rtmp:// or rtmps:// scheme".to_string()))?;
-
-        let authority = rest.split('/').next().unwrap_or(rest);
-        let host_str = if let Some((host, _port_str)) = authority.rsplit_once(':') {
-            host
-        } else {
-            authority
-        };
-
-        // Check if host is a literal IP address
-        if let Ok(ip) = host_str.parse::<IpAddr>() {
-            if crate::validation::is_private_ip(&ip) {
-                return Err(ProviderError::InvalidUrl(
-                    "SSRF protection: URL targets a private IP address".to_string(),
-                ));
+        validate_rtmp_url_for_ssrf(raw).map_err(|e| match e {
+            ValidationError::SSRF(msg) => {
+                ProviderError::InvalidUrl(format!("SSRF protection: {msg}"))
             }
-            return Ok(());
-        }
-
-        // Check hostname against shared blocklist (localhost, metadata endpoints, etc.)
-        use synctv_media_providers::ssrf::{check_hostname, SsrfCheckResult};
-        match check_hostname(host_str) {
-            SsrfCheckResult::Ok => Ok(()),
-            SsrfCheckResult::Blocked(reason) => Err(ProviderError::InvalidUrl(
-                format!("SSRF protection: {reason}"),
-            )),
-        }
+            _ => ProviderError::InvalidUrl(e.to_string()),
+        })
     }
 
     /// Forbidden header names that must not be set via user-supplied config.

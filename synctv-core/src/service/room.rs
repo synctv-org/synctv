@@ -82,6 +82,9 @@ pub struct RoomService {
 
     /// Optional brute-force protection for room password verification
     brute_force_service: Option<crate::service::auth::BruteForceProtection>,
+
+    /// Optional settings registry for reading create_room_need_review setting
+    settings_registry: Option<Arc<crate::service::SettingsRegistry>>,
 }
 
 impl std::fmt::Debug for RoomService {
@@ -195,6 +198,7 @@ impl RoomService {
             cache_invalidation: None,
             audit_service: None,
             brute_force_service: None,
+            settings_registry: None,
         }
     }
 
@@ -209,6 +213,11 @@ impl RoomService {
     /// Inject the brute-force protection service for room password rate limiting.
     pub fn set_brute_force_service(&mut self, service: crate::service::auth::BruteForceProtection) {
         self.brute_force_service = Some(service);
+    }
+
+    /// Inject the settings registry for reading create_room_need_review and other global settings.
+    pub fn set_settings_registry(&mut self, registry: Arc<crate::service::SettingsRegistry>) {
+        self.settings_registry = Some(registry);
     }
 
     /// Log an audit event if the audit service is configured.
@@ -311,12 +320,31 @@ impl RoomService {
             None
         };
 
+        // Determine initial room status based on create_room_need_review setting
+        let need_review = self.settings_registry
+            .as_ref()
+            .map(|r| r.create_room_need_review.get().unwrap_or(false))
+            .unwrap_or(false);
+        let initial_status = if need_review {
+            RoomStatus::Pending
+        } else {
+            RoomStatus::Active
+        };
+
+        if need_review {
+            tracing::info!(
+                user_id = %created_by,
+                room_name = %name,
+                "Room requires review, creating in Pending status"
+            );
+        }
+
         // Transaction: Create room with all related data atomically.
         // On error, the transaction will be automatically rolled back.
         let mut tx = self.pool.begin().await?;
 
-        // 1. Create room
-        let room = Room::new_with_description(name, description, created_by.clone());
+        // 1. Create room with appropriate status
+        let room = Room::new_with_status(name, description, created_by.clone(), initial_status);
         let created_room = self.room_repo.create_with_executor(&room, &mut *tx).await?;
 
         // 2. Set password if provided
@@ -668,11 +696,17 @@ impl RoomService {
     /// (default: 90 days). The actual SQL `DELETE` at purge time triggers
     /// `ON DELETE CASCADE` on all related tables.
     ///
-    /// **Soft-delete lifecycle:**
+    /// **Soft-delete lifecycle (optimized):**
     /// 1. This method sets `rooms.deleted_at = NOW()` (room becomes invisible to queries)
-    /// 2. `CleanupService::purge_soft_deleted_rooms()` runs periodically (default: every 24h)
-    /// 3. Rooms with `deleted_at` older than `room_soft_delete_retention_days` (default: 90)
-    ///    are permanently deleted, cascading to all related tables
+    /// 2. IMMEDIATELY deletes non-critical related data to free storage:
+    ///    - playlists (cascades to media via FK)
+    ///    - room_members
+    ///    - room_settings
+    ///    - room_playback_state
+    ///    - chat_messages
+    /// 3. Preserves only the room row (for audit) and audit_logs entries
+    /// 4. `CleanupService::purge_soft_deleted_rooms()` eventually purges the room row
+    ///    after `room_soft_delete_retention_days` (default: 90 days)
     pub async fn delete_room(&self, room_id: RoomId, user_id: UserId) -> Result<()> {
         tracing::info!(room_id = %room_id, user_id = %user_id, "Soft-deleting room");
 
@@ -684,8 +718,6 @@ impl RoomService {
         let mut tx = self.pool.begin().await?;
 
         // Soft-delete: set deleted_at timestamp.
-        // Related data is NOT deleted yet — it is cleaned up when CleanupService
-        // permanently deletes the room row (ON DELETE CASCADE on all FK references).
         let deleted = sqlx::query(
             "UPDATE rooms
              SET deleted_at = $2, updated_at = $2
@@ -701,6 +733,60 @@ impl RoomService {
             return Err(Error::NotFound("Room not found or already deleted".to_string()));
         }
 
+        // IMMEDIATE CLEANUP: Delete non-critical related data to free storage.
+        // This optimization prevents resource bloat during the 90-day retention period.
+        //
+        // The ON DELETE CASCADE constraints will handle these automatically when the room
+        // row is purged, but we explicitly delete them now to reclaim storage immediately.
+        //
+        // Order matters due to FK dependencies:
+        // 1. media (depends on playlists) - deleted via CASCADE when playlists are deleted
+        // 2. playlists (depends on room) - CASCADE to media
+        // 3. room_members (depends on room and users)
+        // 4. room_settings (depends on room)
+        // 5. room_playback_state (depends on room)
+        // 6. chat_messages (depends on room)
+
+        // Delete playlists (cascades to media via FK)
+        let playlists_deleted = sqlx::query(
+            "DELETE FROM playlists WHERE room_id = $1"
+        )
+        .bind(room_id.as_str())
+        .execute(&mut *tx)
+        .await?;
+
+        // Delete room members
+        let members_deleted = sqlx::query(
+            "DELETE FROM room_members WHERE room_id = $1"
+        )
+        .bind(room_id.as_str())
+        .execute(&mut *tx)
+        .await?;
+
+        // Delete room settings
+        let settings_deleted = sqlx::query(
+            "DELETE FROM room_settings WHERE room_id = $1"
+        )
+        .bind(room_id.as_str())
+        .execute(&mut *tx)
+        .await?;
+
+        // Delete room playback state
+        let _playback_deleted = sqlx::query(
+            "DELETE FROM room_playback_state WHERE room_id = $1"
+        )
+        .bind(room_id.as_str())
+        .execute(&mut *tx)
+        .await?;
+
+        // Delete chat messages
+        let chat_deleted = sqlx::query(
+            "DELETE FROM chat_messages WHERE room_id = $1"
+        )
+        .bind(room_id.as_str())
+        .execute(&mut *tx)
+        .await?;
+
         // Commit transaction - all or nothing
         tx.commit().await?;
 
@@ -710,7 +796,11 @@ impl RoomService {
         tracing::info!(
             room_id = %room_id,
             user_id = %user_id,
-            "Room soft-deleted (will be permanently purged by CleanupService after retention period)"
+            playlists_deleted = playlists_deleted.rows_affected(),
+            members_deleted = members_deleted.rows_affected(),
+            settings_deleted = settings_deleted.rows_affected(),
+            chat_deleted = chat_deleted.rows_affected(),
+            "Room soft-deleted with immediate cleanup of related data (room row preserved for audit, will be purged by CleanupService after retention period)"
         );
 
         // Track room metrics
@@ -724,16 +814,153 @@ impl RoomService {
         self.permission_service.invalidate_room_cache(&room_id).await;
         self.playback_service.invalidate_playback_cache(&room_id).await;
 
-        // Audit log
+        // Audit log (preserved - not deleted with room data)
         self.audit_log(
             &user_id,
             AuditAction::RoomDeleted,
             AuditTargetType::Room,
             Some(room_id.as_str().to_string()),
-            serde_json::json!({"reason": "Room deleted by user"}),
+            serde_json::json!({
+                "reason": "Room deleted by user",
+                "playlists_deleted": playlists_deleted.rows_affected(),
+                "members_deleted": members_deleted.rows_affected(),
+                "settings_deleted": settings_deleted.rows_affected(),
+                "chat_deleted": chat_deleted.rows_affected(),
+            }),
         ).await;
 
         Ok(())
+    }
+
+    // ========== Room Review Workflow (Admin Only) ==========
+
+    /// Approve a pending room (review workflow), changing its status to Active.
+    ///
+    /// This is an admin-only operation for rooms created when `create_room_need_review=true`.
+    /// After approval, the room becomes visible and usable by its creator.
+    ///
+    /// # Errors
+    /// - `Error::NotFound` if room doesn't exist
+    /// - `Error::InvalidInput` if room is not in Pending status
+    /// - `Error::Authorization` if caller is not a global admin
+    pub async fn approve_pending_room(&self, room_id: RoomId, admin_id: UserId) -> Result<Room> {
+        tracing::info!(room_id = %room_id, admin_id = %admin_id, "Approving pending room");
+
+        // Verify admin permission (global admin required)
+        let admin = self.user_service.get_user(&admin_id).await?;
+
+        if !admin.role.is_admin_or_above() {
+            return Err(Error::Authorization("Only admins can approve rooms".to_string()));
+        }
+
+        // Get current room to check status
+        let room = self.room_repo.get_by_id(&room_id).await?
+            .ok_or_else(|| Error::NotFound(format!("Room {} not found", room_id.as_str())))?;
+
+        if room.status != RoomStatus::Pending {
+            return Err(Error::InvalidInput(
+                format!("Room is not pending (current status: {:?})", room.status)
+            ));
+        }
+
+        // Update status to Active
+        let updated = self.room_repo.update_status(&room_id, RoomStatus::Active).await?;
+
+        // Invalidate cache
+        self.notify_room_invalidation(&room_id).await;
+        self.permission_service.invalidate_room_cache(&room_id).await;
+
+        // Audit log
+        self.audit_log(
+            &admin_id,
+            AuditAction::RoomApproved,
+            AuditTargetType::Room,
+            Some(room_id.as_str().to_string()),
+            serde_json::json!({
+                "previous_status": "pending",
+                "new_status": "active",
+            }),
+        ).await;
+
+        tracing::info!(room_id = %room_id, admin_id = %admin_id, "Room approved and activated");
+
+        Ok(updated)
+    }
+
+    /// Reject a pending room, changing its status to Closed.
+    ///
+    /// This is an admin-only operation for rooms created when `create_room_need_review=true`.
+    /// Rejected rooms are closed and cannot be used.
+    ///
+    /// # Errors
+    /// - `Error::NotFound` if room doesn't exist
+    /// - `Error::InvalidInput` if room is not in Pending status
+    /// - Permission error if caller is not a global admin
+    pub async fn reject_room(&self, room_id: RoomId, admin_id: UserId, reason: Option<String>) -> Result<Room> {
+        tracing::info!(room_id = %room_id, admin_id = %admin_id, "Rejecting pending room");
+
+        // Verify admin permission (global admin required)
+        let admin = self.user_service.get_user(&admin_id).await?;
+
+        if !admin.role.is_admin_or_above() {
+            return Err(Error::Authorization("Only admins can reject rooms".to_string()));
+        }
+
+        // Get current room to check status
+        let room = self.room_repo.get_by_id(&room_id).await?
+            .ok_or_else(|| Error::NotFound(format!("Room {} not found", room_id.as_str())))?;
+
+        if room.status != RoomStatus::Pending {
+            return Err(Error::InvalidInput(
+                format!("Room is not pending (current status: {:?})", room.status)
+            ));
+        }
+
+        // Update status to Closed
+        let updated = self.room_repo.update_status(&room_id, RoomStatus::Closed).await?;
+
+        // Invalidate cache
+        self.notify_room_invalidation(&room_id).await;
+        self.permission_service.invalidate_room_cache(&room_id).await;
+
+        // Audit log
+        self.audit_log(
+            &admin_id,
+            AuditAction::RoomRejected,
+            AuditTargetType::Room,
+            Some(room_id.as_str().to_string()),
+            serde_json::json!({
+                "previous_status": "pending",
+                "new_status": "closed",
+                "reason": reason,
+            }),
+        ).await;
+
+        tracing::info!(room_id = %room_id, admin_id = %admin_id, "Room rejected and closed");
+
+        Ok(updated)
+    }
+
+    /// List pending rooms (admin only).
+    ///
+    /// Returns all rooms with `RoomStatus::Pending` for admin review.
+    pub async fn list_pending_rooms(&self, admin_id: UserId, pagination: PageParams) -> Result<(Vec<Room>, i64)> {
+        // Verify admin permission
+        let admin = self.user_service.get_user(&admin_id).await?;
+
+        if !admin.role.is_admin_or_above() {
+            return Err(Error::Authorization("Only admins can list pending rooms".to_string()));
+        }
+
+        let query = RoomListQuery {
+            pagination,
+            status: Some(RoomStatus::Pending),
+            search: None,
+            is_banned: None,
+            creator_id: None,
+        };
+
+        self.room_repo.list(&query).await
     }
 
     /// Set room settings with optimistic locking (CAS).
@@ -1625,6 +1852,7 @@ impl RoomService {
     /// Delete room (admin use, bypasses permission checks)
     ///
     /// Uses a transaction for atomicity, matching the pattern of `delete_room`.
+    /// Immediately cleans up non-critical related data (see delete_room for details).
     pub async fn admin_delete_room(&self, room_id: &RoomId, admin_user_id: &UserId) -> Result<()> {
         // Wrap deletion in a transaction for atomicity
         let mut tx = self.pool.begin().await?;
@@ -1644,6 +1872,42 @@ impl RoomService {
             return Err(Error::NotFound("Room not found or already deleted".to_string()));
         }
 
+        // IMMEDIATE CLEANUP: Delete non-critical related data (same as delete_room)
+        let playlists_deleted = sqlx::query(
+            "DELETE FROM playlists WHERE room_id = $1"
+        )
+        .bind(room_id.as_str())
+        .execute(&mut *tx)
+        .await?;
+
+        let members_deleted = sqlx::query(
+            "DELETE FROM room_members WHERE room_id = $1"
+        )
+        .bind(room_id.as_str())
+        .execute(&mut *tx)
+        .await?;
+
+        let settings_deleted = sqlx::query(
+            "DELETE FROM room_settings WHERE room_id = $1"
+        )
+        .bind(room_id.as_str())
+        .execute(&mut *tx)
+        .await?;
+
+        let _playback_deleted = sqlx::query(
+            "DELETE FROM room_playback_state WHERE room_id = $1"
+        )
+        .bind(room_id.as_str())
+        .execute(&mut *tx)
+        .await?;
+
+        let chat_deleted = sqlx::query(
+            "DELETE FROM chat_messages WHERE room_id = $1"
+        )
+        .bind(room_id.as_str())
+        .execute(&mut *tx)
+        .await?;
+
         tx.commit().await?;
 
         // Notify after commit so notifications are only sent for successful deletions
@@ -1660,11 +1924,173 @@ impl RoomService {
                 AuditAction::RoomDeleted,
                 AuditTargetType::Room,
                 Some(room_id.as_str().to_string()),
-                serde_json::json!({"reason": "Room deleted by admin"}),
+                serde_json::json!({
+                    "reason": "Room deleted by admin",
+                    "playlists_deleted": playlists_deleted.rows_affected(),
+                    "members_deleted": members_deleted.rows_affected(),
+                    "settings_deleted": settings_deleted.rows_affected(),
+                    "chat_deleted": chat_deleted.rows_affected(),
+                }),
                 None,
                 None,
             ).await;
         }
+
+        Ok(())
+    }
+
+    /// Delete an orphaned room whose creator has been deleted or banned.
+    ///
+    /// This method allows global admins to clean up rooms that become orphaned
+    /// when the creator's account is deleted or banned. The FK constraint
+    /// `rooms.created_by REFERENCES users(id) ON DELETE RESTRICT` prevents
+    /// user deletion when they have created rooms, so this method provides
+    /// a way to first delete the orphaned room before retrying user deletion.
+    ///
+    /// # Verification
+    ///
+    /// This method verifies that the room is truly orphaned by checking:
+    /// 1. The room exists and is not already deleted
+    /// 2. The creator's user record either:
+    ///    - Does not exist (hard-deleted), OR
+    ///    - Has `deleted_at` set (soft-deleted), OR
+    ///    - Has `status = 'Banned'`
+    ///
+    /// # Arguments
+    ///
+    /// * `room_id` - The room to delete
+    /// * `admin_user_id` - The admin performing the deletion (for audit log)
+    ///
+    /// # Errors
+    ///
+    /// Returns `Error::InvalidInput` if the room is not actually orphaned
+    /// (creator exists and is active). In this case, use `delete_room` instead.
+    pub async fn admin_delete_orphaned_room(
+        &self,
+        room_id: &RoomId,
+        admin_user_id: &UserId,
+    ) -> Result<()> {
+        tracing::info!(room_id = %room_id, admin_user_id = %admin_user_id, "Admin deleting orphaned room");
+
+        // First, verify the room exists and check if it's orphaned
+        let room = self
+            .room_repo
+            .get_by_id(room_id)
+            .await?
+            .ok_or_else(|| Error::NotFound("Room not found".to_string()))?;
+
+        if room.deleted_at.is_some() {
+            return Err(Error::InvalidInput("Room is already deleted".to_string()));
+        }
+
+        // Check if the creator is deleted or banned
+        let creator_orphaned = sqlx::query_scalar::<_, bool>(
+            "SELECT NOT EXISTS (
+                SELECT 1 FROM users
+                WHERE id = $1
+                AND deleted_at IS NULL
+                AND status != 'Banned'
+            )"
+        )
+        .bind(room.created_by.as_str())
+        .fetch_one(&self.pool)
+        .await?;
+
+        if !creator_orphaned {
+            return Err(Error::InvalidInput(
+                "Room is not orphaned: creator still exists and is active. Use delete_room instead.".to_string()
+            ));
+        }
+
+        tracing::info!(
+            room_id = %room_id,
+            creator_id = %room.created_by,
+            "Confirmed room is orphaned, proceeding with admin deletion"
+        );
+
+        // Now delete the room using the same logic as admin_delete_room
+        let mut tx = self.pool.begin().await?;
+
+        let deleted = sqlx::query(
+            "UPDATE rooms
+             SET deleted_at = $2, updated_at = $2
+             WHERE id = $1 AND deleted_at IS NULL"
+        )
+        .bind(room_id.as_str())
+        .bind(chrono::Utc::now())
+        .execute(&mut *tx)
+        .await?;
+
+        if deleted.rows_affected() == 0 {
+            return Err(Error::NotFound("Room not found or already deleted".to_string()));
+        }
+
+        // IMMEDIATE CLEANUP: Delete non-critical related data
+        let playlists_deleted = sqlx::query(
+            "DELETE FROM playlists WHERE room_id = $1"
+        )
+        .bind(room_id.as_str())
+        .execute(&mut *tx)
+        .await?;
+
+        let members_deleted = sqlx::query(
+            "DELETE FROM room_members WHERE room_id = $1"
+        )
+        .bind(room_id.as_str())
+        .execute(&mut *tx)
+        .await?;
+
+        let settings_deleted = sqlx::query(
+            "DELETE FROM room_settings WHERE room_id = $1"
+        )
+        .bind(room_id.as_str())
+        .execute(&mut *tx)
+        .await?;
+
+        let _playback_deleted = sqlx::query(
+            "DELETE FROM room_playback_state WHERE room_id = $1"
+        )
+        .bind(room_id.as_str())
+        .execute(&mut *tx)
+        .await?;
+
+        let chat_deleted = sqlx::query(
+            "DELETE FROM chat_messages WHERE room_id = $1"
+        )
+        .bind(room_id.as_str())
+        .execute(&mut *tx)
+        .await?;
+
+        tx.commit().await?;
+
+        // Notify after commit
+        let _ = self.notification_service.notify_room_deleted(room_id).await;
+
+        crate::metrics::http::ROOMS_ACTIVE.dec();
+        self.notify_room_invalidation(room_id).await;
+
+        // Audit log
+        if let Some(ref audit) = self.audit_service {
+            let _ = audit.log(
+                admin_user_id.as_str().to_string(),
+                admin_user_id.as_str().to_string(),
+                AuditAction::RoomDeleted,
+                AuditTargetType::Room,
+                Some(room_id.as_str().to_string()),
+                serde_json::json!({
+                    "reason": "Orphaned room deleted by admin (creator deleted/banned)",
+                    "creator_id": room.created_by.as_str(),
+                    "playlists_deleted": playlists_deleted.rows_affected(),
+                    "members_deleted": members_deleted.rows_affected(),
+                    "settings_deleted": settings_deleted.rows_affected(),
+                    "chat_deleted": chat_deleted.rows_affected(),
+                }),
+                None,
+                None,
+            ).await;
+        }
+
+        tracing::info!(room_id = %room_id, "Orphaned room deleted successfully");
 
         Ok(())
     }
@@ -2510,6 +2936,55 @@ mod tests {
 
         let effective = member.effective_permissions(PermissionBits(PermissionBits::DEFAULT_MEMBER));
         assert_eq!(effective.0, PermissionBits::DEFAULT_MEMBER);
+    }
+
+    // ========== Room Status Transition Tests ==========
+
+    #[test]
+    fn test_room_status_pending_is_pending() {
+        use crate::models::RoomStatus;
+        let status = RoomStatus::Pending;
+        assert!(status.is_pending());
+        assert!(!status.is_active());
+        assert!(!status.is_closed());
+    }
+
+    #[test]
+    fn test_room_status_active_is_active() {
+        use crate::models::RoomStatus;
+        let status = RoomStatus::Active;
+        assert!(status.is_active());
+        assert!(!status.is_pending());
+        assert!(!status.is_closed());
+    }
+
+    #[test]
+    fn test_room_status_closed_is_closed() {
+        use crate::models::RoomStatus;
+        let status = RoomStatus::Closed;
+        assert!(status.is_closed());
+        assert!(!status.is_pending());
+        assert!(!status.is_active());
+    }
+
+    #[test]
+    fn test_room_new_has_active_status() {
+        use crate::models::{Room, RoomId, UserId, RoomStatus};
+        let owner = UserId::new();
+        let room = Room::new("Test Room".to_string(), owner.clone());
+        assert_eq!(room.status, RoomStatus::Active);
+    }
+
+    #[test]
+    fn test_room_new_with_description_has_active_status() {
+        use crate::models::{Room, RoomId, UserId, RoomStatus};
+        let owner = UserId::new();
+        let room = Room::new_with_description(
+            "Test Room".to_string(),
+            "A test room".to_string(),
+            owner.clone(),
+        );
+        assert_eq!(room.status, RoomStatus::Active);
     }
 
     // ========== Integration Test Placeholders ==========

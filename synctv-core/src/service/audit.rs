@@ -98,6 +98,7 @@ pub enum AuditAction {
     RoomSettingsUpdated,
     UserApproved,
     RoomApproved,
+    RoomRejected,
     StreamKicked,
 }
 
@@ -132,6 +133,7 @@ impl AuditAction {
             Self::RoomSettingsUpdated => "room_settings_updated",
             Self::UserApproved => "user_approved",
             Self::RoomApproved => "room_approved",
+            Self::RoomRejected => "room_rejected",
             Self::StreamKicked => "stream_kicked",
         }
     }

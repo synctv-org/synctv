@@ -40,6 +40,12 @@ impl KeyBuilder {
         Self::new(config.redis.key_prefix.clone())
     }
 
+    /// Get the key prefix
+    #[must_use]
+    pub fn prefix(&self) -> &str {
+        &self.prefix
+    }
+
     // ==================== Cluster Management ====================
 
     /// Node registration information

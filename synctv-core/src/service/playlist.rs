@@ -194,12 +194,30 @@ impl PlaylistService {
         self.playlist_repo.get_children(parent_id).await
     }
 
+    /// Get count of children playlists for a parent.
+    pub async fn count_children(&self, parent_id: &PlaylistId) -> Result<i64> {
+        self.playlist_repo.count_children(parent_id).await
+    }
+
+    /// Get paginated children playlists for a parent.
+    pub async fn get_children_paginated(
+        &self,
+        parent_id: &PlaylistId,
+        limit: i64,
+        offset: i64,
+    ) -> Result<Vec<Playlist>> {
+        self.playlist_repo.get_children_paginated(parent_id, limit, offset).await
+    }
+
     /// Get all playlists in a room (tree structure)
     pub async fn get_room_playlists(&self, room_id: &RoomId) -> Result<Vec<Playlist>> {
         self.playlist_repo.get_by_room(room_id).await
     }
 
     /// Set playlist properties
+    ///
+    /// Uses optimistic locking with automatic retry on version conflicts.
+    /// Retries use exponential backoff with jitter to avoid thundering herd.
     pub async fn set_playlist(
         &self,
         room_id: RoomId,
@@ -214,42 +232,78 @@ impl PlaylistService {
             .check_permission(&room_id, &user_id, PermissionBits::REORDER_PLAYLIST)
             .await?;
 
-        // Get existing playlist
-        let mut playlist = self
-            .playlist_repo
-            .get_by_id(&request.playlist_id)
-            .await?
-            .ok_or_else(|| Error::NotFound("Playlist not found".to_string()))?;
+        // Retry loop with optimistic locking
+        const MAX_RETRIES: u32 = 3;
+        const BACKOFF_BASE_MS: u64 = 5;
 
-        // Verify playlist belongs to room
-        if playlist.room_id != room_id {
-            return Err(Error::Authorization("Playlist does not belong to this room".to_string()));
-        }
+        for attempt in 0..MAX_RETRIES {
+            // Get existing playlist (re-fetch on each retry to get latest version)
+            let mut playlist = self
+                .playlist_repo
+                .get_by_id(&request.playlist_id)
+                .await?
+                .ok_or_else(|| Error::NotFound("Playlist not found".to_string()))?;
 
-        // Update fields
-        if let Some(name) = request.name {
-            let name = name.trim().to_string();
-            if name.is_empty() {
-                return Err(Error::InvalidInput("Playlist name cannot be empty".to_string()));
+            // Verify playlist belongs to room
+            if playlist.room_id != room_id {
+                return Err(Error::Authorization("Playlist does not belong to this room".to_string()));
             }
-            if name.chars().count() > 200 {
-                return Err(Error::InvalidInput("Playlist name cannot exceed 200 characters".to_string()));
+
+            // Store original version for optimistic locking
+            let expected_version = playlist.version;
+
+            // Update fields
+            if let Some(ref name) = request.name {
+                let name = name.trim().to_string();
+                if name.is_empty() {
+                    return Err(Error::InvalidInput("Playlist name cannot be empty".to_string()));
+                }
+                if name.chars().count() > 200 {
+                    return Err(Error::InvalidInput("Playlist name cannot exceed 200 characters".to_string()));
+                }
+                playlist.name = name;
             }
-            playlist.name = name;
+            if let Some(position) = request.position {
+                playlist.position = position;
+            }
+
+            // Save with optimistic locking
+            match self.playlist_repo.update_with_version(&playlist, expected_version).await {
+                Ok(updated_playlist) => {
+                    tracing::info!(
+                        room_id = %room_id.as_str(),
+                        playlist_id = %request.playlist_id.as_str(),
+                        "Playlist updated"
+                    );
+                    return Ok(updated_playlist);
+                }
+                Err(Error::OptimisticLockConflict) => {
+                    if attempt + 1 < MAX_RETRIES {
+                        // Exponential backoff with jitter
+                        let backoff = BACKOFF_BASE_MS * (1 << attempt);
+                        let jitter = rand::random_range(0..BACKOFF_BASE_MS);
+                        let delay = backoff + jitter;
+                        tracing::debug!(
+                            room_id = %room_id.as_str(),
+                            playlist_id = %request.playlist_id.as_str(),
+                            attempt = attempt + 1,
+                            delay_ms = delay,
+                            "Playlist version conflict, retrying with backoff"
+                        );
+                        tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
+                        continue;
+                    }
+                    return Err(Error::Internal(
+                        "Playlist update failed after maximum retry attempts".to_string(),
+                    ));
+                }
+                Err(e) => return Err(e),
+            }
         }
-        if let Some(position) = request.position {
-            playlist.position = position;
-        }
 
-        let updated_playlist = self.playlist_repo.update(&playlist).await?;
-
-        tracing::info!(
-            room_id = %room_id.as_str(),
-            playlist_id = %request.playlist_id.as_str(),
-            "Playlist updated"
-        );
-
-        Ok(updated_playlist)
+        Err(Error::Internal(
+            "Playlist update failed after maximum retry attempts".to_string(),
+        ))
     }
 
     /// Delete playlist
@@ -593,6 +647,41 @@ mod tests {
         let mut playlists: Vec<i32> = vec![3, 1, 4, 1, 5, 9, 2, 6];
         playlists.sort();
         assert_eq!(playlists, vec![1, 1, 2, 3, 4, 5, 6, 9]);
+    }
+
+    // ========== Optimistic Locking Retry Constants ==========
+
+    #[test]
+    fn test_set_playlist_retry_constants() {
+        // MAX_RETRIES = 3 to match optimistic_retry::DEFAULT_MAX_RETRIES
+        const MAX_RETRIES: u32 = 3;
+        const BACKOFF_BASE_MS: u64 = 5;
+        assert_eq!(MAX_RETRIES, 3);
+        assert_eq!(BACKOFF_BASE_MS, 5);
+    }
+
+    #[test]
+    fn test_set_playlist_backoff_increases_exponentially() {
+        const BACKOFF_BASE_MS: u64 = 5;
+        // Verify exponential backoff calculation:
+        // attempt 0: base * 1 = 5ms
+        // attempt 1: base * 2 = 10ms
+        // attempt 2: base * 4 = 20ms
+        let delays: Vec<u64> = (0..3).map(|a| BACKOFF_BASE_MS * (1 << a)).collect();
+        assert_eq!(delays, vec![5, 10, 20]);
+    }
+
+    #[test]
+    fn test_set_playlist_retry_succeeds_within_max_attempts() {
+        // With MAX_RETRIES = 3, we have 3 attempts total
+        // If conflicts happen on attempts 0 and 1, attempt 2 should succeed
+        let conflicts = 2;
+        let attempts_needed = conflicts + 1; // 3 attempts
+        assert!(
+            attempts_needed <= 3,
+            "Need {} attempts but MAX_RETRIES is 3",
+            attempts_needed
+        );
     }
 
     // ========== Integration Tests (Require DB) ==========

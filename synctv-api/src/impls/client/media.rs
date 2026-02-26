@@ -607,19 +607,18 @@ impl ClientApiImpl {
             })
         } else {
             // Static playlist: list child playlists and media from database
-            // Get all child playlists (folders)
-            let child_playlists = self.room_service.playlist_service()
-                .get_children(&playlist_id)
-                .await
-                .map_err(ApiError::from)?;
-            let folder_count = child_playlists.len();
+            // Use database pagination to avoid loading all items into memory.
 
-            // Get all media in this playlist (files)
-            let all_media = self.room_service.media_service()
-                .get_playlist_media(&playlist_id)
+            // Get counts first (2 small queries instead of loading all data)
+            let folder_count = self.room_service.playlist_service()
+                .count_children(&playlist_id)
                 .await
-                .map_err(ApiError::from)?;
-            let file_count = all_media.len();
+                .map_err(ApiError::from)? as usize;
+
+            let file_count = self.room_service.media_service()
+                .count_playlist_media(&playlist_id)
+                .await
+                .map_err(ApiError::from)? as usize;
 
             let total = folder_count + file_count;
 
@@ -629,12 +628,12 @@ impl ClientApiImpl {
             let (mut proto_playlists, mut proto_media) = (Vec::new(), Vec::new());
 
             if skip < folder_count {
-                // Current page includes folders
+                // Current page includes folders - fetch paginated folders from DB
                 let folder_take = (folder_count - skip).min(page_size);
-                let folders_page: Vec<_> = child_playlists.into_iter()
-                    .skip(skip)
-                    .take(folder_take)
-                    .collect();
+                let folders_page = self.room_service.playlist_service()
+                    .get_children_paginated(&playlist_id, folder_take as i64, skip as i64)
+                    .await
+                    .map_err(ApiError::from)?;
 
                 // Batch fetch media counts for folders
                 let folder_ids: Vec<&str> = folders_page.iter().map(|pl| pl.id.as_str()).collect();
@@ -653,20 +652,29 @@ impl ClientApiImpl {
 
                 // If there's room left on this page, add media
                 let remaining = page_size - folder_take;
-                if remaining > 0 && !all_media.is_empty() {
-                    proto_media = all_media.into_iter()
-                        .take(remaining)
+                if remaining > 0 && file_count > 0 {
+                    // Fetch only the needed media items from DB
+                    let media_page = self.room_service.media_service()
+                        .get_playlist_media_offset_limit(&playlist_id, remaining as i64, 0)
+                        .await
+                        .map_err(ApiError::from)?;
+                    proto_media = media_page.into_iter()
                         .map(|m| media_to_proto(&m))
                         .collect();
                 }
             } else {
                 // Current page only has media (all folders already shown)
                 let media_skip = skip - folder_count;
-                proto_media = all_media.into_iter()
-                    .skip(media_skip)
-                    .take(page_size)
-                    .map(|m| media_to_proto(&m))
-                    .collect();
+                if file_count > media_skip {
+                    // Fetch only the needed media items from DB
+                    let media_page = self.room_service.media_service()
+                        .get_playlist_media_offset_limit(&playlist_id, page_size as i64, media_skip as i64)
+                        .await
+                        .map_err(ApiError::from)?;
+                    proto_media = media_page.into_iter()
+                        .map(|m| media_to_proto(&m))
+                        .collect();
+                }
             }
 
             Ok(crate::proto::client::ListPlaylistItemsResponse {

@@ -570,6 +570,156 @@ async fn test_login_unverified_email_allowed_when_not_required() {
 }
 
 // ============================================================================
+// S2.5: Account enumeration prevention tests (HIGH #13)
+// ============================================================================
+
+/// Test that email-based users and OAuth2-only users receive identical
+/// error messages when email verification is required but not satisfied.
+///
+/// This prevents account enumeration where attackers could determine
+/// which accounts have emails configured based on different error responses.
+///
+/// VULNERABILITY DEMONSTRATION:
+/// When email_verification_required=true, the code checks:
+///   `user.email.is_some() && !user.email_verified`
+///
+/// This means:
+/// - User WITH email (unverified): blocked (email.is_some() = true)
+/// - User WITHOUT email (OAuth2-only): PASSES (email.is_some() = false)
+///
+/// An attacker can enumerate accounts by attempting login with correct password:
+/// - Blocked → account has email configured
+/// - Success → account is OAuth2-only (no email)
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_login_email_verification_no_account_enumeration() {
+    let (_container, pool) = create_test_pool().await;
+    let mut service = create_user_service(pool.clone());
+    service.set_email_verification_required(true);
+
+    // Create user WITH email (unverified but Active)
+    let email_user = format!("email_user_{}", nanoid::nanoid!(6));
+    let (user_with_email, _, _) = service
+        .register(
+            email_user.clone(),
+            Some(format!("{}@test.com", email_user)),
+            "StrongPass1".to_string(),
+            None,
+        )
+        .await
+        .expect("Registration should succeed");
+
+    // Mark email as unverified (but user is Active because verification was not required during registration)
+    sqlx::query("UPDATE users SET email_verified = false WHERE id = $1")
+        .bind(user_with_email.id.as_str())
+        .execute(&pool)
+        .await
+        .expect("Failed to set unverified");
+
+    // Create OAuth2-only user (no email) and set them as Active
+    let provider = synctv_core::models::oauth2_client::OAuth2Provider::Google;
+    let oauth_user = service
+        .create_or_load_by_oauth2(&provider, "oauth123", "oauthuser", None)
+        .await
+        .expect("OAuth2 user creation should succeed");
+
+    // Set a password for the OAuth2 user so they can login
+    service
+        .set_password(&oauth_user.id, "StrongPass1")
+        .await
+        .expect("Setting password should succeed");
+
+    // Set OAuth2 user status to Active (they start as Pending)
+    // This simulates an admin-approved OAuth2 user or one that bypasses review
+    sqlx::query("UPDATE users SET status = 1 WHERE id = $1")  // 1 = Active
+        .bind(oauth_user.id.as_str())
+        .execute(&pool)
+        .await
+        .expect("Failed to set active status");
+
+    // Both users should receive the SAME error message when attempting login
+    // with correct password but unverified email status
+    let email_result = service
+        .login(email_user, "StrongPass1".to_string(), None)
+        .await;
+
+    let oauth_result = service
+        .login(oauth_user.username.clone(), "StrongPass1".to_string(), None)
+        .await;
+
+    // Both should fail (CRITICAL: before fix, oauth_result would succeed!)
+    assert!(email_result.is_err(), "Email user with unverified email should be blocked");
+    assert!(oauth_result.is_err(), "OAuth2 user with no email should also be blocked (VULNERABILITY: currently passes)");
+
+    // Both should return the SAME error type and message
+    let email_err = email_result.unwrap_err();
+    let oauth_err = oauth_result.unwrap_err();
+
+    match (&email_err, &oauth_err) {
+        (Error::Authentication(msg1), Error::Authentication(msg2)) => {
+            assert_eq!(
+                msg1, msg2,
+                "Both users should receive identical error messages to prevent enumeration"
+            );
+        }
+        _ => panic!("Both errors should be Authentication errors, got: {:?} and {:?}", email_err, oauth_err),
+    }
+}
+
+/// Test that when email verification is NOT required, both email and OAuth2
+/// users can login regardless of email_verified status.
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_login_no_verification_required_both_user_types_allowed() {
+    let (_container, pool) = create_test_pool().await;
+    let service = create_user_service(pool.clone());
+    // email_verification_required is false by default
+
+    // Create user WITH email (unverified)
+    let email_user = format!("email_allowed_{}", nanoid::nanoid!(6));
+    let (_user_with_email, _, _) = service
+        .register(
+            email_user.clone(),
+            Some(format!("{}@test.com", email_user)),
+            "StrongPass1".to_string(),
+            None,
+        )
+        .await
+        .expect("Registration should succeed");
+
+    // Create OAuth2-only user (no email)
+    let provider = synctv_core::models::oauth2_client::OAuth2Provider::Google;
+    let oauth_user = service
+        .create_or_load_by_oauth2(&provider, "oauth_allowed", "oauth_allowed", None)
+        .await
+        .expect("OAuth2 user creation should succeed");
+
+    service
+        .set_password(&oauth_user.id, "StrongPass1")
+        .await
+        .expect("Setting password should succeed");
+
+    // Set OAuth2 user status to Active (they start as Pending)
+    sqlx::query("UPDATE users SET status = 1 WHERE id = $1")  // 1 = Active
+        .bind(oauth_user.id.as_str())
+        .execute(&pool)
+        .await
+        .expect("Failed to set active status");
+
+    // Both should be able to login when verification is not required
+    let email_result = service
+        .login(email_user, "StrongPass1".to_string(), None)
+        .await;
+
+    let oauth_result = service
+        .login(oauth_user.username.clone(), "StrongPass1".to_string(), None)
+        .await;
+
+    assert!(email_result.is_ok(), "Email user should be allowed when verification not required: {:?}", email_result.err());
+    assert!(oauth_result.is_ok(), "OAuth2 user should be allowed when verification not required: {:?}", oauth_result.err());
+}
+
+// ============================================================================
 // S3: UserService::delete_user
 // ============================================================================
 
@@ -906,5 +1056,116 @@ async fn test_refresh_token_email_verification_recheck() {
     assert!(
         result.is_err(),
         "Refresh should fail when email verification is required but email is unverified"
+    );
+}
+
+// ============================================================================
+// S1.5: refresh_token rate limiting tests (HIGH #16)
+// ============================================================================
+
+/// Test that refresh_token endpoint has rate limiting to prevent abuse.
+///
+/// Without rate limiting, an attacker with a stolen refresh token can:
+/// 1. Rapidly call refresh_token to exhaust server resources
+/// 2. Trigger family revocation, locking out the legitimate user
+///
+/// Rate limiting should:
+/// - Limit per-user refresh requests to prevent abuse
+/// - Allow legitimate refresh patterns (occasional token rotation)
+/// - Return clear rate limit error when exceeded
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_refresh_token_rate_limiting_per_user() {
+    let (_container, pool) = create_test_pool().await;
+    let service = create_user_service(pool.clone());
+
+    // Register and get initial tokens
+    let (_user, _access, Some(refresh_token)) = service
+        .register(
+            format!("rate_limit_refresh_{}", nanoid::nanoid!(6)),
+            Some(format!("rate_limit_refresh_{}@test.com", nanoid::nanoid!(6))),
+            "StrongPass1".to_string(),
+            None,
+        )
+        .await
+        .expect("Registration should succeed")
+    else {
+        panic!("Expected tokens from registration");
+    };
+
+    // Make rapid refresh requests - should eventually be rate limited
+    // The default limit is typically 10 requests per minute per user
+    let mut success_count = 0;
+    let mut rate_limited = false;
+    let mut current_token = refresh_token;
+
+    for _ in 0..20 {
+        match service.refresh_token(current_token.clone()).await {
+            Ok((_new_access, new_refresh)) => {
+                success_count += 1;
+                // Use the new refresh token for next iteration (token rotation)
+                current_token = new_refresh;
+            }
+            Err(Error::RateLimited(_)) => {
+                rate_limited = true;
+                break;
+            }
+            Err(e) => {
+                // Other errors shouldn't happen in this test
+                panic!("Unexpected error during refresh: {:?}", e);
+            }
+        }
+    }
+
+    assert!(
+        rate_limited,
+        "Refresh token endpoint should be rate limited after {} requests (VULNERABILITY: no rate limiting)",
+        success_count
+    );
+
+    // Should have had at least some successful refreshes before hitting limit
+    assert!(success_count > 0, "Should allow at least some refresh requests before rate limiting");
+}
+
+/// Test that rate limit recovers after waiting.
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_refresh_token_rate_limit_recovers() {
+    let (_container, pool) = create_test_pool().await;
+    let service = create_user_service(pool.clone());
+
+    let (_user, _access, Some(refresh_token)) = service
+        .register(
+            format!("rate_limit_recover_{}", nanoid::nanoid!(6)),
+            Some(format!("rate_limit_recover_{}@test.com", nanoid::nanoid!(6))),
+            "StrongPass1".to_string(),
+            None,
+        )
+        .await
+        .expect("Registration should succeed")
+    else {
+        panic!("Expected tokens from registration");
+    };
+
+    // Exhaust rate limit, keeping track of the latest token
+    let mut current_token = refresh_token;
+    for _ in 0..20 {
+        match service.refresh_token(current_token.clone()).await {
+            Ok((_access, new_refresh)) => {
+                current_token = new_refresh;
+            }
+            Err(_) => break,
+        }
+    }
+
+    // Wait for rate limit to reset (60 second window)
+    tokio::time::sleep(std::time::Duration::from_secs(61)).await;
+
+    // Should be able to refresh again after reset using the latest token
+    let result = service.refresh_token(current_token).await;
+    assert!(
+        result.is_ok(),
+        "Should be able to refresh again after rate limit window resets: {:?}",
+        result.err()
     );
 }

@@ -1410,10 +1410,11 @@ impl ConnectionManager {
             );
         }
 
-        // Synchronize local connection counts to Redis counters.
+        // Perform full reconciliation with Redis after TTL refresh.
         // This handles cases where Redis was temporarily unavailable during
         // connection registration, ensuring eventual consistency.
-        self.sync_local_counts_to_redis(&mut conn).await;
+        // Note: This includes sync_local_counts_to_redis plus metadata sync and cleanup.
+        self.reconcile_with_redis().await;
     }
 
     /// Batch refresh TTLs using a Lua script for efficiency.
@@ -1671,6 +1672,188 @@ impl ConnectionManager {
                 counters_synced = sync_count,
                 sync_errors = sync_errors,
                 "Completed distributed counter synchronization"
+            );
+        }
+    }
+
+    /// Reconcile in-memory connection state with Redis after an outage recovery.
+    ///
+    /// This method performs a full reconciliation between local state and Redis:
+    /// 1. Syncs local connection counts to Redis counters
+    /// 2. Writes missing connection metadata to Redis
+    /// 3. Cleans up stale Redis connection metadata that doesn't exist locally
+    ///
+    /// # When to Call
+    ///
+    /// This method should be called:
+    /// - Periodically by a background task (every 60s by default)
+    /// - After detecting Redis has recovered from an outage
+    /// - On startup to recover from previous unclean shutdowns
+    ///
+    /// # Trade-offs
+    ///
+    /// - **Pros**: Ensures eventual consistency, handles partial failures
+    /// - **Cons**: Can be expensive with many connections; uses Redis round-trips
+    ///
+    /// # Errors
+    ///
+    /// Errors are logged but do not propagate. The method is designed to be
+    /// eventually consistent - failures are retried on the next call.
+    pub async fn reconcile_with_redis(&self) {
+        let Some(ref conn) = self.redis_conn else {
+            // No Redis configured - nothing to reconcile
+            return;
+        };
+        let mut conn = conn.clone();
+
+        // Step 1: Sync connection counters (existing logic)
+        self.sync_local_counts_to_redis(&mut conn).await;
+
+        // Step 2: Sync connection metadata to Redis
+        self.sync_connection_metadata_to_redis(&mut conn).await;
+
+        // Step 3: Clean up stale Redis metadata (keys that don't exist locally)
+        self.cleanup_stale_redis_metadata(&mut conn).await;
+    }
+
+    /// Sync local connection metadata to Redis.
+    ///
+    /// Writes metadata for all active connections. Uses SET with TTL to ensure
+    /// keys are eventually cleaned up even if the node crashes.
+    async fn sync_connection_metadata_to_redis(&self, conn: &mut redis::aio::ConnectionManager) {
+        use redis::AsyncCommands;
+
+        let mut synced = 0u64;
+        let mut errors = 0u64;
+
+        for entry in self.connections.iter() {
+            let conn_info = entry.value();
+            let key = format!(
+                "{}conn_mgr:conn:{}",
+                self.redis_key_prefix,
+                conn_info.connection_id
+            );
+            let persistent = ConnectionInfoPersistent::from(conn_info);
+
+            match serde_json::to_string(&persistent) {
+                Ok(json_data) => {
+                    let result: Result<(), _> = conn
+                        .set_ex(&key, json_data, CONNECTION_METADATA_TTL_SECONDS as u64)
+                        .await;
+
+                    match result {
+                        Ok(()) => {
+                            synced += 1;
+                        }
+                        Err(e) => {
+                            errors += 1;
+                            warn!(
+                                connection_id = %conn_info.connection_id,
+                                error = %e,
+                                "Failed to sync connection metadata to Redis"
+                            );
+                        }
+                    }
+                }
+                Err(e) => {
+                    errors += 1;
+                    warn!(
+                        connection_id = %conn_info.connection_id,
+                        error = %e,
+                        "Failed to serialize connection metadata"
+                    );
+                }
+            }
+        }
+
+        if synced > 0 || errors > 0 {
+            debug!(
+                metadata_synced = synced,
+                metadata_errors = errors,
+                "Synced connection metadata to Redis"
+            );
+        }
+    }
+
+    /// Clean up stale Redis connection metadata that doesn't exist locally.
+    ///
+    /// Scans Redis for connection metadata keys and deletes any that don't
+    /// correspond to active local connections. This handles the case where
+    /// a connection was unregistered locally but the Redis deletion failed.
+    async fn cleanup_stale_redis_metadata(&self, conn: &mut redis::aio::ConnectionManager) {
+        use redis::AsyncCommands;
+
+        let pattern = format!("{}conn_mgr:conn:*", self.redis_key_prefix);
+        let mut cleaned = 0u64;
+        let mut errors = 0u64;
+
+        // Use SCAN to iterate over matching keys
+        let mut cursor: u64 = 0;
+        loop {
+            let result: Result<(u64, Vec<String>), _> = redis::cmd("SCAN")
+                .arg(cursor)
+                .arg("MATCH")
+                .arg(&pattern)
+                .arg("COUNT")
+                .arg(100) // Batch size
+                .query_async(conn)
+                .await;
+
+            match result {
+                Ok((new_cursor, keys)) => {
+                    cursor = new_cursor;
+
+                    for key in keys {
+                        // Extract connection_id from key
+                        // Key format: {prefix}conn_mgr:conn:{connection_id}
+                        if let Some(conn_id) = key.strip_prefix(&format!(
+                            "{}conn_mgr:conn:",
+                            self.redis_key_prefix
+                        )) {
+                            // Check if this connection exists locally
+                            if !self.connections.contains_key(conn_id) {
+                                // Connection doesn't exist locally - delete from Redis
+                                let del_result: Result<(), _> = conn.del(&key).await;
+                                match del_result {
+                                    Ok(()) => {
+                                        cleaned += 1;
+                                        debug!(
+                                            connection_id = %conn_id,
+                                            key = %key,
+                                            "Cleaned up stale connection metadata from Redis"
+                                        );
+                                    }
+                                    Err(e) => {
+                                        errors += 1;
+                                        warn!(
+                                            key = %key,
+                                            error = %e,
+                                            "Failed to delete stale connection metadata"
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // SCAN returns cursor 0 when done
+                    if cursor == 0 {
+                        break;
+                    }
+                }
+                Err(e) => {
+                    errors += 1;
+                    warn!(error = %e, "Failed to SCAN Redis for stale metadata");
+                    break;
+                }
+            }
+        }
+
+        if cleaned > 0 || errors > 0 {
+            info!(
+                stale_cleaned = cleaned,
+                cleanup_errors = errors,
+                "Cleaned up stale connection metadata from Redis"
             );
         }
     }
@@ -2100,5 +2283,210 @@ mod tests {
         let timeouts = manager.check_timeouts();
         assert_eq!(timeouts.len(), 1);
         assert_eq!(timeouts[0], "conn1");
+    }
+
+    // ========== Redis Reconciliation Tests ==========
+
+    #[tokio::test]
+    #[ignore = "Requires Docker Redis"]
+    async fn test_redis_recovery_reconciles_connection_counts() {
+        // This test verifies that after a Redis outage, the ConnectionManager
+        // reconciles in-memory connection counts with Redis.
+
+        // Setup: Create manager with Redis
+        use redis::AsyncCommands;
+
+        let client = redis::Client::open("redis://127.0.0.1:6379").unwrap();
+        let conn = redis::aio::ConnectionManager::new(client.clone())
+            .await
+            .unwrap();
+
+        let manager = ConnectionManager::new(ConnectionLimits::default())
+            .with_redis(conn, "test:");
+
+        let user_id = UserId::from_string("user1".to_string());
+        let room_id = RoomId::from_string("room1".to_string());
+
+        // Register connections
+        manager
+            .register("conn1".to_string(), user_id.clone())
+            .await
+            .unwrap();
+        manager.join_room("conn1", room_id.clone()).await.unwrap();
+
+        // Verify Redis has the counts
+        let mut redis_conn = redis::aio::ConnectionManager::new(client.clone())
+            .await
+            .unwrap();
+        let user_count: i64 = redis_conn
+            .get("test:connections:user:user1")
+            .await
+            .unwrap_or(0);
+        assert_eq!(user_count, 1);
+
+        // Simulate Redis outage by clearing Redis keys manually
+        // (In real scenario, Redis would be down)
+        let _: () = redis_conn.del("test:connections:user:user1").await.unwrap();
+        let _: () = redis_conn.del("test:connections:room:room1").await.unwrap();
+
+        // At this point, local state has 1 connection but Redis has 0
+        assert_eq!(manager.user_connection_count(&user_id), 1);
+
+        // Trigger reconciliation
+        manager.reconcile_with_redis().await;
+
+        // After reconciliation, Redis should match local state
+        let user_count: i64 = redis_conn
+            .get("test:connections:user:user1")
+            .await
+            .unwrap_or(0);
+        assert_eq!(user_count, 1);
+
+        // Cleanup
+        manager.unregister("conn1").await;
+    }
+
+    #[tokio::test]
+    #[ignore = "Requires Docker Redis"]
+    async fn test_redis_recovery_reconciles_stale_connections() {
+        // This test verifies that stale Redis connection metadata is cleaned up
+        // during reconciliation.
+
+        use redis::AsyncCommands;
+
+        let client = redis::Client::open("redis://127.0.0.1:6379").unwrap();
+        let conn = redis::aio::ConnectionManager::new(client.clone())
+            .await
+            .unwrap();
+
+        let manager = ConnectionManager::new(ConnectionLimits::default())
+            .with_redis(conn, "test2:");
+
+        let _user_id = UserId::from_string("user1".to_string());
+
+        // Manually inject stale connection metadata into Redis
+        // (simulating a connection that was never cleaned up)
+        let mut redis_conn = redis::aio::ConnectionManager::new(client.clone())
+            .await
+            .unwrap();
+        let stale_key = "test2:conn_mgr:conn:stale_conn";
+        let stale_meta = ConnectionInfoPersistent {
+            connection_id: "stale_conn".to_string(),
+            user_id: "user_stale".to_string(),
+            room_id: None,
+            connected_at_unix: 0,
+            last_activity_unix: 0,
+            message_count: 0,
+            rtc_joined: false,
+        };
+        let _: () = redis_conn
+            .set(stale_key, serde_json::to_string(&stale_meta).unwrap())
+            .await
+            .unwrap();
+
+        // Verify stale data exists
+        let exists: bool = redis_conn.exists(stale_key).await.unwrap();
+        assert!(exists);
+
+        // Trigger reconciliation
+        manager.reconcile_with_redis().await;
+
+        // Stale connection should be cleaned up since it doesn't exist locally
+        let exists: bool = redis_conn.exists(stale_key).await.unwrap();
+        assert!(!exists);
+    }
+
+    #[tokio::test]
+    #[ignore = "Requires Docker Redis"]
+    async fn test_redis_outage_during_register_eventually_consistent() {
+        // This test verifies that failed Redis operations during register
+        // are eventually reconciled.
+
+        use redis::AsyncCommands;
+
+        let client = redis::Client::open("redis://127.0.0.1:6379").unwrap();
+        let conn = redis::aio::ConnectionManager::new(client.clone())
+            .await
+            .unwrap();
+
+        let manager = ConnectionManager::new(ConnectionLimits::default())
+            .with_redis(conn, "test3:");
+
+        let user_id = UserId::from_string("user1".to_string());
+
+        // Register a connection (should succeed and write to Redis)
+        manager
+            .register("conn1".to_string(), user_id.clone())
+            .await
+            .unwrap();
+
+        // Verify Redis counter
+        let mut redis_conn = redis::aio::ConnectionManager::new(client.clone())
+            .await
+            .unwrap();
+        let user_count: i64 = redis_conn
+            .get("test3:connections:user:user1")
+            .await
+            .unwrap_or(0);
+        assert_eq!(user_count, 1);
+
+        // Manually corrupt the counter (simulating partial failure)
+        let _: () = redis_conn.set("test3:connections:user:user1", 0).await.unwrap();
+
+        // Local state says 1, Redis says 0
+        assert_eq!(manager.user_connection_count(&user_id), 1);
+
+        // Trigger reconciliation
+        manager.reconcile_with_redis().await;
+
+        // After reconciliation, Redis should be corrected
+        let user_count: i64 = redis_conn
+            .get("test3:connections:user:user1")
+            .await
+            .unwrap_or(0);
+        assert_eq!(user_count, 1);
+
+        // Cleanup
+        manager.unregister("conn1").await;
+    }
+
+    #[tokio::test]
+    async fn test_reconcile_without_redis_is_noop() {
+        // Reconciliation should be a no-op when Redis is not configured
+        let manager = ConnectionManager::default();
+        let user_id = UserId::from_string("user1".to_string());
+
+        manager
+            .register("conn1".to_string(), user_id.clone())
+            .await
+            .unwrap();
+
+        // Should not panic or error
+        manager.reconcile_with_redis().await;
+
+        assert_eq!(manager.connection_count(), 1);
+    }
+
+    #[test]
+    fn test_connection_info_persistent_serialization() {
+        // Verify that ConnectionInfoPersistent can be serialized/deserialized
+        let persistent = ConnectionInfoPersistent {
+            connection_id: "conn1".to_string(),
+            user_id: "user1".to_string(),
+            room_id: Some("room1".to_string()),
+            connected_at_unix: 1000,
+            last_activity_unix: 2000,
+            message_count: 5,
+            rtc_joined: true,
+        };
+
+        let json = serde_json::to_string(&persistent).unwrap();
+        let deserialized: ConnectionInfoPersistent = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(deserialized.connection_id, "conn1");
+        assert_eq!(deserialized.user_id, "user1");
+        assert_eq!(deserialized.room_id, Some("room1".to_string()));
+        assert_eq!(deserialized.message_count, 5);
+        assert!(deserialized.rtc_joined);
     }
 }

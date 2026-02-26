@@ -64,11 +64,13 @@ impl SegmentManager {
     ///
     /// This spawns a background task that periodically calls `storage.cleanup()`
     /// to delete expired segments. The task stops when the `CancellationToken` is cancelled.
-    pub fn start_cleanup_task(self: Arc<Self>, shutdown_token: CancellationToken) {
+    ///
+    /// Returns the `JoinHandle` so callers can wait for graceful shutdown or abort if needed.
+    pub fn start_cleanup_task(self: Arc<Self>, shutdown_token: CancellationToken) -> tokio::task::JoinHandle<()> {
         let manager = Arc::clone(&self);
         tokio::spawn(async move {
             manager.run_cleanup_loop(shutdown_token, None).await;
-        });
+        })
     }
 
     /// Start periodic cleanup task with stream registry for priority cleanup.
@@ -77,15 +79,17 @@ impl SegmentManager {
     /// (handler ended but still in grace period). These streams can be
     /// cleaned up earlier based on memory pressure rather than waiting
     /// for the full grace period.
+    ///
+    /// Returns the `JoinHandle` so callers can wait for graceful shutdown or abort if needed.
     pub fn start_cleanup_task_with_registry(
         self: Arc<Self>,
         shutdown_token: CancellationToken,
         registry: Arc<dyn StreamCleanupChecker>,
-    ) {
+    ) -> tokio::task::JoinHandle<()> {
         let manager = Arc::clone(&self);
         tokio::spawn(async move {
             manager.run_cleanup_loop(shutdown_token, Some(registry)).await;
-        });
+        })
     }
 
     /// Run the cleanup loop until cancelled.

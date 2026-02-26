@@ -190,7 +190,7 @@ impl ClusterManager {
                 )?
             );
 
-            let (tx, publisher_handle) = redis_pubsub.clone().start(config.publish_channel_capacity).await?;
+            let (tx, _backpressure, publisher_handle) = redis_pubsub.clone().start(config.publish_channel_capacity).await?;
             // Critical events share the same Redis publisher but use a separate
             // bounded channel so they are never dropped when the normal channel is full.
             let critical_capacity = config.critical_channel_capacity;

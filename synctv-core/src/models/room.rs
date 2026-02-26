@@ -212,6 +212,27 @@ impl Room {
         }
     }
 
+    /// Create a new room with description and explicit status
+    ///
+    /// Used when `create_room_need_review=true` to create rooms in Pending status
+    /// that require admin approval before becoming active.
+    #[must_use]
+    pub fn new_with_status(name: String, description: String, created_by: UserId, status: RoomStatus) -> Self {
+        let now = Utc::now();
+        Self {
+            id: RoomId::new(),
+            name,
+            description,
+            created_by,
+            status,
+            is_banned: false,
+            created_at: now,
+            updated_at: now,
+            deleted_at: None,
+            version: 0,
+        }
+    }
+
     /// Check if room is usable (active status, not banned, not deleted)
     #[must_use]
     pub fn is_active(&self) -> bool {

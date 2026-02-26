@@ -388,9 +388,10 @@ impl PlaybackService {
             .check_permission(&room_id, &user_id, PermissionBits::CHANGE_SPEED)
             .await?;
 
-        // Validate speed range (must match DB CHECK constraint: speed > 0 AND speed <= 16.0)
-        if speed <= 0.0 || speed > 16.0 {
-            return Err(Error::InvalidInput("Speed must be between 0 (exclusive) and 16.0".to_string()));
+        // Validate speed range (UI bounds: 0.25 to 4.0)
+        // Note: DB allows wider range (0 < speed <= 16.0) but UI restricts to practical values
+        if speed < 0.25 || speed > 4.0 {
+            return Err(Error::InvalidInput("Speed must be between 0.25 and 4.0".to_string()));
         }
 
         let state = self.update_state(room_id.clone(), |state| {
@@ -1058,20 +1059,26 @@ mod tests {
 
     #[test]
     fn test_speed_validation_bounds() {
-        // speed > 0 AND speed <= 16.0
-        let valid = |s: f64| s > 0.0 && s <= 16.0;
+        // UI bounds: 0.25 <= speed <= 4.0
+        let valid = |s: f64| s >= 0.25 && s <= 4.0;
 
         // Valid boundary values
         assert!(valid(0.25));
-        assert!(valid(4.0));
+        assert!(valid(0.5));
         assert!(valid(1.0));
-        assert!(valid(16.0));
-        assert!(valid(0.01));
+        assert!(valid(2.0));
+        assert!(valid(4.0));
 
-        // Invalid boundary values
+        // Invalid boundary values (below minimum)
         assert!(!valid(0.0));
+        assert!(!valid(0.1));
+        assert!(!valid(0.24));
         assert!(!valid(-1.0));
-        assert!(!valid(16.1));
+
+        // Invalid boundary values (above maximum)
+        assert!(!valid(4.1));
+        assert!(!valid(8.0));
+        assert!(!valid(16.0));
     }
 
     #[test]

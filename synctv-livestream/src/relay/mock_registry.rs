@@ -12,6 +12,8 @@ pub struct MockStreamRegistry {
     publishers: std::sync::Arc<tokio::sync::Mutex<std::collections::HashMap<(String, String), PublisherInfo>>>,
     /// Epoch counter for each stream (room_id, media_id)
     epoch_counters: std::sync::Arc<tokio::sync::Mutex<std::collections::HashMap<(String, String), u64>>>,
+    /// Counter for register calls (for testing task leaks)
+    register_call_count: std::sync::Arc<std::sync::atomic::AtomicUsize>,
 }
 
 impl MockStreamRegistry {
@@ -19,6 +21,7 @@ impl MockStreamRegistry {
         Self {
             publishers: std::sync::Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
             epoch_counters: std::sync::Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
+            register_call_count: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
         }
     }
 
@@ -26,7 +29,13 @@ impl MockStreamRegistry {
         Self {
             publishers: std::sync::Arc::new(tokio::sync::Mutex::new(publishers)),
             epoch_counters: std::sync::Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
+            register_call_count: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
         }
+    }
+
+    /// Get the count of register_publisher calls (for testing task leaks)
+    pub fn register_call_count(&self) -> usize {
+        self.register_call_count.load(std::sync::atomic::Ordering::SeqCst)
     }
 }
 
@@ -46,6 +55,9 @@ impl StreamRegistryTrait for MockStreamRegistry {
         app_name: &str,
         grpc_address: &str,
     ) -> Result<bool> {
+        // Increment call counter for testing
+        self.register_call_count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+
         let mut publishers = self.publishers.lock().await;
         let mut epoch_counters = self.epoch_counters.lock().await;
         let key = (room_id.to_string(), media_id.to_string());

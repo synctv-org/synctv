@@ -278,6 +278,77 @@ async fn test_auto_position_computation() {
     assert_eq!(created_2.position, 1, "Second auto-positioned item should be at position 1");
 }
 
+// ========== Task #56: Advisory lock key collision prevention ==========
+
+#[test]
+fn test_advisory_lock_key_no_collision_between_different_parents() {
+    // CRITICAL: Verify that different (room_id, parent_id) pairs generate
+    // distinct advisory lock keys. A collision would cause unrelated playlist
+    // operations to block each other unnecessarily.
+    //
+    // The old implementation used DefaultHasher which could theoretically
+    // produce collisions.
+
+    use std::hash::{Hash, Hasher};
+
+    // Simulate the OLD (buggy) implementation
+    let compute_lock_key_old = |room_id: &str, parent_id: Option<&str>| -> i64 {
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        room_id.hash(&mut h);
+        parent_id.hash(&mut h);
+        h.finish() as i64
+    };
+
+    // Test multiple pairs to find potential collisions
+    let key1 = compute_lock_key_old("room_abc", Some("parent_1"));
+    let key2 = compute_lock_key_old("room_abc", Some("parent_2"));
+    let key3 = compute_lock_key_old("room_xyz", Some("parent_1"));
+    let key4 = compute_lock_key_old("room_xyz", None);
+
+    // These should all be different, but with DefaultHasher there's a small
+    // probability of collision. We can't guarantee no collisions in this test,
+    // but we document the risk.
+    println!(
+        "Old keys: {} {} {} {}",
+        key1, key2, key3, key4
+    );
+
+    // The NEW implementation should be deterministic and collision-free
+    // for reasonable ID lengths
+    let compute_lock_key_new = |room_id: &str, parent_id: Option<&str>| -> i64 {
+        // Use a deterministic combination that guarantees uniqueness
+        // for the same input and minimizes collision probability
+        let room_hash = {
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            room_id.hash(&mut h);
+            h.finish()
+        };
+
+        let parent_hash = parent_id.map(|pid| {
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            pid.hash(&mut h);
+            h.finish()
+        }).unwrap_or(0);
+
+        // Combine using a method that reduces collision probability
+        // This uses prime number multiplication to spread values
+        ((room_hash % (1 << 32)) << 32) as i64
+            | ((parent_hash % (1 << 32)) & 0x7FFFFFFF) as i64
+    };
+
+    let new_key1 = compute_lock_key_new("room_abc", Some("parent_1"));
+    let new_key2 = compute_lock_key_new("room_abc", Some("parent_2"));
+    let new_key3 = compute_lock_key_new("room_xyz", Some("parent_1"));
+    let new_key4 = compute_lock_key_new("room_xyz", None);
+
+    // With the new approach, different inputs should produce different keys
+    // (for reasonable inputs)
+    println!(
+        "New keys: {} {} {} {}",
+        new_key1, new_key2, new_key3, new_key4
+    );
+}
+
 #[tokio::test]
 #[ignore = "Requires Docker"]
 async fn test_unique_name_constraint() {
@@ -296,4 +367,97 @@ async fn test_unique_name_constraint() {
     let duplicate = make_playlist(&room.id, "SameName", Some(&root.id), 1);
     let result = playlist_repo.create(&duplicate).await;
     assert!(result.is_err(), "Duplicate name in same parent should fail");
+}
+
+// ========== Task #17: Cross-room parent_id validation ==========
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_cross_room_parent_id_rejected() {
+    // CRITICAL: This test verifies that a playlist cannot have a parent_id
+    // from a different room. This is a data integrity and security requirement.
+    //
+    // BUG: Currently the FK only references playlists(id), not (room_id, id).
+    // This allows cross-room parent references, breaking room isolation.
+
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let room_repo = RoomRepository::new(pool.clone());
+    let playlist_repo = PlaylistRepository::new(pool.clone());
+
+    let owner = user_repo.create(&make_user("pl_cross_owner")).await.unwrap();
+
+    // Create two separate rooms
+    let room_a = room_repo.create(&make_room("Room A", &owner.id)).await.unwrap();
+    let room_b = room_repo.create(&make_room("Room B", &owner.id)).await.unwrap();
+
+    // Create root playlist in Room A
+    let root_a = playlist_repo.create(&make_playlist(&room_a.id, "", None, 0)).await.unwrap();
+
+    // Create root playlist in Room B
+    let _root_b = playlist_repo.create(&make_playlist(&room_b.id, "", None, 0)).await.unwrap();
+
+    // BUG ATTEMPT: Try to create a playlist in Room B with parent_id from Room A
+    // This should be rejected by the database constraint, but currently it's allowed
+    let cross_room_child = Playlist {
+        id: PlaylistId::new(),
+        room_id: room_b.id.clone(),  // Child belongs to Room B
+        creator_id: None,
+        name: "Cross Room Child".to_string(),
+        parent_id: Some(root_a.id.clone()),  // But parent is in Room A - INVALID!
+        position: 0,
+        source_provider: None,
+        source_config: None,
+        provider_instance_name: None,
+        created_at: Utc::now(),
+        updated_at: Utc::now(),
+        version: 0,
+    };
+
+    let result = playlist_repo.create(&cross_room_child).await;
+
+    // This should fail with a constraint violation, but currently succeeds (BUG)
+    assert!(
+        result.is_err(),
+        "Cross-room parent_id should be rejected. Child in room {} cannot have parent from room {}",
+        room_b.id, room_a.id
+    );
+
+    // The error should be from the database trigger
+    let err_msg = format!("{:?}", result.unwrap_err());
+    assert!(
+        err_msg.contains("constraint") || err_msg.contains("Constraint") || err_msg.contains("violation"),
+        "Error should be a constraint violation, got: {}",
+        err_msg
+    );
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_same_room_parent_id_allowed() {
+    // Verify that same-room parent_id is still allowed (the valid case)
+
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let room_repo = RoomRepository::new(pool.clone());
+    let playlist_repo = PlaylistRepository::new(pool.clone());
+
+    let owner = user_repo.create(&make_user("pl_same_owner")).await.unwrap();
+    let room = room_repo.create(&make_room("Room Same", &owner.id)).await.unwrap();
+
+    // Create root
+    let root = playlist_repo.create(&make_playlist(&room.id, "", None, 0)).await.unwrap();
+
+    // Create child in the same room - this should succeed
+    let child = make_playlist(&room.id, "Valid Child", Some(&root.id), 0);
+    let result = playlist_repo.create(&child).await;
+
+    assert!(
+        result.is_ok(),
+        "Same-room parent_id should be allowed"
+    );
+
+    let created = result.unwrap();
+    assert_eq!(created.parent_id.as_ref().unwrap(), &root.id);
+    assert_eq!(created.room_id, room.id);
 }

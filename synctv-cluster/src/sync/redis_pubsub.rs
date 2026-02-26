@@ -4,11 +4,41 @@ use redis::{AsyncCommands, Client as RedisClient};
 use redis::streams::StreamReadReply;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use tokio::sync::{broadcast, mpsc};
 use tokio::time::{timeout, Duration};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
+
+/// Buffer pressure level for backpressure signaling.
+///
+/// This enum indicates how much pressure the publish buffer is under,
+/// allowing callers to make informed decisions about event submission.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BufferPressure {
+    /// Buffer is under normal load - send events freely
+    Normal,
+    /// Buffer is under moderate pressure - consider throttling non-critical events
+    Moderate,
+    /// Buffer is under high pressure - only send critical events
+    High,
+    /// Buffer is at capacity - non-critical events will be dropped
+    Critical,
+}
+
+impl BufferPressure {
+    /// Check if this pressure level allows sending non-critical events.
+    #[must_use]
+    pub const fn allows_non_critical(self) -> bool {
+        matches!(self, Self::Normal | Self::Moderate)
+    }
+
+    /// Check if this pressure level only allows critical events.
+    #[must_use]
+    pub const fn critical_only(self) -> bool {
+        matches!(self, Self::High | Self::Critical)
+    }
+}
 
 /// Timeout for Redis operations in seconds
 const REDIS_TIMEOUT_SECS: u64 = 5;
@@ -69,6 +99,117 @@ use super::room_hub::{RoomLifecycleEvent, RoomMessageHub};
 use synctv_core::cache::CacheInvalidationService;
 use synctv_core::models::id::RoomId;
 use synctv_core::service::PermissionService;
+
+/// Shared state for tracking buffer pressure across tasks.
+///
+/// This struct is cloned and shared between the publisher task and
+/// the `PublishBackpressure` handle, allowing callers to check
+/// current buffer pressure before sending events.
+#[derive(Clone)]
+struct BufferPressureState {
+    /// Current retry buffer size (non-critical events)
+    retry_buffer_size: Arc<AtomicUsize>,
+    /// Current critical buffer size
+    critical_buffer_size: Arc<AtomicUsize>,
+    /// Maximum retry buffer capacity
+    max_retry_buffer: usize,
+    /// Warning threshold (80% of max)
+    warn_threshold: usize,
+    /// High pressure threshold (90% of max)
+    high_threshold: usize,
+}
+
+impl BufferPressureState {
+    fn new(max_retry_buffer: usize) -> Self {
+        Self {
+            retry_buffer_size: Arc::new(AtomicUsize::new(0)),
+            critical_buffer_size: Arc::new(AtomicUsize::new(0)),
+            max_retry_buffer,
+            warn_threshold: (max_retry_buffer as f64 * 0.8) as usize,
+            high_threshold: (max_retry_buffer as f64 * 0.9) as usize,
+        }
+    }
+
+    /// Get the current buffer pressure level.
+    fn pressure(&self) -> BufferPressure {
+        let retry_size = self.retry_buffer_size.load(Ordering::Relaxed);
+        let critical_size = self.critical_buffer_size.load(Ordering::Relaxed);
+        let total = retry_size + critical_size;
+
+        if total >= self.max_retry_buffer {
+            BufferPressure::Critical
+        } else if retry_size >= self.high_threshold {
+            BufferPressure::High
+        } else if retry_size >= self.warn_threshold {
+            BufferPressure::Moderate
+        } else {
+            BufferPressure::Normal
+        }
+    }
+
+    /// Update retry buffer size (called by publisher task)
+    fn set_retry_size(&self, size: usize) {
+        self.retry_buffer_size.store(size, Ordering::Relaxed);
+    }
+
+    /// Update critical buffer size (called by publisher task)
+    fn set_critical_size(&self, size: usize) {
+        self.critical_buffer_size.store(size, Ordering::Relaxed);
+    }
+}
+
+/// Handle for checking publish buffer backpressure.
+///
+/// This is returned by `RedisPubSub::start()` alongside the sender,
+/// allowing callers to check buffer pressure before sending events.
+///
+/// # Example
+///
+/// ```text
+/// let (tx, backpressure) = pubsub.start(10_000).await?;
+///
+/// // Check pressure before sending non-critical events
+/// if backpressure.pressure().allows_non_critical() {
+///     tx.send(PublishRequest { event }).await?;
+/// } else {
+///     // Drop or queue the event
+/// }
+/// ```
+#[derive(Clone)]
+pub struct PublishBackpressure {
+    state: BufferPressureState,
+}
+
+impl PublishBackpressure {
+    /// Get the current buffer pressure level.
+    ///
+    /// Use this to decide whether to send non-critical events.
+    /// Critical events (kick/ban) are always buffered regardless of pressure.
+    #[must_use]
+    pub fn pressure(&self) -> BufferPressure {
+        self.state.pressure()
+    }
+
+    /// Check if the buffer can accept a non-critical event.
+    ///
+    /// Returns `true` if pressure is Normal or Moderate.
+    #[must_use]
+    pub fn can_send_non_critical(&self) -> bool {
+        self.state.pressure().allows_non_critical()
+    }
+
+    /// Get the current retry buffer size (for monitoring).
+    #[must_use]
+    pub fn retry_buffer_size(&self) -> usize {
+        self.state.retry_buffer_size.load(Ordering::Relaxed)
+    }
+
+    /// Get the current critical buffer size (for monitoring).
+    #[must_use]
+    pub fn critical_buffer_size(&self) -> usize {
+        self.state.critical_buffer_size.load(Ordering::Relaxed)
+    }
+}
 
 /// Redis Pub/Sub service for cross-node event synchronization
 ///
@@ -227,7 +368,13 @@ impl RedisPubSub {
     /// # Arguments
     /// * `publish_channel_capacity` - Capacity for the publish channel. Events are
     ///   dropped with a warning when full (e.g., during a prolonged Redis outage).
-    pub async fn start(self: Arc<Self>, publish_channel_capacity: usize) -> Result<(mpsc::Sender<PublishRequest>, tokio::task::JoinHandle<()>)> {
+    ///
+    /// # Returns
+    /// A tuple of:
+    /// - `mpsc::Sender<PublishRequest>` - Channel sender for publishing events
+    /// - `PublishBackpressure` - Handle for checking buffer pressure (backpressure signaling)
+    /// - `JoinHandle<()>` - Task handle for awaiting shutdown
+    pub async fn start(self: Arc<Self>, publish_channel_capacity: usize) -> Result<(mpsc::Sender<PublishRequest>, PublishBackpressure, tokio::task::JoinHandle<()>)> {
         // Create bounded channel for publishing events to prevent OOM under Redis outage
         let (publish_tx, mut publish_rx) = mpsc::channel::<PublishRequest>(publish_channel_capacity);
 
@@ -252,6 +399,12 @@ impl RedisPubSub {
         /// Warning threshold for normal buffer (80% of MAX_RETRY_BUFFER)
         const BUFFER_WARN_THRESHOLD: usize = (MAX_RETRY_BUFFER as f64 * 0.8) as usize;
 
+        // Create shared buffer pressure state for backpressure signaling
+        let buffer_pressure_state = BufferPressureState::new(MAX_RETRY_BUFFER);
+        let backpressure = PublishBackpressure {
+            state: buffer_pressure_state.clone(),
+        };
+
         // Spawn task to handle publishing with reconnection logic.
         // The handle is returned to the caller so shutdown() can await completion.
         let publisher_handle = tokio::spawn(async move {
@@ -267,6 +420,12 @@ impl RedisPubSub {
             let mut critical_retry_buffer: Vec<PublishRequest> = Vec::new();
             // Track whether we've already logged a warning about buffer approaching capacity
             let mut buffer_warn_logged = false;
+
+            // Helper to update buffer pressure state
+            let update_pressure = |retry_len: usize, critical_len: usize| {
+                buffer_pressure_state.set_retry_size(retry_len);
+                buffer_pressure_state.set_critical_size(critical_len);
+            };
 
             loop {
                 let conn = match timeout(
@@ -343,6 +502,7 @@ impl RedisPubSub {
                 // CRITICAL EVENTS: Always retry first (highest priority)
                 if !critical_retry_buffer.is_empty() {
                     let critical_batch = std::mem::take(&mut critical_retry_buffer);
+                    update_pressure(retry_buffer.len(), 0); // Critical buffer is empty during retry
                     info!(
                         critical_count = critical_batch.len(),
                         "Retrying critical events after reconnection"
@@ -354,6 +514,7 @@ impl RedisPubSub {
                             "Some critical events failed to retry, keeping in buffer"
                         );
                         critical_retry_buffer = failed;
+                        update_pressure(retry_buffer.len(), critical_retry_buffer.len());
                         tokio::time::sleep(Duration::from_secs(backoff_secs)).await;
                         backoff_secs = (backoff_secs * 2).min(MAX_BACKOFF_SECS);
                         continue;
@@ -363,6 +524,7 @@ impl RedisPubSub {
                 // NORMAL EVENTS: Retry after critical events
                 if !retry_buffer.is_empty() {
                     let buffered = std::mem::take(&mut retry_buffer);
+                    update_pressure(0, critical_retry_buffer.len()); // Retry buffer is empty during retry
                     info!(
                         buffered_count = buffered.len(),
                         "Retrying buffered events after reconnection"
@@ -370,11 +532,15 @@ impl RedisPubSub {
                     let (failed, _success_count) = retry_batch(buffered, &mut conn, &node_id, &key_prefix, stream_max_length).await;
                     if !failed.is_empty() {
                         retry_buffer = failed;
+                        update_pressure(retry_buffer.len(), critical_retry_buffer.len());
                         tokio::time::sleep(Duration::from_secs(backoff_secs)).await;
                         backoff_secs = (backoff_secs * 2).min(MAX_BACKOFF_SECS);
                         continue;
                     }
                 }
+
+                // Buffers are empty after successful retries - update pressure
+                update_pressure(0, 0);
 
                 // Track whether this session was healthy (at least one event sent)
                 let mut session_healthy = false;
@@ -561,6 +727,9 @@ impl RedisPubSub {
                                         );
                                     }
                                 }
+
+                                // Update buffer pressure after draining
+                                update_pressure(retry_buffer.len(), critical_retry_buffer.len());
                                 break;
                             }
                         }
@@ -641,7 +810,7 @@ impl RedisPubSub {
             }
         });
 
-        Ok((publish_tx, publisher_handle))
+        Ok((publish_tx, backpressure, publisher_handle))
     }
 
     /// Run the subscriber task.
@@ -1985,8 +2154,8 @@ mod tests {
         );
 
         // Start both - this subscribes to lifecycle events from message_hub
-        let (publish_tx1, _) = pubsub1.start(10_000).await.unwrap();
-        let (_publish_tx2, _) = pubsub2.start(10_000).await.unwrap();
+        let (publish_tx1, _backpressure1, _) = pubsub1.start(10_000).await.unwrap();
+        let (_publish_tx2, _backpressure2, _) = pubsub2.start(10_000).await.unwrap();
 
         // Wait for subscriber loops to be ready and lifecycle subscriptions established.
         // The subscriber tasks need to: connect to Redis, subscribe to admin pattern,
@@ -2132,5 +2301,81 @@ mod tests {
 
         // Allow 1 second tolerance
         assert!(diff < 1000, "catchup_start_id should use 60s window, diff: {}ms", diff);
+    }
+
+    // ========== Backpressure Tests ==========
+
+    #[test]
+    fn test_buffer_pressure_levels() {
+        assert!(BufferPressure::Normal.allows_non_critical());
+        assert!(!BufferPressure::Normal.critical_only());
+
+        assert!(BufferPressure::Moderate.allows_non_critical());
+        assert!(!BufferPressure::Moderate.critical_only());
+
+        assert!(!BufferPressure::High.allows_non_critical());
+        assert!(BufferPressure::High.critical_only());
+
+        assert!(!BufferPressure::Critical.allows_non_critical());
+        assert!(BufferPressure::Critical.critical_only());
+    }
+
+    #[test]
+    fn test_buffer_pressure_state() {
+        let state = BufferPressureState::new(1000);
+
+        // Initially normal
+        assert_eq!(state.pressure(), BufferPressure::Normal);
+
+        // Set to moderate level (80%)
+        state.set_retry_size(800);
+        assert_eq!(state.pressure(), BufferPressure::Moderate);
+
+        // Set to high level (90%)
+        state.set_retry_size(900);
+        assert_eq!(state.pressure(), BufferPressure::High);
+
+        // Set to critical (100%)
+        state.set_retry_size(1000);
+        assert_eq!(state.pressure(), BufferPressure::Critical);
+
+        // Critical buffer also counts
+        state.set_retry_size(500);
+        state.set_critical_size(500);
+        assert_eq!(state.pressure(), BufferPressure::Critical);
+    }
+
+    #[test]
+    fn test_publish_backpressure() {
+        let state = BufferPressureState::new(1000);
+        let backpressure = PublishBackpressure { state: state.clone() };
+
+        assert!(backpressure.can_send_non_critical());
+        assert_eq!(backpressure.pressure(), BufferPressure::Normal);
+
+        state.set_retry_size(900);
+        assert!(!backpressure.can_send_non_critical());
+        assert_eq!(backpressure.pressure(), BufferPressure::High);
+    }
+
+    #[tokio::test]
+    async fn test_backpressure_returns_from_start() {
+        let message_hub = Arc::new(RoomMessageHub::new());
+        let (admin_tx, _) = broadcast::channel(256);
+        let dedup = Arc::new(MessageDeduplicator::with_defaults());
+        let redis_client = RedisClient::open("redis://127.0.0.1:6379").unwrap();
+
+        let pubsub = Arc::new(
+            RedisPubSub::new(redis_client, message_hub, "test-node".to_string(), admin_tx, None, None, dedup).unwrap(),
+        );
+
+        // Start should return (sender, backpressure, handle)
+        let result = pubsub.start(100).await;
+        assert!(result.is_ok());
+
+        let (_tx, backpressure, _handle) = result.unwrap();
+
+        // Backpressure should initially be normal
+        assert_eq!(backpressure.pressure(), BufferPressure::Normal);
     }
 }

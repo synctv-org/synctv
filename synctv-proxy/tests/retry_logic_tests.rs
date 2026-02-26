@@ -90,7 +90,7 @@ fn test_4xx_is_not_retryable() {
 
 /// Test that 500 Internal Server Error is retried.
 /// This is a common transient error that should be retried.
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_retry_on_500_internal_server_error() {
     let server = MockServer::start().await;
 
@@ -171,7 +171,7 @@ async fn test_retry_has_delay() {
 }
 
 /// Test that retry delay is logged for debugging.
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_retry_delay_is_logged() {
     // After the fix, retry attempts log:
     // - The status code received
@@ -204,7 +204,7 @@ async fn test_single_retry_only() {
 /// 1. A mock server on a public IP, OR
 /// 2. A way to inject a mock DNS resolver that returns public IPs, OR
 /// 3. A test-only flag to disable SSRF protection
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_retry_integration_blocked_by_ssrf() {
     let server = MockServer::start().await;
 

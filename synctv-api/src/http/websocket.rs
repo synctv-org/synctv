@@ -452,6 +452,24 @@ pub async fn websocket_handler(
         return Err(AppError::service_unavailable());
     }
 
+    // CRITICAL: Check per-room connection limit BEFORE WebSocket upgrade.
+    // This prevents unauthorized connections from consuming resources by upgrading
+    // and then being disconnected. The check happens here to return HTTP 429
+    // (Too Many Requests) instead of HTTP 101 (Switching Protocols).
+    if let Err(e) = state.connection_manager.can_accept_room_connection(&rid) {
+        // Return HTTP 429 Too Many Requests for capacity limit
+        return Err(AppError::too_many_requests(e));
+    }
+
+    // CRITICAL: Check per-user connection limit BEFORE WebSocket upgrade.
+    // This prevents users from exceeding their connection limit by upgrading
+    // and then being disconnected. The check happens here to return HTTP 429
+    // (Too Many Requests) instead of HTTP 101 (Switching Protocols).
+    if let Err(e) = state.connection_manager.can_accept_user_connection(&user_id) {
+        // Return HTTP 429 Too Many Requests for capacity limit
+        return Err(AppError::too_many_requests(e));
+    }
+
     // Authentication and membership verified, upgrade to WebSocket
     // Limit max message size to 64KB (default is 64MB which is excessive for signaling)
     Ok(ws.max_message_size(64 * 1024)

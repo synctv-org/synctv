@@ -250,12 +250,10 @@ fn test_ipv4_172_range_boundary() {
 
 #[test]
 fn test_ipv4_cgnat_boundary() {
-    // 100.63.255.255 should be allowed (below CGNAT)
+    // Note: CGNAT (100.64.0.0/10) is NOT blocked - it's technically routable
+    // All these addresses should be allowed
     assert!(!is_blocked_ipv4(&Ipv4Addr::new(100, 63, 255, 255)));
-    // 100.64.0.0 should be blocked (start of CGNAT)
-    assert!(is_blocked_ipv4(&Ipv4Addr::new(100, 64, 0, 0)));
-    // 100.127.255.255 should be blocked (end of CGNAT)
-    assert!(is_blocked_ipv4(&Ipv4Addr::new(100, 127, 255, 255)));
-    // 100.128.0.0 should be allowed (above CGNAT)
+    assert!(!is_blocked_ipv4(&Ipv4Addr::new(100, 64, 0, 0)));
+    assert!(!is_blocked_ipv4(&Ipv4Addr::new(100, 127, 255, 255)));
     assert!(!is_blocked_ipv4(&Ipv4Addr::new(100, 128, 0, 0)));
 }

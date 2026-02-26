@@ -83,7 +83,13 @@ fn make_user_service(pool: PgPool) -> UserService {
 
 fn make_room_service(pool: PgPool) -> RoomService {
     let user_service = make_user_service(pool.clone());
-    RoomService::new(pool, user_service)
+    let mut room_service = RoomService::new(pool, user_service);
+
+    // Set up brute-force protection for rate limiting tests
+    let brute_force = BruteForceProtection::in_memory("test_room_password".to_string());
+    room_service.set_brute_force_service(brute_force);
+
+    room_service
 }
 
 fn make_user(username: &str) -> User {
@@ -134,15 +140,15 @@ async fn test_room_password_verification_failure_triggers_rate_limit() {
 
     let client_ip = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 100));
 
-    // Make 5 failed password attempts (tier 1 threshold)
-    for i in 0..5 {
+    // Make 6 password attempts (5 failed, 6th should be rate limited)
+    for i in 0..6 {
         let result = room_service
             .check_room_password_with_rate_limit(&room.id, "WrongPassword", Some(client_ip))
             .await;
 
-        // First 4 attempts should return false (password incorrect)
-        // 5th attempt should trigger rate limiting and return an error
-        if i < 4 {
+        // First 5 attempts should return false (password incorrect)
+        // 6th attempt should trigger rate limiting and return an error
+        if i < 5 {
             assert!(
                 result.is_ok(),
                 "Attempt {}: should be Ok(false) for wrong password",
@@ -154,7 +160,7 @@ async fn test_room_password_verification_failure_triggers_rate_limit() {
                 i + 1
             );
         } else {
-            // 5th attempt should be rate limited
+            // 6th attempt should be rate limited
             assert!(
                 result.is_err(),
                 "Attempt {}: should be rate limited after 5 failures",
@@ -210,8 +216,8 @@ async fn test_room_password_rate_limit_is_per_room_per_ip() {
     let ip1 = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 100));
     let ip2 = IpAddr::V4(Ipv4Addr::new(192, 168, 1, 101));
 
-    // Make 5 failed attempts from ip1 to room1
-    for _ in 0..5 {
+    // Make 6 failed attempts from ip1 to room1 (5 allowed, 6th rate limited)
+    for _ in 0..6 {
         let _ = room_service
             .check_room_password_with_rate_limit(&room1.id, "WrongPassword", Some(ip1))
             .await;
@@ -343,13 +349,13 @@ async fn test_successful_password_verification_resets_failure_counter() {
     assert!(result.unwrap(), "Correct password should return true");
 
     // After successful verification, we should have more attempts available
-    // (counter was reset, so we can fail 5 more times before lockout)
-    for i in 0..5 {
+    // (counter was reset, so we can fail 5 more times before lockout on 6th)
+    for i in 0..6 {
         let result = room_service
             .check_room_password_with_rate_limit(&room.id, "WrongPassword", Some(client_ip))
             .await;
 
-        if i < 4 {
+        if i < 5 {
             assert!(
                 result.is_ok(),
                 "Attempt {} after reset: should be Ok(false)",
@@ -388,13 +394,13 @@ async fn test_room_password_rate_limit_without_ip() {
         .await
         .unwrap();
 
-    // Make 5 failed password attempts without IP
-    for i in 0..5 {
+    // Make 6 failed password attempts without IP (5 allowed, 6th rate limited)
+    for i in 0..6 {
         let result = room_service
             .check_room_password_with_rate_limit(&room.id, "WrongPassword", None)
             .await;
 
-        if i < 4 {
+        if i < 5 {
             assert!(
                 result.is_ok() && !result.unwrap(),
                 "Attempt {}: should be Ok(false)",

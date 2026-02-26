@@ -3009,9 +3009,9 @@ async fn test_admin_delete_orphaned_room_creator_soft_deleted() {
     // Soft-delete the creator (simulating user deletion)
     user_service.delete_user(&creator.id).await.unwrap();
 
-    // Verify the creator is soft-deleted
+    // Verify the creator is soft-deleted (get_by_id returns None for soft-deleted users)
     let deleted_creator = user_repo.get_by_id(&creator.id).await.unwrap();
-    assert!(deleted_creator.unwrap().deleted_at.is_some());
+    assert!(deleted_creator.is_none(), "Soft-deleted user should not be found");
 
     // Now admin should be able to delete the orphaned room
     room_service

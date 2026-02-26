@@ -12,7 +12,7 @@ use synctv_proxy::validate_proxy_url;
 /// Test that validate_proxy_url performs DNS resolution exactly once per call.
 /// This is a baseline test - we're not testing caching here, just that the
 /// function works correctly.
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_validate_proxy_url_dns_resolution_once() {
     // Use a well-known public IP that won't be blocked by SSRF protection
     // 1.1.1.1 is Cloudflare's public DNS, a safe public IP for testing
@@ -23,7 +23,7 @@ async fn test_validate_proxy_url_dns_resolution_once() {
 /// Test that hostname-based URLs get DNS resolution for SSRF protection.
 /// This test documents the expected behavior that hostnames require DNS lookup
 /// to prevent DNS rebinding attacks.
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_validate_proxy_url_hostname_requires_dns() {
     // This test uses a real domain - it requires network access.
     // If network is unavailable, the test will fail with DNS lookup error.
@@ -42,7 +42,7 @@ async fn test_validate_proxy_url_hostname_requires_dns() {
 /// and that the SsrfSafeDnsResolver performs DNS resolution at
 /// connection time. This eliminates duplicate DNS lookups while
 /// maintaining TOCTOU protection.
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_dns_double_resolution_eliminated() {
     // After the fix:
     // 1. validate_proxy_url does only static URL checks (no DNS lookup)
@@ -57,7 +57,7 @@ async fn test_dns_double_resolution_eliminated() {
 
 /// Test that consecutive calls to validate_proxy_url with the same URL
 /// each perform their own validation (static only, no DNS).
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_consecutive_validations_no_dns() {
     // validate_proxy_url now only does static checks (no DNS).
     // Multiple calls are cheap since no DNS lookup is involved.
@@ -73,7 +73,7 @@ async fn test_consecutive_validations_no_dns() {
 
 /// Test that DNS resolution for a hostname that resolves to a private IP
 /// is blocked correctly by the SsrfSafeDnsResolver at connection time.
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_dns_rebinding_protection_on_private_ip() {
     // Localhost should always be blocked
     let result = validate_proxy_url("http://127.0.0.1/admin").await;
@@ -89,7 +89,7 @@ async fn test_dns_rebinding_protection_on_private_ip() {
 
 /// Test that static checks (validate_proxy_url_static) are sufficient for
 /// blocking known-bad IPs without requiring DNS.
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_static_checks_block_known_bad_ips() {
     use synctv_proxy::validate_proxy_url_static;
 

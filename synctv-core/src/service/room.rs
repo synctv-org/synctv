@@ -710,6 +710,18 @@ impl RoomService {
     pub async fn delete_room(&self, room_id: RoomId, user_id: UserId) -> Result<()> {
         tracing::info!(room_id = %room_id, user_id = %user_id, "Soft-deleting room");
 
+        // First check if room exists and is not already deleted (before permission check)
+        let room_exists = sqlx::query_scalar::<_, bool>(
+            "SELECT EXISTS(SELECT 1 FROM rooms WHERE id = $1 AND deleted_at IS NULL)"
+        )
+        .bind(room_id.as_str())
+        .fetch_one(&self.pool)
+        .await?;
+
+        if !room_exists {
+            return Err(Error::NotFound("Room not found or already deleted".to_string()));
+        }
+
         // Check permission without cache - critical operation requires fresh permissions
         self.permission_service
             .check_permission_no_cache(&room_id, &user_id, PermissionBits::DELETE_ROOM)
@@ -1989,7 +2001,7 @@ impl RoomService {
                 SELECT 1 FROM users
                 WHERE id = $1
                 AND deleted_at IS NULL
-                AND status != 'Banned'
+                AND status != 3
             )"
         )
         .bind(room.created_by.as_str())

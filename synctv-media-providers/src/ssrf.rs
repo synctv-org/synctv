@@ -99,10 +99,7 @@ pub fn is_blocked_ipv4(ip: &Ipv4Addr) -> bool {
     if o[0] == 169 && o[1] == 254 {
         return true;
     }
-    // CGNAT: 100.64.0.0/10
-    if o[0] == 100 && (64..=127).contains(&o[1]) {
-        return true;
-    }
+    // Note: CGNAT (100.64.0.0/10) is NOT blocked - it's technically routable
     // Current network: 0.0.0.0/8
     if o[0] == 0 {
         return true;
@@ -170,6 +167,76 @@ pub fn is_blocked_ip(ip: IpAddr) -> bool {
     }
 }
 
+/// Check if an IP address should be blocked regardless of policy.
+///
+/// This only blocks ranges that url_jail doesn't handle:
+/// - CGNAT (100.64.0.0/10)
+/// - Multicast (224.0.0.0/4)
+/// - Reserved (240.0.0.0/4)
+/// - Link-local cloud metadata (169.254.169.254/32)
+///
+/// It does NOT block RFC1918 private IPs (10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16)
+/// because those should be controlled by Policy::AllowPrivate.
+#[must_use]
+fn is_always_blocked_ip(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(v4) => is_always_blocked_ipv4(&v4),
+        IpAddr::V6(v6) => is_always_blocked_ipv6(&v6),
+    }
+}
+
+/// Check if an IPv4 address should be blocked regardless of policy.
+#[must_use]
+fn is_always_blocked_ipv4(ip: &Ipv4Addr) -> bool {
+    let o = ip.octets();
+
+    // Cloud metadata endpoint: 169.254.169.254 (not entire link-local range)
+    if o[0] == 169 && o[1] == 254 && o[2] == 169 && o[3] == 254 {
+        return true;
+    }
+    // CGNAT: 100.64.0.0/10
+    if o[0] == 100 && (64..=127).contains(&o[1]) {
+        return true;
+    }
+    // Current network: 0.0.0.0/8
+    if o[0] == 0 {
+        return true;
+    }
+    // Multicast: 224.0.0.0/4
+    if (224..=239).contains(&o[0]) {
+        return true;
+    }
+    // Reserved/Broadcast: 240.0.0.0/4
+    if o[0] >= 240 {
+        return true;
+    }
+
+    false
+}
+
+/// Check if an IPv6 address should be blocked regardless of policy.
+#[must_use]
+fn is_always_blocked_ipv6(ip: &Ipv6Addr) -> bool {
+    // Unspecified (::)
+    if ip.is_unspecified() {
+        return true;
+    }
+
+    let segments = ip.segments();
+
+    // Multicast: ff00::/8
+    if segments[0] & 0xff00 == 0xff00 {
+        return true;
+    }
+
+    // Reserved (includes documentation, benchmarking, etc.)
+    if segments[0] >= 0xff00 {
+        return true;
+    }
+
+    false
+}
+
 // ============================================================================
 // URL validation using url_jail
 // ============================================================================
@@ -223,11 +290,18 @@ pub fn check_url_with_policy(url: &str, policy: Policy) -> SsrfCheckResult {
 
             // Check if host is an IP address that needs additional blocking
             if let Ok(ip) = host_str.parse::<IpAddr>() {
-                // Check for CGNAT, multicast, and reserved ranges
-                if is_blocked_ip(ip) {
+                // Check for ranges that should ALWAYS be blocked (regardless of policy)
+                // This includes CGNAT, multicast, and reserved ranges that url_jail doesn't block
+                if is_always_blocked_ip(ip) {
                     return SsrfCheckResult::Blocked(format!(
-                        "IP {ip} is in blocked range"
+                        "IP {ip} is in blocked range (CGNAT, multicast, or reserved network)"
                     ));
+                }
+            } else {
+                // Not an IP address - check hostname patterns
+                let hostname_result = check_hostname(host_str);
+                if let SsrfCheckResult::Blocked(reason) = hostname_result {
+                    return SsrfCheckResult::Blocked(reason);
                 }
             }
         }
@@ -266,6 +340,35 @@ pub async fn check_url_async(url: &str) -> SsrfCheckResult {
 
 /// Validate a URL asynchronously with a custom policy.
 pub async fn check_url_with_policy_async(url: &str, policy: Policy) -> SsrfCheckResult {
+    // Parse URL to check host for blocked hostnames before DNS resolution
+    if let Ok(parsed) = url::Url::parse(url) {
+        if let Some(host) = parsed.host_str() {
+            // Handle IPv6 addresses with brackets
+            let host_str = if host.starts_with('[') && host.ends_with(']') {
+                &host[1..host.len() - 1]
+            } else {
+                host
+            };
+
+            // Check if host is an IP address that needs additional blocking
+            if let Ok(ip) = host_str.parse::<IpAddr>() {
+                // Check for ranges that should ALWAYS be blocked (regardless of policy)
+                // This includes CGNAT, multicast, and reserved ranges that url_jail doesn't block
+                if is_always_blocked_ip(ip) {
+                    return SsrfCheckResult::Blocked(format!(
+                        "IP {ip} is in blocked range (CGNAT, multicast, or reserved network)"
+                    ));
+                }
+            } else {
+                // Not an IP address - check hostname patterns
+                let hostname_result = check_hostname(host_str);
+                if let SsrfCheckResult::Blocked(reason) = hostname_result {
+                    return SsrfCheckResult::Blocked(reason);
+                }
+            }
+        }
+    }
+
     match url_jail::validate(url, policy).await {
         Ok(_) => SsrfCheckResult::Ok,
         Err(e) => {
@@ -382,7 +485,7 @@ mod tests {
             is_blocked_ipv4(&Ipv4Addr::new(169, 254, 1, 1)),
             "link-local / metadata"
         );
-        assert!(is_blocked_ipv4(&Ipv4Addr::new(100, 64, 0, 1)), "CGNAT");
+        // Note: CGNAT (100.64.0.0/10) is NOT blocked - it's technically routable
         assert!(is_blocked_ipv4(&Ipv4Addr::new(0, 0, 0, 0)), "current network");
         assert!(is_blocked_ipv4(&Ipv4Addr::new(224, 0, 0, 1)), "multicast");
         assert!(is_blocked_ipv4(&Ipv4Addr::new(240, 0, 0, 1)), "reserved");

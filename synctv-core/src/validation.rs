@@ -512,13 +512,9 @@ pub struct SSRFValidator {
 
 impl Default for SSRFValidator {
     fn default() -> Self {
-        // Add CGNAT range (100.64.0.0/10) as blocked IPs
-        // We add representative IPs from the range since we can't add CIDR ranges directly
-        let blocked_ips = vec![
-            // CGNAT range representatives (100.64.0.0/10)
-            IpAddr::V4(Ipv4Addr::new(100, 64, 0, 1)),
-            IpAddr::V4(Ipv4Addr::new(100, 127, 255, 255)),
-        ];
+        // No additional blocked IPs by default (url_jail handles standard private ranges)
+        // Note: CGNAT (100.64.0.0/10) is NOT blocked by default as it's technically routable
+        let blocked_ips = vec![];
 
         // Blocked hostnames (internal/private hostnames)
         let blocked_hostnames = vec![
@@ -609,16 +605,11 @@ impl SSRFValidator {
                         )));
                     }
 
-                    // Check for additional blocked IP ranges (CGNAT, multicast, reserved)
+                    // Check for additional blocked IP ranges that url_jail doesn't block
+                    // These include multicast, reserved, and current network ranges
+                    // Note: CGNAT (100.64.0.0/10) is NOT blocked as it's technically routable
                     if let IpAddr::V4(ipv4) = ip {
                         let octets = ipv4.octets();
-
-                        // CGNAT: 100.64.0.0/10
-                        if octets[0] == 100 && (64..=127).contains(&octets[1]) {
-                            return Err(ValidationError::SSRF(format!(
-                                "CGNAT IP {ip} is blocked"
-                            )));
-                        }
 
                         // Current network: 0.0.0.0/8
                         if octets[0] == 0 {

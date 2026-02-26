@@ -308,7 +308,7 @@ room_setting!(ShufflePlaylist, bool, "shuffle_playlist", false);
 /// Maximum allowed value for `max_members` setting (used in validator below)
 const MAX_MEMBERS_LIMIT: u64 = 10_000;
 
-room_setting!(MaxMembers, u64, "max_members", 0, |v: &u64| {
+room_setting!(MaxMembers, u64, "max_members", 100, |v: &u64| {
     if *v > MAX_MEMBERS_LIMIT {
         Err(crate::Error::InvalidInput(format!(
             "max_members cannot exceed {MAX_MEMBERS_LIMIT}"
@@ -702,7 +702,7 @@ mod tests {
         let mut settings = RoomSettings::default();
         let result = settings.set_by_key("max_members", "99999");
         assert!(result.is_err());
-        // Value should not have been applied
-        assert_eq!(settings.max_members.0, 0);
+        // Value should not have been applied (default is 100)
+        assert_eq!(settings.max_members.0, 100);
     }
 }

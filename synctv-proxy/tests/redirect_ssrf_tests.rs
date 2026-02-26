@@ -65,13 +65,13 @@ fn test_redirect_to_100_64_cgnat_blocked() {
 // Redirect SSRF: Async validation (including DNS-level checks)
 // ==================================================================
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_async_validate_private_ip_blocked() {
     let result = validate_proxy_url("http://192.168.50.50/api").await;
     assert!(result.is_err(), "Private IP should fail async validation");
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_async_validate_loopback_blocked() {
     let result = validate_proxy_url("http://127.0.0.1/admin").await;
     assert!(result.is_err(), "Loopback should fail async validation");
@@ -231,7 +231,7 @@ fn test_redirect_to_ipv6_unique_local_blocked() {
 /// Verify that proxy_fetch_and_forward blocks SSRF attempts.
 /// Since wiremock runs on loopback, we can't actually test redirect chains,
 /// but we can verify that the initial URL validation blocks private IPs.
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_proxy_blocks_private_ip_initial_url() {
     let headers = axum::http::HeaderMap::new();
     let cfg = ProxyConfig {
@@ -250,7 +250,7 @@ async fn test_proxy_blocks_private_ip_initial_url() {
 }
 
 /// Verify that proxy_fetch_and_forward blocks loopback addresses.
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_proxy_blocks_loopback_initial_url() {
     let headers = axum::http::HeaderMap::new();
     let cfg = ProxyConfig {
@@ -263,7 +263,7 @@ async fn test_proxy_blocks_loopback_initial_url() {
 }
 
 /// Verify that proxy_fetch_and_forward blocks cloud metadata endpoints.
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_proxy_blocks_cloud_metadata_url() {
     let headers = axum::http::HeaderMap::new();
     let cfg = ProxyConfig {

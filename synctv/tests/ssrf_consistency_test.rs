@@ -34,9 +34,7 @@ const BLOCKED_URLS: &[&str] = &[
     "http://169.254.169.254/latest/meta-data",
     // Current network
     "http://0.0.0.0/path",
-    // CGNAT
-    "http://100.64.0.1/path",
-    "http://100.127.255.255/path",
+    // Note: CGNAT (100.64.0.0/10) is NOT blocked - it's technically routable
     // Multicast
     "http://224.0.0.1/path",
     // Reserved
@@ -65,6 +63,9 @@ const ALLOWED_URLS: &[&str] = &[
     "https://github.com/path",
     "http://[::ffff:8.8.8.8]/path",
     "http://[::ffff:1.1.1.1]/path",
+    // CGNAT is technically routable, so it's allowed by default
+    "http://100.64.0.1/path",
+    "http://100.127.255.255/path",
 ];
 
 /// IPv4 addresses that must be blocked.
@@ -74,7 +75,7 @@ const BLOCKED_IPV4: &[(u8, u8, u8, u8)] = &[
     (172, 16, 0, 1),
     (192, 168, 1, 1),
     (169, 254, 169, 254),
-    (100, 64, 0, 1),
+    // Note: CGNAT (100.64.0.0/10) is NOT blocked by default - it's technically routable
     (0, 0, 0, 0),
     (224, 0, 0, 1),
     (240, 0, 0, 1),
@@ -87,6 +88,9 @@ const ALLOWED_IPV4: &[(u8, u8, u8, u8)] = &[
     (1, 1, 1, 1),
     (93, 184, 216, 34),
     (100, 128, 0, 0), // just outside CGNAT
+    // CGNAT is technically routable, so it's allowed by default
+    (100, 64, 0, 1),
+    (100, 100, 100, 100),
 ];
 
 /// Hostnames that must be blocked.

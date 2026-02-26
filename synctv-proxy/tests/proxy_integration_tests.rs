@@ -32,7 +32,7 @@ fn test_client() -> reqwest::Client {
 // Full proxy pipeline tests
 // ==================================================================
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_proxy_200_response_forwarded() {
     // The proxy blocks loopback IPs (SSRF protection), so calling
     // proxy_fetch_and_forward with a wiremock URL on 127.0.0.1 should fail.
@@ -72,7 +72,7 @@ async fn test_proxy_200_response_forwarded() {
     );
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_proxy_206_preserves_content_length() {
     // Test that 206 responses preserve Content-Length by checking the
     // response building logic (since we can't reach wiremock via the proxy).
@@ -99,7 +99,7 @@ async fn test_proxy_206_preserves_content_length() {
     assert!(resp.headers().get("content-length").is_some());
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_proxy_200_strips_content_length() {
     // For non-206 responses, Content-Length is stripped by the proxy.
     // Verify the wiremock serves with content-length, which the proxy would strip.
@@ -125,7 +125,7 @@ async fn test_proxy_200_strips_content_length() {
     assert!(resp.headers().get("content-length").is_some());
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_proxy_5xx_retries_once() {
     // Verify the retry behavior: first 500, second 200.
     let server = MockServer::start().await;
@@ -147,7 +147,7 @@ async fn test_proxy_5xx_retries_once() {
     assert_eq!(resp.status(), 500);
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_proxy_gzip_encoding_stripped() {
     // When content-encoding is gzip, the proxy strips it (reqwest auto-decompresses).
     let server = MockServer::start().await;
@@ -172,7 +172,7 @@ async fn test_proxy_gzip_encoding_stripped() {
     assert_eq!(resp.status(), 200);
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_proxy_cache_control_video() {
     // video/mp4 should get "public, max-age=86400, immutable" from the proxy.
     // We test the cache control logic via the rewrite path that IS exercisable.
@@ -203,7 +203,7 @@ async fn test_proxy_cache_control_video() {
     );
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_proxy_cache_control_m3u8() {
     // M3U8 should get "no-cache" from the proxy. Verified via proxy_m3u8_and_rewrite.
     // Since proxy_m3u8_and_rewrite also calls validate_proxy_url which blocks loopback,
@@ -224,7 +224,7 @@ async fn test_proxy_cache_control_m3u8() {
 // Redirect following
 // ==================================================================
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_redirect_to_public_ip_followed() {
     // The proxy follows redirects but validates each hop.
     // A redirect to a public IP should be followed (in theory).
@@ -244,7 +244,7 @@ async fn test_redirect_to_public_ip_followed() {
     }
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_redirect_chain_over_max_returns_error() {
     // Redirect chains > 10 should fail. We test this by verifying the
     // validate_proxy_url blocks loopback, and document the MAX_REDIRECTS constant.
@@ -275,7 +275,7 @@ async fn test_redirect_chain_over_max_returns_error() {
     assert!(result.is_err(), "Should fail (SSRF blocks loopback)");
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_redirect_missing_location_returns_error() {
     // A redirect without a Location header should produce an error.
     let server = MockServer::start().await;
@@ -302,7 +302,7 @@ async fn test_redirect_missing_location_returns_error() {
 // M3U8 proxy
 // ==================================================================
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_proxy_m3u8_rewrites_and_returns() {
     // Test the full M3U8 rewrite flow. Since the proxy blocks loopback,
     // we test rewrite_m3u8 directly with content from a wiremock server.
@@ -349,7 +349,7 @@ async fn test_proxy_m3u8_rewrites_and_returns() {
     assert!(rewritten.contains("#EXT-X-ENDLIST"));
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_proxy_m3u8_non_200_returns_error() {
     // proxy_m3u8_and_rewrite should return an error for non-200 status.
     // Since it also validates the URL first (blocking loopback), we verify
@@ -373,7 +373,7 @@ async fn test_proxy_m3u8_non_200_returns_error() {
 // Body size limits
 // ==================================================================
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_body_exceeds_max_size_terminates() {
     // The proxy checks Content-Length against MAX_PROXY_BODY_SIZE (256 MB).
     // It also enforces cumulative size during streaming via a scan combinator.
@@ -423,7 +423,7 @@ async fn test_body_exceeds_max_size_terminates() {
 // SSRF protection integration tests
 // ==================================================================
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_ssrf_blocks_private_ranges() {
     let private_urls = [
         "http://10.0.0.1/secret",
@@ -439,7 +439,7 @@ async fn test_ssrf_blocks_private_ranges() {
     }
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_ssrf_blocks_loopback() {
     let loopback_urls = [
         "http://127.0.0.1/metadata",
@@ -454,7 +454,7 @@ async fn test_ssrf_blocks_loopback() {
     }
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_ssrf_blocks_non_http_schemes() {
     let bad_schemes = [
         "ftp://example.com/file",
@@ -486,7 +486,7 @@ fn test_noop_metrics_does_not_panic() {
 // Content-encoding stripping logic (br, deflate, followed redirects)
 // ==================================================================
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_proxy_brotli_encoding_stripped() {
     // Content-encoding "br" (brotli) is auto-decompressed by reqwest
     // and should be stripped by the proxy.
@@ -517,7 +517,7 @@ async fn test_proxy_brotli_encoding_stripped() {
     assert_eq!(ce.unwrap().to_str().unwrap(), "br");
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_proxy_deflate_encoding_stripped() {
     let server = MockServer::start().await;
     Mock::given(method("GET"))
@@ -542,7 +542,7 @@ async fn test_proxy_deflate_encoding_stripped() {
     assert_eq!(ce.unwrap().to_str().unwrap(), "deflate");
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_proxy_zstd_encoding_preserved() {
     // zstd is NOT auto-decompressed by reqwest, so the proxy should
     // preserve the content-encoding header for it.
@@ -573,7 +573,7 @@ async fn test_proxy_zstd_encoding_preserved() {
 // Cache-Control logic (detailed)
 // ==================================================================
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_cache_control_audio_gets_long_max_age() {
     // audio/* content-type should get "public, max-age=86400, immutable"
     let server = MockServer::start().await;
@@ -599,7 +599,7 @@ async fn test_cache_control_audio_gets_long_max_age() {
     );
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_cache_control_unknown_gets_no_cache() {
     // text/html or other unknown content-types should get "no-cache"
     // from the proxy. Use set_body_bytes to avoid wiremock overriding
@@ -631,7 +631,7 @@ async fn test_cache_control_unknown_gets_no_cache() {
 // M3U8 manifest size limit
 // ==================================================================
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_proxy_m3u8_manifest_size_limit() {
     // proxy_m3u8_and_rewrite checks Content-Length against MAX_MANIFEST_SIZE (10 MB).
     // Since SSRF blocks loopback, we verify the error is about SSRF, not size.
@@ -649,7 +649,7 @@ async fn test_proxy_m3u8_manifest_size_limit() {
 // Redirect with wiremock chains
 // ==================================================================
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_redirect_single_hop_via_wiremock() {
     // Verify wiremock can model a single redirect hop
     let server = MockServer::start().await;
@@ -702,7 +702,7 @@ async fn test_redirect_single_hop_via_wiremock() {
 // SSRF: validate_proxy_url with async DNS
 // ==================================================================
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_validate_proxy_url_public_ip_passes_static() {
     // A public IP should pass the static URL check.
     // The async DNS check may or may not resolve (depends on network),
@@ -711,7 +711,7 @@ async fn test_validate_proxy_url_public_ip_passes_static() {
     assert!(validate_proxy_url_static("https://93.184.216.34/page").is_ok());
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_validate_proxy_url_link_local_blocked() {
     let result = validate_proxy_url("http://169.254.169.254/latest/meta-data/").await;
     assert!(
@@ -726,7 +726,7 @@ async fn test_validate_proxy_url_link_local_blocked() {
 
 // The deprecated function is intentionally tested for backward compatibility
 #[allow(deprecated)]
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_proxy_options_preflight_headers() {
     use axum::response::IntoResponse;
     let response = synctv_proxy::proxy_options_preflight().await.into_response();

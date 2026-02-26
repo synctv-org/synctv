@@ -624,6 +624,52 @@ impl ConnectionManager {
         });
     }
 
+    /// Check if a user can accept a new connection (without registering)
+    ///
+    /// This is used to enforce per-user connection limits BEFORE WebSocket upgrade,
+    /// preventing users from exceeding their connection limit.
+    ///
+    /// Returns Ok(()) if the user can accept a connection, or Err with reason if at limit.
+    #[must_use]
+    pub fn can_accept_user_connection(&self, user_id: &UserId) -> Result<(), String> {
+        // Check local user connection limit
+        let user_entry = self.user_connections.get(user_id);
+        let current_count = user_entry.as_ref().map(|v| v.len()).unwrap_or(0);
+
+        if current_count >= self.limits.max_per_user {
+            return Err(format!(
+                "User at capacity ({} connections, max: {})",
+                current_count,
+                self.limits.max_per_user
+            ));
+        }
+
+        Ok(())
+    }
+
+    /// Check if a room can accept a new connection (without registering)
+    ///
+    /// This is used to enforce connection limits BEFORE WebSocket upgrade,
+    /// preventing unauthorized connections from being upgraded.
+    ///
+    /// Returns Ok(()) if the room can accept a connection, or Err with reason if at capacity.
+    #[must_use]
+    pub fn can_accept_room_connection(&self, room_id: &RoomId) -> Result<(), String> {
+        // Check local room connection limit
+        let room_entry = self.room_connections.get(room_id);
+        let current_count = room_entry.as_ref().map(|v| v.len()).unwrap_or(0);
+
+        if current_count >= self.limits.max_per_room {
+            return Err(format!(
+                "Room at capacity ({} connections, max: {})",
+                current_count,
+                self.limits.max_per_room
+            ));
+        }
+
+        Ok(())
+    }
+
     /// Register a new connection
     ///
     /// Returns Ok(()) if connection is allowed, or Err with reason if rejected.

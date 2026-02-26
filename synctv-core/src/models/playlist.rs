@@ -27,6 +27,9 @@ pub struct Playlist {
 
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+
+    /// Optimistic locking version (incremented on each update)
+    pub version: i32,
 }
 
 impl Playlist {
@@ -97,6 +100,7 @@ mod tests {
             provider_instance_name: None,
             created_at: Utc::now(),
             updated_at: Utc::now(),
+            version: 0,
         }
     }
 

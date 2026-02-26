@@ -41,6 +41,9 @@ sha2.workspace = true
 md-5.workspace = true
 uuid.workspace = true
 
+# SSRF Protection
+url_jail.workspace = true
+
 # Compression
 flate2.workspace = true
 brotli.workspace = true
@@ -52,6 +55,11 @@ backon.workspace = true
 
 # Utilities
 nanoid.workspace = true
+
+# Encryption
+aes-gcm.workspace = true
+base64.workspace = true
+hex.workspace = true
 
 # Database (optional, for PostgreSQL storage)
 sqlx = { workspace = true, optional = true }

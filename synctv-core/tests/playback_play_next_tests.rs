@@ -141,10 +141,10 @@ async fn insert_media(pool: &PgPool, playlist_id: &PlaylistId, room_id: &RoomId,
         source_config: serde_json::json!({"url": format!("https://example.com/{}.mp4", name)}),
         provider_instance_name: None,
         added_at: Utc::now(),
+        version: 0,
     };
     let media_repo = MediaRepository::new(pool.clone());
-    media_repo.create(&media).await.expect("Failed to create media");
-    media
+    media_repo.create(&media).await.expect("Failed to create media")
 }
 
 // ========== Sequential Mode Tests ==========

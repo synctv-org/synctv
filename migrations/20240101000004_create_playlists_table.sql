@@ -28,6 +28,9 @@ CREATE TABLE playlists (
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 
+    -- Optimistic locking version (incremented on each update)
+    version INTEGER NOT NULL DEFAULT 0,
+
     -- Constraints
     CONSTRAINT valid_parent CHECK (parent_id IS NULL OR parent_id != id),
     -- NOTE: No UNIQUE(room_id, parent_id, name) constraint here because PostgreSQL
@@ -98,6 +101,7 @@ COMMENT ON COLUMN playlists.source_config IS 'Media provider configuration (requ
 COMMENT ON COLUMN playlists.provider_instance_name IS 'Recommended media provider backend instance name (optional)';
 COMMENT ON CONSTRAINT valid_name ON playlists IS 'Name validation: root directory must be empty string, non-root cannot be empty/spaces, forbids / character';
 COMMENT ON CONSTRAINT valid_dynamic_folder ON playlists IS 'Dynamic folder constraint: source_provider/source_config must either both exist or both be NULL';
+COMMENT ON COLUMN playlists.version IS 'Optimistic locking version, incremented on each update';
 
 -- ============================================================================
 -- Circular Reference Protection

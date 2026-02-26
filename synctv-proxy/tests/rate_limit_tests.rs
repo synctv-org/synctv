@@ -4,6 +4,8 @@
 
 use std::time::Duration;
 
+// The deprecated function is intentionally tested for backward compatibility
+#[allow(deprecated)]
 use synctv_proxy::{proxy_options_preflight_rate_limited, RateLimiter};
 
 // ==================================================================

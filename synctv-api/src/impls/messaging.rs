@@ -40,20 +40,94 @@ const MEMBERSHIP_CACHE_TTL: Duration = Duration::from_secs(60);
 /// Default maximum concurrent message processing operations across all connections.
 /// This provides backpressure when the system is under heavy load.
 /// When exceeded, new messages receive a ResourceExhausted error.
-const DEFAULT_MAX_CONCURRENT_MESSAGE_PROCESSING: usize = 1000;
+pub const DEFAULT_MAX_CONCURRENT_MESSAGE_PROCESSING: usize = 1000;
 
-/// Global semaphore for backpressure control.
-/// Limits the total number of concurrent message processing operations across all
-/// connections to prevent system overload. When the semaphore is exhausted,
-/// new messages are rejected with a ResourceExhausted error.
-static MESSAGE_PROCESSING_SEMAPHORE: std::sync::OnceLock<Arc<Semaphore>> = std::sync::OnceLock::new();
+// ============================================================================
+// MessageConcurrencyConfig - Instance-level concurrency configuration
+// ============================================================================
 
-/// Get or create the global message processing semaphore.
-/// Uses a default limit of [`DEFAULT_MAX_CONCURRENT_MESSAGE_PROCESSING`].
-fn get_message_processing_semaphore() -> &'static Arc<Semaphore> {
-    MESSAGE_PROCESSING_SEMAPHORE.get_or_init(|| {
-        Arc::new(Semaphore::new(DEFAULT_MAX_CONCURRENT_MESSAGE_PROCESSING))
-    })
+/// Configuration for message processing concurrency.
+///
+/// This replaces the previous global `MESSAGE_PROCESSING_SEMAPHORE` with instance-level
+/// configuration, enabling proper test isolation and per-AppState concurrency limits.
+///
+/// Each `AppState` instance can have its own `MessageConcurrencyConfig`, allowing:
+/// - Different concurrency limits for different server instances
+/// - Proper test isolation (tests don't share semaphores)
+/// - Runtime configuration of concurrency limits
+///
+/// # Example
+///
+/// ```
+/// use synctv_api::impls::MessageConcurrencyConfig;
+/// use std::sync::Arc;
+///
+/// // Create with default limit (1000)
+/// let default_config = MessageConcurrencyConfig::default();
+///
+/// // Create with custom limit
+/// let custom_config = MessageConcurrencyConfig::new(500);
+///
+/// // Share across handlers via Arc
+/// let shared = Arc::new(custom_config);
+/// ```
+#[derive(Clone, Debug)]
+pub struct MessageConcurrencyConfig {
+    /// Semaphore for limiting concurrent message processing.
+    /// This is shared across all connections for the same AppState.
+    semaphore: Arc<Semaphore>,
+    /// The maximum number of concurrent message processing operations.
+    max_concurrent: usize,
+}
+
+impl MessageConcurrencyConfig {
+    /// Create a new concurrency config with the specified limit.
+    ///
+    /// # Arguments
+    ///
+    /// * `max_concurrent` - Maximum number of concurrent message processing operations.
+    ///   When this limit is reached, new messages will receive a ResourceExhausted error.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use synctv_api::impls::MessageConcurrencyConfig;
+    ///
+    /// let config = MessageConcurrencyConfig::new(500);
+    /// assert_eq!(config.max_concurrent(), 500);
+    /// ```
+    pub fn new(max_concurrent: usize) -> Self {
+        Self {
+            semaphore: Arc::new(Semaphore::new(max_concurrent)),
+            max_concurrent,
+        }
+    }
+
+    /// Get the semaphore for acquiring permits.
+    ///
+    /// Returns a cloned `Arc<Semaphore>` that can be used to acquire permits
+    /// for message processing.
+    pub fn semaphore(&self) -> Arc<Semaphore> {
+        Arc::clone(&self.semaphore)
+    }
+
+    /// Get the maximum concurrent limit.
+    pub fn max_concurrent(&self) -> usize {
+        self.max_concurrent
+    }
+
+    /// Get the number of available permits.
+    ///
+    /// This is useful for monitoring and health checks.
+    pub fn available_permits(&self) -> usize {
+        self.semaphore.available_permits()
+    }
+}
+
+impl Default for MessageConcurrencyConfig {
+    fn default() -> Self {
+        Self::new(DEFAULT_MAX_CONCURRENT_MESSAGE_PROCESSING)
+    }
 }
 
 /// Cached membership status for heartbeat validation.
@@ -194,6 +268,9 @@ pub struct StreamMessageHandler {
     /// maintaining reasonable responsiveness to membership changes.
     /// Key: (room_id, user_id) tuple for O(1) lookup.
     membership_cache: Arc<moka::sync::Cache<(String, String), CachedMembership>>,
+    /// Instance-level concurrency configuration for backpressure control.
+    /// This replaces the global MESSAGE_PROCESSING_SEMAPHORE with per-AppState configuration.
+    concurrency_config: Arc<MessageConcurrencyConfig>,
 }
 
 impl Clone for StreamMessageHandler {
@@ -215,6 +292,7 @@ impl Clone for StreamMessageHandler {
             has_webrtc_session: Arc::clone(&self.has_webrtc_session),
             skip_cleanup_user_left: Arc::clone(&self.skip_cleanup_user_left),
             membership_cache: Arc::clone(&self.membership_cache),
+            concurrency_config: Arc::clone(&self.concurrency_config),
         }
     }
 }
@@ -233,6 +311,39 @@ impl StreamMessageHandler {
         rate_limit_config: Arc<RateLimitConfig>,
         content_filter: Arc<ContentFilter>,
         sender: Arc<dyn MessageSender>,
+    ) -> Self {
+        Self::with_concurrency_config(
+            room_id,
+            user_id,
+            username,
+            room_service,
+            cluster_manager,
+            connection_manager,
+            rate_limiter,
+            rate_limit_config,
+            content_filter,
+            sender,
+            Arc::new(MessageConcurrencyConfig::default()),
+        )
+    }
+
+    /// Create a new stream message handler with a specific concurrency configuration.
+    ///
+    /// This is the preferred constructor when you need to control the concurrency limit
+    /// for message processing (e.g., in tests or when configuring multiple server instances).
+    #[allow(clippy::too_many_arguments)]
+    pub fn with_concurrency_config(
+        room_id: RoomId,
+        user_id: UserId,
+        username: String,
+        room_service: Arc<RoomService>,
+        cluster_manager: Arc<ClusterManager>,
+        connection_manager: ConnectionManager,
+        rate_limiter: Arc<RateLimiter>,
+        rate_limit_config: Arc<RateLimitConfig>,
+        content_filter: Arc<ContentFilter>,
+        sender: Arc<dyn MessageSender>,
+        concurrency_config: Arc<MessageConcurrencyConfig>,
     ) -> Self {
         let connection_id = format!("{}_{}", user_id.as_str(), nanoid::nanoid!(8));
         // Create membership cache with TTL for heartbeat validation.
@@ -259,6 +370,7 @@ impl StreamMessageHandler {
             has_webrtc_session: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             skip_cleanup_user_left: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             membership_cache,
+            concurrency_config,
         }
     }
 
@@ -266,6 +378,16 @@ impl StreamMessageHandler {
     #[must_use]
     pub const fn with_ws_message_rate_limit(mut self, limit: u32) -> Self {
         self.ws_message_rate_limit = limit;
+        self
+    }
+
+    /// Set the concurrency configuration for this handler.
+    ///
+    /// This allows configuring the message processing concurrency limit
+    /// after creating the handler.
+    #[must_use]
+    pub fn with_concurrency(mut self, config: Arc<MessageConcurrencyConfig>) -> Self {
+        self.concurrency_config = config;
         self
     }
 
@@ -378,8 +500,8 @@ impl StreamMessageHandler {
 
                             // Backpressure control: try to acquire a semaphore permit.
                             // If the system is overloaded, return ResourceExhausted error instead of processing.
-                            let semaphore = get_message_processing_semaphore();
-                            let permit = match semaphore.clone().try_acquire_owned() {
+                            let semaphore = self.concurrency_config.semaphore();
+                            let permit = match semaphore.try_acquire_owned() {
                                 Ok(permit) => permit,
                                 Err(_) => {
                                     tracing::warn!(
@@ -1114,8 +1236,8 @@ impl StreamMessageHandler {
 
                                 // Backpressure control: try to acquire a semaphore permit.
                                 // If the system is overloaded, skip this message.
-                                let semaphore = get_message_processing_semaphore();
-                                let permit = match semaphore.clone().try_acquire_owned() {
+                                let semaphore = handler.concurrency_config.semaphore();
+                                let permit = match semaphore.try_acquire_owned() {
                                     Ok(permit) => permit,
                                     Err(_) => {
                                         tracing::warn!(
@@ -1451,6 +1573,9 @@ impl StreamMessageHandler {
 
                 // Handle message
                 if is_danmaku {
+                    // Validate danmaku color format to prevent XSS/injection attacks
+                    validate_danmaku_color(&chat_msg.color)?;
+
                     self.handle_danmaku(
                         &sanitized_content,
                         chat_msg.position.unwrap_or(0.0),
@@ -2309,6 +2434,60 @@ fn cluster_event_to_server_message(
     }
 }
 
+/// Validate danmaku color format.
+///
+/// Only accepts hex color format: `#RRGGBB` (6 hex digits with # prefix).
+/// Returns `Ok(())` if the color is valid or `None` (default color).
+/// Returns `Err` with a descriptive message if the color format is invalid.
+///
+/// # Security
+///
+/// This validation prevents XSS attacks by rejecting any non-hex characters
+/// and enforcing strict format requirements. The color value is typically
+/// rendered in CSS/HTML contexts where injection attacks could be dangerous.
+///
+/// # Examples
+///
+/// ```
+/// # use synctv_api::impls::messaging::validate_danmaku_color;
+/// assert!(validate_danmaku_color(&Some("#FF0000".to_string())).is_ok()); // Red
+/// assert!(validate_danmaku_color(&Some("#abcdef".to_string())).is_ok()); // Lowercase
+/// assert!(validate_danmaku_color(&None).is_ok()); // No color = default
+/// assert!(validate_danmaku_color(&Some("red".to_string())).is_err()); // Invalid format
+/// assert!(validate_danmaku_color(&Some("javascript:alert(1)".to_string())).is_err()); // XSS
+/// ```
+pub fn validate_danmaku_color(color: &Option<String>) -> Result<(), String> {
+    let Some(color_str) = color else {
+        // None is valid - means default color
+        return Ok(());
+    };
+
+    // Must start with #
+    if !color_str.starts_with('#') {
+        return Err(format!(
+            "Invalid danmaku color: must start with '#', got: {color_str}"
+        ));
+    }
+
+    // Must be exactly 7 characters (# + 6 hex digits)
+    if color_str.len() != 7 {
+        return Err(format!(
+            "Invalid danmaku color: must be 7 characters (#RRGGBB), got {} characters: {color_str}",
+            color_str.len()
+        ));
+    }
+
+    // All characters after # must be valid hex digits
+    let hex_part = &color_str[1..];
+    if !hex_part.chars().all(|c| c.is_ascii_hexdigit()) {
+        return Err(format!(
+            "Invalid danmaku color: must contain only hex characters (0-9, a-f, A-F), got: {color_str}"
+        ));
+    }
+
+    Ok(())
+}
+
 /// Binary codec for proto messages
 pub struct ProtoCodec;
 
@@ -2694,9 +2873,10 @@ mod tests {
     // ========== Backpressure Control Tests ==========
 
     #[test]
-    fn test_message_processing_semaphore_can_be_acquired() {
+    fn test_message_concurrency_config_can_be_acquired() {
         // Test that the semaphore can be acquired under normal conditions
-        let semaphore = get_message_processing_semaphore();
+        let config = super::MessageConcurrencyConfig::new(100);
+        let semaphore = config.semaphore();
         // Use try_acquire to check without blocking
         let permit = semaphore.try_acquire();
         assert!(
@@ -2708,40 +2888,27 @@ mod tests {
     }
 
     #[test]
-    fn test_message_processing_semaphore_enforces_limit() {
+    fn test_message_concurrency_config_enforces_limit() {
         // Test that semaphore enforces the concurrent processing limit.
-        // Note: The semaphore is global (OnceLock), so we test the basic behavior
-        // rather than trying to exhaust all permits (which could fail if other
-        // tests run in parallel).
-        let semaphore = get_message_processing_semaphore();
+        // Each test gets its own config instance, so no cross-test interference.
+        let config = super::MessageConcurrencyConfig::new(10);
+        let semaphore = config.semaphore();
 
-        // Skip the test if the semaphore is already exhausted by other tests
-        if semaphore.available_permits() == 0 {
-            return;
-        }
+        // Acquire all 10 permits
+        let permits: Vec<_> = (0..10)
+            .map(|_| semaphore.clone().try_acquire_owned())
+            .collect::<Result<Vec<_>, _>>()
+            .expect("Should acquire all 10 permits");
 
-        // Acquire a single permit and verify permits decreased
-        let permit = match semaphore.try_acquire() {
-            Ok(p) => p,
-            Err(_) => {
-                // Another test may have exhausted permits; skip gracefully
-                return;
-            }
-        };
-        let after_acquire = semaphore.available_permits();
+        assert_eq!(config.available_permits(), 0, "No permits should remain");
 
-        // Drop the permit
-        drop(permit);
+        // Next acquisition should fail
+        let failed = semaphore.clone().try_acquire_owned();
+        assert!(failed.is_err(), "Should fail when no permits available");
 
-        // Verify permits are restored.
-        // Due to concurrent test execution, another test may have released/acquired
-        // permits between our drop and read, so we just verify the count is healthy.
-        let after_release = semaphore.available_permits();
-        // The release should restore at least as many permits as we had while holding
-        assert!(
-            after_release >= after_acquire,
-            "Available permits should be restored after releasing: was {after_acquire}, now {after_release}"
-        );
+        // Drop all permits
+        drop(permits);
+        assert_eq!(config.available_permits(), 10, "All permits restored");
     }
 
     #[test]
@@ -2775,30 +2942,131 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_semaphore_backpressure_with_async() {
+    async fn test_concurrency_config_backpressure_with_async() {
         // Test that semaphore backpressure works correctly with async operations.
-        // Note: The semaphore is global, so we test basic behavior rather than
-        // trying to exhaust all permits.
-        let semaphore = get_message_processing_semaphore();
+        // Each test gets its own config instance, so no cross-test interference.
+        let config = std::sync::Arc::new(super::MessageConcurrencyConfig::new(50));
+        let semaphore = config.semaphore();
 
-        // Skip if semaphore is already exhausted
-        if semaphore.available_permits() == 0 {
-            return;
-        }
-
-        // Simulate acquiring a permit for message processing
-        let permit = semaphore.clone().try_acquire_owned();
+        // Acquire a permit for message processing
+        let permit = semaphore.try_acquire_owned();
         assert!(permit.is_ok(), "Should be able to acquire permit");
-        let after_acquire = semaphore.available_permits();
+        let after_acquire = config.available_permits();
 
         // Drop the permit (simulating message processing completion)
         drop(permit);
 
-        // Verify permits are restored (should be at least 1 more than while holding permit)
-        let after_release = semaphore.available_permits();
+        // Verify permits are restored
+        let after_release = config.available_permits();
         assert!(
             after_release > after_acquire,
             "Available permits should increase after releasing: was {after_acquire}, now {after_release}"
         );
+    }
+
+    #[test]
+    fn test_concurrency_config_default_matches_constant() {
+        // Verify default config uses the correct constant
+        let config = super::MessageConcurrencyConfig::default();
+        assert_eq!(
+            config.max_concurrent(),
+            super::DEFAULT_MAX_CONCURRENT_MESSAGE_PROCESSING,
+            "Default should match DEFAULT_MAX_CONCURRENT_MESSAGE_PROCESSING"
+        );
+    }
+
+    // ========== Danmaku Color Validation Tests ==========
+
+    #[test]
+    fn test_validate_danmaku_color_valid_hex_colors() {
+        // Valid hex color formats: #RRGGBB
+        assert!(super::validate_danmaku_color(&Some("#FF0000".to_string())).is_ok()); // Red
+        assert!(super::validate_danmaku_color(&Some("#00FF00".to_string())).is_ok()); // Green
+        assert!(super::validate_danmaku_color(&Some("#0000FF".to_string())).is_ok()); // Blue
+        assert!(super::validate_danmaku_color(&Some("#FFFFFF".to_string())).is_ok()); // White
+        assert!(super::validate_danmaku_color(&Some("#000000".to_string())).is_ok()); // Black
+        assert!(super::validate_danmaku_color(&Some("#abcdef".to_string())).is_ok()); // Lowercase
+        assert!(super::validate_danmaku_color(&Some("#ABCDEF".to_string())).is_ok()); // Uppercase
+        assert!(super::validate_danmaku_color(&Some("#123456".to_string())).is_ok()); // Mixed digits
+        assert!(super::validate_danmaku_color(&Some("#1a2B3c".to_string())).is_ok()); // Mixed case
+    }
+
+    #[test]
+    fn test_validate_danmaku_color_none_is_valid() {
+        // None should be valid (no color specified = default color)
+        assert!(super::validate_danmaku_color(&None).is_ok());
+    }
+
+    #[test]
+    fn test_validate_danmaku_color_invalid_format_no_hash() {
+        // Missing # prefix should be rejected
+        let result = super::validate_danmaku_color(&Some("FF0000".to_string()));
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("must start with '#'"));
+    }
+
+    #[test]
+    fn test_validate_danmaku_color_invalid_format_wrong_length() {
+        // Wrong length should be rejected
+        let result = super::validate_danmaku_color(&Some("#FFF".to_string())); // Too short
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("must be 7 characters"));
+
+        let result = super::validate_danmaku_color(&Some("#FFFFFFFF".to_string())); // Too long (no alpha)
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("must be 7 characters"));
+    }
+
+    #[test]
+    fn test_validate_danmaku_color_invalid_characters() {
+        // Non-hex characters should be rejected
+        let result = super::validate_danmaku_color(&Some("#GGGGGG".to_string()));
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("must contain only hex characters"));
+
+        let result = super::validate_danmaku_color(&Some("#ZZZZZZ".to_string()));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_validate_danmaku_color_xss_injection() {
+        // XSS injection attempts should be rejected
+        let result = super::validate_danmaku_color(&Some("javascript:alert(1)".to_string()));
+        assert!(result.is_err());
+
+        let result = super::validate_danmaku_color(&Some("<script>".to_string()));
+        assert!(result.is_err());
+
+        let result = super::validate_danmaku_color(&Some("rgb(255,0,0)".to_string()));
+        assert!(result.is_err());
+
+        let result = super::validate_danmaku_color(&Some("red".to_string()));
+        assert!(result.is_err());
+
+        let result = super::validate_danmaku_color(&Some("#expression(alert(1))".to_string()));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_validate_danmaku_color_empty_string() {
+        // Empty string should be rejected
+        let result = super::validate_danmaku_color(&Some("".to_string()));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_validate_danmaku_color_special_characters() {
+        // Special characters should be rejected
+        let result = super::validate_danmaku_color(&Some("#FF 000".to_string())); // Space
+        assert!(result.is_err());
+
+        let result = super::validate_danmaku_color(&Some("#FF-000".to_string())); // Dash
+        assert!(result.is_err());
+
+        let result = super::validate_danmaku_color(&Some("#FF\n000".to_string())); // Newline
+        assert!(result.is_err());
+
+        let result = super::validate_danmaku_color(&Some("#\u{0000}F0000".to_string())); // Null byte
+        assert!(result.is_err());
     }
 }

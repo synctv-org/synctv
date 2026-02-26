@@ -2,14 +2,24 @@
 //!
 //! Defines the interface for credential persistence and provides an in-memory
 //! implementation for testing purposes.
+//!
+//! # Encryption
+//!
+//! When encryption is enabled (via `with_encryption`), sensitive credential fields
+//! are encrypted before storage and decrypted after retrieval:
+//! - Alist: `password` field
+//! - Emby: `api_key` field
+//!
+//! The encryption uses AES-256-GCM with a 32-byte key.
 
+use super::encryption::FieldEncryption;
 use super::types::{CredentialData, ProviderType};
 use async_trait::async_trait;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
-use crate::ssrf::check_url;
+use crate::ssrf::check_url_async;
 
 /// Error type for credential storage operations
 #[derive(Debug, thiserror::Error)]
@@ -42,9 +52,19 @@ pub enum CredentialStorageError {
     #[error("Serialization error: {0}")]
     Serialization(#[from] serde_json::Error),
 
+    /// Encryption error
+    #[error("Encryption error: {0}")]
+    Encryption(String),
+
     /// Internal error
     #[error("Internal error: {0}")]
     Internal(String),
+}
+
+impl From<super::encryption::EncryptionError> for CredentialStorageError {
+    fn from(err: super::encryption::EncryptionError) -> Self {
+        CredentialStorageError::Encryption(err.to_string())
+    }
 }
 
 /// Result type for credential storage operations
@@ -124,8 +144,15 @@ pub trait CredentialStorage: Send + Sync {
 ///
 /// Simple in-memory implementation for testing purposes.
 /// Uses a HashMap protected by RwLock for thread safety.
+///
+/// # Encryption
+///
+/// When created with `with_encryption`, sensitive credential fields are encrypted:
+/// - Alist: `password` field
+/// - Emby: `api_key` field
 pub struct InMemoryCredentialStorage {
     credentials: Arc<RwLock<HashMap<String, StoredCredential>>>,
+    encryption: Option<FieldEncryption>,
 }
 
 impl Default for InMemoryCredentialStorage {
@@ -135,11 +162,29 @@ impl Default for InMemoryCredentialStorage {
 }
 
 impl InMemoryCredentialStorage {
-    /// Create a new in-memory credential storage
+    /// Create a new in-memory credential storage without encryption
     #[must_use]
     pub fn new() -> Self {
         Self {
             credentials: Arc::new(RwLock::new(HashMap::new())),
+            encryption: None,
+        }
+    }
+
+    /// Create a new in-memory credential storage with encryption enabled
+    ///
+    /// # Arguments
+    /// * `key_bytes` - 32-byte encryption key (AES-256)
+    ///
+    /// # Panics
+    /// Panics if the key is not exactly 32 bytes.
+    #[must_use]
+    pub fn with_encryption(key_bytes: Vec<u8>) -> Self {
+        let encryption = FieldEncryption::new(&key_bytes)
+            .expect("Encryption key must be exactly 32 bytes");
+        Self {
+            credentials: Arc::new(RwLock::new(HashMap::new())),
+            encryption: Some(encryption),
         }
     }
 
@@ -154,6 +199,72 @@ impl InMemoryCredentialStorage {
         static COUNTER: AtomicU64 = AtomicU64::new(1);
         format!("cred_{}", COUNTER.fetch_add(1, Ordering::SeqCst))
     }
+
+    /// Encrypt sensitive fields in credential data before storage
+    fn encrypt_data(&self, data: CredentialData) -> Result<CredentialData> {
+        let Some(enc) = &self.encryption else {
+            return Ok(data);
+        };
+
+        match data {
+            CredentialData::Alist { host, username, password } => {
+                let encrypted_password = enc.encrypt(&password)?;
+                Ok(CredentialData::Alist {
+                    host,
+                    username,
+                    password: encrypted_password,
+                })
+            }
+            CredentialData::Emby { host, api_key, emby_user_id } => {
+                let encrypted_api_key = enc.encrypt(&api_key)?;
+                Ok(CredentialData::Emby {
+                    host,
+                    api_key: encrypted_api_key,
+                    emby_user_id,
+                })
+            }
+            // Bilibili cookies don't need field-level encryption (no password-like secrets)
+            other => Ok(other),
+        }
+    }
+
+    /// Decrypt sensitive fields in credential data after retrieval
+    fn decrypt_data(&self, data: CredentialData) -> Result<CredentialData> {
+        let Some(enc) = &self.encryption else {
+            return Ok(data);
+        };
+
+        match data {
+            CredentialData::Alist { host, username, password } => {
+                // Only decrypt if it looks encrypted
+                let decrypted_password = if FieldEncryption::is_encrypted(&password) {
+                    enc.decrypt(&password)?
+                } else {
+                    password
+                };
+                Ok(CredentialData::Alist {
+                    host,
+                    username,
+                    password: decrypted_password,
+                })
+            }
+            CredentialData::Emby { host, api_key, emby_user_id } => {
+                // Only decrypt if it looks encrypted
+                let decrypted_api_key = if FieldEncryption::is_encrypted(&api_key) {
+                    enc.decrypt(&api_key)?
+                } else {
+                    api_key
+                };
+                Ok(CredentialData::Emby {
+                    host,
+                    api_key: decrypted_api_key,
+                    emby_user_id,
+                })
+            }
+            // Bilibili cookies pass through unchanged
+            other => Ok(other),
+        }
+    }
 }
 
 #[async_trait]
@@ -166,7 +277,16 @@ impl CredentialStorage for InMemoryCredentialStorage {
     ) -> Result<Option<StoredCredential>> {
         let key = Self::make_key(user_id, provider, server_id);
         let credentials = self.credentials.read().await;
-        Ok(credentials.get(&key).cloned())
+        if let Some(cred) = credentials.get(&key) {
+            // Decrypt sensitive fields before returning
+            let decrypted_data = self.decrypt_data(cred.data.clone())?;
+            Ok(Some(StoredCredential {
+                data: decrypted_data,
+                ..cred.clone()
+            }))
+        } else {
+            Ok(None)
+        }
     }
 
     async fn set(
@@ -183,7 +303,7 @@ impl CredentialStorage for InMemoryCredentialStorage {
         };
 
         if let Some(url) = host_url {
-            let ssrf_result = check_url(url);
+            let ssrf_result = check_url_async(url).await;
             if !ssrf_result.is_ok() {
                 return Err(CredentialStorageError::InvalidData(format!(
                     "SSRF validation failed: {}",
@@ -195,24 +315,33 @@ impl CredentialStorage for InMemoryCredentialStorage {
             }
         }
 
-        let provider = data.provider_type();
-        let server_id = data.server_id();
+        // Encrypt sensitive fields before storage
+        let encrypted_data = self.encrypt_data(data)?;
+
+        let provider = encrypted_data.provider_type();
+        let server_id = encrypted_data.server_id();
         let key = Self::make_key(user_id, provider, &server_id);
 
+        // Store with encrypted data
         let credential = StoredCredential {
             id: Self::generate_id(),
             user_id: user_id.to_string(),
             provider,
             server_id: server_id.clone(),
             provider_instance_name: provider_instance_name.map(|s| s.to_string()),
-            data,
+            data: encrypted_data,
             expires_at: None,
         };
 
         let mut credentials = self.credentials.write().await;
         credentials.insert(key, credential.clone());
 
-        Ok(credential)
+        // Return credential with decrypted data for caller convenience
+        let decrypted_data = self.decrypt_data(credential.data.clone())?;
+        Ok(StoredCredential {
+            data: decrypted_data,
+            ..credential
+        })
     }
 
     async fn delete(
@@ -231,8 +360,14 @@ impl CredentialStorage for InMemoryCredentialStorage {
         let result = credentials
             .values()
             .filter(|c| c.user_id == user_id)
-            .cloned()
-            .collect();
+            .map(|c| {
+                let decrypted_data = self.decrypt_data(c.data.clone())?;
+                Ok(StoredCredential {
+                    data: decrypted_data,
+                    ..c.clone()
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
         Ok(result)
     }
 
@@ -245,8 +380,14 @@ impl CredentialStorage for InMemoryCredentialStorage {
         let result = credentials
             .values()
             .filter(|c| c.user_id == user_id && c.provider == provider)
-            .cloned()
-            .collect();
+            .map(|c| {
+                let decrypted_data = self.decrypt_data(c.data.clone())?;
+                Ok(StoredCredential {
+                    data: decrypted_data,
+                    ..c.clone()
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
         Ok(result)
     }
 }
@@ -504,5 +645,121 @@ mod tests {
         // Verify they have different server_ids
         let server_ids: std::collections::HashSet<_> = all.iter().map(|c| c.server_id.clone()).collect();
         assert_eq!(server_ids.len(), 2);
+    }
+
+    // ========== Encryption Tests ==========
+
+    fn test_encryption_key() -> Vec<u8> {
+        vec![
+            0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07,
+            0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f,
+            0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17,
+            0x18, 0x19, 0x1a, 0x1b, 0x1c, 0x1d, 0x1e, 0x1f,
+        ]
+    }
+
+    #[tokio::test]
+    async fn test_encryption_alist_password_round_trip() {
+        let storage = InMemoryCredentialStorage::with_encryption(test_encryption_key());
+
+        let plain_password = "my_secret_password_123";
+
+        // Store Alist credential
+        let stored = storage
+            .set(
+                "user1",
+                Some("my_alist"),
+                CredentialData::alist(
+                    "https://alist.example.com".to_string(),
+                    "admin".to_string(),
+                    plain_password.to_string(),
+                ),
+            )
+            .await
+            .expect("Failed to store credential");
+
+        // The returned credential should have decrypted password (for caller convenience)
+        if let CredentialData::Alist { password, .. } = &stored.data {
+            assert_eq!(password, plain_password, "Returned password should be decrypted");
+        } else {
+            panic!("Expected Alist credential data");
+        }
+
+        // Retrieve the credential
+        let retrieved = storage
+            .get("user1", ProviderType::Alist, &stored.server_id)
+            .await
+            .expect("Failed to get credential")
+            .expect("Credential should exist");
+
+        // The retrieved password should be decrypted
+        if let CredentialData::Alist { password, .. } = &retrieved.data {
+            assert_eq!(password, plain_password, "Retrieved password should be decrypted");
+        } else {
+            panic!("Expected Alist credential data");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_encryption_emby_api_key_round_trip() {
+        let storage = InMemoryCredentialStorage::with_encryption(test_encryption_key());
+
+        let api_key = "secret_api_key_12345";
+
+        // Store Emby credential
+        let stored = storage
+            .set(
+                "user1",
+                Some("my_emby"),
+                CredentialData::emby(
+                    "https://emby.example.com".to_string(),
+                    api_key.to_string(),
+                    "user_id".to_string(),
+                ),
+            )
+            .await
+            .expect("Failed to store credential");
+
+        // The returned credential should have decrypted api_key
+        if let CredentialData::Emby { api_key: key, .. } = &stored.data {
+            assert_eq!(key, api_key, "Returned api_key should be decrypted");
+        } else {
+            panic!("Expected Emby credential data");
+        }
+
+        // Retrieve the credential
+        let retrieved = storage
+            .get("user1", ProviderType::Emby, &stored.server_id)
+            .await
+            .expect("Failed to get credential")
+            .expect("Credential should exist");
+
+        // The retrieved api_key should be decrypted
+        if let CredentialData::Emby { api_key: key, .. } = &retrieved.data {
+            assert_eq!(key, api_key, "Retrieved api_key should be decrypted");
+        } else {
+            panic!("Expected Emby credential data");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_encryption_bilibili_unaffected() {
+        let storage = InMemoryCredentialStorage::with_encryption(test_encryption_key());
+
+        let mut cookies = HashMap::new();
+        cookies.insert("SESSDATA".to_string(), "test_session".to_string());
+
+        // Store Bilibili credential
+        let stored = storage
+            .set("user1", None, CredentialData::bilibili(cookies.clone()))
+            .await
+            .expect("Failed to store credential");
+
+        // Bilibili cookies should not be encrypted
+        if let CredentialData::Bilibili { cookies: c } = &stored.data {
+            assert_eq!(c.get("SESSDATA"), Some(&"test_session".to_string()));
+        } else {
+            panic!("Expected Bilibili credential data");
+        }
     }
 }

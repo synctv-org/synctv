@@ -97,6 +97,7 @@ fn make_playlist(room_id: &RoomId, name: &str, parent_id: Option<&PlaylistId>, p
         provider_instance_name: None,
         created_at: Utc::now(),
         updated_at: Utc::now(),
+        version: 0,
     }
 }
 

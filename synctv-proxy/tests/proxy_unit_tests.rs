@@ -737,3 +737,381 @@ fn test_make_absolute_deep_relative() {
         "Deep relative path should be resolved correctly"
     );
 }
+
+// ==================================================================
+// M3U8 SSRF Security Tests
+// ==================================================================
+
+/// Test that directory traversal attacks in M3U8 segment URLs are properly
+/// resolved and normalized. A segment like `../../../etc/passwd` should
+/// resolve to a URL that still targets the same host, not escape to local files.
+#[test]
+fn test_m3u8_ssrf_path_traversal_attack() {
+    // Attacker-controlled M3U8 with directory traversal
+    let m3u8 = "#EXTM3U\n#EXT-X-VERSION:3\n../../../etc/passwd\n";
+    let rewritten = rewrite_m3u8(
+        m3u8,
+        "https://cdn.example.com/hls/stream/master.m3u8",
+        "/proxy/stream",
+    );
+
+    // The rewritten URL should still point to cdn.example.com
+    // Directory traversal should be normalized by url::Url::join
+    assert!(
+        rewritten.contains("cdn%2Eexample%2Ecom"),
+        "Path traversal should resolve to same host, got: {rewritten}"
+    );
+
+    // The path should be normalized - url::Url::join normalizes `..` sequences
+    // The resulting path should NOT contain raw `..` sequences
+    assert!(
+        !rewritten.contains(".."),
+        "Path should be normalized without .. sequences, got: {rewritten}"
+    );
+}
+
+/// Test that M3U8 segment URLs pointing to private IP addresses are
+/// NOT directly embedded in the rewritten output. The proxy URL should
+/// point to our proxy endpoint, and the proxy will validate the actual
+/// target URL when fetching.
+#[test]
+fn test_m3u8_ssrf_private_ip_in_segment() {
+    // M3U8 with segment pointing to internal server
+    let m3u8 = "#EXTM3U\nhttp://192.168.1.1/internal/secret.ts\n";
+    let rewritten = rewrite_m3u8(
+        m3u8,
+        "https://cdn.example.com/hls/master.m3u8",
+        "/proxy/stream",
+    );
+
+    // The segment URL should be encoded as a parameter to our proxy
+    assert!(
+        rewritten.contains("/proxy/stream?url="),
+        "Segment should be proxied, got: {rewritten}"
+    );
+
+    // The private IP should be percent-encoded in the url parameter
+    assert!(
+        rewritten.contains("192%2E168%2E1%2E1"),
+        "Private IP should be encoded in proxy URL, got: {rewritten}"
+    );
+}
+
+/// Test that M3U8 with EXT-X-KEY URI pointing to localhost is properly
+/// rewritten through the proxy. The proxy endpoint will validate the URL
+/// when the client fetches the key.
+#[test]
+fn test_m3u8_ssrf_localhost_in_key_uri() {
+    let m3u8 = concat!(
+        "#EXTM3U\n",
+        "#EXT-X-KEY:METHOD=AES-128,URI=\"http://localhost/key.bin\"\n",
+        "seg1.ts\n",
+    );
+    let rewritten = rewrite_m3u8(
+        m3u8,
+        "https://cdn.example.com/hls/master.m3u8",
+        "/proxy/stream",
+    );
+
+    // The key URI should be rewritten to go through our proxy
+    assert!(
+        rewritten.contains("URI=\"/proxy/stream?url="),
+        "Key URI should be proxied, got: {rewritten}"
+    );
+
+    // The localhost URL should be encoded in the parameter
+    assert!(
+        rewritten.contains("localhost"),
+        "Localhost should be in the encoded URL parameter, got: {rewritten}"
+    );
+}
+
+/// Test that control characters and newlines in M3U8 content are handled
+/// safely. Malicious M3U8 files should not inject extra lines or headers.
+#[test]
+fn test_m3u8_ssrf_newline_injection() {
+    // M3U8 with embedded newline that might try to inject a new segment line
+    // Note: The rewrite_m3u8 function iterates over lines(), so embedded \n
+    // within a line won't create new lines in output
+    let m3u8 = "#EXTM3U\n#EXT-X-VERSION:3\nseg1.ts\n#EXTINF:10,\nseg2.ts\n";
+    let rewritten = rewrite_m3u8(
+        m3u8,
+        "https://cdn.example.com/hls/master.m3u8",
+        "/proxy/stream",
+    );
+
+    // Verify normal processing - should have exactly 2 segment URLs
+    let url_count = rewritten.matches("/proxy/stream?url=").count();
+    assert_eq!(
+        url_count, 2,
+        "Should have exactly 2 segment URLs, got {url_count}: {rewritten}"
+    );
+}
+
+/// Test that URLs with control characters are handled safely.
+#[test]
+fn test_m3u8_ssrf_control_characters() {
+    // URL with embedded null byte (should be percent-encoded or stripped)
+    let m3u8 = "#EXTM3U\nseg\u{0000}1.ts\n";
+    let rewritten = rewrite_m3u8(
+        m3u8,
+        "https://cdn.example.com/hls/master.m3u8",
+        "/proxy/stream",
+    );
+
+    // The null byte should be encoded (percent_encode handles UTF-8)
+    // or the URL resolution should handle it gracefully
+    // The key test is: no crash, output is valid
+    assert!(
+        rewritten.contains("/proxy/stream?url="),
+        "Should still produce proxy URLs, got: {rewritten}"
+    );
+}
+
+/// Test that extremely long paths with many `..` segments don't escape
+/// to unexpected locations.
+#[test]
+fn test_m3u8_ssrf_deep_traversal() {
+    let m3u8 = "#EXTM3U\n../../../../../../../../../../../../etc/passwd\n";
+    let rewritten = rewrite_m3u8(
+        m3u8,
+        "https://cdn.example.com/hls/stream/master.m3u8",
+        "/proxy/stream",
+    );
+
+    // Path should be normalized to root of the host
+    assert!(
+        rewritten.contains("cdn%2Eexample%2Ecom"),
+        "Should resolve to cdn.example.com, got: {rewritten}"
+    );
+
+    // The path should NOT contain raw `..` - url::Url::join normalizes them
+    assert!(
+        !rewritten.contains(".."),
+        "Path traversal should be normalized, got: {rewritten}"
+    );
+}
+
+/// Test that the rewrite_m3u8 function properly handles EXT-X-MAP with
+/// a URI that attempts SSRF.
+#[test]
+fn test_m3u8_ssrf_ext_x_map_internal_uri() {
+    let m3u8 = concat!(
+        "#EXTM3U\n",
+        "#EXT-X-MAP:URI=\"http://169.254.169.254/latest/meta-data/\"\n",
+        "#EXTINF:6.006,\n",
+        "seg0.m4s\n",
+    );
+    let rewritten = rewrite_m3u8(
+        m3u8,
+        "https://cdn.example.com/hls/master.m3u8",
+        "/proxy/stream",
+    );
+
+    // The metadata IP should be proxied through our endpoint
+    assert!(
+        rewritten.contains("URI=\"/proxy/stream?url="),
+        "EXT-X-MAP URI should be proxied, got: {rewritten}"
+    );
+
+    // The AWS metadata IP should be in the encoded URL
+    assert!(
+        rewritten.contains("169%2E254%2E169%2E254"),
+        "Metadata IP should be encoded, got: {rewritten}"
+    );
+}
+
+/// Test make_absolute with various malicious inputs
+#[test]
+fn test_make_absolute_with_traversal() {
+    let base = url::Url::parse("https://cdn.example.com/hls/stream/master.m3u8").unwrap();
+
+    // Simple traversal
+    let result = make_absolute("../secret.ts", Some(&base));
+    assert_eq!(
+        result, "https://cdn.example.com/hls/secret.ts",
+        "Simple traversal should be normalized"
+    );
+
+    // Deep traversal
+    let result = make_absolute("../../../../etc/passwd", Some(&base));
+    // url::Url::join normalizes this to the host root
+    assert!(
+        result.starts_with("https://cdn.example.com/"),
+        "Deep traversal should stay on same host: {result}"
+    );
+    assert!(
+        !result.contains(".."),
+        "Result should not contain ..: {result}"
+    );
+}
+
+/// Test that protocol-relative URLs are handled correctly
+#[test]
+fn test_m3u8_ssrf_protocol_relative() {
+    // Protocol-relative URL could potentially switch to file://
+    // but url::Url::join handles this correctly for http/https bases
+    let m3u8 = "#EXTM3U\n//attacker.com/malicious.ts\n";
+    let rewritten = rewrite_m3u8(
+        m3u8,
+        "https://cdn.example.com/hls/master.m3u8",
+        "/proxy/stream",
+    );
+
+    // Protocol-relative URL should inherit the scheme from base
+    assert!(
+        rewritten.contains("attacker%2Ecom"),
+        "Protocol-relative URL should be resolved, got: {rewritten}"
+    );
+}
+
+/// Test that make_absolute doesn't allow scheme injection
+#[test]
+fn test_make_absolute_scheme_injection() {
+    let base = url::Url::parse("https://cdn.example.com/hls/master.m3u8").unwrap();
+
+    // Try to inject file:// scheme
+    let result = make_absolute("file:///etc/passwd", Some(&base));
+    // url::Url::join treats this as a URL with scheme, returns as-is
+    // but rewrite_m3u8 then proxies it, and validate_proxy_url will block it
+    assert_eq!(
+        result, "file:///etc/passwd",
+        "Absolute URLs are returned as-is; validation happens elsewhere"
+    );
+}
+
+// ==================================================================
+// M3U8 SSRF End-to-End Validation Tests
+// ==================================================================
+
+/// Test that malicious URLs in M3U8 are blocked when the proxy tries to fetch them.
+/// This tests the full chain: rewrite_m3u8 -> validate_proxy_url_static
+#[test]
+fn test_m3u8_ssrf_file_url_blocked_by_validator() {
+    let m3u8 = "#EXTM3U\nfile:///etc/passwd\n";
+    let rewritten = rewrite_m3u8(
+        m3u8,
+        "https://cdn.example.com/hls/master.m3u8",
+        "/proxy/stream",
+    );
+
+    // The file:// URL should be encoded in the proxy URL
+    assert!(
+        rewritten.contains("/proxy/stream?url="),
+        "URL should be rewritten to proxy, got: {rewritten}"
+    );
+
+    // Extract the encoded URL and decode it
+    // The encoded URL contains "file%3A%2F%2F" which is "file://"
+    assert!(
+        rewritten.contains("file%3A%2F%2F"),
+        "file:// scheme should be encoded in proxy URL, got: {rewritten}"
+    );
+
+    // When the client fetches this URL, the proxy will decode and validate
+    // file:// URLs are blocked by validate_proxy_url_static
+    assert!(
+        validate_proxy_url_static("file:///etc/passwd").is_err(),
+        "file:// URLs should be blocked by validator"
+    );
+}
+
+/// Test that internal IP addresses in M3U8 are blocked when proxy tries to fetch.
+#[test]
+fn test_m3u8_ssrf_private_ip_blocked_by_validator() {
+    // Test various private/internal IPs
+    let blocked_ips = [
+        "http://192.168.1.1/secret.ts",
+        "http://10.0.0.1/secret.ts",
+        "http://172.16.0.1/secret.ts",
+        "http://127.0.0.1/secret.ts",
+        "http://169.254.169.254/metadata",
+        "http://localhost/secret.ts",
+    ];
+
+    for url in blocked_ips {
+        assert!(
+            validate_proxy_url_static(url).is_err(),
+            "Private/internal IP {url} should be blocked by validator"
+        );
+    }
+}
+
+/// Test that public URLs pass validation
+#[test]
+fn test_m3u8_ssrf_public_url_allowed_by_validator() {
+    let allowed_urls = [
+        "https://cdn.example.com/seg1.ts",
+        "https://8.8.8.8/dns-query",
+        "https://1.1.1.1/dns",
+    ];
+
+    for url in allowed_urls {
+        assert!(
+            validate_proxy_url_static(url).is_ok(),
+            "Public URL {url} should be allowed by validator"
+        );
+    }
+}
+
+/// Test that URLs with special characters are safely encoded
+#[test]
+fn test_m3u8_ssrf_special_chars_encoded() {
+    // URL with special characters that might be used in injection attacks
+    let m3u8 = "#EXTM3U\nseg.ts?token=abc&redirect=http://evil.com\n";
+    let rewritten = rewrite_m3u8(
+        m3u8,
+        "https://cdn.example.com/hls/master.m3u8",
+        "/proxy/stream",
+    );
+
+    // The entire URL including special chars should be encoded
+    // & should become %26, : should become %3A, etc.
+    assert!(
+        rewritten.contains("%3A"),
+        "Colon should be encoded, got: {rewritten}"
+    );
+    assert!(
+        rewritten.contains("%26"),
+        "Ampersand should be encoded, got: {rewritten}"
+    );
+}
+
+/// Test that backslash and other potentially dangerous characters are handled
+#[test]
+fn test_m3u8_ssrf_backslash_handling() {
+    // Backslash might be used to bypass path normalization on Windows
+    let m3u8 = "#EXTM3U\n..\\..\\..\\etc\\passwd\n";
+    let rewritten = rewrite_m3u8(
+        m3u8,
+        "https://cdn.example.com/hls/master.m3u8",
+        "/proxy/stream",
+    );
+
+    // Backslash should be encoded as %5C
+    // The URL resolution should handle it gracefully
+    assert!(
+        rewritten.contains("/proxy/stream?url="),
+        "Should produce proxy URL, got: {rewritten}"
+    );
+}
+
+/// Test that encoded path traversal is handled
+#[test]
+fn test_m3u8_ssrf_encoded_traversal() {
+    // URL-encoded path traversal: %2e%2e%2f = ../
+    let m3u8 = "#EXTM3U\n%2e%2e%2f%2e%2e%2fetc/passwd\n";
+    let rewritten = rewrite_m3u8(
+        m3u8,
+        "https://cdn.example.com/hls/stream/master.m3u8",
+        "/proxy/stream",
+    );
+
+    // The double-encoding should result in a valid URL
+    // url::Url::join will treat %2e%2e%2f as literal characters, not as ../
+    // This is actually safe because the URL will be percent-encoded again
+    assert!(
+        rewritten.contains("/proxy/stream?url="),
+        "Should produce proxy URL, got: {rewritten}"
+    );
+}

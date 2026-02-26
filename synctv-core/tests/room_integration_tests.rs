@@ -293,6 +293,7 @@ async fn test_cascade_delete_room_deletes_members_and_playlists() {
         provider_instance_name: None,
         created_at: Utc::now(),
         updated_at: Utc::now(),
+        version: 0,
     };
     playlist_repo.create(&root_playlist).await.unwrap();
 

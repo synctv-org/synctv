@@ -513,9 +513,19 @@ pub async fn proxy_m3u8_and_rewrite(
 /// handles standard preflight requests before they reach routes, but this
 /// ensures correct headers if the middleware is bypassed or misconfigured.
 ///
-/// **Security Note**: This function uses `Access-Control-Allow-Origin: *` for
-/// backward compatibility. For production use, prefer `proxy_options_preflight_with_cors`
-/// with an explicit allowed origins list.
+/// **Deprecated**: This function uses `Access-Control-Allow-Origin: *` which is
+/// insecure for production use. Use `proxy_options_preflight_with_cors` with an
+/// explicit allowed origins list instead.
+///
+/// # Security Warning
+///
+/// This function allows any origin to access your resources, which may expose
+/// your application to CSRF attacks and data exfiltration. Migrate to
+/// `proxy_options_preflight_with_cors` with a whitelist of trusted origins.
+#[deprecated(
+    since = "0.2.0",
+    note = "Use `proxy_options_preflight_with_cors` with explicit origin list for security"
+)]
 #[allow(clippy::unused_async)]
 pub async fn proxy_options_preflight() -> impl IntoResponse {
     (
@@ -525,6 +535,9 @@ pub async fn proxy_options_preflight() -> impl IntoResponse {
             ("Access-Control-Allow-Methods", "GET, OPTIONS"),
             ("Access-Control-Allow-Headers", "Authorization, Content-Type, Accept, Range"),
             ("Access-Control-Max-Age", "86400"),
+            // Deprecation warning header to alert developers
+            ("Deprecation", "true"),
+            ("X-Deprecated", "Use proxy_options_preflight_with_cors with explicit CORS config"),
         ],
     )
 }
@@ -633,10 +646,18 @@ impl RateLimiter {
 /// Returns 429 Too Many Requests if the rate limit is exceeded,
 /// otherwise returns standard CORS preflight headers.
 ///
+/// **Deprecated**: This function uses `Access-Control-Allow-Origin: *` which is
+/// insecure for production use. Use `proxy_options_preflight_rate_limited_with_cors`
+/// with an explicit allowed origins list instead.
+///
 /// # Arguments
 ///
 /// * `client_ip` - The client's IP address (extracted from connection or X-Forwarded-For).
 /// * `limiter` - The rate limiter to use.
+#[deprecated(
+    since = "0.2.0",
+    note = "Use `proxy_options_preflight_rate_limited_with_cors` with explicit origin list"
+)]
 #[allow(clippy::unused_async)]
 pub async fn proxy_options_preflight_rate_limited(
     client_ip: Option<&str>,
@@ -659,8 +680,97 @@ pub async fn proxy_options_preflight_rate_limited(
         .header("Access-Control-Allow-Methods", "GET, OPTIONS")
         .header("Access-Control-Allow-Headers", "Authorization, Content-Type, Accept, Range")
         .header("Access-Control-Max-Age", "86400")
+        // Deprecation warning header
+        .header("Deprecation", "true")
+        .header("X-Deprecated", "Use proxy_options_preflight_rate_limited_with_cors")
         .body(Body::empty())
         .expect("Failed to build preflight response")
+}
+
+/// Preflight handler with rate limiting and explicit CORS origin validation.
+///
+/// Combines rate limiting with secure CORS validation. Returns:
+/// - 429 Too Many Requests if the rate limit is exceeded
+/// - 403 Forbidden if the origin is not in the allowed list
+/// - 204 No Content with proper CORS headers if both checks pass
+///
+/// # Arguments
+///
+/// * `origin` - The Origin header value from the request.
+/// * `config` - The CORS configuration specifying allowed origins.
+/// * `client_ip` - The client's IP address (extracted from connection or X-Forwarded-For).
+/// * `limiter` - The rate limiter to use.
+///
+/// # Security
+///
+/// - Origins not in the allowed list receive 403 Forbidden.
+/// - When the allowed list is empty, all origins are rejected (secure default).
+/// - Rate limiting prevents abuse of preflight endpoints.
+/// - The `Vary: Origin` header is included for proper caching.
+#[allow(clippy::unused_async)]
+pub async fn proxy_options_preflight_rate_limited_with_cors(
+    origin: Option<&str>,
+    config: std::sync::Arc<CorsConfig>,
+    client_ip: Option<&str>,
+    limiter: std::sync::Arc<RateLimiter>,
+) -> Response {
+    // First check rate limit
+    let ip_key = client_ip.unwrap_or("unknown");
+
+    if !limiter.check(ip_key) {
+        return Response::builder()
+            .status(StatusCode::TOO_MANY_REQUESTS)
+            .header("Content-Type", "text/plain")
+            .header("Retry-After", "60")
+            .body(Body::from("Rate limit exceeded"))
+            .expect("Failed to build rate limit response");
+    }
+
+    // Then check CORS (reuse the logic from proxy_options_preflight_with_cors)
+    // Handle wildcard mode
+    if config.wildcard {
+        return Response::builder()
+            .status(StatusCode::NO_CONTENT)
+            .header("Access-Control-Allow-Origin", "*")
+            .header("Access-Control-Allow-Methods", "GET, OPTIONS")
+            .header("Access-Control-Allow-Headers", "Authorization, Content-Type, Accept, Range")
+            .header("Access-Control-Max-Age", "86400")
+            .body(Body::empty())
+            .expect("Failed to build wildcard CORS response");
+    }
+
+    // Check if origin is provided
+    let Some(origin) = origin else {
+        // No origin header - return minimal response without CORS headers
+        return Response::builder()
+            .status(StatusCode::NO_CONTENT)
+            .header("Access-Control-Allow-Methods", "GET, OPTIONS")
+            .header("Access-Control-Allow-Headers", "Authorization, Content-Type, Accept, Range")
+            .header("Access-Control-Max-Age", "86400")
+            .body(Body::empty())
+            .expect("Failed to build no-origin CORS response");
+    };
+
+    // Check if origin is allowed
+    if !config.is_allowed(origin) {
+        return Response::builder()
+            .status(StatusCode::FORBIDDEN)
+            .header("Content-Type", "text/plain")
+            .body(Body::from("Origin not allowed"))
+            .expect("Failed to build forbidden CORS response");
+    }
+
+    // Origin is allowed - return proper CORS headers
+    Response::builder()
+        .status(StatusCode::NO_CONTENT)
+        .header("Access-Control-Allow-Origin", origin)
+        .header("Access-Control-Allow-Methods", "GET, OPTIONS")
+        .header("Access-Control-Allow-Headers", "Authorization, Content-Type, Accept, Range")
+        .header("Access-Control-Allow-Credentials", "true")
+        .header("Access-Control-Max-Age", "86400")
+        .header("Vary", "Origin")
+        .body(Body::empty())
+        .expect("Failed to build allowed CORS response")
 }
 
 // ------------------------------------------------------------------

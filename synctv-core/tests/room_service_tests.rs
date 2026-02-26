@@ -2562,3 +2562,204 @@ async fn test_join_room_idempotent_same_user() {
     let count2 = member_repo.count_by_room(&room.id).await.unwrap();
     assert_eq!(count1, count2, "Member count should not increase on idempotent join");
 }
+
+// ========== Max Members Concurrent Tests ==========
+
+/// Test that max_members is correctly read from RoomSettings when joining.
+///
+/// This test verifies that when max_members=0 is passed to with_max_members(0),
+/// the system correctly reads the actual max_members value from RoomSettings.
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_max_members_read_from_room_settings_on_join() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let room_service = make_room_service(pool.clone());
+    let member_repo = RoomMemberRepository::new(pool.clone());
+    let settings_repo = RoomSettingsRepository::new(pool.clone());
+
+    let owner = user_repo.create(&make_user("settings_owner")).await.unwrap();
+
+    // Create room with default settings (max_members = 100 by default)
+    let (room, _) = room_service
+        .create_room(
+            "Settings Test Room".to_string(),
+            String::new(),
+            owner.id.clone(),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+    // Verify default max_members in settings
+    let settings = settings_repo.get(&room.id).await.unwrap();
+    assert_eq!(settings.max_members.0, 100, "Default max_members should be 100");
+
+    // Add 99 more members to reach the limit (owner + 99 = 100)
+    for i in 0..99 {
+        let joiner = user_repo.create(&make_user(&format!("settings_joiner_{}", i))).await.unwrap();
+        let result = room_service.join_room(room.id.clone(), joiner.id.clone(), None).await;
+        assert!(result.is_ok(), "Joiner {} should succeed: {:?}", i, result.err());
+    }
+
+    // Verify we're at the limit
+    let count = member_repo.count_by_room(&room.id).await.unwrap();
+    assert_eq!(count, 100, "Should have 100 members (owner + 99 joiners)");
+
+    // The 101st member should fail
+    let joiner101 = user_repo.create(&make_user("settings_joiner_101")).await.unwrap();
+    let result = room_service.join_room(room.id.clone(), joiner101.id.clone(), None).await;
+    assert!(result.is_err(), "101st joiner should fail (exceeds max)");
+
+    match result.unwrap_err() {
+        Error::InvalidInput(msg) => {
+            assert!(
+                msg.contains("full") || msg.contains("max") || msg.contains("capacity"),
+                "Error should mention room capacity: {}",
+                msg
+            );
+        }
+        other => panic!("Expected InvalidInput error, got: {:?}", other),
+    }
+}
+
+/// Test that concurrent joins cannot exceed max_members limit.
+///
+/// This test spawns multiple concurrent join requests and verifies that
+/// even under concurrent access, the room never exceeds its max_members limit.
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_concurrent_joins_cannot_exceed_max_members() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let room_service = Arc::new(make_room_service(pool.clone()));
+    let member_repo = RoomMemberRepository::new(pool.clone());
+
+    let owner = user_repo.create(&make_user("concurrent_owner")).await.unwrap();
+
+    // Create room with max_members = 5 (owner counts as 1, so 4 more can join)
+    let mut settings = synctv_core::models::RoomSettings::default();
+    settings.max_members = synctv_core::models::room_settings::MaxMembers(5);
+
+    let (room, _) = room_service
+        .create_room(
+            "Concurrent Room".to_string(),
+            String::new(),
+            owner.id.clone(),
+            None,
+            Some(settings),
+        )
+        .await
+        .unwrap();
+
+    // Create 20 users who will try to join concurrently
+    let mut users = Vec::new();
+    for i in 0..20 {
+        let user = user_repo.create(&make_user(&format!("concurrent_joiner_{}", i))).await.unwrap();
+        users.push(user);
+    }
+
+    // Track success/failure counts (wrapped in Arc for sharing across tasks)
+    let success_count = Arc::new(AtomicUsize::new(0));
+    let failure_count = Arc::new(AtomicUsize::new(0));
+
+    // Spawn all join requests concurrently
+    let mut handles = Vec::new();
+    for user in users {
+        let room_service = room_service.clone();
+        let room_id = room.id.clone();
+        let success_count = Arc::clone(&success_count);
+        let failure_count = Arc::clone(&failure_count);
+
+        let handle = tokio::spawn(async move {
+            let result = room_service.join_room(room_id, user.id.clone(), None).await;
+            match result {
+                Ok(_) => {
+                    success_count.fetch_add(1, Ordering::SeqCst);
+                }
+                Err(Error::InvalidInput(_)) => {
+                    // Expected for users who couldn't join due to capacity
+                    failure_count.fetch_add(1, Ordering::SeqCst);
+                }
+                Err(Error::AlreadyExists(_)) => {
+                    // Idempotent join - treat as success but don't increment count
+                    // (shouldn't happen in this test since all users are unique)
+                }
+                Err(e) => {
+                    panic!("Unexpected error type: {:?}", e);
+                }
+            }
+        });
+        handles.push(handle);
+    }
+
+    // Wait for all joins to complete
+    for handle in handles {
+        handle.await.expect("Join task panicked");
+    }
+
+    // Verify final member count
+    let final_count = member_repo.count_by_room(&room.id).await.unwrap();
+
+    // The room should have exactly 5 members (max_members limit)
+    assert_eq!(final_count, 5, "Room should have exactly 5 members (max limit)");
+
+    // 4 should succeed (owner + 4 = 5), 16 should fail
+    let successes = success_count.load(Ordering::SeqCst);
+    let failures = failure_count.load(Ordering::SeqCst);
+
+    assert_eq!(successes, 4, "Exactly 4 users should have joined successfully");
+    assert_eq!(failures, 16, "16 users should have been rejected due to capacity");
+
+    // Total should account for all 20 users
+    assert_eq!(successes + failures, 20, "All 20 users should have been processed");
+}
+
+/// Test that max_members=0 in RoomSettings means unlimited members.
+///
+/// This verifies that when RoomSettings.max_members is explicitly set to 0,
+/// the room accepts unlimited members (no capacity enforcement).
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_max_members_zero_in_settings_means_unlimited() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let room_service = make_room_service(pool.clone());
+    let settings_repo = RoomSettingsRepository::new(pool.clone());
+
+    let owner = user_repo.create(&make_user("unlimited_owner")).await.unwrap();
+
+    // Create room with max_members = 0 (unlimited)
+    let mut settings = synctv_core::models::RoomSettings::default();
+    settings.max_members = synctv_core::models::room_settings::MaxMembers(0);
+
+    let (room, _) = room_service
+        .create_room(
+            "Unlimited Room Explicit".to_string(),
+            String::new(),
+            owner.id.clone(),
+            None,
+            Some(settings),
+        )
+        .await
+        .unwrap();
+
+    // Verify settings have max_members = 0
+    let saved_settings = settings_repo.get(&room.id).await.unwrap();
+    assert_eq!(saved_settings.max_members.0, 0, "max_members should be 0 in settings");
+
+    // Add 50 members - all should succeed since max_members=0 means unlimited
+    for i in 0..50 {
+        let joiner = user_repo.create(&make_user(&format!("unlimited_explicit_{}", i))).await.unwrap();
+        let result = room_service.join_room(room.id.clone(), joiner.id.clone(), None).await;
+        assert!(
+            result.is_ok(),
+            "Joiner {} should succeed (unlimited room): {:?}",
+            i,
+            result.err()
+        );
+    }
+}

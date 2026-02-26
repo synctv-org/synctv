@@ -512,6 +512,7 @@ fn make_test_media() -> synctv_core::models::Media {
         source_config: serde_json::json!({"bvid": "BV1234"}),
         provider_instance_name: Some("bili_main".to_string()),
         added_at: chrono::Utc::now(),
+        version: 0,
     }
 }
 
@@ -606,6 +607,7 @@ fn test_playlist_to_proto() {
         provider_instance_name: None,
         created_at: chrono::Utc::now(),
         updated_at: chrono::Utc::now(),
+        version: 0,
     };
 
     let proto = playlist_to_proto(&playlist, 10);
@@ -633,6 +635,7 @@ fn test_playlist_to_proto_dynamic() {
         provider_instance_name: None,
         created_at: chrono::Utc::now(),
         updated_at: chrono::Utc::now(),
+        version: 0,
     };
 
     let proto = playlist_to_proto(&playlist, 5);

@@ -70,6 +70,8 @@ pub struct Media {
     /// Used to look up the provider from the registry at playback time
     pub provider_instance_name: Option<String>,
     pub added_at: DateTime<Utc>,
+    /// Optimistic locking version, incremented on each update
+    pub version: i32,
 }
 
 /// Parameters for creating media from a provider
@@ -123,11 +125,12 @@ impl Media {
             source_config,
             provider_instance_name: Some(provider_instance_name),
             added_at: Utc::now(),
+            version: 0,
         }
     }
 
     /// Create media from provider with parameters struct
-    #[must_use] 
+    #[must_use]
     pub fn from_provider_with_params(params: FromProviderParams) -> Self {
         Self {
             id: MediaId::new(),
@@ -140,6 +143,7 @@ impl Media {
             source_config: params.source_config,
             provider_instance_name: Some(params.provider_instance_name),
             added_at: Utc::now(),
+            version: 0,
         }
     }
 
@@ -221,6 +225,7 @@ impl Media {
             source_config,
             provider_instance_name: None,
             added_at: Utc::now(),
+            version: 0,
         }
     }
 

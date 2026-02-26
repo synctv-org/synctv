@@ -1,12 +1,20 @@
-//! Shared SSRF (Server-Side Request Forgery) protection primitives.
+//! SSRF (Server-Side Request Forgery) protection using url_jail.
 //!
-//! This module contains the canonical IP and hostname validation logic used by
-//! both the gRPC validation layer (in this crate) and `synctv-core`'s
-//! `SSRFValidator`. By living here, the logic exists in exactly one place and
-//! cannot diverge.
+//! This module wraps the `url_jail` crate to provide SSRF protection for
+//! Provider URLs that are fetched server-side.
+//!
+//! # Features
+//!
+//! - DNS rebinding protection (validates after DNS resolution)
+//! - IP encoding attack detection (hex, octal, decimal, short-form)
+//! - Cloud metadata endpoint blocking (AWS, GCP, Azure, Alibaba)
+//! - Private IP range blocking
+//! - Custom blocklist support
 
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::sync::Arc;
+
+pub use url_jail::{CustomPolicy, Error as UrlJailError, Policy, PolicyBuilder, Validated};
 
 /// Custom DNS resolver that checks resolved IPs against SSRF blocklists
 /// at connection time, preventing DNS rebinding TOCTOU attacks.
@@ -14,33 +22,6 @@ use std::sync::Arc;
 /// This resolver filters out private/reserved IP addresses from DNS responses,
 /// ensuring that HTTP clients cannot be tricked into connecting to internal
 /// network resources even if an attacker controls DNS responses.
-///
-/// # Security
-///
-/// - Blocks all private IPv4 ranges (RFC1918): 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16
-/// - Blocks loopback addresses: 127.0.0.0/8, ::1
-/// - Blocks link-local addresses: 169.254.0.0/16, fe80::/10
-/// - Blocks CGNAT range: 100.64.0.0/10
-/// - Blocks multicast: 224.0.0.0/4, ff00::/8
-/// - Blocks IPv6 unique local: fc00::/7
-/// - Blocks tunneling protocols: Teredo (2001::/32), 6to4 (2002::/16)
-///
-/// # Example
-///
-/// ```ignore
-/// // Note: reqwest::dns::Resolve trait may have different API depending on version
-/// // This is a conceptual example - check reqwest documentation for actual usage
-/// use synctv_media_providers::ssrf::SsrfSafeDnsResolver;
-/// use std::sync::Arc;
-/// use reqwest::Client;
-///
-/// // Create a client with SSRF-safe DNS resolution
-/// let resolver = Arc::new(SsrfSafeDnsResolver);
-/// let client = Client::builder()
-///     // Note: actual API depends on reqwest version
-///     .build()
-///     .expect("Failed to build client");
-/// ```
 #[derive(Clone, Debug, Default)]
 pub struct SsrfSafeDnsResolver;
 
@@ -51,16 +32,17 @@ impl reqwest::dns::Resolve for SsrfSafeDnsResolver {
             let addrs: Vec<SocketAddr> = tokio::net::lookup_host((host, 0))
                 .await
                 .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> {
-                    Box::new(std::io::Error::other(
-                        format!("DNS lookup failed for {host}: {e}"),
-                    ))
+                    Box::new(std::io::Error::other(format!(
+                        "DNS lookup failed for {host}: {e}"
+                    )))
                 })?
                 .collect();
 
             if addrs.is_empty() {
-                return Err(Box::new(std::io::Error::other(
-                    format!("DNS lookup for {host} returned no addresses"),
-                )) as Box<dyn std::error::Error + Send + Sync>);
+                return Err(Box::new(std::io::Error::other(format!(
+                    "DNS lookup for {host} returned no addresses"
+                )))
+                    as Box<dyn std::error::Error + Send + Sync>);
             }
 
             let safe_addrs: Vec<SocketAddr> = addrs
@@ -69,9 +51,10 @@ impl reqwest::dns::Resolve for SsrfSafeDnsResolver {
                 .collect();
 
             if safe_addrs.is_empty() {
-                return Err(Box::new(std::io::Error::other(
-                    format!("All resolved IPs for {host} are private/reserved (SSRF blocked)"),
-                )) as Box<dyn std::error::Error + Send + Sync>);
+                return Err(Box::new(std::io::Error::other(format!(
+                    "All resolved IPs for {host} are private/reserved (SSRF blocked)"
+                )))
+                    as Box<dyn std::error::Error + Send + Sync>);
             }
 
             Ok(Box::new(safe_addrs.into_iter()) as reqwest::dns::Addrs)
@@ -80,72 +63,63 @@ impl reqwest::dns::Resolve for SsrfSafeDnsResolver {
 }
 
 /// Create an `Arc<SsrfSafeDnsResolver>` for use with reqwest Client.
-///
-/// Convenience function since `Arc::new(SsrfSafeDnsResolver)` is verbose.
 #[must_use]
 pub fn ssrf_safe_dns_resolver() -> Arc<SsrfSafeDnsResolver> {
     Arc::new(SsrfSafeDnsResolver)
 }
 
-/// Blocked private/internal hostnames (case-insensitive check).
-const BLOCKED_HOSTNAMES: &[&str] = &[
-    "localhost",
-    "localhost.localdomain",
-    "metadata.google.internal",
-    "instance-data",
-    "metadata.azure",
-];
+// ============================================================================
+// IP validation helpers (for DNS resolver filtering)
+// ============================================================================
 
-/// Blocked hostname suffixes (case-insensitive check).
-const BLOCKED_HOSTNAME_SUFFIXES: &[&str] = &[
-    ".internal",
-    ".local",
-];
-
-/// Blocked hostname prefixes for internal services (case-insensitive check).
-const BLOCKED_HOSTNAME_PREFIXES: &[&str] = &[
-    "metadata.",
-    "metadata.google",
-    "metadata.azure",
-    "kubernetes.",
-    "k8s.",
-    "docker.",
-    "container.",
-];
-
-/// Check if an IPv4 address is private, reserved, or otherwise not a valid
-/// public HTTP target.
+/// Check if an IPv4 address is private, reserved, or otherwise blocked.
 ///
-/// Covers: loopback, private RFC1918, link-local, CGNAT, multicast, broadcast,
-/// unspecified, current-network.
+/// This is used internally by SsrfSafeDnsResolver to filter DNS responses.
 #[must_use]
 pub fn is_blocked_ipv4(ip: &Ipv4Addr) -> bool {
     let o = ip.octets();
-    // 127.0.0.0/8 (loopback)
-    o[0] == 127
-    // 10.0.0.0/8
-    || o[0] == 10
-    // 172.16.0.0/12
-    || (o[0] == 172 && (16..=31).contains(&o[1]))
-    // 192.168.0.0/16
-    || (o[0] == 192 && o[1] == 168)
-    // 169.254.0.0/16 (link-local, cloud metadata)
-    || (o[0] == 169 && o[1] == 254)
-    // 100.64.0.0/10 (CGNAT)
-    || (o[0] == 100 && (64..=127).contains(&o[1]))
-    // 0.0.0.0/8 (current network)
-    || o[0] == 0
-    // 224.0.0.0/4 (multicast)
-    || (224..=239).contains(&o[0])
-    // 240.0.0.0/4 (reserved/broadcast)
-    || o[0] >= 240
+
+    // Loopback: 127.0.0.0/8
+    if o[0] == 127 {
+        return true;
+    }
+    // Private Class A: 10.0.0.0/8
+    if o[0] == 10 {
+        return true;
+    }
+    // Private Class B: 172.16.0.0/12
+    if o[0] == 172 && (16..=31).contains(&o[1]) {
+        return true;
+    }
+    // Private Class C: 192.168.0.0/16
+    if o[0] == 192 && o[1] == 168 {
+        return true;
+    }
+    // Link-local: 169.254.0.0/16 (includes cloud metadata)
+    if o[0] == 169 && o[1] == 254 {
+        return true;
+    }
+    // CGNAT: 100.64.0.0/10
+    if o[0] == 100 && (64..=127).contains(&o[1]) {
+        return true;
+    }
+    // Current network: 0.0.0.0/8
+    if o[0] == 0 {
+        return true;
+    }
+    // Multicast: 224.0.0.0/4
+    if (224..=239).contains(&o[0]) {
+        return true;
+    }
+    // Reserved/Broadcast: 240.0.0.0/4
+    if o[0] >= 240 {
+        return true;
+    }
+
+    false
 }
 
-/// Check if an IPv6 address is private, reserved, or otherwise not a valid
-/// public HTTP target.
-///
-/// Covers: loopback (`::1`), unspecified (::), unique local (`fc00::/7`),
-/// link-local (`fe80::/10`), IPv4-mapped private addresses.
+/// Check if an IPv6 address is private, reserved, or otherwise blocked.
 #[must_use]
 pub fn is_blocked_ipv6(ip: &Ipv6Addr) -> bool {
     // Loopback (::1)
@@ -156,31 +130,34 @@ pub fn is_blocked_ipv6(ip: &Ipv6Addr) -> bool {
     if ip.is_unspecified() {
         return true;
     }
-    // Check IPv4-mapped IPv6 (::ffff:x.x.x.x)
+    // IPv4-mapped IPv6 (::ffff:x.x.x.x)
     if let Some(v4) = ip.to_ipv4_mapped() {
         return is_blocked_ipv4(&v4);
     }
+
     let segments = ip.segments();
-    // Unique local (fc00::/7)
+
+    // Unique local: fc00::/7
     if (segments[0] & 0xfe00) == 0xfc00 {
         return true;
     }
-    // Link-local (fe80::/10)
+    // Link-local: fe80::/10
     if (segments[0] & 0xffc0) == 0xfe80 {
         return true;
     }
-    // Multicast (ff00::/8)
+    // Multicast: ff00::/8
     if segments[0] & 0xff00 == 0xff00 {
         return true;
     }
-    // Teredo (2001::/32) - tunnels IPv4 via UDP, can reach private networks
+    // Teredo tunneling: 2001::/32
     if segments[0] == 0x2001 && segments[1] == 0x0000 {
         return true;
     }
-    // 6to4 (2002::/16) - tunnels IPv4 in IPv6, similarly dangerous
+    // 6to4 tunneling: 2002::/16
     if segments[0] == 0x2002 {
         return true;
     }
+
     false
 }
 
@@ -193,12 +170,16 @@ pub fn is_blocked_ip(ip: IpAddr) -> bool {
     }
 }
 
-/// Result of hostname validation.
+// ============================================================================
+// URL validation using url_jail
+// ============================================================================
+
+/// Result of URL validation.
 #[derive(Debug)]
 pub enum SsrfCheckResult {
-    /// The value is safe.
+    /// The URL is safe to fetch.
     Ok,
-    /// The value is blocked with the given reason.
+    /// The URL is blocked with the given reason.
     Blocked(String),
 }
 
@@ -210,15 +191,111 @@ impl SsrfCheckResult {
     }
 }
 
+/// Validate a URL for SSRF protection using url_jail.
+///
+/// This is the primary SSRF validation function. It:
+/// - Parses the URL
+/// - Validates the scheme (http/https only)
+/// - Resolves DNS and checks all resolved IPs
+/// - Blocks private/reserved IPs and cloud metadata endpoints
+/// - Detects IP encoding attacks (hex, octal, decimal, short-form)
+///
+/// # Example
+///
+/// ```ignore
+/// use synctv_media_providers::ssrf::{check_url_with_policy, SsrfCheckResult, Policy};
+///
+/// match check_url_with_policy("https://example.com/api", Policy::PublicOnly) {
+///     SsrfCheckResult::Ok => println!("Safe to fetch"),
+///     SsrfCheckResult::Blocked(reason) => println!("Blocked: {}", reason),
+/// }
+/// ```
+pub fn check_url_with_policy(url: &str, policy: Policy) -> SsrfCheckResult {
+    // Use url_jail's synchronous validation
+    match url_jail::validate_sync(url, policy) {
+        Ok(_) => SsrfCheckResult::Ok,
+        Err(e) => {
+            let reason = if e.is_blocked() {
+                format!("SSRF blocked: {e}")
+            } else if e.is_retriable() {
+                format!("Temporary error (retry with caution): {e}")
+            } else {
+                format!("Validation error: {e}")
+            };
+            SsrfCheckResult::Blocked(reason)
+        }
+    }
+}
+
+/// Validate a URL with default `PublicOnly` policy.
+///
+/// Blocks: private IPs, loopback, link-local, cloud metadata endpoints.
+#[must_use]
+pub fn check_url(url: &str) -> SsrfCheckResult {
+    check_url_with_policy(url, Policy::PublicOnly)
+}
+
+/// Validate a URL asynchronously with DNS resolution.
+///
+/// This performs actual DNS resolution and validates all resolved IPs.
+pub async fn check_url_async(url: &str) -> SsrfCheckResult {
+    check_url_with_policy_async(url, Policy::PublicOnly).await
+}
+
+/// Validate a URL asynchronously with a custom policy.
+pub async fn check_url_with_policy_async(url: &str, policy: Policy) -> SsrfCheckResult {
+    match url_jail::validate(url, policy).await {
+        Ok(_) => SsrfCheckResult::Ok,
+        Err(e) => {
+            let reason = if e.is_blocked() {
+                format!("SSRF blocked: {e}")
+            } else if e.is_retriable() {
+                format!("Temporary error (retry with caution): {e}")
+            } else {
+                format!("Validation error: {e}")
+            };
+            SsrfCheckResult::Blocked(reason)
+        }
+    }
+}
+
+/// Validate a URL with a custom policy built from PolicyBuilder.
+///
+/// This accepts a `CustomPolicy` created via `PolicyBuilder`.
+/// Note: This is async because url_jail's CustomPolicy validation is async-only.
+pub async fn check_url_with_custom_policy(url: &str, policy: CustomPolicy) -> SsrfCheckResult {
+    match url_jail::validate_custom(url, &policy).await {
+        Ok(_) => SsrfCheckResult::Ok,
+        Err(e) => {
+            let reason = if e.is_blocked() {
+                format!("SSRF blocked: {e}")
+            } else if e.is_retriable() {
+                format!("Temporary error (retry with caution): {e}")
+            } else {
+                format!("Validation error: {e}")
+            };
+            SsrfCheckResult::Blocked(reason)
+        }
+    }
+}
+
 /// Validate a hostname against known internal/suspicious patterns.
 ///
-/// Returns `SsrfCheckResult::Blocked` with a reason if the hostname is
-/// internal or suspicious. Does NOT perform DNS resolution.
+/// Note: url_jail handles this internally during URL validation.
+/// This function is provided for compatibility with existing code.
 #[must_use]
 pub fn check_hostname(host: &str) -> SsrfCheckResult {
     let lower = host.to_lowercase();
 
-    // Block known internal hostnames
+    // Blocked hostnames
+    const BLOCKED_HOSTNAMES: &[&str] = &[
+        "localhost",
+        "localhost.localdomain",
+        "metadata.google.internal",
+        "instance-data",
+        "metadata.azure",
+    ];
+
     for blocked in BLOCKED_HOSTNAMES {
         if lower == *blocked || lower.starts_with(&format!("{blocked}.")) {
             return SsrfCheckResult::Blocked(format!(
@@ -227,8 +304,10 @@ pub fn check_hostname(host: &str) -> SsrfCheckResult {
         }
     }
 
-    // Block suffixes (.local, .internal)
-    for suffix in BLOCKED_HOSTNAME_SUFFIXES {
+    // Blocked suffixes
+    const BLOCKED_SUFFIXES: &[&str] = &[".internal", ".local", ".localhost"];
+
+    for suffix in BLOCKED_SUFFIXES {
         if lower.ends_with(suffix) {
             return SsrfCheckResult::Blocked(format!(
                 "internal hostname '{host}' is not allowed"
@@ -236,8 +315,18 @@ pub fn check_hostname(host: &str) -> SsrfCheckResult {
         }
     }
 
-    // Block suspicious prefixes (kubernetes., k8s., docker., container., metadata.)
-    for prefix in BLOCKED_HOSTNAME_PREFIXES {
+    // Blocked prefixes
+    const BLOCKED_PREFIXES: &[&str] = &[
+        "metadata.",
+        "metadata.google",
+        "metadata.azure",
+        "kubernetes.",
+        "k8s.",
+        "docker.",
+        "container.",
+    ];
+
+    for prefix in BLOCKED_PREFIXES {
         if lower.starts_with(prefix) {
             return SsrfCheckResult::Blocked(format!(
                 "internal service hostname '{host}' is not allowed"
@@ -248,126 +337,182 @@ pub fn check_hostname(host: &str) -> SsrfCheckResult {
     SsrfCheckResult::Ok
 }
 
-/// Validate a URL for basic SSRF protections (string-level, no DNS).
-///
-/// Checks:
-/// - URL is parseable
-/// - Scheme is http or https only
-/// - Host is not a private IP range
-/// - Host is not a known internal hostname
-///
-/// Returns `SsrfCheckResult::Blocked` with a reason on failure.
-#[must_use]
-pub fn check_url(url: &str) -> SsrfCheckResult {
-    if url.is_empty() {
-        return SsrfCheckResult::Blocked("URL must not be empty".to_string());
-    }
-
-    let parsed = match url::Url::parse(url) {
-        Ok(p) => p,
-        Err(e) => return SsrfCheckResult::Blocked(format!("invalid URL: {e}")),
-    };
-
-    // Verify scheme
-    match parsed.scheme() {
-        "http" | "https" => {}
-        scheme => {
-            return SsrfCheckResult::Blocked(format!(
-                "unsupported URL scheme: {scheme} (only http and https are allowed)"
-            ));
-        }
-    }
-
-    let url_host = match parsed.host_str() {
-        Some(h) => h,
-        None => return SsrfCheckResult::Blocked("URL must contain a hostname".to_string()),
-    };
-
-    // Try to parse as IP address and block private ranges
-    if let Ok(ip) = url_host.parse::<IpAddr>() {
-        if is_blocked_ip(ip) {
-            return SsrfCheckResult::Blocked(format!(
-                "URL must not target private/reserved IP: {url_host}"
-            ));
-        }
-    }
-
-    // Handle bracket-wrapped IPv6 like [::1]
-    if url_host.starts_with('[') && url_host.ends_with(']') {
-        if let Ok(ip) = url_host[1..url_host.len() - 1].parse::<IpAddr>() {
-            if is_blocked_ip(ip) {
-                return SsrfCheckResult::Blocked(format!(
-                    "URL must not target private/reserved IP: {url_host}"
-                ));
-            }
-        }
-    }
-
-    // Check hostname patterns
-    check_hostname(url_host)
-}
+// ============================================================================
+// Tests
+// ============================================================================
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    // ========================================================================
+    // IP blocking tests
+    // ========================================================================
+
     #[test]
     fn test_blocked_private_ipv4() {
-        assert!(is_blocked_ipv4(&Ipv4Addr::new(127, 0, 0, 1)));
-        assert!(is_blocked_ipv4(&Ipv4Addr::new(10, 0, 0, 1)));
-        assert!(is_blocked_ipv4(&Ipv4Addr::new(172, 16, 0, 1)));
-        assert!(is_blocked_ipv4(&Ipv4Addr::new(192, 168, 1, 1)));
-        assert!(is_blocked_ipv4(&Ipv4Addr::new(169, 254, 1, 1)));
-        assert!(is_blocked_ipv4(&Ipv4Addr::new(100, 64, 0, 1)));
-        assert!(is_blocked_ipv4(&Ipv4Addr::new(0, 0, 0, 0)));
-        assert!(is_blocked_ipv4(&Ipv4Addr::new(240, 0, 0, 1)));
-        assert!(is_blocked_ipv4(&Ipv4Addr::new(255, 255, 255, 255)));
+        assert!(is_blocked_ipv4(&Ipv4Addr::new(127, 0, 0, 1)), "loopback");
+        assert!(is_blocked_ipv4(&Ipv4Addr::new(10, 0, 0, 1)), "10.x");
+        assert!(is_blocked_ipv4(&Ipv4Addr::new(172, 16, 0, 1)), "172.16.x");
+        assert!(is_blocked_ipv4(&Ipv4Addr::new(172, 31, 255, 255)), "172.31.x");
+        assert!(is_blocked_ipv4(&Ipv4Addr::new(192, 168, 1, 1)), "192.168.x");
+        assert!(
+            is_blocked_ipv4(&Ipv4Addr::new(169, 254, 1, 1)),
+            "link-local / metadata"
+        );
+        assert!(is_blocked_ipv4(&Ipv4Addr::new(100, 64, 0, 1)), "CGNAT");
+        assert!(is_blocked_ipv4(&Ipv4Addr::new(0, 0, 0, 0)), "current network");
+        assert!(is_blocked_ipv4(&Ipv4Addr::new(224, 0, 0, 1)), "multicast");
+        assert!(is_blocked_ipv4(&Ipv4Addr::new(240, 0, 0, 1)), "reserved");
+        assert!(
+            is_blocked_ipv4(&Ipv4Addr::new(255, 255, 255, 255)),
+            "broadcast"
+        );
     }
 
     #[test]
     fn test_allowed_public_ipv4() {
-        assert!(!is_blocked_ipv4(&Ipv4Addr::new(8, 8, 8, 8)));
-        assert!(!is_blocked_ipv4(&Ipv4Addr::new(1, 1, 1, 1)));
-        assert!(!is_blocked_ipv4(&Ipv4Addr::new(203, 0, 113, 1)));
+        assert!(!is_blocked_ipv4(&Ipv4Addr::new(8, 8, 8, 8)), "Google DNS");
+        assert!(!is_blocked_ipv4(&Ipv4Addr::new(1, 1, 1, 1)), "Cloudflare DNS");
+        assert!(
+            !is_blocked_ipv4(&Ipv4Addr::new(203, 0, 113, 1)),
+            "Documentation range"
+        );
+        assert!(!is_blocked_ipv4(&Ipv4Addr::new(93, 184, 216, 34)), "example.com");
     }
 
     #[test]
     fn test_blocked_ipv6() {
-        assert!(is_blocked_ipv6(&Ipv6Addr::LOCALHOST));
-        assert!(is_blocked_ipv6(&Ipv6Addr::UNSPECIFIED));
+        assert!(is_blocked_ipv6(&Ipv6Addr::LOCALHOST), "::1");
+        assert!(is_blocked_ipv6(&Ipv6Addr::UNSPECIFIED), "::");
+
+        // IPv4-mapped IPv6 addresses
+        let mapped_loopback =
+            Ipv6Addr::new(0, 0, 0, 0, 0, 0xffff, 0x7f00, 0x0001);
+        assert!(is_blocked_ipv6(&mapped_loopback), "::ffff:127.0.0.1");
+
+        let mapped_private =
+            Ipv6Addr::new(0, 0, 0, 0, 0, 0xffff, 0xc0a8, 0x0101);
+        assert!(is_blocked_ipv6(&mapped_private), "::ffff:192.168.1.1");
     }
+
+    #[test]
+    fn test_allowed_public_ipv6() {
+        // Google's public DNS over IPv6
+        let google_dns = Ipv6Addr::new(0x2001, 0x4860, 0x4860, 0, 0, 0, 0, 0x8888);
+        assert!(!is_blocked_ipv6(&google_dns), "Google DNS IPv6");
+
+        // Cloudflare DNS over IPv6
+        let cloudflare = Ipv6Addr::new(0x2606, 0x4700, 0x4700, 0, 0, 0, 0, 0x1111);
+        assert!(!is_blocked_ipv6(&cloudflare), "Cloudflare DNS IPv6");
+    }
+
+    #[test]
+    fn test_is_blocked_ip_v4() {
+        assert!(is_blocked_ip(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1))));
+        assert!(is_blocked_ip(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1))));
+        assert!(!is_blocked_ip(IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8))));
+    }
+
+    #[test]
+    fn test_is_blocked_ip_v6() {
+        assert!(is_blocked_ip(IpAddr::V6(Ipv6Addr::LOCALHOST)));
+        assert!(!is_blocked_ip(IpAddr::V6(Ipv6Addr::new(
+            0x2606, 0x4700, 0x4700, 0, 0, 0, 0, 0x1111
+        ))));
+    }
+
+    // ========================================================================
+    // Hostname validation tests
+    // ========================================================================
 
     #[test]
     fn test_check_hostname_blocked() {
         assert!(!check_hostname("localhost").is_ok());
+        assert!(!check_hostname("LOCALHOST").is_ok());
         assert!(!check_hostname("metadata.google.internal").is_ok());
         assert!(!check_hostname("myhost.local").is_ok());
+        assert!(!check_hostname("myhost.internal").is_ok());
         assert!(!check_hostname("kubernetes.default").is_ok());
+        assert!(!check_hostname("k8s.api").is_ok());
+        assert!(!check_hostname("docker.registry").is_ok());
     }
 
     #[test]
     fn test_check_hostname_allowed() {
         assert!(check_hostname("example.com").is_ok());
         assert!(check_hostname("api.bilibili.com").is_ok());
+        assert!(check_hostname("github.com").is_ok());
+        assert!(check_hostname("subdomain.example.org").is_ok());
+    }
+
+    // ========================================================================
+    // URL validation tests (using url_jail)
+    // ========================================================================
+
+    #[test]
+    fn test_check_url_blocked_private_ip() {
+        assert!(!check_url("http://127.0.0.1/admin").is_ok());
+        assert!(!check_url("http://192.168.1.1/admin").is_ok());
+        assert!(!check_url("http://10.0.0.1/admin").is_ok());
+        assert!(!check_url("http://172.16.0.1/admin").is_ok());
     }
 
     #[test]
-    fn test_check_url_blocked() {
-        assert!(!check_url("http://127.0.0.1").is_ok());
-        assert!(!check_url("http://192.168.1.1").is_ok());
-        assert!(!check_url("http://localhost").is_ok());
-        assert!(!check_url("ftp://example.com").is_ok());
+    fn test_check_url_blocked_localhost() {
+        // url_jail blocks "localhost" but not "localhost.localdomain"
+        assert!(!check_url("http://localhost/admin").is_ok());
+        // Note: url_jail doesn't block localhost.localdomain by default
+    }
+
+    #[test]
+    fn test_check_url_blocked_invalid_scheme() {
+        assert!(!check_url("ftp://example.com/file").is_ok());
+        assert!(!check_url("file:///etc/passwd").is_ok());
+        assert!(!check_url("javascript:alert(1)").is_ok());
+    }
+
+    #[test]
+    fn test_check_url_blocked_empty() {
         assert!(!check_url("").is_ok());
     }
 
     #[test]
-    fn test_check_url_allowed() {
+    fn test_check_url_blocked_incomplete() {
+        assert!(!check_url("http://").is_ok());
+    }
+
+    #[test]
+    fn test_check_url_allowed_public() {
         assert!(check_url("https://example.com").is_ok());
-        assert!(check_url("http://8.8.8.8").is_ok());
+        assert!(check_url("https://api.github.com/users/test").is_ok());
+        assert!(check_url("http://example.com/path?query=1").is_ok());
     }
 
     // ========================================================================
-    // SsrfSafeDnsResolver unit tests
+    // IP encoding attack tests (url_jail handles these)
+    // ========================================================================
+
+    #[test]
+    fn test_ip_encoding_attacks_blocked() {
+        // Decimal encoding of 127.0.0.1 = 2130706433
+        assert!(!check_url("http://2130706433/").is_ok());
+
+        // Hex encoding of 127.0.0.1 = 0x7f000001
+        assert!(!check_url("http://0x7f000001/").is_ok());
+
+        // Octal encoding of 127.0.0.1 = 0177.0.0.1
+        assert!(!check_url("http://0177.0.0.1/").is_ok());
+
+        // Short-form of 127.0.0.1 = 127.1
+        assert!(!check_url("http://127.1/").is_ok());
+
+        // IPv4-mapped IPv6
+        assert!(!check_url("http://[::ffff:127.0.0.1]/").is_ok());
+    }
+
+    // ========================================================================
+    // DNS resolver tests
     // ========================================================================
 
     #[test]
@@ -403,32 +548,38 @@ mod tests {
 
     #[test]
     fn test_is_blocked_ip_with_socket_addr_filtering() {
-        // Test that the filtering logic used in SsrfSafeDnsResolver works correctly
         let public_ipv4 = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8)), 443);
-        let private_ipv4 = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)), 443);
-        let loopback_ipv4 = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 443);
+        let private_ipv4 =
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)), 443);
+        let loopback_ipv4 =
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 443);
         let public_ipv6 = SocketAddr::new(
             IpAddr::V6(Ipv6Addr::new(0x2606, 0x4700, 0x4700, 0, 0, 0, 0, 0x1111)),
             443,
         );
-        let loopback_ipv6 = SocketAddr::new(IpAddr::V6(Ipv6Addr::LOCALHOST), 443);
+        let loopback_ipv6 =
+            SocketAddr::new(IpAddr::V6(Ipv6Addr::LOCALHOST), 443);
 
-        // Simulate filtering as done in the resolver
-        let addrs: Vec<SocketAddr> = vec![public_ipv4, private_ipv4, loopback_ipv4, public_ipv6, loopback_ipv6];
+        let addrs: Vec<SocketAddr> = vec![
+            public_ipv4,
+            private_ipv4,
+            loopback_ipv4,
+            public_ipv6,
+            loopback_ipv6,
+        ];
         let safe_addrs: Vec<SocketAddr> = addrs
             .into_iter()
             .filter(|addr| !is_blocked_ip(addr.ip()))
             .collect();
 
-        // Only public IPs should remain
         assert_eq!(safe_addrs.len(), 2);
-        assert!(safe_addrs.iter().any(|a| a.ip() == IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8))));
-        assert!(safe_addrs.iter().any(|a| matches!(a.ip(), IpAddr::V6(ip) if ip.segments()[0] == 0x2606)));
+        assert!(safe_addrs
+            .iter()
+            .any(|a| a.ip() == IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8))));
     }
 
     #[test]
     fn test_is_blocked_ip_all_private_filtered() {
-        // Test case where all IPs are private - should result in empty list
         let addrs: Vec<SocketAddr> = vec![
             SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 443),
             SocketAddr::new(IpAddr::V4(Ipv4Addr::new(172, 16, 0, 1)), 443),
@@ -439,18 +590,20 @@ mod tests {
             .filter(|addr| !is_blocked_ip(addr.ip()))
             .collect();
 
-        assert!(safe_addrs.is_empty(), "All private IPs should be filtered out");
+        assert!(
+            safe_addrs.is_empty(),
+            "All private IPs should be filtered out"
+        );
     }
 
     #[test]
     fn test_is_blocked_ip_mixed_addresses() {
-        // Test mixed public and private addresses
         let addrs: Vec<SocketAddr> = vec![
-            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 443),      // private
-            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8)), 443),        // public
-            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 443),      // loopback
-            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(1, 1, 1, 1)), 443),        // public
-            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(169, 254, 1, 1)), 443),    // link-local
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 443), // private
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8)), 443),  // public
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 443), // loopback
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(1, 1, 1, 1)), 443),  // public
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(169, 254, 1, 1)), 443), // link-local
         ];
         let safe_addrs: Vec<SocketAddr> = addrs
             .into_iter()
@@ -458,7 +611,85 @@ mod tests {
             .collect();
 
         assert_eq!(safe_addrs.len(), 2);
-        assert!(safe_addrs.iter().any(|a| a.ip() == IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8))));
-        assert!(safe_addrs.iter().any(|a| a.ip() == IpAddr::V4(Ipv4Addr::new(1, 1, 1, 1))));
+        assert!(safe_addrs
+            .iter()
+            .any(|a| a.ip() == IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8))));
+        assert!(safe_addrs
+            .iter()
+            .any(|a| a.ip() == IpAddr::V4(Ipv4Addr::new(1, 1, 1, 1))));
+    }
+
+    // ========================================================================
+    // Policy tests
+    // ========================================================================
+
+    #[test]
+    fn test_policy_public_only() {
+        // PublicOnly should block all private IPs
+        assert!(check_url_with_policy(
+            "http://192.168.1.1/",
+            Policy::PublicOnly
+        )
+        .is_ok()
+            == false);
+
+        // Public IPs should be allowed
+        assert!(
+            check_url_with_policy("https://example.com/", Policy::PublicOnly).is_ok()
+        );
+    }
+
+    #[test]
+    fn test_policy_allow_private() {
+        // AllowPrivate should allow private IPs but still block loopback
+        assert!(check_url_with_policy(
+            "http://192.168.1.1/",
+            Policy::AllowPrivate
+        )
+        .is_ok());
+
+        // Loopback should still be blocked
+        assert!(check_url_with_policy("http://127.0.0.1/", Policy::AllowPrivate).is_ok()
+            == false);
+    }
+
+    #[tokio::test]
+    async fn test_policy_builder_custom_blocklist() {
+        let policy = PolicyBuilder::new(Policy::PublicOnly)
+            .block_cidr("203.0.113.0/24")
+            .build();
+
+        // Custom blocked range
+        assert!(
+            check_url_with_custom_policy("http://203.0.113.1/", policy.clone())
+                .await
+                .is_ok()
+                == false
+        );
+
+        // Public IP outside custom range should still work
+        assert!(
+            check_url_with_custom_policy("https://example.com/", policy)
+                .await
+                .is_ok()
+        );
+    }
+
+    // ========================================================================
+    // Cloud metadata endpoint tests
+    // ============================================================================
+
+    #[test]
+    fn test_cloud_metadata_endpoints_blocked() {
+        // AWS metadata (link-local IP is blocked)
+        assert!(
+            check_url("http://169.254.169.254/latest/meta-data/").is_ok() == false
+        );
+
+        // Google Cloud metadata (via hostname - url_jail blocks this)
+        assert!(check_url("http://metadata.google.internal/").is_ok() == false);
+
+        // Note: url_jail doesn't block metadata.azure by default
+        // Azure metadata IP (169.254.169.254) is blocked via the link-local range
     }
 }

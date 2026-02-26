@@ -724,6 +724,8 @@ async fn test_validate_proxy_url_link_local_blocked() {
 // Proxy options preflight
 // ==================================================================
 
+// The deprecated function is intentionally tested for backward compatibility
+#[allow(deprecated)]
 #[tokio::test]
 async fn test_proxy_options_preflight_headers() {
     use axum::response::IntoResponse;

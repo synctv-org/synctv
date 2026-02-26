@@ -224,6 +224,179 @@ mod error_responses {
         assert!(msg.contains("email"), "Should mention field name");
         assert!(msg.contains("must be valid"), "Should mention reason");
     }
+
+    // ========================================================================
+    // Security: Internal error message sanitization
+    // ========================================================================
+    //
+    // Internal errors (5xx) should return a generic message to avoid leaking
+    // sensitive information like database connection strings, file paths,
+    // stack traces, or internal implementation details.
+    //
+    // Client errors (4xx) should preserve the original message to help the
+    // client understand and fix their request.
+
+    /// Internal server error (500) MUST return generic message, not the original.
+    /// This prevents leaking sensitive info like "connection to postgres://user:pass@..."
+    #[tokio::test]
+    async fn test_internal_error_returns_generic_message() {
+        // Simulate an internal error with sensitive info in the message
+        let sensitive_msg = "Database connection failed: postgres://admin:secret@db.internal:5432/production";
+        let app = error_router(AppError::internal_server_error(sensitive_msg));
+        let req = Request::get("/test").body(Body::empty()).unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+
+        assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        let json = body_json(resp).await;
+        let error_msg = json["error"].as_str().unwrap();
+
+        // The response MUST NOT contain the sensitive message
+        assert!(
+            !error_msg.contains("postgres://"),
+            "Internal error response must not leak database connection strings"
+        );
+        assert!(
+            !error_msg.contains("secret"),
+            "Internal error response must not leak passwords"
+        );
+        assert!(
+            !error_msg.contains("db.internal"),
+            "Internal error response must not leak internal hostnames"
+        );
+
+        // The response should be a generic message
+        assert_eq!(
+            error_msg,
+            "Internal server error",
+            "Internal error should return generic message"
+        );
+    }
+
+    /// Client errors (4xx) MUST preserve the original message to help clients.
+    #[tokio::test]
+    async fn test_client_errors_preserve_original_messages() {
+        // 400 Bad Request
+        let app = error_router(AppError::bad_request("Invalid email format"));
+        let req = Request::get("/test").body(Body::empty()).unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        let json = body_json(resp).await;
+        assert_eq!(json["error"], "Invalid email format", "400 should preserve message");
+
+        // 401 Unauthorized
+        let app = error_router(AppError::unauthorized("Token has expired"));
+        let req = Request::get("/test").body(Body::empty()).unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        let json = body_json(resp).await;
+        assert_eq!(json["error"], "Token has expired", "401 should preserve message");
+
+        // 403 Forbidden
+        let app = error_router(AppError::forbidden("Admin access required"));
+        let req = Request::get("/test").body(Body::empty()).unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        let json = body_json(resp).await;
+        assert_eq!(json["error"], "Admin access required", "403 should preserve message");
+
+        // 404 Not Found
+        let app = error_router(AppError::not_found("Room 'abc123' does not exist"));
+        let req = Request::get("/test").body(Body::empty()).unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        let json = body_json(resp).await;
+        assert_eq!(json["error"], "Room 'abc123' does not exist", "404 should preserve message");
+    }
+
+    /// Sensitive patterns must NEVER appear in any error response.
+    /// This is a defense-in-depth test to catch accidental leakage.
+    #[tokio::test]
+    async fn test_sensitive_info_never_leaked_in_responses() {
+        let sensitive_patterns = [
+            "password",
+            "secret",
+            "api_key",
+            "private_key",
+            "postgres://",
+            "mysql://",
+            "redis://",
+            "mongodb://",
+            "/etc/",
+            "stack trace",
+            "Error:",
+            "panic!",
+        ];
+
+        // Test internal error with all sensitive patterns
+        let sensitive_msg = "Error: panic! at /etc/config.toml - postgres://admin:password@localhost redis://localhost private_key=abc123";
+        let app = error_router(AppError::internal_server_error(sensitive_msg));
+        let req = Request::get("/test").body(Body::empty()).unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        let json = body_json(resp).await;
+        let error_msg = json["error"].as_str().unwrap().to_lowercase();
+
+        for pattern in &sensitive_patterns {
+            assert!(
+                !error_msg.contains(&pattern.to_lowercase()),
+                "Response must not contain sensitive pattern: {}",
+                pattern
+            );
+        }
+    }
+
+    /// Service unavailable (503) is a server error, so it returns generic message.
+    /// This is consistent with security best practices - all 5xx errors get generic messages.
+    #[tokio::test]
+    async fn test_service_unavailable_returns_safe_message() {
+        let app = error_router(AppError::service_unavailable());
+        let req = Request::get("/test").body(Body::empty()).unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+
+        assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let json = body_json(resp).await;
+        let error_msg = json["error"].as_str().unwrap();
+
+        // 503 is a server error (5xx), so it returns generic message for security
+        assert_eq!(
+            error_msg,
+            "Internal server error",
+            "503 should return generic message (all 5xx errors are sanitized)"
+        );
+    }
+
+    /// Bad gateway (502) should also return generic message.
+    #[tokio::test]
+    async fn test_bad_gateway_returns_generic_message() {
+        let app = error_router(AppError::new(StatusCode::BAD_GATEWAY, "Upstream nginx error: connection reset by peer"));
+        let req = Request::get("/test").body(Body::empty()).unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+
+        assert_eq!(resp.status(), StatusCode::BAD_GATEWAY);
+        let json = body_json(resp).await;
+        let error_msg = json["error"].as_str().unwrap();
+
+        // 502 is a server error, should return generic message
+        assert_eq!(
+            error_msg,
+            "Internal server error",
+            "502 should return generic message"
+        );
+    }
+
+    /// Gateway timeout (504) should also return generic message.
+    #[tokio::test]
+    async fn test_gateway_timeout_returns_generic_message() {
+        let app = error_router(AppError::new(StatusCode::GATEWAY_TIMEOUT, "Upstream timeout after 30s"));
+        let req = Request::get("/test").body(Body::empty()).unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+
+        assert_eq!(resp.status(), StatusCode::GATEWAY_TIMEOUT);
+        let json = body_json(resp).await;
+        let error_msg = json["error"].as_str().unwrap();
+
+        // 504 is a server error, should return generic message
+        assert_eq!(
+            error_msg,
+            "Internal server error",
+            "504 should return generic message"
+        );
+    }
 }
 
 // ============================================================================

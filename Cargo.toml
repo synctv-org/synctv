@@ -117,6 +117,7 @@ jsonwebtoken = { version = "10.3", features = ["aws_lc_rs"] }
 oauth2 = "5.0"
 aes-gcm = "0.10"
 ammonia = "4.1"
+url_jail = { version = "0.2", features = ["fetch"] }
 sha1 = "0.10"
 sha2 = "0.10"
 md-5 = "0.10"

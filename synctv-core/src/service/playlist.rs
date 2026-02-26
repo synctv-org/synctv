@@ -158,6 +158,7 @@ impl PlaylistService {
             provider_instance_name: request.provider_instance_name,
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
+            version: 0,
         };
 
         let created_playlist = self.playlist_repo.create(&playlist).await?;
@@ -451,6 +452,7 @@ mod tests {
             provider_instance_name: None,
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
+            version: 0,
         };
 
         assert!(playlist.is_root());
@@ -472,6 +474,7 @@ mod tests {
             provider_instance_name: None,
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
+            version: 0,
         };
 
         assert!(!playlist.is_root());
@@ -491,6 +494,7 @@ mod tests {
             provider_instance_name: None,
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
+            version: 0,
         };
 
         assert!(!playlist.is_root());
@@ -510,6 +514,7 @@ mod tests {
             provider_instance_name: Some("alist_home".to_string()),
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
+            version: 0,
         };
 
         assert!(playlist.is_dynamic());
@@ -531,6 +536,7 @@ mod tests {
             provider_instance_name: None,
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
+            version: 0,
         };
 
         assert!(playlist.is_static());

@@ -26,7 +26,7 @@ impl PlaylistRepository {
             r"
             SELECT id, room_id, creator_id, name, parent_id, position,
                    source_provider, source_config, provider_instance_name,
-                   created_at, updated_at
+                   created_at, updated_at, version
             FROM playlists
             WHERE id = $1
             "
@@ -47,7 +47,7 @@ impl PlaylistRepository {
             r"
             SELECT id, room_id, creator_id, name, parent_id, position,
                    source_provider, source_config, provider_instance_name,
-                   created_at, updated_at
+                   created_at, updated_at, version
             FROM playlists
             WHERE room_id = $1 AND parent_id IS NULL AND name = ''
             "
@@ -65,7 +65,7 @@ impl PlaylistRepository {
             r"
             SELECT id, room_id, creator_id, name, parent_id, position,
                    source_provider, source_config, provider_instance_name,
-                   created_at, updated_at
+                   created_at, updated_at, version
             FROM playlists
             WHERE parent_id = $1
             ORDER BY position ASC
@@ -86,7 +86,7 @@ impl PlaylistRepository {
             r"
             SELECT id, room_id, creator_id, name, parent_id, position,
                    source_provider, source_config, provider_instance_name,
-                   created_at, updated_at
+                   created_at, updated_at, version
             FROM playlists
             WHERE room_id = $1
             ORDER BY parent_id NULLS FIRST, position ASC
@@ -167,7 +167,7 @@ impl PlaylistRepository {
                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
                 RETURNING id, room_id, creator_id, name, parent_id, position,
                           source_provider, source_config, provider_instance_name,
-                          created_at, updated_at
+                          created_at, updated_at, version
                 "
             )
             .bind(playlist.id.as_str())
@@ -196,7 +196,7 @@ impl PlaylistRepository {
                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
                 RETURNING id, room_id, creator_id, name, parent_id, position,
                           source_provider, source_config, provider_instance_name,
-                          created_at, updated_at
+                          created_at, updated_at, version
                 "
             )
             .bind(playlist.id.as_str())
@@ -251,7 +251,7 @@ impl PlaylistRepository {
             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
             RETURNING id, room_id, creator_id, name, parent_id, position,
                       source_provider, source_config, provider_instance_name,
-                      created_at, updated_at
+                      created_at, updated_at, version
             "
         )
         .bind(playlist.id.as_str())
@@ -339,18 +339,56 @@ impl PlaylistRepository {
         Ok(max_pos.unwrap_or(-1) + 1)
     }
 
-    /// Update playlist
+    /// Update playlist with optimistic locking.
+    ///
+    /// Returns `Err(Error::OptimisticLockConflict)` if the version in the database
+    /// does not match `expected_version`.
+    ///
+    /// On success, returns the updated playlist with incremented version.
+    pub async fn update_with_version(&self, playlist: &Playlist, expected_version: i32) -> Result<Playlist> {
+        let source_provider_str = playlist.source_provider.as_deref();
+        let row = sqlx::query(
+            r"
+            UPDATE playlists
+            SET name = $2, position = $3, source_provider = $4, source_config = $5,
+                provider_instance_name = $6, version = version + 1
+            WHERE id = $1 AND version = $7
+            RETURNING id, room_id, creator_id, name, parent_id, position,
+                      source_provider, source_config, provider_instance_name,
+                      created_at, updated_at, version
+            "
+        )
+        .bind(playlist.id.as_str())
+        .bind(&playlist.name)
+        .bind(playlist.position)
+        .bind(source_provider_str)
+        .bind(&playlist.source_config)
+        .bind(&playlist.provider_instance_name)
+        .bind(expected_version)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        match row {
+            Some(row) => Ok(Playlist::from_row(&row)?),
+            None => Err(crate::Error::OptimisticLockConflict),
+        }
+    }
+
+    /// Update playlist (legacy method without optimistic locking).
+    ///
+    /// **Warning:** This method does not check version and always succeeds.
+    /// Prefer `update_with_version` for concurrent access patterns.
     pub async fn update(&self, playlist: &Playlist) -> Result<Playlist> {
         let source_provider_str = playlist.source_provider.as_deref();
         let row = sqlx::query(
             r"
             UPDATE playlists
             SET name = $2, position = $3, source_provider = $4, source_config = $5,
-                provider_instance_name = $6
+                provider_instance_name = $6, version = version + 1
             WHERE id = $1
             RETURNING id, room_id, creator_id, name, parent_id, position,
                       source_provider, source_config, provider_instance_name,
-                      created_at, updated_at
+                      created_at, updated_at, version
             "
         )
         .bind(playlist.id.as_str())
@@ -383,20 +421,20 @@ impl PlaylistRepository {
             WITH RECURSIVE ancestors AS (
                 SELECT id, room_id, creator_id, name, parent_id, position,
                        source_provider, source_config, provider_instance_name,
-                       created_at, updated_at, 0 AS depth
+                       created_at, updated_at, version, 0 AS depth
                 FROM playlists
                 WHERE id = $1
               UNION ALL
                 SELECT p.id, p.room_id, p.creator_id, p.name, p.parent_id, p.position,
                        p.source_provider, p.source_config, p.provider_instance_name,
-                       p.created_at, p.updated_at, a.depth + 1
+                       p.created_at, p.updated_at, p.version, a.depth + 1
                 FROM playlists p
                 JOIN ancestors a ON p.id = a.parent_id
                 WHERE a.depth < 50
             )
             SELECT id, room_id, creator_id, name, parent_id, position,
                    source_provider, source_config, provider_instance_name,
-                   created_at, updated_at
+                   created_at, updated_at, version
             FROM ancestors
             ORDER BY depth DESC
             "

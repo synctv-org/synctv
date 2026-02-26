@@ -207,6 +207,15 @@ impl KeyBuilder {
         format!("{}:auth:login_attempts_ip:{}", self.prefix, ip)
     }
 
+    /// Failed room password verification counter per room+IP combination
+    ///
+    /// Type: String + TTL (15 minutes)
+    /// Value: JSON with count and `last_failure_at`
+    #[must_use]
+    pub fn room_password_attempts(&self, room_id: &str, ip: &str) -> String {
+        format!("{}:room:pwd_attempts:{}:{}", self.prefix, room_id, ip)
+    }
+
     // ==================== Refresh Token Blacklist ====================
 
     /// Blacklisted refresh token JTI (used for refresh token rotation)

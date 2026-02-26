@@ -129,8 +129,27 @@ struct ErrorResponse {
 impl IntoResponse for AppError {
     fn into_response(self) -> Response {
         let status = self.status;
+
+        // For 5xx server errors, return a generic message to avoid leaking
+        // sensitive information like database connection strings, file paths,
+        // stack traces, or internal implementation details.
+        // The original error message is logged at the conversion point
+        // (e.g., From<synctv_core::Error>, From<anyhow::Error>).
+        let error_message = if status.is_server_error() {
+            // Log the actual error for 5xx errors (original message is lost to client)
+            tracing::error!(
+                status = status.as_u16(),
+                original_message = %self.message,
+                error_code = ?self.error_code,
+                "Server error response"
+            );
+            "Internal server error".to_string()
+        } else {
+            self.message
+        };
+
         let body = Json(ErrorResponse {
-            error: self.message,
+            error: error_message,
             status: status.as_u16(),
             code: self.error_code,
         });

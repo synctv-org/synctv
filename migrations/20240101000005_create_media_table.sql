@@ -31,6 +31,9 @@ CREATE TABLE IF NOT EXISTS media (
     -- Timestamps
     added_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
+    -- Optimistic locking version (incremented on each update)
+    version INTEGER NOT NULL DEFAULT 0,
+
     -- Constraints
     CONSTRAINT valid_media_name CHECK (
         length(trim(name)) > 0
@@ -66,6 +69,7 @@ COMMENT ON COLUMN media.position IS 'Position in playlist (0-indexed)';
 COMMENT ON COLUMN media.source_provider IS 'Media provider type name (e.g., "bilibili", "alist", "emby", "direct_url")';
 COMMENT ON COLUMN media.source_config IS 'Media provider-specific configuration (persistent)';
 COMMENT ON COLUMN media.provider_instance_name IS 'Media provider instance name for registry lookup (e.g., "bilibili_main")';
+COMMENT ON COLUMN media.version IS 'Optimistic locking version, incremented on each update';
 COMMENT ON INDEX unique_media_name IS 'No duplicate names in same playlist';
 COMMENT ON CONSTRAINT valid_media_name ON media IS 'File name validation: not empty, 1-255 chars, no / character';
 

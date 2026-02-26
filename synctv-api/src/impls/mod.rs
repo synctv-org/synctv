@@ -18,7 +18,7 @@ pub mod providers;
 pub use admin::AdminApiImpl;
 pub use client::{ClientApiImpl, ClientApiConfig};
 pub use email::EmailApiImpl;
-pub use messaging::{StreamMessageHandler, MessageSender, ProtoCodec};
+pub use messaging::{MessageConcurrencyConfig, StreamMessageHandler, MessageSender, ProtoCodec};
 pub use notification::NotificationApiImpl;
 pub use oauth2::OAuth2ApiImpl;
 pub use providers::{AlistApiImpl, BilibiliApiImpl, EmbyApiImpl};

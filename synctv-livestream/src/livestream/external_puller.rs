@@ -18,6 +18,7 @@
 use std::sync::Arc;
 
 use anyhow::Result;
+use url::Url;
 use bytes::{Buf, BytesMut};
 use synctv_core::validation::SSRFValidator;
 use synctv_xiu::rtmp::session::client_session::{ClientSession, ClientSessionType};
@@ -116,13 +117,24 @@ impl ExternalStreamPuller {
             ))?;
 
         // Async SSRF validation: resolves hostname and checks all IPs
-        SSRFValidator::new().validate_url_async(&source_url).await
+        // Note: url_jail only supports http/https schemes. For RTMP URLs, we extract
+        // the host and validate it by constructing a temporary http:// URL.
+        let ssrf_check_url = match source_type {
+            ExternalSourceType::Rtmp => {
+                let parsed = Url::parse(&source_url)?;
+                let host = parsed.host_str()
+                    .ok_or_else(|| anyhow::anyhow!("URL has no host"))?;
+                format!("http://{host}/")
+            }
+            ExternalSourceType::HttpFlv => source_url.clone(),
+        };
+        SSRFValidator::new().validate_url_async(&ssrf_check_url).await
             .map_err(|e| anyhow::anyhow!("SSRF protection blocked URL: {e}"))?;
 
         // Pin the resolved IP to prevent DNS rebinding attacks: the actual connection
         // will use this address instead of re-resolving the hostname.
         let mut resolved_addr = None;
-        let parsed = reqwest::Url::parse(&source_url)?;
+        let parsed = Url::parse(&source_url)?;
         let host = parsed.host_str().unwrap_or("");
         if !host.is_empty() && host.parse::<std::net::IpAddr>().is_err() {
             // It's a hostname (not a literal IP), resolve and pin
@@ -780,7 +792,22 @@ pub fn validate_source_url(url: &str) -> Result<ExternalSourceType, String> {
         ))?;
 
     // SSRF validation: block private IPs, loopback, link-local, metadata endpoints
-    SSRFValidator::new().validate_url(url)
+    // Note: url_jail only supports http/https schemes. For RTMP URLs, we extract
+    // the host and validate it by constructing a temporary http:// URL.
+    let ssrf_check_url = match source_type {
+        ExternalSourceType::Rtmp => {
+            // Extract host from RTMP URL for SSRF validation
+            let parsed = Url::parse(url)
+                .map_err(|e| format!("Invalid URL: {e}"))?;
+            let host = parsed.host_str()
+                .ok_or_else(|| "URL has no host".to_string())?;
+            // Use http:// to validate the host (we only care about IP validation)
+            format!("http://{host}/")
+        }
+        ExternalSourceType::HttpFlv => url.to_string(),
+    };
+
+    SSRFValidator::new().validate_url(&ssrf_check_url)
         .map_err(|e| format!("SSRF protection blocked URL: {e}"))?;
 
     Ok(source_type)

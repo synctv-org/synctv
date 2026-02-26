@@ -18,6 +18,7 @@
 use sqlx::PgPool;
 use chrono::{DateTime, Utc};
 use rand::RngExt;
+use std::net::IpAddr;
 
 use crate::{
     cache::CacheInvalidationService,
@@ -78,6 +79,9 @@ pub struct RoomService {
 
     /// Optional audit service for logging security-sensitive operations
     audit_service: Option<Arc<AuditService>>,
+
+    /// Optional brute-force protection for room password verification
+    brute_force_service: Option<crate::service::auth::BruteForceProtection>,
 }
 
 impl std::fmt::Debug for RoomService {
@@ -190,6 +194,7 @@ impl RoomService {
             user_service,
             cache_invalidation: None,
             audit_service: None,
+            brute_force_service: None,
         }
     }
 
@@ -199,6 +204,11 @@ impl RoomService {
     pub fn set_audit_service(&mut self, audit: Arc<AuditService>) {
         self.member_service.set_audit_service(Arc::clone(&audit));
         self.audit_service = Some(audit);
+    }
+
+    /// Inject the brute-force protection service for room password rate limiting.
+    pub fn set_brute_force_service(&mut self, service: crate::service::auth::BruteForceProtection) {
+        self.brute_force_service = Some(service);
     }
 
     /// Log an audit event if the audit service is configured.
@@ -339,6 +349,7 @@ impl RoomService {
             provider_instance_name: None,
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),
+            version: 0,
         };
         self.playlist_repo.create_with_executor(&root_playlist, &mut *tx).await?;
 
@@ -948,6 +959,95 @@ impl RoomService {
             }
             None => Ok(false),
         }
+    }
+
+    /// Check room password with brute-force rate limiting.
+    ///
+    /// Uses the `BruteForceProtection` service to prevent password guessing attacks.
+    /// Rate limiting is based on `room_id + client_ip` combination.
+    ///
+    /// # Rate Limit Thresholds
+    ///
+    /// - 5 failures: 1 minute lockout
+    /// - 10 failures: 5 minute lockout
+    /// - 15+ failures: 15 minute lockout
+    ///
+    /// # Arguments
+    ///
+    /// * `room_id` - The room to check password for
+    /// * `password` - The password to verify
+    /// * `client_ip` - Optional client IP for per-IP rate limiting
+    ///
+    /// # Returns
+    ///
+    /// * `Ok(true)` - Password is correct
+    /// * `Ok(false)` - Password is incorrect (but not rate limited)
+    /// * `Err(Error::Authentication)` - Rate limited (too many failed attempts)
+    /// * `Err(Error::Internal)` - Brute-force service unavailable (fail-closed)
+    pub async fn check_room_password_with_rate_limit(
+        &self,
+        room_id: &RoomId,
+        password: &str,
+        client_ip: Option<IpAddr>,
+    ) -> Result<bool> {
+        // Build the rate limit key: room_id + client_ip (or just room_id if no IP)
+        let rate_limit_key = match client_ip {
+            Some(ip) => format!("{}:{}", room_id.as_str(), ip),
+            None => room_id.as_str().to_string(),
+        };
+
+        // Check rate limit if brute-force service is configured
+        if let Some(ref brute_force) = self.brute_force_service {
+            brute_force
+                .check_allowed(&rate_limit_key, client_ip)
+                .await?;
+        }
+
+        // Verify the password
+        let password_hash = self.room_settings_repo.get_password_hash(room_id).await?;
+        let is_valid = match password_hash {
+            Some(stored) => {
+                verify_password(password, &stored).await
+                    .internal_with_err("Password verification failed")
+            }
+            None => Ok(false),
+        }?;
+
+        // Handle success/failure tracking
+        if let Some(ref brute_force) = self.brute_force_service {
+            if is_valid {
+                // Reset failure counter on successful verification
+                if let Err(e) = brute_force.reset(&rate_limit_key).await {
+                    tracing::warn!(
+                        room_id = %room_id,
+                        client_ip = ?client_ip,
+                        error = %e,
+                        "Failed to reset room password rate limit counter after successful verification"
+                    );
+                }
+            } else {
+                // Record failure on incorrect password
+                brute_force.record_failure(&rate_limit_key, client_ip).await?;
+            }
+        }
+
+        Ok(is_valid)
+    }
+
+    /// Reset the room password rate limit counter.
+    ///
+    /// This is primarily used for testing to simulate lockout expiry.
+    /// In production, counters expire automatically via TTL.
+    pub async fn reset_room_password_rate_limit(
+        &self,
+        room_id: &RoomId,
+        client_ip: IpAddr,
+    ) -> Result<()> {
+        if let Some(ref brute_force) = self.brute_force_service {
+            let rate_limit_key = format!("{}:{}", room_id.as_str(), client_ip);
+            brute_force.reset(&rate_limit_key).await?;
+        }
+        Ok(())
     }
 
     /// Update room password

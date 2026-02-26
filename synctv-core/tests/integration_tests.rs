@@ -272,6 +272,7 @@ fn test_playlist_model() {
         provider_instance_name: None,
         created_at: chrono::Utc::now(),
         updated_at: chrono::Utc::now(),
+        version: 0,
     };
     assert!(root.is_root());
     assert!(!root.is_dynamic());
@@ -289,6 +290,7 @@ fn test_playlist_model() {
         provider_instance_name: None,
         created_at: chrono::Utc::now(),
         updated_at: chrono::Utc::now(),
+        version: 0,
     };
     assert!(!folder.is_root());
     assert!(!folder.is_dynamic());
@@ -306,6 +308,7 @@ fn test_playlist_model() {
         provider_instance_name: Some("my_alist".to_string()),
         created_at: chrono::Utc::now(),
         updated_at: chrono::Utc::now(),
+        version: 0,
     };
     assert!(!dynamic.is_root());
     assert!(dynamic.is_dynamic());
@@ -555,6 +558,7 @@ async fn test_e2e_playlist_hierarchy() {
         provider_instance_name: None,
         created_at: chrono::Utc::now(),
         updated_at: chrono::Utc::now(),
+        version: 0,
     };
 
     assert!(root.is_root());
@@ -573,6 +577,7 @@ async fn test_e2e_playlist_hierarchy() {
         provider_instance_name: None,
         created_at: chrono::Utc::now(),
         updated_at: chrono::Utc::now(),
+        version: 0,
     };
 
     assert!(!static_folder.is_root());
@@ -595,6 +600,7 @@ async fn test_e2e_playlist_hierarchy() {
         provider_instance_name: Some("main_alist".to_string()),
         created_at: chrono::Utc::now(),
         updated_at: chrono::Utc::now(),
+        version: 0,
     };
 
     assert!(!dynamic_folder.is_root());

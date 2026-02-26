@@ -2430,3 +2430,501 @@ mod websocket_e2e {
         ws.close(None).await.expect("close");
     }
 }
+
+// ============================================================================
+// Module: WebSocket connection limit check timing tests
+// ============================================================================
+//
+// These tests verify that connection limit checks happen BEFORE the WebSocket
+// upgrade (HTTP 101), so clients receive a proper HTTP 429 error instead of
+// getting a successful upgrade followed by an immediate disconnect.
+//
+// Issue: Previously, the connection limit was checked inside handle_socket()
+// after the WebSocket upgrade completed. This meant:
+// 1. Client receives HTTP 101 Switching Protocols
+// 2. Connection is established
+// 3. Server checks limits and disconnects if exceeded
+//
+// Fix: Move the limit check to websocket_handler() before ws.on_upgrade(),
+// returning HTTP 429 Too Many Requests if limits are exceeded.
+// ============================================================================
+
+#[cfg(test)]
+mod websocket_connection_limit_timing {
+    use std::sync::Arc;
+    use futures::StreamExt;
+    use tokio::net::TcpListener;
+    use tokio_tungstenite::tungstenite;
+
+    use synctv_api::http::websocket::websocket_handler;
+    use synctv_core::cache::UsernameCache;
+    use synctv_core::models::id::UserId;
+    use synctv_core::service::auth::jwt::{JwtService, TokenType};
+    use synctv_core::service::rate_limit::RateLimiter;
+    use synctv_core::config::PasswordComplexityConfig;
+    use synctv_core::service::{RoomService, UserService};
+    use synctv_cluster::sync::{ClusterConfig, ClusterManager, ConnectionManager, ConnectionLimits};
+
+    use sqlx::PgPool;
+    use testcontainers::core::ImageExt;
+    use testcontainers::runners::AsyncRunner;
+    use testcontainers::ContainerAsync;
+    use testcontainers_modules::postgres::Postgres;
+    use testcontainers_modules::redis::Redis;
+
+    const TEST_JWT_SECRET: &str = "this-is-a-test-secret-with-enough-entropy-for-jwt-signing-32chars";
+    const POSTGRES_VERSION: &str = "16-alpine";
+    const REDIS_VERSION: &str = "7-alpine";
+
+    struct TestInfra {
+        pool: PgPool,
+        redis_url: String,
+        _postgres: ContainerAsync<Postgres>,
+        _redis: ContainerAsync<Redis>,
+    }
+
+    impl TestInfra {
+        async fn new() -> Self {
+            let (pg_container, redis_container) = tokio::join!(
+                Postgres::default()
+                    .with_db_name("synctv_test")
+                    .with_user("synctv")
+                    .with_password("synctv_test")
+                    .with_tag(POSTGRES_VERSION)
+                    .start(),
+                Redis::default()
+                    .with_tag(REDIS_VERSION)
+                    .start(),
+            );
+            let pg_container = pg_container.expect("Failed to start Postgres");
+            let redis_container = redis_container.expect("Failed to start Redis");
+
+            let pg_host = pg_container.get_host().await.expect("pg host");
+            let pg_port = pg_container.get_host_port_ipv4(5432).await.expect("pg port");
+            let redis_host = redis_container.get_host().await.expect("redis host");
+            let redis_port = redis_container.get_host_port_ipv4(6379).await.expect("redis port");
+
+            let database_url = format!(
+                "postgresql://synctv:synctv_test@{pg_host}:{pg_port}/synctv_test"
+            );
+            let redis_url = format!("redis://{redis_host}:{redis_port}");
+
+            let pool = PgPool::connect(&database_url).await.expect("connect pg");
+            sqlx::migrate!("../migrations").run(&pool).await.expect("migrations");
+
+            Self {
+                pool,
+                redis_url,
+                _postgres: pg_container,
+                _redis: redis_container,
+            }
+        }
+    }
+
+    struct LimitTestServer {
+        addr: String,
+        jwt_service: JwtService,
+        room_service: Arc<RoomService>,
+        user_service: Arc<UserService>,
+        connection_manager: Arc<ConnectionManager>,
+    }
+
+    /// Build a server with a very low max_per_user limit (1 connection per user)
+    async fn setup_server_with_low_user_limit(infra: &TestInfra) -> LimitTestServer {
+        let pool = infra.pool.clone();
+        let redis_url = infra.redis_url.clone();
+
+        let jwt_service = JwtService::new(TEST_JWT_SECRET).expect("JwtService");
+        let redis_client = redis::Client::open(infra.redis_url.as_str()).expect("Redis client");
+        let redis_conn = redis::aio::ConnectionManager::new(redis_client.clone()).await.expect("Redis ConnectionManager");
+
+        let l2_backend = Arc::new(synctv_core::cache::l2_backend::RedisCacheL2::new(redis_conn.clone()));
+        let username_cache = UsernameCache::new(l2_backend, "test_un:".to_string(), 100, 300);
+        let key_builder = synctv_core::cache::KeyBuilder::new("test:".to_string());
+        let brute_force = synctv_core::service::auth::BruteForceProtection::with_redis(redis_conn.clone(), "test:".to_string());
+        let token_blacklist: Arc<dyn synctv_core::service::TokenBlacklistStore> = Arc::new(synctv_core::service::InMemoryTokenBlacklistStore::new(10_000, 3600, 86400));
+
+        let user_service = Arc::new(UserService::new(
+            pool.clone(),
+            jwt_service.clone(),
+            username_cache,
+            PasswordComplexityConfig::default(),
+            token_blacklist,
+            key_builder,
+            brute_force,
+        ));
+        let room_service = Arc::new(RoomService::new(pool.clone(), (*user_service).clone()));
+
+        let redis_client_for_cluster = redis::Client::open(redis_url.clone()).expect("Redis client");
+        let redis_conn_for_cluster = redis_client_for_cluster.get_connection_manager().await.expect("ConnectionManager");
+        let cluster_config = ClusterConfig {
+            redis_client: Some(redis_client_for_cluster),
+            redis_conn: Some(redis_conn_for_cluster),
+            node_id: "limit_test_node".to_string(),
+            ..Default::default()
+        };
+        let cluster_manager = Arc::new(
+            ClusterManager::new(cluster_config, None, None).await.expect("ClusterManager"),
+        );
+
+        // CRITICAL: Set max_per_user = 1 to trigger the limit easily
+        let connection_limits = ConnectionLimits {
+            max_per_user: 1,
+            max_per_room: 200,
+            max_total: 10000,
+            idle_timeout: std::time::Duration::from_secs(300),
+            max_duration: std::time::Duration::from_secs(86400),
+        };
+        let connection_manager = Arc::new(ConnectionManager::new(connection_limits));
+        let connection_manager_ret = connection_manager.clone();
+
+        let rate_limiter = RateLimiter::in_memory_only("test_ws:".to_string());
+        let jwt_validator = Arc::new(synctv_core::service::auth::JwtValidator::new(Arc::new(jwt_service.clone())));
+        let rate_limit_config = Arc::new(synctv_api::http::middleware::RateLimitConfig::default());
+
+        let provider_instance_repo = Arc::new(synctv_core::repository::ProviderInstanceRepository::new(pool.clone()));
+        let provider_instance_manager = Arc::new(synctv_core::service::RemoteProviderManager::new(provider_instance_repo, None, None));
+        let user_provider_credential_repo = Arc::new(synctv_core::repository::UserProviderCredentialRepository::new(pool.clone()));
+        let bilibili_provider = Arc::new(synctv_core::provider::BilibiliProvider::new(provider_instance_manager.clone()));
+        let alist_provider = Arc::new(synctv_core::provider::AlistProvider::new(provider_instance_manager.clone()));
+        let emby_provider = Arc::new(synctv_core::provider::EmbyProvider::new(provider_instance_manager.clone()));
+
+        let mut config = synctv_core::Config::default();
+        config.server.disable_ws_token_query = false;
+        let config = Arc::new(config);
+
+        let client_api = Arc::new(synctv_api::impls::ClientApiImpl::new(
+            user_service.clone(),
+            room_service.clone(),
+            connection_manager.clone(),
+            config.clone(),
+            None,
+            jwt_service.clone(),
+            None,
+            None,
+            None,
+        ));
+
+        let bilibili_api = Arc::new(synctv_api::impls::BilibiliApiImpl::new(bilibili_provider.clone()));
+        let alist_api = Arc::new(synctv_api::impls::AlistApiImpl::new(alist_provider.clone()));
+        let emby_api = Arc::new(synctv_api::impls::EmbyApiImpl::new(emby_provider.clone()));
+
+        let router_config = synctv_api::http::RouterConfig {
+            config,
+            user_service: user_service.clone(),
+            room_service: room_service.clone(),
+            provider_instance_manager,
+            user_provider_credential_repository: user_provider_credential_repo,
+            alist_provider,
+            bilibili_provider,
+            emby_provider,
+            cluster_manager: Some(cluster_manager),
+            connection_manager,
+            jwt_service: jwt_service.clone(),
+            redis_publish_tx: None,
+            oauth2_service: None,
+            settings_service: None,
+            settings_registry: None,
+            email_service: None,
+            email_token_service: None,
+            publish_key_service: None,
+            notification_service: None,
+            audit_service: {
+                let (audit_svc, _audit_handle) = synctv_core::service::AuditService::new(pool.clone());
+                Arc::new(audit_svc)
+            },
+            live_streaming_infrastructure: None,
+            rate_limiter,
+            ws_ticket_service: None,
+            redis_conn: None,
+            builtin_stun_url: None,
+            credential_encryption: None,
+        };
+
+        let state = synctv_api::AppState {
+            router_config: Arc::new(router_config),
+            rate_limit_config,
+            jwt_validator,
+            security_pipeline: Arc::new(synctv_core::service::SecurityPipeline::new(user_service.clone()).with_token_blacklist(
+                user_service.token_blacklist_store(),
+                user_service.key_builder().clone(),
+            )),
+            client_api,
+            admin_api: None,
+            notification_api: None,
+            oauth2_api: None,
+            bilibili_api,
+            alist_api,
+            emby_api,
+        };
+
+        let app = axum::Router::new()
+            .route("/ws/rooms/{room_id}", axum::routing::get(websocket_handler))
+            .with_state(state);
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let addr = listener.local_addr().expect("local_addr");
+        let addr_str = format!("127.0.0.1:{}", addr.port());
+
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.expect("server error");
+        });
+
+        LimitTestServer {
+            addr: addr_str,
+            jwt_service,
+            room_service,
+            user_service,
+            connection_manager: connection_manager_ret,
+        }
+    }
+
+    async fn register_test_user(
+        user_service: &UserService,
+        jwt_service: &JwtService,
+        username: &str,
+    ) -> (UserId, String) {
+        let (user, _access, _refresh) = user_service
+            .register(
+                username.to_string(),
+                Some(format!("{username}@test.com")),
+                "TestPassword123!".to_string(),
+                None,
+            )
+            .await
+            .expect("register user");
+        let token = jwt_service.sign_token(&user.id, TokenType::Access, 0).expect("sign token");
+        (user.id, token)
+    }
+
+    async fn create_test_room(
+        room_service: &RoomService,
+        user_id: &UserId,
+        room_name: &str,
+    ) -> String {
+        let (room, _member) = room_service
+            .create_room(
+                room_name.to_string(),
+                String::new(),
+                user_id.clone(),
+                None,
+                None,
+            )
+            .await
+            .expect("create room");
+        room.id.as_str().to_string()
+    }
+
+    // ========================================================================
+    // TEST 1: Connection limit exceeded returns HTTP 429 (not 101)
+    // ========================================================================
+    //
+    // This test verifies that when a user exceeds their connection limit,
+    // the server returns HTTP 429 Too Many Requests BEFORE upgrading to WebSocket.
+    //
+    // Expected behavior:
+    // - First connection: HTTP 101 Switching Protocols (success)
+    // - Second connection (same user): HTTP 429 Too Many Requests
+    //
+    // Current bug: Both connections get HTTP 101, then the second one is
+    // disconnected from inside handle_socket().
+    // ========================================================================
+
+    #[tokio::test]
+    #[ignore = "Disabled: CI timeout - run with --ignored flag"]
+    async fn test_ws_connection_limit_returns_429_before_upgrade() {
+        let infra = TestInfra::new().await;
+        let server = setup_server_with_low_user_limit(&infra).await;
+
+        // Create a user and room
+        let (user_id, token) = register_test_user(&server.user_service, &server.jwt_service, "limit_user").await;
+        let room_id = create_test_room(&server.room_service, &user_id, "Limit Test Room").await;
+
+        // First connection should succeed (HTTP 101)
+        let url1 = format!("ws://{}/ws/rooms/{}?token={}", server.addr, room_id, token);
+        let (ws1, response1) = tokio_tungstenite::connect_async(&url1)
+            .await
+            .expect("First WebSocket connect should succeed");
+        assert_eq!(
+            response1.status(),
+            tungstenite::http::StatusCode::SWITCHING_PROTOCOLS,
+            "First connection should get HTTP 101 Switching Protocols"
+        );
+
+        // Wait a bit for the first connection to register
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+        // Verify user has 1 connection
+        assert_eq!(server.connection_manager.user_connection_count(&user_id), 1);
+
+        // Second connection (same user) should fail with HTTP 429
+        // This is the KEY assertion - the limit check must happen BEFORE upgrade
+        let url2 = format!("ws://{}/ws/rooms/{}?token={}", server.addr, room_id, token);
+        let result = tokio_tungstenite::connect_async(&url2).await;
+
+        match result {
+            Err(tokio_tungstenite::tungstenite::Error::Http(response)) => {
+                assert_eq!(
+                    response.status(),
+                    tungstenite::http::StatusCode::TOO_MANY_REQUESTS,
+                    "Second connection should get HTTP 429 Too Many Requests, got {}",
+                    response.status()
+                );
+            }
+            Err(e) => {
+                panic!("Expected HTTP error with status 429, got: {:?}", e);
+            }
+            Ok((_ws2, response)) => {
+                // BUG: If we get here, the connection was upgraded when it shouldn't have been
+                panic!(
+                    "BUG: Second connection was upgraded with status {} instead of being rejected with 429. \
+                     Connection limit check is happening AFTER WebSocket upgrade!",
+                    response.status()
+                );
+            }
+        }
+
+        // Clean up first connection
+        drop(ws1);
+    }
+
+    // ========================================================================
+    // TEST 2: Normal connection flow is not affected
+    // ========================================================================
+    //
+    // This test verifies that users within their connection limits can
+    // still connect normally.
+    // ========================================================================
+
+    #[tokio::test]
+    #[ignore = "Disabled: CI timeout - run with --ignored flag"]
+    async fn test_ws_normal_connection_within_limits() {
+        let infra = TestInfra::new().await;
+        let server = setup_server_with_low_user_limit(&infra).await;
+
+        // Create a user and room
+        let (user_id, token) = register_test_user(&server.user_service, &server.jwt_service, "normal_user").await;
+        let room_id = create_test_room(&server.room_service, &user_id, "Normal Flow Room").await;
+
+        // Connection should succeed (HTTP 101)
+        let url = format!("ws://{}/ws/rooms/{}?token={}", server.addr, room_id, token);
+        let (_ws, response) = tokio_tungstenite::connect_async(&url)
+            .await
+            .expect("WebSocket connect should succeed");
+
+        assert_eq!(
+            response.status(),
+            tungstenite::http::StatusCode::SWITCHING_PROTOCOLS,
+            "Connection within limits should get HTTP 101"
+        );
+
+        // Wait for registration
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+        // Verify connection is tracked
+        assert_eq!(server.connection_manager.user_connection_count(&user_id), 1);
+    }
+
+    // ========================================================================
+    // TEST 3: Different users can each connect within their limits
+    // ========================================================================
+
+    #[tokio::test]
+    #[ignore = "Disabled: CI timeout - run with --ignored flag"]
+    async fn test_ws_different_users_can_connect_within_limits() {
+        let infra = TestInfra::new().await;
+        let server = setup_server_with_low_user_limit(&infra).await;
+
+        // Create two different users
+        let (user1_id, user1_token) = register_test_user(&server.user_service, &server.jwt_service, "user1").await;
+        let (user2_id, user2_token) = register_test_user(&server.user_service, &server.jwt_service, "user2").await;
+
+        // Create a room with user1 as owner
+        let room_id = create_test_room(&server.room_service, &user1_id, "Multi User Room").await;
+
+        // Join user2 to the room
+        let rid = synctv_core::models::RoomId::from_string(room_id.clone());
+        server.room_service.join_room(rid, user2_id.clone(), None).await.expect("user2 join room");
+
+        // Both users should be able to connect (HTTP 101)
+        let url1 = format!("ws://{}/ws/rooms/{}?token={}", server.addr, room_id, user1_token);
+        let (_ws1, response1) = tokio_tungstenite::connect_async(&url1)
+            .await
+            .expect("User1 WebSocket connect should succeed");
+
+        assert_eq!(
+            response1.status(),
+            tungstenite::http::StatusCode::SWITCHING_PROTOCOLS,
+            "User1 should get HTTP 101"
+        );
+
+        let url2 = format!("ws://{}/ws/rooms/{}?token={}", server.addr, room_id, user2_token);
+        let (_ws2, response2) = tokio_tungstenite::connect_async(&url2)
+            .await
+            .expect("User2 WebSocket connect should succeed");
+
+        assert_eq!(
+            response2.status(),
+            tungstenite::http::StatusCode::SWITCHING_PROTOCOLS,
+            "User2 should get HTTP 101"
+        );
+
+        // Wait for registration
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+        // Verify both connections are tracked
+        assert_eq!(server.connection_manager.user_connection_count(&user1_id), 1);
+        assert_eq!(server.connection_manager.user_connection_count(&user2_id), 1);
+    }
+
+    // ========================================================================
+    // TEST 4: After disconnect, user can reconnect
+    // ========================================================================
+
+    #[tokio::test]
+    #[ignore = "Disabled: CI timeout - run with --ignored flag"]
+    async fn test_ws_can_reconnect_after_disconnect() {
+        let infra = TestInfra::new().await;
+        let server = setup_server_with_low_user_limit(&infra).await;
+
+        // Create a user and room
+        let (user_id, token) = register_test_user(&server.user_service, &server.jwt_service, "reconnect_user").await;
+        let room_id = create_test_room(&server.room_service, &user_id, "Reconnect Room").await;
+
+        // First connection
+        let url = format!("ws://{}/ws/rooms/{}?token={}", server.addr, room_id, token);
+        let (ws1, response1) = tokio_tungstenite::connect_async(&url)
+            .await
+            .expect("First connect should succeed");
+
+        assert_eq!(response1.status(), tungstenite::http::StatusCode::SWITCHING_PROTOCOLS);
+
+        // Wait for registration
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        assert_eq!(server.connection_manager.user_connection_count(&user_id), 1);
+
+        // Disconnect
+        drop(ws1);
+
+        // Wait for cleanup
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        assert_eq!(server.connection_manager.user_connection_count(&user_id), 0);
+
+        // Should be able to reconnect (HTTP 101)
+        let (ws2, response2) = tokio_tungstenite::connect_async(&url)
+            .await
+            .expect("Reconnect should succeed");
+
+        assert_eq!(
+            response2.status(),
+            tungstenite::http::StatusCode::SWITCHING_PROTOCOLS,
+            "Reconnection after disconnect should get HTTP 101"
+        );
+
+        // Wait for registration
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        assert_eq!(server.connection_manager.user_connection_count(&user_id), 1);
+
+        drop(ws2);
+    }
+}

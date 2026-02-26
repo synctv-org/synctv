@@ -113,6 +113,7 @@ async fn setup_test_context(suffix: &str) -> TestContext {
         provider_instance_name: None,
         created_at: Utc::now(),
         updated_at: Utc::now(),
+        version: 0,
     }).await.unwrap();
 
     TestContext {
@@ -136,6 +137,7 @@ fn make_media(playlist_id: &PlaylistId, room_id: &RoomId, name: &str, position: 
         source_config: json!({"url": "https://example.com/video.mp4"}),
         provider_instance_name: None,
         added_at: Utc::now(),
+        version: 0,
     }
 }
 
@@ -272,6 +274,7 @@ async fn test_media_cascade_delete_with_playlist() {
         provider_instance_name: None,
         created_at: Utc::now(),
         updated_at: Utc::now(),
+        version: 0,
     }).await.unwrap();
 
     // Add media to child playlist
@@ -574,6 +577,7 @@ async fn test_count_by_playlists_batch_multiple_playlists() {
             provider_instance_name: None,
             created_at: Utc::now(),
             updated_at: Utc::now(),
+            version: 0,
         })
         .await
         .unwrap();

@@ -42,11 +42,11 @@ impl MediaRepository {
         let row = sqlx::query(
             r"
             INSERT INTO media (id, playlist_id, room_id, creator_id, name, position,
-                              source_provider, source_config, provider_instance_name, added_at)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+                              source_provider, source_config, provider_instance_name, added_at, version)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 0)
              RETURNING id, playlist_id, room_id, creator_id, name, position,
                        source_provider, source_config, provider_instance_name,
-                       added_at
+                       added_at, version
             "
         )
         .bind(media.id.as_str())
@@ -124,7 +124,7 @@ impl MediaRepository {
 
         let mut query_builder = String::from(
             "INSERT INTO media (id, playlist_id, room_id, creator_id, name, position,
-                               source_provider, source_config, provider_instance_name, added_at)
+                               source_provider, source_config, provider_instance_name, added_at, version)
              VALUES "
         );
         let mut binds = Vec::new();
@@ -134,7 +134,7 @@ impl MediaRepository {
             }
             let base = i * 10;
             query_builder.push_str(&format!(
-                "(${}, ${}, ${}, ${}, ${}, ${}, ${}, ${}, ${}, ${})",
+                "(${}, ${}, ${}, ${}, ${}, ${}, ${}, ${}, ${}, ${}, 0)",
                 base + 1, base + 2, base + 3, base + 4, base + 5,
                 base + 6, base + 7, base + 8, base + 9, base + 10
             ));
@@ -143,7 +143,7 @@ impl MediaRepository {
         query_builder.push_str(
             " RETURNING id, playlist_id, room_id, creator_id, name, position,
                        source_provider, source_config, provider_instance_name,
-                       added_at"
+                       added_at, version"
         );
 
         let mut query = sqlx::query(&query_builder);
@@ -202,7 +202,7 @@ impl MediaRepository {
                 provider_instance_name = $5
              WHERE id = $1             RETURNING id, playlist_id, room_id, creator_id, name, position,
                        source_provider, source_config, provider_instance_name,
-                       added_at
+                       added_at, version
             "
         )
         .bind(media.id.as_str())
@@ -219,6 +219,7 @@ impl MediaRepository {
     /// Conditional update: only succeeds if the row's name and position still
     /// match `old_name`/`old_position`, providing optimistic locking without a
     /// dedicated version column. Returns `Ok(None)` on conflict (no rows updated).
+    #[deprecated(note = "Use update_with_version for proper optimistic locking")]
     pub async fn update_if_unchanged(
         &self,
         media: &Media,
@@ -231,11 +232,11 @@ impl MediaRepository {
             r"
             UPDATE media
             SET name = $2, position = $3, source_config = $4,
-                provider_instance_name = $5
+                provider_instance_name = $5, version = version + 1
              WHERE id = $1 AND name = $6 AND position = $7
              RETURNING id, playlist_id, room_id, creator_id, name, position,
                        source_provider, source_config, provider_instance_name,
-                       added_at
+                       added_at, version
             "
         )
         .bind(media.id.as_str())
@@ -254,13 +255,61 @@ impl MediaRepository {
         }
     }
 
+    /// Optimistic locking update: only succeeds if the row's version matches
+    /// the provided `expected_version`. Returns `Ok(Some(Media))` with the updated
+    /// row (version incremented) on success, or `Ok(None)` if the version doesn't
+    /// match (indicating a concurrent modification).
+    ///
+    /// # Example
+    /// ```text
+    /// let media = repo.get_by_id(&id).await?.unwrap();
+    /// let mut updated = media.clone();
+    /// updated.name = "new_name".to_string();
+    /// match repo.update_with_version(&updated, media.version).await? {
+    ///     Some(result) => println!("Updated to version {}", result.version),
+    ///     None => println!("Conflict! Someone else modified this media."),
+    /// }
+    /// ```
+    pub async fn update_with_version(
+        &self,
+        media: &Media,
+        expected_version: i32,
+    ) -> Result<Option<Media>> {
+        let source_config_json = serde_json::to_value(&media.source_config)?;
+
+        let row = sqlx::query(
+            r"
+            UPDATE media
+            SET name = $2, position = $3, source_config = $4,
+                provider_instance_name = $5, version = version + 1
+             WHERE id = $1 AND version = $6
+             RETURNING id, playlist_id, room_id, creator_id, name, position,
+                       source_provider, source_config, provider_instance_name,
+                       added_at, version
+            "
+        )
+        .bind(media.id.as_str())
+        .bind(&media.name)
+        .bind(media.position)
+        .bind(&source_config_json)
+        .bind(&media.provider_instance_name)
+        .bind(expected_version)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        match row {
+            Some(row) => Ok(Some(Media::from_row(&row)?)),
+            None => Ok(None),
+        }
+    }
+
     /// Get media by ID
     pub async fn get_by_id(&self, media_id: &MediaId) -> Result<Option<Media>> {
         let row = sqlx::query(
             r"
             SELECT id, playlist_id, room_id, creator_id, name, position,
                    source_provider, source_config, provider_instance_name,
-                   added_at
+                   added_at, version
              FROM media
              WHERE id = $1            "
         )
@@ -293,7 +342,7 @@ impl MediaRepository {
             r"
             SELECT id, playlist_id, room_id, creator_id, name, position,
                    source_provider, source_config, provider_instance_name,
-                   added_at
+                   added_at, version
              FROM media
              WHERE id = ANY($1)            "
         )
@@ -310,7 +359,7 @@ impl MediaRepository {
             r"
             SELECT id, playlist_id, room_id, creator_id, name, position,
                    source_provider, source_config, provider_instance_name,
-                   added_at
+                   added_at, version
              FROM media
              WHERE room_id = $1             ORDER BY playlist_id, position ASC
             "
@@ -328,7 +377,7 @@ impl MediaRepository {
             r"
             SELECT id, playlist_id, room_id, creator_id, name, position,
                    source_provider, source_config, provider_instance_name,
-                   added_at
+                   added_at, version
              FROM media
              WHERE playlist_id = $1             ORDER BY position ASC
             "
@@ -363,7 +412,7 @@ impl MediaRepository {
             r"
             SELECT id, playlist_id, room_id, creator_id, name, position,
                    source_provider, source_config, provider_instance_name,
-                   added_at
+                   added_at, version
              FROM media
              WHERE playlist_id = $1             ORDER BY position ASC
              LIMIT $2 OFFSET $3

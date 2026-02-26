@@ -312,6 +312,7 @@ impl PlaylistFixture {
             provider_instance_name: None,
             created_at: now,
             updated_at: now,
+            version: 0,
         }
     }
 }

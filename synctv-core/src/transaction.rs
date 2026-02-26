@@ -95,13 +95,26 @@ impl std::error::Error for TransactionError {}
 /// ```
 pub struct UnitOfWork {
     tx: Option<Transaction<'static, Postgres>>,
+    /// Track if the transaction was explicitly committed
+    committed: bool,
+    /// Track if the transaction was explicitly rolled back
+    rolled_back: bool,
+    /// For testing: simulate having an active uncommitted transaction
+    #[cfg(test)]
+    _test_simulate_uncommitted: bool,
 }
 
 impl UnitOfWork {
     /// Begin a new transaction
     pub async fn begin(pool: &PgPool) -> Result<Self> {
         let tx = pool.begin().await?;
-        Ok(Self { tx: Some(tx) })
+        Ok(Self {
+            tx: Some(tx),
+            committed: false,
+            rolled_back: false,
+            #[cfg(test)]
+            _test_simulate_uncommitted: false,
+        })
     }
 
     /// Commit the transaction
@@ -109,6 +122,7 @@ impl UnitOfWork {
         if let Some(tx) = self.tx.take() {
             tx.commit().await?;
         }
+        self.committed = true;
         Ok(())
     }
 
@@ -117,6 +131,7 @@ impl UnitOfWork {
         if let Some(tx) = self.tx.take() {
             tx.rollback().await?;
         }
+        self.rolled_back = true;
         Ok(())
     }
 
@@ -133,19 +148,74 @@ impl UnitOfWork {
     pub const fn is_active(&self) -> bool {
         self.tx.is_some()
     }
+
+    /// Check if the transaction was explicitly handled (committed or rolled back)
+    #[inline]
+    fn is_handled(&self) -> bool {
+        self.committed || self.rolled_back
+    }
+
+    /// Create a UnitOfWork for testing purposes that simulates an uncommitted state.
+    ///
+    /// This allows testing the panic behavior without a real database connection.
+    #[cfg(test)]
+    pub fn new_uncommitted_for_testing() -> Self {
+        Self {
+            tx: None,
+            committed: false,
+            rolled_back: false,
+            _test_simulate_uncommitted: true,
+        }
+    }
+
+    /// Mark the UnitOfWork as committed for testing purposes
+    #[cfg(test)]
+    pub fn mark_committed_for_testing(&mut self) {
+        self.committed = true;
+    }
+
+    /// Mark the UnitOfWork as rolled back for testing purposes
+    #[cfg(test)]
+    pub fn mark_rolled_back_for_testing(&mut self) {
+        self.rolled_back = true;
+    }
 }
 
 // Implement Drop for automatic rollback on panic
 impl Drop for UnitOfWork {
     fn drop(&mut self) {
-        if self.tx.is_some() {
+        // Check if the transaction needs explicit handling
+        // In production: tx.is_some() means we have an uncommitted transaction
+        // In testing: _test_simulate_uncommitted simulates having an uncommitted tx
+        #[cfg(not(test))]
+        let needs_handling = self.tx.is_some() && !self.is_handled();
+
+        #[cfg(test)]
+        let needs_handling = (self.tx.is_some() || self._test_simulate_uncommitted) && !self.is_handled();
+
+        if needs_handling {
             // Transaction was not explicitly committed/rolled back.
             // sqlx will automatically rollback when the Transaction is dropped,
             // but this is likely a bug in the caller.
-            tracing::warn!(
-                "UnitOfWork dropped without explicit commit or rollback; \
-                 transaction will be rolled back automatically"
-            );
+            //
+            // In debug mode, panic to catch the bug early.
+            // In release mode, just log a warning.
+            #[cfg(debug_assertions)]
+            {
+                panic!(
+                    "UnitOfWork dropped without explicit commit or rollback! \
+                     This is likely a bug - transactions should be explicitly committed or rolled back. \
+                     The transaction will be rolled back automatically."
+                );
+            }
+
+            #[cfg(not(debug_assertions))]
+            {
+                tracing::warn!(
+                    "UnitOfWork dropped without explicit commit or rollback; \
+                     transaction will be rolled back automatically"
+                );
+            }
         }
     }
 }
@@ -177,6 +247,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::panic::{catch_unwind, AssertUnwindSafe};
 
     // ========== UnitOfWork State Machine Tests ==========
 
@@ -203,7 +274,12 @@ mod tests {
 
     #[test]
     fn test_uow_transaction_returns_error_when_consumed() {
-        let mut uow = UnitOfWork { tx: None };
+        let mut uow = UnitOfWork {
+            tx: None,
+            committed: false,
+            rolled_back: false,
+            _test_simulate_uncommitted: false,
+        };
         let result = uow.transaction();
         assert!(result.is_err());
         let err = result.unwrap_err();
@@ -212,15 +288,204 @@ mod tests {
 
     #[test]
     fn test_uow_is_active_when_no_transaction() {
-        let uow = UnitOfWork { tx: None };
+        let uow = UnitOfWork {
+            tx: None,
+            committed: false,
+            rolled_back: false,
+            _test_simulate_uncommitted: false,
+        };
         assert!(!uow.is_active());
     }
 
     #[test]
-    fn test_uow_drop_when_consumed_is_safe() {
-        // Dropping a consumed UnitOfWork should not panic
-        let uow = UnitOfWork { tx: None };
-        drop(uow); // Should not panic
+    fn test_uow_drop_when_committed_is_safe() {
+        // Dropping a committed UnitOfWork should not panic
+        let mut uow = UnitOfWork {
+            tx: None,
+            committed: true,
+            rolled_back: false,
+            _test_simulate_uncommitted: true, // Simulates having had a transaction
+        };
+        drop(uow); // Should not panic because committed = true
+    }
+
+    #[test]
+    fn test_uow_drop_when_rolled_back_is_safe() {
+        // Dropping a rolled back UnitOfWork should not panic
+        let uow = UnitOfWork {
+            tx: None,
+            committed: false,
+            rolled_back: true,
+            _test_simulate_uncommitted: true, // Simulates having had a transaction
+        };
+        drop(uow); // Should not panic because rolled_back = true
+    }
+
+    // ========== TDD Tests for Uncommitted Detection ==========
+
+    /// Test: Uncommitted UnitOfWork panics in debug mode when dropped.
+    /// This is the key safety feature to catch developer mistakes early.
+    #[test]
+    fn test_uncommitted_uow_panics_in_debug_mode() {
+        #[cfg(debug_assertions)]
+        {
+            let result = catch_unwind(AssertUnwindSafe(|| {
+                let _uow = UnitOfWork::new_uncommitted_for_testing();
+                // When _uow goes out of scope, it should panic
+            }));
+
+            assert!(
+                result.is_err(),
+                "Expected panic when dropping uncommitted UnitOfWork in debug mode"
+            );
+
+            // Verify the panic message contains useful information
+            if let Err(panic_payload) = result {
+                if let Some(msg) = panic_payload.downcast_ref::<&str>() {
+                    assert!(
+                        msg.contains("UnitOfWork dropped without explicit commit or rollback"),
+                        "Panic message should mention uncommitted UnitOfWork: {msg}"
+                    );
+                } else if let Some(msg) = panic_payload.downcast_ref::<String>() {
+                    assert!(
+                        msg.contains("UnitOfWork dropped without explicit commit or rollback"),
+                        "Panic message should mention uncommitted UnitOfWork: {msg}"
+                    );
+                }
+            }
+        }
+
+        #[cfg(not(debug_assertions))]
+        {
+            println!("Test skipped in release mode");
+        }
+    }
+
+    /// Test: Committed UnitOfWork drops cleanly without panic.
+    #[test]
+    fn test_committed_uow_drops_cleanly() {
+        let result = catch_unwind(AssertUnwindSafe(|| {
+            let mut uow = UnitOfWork::new_uncommitted_for_testing();
+            uow.mark_committed_for_testing();
+            drop(uow);
+        }));
+
+        assert!(
+            result.is_ok(),
+            "Committed UnitOfWork should drop without panic"
+        );
+    }
+
+    /// Test: Explicitly rolled back UnitOfWork drops cleanly without panic.
+    #[test]
+    fn test_rolled_back_uow_drops_cleanly() {
+        let result = catch_unwind(AssertUnwindSafe(|| {
+            let mut uow = UnitOfWork::new_uncommitted_for_testing();
+            uow.mark_rolled_back_for_testing();
+            drop(uow);
+        }));
+
+        assert!(
+            result.is_ok(),
+            "Rolled back UnitOfWork should drop without panic"
+        );
+    }
+
+    /// Test: Double commit is safe (no panic on drop).
+    #[test]
+    fn test_double_commit_is_safe() {
+        let mut uow = UnitOfWork::new_uncommitted_for_testing();
+        uow.mark_committed_for_testing();
+        uow.mark_committed_for_testing(); // Second commit should be safe
+
+        let result = catch_unwind(AssertUnwindSafe(|| {
+            drop(uow);
+        }));
+
+        assert!(result.is_ok(), "Double committed UnitOfWork should drop safely");
+    }
+
+    /// Test: Double rollback is safe (no panic on drop).
+    #[test]
+    fn test_double_rollback_is_safe() {
+        let mut uow = UnitOfWork::new_uncommitted_for_testing();
+        uow.mark_rolled_back_for_testing();
+        uow.mark_rolled_back_for_testing(); // Second rollback should be safe
+
+        let result = catch_unwind(AssertUnwindSafe(|| {
+            drop(uow);
+        }));
+
+        assert!(result.is_ok(), "Double rolled back UnitOfWork should drop safely");
+    }
+
+    /// Test: Commit after rollback is safe (no panic on drop).
+    #[test]
+    fn test_commit_after_rollback_is_safe() {
+        let mut uow = UnitOfWork::new_uncommitted_for_testing();
+        uow.mark_rolled_back_for_testing();
+        uow.mark_committed_for_testing(); // Should be safe, no-op
+
+        let result = catch_unwind(AssertUnwindSafe(|| {
+            drop(uow);
+        }));
+
+        assert!(result.is_ok(), "UnitOfWork with both flags should drop safely");
+    }
+
+    /// Test: is_handled method returns correct state.
+    #[test]
+    fn test_is_handled_method() {
+        // Test committed state
+        let uow = UnitOfWork {
+            tx: None,
+            committed: true,
+            rolled_back: false,
+            _test_simulate_uncommitted: false,
+        };
+        assert!(uow.is_handled());
+
+        // Test rolled back state
+        let uow = UnitOfWork {
+            tx: None,
+            committed: false,
+            rolled_back: true,
+            _test_simulate_uncommitted: false,
+        };
+        assert!(uow.is_handled());
+
+        // Test unhandled state
+        let uow = UnitOfWork {
+            tx: None,
+            committed: false,
+            rolled_back: false,
+            _test_simulate_uncommitted: false,
+        };
+        assert!(!uow.is_handled());
+
+        // Test both flags set (should be handled)
+        let uow = UnitOfWork {
+            tx: None,
+            committed: true,
+            rolled_back: true,
+            _test_simulate_uncommitted: false,
+        };
+        assert!(uow.is_handled());
+    }
+
+    /// Test: In release mode, uncommitted UnitOfWork only logs a warning (no panic).
+    #[test]
+    #[cfg(not(debug_assertions))]
+    fn test_uncommitted_uow_only_warns_in_release() {
+        // In release mode, should not panic, just warn
+        let result = catch_unwind(AssertUnwindSafe(|| {
+            let _uow = UnitOfWork::new_uncommitted_for_testing();
+        }));
+
+        assert!(
+            result.is_ok(),
+            "Uncommitted UnitOfWork should not panic in release mode"
+        );
     }
 
     // ========== Integration test placeholders ==========

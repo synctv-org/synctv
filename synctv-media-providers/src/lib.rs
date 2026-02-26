@@ -37,8 +37,8 @@ pub use error::ProviderClientError;
 
 // Re-export credential types
 pub use credential::{
-    CredentialData, CredentialStorage, CredentialStorageError, InMemoryCredentialStorage,
-    ProviderType, Result as CredentialResult, StoredCredential,
+    CredentialData, CredentialStorage, CredentialStorageError, FieldEncryption,
+    InMemoryCredentialStorage, ProviderType, Result as CredentialResult, StoredCredential,
 };
 
 #[cfg(feature = "postgres")]

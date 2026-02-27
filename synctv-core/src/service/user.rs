@@ -6,7 +6,7 @@ use std::sync::Arc;
 use crate::{
     cache::{CacheInvalidationService, KeyBuilder, UsernameCache},
     config::PasswordComplexityConfig,
-    models::{User, UserId, SignupMethod},
+    models::{User, UserId, SignupMethod, UserStatus},
     models::oauth2_client::OAuth2Provider,
     repository::{UserRepository, UserOAuthProviderRepository},
     service::auth::{hash_password, verify_password, JwtService, TokenType, BruteForceProtection, TokenBlacklistStore},
@@ -756,6 +756,101 @@ impl UserService {
         let user = self.repository.update_status(user_id, status).await?;
         self.notify_user_invalidation(user_id).await;
         Ok(user)
+    }
+
+    // ========================
+    // Batch Operations
+    // ========================
+
+    /// Maximum number of items allowed in a batch operation
+    pub const BATCH_SIZE_LIMIT: usize = 100;
+
+    /// Batch ban multiple users.
+    ///
+    /// Each user is processed individually - if one user fails, others may still succeed.
+    /// Returns per-user results with success/failure status.
+    ///
+    /// # Errors
+    /// - `InvalidInput` if user_ids is empty or exceeds `BATCH_SIZE_LIMIT`
+    pub async fn batch_ban_users(
+        &self,
+        user_ids: &[String],
+    ) -> Result<Vec<(String, Result<()>)>> {
+        if user_ids.is_empty() {
+            return Err(Error::InvalidInput("user_ids cannot be empty".to_string()));
+        }
+        if user_ids.len() > Self::BATCH_SIZE_LIMIT {
+            return Err(Error::InvalidInput(format!(
+                "Batch size {} exceeds limit of {}",
+                user_ids.len(),
+                Self::BATCH_SIZE_LIMIT
+            )));
+        }
+
+        let mut results = Vec::with_capacity(user_ids.len());
+
+        for user_id_str in user_ids {
+            let user_id = UserId::from_string(user_id_str.clone());
+
+            // Get user, check if already banned
+            let user = match self.get_user(&user_id).await {
+                Ok(u) => u,
+                Err(e) => {
+                    results.push((user_id_str.clone(), Err(e)));
+                    continue;
+                }
+            };
+
+            if user.status == UserStatus::Banned {
+                // Already banned, skip
+                results.push((user_id_str.clone(), Ok(())));
+                continue;
+            }
+
+            // Update status to Banned
+            let result = self
+                .set_user_status(&user_id, UserStatus::Banned)
+                .await
+                .map(|_| ());
+
+            results.push((user_id_str.clone(), result));
+        }
+
+        Ok(results)
+    }
+
+    /// Batch delete multiple users.
+    ///
+    /// Each user is processed individually - if one user fails, others may still succeed.
+    /// Returns per-user results with success/failure status.
+    ///
+    /// # Errors
+    /// - `InvalidInput` if user_ids is empty or exceeds `BATCH_SIZE_LIMIT`
+    pub async fn batch_delete_users(
+        &self,
+        user_ids: &[String],
+    ) -> Result<Vec<(String, Result<()>)>> {
+        if user_ids.is_empty() {
+            return Err(Error::InvalidInput("user_ids cannot be empty".to_string()));
+        }
+        if user_ids.len() > Self::BATCH_SIZE_LIMIT {
+            return Err(Error::InvalidInput(format!(
+                "Batch size {} exceeds limit of {}",
+                user_ids.len(),
+                Self::BATCH_SIZE_LIMIT
+            )));
+        }
+
+        let mut results = Vec::with_capacity(user_ids.len());
+
+        for user_id_str in user_ids {
+            let user_id = UserId::from_string(user_id_str.clone());
+
+            let result = self.delete_user(&user_id).await;
+            results.push((user_id_str.clone(), result));
+        }
+
+        Ok(results)
     }
 }
 

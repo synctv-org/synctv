@@ -266,7 +266,8 @@ mod tests {
             "group": "server",
             "value": "{\"test\": true}",
             "created_at": "2024-01-01T00:00:00Z",
-            "updated_at": "2024-01-01T00:00:00Z"
+            "updated_at": "2024-01-01T00:00:00Z",
+            "version": 0
         });
 
         let sg: SettingsGroup = serde_json::from_value(json).unwrap();

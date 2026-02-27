@@ -28,6 +28,8 @@ use crate::proto::admin::{
     GetRoomSettingsResponse, UpdateRoomSettingsRequest, UpdateRoomSettingsResponse,
     ResetRoomSettingsRequest, ResetRoomSettingsResponse, ListActiveStreamsRequest,
     ListActiveStreamsResponse, KickStreamRequest, KickStreamResponse,
+    BatchBanUsersRequest, BatchBanUsersResponse, BatchDeleteUsersRequest, BatchDeleteUsersResponse,
+    BatchBanRoomsRequest, BatchBanRoomsResponse, BatchDeleteRoomsRequest, BatchDeleteRoomsResponse,
 };
 
 use crate::impls::AdminApiImpl;
@@ -416,6 +418,58 @@ impl AdminService for AdminServiceImpl {
         let ctx = grpc_request_context(&request);
         let req = request.into_inner();
         let resp = self.admin_api.approve_user(req, &admin_user_id, &ctx).await.map_err(map_api_error)?;
+        Ok(Response::new(resp))
+    }
+
+    // =========================
+    // Batch Operations
+    // =========================
+
+    async fn batch_ban_users(
+        &self,
+        request: Request<BatchBanUsersRequest>,
+    ) -> Result<Response<BatchBanUsersResponse>, Status> {
+        let caller_role = self.check_admin_get_role(&request).await?;
+        let admin_user_id = super::interceptors::extract_user_id(&request)?;
+        let ctx = grpc_request_context(&request);
+        let req = request.into_inner();
+        let resp = self.admin_api.batch_ban_users(req, &admin_user_id, caller_role, &ctx).await.map_err(map_api_error)?;
+        Ok(Response::new(resp))
+    }
+
+    async fn batch_delete_users(
+        &self,
+        request: Request<BatchDeleteUsersRequest>,
+    ) -> Result<Response<BatchDeleteUsersResponse>, Status> {
+        self.check_root(&request).await?;
+        let admin_user_id = super::interceptors::extract_user_id(&request)?;
+        let ctx = grpc_request_context(&request);
+        let req = request.into_inner();
+        let resp = self.admin_api.batch_delete_users(req, &admin_user_id, &ctx).await.map_err(map_api_error)?;
+        Ok(Response::new(resp))
+    }
+
+    async fn batch_ban_rooms(
+        &self,
+        request: Request<BatchBanRoomsRequest>,
+    ) -> Result<Response<BatchBanRoomsResponse>, Status> {
+        self.check_admin(&request).await?;
+        let admin_user_id = super::interceptors::extract_user_id(&request)?;
+        let ctx = grpc_request_context(&request);
+        let req = request.into_inner();
+        let resp = self.admin_api.batch_ban_rooms(req, &admin_user_id, &ctx).await.map_err(map_api_error)?;
+        Ok(Response::new(resp))
+    }
+
+    async fn batch_delete_rooms(
+        &self,
+        request: Request<BatchDeleteRoomsRequest>,
+    ) -> Result<Response<BatchDeleteRoomsResponse>, Status> {
+        self.check_admin(&request).await?;
+        let admin_user_id = super::interceptors::extract_user_id(&request)?;
+        let ctx = grpc_request_context(&request);
+        let req = request.into_inner();
+        let resp = self.admin_api.batch_delete_rooms(req, &admin_user_id, &ctx).await.map_err(map_api_error)?;
         Ok(Response::new(resp))
     }
 

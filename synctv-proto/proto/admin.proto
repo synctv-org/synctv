@@ -45,6 +45,14 @@ service AdminService {
     rpc ApproveUser(ApproveUserRequest) returns (ApproveUserResponse);
 
     // =========================
+    // Batch Operations
+    // =========================
+    rpc BatchBanUsers(BatchBanUsersRequest) returns (BatchBanUsersResponse);
+    rpc BatchDeleteUsers(BatchDeleteUsersRequest) returns (BatchDeleteUsersResponse);
+    rpc BatchBanRooms(BatchBanRoomsRequest) returns (BatchBanRoomsResponse);
+    rpc BatchDeleteRooms(BatchDeleteRoomsRequest) returns (BatchDeleteRoomsResponse);
+
+    // =========================
     // Room Management
     // =========================
     rpc ListRooms(ListRoomsRequest) returns (ListRoomsResponse);
@@ -289,17 +297,15 @@ message GetUserResponse {
 }
 
 // SECURITY: Admin password reset is a privileged operation. The reason field
-// provides an audit trail for compliance. force_logout invalidates existing sessions.
+// provides an audit trail for compliance.
 message UpdateUserPasswordRequest {
     string user_id = 1; // Validation: required
     string new_password = 2;   // SECURITY: Plaintext credential - requires TLS in transit. Validation: min 8, max 128 chars
     string reason = 3;         // Audit trail: why the password was reset. Validation: max 500 chars
-    bool force_logout = 4;     // If true, invalidate all existing sessions for this user
 }
 
 message UpdateUserPasswordResponse {
     bool success = 1;
-    int32 sessions_invalidated = 2; // Number of sessions invalidated (when force_logout=true)
 }
 
 message UpdateUserUsernameRequest {
@@ -531,3 +537,64 @@ message KickStreamRequest {
 }
 
 message KickStreamResponse {}
+
+// =========================
+// Batch Operations
+// =========================
+
+// Batch result for a single item
+message BatchResultItem {
+    string id = 1;          // User ID or Room ID
+    bool success = 2;       // Whether the operation succeeded
+    string error = 3;       // Error message if success is false
+}
+
+// Batch ban users request
+message BatchBanUsersRequest {
+    repeated string user_ids = 1; // Max 100 items. Validation: max 100
+    string reason = 2;            // Optional reason for the ban
+}
+
+// Batch ban users response
+message BatchBanUsersResponse {
+    repeated BatchResultItem results = 1; // Per-user results
+    int32 succeeded = 2;                   // Count of successful operations
+    int32 failed = 3;                      // Count of failed operations
+}
+
+// Batch delete users request
+message BatchDeleteUsersRequest {
+    repeated string user_ids = 1; // Max 100 items. Validation: max 100
+}
+
+// Batch delete users response
+message BatchDeleteUsersResponse {
+    repeated BatchResultItem results = 1; // Per-user results
+    int32 succeeded = 2;                   // Count of successful operations
+    int32 failed = 3;                      // Count of failed operations
+}
+
+// Batch ban rooms request
+message BatchBanRoomsRequest {
+    repeated string room_ids = 1; // Max 100 items. Validation: max 100
+    string reason = 2;            // Optional reason for the ban
+}
+
+// Batch ban rooms response
+message BatchBanRoomsResponse {
+    repeated BatchResultItem results = 1; // Per-room results
+    int32 succeeded = 2;                   // Count of successful operations
+    int32 failed = 3;                      // Count of failed operations
+}
+
+// Batch delete rooms request
+message BatchDeleteRoomsRequest {
+    repeated string room_ids = 1; // Max 100 items. Validation: max 100
+}
+
+// Batch delete rooms response
+message BatchDeleteRoomsResponse {
+    repeated BatchResultItem results = 1; // Per-room results
+    int32 succeeded = 2;                   // Count of successful operations
+    int32 failed = 3;                      // Count of failed operations
+}

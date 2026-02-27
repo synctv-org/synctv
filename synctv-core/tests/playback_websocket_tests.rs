@@ -1,0 +1,822 @@
+//! Playback WebSocket notification integration tests
+//!
+//! Tests for WebSocket notifications on playback state changes,
+//! multi-user synchronization, and cluster broadcast behavior.
+//!
+//! Note: This tests the notification/broadcast layer, not actual WebSocket connections.
+//! The PlaybackService uses PlaybackBroadcaster trait for abstraction.
+//!
+//! Run with: cargo test -p synctv-core --test playback_websocket_tests -- --nocapture
+
+use std::sync::Arc;
+
+use synctv_core::{
+    cache::{KeyBuilder, UsernameCache, NoopCacheL2},
+    config::PasswordComplexityConfig,
+    models::{
+        UserId, User, UserRole, UserStatus,
+        RoomPlaybackState,
+    },
+    repository::UserRepository,
+    service::{
+        RoomService, UserService, InMemoryTokenBlacklistStore,
+        auth::{JwtService, BruteForceProtection},
+        playback::{PlaybackBroadcaster, BroadcastResult},
+    },
+};
+use chrono::Utc;
+use parking_lot::RwLock;
+use sqlx::PgPool;
+use testcontainers::core::ImageExt;
+use testcontainers::runners::AsyncRunner;
+use testcontainers::ContainerAsync;
+use testcontainers_modules::postgres::Postgres;
+
+const POSTGRES_VERSION: &str = "16-alpine";
+
+async fn create_test_pool() -> (ContainerAsync<Postgres>, PgPool) {
+    let postgres = Postgres::default()
+        .with_db_name("synctv_test")
+        .with_user("synctv")
+        .with_password("synctv_test")
+        .with_tag(POSTGRES_VERSION)
+        .start()
+        .await
+        .expect("Failed to start Postgres container");
+
+    let connection_string = format!(
+        "postgresql://synctv:synctv_test@127.0.0.1:{}/synctv_test",
+        postgres.get_host_port_ipv4(5432).await.expect("Failed to get port")
+    );
+
+    let pool = PgPool::connect(&connection_string)
+        .await
+        .expect("Failed to create pool");
+
+    sqlx::migrate!("../migrations")
+        .run(&pool)
+        .await
+        .expect("Failed to run migrations");
+
+    (postgres, pool)
+}
+
+fn make_user_service(pool: PgPool) -> UserService {
+    let secret = "Test_Secret_Key_For_JWT_Tokens_32Bytes!!";
+    let jwt_service = JwtService::new(secret).expect("Failed to create JwtService");
+    let l2 = Arc::new(NoopCacheL2);
+    let username_cache = UsernameCache::new(l2, "test:username:".to_string(), 100, 60);
+    let password_complexity = PasswordComplexityConfig::default();
+    let token_blacklist = Arc::new(InMemoryTokenBlacklistStore::new(1000, 3600, 86400));
+    let key_builder = KeyBuilder::new("test");
+    let brute_force = BruteForceProtection::in_memory("test".to_string());
+
+    UserService::new(
+        pool,
+        jwt_service,
+        username_cache,
+        password_complexity,
+        token_blacklist,
+        key_builder,
+        brute_force,
+    )
+}
+
+fn make_room_service(pool: PgPool) -> RoomService {
+    let user_service = make_user_service(pool.clone());
+    RoomService::new(pool, user_service)
+}
+
+fn make_user(username: &str) -> User {
+    let now = Utc::now();
+    User {
+        id: UserId::new(),
+        username: username.to_string(),
+        email: Some(format!("{}@test.com", username)),
+        password_hash: "hash".to_string(),
+        role: UserRole::User,
+        status: UserStatus::Active,
+        email_verified: true,
+        signup_method: None,
+        created_at: now,
+        updated_at: now,
+        password_changed_at: now,
+        password_version: 0,
+        version: 0,
+        deleted_at: None,
+    }
+}
+
+// ============================================================================
+// Mock Broadcaster for Testing
+// ============================================================================
+
+/// Mock broadcaster that records all broadcast calls
+#[derive(Debug, Default)]
+struct MockBroadcaster {
+    broadcasts: Arc<RwLock<Vec<RoomPlaybackState>>>,
+    fail_broadcasts: Arc<RwLock<bool>>,
+}
+
+impl MockBroadcaster {
+    fn new() -> Self {
+        Self::default()
+    }
+
+    fn get_broadcasts(&self) -> Vec<RoomPlaybackState> {
+        self.broadcasts.read().clone()
+    }
+
+    fn clear_broadcasts(&self) {
+        self.broadcasts.write().clear();
+    }
+
+    fn set_fail(&self, fail: bool) {
+        *self.fail_broadcasts.write() = fail;
+    }
+
+    fn broadcast_count(&self) -> usize {
+        self.broadcasts.read().len()
+    }
+}
+
+impl PlaybackBroadcaster for MockBroadcaster {
+    fn broadcast_playback_state(&self, state: &RoomPlaybackState) -> BroadcastResult {
+        if *self.fail_broadcasts.read() {
+            return BroadcastResult::default();
+        }
+
+        self.broadcasts.write().push(state.clone());
+
+        BroadcastResult {
+            local_sent: 1,
+            redis_sent: true,
+        }
+    }
+}
+
+// ============================================================================
+// WebSocket Push Tests: State Change Notifications
+// ============================================================================
+
+/// Test: Play/pause triggers broadcast
+///
+/// When play/pause is called, a broadcast should be sent.
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_play_pause_triggers_broadcast() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let room_service = make_room_service(pool.clone());
+
+    let owner = user_repo.create(&make_user("ws_play")).await.unwrap();
+
+    let (room, _) = room_service
+        .create_room(
+            "WS Play Room".to_string(),
+            String::new(),
+            owner.id.clone(),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+    // Set up mock broadcaster
+    let mock_broadcaster = Arc::new(MockBroadcaster::new());
+    room_service.playback_service().set_cluster_broadcaster(mock_broadcaster.clone());
+
+    // Trigger play
+    room_service
+        .playback_service()
+        .set_playing(room.id.clone(), owner.id.clone(), true)
+        .await
+        .unwrap();
+
+    // Should have broadcast
+    assert_eq!(mock_broadcaster.broadcast_count(), 1, "Should have one broadcast");
+    let broadcast = &mock_broadcaster.get_broadcasts()[0];
+    assert!(broadcast.is_playing, "Broadcast should show is_playing = true");
+
+    mock_broadcaster.clear_broadcasts();
+
+    // Trigger pause
+    room_service
+        .playback_service()
+        .set_playing(room.id.clone(), owner.id.clone(), false)
+        .await
+        .unwrap();
+
+    assert_eq!(mock_broadcaster.broadcast_count(), 1, "Should have one broadcast");
+    let broadcast = &mock_broadcaster.get_broadcasts()[0];
+    assert!(!broadcast.is_playing, "Broadcast should show is_playing = false");
+}
+
+/// Test: Seek triggers broadcast
+///
+/// When seek is called, a broadcast should be sent.
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_seek_triggers_broadcast() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let room_service = make_room_service(pool.clone());
+
+    let owner = user_repo.create(&make_user("ws_seek")).await.unwrap();
+
+    let (room, _) = room_service
+        .create_room(
+            "WS Seek Room".to_string(),
+            String::new(),
+            owner.id.clone(),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+    // Set up mock broadcaster
+    let mock_broadcaster = Arc::new(MockBroadcaster::new());
+    room_service.playback_service().set_cluster_broadcaster(mock_broadcaster.clone());
+
+    // Trigger seek
+    room_service
+        .playback_service()
+        .seek(room.id.clone(), owner.id.clone(), 120.5)
+        .await
+        .unwrap();
+
+    // Should have broadcast
+    assert_eq!(mock_broadcaster.broadcast_count(), 1, "Should have one broadcast");
+    let broadcast = &mock_broadcaster.get_broadcasts()[0];
+    assert!((broadcast.current_time - 120.5).abs() < f64::EPSILON,
+        "Broadcast should show correct position");
+}
+
+/// Test: Speed change triggers broadcast
+///
+/// When speed is changed, a broadcast should be sent.
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_speed_change_triggers_broadcast() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let room_service = make_room_service(pool.clone());
+
+    let owner = user_repo.create(&make_user("ws_speed")).await.unwrap();
+
+    let (room, _) = room_service
+        .create_room(
+            "WS Speed Room".to_string(),
+            String::new(),
+            owner.id.clone(),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+    // Set up mock broadcaster
+    let mock_broadcaster = Arc::new(MockBroadcaster::new());
+    room_service.playback_service().set_cluster_broadcaster(mock_broadcaster.clone());
+
+    // Trigger speed change
+    room_service
+        .playback_service()
+        .change_speed(room.id.clone(), owner.id.clone(), 2.0)
+        .await
+        .unwrap();
+
+    // Should have broadcast
+    assert_eq!(mock_broadcaster.broadcast_count(), 1, "Should have one broadcast");
+    let broadcast = &mock_broadcaster.get_broadcasts()[0];
+    assert!((broadcast.speed - 2.0).abs() < f64::EPSILON,
+        "Broadcast should show correct speed");
+}
+
+/// Test: Media switch triggers broadcast
+///
+/// When media is switched, a broadcast should be sent.
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_media_switch_triggers_broadcast() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let media_repo = synctv_core::repository::MediaRepository::new(pool.clone());
+    let room_service = make_room_service(pool.clone());
+
+    let owner = user_repo.create(&make_user("ws_switch")).await.unwrap();
+
+    let (room, _) = room_service
+        .create_room(
+            "WS Switch Room".to_string(),
+            String::new(),
+            owner.id.clone(),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+    // Get the root playlist
+    let playlists: Vec<synctv_core::models::Playlist> = sqlx::query_as(
+        "SELECT * FROM playlists WHERE room_id = $1"
+    )
+    .bind(room.id.as_str())
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    let root_playlist = &playlists[0];
+
+    // Add media
+    let media = synctv_core::models::Media {
+        id: synctv_core::models::MediaId::new(),
+        playlist_id: root_playlist.id.clone(),
+        room_id: room.id.clone(),
+        creator_id: Some(owner.id.clone()),
+        name: "Test Video".to_string(),
+        position: 0,
+        source_provider: "direct_url".to_string(),
+        source_config: serde_json::json!({"url": "https://example.com/video.mp4"}),
+        provider_instance_name: None,
+        added_at: Utc::now(),
+        version: 0,
+    };
+    media_repo.create(&media).await.unwrap();
+
+    // Set up mock broadcaster
+    let mock_broadcaster = Arc::new(MockBroadcaster::new());
+    room_service.playback_service().set_cluster_broadcaster(mock_broadcaster.clone());
+
+    // Trigger media switch
+    room_service
+        .playback_service()
+        .switch_media(room.id.clone(), owner.id.clone(), media.id.clone())
+        .await
+        .unwrap();
+
+    // Should have broadcast
+    assert_eq!(mock_broadcaster.broadcast_count(), 1, "Should have one broadcast");
+    let broadcast = &mock_broadcaster.get_broadcasts()[0];
+    assert_eq!(broadcast.playing_media_id, Some(media.id.clone()),
+        "Broadcast should show correct media");
+    assert!(broadcast.is_playing, "Should be playing after media switch");
+}
+
+/// Test: Reset triggers broadcast
+///
+/// When playback is reset, a broadcast should be sent.
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_reset_triggers_broadcast() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let room_service = make_room_service(pool.clone());
+
+    let owner = user_repo.create(&make_user("ws_reset")).await.unwrap();
+
+    let (room, _) = room_service
+        .create_room(
+            "WS Reset Room".to_string(),
+            String::new(),
+            owner.id.clone(),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+    // Set up mock broadcaster
+    let mock_broadcaster = Arc::new(MockBroadcaster::new());
+    room_service.playback_service().set_cluster_broadcaster(mock_broadcaster.clone());
+
+    // Trigger reset
+    room_service
+        .playback_service()
+        .reset(room.id.clone(), owner.id.clone())
+        .await
+        .unwrap();
+
+    // Should have broadcast
+    assert_eq!(mock_broadcaster.broadcast_count(), 1, "Should have one broadcast");
+    let broadcast = &mock_broadcaster.get_broadcasts()[0];
+    assert!(!broadcast.is_playing, "Broadcast should show is_playing = false");
+    assert!((broadcast.current_time - 0.0).abs() < f64::EPSILON, "Position should be 0");
+    assert!(broadcast.playing_media_id.is_none(), "Media should be None");
+}
+
+// ============================================================================
+// WebSocket Push Tests: Multi-User Sync
+// ============================================================================
+
+/// Test: Multiple state changes each trigger broadcast
+///
+/// Each state change should trigger exactly one broadcast.
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_multiple_state_changes_trigger_broadcasts() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let room_service = make_room_service(pool.clone());
+
+    let owner = user_repo.create(&make_user("ws_multi")).await.unwrap();
+
+    let (room, _) = room_service
+        .create_room(
+            "WS Multi Room".to_string(),
+            String::new(),
+            owner.id.clone(),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+    // Set up mock broadcaster
+    let mock_broadcaster = Arc::new(MockBroadcaster::new());
+    room_service.playback_service().set_cluster_broadcaster(mock_broadcaster.clone());
+
+    // Multiple operations
+    room_service
+        .playback_service()
+        .set_playing(room.id.clone(), owner.id.clone(), true)
+        .await
+        .unwrap();
+
+    room_service
+        .playback_service()
+        .seek(room.id.clone(), owner.id.clone(), 50.0)
+        .await
+        .unwrap();
+
+    room_service
+        .playback_service()
+        .change_speed(room.id.clone(), owner.id.clone(), 1.5)
+        .await
+        .unwrap();
+
+    room_service
+        .playback_service()
+        .set_playing(room.id.clone(), owner.id.clone(), false)
+        .await
+        .unwrap();
+
+    // Should have 4 broadcasts
+    assert_eq!(mock_broadcaster.broadcast_count(), 4, "Should have 4 broadcasts");
+
+    // Check broadcasts are in order
+    let broadcasts = mock_broadcaster.get_broadcasts();
+    assert!(broadcasts[0].is_playing, "1st: playing");
+    assert!((broadcasts[1].current_time - 50.0).abs() < f64::EPSILON, "2nd: seek to 50");
+    assert!((broadcasts[2].speed - 1.5).abs() < f64::EPSILON, "3rd: speed 1.5");
+    assert!(!broadcasts[3].is_playing, "4th: paused");
+}
+
+/// Test: Broadcast contains correct room_id
+///
+/// Each broadcast should contain the correct room_id.
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_broadcast_contains_correct_room_id() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let room_service = make_room_service(pool.clone());
+
+    let owner = user_repo.create(&make_user("ws_roomid")).await.unwrap();
+
+    let (room, _) = room_service
+        .create_room(
+            "WS RoomID Room".to_string(),
+            String::new(),
+            owner.id.clone(),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+    // Set up mock broadcaster
+    let mock_broadcaster = Arc::new(MockBroadcaster::new());
+    room_service.playback_service().set_cluster_broadcaster(mock_broadcaster.clone());
+
+    // Trigger operation
+    room_service
+        .playback_service()
+        .set_playing(room.id.clone(), owner.id.clone(), true)
+        .await
+        .unwrap();
+
+    // Check room_id
+    let broadcasts = mock_broadcaster.get_broadcasts();
+    assert_eq!(broadcasts[0].room_id, room.id, "Broadcast should have correct room_id");
+}
+
+// ============================================================================
+// WebSocket Push Tests: Broadcast Failure Handling
+// ============================================================================
+
+/// Test: Operations succeed even if broadcast fails
+///
+/// The service should continue to work even if broadcasting fails.
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_operations_succeed_when_broadcast_fails() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let room_service = make_room_service(pool.clone());
+
+    let owner = user_repo.create(&make_user("ws_fail")).await.unwrap();
+
+    let (room, _) = room_service
+        .create_room(
+            "WS Fail Room".to_string(),
+            String::new(),
+            owner.id.clone(),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+    // Set up mock broadcaster that always fails
+    let mock_broadcaster = Arc::new(MockBroadcaster::new());
+    mock_broadcaster.set_fail(true);
+    room_service.playback_service().set_cluster_broadcaster(mock_broadcaster.clone());
+
+    // Operations should still succeed
+    let result = room_service
+        .playback_service()
+        .set_playing(room.id.clone(), owner.id.clone(), true)
+        .await;
+
+    assert!(result.is_ok(), "Operation should succeed even if broadcast fails");
+
+    // Verify state was actually changed
+    let state = room_service
+        .playback_service()
+        .get_state(&room.id)
+        .await
+        .unwrap();
+    assert!(state.is_playing, "State should be updated");
+}
+
+/// Test: No broadcaster configured
+///
+/// Operations should succeed when no broadcaster is configured (single-node mode).
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_no_broadcaster_configured() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let room_service = make_room_service(pool.clone());
+
+    let owner = user_repo.create(&make_user("ws_no_bc")).await.unwrap();
+
+    let (room, _) = room_service
+        .create_room(
+            "WS No BC Room".to_string(),
+            String::new(),
+            owner.id.clone(),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+    // No broadcaster set - should work fine
+    let result = room_service
+        .playback_service()
+        .set_playing(room.id.clone(), owner.id.clone(), true)
+        .await;
+
+    assert!(result.is_ok(), "Operation should succeed without broadcaster");
+
+    let state = room_service
+        .playback_service()
+        .get_state(&room.id)
+        .await
+        .unwrap();
+    assert!(state.is_playing, "State should be updated");
+}
+
+// ============================================================================
+// WebSocket Push Tests: BroadcastResult
+// ============================================================================
+
+/// Test: BroadcastResult is_success method
+///
+/// Test the BroadcastResult::is_success() method.
+#[test]
+fn test_broadcast_result_is_success() {
+    // Both local and redis sent
+    let result = BroadcastResult {
+        local_sent: 5,
+        redis_sent: true,
+    };
+    assert!(result.is_success());
+
+    // Only local sent
+    let result = BroadcastResult {
+        local_sent: 5,
+        redis_sent: false,
+    };
+    assert!(result.is_success());
+
+    // Only redis sent
+    let result = BroadcastResult {
+        local_sent: 0,
+        redis_sent: true,
+    };
+    assert!(result.is_success());
+
+    // Neither sent
+    let result = BroadcastResult {
+        local_sent: 0,
+        redis_sent: false,
+    };
+    assert!(!result.is_success());
+}
+
+// ============================================================================
+// WebSocket Push Tests: Version in Broadcasts
+// ============================================================================
+
+/// Test: Broadcast contains correct version
+///
+/// Each broadcast should contain the updated version number.
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_broadcast_contains_correct_version() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let room_service = make_room_service(pool.clone());
+
+    let owner = user_repo.create(&make_user("ws_ver")).await.unwrap();
+
+    let (room, _) = room_service
+        .create_room(
+            "WS Version Room".to_string(),
+            String::new(),
+            owner.id.clone(),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+    // Set up mock broadcaster
+    let mock_broadcaster = Arc::new(MockBroadcaster::new());
+    room_service.playback_service().set_cluster_broadcaster(mock_broadcaster.clone());
+
+    // Initial version
+    let state = room_service.playback_service().get_state(&room.id).await.unwrap();
+    let initial_version = state.version;
+
+    // Trigger operation
+    room_service
+        .playback_service()
+        .set_playing(room.id.clone(), owner.id.clone(), true)
+        .await
+        .unwrap();
+
+    // Check version in broadcast
+    let broadcasts = mock_broadcaster.get_broadcasts();
+    assert_eq!(broadcasts[0].version, initial_version + 1,
+        "Broadcast should contain incremented version");
+}
+
+// ============================================================================
+// WebSocket Push Tests: Concurrent Broadcasts
+// ============================================================================
+
+/// Test: Concurrent operations produce consistent broadcasts
+///
+/// Even with concurrent operations, each broadcast should contain
+/// consistent state.
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_concurrent_operations_produce_consistent_broadcasts() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let room_service = Arc::new(make_room_service(pool.clone()));
+
+    let owner = user_repo.create(&make_user("ws_concurrent")).await.unwrap();
+
+    let (room, _) = room_service
+        .create_room(
+            "WS Concurrent Room".to_string(),
+            String::new(),
+            owner.id.clone(),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+    // Set up mock broadcaster
+    let mock_broadcaster = Arc::new(MockBroadcaster::new());
+    room_service.playback_service().set_cluster_broadcaster(mock_broadcaster.clone());
+
+    // Spawn concurrent operations
+    let mut handles = vec![];
+    let barrier = Arc::new(tokio::sync::Barrier::new(5));
+
+    for i in 0..5 {
+        let rs = room_service.clone();
+        let rid = room.id.clone();
+        let uid = owner.id.clone();
+        let b = barrier.clone();
+        let pos = (i as f64) * 10.0;
+
+        handles.push(tokio::spawn(async move {
+            b.wait().await;
+            rs.playback_service().seek(rid, uid, pos).await
+        }));
+    }
+
+    let results: Vec<_> = futures::future::join_all(handles).await;
+
+    // All should succeed
+    let success_count = results.iter().filter(|r| r.as_ref().unwrap().is_ok()).count();
+    assert!(success_count >= 3, "Most operations should succeed");
+
+    // All broadcasts should have valid state
+    let broadcasts = mock_broadcaster.get_broadcasts();
+    assert!(broadcasts.len() >= 3, "Should have at least 3 broadcasts");
+
+    for (i, broadcast) in broadcasts.iter().enumerate() {
+        assert!(broadcast.current_time >= 0.0,
+            "Broadcast {} should have valid position", i);
+        assert!(broadcast.version > 0 || i == 0,
+            "Broadcast {} should have valid version", i);
+    }
+}
+
+// ============================================================================
+// WebSocket Push Tests: Cluster Mode Simulation
+// ============================================================================
+
+/// Test: Simulated cluster broadcast with multiple rooms
+///
+/// Test that broadcasts for different rooms are independent.
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_cluster_mode_multiple_rooms() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let room_service = make_room_service(pool.clone());
+
+    let owner = user_repo.create(&make_user("ws_cluster")).await.unwrap();
+
+    // Create two rooms
+    let (room1, _) = room_service
+        .create_room(
+            "WS Cluster Room 1".to_string(),
+            String::new(),
+            owner.id.clone(),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+    let (room2, _) = room_service
+        .create_room(
+            "WS Cluster Room 2".to_string(),
+            String::new(),
+            owner.id.clone(),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+    // Set up mock broadcaster
+    let mock_broadcaster = Arc::new(MockBroadcaster::new());
+    room_service.playback_service().set_cluster_broadcaster(mock_broadcaster.clone());
+
+    // Update room1
+    room_service
+        .playback_service()
+        .seek(room1.id.clone(), owner.id.clone(), 100.0)
+        .await
+        .unwrap();
+
+    // Update room2
+    room_service
+        .playback_service()
+        .seek(room2.id.clone(), owner.id.clone(), 200.0)
+        .await
+        .unwrap();
+
+    // Should have 2 broadcasts, one for each room
+    assert_eq!(mock_broadcaster.broadcast_count(), 2);
+
+    let broadcasts = mock_broadcaster.get_broadcasts();
+    assert_eq!(broadcasts[0].room_id, room1.id);
+    assert_eq!(broadcasts[1].room_id, room2.id);
+
+    // Positions should be different
+    assert!((broadcasts[0].current_time - 100.0).abs() < f64::EPSILON);
+    assert!((broadcasts[1].current_time - 200.0).abs() < f64::EPSILON);
+}

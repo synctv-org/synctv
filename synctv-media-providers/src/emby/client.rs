@@ -849,6 +849,7 @@ mod tests {
             media_sources: vec![],
             run_time_ticks: None,
             production_year: Some(2024),
+            image_tags: None,
         };
         let proto: crate::grpc::emby::Item = item.into();
         assert_eq!(proto.id, "item1");

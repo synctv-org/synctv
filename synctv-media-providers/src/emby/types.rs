@@ -47,6 +47,38 @@ pub struct UserPolicy {
     pub enable_all_folders: bool,
 }
 
+/// Image tags for different image types (Primary, Thumb, etc.)
+/// These tags are used to construct thumbnail URLs and for cache busting.
+#[derive(Debug, Deserialize, Clone, Default)]
+pub struct ImageTags {
+    /// Primary image tag (usually poster/thumbnail)
+    #[serde(rename = "Primary", default)]
+    pub primary: Option<String>,
+    /// Thumbnail image tag
+    #[serde(rename = "Thumb", default)]
+    pub thumb: Option<String>,
+}
+
+impl ImageTags {
+    /// Check if any image tag is available
+    #[must_use]
+    pub fn has_any(&self) -> bool {
+        self.primary.is_some() || self.thumb.is_some()
+    }
+
+    /// Get the preferred image tag (Primary first, then Thumb)
+    #[must_use]
+    pub fn preferred_tag(&self) -> Option<(&str, &str)> {
+        if let Some(ref tag) = self.primary {
+            Some(("Primary", tag.as_str()))
+        } else if let Some(ref tag) = self.thumb {
+            Some(("Thumb", tag.as_str()))
+        } else {
+            None
+        }
+    }
+}
+
 /// Media item information
 #[derive(Debug, Deserialize, Clone)]
 pub struct Item {
@@ -76,6 +108,10 @@ pub struct Item {
     pub run_time_ticks: Option<u64>,
     #[serde(rename = "ProductionYear", default)]
     pub production_year: Option<u32>,
+    /// Image tags for different image types (Primary, Thumb, etc.)
+    /// Used to construct thumbnail URLs with cache busting.
+    #[serde(rename = "ImageTags", default)]
+    pub image_tags: Option<ImageTags>,
 }
 
 /// Items response

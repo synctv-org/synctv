@@ -8,6 +8,45 @@
 //! flushed to the database in batches (every 5 seconds or when 100 events
 //! accumulate). This decouples the request path from database write latency.
 //! On graceful shutdown the remaining buffer is flushed.
+//!
+//! # Audit Logging Design Tradeoff
+//!
+//! ## Availability vs Consistency
+//!
+//! This service chooses **availability over consistency** for audit logging.
+//! When audit log writes fail, operations are **not blocked**.
+//!
+//! ## Rationale
+//!
+//! - Audit logs are important for compliance and debugging
+//! - Blocking user operations for audit failures would hurt availability
+//! - Failed audits are logged at ERROR level for monitoring
+//! - Monitoring should alert on audit failures
+//!
+//! ## Failure Scenarios
+//!
+//! 1. **Buffer full**: Falls back to synchronous write; if that also fails,
+//!    logs ERROR and increments dropped counter
+//! 2. **Database unavailable**: Batch flush retries with exponential backoff
+//!    (100ms, 200ms, 400ms); after 3 failures, logs ERROR and drops batch
+//! 3. **Channel closed**: Logs ERROR and continues operation
+//!
+//! ## Monitoring
+//!
+//! Operators should monitor for ERROR logs indicating audit failures:
+//! - "Audit sync fallback write also failed, event dropped"
+//! - "Failed to flush audit batch after all retries, events dropped"
+//!
+//! The `dropped_count()` method returns the total number of dropped events.
+//!
+//! ## Recovery Strategies
+//!
+//! - **Temporary database outage**: Events are retried with backoff; most
+//!   outages are recovered automatically
+//! - **Extended outage**: Events may be dropped; check application logs
+//!   for ERROR messages and investigate database connectivity
+//! - **Buffer overflow**: Indicates high audit volume; consider increasing
+//!   buffer capacity via configuration
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};

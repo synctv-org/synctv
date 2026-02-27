@@ -351,7 +351,7 @@ pub struct GetUserResponse {
     pub user: ::core::option::Option<AdminUser>,
 }
 /// SECURITY: Admin password reset is a privileged operation. The reason field
-/// provides an audit trail for compliance. force_logout invalidates existing sessions.
+/// provides an audit trail for compliance.
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct UpdateUserPasswordRequest {
@@ -364,18 +364,12 @@ pub struct UpdateUserPasswordRequest {
     /// Audit trail: why the password was reset. Validation: max 500 chars
     #[prost(string, tag = "3")]
     pub reason: ::prost::alloc::string::String,
-    /// If true, invalidate all existing sessions for this user
-    #[prost(bool, tag = "4")]
-    pub force_logout: bool,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct UpdateUserPasswordResponse {
     #[prost(bool, tag = "1")]
     pub success: bool,
-    /// Number of sessions invalidated (when force_logout=true)
-    #[prost(int32, tag = "2")]
-    pub sessions_invalidated: i32,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
@@ -739,6 +733,114 @@ pub struct KickStreamRequest {
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct KickStreamResponse {}
+/// Batch result for a single item
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct BatchResultItem {
+    /// User ID or Room ID
+    #[prost(string, tag = "1")]
+    pub id: ::prost::alloc::string::String,
+    /// Whether the operation succeeded
+    #[prost(bool, tag = "2")]
+    pub success: bool,
+    /// Error message if success is false
+    #[prost(string, tag = "3")]
+    pub error: ::prost::alloc::string::String,
+}
+/// Batch ban users request
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct BatchBanUsersRequest {
+    /// Max 100 items. Validation: max 100
+    #[prost(string, repeated, tag = "1")]
+    pub user_ids: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
+    /// Optional reason for the ban
+    #[prost(string, tag = "2")]
+    pub reason: ::prost::alloc::string::String,
+}
+/// Batch ban users response
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct BatchBanUsersResponse {
+    /// Per-user results
+    #[prost(message, repeated, tag = "1")]
+    pub results: ::prost::alloc::vec::Vec<BatchResultItem>,
+    /// Count of successful operations
+    #[prost(int32, tag = "2")]
+    pub succeeded: i32,
+    /// Count of failed operations
+    #[prost(int32, tag = "3")]
+    pub failed: i32,
+}
+/// Batch delete users request
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct BatchDeleteUsersRequest {
+    /// Max 100 items. Validation: max 100
+    #[prost(string, repeated, tag = "1")]
+    pub user_ids: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
+}
+/// Batch delete users response
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct BatchDeleteUsersResponse {
+    /// Per-user results
+    #[prost(message, repeated, tag = "1")]
+    pub results: ::prost::alloc::vec::Vec<BatchResultItem>,
+    /// Count of successful operations
+    #[prost(int32, tag = "2")]
+    pub succeeded: i32,
+    /// Count of failed operations
+    #[prost(int32, tag = "3")]
+    pub failed: i32,
+}
+/// Batch ban rooms request
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct BatchBanRoomsRequest {
+    /// Max 100 items. Validation: max 100
+    #[prost(string, repeated, tag = "1")]
+    pub room_ids: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
+    /// Optional reason for the ban
+    #[prost(string, tag = "2")]
+    pub reason: ::prost::alloc::string::String,
+}
+/// Batch ban rooms response
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct BatchBanRoomsResponse {
+    /// Per-room results
+    #[prost(message, repeated, tag = "1")]
+    pub results: ::prost::alloc::vec::Vec<BatchResultItem>,
+    /// Count of successful operations
+    #[prost(int32, tag = "2")]
+    pub succeeded: i32,
+    /// Count of failed operations
+    #[prost(int32, tag = "3")]
+    pub failed: i32,
+}
+/// Batch delete rooms request
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct BatchDeleteRoomsRequest {
+    /// Max 100 items. Validation: max 100
+    #[prost(string, repeated, tag = "1")]
+    pub room_ids: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
+}
+/// Batch delete rooms response
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, PartialEq, ::prost::Message)]
+pub struct BatchDeleteRoomsResponse {
+    /// Per-room results
+    #[prost(message, repeated, tag = "1")]
+    pub results: ::prost::alloc::vec::Vec<BatchResultItem>,
+    /// Count of successful operations
+    #[prost(int32, tag = "2")]
+    pub succeeded: i32,
+    /// Count of failed operations
+    #[prost(int32, tag = "3")]
+    pub failed: i32,
+}
 /// Connection status for a media provider instance
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
@@ -1439,6 +1541,108 @@ pub mod admin_service_client {
             self.inner.unary(req, path, codec).await
         }
         /// # =========================
+        /// Batch Operations
+        pub async fn batch_ban_users(
+            &mut self,
+            request: impl tonic::IntoRequest<super::BatchBanUsersRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::BatchBanUsersResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/synctv.admin.AdminService/BatchBanUsers",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(GrpcMethod::new("synctv.admin.AdminService", "BatchBanUsers"));
+            self.inner.unary(req, path, codec).await
+        }
+        pub async fn batch_delete_users(
+            &mut self,
+            request: impl tonic::IntoRequest<super::BatchDeleteUsersRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::BatchDeleteUsersResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/synctv.admin.AdminService/BatchDeleteUsers",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new("synctv.admin.AdminService", "BatchDeleteUsers"),
+                );
+            self.inner.unary(req, path, codec).await
+        }
+        pub async fn batch_ban_rooms(
+            &mut self,
+            request: impl tonic::IntoRequest<super::BatchBanRoomsRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::BatchBanRoomsResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/synctv.admin.AdminService/BatchBanRooms",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(GrpcMethod::new("synctv.admin.AdminService", "BatchBanRooms"));
+            self.inner.unary(req, path, codec).await
+        }
+        pub async fn batch_delete_rooms(
+            &mut self,
+            request: impl tonic::IntoRequest<super::BatchDeleteRoomsRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::BatchDeleteRoomsResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/synctv.admin.AdminService/BatchDeleteRooms",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(
+                    GrpcMethod::new("synctv.admin.AdminService", "BatchDeleteRooms"),
+                );
+            self.inner.unary(req, path, codec).await
+        }
+        /// # =========================
         /// Room Management
         pub async fn list_rooms(
             &mut self,
@@ -2029,6 +2233,36 @@ pub mod admin_service_server {
             request: tonic::Request<super::ApproveUserRequest>,
         ) -> std::result::Result<
             tonic::Response<super::ApproveUserResponse>,
+            tonic::Status,
+        >;
+        /// # =========================
+        /// Batch Operations
+        async fn batch_ban_users(
+            &self,
+            request: tonic::Request<super::BatchBanUsersRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::BatchBanUsersResponse>,
+            tonic::Status,
+        >;
+        async fn batch_delete_users(
+            &self,
+            request: tonic::Request<super::BatchDeleteUsersRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::BatchDeleteUsersResponse>,
+            tonic::Status,
+        >;
+        async fn batch_ban_rooms(
+            &self,
+            request: tonic::Request<super::BatchBanRoomsRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::BatchBanRoomsResponse>,
+            tonic::Status,
+        >;
+        async fn batch_delete_rooms(
+            &self,
+            request: tonic::Request<super::BatchDeleteRoomsRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::BatchDeleteRoomsResponse>,
             tonic::Status,
         >;
         /// # =========================
@@ -3242,6 +3476,188 @@ pub mod admin_service_server {
                     let inner = self.inner.clone();
                     let fut = async move {
                         let method = ApproveUserSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/synctv.admin.AdminService/BatchBanUsers" => {
+                    #[allow(non_camel_case_types)]
+                    struct BatchBanUsersSvc<T: AdminService>(pub Arc<T>);
+                    impl<
+                        T: AdminService,
+                    > tonic::server::UnaryService<super::BatchBanUsersRequest>
+                    for BatchBanUsersSvc<T> {
+                        type Response = super::BatchBanUsersResponse;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::BatchBanUsersRequest>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as AdminService>::batch_ban_users(&inner, request).await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = BatchBanUsersSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/synctv.admin.AdminService/BatchDeleteUsers" => {
+                    #[allow(non_camel_case_types)]
+                    struct BatchDeleteUsersSvc<T: AdminService>(pub Arc<T>);
+                    impl<
+                        T: AdminService,
+                    > tonic::server::UnaryService<super::BatchDeleteUsersRequest>
+                    for BatchDeleteUsersSvc<T> {
+                        type Response = super::BatchDeleteUsersResponse;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::BatchDeleteUsersRequest>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as AdminService>::batch_delete_users(&inner, request)
+                                    .await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = BatchDeleteUsersSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/synctv.admin.AdminService/BatchBanRooms" => {
+                    #[allow(non_camel_case_types)]
+                    struct BatchBanRoomsSvc<T: AdminService>(pub Arc<T>);
+                    impl<
+                        T: AdminService,
+                    > tonic::server::UnaryService<super::BatchBanRoomsRequest>
+                    for BatchBanRoomsSvc<T> {
+                        type Response = super::BatchBanRoomsResponse;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::BatchBanRoomsRequest>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as AdminService>::batch_ban_rooms(&inner, request).await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = BatchBanRoomsSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/synctv.admin.AdminService/BatchDeleteRooms" => {
+                    #[allow(non_camel_case_types)]
+                    struct BatchDeleteRoomsSvc<T: AdminService>(pub Arc<T>);
+                    impl<
+                        T: AdminService,
+                    > tonic::server::UnaryService<super::BatchDeleteRoomsRequest>
+                    for BatchDeleteRoomsSvc<T> {
+                        type Response = super::BatchDeleteRoomsResponse;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::BatchDeleteRoomsRequest>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as AdminService>::batch_delete_rooms(&inner, request)
+                                    .await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = BatchDeleteRoomsSvc(inner);
                         let codec = tonic_prost::ProstCodec::default();
                         let mut grpc = tonic::server::Grpc::new(codec)
                             .apply_compression_config(

@@ -519,12 +519,6 @@ impl AdminApiImpl {
         self.user_service.set_password(&uid, &req.new_password).await
             .map_err(ApiError::from)?;
 
-        // Note: force_logout parameter is no longer used.
-        // Without token blacklisting, existing tokens remain valid until expiry.
-        // The status change (Banned/Pending) will cause the security pipeline to
-        // reject all subsequent requests using those tokens.
-        let sessions_invalidated = 0;
-
         // Log to audit trail
         let caller = self.user_service.get_user(&caller_user_id).await
             .map_err(ApiError::from)?;
@@ -532,7 +526,6 @@ impl AdminApiImpl {
         let mut details = serde_json::Map::new();
         details.insert("target_user_id".to_string(), serde_json::Value::String(uid.as_str().to_string()));
         details.insert("target_username".to_string(), serde_json::Value::String(target_user.username.clone()));
-        details.insert("force_logout".to_string(), serde_json::Value::Bool(req.force_logout));
         if !req.reason.is_empty() {
             details.insert("reason".to_string(), serde_json::Value::String(req.reason));
         }
@@ -550,7 +543,6 @@ impl AdminApiImpl {
 
         Ok(crate::proto::admin::UpdateUserPasswordResponse {
             success: true,
-            sessions_invalidated,
         })
     }
 
@@ -1979,6 +1971,391 @@ impl AdminApiImpl {
         }
 
         Ok(())
+    }
+
+    // =========================
+    // Batch Operations
+    // =========================
+
+    /// Batch ban multiple users.
+    ///
+    /// Each user is processed individually. If a user cannot be banned (e.g., not found,
+    /// already banned, or permission denied), the error is recorded but processing continues.
+    /// Returns per-user results with success/failure status.
+    pub async fn batch_ban_users(
+        &self,
+        req: crate::proto::admin::BatchBanUsersRequest,
+        admin_user_id: &UserId,
+        _caller_role: UserRole,
+        ctx: &RequestContext,
+    ) -> Result<crate::proto::admin::BatchBanUsersResponse, ApiError> {
+        let results = self.user_service.batch_ban_users(&req.user_ids).await
+            .map_err(ApiError::from)?;
+
+        let mut proto_results = Vec::with_capacity(results.len());
+        let mut succeeded = 0i32;
+        let mut failed = 0i32;
+
+        for (user_id, result) in results {
+            match result {
+                Ok(()) => {
+                    proto_results.push(crate::proto::admin::BatchResultItem {
+                        id: user_id.clone(),
+                        success: true,
+                        error: String::new(),
+                    });
+                    succeeded += 1;
+
+                    // Disconnect user and kick streams
+                    let uid = UserId::from_string(user_id);
+                    self.connection_manager.disconnect_user(&uid);
+
+                    if let Some(infra) = &self.live_streaming_infrastructure {
+                        infra.kick_user_publishers(uid.as_str()).await;
+                    }
+
+                    if let Some(tx) = &self.redis_publish_tx {
+                        super::try_publish_cluster_event(tx, PublishRequest {
+                            event: ClusterEvent::KickUser {
+                                event_id: nanoid::nanoid!(16),
+                                user_id: uid,
+                                reason: "batch_banned".to_string(),
+                                timestamp: chrono::Utc::now(),
+                            },
+                        });
+                    }
+                }
+                Err(e) => {
+                    proto_results.push(crate::proto::admin::BatchResultItem {
+                        id: user_id,
+                        success: false,
+                        error: e.to_string(),
+                    });
+                    failed += 1;
+                }
+            }
+        }
+
+        // Audit log
+        {
+            let admin_username = self.user_service.get_user(admin_user_id).await
+                .map_or_else(|_| admin_user_id.as_str().to_string(), |u| u.username);
+            if let Err(e) = self.audit_service.log(
+                admin_user_id.as_str().to_string(),
+                admin_username.clone(),
+                synctv_core::service::AuditAction::UserBanned,
+                synctv_core::service::AuditTargetType::User,
+                None,
+                serde_json::json!({
+                    "action": "batch_ban",
+                    "total": req.user_ids.len(),
+                    "succeeded": succeeded,
+                    "failed": failed,
+                    "reason": req.reason,
+                }),
+                ctx.ip_address.clone(),
+                ctx.user_agent.clone(),
+            ).await {
+                tracing::error!(
+                    error = %e,
+                    admin_user_id = %admin_user_id.as_str(),
+                    action = "batch_ban_users",
+                    "AUDIT LOG FAILURE: failed to record batch user ban."
+                );
+            }
+        }
+
+        Ok(crate::proto::admin::BatchBanUsersResponse {
+            results: proto_results,
+            succeeded,
+            failed,
+        })
+    }
+
+    /// Batch delete multiple users.
+    ///
+    /// Each user is processed individually. If a user cannot be deleted, the error is
+    /// recorded but processing continues.
+    pub async fn batch_delete_users(
+        &self,
+        req: crate::proto::admin::BatchDeleteUsersRequest,
+        admin_user_id: &UserId,
+        ctx: &RequestContext,
+    ) -> Result<crate::proto::admin::BatchDeleteUsersResponse, ApiError> {
+        let results = self.user_service.batch_delete_users(&req.user_ids).await
+            .map_err(ApiError::from)?;
+
+        let mut proto_results = Vec::with_capacity(results.len());
+        let mut succeeded = 0i32;
+        let mut failed = 0i32;
+
+        for (user_id, result) in results {
+            match result {
+                Ok(()) => {
+                    proto_results.push(crate::proto::admin::BatchResultItem {
+                        id: user_id.clone(),
+                        success: true,
+                        error: String::new(),
+                    });
+                    succeeded += 1;
+
+                    // Disconnect user and kick streams
+                    let uid = UserId::from_string(user_id);
+                    self.connection_manager.disconnect_user(&uid);
+
+                    if let Some(infra) = &self.live_streaming_infrastructure {
+                        infra.kick_user_publishers(uid.as_str()).await;
+                    }
+
+                    if let Some(tx) = &self.redis_publish_tx {
+                        super::try_publish_cluster_event(tx, PublishRequest {
+                            event: ClusterEvent::KickUser {
+                                event_id: nanoid::nanoid!(16),
+                                user_id: uid,
+                                reason: "batch_deleted".to_string(),
+                                timestamp: chrono::Utc::now(),
+                            },
+                        });
+                    }
+                }
+                Err(e) => {
+                    proto_results.push(crate::proto::admin::BatchResultItem {
+                        id: user_id,
+                        success: false,
+                        error: e.to_string(),
+                    });
+                    failed += 1;
+                }
+            }
+        }
+
+        // Audit log
+        {
+            let admin_username = self.user_service.get_user(admin_user_id).await
+                .map_or_else(|_| admin_user_id.as_str().to_string(), |u| u.username);
+            if let Err(e) = self.audit_service.log(
+                admin_user_id.as_str().to_string(),
+                admin_username.clone(),
+                synctv_core::service::AuditAction::UserDeleted,
+                synctv_core::service::AuditTargetType::User,
+                None,
+                serde_json::json!({
+                    "action": "batch_delete",
+                    "total": req.user_ids.len(),
+                    "succeeded": succeeded,
+                    "failed": failed,
+                }),
+                ctx.ip_address.clone(),
+                ctx.user_agent.clone(),
+            ).await {
+                tracing::error!(
+                    error = %e,
+                    admin_user_id = %admin_user_id.as_str(),
+                    action = "batch_delete_users",
+                    "AUDIT LOG FAILURE: failed to record batch user deletion."
+                );
+            }
+        }
+
+        Ok(crate::proto::admin::BatchDeleteUsersResponse {
+            results: proto_results,
+            succeeded,
+            failed,
+        })
+    }
+
+    /// Batch ban multiple rooms.
+    ///
+    /// Each room is processed individually. If a room cannot be banned, the error is
+    /// recorded but processing continues.
+    pub async fn batch_ban_rooms(
+        &self,
+        req: crate::proto::admin::BatchBanRoomsRequest,
+        admin_user_id: &UserId,
+        ctx: &RequestContext,
+    ) -> Result<crate::proto::admin::BatchBanRoomsResponse, ApiError> {
+        let results = self.room_service.batch_ban_rooms(&req.room_ids, admin_user_id).await
+            .map_err(ApiError::from)?;
+
+        let mut proto_results = Vec::with_capacity(results.len());
+        let mut succeeded = 0i32;
+        let mut failed = 0i32;
+
+        for (room_id, result) in results {
+            match result {
+                Ok(()) => {
+                    proto_results.push(crate::proto::admin::BatchResultItem {
+                        id: room_id.clone(),
+                        success: true,
+                        error: String::new(),
+                    });
+                    succeeded += 1;
+
+                    // Disconnect room and kick streams
+                    let rid = RoomId::from_string(room_id);
+                    self.connection_manager.disconnect_room(&rid);
+
+                    if let Some(infra) = &self.live_streaming_infrastructure {
+                        let media_ids = infra.user_stream_tracker.get_room_streams(rid.as_str());
+                        for media_id in &media_ids {
+                            self.kick_stream_cluster(rid.as_str(), media_id, "room_batch_banned");
+                        }
+                        infra.kick_room_publishers(rid.as_str()).await;
+                    }
+
+                    if let Some(tx) = &self.redis_publish_tx {
+                        super::try_publish_cluster_event(tx, PublishRequest {
+                            event: ClusterEvent::CacheInvalidate {
+                                event_id: nanoid::nanoid!(16),
+                                targets: vec![synctv_cluster::sync::CacheTarget::Room {
+                                    room_id: rid.as_str().to_string(),
+                                }],
+                                timestamp: chrono::Utc::now(),
+                            },
+                        });
+                    }
+                }
+                Err(e) => {
+                    proto_results.push(crate::proto::admin::BatchResultItem {
+                        id: room_id,
+                        success: false,
+                        error: e.to_string(),
+                    });
+                    failed += 1;
+                }
+            }
+        }
+
+        // Audit log
+        {
+            let admin_username = self.user_service.get_user(admin_user_id).await
+                .map_or_else(|_| admin_user_id.as_str().to_string(), |u| u.username);
+            if let Err(e) = self.audit_service.log(
+                admin_user_id.as_str().to_string(),
+                admin_username.clone(),
+                synctv_core::service::AuditAction::RoomBanned,
+                synctv_core::service::AuditTargetType::Room,
+                None,
+                serde_json::json!({
+                    "action": "batch_ban",
+                    "total": req.room_ids.len(),
+                    "succeeded": succeeded,
+                    "failed": failed,
+                    "reason": req.reason,
+                }),
+                ctx.ip_address.clone(),
+                ctx.user_agent.clone(),
+            ).await {
+                tracing::error!(
+                    error = %e,
+                    admin_user_id = %admin_user_id.as_str(),
+                    action = "batch_ban_rooms",
+                    "AUDIT LOG FAILURE: failed to record batch room ban."
+                );
+            }
+        }
+
+        Ok(crate::proto::admin::BatchBanRoomsResponse {
+            results: proto_results,
+            succeeded,
+            failed,
+        })
+    }
+
+    /// Batch delete multiple rooms.
+    ///
+    /// Each room is processed individually. If a room cannot be deleted, the error is
+    /// recorded but processing continues.
+    pub async fn batch_delete_rooms(
+        &self,
+        req: crate::proto::admin::BatchDeleteRoomsRequest,
+        admin_user_id: &UserId,
+        ctx: &RequestContext,
+    ) -> Result<crate::proto::admin::BatchDeleteRoomsResponse, ApiError> {
+        let results = self.room_service.batch_delete_rooms(&req.room_ids, admin_user_id).await
+            .map_err(ApiError::from)?;
+
+        let mut proto_results = Vec::with_capacity(results.len());
+        let mut succeeded = 0i32;
+        let mut failed = 0i32;
+
+        for (room_id, result) in results {
+            match result {
+                Ok(()) => {
+                    proto_results.push(crate::proto::admin::BatchResultItem {
+                        id: room_id.clone(),
+                        success: true,
+                        error: String::new(),
+                    });
+                    succeeded += 1;
+
+                    // Disconnect room and kick streams
+                    let rid = RoomId::from_string(room_id);
+                    self.connection_manager.disconnect_room(&rid);
+
+                    if let Some(infra) = &self.live_streaming_infrastructure {
+                        let media_ids = infra.user_stream_tracker.get_room_streams(rid.as_str());
+                        for media_id in &media_ids {
+                            self.kick_stream_cluster(rid.as_str(), media_id, "room_batch_deleted");
+                        }
+                        infra.kick_room_publishers(rid.as_str()).await;
+                    }
+
+                    if let Some(tx) = &self.redis_publish_tx {
+                        super::try_publish_cluster_event(tx, PublishRequest {
+                            event: ClusterEvent::RoomDeleted {
+                                event_id: nanoid::nanoid!(16),
+                                room_id: rid.clone(),
+                                deleted_by: admin_user_id.clone(),
+                                timestamp: chrono::Utc::now(),
+                            },
+                        });
+                    }
+                }
+                Err(e) => {
+                    proto_results.push(crate::proto::admin::BatchResultItem {
+                        id: room_id,
+                        success: false,
+                        error: e.to_string(),
+                    });
+                    failed += 1;
+                }
+            }
+        }
+
+        // Audit log
+        {
+            let admin_username = self.user_service.get_user(admin_user_id).await
+                .map_or_else(|_| admin_user_id.as_str().to_string(), |u| u.username);
+            if let Err(e) = self.audit_service.log(
+                admin_user_id.as_str().to_string(),
+                admin_username.clone(),
+                synctv_core::service::AuditAction::RoomDeleted,
+                synctv_core::service::AuditTargetType::Room,
+                None,
+                serde_json::json!({
+                    "action": "batch_delete",
+                    "total": req.room_ids.len(),
+                    "succeeded": succeeded,
+                    "failed": failed,
+                }),
+                ctx.ip_address.clone(),
+                ctx.user_agent.clone(),
+            ).await {
+                tracing::error!(
+                    error = %e,
+                    admin_user_id = %admin_user_id.as_str(),
+                    action = "batch_delete_rooms",
+                    "AUDIT LOG FAILURE: failed to record batch room deletion."
+                );
+            }
+        }
+
+        Ok(crate::proto::admin::BatchDeleteRoomsResponse {
+            results: proto_results,
+            succeeded,
+            failed,
+        })
     }
 }
 

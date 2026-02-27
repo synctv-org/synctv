@@ -17,6 +17,12 @@ use crate::{
 use serde_json::Value as JsonValue;
 use std::sync::Arc;
 
+/// Maximum number of items allowed in a single batch operation
+///
+/// This limit prevents DoS attacks and ensures reasonable resource usage
+/// for bulk operations like add, delete, and reorder.
+const MAX_BATCH_SIZE: usize = 100;
+
 /// Request to add a media item
 ///
 /// Design note: According to the three-stage workflow,
@@ -258,9 +264,9 @@ impl MediaService {
             return Ok(Vec::new());
         }
 
-        if items.len() > 100 {
+        if items.len() > MAX_BATCH_SIZE {
             return Err(Error::InvalidInput(
-                "Batch size cannot exceed 100 items".to_string(),
+                format!("Batch size exceeds maximum of {}", MAX_BATCH_SIZE),
             ));
         }
 
@@ -604,6 +610,12 @@ impl MediaService {
             return Ok(0);
         }
 
+        if media_ids.len() > MAX_BATCH_SIZE {
+            return Err(Error::InvalidInput(
+                format!("Batch size exceeds maximum of {}", MAX_BATCH_SIZE),
+            ));
+        }
+
         // Use explicit transaction to prevent TOCTOU between read and delete
         let mut tx = self.media_repo.pool().begin().await?;
 
@@ -694,6 +706,12 @@ impl MediaService {
 
         if updates.is_empty() {
             return Ok(());
+        }
+
+        if updates.len() > MAX_BATCH_SIZE {
+            return Err(Error::InvalidInput(
+                format!("Batch size exceeds maximum of {}", MAX_BATCH_SIZE),
+            ));
         }
 
         // Validate all positions are non-negative

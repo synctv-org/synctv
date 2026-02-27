@@ -2402,6 +2402,83 @@ impl RoomService {
             }
         }
     }
+
+    // ========================
+    // Batch Operations
+    // ========================
+
+    /// Maximum number of items allowed in a batch operation
+    pub const BATCH_SIZE_LIMIT: usize = 100;
+
+    /// Batch ban multiple rooms.
+    ///
+    /// Each room is processed individually - if one room fails, others may still succeed.
+    /// Returns per-room results with success/failure status.
+    ///
+    /// # Errors
+    /// - `InvalidInput` if room_ids is empty or exceeds `BATCH_SIZE_LIMIT`
+    pub async fn batch_ban_rooms(
+        &self,
+        room_ids: &[String],
+        admin_user_id: &UserId,
+    ) -> crate::Result<Vec<(String, crate::Result<()>)>> {
+        if room_ids.is_empty() {
+            return Err(Error::InvalidInput("room_ids cannot be empty".to_string()));
+        }
+        if room_ids.len() > Self::BATCH_SIZE_LIMIT {
+            return Err(Error::InvalidInput(format!(
+                "Batch size {} exceeds limit of {}",
+                room_ids.len(),
+                Self::BATCH_SIZE_LIMIT
+            )));
+        }
+
+        let mut results = Vec::with_capacity(room_ids.len());
+
+        for room_id_str in room_ids {
+            let room_id = RoomId::from_string(room_id_str.clone());
+
+            let result = self.ban_room(&room_id, admin_user_id).await.map(|_| ());
+            results.push((room_id_str.clone(), result));
+        }
+
+        Ok(results)
+    }
+
+    /// Batch delete multiple rooms.
+    ///
+    /// Each room is processed individually - if one room fails, others may still succeed.
+    /// Returns per-room results with success/failure status.
+    ///
+    /// # Errors
+    /// - `InvalidInput` if room_ids is empty or exceeds `BATCH_SIZE_LIMIT`
+    pub async fn batch_delete_rooms(
+        &self,
+        room_ids: &[String],
+        admin_user_id: &UserId,
+    ) -> crate::Result<Vec<(String, crate::Result<()>)>> {
+        if room_ids.is_empty() {
+            return Err(Error::InvalidInput("room_ids cannot be empty".to_string()));
+        }
+        if room_ids.len() > Self::BATCH_SIZE_LIMIT {
+            return Err(Error::InvalidInput(format!(
+                "Batch size {} exceeds limit of {}",
+                room_ids.len(),
+                Self::BATCH_SIZE_LIMIT
+            )));
+        }
+
+        let mut results = Vec::with_capacity(room_ids.len());
+
+        for room_id_str in room_ids {
+            let room_id = RoomId::from_string(room_id_str.clone());
+
+            let result = self.admin_delete_room(&room_id, admin_user_id).await;
+            results.push((room_id_str.clone(), result));
+        }
+
+        Ok(results)
+    }
 }
 
 #[cfg(test)]

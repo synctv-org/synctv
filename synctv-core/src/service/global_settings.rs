@@ -144,6 +144,50 @@ impl std::str::FromStr for StunServerList {
     }
 }
 
+/// A list of allowed CORS origins, stored as a JSON array in the settings database.
+///
+/// Each entry is an origin URL string, e.g. `"https://example.com"`.
+///
+/// Implements `Display` (→ JSON) and `FromStr` (← JSON) so it can be used
+/// directly with `Setting<CorsAllowedOrigins>`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(transparent)]
+pub struct CorsAllowedOrigins(pub Vec<String>);
+
+impl CorsAllowedOrigins {
+    /// Create an empty list of allowed origins (secure default).
+    #[must_use]
+    pub const fn new() -> Self {
+        Self(Vec::new())
+    }
+}
+
+impl Default for CorsAllowedOrigins {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl fmt::Display for CorsAllowedOrigins {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let json = serde_json::to_string(&self.0)
+            .unwrap_or_else(|_| "[]".to_string());
+        f.write_str(&json)
+    }
+}
+
+impl std::str::FromStr for CorsAllowedOrigins {
+    type Err = serde_json::Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        if s.is_empty() {
+            return Ok(Self(Vec::new()));
+        }
+        let origins: Vec<String> = serde_json::from_str(s)?;
+        Ok(Self(origins))
+    }
+}
+
 /// A snapshot of all client-visible settings.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PublicSettings {
@@ -259,6 +303,10 @@ pub struct SettingsRegistry {
     // Chat message retention settings
     /// Maximum number of messages to keep per room (0 = unlimited)
     pub max_chat_messages_per_room: Setting<u64>,
+
+    // CORS settings
+    /// Allowed CORS origins for proxy endpoints (empty = no origins allowed)
+    pub cors_allowed_origins: Setting<CorsAllowedOrigins>,
 }
 
 impl std::fmt::Debug for SettingsRegistry {
@@ -358,7 +406,7 @@ impl SettingsRegistry {
             turn_servers: setting!(TurnServerList, "webrtc.turn_servers", storage.clone(), TurnServerList::new()),
 
             // Chat message retention settings
-            max_chat_messages_per_room: setting!(u64, "chat.max_messages_per_room", storage, 500,
+            max_chat_messages_per_room: setting!(u64, "chat.max_messages_per_room", storage.clone(), 500,
                 |v: &u64| -> crate::Result<()> {
                     if *v <= 100000 {
                         Ok(())
@@ -367,6 +415,9 @@ impl SettingsRegistry {
                     }
                 }
             ),
+
+            // CORS settings
+            cors_allowed_origins: setting!(CorsAllowedOrigins, "cors.allowed_origins", storage, CorsAllowedOrigins::new()),
         }
     }
 
@@ -697,5 +748,77 @@ mod tests {
     fn test_stun_server_list_from_str_empty_array() {
         let list: StunServerList = "[]".parse().unwrap();
         assert!(list.0.is_empty());
+    }
+
+    // ========== CorsAllowedOrigins ==========
+
+    #[test]
+    fn test_cors_allowed_origins_new_is_empty() {
+        let origins = CorsAllowedOrigins::new();
+        assert!(origins.0.is_empty());
+    }
+
+    #[test]
+    fn test_cors_allowed_origins_default_is_empty() {
+        let origins = CorsAllowedOrigins::default();
+        assert!(origins.0.is_empty());
+    }
+
+    #[test]
+    fn test_cors_allowed_origins_display_empty() {
+        let origins = CorsAllowedOrigins::new();
+        assert_eq!(origins.to_string(), "[]");
+    }
+
+    #[test]
+    fn test_cors_allowed_origins_display_with_origins() {
+        let origins = CorsAllowedOrigins(vec![
+            "https://example.com".to_string(),
+            "https://app.example.com".to_string(),
+        ]);
+        let json = origins.to_string();
+        let parsed: Vec<String> = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.len(), 2);
+        assert_eq!(parsed[0], "https://example.com");
+        assert_eq!(parsed[1], "https://app.example.com");
+    }
+
+    #[test]
+    fn test_cors_allowed_origins_from_str_empty_string() {
+        let origins: CorsAllowedOrigins = "".parse().unwrap();
+        assert!(origins.0.is_empty());
+    }
+
+    #[test]
+    fn test_cors_allowed_origins_from_str_valid_json() {
+        let json = r#"["https://example.com","https://app.example.com"]"#;
+        let origins: CorsAllowedOrigins = json.parse().unwrap();
+        assert_eq!(origins.0.len(), 2);
+        assert_eq!(origins.0[0], "https://example.com");
+        assert_eq!(origins.0[1], "https://app.example.com");
+    }
+
+    #[test]
+    fn test_cors_allowed_origins_from_str_invalid_json() {
+        let result = "not valid json".parse::<CorsAllowedOrigins>();
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_cors_allowed_origins_roundtrip() {
+        let original = CorsAllowedOrigins(vec![
+            "https://a.com".to_string(),
+            "https://b.com".to_string(),
+            "https://c.com".to_string(),
+        ]);
+        let serialized = original.to_string();
+        let deserialized: CorsAllowedOrigins = serialized.parse().unwrap();
+        assert_eq!(original, deserialized);
+    }
+
+    #[test]
+    fn test_cors_allowed_origins_from_str_empty_array() {
+        let origins: CorsAllowedOrigins = "[]".parse().unwrap();
+        assert!(origins.0.is_empty());
     }
 }

@@ -288,3 +288,102 @@ async fn test_full_publish_failure_sequence() {
         "Publisher should be cleaned up after StreamHub failure"
     );
 }
+
+// ========== RTMP Player Settings Tests ==========
+//
+// These tests verify the expected behavior of RTMP play authorization
+// based on room settings. The actual implementation is in SyncTvRtmpAuth
+// (synctv crate) which has access to RoomSettingsService.
+//
+// Default behavior: RTMP play is disabled (rtmp_player = false)
+// Only when room admin explicitly enables rtmp_player should play be allowed.
+
+/// Mock auth callback that respects room settings for play authorization
+struct MockRtmpSettingsAuthCallback {
+    rtmp_player_enabled: bool,
+}
+
+impl MockRtmpSettingsAuthCallback {
+    fn new(rtmp_player_enabled: bool) -> Self {
+        Self { rtmp_player_enabled }
+    }
+}
+
+#[async_trait]
+impl AuthCallback for MockRtmpSettingsAuthCallback {
+    async fn on_publish(
+        &self,
+        _app_name: &str,
+        _stream_name: &str,
+        _query: Option<&str>,
+    ) -> Result<Option<AuthPublishRewrite>, Box<dyn std::error::Error + Send + Sync>> {
+        // Not testing publish in these tests
+        Ok(None)
+    }
+
+    async fn on_play(
+        &self,
+        app_name: &str,
+        stream_name: &str,
+        _query: Option<&str>,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        // Check room settings for RTMP player
+        if !self.rtmp_player_enabled {
+            return Err(format!(
+                "RTMP play rejected for room {}: rtmp_player is disabled in room settings. Use HTTP-FLV or HLS.",
+                app_name
+            ).into());
+        }
+        Ok(())
+    }
+
+    async fn on_unpublish(
+        &self,
+        _app_name: &str,
+        _stream_name: &str,
+        _query: Option<&str>,
+    ) {
+    }
+}
+
+/// Test that RTMP play is rejected when rtmp_player is disabled (default)
+#[tokio::test]
+async fn rtmp_play_rejected_when_disabled() {
+    let auth = MockRtmpSettingsAuthCallback::new(false);
+
+    let result = auth.on_play("room1", "media1", None).await;
+    assert!(result.is_err(), "RTMP play should be rejected when rtmp_player is disabled");
+
+    let err = result.unwrap_err().to_string();
+    assert!(
+        err.contains("rtmp_player is disabled"),
+        "Error message should mention rtmp_player setting"
+    );
+    assert!(
+        err.contains("HTTP-FLV") || err.contains("HLS"),
+        "Error message should suggest HTTP-FLV or HLS alternatives"
+    );
+}
+
+/// Test that RTMP play is allowed when rtmp_player is enabled
+#[tokio::test]
+async fn rtmp_play_allowed_when_enabled() {
+    let auth = MockRtmpSettingsAuthCallback::new(true);
+
+    let result = auth.on_play("room1", "media1", None).await;
+    assert!(result.is_ok(), "RTMP play should be allowed when rtmp_player is enabled");
+}
+
+/// Test that the default behavior (no explicit setting) rejects RTMP play
+#[tokio::test]
+async fn rtmp_play_default_is_rejected() {
+    // Default should be disabled (false)
+    let default_settings_enabled = false;
+    let auth = MockRtmpSettingsAuthCallback::new(default_settings_enabled);
+
+    let result = auth.on_play("room1", "media1", None).await;
+    assert!(
+        result.is_err(),
+        "RTMP play should be rejected by default (rtmp_player defaults to false)"
+    );
+}

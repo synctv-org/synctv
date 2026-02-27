@@ -228,6 +228,9 @@ pub fn create_admin_router() -> Router<AppState> {
         .route("/users/{user_id}/unban", post(unban_user))
         .route("/users/{user_id}/approve", post(approve_user))
         .route("/users/{user_id}/rooms", get(get_user_rooms))
+        // Batch user operations
+        .route("/users/batch/ban", post(batch_ban_users))
+        .route("/users/batch/delete", post(batch_delete_users))
         // Room management
         .route("/rooms", get(list_rooms))
         .route("/rooms/{room_id}", get(get_room).delete(delete_room))
@@ -238,6 +241,9 @@ pub fn create_admin_router() -> Router<AppState> {
         .route("/rooms/{room_id}/approve", post(approve_room))
         .route("/rooms/{room_id}/settings", get(get_room_settings).post(set_room_settings))
         .route("/rooms/{room_id}/settings/reset", post(reset_room_settings))
+        // Batch room operations
+        .route("/rooms/batch/ban", post(batch_ban_rooms))
+        .route("/rooms/batch/delete", post(batch_delete_rooms))
         // Provider instances
         .route("/providers", get(list_providers).post(add_provider))
         .route("/providers/{name}", put(update_provider).delete(delete_provider))
@@ -445,7 +451,6 @@ async fn set_user_password(
             user_id,
             new_password: req.password,
             reason,
-            force_logout: true,
         }, auth.user_id, auth.role, &rctx.0)
         .await
         .map_err(admin_err_to_app_error)?;
@@ -535,6 +540,81 @@ async fn get_user_rooms(
             page: q.page.unwrap_or(1),
             page_size: q.page_size.unwrap_or(50).clamp(1, MAX_PAGE_SIZE),
         })
+        .await
+        .map_err(admin_err_to_app_error)?;
+    Ok(Json(resp))
+}
+
+// ------------------------------------------------------------------
+// Batch User Operations
+// ------------------------------------------------------------------
+
+#[derive(serde::Deserialize)]
+struct BatchBanUsersRequest {
+    user_ids: Vec<String>,
+    #[serde(default)]
+    reason: String,
+}
+
+#[derive(serde::Deserialize)]
+struct BatchDeleteUsersRequest {
+    user_ids: Vec<String>,
+}
+
+async fn batch_ban_users(
+    auth: AuthAdmin,
+    rctx: ReqCtx,
+    State(state): State<AppState>,
+    Json(req): Json<BatchBanUsersRequest>,
+) -> AppResult<Json<admin::BatchBanUsersResponse>> {
+    if req.user_ids.is_empty() {
+        return Err(AppError::bad_request("user_ids cannot be empty"));
+    }
+    if req.user_ids.len() > 100 {
+        return Err(AppError::bad_request("Batch size exceeds limit of 100"));
+    }
+    if req.reason.len() > 500 {
+        return Err(AppError::bad_request("Reason too long (max 500 characters)"));
+    }
+
+    let api = require_admin_api(&state)?;
+    let resp = api
+        .batch_ban_users(
+            admin::BatchBanUsersRequest {
+                user_ids: req.user_ids,
+                reason: req.reason,
+            },
+            &auth.user_id,
+            auth.role,
+            &rctx.0,
+        )
+        .await
+        .map_err(admin_err_to_app_error)?;
+    Ok(Json(resp))
+}
+
+async fn batch_delete_users(
+    auth: AuthRoot,
+    rctx: ReqCtx,
+    State(state): State<AppState>,
+    Json(req): Json<BatchDeleteUsersRequest>,
+) -> AppResult<Json<admin::BatchDeleteUsersResponse>> {
+    if req.user_ids.is_empty() {
+        return Err(AppError::bad_request("user_ids cannot be empty"));
+    }
+    if req.user_ids.len() > 100 {
+        return Err(AppError::bad_request("Batch size exceeds limit of 100"));
+    }
+
+    let api = require_admin_api(&state)?;
+    let resp = api
+        .batch_delete_users(
+            admin::BatchDeleteUsersRequest {
+                user_ids: req.user_ids,
+            },
+            &auth.user_id,
+            &rctx.0,
+        )
         .await
         .map_err(admin_err_to_app_error)?;
     Ok(Json(resp))
@@ -738,6 +818,80 @@ async fn reset_room_settings(
     let api = require_admin_api(&state)?;
     let resp = api
         .reset_room_settings(admin::ResetRoomSettingsRequest { room_id }, &auth.user_id)
+        .await
+        .map_err(admin_err_to_app_error)?;
+    Ok(Json(resp))
+}
+
+// ------------------------------------------------------------------
+// Batch Room Operations
+// ------------------------------------------------------------------
+
+#[derive(serde::Deserialize)]
+struct BatchBanRoomsRequest {
+    room_ids: Vec<String>,
+    #[serde(default)]
+    reason: String,
+}
+
+#[derive(serde::Deserialize)]
+struct BatchDeleteRoomsRequest {
+    room_ids: Vec<String>,
+}
+
+async fn batch_ban_rooms(
+    auth: AuthAdmin,
+    rctx: ReqCtx,
+    State(state): State<AppState>,
+    Json(req): Json<BatchBanRoomsRequest>,
+) -> AppResult<Json<admin::BatchBanRoomsResponse>> {
+    if req.room_ids.is_empty() {
+        return Err(AppError::bad_request("room_ids cannot be empty"));
+    }
+    if req.room_ids.len() > 100 {
+        return Err(AppError::bad_request("Batch size exceeds limit of 100"));
+    }
+    if req.reason.len() > 500 {
+        return Err(AppError::bad_request("Reason too long (max 500 characters)"));
+    }
+
+    let api = require_admin_api(&state)?;
+    let resp = api
+        .batch_ban_rooms(
+            admin::BatchBanRoomsRequest {
+                room_ids: req.room_ids,
+                reason: req.reason,
+            },
+            &auth.user_id,
+            &rctx.0,
+        )
+        .await
+        .map_err(admin_err_to_app_error)?;
+    Ok(Json(resp))
+}
+
+async fn batch_delete_rooms(
+    auth: AuthAdmin,
+    rctx: ReqCtx,
+    State(state): State<AppState>,
+    Json(req): Json<BatchDeleteRoomsRequest>,
+) -> AppResult<Json<admin::BatchDeleteRoomsResponse>> {
+    if req.room_ids.is_empty() {
+        return Err(AppError::bad_request("room_ids cannot be empty"));
+    }
+    if req.room_ids.len() > 100 {
+        return Err(AppError::bad_request("Batch size exceeds limit of 100"));
+    }
+
+    let api = require_admin_api(&state)?;
+    let resp = api
+        .batch_delete_rooms(
+            admin::BatchDeleteRoomsRequest {
+                room_ids: req.room_ids,
+            },
+            &auth.user_id,
+            &rctx.0,
+        )
         .await
         .map_err(admin_err_to_app_error)?;
     Ok(Json(resp))

@@ -170,13 +170,13 @@ pub fn is_blocked_ip(ip: IpAddr) -> bool {
 /// Check if an IP address should be blocked regardless of policy.
 ///
 /// This only blocks ranges that url_jail doesn't handle:
-/// - CGNAT (100.64.0.0/10)
 /// - Multicast (224.0.0.0/4)
 /// - Reserved (240.0.0.0/4)
 /// - Link-local cloud metadata (169.254.169.254/32)
 ///
 /// It does NOT block RFC1918 private IPs (10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16)
 /// because those should be controlled by Policy::AllowPrivate.
+/// It does NOT block CGNAT (100.64.0.0/10) as it's technically routable.
 #[must_use]
 fn is_always_blocked_ip(ip: IpAddr) -> bool {
     match ip {
@@ -192,10 +192,6 @@ fn is_always_blocked_ipv4(ip: &Ipv4Addr) -> bool {
 
     // Cloud metadata endpoint: 169.254.169.254 (not entire link-local range)
     if o[0] == 169 && o[1] == 254 && o[2] == 169 && o[3] == 254 {
-        return true;
-    }
-    // CGNAT: 100.64.0.0/10
-    if o[0] == 100 && (64..=127).contains(&o[1]) {
         return true;
     }
     // Current network: 0.0.0.0/8

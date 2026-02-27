@@ -429,6 +429,15 @@ impl LivestreamServer {
                     }
                 }
 
+                // Brief delay to allow in-progress unregistrations to complete.
+                // This reduces the race window where cleanup_all_publishers_for_node
+                // might conflict with concurrent unregister_publisher calls from
+                // streams that are still disconnecting after the stop_all() signal.
+                // The 500ms delay is a reasonable tradeoff: long enough for most
+                // async unregistration operations to complete, but short enough
+                // to not significantly delay the restart recovery.
+                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+
                 // Clean up all local publisher registrations from Redis
                 // This ensures stale state doesn't persist after restart
                 if let Err(e) = registry_for_cleanup.cleanup_all_publishers_for_node(&node_id_for_cleanup).await {

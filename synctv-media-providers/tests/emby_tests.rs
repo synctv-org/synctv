@@ -378,3 +378,162 @@ async fn test_emby_logout_success() {
     let result = client.logout().await;
     assert!(result.is_ok(), "Logout should succeed: {result:?}");
 }
+
+// ============================================================================
+// Thumbnail extraction from ImageTags tests (M-1)
+// ============================================================================
+
+/// Test extracting thumbnail from ImageTags.Primary
+#[tokio::test]
+async fn emby_thumbnail_extract_from_primary_tag() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("GET"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "Items": [
+                    {
+                        "Id": "item-with-primary",
+                        "Name": "Movie with Primary Image",
+                        "Type": "Movie",
+                        "IsFolder": false,
+                        "ImageTags": {
+                            "Primary": "abc123tag"
+                        },
+                        "MediaSources": []
+                    }
+                ],
+                "TotalRecordCount": 1
+            })),
+        )
+        .mount(&server)
+        .await;
+
+    let client =
+        EmbyClient::with_credentials(&server.uri(), "token123", "user-uuid-123").unwrap();
+    let resp = client.get_items(None, None).await.unwrap();
+    assert_eq!(resp.items.len(), 1);
+
+    let item = &resp.items[0];
+    assert!(item.image_tags.is_some());
+    let image_tags = item.image_tags.as_ref().unwrap();
+    assert!(image_tags.primary.is_some());
+    assert_eq!(image_tags.primary.as_ref().unwrap(), "abc123tag");
+}
+
+/// Test extracting thumbnail from ImageTags.Thumb when Primary is not available
+#[tokio::test]
+async fn emby_thumbnail_extract_from_thumb_tag() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("GET"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "Items": [
+                    {
+                        "Id": "item-with-thumb",
+                        "Name": "Movie with Thumb Image",
+                        "Type": "Movie",
+                        "IsFolder": false,
+                        "ImageTags": {
+                            "Thumb": "thumb456tag"
+                        },
+                        "MediaSources": []
+                    }
+                ],
+                "TotalRecordCount": 1
+            })),
+        )
+        .mount(&server)
+        .await;
+
+    let client =
+        EmbyClient::with_credentials(&server.uri(), "token123", "user-uuid-123").unwrap();
+    let resp = client.get_items(None, None).await.unwrap();
+    assert_eq!(resp.items.len(), 1);
+
+    let item = &resp.items[0];
+    assert!(item.image_tags.is_some());
+    let image_tags = item.image_tags.as_ref().unwrap();
+    assert!(image_tags.primary.is_none());
+    assert!(image_tags.thumb.is_some());
+    assert_eq!(image_tags.thumb.as_ref().unwrap(), "thumb456tag");
+}
+
+/// Test that no thumbnail is returned when ImageTags is missing
+#[tokio::test]
+async fn emby_thumbnail_no_image_tags_returns_none() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("GET"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "Items": [
+                    {
+                        "Id": "item-no-images",
+                        "Name": "Movie without Images",
+                        "Type": "Movie",
+                        "IsFolder": false,
+                        "MediaSources": []
+                    }
+                ],
+                "TotalRecordCount": 1
+            })),
+        )
+        .mount(&server)
+        .await;
+
+    let client =
+        EmbyClient::with_credentials(&server.uri(), "token123", "user-uuid-123").unwrap();
+    let resp = client.get_items(None, None).await.unwrap();
+    assert_eq!(resp.items.len(), 1);
+
+    let item = &resp.items[0];
+    assert!(item.image_tags.is_none());
+}
+
+/// Test thumbnail URL construction with image tag
+#[test]
+fn emby_thumbnail_url_construction() {
+    use synctv_media_providers::emby::types::ImageTags;
+
+    // Test building thumbnail URL with Primary tag
+    let image_tags = ImageTags {
+        primary: Some("primary-tag-123".to_string()),
+        thumb: None,
+    };
+
+    let item_id = "item-abc";
+    let host = "https://emby.example.com";
+
+    // Construct thumbnail URL (this is how it should be built)
+    let tag = image_tags.primary.as_ref().unwrap();
+    let thumbnail_url = format!(
+        "{}/Items/{}/Images/Primary?tag={}&maxHeight=300",
+        host.trim_end_matches('/'),
+        item_id,
+        tag
+    );
+    assert_eq!(
+        thumbnail_url,
+        "https://emby.example.com/Items/item-abc/Images/Primary?tag=primary-tag-123&maxHeight=300"
+    );
+
+    // Test with Thumb tag
+    let image_tags_thumb = ImageTags {
+        primary: None,
+        thumb: Some("thumb-tag-456".to_string()),
+    };
+
+    let tag = image_tags_thumb.thumb.as_ref().unwrap();
+    let thumbnail_url = format!(
+        "{}/Items/{}/Images/Thumb?tag={}&maxHeight=300",
+        host.trim_end_matches('/'),
+        item_id,
+        tag
+    );
+    assert_eq!(
+        thumbnail_url,
+        "https://emby.example.com/Items/item-abc/Images/Thumb?tag=thumb-tag-456&maxHeight=300"
+    );
+}

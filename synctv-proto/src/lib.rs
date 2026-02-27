@@ -437,13 +437,11 @@ mod tests {
             user_id: "user-123".into(),
             new_password: "new-secure-pass".into(),
             reason: "security incident".into(),
-            force_logout: true,
         };
         let bytes = req.encode_to_vec();
         let decoded = crate::admin::UpdateUserPasswordRequest::decode(bytes.as_slice()).unwrap();
         assert_eq!(decoded.user_id, "user-123");
         assert_eq!(decoded.reason, "security incident");
-        assert!(decoded.force_logout);
     }
 
     // === Provider Proto Tests ===

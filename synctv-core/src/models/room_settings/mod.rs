@@ -335,6 +335,11 @@ room_setting!(
 room_setting!(GuestAddedPermissions, u64, "guest_added_permissions", 0);
 room_setting!(GuestRemovedPermissions, u64, "guest_removed_permissions", 0);
 
+// RTMP player setting - controls whether RTMP play is allowed for a room.
+// Default is false since RTMP play has no authentication and is insecure.
+// Viewers should use HTTP-FLV or HLS endpoints instead.
+room_setting!(RtmpPlayer, bool, "rtmp_player", false);
+
 use crate::models::room::AutoPlaySettings;
 
 /// Auto play settings (complex type)
@@ -455,6 +460,8 @@ pub struct RoomSettings {
     pub guest_added_permissions: GuestAddedPermissions,
     #[serde(default)]
     pub guest_removed_permissions: GuestRemovedPermissions,
+    #[serde(default)]
+    pub rtmp_player: RtmpPlayer,
 }
 
 impl RoomSettings {

@@ -35,7 +35,7 @@ pub mod ws_ticket;
 
 pub use auth::{hash_password, verify_password, JwtService, TokenType, Claims, GuestClaims, BruteForceProtection, SecurityPipeline, AuthenticatedToken, TokenBlacklistStore};
 pub use auth::security_pipeline::{BlacklistEnforcement, SecurityPipelineBuilder, SecurityPipelineBuildError};
-pub use auth::brute_force::{AttemptTracker, InMemoryAttemptTracker, RedisAttemptTracker};
+pub use auth::brute_force::{AttemptTracker, InMemoryAttemptTracker, RedisAttemptTracker, BruteForceConfig};
 pub use auth::token_blacklist::{FallbackTokenBlacklistStore, InMemoryTokenBlacklistStore, PgTokenBlacklistStore, TieredTokenBlacklistStore, RedisSyncableTokenBlacklistStore, SyncStats};
 pub use auth::guest_validator::GuestTokenValidator;
 pub use chat::ChatService;
@@ -55,7 +55,7 @@ pub use providers_manager::ProvidersManager;
 pub use permission::PermissionService;
 pub use member::{MemberService, AddMemberOptions, MemberEventBroadcaster};
 pub use media::MediaService;
-pub use playback::{PlaybackService, PlaybackBroadcaster};
+pub use playback::{PlaybackService, PlaybackBroadcaster, BroadcastResult, SeekResponse};
 pub use publish_key::{PublishKeyService, PublishKey, JtiStore, RedisJtiStore, InMemoryJtiStore};
 pub use notification::{NotificationService, RoomEvent};
 pub use user_notification::UserNotificationService;
@@ -76,7 +76,7 @@ pub use email::{EmailService, EmailConfig, VerificationCodeStore, RedisVerificat
 pub use email_templates::{EmailTemplateManager, EmailTemplateType};
 pub use optimistic_retry::retry_with_optimistic_lock;
 pub use turn_server::{StunServer, StunServerConfig, resolve_external_ip, validate_external_addr};
-pub use ws_ticket::{WsTicketService, WsTicketData, TicketStore, RedisTicketStore, InMemoryTicketStore};
+pub use ws_ticket::{WsTicketService, WsTicketData, TicketStore, RedisTicketStore, InMemoryTicketStore, UserValidator, UserValidationResult};
 
 /// Trait for checking if the current node is the cluster leader.
 ///

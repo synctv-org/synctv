@@ -226,9 +226,9 @@ impl SettingsService {
         for (key, value) in &updates {
             let row = sqlx::query(
                 "UPDATE settings
-                 SET value = $1, updated_at = NOW()
+                 SET value = $1, version = version + 1, updated_at = NOW()
                  WHERE key = $2
-                 RETURNING key, group_name, value, created_at, updated_at",
+                 RETURNING key, group_name, value, version, created_at, updated_at",
             )
             .bind(value.as_str())
             .bind(key.as_str())
@@ -243,6 +243,8 @@ impl SettingsService {
                     .map_err(|e| Error::Internal(format!("Failed to read setting group: {e}")))?,
                 value: row.try_get("value")
                     .map_err(|e| Error::Internal(format!("Failed to read setting value: {e}")))?,
+                version: row.try_get("version")
+                    .map_err(|e| Error::Internal(format!("Failed to read setting version: {e}")))?,
                 created_at: row.try_get("created_at")
                     .map_err(|e| Error::Internal(format!("Failed to read setting created_at: {e}")))?,
                 updated_at: row.try_get("updated_at")

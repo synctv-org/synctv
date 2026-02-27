@@ -134,7 +134,7 @@ pub(crate) fn map_provider_error(err: synctv_core::provider::ProviderError) -> t
         ProviderError::AuthRequired | ProviderError::CredentialRequired => {
             tonic::Status::unauthenticated(msg)
         }
-        ProviderError::RouteRegistrationFailed(_) | ProviderError::IoError(_) | ProviderError::JsonError(_) => {
+        ProviderError::RouteRegistrationFailed(_) | ProviderError::IoError(_) | ProviderError::JsonError(_) | ProviderError::EncryptionRequired(_) => {
             tracing::error!("Provider internal error: {msg}");
             tonic::Status::internal("Internal error")
         }

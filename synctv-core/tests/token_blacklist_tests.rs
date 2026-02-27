@@ -50,6 +50,97 @@ async fn test_in_memory_blacklist_ttl_expiry() {
     );
 }
 
+// ============================================================================
+// Atomic blacklist_if_not_exists tests (Task #10)
+// ============================================================================
+
+/// Test that blacklist_if_not_exists returns false for first insert (first use)
+#[tokio::test]
+async fn test_in_memory_blacklist_if_not_exists_first_use() {
+    let store = InMemoryTokenBlacklistStore::new(10_000, 3600, 86400);
+
+    let key = "jti:first_use";
+
+    // First call should return false (not existed, newly inserted)
+    let already_existed = store.blacklist_if_not_exists(key, 3600).await.unwrap();
+    assert!(!already_existed, "First use should return false (newly inserted)");
+
+    // Key should now be blacklisted
+    assert!(store.is_blacklisted(key).await);
+}
+
+/// Test that blacklist_if_not_exists returns true for second insert (replay detected)
+#[tokio::test]
+async fn test_in_memory_blacklist_if_not_exists_replay_detected() {
+    let store = InMemoryTokenBlacklistStore::new(10_000, 3600, 86400);
+
+    let key = "jti:replay_test";
+
+    // First call
+    let first_result = store.blacklist_if_not_exists(key, 3600).await.unwrap();
+    assert!(!first_result, "First use should return false");
+
+    // Second call should return true (already existed = replay detected)
+    let second_result = store.blacklist_if_not_exists(key, 3600).await.unwrap();
+    assert!(second_result, "Second use should return true (replay detected)");
+
+    // Key should still be blacklisted
+    assert!(store.is_blacklisted(key).await);
+}
+
+/// Test atomicity: concurrent calls to blacklist_if_not_exists should have exactly
+/// one return false (first use) and all others return true (replay detected).
+#[tokio::test]
+async fn test_in_memory_blacklist_if_not_exists_concurrent_atomicity() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use tokio::sync::Barrier;
+
+    let store = Arc::new(InMemoryTokenBlacklistStore::new(10_000, 3600, 86400));
+    let key = "jti:concurrent_atomic";
+
+    let first_use_count = Arc::new(AtomicUsize::new(0));
+    let replay_count = Arc::new(AtomicUsize::new(0));
+    let barrier = Arc::new(Barrier::new(20));
+
+    let mut handles = vec![];
+    for _ in 0..20 {
+        let store = store.clone();
+        let first_use = first_use_count.clone();
+        let replay = replay_count.clone();
+        let barrier = barrier.clone();
+
+        handles.push(tokio::spawn(async move {
+            barrier.wait().await;
+
+            let already_existed = store.blacklist_if_not_exists(key, 3600).await.unwrap();
+            if already_existed {
+                replay.fetch_add(1, Ordering::SeqCst);
+            } else {
+                first_use.fetch_add(1, Ordering::SeqCst);
+            }
+        }));
+    }
+
+    for handle in handles {
+        handle.await.unwrap();
+    }
+
+    // CRITICAL: Exactly ONE call should be first use, rest should be replays
+    assert_eq!(
+        first_use_count.load(Ordering::SeqCst),
+        1,
+        "Exactly ONE concurrent call should return false (first use)"
+    );
+    assert_eq!(
+        replay_count.load(Ordering::SeqCst),
+        19,
+        "19 concurrent calls should return true (replay detected)"
+    );
+
+    // Key should be blacklisted
+    assert!(store.is_blacklisted(key).await);
+}
+
 #[tokio::test]
 async fn test_in_memory_family_revoked_set_and_get() {
     let store = InMemoryTokenBlacklistStore::new(10_000, 3600, 86400);

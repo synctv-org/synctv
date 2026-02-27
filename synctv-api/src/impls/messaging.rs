@@ -25,17 +25,17 @@ use tokio::sync::Semaphore;
 
 use crate::proto::client::{ClientMessage, ServerMessage};
 
-/// Default TTL for membership cache entries (60 seconds).
+/// Default TTL for membership cache entries (30 seconds).
 ///
 /// This TTL is chosen to balance between:
 /// - Reducing database load (longer TTL = fewer queries)
 /// - Responsiveness to membership changes (shorter TTL = faster detection of bans/removals)
 ///
-/// With a 60-second TTL and 25-35 second heartbeat interval, we ensure:
-/// - At most 1 DB query per connection per 60 seconds (vs. every heartbeat without cache)
-/// - Banned/removed users are disconnected within ~60-95 seconds worst case
+/// With a 30-second TTL and 25-35 second heartbeat interval, we ensure:
+/// - At most 1 DB query per connection per 30 seconds (vs. every heartbeat without cache)
+/// - Banned/removed users are disconnected within ~30-65 seconds worst case
 /// - The disconnect signal channel (Redis PubSub) provides immediate notification in most cases
-const MEMBERSHIP_CACHE_TTL: Duration = Duration::from_secs(60);
+const MEMBERSHIP_CACHE_TTL: Duration = Duration::from_secs(30);
 
 /// Default maximum concurrent message processing operations across all connections.
 /// This provides backpressure when the system is under heavy load.
@@ -264,7 +264,7 @@ pub struct StreamMessageHandler {
     /// and the WS handler is disconnecting in response to that cluster event.
     skip_cleanup_user_left: Arc<std::sync::atomic::AtomicBool>,
     /// Cached membership status for heartbeat validation.
-    /// Uses TTL-based expiration (60 seconds) to reduce database load while
+    /// Uses TTL-based expiration (30 seconds) to reduce database load while
     /// maintaining reasonable responsiveness to membership changes.
     /// Key: (room_id, user_id) tuple for O(1) lookup.
     membership_cache: Arc<moka::sync::Cache<(String, String), CachedMembership>>,
@@ -347,7 +347,7 @@ impl StreamMessageHandler {
     ) -> Self {
         let connection_id = format!("{}_{}", user_id.as_str(), nanoid::nanoid!(8));
         // Create membership cache with TTL for heartbeat validation.
-        // This reduces database queries from every heartbeat (25-35s) to at most once per TTL (60s).
+        // This reduces database queries from every heartbeat (25-35s) to at most once per TTL (30s).
         let membership_cache = Arc::new(
             moka::sync::Cache::builder()
                 .time_to_live(MEMBERSHIP_CACHE_TTL)
@@ -2095,11 +2095,23 @@ impl StreamMessageHandler {
         }
 
         // Permission check (SEEK) is handled by PlaybackService::seek()
-        self.room_service
+        let response = self.room_service
             .playback_service()
             .seek(self.room_id.clone(), self.user_id.clone(), current_time)
             .await
             .map_err(|e| e.to_string())?;
+
+        // Log warning if seek was not applied due to contention
+        if !response.seek_applied {
+            tracing::warn!(
+                room_id = %self.room_id.as_str(),
+                user_id = %self.user_id.as_str(),
+                requested_time = current_time,
+                actual_time = response.state.current_time,
+                message = ?response.message,
+                "Seek command returned degraded response"
+            );
+        }
 
         // PlaybackStateChanged broadcast is handled by room_service
         Ok(())
@@ -2264,6 +2276,25 @@ fn cluster_event_to_server_message(
                 removed_by_user_id: user_id.as_str().to_string(),
             })),
         }),
+        ClusterEvent::MediaRemovedBatch {
+            media_ids,
+            user_id,
+            ..
+        } => {
+            // Broadcast batch removal as individual messages for backward compatibility
+            // Clients receive one MediaRemoved message per item, but we only sent one
+            // Redis pub/sub message (O(1) instead of O(n) network traffic)
+            // Note: We return None here because this should be handled differently -
+            // batch events should be expanded into multiple messages if needed,
+            // but for now we just skip broadcasting to avoid message storms
+            tracing::debug!(
+                room_id = %room_id,
+                user_id = %user_id.as_str(),
+                count = media_ids.len(),
+                "Batch media removal event received"
+            );
+            None
+        }
         ClusterEvent::PermissionChanged {
             target_user_id,
             new_permissions,

@@ -272,6 +272,13 @@ impl UserService {
     ///
     /// Includes per-account and per-IP brute-force protection: after repeated failures,
     /// accounts/IPs are temporarily locked with exponential backoff (1min / 5min / 15min).
+    ///
+    /// ## Failure Type Differentiation (Task #74)
+    ///
+    /// To prevent attackers from locking out legitimate users by trying random usernames:
+    /// - "User doesn't exist" → Only IP-level tracking (username doesn't exist to attack)
+    /// - "Wrong password for existing user" → Both username and IP tracking
+    /// - "Account banned/pending/deleted" → Both username and IP tracking (prevents enumeration)
     pub async fn login(
         &self,
         username: String,
@@ -288,6 +295,9 @@ impl UserService {
             .repository
             .get_by_username(&username)
             .await?;
+
+        // Track whether user existed for differentiated failure recording (Task #74)
+        let user_existed = maybe_user.is_some();
 
         // Always perform password verification to prevent timing side-channel.
         // If the user doesn't exist, verify against a dummy hash so the response
@@ -307,8 +317,18 @@ impl UserService {
         let user = match user {
             Some(u) if is_valid => u,
             _ => {
-                // Record failed attempt for brute-force tracking
-                if let Err(e) = self.brute_force.record_failure(&username, client_ip).await {
+                // Differentiate failure types (Task #74):
+                // - User doesn't exist: Only record IP-level failure to prevent
+                //   attackers from locking out legitimate usernames
+                // - Wrong password for existing user: Record both username and IP
+                let record_result = if user_existed {
+                    // User existed but wrong password - record both username and IP
+                    self.brute_force.record_failure(&username, client_ip).await
+                } else {
+                    // User didn't exist - only record IP-level failure
+                    self.brute_force.record_ip_failure(client_ip).await
+                };
+                if let Err(e) = record_result {
                     tracing::warn!(error = %e, "Failed to record login failure for brute-force tracking");
                 }
                 return Err(Error::Authentication("Authentication failed".to_string()));
@@ -321,6 +341,7 @@ impl UserService {
             || user.deleted_at.is_some()
         {
             // Record failure (account is locked/deleted but attacker shouldn't know)
+            // Use both username and IP tracking to prevent enumeration
             if let Err(e) = self.brute_force.record_failure(&username, client_ip).await {
                 tracing::warn!(error = %e, "Failed to record login failure for brute-force tracking");
             }
@@ -517,10 +538,20 @@ impl UserService {
                 }
             }
 
-            // Check if this specific JTI has been blacklisted (already used)
+            // Atomically check and blacklist the JTI.
+            // This prevents TOCTOU race conditions where two concurrent requests
+            // both pass the is_blacklisted check before either calls blacklist.
             if !old_jti.is_empty() {
                 let blacklist_key = self.key_builder.refresh_token_blacklist(old_jti);
-                if self.token_blacklist.is_blacklisted(&blacklist_key).await {
+                let now = chrono::Utc::now().timestamp();
+                let remaining_ttl = (claims.exp - now).max(60) as u64;
+
+                // Atomic operation: returns true if key already existed (replay detected)
+                let already_existed = self.token_blacklist
+                    .blacklist_if_not_exists(&blacklist_key, remaining_ttl)
+                    .await?;
+
+                if already_existed {
                     // A blacklisted JTI is being replayed! This indicates the refresh token
                     // was stolen and both the legitimate user and attacker are trying to use it.
                     // Revoke the entire refresh token family for this user as a precaution.
@@ -530,7 +561,6 @@ impl UserService {
                         "Blacklisted refresh token JTI replayed — revoking entire token family"
                     );
 
-                    let now = chrono::Utc::now().timestamp();
                     let family_ttl = self.jwt_service.refresh_token_duration_seconds().saturating_add(3600);
                     self.token_blacklist.set_family_revoked(&family_key, now, family_ttl).await;
 
@@ -539,22 +569,8 @@ impl UserService {
             }
         }
 
-        // Blacklist the old refresh token JTI BEFORE issuing new tokens.
-        // This ensures "revoke old, then issue new" ordering: a concurrent replay
-        // of the old token will hit the blacklist even during the brief signing window.
-        {
-            let old_jti = &claims.jti;
-            if !old_jti.is_empty() {
-                let blacklist_key = self.key_builder.refresh_token_blacklist(old_jti);
-                let now = chrono::Utc::now().timestamp();
-                // TTL = remaining lifetime of the old token (it can't be used after expiry anyway)
-                let remaining_ttl = (claims.exp - now).max(60) as u64;
-                // Fail closed: if blacklist write fails, refuse to issue new tokens
-                self.token_blacklist.blacklist(&blacklist_key, remaining_ttl).await?;
-            }
-        }
-
         // Generate new tokens (role will be fetched from DB on each request)
+        // The old JTI is now atomically blacklisted, so concurrent replays will be detected.
         let new_access_token = self
             .jwt_service
             .sign_token(&user.id, TokenType::Access, user.password_version)?;
@@ -731,6 +747,60 @@ impl UserService {
         Ok(())
     }
 
+    /// Set user status (Active/Pending/Banned).
+    ///
+    /// This method updates the user's account status and invalidates
+    /// relevant caches. Changing status to Banned or Pending will
+    /// prevent the user from logging in or using WebSocket connections.
+    pub async fn set_user_status(&self, user_id: &UserId, status: crate::models::UserStatus) -> Result<User> {
+        let user = self.repository.update_status(user_id, status).await?;
+        self.notify_user_invalidation(user_id).await;
+        Ok(user)
+    }
+}
+
+// Implement UserValidator for UserService to support TOCTOU-safe ticket validation
+#[async_trait::async_trait]
+impl crate::service::ws_ticket::UserValidator for UserService {
+    /// Validate user for ticket-based WebSocket authentication.
+    ///
+    /// This implementation checks:
+    /// - User exists and is not soft-deleted
+    /// - User status is Active (not Banned or Pending)
+    ///
+    /// Returns the current password version for ticket validation.
+    async fn validate_for_ticket(
+        &self,
+        user_id: &UserId,
+    ) -> crate::Result<crate::service::ws_ticket::UserValidationResult> {
+        let user = self
+            .repository
+            .get_by_id(user_id)
+            .await?
+            .ok_or_else(|| crate::Error::NotFound("User not found".to_string()))?;
+
+        // Check soft-delete
+        if user.is_deleted() {
+            return Err(crate::Error::Authorization("Authentication failed".to_string()));
+        }
+
+        // Check user status
+        match user.status {
+            crate::models::UserStatus::Active => {
+                // User is active, continue
+            }
+            crate::models::UserStatus::Banned | crate::models::UserStatus::Pending => {
+                return Err(crate::Error::Authorization("Authentication failed".to_string()));
+            }
+        }
+
+        Ok(crate::service::ws_ticket::UserValidationResult {
+            password_version: user.password_version,
+        })
+    }
+}
+
+impl UserService {
     /// Create a new user for an `OAuth2` login.
     ///
     /// This method is called during `OAuth2` login flow when no existing provider

@@ -37,6 +37,9 @@ pub enum Error {
 
     #[error("Optimistic lock conflict")]
     OptimisticLockConflict,
+
+    #[error("Operation timeout: {0}")]
+    Timeout(String),
 }
 
 impl From<sqlx::Error> for Error {
@@ -84,6 +87,56 @@ impl From<anyhow::Error> for Error {
             msg.push_str(&cause.to_string());
         }
         Self::Internal(msg)
+    }
+}
+
+impl From<crate::provider::ProviderError> for Error {
+    fn from(err: crate::provider::ProviderError) -> Self {
+        use crate::provider::ProviderError;
+        match err {
+            // Network-related errors -> Timeout for transient issues
+            ProviderError::NetworkError(msg) => Self::Timeout(format!("Provider network error: {msg}")),
+            // Authentication errors
+            ProviderError::AuthRequired | ProviderError::CredentialRequired | ProviderError::InvalidCredentialType => {
+                Self::Authentication("Provider authentication required".to_string())
+            }
+            // Configuration errors
+            ProviderError::InvalidConfig(msg) => Self::InvalidInput(format!("Invalid provider configuration: {msg}")),
+            ProviderError::MissingField(field) => Self::InvalidInput(format!("Missing required field: {field}")),
+            ProviderError::MissingInstance | ProviderError::InstanceNotFound(_) => {
+                Self::NotFound("Provider instance not found".to_string())
+            }
+            // Not found
+            ProviderError::NotFound => Self::NotFound("Provider resource not found".to_string()),
+            // Invalid URL
+            ProviderError::InvalidUrl(msg) => Self::InvalidInput(format!("Invalid URL: {msg}")),
+            // Upstream HTTP errors
+            ProviderError::UpstreamHttp { status, url } => {
+                if status == 401 || status == 403 {
+                    Self::Authentication(format!("Provider authentication failed for {url}"))
+                } else if status == 404 {
+                    Self::NotFound(format!("Provider resource not found: {url}"))
+                } else if status >= 500 {
+                    Self::Timeout(format!("Provider server error ({status}) for {url}"))
+                } else {
+                    Self::Internal(format!("Provider HTTP error {status} for {url}"))
+                }
+            }
+            // Encryption required
+            ProviderError::EncryptionRequired(provider) => {
+                Self::InvalidInput(format!("Credential encryption required for provider '{provider}'"))
+            }
+            // API errors - could be various things
+            ProviderError::ApiError(msg) => Self::Internal(format!("Provider API error: {msg}")),
+            // Format/parse errors
+            ProviderError::UnsupportedFormat(fmt) => Self::InvalidInput(format!("Unsupported format: {fmt}")),
+            ProviderError::ParseError(msg) => Self::InvalidInput(format!("Parse error: {msg}")),
+            // Route registration
+            ProviderError::RouteRegistrationFailed(msg) => Self::Internal(format!("Route registration failed: {msg}")),
+            // IO/JSON errors
+            ProviderError::IoError(e) => Self::Internal(format!("IO error: {e}")),
+            ProviderError::JsonError(e) => Self::Internal(format!("JSON error: {e}")),
+        }
     }
 }
 
@@ -324,5 +377,155 @@ mod tests {
             Error::OptimisticLockConflict.to_string(),
             "Optimistic lock conflict"
         );
+    }
+
+    // ========== ProviderError Conversion Tests (#34) ==========
+
+    #[test]
+    fn test_provider_error_network_converts_to_timeout() {
+        let provider_err = crate::provider::ProviderError::NetworkError("connection refused".to_string());
+        let core_err: Error = provider_err.into();
+        assert!(matches!(core_err, Error::Timeout(_)));
+        assert!(core_err.to_string().contains("network error"));
+    }
+
+    #[test]
+    fn test_provider_error_auth_required_converts_to_authentication() {
+        let provider_err = crate::provider::ProviderError::AuthRequired;
+        let core_err: Error = provider_err.into();
+        assert!(matches!(core_err, Error::Authentication(_)));
+    }
+
+    #[test]
+    fn test_provider_error_credential_required_converts_to_authentication() {
+        let provider_err = crate::provider::ProviderError::CredentialRequired;
+        let core_err: Error = provider_err.into();
+        assert!(matches!(core_err, Error::Authentication(_)));
+    }
+
+    #[test]
+    fn test_provider_error_invalid_config_converts_to_invalid_input() {
+        let provider_err = crate::provider::ProviderError::InvalidConfig("missing host".to_string());
+        let core_err: Error = provider_err.into();
+        assert!(matches!(core_err, Error::InvalidInput(_)));
+        assert!(core_err.to_string().contains("Invalid provider configuration"));
+    }
+
+    #[test]
+    fn test_provider_error_not_found_converts_to_not_found() {
+        let provider_err = crate::provider::ProviderError::NotFound;
+        let core_err: Error = provider_err.into();
+        assert!(matches!(core_err, Error::NotFound(_)));
+    }
+
+    #[test]
+    fn test_provider_error_instance_not_found_converts_to_not_found() {
+        let provider_err = crate::provider::ProviderError::InstanceNotFound("bilibili_main".to_string());
+        let core_err: Error = provider_err.into();
+        assert!(matches!(core_err, Error::NotFound(_)));
+    }
+
+    #[test]
+    fn test_provider_error_invalid_url_converts_to_invalid_input() {
+        let provider_err = crate::provider::ProviderError::InvalidUrl("bad url".to_string());
+        let core_err: Error = provider_err.into();
+        assert!(matches!(core_err, Error::InvalidInput(_)));
+        assert!(core_err.to_string().contains("Invalid URL"));
+    }
+
+    #[test]
+    fn test_provider_error_upstream_http_401_converts_to_authentication() {
+        let provider_err = crate::provider::ProviderError::UpstreamHttp {
+            status: 401,
+            url: "https://api.example.com/video".to_string(),
+        };
+        let core_err: Error = provider_err.into();
+        assert!(matches!(core_err, Error::Authentication(_)));
+    }
+
+    #[test]
+    fn test_provider_error_upstream_http_403_converts_to_authentication() {
+        let provider_err = crate::provider::ProviderError::UpstreamHttp {
+            status: 403,
+            url: "https://api.example.com/video".to_string(),
+        };
+        let core_err: Error = provider_err.into();
+        assert!(matches!(core_err, Error::Authentication(_)));
+    }
+
+    #[test]
+    fn test_provider_error_upstream_http_404_converts_to_not_found() {
+        let provider_err = crate::provider::ProviderError::UpstreamHttp {
+            status: 404,
+            url: "https://api.example.com/video".to_string(),
+        };
+        let core_err: Error = provider_err.into();
+        assert!(matches!(core_err, Error::NotFound(_)));
+    }
+
+    #[test]
+    fn test_provider_error_upstream_http_500_converts_to_timeout() {
+        let provider_err = crate::provider::ProviderError::UpstreamHttp {
+            status: 500,
+            url: "https://api.example.com/video".to_string(),
+        };
+        let core_err: Error = provider_err.into();
+        // 5xx errors are treated as transient/timeout
+        assert!(matches!(core_err, Error::Timeout(_)));
+    }
+
+    #[test]
+    fn test_provider_error_upstream_http_400_converts_to_internal() {
+        let provider_err = crate::provider::ProviderError::UpstreamHttp {
+            status: 400,
+            url: "https://api.example.com/video".to_string(),
+        };
+        let core_err: Error = provider_err.into();
+        // 4xx (except 401/403/404) are internal errors
+        assert!(matches!(core_err, Error::Internal(_)));
+    }
+
+    #[test]
+    fn test_provider_error_encryption_required_converts_to_invalid_input() {
+        let provider_err = crate::provider::ProviderError::EncryptionRequired("bilibili");
+        let core_err: Error = provider_err.into();
+        assert!(matches!(core_err, Error::InvalidInput(_)));
+        assert!(core_err.to_string().contains("Credential encryption required"));
+    }
+
+    #[test]
+    fn test_provider_error_api_error_converts_to_internal() {
+        let provider_err = crate::provider::ProviderError::ApiError("rate limited".to_string());
+        let core_err: Error = provider_err.into();
+        assert!(matches!(core_err, Error::Internal(_)));
+    }
+
+    #[test]
+    fn test_provider_error_unsupported_format_converts_to_invalid_input() {
+        let provider_err = crate::provider::ProviderError::UnsupportedFormat("avi".to_string());
+        let core_err: Error = provider_err.into();
+        assert!(matches!(core_err, Error::InvalidInput(_)));
+    }
+
+    #[test]
+    fn test_provider_error_to_tonic_status_preserves_error_type() {
+        // Network error -> Timeout -> should map to something appropriate
+        let provider_err = crate::provider::ProviderError::NetworkError("timeout".to_string());
+        let core_err: Error = provider_err.into();
+        let status: tonic::Status = core_err.into();
+        // Timeout errors don't have a direct tonic code, so they become Internal
+        assert_eq!(status.code(), tonic::Code::Internal);
+
+        // Auth error -> Authentication -> Unauthenticated
+        let provider_err = crate::provider::ProviderError::AuthRequired;
+        let core_err: Error = provider_err.into();
+        let status: tonic::Status = core_err.into();
+        assert_eq!(status.code(), tonic::Code::Unauthenticated);
+
+        // Invalid config -> InvalidInput -> InvalidArgument
+        let provider_err = crate::provider::ProviderError::InvalidConfig("bad".to_string());
+        let core_err: Error = provider_err.into();
+        let status: tonic::Status = core_err.into();
+        assert_eq!(status.code(), tonic::Code::InvalidArgument);
     }
 }

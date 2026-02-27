@@ -49,6 +49,39 @@ impl RoomStatus {
     pub const fn is_closed(&self) -> bool {
         matches!(self, Self::Closed)
     }
+
+    /// Check if a status transition is valid.
+    ///
+    /// Valid transitions:
+    /// - `Pending -> Active` (review approved)
+    /// - `Pending -> Closed` (review rejected)
+    /// - `Active -> Closed` (room closed)
+    /// - `Closed -> Active` (room reopened)
+    /// - Same status (no change) is always allowed
+    ///
+    /// Invalid transitions:
+    /// - `Closed -> Pending` (cannot return to pending state)
+    /// - `Active -> Pending` (cannot return to pending state)
+    #[must_use]
+    pub fn can_transition_to(&self, new_status: &Self) -> bool {
+        match (self, new_status) {
+            // Same status (no change) is always allowed
+            (a, b) if *a == *b => true,
+
+            // Pending can transition to Active (approved) or Closed (rejected)
+            (Self::Pending, Self::Active) => true,
+            (Self::Pending, Self::Closed) => true,
+
+            // Active can transition to Closed (room closed)
+            (Self::Active, Self::Closed) => true,
+
+            // Closed can transition to Active (room reopened)
+            (Self::Closed, Self::Active) => true,
+
+            // All other transitions are invalid
+            _ => false,
+        }
+    }
 }
 
 // Database mapping: RoomStatus -> SMALLINT
@@ -509,5 +542,74 @@ impl std::str::FromStr for RoomSettingsJson {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         serde_json::from_str(s)
             .map_err(|e| Error::InvalidInput(format!("Invalid RoomSettingsJson: {e}")))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_status_transition_pending_to_active_is_valid() {
+        assert!(RoomStatus::Pending.can_transition_to(&RoomStatus::Active));
+    }
+
+    #[test]
+    fn test_status_transition_pending_to_closed_is_valid() {
+        assert!(RoomStatus::Pending.can_transition_to(&RoomStatus::Closed));
+    }
+
+    #[test]
+    fn test_status_transition_active_to_closed_is_valid() {
+        assert!(RoomStatus::Active.can_transition_to(&RoomStatus::Closed));
+    }
+
+    #[test]
+    fn test_status_transition_closed_to_active_is_valid() {
+        assert!(RoomStatus::Closed.can_transition_to(&RoomStatus::Active));
+    }
+
+    #[test]
+    fn test_status_transition_same_status_is_valid() {
+        assert!(RoomStatus::Pending.can_transition_to(&RoomStatus::Pending));
+        assert!(RoomStatus::Active.can_transition_to(&RoomStatus::Active));
+        assert!(RoomStatus::Closed.can_transition_to(&RoomStatus::Closed));
+    }
+
+    #[test]
+    fn test_status_transition_closed_to_pending_is_invalid() {
+        assert!(!RoomStatus::Closed.can_transition_to(&RoomStatus::Pending));
+    }
+
+    #[test]
+    fn test_status_transition_active_to_pending_is_invalid() {
+        assert!(!RoomStatus::Active.can_transition_to(&RoomStatus::Pending));
+    }
+
+    #[test]
+    fn test_status_transition_matrix_exhaustive() {
+        // Define all valid transitions
+        let valid_transitions = [
+            (RoomStatus::Pending, RoomStatus::Active),
+            (RoomStatus::Pending, RoomStatus::Closed),
+            (RoomStatus::Active, RoomStatus::Closed),
+            (RoomStatus::Closed, RoomStatus::Active),
+        ];
+
+        let all_statuses = [RoomStatus::Pending, RoomStatus::Active, RoomStatus::Closed];
+
+        for &from in &all_statuses {
+            for &to in &all_statuses {
+                let expected = from == to || valid_transitions.contains(&(from, to));
+                assert_eq!(
+                    from.can_transition_to(&to),
+                    expected,
+                    "Transition {:?} -> {:?} should be {}",
+                    from,
+                    to,
+                    if expected { "valid" } else { "invalid" }
+                );
+            }
+        }
     }
 }

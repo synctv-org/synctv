@@ -53,11 +53,21 @@ impl EmailTokenService {
     }
 
     /// Generate a new email token
+    ///
+    /// Invalidates any existing tokens of the same type for this user before
+    /// creating a new one. This ensures only one valid token per user per
+    /// purpose at any time, preventing token accumulation attacks.
     pub async fn generate_token(
         &self,
         user_id: &UserId,
         token_type: EmailTokenType,
     ) -> Result<String> {
+        // Invalidate any existing tokens of this type for the user first
+        // This ensures only one valid token per user per purpose
+        self.repository
+            .delete_user_tokens(user_id, token_type)
+            .await?;
+
         // Generate random token
         let token = nanoid!(64);
 

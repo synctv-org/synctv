@@ -138,9 +138,27 @@ async fn proxy_m3u8(
 /// Returns danmaku server connection info as SSE events.
 /// The client uses this info to connect to Bilibili's WebSocket danmu servers directly.
 ///
-/// Events emitted:
+/// ## Current Behavior
+/// - Emits a single `danmu_info` event with connection details
+/// - Then keeps the connection alive with periodic keep-alive messages
+///
+/// ## Events Emitted
 /// - `danmu_info`: JSON with `token` and `host_list` for WebSocket connection
 /// - `error`: If the media is not a live stream or danmu info cannot be fetched
+///
+/// ## Future Enhancement (TODO)
+/// This endpoint could be enhanced to act as a danmaku proxy:
+/// 1. Server connects to Bilibili's WebSocket danmu servers
+/// 2. Forwards received danmaku messages to SSE clients
+/// 3. Clients receive continuous stream of `danmu` events
+///
+/// This would require:
+/// - WebSocket client implementation for Bilibili protocol
+/// - Connection pooling and management
+/// - Proper cleanup on client disconnect
+///
+/// Current design allows clients to connect directly to Bilibili's servers,
+/// which avoids server being a proxy for all danmaku traffic.
 async fn danmu_sse(
     auth: AuthUser,
     Path((room_id, media_id)): Path<(String, String)>,

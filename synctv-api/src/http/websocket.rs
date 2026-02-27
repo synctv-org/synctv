@@ -37,6 +37,60 @@ use synctv_core::service::{ContentFilter, RateLimitConfig};
 /// Threshold for consecutive slow-client drops before disconnecting them
 const SLOW_CLIENT_DROP_THRESHOLD: u32 = 10;
 
+// ============================================================================
+// MetricsGuard - RAII guard for WebSocket metrics
+// ============================================================================
+
+/// RAII guard that increments WebSocket metrics on creation and decrements on drop.
+///
+/// This ensures metrics are correctly maintained even if the connection handling
+/// panics or returns early. Without this guard, metrics would leak in error paths.
+///
+/// # Example
+///
+/// ```ignore
+/// async fn handle_socket(...) {
+///     let _guard = MetricsGuard::new();
+///
+///     // Even if this panics, metrics will be decremented
+///     // when _guard is dropped
+///     do_work().await;
+/// }
+/// ```
+pub struct MetricsGuard {
+    /// Track if we've already decremented (to prevent double-decrement)
+    decremented: bool,
+}
+
+impl MetricsGuard {
+    /// Create a new guard, incrementing WebSocket connection metrics.
+    #[must_use = "MetricsGuard must be held for metrics to be tracked correctly"]
+    pub fn new() -> Self {
+        synctv_core::metrics::http::WEBSOCKET_CONNECTIONS_ACTIVE.inc();
+        synctv_core::metrics::http::WEBSOCKET_CONNECTIONS_TOTAL
+            .with_label_values(&["success"])
+            .inc();
+        synctv_core::metrics::http::USERS_ONLINE.inc();
+
+        Self { decremented: false }
+    }
+}
+
+impl Default for MetricsGuard {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Drop for MetricsGuard {
+    fn drop(&mut self) {
+        if !self.decremented {
+            synctv_core::metrics::http::WEBSOCKET_CONNECTIONS_ACTIVE.dec();
+            synctv_core::metrics::http::USERS_ONLINE.dec();
+        }
+    }
+}
+
 /// Query parameters for WebSocket connection
 #[derive(Debug, Deserialize)]
 pub struct WsQuery {
@@ -107,36 +161,15 @@ async fn extract_user_id(
 
     // Second, try ticket query parameter (recommended for browsers).
     // The ticket is validated against the target room to prevent cross-room replay (Issue #65).
+    // User status and password version are checked atomically with ticket consumption
+    // to prevent TOCTOU race conditions (Issue #17).
     if let Some(ref ticket) = query.ticket {
         if let Some(ref ws_ticket_service) = state.ws_ticket_service {
+            // Use validate_and_consume_checked for TOCTOU-safe validation
             let validated = ws_ticket_service
-                .validate_and_consume(ticket, room_id)
+                .validate_and_consume_checked(ticket, room_id, &*state.user_service)
                 .await
                 .map_err(|e| AppError::unauthorized(format!("Invalid or expired ticket: {e}")))?;
-
-            // Ticket path: verify user status and password version since tickets don't carry JWT claims.
-            // We check password_version to ensure tickets are invalidated if the user changes
-            // their password after the ticket was issued. This provides parity with JWT
-            // authentication which uses the SecurityPipeline.
-            let user = state
-                .user_service
-                .get_user(&validated.user_id)
-                .await
-                .map_err(|_| AppError::unauthorized("User not found"))?;
-
-            if user.is_deleted()
-                || user.status == synctv_core::models::UserStatus::Banned
-                || user.status == synctv_core::models::UserStatus::Pending
-            {
-                return Err(AppError::unauthorized("Authentication failed"));
-            }
-
-            // Check password version: if the user's current password_version is higher than
-            // the version stored in the ticket, the password was changed after the ticket
-            // was issued, and the ticket should be rejected.
-            if validated.password_version < user.password_version {
-                return Err(AppError::unauthorized("Authentication failed"));
-            }
 
             return Ok((validated.user_id, AuthMethod::Ticket));
         }
@@ -507,13 +540,9 @@ async fn handle_socket(
         return;
     };
 
-    // Track WebSocket metrics AFTER all early-return checks have passed.
-    // The corresponding decrements at the end of this function are now guaranteed to run.
-    synctv_core::metrics::http::WEBSOCKET_CONNECTIONS_ACTIVE.inc();
-    synctv_core::metrics::http::WEBSOCKET_CONNECTIONS_TOTAL
-        .with_label_values(&["success"])
-        .inc();
-    synctv_core::metrics::http::USERS_ONLINE.inc();
+    // Create RAII guard for metrics - ensures metrics are decremented even on panic.
+    // This must be created AFTER all early-return checks to prevent false decrements.
+    let _metrics_guard = MetricsGuard::new();
 
     let rid = RoomId::from_string(room_id.clone());
 
@@ -579,9 +608,8 @@ async fn handle_socket(
         error!("Stream handler error: {}", e);
     }
 
-    // Decrement WebSocket metrics on disconnect (always runs, even on error paths)
-    synctv_core::metrics::http::WEBSOCKET_CONNECTIONS_ACTIVE.dec();
-    synctv_core::metrics::http::USERS_ONLINE.dec();
+    // Metrics are automatically decremented when _metrics_guard is dropped
+    // (RAII ensures this happens even if the above code panics)
 
     info!(
         "WebSocket connection closed: user={}, room={}",

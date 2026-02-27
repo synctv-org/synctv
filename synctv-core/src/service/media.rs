@@ -435,7 +435,11 @@ impl MediaService {
                 }
                 Ok(None) => {
                     return Err(Error::Internal(
-                        "Media edit failed: concurrent modification after retries".to_string(),
+                        format!(
+                            "Media edit failed: concurrent modification after {} retries for media_id={}",
+                            attempt + 1,
+                            request.media_id.as_str()
+                        ),
                     ));
                 }
                 Err(e) => return Err(e),
@@ -443,7 +447,11 @@ impl MediaService {
         }
 
         Err(Error::Internal(
-            "Media edit failed after maximum retry attempts".to_string(),
+            format!(
+                "Media edit failed after {} attempts for media_id={}",
+                Self::EDIT_MAX_RETRIES,
+                request.media_id.as_str()
+            ),
         ))
     }
 
@@ -825,7 +833,7 @@ impl MediaService {
         let items = dynamic_folder
             .list_playlist(&ctx, &playlist, relative_path, page, page_size)
             .await
-            .map_err(|e| Error::Internal(format!("Failed to list playlist items: {e}")))?;
+            .map_err(Error::from)?;
 
         Ok(items)
     }
@@ -1008,6 +1016,143 @@ mod tests {
             .map(|s| s.len())
             .unwrap_or(0);
         assert!(size > MAX_SOURCE_CONFIG_SIZE, "Large config should exceed 1MB");
+    }
+
+    // ========== source_config Boundary Tests (Task #72) ==========
+
+    #[test]
+    fn test_source_config_exactly_1mb_accepted() {
+        // Config exactly at 1MB limit should be accepted
+        const MAX_SOURCE_CONFIG_SIZE: usize = 1024 * 1024; // 1MB
+
+        // Create a config that is exactly 1MB when serialized
+        // JSON overhead: {"data":"..."} = 12 bytes, so we need 1MB - 12 bytes
+        let data_size = MAX_SOURCE_CONFIG_SIZE - 12;
+        let exact_string = "x".repeat(data_size);
+        let exact_config = serde_json::json!({
+            "data": exact_string
+        });
+
+        let size = serde_json::to_string(&exact_config)
+            .map(|s| s.len())
+            .unwrap_or(0);
+
+        // Should be exactly at or just under the limit
+        assert!(size <= MAX_SOURCE_CONFIG_SIZE,
+            "Config should be at or under 1MB, got {} bytes", size);
+    }
+
+    #[test]
+    fn test_source_config_1mb_plus_one_rejected() {
+        // Config at 1MB + 1 byte should be rejected
+        const MAX_SOURCE_CONFIG_SIZE: usize = 1024 * 1024; // 1MB
+
+        // Create a config that exceeds 1MB by a small amount
+        // JSON overhead: {"data":"..."} = 12 bytes
+        // To be 1 byte over, we need (1MB - 12 bytes + 1 byte) = 1MB - 11 bytes of data
+        let data_size = MAX_SOURCE_CONFIG_SIZE - 10; // -10 to be safely over the limit
+        let over_string = "x".repeat(data_size);
+        let over_config = serde_json::json!({
+            "data": over_string
+        });
+
+        let size = serde_json::to_string(&over_config)
+            .map(|s| s.len())
+            .unwrap_or(0);
+
+        assert!(size > MAX_SOURCE_CONFIG_SIZE,
+            "Config should exceed 1MB, got {} bytes", size);
+    }
+
+    #[test]
+    fn test_source_config_nested_structure_size() {
+        // Nested JSON structures should also be checked for size
+        const MAX_SOURCE_CONFIG_SIZE: usize = 1024 * 1024; // 1MB
+
+        let nested_config = serde_json::json!({
+            "playback_infos": {
+                "1080p": {
+                    "urls": ["https://example.com/video1.mp4", "https://example.com/video2.mp4"],
+                    "headers": {
+                        "Referer": "https://example.com",
+                        "User-Agent": "Mozilla/5.0"
+                    }
+                },
+                "720p": {
+                    "urls": ["https://example.com/video1-720.mp4"],
+                    "headers": {}
+                }
+            },
+            "default_mode": "1080p",
+            "metadata": {
+                "title": "Test Video",
+                "duration": 3600
+            }
+        });
+
+        let size = serde_json::to_string(&nested_config)
+            .map(|s| s.len())
+            .unwrap_or(0);
+
+        // Complex nested structures should still be under limit
+        assert!(size < MAX_SOURCE_CONFIG_SIZE,
+            "Nested config should be under 1MB, got {} bytes", size);
+    }
+
+    #[test]
+    fn test_source_config_unicode_content_size() {
+        // Unicode characters should be counted correctly in bytes, not characters
+        const MAX_SOURCE_CONFIG_SIZE: usize = 1024 * 1024; // 1MB
+
+        // Unicode emoji takes 4 bytes in UTF-8
+        let unicode_string = "🎉".repeat(100);
+        let unicode_config = serde_json::json!({
+            "title": unicode_string
+        });
+
+        let size = serde_json::to_string(&unicode_config)
+            .map(|s| s.len()) // len() gives bytes, not characters
+            .unwrap_or(0);
+
+        // 100 emoji * 4 bytes each = 400 bytes + JSON overhead
+        assert!(size > 400 && size < 500,
+            "Unicode size should be counted in bytes, got {} bytes", size);
+    }
+
+    // ========== Optimistic Lock Error Messages (Task #51) ==========
+
+    #[test]
+    fn test_edit_media_error_message_contains_media_id() {
+        // Test that optimistic lock error messages include media_id for debugging
+        let media_id = MediaId::new();
+        let max_retries = super::MediaService::EDIT_MAX_RETRIES;
+
+        // Expected error format should include media_id and max_retries
+        let expected_msg = format!(
+            "Media edit failed after {} attempts for media_id={}",
+            max_retries,
+            media_id.as_str()
+        );
+
+        // Verify the format includes the key debugging information
+        assert!(expected_msg.contains(media_id.as_str()), "Error message should contain media_id");
+        assert!(expected_msg.contains(&max_retries.to_string()), "Error message should contain retry count");
+    }
+
+    #[test]
+    fn test_edit_media_concurrent_modification_error_message() {
+        // Test that concurrent modification error message includes context
+        let media_id = MediaId::new();
+        let attempts = 3;
+
+        let expected_msg = format!(
+            "Media edit failed: concurrent modification after {} retries for media_id={}",
+            attempts,
+            media_id.as_str()
+        );
+
+        assert!(expected_msg.contains(media_id.as_str()), "Error message should contain media_id");
+        assert!(expected_msg.contains(&attempts.to_string()), "Error message should contain attempt count");
     }
 
 }

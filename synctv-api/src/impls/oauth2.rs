@@ -189,10 +189,22 @@ impl OAuth2ApiImpl {
         } else {
             // User doesn't exist, create new account and link OAuth2 provider
             // atomically within a single transaction to prevent orphaned users.
+            //
+            // Generate a random password for the OAuth2 user. This password is never
+            // used for login (OAuth2 users authenticate via their provider), but it's
+            // required by the user model. The password is hashed with Argon2, which
+            // is a CPU-intensive operation.
             let random_password = nanoid::nanoid!(32);
+            tracing::debug!(
+                username = %user_info.username,
+                provider = %provider_type.as_str(),
+                "Creating new OAuth2 user with random password"
+            );
+
             let pool = self.user_service.pool();
 
             let mut tx = pool.begin().await.map_err(|e| {
+                tracing::error!(error = %e, "Failed to begin transaction for OAuth2 user creation");
                 ApiError::Internal(format!("Failed to begin transaction: {e}"))
             })?;
 
@@ -206,7 +218,16 @@ impl OAuth2ApiImpl {
                     &mut *tx,
                 )
                 .await
-                .map_err(ApiError::from)?;
+                .map_err(|e| {
+                    // Log detailed error for debugging, but return a generic error to the user
+                    tracing::error!(
+                        error = %e,
+                        username = %user_info.username,
+                        provider = %provider_type.as_str(),
+                        "Failed to create OAuth2 user (password hashing or validation failed)"
+                    );
+                    ApiError::from(e)
+                })?;
 
             self.oauth2_service
                 .upsert_user_provider_with_executor(

@@ -39,10 +39,17 @@ pub async fn list_media(
     auth: AuthUser,
     State(state): State<AppState>,
     Path(room_id): Path<String>,
+    Query(params): Query<ListPlaylistQuery>,
 ) -> AppResult<impl IntoResponse> {
+    let req = crate::proto::client::ListPlaylistRequest {
+        playlist_id: String::new(), // Not used by list_media (uses room's root playlist)
+        page: params.page.unwrap_or(0).max(0),
+        page_size: params.page_size.unwrap_or(50).clamp(1, 200),
+    };
+
     let response = state
         .client_api
-        .list_media(auth.user_id.as_str(), &room_id)
+        .list_media(auth.user_id.as_str(), &room_id, req)
         .await
         .map_err(super::error::map_api_error)?;
 
@@ -99,6 +106,12 @@ pub async fn set_playing_media(
 }
 
 // ============== Request/Response Types ==============
+
+#[derive(Debug, serde::Deserialize)]
+pub struct ListPlaylistQuery {
+    pub page: Option<i32>,
+    pub page_size: Option<i32>,
+}
 
 #[derive(Debug, serde::Deserialize)]
 pub struct ListPlaylistItemsQuery {

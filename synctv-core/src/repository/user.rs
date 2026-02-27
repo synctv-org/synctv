@@ -260,6 +260,26 @@ impl UserRepository {
         Ok(u)
     }
 
+    /// Update user status (Active/Pending/Banned)
+    pub async fn update_status(&self, user_id: &UserId, status: crate::models::UserStatus) -> Result<User> {
+        let u = sqlx::query_as::<_, User>(
+            r"
+            UPDATE users
+            SET status = $2, updated_at = $3, version = version + 1
+            WHERE id = $1 AND deleted_at IS NULL
+            RETURNING id, username, email, password_hash, signup_method, role, status, created_at, updated_at, password_changed_at, password_version, version, deleted_at, email_verified
+            ",
+        )
+        .bind(user_id.as_str())
+        .bind(status)
+        .bind(Utc::now())
+        .fetch_optional(&self.pool)
+        .await?
+        .ok_or_else(|| Error::NotFound(format!("User {} not found", user_id.as_str())))?;
+
+        Ok(u)
+    }
+
     /// Build the shared WHERE clause conditions for user list queries.
     fn build_user_list_conditions(query: &UserListQuery) -> WhereClauseBuilder {
         let mut wb = WhereClauseBuilder::new();

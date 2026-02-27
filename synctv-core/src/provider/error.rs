@@ -48,6 +48,9 @@ pub enum ProviderError {
     #[error("Provider instance not found: {0}")]
     InstanceNotFound(String),
 
+    #[error("Credential encryption required for sensitive provider '{0}'. Configure credential_encryption in server settings.")]
+    EncryptionRequired(&'static str),
+
     #[error("Route registration failed: {0}")]
     RouteRegistrationFailed(String),
 

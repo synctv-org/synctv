@@ -13,7 +13,7 @@ pub struct ClusterPlaybackBroadcaster {
 }
 
 impl synctv_core::service::PlaybackBroadcaster for ClusterPlaybackBroadcaster {
-    fn broadcast_playback_state(&self, state: &synctv_core::models::RoomPlaybackState) {
+    fn broadcast_playback_state(&self, state: &synctv_core::models::RoomPlaybackState) -> synctv_core::service::BroadcastResult {
         let event = synctv_cluster::sync::ClusterEvent::PlaybackStateChanged {
             event_id: nanoid::nanoid!(16),
             room_id: state.room_id.clone(),
@@ -24,6 +24,12 @@ impl synctv_core::service::PlaybackBroadcaster for ClusterPlaybackBroadcaster {
             state: state.clone(),
             timestamp: chrono::Utc::now(),
         };
-        let _ = self.cluster_manager.broadcast(event);
+
+        let result = self.cluster_manager.broadcast(event);
+
+        synctv_core::service::BroadcastResult {
+            local_sent: result.local_sent,
+            redis_sent: result.redis_sent,
+        }
     }
 }

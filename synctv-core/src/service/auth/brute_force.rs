@@ -88,6 +88,103 @@ const IP_LOCKOUT_SECS: u64 = 600;
 pub const IP_ATTEMPTS_TTL_SECS: u64 = 600;
 
 // ============================================================================
+// BruteForceConfig (Task #64)
+// ============================================================================
+
+/// Configuration for brute-force protection thresholds and durations.
+///
+/// This struct allows customizing the brute-force protection behavior
+/// without changing code. It can be loaded from the settings system.
+///
+/// ## Default Values
+///
+/// The defaults match the original hardcoded values for backward compatibility:
+/// - Tier 1: 5 failures → 60 second lockout
+/// - Tier 2: 10 failures → 5 minute lockout
+/// - Tier 3: 15 failures → 15 minute lockout
+/// - IP lockout: 20 failures → 10 minute lockout
+///
+/// ## Example
+///
+/// ```text
+/// let config = BruteForceConfig {
+///     tier1_threshold: 3,
+///     tier1_lockout_secs: 30,
+///     ..BruteForceConfig::default()
+/// };
+/// let protection = BruteForceProtection::in_memory_with_config("prefix".to_string(), config);
+/// ```
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BruteForceConfig {
+    /// Number of failures to trigger tier 1 lockout (default: 5)
+    #[serde(default = "default_tier1_threshold")]
+    pub tier1_threshold: u64,
+    /// Lockout duration in seconds for tier 1 (default: 60)
+    #[serde(default = "default_tier1_lockout_secs")]
+    pub tier1_lockout_secs: u64,
+
+    /// Number of failures to trigger tier 2 lockout (default: 10)
+    #[serde(default = "default_tier2_threshold")]
+    pub tier2_threshold: u64,
+    /// Lockout duration in seconds for tier 2 (default: 300)
+    #[serde(default = "default_tier2_lockout_secs")]
+    pub tier2_lockout_secs: u64,
+
+    /// Number of failures to trigger tier 3 lockout (default: 15)
+    #[serde(default = "default_tier3_threshold")]
+    pub tier3_threshold: u64,
+    /// Lockout duration in seconds for tier 3 (default: 900)
+    #[serde(default = "default_tier3_lockout_secs")]
+    pub tier3_lockout_secs: u64,
+
+    /// Number of failures from a single IP to trigger IP lockout (default: 20)
+    #[serde(default = "default_ip_threshold")]
+    pub ip_threshold: u64,
+    /// Lockout duration in seconds for IP-level lockout (default: 600)
+    #[serde(default = "default_ip_lockout_secs")]
+    pub ip_lockout_secs: u64,
+
+    /// TTL for the per-username attempt counter in seconds (default: 900)
+    #[serde(default = "default_attempts_ttl_secs")]
+    pub attempts_ttl_secs: u64,
+    /// TTL for the per-IP attempt counter in seconds (default: 600)
+    #[serde(default = "default_ip_attempts_ttl_secs")]
+    pub ip_attempts_ttl_secs: u64,
+}
+
+// Helper functions for serde defaults
+const fn default_tier1_threshold() -> u64 { TIER1_THRESHOLD }
+const fn default_tier1_lockout_secs() -> u64 { TIER1_LOCKOUT_SECS }
+const fn default_tier2_threshold() -> u64 { TIER2_THRESHOLD }
+const fn default_tier2_lockout_secs() -> u64 { TIER2_LOCKOUT_SECS }
+const fn default_tier3_threshold() -> u64 { TIER3_THRESHOLD }
+const fn default_tier3_lockout_secs() -> u64 { TIER3_LOCKOUT_SECS }
+const fn default_ip_threshold() -> u64 { IP_THRESHOLD }
+const fn default_ip_lockout_secs() -> u64 { IP_LOCKOUT_SECS }
+const fn default_attempts_ttl_secs() -> u64 { ATTEMPTS_TTL_SECS }
+const fn default_ip_attempts_ttl_secs() -> u64 { IP_ATTEMPTS_TTL_SECS }
+
+impl Default for BruteForceConfig {
+    fn default() -> Self {
+        Self {
+            // Tier thresholds and lockout durations
+            tier1_threshold: TIER1_THRESHOLD,
+            tier1_lockout_secs: TIER1_LOCKOUT_SECS,
+            tier2_threshold: TIER2_THRESHOLD,
+            tier2_lockout_secs: TIER2_LOCKOUT_SECS,
+            tier3_threshold: TIER3_THRESHOLD,
+            tier3_lockout_secs: TIER3_LOCKOUT_SECS,
+            // IP lockout
+            ip_threshold: IP_THRESHOLD,
+            ip_lockout_secs: IP_LOCKOUT_SECS,
+            // TTLs
+            attempts_ttl_secs: ATTEMPTS_TTL_SECS,
+            ip_attempts_ttl_secs: IP_ATTEMPTS_TTL_SECS,
+        }
+    }
+}
+
+// ============================================================================
 // AttemptTracker trait
 // ============================================================================
 
@@ -527,6 +624,8 @@ pub struct BruteForceProtection {
     username_tracker: Arc<dyn AttemptTracker>,
     /// Attempt tracker for per-IP tracking
     ip_tracker: Arc<dyn AttemptTracker>,
+    /// Configuration for thresholds and durations (Task #64)
+    config: BruteForceConfig,
 }
 
 impl std::fmt::Debug for BruteForceProtection {
@@ -551,6 +650,25 @@ impl BruteForceProtection {
             key_builder: KeyBuilder::new(key_prefix),
             username_tracker,
             ip_tracker,
+            config: BruteForceConfig::default(),
+        }
+    }
+
+    /// Create a new brute-force protection service with custom config.
+    ///
+    /// Use this when you need to customize thresholds and durations.
+    #[must_use]
+    pub fn new_with_config(
+        key_prefix: String,
+        username_tracker: Arc<dyn AttemptTracker>,
+        ip_tracker: Arc<dyn AttemptTracker>,
+        config: BruteForceConfig,
+    ) -> Self {
+        Self {
+            key_builder: KeyBuilder::new(key_prefix),
+            username_tracker,
+            ip_tracker,
+            config,
         }
     }
 
@@ -565,13 +683,14 @@ impl BruteForceProtection {
     /// to bypass lockouts. Use [`Self::with_redis_fail_closed`] for cluster mode.
     #[must_use]
     pub fn with_redis(conn: redis::aio::ConnectionManager, key_prefix: String) -> Self {
+        let config = BruteForceConfig::default();
         let username_tracker = Arc::new(RedisAttemptTracker::new(
-            conn.clone(), 50_000, ATTEMPTS_TTL_SECS,
+            conn.clone(), 50_000, config.attempts_ttl_secs,
         ));
         let ip_tracker = Arc::new(RedisAttemptTracker::new(
-            conn, 100_000, IP_ATTEMPTS_TTL_SECS,
+            conn, 100_000, config.ip_attempts_ttl_secs,
         ));
-        Self::new(key_prefix, username_tracker, ip_tracker)
+        Self::new_with_config(key_prefix, username_tracker, ip_tracker, config)
     }
 
     /// Create a Redis-backed brute-force protection service with fail-closed mode.
@@ -599,13 +718,14 @@ impl BruteForceProtection {
             "Brute-force protection initialized in fail-closed mode. \
              Login attempts will be rejected if Redis is unavailable."
         );
+        let config = BruteForceConfig::default();
         let username_tracker = Arc::new(RedisAttemptTracker::new_fail_closed(
-            conn.clone(), 50_000, ATTEMPTS_TTL_SECS,
+            conn.clone(), 50_000, config.attempts_ttl_secs,
         ));
         let ip_tracker = Arc::new(RedisAttemptTracker::new_fail_closed(
-            conn, 100_000, IP_ATTEMPTS_TTL_SECS,
+            conn, 100_000, config.ip_attempts_ttl_secs,
         ));
-        Self::new(key_prefix, username_tracker, ip_tracker)
+        Self::new_with_config(key_prefix, username_tracker, ip_tracker, config)
     }
 
     /// Create an in-memory-only brute-force protection service.
@@ -618,9 +738,52 @@ impl BruteForceProtection {
     /// to bypass lockouts by distributing requests across replicas.
     #[must_use]
     pub fn in_memory(key_prefix: String) -> Self {
-        let username_tracker = Arc::new(InMemoryAttemptTracker::new(50_000, ATTEMPTS_TTL_SECS));
-        let ip_tracker = Arc::new(InMemoryAttemptTracker::new(100_000, IP_ATTEMPTS_TTL_SECS));
-        Self::new(key_prefix, username_tracker, ip_tracker)
+        let config = BruteForceConfig::default();
+        let username_tracker = Arc::new(InMemoryAttemptTracker::new(50_000, config.attempts_ttl_secs));
+        let ip_tracker = Arc::new(InMemoryAttemptTracker::new(100_000, config.ip_attempts_ttl_secs));
+        Self::new_with_config(key_prefix, username_tracker, ip_tracker, config)
+    }
+
+    /// Create an in-memory brute-force protection service with custom config.
+    ///
+    /// Use this when you need to customize thresholds and durations.
+    ///
+    /// **WARNING**: Do not use in cluster mode. In multi-replica deployments,
+    /// each replica would maintain independent counters, allowing attackers
+    /// to bypass lockouts by distributing requests across replicas.
+    #[must_use]
+    pub fn in_memory_with_config(key_prefix: String, config: BruteForceConfig) -> Self {
+        let username_tracker = Arc::new(InMemoryAttemptTracker::new(50_000, config.attempts_ttl_secs));
+        let ip_tracker = Arc::new(InMemoryAttemptTracker::new(100_000, config.ip_attempts_ttl_secs));
+        Self::new_with_config(key_prefix, username_tracker, ip_tracker, config)
+    }
+
+    /// Get a reference to the current config.
+    #[must_use]
+    pub fn config(&self) -> &BruteForceConfig {
+        &self.config
+    }
+
+    /// Determine lockout duration based on failure count using the stored config.
+    ///
+    /// Returns `Some(seconds)` if locked out, `None` if allowed.
+    fn lockout_duration_with_config(&self, attempts: u64) -> Option<u64> {
+        if attempts >= self.config.tier3_threshold {
+            Some(self.config.tier3_lockout_secs)
+        } else if attempts >= self.config.tier2_threshold {
+            Some(self.config.tier2_lockout_secs)
+        } else if attempts >= self.config.tier1_threshold {
+            Some(self.config.tier1_lockout_secs)
+        } else {
+            None
+        }
+    }
+
+    /// Test-only method to check lockout duration for a given attempt count.
+    #[cfg(test)]
+    #[must_use]
+    pub fn lockout_duration_for_test(&self, attempts: u64) -> Option<u64> {
+        self.lockout_duration_with_config(attempts)
     }
 
     /// Check if a login attempt is allowed for the given username and optional IP.
@@ -633,11 +796,11 @@ impl BruteForceProtection {
         if let Some(ip_addr) = ip {
             let ip_key = self.key_builder.login_attempts_ip(&ip_addr.to_string());
             let (ip_attempts, ip_last_failure_at) = self.ip_tracker.get_attempts(&ip_key).await?;
-            if ip_attempts >= IP_THRESHOLD {
+            if ip_attempts >= self.config.ip_threshold {
                 let now = chrono::Utc::now().timestamp();
                 let elapsed = (now - ip_last_failure_at).max(0) as u64;
-                if elapsed < IP_LOCKOUT_SECS {
-                    let remaining = IP_LOCKOUT_SECS - elapsed;
+                if elapsed < self.config.ip_lockout_secs {
+                    let remaining = self.config.ip_lockout_secs - elapsed;
                     tracing::warn!(
                         ip = %ip_addr,
                         attempts = ip_attempts,
@@ -654,7 +817,7 @@ impl BruteForceProtection {
         // Check per-username lockout
         let key = self.key_builder.login_attempts(username);
         let (attempts, last_failure_at) = self.username_tracker.get_attempts(&key).await?;
-        let lockout_secs = Self::lockout_duration(attempts);
+        let lockout_secs = self.lockout_duration_with_config(attempts);
         if let Some(lockout_secs) = lockout_secs {
             let now = chrono::Utc::now().timestamp();
             let elapsed = (now - last_failure_at).max(0) as u64;
@@ -689,12 +852,64 @@ impl BruteForceProtection {
         // Record IP-level failure
         if let Some(ip_addr) = ip {
             let ip_key = self.key_builder.login_attempts_ip(&ip_addr.to_string());
-            self.ip_tracker.record_failure(&ip_key, now, IP_ATTEMPTS_TTL_SECS).await?;
+            self.ip_tracker.record_failure(&ip_key, now, self.config.ip_attempts_ttl_secs).await?;
         }
 
         // Record username-level failure
         let key = self.key_builder.login_attempts(username);
-        self.username_tracker.record_failure(&key, now, ATTEMPTS_TTL_SECS).await?;
+        self.username_tracker.record_failure(&key, now, self.config.attempts_ttl_secs).await?;
+        Ok(())
+    }
+
+    /// Record a failed login attempt only at the IP level.
+    ///
+    /// Used when a login attempt is made with a username that doesn't exist.
+    /// This prevents attackers from locking out legitimate users by trying
+    /// non-existent usernames, while still protecting against distributed
+    /// IP-based attacks.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Error::Internal` if the backend is unavailable in fail-closed mode.
+    pub async fn record_ip_failure(&self, ip: Option<IpAddr>) -> Result<()> {
+        if let Some(ip_addr) = ip {
+            let now = chrono::Utc::now().timestamp();
+            let ip_key = self.key_builder.login_attempts_ip(&ip_addr.to_string());
+            self.ip_tracker.record_failure(&ip_key, now, self.config.ip_attempts_ttl_secs).await?;
+        }
+        Ok(())
+    }
+
+    /// Check if a login attempt is allowed for the given IP address only.
+    ///
+    /// Used in conjunction with `record_ip_failure` for non-existent username
+    /// attempts. This allows checking IP-level lockout without checking a
+    /// specific username.
+    ///
+    /// Returns `Ok(())` if the attempt is allowed, or an error:
+    /// - `Error::Authentication`: IP is locked (legitimate lockout)
+    /// - `Error::Internal`: Backend unavailable in fail-closed mode (temporary)
+    pub async fn check_ip_allowed(&self, ip: Option<IpAddr>) -> Result<()> {
+        if let Some(ip_addr) = ip {
+            let ip_key = self.key_builder.login_attempts_ip(&ip_addr.to_string());
+            let (ip_attempts, ip_last_failure_at) = self.ip_tracker.get_attempts(&ip_key).await?;
+            if ip_attempts >= self.config.ip_threshold {
+                let now = chrono::Utc::now().timestamp();
+                let elapsed = (now - ip_last_failure_at).max(0) as u64;
+                if elapsed < self.config.ip_lockout_secs {
+                    let remaining = self.config.ip_lockout_secs - elapsed;
+                    tracing::warn!(
+                        ip = %ip_addr,
+                        attempts = ip_attempts,
+                        remaining_secs = remaining,
+                        "Login attempt blocked: IP temporarily locked"
+                    );
+                    return Err(Error::Authentication(format!(
+                        "Too many failed login attempts. Please try again in {remaining} seconds.",
+                    )));
+                }
+            }
+        }
         Ok(())
     }
 
@@ -722,21 +937,6 @@ impl BruteForceProtection {
         self.ip_tracker.reset(&ip_key).await?;
         Ok(())
     }
-
-    /// Determine lockout duration based on failure count.
-    ///
-    /// Returns `Some(seconds)` if locked out, `None` if allowed.
-    const fn lockout_duration(attempts: u64) -> Option<u64> {
-        if attempts >= TIER3_THRESHOLD {
-            Some(TIER3_LOCKOUT_SECS)
-        } else if attempts >= TIER2_THRESHOLD {
-            Some(TIER2_LOCKOUT_SECS)
-        } else if attempts >= TIER1_THRESHOLD {
-            Some(TIER1_LOCKOUT_SECS)
-        } else {
-            None
-        }
-    }
 }
 
 #[cfg(test)]
@@ -746,16 +946,17 @@ mod tests {
     // Note: Integration tests that require Redis (record_failure, check_allowed, etc.)
     // are in the integration test suite. Unit tests here cover pure logic only.
 
-    /// Test that lockout duration thresholds are correct
+    /// Test that lockout duration thresholds are correct with default config
     #[test]
     fn test_lockout_duration_standard_thresholds() {
-        assert_eq!(BruteForceProtection::lockout_duration(4), None);
-        assert_eq!(BruteForceProtection::lockout_duration(5), Some(TIER1_LOCKOUT_SECS));
-        assert_eq!(BruteForceProtection::lockout_duration(9), Some(TIER1_LOCKOUT_SECS));
-        assert_eq!(BruteForceProtection::lockout_duration(10), Some(TIER2_LOCKOUT_SECS));
-        assert_eq!(BruteForceProtection::lockout_duration(14), Some(TIER2_LOCKOUT_SECS));
-        assert_eq!(BruteForceProtection::lockout_duration(15), Some(TIER3_LOCKOUT_SECS));
-        assert_eq!(BruteForceProtection::lockout_duration(100), Some(TIER3_LOCKOUT_SECS));
+        let protection = BruteForceProtection::in_memory("test".to_string());
+        assert_eq!(protection.lockout_duration_for_test(4), None);
+        assert_eq!(protection.lockout_duration_for_test(5), Some(TIER1_LOCKOUT_SECS));
+        assert_eq!(protection.lockout_duration_for_test(9), Some(TIER1_LOCKOUT_SECS));
+        assert_eq!(protection.lockout_duration_for_test(10), Some(TIER2_LOCKOUT_SECS));
+        assert_eq!(protection.lockout_duration_for_test(14), Some(TIER2_LOCKOUT_SECS));
+        assert_eq!(protection.lockout_duration_for_test(15), Some(TIER3_LOCKOUT_SECS));
+        assert_eq!(protection.lockout_duration_for_test(100), Some(TIER3_LOCKOUT_SECS));
     }
 
     // ========================================================================

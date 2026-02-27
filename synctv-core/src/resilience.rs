@@ -8,7 +8,18 @@ pub mod timeout {
 
     use std::time::Duration;
 
-    /// Default timeout for database operations
+    /// Default timeout for database operations.
+    ///
+    /// This 30-second timeout is applied to all connections via `after_connect`
+    /// (see `bootstrap/database.rs`) and is appropriate for OLTP workloads. It aligns
+    /// with industry standards (Heroku, AWS RDS, Supabase all use 30s defaults).
+    ///
+    /// If queries exceed this timeout regularly, they should be optimized rather
+    /// than given more time. Use `pg_stat_statements` to identify slow queries.
+    ///
+    /// For deployment-specific needs, modify this constant or make it configurable
+    /// via `Config`. Runtime adjustment is not recommended as it adds complexity
+    /// without clear benefit for this application's query patterns.
     pub const DB_QUERY_TIMEOUT: Duration = Duration::from_secs(30);
 
     /// Default timeout for Redis operations

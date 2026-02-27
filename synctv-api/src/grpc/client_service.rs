@@ -764,7 +764,8 @@ impl MediaService for ClientServiceImpl {
     ) -> Result<Response<ListPlaylistResponse>, Status> {
         let user_id = self.get_user_id(&request).await?;
         let room_id = self.get_room_id(&request)?;
-        let response = self.client_api.list_media(user_id.as_str(), room_id.as_str()).await.map_err(map_api_error)?;
+        let req = request.into_inner();
+        let response = self.client_api.list_media(user_id.as_str(), room_id.as_str(), req).await.map_err(map_api_error)?;
         Ok(Response::new(response))
     }
 

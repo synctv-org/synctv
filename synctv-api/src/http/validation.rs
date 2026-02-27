@@ -931,4 +931,44 @@ mod tests {
         let exact_code = "a".repeat(limits::OAUTH2_CODE_MAX);
         assert!(validate_oauth2_code(&exact_code).is_ok());
     }
+
+    #[test]
+    fn test_validate_media_title() {
+        // Valid titles
+        assert!(validate_media_title("My Video").is_ok());
+        assert!(validate_media_title("Movie 2024").is_ok());
+        assert!(validate_media_title("视频标题").is_ok()); // CJK characters
+
+        // Empty title is allowed (defaults will be used)
+        assert!(validate_media_title("").is_ok());
+
+        // Exactly at max length (500) should succeed
+        let exact_title = "a".repeat(limits::MEDIA_TITLE_MAX);
+        assert!(validate_media_title(&exact_title).is_ok());
+
+        // Over max length (501) should fail
+        let long_title = "a".repeat(limits::MEDIA_TITLE_MAX + 1);
+        let result = validate_media_title(&long_title);
+        assert!(result.is_err());
+        match result {
+            Err(ValidationError::TooLong { field, max, actual }) => {
+                assert_eq!(field, "media_title");
+                assert_eq!(max, limits::MEDIA_TITLE_MAX);
+                assert_eq!(actual, limits::MEDIA_TITLE_MAX + 1);
+            }
+            _ => panic!("Expected TooLong error"),
+        }
+
+        // XSS attempt should fail
+        let xss_result = validate_media_title("<script>alert('xss')</script>");
+        assert!(xss_result.is_err());
+        match xss_result {
+            Err(ValidationError::SecurityRisk) => {}
+            _ => panic!("Expected SecurityRisk error for HTML tags"),
+        }
+
+        // Control characters should be stripped
+        let sanitized = validate_media_title("hello\x00world").unwrap();
+        assert_eq!(sanitized, "helloworld");
+    }
 }

@@ -125,3 +125,7 @@ testcontainers-modules.workspace = true
 [[bench]]
 name = "auth_service"
 harness = false
+
+[[bench]]
+name = "database_benchmarks"
+harness = false

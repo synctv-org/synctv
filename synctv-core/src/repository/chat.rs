@@ -285,6 +285,12 @@ impl ChatRepository {
     ///
     /// # Returns
     /// Total number of messages deleted across all rooms
+    ///
+    /// # Partition Pruning (Task #26)
+    ///
+    /// The redundant `created_at > NOW() - INTERVAL '90 days'` filter on the outer DELETE
+    /// ensures PostgreSQL can apply partition pruning at the top-level query without
+    /// relying on constraint exclusion from the subquery.
     pub async fn cleanup_all_rooms(&self, keep_count: i32, activity_window_minutes: i32) -> Result<u64> {
         // If keep_count is 0, no cleanup needed
         if keep_count <= 0 {
@@ -294,7 +300,8 @@ impl ChatRepository {
         let result = sqlx::query(
             r"
             DELETE FROM chat_messages
-            WHERE (id, created_at) IN (
+            WHERE created_at > NOW() - INTERVAL '90 days'
+              AND (id, created_at) IN (
                 SELECT id, created_at FROM (
                     SELECT id, created_at, room_id,
                            ROW_NUMBER() OVER (PARTITION BY room_id ORDER BY created_at DESC) as rn

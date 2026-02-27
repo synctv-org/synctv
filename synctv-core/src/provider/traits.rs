@@ -169,7 +169,7 @@ pub trait MediaProvider: Send + Sync {
     fn cache_key(&self, ctx: &ProviderContext<'_>, source_config: &Value) -> String {
         use sha2::{Sha256, Digest};
 
-        tracing::warn!(
+        tracing::debug!(
             provider = self.name(),
             "Provider uses default cache_key implementation; \
              consider overriding cache_key() for optimal caching behaviour"

@@ -100,6 +100,13 @@ pub enum AuditAction {
     RoomApproved,
     RoomRejected,
     StreamKicked,
+    RateLimitResetFailed,
+    // Token security events (Task #65)
+    UserLogin,
+    UserLogout,
+    TokenIssued,
+    TokenRefreshed,
+    TokenFamilyRevoked,
 }
 
 impl AuditAction {
@@ -135,6 +142,13 @@ impl AuditAction {
             Self::RoomApproved => "room_approved",
             Self::RoomRejected => "room_rejected",
             Self::StreamKicked => "stream_kicked",
+            Self::RateLimitResetFailed => "rate_limit_reset_failed",
+            // Token security events
+            Self::UserLogin => "user_login",
+            Self::UserLogout => "user_logout",
+            Self::TokenIssued => "token_issued",
+            Self::TokenRefreshed => "token_refreshed",
+            Self::TokenFamilyRevoked => "token_family_revoked",
         }
     }
 }
@@ -150,6 +164,7 @@ pub enum AuditTargetType {
     Settings,
     System,
     Stream,
+    Token,
 }
 
 impl AuditTargetType {
@@ -163,6 +178,7 @@ impl AuditTargetType {
             Self::Settings => "settings",
             Self::System => "system",
             Self::Stream => "stream",
+            Self::Token => "token",
         }
     }
 }
@@ -484,6 +500,181 @@ impl AuditService {
         )
         .await
     }
+
+    /// Log rate limit reset failure event.
+    ///
+    /// This is used when a password verification succeeds but the rate limit
+    /// counter reset fails (e.g., Redis unavailable). This is security-relevant
+    /// because it could lead to legitimate users being locked out if the counter
+    /// persists after successful authentication.
+    pub async fn log_rate_limit_reset_failed(
+        &self,
+        target_type: AuditTargetType,
+        target_id: String,
+        error_message: String,
+        ip_address: Option<String>,
+    ) -> Result<()> {
+        self.log(
+            "system".to_string(),
+            "system".to_string(),
+            AuditAction::RateLimitResetFailed,
+            target_type,
+            Some(target_id),
+            serde_json::json!({
+                "error": error_message,
+                "context": "password_verification_succeeded"
+            }),
+            ip_address,
+            None,
+        )
+        .await
+    }
+
+    // ========================================================================
+    // Token Security Audit Methods (Task #65)
+    // ========================================================================
+
+    /// Log a successful user login event.
+    ///
+    /// Records the user ID, username, IP address, and user agent for security
+    /// auditing and incident investigation.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn log_user_login(
+        &self,
+        user_id: String,
+        username: String,
+        login_method: &str,
+        ip_address: Option<String>,
+        user_agent: Option<String>,
+    ) -> Result<()> {
+        self.log(
+            user_id.clone(),
+            username.clone(),
+            AuditAction::UserLogin,
+            AuditTargetType::User,
+            Some(user_id),
+            serde_json::json!({
+                "login_method": login_method,
+                "username": username
+            }),
+            ip_address,
+            user_agent,
+        )
+        .await
+    }
+
+    /// Log a user logout event.
+    ///
+    /// Records when a user explicitly logs out (access token blacklisted).
+    pub async fn log_user_logout(
+        &self,
+        user_id: String,
+        username: String,
+        ip_address: Option<String>,
+        user_agent: Option<String>,
+    ) -> Result<()> {
+        self.log(
+            user_id.clone(),
+            username,
+            AuditAction::UserLogout,
+            AuditTargetType::User,
+            Some(user_id),
+            serde_json::json!({}),
+            ip_address,
+            user_agent,
+        )
+        .await
+    }
+
+    /// Log a token issuance event.
+    ///
+    /// Records when tokens are issued (login, OAuth2, or refresh).
+    /// The JTI is recorded for token tracing and revocation investigations.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn log_token_issued(
+        &self,
+        user_id: String,
+        username: String,
+        token_type: &str,
+        jti: String,
+        expires_at: i64,
+        ip_address: Option<String>,
+        user_agent: Option<String>,
+    ) -> Result<()> {
+        self.log(
+            user_id.clone(),
+            username,
+            AuditAction::TokenIssued,
+            AuditTargetType::Token,
+            Some(format!("{}:{}", user_id, jti)),
+            serde_json::json!({
+                "token_type": token_type,
+                "jti": jti,
+                "expires_at": expires_at
+            }),
+            ip_address,
+            user_agent,
+        )
+        .await
+    }
+
+    /// Log a token refresh event.
+    ///
+    /// Records when a refresh token is used to generate new tokens.
+    /// Both old and new JTI values are recorded for token chain tracing.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn log_token_refreshed(
+        &self,
+        user_id: String,
+        username: String,
+        old_jti: String,
+        new_jti: String,
+        ip_address: Option<String>,
+        user_agent: Option<String>,
+    ) -> Result<()> {
+        self.log(
+            user_id.clone(),
+            username,
+            AuditAction::TokenRefreshed,
+            AuditTargetType::Token,
+            Some(format!("{}:{}", user_id, new_jti)),
+            serde_json::json!({
+                "old_jti": old_jti,
+                "new_jti": new_jti
+            }),
+            ip_address,
+            user_agent,
+        )
+        .await
+    }
+
+    /// Log a token family revocation event.
+    ///
+    /// Recorded when a refresh token replay is detected, indicating possible
+    /// token theft. All refresh tokens for the user are revoked as a security
+    /// measure.
+    pub async fn log_token_family_revoked(
+        &self,
+        user_id: String,
+        username: String,
+        replayed_jti: String,
+        ip_address: Option<String>,
+    ) -> Result<()> {
+        self.log(
+            user_id.clone(),
+            username,
+            AuditAction::TokenFamilyRevoked,
+            AuditTargetType::Token,
+            Some(user_id),
+            serde_json::json!({
+                "replayed_jti": replayed_jti,
+                "reason": "token_replay_detected"
+            }),
+            ip_address,
+            None,
+        )
+        .await
+    }
 }
 
 impl std::fmt::Debug for AuditService {
@@ -751,6 +942,13 @@ mod tests {
             (AuditAction::UserApproved, "user_approved"),
             (AuditAction::RoomApproved, "room_approved"),
             (AuditAction::StreamKicked, "stream_kicked"),
+            (AuditAction::RateLimitResetFailed, "rate_limit_reset_failed"),
+            // Token security events (Task #65)
+            (AuditAction::UserLogin, "user_login"),
+            (AuditAction::UserLogout, "user_logout"),
+            (AuditAction::TokenIssued, "token_issued"),
+            (AuditAction::TokenRefreshed, "token_refreshed"),
+            (AuditAction::TokenFamilyRevoked, "token_family_revoked"),
         ];
 
         for (action, expected) in actions {
@@ -807,6 +1005,13 @@ mod tests {
             AuditAction::UserApproved,
             AuditAction::RoomApproved,
             AuditAction::StreamKicked,
+            AuditAction::RateLimitResetFailed,
+            // Token security events (Task #65)
+            AuditAction::UserLogin,
+            AuditAction::UserLogout,
+            AuditAction::TokenIssued,
+            AuditAction::TokenRefreshed,
+            AuditAction::TokenFamilyRevoked,
         ];
 
         for action in actions {
@@ -829,6 +1034,7 @@ mod tests {
             (AuditTargetType::Settings, "settings"),
             (AuditTargetType::System, "system"),
             (AuditTargetType::Stream, "stream"),
+            (AuditTargetType::Token, "token"),
         ];
 
         for (target, expected) in targets {
@@ -847,6 +1053,7 @@ mod tests {
             AuditTargetType::Settings,
             AuditTargetType::System,
             AuditTargetType::Stream,
+            AuditTargetType::Token,
         ];
 
         for target in targets {
@@ -1136,5 +1343,226 @@ mod tests {
 
         assert_eq!(action.as_str(), "stream_kicked");
         assert_eq!(target_type.as_str(), "stream");
+    }
+
+    // ========================================================================
+    // Token Security Audit Tests (Task #65)
+    // ========================================================================
+
+    #[test]
+    fn test_token_actions_serialization() {
+        let actions = vec![
+            (AuditAction::UserLogin, "user_login"),
+            (AuditAction::UserLogout, "user_logout"),
+            (AuditAction::TokenIssued, "token_issued"),
+            (AuditAction::TokenRefreshed, "token_refreshed"),
+            (AuditAction::TokenFamilyRevoked, "token_family_revoked"),
+        ];
+
+        for (action, expected) in actions {
+            let json = serde_json::to_string(&action).unwrap();
+            assert_eq!(json, format!("\"{expected}\""), "Mismatch for {expected}");
+        }
+    }
+
+    #[test]
+    fn test_token_target_type_serialization() {
+        let target = AuditTargetType::Token;
+        let json = serde_json::to_string(&target).unwrap();
+        assert_eq!(json, "\"token\"");
+        assert_eq!(target.as_str(), "token");
+    }
+
+    #[test]
+    fn test_log_user_login_details_structure() {
+        let details = serde_json::json!({
+            "login_method": "password",
+            "username": "alice"
+        });
+
+        assert_eq!(details["login_method"], "password");
+        assert_eq!(details["username"], "alice");
+    }
+
+    #[test]
+    fn test_log_user_login_oauth2_method() {
+        let details = serde_json::json!({
+            "login_method": "oauth2",
+            "username": "bob"
+        });
+
+        assert_eq!(details["login_method"], "oauth2");
+    }
+
+    #[test]
+    fn test_log_token_issued_details_structure() {
+        let jti = "jti_abc123";
+        let token_type = "access";
+        let expires_at = 1735689600i64;
+
+        let details = serde_json::json!({
+            "token_type": token_type,
+            "jti": jti,
+            "expires_at": expires_at
+        });
+
+        assert_eq!(details["token_type"], "access");
+        assert_eq!(details["jti"], "jti_abc123");
+        assert_eq!(details["expires_at"], 1735689600);
+    }
+
+    #[test]
+    fn test_log_token_refreshed_details_structure() {
+        let old_jti = "jti_old_123";
+        let new_jti = "jti_new_456";
+
+        let details = serde_json::json!({
+            "old_jti": old_jti,
+            "new_jti": new_jti
+        });
+
+        assert_eq!(details["old_jti"], "jti_old_123");
+        assert_eq!(details["new_jti"], "jti_new_456");
+    }
+
+    #[test]
+    fn test_log_token_family_revoked_details_structure() {
+        let replayed_jti = "jti_replayed_789";
+
+        let details = serde_json::json!({
+            "replayed_jti": replayed_jti,
+            "reason": "token_replay_detected"
+        });
+
+        assert_eq!(details["replayed_jti"], "jti_replayed_789");
+        assert_eq!(details["reason"], "token_replay_detected");
+    }
+
+    #[test]
+    fn test_log_user_logout_details_empty() {
+        let details = serde_json::json!({});
+        assert!(details.is_object());
+        assert!(details.as_object().unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_token_issued_target_id_format() {
+        // Verify the target_id format is "user_id:jti"
+        let user_id = "user_123";
+        let jti = "jti_abc456";
+        let target_id = format!("{}:{}", user_id, jti);
+        assert_eq!(target_id, "user_123:jti_abc456");
+    }
+
+    #[test]
+    fn test_token_refreshed_target_id_format() {
+        // Verify the target_id format uses new_jti
+        let user_id = "user_123";
+        let new_jti = "jti_new_789";
+        let target_id = format!("{}:{}", user_id, new_jti);
+        assert_eq!(target_id, "user_123:jti_new_789");
+    }
+
+    #[tokio::test]
+    async fn test_log_user_login_buffered() {
+        let pool = PgPool::connect_lazy("postgresql://fake").unwrap();
+        let (service, _handle) = AuditService::new(pool);
+
+        let result = service.log_user_login(
+            "user_123".to_string(),
+            "alice".to_string(),
+            "password",
+            Some("192.168.1.1".to_string()),
+            Some("Mozilla/5.0".to_string()),
+        ).await;
+
+        assert!(result.is_ok());
+        assert_eq!(service.dropped_count(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_log_user_logout_buffered() {
+        let pool = PgPool::connect_lazy("postgresql://fake").unwrap();
+        let (service, _handle) = AuditService::new(pool);
+
+        let result = service.log_user_logout(
+            "user_123".to_string(),
+            "alice".to_string(),
+            Some("192.168.1.1".to_string()),
+            Some("Mozilla/5.0".to_string()),
+        ).await;
+
+        assert!(result.is_ok());
+        assert_eq!(service.dropped_count(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_log_token_issued_buffered() {
+        let pool = PgPool::connect_lazy("postgresql://fake").unwrap();
+        let (service, _handle) = AuditService::new(pool);
+
+        let result = service.log_token_issued(
+            "user_123".to_string(),
+            "alice".to_string(),
+            "access",
+            "jti_abc123".to_string(),
+            1735689600,
+            Some("192.168.1.1".to_string()),
+            Some("Mozilla/5.0".to_string()),
+        ).await;
+
+        assert!(result.is_ok());
+        assert_eq!(service.dropped_count(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_log_token_refreshed_buffered() {
+        let pool = PgPool::connect_lazy("postgresql://fake").unwrap();
+        let (service, _handle) = AuditService::new(pool);
+
+        let result = service.log_token_refreshed(
+            "user_123".to_string(),
+            "alice".to_string(),
+            "jti_old_123".to_string(),
+            "jti_new_456".to_string(),
+            Some("192.168.1.1".to_string()),
+            Some("Mozilla/5.0".to_string()),
+        ).await;
+
+        assert!(result.is_ok());
+        assert_eq!(service.dropped_count(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_log_token_family_revoked_buffered() {
+        let pool = PgPool::connect_lazy("postgresql://fake").unwrap();
+        let (service, _handle) = AuditService::new(pool);
+
+        let result = service.log_token_family_revoked(
+            "user_123".to_string(),
+            "alice".to_string(),
+            "jti_replayed_789".to_string(),
+            Some("192.168.1.1".to_string()),
+        ).await;
+
+        assert!(result.is_ok());
+        assert_eq!(service.dropped_count(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_log_user_login_without_ip_or_user_agent() {
+        let pool = PgPool::connect_lazy("postgresql://fake").unwrap();
+        let (service, _handle) = AuditService::new(pool);
+
+        let result = service.log_user_login(
+            "user_123".to_string(),
+            "alice".to_string(),
+            "oauth2",
+            None,
+            None,
+        ).await;
+
+        assert!(result.is_ok());
+        assert_eq!(service.dropped_count(), 0);
     }
 }

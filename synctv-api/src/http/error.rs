@@ -205,6 +205,10 @@ impl From<synctv_core::provider::ProviderError> for AppError {
                 tracing::error!("Provider JSON error: {}", e);
                 Self::bad_request("Invalid data format")
             }
+            ProviderError::EncryptionRequired(msg) => {
+                tracing::error!("Provider encryption required: {}", msg);
+                Self::internal_server_error("Credential encryption not configured")
+            }
         }
     }
 }
@@ -243,6 +247,10 @@ impl From<synctv_core::Error> for AppError {
             }
             Error::OptimisticLockConflict => {
                 Self::new(StatusCode::CONFLICT, "Resource was modified concurrently, please retry")
+            }
+            Error::Timeout(msg) => {
+                tracing::warn!("Request timeout: {}", msg);
+                Self::new(StatusCode::REQUEST_TIMEOUT, msg)
             }
         }
     }

@@ -3,7 +3,7 @@
 use sqlx::{PgPool, Row};
 use tracing::debug;
 
-use crate::Result;
+use crate::{Error, Result};
 
 use crate::models::settings::SettingsGroup;
 
@@ -14,7 +14,7 @@ pub struct SettingsRepository {
 }
 
 impl SettingsRepository {
-    #[must_use] 
+    #[must_use]
     pub const fn new(pool: PgPool) -> Self {
         Self { pool }
     }
@@ -23,7 +23,7 @@ impl SettingsRepository {
     pub async fn get_all(&self) -> Result<Vec<SettingsGroup>> {
         let rows = sqlx::query(
             r"
-            SELECT key, group_name, value, created_at, updated_at
+            SELECT key, group_name, value, version, created_at, updated_at
             FROM settings
             ORDER BY group_name
             ",
@@ -38,6 +38,7 @@ impl SettingsRepository {
                     key: row.try_get("key")?,
                     group_name: row.try_get("group_name")?,
                     value: row.try_get("value")?,
+                    version: row.try_get("version")?,
                     created_at: row.try_get("created_at")?,
                     updated_at: row.try_get("updated_at")?,
                 })
@@ -52,7 +53,7 @@ impl SettingsRepository {
     pub async fn get(&self, key: &str) -> Result<SettingsGroup> {
         let row = sqlx::query(
             r"
-            SELECT key, group_name, value, created_at, updated_at
+            SELECT key, group_name, value, version, created_at, updated_at
             FROM settings
             WHERE key = $1
             ",
@@ -65,9 +66,18 @@ impl SettingsRepository {
             key: row.try_get("key")?,
             group_name: row.try_get("group_name")?,
             value: row.try_get("value")?,
+            version: row.try_get("version")?,
             created_at: row.try_get("created_at")?,
             updated_at: row.try_get("updated_at")?,
         })
+    }
+
+    /// Get a single setting by key with version for optimistic locking (Task #45)
+    ///
+    /// This is an alias for `get()` but makes the intent clearer when
+    /// the caller plans to use optimistic locking.
+    pub async fn get_with_version(&self, key: &str) -> Result<SettingsGroup> {
+        self.get(key).await
     }
 
     /// Update a setting value by key
@@ -79,9 +89,9 @@ impl SettingsRepository {
         let row = sqlx::query(
             r"
             UPDATE settings
-            SET value = $1, updated_at = NOW()
+            SET value = $1, version = version + 1, updated_at = NOW()
             WHERE key = $2
-            RETURNING key, group_name, value, created_at, updated_at
+            RETURNING key, group_name, value, version, created_at, updated_at
             ",
         )
         .bind(value)
@@ -96,8 +106,70 @@ impl SettingsRepository {
             key: row.try_get("key")?,
             group_name: row.try_get("group_name")?,
             value: row.try_get("value")?,
+            version: row.try_get("version")?,
             created_at: row.try_get("created_at")?,
             updated_at: row.try_get("updated_at")?,
         })
+    }
+
+    /// Update a setting value by key with optimistic locking (Task #45)
+    ///
+    /// This method checks the `expected_version` before updating. If the current
+    /// version in the database doesn't match, it returns `OptimisticLockConflict`.
+    ///
+    /// Use this method when multiple admins might update settings concurrently
+    /// to prevent "lost update" problems.
+    ///
+    /// # Arguments
+    /// * `key` - The setting key to update
+    /// * `value` - The new value
+    /// * `expected_version` - The version the caller expects (from previous get)
+    ///
+    /// # Returns
+    /// * `Ok(SettingsGroup)` - Updated setting with new version
+    /// * `Err(OptimisticLockConflict)` - Version mismatch, update rejected
+    pub async fn update_with_version(
+        &self,
+        key: &str,
+        value: &str,
+        expected_version: i32,
+    ) -> Result<SettingsGroup> {
+        let row = sqlx::query(
+            r"
+            UPDATE settings
+            SET value = $1, version = version + 1, updated_at = NOW()
+            WHERE key = $2 AND version = $3
+            RETURNING key, group_name, value, version, created_at, updated_at
+            ",
+        )
+        .bind(value)
+        .bind(key)
+        .bind(expected_version)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        match row {
+            Some(row) => {
+                debug!(
+                    "Updated setting '{}' with optimistic lock (version {} -> {})",
+                    key, expected_version, row.try_get::<i32, _>("version")?
+                );
+                Ok(SettingsGroup {
+                    key: row.try_get("key")?,
+                    group_name: row.try_get("group_name")?,
+                    value: row.try_get("value")?,
+                    version: row.try_get("version")?,
+                    created_at: row.try_get("created_at")?,
+                    updated_at: row.try_get("updated_at")?,
+                })
+            }
+            None => {
+                debug!(
+                    "Optimistic lock conflict for setting '{}' (expected version {})",
+                    key, expected_version
+                );
+                Err(Error::OptimisticLockConflict)
+            }
+        }
     }
 }

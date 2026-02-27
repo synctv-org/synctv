@@ -98,6 +98,15 @@ impl RoomService {
     const MAX_RETRIES: u32 = 3;
     /// Base backoff in milliseconds (exponential: 5ms, 10ms, 20ms)
     const BACKOFF_BASE_MS: u64 = 5;
+    /// Total timeout for settings updates with retries (seconds)
+    /// Prevents unbounded wait times when database operations are slow.
+    const SETTINGS_UPDATE_TIMEOUT_SECS: u64 = 5;
+    /// TTL for create_room distributed lock (seconds)
+    /// Increased from 15s to 30s to account for:
+    /// - bcrypt password hashing (1-3 seconds)
+    /// - database transaction latency
+    /// - network delays under high load
+    const CREATE_ROOM_LOCK_TTL_SECS: u64 = 30;
 
     /// Get the playlist service
     #[must_use]
@@ -267,7 +276,7 @@ impl RoomService {
         // Acquire distributed lock to prevent duplicate creation by the same user
         if let Some(ref lock) = self.distributed_lock {
             let lock_key = format!("create_room:{}", created_by.as_str());
-            return lock.with_lock(&lock_key, 15, || {
+            return lock.with_lock(&lock_key, Self::CREATE_ROOM_LOCK_TTL_SECS, || {
                 let name = name.clone();
                 let description = description.clone();
                 let created_by = created_by.clone();
@@ -449,7 +458,8 @@ impl RoomService {
         }
 
         // Check password if required (CPU-intensive bcrypt, done before lock)
-        if ctx.settings.require_password.0 {
+        // Store the verified hash for fast comparison under lock.
+        let verified_hash: Option<String> = if ctx.settings.require_password.0 {
             if let Some(ref hash) = ctx.password_hash {
                 let provided_password = password.as_ref().ok_or_else(|| {
                     tracing::warn!(room_id = %room_id, user_id = %user_id, "Password required but not provided");
@@ -461,12 +471,15 @@ impl RoomService {
                     return Err(Error::Authorization("Invalid password".to_string()));
                 }
                 tracing::debug!(room_id = %room_id, user_id = %user_id, "Password verified successfully");
+                Some(hash.clone())
             } else {
                 // Room requires password but none is configured -- reject join
                 tracing::warn!(room_id = %room_id, "Room requires password but none is set");
                 return Err(Error::Authorization("Invalid password".to_string()));
             }
-        }
+        } else {
+            None
+        };
 
         // Use distributed lock to make the check-then-add-member atomic.
         // This prevents the TOCTOU race where two concurrent join requests
@@ -479,6 +492,7 @@ impl RoomService {
                 let room_id = room_id.clone();
                 let user_id = user_id.clone();
                 let password = password.clone();
+                let verified_hash = verified_hash.clone();
                 async move {
                     // Re-validate state under lock to catch changes that occurred
                     // between the initial check and lock acquisition
@@ -499,18 +513,27 @@ impl RoomService {
                     // the password was changed between the initial verification and
                     // lock acquisition. This ensures the provided password is still
                     // valid against the current password hash.
+                    //
+                    // Optimization: if the hash hasn't changed, skip the expensive
+                    // bcrypt verification since we already verified before the lock.
                     if fresh_ctx.settings.require_password.0 {
                         if let Some(ref hash) = fresh_ctx.password_hash {
-                            let provided_password = password.ok_or_else(|| {
-                                tracing::warn!(room_id = %room_id, user_id = %user_id, "Password required but not provided under lock");
-                                Error::Authorization("Password required".to_string())
-                            })?;
+                            // Fast path: hash unchanged, previous verification still valid
+                            if verified_hash.as_ref() == Some(hash) {
+                                tracing::debug!(room_id = %room_id, user_id = %user_id, "Password hash unchanged, skipping re-verification");
+                            } else {
+                                // Hash changed or wasn't verified before, must re-verify
+                                let provided_password = password.ok_or_else(|| {
+                                    tracing::warn!(room_id = %room_id, user_id = %user_id, "Password required but not provided under lock");
+                                    Error::Authorization("Password required".to_string())
+                                })?;
 
-                            if !verify_password(&provided_password, hash).await? {
-                                tracing::warn!(room_id = %room_id, user_id = %user_id, "Invalid password provided under lock (password changed during join)");
-                                return Err(Error::Authorization("Invalid password".to_string()));
+                                if !verify_password(&provided_password, hash).await? {
+                                    tracing::warn!(room_id = %room_id, user_id = %user_id, "Invalid password provided under lock (password changed during join)");
+                                    return Err(Error::Authorization("Invalid password".to_string()));
+                                }
+                                tracing::debug!(room_id = %room_id, user_id = %user_id, "Password re-verified successfully under lock");
                             }
-                            tracing::debug!(room_id = %room_id, user_id = %user_id, "Password re-verified successfully under lock");
                         } else {
                             // Room requires password but none is configured -- reject join
                             tracing::warn!(room_id = %room_id, "Room requires password but none is set under lock");
@@ -799,6 +822,24 @@ impl RoomService {
         .execute(&mut *tx)
         .await?;
 
+        // Invalidate caches BEFORE committing the transaction.
+        // This prevents a race condition where:
+        // 1. Transaction commits (deleted_at is set)
+        // 2. Another request reads stale data from cache (room still appears active)
+        // 3. Cache is invalidated (too late - stale data was already served)
+        //
+        // By invalidating before commit, we ensure that when the transaction commits,
+        // the cache is already empty. Any concurrent request will miss the cache
+        // and read fresh data from the database (which will correctly filter out
+        // the deleted room via `deleted_at IS NULL`).
+        //
+        // Note: If the transaction rolls back after cache invalidation, the cache
+        // will simply be empty and will be repopulated on the next read with the
+        // correct (still-active) room data. This is safe.
+        self.notify_room_invalidation(&room_id).await;
+        self.permission_service.invalidate_room_cache(&room_id).await;
+        self.playback_service.invalidate_playback_cache(&room_id).await;
+
         // Commit transaction - all or nothing
         tx.commit().await?;
 
@@ -817,14 +858,6 @@ impl RoomService {
 
         // Track room metrics
         crate::metrics::http::ROOMS_ACTIVE.dec();
-
-        // Invalidate room cache across all replicas
-        self.notify_room_invalidation(&room_id).await;
-
-        // Invalidate permission and playback caches so stale entries don't
-        // linger for the cache TTL after the room is soft-deleted.
-        self.permission_service.invalidate_room_cache(&room_id).await;
-        self.playback_service.invalidate_playback_cache(&room_id).await;
 
         // Audit log (preserved - not deleted with room data)
         self.audit_log(
@@ -978,7 +1011,7 @@ impl RoomService {
     /// Set room settings with optimistic locking (CAS).
     ///
     /// Uses version-based CAS to prevent concurrent overwrites. Retries
-    /// automatically on version conflicts.
+    /// automatically on version conflicts with a total timeout limit.
     pub async fn set_settings(
         &self,
         room_id: RoomId,
@@ -1000,42 +1033,73 @@ impl RoomService {
             .await?
             .ok_or_else(|| Error::NotFound("Room not found".to_string()))?;
 
-        // CAS write with retry
-        for attempt in 0..Self::MAX_RETRIES {
-            let (_current, version) = self.room_settings_repo.get_with_version(&room_id).await?;
-            match self.room_settings_repo.set_settings_with_version(&room_id, &settings, version).await {
-                Ok(_new_version) => {
+        // CAS write with retry and total timeout
+        let room_id_clone = room_id.clone();
+        let settings_clone = settings.clone();
+        let room_settings_repo = self.room_settings_repo.clone();
+        let permission_service = self.permission_service.clone();
+        let invalidation_service = self.cache_invalidation.clone();
+        let notification_service = self.notification_service.clone();
+        let user_id_clone = user_id.clone();
+        let audit_service = self.audit_service.clone();
+
+        super::optimistic_retry::retry_with_optimistic_lock_timeout(
+            Self::MAX_RETRIES,
+            Self::BACKOFF_BASE_MS,
+            std::time::Duration::from_secs(Self::SETTINGS_UPDATE_TIMEOUT_SECS),
+            "Settings update failed after maximum retry attempts",
+            || {
+                let room_id = room_id_clone.clone();
+                let settings = settings_clone.clone();
+                let room_settings_repo = room_settings_repo.clone();
+                let permission_service = permission_service.clone();
+                let invalidation_service = invalidation_service.clone();
+                let notification_service = notification_service.clone();
+                let user_id = user_id_clone.clone();
+                let audit_service = audit_service.clone();
+                async move {
+                    let (_current, version) = room_settings_repo.get_with_version(&room_id).await?;
+                    room_settings_repo.set_settings_with_version(&room_id, &settings, version).await?;
+
                     // Invalidate permission cache for all room members
-                    self.permission_service.invalidate_room_cache(&room_id).await;
-                    self.notify_room_invalidation(&room_id).await;
-                    let settings_json = serde_json::to_value(&settings)?;
-                    let _ = self.notification_service.notify_settings_updated(&room_id, settings_json.clone()).await;
+                    permission_service.invalidate_room_cache(&room_id).await;
+
+                    // Broadcast cache invalidation
+                    if let Some(ref service) = invalidation_service {
+                        if let Err(e) = service.invalidate_and_broadcast_room(&room_id).await {
+                            tracing::warn!(
+                                error = %e,
+                                room_id = %room_id.as_str(),
+                                "Failed to broadcast room cache invalidation"
+                            );
+                        }
+                    }
+
+                    // Notify clients
+                    let settings_json = serde_json::to_value(&settings)
+                        .map_err(|e| crate::Error::Internal(format!("Failed to serialize settings: {}", e)))?;
+                    let _ = notification_service.notify_settings_updated(&room_id, settings_json.clone()).await;
 
                     // Audit log
-                    self.audit_log(
-                        &user_id,
-                        AuditAction::RoomSettingsUpdated,
-                        AuditTargetType::Room,
-                        Some(room_id.as_str().to_string()),
-                        settings_json,
-                    ).await;
-
-                    return Ok(room);
-                }
-                Err(Error::OptimisticLockConflict) => {
-                    if attempt + 1 < Self::MAX_RETRIES {
-                        let backoff = Self::BACKOFF_BASE_MS * (1 << attempt);
-                        let jitter = rand::rng().random_range(0..Self::BACKOFF_BASE_MS);
-                        tokio::time::sleep(std::time::Duration::from_millis(backoff + jitter)).await;
-                        continue;
+                    if let Some(ref audit) = audit_service {
+                        let _ = audit.log(
+                            user_id.as_str().to_string(),
+                            user_id.as_str().to_string(),
+                            AuditAction::RoomSettingsUpdated,
+                            AuditTargetType::Room,
+                            Some(room_id.as_str().to_string()),
+                            settings_json,
+                            None,
+                            None,
+                        ).await;
                     }
-                    return Err(Error::Internal("Settings update failed after maximum retry attempts".to_string()));
-                }
-                Err(e) => return Err(e),
-            }
-        }
 
-        Err(Error::Internal("Settings update failed after maximum retry attempts".to_string()))
+                    Ok(())
+                }
+            },
+        ).await?;
+
+        Ok(room)
     }
 
     // ========== Query Operations ==========
@@ -1257,12 +1321,32 @@ impl RoomService {
             if is_valid {
                 // Reset failure counter on successful verification
                 if let Err(e) = brute_force.reset(&rate_limit_key).await {
+                    // Log warning for monitoring
                     tracing::warn!(
                         room_id = %room_id,
                         client_ip = ?client_ip,
                         error = %e,
                         "Failed to reset room password rate limit counter after successful verification"
                     );
+
+                    // Record to audit log for security tracking
+                    // This is security-relevant because a persistent counter could lead to
+                    // legitimate users being locked out if Redis recovers with stale data
+                    if let Some(ref audit) = self.audit_service {
+                        let ip_str = client_ip.map(|ip| ip.to_string());
+                        if let Err(audit_err) = audit.log_rate_limit_reset_failed(
+                            crate::service::audit::AuditTargetType::Room,
+                            room_id.as_str().to_string(),
+                            e.to_string(),
+                            ip_str,
+                        ).await {
+                            tracing::error!(
+                                room_id = %room_id,
+                                error = %audit_err,
+                                "Failed to log rate limit reset failure to audit log"
+                            );
+                        }
+                    }
                 }
             } else {
                 // Record failure on incorrect password
@@ -1383,11 +1467,24 @@ impl RoomService {
         Err(Error::Internal("Password update failed after maximum retry attempts".to_string()))
     }
 
-    /// Update room description
-    pub async fn update_room_description(&self, room_id: &RoomId, description: String) -> Result<Room> {
+    /// Update room description.
+    ///
+    /// Requires `UPDATE_ROOM_SETTINGS` permission.
+    ///
+    /// # Errors
+    ///
+    /// - `Error::InvalidInput` - Description exceeds 500 characters
+    /// - `Error::Authentication` - User lacks `UPDATE_ROOM_SETTINGS` permission
+    pub async fn update_room_description(&self, room_id: &RoomId, user_id: &UserId, description: String) -> Result<Room> {
         if description.chars().count() > 500 {
             return Err(Error::InvalidInput("Room description too long (max 500 characters)".to_string()));
         }
+
+        // Check permission
+        self.permission_service
+            .check_permission(room_id, user_id, PermissionBits::UPDATE_ROOM_SETTINGS)
+            .await?;
+
         let room = self.room_repo.update_description(room_id, &description).await?;
         self.notify_room_invalidation(room_id).await;
         Ok(room)
@@ -1847,8 +1944,35 @@ impl RoomService {
     // ========== Admin Operations ==========
 
     /// Update room status (admin use, bypasses permission checks)
-    pub async fn update_room_status(&self, room_id: &RoomId, status: crate::models::RoomStatus) -> Result<Room> {
-        let room = self.room_repo.update_status(room_id, status).await?;
+    ///
+    /// Validates the status transition before applying it. Valid transitions are:
+    /// - `Pending -> Active` (review approved)
+    /// - `Pending -> Closed` (review rejected)
+    /// - `Active -> Closed` (room closed)
+    /// - `Closed -> Active` (room reopened)
+    /// - Same status (no change) is always allowed
+    ///
+    /// # Errors
+    /// - `Error::NotFound` if room doesn't exist
+    /// - `Error::InvalidInput` if the status transition is not allowed
+    pub async fn update_room_status(&self, room_id: &RoomId, new_status: crate::models::RoomStatus) -> Result<Room> {
+        // Get current room to check existing status
+        let room = self
+            .room_repo
+            .get_by_id(room_id)
+            .await?
+            .ok_or_else(|| Error::NotFound("Room not found".to_string()))?;
+
+        // Validate status transition
+        if !room.status.can_transition_to(&new_status) {
+            return Err(Error::InvalidInput(format!(
+                "Invalid status transition from {} to {}",
+                room.status.as_str(),
+                new_status.as_str()
+            )));
+        }
+
+        let room = self.room_repo.update_status(room_id, new_status).await?;
         self.notify_room_invalidation(room_id).await;
         Ok(room)
     }
@@ -1920,13 +2044,16 @@ impl RoomService {
         .execute(&mut *tx)
         .await?;
 
+        // Invalidate caches BEFORE committing the transaction (same pattern as delete_room)
+        // See delete_room for detailed explanation of why this ordering is important.
+        self.notify_room_invalidation(room_id).await;
+
         tx.commit().await?;
 
         // Notify after commit so notifications are only sent for successful deletions
         let _ = self.notification_service.notify_room_deleted(room_id).await;
 
         crate::metrics::http::ROOMS_ACTIVE.dec();
-        self.notify_room_invalidation(room_id).await;
 
         // Audit log
         if let Some(ref audit) = self.audit_service {

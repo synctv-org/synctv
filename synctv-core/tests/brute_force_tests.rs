@@ -439,3 +439,444 @@ async fn test_redis_tracker_fallback_not_used_when_redis_healthy() {
     assert!(!tracker.is_degraded());
     assert_eq!(tracker.degraded_operation_count(), 0);
 }
+
+// ============================================================================
+// BruteForceConfig tests (Task #64)
+// ============================================================================
+
+use synctv_core::service::auth::brute_force::BruteForceConfig;
+
+/// Test that BruteForceConfig::default() matches the original hardcoded values
+/// This ensures backward compatibility when no config is provided
+#[test]
+fn test_brute_force_config_defaults_match_hardcoded() {
+    let config = BruteForceConfig::default();
+
+    // Tier 1: 5 failures -> 60 second lockout
+    assert_eq!(config.tier1_threshold, 5, "TIER1_THRESHOLD should be 5");
+    assert_eq!(config.tier1_lockout_secs, 60, "TIER1_LOCKOUT_SECS should be 60");
+
+    // Tier 2: 10 failures -> 5 minute lockout
+    assert_eq!(config.tier2_threshold, 10, "TIER2_THRESHOLD should be 10");
+    assert_eq!(config.tier2_lockout_secs, 300, "TIER2_LOCKOUT_SECS should be 300");
+
+    // Tier 3: 15 failures -> 15 minute lockout
+    assert_eq!(config.tier3_threshold, 15, "TIER3_THRESHOLD should be 15");
+    assert_eq!(config.tier3_lockout_secs, 900, "TIER3_LOCKOUT_SECS should be 900");
+
+    // IP lockout: 20 failures -> 10 minute lockout
+    assert_eq!(config.ip_threshold, 20, "IP_THRESHOLD should be 20");
+    assert_eq!(config.ip_lockout_secs, 600, "IP_LOCKOUT_SECS should be 600");
+
+    // TTLs
+    assert_eq!(config.attempts_ttl_secs, 900, "ATTEMPTS_TTL_SECS should be 900");
+    assert_eq!(config.ip_attempts_ttl_secs, 600, "IP_ATTEMPTS_TTL_SECS should be 600");
+}
+
+/// Test BruteForceConfig::custom_thresholds() with custom values
+#[test]
+fn test_brute_force_config_custom_thresholds() {
+    let config = BruteForceConfig {
+        tier1_threshold: 3,
+        tier1_lockout_secs: 30,
+        tier2_threshold: 6,
+        tier2_lockout_secs: 120,
+        tier3_threshold: 9,
+        tier3_lockout_secs: 300,
+        ip_threshold: 10,
+        ip_lockout_secs: 180,
+        attempts_ttl_secs: 600,
+        ip_attempts_ttl_secs: 300,
+    };
+
+    assert_eq!(config.tier1_threshold, 3);
+    assert_eq!(config.tier1_lockout_secs, 30);
+    assert_eq!(config.tier2_threshold, 6);
+    assert_eq!(config.tier2_lockout_secs, 120);
+    assert_eq!(config.tier3_threshold, 9);
+    assert_eq!(config.tier3_lockout_secs, 300);
+    assert_eq!(config.ip_threshold, 10);
+    assert_eq!(config.ip_lockout_secs, 180);
+}
+
+/// Test BruteForceConfig serialization/deserialization for settings storage
+#[test]
+fn test_brute_force_config_serde_roundtrip() {
+    let original = BruteForceConfig {
+        tier1_threshold: 3,
+        tier1_lockout_secs: 30,
+        tier2_threshold: 6,
+        tier2_lockout_secs: 120,
+        tier3_threshold: 9,
+        tier3_lockout_secs: 300,
+        ip_threshold: 10,
+        ip_lockout_secs: 180,
+        attempts_ttl_secs: 600,
+        ip_attempts_ttl_secs: 300,
+    };
+
+    let json = serde_json::to_string(&original).unwrap();
+    let deserialized: BruteForceConfig = serde_json::from_str(&json).unwrap();
+
+    assert_eq!(deserialized.tier1_threshold, original.tier1_threshold);
+    assert_eq!(deserialized.tier1_lockout_secs, original.tier1_lockout_secs);
+    assert_eq!(deserialized.tier2_threshold, original.tier2_threshold);
+    assert_eq!(deserialized.tier2_lockout_secs, original.tier2_lockout_secs);
+    assert_eq!(deserialized.tier3_threshold, original.tier3_threshold);
+    assert_eq!(deserialized.tier3_lockout_secs, original.tier3_lockout_secs);
+    assert_eq!(deserialized.ip_threshold, original.ip_threshold);
+    assert_eq!(deserialized.ip_lockout_secs, original.ip_lockout_secs);
+    assert_eq!(deserialized.attempts_ttl_secs, original.attempts_ttl_secs);
+    assert_eq!(deserialized.ip_attempts_ttl_secs, original.ip_attempts_ttl_secs);
+}
+
+/// Test BruteForceProtection uses custom thresholds via config
+#[tokio::test]
+async fn test_brute_force_with_custom_tier1_threshold() {
+    let custom_config = BruteForceConfig {
+        tier1_threshold: 3, // Lower than default (5)
+        tier1_lockout_secs: 30,
+        ..BruteForceConfig::default()
+    };
+
+    let protection = BruteForceProtection::in_memory_with_config(
+        "test_custom_tier1:".to_string(),
+        custom_config,
+    );
+
+    // Record 3 failures (custom tier1 threshold)
+    for _ in 0..3 {
+        protection.record_failure("custom_user", None).await.unwrap();
+    }
+
+    // Should be locked out at 3 failures (not 5)
+    let result = protection.check_allowed("custom_user", None).await;
+    assert!(
+        result.is_err(),
+        "Should be locked out at 3 failures with custom threshold"
+    );
+
+    let err_msg = result.unwrap_err().to_string();
+    assert!(
+        err_msg.contains("Too many failed login attempts"),
+        "Error should mention lockout: {err_msg}"
+    );
+}
+
+/// Test BruteForceProtection uses custom lockout duration
+#[tokio::test]
+async fn test_brute_force_with_custom_lockout_duration() {
+    let custom_config = BruteForceConfig {
+        tier1_threshold: 2,
+        tier1_lockout_secs: 5, // Very short for testing
+        ..BruteForceConfig::default()
+    };
+
+    let username_tracker = Arc::new(InMemoryAttemptTracker::new(50_000, 900));
+    let ip_tracker = Arc::new(InMemoryAttemptTracker::new(100_000, 600));
+
+    let protection = BruteForceProtection::new_with_config(
+        "test_custom_duration:".to_string(),
+        username_tracker.clone(),
+        ip_tracker,
+        custom_config,
+    );
+
+    // Record 2 failures with timestamp far in the past (beyond lockout)
+    let past = chrono::Utc::now().timestamp() - 10; // 10 seconds ago (beyond 5s lockout)
+    let key = "test_custom_duration:auth:login_attempts:expired_user";
+    for i in 0..2 {
+        username_tracker.record_failure(key, past + i, 900).await.unwrap();
+    }
+
+    // Lockout should have expired (5s lockout, failures 10s ago)
+    let result = protection.check_allowed("expired_user", None).await;
+    assert!(
+        result.is_ok(),
+        "Custom lockout should have expired after 5 seconds"
+    );
+}
+
+/// Test BruteForceProtection uses custom IP thresholds
+#[tokio::test]
+async fn test_brute_force_with_custom_ip_threshold() {
+    let custom_config = BruteForceConfig {
+        ip_threshold: 5, // Lower than default (20)
+        ip_lockout_secs: 60,
+        ip_attempts_ttl_secs: 300,
+        ..BruteForceConfig::default()
+    };
+
+    let protection = BruteForceProtection::in_memory_with_config(
+        "test_custom_ip:".to_string(),
+        custom_config,
+    );
+
+    let ip = Some(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 50)));
+
+    // Record 5 failures from same IP (custom IP threshold)
+    for i in 0..5 {
+        let username = format!("ip_user_{i}");
+        protection.record_failure(&username, ip).await.unwrap();
+    }
+
+    // IP should be locked out at 5 failures (not 20)
+    let result = protection.check_allowed("brand_new_user", ip).await;
+    assert!(
+        result.is_err(),
+        "IP should be locked out at 5 failures with custom threshold"
+    );
+}
+
+/// Test BruteForceConfig validation: thresholds should be increasing
+#[test]
+fn test_brute_force_config_threshold_ordering() {
+    // Valid: thresholds are in increasing order
+    let valid = BruteForceConfig {
+        tier1_threshold: 5,
+        tier2_threshold: 10,
+        tier3_threshold: 15,
+        ..BruteForceConfig::default()
+    };
+    assert!(valid.tier1_threshold < valid.tier2_threshold);
+    assert!(valid.tier2_threshold < valid.tier3_threshold);
+
+    // Invalid but allowed (enforcement is in validation, not types)
+    let _invalid = BruteForceConfig {
+        tier1_threshold: 20, // Higher than tier2
+        tier2_threshold: 10,
+        tier3_threshold: 5,
+        ..BruteForceConfig::default()
+    };
+    // Note: Config validation should reject this, but the type allows it
+}
+
+/// Test that BruteForceConfig can be parsed from JSON (for settings integration)
+#[test]
+fn test_brute_force_config_from_json() {
+    let json = serde_json::json!({
+        "tier1_threshold": 4,
+        "tier1_lockout_secs": 45,
+        "tier2_threshold": 8,
+        "tier2_lockout_secs": 180,
+        "tier3_threshold": 12,
+        "tier3_lockout_secs": 600,
+        "ip_threshold": 15,
+        "ip_lockout_secs": 300,
+        "attempts_ttl_secs": 1200,
+        "ip_attempts_ttl_secs": 900
+    });
+
+    let config: BruteForceConfig = serde_json::from_value(json).unwrap();
+
+    assert_eq!(config.tier1_threshold, 4);
+    assert_eq!(config.tier1_lockout_secs, 45);
+    assert_eq!(config.tier2_threshold, 8);
+    assert_eq!(config.tier2_lockout_secs, 180);
+    assert_eq!(config.tier3_threshold, 12);
+    assert_eq!(config.tier3_lockout_secs, 600);
+    assert_eq!(config.ip_threshold, 15);
+    assert_eq!(config.ip_lockout_secs, 300);
+    assert_eq!(config.attempts_ttl_secs, 1200);
+    assert_eq!(config.ip_attempts_ttl_secs, 900);
+}
+
+/// Test that partial JSON uses default values for missing fields
+#[test]
+fn test_brute_force_config_partial_json_uses_defaults() {
+    let json = serde_json::json!({
+        "tier1_threshold": 3
+    });
+
+    let config: BruteForceConfig = serde_json::from_value(json).unwrap();
+
+    // Only tier1_threshold is customized
+    assert_eq!(config.tier1_threshold, 3);
+
+    // All other fields should use defaults
+    let defaults = BruteForceConfig::default();
+    assert_eq!(config.tier1_lockout_secs, defaults.tier1_lockout_secs);
+    assert_eq!(config.tier2_threshold, defaults.tier2_threshold);
+    assert_eq!(config.tier2_lockout_secs, defaults.tier2_lockout_secs);
+    assert_eq!(config.tier3_threshold, defaults.tier3_threshold);
+    assert_eq!(config.tier3_lockout_secs, defaults.tier3_lockout_secs);
+    assert_eq!(config.ip_threshold, defaults.ip_threshold);
+    assert_eq!(config.ip_lockout_secs, defaults.ip_lockout_secs);
+    assert_eq!(config.attempts_ttl_secs, defaults.attempts_ttl_secs);
+    assert_eq!(config.ip_attempts_ttl_secs, defaults.ip_attempts_ttl_secs);
+}
+
+/// Test that protection stores and uses custom config correctly
+#[test]
+fn test_protection_config_accessible() {
+    let config = BruteForceConfig {
+        tier1_threshold: 3,
+        tier1_lockout_secs: 30,
+        tier2_threshold: 7,
+        tier2_lockout_secs: 120,
+        tier3_threshold: 12,
+        tier3_lockout_secs: 300,
+        ip_threshold: 10,
+        ip_lockout_secs: 180,
+        attempts_ttl_secs: 600,
+        ip_attempts_ttl_secs: 300,
+    };
+
+    let protection = BruteForceProtection::in_memory_with_config(
+        "test_config_access:".to_string(),
+        config.clone(),
+    );
+
+    // Verify config is accessible
+    let stored_config = protection.config();
+    assert_eq!(stored_config.tier1_threshold, 3);
+    assert_eq!(stored_config.tier1_lockout_secs, 30);
+    assert_eq!(stored_config.tier2_threshold, 7);
+    assert_eq!(stored_config.tier2_lockout_secs, 120);
+    assert_eq!(stored_config.tier3_threshold, 12);
+    assert_eq!(stored_config.tier3_lockout_secs, 300);
+    assert_eq!(stored_config.ip_threshold, 10);
+    assert_eq!(stored_config.ip_lockout_secs, 180);
+}
+
+// ============================================================================
+// IP-only Failure Tracking Tests (Task #74)
+// ============================================================================
+
+/// Test record_ip_failure only increments IP counter, not username counter
+#[tokio::test]
+async fn test_record_ip_failure_only_affects_ip_counter() {
+    let protection = BruteForceProtection::in_memory("test_ip_only:".to_string());
+    let ip = Some(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 100)));
+
+    // Record IP-only failure multiple times
+    for _ in 0..5 {
+        protection.record_ip_failure(ip).await.unwrap();
+    }
+
+    // IP should be tracked
+    assert!(protection.check_ip_allowed(ip).await.is_ok(), "IP should not be locked yet");
+
+    // Record more failures to trigger IP lockout
+    for _ in 0..15 {
+        protection.record_ip_failure(ip).await.unwrap();
+    }
+
+    // Now IP should be locked out (default threshold is 20)
+    let result = protection.check_ip_allowed(ip).await;
+    assert!(result.is_err(), "IP should be locked out after 20 failures");
+}
+
+/// Test record_ip_failure with None IP does nothing
+#[tokio::test]
+async fn test_record_ip_failure_with_none_ip_is_noop() {
+    let protection = BruteForceProtection::in_memory("test_noop:".to_string());
+
+    // Should succeed without error
+    let result = protection.record_ip_failure(None).await;
+    assert!(result.is_ok());
+}
+
+/// Test check_ip_allowed with None IP always returns Ok
+#[tokio::test]
+async fn test_check_ip_allowed_with_none_is_always_ok() {
+    let protection = BruteForceProtection::in_memory("test_none_ip:".to_string());
+
+    // Should always succeed when no IP is provided
+    let result = protection.check_ip_allowed(None).await;
+    assert!(result.is_ok());
+}
+
+/// Test that username is NOT locked when only IP failures are recorded
+#[tokio::test]
+async fn test_ip_only_failure_does_not_lock_username() {
+    let protection = BruteForceProtection::in_memory("test_username_safe:".to_string());
+    let ip = Some(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 50)));
+
+    // Record many IP-only failures
+    for _ in 0..25 {
+        protection.record_ip_failure(ip).await.unwrap();
+    }
+
+    // IP should be locked
+    assert!(protection.check_ip_allowed(ip).await.is_err());
+
+    // But a legitimate user with a different IP should be able to log in
+    // (this is the key behavior - random username guessing doesn't lock out real users)
+    let different_ip = Some(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 99)));
+    assert!(protection.check_allowed("legitimate_user", different_ip).await.is_ok());
+
+    // And the username that was attacked should also be accessible from different IP
+    assert!(protection.check_allowed("nonexistent_user_tried_earlier", different_ip).await.is_ok());
+}
+
+/// Test differentiated failure: wrong password for existing user locks both
+#[tokio::test]
+async fn test_wrong_password_for_existing_user_locks_both() {
+    let protection = BruteForceProtection::in_memory("test_both_lock:".to_string());
+    let ip = Some(IpAddr::V4(Ipv4Addr::new(172, 16, 0, 1)));
+    let username = "existing_user";
+
+    // Simulate wrong password attempts for existing user (record_failure)
+    for _ in 0..5 {
+        protection.record_failure(username, ip).await.unwrap();
+    }
+
+    // Username should be locked at tier 1 threshold (5)
+    let result = protection.check_allowed(username, None).await;
+    assert!(result.is_err(), "Username should be locked after 5 failures");
+}
+
+/// Test that legitimate user from same IP gets locked when using wrong password
+#[tokio::test]
+async fn test_legitimate_user_wrong_password_locks_username() {
+    let protection = BruteForceProtection::in_memory("test_legit_lock:".to_string());
+    let ip = Some(IpAddr::V4(Ipv4Addr::new(192, 168, 0, 50)));
+    let username = "alice";
+
+    // Alice enters wrong password 5 times
+    for _ in 0..5 {
+        protection.record_failure(username, ip).await.unwrap();
+    }
+
+    // Alice should be locked out
+    let result = protection.check_allowed(username, ip).await;
+    assert!(result.is_err(), "Alice should be locked out");
+}
+
+/// Test attacker cannot lock out legitimate user by trying non-existent usernames
+#[tokio::test]
+async fn test_attacker_cannot_lock_legitimate_user() {
+    let protection = BruteForceProtection::in_memory("test_no_lock:".to_string());
+    let attacker_ip = Some(IpAddr::V4(Ipv4Addr::new(203, 0, 113, 50)));
+
+    // Attacker tries many non-existent usernames (only IP tracking)
+    for _ in 0..19 {
+        protection.record_ip_failure(attacker_ip).await.unwrap();
+    }
+
+    // Legitimate user "bob" should NOT be locked out
+    // (even though attacker used the same IP, they didn't use "bob" as username)
+    let result = protection.check_allowed("bob", attacker_ip).await;
+    assert!(result.is_ok(), "Bob should not be locked out by attacker's random username attempts");
+}
+
+/// Test IP lockout still works with IP-only failures
+#[tokio::test]
+async fn test_ip_lockout_works_with_ip_only_failures() {
+    let protection = BruteForceProtection::in_memory("test_ip_lockout:".to_string());
+    let ip = Some(IpAddr::V4(Ipv4Addr::new(198, 51, 100, 1)));
+
+    // Record IP-only failures up to threshold (default: 20)
+    for _ in 0..20 {
+        protection.record_ip_failure(ip).await.unwrap();
+    }
+
+    // IP should be locked
+    let result = protection.check_ip_allowed(ip).await;
+    assert!(result.is_err(), "IP should be locked out");
+
+    // Any username from this IP should also be blocked
+    let result = protection.check_allowed("any_username", ip).await;
+    assert!(result.is_err(), "Any username from locked IP should be blocked");
+}

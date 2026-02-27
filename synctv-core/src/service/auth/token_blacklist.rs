@@ -57,6 +57,35 @@ pub trait TokenBlacklistStore: Send + Sync {
     /// refuse to issue new tokens (fail-closed).
     async fn blacklist(&self, key: &str, ttl_secs: u64) -> Result<()>;
 
+    /// Atomically blacklist a JTI key if it doesn't already exist.
+    ///
+    /// This is the core method for preventing TOCTOU race conditions in
+    /// refresh token rotation. It performs an atomic "check and set" operation:
+    ///
+    /// - Returns `Ok(true)` if the key **already existed** (replay detected)
+    /// - Returns `Ok(false)` if the key was **newly inserted** (first use)
+    /// - Returns `Err` only on critical failures (fail-closed)
+    ///
+    /// # Security Implications
+    ///
+    /// When refreshing a token:
+    /// - `Ok(false)` means this is the first use → proceed to issue new token
+    /// - `Ok(true)` means a replay was detected → trigger family revocation
+    ///
+    /// # Default Implementation
+    ///
+    /// The default implementation uses `is_blacklisted` + `blacklist` which
+    /// is NOT atomic. Implementations should override this with proper atomic
+    /// operations (e.g., Redis SETNX, PostgreSQL INSERT ... ON CONFLICT DO NOTHING).
+    async fn blacklist_if_not_exists(&self, key: &str, ttl_secs: u64) -> Result<bool> {
+        // Default: non-atomic check-then-set (has TOCTOU race condition)
+        if self.is_blacklisted(key).await {
+            return Ok(true);
+        }
+        self.blacklist(key, ttl_secs).await?;
+        Ok(false)
+    }
+
     /// Get the family revocation timestamp for a key, if set.
     ///
     /// Returns `Some(revoked_at_timestamp)` if the family was revoked.
@@ -77,11 +106,20 @@ pub trait TokenBlacklistStore: Send + Sync {
 /// stored `(value, expiry: Instant)` pairs and checked on every read so the
 /// caller-supplied `ttl_secs` is honoured exactly.
 /// Data is lost on restart.
+///
+/// ## Atomicity for `blacklist_if_not_exists`
+///
+/// Since moka doesn't support atomic "insert if absent", we use a `DashMap` of
+/// `Arc<tokio::sync::Mutex>` per key to serialize concurrent operations on the same JTI.
+/// This prevents TOCTOU race conditions during refresh token rotation.
 pub struct InMemoryTokenBlacklistStore {
     /// JTI -> expiry Instant (presence + non-expired = blacklisted)
     jti_blacklist: Arc<moka::future::Cache<String, Instant>>,
     /// `user_key` -> (`revoked_at` timestamp, expiry Instant)
     family_revoked: Arc<moka::future::Cache<String, (i64, Instant)>>,
+    /// Per-key mutex for atomic blacklist_if_not_exists operations
+    /// Uses DashMap for O(1) lock acquisition without global contention
+    blacklist_locks: Arc<dashmap::DashMap<String, Arc<tokio::sync::Mutex<()>>>>,
 }
 
 impl InMemoryTokenBlacklistStore {
@@ -109,6 +147,7 @@ impl InMemoryTokenBlacklistStore {
                     .time_to_live(Duration::from_secs(family_ttl_secs))
                     .build(),
             ),
+            blacklist_locks: Arc::new(dashmap::DashMap::new()),
         }
     }
 }
@@ -126,6 +165,41 @@ impl TokenBlacklistStore for InMemoryTokenBlacklistStore {
         let expiry = Instant::now() + Duration::from_secs(ttl_secs);
         self.jti_blacklist.insert(key.to_string(), expiry).await;
         Ok(())
+    }
+
+    /// Atomically blacklist the key if it doesn't already exist.
+    ///
+    /// Uses a per-key mutex to serialize concurrent operations on the same JTI,
+    /// preventing TOCTOU race conditions. Returns:
+    /// - `Ok(true)` if key already existed (replay detected)
+    /// - `Ok(false)` if key was newly inserted (first use)
+    async fn blacklist_if_not_exists(&self, key: &str, ttl_secs: u64) -> Result<bool> {
+        // Get or create a mutex for this specific key
+        // Using entry API to avoid race between get and insert
+        let mutex: Arc<tokio::sync::Mutex<()>> = self.blacklist_locks
+            .entry(key.to_string())
+            .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
+            .value()
+            .clone();
+
+        // Hold the lock while checking and inserting
+        let _guard = mutex.lock().await;
+
+        // Double-check pattern: check if already blacklisted
+        if self.is_blacklisted(key).await {
+            // Clean up the mutex entry to prevent unbounded growth
+            self.blacklist_locks.remove(key);
+            return Ok(true); // Already existed = replay detected
+        }
+
+        // Not blacklisted, so insert atomically
+        let expiry = Instant::now() + Duration::from_secs(ttl_secs);
+        self.jti_blacklist.insert(key.to_string(), expiry).await;
+
+        // Clean up the mutex entry
+        self.blacklist_locks.remove(key);
+
+        Ok(false) // Newly inserted = first use
     }
 
     async fn get_family_revoked_at(&self, key: &str) -> Option<i64> {
@@ -223,6 +297,43 @@ impl TokenBlacklistStore for PgTokenBlacklistStore {
             crate::Error::Internal("Failed to rotate refresh token".to_string())
         })?;
         Ok(())
+    }
+
+    /// Atomically blacklist the key if it doesn't already exist.
+    ///
+    /// Uses PostgreSQL's `INSERT ... ON CONFLICT DO NOTHING` with `xmax` check
+    /// to atomically detect whether the insert was successful or the key existed.
+    /// Returns:
+    /// - `Ok(true)` if key already existed (replay detected)
+    /// - `Ok(false)` if key was newly inserted (first use)
+    async fn blacklist_if_not_exists(&self, key: &str, ttl_secs: u64) -> Result<bool> {
+        let expires_at = chrono::Utc::now() + chrono::Duration::seconds(ttl_secs as i64);
+
+        // xmax = 0 means the row was inserted (no conflict)
+        // xmax != 0 means the row already existed (conflict, nothing inserted)
+        // See: https://www.postgresql.org/docs/current/functions-info.html
+        let inserted: bool = sqlx::query_scalar(
+            "INSERT INTO token_blacklist (jti, expires_at) VALUES ($1, $2) \
+             ON CONFLICT (jti) DO NOTHING \
+             RETURNING (xmax = 0)"
+        )
+        .bind(key)
+        .bind(expires_at)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| {
+            tracing::error!(
+                key = %key,
+                error = %e,
+                "Failed to blacklist refresh token JTI in PostgreSQL"
+            );
+            crate::Error::Internal("Failed to rotate refresh token".to_string())
+        })?
+        .unwrap_or(false); // None means conflict occurred, row not returned
+
+        // inserted = true means we inserted a new row (first use)
+        // inserted = false means conflict, key already existed (replay)
+        Ok(!inserted)
     }
 
     async fn get_family_revoked_at(&self, key: &str) -> Option<i64> {
@@ -474,6 +585,32 @@ impl TokenBlacklistStore for TieredTokenBlacklistStore {
         Ok(())
     }
 
+    /// Atomically blacklist the key if it doesn't already exist.
+    ///
+    /// Uses PostgreSQL as the authoritative source for atomicity, then
+    /// propagates the result to L2 (Redis) and L1 (moka) caches.
+    ///
+    /// Returns:
+    /// - `Ok(true)` if key already existed (replay detected)
+    /// - `Ok(false)` if key was newly inserted (first use)
+    async fn blacklist_if_not_exists(&self, key: &str, ttl_secs: u64) -> Result<bool> {
+        // 1. Atomic insert on PG (authoritative)
+        let already_existed = self.pg.blacklist_if_not_exists(key, ttl_secs).await?;
+
+        // 2. Propagate to caches (always positive, since PG now has the entry)
+        if let Some(ref redis_conn) = self.redis_conn {
+            let redis_key = self.bl_key(key);
+            let l2_ttl = Self::l2_positive_ttl(ttl_secs);
+            let mut conn = redis_conn.clone();
+            let _: redis::RedisResult<()> = conn.set_ex(&redis_key, "1", l2_ttl).await;
+        }
+        self.l1_blacklist
+            .insert(key.to_string(), (true, Instant::now() + L1_POSITIVE_TTL))
+            .await;
+
+        Ok(already_existed)
+    }
+
     async fn get_family_revoked_at(&self, key: &str) -> Option<i64> {
         // --- L1 check ---
         if let Some((cached_val, expiry)) = self.l1_family.get(key).await {
@@ -671,6 +808,31 @@ impl TokenBlacklistStore for FallbackTokenBlacklistStore {
                 );
                 // Still return Ok since we successfully wrote to fallback
                 Ok(())
+            }
+        }
+    }
+
+    /// Atomically blacklist if not exists, with fallback to in-memory on primary failure.
+    ///
+    /// Uses the primary's atomic operation first, then mirrors to fallback.
+    /// If primary fails, uses fallback's atomic operation instead.
+    async fn blacklist_if_not_exists(&self, key: &str, ttl_secs: u64) -> Result<bool> {
+        // Try primary's atomic operation first
+        match self.primary.blacklist_if_not_exists(key, ttl_secs).await {
+            Ok(already_existed) => {
+                // Mirror to fallback for fast-path checks
+                // Note: We don't care about the result since primary is authoritative
+                let _ = self.fallback.blacklist(key, ttl_secs).await;
+                Ok(already_existed)
+            }
+            Err(e) => {
+                // Primary failed, use fallback's atomic operation
+                tracing::warn!(
+                    key = %key,
+                    error = %e,
+                    "Primary atomic blacklist failed, using fallback atomic operation"
+                );
+                self.fallback.blacklist_if_not_exists(key, ttl_secs).await
             }
         }
     }
@@ -956,6 +1118,40 @@ impl TokenBlacklistStore for RedisSyncableTokenBlacklistStore {
                 Ok(())
             }
         }
+    }
+
+    /// Atomically blacklist if not exists, with pending sync buffer on primary failure.
+    ///
+    /// Uses the fallback's atomic operation (since it's always available and reliable),
+    /// then attempts to sync to primary. If primary fails, the write is buffered.
+    async fn blacklist_if_not_exists(&self, key: &str, ttl_secs: u64) -> Result<bool> {
+        // Use fallback's atomic operation (it's always available and has proper atomicity)
+        let already_existed = self.fallback.blacklist_if_not_exists(key, ttl_secs).await?;
+
+        // Try to sync to primary
+        match self.primary.blacklist_if_not_exists(key, ttl_secs).await {
+            Ok(_) => {
+                // Remove from pending if it was there
+                self.pending_blacklist.remove(key).await;
+            }
+            Err(e) => {
+                tracing::warn!(
+                    key = %key,
+                    error = %e,
+                    "Primary atomic blacklist failed, token tracked in fallback, added to pending sync buffer"
+                );
+
+                // Add to pending writes for later sync
+                let pending = PendingWrite {
+                    key: key.to_string(),
+                    ttl_secs,
+                    expires_at: Instant::now() + Duration::from_secs(ttl_secs),
+                };
+                self.pending_blacklist.insert(key.to_string(), pending).await;
+            }
+        }
+
+        Ok(already_existed)
     }
 
     async fn get_family_revoked_at(&self, key: &str) -> Option<i64> {

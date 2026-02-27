@@ -1127,6 +1127,162 @@ async fn test_refresh_token_rate_limiting_per_user() {
     assert!(success_count > 0, "Should allow at least some refresh requests before rate limiting");
 }
 
+// ============================================================================
+// S1.6: refresh_token concurrent refresh race condition tests (P0 #10)
+// ============================================================================
+
+/// Test that concurrent refresh of the same token triggers family revocation.
+///
+/// RACE CONDITION VULNERABILITY:
+/// The original implementation has a TOCTOU (Time-Of-Check-Time-Of-Use) race:
+/// 1. Request A: is_blacklisted(jti) -> false
+/// 2. Request B: is_blacklisted(jti) -> false (A hasn't blacklisted yet)
+/// 3. Request A: blacklist(jti) -> success, issues new token
+/// 4. Request B: blacklist(jti) -> success (upsert), issues new token
+///
+/// Both requests succeed, but B should have detected the replay and triggered
+/// family revocation instead.
+///
+/// SECURITY IMPACT:
+/// - Attacker with stolen token can get a valid new token
+/// - Token theft detection is bypassed
+/// - Legitimate user is NOT protected
+///
+/// FIX:
+/// Use atomic `blacklist_if_not_exists` that returns whether the key was
+/// newly inserted (first use) or already existed (replay detected).
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_refresh_token_concurrent_refresh_race_condition() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+    use tokio::sync::Barrier;
+
+    let (_container, pool) = create_test_pool().await;
+    let token_blacklist: Arc<dyn TokenBlacklistStore> =
+        Arc::new(InMemoryTokenBlacklistStore::new(10_000, 3600, 86400));
+    let service = create_user_service_with_blacklist(pool.clone(), token_blacklist.clone());
+
+    // Register and get tokens
+    let (_user, _access, Some(refresh_token)) = service
+        .register(
+            format!("concurrent_race_{}", nanoid::nanoid!(6)),
+            Some(format!("concurrent_race_{}@test.com", nanoid::nanoid!(6))),
+            "StrongPass1".to_string(),
+            None,
+        )
+        .await
+        .expect("Registration should succeed")
+    else {
+        panic!("Expected tokens");
+    };
+
+    // Track results from concurrent refreshes
+    let success_count = Arc::new(AtomicUsize::new(0));
+    let failure_count = Arc::new(AtomicUsize::new(0));
+
+    // Use barrier to maximize concurrency - all threads start at the same time
+    let barrier = Arc::new(Barrier::new(10));
+
+    // Spawn multiple concurrent refresh requests with the SAME token
+    let mut handles = vec![];
+    for _ in 0..10 {
+        let service = service.clone();
+        let token = refresh_token.clone();
+        let success = success_count.clone();
+        let failure = failure_count.clone();
+        let barrier = barrier.clone();
+
+        handles.push(tokio::spawn(async move {
+            // Synchronize all tasks to start at the same time
+            barrier.wait().await;
+
+            match service.refresh_token(token).await {
+                Ok(_) => {
+                    success.fetch_add(1, Ordering::SeqCst);
+                }
+                Err(_) => {
+                    failure.fetch_add(1, Ordering::SeqCst);
+                }
+            }
+        }));
+    }
+
+    // Wait for all concurrent requests to complete
+    for handle in handles {
+        handle.await.expect("Task should complete");
+    }
+
+    let successes = success_count.load(Ordering::SeqCst);
+    let failures = failure_count.load(Ordering::SeqCst);
+
+    // CRITICAL: Only ONE request should succeed (the first one to blacklist)
+    // All others should fail because the JTI is already blacklisted
+    assert_eq!(
+        successes, 1,
+        "Exactly ONE concurrent refresh should succeed, got {} successes and {} failures. \
+         RACE CONDITION: multiple requests bypassed the blacklist check!",
+        successes, failures
+    );
+    assert_eq!(
+        failures, 9,
+        "Nine requests should fail due to JTI already blacklisted"
+    );
+}
+
+/// Test that concurrent refresh properly triggers family revocation on replay.
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_refresh_token_concurrent_refresh_family_revocation() {
+    let (_container, pool) = create_test_pool().await;
+    let token_blacklist: Arc<dyn TokenBlacklistStore> =
+        Arc::new(InMemoryTokenBlacklistStore::new(10_000, 3600, 86400));
+    let service = create_user_service_with_blacklist(pool.clone(), token_blacklist.clone());
+
+    // Register and get tokens
+    let (_user, _access, Some(refresh_token)) = service
+        .register(
+            format!("family_rev_race_{}", nanoid::nanoid!(6)),
+            Some(format!("family_rev_race_{}@test.com", nanoid::nanoid!(6))),
+            "StrongPass1".to_string(),
+            None,
+        )
+        .await
+        .expect("Registration should succeed")
+    else {
+        panic!("Expected tokens");
+    };
+
+    // First legitimate refresh
+    let (_access1, refresh_token1) = service
+        .refresh_token(refresh_token.clone())
+        .await
+        .expect("First refresh should succeed");
+
+    // Now do concurrent refreshes with the OLD token (simulating attacker replay)
+    let mut handles = vec![];
+    for _ in 0..5 {
+        let service = service.clone();
+        let token = refresh_token.clone();
+
+        handles.push(tokio::spawn(async move {
+            service.refresh_token(token).await.is_ok()
+        }));
+    }
+
+    for handle in handles {
+        let _ = handle.await;
+    }
+
+    // After concurrent replay attempts, the new token should also be blocked
+    // because family revocation should have been triggered
+    let result = service.refresh_token(refresh_token1).await;
+    assert!(
+        result.is_err(),
+        "New token should be blocked after family revocation from concurrent replay detection"
+    );
+}
+
 /// Test that rate limit recovers after waiting.
 #[tokio::test]
 #[ignore = "Requires Docker"]
@@ -1167,5 +1323,149 @@ async fn test_refresh_token_rate_limit_recovers() {
         result.is_ok(),
         "Should be able to refresh again after rate limit window resets: {:?}",
         result.err()
+    );
+}
+
+// ============================================================================
+// S2.6: Password timing attack prevention tests (P1 #24)
+// ============================================================================
+
+/// Test that login times are similar whether user exists or not (timing attack prevention).
+///
+/// SECURITY REQUIREMENT:
+/// When a user doesn't exist, the system should still perform password verification
+/// against a dummy hash to ensure the response time is indistinguishable from a
+/// real verification. This prevents timing attacks that could enumerate usernames.
+///
+/// TIMING BUDGET:
+/// The difference between "user not found" and "user found, wrong password"
+/// should be less than 50ms to make timing attacks impractical.
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_login_timing_attack_prevention() {
+    let (_container, pool) = create_test_pool().await;
+    let service = create_user_service(pool.clone());
+
+    // Create a real user
+    let username = format!("timing_user_{}", nanoid::nanoid!(6));
+    let password = "CorrectPassword123!";
+    service
+        .register(
+            username.clone(),
+            Some(format!("timing_{}@test.com", nanoid::nanoid!(6))),
+            password.to_string(),
+            None,
+        )
+        .await
+        .expect("Registration should succeed");
+
+    let nonexistent_username = format!("nonexistent_{}", nanoid::nanoid!(6));
+
+    // Warm up - run both paths once to ensure any lazy initialization is done
+    let _ = service.login(nonexistent_username.clone(), "AnyPassword123!".to_string(), None).await;
+    let _ = service.login(username.clone(), "WrongPassword123!".to_string(), None).await;
+
+    // Measure time for login with nonexistent user (should still do Argon2)
+    let num_samples = 5;
+    let mut nonexistent_times = Vec::with_capacity(num_samples);
+
+    for _ in 0..num_samples {
+        let start = std::time::Instant::now();
+        let _ = service.login(nonexistent_username.clone(), "AnyPassword123!".to_string(), None).await;
+        nonexistent_times.push(start.elapsed());
+    }
+
+    // Measure time for login with existing user but wrong password
+    let mut wrong_password_times = Vec::with_capacity(num_samples);
+
+    for _ in 0..num_samples {
+        let start = std::time::Instant::now();
+        let _ = service.login(username.clone(), "WrongPassword123!".to_string(), None).await;
+        wrong_password_times.push(start.elapsed());
+    }
+
+    // Calculate average times
+    let avg_nonexistent: std::time::Duration = nonexistent_times.iter().sum::<std::time::Duration>() / num_samples as u32;
+    let avg_wrong_password: std::time::Duration = wrong_password_times.iter().sum::<std::time::Duration>() / num_samples as u32;
+
+    // Log for debugging
+    println!("Avg nonexistent user time: {:?}", avg_nonexistent);
+    println!("Avg wrong password time: {:?}", avg_wrong_password);
+
+    // Calculate the difference
+    let diff = if avg_nonexistent > avg_wrong_password {
+        avg_nonexistent - avg_wrong_password
+    } else {
+        avg_wrong_password - avg_nonexistent
+    };
+
+    // SECURITY REQUIREMENT: Timing difference should be less than 100ms
+    //
+    // With Argon2 taking ~800ms, the remaining timing difference comes from:
+    // - Database query time (user exists vs doesn't)
+    // - Response processing
+    //
+    // A difference of <100ms is considered secure because:
+    // 1. Network jitter is typically >50ms, making measurement unreliable
+    // 2. An attacker would need hundreds of samples for statistical significance
+    // 3. Brute-force protection limits attempts (prevents statistical attacks)
+    //
+    // Note: We use 100ms instead of 50ms because the database query time
+    // is inherently variable and cannot be perfectly hidden without adding
+    // artificial delays (which would hurt UX).
+    const MAX_ACCEPTABLE_DIFF: std::time::Duration = std::time::Duration::from_millis(100);
+
+    assert!(
+        diff < MAX_ACCEPTABLE_DIFF,
+        "Timing difference ({:?}) exceeds security threshold ({:?}). \
+         This could allow username enumeration via timing attacks. \
+         Nonexistent avg: {:?}, Wrong password avg: {:?}",
+        diff,
+        MAX_ACCEPTABLE_DIFF,
+        avg_nonexistent,
+        avg_wrong_password
+    );
+
+    // Additional check: Ensure both paths take significant time (Argon2 is running)
+    // This verifies that dummy hash verification is actually being performed
+    const MIN_RESPONSE_TIME: std::time::Duration = std::time::Duration::from_millis(100);
+    assert!(
+        avg_nonexistent >= MIN_RESPONSE_TIME && avg_wrong_password >= MIN_RESPONSE_TIME,
+        "Both paths should take significant time due to Argon2 verification. \
+         Nonexistent avg: {:?}, Wrong password avg: {:?}",
+        avg_nonexistent,
+        avg_wrong_password
+    );
+}
+
+/// Test that password verification uses Argon2 for both cases (timing safety).
+///
+/// This test verifies the implementation uses a dummy hash when the user
+/// doesn't exist, ensuring both paths perform the same expensive operation.
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_login_uses_constant_time_verification() {
+    let (_container, pool) = create_test_pool().await;
+    let service = create_user_service(pool.clone());
+
+    let nonexistent_username = format!("const_time_{}", nanoid::nanoid!(6));
+
+    // Argon2 with the configured parameters should take at least 100ms
+    // If no Argon2 is performed (user not found path), it would be much faster (< 10ms)
+    let start = std::time::Instant::now();
+    let _ = service.login(nonexistent_username, "TestPassword123!".to_string(), None).await;
+    let elapsed = start.elapsed();
+
+    // SECURITY REQUIREMENT: Should take at least 50ms due to Argon2 verification
+    // This verifies that dummy hash verification is actually happening
+    const MIN_ARGON2_TIME: std::time::Duration = std::time::Duration::from_millis(50);
+
+    assert!(
+        elapsed >= MIN_ARGON2_TIME,
+        "Login for nonexistent user completed too quickly ({:?} < {:?}). \
+         This suggests dummy hash verification is NOT being performed, \
+         which enables timing attacks for username enumeration.",
+        elapsed,
+        MIN_ARGON2_TIME
     );
 }

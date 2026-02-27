@@ -206,10 +206,17 @@ pub async fn list_media(
     auth: AuthUser,
     State(state): State<AppState>,
     Path(room_id): Path<String>,
+    Query(params): Query<super::media::ListPlaylistQuery>,
 ) -> AppResult<Json<ListPlaylistResponse>> {
+    let req = crate::proto::client::ListPlaylistRequest {
+        playlist_id: String::new(), // Not used by list_media (uses room's root playlist)
+        page: params.page.unwrap_or(0).max(0),
+        page_size: params.page_size.unwrap_or(50).clamp(1, 200),
+    };
+
     let response = state
         .client_api
-        .list_media(&auth.user_id.to_string(), &room_id)
+        .list_media(&auth.user_id.to_string(), &room_id, req)
         .await
         .map_err(super::error::map_api_error)?;
 
@@ -318,6 +325,11 @@ pub async fn check_room(
 
 /// Maximum allowed page size for `list_rooms` to prevent DB overload and OOM.
 const LIST_ROOMS_MAX_PAGE_SIZE: i32 = 200;
+/// Maximum allowed page number to prevent deep pagination DoS.
+/// Beyond this limit, the database must scan too many rows, causing performance issues.
+const LIST_ROOMS_MAX_PAGE: i32 = 1000;
+/// Maximum allowed search query length to prevent abuse.
+const LIST_ROOMS_MAX_SEARCH_LENGTH: usize = 100;
 
 /// List rooms (requires authentication to prevent anonymous enumeration)
 pub async fn list_rooms(
@@ -325,13 +337,33 @@ pub async fn list_rooms(
     State(state): State<AppState>,
     Query(params): Query<std::collections::HashMap<String, String>>,
 ) -> AppResult<Json<ListRoomsResponse>> {
+    // Parse and validate page parameter
     let page: i32 = params.get("page").and_then(|v| v.parse().ok()).unwrap_or(1);
+    if page < 1 {
+        return Err(super::error::AppError::bad_request("page must be at least 1".to_string()));
+    }
+    if page > LIST_ROOMS_MAX_PAGE {
+        return Err(super::error::AppError::bad_request(format!(
+            "page must not exceed {}",
+            LIST_ROOMS_MAX_PAGE
+        )));
+    }
+
+    // Parse and validate page_size parameter
     let page_size: i32 = params
         .get("page_size")
         .and_then(|v| v.parse().ok())
         .unwrap_or(50)
         .clamp(1, LIST_ROOMS_MAX_PAGE_SIZE);
+
+    // Validate search parameter length
     let search = params.get("search").cloned().unwrap_or_default();
+    if search.len() > LIST_ROOMS_MAX_SEARCH_LENGTH {
+        return Err(super::error::AppError::bad_request(format!(
+            "search query must not exceed {} characters",
+            LIST_ROOMS_MAX_SEARCH_LENGTH
+        )));
+    }
 
     let proto_req = ListRoomsRequest {
         page,

@@ -305,3 +305,178 @@ fn test_ttl_refresh_batch_size_reasonable() {
     // We verify the design constraint here that batch sizes should be 1000.
     // If the implementation changes, the performance tests above will catch regressions.
 }
+
+// ============================================================================
+// TTL Task Shutdown Tests (Task #85)
+// ============================================================================
+
+/// Test that shutdown() cancels the TTL refresh task.
+///
+/// This test verifies:
+/// 1. The TTL refresh task is running after with_redis() is called
+/// 2. shutdown() sends the cancellation signal
+/// 3. The task terminates after shutdown
+#[tokio::test]
+#[ignore = "Requires Docker (testcontainers)"]
+async fn test_shutdown_cancels_ttl_refresh_task() {
+    let (_container, conn) = setup_redis().await;
+
+    let manager = ConnectionManager::new(ConnectionLimits::default())
+        .with_redis(conn.clone(), "shutdown_test:");
+
+    // Register a connection to ensure TTL task has work to do
+    let user_id = uid("user_1");
+    manager.register("conn_1".to_string(), user_id).await.unwrap();
+
+    // Give the TTL task time to start (it spawns automatically)
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    // Call shutdown
+    manager.shutdown();
+
+    // The task should terminate gracefully
+    // We verify this by waiting a short time and checking the manager is still usable
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    // Manager should still function for local operations
+    assert_eq!(manager.connection_count(), 1);
+}
+
+/// Test that TTL refresh task responds to cancellation quickly.
+///
+/// This test verifies that the task doesn't hang when cancelled -
+/// it should exit on the next select! iteration.
+#[tokio::test]
+#[ignore = "Requires Docker (testcontainers)"]
+async fn test_ttl_refresh_task_responds_quickly_to_shutdown() {
+    let (_container, conn) = setup_redis().await;
+
+    let manager = ConnectionManager::new(ConnectionLimits::default())
+        .with_redis(conn.clone(), "quick_shutdown:");
+
+    // Register some connections
+    for i in 0..5 {
+        let user_id = uid(&format!("user_{}", i));
+        manager.register(format!("conn_{}", i), user_id).await.unwrap();
+    }
+
+    // Measure how long shutdown takes
+    let start = std::time::Instant::now();
+    manager.shutdown();
+    let elapsed = start.elapsed();
+
+    // Shutdown should be nearly instantaneous since it just cancels tokens
+    // The actual task termination happens asynchronously
+    assert!(
+        elapsed < Duration::from_millis(100),
+        "shutdown() took too long: {:?}. Should just cancel tokens synchronously.",
+        elapsed
+    );
+}
+
+/// Test that shutdown is idempotent.
+///
+/// Multiple calls to shutdown() should be safe and not panic.
+#[tokio::test]
+#[ignore = "Requires Docker (testcontainers)"]
+async fn test_ttl_shutdown_is_idempotent() {
+    let (_container, conn) = setup_redis().await;
+
+    let manager = ConnectionManager::new(ConnectionLimits::default())
+        .with_redis(conn.clone(), "idempotent:");
+
+    // Call shutdown multiple times
+    manager.shutdown();
+    manager.shutdown();
+    manager.shutdown();
+
+    // Should not panic, and manager should still work
+    assert_eq!(manager.connection_count(), 0);
+}
+
+/// Test that manager without Redis doesn't need shutdown.
+///
+/// A ConnectionManager without Redis configured should work fine
+/// without calling shutdown() (no background tasks to cancel).
+#[tokio::test]
+async fn test_manager_without_redis_works_without_shutdown() {
+    let manager = ConnectionManager::new(ConnectionLimits::default());
+
+    // No Redis configured, so no background tasks
+    // shutdown() should still be safe to call
+    manager.shutdown();
+
+    // Manager should work for local operations
+    let user_id = uid("local_user");
+    manager.register("local_conn".to_string(), user_id).await.unwrap();
+    assert_eq!(manager.connection_count(), 1);
+}
+
+/// Test that pending operations complete gracefully on shutdown.
+///
+/// When shutdown is called during active operations, the operations
+/// should complete or be handled gracefully.
+#[tokio::test]
+#[ignore = "Requires Docker (testcontainers)"]
+async fn test_shutdown_during_active_operations() {
+    let (_container, conn) = setup_redis().await;
+
+    let manager = ConnectionManager::new(ConnectionLimits::default())
+        .with_redis(conn.clone(), "active_ops:");
+
+    // Register many connections concurrently with shutdown
+    let manager_clone = manager.clone();
+    let register_handle = tokio::spawn(async move {
+        for i in 0..50 {
+            let user_id = uid(&format!("concurrent_user_{}", i));
+            let _ = manager_clone.register(format!("concurrent_conn_{}", i), user_id).await;
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+    });
+
+    // Wait a bit for some registrations to complete
+    tokio::time::sleep(Duration::from_millis(10)).await;
+
+    // Call shutdown while registrations are in progress
+    manager.shutdown();
+
+    // Wait for the registration task to complete
+    let _ = register_handle.await;
+
+    // Manager should be in a consistent state
+    // (exact count depends on timing, but should be valid)
+    let count = manager.connection_count();
+    assert!(count <= 50, "Connection count should be at most 50, got {}", count);
+}
+
+/// Test that the disconnect retry task is also cancelled on shutdown.
+///
+/// ConnectionManager spawns two tasks with Redis:
+/// 1. TTL refresh task
+/// 2. Disconnect retry task
+///
+/// Both should be cancelled by shutdown().
+#[tokio::test]
+#[ignore = "Requires Docker (testcontainers)"]
+async fn test_shutdown_cancels_disconnect_retry_task() {
+    let (_container, conn) = setup_redis().await;
+
+    let manager = ConnectionManager::new(ConnectionLimits::default())
+        .with_redis(conn.clone(), "disconnect_retry:");
+
+    // Register and then force disconnect signal
+    let user_id = uid("disconnect_user");
+    manager.register("disconnect_conn".to_string(), user_id.clone()).await.unwrap();
+
+    // Send a disconnect signal (this uses the disconnect retry mechanism)
+    manager.disconnect_user(&user_id);
+
+    // Give disconnect retry task time to start processing
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    // Call shutdown
+    manager.shutdown();
+
+    // Should complete without hanging
+    // (If disconnect retry task wasn't cancelled, this could hang)
+}

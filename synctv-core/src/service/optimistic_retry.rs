@@ -5,6 +5,7 @@
 //! (`PlaybackService`, `RoomService`, `MemberService`, `RoomSettingsService`).
 
 use std::future::Future;
+use std::time::Duration;
 
 use rand::RngExt;
 
@@ -15,6 +16,9 @@ pub const DEFAULT_MAX_RETRIES: u32 = 3;
 
 /// Default base delay for exponential backoff (milliseconds)
 pub const DEFAULT_BACKOFF_BASE_MS: u64 = 5;
+
+/// Default total timeout for retry operations (seconds)
+pub const DEFAULT_TIMEOUT_SECS: u64 = 5;
 
 /// Retry an async operation that may fail with `OptimisticLockConflict`.
 ///
@@ -57,6 +61,57 @@ where
     }
 
     Err(Error::Internal(error_msg.to_string()))
+}
+
+/// Retry an async operation with a total timeout limit.
+///
+/// Like `retry_with_optimistic_lock`, but wraps the entire retry loop in a timeout.
+/// This prevents scenarios where slow database operations combined with retries
+/// cause unacceptably long request times.
+///
+/// # Arguments
+/// * `max_retries` - Maximum number of attempts before giving up
+/// * `base_backoff_ms` - Base delay in milliseconds (doubles each retry)
+/// * `timeout` - Maximum total time for all retries combined
+/// * `error_msg` - Error message to use when all retries are exhausted
+/// * `operation` - Async closure that returns `Result<T>`. Called on each attempt.
+///
+/// # Returns
+/// The successful result from the operation, or an error if:
+/// - All retries are exhausted (Internal error)
+/// - Total timeout exceeded (Timeout error)
+/// - Operation returns a non-conflict error (propagated as-is)
+pub async fn retry_with_optimistic_lock_timeout<F, Fut, T>(
+    max_retries: u32,
+    base_backoff_ms: u64,
+    timeout: Duration,
+    error_msg: &str,
+    operation: F,
+) -> Result<T>
+where
+    F: Fn() -> Fut,
+    Fut: Future<Output = Result<T>>,
+{
+    tokio::time::timeout(timeout, async {
+        for attempt in 0..max_retries {
+            match operation().await {
+                Ok(result) => return Ok(result),
+                Err(Error::OptimisticLockConflict) if attempt + 1 < max_retries => {
+                    let backoff = base_backoff_ms * (1 << attempt);
+                    let jitter = rand::rng().random_range(0..base_backoff_ms);
+                    tokio::time::sleep(std::time::Duration::from_millis(backoff + jitter)).await;
+                    continue;
+                }
+                Err(Error::OptimisticLockConflict) => {
+                    return Err(Error::Internal(error_msg.to_string()));
+                }
+                Err(e) => return Err(e),
+            }
+        }
+        Err(Error::Internal(error_msg.to_string()))
+    })
+    .await
+    .map_err(|_| Error::Timeout(format!("{} (timeout after {:?})", error_msg, timeout)))?
 }
 
 #[cfg(test)]
@@ -342,5 +397,149 @@ mod tests {
         assert_eq!(result2.unwrap(), 2);
         assert_eq!(counter1.load(Ordering::SeqCst), 2);
         assert_eq!(counter2.load(Ordering::SeqCst), 3);
+    }
+
+    // ========== Timeout Tests ==========
+
+    #[tokio::test]
+    async fn test_timeout_succeeds_on_first_try() {
+        let result = retry_with_optimistic_lock_timeout(
+            3,
+            5,
+            Duration::from_secs(5),
+            "failed",
+            || async { Ok::<_, Error>(42) },
+        )
+        .await;
+
+        assert_eq!(result.unwrap(), 42);
+    }
+
+    #[tokio::test]
+    async fn test_timeout_succeeds_after_retry() {
+        let attempts = AtomicU32::new(0);
+
+        let result = retry_with_optimistic_lock_timeout(
+            3,
+            1,
+            Duration::from_secs(5),
+            "failed",
+            || {
+                let attempt = attempts.fetch_add(1, Ordering::SeqCst);
+                async move {
+                    if attempt < 2 {
+                        Err(Error::OptimisticLockConflict)
+                    } else {
+                        Ok(42)
+                    }
+                }
+            },
+        )
+        .await;
+
+        assert_eq!(result.unwrap(), 42);
+        assert_eq!(attempts.load(Ordering::SeqCst), 3);
+    }
+
+    #[tokio::test]
+    async fn test_timeout_exhausts_retries() {
+        let result = retry_with_optimistic_lock_timeout(
+            3,
+            1,
+            Duration::from_secs(5),
+            "all retries exhausted",
+            || async { Err::<i32, _>(Error::OptimisticLockConflict) },
+        )
+        .await;
+
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            Error::Internal(msg) => assert_eq!(msg, "all retries exhausted"),
+            other => panic!("Expected Internal error, got: {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_timeout_exceeded() {
+        use std::time::Instant;
+
+        let start = Instant::now();
+
+        // Use a very short timeout (50ms) with slow operations
+        let result = retry_with_optimistic_lock_timeout(
+            10, // Many retries
+            10, // 10ms base backoff
+            Duration::from_millis(50), // 50ms timeout
+            "timeout test",
+            || async {
+                // Each operation takes 30ms, so 2 operations = 60ms > 50ms timeout
+                tokio::time::sleep(Duration::from_millis(30)).await;
+                Err::<i32, _>(Error::OptimisticLockConflict)
+            },
+        )
+        .await;
+
+        let elapsed = start.elapsed();
+
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            Error::Timeout(msg) => {
+                assert!(msg.contains("timeout test"));
+                assert!(msg.contains("timeout"));
+            }
+            other => panic!("Expected Timeout error, got: {:?}", other),
+        }
+
+        // Should timeout around 50ms, not wait for all 10 retries
+        assert!(
+            elapsed.as_millis() < 200,
+            "Expected timeout around 50ms, got {:?}",
+            elapsed
+        );
+    }
+
+    #[tokio::test]
+    async fn test_timeout_preserves_non_conflict_error() {
+        let result = retry_with_optimistic_lock_timeout(
+            3,
+            1,
+            Duration::from_secs(5),
+            "failed",
+            || async { Err::<i32, _>(Error::NotFound("not found".to_string())) },
+        )
+        .await;
+
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            Error::NotFound(msg) => assert_eq!(msg, "not found"),
+            other => panic!("Expected NotFound error, got: {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_timeout_completes_within_limit() {
+        use std::time::Instant;
+
+        let start = Instant::now();
+
+        // Fast operations with generous timeout should complete quickly
+        let result = retry_with_optimistic_lock_timeout(
+            3,
+            1,
+            Duration::from_secs(5),
+            "failed",
+            || async { Ok::<_, Error>(42) },
+        )
+        .await;
+
+        let elapsed = start.elapsed();
+
+        assert_eq!(result.unwrap(), 42);
+        // Should complete almost instantly
+        assert!(
+            elapsed.as_millis() < 100,
+            "Expected fast completion, got {:?}",
+            elapsed
+        );
     }
 }

@@ -16,6 +16,64 @@ use crate::{
 use rand::prelude::IteratorRandom;
 use rand::RngExt;
 
+/// Result of a broadcast operation from `ClusterManager::broadcast`.
+///
+/// Indicates whether the event was delivered to local subscribers and/or Redis.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct BroadcastResult {
+    /// Number of local WebSocket subscribers that received the event
+    pub local_sent: usize,
+    /// Whether the event was successfully published to Redis
+    pub redis_sent: bool,
+}
+
+impl BroadcastResult {
+    /// Check if the broadcast reached any destination
+    #[must_use]
+    pub fn is_success(&self) -> bool {
+        self.local_sent > 0 || self.redis_sent
+    }
+}
+
+/// Response from a seek operation.
+///
+/// Allows clients to distinguish between a successful seek and a degraded
+/// response when retry exhaustion occurs due to concurrent modifications.
+#[derive(Debug, Clone)]
+pub struct SeekResponse {
+    /// The current playback state after the seek operation.
+    /// Always contains a valid state, even if the seek was not applied.
+    pub state: RoomPlaybackState,
+    /// Whether the requested seek position was successfully applied.
+    /// When `false`, the state contains the latest known position, which
+    /// may differ from the requested position.
+    pub seek_applied: bool,
+    /// Optional message explaining why the seek was not applied (when seek_applied is false).
+    pub message: Option<String>,
+}
+
+impl SeekResponse {
+    /// Create a successful seek response.
+    #[must_use]
+    pub fn success(state: RoomPlaybackState) -> Self {
+        Self {
+            state,
+            seek_applied: true,
+            message: None,
+        }
+    }
+
+    /// Create a degraded seek response (seek not applied due to contention).
+    #[must_use]
+    pub fn degraded(state: RoomPlaybackState, message: impl Into<String>) -> Self {
+        Self {
+            state,
+            seek_applied: false,
+            message: Some(message.into()),
+        }
+    }
+}
+
 /// Trait for broadcasting playback state changes to cluster replicas.
 ///
 /// This abstracts over the cluster manager so that `synctv-core` does not
@@ -23,8 +81,10 @@ use rand::RngExt;
 /// layer where `ClusterManager` is available.
 pub trait PlaybackBroadcaster: Send + Sync {
     /// Broadcast a playback state change to other cluster replicas.
-    /// Implementations should be non-blocking (fire-and-forget).
-    fn broadcast_playback_state(&self, state: &RoomPlaybackState);
+    ///
+    /// Returns a `BroadcastResult` indicating whether the broadcast succeeded.
+    /// Implementations should be non-blocking but report success/failure.
+    fn broadcast_playback_state(&self, state: &RoomPlaybackState) -> BroadcastResult;
 }
 
 /// Playback management service
@@ -230,16 +290,41 @@ impl PlaybackService {
     /// it in addition to the cluster broadcaster would cause local clients to
     /// receive the same `PlaybackStateChanged` event twice.
     ///
-    /// Best-effort: logs warnings on failure but does not propagate errors,
-    /// since broadcasting is not critical to the mutation itself.
-    async fn broadcast_state_change(&self, state: &RoomPlaybackState) {
+    /// Returns `BroadcastResult` indicating whether the broadcast succeeded.
+    /// Logs warnings on partial/complete failure for monitoring.
+    async fn broadcast_state_change(&self, state: &RoomPlaybackState) -> BroadcastResult {
         // Single broadcast path: cluster broadcaster handles both local delivery
         // (via the in-process message hub) and remote delivery (via Redis pub/sub).
         // Do NOT also call notification_service here — that would send the event
         // to local WebSocket clients a second time.
         if let Some(ref broadcaster) = *self.cluster_broadcaster.read() {
-            broadcaster.broadcast_playback_state(state);
+            let result = broadcaster.broadcast_playback_state(state);
+
+            // Log warning if broadcast failed to reach any destination
+            if !result.is_success() {
+                tracing::warn!(
+                    room_id = %state.room_id.as_str(),
+                    local_sent = result.local_sent,
+                    redis_sent = result.redis_sent,
+                    "Playback state broadcast failed to reach any destination; \
+                     other replicas may have stale playback state (up to {}s cache TTL)",
+                    Self::DEFAULT_CACHE_TTL_SECS
+                );
+            } else if !result.redis_sent {
+                // Partial failure: local clients got it, but Redis publish failed
+                tracing::warn!(
+                    room_id = %state.room_id.as_str(),
+                    local_sent = result.local_sent,
+                    "Playback state broadcast reached local clients but failed to publish to Redis; \
+                     other replicas may have stale playback state"
+                );
+            }
+
+            return result;
         }
+
+        // No broadcaster configured (single-node mode) - return success
+        BroadcastResult::default()
     }
 
     /// Get playback state for a room.
@@ -336,12 +421,17 @@ impl PlaybackService {
     /// bursts), falls back to returning the latest playback state as a
     /// degraded response so the client knows the current position, rather
     /// than receiving a bare error.
+    ///
+    /// Returns a `SeekResponse` containing:
+    /// - `state`: The current playback state (always valid)
+    /// - `seek_applied`: Whether the requested position was successfully applied
+    /// - `message`: Optional explanation when seek was not applied
     pub async fn seek(
         &self,
         room_id: RoomId,
         user_id: UserId,
         current_time: f64,
-    ) -> Result<RoomPlaybackState> {
+    ) -> Result<SeekResponse> {
         if current_time < 0.0 {
             return Err(Error::InvalidInput("Seek position must be non-negative".to_string()));
         }
@@ -361,7 +451,7 @@ impl PlaybackService {
             Ok(state) => {
                 // Cache invalidation is already handled inside update_state()
                 self.broadcast_state_change(&state).await;
-                Ok(state)
+                Ok(SeekResponse::success(state))
             }
             Err(Error::Internal(ref msg)) if msg.contains("maximum retry attempts") => {
                 // Degraded response: seek failed due to contention, but return
@@ -371,7 +461,11 @@ impl PlaybackService {
                     requested_time = current_time,
                     "Seek failed after max retries, returning latest state as degraded response"
                 );
-                self.get_state(&room_id).await
+                let state = self.get_state(&room_id).await?;
+                Ok(SeekResponse::degraded(
+                    state,
+                    "Seek could not be applied due to concurrent modifications; returning current state",
+                ))
             }
             Err(e) => Err(e),
         }

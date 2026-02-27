@@ -234,11 +234,23 @@ impl ClientApiImpl {
         let rid = RoomId::from_string(room_id.to_string());
 
         // Permission check (SEEK) is handled by PlaybackService::seek()
-        self.room_service
+        let response = self.room_service
             .playback_service()
             .seek(rid, uid, current_time)
             .await
             .map_err(ApiError::from)?;
+
+        // Log warning if seek was not applied due to contention
+        if !response.seek_applied {
+            tracing::warn!(
+                room_id = %room_id,
+                user_id = %user_id,
+                requested_time = current_time,
+                actual_time = response.state.current_time,
+                message = ?response.message,
+                "Seek command returned degraded response"
+            );
+        }
 
         // PlaybackStateChanged broadcast is handled by room_service
         Ok(())

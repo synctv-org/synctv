@@ -98,6 +98,19 @@ pub enum ClusterEvent {
         timestamp: DateTime<Utc>,
     },
 
+    /// Batch of media removed from room playlist (efficient for bulk deletions)
+    /// Instead of sending 100 individual MediaRemoved events, send one batch event.
+    MediaRemovedBatch {
+        #[serde(default = "generate_event_id")]
+        event_id: String,
+        room_id: RoomId,
+        user_id: UserId,
+        username: String,
+        /// List of media IDs that were removed
+        media_ids: Vec<MediaId>,
+        timestamp: DateTime<Utc>,
+    },
+
     /// User permissions changed in a room
     PermissionChanged {
         #[serde(default = "generate_event_id")]
@@ -295,6 +308,7 @@ impl ClusterEvent {
             | Self::UserLeft { event_id, .. }
             | Self::MediaAdded { event_id, .. }
             | Self::MediaRemoved { event_id, .. }
+            | Self::MediaRemovedBatch { event_id, .. }
             | Self::PermissionChanged { event_id, .. }
             | Self::RoomSettingsChanged { event_id, .. }
             | Self::WebRTCSignaling { event_id, .. }
@@ -321,6 +335,7 @@ impl ClusterEvent {
             | Self::UserLeft { room_id, .. }
             | Self::MediaAdded { room_id, .. }
             | Self::MediaRemoved { room_id, .. }
+            | Self::MediaRemovedBatch { room_id, .. }
             | Self::PermissionChanged { room_id, .. }
             | Self::RoomSettingsChanged { room_id, .. }
             | Self::WebRTCSignaling { room_id, .. }
@@ -345,6 +360,7 @@ impl ClusterEvent {
             | Self::UserLeft { user_id, .. }
             | Self::MediaAdded { user_id, .. }
             | Self::MediaRemoved { user_id, .. }
+            | Self::MediaRemovedBatch { user_id, .. }
             | Self::RoomSettingsChanged { user_id, .. }
             | Self::WebRTCJoin { user_id, .. }
             | Self::WebRTCLeave { user_id, .. }
@@ -369,6 +385,7 @@ impl ClusterEvent {
             | Self::UserLeft { timestamp, .. }
             | Self::MediaAdded { timestamp, .. }
             | Self::MediaRemoved { timestamp, .. }
+            | Self::MediaRemovedBatch { timestamp, .. }
             | Self::PermissionChanged { timestamp, .. }
             | Self::RoomSettingsChanged { timestamp, .. }
             | Self::WebRTCSignaling { timestamp, .. }
@@ -431,6 +448,7 @@ impl ClusterEvent {
             Self::UserLeft { .. } => "user_left",
             Self::MediaAdded { .. } => "media_added",
             Self::MediaRemoved { .. } => "media_removed",
+            Self::MediaRemovedBatch { .. } => "media_removed_batch",
             Self::PermissionChanged { .. } => "permission_changed",
             Self::RoomSettingsChanged { .. } => "room_settings_changed",
             Self::WebRTCSignaling { .. } => "webrtc_signaling",

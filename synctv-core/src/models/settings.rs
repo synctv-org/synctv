@@ -73,6 +73,8 @@ pub struct SettingsGroup {
     #[serde(rename = "group")]
     pub group_name: String,
     pub value: String,
+    /// Version for optimistic locking (Task #45)
+    pub version: i32,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -85,6 +87,7 @@ impl SettingsGroup {
             key: format!("{group_name}.default"),
             group_name,
             value,
+            version: 0,
             created_at: Utc::now(),
             updated_at: Utc::now(),
         }

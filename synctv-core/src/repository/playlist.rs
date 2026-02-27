@@ -358,12 +358,32 @@ impl PlaylistRepository {
         // Acquire a transaction-scoped advisory lock on (room_id, parent_id) to
         // serialize position computation. The lock is automatically released when
         // the surrounding transaction commits or rolls back.
+        //
+        // IMPORTANT: This must use the SAME hash strategy as the create() method
+        // (lines 175-204) to ensure both methods acquire the SAME lock for the
+        // same (room_id, parent_id) pair. Different keys would defeat the lock.
         let lock_key: i64 = {
             use std::hash::{Hash, Hasher};
-            let mut h = std::collections::hash_map::DefaultHasher::new();
-            room_id.as_str().hash(&mut h);
-            parent_id_str.hash(&mut h);
-            h.finish() as i64
+
+            // Hash room_id to get first 32 bits
+            let room_hash = {
+                let mut h = std::collections::hash_map::DefaultHasher::new();
+                room_id.as_str().hash(&mut h);
+                h.finish()
+            };
+
+            // Hash parent_id to get second 32 bits
+            let parent_hash = parent_id_str.map(|pid| {
+                let mut h = std::collections::hash_map::DefaultHasher::new();
+                pid.hash(&mut h);
+                h.finish()
+            }).unwrap_or(0);
+
+            // Combine using upper 32 bits for room and lower 32 bits for parent
+            // This is IDENTICAL to the strategy in create() method.
+            let room_bits = (room_hash & 0x7FFFFFFF) as i64; // 31 bits, positive
+            let parent_bits = (parent_hash & 0x7FFFFFFF) as i64; // 31 bits, positive
+            (room_bits << 31) | parent_bits
         };
         sqlx::query("SELECT pg_advisory_xact_lock($1)")
             .bind(lock_key)

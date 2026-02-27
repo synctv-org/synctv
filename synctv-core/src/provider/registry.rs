@@ -168,4 +168,151 @@ mod tests {
         let provider = registry.get_instance("mock_main").unwrap();
         assert_eq!(provider.name(), "mock");
     }
+
+    // ========== Dynamic Operation Tests (Task #71) ==========
+
+    #[test]
+    fn test_concurrent_create_same_instance_id() {
+        // Test that concurrent creation of same-named instances doesn't cause data races
+        use std::thread;
+
+        let registry = Arc::new(ProviderRegistry::new());
+        registry.register_factory(
+            "mock",
+            Box::new(|_instance_id, _config| {
+                Ok(Arc::new(MockProvider {}))
+            }),
+        );
+
+        let mut handles = vec![];
+
+        // Spawn 10 threads all trying to create the same instance
+        for _ in 0..10 {
+            let reg = Arc::clone(&registry);
+            handles.push(thread::spawn(move || {
+                reg.create_instance("mock", "mock_concurrent", serde_json::json!({}))
+            }));
+        }
+
+        // All should succeed (last write wins in DashMap)
+        let results: Vec<_> = handles.into_iter().map(|h| h.join().unwrap()).collect();
+        for result in results {
+            assert!(result.is_ok(), "Concurrent create should succeed (last write wins)");
+        }
+
+        // Verify instance exists
+        let provider = registry.get_instance("mock_concurrent");
+        assert!(provider.is_some(), "Instance should exist after concurrent creation");
+    }
+
+    #[test]
+    fn test_remove_instance_in_use() {
+        // Test removing an instance that's currently being used
+        let registry = ProviderRegistry::new();
+        registry.register_factory(
+            "mock",
+            Box::new(|_instance_id, _config| {
+                Ok(Arc::new(MockProvider {}))
+            }),
+        );
+
+        // Create instance
+        registry
+            .create_instance("mock", "mock_in_use", serde_json::json!({}))
+            .unwrap();
+
+        // Get a reference to the instance (simulating "in use")
+        let provider_ref = registry.get_instance("mock_in_use").unwrap();
+
+        // Remove the instance
+        let removed = registry.remove_instance("mock_in_use");
+        assert!(removed, "Instance should be removed");
+
+        // The old reference should still be valid (Arc keeps it alive)
+        assert_eq!(provider_ref.name(), "mock");
+
+        // But new lookups should fail
+        let not_found = registry.get_instance("mock_in_use");
+        assert!(not_found.is_none(), "Removed instance should not be found");
+    }
+
+    #[test]
+    fn test_factory_error_handling() {
+        // Test that factory function errors are properly propagated
+        use super::ProviderError;
+
+        let registry = ProviderRegistry::new();
+        registry.register_factory(
+            "failing",
+            Box::new(|_instance_id, _config| {
+                Err(ProviderError::InvalidConfig("Intentional failure for testing".to_string()))
+            }),
+        );
+
+        // Try to create instance with failing factory
+        let result = registry.create_instance("failing", "fail_instance", serde_json::json!({}));
+
+        assert!(result.is_err(), "Factory error should propagate");
+        match result {
+            Err(ProviderError::InvalidConfig(msg)) => {
+                assert!(msg.contains("Intentional failure"), "Error message should be preserved");
+            }
+            _ => panic!("Expected InvalidConfig error"),
+        }
+
+        // Instance should not exist in registry
+        let not_found = registry.get_instance("fail_instance");
+        assert!(not_found.is_none(), "Failed instance should not be registered");
+    }
+
+    #[test]
+    fn test_create_unknown_provider_type() {
+        // Test creating instance of unregistered provider type
+        let registry = ProviderRegistry::new();
+
+        let result = registry.create_instance("unknown", "unknown_instance", serde_json::json!({}));
+
+        assert!(result.is_err(), "Unknown provider type should fail");
+        match result {
+            Err(ProviderError::InstanceNotFound(name)) => {
+                assert_eq!(name, "unknown", "Error should mention the provider type");
+            }
+            _ => panic!("Expected InstanceNotFound error"),
+        }
+    }
+
+    #[test]
+    fn test_remove_nonexistent_instance() {
+        // Test removing an instance that doesn't exist
+        let registry = ProviderRegistry::new();
+
+        let removed = registry.remove_instance("nonexistent");
+        assert!(!removed, "Removing nonexistent instance should return false");
+    }
+
+    #[test]
+    fn test_list_instances() {
+        // Test listing all registered instances
+        let registry = ProviderRegistry::new();
+        registry.register_factory(
+            "mock",
+            Box::new(|_instance_id, _config| {
+                Ok(Arc::new(MockProvider {}))
+            }),
+        );
+
+        // Initially empty
+        assert!(registry.list_instances().is_empty());
+
+        // Create multiple instances
+        registry.create_instance("mock", "inst1", serde_json::json!({})).unwrap();
+        registry.create_instance("mock", "inst2", serde_json::json!({})).unwrap();
+        registry.create_instance("mock", "inst3", serde_json::json!({})).unwrap();
+
+        let instances = registry.list_instances();
+        assert_eq!(instances.len(), 3);
+        assert!(instances.contains(&"inst1".to_string()));
+        assert!(instances.contains(&"inst2".to_string()));
+        assert!(instances.contains(&"inst3".to_string()));
+    }
 }

@@ -71,7 +71,9 @@ impl ClientApiImpl {
                 .unwrap_or("Unknown")
                 .to_string()
         } else {
-            req.title
+            // Validate user-provided title for length and security
+            crate::http::validation::validate_media_title(&req.title)
+                .map_err(|e| ApiError::InvalidInput(format!("Invalid media title: {e}")))?
         };
 
         // Use the parsed provider as the instance name. For DirectUrl, this is
@@ -197,7 +199,14 @@ impl ClientApiImpl {
         let rid = RoomId::from_string(room_id.to_string());
         let mid = synctv_core::models::MediaId::from_string(req.media_id);
 
-        let title = if req.title.is_empty() { None } else { Some(req.title) };
+        let title = if req.title.is_empty() {
+            None
+        } else {
+            // Validate user-provided title for length and security
+            let validated = crate::http::validation::validate_media_title(&req.title)
+                .map_err(|e| ApiError::InvalidInput(format!("Invalid media title: {e}")))?;
+            Some(validated)
+        };
 
         let media = self.room_service
             .edit_media(rid.clone(), uid, mid, title)
@@ -319,7 +328,9 @@ impl ClientApiImpl {
                     .unwrap_or("Unknown")
                     .to_string()
             } else {
-                item.title.clone()
+                // Validate user-provided title for length and security
+                crate::http::validation::validate_media_title(&item.title)
+                    .map_err(|e| ApiError::InvalidInput(format!("Invalid media title: {e}")))?
             };
             // Use provider_instance_name from the request item
             items.push((item.provider_instance_name.clone(), source_config, title));
@@ -393,23 +404,26 @@ impl ClientApiImpl {
             .await
             .map_err(ApiError::from)?;
 
-        // Broadcast MediaRemoved for each deleted item
+        // Broadcast single MediaRemovedBatch event instead of N individual events
+        // This reduces Redis pub/sub traffic from O(n) to O(1) messages
         if let Some(ref tx) = self.redis_publish_tx {
             let username = self.user_service.get_user(&uid).await
                 .map(|u| u.username)
                 .unwrap_or_default();
-            for media_id in &media_id_strings {
-                crate::impls::try_publish_cluster_event(tx, synctv_cluster::sync::PublishRequest {
-                    event: synctv_cluster::sync::ClusterEvent::MediaRemoved {
-                        event_id: nanoid::nanoid!(16),
-                        room_id: rid.clone(),
-                        user_id: uid.clone(),
-                        username: username.clone(),
-                        media_id: synctv_core::models::MediaId::from_string(media_id.clone()),
-                        timestamp: chrono::Utc::now(),
-                    },
-                });
-            }
+            let media_ids: Vec<synctv_core::models::MediaId> = media_id_strings
+                .iter()
+                .map(|id| synctv_core::models::MediaId::from_string(id.clone()))
+                .collect();
+            crate::impls::try_publish_cluster_event(tx, synctv_cluster::sync::PublishRequest {
+                event: synctv_cluster::sync::ClusterEvent::MediaRemovedBatch {
+                    event_id: nanoid::nanoid!(16),
+                    room_id: rid.clone(),
+                    user_id: uid.clone(),
+                    username,
+                    media_ids,
+                    timestamp: chrono::Utc::now(),
+                },
+            });
         }
 
         // Invalidate playback cache for deleted media (best-effort)
@@ -480,6 +494,7 @@ impl ClientApiImpl {
         &self,
         user_id: &str,
         room_id: &str,
+        req: crate::proto::client::ListPlaylistRequest,
     ) -> Result<crate::proto::client::ListPlaylistResponse, ApiError> {
         let uid = UserId::from_string(user_id.to_string());
         let rid = RoomId::from_string(room_id.to_string());
@@ -489,8 +504,10 @@ impl ClientApiImpl {
             .map_err(|e| ApiError::Authorization(format!("Forbidden: {e}")))?;
 
         // M-7: Use paginated query instead of loading all items into memory.
-        // Default to first page with 500 items max.
-        let pagination = synctv_core::models::PageParams::new(Some(1), Some(500));
+        // Default to first page with 50 items, max 200 items per page.
+        let page = req.page.max(1) as u32;
+        let page_size = req.page_size.clamp(1, 200) as u32;
+        let pagination = synctv_core::models::PageParams::new(Some(page), Some(page_size));
         let (media_list, total_count) = self.room_service.get_playlist_paginated(&rid, pagination).await
             .map_err(ApiError::from)?;
 

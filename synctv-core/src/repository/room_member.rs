@@ -202,14 +202,23 @@ impl RoomMemberRepository {
 
         // 4. Check max members limit (if option enabled)
         //    When max_members is 0 or None, treat as unlimited (no enforcement).
-        //    The room row is already locked by step 1 (SELECT ... FOR UPDATE),
-        //    so we can safely count members without a TOCTOU race.
+        //
+        //    IMPORTANT (Task #47): We use a subquery with FOR UPDATE to lock all
+        //    member rows, then count them. This prevents TOCTOU races where two
+        //    concurrent transactions could both see count < max and both insert,
+        //    exceeding the limit. PostgreSQL doesn't allow FOR UPDATE directly
+        //    with aggregate functions like COUNT(*).
         if options.check_max_members {
             let max_members = options.max_members;
             if max_members > 0 {
+                // Lock all member rows for this room to prevent concurrent inserts
+                // from seeing the same count value
                 let count_row = sqlx::query(
-                    "SELECT COUNT(*) as count FROM room_members
-                     WHERE room_id = $1 AND left_at IS NULL AND status != $2"
+                    "SELECT COUNT(*) as count FROM (
+                        SELECT 1 FROM room_members
+                        WHERE room_id = $1 AND left_at IS NULL AND status != $2
+                        FOR UPDATE
+                    ) sub"
                 )
                 .bind(member.room_id.as_str())
                 .bind(MemberStatus::Banned)

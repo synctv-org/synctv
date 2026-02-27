@@ -118,4 +118,36 @@ mod tests {
         assert!(verify_password(password, &hash1).await.unwrap());
         assert!(verify_password(password, &hash2).await.unwrap());
     }
+
+    #[tokio::test]
+    async fn test_hash_password_long_password() {
+        // Test with a very long password (should still work)
+        let password = "a".repeat(1000);
+        let hash = hash_password(&password).await.unwrap();
+        assert!(verify_password(&password, &hash).await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn test_hash_password_unicode() {
+        // Test with unicode characters
+        let password = "密码测试🔐🔒123";
+        let hash = hash_password(password).await.unwrap();
+        assert!(verify_password(password, &hash).await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn test_hash_password_empty() {
+        // Empty password should still hash (validation happens elsewhere)
+        let password = "";
+        let hash = hash_password(password).await.unwrap();
+        assert!(verify_password(password, &hash).await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn test_hash_password_special_chars() {
+        // Test with special characters
+        let password = "P@ssw0rd!#$%^&*()_+-=[]{}|;':\",./<>?`~";
+        let hash = hash_password(password).await.unwrap();
+        assert!(verify_password(password, &hash).await.unwrap());
+    }
 }

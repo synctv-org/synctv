@@ -8,7 +8,7 @@
 use synctv_core::{
     models::{UserId, User, UserRole, UserStatus},
     repository::{UserRepository, EmailTokenRepository},
-    service::email_token::EmailTokenType,
+    service::email_token::{EmailTokenService, EmailTokenType},
 };
 use chrono::{Utc, Duration};
 use sqlx::PgPool;
@@ -269,4 +269,256 @@ async fn test_get_nonexistent_token() {
 
     let result = token_repo.get("nonexistent_token_value").await.unwrap();
     assert!(result.is_none());
+}
+
+// ============================================================================
+// Token Invalidation Tests (Task #75)
+// ============================================================================
+
+/// Test that generating a new token invalidates previous tokens of the same type
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_generate_token_invalidates_previous_tokens_same_type() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let token_service = EmailTokenService::new(pool.clone());
+
+    let user = user_repo.create(&make_user("token_invalidation_1")).await.unwrap();
+
+    // Generate first token
+    let first_token = token_service
+        .generate_token(&user.id, EmailTokenType::PasswordReset)
+        .await
+        .unwrap();
+
+    // First token should be valid
+    let result = token_service
+        .validate_token(&first_token, EmailTokenType::PasswordReset)
+        .await;
+    assert!(result.is_ok(), "First token should be valid before generating second");
+
+    // Generate second token (should invalidate first)
+    let second_token = token_service
+        .generate_token(&user.id, EmailTokenType::PasswordReset)
+        .await
+        .unwrap();
+
+    // Second token should be valid
+    let result = token_service
+        .validate_token(&second_token, EmailTokenType::PasswordReset)
+        .await;
+    assert!(result.is_ok(), "Second token should be valid");
+
+    // First token should now be invalid
+    let result = token_service
+        .validate_token(&first_token, EmailTokenType::PasswordReset)
+        .await;
+    assert!(result.is_err(), "First token should be invalidated after generating second");
+}
+
+/// Test that tokens of different types are independent
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_different_token_types_are_independent() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let token_service = EmailTokenService::new(pool.clone());
+
+    let user = user_repo.create(&make_user("token_invalidation_2")).await.unwrap();
+
+    // Generate email verification token
+    let email_token = token_service
+        .generate_token(&user.id, EmailTokenType::EmailVerification)
+        .await
+        .unwrap();
+
+    // Generate password reset token
+    let reset_token = token_service
+        .generate_token(&user.id, EmailTokenType::PasswordReset)
+        .await
+        .unwrap();
+
+    // Both should be valid (different types)
+    let result = token_service
+        .validate_token(&email_token, EmailTokenType::EmailVerification)
+        .await;
+    assert!(result.is_ok(), "Email token should still be valid");
+
+    let result = token_service
+        .validate_token(&reset_token, EmailTokenType::PasswordReset)
+        .await;
+    assert!(result.is_ok(), "Password reset token should be valid");
+}
+
+/// Test that generating new password reset token doesn't affect email verification token
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_password_reset_regeneration_preserves_email_token() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let token_service = EmailTokenService::new(pool.clone());
+
+    let user = user_repo.create(&make_user("token_invalidation_3")).await.unwrap();
+
+    // Generate email verification token
+    let email_token = token_service
+        .generate_token(&user.id, EmailTokenType::EmailVerification)
+        .await
+        .unwrap();
+
+    // Generate first password reset token
+    let reset1 = token_service
+        .generate_token(&user.id, EmailTokenType::PasswordReset)
+        .await
+        .unwrap();
+
+    // Generate second password reset token (should invalidate first reset, but not email)
+    let reset2 = token_service
+        .generate_token(&user.id, EmailTokenType::PasswordReset)
+        .await
+        .unwrap();
+
+    // Second reset token should be valid
+    let result = token_service
+        .validate_token(&reset2, EmailTokenType::PasswordReset)
+        .await;
+    assert!(result.is_ok(), "Second reset token should be valid");
+
+    // First reset token should be invalid
+    let result = token_service
+        .validate_token(&reset1, EmailTokenType::PasswordReset)
+        .await;
+    assert!(result.is_err(), "First reset token should be invalidated");
+
+    // Email token should still be valid
+    let result = token_service
+        .validate_token(&email_token, EmailTokenType::EmailVerification)
+        .await;
+    assert!(result.is_ok(), "Email token should still be valid after reset token regeneration");
+}
+
+/// Test multiple token generations, only last is valid
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_multiple_token_generations_only_last_valid() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let token_service = EmailTokenService::new(pool.clone());
+
+    let user = user_repo.create(&make_user("token_invalidation_4")).await.unwrap();
+
+    let mut tokens = Vec::new();
+
+    // Generate 5 tokens
+    for _ in 0..5 {
+        let token = token_service
+            .generate_token(&user.id, EmailTokenType::PasswordReset)
+            .await
+            .unwrap();
+        tokens.push(token);
+    }
+
+    // Only the last token should be valid
+    let last_token = tokens.last().unwrap();
+    let result = token_service
+        .validate_token(last_token, EmailTokenType::PasswordReset)
+        .await;
+    assert!(result.is_ok(), "Last generated token should be valid");
+
+    // All previous tokens should be invalid
+    for (i, token) in tokens.iter().enumerate() {
+        if i < tokens.len() - 1 {
+            let result = token_service
+                .validate_token(token, EmailTokenType::PasswordReset)
+                .await;
+            assert!(result.is_err(), "Token {} should be invalid", i);
+        }
+    }
+}
+
+/// Test that two users can have valid tokens simultaneously
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_two_users_independent_tokens() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let token_repo = EmailTokenRepository::new(pool.clone());
+    let token_service = EmailTokenService::new(pool.clone());
+
+    let user1 = user_repo.create(&make_user("token_user_a")).await.unwrap();
+    let user2 = user_repo.create(&make_user("token_user_b")).await.unwrap();
+
+    // Generate tokens for both users
+    let token1 = token_service
+        .generate_token(&user1.id, EmailTokenType::PasswordReset)
+        .await
+        .unwrap();
+
+    let token2 = token_service
+        .generate_token(&user2.id, EmailTokenType::PasswordReset)
+        .await
+        .unwrap();
+
+    // Both should exist and be unused (check via repo, not consuming validate)
+    let fetched1 = token_repo.get(&token1).await.unwrap();
+    assert!(fetched1.is_some(), "User 1 token should exist");
+    assert!(fetched1.unwrap().used_at.is_none(), "User 1 token should be unused");
+
+    let fetched2 = token_repo.get(&token2).await.unwrap();
+    assert!(fetched2.is_some(), "User 2 token should exist");
+    assert!(fetched2.unwrap().used_at.is_none(), "User 2 token should be unused");
+
+    // Regenerating for user1 should not affect user2
+    let token1_new = token_service
+        .generate_token(&user1.id, EmailTokenType::PasswordReset)
+        .await
+        .unwrap();
+
+    // user1's old token should be deleted
+    let fetched1_old = token_repo.get(&token1).await.unwrap();
+    assert!(fetched1_old.is_none(), "User 1 old token should be deleted");
+
+    // user1's new token should exist
+    let fetched1_new = token_repo.get(&token1_new).await.unwrap();
+    assert!(fetched1_new.is_some(), "User 1 new token should exist");
+
+    // user2's token should still exist and be unused
+    let fetched2_again = token_repo.get(&token2).await.unwrap();
+    assert!(fetched2_again.is_some(), "User 2 token should still exist");
+    assert!(fetched2_again.unwrap().used_at.is_none(), "User 2 token should still be unused");
+}
+
+/// Test that manual invalidation works
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_manual_token_invalidation() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let token_service = EmailTokenService::new(pool.clone());
+
+    let user = user_repo.create(&make_user("token_manual_invalidation")).await.unwrap();
+
+    // Generate token
+    let token = token_service
+        .generate_token(&user.id, EmailTokenType::EmailVerification)
+        .await
+        .unwrap();
+
+    // Should be valid
+    let result = token_service
+        .validate_token(&token, EmailTokenType::EmailVerification)
+        .await;
+    assert!(result.is_ok());
+
+    // Manually invalidate
+    token_service
+        .invalidate_user_tokens(&user.id, EmailTokenType::EmailVerification)
+        .await
+        .unwrap();
+
+    // Should now be invalid
+    let result = token_service
+        .validate_token(&token, EmailTokenType::EmailVerification)
+        .await;
+    assert!(result.is_err(), "Token should be invalid after manual invalidation");
 }

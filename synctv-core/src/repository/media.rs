@@ -682,20 +682,49 @@ impl MediaRepository {
 
     /// Get the next available position in a playlist within a transaction.
     ///
-    /// Locks all rows in the playlist with `FOR UPDATE` via a subquery, then
-    /// computes `MAX(position) + 1` over the locked set. This avoids the
-    /// `PostgreSQL` restriction that forbids `FOR UPDATE` with aggregate functions
-    /// while still preventing concurrent inserts from assigning duplicate positions.
-    /// The lock is held until the caller commits or rolls back the transaction.
+    /// Uses `pg_advisory_xact_lock` to serialize position computation, which
+    /// correctly handles both empty and non-empty playlists. The `FOR UPDATE`
+    /// approach alone cannot protect empty playlists because there are no rows
+    /// to lock, leading to duplicate positions (Task #25).
+    ///
+    /// The advisory lock is transaction-scoped and automatically released when
+    /// the transaction commits or rolls back.
+    ///
+    /// # Lock Key Strategy
+    ///
+    /// The lock key is computed from playlist_id using a hash function, ensuring
+    /// different playlists get different locks. This is simpler than the
+    /// playlist position lock (which needs room_id + parent_id) because media
+    /// positions only need to be unique within a single playlist.
     pub async fn get_next_position_with_tx(
         &self,
         playlist_id: &PlaylistId,
         tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     ) -> Result<i32> {
+        // Compute advisory lock key from playlist_id
+        // Use a deterministic hash to ensure the same playlist always gets
+        // the same lock key
+        let lock_key: i64 = {
+            use std::hash::{Hash, Hasher};
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            playlist_id.as_str().hash(&mut h);
+            // Use lower 63 bits to stay within positive i64 range
+            (h.finish() & 0x7FFFFFFFFFFFFFFF) as i64
+        };
+
+        // Acquire transaction-scoped advisory lock
+        // This serializes position computation even for empty playlists
+        sqlx::query("SELECT pg_advisory_xact_lock($1)")
+            .bind(lock_key)
+            .execute(&mut **tx)
+            .await?;
+
+        // Now safe to compute MAX(position) + 1
         let next_pos: i32 = sqlx::query_scalar(
             r"
             SELECT COALESCE(MAX(position), -1) + 1
-            FROM (SELECT position FROM media WHERE playlist_id = $1 FOR UPDATE) sub
+            FROM media
+            WHERE playlist_id = $1
             "
         )
         .bind(playlist_id.as_str())

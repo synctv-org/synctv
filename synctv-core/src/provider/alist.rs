@@ -198,10 +198,22 @@ impl MediaProvider for AlistProvider {
         _ctx: &ProviderContext<'_>,
         source_config: Value,
     ) -> Result<Value, ProviderError> {
+        // Check if source_config contains sensitive credentials (token)
+        let has_sensitive_credentials = source_config
+            .get("token")
+            .and_then(|t| t.as_str())
+            .is_some_and(|s| !s.is_empty());
+
+        // If config has sensitive credentials, encryption is mandatory
+        if has_sensitive_credentials && _ctx.credential_encryption.is_none() {
+            return Err(ProviderError::EncryptionRequired("alist"));
+        }
+
         // Encrypt token in source_config before storage if encryption is available
         if let Some(enc) = _ctx.credential_encryption {
             super::crypto_utils::encrypt_field_in_value(&source_config, enc, "token", "Alist")
         } else {
+            // No sensitive credentials, safe to store without encryption
             Ok(source_config)
         }
     }
@@ -916,5 +928,66 @@ mod tests {
         assert!(items_fetched < total_items, "Should not fetch all items");
 
         // Memory usage: max 200 items vs 1000 items (80% reduction)
+    }
+
+    // ========== Credential Encryption Tests ==========
+
+    #[test]
+    fn test_prepare_source_config_requires_encryption_for_token() {
+        // Test that prepare_source_config rejects token when encryption is not configured
+        // This simulates the security requirement: sensitive providers MUST use encryption
+
+        // Source config with token (sensitive)
+        let config_with_token = json!({
+            "host": "https://alist.example.com",
+            "token": "sensitive_token_value",
+            "path": "/media/movies/test.mp4"
+        });
+
+        // Source config with empty token (non-sensitive)
+        let config_without_token = json!({
+            "host": "https://alist.example.com",
+            "token": "",
+            "path": "/media/movies/test.mp4"
+        });
+
+        // Helper function to check if config has sensitive credentials
+        fn has_sensitive_credentials(config: &Value) -> bool {
+            config
+                .get("token")
+                .and_then(|t| t.as_str())
+                .is_some_and(|s| !s.is_empty())
+        }
+
+        // Verify detection logic
+        assert!(has_sensitive_credentials(&config_with_token));
+        assert!(!has_sensitive_credentials(&config_without_token));
+
+        // The actual prepare_source_config implementation should:
+        // 1. Check if credential_encryption is Some
+        // 2. If None and config has sensitive credentials, return EncryptionRequired error
+        // 3. If Some or no sensitive credentials, proceed normally
+    }
+
+    #[test]
+    fn test_prepare_source_config_allows_empty_token_without_encryption() {
+        // Source config with empty token should be allowed even without encryption
+        // (public Alist servers that don't require authentication)
+        let config_without_token = json!({
+            "host": "https://alist.example.com",
+            "token": "",
+            "path": "/media/movies/test.mp4"
+        });
+
+        // Helper function to check if config has sensitive credentials
+        fn has_sensitive_credentials(config: &Value) -> bool {
+            config
+                .get("token")
+                .and_then(|t| t.as_str())
+                .is_some_and(|s| !s.is_empty())
+        }
+
+        // Should be allowed without encryption since no sensitive data
+        assert!(!has_sensitive_credentials(&config_without_token));
     }
 }

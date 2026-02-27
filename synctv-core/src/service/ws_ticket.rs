@@ -13,6 +13,13 @@
 //!   ensuring they work across all replicas.
 //! - **Memory** (single-replica only): Tickets are stored in memory. This is suitable
 //!   for single-instance deployments but will not work correctly with multiple replicas.
+//!
+//! ## Security: TOCTOU Prevention (Issue #17)
+//!
+//! The `validate_and_consume_checked` method accepts a user validator callback
+//! to prevent Time-Of-Check to Time-Of-Use race conditions. The validator is
+//! called AFTER the ticket is consumed, ensuring the user status check happens
+//! at the last possible moment before the connection is accepted.
 
 use async_trait::async_trait;
 use base64::Engine;
@@ -23,6 +30,27 @@ use tracing::{debug, error, warn};
 
 use crate::models::{RoomId, UserId};
 use crate::{Error, Result};
+
+/// User validation result returned by `UserValidator` callback
+#[derive(Debug, Clone)]
+pub struct UserValidationResult {
+    /// Current password version of the user
+    pub password_version: i32,
+}
+
+/// Trait for validating user status during ticket consumption.
+///
+/// Implemented by the caller (typically UserService) to check user status
+/// atomically with ticket validation, preventing TOCTOU race conditions.
+#[async_trait]
+pub trait UserValidator: Send + Sync {
+    /// Validate user for ticket-based authentication.
+    ///
+    /// Returns `Ok(UserValidationResult)` if the user is valid (active status,
+    /// not deleted) or `Err` if the user should be rejected (banned, pending,
+    /// deleted, or not found).
+    async fn validate_for_ticket(&self, user_id: &UserId) -> Result<UserValidationResult>;
+}
 
 /// Default ticket TTL in seconds
 const DEFAULT_TICKET_TTL_SECS: u64 = 30;
@@ -384,6 +412,81 @@ impl WsTicketService {
 
         Ok(ValidatedTicket {
             user_id: UserId::from_string(ticket_data.user_id),
+            password_version: ticket_data.password_version,
+        })
+    }
+
+    /// Validate and consume a ticket with user status check (TOCTOU-safe).
+    ///
+    /// This is the recommended method for WebSocket ticket validation. It:
+    /// 1. Consumes the ticket (one-time use)
+    /// 2. Validates room binding
+    /// 3. Calls the `user_validator` to check user status and password version
+    ///
+    /// The user validator is called AFTER ticket consumption, ensuring the user
+    /// status check happens at the latest possible moment, preventing TOCTOU
+    /// race conditions (Issue #17).
+    ///
+    /// Returns [`ValidatedTicket`] if all checks pass.
+    pub async fn validate_and_consume_checked(
+        &self,
+        ticket: &str,
+        expected_room_id: &RoomId,
+        user_validator: &dyn UserValidator,
+    ) -> Result<ValidatedTicket> {
+        // Step 1: Consume the ticket (one-time use)
+        let mode = self.store.backend_name();
+
+        let Some(ticket_data) = self.store.consume(ticket).await? else {
+            debug!(ticket = %ticket, mode = %mode, "WebSocket ticket not found or expired");
+            return Err(Error::Authorization("Invalid or expired ticket".to_string()));
+        };
+
+        // Step 2: Validate room binding
+        if ticket_data.room_id != expected_room_id.as_str() {
+            debug!(
+                ticket_room = %ticket_data.room_id,
+                expected_room = %expected_room_id.as_str(),
+                mode = %mode,
+                "WebSocket ticket rejected: room mismatch"
+            );
+            return Err(Error::Authorization("Ticket not valid for this room".to_string()));
+        }
+
+        let user_id = UserId::from_string(ticket_data.user_id.clone());
+
+        // Step 3: Validate user status (TOCTOU-safe: happens after ticket consumption)
+        let user_validation = user_validator.validate_for_ticket(&user_id).await.map_err(|e| {
+            debug!(
+                user_id = %user_id.as_str(),
+                error = %e,
+                mode = %mode,
+                "WebSocket ticket rejected: user validation failed"
+            );
+            Error::Authorization("Authentication failed".to_string())
+        })?;
+
+        // Step 4: Check password version (ticket must be invalidated if password changed)
+        if ticket_data.password_version < user_validation.password_version {
+            debug!(
+                user_id = %user_id.as_str(),
+                ticket_pv = ticket_data.password_version,
+                current_pv = user_validation.password_version,
+                mode = %mode,
+                "WebSocket ticket rejected: password changed after ticket issued"
+            );
+            return Err(Error::Authorization("Authentication failed".to_string()));
+        }
+
+        debug!(
+            user_id = %user_id.as_str(),
+            room_id = %ticket_data.room_id,
+            mode = %mode,
+            "WebSocket ticket validated and consumed with user check"
+        );
+
+        Ok(ValidatedTicket {
+            user_id,
             password_version: ticket_data.password_version,
         })
     }

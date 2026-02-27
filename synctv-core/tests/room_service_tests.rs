@@ -2483,7 +2483,7 @@ async fn test_update_room_description_success() {
     // Update description
     let new_description = "Updated description with more details";
     let updated_room = room_service
-        .update_room_description(&room.id, new_description.to_string())
+        .update_room_description(&room.id, &owner.id, new_description.to_string())
         .await
         .unwrap();
 
@@ -2513,10 +2513,87 @@ async fn test_update_room_description_too_long_fails() {
     // Try to set description longer than 500 chars
     let long_description = "x".repeat(501);
     let result = room_service
-        .update_room_description(&room.id, long_description)
+        .update_room_description(&room.id, &owner.id, long_description)
         .await;
 
     assert!(result.is_err(), "Description > 500 chars should fail");
+}
+
+/// Test: User without UPDATE_ROOM_SETTINGS permission cannot update room description
+///
+/// This verifies that the permission check is enforced for description updates.
+/// Only room owner (or users with UPDATE_ROOM_SETTINGS permission) should be able
+/// to modify the room description.
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_update_room_description_permission_denied() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let room_service = make_room_service(pool.clone());
+
+    // Create room owner
+    let owner = user_repo.create(&make_user("desc_perm_owner")).await.unwrap();
+
+    // Create another user who is NOT a member of the room
+    let outsider = user_repo.create(&make_user("desc_perm_outsider")).await.unwrap();
+
+    let (room, _) = room_service
+        .create_room(
+            "Permission Check Room".to_string(),
+            "Original description".to_string(),
+            owner.id.clone(),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+    // Outsider tries to update description - should be denied
+    let result = room_service
+        .update_room_description(&room.id, &outsider.id, "Hacked description".to_string())
+        .await;
+
+    assert!(result.is_err(), "Non-member should not be able to update description");
+    let err = result.unwrap_err();
+    let err_str = err.to_string();
+    assert!(
+        err_str.contains("permission") || err_str.contains("denied") || err_str.contains("not found"),
+        "Error should indicate permission denied: {err_str}"
+    );
+
+    // Verify description was NOT changed
+    let room_after = room_service.get_room(&room.id).await.unwrap();
+    assert_eq!(room_after.description, "Original description");
+}
+
+/// Test: Room owner can update room description (has implicit UPDATE_ROOM_SETTINGS)
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_update_room_description_owner_allowed() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let room_service = make_room_service(pool.clone());
+
+    let owner = user_repo.create(&make_user("desc_owner_allowed")).await.unwrap();
+
+    let (room, _) = room_service
+        .create_room(
+            "Owner Update Room".to_string(),
+            "Original".to_string(),
+            owner.id.clone(),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+    // Owner should be able to update description
+    let updated = room_service
+        .update_room_description(&room.id, &owner.id, "Owner updated this".to_string())
+        .await;
+
+    assert!(updated.is_ok(), "Owner should be able to update description");
+    assert_eq!(updated.unwrap().description, "Owner updated this");
 }
 
 // ========== Idempotent Join Tests ==========

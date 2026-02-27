@@ -25,11 +25,16 @@ pub struct PermissionService {
     member_repo: RoomMemberRepository,
     room_settings_repo: Option<RoomSettingsRepository>,
     cache: Arc<moka::future::Cache<String, PermissionBits>>,
+    /// Short-term fallback cache used during degraded mode (Pub/Sub lag).
+    /// Has a much shorter TTL (30s) than the main cache to balance:
+    /// - Reducing database load during degraded periods
+    /// - Not serving stale data for too long when invalidation is unreliable
+    degraded_cache: Arc<moka::future::Cache<String, PermissionBits>>,
     settings_registry: Option<Arc<SettingsRegistry>>,
     /// Optional invalidation service for cross-replica cache sync
     invalidation_service: Option<Arc<CacheInvalidationService>>,
     /// When true, cache is considered unreliable due to Pub/Sub lag;
-    /// all permission checks fall back to no-cache until recovery.
+    /// all permission checks use degraded_cache with short TTL.
     cache_degraded: Arc<AtomicBool>,
     /// Tracks last `invalidate_all()` time to rate-limit flushes
     last_flush_time: Arc<parking_lot::Mutex<Instant>>,
@@ -53,7 +58,12 @@ impl PermissionService {
     const FLUSH_RATE_LIMIT_SECS: u64 = 10;
     /// Maximum duration to remain in degraded mode before automatic recovery (seconds)
     /// After this time, the cache is re-enabled assuming Pub/Sub lag has resolved.
-    const MAX_DEGRADATION_DURATION_SECS: u64 = 60;
+    /// Reduced from 60s to 10s to minimize time spent in degraded mode.
+    const MAX_DEGRADATION_DURATION_SECS: u64 = 10;
+    /// TTL for the degraded cache (seconds)
+    /// Short enough to not serve stale data for too long, but long enough
+    /// to significantly reduce database load during degraded periods.
+    const DEGRADED_CACHE_TTL_SECS: u64 = 30;
 
     /// Create a new permission service with caching
     #[must_use]
@@ -70,6 +80,11 @@ impl PermissionService {
             cache: Arc::new(
                 moka::future::CacheBuilder::new(cache_size)
                     .time_to_live(Duration::from_secs(cache_ttl_secs))
+                    .build(),
+            ),
+            degraded_cache: Arc::new(
+                moka::future::CacheBuilder::new(cache_size)
+                    .time_to_live(Duration::from_secs(Self::DEGRADED_CACHE_TTL_SECS))
                     .build(),
             ),
             settings_registry,
@@ -255,6 +270,11 @@ impl PermissionService {
                     .time_to_live(Duration::from_secs(1))
                     .build(),
             ),
+            degraded_cache: Arc::new(
+                moka::future::CacheBuilder::new(1)
+                    .time_to_live(Duration::from_secs(1))
+                    .build(),
+            ),
             settings_registry,
             invalidation_service: None,
             cache_degraded: Arc::new(AtomicBool::new(false)),
@@ -369,20 +389,22 @@ impl PermissionService {
 
     /// Check if a user has a specific permission in a room
     ///
-    /// Falls back to `check_permission_no_cache` when the cache is degraded
-    /// (e.g., due to Pub/Sub lag), ensuring correct permission data is always used.
+    /// When the cache is degraded (e.g., due to Pub/Sub lag), uses a short-TTL
+    /// fallback cache instead of hitting the database for every request.
+    /// This balances correctness (not serving stale data for too long) with
+    /// database protection (avoiding cache stampedes during degraded periods).
     pub async fn check_permission(
         &self,
         room_id: &RoomId,
         user_id: &UserId,
         permission: u64,
     ) -> Result<()> {
-        // Fall back to no-cache when degraded (Pub/Sub lag)
-        if self.cache_degraded.load(Ordering::Acquire) {
-            return self.check_permission_no_cache(room_id, user_id, permission).await;
-        }
-
-        let permissions = self.get_user_permissions(room_id, user_id).await?;
+        let permissions = if self.cache_degraded.load(Ordering::Acquire) {
+            // Use degraded cache with short TTL instead of no cache at all
+            self.get_user_permissions_degraded(room_id, user_id).await?
+        } else {
+            self.get_user_permissions(room_id, user_id).await?
+        };
 
         if !permissions.has_all(permission) {
             return Err(Error::Authorization("Permission denied".to_string()));
@@ -498,6 +520,53 @@ impl PermissionService {
         Ok(permissions)
     }
 
+    /// Get user's permissions during degraded mode (Pub/Sub lag)
+    ///
+    /// Uses a separate cache with a much shorter TTL (30 seconds) to balance:
+    /// - **Database protection**: Avoid cache stampede during degraded periods
+    /// - **Freshness**: Don't serve stale data for too long when invalidation is unreliable
+    ///
+    /// When the main cache's Pub/Sub is lagging, cross-replica invalidation messages
+    /// may be delayed or lost. Using a short TTL ensures that even if invalidation
+    /// doesn't work, stale data won't be served for more than 30 seconds.
+    pub async fn get_user_permissions_degraded(
+        &self,
+        room_id: &RoomId,
+        user_id: &UserId,
+    ) -> Result<PermissionBits> {
+        let cache_key = Self::cache_key(room_id, user_id);
+
+        // Check degraded cache first
+        if let Some(permissions) = self.degraded_cache.get(&cache_key).await {
+            return Ok(permissions);
+        }
+
+        // Fetch from database
+        let member = self
+            .member_repo
+            .get(room_id, user_id)
+            .await?
+            .ok_or_else(|| Error::Authorization("Not a member of this room".to_string()))?;
+
+        // Get room settings for role defaults
+        let room_settings = if let Some(ref settings_repo) = self.room_settings_repo {
+            settings_repo.get(room_id).await?
+        } else {
+            RoomSettings::default()
+        };
+
+        // Calculate role default permissions (global + room-level overrides)
+        let role_default = self.calculate_role_default_permissions(&member.role, &room_settings);
+
+        // Apply member-level overrides
+        let permissions = member.effective_permissions(role_default);
+
+        // Update degraded cache with short TTL
+        self.degraded_cache.insert(cache_key, permissions).await;
+
+        Ok(permissions)
+    }
+
     /// Invalidate cache for a specific user in a room
     ///
     /// If cache invalidation service is configured, this also broadcasts the
@@ -516,6 +585,8 @@ impl PermissionService {
         // Invalidate local cache first to close the stale read window immediately
         let cache_key = Self::cache_key(room_id, user_id);
         self.cache.invalidate(&cache_key).await;
+        // Also invalidate degraded cache to ensure consistency
+        self.degraded_cache.invalidate(&cache_key).await;
 
         // Broadcast to other replicas (best effort)
         if let Some(ref service) = self.invalidation_service {
@@ -542,7 +613,12 @@ impl PermissionService {
         // Invalidate local cache first to close the stale read window immediately
         // Use namespace prefix to match all permission cache entries for this room
         let prefix = format!("perm:room:{}:user:", room_id.0);
-        let _ = self.cache.invalidate_entries_if(move |key, _| key.starts_with(&prefix));
+        let _ = self.cache.invalidate_entries_if({
+            let prefix = prefix.clone();
+            move |key, _| key.starts_with(&prefix)
+        });
+        // Also invalidate degraded cache
+        let _ = self.degraded_cache.invalidate_entries_if(move |key, _| key.starts_with(&prefix));
 
         // Broadcast to other replicas (best effort)
         if let Some(ref service) = self.invalidation_service {
@@ -678,6 +754,11 @@ mod tests {
             cache: Arc::new(
                 moka::future::CacheBuilder::new(10)
                     .time_to_live(Duration::from_secs(60))
+                    .build(),
+            ),
+            degraded_cache: Arc::new(
+                moka::future::CacheBuilder::new(10)
+                    .time_to_live(Duration::from_secs(PermissionService::DEGRADED_CACHE_TTL_SECS))
                     .build(),
             ),
             settings_registry: None,

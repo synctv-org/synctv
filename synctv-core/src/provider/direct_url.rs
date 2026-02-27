@@ -60,7 +60,10 @@ impl DirectUrlProvider {
         "trailer",
         "x-forwarded-for",
         "x-forwarded-host",
+        "x-forwarded-proto",
         "x-real-ip",
+        "x-original-url",
+        "x-rewrite-url",
     ];
 
     /// Validate that custom headers do not include forbidden header names.
@@ -353,6 +356,27 @@ mod tests {
         headers.insert("Referer".to_string(), "https://example.com".to_string());
         headers.insert("User-Agent".to_string(), "MyPlayer/1.0".to_string());
         assert!(DirectUrlProvider::validate_headers(&headers).is_ok());
+    }
+
+    #[test]
+    fn test_forbidden_headers_x_forwarded_proto() {
+        let mut headers = HashMap::new();
+        headers.insert("X-Forwarded-Proto".to_string(), "https".to_string());
+        assert!(DirectUrlProvider::validate_headers(&headers).is_err());
+    }
+
+    #[test]
+    fn test_forbidden_headers_x_original_url() {
+        let mut headers = HashMap::new();
+        headers.insert("X-Original-URL".to_string(), "http://internal.host/secret".to_string());
+        assert!(DirectUrlProvider::validate_headers(&headers).is_err());
+    }
+
+    #[test]
+    fn test_forbidden_headers_x_rewrite_url() {
+        let mut headers = HashMap::new();
+        headers.insert("X-Rewrite-URL".to_string(), "/admin".to_string());
+        assert!(DirectUrlProvider::validate_headers(&headers).is_err());
     }
 
     #[test]

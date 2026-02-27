@@ -705,3 +705,214 @@ async fn test_delete_by_playlist_removes_all() {
 
     assert_eq!(media_repo.count_by_playlist(&ctx.root_playlist.id).await.unwrap(), 0);
 }
+
+// ============================================================================
+// Task #25: Concurrent position assignment tests
+// ============================================================================
+//
+// BUG: get_next_position_with_tx uses FOR UPDATE on a subquery, but this
+// provides NO protection when the playlist is empty - the subquery returns
+// no rows to lock. Two concurrent inserts on an empty playlist will both
+// compute position=0 and violate the UNIQUE constraint.
+//
+// FIX: Use pg_advisory_xact_lock on playlist_id to serialize position
+// computation, similar to Task #9's fix for playlist position.
+
+/// Test that concurrent media additions to an EMPTY playlist produce unique positions.
+///
+/// This is the critical edge case where the current implementation fails:
+/// - Empty playlist = no rows for FOR UPDATE to lock
+/// - Both transactions see MAX(position) = NULL
+/// - Both compute position = 0
+/// - UNIQUE constraint violation!
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_concurrent_add_to_empty_playlist_unique_positions() {
+    let ctx = setup_test_context("concurrent_empty").await;
+    let media_repo = MediaRepository::new(ctx.pool.clone());
+
+    let num_concurrent = 10;
+    let mut handles = Vec::new();
+
+    // Spawn 10 concurrent tasks, each adding media to the same empty playlist
+    for i in 0..num_concurrent {
+        let pool = ctx.pool.clone();
+        let playlist_id = ctx.root_playlist.id.clone();
+        let room_id = ctx.room.id.clone();
+        let media_repo = media_repo.clone();
+
+        let handle = tokio::spawn(async move {
+            // Each task starts its own transaction and calls get_next_position_with_tx
+            let mut tx = pool.begin().await.expect("Failed to begin transaction");
+
+            let position = media_repo
+                .get_next_position_with_tx(&playlist_id, &mut tx)
+                .await
+                .expect("Failed to get next position");
+
+            // Create media with the computed position
+            let media = Media {
+                id: MediaId::new(),
+                playlist_id: playlist_id.clone(),
+                room_id: room_id.clone(),
+                creator_id: None,
+                name: format!("concurrent_{}.mp4", i),
+                position,
+                source_provider: "direct_url".to_string(),
+                source_config: json!({"url": format!("https://example.com/video{}.mp4", i)}),
+                provider_instance_name: None,
+                added_at: Utc::now(),
+                version: 0,
+            };
+
+            let result = media_repo.create_with_executor(&media, &mut *tx).await;
+
+            if let Err(ref e) = result {
+                eprintln!("Task {} failed to create media: {:?}", i, e);
+            }
+
+            tx.commit().await.expect("Failed to commit transaction");
+
+            result.map(|m| m.position)
+        });
+
+        handles.push(handle);
+    }
+
+    // Wait for all tasks to complete
+    let results: Vec<_> = futures::future::join_all(handles)
+        .await
+        .into_iter()
+        .map(|r| r.expect("Task panicked"))
+        .collect();
+
+    // All tasks should succeed (no UNIQUE constraint violations)
+    let successful_positions: Vec<i32> = results
+        .into_iter()
+        .filter_map(|r| r.ok())
+        .collect();
+
+    assert_eq!(
+        successful_positions.len(),
+        num_concurrent,
+        "All {} concurrent adds should succeed, but only {} did",
+        num_concurrent,
+        successful_positions.len()
+    );
+
+    // All positions should be unique
+    let mut sorted_positions = successful_positions.clone();
+    sorted_positions.sort();
+    sorted_positions.dedup();
+    assert_eq!(
+        sorted_positions.len(),
+        num_concurrent,
+        "All positions should be unique, got duplicates: {:?}",
+        successful_positions
+    );
+
+    // Positions should be 0..9
+    assert_eq!(
+        sorted_positions,
+        (0..num_concurrent as i32).collect::<Vec<_>>(),
+        "Positions should be 0 through 9"
+    );
+}
+
+/// Test that concurrent media additions to a NON-EMPTY playlist also work correctly.
+///
+/// This should already work with the current implementation (FOR UPDATE on
+/// existing rows), but we verify it for completeness.
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_concurrent_add_to_nonempty_playlist_unique_positions() {
+    let ctx = setup_test_context("concurrent_nonempty").await;
+    let media_repo = MediaRepository::new(ctx.pool.clone());
+
+    // Pre-populate with 5 existing items
+    for i in 0..5 {
+        media_repo
+            .create(&make_media(
+                &ctx.root_playlist.id,
+                &ctx.room.id,
+                &format!("existing_{}.mp4", i),
+                i,
+            ))
+            .await
+            .unwrap();
+    }
+
+    let num_concurrent = 5;
+    let mut handles = Vec::new();
+
+    // Spawn 5 concurrent tasks adding more media
+    for i in 0..num_concurrent {
+        let pool = ctx.pool.clone();
+        let playlist_id = ctx.root_playlist.id.clone();
+        let room_id = ctx.room.id.clone();
+        let media_repo = media_repo.clone();
+
+        let handle = tokio::spawn(async move {
+            let mut tx = pool.begin().await.expect("Failed to begin transaction");
+
+            let position = media_repo
+                .get_next_position_with_tx(&playlist_id, &mut tx)
+                .await
+                .expect("Failed to get next position");
+
+            let media = Media {
+                id: MediaId::new(),
+                playlist_id: playlist_id.clone(),
+                room_id: room_id.clone(),
+                creator_id: None,
+                name: format!("new_{}.mp4", i),
+                position,
+                source_provider: "direct_url".to_string(),
+                source_config: json!({"url": format!("https://example.com/new{}.mp4", i)}),
+                provider_instance_name: None,
+                added_at: Utc::now(),
+                version: 0,
+            };
+
+            let result = media_repo.create_with_executor(&media, &mut *tx).await;
+            tx.commit().await.expect("Failed to commit transaction");
+
+            result.map(|m| m.position)
+        });
+
+        handles.push(handle);
+    }
+
+    let results: Vec<_> = futures::future::join_all(handles)
+        .await
+        .into_iter()
+        .map(|r| r.expect("Task panicked"))
+        .collect();
+
+    let successful_positions: Vec<i32> = results
+        .into_iter()
+        .filter_map(|r| r.ok())
+        .collect();
+
+    assert_eq!(
+        successful_positions.len(),
+        num_concurrent,
+        "All {} concurrent adds should succeed",
+        num_concurrent
+    );
+
+    // All new positions should be unique and >= 5
+    let mut sorted_positions = successful_positions.clone();
+    sorted_positions.sort();
+    sorted_positions.dedup();
+    assert_eq!(sorted_positions.len(), num_concurrent);
+
+    // All should be in range [5, 10)
+    for &pos in &sorted_positions {
+        assert!(
+            pos >= 5 && pos < 10,
+            "New position {} should be >= 5 and < 10",
+            pos
+        );
+    }
+}

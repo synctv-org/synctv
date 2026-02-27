@@ -77,6 +77,8 @@ pub struct RouterConfig {
     /// Resolved built-in STUN URL (e.g. "stun:203.0.113.1:3478") from a successfully started
     /// STUN server. When `None`, the built-in STUN entry is omitted from ICE server lists.
     pub builtin_stun_url: Option<String>,
+    /// TURN health checker for filtering unhealthy TURN servers
+    pub turn_health_checker: Option<Arc<synctv_core::service::TurnHealthChecker>>,
     /// Credential encryption for protecting sensitive data in `source_config`
     pub credential_encryption: Option<synctv_core::service::CredentialEncryption>,
 }
@@ -163,6 +165,14 @@ fn build_app_state(config: RouterConfig) -> AppState {
     let client_api = if let Some(ref stun_url) = config.builtin_stun_url {
         let inner = Arc::try_unwrap(client_api).unwrap_or_else(|arc| (*arc).clone());
         Arc::new(inner.with_builtin_stun_url(stun_url.clone()))
+    } else {
+        client_api
+    };
+
+    // Wire in the TURN health checker
+    let client_api = if config.turn_health_checker.is_some() {
+        let inner = Arc::try_unwrap(client_api).unwrap_or_else(|arc| (*arc).clone());
+        Arc::new(inner.with_turn_health_checker(config.turn_health_checker.clone()))
     } else {
         client_api
     };

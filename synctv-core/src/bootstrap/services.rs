@@ -345,24 +345,16 @@ pub async fn init_services(
     info!("ProvidersManager initialized");
 
     // Initialize OAuth2 service (optional - requires OAuth2 provider config).
-    // In cluster mode, Redis is required (validated at config level).
+    // In cluster mode, Redis is required (validated at service creation).
     // In standalone mode, uses in-memory state store when Redis is not available.
     let oauth2_configured = config.oauth2.providers.as_object()
         .is_some_and(|m| !m.is_empty());
     let oauth2_service = if oauth2_configured {
-        init_oauth2_service(pool.clone(), config, redis_conn_plain.clone()).await?
+        init_oauth2_service(pool.clone(), config, redis_conn_plain.clone(), cluster_mode).await?
     } else {
         None
     };
     if oauth2_service.is_some() {
-        if redis_conn_plain.is_none() && cluster_mode {
-            warn!(
-                "OAuth2 is configured but Redis is unavailable. OAuth2 state (CSRF tokens) \
-                 is stored in-memory and will NOT be shared across replicas. Users may \
-                 experience login failures if the callback hits a different replica. \
-                 Configure Redis to fix this."
-            );
-        }
         info!("OAuth2 service initialized");
     } else {
         info!("OAuth2 service not configured (no OAuth2 providers in config)");
@@ -475,6 +467,7 @@ async fn init_oauth2_service(
     pool: PgPool,
     config: &Config,
     redis_conn: Option<redis::aio::ConnectionManager>,
+    cluster_mode: bool,
 ) -> Result<Option<Arc<OAuth2Service>>, anyhow::Error> {
     // 0. Initialize provider registry (register all factory functions)
     crate::oauth2::providers::init_providers();
@@ -505,7 +498,8 @@ async fn init_oauth2_service(
         info!("OAuth2 state store: in-memory (standalone mode)");
         Arc::new(crate::service::InMemoryOAuthStateStore::new())
     };
-    let oauth2_service = OAuth2Service::new(oauth2_repo, state_store);
+    let oauth2_service = OAuth2Service::new(oauth2_repo, state_store, cluster_mode)
+        .map_err(|e| anyhow::anyhow!("Failed to create OAuth2 service: {e}"))?;
     let oauth2_service = Arc::new(oauth2_service);
 
     // 3. Initialize each provider instance using factory pattern

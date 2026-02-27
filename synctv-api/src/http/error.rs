@@ -128,6 +128,10 @@ struct ErrorResponse {
     /// Only present when the error originates from the impls layer.
     #[serde(skip_serializing_if = "Option::is_none")]
     code: Option<i32>,
+    /// Request ID for correlating the error with the request.
+    /// Present when the request has passed through request_id_middleware.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    request_id: Option<String>,
 }
 
 impl IntoResponse for AppError {
@@ -152,10 +156,13 @@ impl IntoResponse for AppError {
             self.message
         };
 
+        // Note: request_id will be added by a response middleware if available
+        // For now, we set it to None here. The middleware layer will handle it.
         let body = Json(ErrorResponse {
             error: error_message,
             status: status.as_u16(),
             code: self.error_code,
+            request_id: None,
         });
 
         (status, body).into_response()
@@ -307,6 +314,137 @@ pub fn map_api_error(err: crate::impls::ApiError) -> AppError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::body::to_bytes;
+    use axum::http::{Request, StatusCode};
+    use axum::body::Body;
+    use tower::ServiceExt;
+
+    // ========== Request ID in error responses ==========
+
+    #[tokio::test]
+    async fn test_error_response_includes_request_id() {
+        // Create a simple app that returns an error
+        let app = axum::Router::new()
+            .route(
+                "/test",
+                axum::routing::get(|| async { AppError::bad_request("invalid input") }),
+            )
+            .layer(axum::middleware::from_fn(
+                crate::http::middleware::request_id_middleware,
+            ));
+
+        let request = Request::builder()
+            .uri("/test")
+            .header("x-request-id", "test-req-123")
+            .body(Body::empty())
+            .unwrap();
+
+        let response = app.oneshot(request).await.unwrap();
+
+        // Check that the error response includes request_id in JSON body
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+
+        assert_eq!(json["request_id"], "test-req-123");
+        assert_eq!(json["error"], "invalid input");
+        assert_eq!(json["status"], 400);
+    }
+
+    #[tokio::test]
+    async fn test_error_response_without_request_id_header() {
+        // When no request ID is provided, a generated one should still be included
+        let app = axum::Router::new()
+            .route(
+                "/test",
+                axum::routing::get(|| async { AppError::not_found("resource") }),
+            )
+            .layer(axum::middleware::from_fn(
+                crate::http::middleware::request_id_middleware,
+            ));
+
+        let request = Request::builder()
+            .uri("/test")
+            .body(Body::empty())
+            .unwrap();
+
+        let response = app.oneshot(request).await.unwrap();
+
+        // Check that a generated request_id is present
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+
+        // request_id should be present and not empty
+        let request_id = json["request_id"].as_str();
+        assert!(request_id.is_some());
+        assert!(!request_id.unwrap().is_empty());
+        assert_eq!(json["error"], "resource");
+        assert_eq!(json["status"], 404);
+    }
+
+    #[tokio::test]
+    async fn test_error_response_with_internal_server_error() {
+        // 5xx errors should return generic message but still include request_id
+        let app = axum::Router::new()
+            .route(
+                "/test",
+                axum::routing::get(|| async {
+                    AppError::internal_server_error("database connection failed")
+                }),
+            )
+            .layer(axum::middleware::from_fn(
+                crate::http::middleware::request_id_middleware,
+            ));
+
+        let request = Request::builder()
+            .uri("/test")
+            .header("x-request-id", "internal-err-456")
+            .body(Body::empty())
+            .unwrap();
+
+        let response = app.oneshot(request).await.unwrap();
+
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+
+        // Should include request_id even for 5xx errors
+        assert_eq!(json["request_id"], "internal-err-456");
+        // Message should be generic for 5xx
+        assert_eq!(json["error"], "Internal server error");
+        assert_eq!(json["status"], 500);
+    }
+
+    #[tokio::test]
+    async fn test_error_response_with_error_code() {
+        // Test that error codes are preserved along with request_id
+        // We use a different approach: use a constant error code
+        let app = axum::Router::new()
+            .route(
+                "/test",
+                axum::routing::get(|| async {
+                    let mut err = AppError::bad_request("test error");
+                    err.error_code = Some(1001);
+                    err
+                }),
+            )
+            .layer(axum::middleware::from_fn(
+                crate::http::middleware::request_id_middleware,
+            ));
+
+        let request = Request::builder()
+            .uri("/test")
+            .header("x-request-id", "code-test-789")
+            .body(Body::empty())
+            .unwrap();
+
+        let response = app.oneshot(request).await.unwrap();
+
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+
+        assert_eq!(json["request_id"], "code-test-789");
+        assert_eq!(json["code"], 1001);
+        assert_eq!(json["status"], 400);
+    }
 
     // ========== AppError construction ==========
 

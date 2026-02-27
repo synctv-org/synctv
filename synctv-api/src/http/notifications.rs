@@ -56,11 +56,13 @@ pub async fn list_notifications(
         .and_then(|t| t.parse::<i32>().ok())
         .and_then(proto_notification_type_to_core);
 
+    let (page, page_size) = super::validation::validate_pagination(query.page, query.page_size);
+
     let result = api
         .list_notifications(
             &auth.user_id,
-            query.page,
-            query.page_size,
+            Some(page),
+            Some(page_size),
             query.is_read,
             notification_type,
         )

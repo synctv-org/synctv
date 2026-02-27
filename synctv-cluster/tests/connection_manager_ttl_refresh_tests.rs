@@ -480,3 +480,145 @@ async fn test_shutdown_cancels_disconnect_retry_task() {
     // Should complete without hanging
     // (If disconnect retry task wasn't cancelled, this could hang)
 }
+
+// ============================================================================
+// TTL Value Verification Tests (Task #16)
+// ============================================================================
+
+/// Test that distributed counter TTL is set to 2x the refresh interval.
+///
+/// This verifies the fix for Task #16: TTL should be 120s (2x 60s refresh interval)
+/// rather than 180s (3x), ensuring faster crash recovery while maintaining safety.
+#[tokio::test]
+#[ignore = "Requires Docker (testcontainers)"]
+async fn test_distributed_counter_ttl_is_2x_refresh_interval() {
+    let (_container, conn) = setup_redis().await;
+
+    let manager = ConnectionManager::new(ConnectionLimits::default())
+        .with_redis(conn.clone(), "ttl_value:");
+
+    // Register a connection
+    let user_id = uid("user_ttl_test");
+    manager.register("conn_ttl_test".to_string(), user_id).await.unwrap();
+
+    // Verify the TTL on the user counter key
+    let mut test_conn = conn.clone();
+    let key = "ttl_value:connections:user:user_ttl_test";
+    let ttl: i64 = redis::cmd("TTL")
+        .arg(key)
+        .query_async(&mut test_conn)
+        .await
+        .expect("Failed to get TTL");
+
+    // TTL should be approximately 120 seconds (2x the 60s refresh interval)
+    // We allow a small margin for test execution time
+    assert!(
+        ttl >= 115 && ttl <= 125,
+        "Distributed counter TTL should be ~120s (2x refresh interval), got {}s",
+        ttl
+    );
+}
+
+/// Test that distributed counters expire after TTL without refresh.
+///
+/// This verifies the crash-safety mechanism: if a node crashes without
+/// decrementing counters, the counters should expire after the TTL.
+#[tokio::test]
+#[ignore = "Requires Docker (testcontainers)"]
+async fn test_distributed_counter_expires_after_ttl() {
+    let (_container, conn) = setup_redis().await;
+
+    let manager = ConnectionManager::new(ConnectionLimits::default())
+        .with_redis(conn.clone(), "ttl_expire:");
+
+    // Register a connection
+    let user_id = uid("user_expire_test");
+    manager.register("conn_expire_test".to_string(), user_id).await.unwrap();
+
+    // Verify counter exists and has value
+    let mut test_conn = conn.clone();
+    let key = "ttl_expire:connections:user:user_expire_test";
+    let count: Option<i64> = test_conn.get(key).await.unwrap();
+    assert_eq!(count, Some(1), "Counter should be 1 after registration");
+
+    // Get initial TTL
+    let initial_ttl: i64 = redis::cmd("TTL")
+        .arg(key)
+        .query_async(&mut test_conn)
+        .await
+        .expect("Failed to get initial TTL");
+    assert!(
+        initial_ttl > 0,
+        "Counter should have a TTL set, got {}",
+        initial_ttl
+    );
+
+    // Manually reduce TTL to 2 seconds to simulate expiry
+    let _: () = redis::cmd("EXPIRE")
+        .arg(key)
+        .arg(2)
+        .query_async(&mut test_conn)
+        .await
+        .expect("Failed to reduce TTL");
+
+    // Wait for TTL to expire
+    tokio::time::sleep(Duration::from_secs(3)).await;
+
+    // Verify counter has expired
+    let count_after_expiry: Option<i64> = test_conn.get(key).await.unwrap();
+    assert_eq!(
+        count_after_expiry, None,
+        "Counter should have expired after TTL"
+    );
+}
+
+/// Test that 2x TTL multiplier provides adequate safety margin.
+///
+/// Verifies that the TTL is long enough to survive one missed refresh
+/// but short enough to detect crashes quickly.
+#[tokio::test]
+#[ignore = "Requires Docker (testcontainers)"]
+async fn test_ttl_multiplier_provides_safety_margin() {
+    let (_container, conn) = setup_redis().await;
+
+    let manager = ConnectionManager::new(ConnectionLimits::default())
+        .with_redis(conn.clone(), "ttl_margin:");
+
+    // Register a connection
+    let user_id = uid("user_margin_test");
+    manager.register("conn_margin_test".to_string(), user_id).await.unwrap();
+
+    // Get initial TTL
+    let mut test_conn = conn.clone();
+    let key = "ttl_margin:connections:user:user_margin_test";
+    let ttl: i64 = redis::cmd("TTL")
+        .arg(key)
+        .query_async(&mut test_conn)
+        .await
+        .expect("Failed to get TTL");
+
+    // With 2x multiplier (120s TTL, 60s refresh):
+    // - One missed refresh: TTL goes from 120 to 60, still alive
+    // - Two missed refreshes: TTL would expire
+    //
+    // This provides a good balance between safety and crash detection speed.
+
+    // Verify TTL is at least 1.5x the refresh interval (survive one missed refresh)
+    let refresh_interval_secs = 60i64;
+    assert!(
+        ttl >= refresh_interval_secs * 3 / 2, // At least 1.5x
+        "TTL should provide safety margin for at least one missed refresh. \
+         TTL={}s, refresh_interval={}s",
+        ttl,
+        refresh_interval_secs
+    );
+
+    // Verify TTL is at most 2.5x the refresh interval (quick crash detection)
+    assert!(
+        ttl <= refresh_interval_secs * 5 / 2, // At most 2.5x
+        "TTL should allow quick crash detection. \
+         TTL={}s, refresh_interval={}s",
+        ttl,
+        refresh_interval_secs
+    );
+}

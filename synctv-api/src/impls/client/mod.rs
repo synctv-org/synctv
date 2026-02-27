@@ -112,6 +112,8 @@ pub struct ClientApiImpl {
     pub builtin_stun_url: Option<String>,
     /// Credential encryption for protecting sensitive data in `source_config`
     pub credential_encryption: Option<synctv_core::service::CredentialEncryption>,
+    /// TURN health checker for filtering unhealthy servers
+    pub turn_health_checker: Option<Arc<synctv_core::service::TurnHealthChecker>>,
 }
 
 impl ClientApiImpl {
@@ -146,6 +148,7 @@ impl ClientApiImpl {
             rate_limiter: None,
             builtin_stun_url: None,
             credential_encryption: None,
+            turn_health_checker: None,
         }
     }
 
@@ -167,6 +170,7 @@ impl ClientApiImpl {
             rate_limiter: None,
             builtin_stun_url: None,
             credential_encryption: config.credential_encryption,
+            turn_health_checker: None,
         }
     }
 
@@ -215,6 +219,13 @@ impl ClientApiImpl {
     #[must_use]
     pub fn with_builtin_stun_url(mut self, url: String) -> Self {
         self.builtin_stun_url = Some(url);
+        self
+    }
+
+    /// Set the TURN health checker for filtering unhealthy TURN servers.
+    #[must_use]
+    pub fn with_turn_health_checker(mut self, checker: Option<Arc<synctv_core::service::TurnHealthChecker>>) -> Self {
+        self.turn_health_checker = checker;
         self
     }
 

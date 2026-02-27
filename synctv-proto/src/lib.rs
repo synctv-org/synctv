@@ -413,6 +413,111 @@ mod tests {
         assert_eq!(decoded.detail, "");
     }
 
+    // === Notification Variant Tests ===
+
+    #[test]
+    fn roundtrip_user_notification() {
+        let notification = crate::client::UserNotification {
+            notification_id: "550e8400-e29b-41d4-a716-446655440000".to_string(),
+            notification_type: "room_invitation".to_string(),
+            title: "Room Invitation".to_string(),
+            content: "You have been invited to join a room".to_string(),
+            data: r#"{"room_id":"room123","room_name":"Test Room"}"#.to_string(),
+            timestamp: 1704067200000, // 2024-01-01 00:00:00 UTC
+        };
+        let bytes = notification.encode_to_vec();
+        let decoded = crate::client::UserNotification::decode(bytes.as_slice()).unwrap();
+        assert_eq!(decoded.notification_id, notification.notification_id);
+        assert_eq!(decoded.notification_type, notification.notification_type);
+        assert_eq!(decoded.title, notification.title);
+        assert_eq!(decoded.content, notification.content);
+        assert_eq!(decoded.data, notification.data);
+        assert_eq!(decoded.timestamp, notification.timestamp);
+    }
+
+    #[test]
+    fn server_message_notification_variant() {
+        use crate::client::server_message::Message;
+
+        let notification = crate::client::UserNotification {
+            notification_id: "notif-123".to_string(),
+            notification_type: "system".to_string(),
+            title: "System Update".to_string(),
+            content: "Server will restart in 10 minutes".to_string(),
+            data: String::new(),
+            timestamp: 1704067200000,
+        };
+
+        let server_msg = crate::client::ServerMessage {
+            message: Some(Message::Notification(notification.clone())),
+        };
+
+        // Encode and decode
+        let bytes = server_msg.encode_to_vec();
+        let decoded = crate::client::ServerMessage::decode(bytes.as_slice()).unwrap();
+
+        // Verify it's the Notification variant
+        match decoded.message {
+            Some(Message::Notification(decoded_notif)) => {
+                assert_eq!(decoded_notif.notification_id, notification.notification_id);
+                assert_eq!(decoded_notif.notification_type, notification.notification_type);
+                assert_eq!(decoded_notif.title, notification.title);
+                assert_eq!(decoded_notif.content, notification.content);
+                assert_eq!(decoded_notif.timestamp, notification.timestamp);
+            }
+            _ => panic!("Expected Notification variant, got {:?}", decoded.message),
+        }
+    }
+
+    #[test]
+    fn notification_is_distinct_from_error() {
+        use crate::client::server_message::Message;
+
+        let notification = crate::client::ServerMessage {
+            message: Some(Message::Notification(crate::client::UserNotification {
+                notification_id: "notif-123".to_string(),
+                notification_type: "system".to_string(),
+                title: "Test".to_string(),
+                content: "Test notification".to_string(),
+                data: String::new(),
+                timestamp: 0,
+            })),
+        };
+
+        let error = crate::client::ServerMessage {
+            message: Some(Message::Error(crate::client::ErrorMessage {
+                message: "Actual error".to_string(),
+                code: 1000,
+                detail: "Invalid token".to_string(),
+            })),
+        };
+
+        // Verify they are different variants
+        match &notification.message {
+            Some(Message::Notification(_)) => {
+                // Correct - it's a notification
+            }
+            Some(Message::Error(_)) => {
+                panic!("Notification should not be Error variant");
+            }
+            _ => {
+                panic!("Expected Notification variant");
+            }
+        }
+
+        match &error.message {
+            Some(Message::Notification(_)) => {
+                panic!("Error should not be Notification variant");
+            }
+            Some(Message::Error(_)) => {
+                // Correct - it's an error
+            }
+            _ => {
+                panic!("Expected Error variant");
+            }
+        }
+    }
+
     // === Admin Proto Tests ===
 
     #[test]

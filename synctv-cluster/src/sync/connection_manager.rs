@@ -31,6 +31,7 @@ pub struct ConnectionInfo {
     pub last_activity: Instant,
     pub message_count: u64,
     pub rtc_joined: bool,
+    pub rtc_joined_at: Option<Instant>,
 }
 
 /// Serializable version of ConnectionInfo for Redis persistence.
@@ -44,6 +45,7 @@ struct ConnectionInfoPersistent {
     last_activity_unix: u64,
     message_count: u64,
     rtc_joined: bool,
+    rtc_joined_at_unix: Option<u64>,
 }
 
 impl From<&ConnectionInfo> for ConnectionInfoPersistent {
@@ -53,6 +55,10 @@ impl From<&ConnectionInfo> for ConnectionInfoPersistent {
             .saturating_sub(info.connected_at.elapsed().as_secs());
         let last_activity_unix = now.duration_since(UNIX_EPOCH).unwrap().as_secs()
             .saturating_sub(info.last_activity.elapsed().as_secs());
+        let rtc_joined_at_unix = info.rtc_joined_at.map(|joined| {
+            now.duration_since(UNIX_EPOCH).unwrap().as_secs()
+                .saturating_sub(joined.elapsed().as_secs())
+        });
 
         Self {
             connection_id: info.connection_id.clone(),
@@ -62,6 +68,7 @@ impl From<&ConnectionInfo> for ConnectionInfoPersistent {
             last_activity_unix,
             message_count: info.message_count,
             rtc_joined: info.rtc_joined,
+            rtc_joined_at_unix,
         }
     }
 }
@@ -78,17 +85,24 @@ impl ConnectionInfo {
             last_activity: now,
             message_count: 0,
             rtc_joined: false,
+            rtc_joined_at: None,
         }
     }
 
-    #[must_use] 
+    #[must_use]
     pub fn duration(&self) -> Duration {
         self.connected_at.elapsed()
     }
 
-    #[must_use] 
+    #[must_use]
     pub fn idle_duration(&self) -> Duration {
         self.last_activity.elapsed()
+    }
+
+    /// Get the duration since the WebRTC session was joined, if joined
+    #[must_use]
+    pub fn rtc_session_duration(&self) -> Option<Duration> {
+        self.rtc_joined_at.map(|joined| joined.elapsed())
     }
 }
 
@@ -109,6 +123,9 @@ pub struct ConnectionLimits {
 
     /// Maximum connection duration
     pub max_duration: Duration,
+
+    /// WebRTC session timeout (remove from RTC-joined set if inactive)
+    pub webrtc_session_timeout: Duration,
 }
 
 impl Default for ConnectionLimits {
@@ -119,6 +136,7 @@ impl Default for ConnectionLimits {
             max_total: 10000,
             idle_timeout: Duration::from_secs(5 * 60), // 5 minutes
             max_duration: Duration::from_secs(24 * 60 * 60), // 24 hours
+            webrtc_session_timeout: Duration::from_secs(2 * 60 * 60), // 2 hours
         }
     }
 }
@@ -126,11 +144,11 @@ impl Default for ConnectionLimits {
 /// TTL for distributed connection counters in Redis (seconds).
 ///
 /// Acts as a crash-safety mechanism: if a node crashes without decrementing,
-/// the counter will expire after this duration. Set to 3x the TTL refresh
-/// interval (60s) so that the counter survives two consecutive refresh
-/// failures before expiring and causing incorrect connection counts for
-/// long-lived WebSocket connections (which can last 24+ hours).
-const DISTRIBUTED_COUNTER_TTL_SECONDS: i64 = 180; // 3x TTL refresh interval (60s)
+/// the counter will expire after this duration. Set to 2x the TTL refresh
+/// interval (60s) to balance crash recovery speed with tolerance for
+/// transient network issues. This allows the counter to survive one missed
+/// refresh while detecting crashes more quickly than the previous 3x multiplier.
+const DISTRIBUTED_COUNTER_TTL_SECONDS: i64 = 120; // 2x TTL refresh interval (60s)
 
 /// Maximum number of keys to refresh in a single batch during TTL refresh.
 ///
@@ -1129,6 +1147,30 @@ impl ConnectionManager {
                     "Connection max duration reached"
                 );
                 to_disconnect.push(conn.connection_id.clone());
+                continue;
+            }
+
+            // Check WebRTC session timeout
+            // Only check if the connection is marked as RTC-joined
+            if conn.rtc_joined {
+                if let Some(rtc_duration) = conn.rtc_session_duration() {
+                    if rtc_duration > self.limits.webrtc_session_timeout {
+                        warn!(
+                            connection_id = %conn.connection_id,
+                            user_id = %conn.user_id.as_str(),
+                            room_id = ?conn.room_id,
+                            rtc_session_duration = ?rtc_duration,
+                            webrtc_session_timeout = ?self.limits.webrtc_session_timeout,
+                            "WebRTC session timeout"
+                        );
+                        // Mark as left WebRTC session
+                        if let Some(room_id) = &conn.room_id {
+                            self.mark_rtc_joined(room_id, &conn.user_id, &conn.connection_id, false);
+                        }
+                        // Add to disconnect list to force reconnection
+                        to_disconnect.push(conn.connection_id.clone());
+                    }
+                }
             }
         }
 
@@ -1965,6 +2007,12 @@ impl ConnectionManager {
         if let Some(mut conn) = self.connections.get_mut(conn_id) {
             if &conn.user_id == user_id && conn.room_id.as_ref() == Some(room_id) {
                 conn.rtc_joined = joined;
+                // Set or clear the RTC join timestamp
+                conn.rtc_joined_at = if joined {
+                    Some(Instant::now())
+                } else {
+                    None
+                };
                 debug!(
                     connection_id = %conn_id,
                     user_id = %user_id.as_str(),
@@ -2424,6 +2472,7 @@ mod tests {
             last_activity_unix: 0,
             message_count: 0,
             rtc_joined: false,
+            rtc_joined_at_unix: None,
         };
         let _: () = redis_conn
             .set(stale_key, serde_json::to_string(&stale_meta).unwrap())
@@ -2524,6 +2573,7 @@ mod tests {
             last_activity_unix: 2000,
             message_count: 5,
             rtc_joined: true,
+            rtc_joined_at_unix: Some(1500),
         };
 
         let json = serde_json::to_string(&persistent).unwrap();

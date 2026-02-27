@@ -63,6 +63,7 @@ pub struct Services {
     pub audit_service: Arc<synctv_core::service::AuditService>,
     pub live_streaming_infrastructure: Option<Arc<synctv_livestream::api::LiveStreamingInfrastructure>>,
     pub stun_server: Option<Arc<synctv_core::service::StunServer>>,
+    pub turn_health_checker: Option<Arc<synctv_core::service::TurnHealthChecker>>,
     pub node_registry: Option<Arc<synctv_cluster::discovery::NodeRegistry>>,
     pub health_monitor: Option<Arc<synctv_cluster::discovery::HealthMonitor>>,
     pub load_balancer: Option<Arc<synctv_cluster::discovery::LoadBalancer>>,
@@ -363,6 +364,7 @@ impl SyncTvServer {
                     let addr = s.external_addr();
                     format!("stun:{}:{}", addr.ip(), addr.port())
                 }),
+                turn_health_checker: services.turn_health_checker.clone(),
             };
             if let Err(e) = synctv_api::grpc::serve(grpc_config).await {
                 error!("gRPC server error: {}", e);
@@ -441,6 +443,7 @@ impl SyncTvServer {
                     let addr = s.external_addr();
                     format!("stun:{}:{}", addr.ip(), addr.port())
                 }),
+                turn_health_checker: self.services.turn_health_checker.clone(),
                 credential_encryption: self.services.credential_encryption.clone(),
             },
         );

@@ -8,6 +8,9 @@ pub mod impls;
 pub mod proto;
 pub mod observability;
 
+// Shared validation utilities
+pub mod room_id_validation;
+
 // Re-export commonly used types
 pub use http::AppState;
 

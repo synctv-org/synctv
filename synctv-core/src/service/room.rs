@@ -14,6 +14,62 @@
 //! span multiple sub-services or require transaction coordination. For
 //! domain-specific operations, the API layer can also access sub-services
 //! directly via the accessor methods (`member_service()`, `media_service()`, etc.).
+//!
+//! # Cache Invalidation Patterns
+//!
+//! This service uses a standardized cache invalidation strategy to prevent
+//! race conditions and ensure data consistency across replicas.
+//!
+//! ## Transactional Operations (Before Commit)
+//!
+//! For operations wrapped in transactions (e.g., `delete_room`, `admin_delete_room`),
+//! cache invalidation MUST happen BEFORE `tx.commit()`. This prevents the race condition:
+//!
+//! 1. Transaction commits (data changes)
+//! 2. Concurrent request reads stale data from cache
+//! 3. Cache is invalidated (too late - stale data was already served)
+//!
+//! By invalidating before commit, we ensure that when the transaction commits,
+//! the cache is already empty. Any concurrent request will miss the cache and
+//! read fresh data from the database.
+//!
+//! ### Rollback Safety
+//!
+//! If the transaction rolls back after cache invalidation, the cache will be
+//! empty and will be repopulated on the next read with the correct data.
+//! This is safe because:
+//! - Empty cache → cache miss → database read → returns current state → cache repopulated
+//!
+//! ### Implementation
+//!
+//! Use the `invalidate_room_caches()` helper method for transactional operations:
+//!
+//! ```ignore
+//! let mut tx = self.pool.begin().await?;
+//! // ... perform database operations ...
+//! self.invalidate_room_caches(&room_id).await;  // BEFORE commit
+//! tx.commit().await?;
+//! // ... post-commit operations ...
+//! ```
+//!
+//! ## Non-Transactional Operations
+//!
+//! For simple updates without transactions (e.g., status changes, bans), cache
+//! invalidation can happen after the database operation completes. These operations
+//! typically only need room cache invalidation (not permission/playback):
+//!
+//! ```ignore
+//! self.room_repo.update_status(&room_id, new_status).await?;
+//! self.notify_room_invalidation(&room_id).await;  // Room cache only
+//! ```
+//!
+//! ## Cache Types
+//!
+//! - **Room cache**: Broadcast to all replicas via `CacheInvalidationService`
+//! - **Permission cache**: Local only (cleared on each replica independently)
+//! - **Playback cache**: Broadcast to all replicas via `CacheInvalidationService`
+//!
+//! The `invalidate_room_caches()` method handles all three types appropriately.
 
 use sqlx::PgPool;
 use chrono::{DateTime, Utc};
@@ -457,9 +513,10 @@ impl RoomService {
             return Err(Error::Authorization("You are banned from this room".to_string()));
         }
 
-        // Check password if required (CPU-intensive bcrypt, done before lock)
-        // Store the verified hash for fast comparison under lock.
-        let verified_hash: Option<String> = if ctx.settings.require_password.0 {
+        // Check password if required (CPU-intensive bcrypt, done before lock).
+        // This is a pre-check to avoid acquiring the lock if the password is invalid.
+        // We'll re-verify under the lock to catch race conditions.
+        if ctx.settings.require_password.0 {
             if let Some(ref hash) = ctx.password_hash {
                 let provided_password = password.as_ref().ok_or_else(|| {
                     tracing::warn!(room_id = %room_id, user_id = %user_id, "Password required but not provided");
@@ -470,16 +527,13 @@ impl RoomService {
                     tracing::warn!(room_id = %room_id, user_id = %user_id, "Invalid password provided");
                     return Err(Error::Authorization("Invalid password".to_string()));
                 }
-                tracing::debug!(room_id = %room_id, user_id = %user_id, "Password verified successfully");
-                Some(hash.clone())
+                tracing::debug!(room_id = %room_id, user_id = %user_id, "Password verified successfully (pre-check)");
             } else {
                 // Room requires password but none is configured -- reject join
                 tracing::warn!(room_id = %room_id, "Room requires password but none is set");
                 return Err(Error::Authorization("Invalid password".to_string()));
             }
-        } else {
-            None
-        };
+        }
 
         // Use distributed lock to make the check-then-add-member atomic.
         // This prevents the TOCTOU race where two concurrent join requests
@@ -492,7 +546,6 @@ impl RoomService {
                 let room_id = room_id.clone();
                 let user_id = user_id.clone();
                 let password = password.clone();
-                let verified_hash = verified_hash.clone();
                 async move {
                     // Re-validate state under lock to catch changes that occurred
                     // between the initial check and lock acquisition
@@ -514,26 +567,22 @@ impl RoomService {
                     // lock acquisition. This ensures the provided password is still
                     // valid against the current password hash.
                     //
-                    // Optimization: if the hash hasn't changed, skip the expensive
-                    // bcrypt verification since we already verified before the lock.
+                    // Always re-verify under lock, even if the hash appears unchanged.
+                    // This prevents the A→B→A race condition where the password changes
+                    // and then changes back to the same hash between the initial check
+                    // and lock acquisition.
                     if fresh_ctx.settings.require_password.0 {
                         if let Some(ref hash) = fresh_ctx.password_hash {
-                            // Fast path: hash unchanged, previous verification still valid
-                            if verified_hash.as_ref() == Some(hash) {
-                                tracing::debug!(room_id = %room_id, user_id = %user_id, "Password hash unchanged, skipping re-verification");
-                            } else {
-                                // Hash changed or wasn't verified before, must re-verify
-                                let provided_password = password.ok_or_else(|| {
-                                    tracing::warn!(room_id = %room_id, user_id = %user_id, "Password required but not provided under lock");
-                                    Error::Authorization("Password required".to_string())
-                                })?;
+                            let provided_password = password.ok_or_else(|| {
+                                tracing::warn!(room_id = %room_id, user_id = %user_id, "Password required but not provided under lock");
+                                Error::Authorization("Password required".to_string())
+                            })?;
 
-                                if !verify_password(&provided_password, hash).await? {
-                                    tracing::warn!(room_id = %room_id, user_id = %user_id, "Invalid password provided under lock (password changed during join)");
-                                    return Err(Error::Authorization("Invalid password".to_string()));
-                                }
-                                tracing::debug!(room_id = %room_id, user_id = %user_id, "Password re-verified successfully under lock");
+                            if !verify_password(&provided_password, hash).await? {
+                                tracing::warn!(room_id = %room_id, user_id = %user_id, "Invalid password provided under lock (password changed during join)");
+                                return Err(Error::Authorization("Invalid password".to_string()));
                             }
+                            tracing::debug!(room_id = %room_id, user_id = %user_id, "Password re-verified successfully under lock");
                         } else {
                             // Room requires password but none is configured -- reject join
                             tracing::warn!(room_id = %room_id, "Room requires password but none is set under lock");
@@ -823,22 +872,8 @@ impl RoomService {
         .await?;
 
         // Invalidate caches BEFORE committing the transaction.
-        // This prevents a race condition where:
-        // 1. Transaction commits (deleted_at is set)
-        // 2. Another request reads stale data from cache (room still appears active)
-        // 3. Cache is invalidated (too late - stale data was already served)
-        //
-        // By invalidating before commit, we ensure that when the transaction commits,
-        // the cache is already empty. Any concurrent request will miss the cache
-        // and read fresh data from the database (which will correctly filter out
-        // the deleted room via `deleted_at IS NULL`).
-        //
-        // Note: If the transaction rolls back after cache invalidation, the cache
-        // will simply be empty and will be repopulated on the next read with the
-        // correct (still-active) room data. This is safe.
-        self.notify_room_invalidation(&room_id).await;
-        self.permission_service.invalidate_room_cache(&room_id).await;
-        self.playback_service.invalidate_playback_cache(&room_id).await;
+        // See `invalidate_room_caches` for detailed rationale.
+        self.invalidate_room_caches(&room_id).await;
 
         // Commit transaction - all or nothing
         tx.commit().await?;
@@ -1668,35 +1703,97 @@ impl RoomService {
 
     /// Remove media from playlist
     ///
-    /// Uses a transaction with a locking read on the playback state to
-    /// atomically verify the media is not currently playing before deleting it,
-    /// preventing a TOCTOU race where another user could switch playback to
-    /// this media between the check and the delete.
+    /// Uses a transaction to atomically:
+    /// 1. Verify the user has permission (TOCTOU prevention - permission check is within transaction)
+    /// 2. Verify the media is not currently playing (locking read on playback state)
+    /// 3. Delete the media
+    ///
+    /// # TOCTOU Prevention
+    ///
+    /// The permission check is performed **within the transaction** using raw SQL.
+    /// This prevents a race condition where:
+    /// - Thread A: Check permission (passes)
+    /// - Thread B: Revoke permission
+    /// - Thread A: Delete media (succeeds despite revoked permission)
+    ///
+    /// By checking permissions within the transaction, the database's isolation
+    /// level ensures that permission changes during the operation will cause the
+    /// transaction to fail or the check to see the updated permissions.
     pub async fn remove_media(
         &self,
         room_id: RoomId,
         user_id: UserId,
         media_id: MediaId,
     ) -> Result<()> {
-        // Permission check before starting transaction (uses cache, lightweight)
-        let media = self.media_service.get_media(&media_id).await?
+        // Start transaction first for atomic permission check and delete
+        let mut tx = self.pool.begin().await?;
+
+        // Step 1: Fetch media within transaction to verify it exists and get creator_id
+        let media_row: Option<(String, Option<String>, String)> = sqlx::query_as(
+            "SELECT id, creator_id, room_id FROM media WHERE id = $1"
+        )
+        .bind(media_id.as_str())
+        .fetch_optional(&mut *tx)
+        .await?
+        .map(|(id, creator_id, room_id)| (id, creator_id, room_id));
+
+        let (media_id, media_creator_id, media_room_id) = media_row
             .ok_or_else(|| Error::NotFound("Media not found".to_string()))?;
-        if media.room_id != room_id {
+
+        if media_room_id != room_id.as_str() {
             return Err(Error::Authorization("Media does not belong to this room".to_string()));
         }
-        let required_permission = if media.creator_id.as_ref() == Some(&user_id) {
+
+        // Step 2: Check permission within transaction (TOCTOU fix)
+        // We perform a raw SQL query to calculate effective permissions atomically
+        let is_owner = media_creator_id.as_deref() == Some(user_id.as_str());
+
+        let has_permission: Option<bool> = sqlx::query_scalar(
+            "SELECT EXISTS (
+                SELECT 1
+                FROM room_members rm
+                LEFT JOIN room_settings rs ON rs.room_id = rm.room_id
+                WHERE rm.room_id = $1
+                  AND rm.user_id = $2
+                  AND rm.left_at IS NULL
+                  AND (
+                      -- Creator has all permissions
+                      rm.role = 'creator'
+                      OR (
+                          -- Calculate effective permissions:
+                          -- (role_default | added) & ~removed
+                          CASE rm.role
+                              WHEN 'admin' THEN
+                                  ((COALESCE(rs.admin_added_permissions, 0::bigint) | rm.added_permissions) &
+                                   ~COALESCE(rs.admin_removed_permissions, 0::bigint) & ~rm.removed_permissions) & $3 > 0
+                              WHEN 'member' THEN
+                                  ((COALESCE(rs.member_added_permissions, 0::bigint) | rm.added_permissions) &
+                                   ~COALESCE(rs.member_removed_permissions, 0::bigint) & ~rm.removed_permissions) & $3 > 0
+                              WHEN 'guest' THEN
+                                  ((COALESCE(rs.guest_added_permissions, 0::bigint) | rm.added_permissions) &
+                                   ~COALESCE(rs.guest_removed_permissions, 0::bigint) & ~rm.removed_permissions) & $3 > 0
+                              ELSE FALSE
+                          END
+                      )
+                  )
+            )"
+        )
+        .bind(room_id.as_str())
+        .bind(user_id.as_str())
+        .bind(if is_owner {
             PermissionBits::DELETE_MOVIE_SELF
         } else {
             PermissionBits::DELETE_MOVIE_ANY
-        };
-        self.permission_service
-            .check_permission(&room_id, &user_id, required_permission)
-            .await?;
+        } as i64)
+        .fetch_optional(&mut *tx)
+        .await?
+        .flatten();
 
-        // Atomic check-and-delete within a transaction
-        let mut tx = self.pool.begin().await?;
+        if !has_permission.unwrap_or(false) {
+            return Err(Error::Authorization("Permission denied".to_string()));
+        }
 
-        // Lock the playback state row to prevent concurrent playback switches
+        // Step 3: Lock the playback state row to prevent concurrent playback switches
         let playing_media_id: Option<String> = sqlx::query_scalar(
             "SELECT playing_media_id FROM room_playback_state
              WHERE room_id = $1
@@ -1713,7 +1810,7 @@ impl RoomService {
             ));
         }
 
-        // Delete the media within the transaction
+        // Step 4: Delete the media within the transaction
         sqlx::query("DELETE FROM media WHERE id = $1")
             .bind(media_id.as_str())
             .execute(&mut *tx)
@@ -1724,6 +1821,7 @@ impl RoomService {
         tracing::info!(
             room_id = %room_id.as_str(),
             media_id = %media_id.as_str(),
+            user_id = %user_id.as_str(),
             "Media removed from playlist"
         );
 
@@ -1978,7 +2076,18 @@ impl RoomService {
     }
 
     /// Update room directly (admin use, bypasses permission checks)
-    pub async fn admin_update_room(&self, room: &Room) -> Result<Room> {
+    ///
+    /// # Security
+    /// Verifies that the caller has admin or root role before proceeding.
+    pub async fn admin_update_room(&self, room: &Room, admin_user_id: &UserId) -> Result<Room> {
+        // Verify caller has admin/root role (defense-in-depth)
+        let admin_user = self.user_service.get_user(admin_user_id).await?;
+        if !admin_user.role.is_admin_or_above() {
+            return Err(Error::Authorization(
+                "Admin role required for this operation".to_string(),
+            ));
+        }
+
         let old_version = room.version;
         let updated = self.room_repo.update(room, old_version).await?;
         self.notify_room_invalidation(&room.id).await;
@@ -1989,7 +2098,18 @@ impl RoomService {
     ///
     /// Uses a transaction for atomicity, matching the pattern of `delete_room`.
     /// Immediately cleans up non-critical related data (see delete_room for details).
+    ///
+    /// # Security
+    /// Verifies that the caller has admin or root role before proceeding.
     pub async fn admin_delete_room(&self, room_id: &RoomId, admin_user_id: &UserId) -> Result<()> {
+        // Verify caller has admin/root role (defense-in-depth)
+        let admin_user = self.user_service.get_user(admin_user_id).await?;
+        if !admin_user.role.is_admin_or_above() {
+            return Err(Error::Authorization(
+                "Admin role required for this operation".to_string(),
+            ));
+        }
+
         // Wrap deletion in a transaction for atomicity
         let mut tx = self.pool.begin().await?;
 
@@ -2044,9 +2164,9 @@ impl RoomService {
         .execute(&mut *tx)
         .await?;
 
-        // Invalidate caches BEFORE committing the transaction (same pattern as delete_room)
-        // See delete_room for detailed explanation of why this ordering is important.
-        self.notify_room_invalidation(room_id).await;
+        // Invalidate caches BEFORE committing the transaction.
+        // See `invalidate_room_caches` for detailed rationale.
+        self.invalidate_room_caches(room_id).await;
 
         tx.commit().await?;
 
@@ -2200,13 +2320,16 @@ impl RoomService {
         .execute(&mut *tx)
         .await?;
 
+        // Invalidate caches BEFORE committing the transaction.
+        // See `invalidate_room_caches` for detailed rationale.
+        self.invalidate_room_caches(room_id).await;
+
         tx.commit().await?;
 
         // Notify after commit
         let _ = self.notification_service.notify_room_deleted(room_id).await;
 
         crate::metrics::http::ROOMS_ACTIVE.dec();
-        self.notify_room_invalidation(room_id).await;
 
         // Audit log
         if let Some(ref audit) = self.audit_service {
@@ -2401,6 +2524,61 @@ impl RoomService {
                 );
             }
         }
+    }
+
+    /// Invalidate all caches associated with a room.
+    ///
+    /// This method consolidates cache invalidation for:
+    /// - Room data (broadcast to other replicas)
+    /// - Permission data (local cache)
+    /// - Playback state (broadcast to other replicas)
+    ///
+    /// ## Timing Requirements
+    ///
+    /// **CRITICAL**: This MUST be called BEFORE transaction commit to prevent
+    /// race conditions:
+    ///
+    /// 1. Transaction commits (data is changed)
+    /// 2. Another request reads stale data from cache (shows old state)
+    /// 3. Cache is invalidated (too late - stale data was already served)
+    ///
+    /// By invalidating before commit, we ensure that when the transaction commits,
+    /// the cache is already empty. Any concurrent request will miss the cache
+    /// and read fresh data from the database.
+    ///
+    /// ## Rollback Safety
+    ///
+    /// If the transaction rolls back after cache invalidation, the cache will
+    /// simply be empty and will be repopulated on the next read with the correct
+    /// data. This is safe because:
+    ///
+    /// - Empty cache causes a cache miss
+    /// - Cache miss triggers a database read
+    /// - Database read returns the current (pre-rollback) state
+    /// - Cache is repopulated with correct data
+    ///
+    /// ## Usage Pattern
+    ///
+    /// ```ignore
+    /// let mut tx = self.pool.begin().await?;
+    /// // ... perform database operations ...
+    /// // Invalidate BEFORE commit
+    /// self.invalidate_room_caches(&room_id).await;
+    /// tx.commit().await?;
+    /// // ... post-commit operations ...
+    /// ```
+    ///
+    /// Best-effort: logs warnings on failure but does not propagate errors,
+    /// since cache invalidation is not critical to the mutation itself.
+    async fn invalidate_room_caches(&self, room_id: &RoomId) {
+        // Broadcast room invalidation to other replicas (and clear local cache)
+        self.notify_room_invalidation(room_id).await;
+
+        // Invalidate permission cache (local only)
+        self.permission_service.invalidate_room_cache(room_id).await;
+
+        // Invalidate playback state cache (broadcast to other replicas)
+        self.playback_service.invalidate_playback_cache(room_id).await;
     }
 
     // ========================
@@ -3201,6 +3379,79 @@ mod tests {
             owner.clone(),
         );
         assert_eq!(room.status, RoomStatus::Active);
+    }
+
+    // ========== Join Room Password Verification Race Condition ==========
+
+    /// Documents the A→B→A password change race condition.
+    ///
+    /// SCENARIO: Fast path optimization doesn't detect intermediate password changes.
+    ///
+    /// 1. Initial check: password "abc123" verified against hash H1, verified_hash = H1
+    /// 2. Password changes: H1 → H2 (different password)
+    /// 3. Password changes back: H2 → H1 (same password, same hash if salt reused)
+    /// 4. Under lock: fast path sees verified_hash (H1) == current_hash (H1)
+    /// 5. Fast path skips re-verification, missing the intermediate change
+    ///
+    /// NOTE: Argon2id uses random salts, so re-hashing the same password produces
+    /// a different hash. The race condition only occurs if the exact same hash
+    /// string is restored (e.g., via database update), not by re-setting the same
+    /// password value.
+    ///
+    /// FIX: Remove fast-path optimization, always re-verify password under lock.
+    /// This eliminates the race condition entirely.
+    ///
+    /// See: /Volumes/workspace/rust/synctv/synctv-core/src/service/room.rs:575-598
+    #[test]
+    fn test_join_room_password_race_condition_documentation() {
+        // This is a documentation test explaining the race condition.
+        //
+        // The bug occurs when:
+        // 1. User provides password "abc123"
+        // 2. Initial verification succeeds against hash H1
+        // 3. Password changes to "xyz789" (hash H2)
+        // 4. Password changes back to "abc123" with hash H1 (same hash!)
+        // 5. Under lock, fast path skips re-verification
+        //
+        // The fix: Remove the fast path at lines 578-579 and always re-verify.
+        //
+        // Before fix:
+        //   if verified_hash.as_ref() == Some(hash) {
+        //       // BUG: Skip re-verification
+        //   }
+        //
+        // After fix:
+        //   // Always re-verify, no fast path
+        //   let provided_password = password.ok_or_else(|| ...)?;
+        //   if !verify_password(&provided_password, hash).await? {
+        //       return Err(...);
+        //   }
+
+        // Demonstrate that hash comparison alone doesn't detect intermediate changes
+        let hash1 = "$argon2id$v=19$m=65536,t=3,p=4$abc123$xyz789";
+        let hash2 = "$argon2id$v=19$m=65536,t=3,p=4$different$salt";
+        let hash3 = "$argon2id$v=19$m=65536,t=3,p=4$abc123$xyz789"; // Same as hash1
+
+        let verified_hash: Option<String> = Some(hash1.to_string());
+
+        // Initial state: hash1
+        assert_eq!(verified_hash.as_ref().map(|s| s.as_str()), Some(hash1));
+
+        // Intermediate change: hash1 -> hash2
+        let current_hash: Option<&str> = Some(hash2);
+        assert_ne!(verified_hash.as_ref().map(|s| s.as_str()), current_hash, "Hash changed, should re-verify");
+
+        // A->B->A change: hash2 -> hash1 (same as original)
+        let current_hash: Option<&str> = Some(hash3);
+        assert_eq!(
+            verified_hash.as_ref().map(|s| s.as_str()),
+            current_hash,
+            "Hash is same as initial, fast path would skip re-verification"
+        );
+
+        // The problem: fast path can't distinguish between:
+        // - No change (safe to skip)
+        // - A->B->A change (unsafe to skip, but hash comparison can't tell)
     }
 
     // ========== Integration Test Placeholders ==========

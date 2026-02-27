@@ -704,12 +704,11 @@ impl StreamMessageHandler {
                                 break;
                             }
                         }
-                        Ok(ClusterEvent::UserNotification { ref user_id, ref title, ref content, ref notification_type, ref notification_id, .. }) => {
+                        Ok(ClusterEvent::UserNotification { ref user_id, ref title, ref content, ref notification_type, ref notification_id, timestamp, .. }) => {
                             // RT-1: Push persistent notification to user's active WebSocket connection.
-                            // NOTE: Uses Error variant with code 5000 (NOTIFICATION_PUSH) as a
-                            // transport for notifications. See error_codes::NOTIFICATION_PUSH docs.
+                            // Uses the dedicated Notification variant (not ErrorMessage abuse).
                             if *user_id == self.user_id {
-                                let json_data = serde_json::json!({
+                                let data = serde_json::json!({
                                     "type": "user_notification",
                                     "notification_id": notification_id,
                                     "notification_type": notification_type,
@@ -717,11 +716,14 @@ impl StreamMessageHandler {
                                     "content": content,
                                 });
                                 let msg = ServerMessage {
-                                    message: Some(crate::proto::client::server_message::Message::Error(
-                                        crate::proto::client::ErrorMessage {
-                                            message: json_data.to_string(),
-                                            code: crate::impls::error_codes::NOTIFICATION_PUSH,
-                                            detail: String::new(),
+                                    message: Some(crate::proto::client::server_message::Message::Notification(
+                                        crate::proto::client::UserNotification {
+                                            notification_id: notification_id.clone(),
+                                            notification_type: notification_type.clone(),
+                                            title: title.clone(),
+                                            content: content.clone(),
+                                            data: data.to_string(),
+                                            timestamp: timestamp.timestamp_millis(),
                                         },
                                     )),
                                 };
@@ -942,36 +944,70 @@ impl StreamMessageHandler {
         // RT-2: If this connection had an active WebRTC session, decrement the
         // metric and broadcast WebRtcLeave so other peers can clean up.
         // Use Acquire ordering to synchronize with the Release store in handle_webrtc_join/leave.
+        //
+        // IMPORTANT: We must check if the connection is STILL marked as RTC-joined
+        // in the connection manager before decrementing the metric. This prevents
+        // a race condition where:
+        // 1. Cleanup task times out the WebRTC session (mark_rtc_joined(false))
+        // 2. Connection ungracefully disconnects
+        // 3. cleanup() sees has_webrtc_session=true and decrements the metric again
+        // Result: Metric underflow (negative value)
+        //
+        // By checking the connection manager's state, we ensure idempotency:
+        // - If the cleanup task already timed out the session, the connection
+        //   manager will have rtc_joined=false, and we skip the decrement
+        // - If the user explicitly left WebRTC, the flag is already false, and we skip
+        // - Only if the connection truly had an active session do we decrement
         if self
             .has_webrtc_session
             .swap(false, std::sync::atomic::Ordering::Acquire)
         {
-            synctv_core::metrics::http::WEBRTC_PEERS_ACTIVE.dec();
+            // Check if the connection is still marked as RTC-joined in the connection manager
+            // This prevents double-decrement if the cleanup task already timed out the session
+            let is_still_rtc_joined = self
+                .connection_manager
+                .get_connection(&self.connection_id)
+                .map(|conn| conn.rtc_joined)
+                .unwrap_or(false);
 
-            // Mark the connection as no longer RTC-joined in the connection manager
-            self.connection_manager.mark_rtc_joined(
-                &self.room_id,
-                &self.user_id,
-                &self.connection_id,
-                false,
-            );
+            if is_still_rtc_joined {
+                // Only decrement the metric if the connection was still RTC-joined
+                synctv_core::metrics::http::WEBRTC_PEERS_ACTIVE.dec();
 
-            // Broadcast WebRtcLeave so other peers know this user dropped
-            let leave_event = ClusterEvent::WebRTCLeave {
-                event_id: nanoid::nanoid!(16),
-                room_id: self.room_id.clone(),
-                user_id: self.user_id.clone(),
-                conn_id: self.connection_id.clone(),
-                timestamp: chrono::Utc::now(),
-            };
-            self.cluster_manager.broadcast(leave_event);
+                // Mark the connection as no longer RTC-joined in the connection manager
+                self.connection_manager.mark_rtc_joined(
+                    &self.room_id,
+                    &self.user_id,
+                    &self.connection_id,
+                    false,
+                );
 
-            tracing::info!(
-                user = %self.username,
-                room = %room_id,
-                connection = %self.connection_id,
-                "WebRTC session cleaned up on disconnect"
-            );
+                // Broadcast WebRtcLeave so other peers know this user dropped
+                let leave_event = ClusterEvent::WebRTCLeave {
+                    event_id: nanoid::nanoid!(16),
+                    room_id: self.room_id.clone(),
+                    user_id: self.user_id.clone(),
+                    conn_id: self.connection_id.clone(),
+                    timestamp: chrono::Utc::now(),
+                };
+                self.cluster_manager.broadcast(leave_event);
+
+                tracing::info!(
+                    user = %self.username,
+                    room = %room_id,
+                    connection = %self.connection_id,
+                    "WebRTC session cleaned up on disconnect"
+                );
+            } else {
+                // Session was already cleaned up by timeout task or explicit leave
+                // Just clear the connection manager state (idempotent)
+                tracing::debug!(
+                    user = %self.username,
+                    room = %room_id,
+                    connection = %self.connection_id,
+                    "WebRTC session already cleaned up (skipped metric decrement and broadcast)"
+                );
+            }
         }
 
         // R-10/R-11: If the disconnect was triggered by a cluster event that
@@ -1327,11 +1363,10 @@ impl StreamMessageHandler {
 
                         admin_event = admin_rx.recv() => {
                             // RT-1: Push UserNotification to this user's WebSocket.
-                            // NOTE: Uses Error variant with code 5000 (NOTIFICATION_PUSH) as a
-                            // transport for notifications. See error_codes::NOTIFICATION_PUSH docs.
-                            if let Ok(ClusterEvent::UserNotification { user_id: ref uid, ref title, ref content, ref notification_type, ref notification_id, .. }) = admin_event {
+                            // Uses the dedicated Notification variant (not ErrorMessage abuse).
+                            if let Ok(ClusterEvent::UserNotification { user_id: ref uid, ref title, ref content, ref notification_type, ref notification_id, timestamp, .. }) = admin_event {
                                 if *uid == user_id {
-                                    let json_data = serde_json::json!({
+                                    let data = serde_json::json!({
                                         "type": "user_notification",
                                         "notification_id": notification_id,
                                         "notification_type": notification_type,
@@ -1339,11 +1374,14 @@ impl StreamMessageHandler {
                                         "content": content,
                                     });
                                     let msg = ServerMessage {
-                                        message: Some(crate::proto::client::server_message::Message::Error(
-                                            crate::proto::client::ErrorMessage {
-                                                message: json_data.to_string(),
-                                                code: crate::impls::error_codes::NOTIFICATION_PUSH,
-                                                detail: String::new(),
+                                        message: Some(crate::proto::client::server_message::Message::Notification(
+                                            crate::proto::client::UserNotification {
+                                                notification_id: notification_id.clone(),
+                                                notification_type: notification_type.clone(),
+                                                title: title.clone(),
+                                                content: content.clone(),
+                                                data: data.to_string(),
+                                                timestamp: timestamp.timestamp_millis(),
                                             },
                                         )),
                                     };

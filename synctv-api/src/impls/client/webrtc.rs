@@ -60,12 +60,28 @@ impl ClientApiImpl {
                 user_id.as_str(),
                 webrtc_config.turn_credential_ttl_seconds,
             );
-            servers.push(IceServer {
-                urls: webrtc_config.turn_server_urls.clone(),
-                username: Some(cred.username),
-                credential: Some(cred.password),
-                expiry_time: cred.expiry_timestamp as i64,
-            });
+
+            // Filter out unhealthy TURN servers
+            let turn_urls = if let Some(checker) = &self.turn_health_checker {
+                checker.filter_healthy_servers(&webrtc_config.turn_server_urls).await
+            } else {
+                // No health checker configured - use all servers
+                webrtc_config.turn_server_urls.clone()
+            };
+
+            // Only add TURN entry if we have healthy servers
+            if !turn_urls.is_empty() {
+                servers.push(IceServer {
+                    urls: turn_urls,
+                    username: Some(cred.username),
+                    credential: Some(cred.password),
+                    expiry_time: cred.expiry_timestamp as i64,
+                });
+            } else {
+                tracing::warn!(
+                    "All configured TURN servers are unhealthy - excluding TURN from ICE server list"
+                );
+            }
         } else if let Some(registry) = &self.settings_registry {
             // Fallback: static TURN credentials from dynamic settings
             if let Ok(turn_list) = registry.turn_servers.get() {
@@ -80,12 +96,23 @@ impl ClientApiImpl {
                 };
 
                 for ts in &turn_list.0 {
-                    servers.push(IceServer {
-                        urls: ts.urls.clone(),
-                        username: ts.username.clone(),
-                        credential: ts.credential.clone(),
-                        expiry_time,
-                    });
+                    // Filter out unhealthy TURN servers
+                    let turn_urls = if let Some(checker) = &self.turn_health_checker {
+                        checker.filter_healthy_servers(&ts.urls).await
+                    } else {
+                        // No health checker configured - use all servers
+                        ts.urls.clone()
+                    };
+
+                    // Only add TURN entry if we have healthy servers
+                    if !turn_urls.is_empty() {
+                        servers.push(IceServer {
+                            urls: turn_urls,
+                            username: ts.username.clone(),
+                            credential: ts.credential.clone(),
+                            expiry_time,
+                        });
+                    }
                 }
             }
         }

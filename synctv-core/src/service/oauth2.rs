@@ -48,6 +48,9 @@ pub trait OAuthStateStore: Send + Sync {
     /// Returns `Ok(Some(_))` exactly once per stored token.
     /// Returns `Ok(None)` for unknown or already-consumed tokens.
     async fn consume(&self, token_id: &str) -> Result<Option<OAuth2State>>;
+
+    /// Return the backend name (e.g. "redis", "memory").
+    fn backend_name(&self) -> &'static str;
 }
 
 // ============================================================================
@@ -75,6 +78,10 @@ const OAUTH2_STATE_KEY_PREFIX: &str = "oauth2:state:";
 
 #[async_trait::async_trait]
 impl OAuthStateStore for RedisOAuthStateStore {
+    fn backend_name(&self) -> &'static str {
+        "redis"
+    }
+
     async fn store(&self, token_id: &str, state: &OAuth2State, ttl: std::time::Duration) -> Result<()> {
         let key = format!("{OAUTH2_STATE_KEY_PREFIX}{token_id}");
         let value = serde_json::to_string(state)
@@ -166,6 +173,10 @@ impl Default for InMemoryOAuthStateStore {
 
 #[async_trait::async_trait]
 impl OAuthStateStore for InMemoryOAuthStateStore {
+    fn backend_name(&self) -> &'static str {
+        "memory"
+    }
+
     async fn store(&self, token_id: &str, state: &OAuth2State, ttl: std::time::Duration) -> Result<()> {
         let expiry = std::time::Instant::now() + ttl;
         let mut map = self.states.lock().unwrap();
@@ -258,17 +269,42 @@ impl std::fmt::Debug for OAuth2Service {
 impl OAuth2Service {
     /// Create a new `OAuth2` service.
     ///
-    /// * `state_store` — use [`RedisOAuthStateStore`] in production.
-    #[must_use]
-    pub fn new(repository: UserOAuthProviderRepository, state_store: Arc<dyn OAuthStateStore>) -> Self {
-        info!("OAuth2 service initialized");
+    /// # Arguments
+    /// * `repository` — User OAuth provider repository
+    /// * `state_store` — use [`RedisOAuthStateStore`] in cluster mode
+    /// * `cluster_mode` — whether cluster mode is enabled (multi-replica deployment)
+    ///
+    /// # Errors
+    /// Returns `Error::Internal` if `cluster_mode` is true but `state_store` is not
+    /// [`RedisOAuthStateStore`]. In-memory state storage is not safe in cluster mode
+    /// because OAuth2 callbacks may hit different replicas.
+    pub fn new(
+        repository: UserOAuthProviderRepository,
+        state_store: Arc<dyn OAuthStateStore>,
+        cluster_mode: bool,
+    ) -> Result<Self> {
+        // Validate that Redis-backed state store is used in cluster mode
+        if cluster_mode {
+            let backend = state_store.backend_name();
+            if backend != "redis" {
+                return Err(Error::Internal(
+                    "Redis is required for OAuth2 state storage in cluster mode. \
+                     OAuth2 states stored in memory are only visible on the replica that created them, \
+                     causing authentication failures when the callback hits a different replica. \
+                     Configure Redis to fix this."
+                        .to_string(),
+                ));
+            }
+        }
 
-        Self {
+        info!("OAuth2 service initialized (backend: {})", state_store.backend_name());
+
+        Ok(Self {
             repository,
             providers: Arc::new(RwLock::new(HashMap::new())),
             state_store,
             allowed_redirect_domains: Arc::new(Vec::new()),
-        }
+        })
     }
 
     /// Set allowlist of permitted redirect domains
@@ -843,10 +879,15 @@ mod tests {
     // ========================================================================
 
     fn create_test_service() -> OAuth2Service {
+        create_test_service_with_cluster_mode(false)
+    }
+
+    fn create_test_service_with_cluster_mode(cluster_mode: bool) -> OAuth2Service {
         let pool = PgPool::connect_lazy("postgresql://test").unwrap();
         let repo = crate::repository::UserOAuthProviderRepository::new(pool);
         let state_store = Arc::new(InMemoryOAuthStateStore::new());
-        OAuth2Service::new(repo, state_store)
+        OAuth2Service::new(repo, state_store, cluster_mode)
+            .expect("Failed to create OAuth2 service")
     }
 
     fn create_test_service_with_domains(domains: Vec<String>) -> OAuth2Service {
@@ -2026,5 +2067,93 @@ mod tests {
         // In the API layer, if attacker tries to use github's state with google provider,
         // the provider mismatch check in exchange_authorization_code will catch it.
         // This test verifies the state contains the correct instance_name.
+    }
+
+    // ========================================================================
+    // Cluster mode Redis dependency tests (TDD)
+    // ========================================================================
+
+    /// Test: cluster mode with in-memory state store returns a descriptive error.
+    /// This is the core issue - in cluster mode, OAuth2 states created on replica A
+    /// cannot be validated on replica B without shared Redis storage.
+    #[tokio::test]
+    async fn test_cluster_mode_without_redis_returns_error() {
+        let pool = PgPool::connect_lazy("postgresql://test").unwrap();
+        let repo = crate::repository::UserOAuthProviderRepository::new(pool);
+        let state_store = Arc::new(InMemoryOAuthStateStore::new());
+
+        let result = OAuth2Service::new(repo, state_store, true);
+
+        assert!(
+            result.is_err(),
+            "Cluster mode without Redis should return an error"
+        );
+
+        let err = result.unwrap_err();
+        let err_msg = err.to_string();
+
+        // Error message should be descriptive and mention the core issue
+        assert!(
+            err_msg.contains("Redis is required"),
+            "Error should mention Redis is required; got: {err_msg}"
+        );
+        assert!(
+            err_msg.contains("cluster mode") || err_msg.contains("cluster"),
+            "Error should mention cluster mode; got: {err_msg}"
+        );
+        assert!(
+            err_msg.contains("replica") || err_msg.contains("replicas"),
+            "Error should explain the replica visibility issue; got: {err_msg}"
+        );
+    }
+
+    /// Test: cluster mode error message provides actionable guidance.
+    /// Users should know how to fix the configuration.
+    #[tokio::test]
+    async fn test_cluster_mode_error_message_is_actionable() {
+        let pool = PgPool::connect_lazy("postgresql://test").unwrap();
+        let repo = crate::repository::UserOAuthProviderRepository::new(pool);
+        let state_store = Arc::new(InMemoryOAuthStateStore::new());
+
+        let result = OAuth2Service::new(repo, state_store, true);
+        let err_msg = result.unwrap_err().to_string();
+
+        // Should suggest configuring Redis
+        assert!(
+            err_msg.contains("Configure Redis"),
+            "Error should suggest configuring Redis; got: {err_msg}"
+        );
+    }
+
+    /// Test: non-cluster mode allows in-memory state store.
+    /// Single-replica deployments can use in-memory storage without issues.
+    #[tokio::test]
+    async fn test_non_cluster_mode_allows_memory() {
+        let pool = PgPool::connect_lazy("postgresql://test").unwrap();
+        let repo = crate::repository::UserOAuthProviderRepository::new(pool);
+        let state_store = Arc::new(InMemoryOAuthStateStore::new());
+
+        let result = OAuth2Service::new(repo, state_store, false);
+
+        assert!(
+            result.is_ok(),
+            "Non-cluster mode should allow in-memory state store"
+        );
+    }
+
+    /// Test: cluster mode validation happens at service creation time.
+    /// This prevents runtime failures later during OAuth2 flows.
+    #[tokio::test]
+    async fn test_cluster_mode_validation_at_creation_time() {
+        // Cluster mode should fail immediately at service creation
+        let pool = PgPool::connect_lazy("postgresql://test").unwrap();
+        let repo = crate::repository::UserOAuthProviderRepository::new(pool);
+        let state_store = Arc::new(InMemoryOAuthStateStore::new());
+        let service_result = OAuth2Service::new(repo, state_store, true);
+
+        assert!(
+            service_result.is_err(),
+            "Cluster mode validation should fail at service creation"
+        );
     }
 }

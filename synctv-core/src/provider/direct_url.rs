@@ -70,7 +70,23 @@ impl DirectUrlProvider {
     fn validate_headers(headers: &HashMap<String, String>) -> Result<(), ProviderError> {
         for key in headers.keys() {
             let lower = key.to_lowercase();
+
+            // Check exact forbidden headers list
             if Self::FORBIDDEN_HEADERS.contains(&lower.as_str()) {
+                return Err(ProviderError::InvalidConfig(format!(
+                    "DirectUrl header '{key}' is forbidden for security reasons"
+                )));
+            }
+
+            // Block all Sec-* prefix headers (HTTP/3 security headers, Client Hints, WebSocket headers)
+            if lower.starts_with("sec-") {
+                return Err(ProviderError::InvalidConfig(format!(
+                    "DirectUrl header '{key}' is forbidden (Sec- prefix blocked for security)"
+                )));
+            }
+
+            // Block Priority header (HTTP/3 prioritization)
+            if lower == "priority" {
                 return Err(ProviderError::InvalidConfig(format!(
                     "DirectUrl header '{key}' is forbidden for security reasons"
                 )));
@@ -394,5 +410,79 @@ mod tests {
             DirectUrlProvider::detect_format("http://example.com/video.mp4?quality=high"),
             "mp4"
         );
+    }
+
+    #[test]
+    fn test_forbidden_sec_prefix_headers() {
+        // Sec-CH-UA (Client Hints)
+        let mut headers = HashMap::new();
+        headers.insert("Sec-CH-UA".to_string(), "\"Chrome\";v=\"93\"".to_string());
+        assert!(DirectUrlProvider::validate_headers(&headers).is_err());
+
+        // Sec-CH-UA-Mobile
+        let mut headers = HashMap::new();
+        headers.insert("Sec-CH-UA-Mobile".to_string(), "?0".to_string());
+        assert!(DirectUrlProvider::validate_headers(&headers).is_err());
+
+        // Sec-CH-UA-Platform
+        let mut headers = HashMap::new();
+        headers.insert("Sec-CH-UA-Platform".to_string(), "\"Windows\"".to_string());
+        assert!(DirectUrlProvider::validate_headers(&headers).is_err());
+
+        // Sec-Fetch-Site
+        let mut headers = HashMap::new();
+        headers.insert("Sec-Fetch-Site".to_string(), "cross-site".to_string());
+        assert!(DirectUrlProvider::validate_headers(&headers).is_err());
+
+        // Sec-Fetch-Mode
+        let mut headers = HashMap::new();
+        headers.insert("Sec-Fetch-Mode".to_string(), "cors".to_string());
+        assert!(DirectUrlProvider::validate_headers(&headers).is_err());
+
+        // Sec-Fetch-User
+        let mut headers = HashMap::new();
+        headers.insert("Sec-Fetch-User".to_string(), "?1".to_string());
+        assert!(DirectUrlProvider::validate_headers(&headers).is_err());
+
+        // Sec-Fetch-Dest
+        let mut headers = HashMap::new();
+        headers.insert("Sec-Fetch-Dest".to_string(), "video".to_string());
+        assert!(DirectUrlProvider::validate_headers(&headers).is_err());
+
+        // Sec-WebSocket-Key (HTTP/3 WebSockets)
+        let mut headers = HashMap::new();
+        headers.insert("Sec-WebSocket-Key".to_string(), "dGhlIHNhbXBsZSBub25jZQ==".to_string());
+        assert!(DirectUrlProvider::validate_headers(&headers).is_err());
+
+        // Sec-WebSocket-Version
+        let mut headers = HashMap::new();
+        headers.insert("Sec-WebSocket-Version".to_string(), "13".to_string());
+        assert!(DirectUrlProvider::validate_headers(&headers).is_err());
+
+        // Sec-WebSocket-Protocol
+        let mut headers = HashMap::new();
+        headers.insert("Sec-WebSocket-Protocol".to_string(), "chat".to_string());
+        assert!(DirectUrlProvider::validate_headers(&headers).is_err());
+    }
+
+    #[test]
+    fn test_forbidden_priority_header() {
+        // Priority header (HTTP/3)
+        let mut headers = HashMap::new();
+        headers.insert("Priority".to_string(), "u=5, i".to_string());
+        assert!(DirectUrlProvider::validate_headers(&headers).is_err());
+    }
+
+    #[test]
+    fn test_forbidden_headers_case_insensitive() {
+        // Mixed case Sec- headers should still be blocked
+        let mut headers = HashMap::new();
+        headers.insert("sec-ch-ua".to_string(), "\"Chrome\"".to_string());
+        assert!(DirectUrlProvider::validate_headers(&headers).is_err());
+
+        // Weird case Priority header
+        let mut headers = HashMap::new();
+        headers.insert("PRIORITY".to_string(), "u=5".to_string());
+        assert!(DirectUrlProvider::validate_headers(&headers).is_err());
     }
 }

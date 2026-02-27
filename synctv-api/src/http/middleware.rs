@@ -14,6 +14,13 @@ use synctv_core::{
 
 use super::{AppError, AppState};
 
+/// Request ID extracted from request extensions
+///
+/// This is set by the request_id_middleware and can be used in handlers
+/// to correlate errors with the request ID.
+#[derive(Debug, Clone)]
+pub struct RequestId(pub String);
+
 // ------------------------------------------------------------------
 // Request ID middleware (Issue #22)
 // ------------------------------------------------------------------
@@ -34,8 +41,9 @@ static X_REQUEST_ID: LazyLock<axum::http::HeaderName> = LazyLock::new(|| {
 /// 1. Recorded in the current tracing span as `request_id` for log correlation.
 /// 2. Echoed back in the `X-Request-ID` response header so callers can correlate
 ///    logs with their own request tracking.
+/// 3. Injected into error response JSON bodies when present.
 pub async fn request_id_middleware(
-    request: Request,
+    mut request: Request,
     next: Next,
 ) -> Response {
     // Honour an incoming X-Request-ID header when safe to do so.
@@ -53,6 +61,9 @@ pub async fn request_id_middleware(
     tracing::Span::current().record("request_id", request_id.as_str());
     tracing::debug!(request_id = %request_id, "Request received");
 
+    // Store in request extensions so error responses can include it
+    request.extensions_mut().insert(RequestId(request_id.clone()));
+
     let mut response = next.run(request).await;
 
     // Echo back in response header so callers can correlate.
@@ -60,7 +71,89 @@ pub async fn request_id_middleware(
         response.headers_mut().insert(X_REQUEST_ID.clone(), value);
     }
 
+    // Inject request_id into error response JSON body
+    response = inject_request_id_into_error_response(response, &request_id).await;
+
     response
+}
+
+/// Inject request_id into error response JSON bodies
+///
+/// This function inspects the response and, if it's an error response with JSON body
+/// from AppError, rewrites it to include the request_id field.
+async fn inject_request_id_into_error_response(
+    response: Response,
+    request_id: &str,
+) -> Response {
+    // Only process error responses (4xx and 5xx)
+    if !response.status().is_client_error() && !response.status().is_server_error() {
+        return response;
+    }
+
+    // Check if this is a JSON response
+    let content_type = response
+        .headers()
+        .get(axum::http::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok());
+
+    if content_type != Some("application/json") {
+        return response;
+    }
+
+    // Try to extract and modify the JSON body
+    // Note: This requires buffering the body, which has performance implications.
+    // For high-traffic endpoints, consider alternative approaches.
+    match try_inject_request_id_async(response, request_id).await {
+        Ok(new_response) => new_response,
+        Err(e) => {
+            // Failed to inject, log and return original response
+            tracing::warn!(
+                request_id = %request_id,
+                error = %e,
+                "Failed to inject request_id into error response"
+            );
+            // We need to return something here, but we consumed response
+            // For now, create an empty response
+            Response::new(axum::body::Body::empty())
+        }
+    }
+}
+
+/// Try to inject request_id into a JSON response body (async version)
+///
+/// Returns a new Response with the injected request_id, or an error if
+/// deserialization/serialization failed.
+async fn try_inject_request_id_async(
+    response: Response,
+    request_id: &str,
+) -> anyhow::Result<Response> {
+    use axum::body::{to_bytes, Body};
+
+    // Split response into parts and body
+    let (parts, body) = response.into_parts();
+    let bytes = to_bytes(body, usize::MAX).await?;
+
+    // Try to parse as JSON and check if it's an error response
+    let mut json: serde_json::Value = serde_json::from_slice(&bytes)?;
+
+    // Check if this looks like an AppError response (has "error" and "status" fields)
+    if json.get("error").is_some() && json.get("status").is_some() {
+        // Inject request_id if not already present
+        if json.get("request_id").is_none() {
+            json["request_id"] = serde_json::json!(request_id);
+        }
+
+        // Serialize back to JSON
+        let new_bytes = serde_json::to_vec(&json)?;
+
+        // Build new response with same status and headers
+        let new_response = Response::from_parts(parts, Body::from(new_bytes));
+        return Ok(new_response);
+    }
+
+    // Not an error response, return original
+    let original_response = Response::from_parts(parts, Body::from(bytes.to_vec()));
+    Ok(original_response)
 }
 
 /// Pre-validated security header names (validated once at startup via Lazy)

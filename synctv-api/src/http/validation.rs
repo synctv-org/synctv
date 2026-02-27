@@ -444,7 +444,90 @@ pub fn validate_playback_speed(speed: f64) -> ValidationResult<f64> {
     Ok(speed)
 }
 
-/// Validate pagination limit
+// ============================================================================
+// Pagination Validation
+// ============================================================================
+
+/// Default page number when not specified
+pub const DEFAULT_PAGE: i32 = 1;
+
+/// Default page size when not specified
+pub const DEFAULT_PAGE_SIZE: i32 = 20;
+
+/// Maximum allowed page size across all endpoints
+///
+/// This prevents excessive memory usage and database load from large queries.
+/// Set to 200 as a reasonable upper bound for list endpoints.
+pub const MAX_PAGE_SIZE: i32 = 200;
+
+/// Maximum allowed page number to prevent deep pagination DoS
+///
+/// Beyond this limit, the database must scan too many rows, causing performance issues.
+/// Most users don't navigate beyond page 1000 legitimately.
+pub const MAX_PAGE: i32 = 10000;
+
+/// Validate and normalize a page number
+///
+/// - Converts `None` to `DEFAULT_PAGE`
+/// - Clamps values to the range `1..=MAX_PAGE`
+/// - Ensures page numbers are positive
+///
+/// # Examples
+/// ```
+/// use synctv_api::http::validation::validate_page;
+///
+/// assert_eq!(validate_page(None), 1);
+/// assert_eq!(validate_page(Some(0)), 1); // Minimum is 1
+/// assert_eq!(validate_page(Some(5)), 5);
+/// assert_eq!(validate_page(Some(100000)), MAX_PAGE); // Clamped to max
+/// ```
+pub fn validate_page(page: Option<i32>) -> i32 {
+    page.unwrap_or(DEFAULT_PAGE).clamp(1, MAX_PAGE)
+}
+
+/// Validate and normalize a page size
+///
+/// - Converts `None` to `DEFAULT_PAGE_SIZE`
+/// - Clamps values to the range `1..=MAX_PAGE_SIZE`
+/// - Ensures page sizes are positive
+///
+/// # Examples
+/// ```
+/// use synctv_api::http::validation::validate_page_size;
+///
+/// assert_eq!(validate_page_size(None), 20);
+/// assert_eq!(validate_page_size(Some(0)), 1); // Minimum is 1
+/// assert_eq!(validate_page_size(Some(50)), 50);
+/// assert_eq!(validate_page_size(Some(1000)), MAX_PAGE_SIZE); // Clamped to max
+/// ```
+pub fn validate_page_size(page_size: Option<i32>) -> i32 {
+    page_size.unwrap_or(DEFAULT_PAGE_SIZE).clamp(1, MAX_PAGE_SIZE)
+}
+
+/// Validate both page and page_size, returning normalized values
+///
+/// This is a convenience function for endpoints that need both values validated.
+///
+/// # Examples
+/// ```
+/// use synctv_api::http::validation::validate_pagination;
+///
+/// let (page, page_size) = validate_pagination(Some(2), Some(50));
+/// assert_eq!(page, 2);
+/// assert_eq!(page_size, 50);
+///
+/// let (page, page_size) = validate_pagination(None, None);
+/// assert_eq!(page, 1); // DEFAULT_PAGE
+/// assert_eq!(page_size, 20); // DEFAULT_PAGE_SIZE
+/// ```
+pub fn validate_pagination(page: Option<i32>, page_size: Option<i32>) -> (i32, i32) {
+    (validate_page(page), validate_page_size(page_size))
+}
+
+/// Validate pagination limit (legacy function for backward compatibility)
+///
+/// # Deprecated
+/// Use `validate_page_size` instead for consistency with page-based pagination.
 pub const fn validate_pagination_limit(limit: u32) -> ValidationResult<u32> {
     // Default and max limits
     const DEFAULT_LIMIT: u32 = 20;
@@ -773,6 +856,136 @@ mod tests {
         assert_eq!(validate_pagination_limit(0).unwrap(), 20); // Default
         assert_eq!(validate_pagination_limit(50).unwrap(), 50);
         assert!(validate_pagination_limit(101).is_err()); // Over max
+    }
+
+    // ========== Pagination Validation Tests ==========
+
+    #[test]
+    fn test_validate_page_with_none() {
+        // None should return default page
+        assert_eq!(validate_page(None), DEFAULT_PAGE);
+        assert_eq!(validate_page(None), 1);
+    }
+
+    #[test]
+    fn test_validate_page_with_zero() {
+        // Zero should be clamped to minimum (1)
+        assert_eq!(validate_page(Some(0)), 1);
+    }
+
+    #[test]
+    fn test_validate_page_with_negative() {
+        // Negative should be clamped to minimum (1)
+        assert_eq!(validate_page(Some(-1)), 1);
+        assert_eq!(validate_page(Some(-100)), 1);
+    }
+
+    #[test]
+    fn test_validate_page_with_valid_values() {
+        // Valid values should pass through
+        assert_eq!(validate_page(Some(1)), 1);
+        assert_eq!(validate_page(Some(5)), 5);
+        assert_eq!(validate_page(Some(100)), 100);
+        assert_eq!(validate_page(Some(1000)), 1000);
+    }
+
+    #[test]
+    fn test_validate_page_with_excessive_values() {
+        // Values over MAX_PAGE should be clamped
+        assert_eq!(validate_page(Some(MAX_PAGE + 1)), MAX_PAGE);
+        assert_eq!(validate_page(Some(100000)), MAX_PAGE);
+        assert_eq!(validate_page(Some(i32::MAX)), MAX_PAGE);
+    }
+
+    #[test]
+    fn test_validate_page_size_with_none() {
+        // None should return default page size
+        assert_eq!(validate_page_size(None), DEFAULT_PAGE_SIZE);
+        assert_eq!(validate_page_size(None), 20);
+    }
+
+    #[test]
+    fn test_validate_page_size_with_zero() {
+        // Zero should be clamped to minimum (1)
+        assert_eq!(validate_page_size(Some(0)), 1);
+    }
+
+    #[test]
+    fn test_validate_page_size_with_negative() {
+        // Negative should be clamped to minimum (1)
+        assert_eq!(validate_page_size(Some(-1)), 1);
+        assert_eq!(validate_page_size(Some(-100)), 1);
+    }
+
+    #[test]
+    fn test_validate_page_size_with_valid_values() {
+        // Valid values should pass through
+        assert_eq!(validate_page_size(Some(1)), 1);
+        assert_eq!(validate_page_size(Some(10)), 10);
+        assert_eq!(validate_page_size(Some(50)), 50);
+        assert_eq!(validate_page_size(Some(100)), 100);
+        assert_eq!(validate_page_size(Some(200)), 200);
+    }
+
+    #[test]
+    fn test_validate_page_size_with_excessive_values() {
+        // Values over MAX_PAGE_SIZE should be clamped
+        assert_eq!(validate_page_size(Some(MAX_PAGE_SIZE + 1)), MAX_PAGE_SIZE);
+        assert_eq!(validate_page_size(Some(500)), MAX_PAGE_SIZE);
+        assert_eq!(validate_page_size(Some(1000)), MAX_PAGE_SIZE);
+        assert_eq!(validate_page_size(Some(i32::MAX)), MAX_PAGE_SIZE);
+    }
+
+    #[test]
+    fn test_validate_pagination_with_both_none() {
+        // Both None should return defaults
+        let (page, page_size) = validate_pagination(None, None);
+        assert_eq!(page, DEFAULT_PAGE);
+        assert_eq!(page_size, DEFAULT_PAGE_SIZE);
+    }
+
+    #[test]
+    fn test_validate_pagination_with_valid_values() {
+        // Valid values should pass through
+        let (page, page_size) = validate_pagination(Some(5), Some(50));
+        assert_eq!(page, 5);
+        assert_eq!(page_size, 50);
+    }
+
+    #[test]
+    fn test_validate_pagination_with_edge_cases() {
+        // Zero values should be clamped to minimum
+        let (page, page_size) = validate_pagination(Some(0), Some(0));
+        assert_eq!(page, 1);
+        assert_eq!(page_size, 1);
+
+        // Excessive values should be clamped to maximum
+        let (page, page_size) = validate_pagination(Some(100000), Some(1000));
+        assert_eq!(page, MAX_PAGE);
+        assert_eq!(page_size, MAX_PAGE_SIZE);
+    }
+
+    #[test]
+    fn test_validate_pagination_constants() {
+        // Verify constants are set correctly
+        assert_eq!(DEFAULT_PAGE, 1);
+        assert_eq!(DEFAULT_PAGE_SIZE, 20);
+        assert_eq!(MAX_PAGE_SIZE, 200);
+        assert_eq!(MAX_PAGE, 10000);
+    }
+
+    #[test]
+    fn test_validate_pagination_boundary_values() {
+        // Test exact boundary values
+        assert_eq!(validate_page(Some(MAX_PAGE)), MAX_PAGE);
+        assert_eq!(validate_page(Some(1)), 1);
+
+        assert_eq!(validate_page_size(Some(MAX_PAGE_SIZE)), MAX_PAGE_SIZE);
+        assert_eq!(validate_page_size(Some(1)), 1);
+
+        // Test just beyond boundaries
+        assert_eq!(validate_page(Some(MAX_PAGE + 1)), MAX_PAGE);
+        assert_eq!(validate_page_size(Some(MAX_PAGE_SIZE + 1)), MAX_PAGE_SIZE);
     }
 
     #[test]

@@ -56,3 +56,5 @@ tracing-subscriber.workspace = true
 
 [dev-dependencies]
 synctv-media-providers.workspace = true
+testcontainers.workspace = true
+testcontainers-modules.workspace = true

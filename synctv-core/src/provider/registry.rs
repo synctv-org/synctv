@@ -315,4 +315,259 @@ mod tests {
         assert!(instances.contains(&"inst2".to_string()));
         assert!(instances.contains(&"inst3".to_string()));
     }
+
+    // ========== Task #27: Registry Additional Tests ==========
+
+    #[test]
+    fn test_factory_registration() {
+        // Test that factories can be registered and replaced
+        let registry = ProviderRegistry::new();
+
+        // Register first factory
+        registry.register_factory(
+            "mock",
+            Box::new(|_instance_id, _config| {
+                Ok(Arc::new(MockProvider {}))
+            }),
+        );
+
+        // Create instance with first factory
+        registry
+            .create_instance("mock", "test1", serde_json::json!({}))
+            .unwrap();
+        let provider = registry.get_instance("test1").unwrap();
+        assert_eq!(provider.name(), "mock");
+
+        // Register new factory (replaces old one)
+        registry.register_factory(
+            "mock",
+            Box::new(|_instance_id, _config| {
+                // This factory would create a different instance
+                // but for this test we just verify registration doesn't panic
+                Ok(Arc::new(MockProvider {}))
+            }),
+        );
+
+        // Create instance with new factory
+        registry
+            .create_instance("mock", "test2", serde_json::json!({}))
+            .unwrap();
+        let provider2 = registry.get_instance("test2").unwrap();
+        assert_eq!(provider2.name(), "mock");
+    }
+
+    #[test]
+    fn test_multiple_provider_types() {
+        // Test registry with multiple provider types
+        let registry = ProviderRegistry::new();
+
+        // Register multiple factories
+        registry.register_factory(
+            "mock1",
+            Box::new(|_instance_id, _config| Ok(Arc::new(MockProvider {}))),
+        );
+        registry.register_factory(
+            "mock2",
+            Box::new(|_instance_id, _config| Ok(Arc::new(MockProvider {}))),
+        );
+
+        // Create instances of different types
+        registry
+            .create_instance("mock1", "instance1", serde_json::json!({}))
+            .unwrap();
+        registry
+            .create_instance("mock2", "instance2", serde_json::json!({}))
+            .unwrap();
+
+        // Verify both exist
+        assert!(registry.get_instance("instance1").is_some());
+        assert!(registry.get_instance("instance2").is_some());
+
+        // Verify list contains both
+        let instances = registry.list_instances();
+        assert_eq!(instances.len(), 2);
+    }
+
+    #[test]
+    fn test_instance_id_uniqueness() {
+        // Test that instance_id must be unique
+        let registry = ProviderRegistry::new();
+        registry.register_factory(
+            "mock",
+            Box::new(|_instance_id, _config| Ok(Arc::new(MockProvider {}))),
+        );
+
+        // Create first instance
+        registry
+            .create_instance("mock", "duplicate", serde_json::json!({}))
+            .unwrap();
+
+        // Create second instance with same ID (should replace in DashMap)
+        registry
+            .create_instance("mock", "duplicate", serde_json::json!({}))
+            .unwrap();
+
+        // Only one instance should exist
+        let instances = registry.list_instances();
+        assert_eq!(instances.len(), 1);
+        assert!(instances.contains(&"duplicate".to_string()));
+    }
+
+    #[test]
+    fn test_default_registry() {
+        // Test that Default trait works
+        let registry = ProviderRegistry::default();
+
+        // Should be empty
+        assert!(registry.list_instances().is_empty());
+
+        // Should be usable
+        registry.register_factory(
+            "mock",
+            Box::new(|_instance_id, _config| Ok(Arc::new(MockProvider {}))),
+        );
+        registry
+            .create_instance("mock", "test", serde_json::json!({}))
+            .unwrap();
+
+        assert!(registry.get_instance("test").is_some());
+    }
+
+    #[test]
+    fn test_factory_config_parsing() {
+        // Test that factory receives and can parse config
+        let registry = ProviderRegistry::new();
+
+        // Register factory that validates config
+        registry.register_factory(
+            "config_test",
+            Box::new(|_instance_id, config| {
+                // Verify config contains expected field
+                let value = config
+                    .get("test_field")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| {
+                        ProviderError::InvalidConfig("test_field missing".to_string())
+                    })?;
+
+                assert_eq!(value, "test_value");
+                Ok(Arc::new(MockProvider {}))
+            }),
+        );
+
+        // Valid config
+        let result = registry.create_instance(
+            "config_test",
+            "test",
+            serde_json::json!({"test_field": "test_value"}),
+        );
+        assert!(result.is_ok());
+
+        // Invalid config (missing field)
+        let result = registry.create_instance(
+            "config_test",
+            "test2",
+            serde_json::json!({"other_field": "value"}),
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_concurrent_factory_registration() {
+        // Test that concurrent factory registration is safe
+        use std::thread;
+
+        let registry = std::sync::Arc::new(ProviderRegistry::new());
+        let mut handles = vec![];
+
+        // Spawn multiple threads registering factories
+        for i in 0..10 {
+            let reg = registry.clone();
+            handles.push(thread::spawn(move || {
+                reg.register_factory(
+                    &format!("factory_{}", i),
+                    Box::new(|_instance_id, _config| Ok(Arc::new(MockProvider {}))),
+                );
+            }));
+        }
+
+        // All should complete without panic
+        for handle in handles {
+            handle.join().unwrap();
+        }
+
+        // Create instances with each factory
+        for i in 0..10 {
+            let factory_name = format!("factory_{}", i);
+            registry
+                .create_instance(&factory_name, &format!("inst_{}", i), serde_json::json!({}))
+                .unwrap();
+        }
+
+        // Verify all instances exist
+        let instances = registry.list_instances();
+        assert_eq!(instances.len(), 10);
+    }
+
+    #[test]
+    fn test_get_nonexistent_instance() {
+        // Test getting nonexistent instance returns None
+        let registry = ProviderRegistry::new();
+
+        let result = registry.get_instance("nonexistent");
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_remove_and_recreate() {
+        // Test removing and recreating an instance
+        let registry = ProviderRegistry::new();
+        registry.register_factory(
+            "mock",
+            Box::new(|_instance_id, _config| Ok(Arc::new(MockProvider {}))),
+        );
+
+        // Create instance
+        registry
+            .create_instance("mock", "recreate_test", serde_json::json!({}))
+            .unwrap();
+        assert!(registry.get_instance("recreate_test").is_some());
+
+        // Remove it
+        assert!(registry.remove_instance("recreate_test"));
+        assert!(registry.get_instance("recreate_test").is_none());
+
+        // Recreate with same ID
+        registry
+            .create_instance("mock", "recreate_test", serde_json::json!({}))
+            .unwrap();
+        assert!(registry.get_instance("recreate_test").is_some());
+    }
+
+    #[tokio::test]
+    async fn test_provider_trait_send_sync() {
+        // Test that provider instances can be sent across threads
+        use std::thread;
+
+        let registry = std::sync::Arc::new(ProviderRegistry::new());
+        registry.register_factory(
+            "mock",
+            Box::new(|_instance_id, _config| Ok(Arc::new(MockProvider {}))),
+        );
+
+        registry
+            .create_instance("mock", "thread_test", serde_json::json!({}))
+            .unwrap();
+
+        // Get instance in main thread
+        let provider = registry.get_instance("thread_test").unwrap();
+
+        // Spawn thread and use provider there
+        let handle = thread::spawn(move || {
+            // Provider should be usable in different thread
+            assert_eq!(provider.name(), "mock");
+        });
+
+        handle.join().unwrap();
+    }
 }

@@ -265,6 +265,9 @@ impl BilibiliSourceConfig {
 
     /// Validate that cookie keys and values do not contain control characters
     /// or HTTP header-unsafe characters that could lead to header injection.
+    ///
+    /// This function also URL-decodes cookies before validation to prevent
+    /// URL-encoded bypass attempts (e.g., %0D%0A for CRLF injection).
     fn validate_cookies(&self) -> Result<(), ProviderError> {
         for (key, value) in self.cookies() {
             if key.is_empty() {
@@ -272,14 +275,26 @@ impl BilibiliSourceConfig {
                     "Bilibili cookie key must not be empty".to_string(),
                 ));
             }
-            if key.chars().any(|c| c.is_control() || c == ';' || c == '=' || c == ' ') {
+
+            // URL-decode both key and value to catch encoded injection attempts
+            let decoded_key = urlencoding::decode(&key).map_err(|_| ProviderError::InvalidConfig(
+                format!("Bilibili cookie key '{key}' contains invalid URL encoding")
+            ))?;
+            let decoded_value = urlencoding::decode(&value).map_err(|_| ProviderError::InvalidConfig(
+                format!("Bilibili cookie value for key '{key}' contains invalid URL encoding")
+            ))?;
+
+            // Check decoded key for invalid characters
+            if decoded_key.chars().any(|c| c.is_control() || c == ';' || c == '=' || c == ' ') {
                 return Err(ProviderError::InvalidConfig(format!(
-                    "Bilibili cookie key '{key}' contains invalid characters (control chars, ';', '=', or spaces)"
+                    "Bilibili cookie key '{key}' contains invalid characters (control chars, ';', '=', or spaces, including URL-encoded forms)"
                 )));
             }
-            if value.chars().any(|c| c.is_control() || c == ';') {
+
+            // Check decoded value for invalid characters
+            if decoded_value.chars().any(|c| c.is_control() || c == ';') {
                 return Err(ProviderError::InvalidConfig(format!(
-                    "Bilibili cookie value for key '{key}' contains invalid characters (control chars or ';')"
+                    "Bilibili cookie value for key '{key}' contains invalid characters (control chars or ';', including URL-encoded forms)"
                 )));
             }
         }
@@ -1047,5 +1062,166 @@ mod tests {
 
         // Should be allowed without encryption since no sensitive data
         assert!(!has_sensitive_credentials(&config_without_cookies));
+    }
+
+    // ========== URL Encoding Injection Tests ==========
+
+    #[test]
+    fn test_cookie_value_with_url_encoded_crlf_rejected() {
+        // Test URL-encoded CRLF (%0D%0A) injection attempt
+        let config = json!({
+            "type": "video",
+            "bvid": "BV1xx411c7mD",
+            "cid": 12345,
+            "cookies": {"SESSDATA": "value%0D%0AX-Evil-Header: attack"}
+        });
+        assert!(validate_bilibili(config).is_err());
+    }
+
+    #[test]
+    fn test_cookie_value_with_url_encoded_cr_rejected() {
+        // Test URL-encoded CR (%0D) injection attempt
+        let config = json!({
+            "type": "video",
+            "bvid": "BV1xx411c7mD",
+            "cid": 12345,
+            "cookies": {"SESSDATA": "value%0DX-Evil-Header: attack"}
+        });
+        assert!(validate_bilibili(config).is_err());
+    }
+
+    #[test]
+    fn test_cookie_value_with_url_encoded_lf_rejected() {
+        // Test URL-encoded LF (%0A) injection attempt
+        let config = json!({
+            "type": "video",
+            "bvid": "BV1xx411c7mD",
+            "cid": 12345,
+            "cookies": {"SESSDATA": "value%0AX-Evil-Header: attack"}
+        });
+        assert!(validate_bilibili(config).is_err());
+    }
+
+    #[test]
+    fn test_cookie_key_with_url_encoded_equals_rejected() {
+        // Test URL-encoded equals (%3D) in cookie key
+        let config = json!({
+            "type": "video",
+            "bvid": "BV1xx411c7mD",
+            "cid": 12345,
+            "cookies": {"key%3Dinject": "value"}
+        });
+        assert!(validate_bilibili(config).is_err());
+    }
+
+    #[test]
+    fn test_cookie_key_with_url_encoded_semicolon_rejected() {
+        // Test URL-encoded semicolon (%3B) in cookie key
+        let config = json!({
+            "type": "video",
+            "bvid": "BV1xx411c7mD",
+            "cid": 12345,
+            "cookies": {"key%3Binject": "value"}
+        });
+        assert!(validate_bilibili(config).is_err());
+    }
+
+    #[test]
+    fn test_cookie_key_with_url_encoded_space_rejected() {
+        // Test URL-encoded space (%20) in cookie key
+        let config = json!({
+            "type": "video",
+            "bvid": "BV1xx411c7mD",
+            "cid": 12345,
+            "cookies": {"key%20inject": "value"}
+        });
+        assert!(validate_bilibili(config).is_err());
+    }
+
+    #[test]
+    fn test_cookie_value_with_url_encoded_semicolon_rejected() {
+        // Test URL-encoded semicolon (%3B) in cookie value
+        let config = json!({
+            "type": "video",
+            "bvid": "BV1xx411c7mD",
+            "cid": 12345,
+            "cookies": {"SESSDATA": "value%3Bmalicious"}
+        });
+        assert!(validate_bilibili(config).is_err());
+    }
+
+    #[test]
+    fn test_cookie_with_multiple_url_encoded_sequences_rejected() {
+        // Test multiple URL-encoded control characters
+        let config = json!({
+            "type": "video",
+            "bvid": "BV1xx411c7mD",
+            "cid": 12345,
+            "cookies": {"SESSDATA": "%0D%0A%0D%0Aattack"}
+        });
+        assert!(validate_bilibili(config).is_err());
+    }
+
+    #[test]
+    fn test_cookie_with_percent_sign_accepted() {
+        // Test lone % sign - urlencoding crate treats this as valid literal
+        // This is acceptable since it doesn't decode to a control character
+        let config = json!({
+            "type": "video",
+            "bvid": "BV1xx411c7mD",
+            "cid": 12345,
+            "cookies": {"SESSDATA": "value%"}
+        });
+        // Lone % is valid (doesn't decode to control chars)
+        assert!(validate_bilibili(config).is_ok());
+    }
+
+    #[test]
+    fn test_cookie_with_lowercase_hex_encoding_rejected() {
+        // Test lowercase hex URL encoding (also valid but decodes to control chars)
+        let config = json!({
+            "type": "video",
+            "bvid": "BV1xx411c7mD",
+            "cid": 12345,
+            "cookies": {"SESSDATA": "value%0a%0dattack"}
+        });
+        // Should reject because %0a and %0d decode to LF and CR
+        assert!(validate_bilibili(config).is_err());
+    }
+
+    #[test]
+    fn test_cookie_with_url_encoded_tab_rejected() {
+        // Test URL-encoded tab (%09) which is a control character
+        let config = json!({
+            "type": "video",
+            "bvid": "BV1xx411c7mD",
+            "cid": 12345,
+            "cookies": {"SESSDATA": "value%09attack"}
+        });
+        assert!(validate_bilibili(config).is_err());
+    }
+
+    #[test]
+    fn test_cookie_key_with_url_encoded_space_in_middle_rejected() {
+        // Test URL-encoded space (%20) in the middle of cookie key
+        let config = json!({
+            "type": "video",
+            "bvid": "BV1xx411c7mD",
+            "cid": 12345,
+            "cookies": {"key%20inject": "value"}
+        });
+        assert!(validate_bilibili(config).is_err());
+    }
+
+    #[test]
+    fn test_cookie_value_with_percent_plus_accepted() {
+        // Test that %2B (plus) is accepted (not a control char)
+        let config = json!({
+            "type": "video",
+            "bvid": "BV1xx411c7mD",
+            "cid": 12345,
+            "cookies": {"SESSDATA": "value%2Bmore"}
+        });
+        assert!(validate_bilibili(config).is_ok());
     }
 }

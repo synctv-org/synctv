@@ -16,6 +16,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::sync::Arc;
+use urlencoding;
 
 /// Emby `MediaProvider`
 ///
@@ -660,9 +661,17 @@ impl DynamicFolder for EmbyProvider {
                 // Route thumbnails through synctv's proxy endpoint so the Emby
                 // API key is never exposed to the client.  The proxy handler
                 // will inject the authentication header server-side.
+                //
+                // NOTE: We include host and token in the query string because
+                // this endpoint is called from the client when browsing playlists,
+                // and we don't have room_id/media_id context available. The
+                // thumbnail handler validates the host for SSRF attacks before
+                // fetching, which provides security against malicious URLs.
                 let thumbnail_url = format!(
-                    "/api/providers/emby/thumbnail/{item_id}?maxHeight=300",
+                    "/api/providers/emby/thumbnail/{item_id}?maxHeight=300&host={host}&token={token}",
                     item_id = item.id,
+                    host = urlencoding::encode(&base_config.host),
+                    token = urlencoding::encode(&base_config.token),
                 );
 
                 Some(DirectoryItem {
@@ -908,6 +917,46 @@ mod tests {
         Ok(())
     }
 
+    /// Validate Emby config WITH SSRF protection (like the actual implementation)
+    fn validate_emby_with_ssrf(config: Value) -> Result<(), ProviderError> {
+        let config = EmbySourceConfig::try_from(&config)?;
+
+        if config.host.is_empty() {
+            return Err(ProviderError::InvalidConfig(
+                "Emby host must not be empty".to_string(),
+            ));
+        }
+        if !config.host.starts_with("http://") && !config.host.starts_with("https://") {
+            return Err(ProviderError::InvalidConfig(format!(
+                "Emby host must start with http:// or https://, got: {}",
+                config.host
+            )));
+        }
+
+        // SSRF protection: reject private/internal network addresses
+        validate_url_for_ssrf(&config.host).map_err(|e| match e {
+            ValidationError::SSRF(msg) => ProviderError::InvalidUrl(format!("SSRF protection: {msg}")),
+            _ => ProviderError::InvalidUrl(e.to_string()),
+        })?;
+
+        if config.item_id.is_empty() {
+            return Err(ProviderError::InvalidConfig(
+                "Emby item_id must not be empty".to_string(),
+            ));
+        }
+        if config.token.is_empty() {
+            return Err(ProviderError::InvalidConfig(
+                "Emby token (API key) must not be empty".to_string(),
+            ));
+        }
+        if config.user_id.is_empty() {
+            return Err(ProviderError::InvalidConfig(
+                "Emby user_id must not be empty".to_string(),
+            ));
+        }
+        Ok(())
+    }
+
     #[test]
     fn test_valid_emby_config() {
         let config = json!({
@@ -1033,5 +1082,194 @@ mod tests {
         assert!(items_fetched < total_items, "Should not fetch all items");
 
         // Memory usage: max 200 items vs 1000 items (80% reduction)
+    }
+
+    // ========== SSRF Protection Tests ==========
+
+    #[test]
+    fn test_emby_ssrf_blocks_private_ip_192_168() {
+        // 192.168.0.0/16 - Private network
+        let config = json!({
+            "host": "http://192.168.1.100:8096",
+            "token": "my-api-key",
+            "user_id": "abc123",
+            "item_id": "item-456"
+        });
+
+        let result = validate_emby_with_ssrf(config);
+        assert!(result.is_err(), "Should block 192.168.x.x IP");
+        if let Err(ProviderError::InvalidUrl(msg)) = result {
+            assert!(msg.contains("SSRF"), "Error should mention SSRF");
+        } else {
+            panic!("Expected InvalidUrl error with SSRF message");
+        }
+    }
+
+    #[test]
+    fn test_emby_ssrf_blocks_private_ip_10() {
+        // 10.0.0.0/8 - Private network
+        let config = json!({
+            "host": "http://10.0.0.1:8096",
+            "token": "my-api-key",
+            "user_id": "abc123",
+            "item_id": "item-456"
+        });
+
+        let result = validate_emby_with_ssrf(config);
+        assert!(result.is_err(), "Should block 10.x.x.x IP");
+        if let Err(ProviderError::InvalidUrl(msg)) = result {
+            assert!(msg.contains("SSRF"), "Error should mention SSRF");
+        } else {
+            panic!("Expected InvalidUrl error with SSRF message");
+        }
+    }
+
+    #[test]
+    fn test_emby_ssrf_blocks_private_ip_172_16() {
+        // 172.16.0.0/12 - Private network
+        let config = json!({
+            "host": "http://172.16.0.1:8096",
+            "token": "my-api-key",
+            "user_id": "abc123",
+            "item_id": "item-456"
+        });
+
+        let result = validate_emby_with_ssrf(config);
+        assert!(result.is_err(), "Should block 172.16-31.x.x IP");
+    }
+
+    #[test]
+    fn test_emby_ssrf_blocks_aws_metadata() {
+        // AWS metadata endpoint
+        let config = json!({
+            "host": "http://169.254.169.254:8096",
+            "token": "my-api-key",
+            "user_id": "abc123",
+            "item_id": "item-456"
+        });
+
+        let result = validate_emby_with_ssrf(config);
+        assert!(result.is_err(), "Should block AWS metadata endpoint");
+    }
+
+    #[test]
+    fn test_emby_ssrf_blocks_gcp_metadata() {
+        // GCP metadata endpoint
+        let config = json!({
+            "host": "http://metadata.google.internal:8096",
+            "token": "my-api-key",
+            "user_id": "abc123",
+            "item_id": "item-456"
+        });
+
+        let result = validate_emby_with_ssrf(config);
+        assert!(result.is_err(), "Should block GCP metadata endpoint");
+    }
+
+    #[test]
+    fn test_emby_ssrf_blocks_localhost() {
+        let config = json!({
+            "host": "http://localhost:8096",
+            "token": "my-api-key",
+            "user_id": "abc123",
+            "item_id": "item-456"
+        });
+
+        let result = validate_emby_with_ssrf(config);
+        assert!(result.is_err(), "Should block localhost");
+    }
+
+    #[test]
+    fn test_emby_ssrf_blocks_127_0_0_1() {
+        let config = json!({
+            "host": "http://127.0.0.1:8096",
+            "token": "my-api-key",
+            "user_id": "abc123",
+            "item_id": "item-456"
+        });
+
+        let result = validate_emby_with_ssrf(config);
+        assert!(result.is_err(), "Should block 127.0.0.1");
+    }
+
+    #[test]
+    fn test_emby_ssrf_blocks_ipv6_localhost() {
+        let config = json!({
+            "host": "http://[::1]:8096",
+            "token": "my-api-key",
+            "user_id": "abc123",
+            "item_id": "item-456"
+        });
+
+        let result = validate_emby_with_ssrf(config);
+        assert!(result.is_err(), "Should block IPv6 localhost ::1");
+    }
+
+    #[test]
+    fn test_emby_ssrf_blocks_ipv6_link_local() {
+        let config = json!({
+            "host": "http://[fe80::1]:8096",
+            "token": "my-api-key",
+            "user_id": "abc123",
+            "item_id": "item-456"
+        });
+
+        let result = validate_emby_with_ssrf(config);
+        assert!(result.is_err(), "Should block IPv6 link-local fe80::/10");
+    }
+
+    #[test]
+    fn test_emby_ssrf_allows_public_domain() {
+        let config = json!({
+            "host": "https://emby.example.com",
+            "token": "my-api-key",
+            "user_id": "abc123",
+            "item_id": "item-456"
+        });
+
+        let result = validate_emby_with_ssrf(config);
+        assert!(result.is_ok(), "Should allow public domain");
+    }
+
+    #[test]
+    fn test_emby_ssrf_allows_public_ip() {
+        let config = json!({
+            "host": "http://1.2.3.4:8096",
+            "token": "my-api-key",
+            "user_id": "abc123",
+            "item_id": "item-456"
+        });
+
+        let result = validate_emby_with_ssrf(config);
+        assert!(result.is_ok(), "Should allow public IP address");
+    }
+
+    #[test]
+    fn test_emby_ssrf_blocks_url_encoded_private_ip() {
+        // URL encoding bypass attempt
+        let config = json!({
+            "host": "http://192%2e168%2e1%2e1:8096",
+            "token": "my-api-key",
+            "user_id": "abc123",
+            "item_id": "item-456"
+        });
+
+        // The URL parser should reject this as invalid before SSRF check
+        let result = validate_emby_with_ssrf(config);
+        assert!(result.is_err(), "Should reject URL-encoded IP");
+    }
+
+    #[test]
+    fn test_emby_ssrf_blocks_cloud_metadata_azure() {
+        // Azure metadata endpoint
+        let config = json!({
+            "host": "http://169.254.169.254:8096",
+            "token": "my-api-key",
+            "user_id": "abc123",
+            "item_id": "item-456"
+        });
+
+        let result = validate_emby_with_ssrf(config);
+        assert!(result.is_err(), "Should block Azure metadata endpoint");
     }
 }

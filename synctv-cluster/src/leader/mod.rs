@@ -15,7 +15,8 @@
 //!
 //! ```text
 //! // Redis-based (any deployment):
-//! let elector = LeaderElector::new(redis_conn, node_id, "synctv:");
+//! let is_sentinel = matches!(redis_deployment_mode, RedisDeploymentMode::Sentinel);
+//! let elector = LeaderElector::new(redis_conn, node_id, "synctv:", is_sentinel);
 //! elector.start(cancel_token.clone());
 //!
 //! // K8s Lease-based (K8s only, requires "k8s" feature):
@@ -259,6 +260,13 @@ const LEADER_VACANCY_THRESHOLD: u64 = 3;
 /// equal to `renew_interval_secs` is enforced before attempting re-acquisition
 /// to prevent rapid flip-flopping during transient network issues.
 ///
+/// ## Clock skew handling
+///
+/// Grace period calculations use Redis TIME (server-side timestamps) instead of
+/// local wall-clock time to prevent split-brain during NTP clock skew or VM
+/// clock drift. This ensures that multiple nodes cannot simultaneously exit the
+/// grace period and claim leadership.
+///
 /// ## Observer pattern
 ///
 /// Use `subscribe()` to receive leadership change notifications (gained/lost
@@ -283,14 +291,17 @@ pub struct LeaderElector {
     /// Monotonically increasing epoch (fencing token) incremented on each
     /// leadership acquisition. Used for split-brain protection.
     leader_epoch: Arc<AtomicU64>,
-    /// Timestamp (Instant) at which leadership was lost. Used to enforce a
-    /// grace period before re-acquisition attempts.
-    leadership_lost_at: Arc<TokioMutex<Option<tokio::time::Instant>>>,
+    /// Redis timestamp (seconds since Unix epoch) at which leadership was lost.
+    /// Used to enforce a grace period before re-acquisition attempts.
+    /// Uses Redis TIME instead of local clock to prevent clock skew issues.
+    leadership_lost_at_redis_ts: Arc<TokioMutex<Option<u64>>>,
     /// Broadcast channel for leadership change events (observer pattern)
     event_tx: Arc<broadcast::Sender<LeadershipEvent>>,
     /// Number of consecutive election failures (acquire or renew).
     /// Used to detect prolonged leader vacancy.
     consecutive_failures: Arc<AtomicU64>,
+    /// Redis connection manager for TIME command
+    redis_conn: redis::aio::ConnectionManager,
 }
 
 /// Configuration for leader election.
@@ -316,22 +327,44 @@ impl LeaderElector {
     /// The `key_prefix` is prepended to the leader election lock key in Redis
     /// (e.g. `"synctv:"` produces the lock key `synctv:leader_election`).
     /// Pass an empty string to use the unprefixed default key.
+    ///
+    /// # Safety Warning: Sentinel Mode
+    ///
+    /// When `is_sentinel` is true, a startup warning is logged about the
+    /// distributed lock vulnerability during Sentinel failover. For production
+    /// deployments with Redis Sentinel, consider using K8s Lease-based leader
+    /// election instead (requires `k8s` feature).
     pub fn new(
         redis_conn: redis::aio::ConnectionManager,
         identity: String,
         key_prefix: &str,
+        is_sentinel: bool,
     ) -> Self {
-        Self::with_config(redis_conn, identity, LeaderElectorConfig::default(), key_prefix)
+        Self::with_config(
+            redis_conn,
+            identity,
+            LeaderElectorConfig::default(),
+            key_prefix,
+            is_sentinel,
+        )
     }
 
     /// Create a new leader elector with custom configuration.
     ///
     /// The `key_prefix` is prepended to the leader election lock key in Redis.
+    ///
+    /// # Safety Warning: Sentinel Mode
+    ///
+    /// When `is_sentinel` is true, a startup warning is logged about the
+    /// distributed lock vulnerability during Sentinel failover. For production
+    /// deployments with Redis Sentinel, consider using K8s Lease-based leader
+    /// election instead (requires `k8s` feature).
     pub fn with_config(
         redis_conn: redis::aio::ConnectionManager,
         identity: String,
         config: LeaderElectorConfig,
         key_prefix: &str,
+        is_sentinel: bool,
     ) -> Self {
         assert!(
             config.renew_interval_secs < config.lease_duration_secs,
@@ -341,19 +374,24 @@ impl LeaderElector {
         );
 
         let (event_tx, _) = broadcast::channel(16);
+        let redis_conn_clone = redis_conn.clone();
+
+        // Use new_with_mode to log warning if using Sentinel
+        let lock = DistributedLock::new_with_mode(redis_conn, is_sentinel);
 
         Self {
             is_leader: Arc::new(AtomicBool::new(false)),
-            lock: DistributedLock::new(redis_conn),
+            lock,
             identity,
             lease_duration_secs: config.lease_duration_secs,
             renew_interval_secs: config.renew_interval_secs,
             lock_value: Arc::new(TokioMutex::new(None)),
             lock_key: format!("{}{}", key_prefix, DEFAULT_LEADER_LOCK_KEY),
             leader_epoch: Arc::new(AtomicU64::new(0)),
-            leadership_lost_at: Arc::new(TokioMutex::new(None)),
+            leadership_lost_at_redis_ts: Arc::new(TokioMutex::new(None)),
             event_tx: Arc::new(event_tx),
             consecutive_failures: Arc::new(AtomicU64::new(0)),
+            redis_conn: redis_conn_clone,
         }
     }
 
@@ -371,6 +409,19 @@ impl LeaderElector {
     #[must_use]
     pub fn subscribe(&self) -> broadcast::Receiver<LeadershipEvent> {
         self.event_tx.subscribe()
+    }
+
+    /// Get current time from Redis server (seconds since Unix epoch).
+    ///
+    /// Uses Redis TIME command to get authoritative server-side timestamp,
+    /// avoiding clock skew issues when multiple nodes have NTP drift.
+    async fn get_redis_time(&self) -> Result<u64, redis::RedisError> {
+        let mut conn = self.redis_conn.clone();
+        // TIME returns: [seconds, microseconds]
+        let time_result: (u64, u64) = redis::cmd("TIME")
+            .query_async(&mut conn)
+            .await?;
+        Ok(time_result.0)
     }
 
     /// Returns `true` if this instance is currently the leader.
@@ -496,9 +547,15 @@ impl LeaderElector {
                         // On failover, set a short grace period (2s) before retrying
                         // instead of clearing entirely. This prevents rapid flip-flopping
                         // if the new primary is not yet ready to accept writes.
-                        *self.leadership_lost_at.lock().await = Some(
-                            tokio::time::Instant::now() - Duration::from_secs(self.renew_interval_secs) + Duration::from_secs(2)
-                        );
+                        // Use Redis timestamp to avoid clock skew.
+                        if let Ok(redis_ts) = self.get_redis_time().await {
+                            // Set the timestamp such that (current - lost_at) = renew_interval - 2
+                            // This means: lost_at = current - (renew_interval - 2)
+                            let grace_elapsed = self.renew_interval_secs.saturating_sub(2);
+                            *self.leadership_lost_at_redis_ts.lock().await = Some(
+                                redis_ts.saturating_sub(grace_elapsed)
+                            );
+                        }
                     }
 
                     self.record_election_failure();
@@ -518,20 +575,34 @@ impl LeaderElector {
     }
 
     /// Immediately mark this node as no longer the leader, clear the lock
-    /// value, and record the time of loss for grace period enforcement.
+    /// value, and record the Redis timestamp of loss for grace period enforcement.
     async fn lose_leadership(&self) {
         self.set_leader(false, None);
         *self.lock_value.lock().await = None;
-        *self.leadership_lost_at.lock().await = Some(tokio::time::Instant::now());
+        // Get current Redis timestamp to avoid clock skew issues
+        let redis_ts = self.get_redis_time().await.unwrap_or(0);
+        *self.leadership_lost_at_redis_ts.lock().await = Some(redis_ts);
     }
 
     /// Returns `true` if we recently lost leadership and should wait before
     /// attempting to re-acquire. The grace period equals `renew_interval_secs`
     /// to avoid rapid flip-flopping during transient Redis issues.
+    ///
+    /// Uses Redis TIME (server-side timestamp) instead of local clock to prevent
+    /// multiple nodes from simultaneously exiting the grace period due to NTP skew.
     async fn in_grace_period(&self) -> bool {
-        let guard = self.leadership_lost_at.lock().await;
-        if let Some(lost_at) = *guard {
-            lost_at.elapsed() < Duration::from_secs(self.renew_interval_secs)
+        let guard = self.leadership_lost_at_redis_ts.lock().await;
+        if let Some(lost_at_ts) = *guard {
+            // Get current Redis time
+            if let Ok(current_ts) = self.get_redis_time().await {
+                // Check if less than grace period has elapsed on Redis clock
+                let elapsed = current_ts.saturating_sub(lost_at_ts);
+                elapsed < self.renew_interval_secs
+            } else {
+                // If Redis TIME fails, fall back to assuming in grace period
+                // (conservative: prevent premature acquisition attempts)
+                true
+            }
         } else {
             false
         }
@@ -549,7 +620,7 @@ impl LeaderElector {
                 );
                 *self.lock_value.lock().await = Some(value);
                 // Clear grace period since we successfully acquired
-                *self.leadership_lost_at.lock().await = None;
+                *self.leadership_lost_at_redis_ts.lock().await = None;
                 self.consecutive_failures.store(0, Ordering::Relaxed);
                 self.set_leader(true, Some(epoch));
             }
@@ -572,9 +643,13 @@ impl LeaderElector {
                     // Set a short grace period (2s) before retrying instead of clearing
                     // entirely. This prevents rapid flip-flopping if the new primary is
                     // not yet ready to accept writes.
-                    *self.leadership_lost_at.lock().await = Some(
-                        tokio::time::Instant::now() - Duration::from_secs(self.renew_interval_secs) + Duration::from_secs(2)
-                    );
+                    // Use Redis timestamp to avoid clock skew.
+                    if let Ok(redis_ts) = self.get_redis_time().await {
+                        let grace_elapsed = self.renew_interval_secs.saturating_sub(2);
+                        *self.leadership_lost_at_redis_ts.lock().await = Some(
+                            redis_ts.saturating_sub(grace_elapsed)
+                        );
+                    }
                 } else {
                     warn!(
                         identity = %self.identity,

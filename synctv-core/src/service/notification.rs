@@ -79,6 +79,12 @@ pub enum RoomEvent {
     },
     /// Media removed from playlist
     MediaRemoved { media_id: String },
+    /// Media updated (name or position changed)
+    MediaUpdated {
+        media_id: String,
+        title: String,
+        position: i32,
+    },
     /// Playlist reordered
     PlaylistReordered { media_ids: Vec<String> },
     /// Member permissions changed
@@ -127,6 +133,7 @@ impl RoomEvent {
             Self::PlaybackStateChanged { .. } => "playback_state_changed",
             Self::MediaAdded { .. } => "media_added",
             Self::MediaRemoved { .. } => "media_removed",
+            Self::MediaUpdated { .. } => "media_updated",
             Self::PlaylistReordered { .. } => "playlist_reordered",
             Self::PermissionChanged { .. } => "permission_changed",
             Self::MemberKicked { .. } => "member_kicked",
@@ -422,6 +429,22 @@ impl NotificationService {
         self.broadcast_to_room(room_id, event).await
     }
 
+    /// Notify media updated
+    pub async fn notify_media_updated(
+        &self,
+        room_id: &RoomId,
+        media_id: &str,
+        title: &str,
+        position: i32,
+    ) -> Result<()> {
+        let event = RoomEvent::MediaUpdated {
+            media_id: media_id.to_string(),
+            title: title.to_string(),
+            position,
+        };
+        self.broadcast_to_room(room_id, event).await
+    }
+
     /// Notify permission changed
     pub async fn notify_permission_changed(
         &self,
@@ -695,6 +718,11 @@ mod tests {
             },
             RoomEvent::MediaRemoved {
                 media_id: "media123".to_string(),
+            },
+            RoomEvent::MediaUpdated {
+                media_id: "media123".to_string(),
+                title: "Updated Video".to_string(),
+                position: 2,
             },
             RoomEvent::PlaylistReordered {
                 media_ids: vec!["media1".to_string(), "media2".to_string()],

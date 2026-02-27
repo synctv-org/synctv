@@ -2152,6 +2152,96 @@ async fn test_admin_delete_room_bypasses_permission_check() {
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
+async fn test_admin_delete_room_requires_admin_role() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let room_service = make_room_service(pool.clone());
+
+    // Create a room with a regular user as owner
+    let owner = user_repo.create(&make_user("owner")).await.unwrap();
+    let (room, _) = room_service
+        .create_room(
+            "Test Room".to_string(),
+            String::new(),
+            owner.id.clone(),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+    // Create another regular user (NOT admin)
+    let regular_user = user_repo.create(&make_user("regular_user")).await.unwrap();
+
+    // Non-admin user should NOT be able to call admin_delete_room
+    let result = room_service.admin_delete_room(&room.id, &regular_user.id).await;
+    assert!(result.is_err(), "Non-admin user should not be able to call admin_delete_room");
+    if let Err(Error::Authorization(msg)) = result {
+        assert!(msg.contains("admin") || msg.contains("Admin"), "Error message should mention admin requirement");
+    } else {
+        panic!("Expected Authorization error, got {:?}", result);
+    }
+
+    // Room should still exist (not deleted)
+    let room_repo = RoomRepository::new(pool.clone());
+    let fetched = room_repo.get_by_id(&room.id).await.unwrap();
+    assert!(fetched.is_some(), "Room should still exist after failed admin delete");
+
+    // Now test with an actual admin user
+    let mut admin_user = user_repo.create(&make_user("admin_user")).await.unwrap();
+    admin_user.role = UserRole::Admin;
+    user_repo.update(&admin_user, admin_user.version).await.unwrap();
+
+    // Admin user should be able to call admin_delete_room
+    room_service
+        .admin_delete_room(&room.id, &admin_user.id)
+        .await
+        .unwrap();
+
+    // Room should be soft-deleted
+    let fetched = room_repo.get_by_id(&room.id).await.unwrap();
+    assert!(fetched.is_none(), "Room should be soft-deleted by admin");
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_admin_delete_room_requires_root_role() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let room_service = make_room_service(pool.clone());
+    let room_repo = RoomRepository::new(pool.clone());
+
+    // Create a room with a regular user as owner
+    let owner = user_repo.create(&make_user("owner2")).await.unwrap();
+    let (room, _) = room_service
+        .create_room(
+            "Test Room 2".to_string(),
+            String::new(),
+            owner.id.clone(),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+    // Root user should also be able to call admin_delete_room
+    let mut root_user = user_repo.create(&make_user("root_user")).await.unwrap();
+    root_user.role = UserRole::Root;
+    user_repo.update(&root_user, root_user.version).await.unwrap();
+
+    // Root user should be able to call admin_delete_room
+    room_service
+        .admin_delete_room(&room.id, &root_user.id)
+        .await
+        .unwrap();
+
+    // Room should be soft-deleted
+    let fetched = room_repo.get_by_id(&room.id).await.unwrap();
+    assert!(fetched.is_none(), "Room should be soft-deleted by root");
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
 async fn test_delete_nonexistent_room_returns_error() {
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());

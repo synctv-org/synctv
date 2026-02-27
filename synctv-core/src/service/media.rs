@@ -395,13 +395,21 @@ impl MediaService {
             }
 
             // Check permission: EDIT_MOVIE_SELF if user owns the media, EDIT_MOVIE_ANY otherwise
+            //
+            // IMPORTANT: Use check_permission_no_cache to ensure fresh permissions on each retry.
+            // This prevents a race condition where:
+            // 1. Permission is granted and cached on first attempt
+            // 2. Permission is revoked by admin before retry
+            // 3. Retry would succeed with stale cached permission
+            //
+            // By bypassing cache, we ensure each retry checks current permission state.
             let required_permission = if media.creator_id.as_ref() == Some(&user_id) {
                 PermissionBits::EDIT_MOVIE_SELF
             } else {
                 PermissionBits::EDIT_MOVIE_ANY
             };
             self.permission_service
-                .check_permission(&room_id, &user_id, required_permission)
+                .check_permission_no_cache(&room_id, &user_id, required_permission)
                 .await?;
 
             // Capture the old values before applying changes to detect concurrent edits
@@ -428,6 +436,23 @@ impl MediaService {
                         media_id = %request.media_id.as_str(),
                         "Media edited"
                     );
+
+                    // Broadcast media updated event to local WebSocket clients and cluster
+                    if let Some(ref ns) = self.notification_service {
+                        if let Err(e) = ns.notify_media_updated(
+                            &room_id,
+                            updated_media.id.as_str(),
+                            &updated_media.name,
+                            updated_media.position,
+                        ).await {
+                            tracing::warn!(
+                                error = %e,
+                                room_id = %room_id.as_str(),
+                                "Failed to broadcast media updated event"
+                            );
+                        }
+                    }
+
                     return Ok(updated_media);
                 }
                 Ok(None) if attempt + 1 < Self::EDIT_MAX_RETRIES => {

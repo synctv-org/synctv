@@ -208,10 +208,12 @@ pub async fn list_media(
     Path(room_id): Path<String>,
     Query(params): Query<super::media::ListPlaylistQuery>,
 ) -> AppResult<Json<ListPlaylistResponse>> {
+    let page_size = super::validation::validate_page_size(params.page_size);
+
     let req = crate::proto::client::ListPlaylistRequest {
         playlist_id: String::new(), // Not used by list_media (uses room's root playlist)
-        page: params.page.unwrap_or(0).max(0),
-        page_size: params.page_size.unwrap_or(50).clamp(1, 200),
+        page: params.page.unwrap_or(0).max(0), // 0-based page for this endpoint
+        page_size,
     };
 
     let response = state
@@ -323,11 +325,6 @@ pub async fn check_room(
     Ok(Json(response))
 }
 
-/// Maximum allowed page size for `list_rooms` to prevent DB overload and OOM.
-const LIST_ROOMS_MAX_PAGE_SIZE: i32 = 200;
-/// Maximum allowed page number to prevent deep pagination DoS.
-/// Beyond this limit, the database must scan too many rows, causing performance issues.
-const LIST_ROOMS_MAX_PAGE: i32 = 1000;
 /// Maximum allowed search query length to prevent abuse.
 const LIST_ROOMS_MAX_SEARCH_LENGTH: usize = 100;
 
@@ -337,24 +334,10 @@ pub async fn list_rooms(
     State(state): State<AppState>,
     Query(params): Query<std::collections::HashMap<String, String>>,
 ) -> AppResult<Json<ListRoomsResponse>> {
-    // Parse and validate page parameter
-    let page: i32 = params.get("page").and_then(|v| v.parse().ok()).unwrap_or(1);
-    if page < 1 {
-        return Err(super::error::AppError::bad_request("page must be at least 1".to_string()));
-    }
-    if page > LIST_ROOMS_MAX_PAGE {
-        return Err(super::error::AppError::bad_request(format!(
-            "page must not exceed {}",
-            LIST_ROOMS_MAX_PAGE
-        )));
-    }
-
-    // Parse and validate page_size parameter
-    let page_size: i32 = params
-        .get("page_size")
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(50)
-        .clamp(1, LIST_ROOMS_MAX_PAGE_SIZE);
+    // Parse and validate page and page_size parameters using centralized validation
+    let page_opt = params.get("page").and_then(|v| v.parse().ok());
+    let page_size_opt = params.get("page_size").and_then(|v| v.parse().ok());
+    let (page, page_size) = super::validation::validate_pagination(page_opt, page_size_opt);
 
     // Validate search parameter length
     let search = params.get("search").cloned().unwrap_or_default();
@@ -808,8 +791,9 @@ pub async fn list_playlists(
     Query(params): Query<std::collections::HashMap<String, String>>,
 ) -> AppResult<Json<ListPlaylistsResponse>> {
     let parent_id = params.get("parent_id").cloned().unwrap_or_default();
-    let page: i32 = params.get("page").and_then(|v| v.parse().ok()).unwrap_or(1);
-    let page_size: i32 = params.get("page_size").and_then(|v| v.parse().ok()).unwrap_or(50);
+    let page_opt = params.get("page").and_then(|v| v.parse().ok());
+    let page_size_opt = params.get("page_size").and_then(|v| v.parse().ok());
+    let (page, page_size) = super::validation::validate_pagination(page_opt, page_size_opt);
     let req = crate::proto::client::ListPlaylistsRequest { parent_id, page, page_size };
     let response = state
         .client_api

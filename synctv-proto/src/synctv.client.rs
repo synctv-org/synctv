@@ -1058,7 +1058,7 @@ pub struct PlaybackProgressReport {
 pub struct ServerMessage {
     #[prost(
         oneof = "server_message::Message",
-        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21"
+        tags = "1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22"
     )]
     pub message: ::core::option::Option<server_message::Message>,
 }
@@ -1111,6 +1111,9 @@ pub mod server_message {
         SfuMigrationOffer(super::SfuMigrationOffer),
         #[prost(message, tag = "21")]
         SfuMigrationStatus(super::SfuMigrationStatus),
+        /// User notification push (replaces NOTIFICATION_PUSH error code abuse)
+        #[prost(message, tag = "22")]
+        Notification(super::UserNotification),
     }
 }
 /// Note: room_id extracted from x-room-id metadata in MessageStream context
@@ -1206,6 +1209,44 @@ pub struct ErrorMessage {
     /// Optional detailed/debug info (may be empty in production)
     #[prost(string, tag = "3")]
     pub detail: ::prost::alloc::string::String,
+}
+/// User Notification
+/// Push notification delivered to user's WebSocket connection.
+///
+/// This message type replaces the historical abuse of ErrorMessage with code 5000
+/// (NOTIFICATION_PUSH). Clients should handle this variant separately from errors.
+///
+/// The notification is pushed in real-time when a database-backed notification is
+/// created via UserNotificationService. The notification_id allows clients to
+/// deduplicate notifications if they receive them multiple times (e.g., during
+/// reconnection).
+///
+/// Example notification types:
+///
+/// * "room_invitation": User invited to join a room
+/// * "system": System-wide announcement
+/// * "room_event": Room-specific event (e.g., room closed, settings changed)
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct UserNotification {
+    /// Unique notification ID (UUID string) for client-side deduplication
+    #[prost(string, tag = "1")]
+    pub notification_id: ::prost::alloc::string::String,
+    /// Notification type (e.g., "room_invitation", "system", "room_event")
+    #[prost(string, tag = "2")]
+    pub notification_type: ::prost::alloc::string::String,
+    /// Notification title for display
+    #[prost(string, tag = "3")]
+    pub title: ::prost::alloc::string::String,
+    /// Notification content for display
+    #[prost(string, tag = "4")]
+    pub content: ::prost::alloc::string::String,
+    /// JSON-encoded additional data (e.g., room_id, inviter_name for invitations)
+    #[prost(string, tag = "5")]
+    pub data: ::prost::alloc::string::String,
+    /// Unix timestamp in milliseconds when notification was created
+    #[prost(int64, tag = "6")]
+    pub timestamp: i64,
 }
 /// Chat History
 /// Note: room_id extracted from x-room-id metadata
@@ -5053,6 +5094,30 @@ pub mod media_service_client {
                 .insert(GrpcMethod::new("synctv.client.MediaService", "CreatePlaylist"));
             self.inner.unary(req, path, codec).await
         }
+        pub async fn get_playlist(
+            &mut self,
+            request: impl tonic::IntoRequest<super::GetPlaylistRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::GetPlaylistResponse>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static(
+                "/synctv.client.MediaService/GetPlaylist",
+            );
+            let mut req = request.into_request();
+            req.extensions_mut()
+                .insert(GrpcMethod::new("synctv.client.MediaService", "GetPlaylist"));
+            self.inner.unary(req, path, codec).await
+        }
         pub async fn update_playlist(
             &mut self,
             request: impl tonic::IntoRequest<super::UpdatePlaylistRequest>,
@@ -5547,6 +5612,13 @@ pub mod media_service_server {
             tonic::Response<super::CreatePlaylistResponse>,
             tonic::Status,
         >;
+        async fn get_playlist(
+            &self,
+            request: tonic::Request<super::GetPlaylistRequest>,
+        ) -> std::result::Result<
+            tonic::Response<super::GetPlaylistResponse>,
+            tonic::Status,
+        >;
         async fn update_playlist(
             &self,
             request: tonic::Request<super::UpdatePlaylistRequest>,
@@ -5795,6 +5867,51 @@ pub mod media_service_server {
                     let inner = self.inner.clone();
                     let fut = async move {
                         let method = CreatePlaylistSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.unary(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/synctv.client.MediaService/GetPlaylist" => {
+                    #[allow(non_camel_case_types)]
+                    struct GetPlaylistSvc<T: MediaService>(pub Arc<T>);
+                    impl<
+                        T: MediaService,
+                    > tonic::server::UnaryService<super::GetPlaylistRequest>
+                    for GetPlaylistSvc<T> {
+                        type Response = super::GetPlaylistResponse;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::Response>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<super::GetPlaylistRequest>,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as MediaService>::get_playlist(&inner, request).await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = GetPlaylistSvc(inner);
                         let codec = tonic_prost::ProstCodec::default();
                         let mut grpc = tonic::server::Grpc::new(codec)
                             .apply_compression_config(

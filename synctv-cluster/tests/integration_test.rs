@@ -1140,9 +1140,9 @@ async fn test_leader_election_single_leader() {
         renew_interval_secs: 1,
     };
 
-    let elector_a = LeaderElector::with_config(conn_a, "node_a".to_string(), config_a, "synctv:");
-    let elector_b = LeaderElector::with_config(conn_b, "node_b".to_string(), config_b, "synctv:");
-    let elector_c = LeaderElector::with_config(conn_c, "node_c".to_string(), config_c, "synctv:");
+    let elector_a = LeaderElector::with_config(conn_a, "node_a".to_string(), config_a, "synctv:", false);
+    let elector_b = LeaderElector::with_config(conn_b, "node_b".to_string(), config_b, "synctv:", false);
+    let elector_c = LeaderElector::with_config(conn_c, "node_c".to_string(), config_c, "synctv:", false);
 
     let cancel_a = CancellationToken::new();
     let cancel_b = CancellationToken::new();

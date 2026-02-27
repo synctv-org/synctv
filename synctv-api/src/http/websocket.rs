@@ -327,6 +327,7 @@ fn message_type_name(message: &ServerMessage) -> &'static str {
         Some(Message::WebrtcLeave(_)) => "WebrtcLeave",
         Some(Message::SfuMigrationOffer(_)) => "SfuMigrationOffer",
         Some(Message::SfuMigrationStatus(_)) => "SfuMigrationStatus",
+        Some(Message::Notification(_)) => "Notification",
         None => "None",
     }
 }

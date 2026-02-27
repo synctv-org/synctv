@@ -12,7 +12,7 @@ use super::{
     DynamicFolder, DirectoryItem, ItemType, NextPlayItem,
 };
 use crate::service::RemoteProviderManager;
-use crate::validation::{validate_url_for_ssrf, ValidationError};
+use crate::validation::{validate_path_for_traversal, validate_url_for_ssrf, ValidationError};
 use async_trait::async_trait;
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
@@ -430,13 +430,11 @@ impl DynamicFolder for AlistProvider {
 
         let base_config = AlistSourceConfig::try_from(config)?;
 
-        // Validate relative_path to prevent path traversal attacks
+        // Validate relative_path BEFORE any path concatenation to prevent traversal attacks
         if let Some(rel) = relative_path {
-            if rel.contains("..") || rel.contains('\0') {
-                return Err(ProviderError::InvalidConfig(
-                    "Relative path must not contain path traversal (..) or null bytes".to_string(),
-                ));
-            }
+            validate_path_for_traversal(rel).map_err(|e| ProviderError::InvalidConfig(
+                format!("Invalid relative path: {}", e)
+            ))?;
         }
 
         // Construct full path: base_path + relative_path
@@ -527,12 +525,10 @@ impl DynamicFolder for AlistProvider {
     ) -> Result<Option<NextPlayItem>, ProviderError> {
         use crate::models::PlayMode;
 
-        // Validate relative_path to prevent path traversal attacks
-        if relative_path.contains("..") || relative_path.contains('\0') {
-            return Err(ProviderError::InvalidConfig(
-                "Relative path must not contain path traversal (..) or null bytes".to_string(),
-            ));
-        }
+        // Validate relative_path BEFORE any path operations to prevent traversal attacks
+        validate_path_for_traversal(relative_path).map_err(|e| ProviderError::InvalidConfig(
+            format!("Invalid relative path: {}", e)
+        ))?;
 
         match play_mode {
             PlayMode::RepeatOne => {
@@ -875,6 +871,59 @@ mod tests {
             "path": ""
         });
         assert!(validate_alist(config).is_err());
+    }
+
+    // ========== Path Traversal Validation Tests ==========
+
+    #[test]
+    fn test_path_traversal_validation_rejects_literal_double_dot() {
+        // Use the centralized validation function
+        assert!(validate_path_for_traversal("../../../etc/passwd").is_err());
+        assert!(validate_path_for_traversal("../secret").is_err());
+        assert!(validate_path_for_traversal("test/../etc").is_err());
+    }
+
+    #[test]
+    fn test_path_traversal_validation_rejects_url_encoded_dot() {
+        // URL-encoded . (2E in hex)
+        assert!(validate_path_for_traversal("%2e%2e/etc/passwd").is_err());
+        assert!(validate_path_for_traversal("%2E%2E/secret").is_err()); // uppercase
+        assert!(validate_path_for_traversal("test/%2e%2e/config").is_err());
+    }
+
+    #[test]
+    fn test_path_traversal_validation_rejects_mixed_encoding() {
+        // Mixed literal and encoded
+        assert!(validate_path_for_traversal("..%2fetc/passwd").is_err());
+        assert!(validate_path_for_traversal("%2e%2e/secret").is_err());
+    }
+
+    #[test]
+    fn test_path_traversal_validation_rejects_backslash_traversal() {
+        assert!(validate_path_for_traversal("..\\..\\windows").is_err());
+        assert!(validate_path_for_traversal("test\\..\\config").is_err());
+    }
+
+    #[test]
+    fn test_path_traversal_validation_rejects_mixed_dot_sequences() {
+        assert!(validate_path_for_traversal("./../etc").is_err());
+        assert!(validate_path_for_traversal(".././secret").is_err());
+        assert!(validate_path_for_traversal("././../config").is_err());
+    }
+
+    #[test]
+    fn test_path_traversal_validation_rejects_null_bytes() {
+        assert!(validate_path_for_traversal("test\0../etc").is_err());
+        assert!(validate_path_for_traversal("/etc/\0passwd").is_err());
+    }
+
+    #[test]
+    fn test_path_traversal_validation_allows_valid_paths() {
+        assert!(validate_path_for_traversal("media/movies").is_ok());
+        assert!(validate_path_for_traversal("/absolute/path").is_ok());
+        assert!(validate_path_for_traversal("folder with spaces/file.txt").is_ok());
+        assert!(validate_path_for_traversal("file-with-dashes.txt").is_ok());
+        assert!(validate_path_for_traversal("file_with_underscores.txt").is_ok());
     }
 
     /// Test helper to verify cursor-based pagination bounds.

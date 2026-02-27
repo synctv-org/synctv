@@ -386,7 +386,8 @@ async fn test_update_with_version_nonexistent_media() {
 #[ignore = "Requires Docker"]
 async fn test_version_returned_in_read_operations() {
     let ctx = setup_test_context("v7").await;
-    let media_repo = MediaRepository::new(ctx.pool.clone());
+    let pool = ctx.pool.clone();
+    let media_repo = MediaRepository::new(pool);
 
     // Create and update a media item
     let mut media = media_repo

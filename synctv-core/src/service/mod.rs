@@ -31,6 +31,7 @@ pub mod email;
 pub mod email_templates;
 pub mod optimistic_retry;
 pub mod turn_server;
+pub mod turn_health;
 pub mod ws_ticket;
 
 pub use auth::{hash_password, verify_password, JwtService, TokenType, Claims, GuestClaims, BruteForceProtection, SecurityPipeline, AuthenticatedToken, TokenBlacklistStore};
@@ -76,6 +77,7 @@ pub use email::{EmailService, EmailConfig, VerificationCodeStore, RedisVerificat
 pub use email_templates::{EmailTemplateManager, EmailTemplateType};
 pub use optimistic_retry::retry_with_optimistic_lock;
 pub use turn_server::{StunServer, StunServerConfig, resolve_external_ip, validate_external_addr};
+pub use turn_health::{TurnHealthChecker, TurnHealthCheckConfig, TurnServerHealth, HealthCheckResult};
 pub use ws_ticket::{WsTicketService, WsTicketData, TicketStore, RedisTicketStore, InMemoryTicketStore, UserValidator, UserValidationResult};
 
 /// Trait for checking if the current node is the cluster leader.

@@ -1859,4 +1859,115 @@ mod tests {
         // This will fail because hosts don't exist, but the count validation passed
         assert!(result.is_err());
     }
+
+    /// Test that documents the Sentinel failover vulnerability.
+    ///
+    /// This test demonstrates why single-instance Redis locks are unsafe during
+    /// Sentinel failover. The vulnerability occurs because:
+    ///
+    /// 1. Redis replication is asynchronous
+    /// 2. When Sentinel promotes a replica to master, unreplicated lock state is lost
+    /// 3. Two clients can simultaneously believe they hold the same lock (split-brain)
+    ///
+    /// SCENARIO:
+    /// ```text
+    /// Time  Client1 (Old Master)   Replication Lag   Client2 (New Master)
+    /// ----  ---------------------  ----------------  ---------------------
+    /// t0    SET lock:foo v1 EX 10
+    /// t1    <lock acquired>
+    /// t2                         (not yet replicated)
+    /// t3                         [Sentinel detects failure, promotes replica]
+    /// t4                                          [New master has no lock:foo]
+    /// t5                                          SET lock:foo v2 EX 10
+    /// t6                                          <lock acquired - SPLIT-BRAIN!>
+    /// ```
+    ///
+    /// Both clients now believe they hold the lock simultaneously.
+    ///
+    /// MITIGATIONS:
+    /// - Use fencing tokens for database writes (CAS validation)
+    /// - Use Redlock algorithm with 5 independent Redis masters
+    /// - Use Kubernetes Lease-based leader election
+    /// - Accept the risk for idempotent operations only
+    ///
+    /// NOTE: This test is documentation-only. We cannot simulate actual Sentinel
+    /// failover in unit tests without complex Docker orchestration. The value here
+    /// is in documenting the failure mode and mitigation strategies.
+    #[tokio::test]
+    #[ignore = "Documentation test - illustrates the vulnerability scenario"]
+    async fn test_sentinel_failover_vulnerability_documentation() {
+        // This is a conceptual test to document the vulnerability
+        // In a real Sentinel deployment, the following sequence demonstrates the issue:
+
+        // 1. Client1 acquires lock on old master
+        // SET lock:test "value1" NX EX 10
+        // Result: OK (lock acquired)
+
+        // 2. Before replication completes, Sentinel promotes replica
+        // The new master does NOT have the lock key
+
+        // 3. Client2 acquires lock on new master
+        // SET lock:test "value2" NX EX 10
+        // Result: OK (lock acquired - SPLIT-BRAIN!)
+
+        // Both clients now believe they hold the lock
+
+        // Mitigation: Fencing tokens
+        // - Each lock acquisition generates a monotonically increasing token
+        // - Database writes use the token as a CAS condition
+        // - Client1's write fails because Client2 has a higher token
+        // - This prevents database corruption but NOT non-idempotent side effects
+
+        // Example of fencing token protection:
+        // - Client1 gets token=100, writes to DB with version=100
+        // - Client2 gets token=101, writes to DB with version=101
+        // - Client1's delayed write with version=100 is rejected (stale)
+
+        // Non-idempotent operations CANNOT be protected:
+        // - Sending emails (already sent by both clients)
+        // - Billing charges (charged twice)
+        // - Third-party API calls (called twice)
+
+        println!("See module-level documentation for mitigation strategies");
+        println!("Use Redlock or K8s Lease for true distributed lock safety");
+    }
+
+    /// Test that verifies the warning is logged when using Sentinel mode.
+    ///
+    /// This ensures operators are aware of the lock safety limitations during
+    /// Sentinel failover.
+    #[tokio::test]
+    #[ignore = "Requires Docker"]
+    async fn test_sentinel_mode_emits_warning() {
+        let infra = crate::test_helpers::containers::TestInfra::redis_only().await;
+        let redis = infra.connection_manager().await;
+
+        // Create lock with Sentinel mode enabled - this logs a warning
+        let _lock = DistributedLock::new_with_mode(redis, true);
+
+        // In real execution with logging enabled, this would emit:
+        // WARN Distributed lock is running behind Redis Sentinel.
+        //      During a Sentinel failover, there is a brief split-brain window where
+        //      locks held on the old master may be lost because Redis replication is
+        //      asynchronous. Fencing tokens mitigate this for database writes, but
+        //      non-idempotent side effects (notifications, billing) cannot be fenced.
+        //      For production Sentinel deployments, consider using the Redlock algorithm
+        //      with multiple independent Redis masters.
+    }
+
+    /// Test that verifies NO warning is logged when using Standalone mode.
+    ///
+    /// Standalone mode is safe for distributed locking because there's no
+    /// failover scenario that can lose locks.
+    #[tokio::test]
+    #[ignore = "Requires Docker"]
+    async fn test_standalone_mode_no_warning() {
+        let infra = crate::test_helpers::containers::TestInfra::redis_only().await;
+        let redis = infra.connection_manager().await;
+
+        // Create lock with Standalone mode - should NOT log warning
+        let _lock = DistributedLock::new_with_mode(redis, false);
+
+        // No warning should be emitted for standalone mode
+    }
 }

@@ -188,7 +188,8 @@ impl AdminApiImpl {
         &self,
         req: crate::proto::admin::GetRoomRequest,
     ) -> Result<crate::proto::admin::GetRoomResponse, ApiError> {
-        let rid = RoomId::from_string(req.room_id);
+        let rid = crate::room_id_validation::parse_room_id(&req.room_id)
+            .map_err(|e| ApiError::InvalidInput(e.to_string()))?;
         let room = self.room_service.get_room(&rid).await
             .map_err(ApiError::from)?;
         let creator_username = self.user_service
@@ -216,7 +217,8 @@ impl AdminApiImpl {
         admin_user_id: &UserId,
         ctx: &RequestContext,
     ) -> Result<crate::proto::admin::DeleteRoomResponse, ApiError> {
-        let rid = RoomId::from_string(req.room_id);
+        let rid = crate::room_id_validation::parse_room_id(&req.room_id)
+            .map_err(|e| ApiError::InvalidInput(e.to_string()))?;
 
         self.room_service.admin_delete_room(&rid, admin_user_id).await
             .map_err(ApiError::from)?;
@@ -286,7 +288,8 @@ impl AdminApiImpl {
         admin_user_id: &UserId,
         ctx: &RequestContext,
     ) -> Result<crate::proto::admin::UpdateRoomPasswordResponse, ApiError> {
-        let room_id = RoomId::from_string(req.room_id);
+        let room_id = crate::room_id_validation::parse_room_id(&req.room_id)
+            .map_err(|e| ApiError::InvalidInput(e.to_string()))?;
         let new_password = if req.new_password.is_empty() {
             None
         } else {
@@ -330,7 +333,8 @@ impl AdminApiImpl {
         &self,
         req: crate::proto::admin::GetRoomMembersRequest,
     ) -> Result<crate::proto::admin::GetRoomMembersResponse, ApiError> {
-        let rid = RoomId::from_string(req.room_id);
+        let rid = crate::room_id_validation::parse_room_id(&req.room_id)
+            .map_err(|e| ApiError::InvalidInput(e.to_string()))?;
         let members = self.room_service.get_room_members(&rid).await
             .map_err(ApiError::from)?;
 
@@ -1411,7 +1415,8 @@ impl AdminApiImpl {
         admin_user_id: &UserId,
         ctx: &RequestContext,
     ) -> Result<crate::proto::admin::BanRoomResponse, ApiError> {
-        let rid = RoomId::from_string(req.room_id);
+        let rid = crate::room_id_validation::parse_room_id(&req.room_id)
+            .map_err(|e| ApiError::InvalidInput(e.to_string()))?;
         let room = self.room_service.get_room(&rid).await.map_err(ApiError::from)?;
 
         if room.is_banned {
@@ -1492,7 +1497,8 @@ impl AdminApiImpl {
         admin_user_id: &UserId,
         ctx: &RequestContext,
     ) -> Result<crate::proto::admin::UnbanRoomResponse, ApiError> {
-        let rid = RoomId::from_string(req.room_id);
+        let rid = crate::room_id_validation::parse_room_id(&req.room_id)
+            .map_err(|e| ApiError::InvalidInput(e.to_string()))?;
         let room = self.room_service.get_room(&rid).await.map_err(ApiError::from)?;
 
         if !room.is_banned {
@@ -1545,7 +1551,8 @@ impl AdminApiImpl {
         admin_user_id: &UserId,
         ctx: &RequestContext,
     ) -> Result<crate::proto::admin::ApproveRoomResponse, ApiError> {
-        let rid = RoomId::from_string(req.room_id);
+        let rid = crate::room_id_validation::parse_room_id(&req.room_id)
+            .map_err(|e| ApiError::InvalidInput(e.to_string()))?;
         let room = self.room_service.approve_room(&rid).await.map_err(ApiError::from)?;
 
         // Audit log: approving a room is a security-relevant operation.
@@ -1589,7 +1596,8 @@ impl AdminApiImpl {
         &self,
         req: crate::proto::admin::GetRoomSettingsRequest,
     ) -> Result<crate::proto::admin::GetRoomSettingsResponse, ApiError> {
-        let rid = RoomId::from_string(req.room_id);
+        let rid = crate::room_id_validation::parse_room_id(&req.room_id)
+            .map_err(|e| ApiError::InvalidInput(e.to_string()))?;
         let settings = self.room_service.get_room_settings(&rid).await.map_err(ApiError::from)?;
         let settings_json = serde_json::to_vec(&settings).map_err(ApiError::from)?;
 
@@ -1601,7 +1609,8 @@ impl AdminApiImpl {
         req: crate::proto::admin::UpdateRoomSettingsRequest,
         admin_user_id: &UserId,
     ) -> Result<crate::proto::admin::UpdateRoomSettingsResponse, ApiError> {
-        let rid = RoomId::from_string(req.room_id);
+        let rid = crate::room_id_validation::parse_room_id(&req.room_id)
+            .map_err(|e| ApiError::InvalidInput(e.to_string()))?;
         let settings: synctv_core::models::RoomSettings = serde_json::from_slice(&req.settings)
             .map_err(|e| ApiError::InvalidInput(format!("Invalid settings JSON: {e}")))?;
 
@@ -1640,7 +1649,8 @@ impl AdminApiImpl {
         req: crate::proto::admin::ResetRoomSettingsRequest,
         admin_user_id: &UserId,
     ) -> Result<crate::proto::admin::ResetRoomSettingsResponse, ApiError> {
-        let rid = RoomId::from_string(req.room_id);
+        let rid = crate::room_id_validation::parse_room_id(&req.room_id)
+            .map_err(|e| ApiError::InvalidInput(e.to_string()))?;
         self.room_service.reset_room_settings(&rid, admin_user_id).await.map_err(ApiError::from)?;
 
         let room = self.room_service.get_room(&rid).await.map_err(ApiError::from)?;

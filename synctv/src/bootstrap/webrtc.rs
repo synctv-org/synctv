@@ -2,11 +2,21 @@ use std::sync::Arc;
 use tracing::{error, info, warn};
 
 use synctv_core::Config;
+use tokio_util::sync::CancellationToken;
 
-/// Initialize WebRTC components: STUN server.
+/// WebRTC components initialized during bootstrap
+pub struct WebRTCComponents {
+    /// Built-in STUN server (if enabled)
+    pub stun_server: Option<Arc<synctv_core::service::StunServer>>,
+    /// TURN health checker for monitoring TURN servers
+    pub turn_health_checker: Option<Arc<synctv_core::service::TurnHealthChecker>>,
+}
+
+/// Initialize WebRTC components: STUN server and TURN health checker.
 pub async fn init_webrtc(
     config: &Config,
-) -> Option<Arc<synctv_core::service::StunServer>> {
+    cancel: CancellationToken,
+) -> WebRTCComponents {
     // STUN server (if enabled, powered by turn-rs)
     let stun_server = if config.webrtc.enable_builtin_stun {
         info!("Starting built-in STUN server (turn-rs)...");
@@ -33,7 +43,10 @@ pub async fn init_webrtc(
                          Built-in STUN server will NOT start.",
                         advertise
                     );
-                    return None;
+                    return WebRTCComponents {
+                        stun_server: None,
+                        turn_health_checker: None,
+                    };
                 }
             }
         } else {
@@ -47,7 +60,10 @@ pub async fn init_webrtc(
                 "Built-in STUN server will NOT start. NAT traversal requires a valid \
                  public external address. Set SYNCTV_WEBRTC_STUN_EXTERNAL_ADDR to a routable IP."
             );
-            return None;
+            return WebRTCComponents {
+                stun_server: None,
+                turn_health_checker: None,
+            };
         }
 
         let stun_config = synctv_core::service::StunServerConfig {
@@ -70,5 +86,29 @@ pub async fn init_webrtc(
         None
     };
 
-    stun_server
+    // TURN health checker
+    let turn_health_checker = if !config.webrtc.turn_shared_secret.is_empty()
+        && !config.webrtc.turn_server_urls.is_empty()
+    {
+        info!("Initializing TURN health checker...");
+
+        let checker = Arc::new(synctv_core::service::TurnHealthChecker::new());
+
+        // Start periodic health checks
+        checker.clone().spawn_health_checks(
+            config.webrtc.turn_server_urls.clone(),
+            cancel,
+        );
+
+        info!("TURN health checker started for {} servers", config.webrtc.turn_server_urls.len());
+        Some(checker)
+    } else {
+        info!("TURN health checker disabled (no TURN servers configured)");
+        None
+    };
+
+    WebRTCComponents {
+        stun_server,
+        turn_health_checker,
+    }
 }

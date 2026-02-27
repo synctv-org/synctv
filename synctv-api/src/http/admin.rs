@@ -185,13 +185,6 @@ fn admin_err_to_app_error(err: crate::impls::ApiError) -> AppError {
 }
 
 // ------------------------------------------------------------------
-// Pagination constants
-// ------------------------------------------------------------------
-
-/// Maximum page size for all list endpoints to ensure consistent API contract.
-const MAX_PAGE_SIZE: i32 = 200;
-
-// ------------------------------------------------------------------
 // ID validation helper
 // ------------------------------------------------------------------
 
@@ -360,10 +353,12 @@ async fn list_users(
         Some("user") => synctv_proto::common::UserRole::User as i32,
         _ => synctv_proto::common::UserRole::Unspecified as i32,
     };
+    let (page, page_size) = super::validation::validate_pagination(q.page, q.page_size);
+
     let resp = api
         .list_users(admin::ListUsersRequest {
-            page: q.page.unwrap_or(1),
-            page_size: q.page_size.unwrap_or(20).clamp(1, MAX_PAGE_SIZE),
+            page,
+            page_size,
             status: status_i32,
             role: role_i32,
             search: q.search.unwrap_or_default(),
@@ -534,11 +529,13 @@ async fn get_user_rooms(
 ) -> AppResult<Json<admin::GetUserRoomsResponse>> {
     validate_path_id(&user_id, "user_id")?;
     let api = require_admin_api(&state)?;
+    let (page, page_size) = super::validation::validate_pagination(q.page, q.page_size);
+
     let resp = api
         .get_user_rooms(admin::GetUserRoomsRequest {
             user_id,
-            page: q.page.unwrap_or(1),
-            page_size: q.page_size.unwrap_or(50).clamp(1, MAX_PAGE_SIZE),
+            page,
+            page_size,
         })
         .await
         .map_err(admin_err_to_app_error)?;
@@ -646,10 +643,12 @@ async fn list_rooms(
     Query(q): Query<ListRoomsQuery>,
 ) -> AppResult<Json<admin::ListRoomsResponse>> {
     let api = require_admin_api(&state)?;
+    let (page, page_size) = super::validation::validate_pagination(q.page, q.page_size);
+
     let resp = api
         .list_rooms(admin::ListRoomsRequest {
-            page: q.page.unwrap_or(1),
-            page_size: q.page_size.unwrap_or(20).clamp(1, MAX_PAGE_SIZE),
+            page,
+            page_size,
             status: q.status.unwrap_or(0),
             search: q.search.unwrap_or_default(),
             creator_id: q.creator_id.unwrap_or_default(),
@@ -716,11 +715,13 @@ async fn get_room_members(
 ) -> AppResult<Json<admin::GetRoomMembersResponse>> {
     validate_path_id(&room_id, "room_id")?;
     let api = require_admin_api(&state)?;
+    let (page, page_size) = super::validation::validate_pagination(q.page, q.page_size);
+
     let resp = api
         .get_room_members(admin::GetRoomMembersRequest {
             room_id,
-            page: q.page.unwrap_or(1),
-            page_size: q.page_size.unwrap_or(100).clamp(1, MAX_PAGE_SIZE),
+            page,
+            page_size,
         })
         .await
         .map_err(admin_err_to_app_error)?;
@@ -1330,17 +1331,19 @@ mod tests {
 
     #[test]
     fn test_room_members_page_size_clamp() {
-        // The handler clamps page_size to 1..=MAX_PAGE_SIZE (200)
+        // The handler now uses centralized validation from validation module
+        use super::super::validation;
+
         let raw_page_size: i32 = 1000;
-        let clamped = raw_page_size.clamp(1, MAX_PAGE_SIZE);
-        assert_eq!(clamped, MAX_PAGE_SIZE);
+        let clamped = validation::validate_page_size(Some(raw_page_size));
+        assert_eq!(clamped, validation::MAX_PAGE_SIZE);
 
         let raw_page_size: i32 = 0;
-        let clamped = raw_page_size.clamp(1, MAX_PAGE_SIZE);
+        let clamped = validation::validate_page_size(Some(raw_page_size));
         assert_eq!(clamped, 1);
 
         let raw_page_size: i32 = 100;
-        let clamped = raw_page_size.clamp(1, MAX_PAGE_SIZE);
+        let clamped = validation::validate_page_size(Some(raw_page_size));
         assert_eq!(clamped, 100);
     }
 

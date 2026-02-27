@@ -67,17 +67,21 @@ impl DedupKey {
     }
 }
 
-/// Default dedup TTL: 10 minutes.
+/// Default dedup TTL: 15 minutes.
 ///
-/// The dedup TTL must be at least 2x the maximum expected disconnection window
-/// to prevent duplicate processing after a reconnect. For example, if the maximum
-/// expected disconnect duration is 5 minutes (the catchup window), the dedup TTL
-/// should be at least 10 minutes. During a disconnection, events accumulate in
-/// Redis Streams and are replayed on reconnect; if the dedup TTL is shorter than
-/// the disconnect window, events delivered via live Pub/Sub before the disconnect
+/// The dedup TTL must account for:
+/// 1. Catchup window: 5 minutes (300s) - maximum disconnection duration
+/// 2. Retry buffers: up to 5+ minutes - worst-case retry buffer duration
+/// 3. Safety margin: 5 minutes - buffer for overlapping scenarios
+///
+/// Total: 15 minutes (900s)
+///
+/// During a disconnection, events accumulate in Redis Streams and are replayed
+/// on reconnect. If the dedup TTL is shorter than the disconnect window plus
+/// retry buffer duration, events delivered via live Pub/Sub before the disconnect
 /// may have already been evicted from the dedup cache, causing them to be
 /// re-processed when replayed from the stream.
-pub const DEFAULT_DEDUP_TTL: Duration = Duration::from_secs(600);
+pub const DEFAULT_DEDUP_TTL: Duration = Duration::from_secs(900);
 
 /// Message deduplicator using moka TTL cache.
 ///
@@ -105,11 +109,11 @@ impl MessageDeduplicator {
         Self { cache }
     }
 
-    /// Create with default settings (10 minute window).
+    /// Create with default settings (15 minute window).
     ///
-    /// The 10-minute window ensures dedup entries survive reconnection scenarios
-    /// where the catchup window is 5 minutes (default). See [`DEFAULT_DEDUP_TTL`]
-    /// for the full rationale.
+    /// The 15-minute window ensures dedup entries survive reconnection scenarios
+    /// where the catchup window is 5 minutes plus retry buffers up to 5+ minutes.
+    /// See [`DEFAULT_DEDUP_TTL`] for the full rationale.
     #[must_use]
     pub fn with_defaults() -> Self {
         Self::new(
@@ -267,5 +271,15 @@ mod tests {
 
         assert!(dedup.should_process(&key));
         assert!(!dedup.should_process(&key));
+    }
+
+    #[test]
+    fn test_dedup_ttl_is_fifteen_minutes() {
+        // The dedup TTL must be at least 3x the catchup window to account for:
+        // 1. Catchup window: 5 minutes (300s)
+        // 2. Retry buffers: up to 5+ minutes
+        // 3. Safety margin: 5 minutes
+        // Total: 15 minutes (900s)
+        assert_eq!(DEFAULT_DEDUP_TTL, Duration::from_secs(900));
     }
 }

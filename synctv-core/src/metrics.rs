@@ -568,6 +568,18 @@ pub mod cluster {
         ).expect("Failed to register LEADER_ELECTION_CONSECUTIVE_FAILURES")
     });
 
+    /// Epoch mismatch quarantine state (1 = quarantined, 0 = normal).
+    /// When set to 1, this node has detected split-brain (epoch mismatch) and
+    /// should reject fan-out requests and leadership operations until successfully
+    /// re-registered with a new epoch.
+    pub static CLUSTER_EPOCH_MISMATCH_QUARANTINE: std::sync::LazyLock<IntGauge> = std::sync::LazyLock::new(|| {
+        register_int_gauge_with_registry!(
+            "synctv_cluster_epoch_mismatch_quarantine",
+            "Epoch mismatch quarantine state (1 = quarantined due to split-brain, 0 = normal)",
+            REGISTRY.clone()
+        ).expect("Failed to register CLUSTER_EPOCH_MISMATCH_QUARANTINE")
+    });
+
     /// Leader election mode (0 = standalone/always_leader, 1 = redis, 2 = k8s_lease).
     /// Helps operators understand the active election strategy at a glance.
     pub static LEADER_ELECTION_MODE: std::sync::LazyLock<IntGauge> = std::sync::LazyLock::new(|| {

@@ -45,7 +45,8 @@ use crate::proto::client::{
     StopPlaybackRequest, StopPlaybackResponse,
     GetPlaybackRequest, GetPlaybackResponse,
     CreatePublishKeyRequest, CreatePublishKeyResponse,
-    CreatePlaylistRequest, CreatePlaylistResponse, UpdatePlaylistRequest, UpdatePlaylistResponse,
+    CreatePlaylistRequest, CreatePlaylistResponse, GetPlaylistRequest, GetPlaylistResponse,
+    UpdatePlaylistRequest, UpdatePlaylistResponse,
     DeletePlaylistRequest, DeletePlaylistResponse, ListPlaylistsRequest, ListPlaylistsResponse,
     CheckRoomRequest, CheckRoomResponse, ListRoomsRequest, ListRoomsResponse,
     GetHotRoomsRequest, GetHotRoomsResponse, GetPublicSettingsRequest, GetPublicSettingsResponse,
@@ -921,6 +922,17 @@ impl MediaService for ClientServiceImpl {
         let room_id = self.get_room_id(&request)?;
         let req = request.into_inner();
         let response = self.client_api.create_playlist(user_id.as_str(), room_id.as_str(), req).await.map_err(map_api_error)?;
+        Ok(Response::new(response))
+    }
+
+    async fn get_playlist(
+        &self,
+        request: Request<GetPlaylistRequest>,
+    ) -> Result<Response<GetPlaylistResponse>, Status> {
+        let user_id = self.get_user_id(&request).await?;
+        let room_id = self.get_room_id(&request)?;
+        let req = request.into_inner();
+        let response = self.client_api.get_playlist(user_id.as_str(), room_id.as_str(), &req.playlist_id).await.map_err(map_api_error)?;
         Ok(Response::new(response))
     }
 

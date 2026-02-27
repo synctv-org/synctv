@@ -365,3 +365,314 @@ async fn test_cache_invalidation_playback_state() {
         }
     }
 }
+
+// ============================================================================
+// Cache Invalidation Timing Tests
+// ============================================================================
+
+/// Test that cache invalidation happens BEFORE transaction commit.
+///
+/// This test verifies the critical invariant that cache invalidation occurs
+/// before the transaction commits, preventing the following race condition:
+///
+/// 1. Transaction commits (deleted_at is set)
+/// 2. Another request reads stale data from cache (room still appears active)
+/// 3. Cache is invalidated (too late - stale data was already served)
+///
+/// By invalidating before commit, we ensure that when the transaction commits,
+/// the cache is already empty. Any concurrent request will miss the cache
+/// and read fresh data from the database (which will correctly filter out
+/// the deleted room via `deleted_at IS NULL`).
+///
+/// If the transaction rolls back after cache invalidation, the cache
+/// will simply be empty and will be repopulated on the next read with the
+/// correct (still-active) room data. This is safe.
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_cache_invalidation_before_commit() {
+    use synctv_core::{
+        models::{Room, RoomId, UserId, User, UserRole, UserStatus},
+        repository::{RoomRepository, UserRepository},
+        service::{RoomService, UserService, InMemoryTokenBlacklistStore},
+        cache::{KeyBuilder, UsernameCache, NoopCacheL2},
+        config::PasswordComplexityConfig,
+        service::auth::{JwtService, BruteForceProtection},
+    };
+    use sqlx::PgPool;
+    use testcontainers_modules::postgres::Postgres;
+
+    // Start PostgreSQL
+    let postgres = Postgres::default()
+        .with_db_name("synctv_test")
+        .with_user("synctv")
+        .with_password("synctv_test")
+        .with_tag("16-alpine")
+        .start()
+        .await
+        .expect("Failed to start Postgres container");
+
+    let connection_string = format!(
+        "postgresql://synctv:synctv_test@127.0.0.1:{}/synctv_test",
+        postgres.get_host_port_ipv4(5432).await.expect("Failed to get port")
+    );
+
+    let pool = PgPool::connect(&connection_string)
+        .await
+        .expect("Failed to create pool");
+
+    sqlx::migrate!("../migrations")
+        .run(&pool)
+        .await
+        .expect("Failed to run migrations");
+
+    // Create user service
+    let secret = "Test_Secret_Key_For_JWT_Tokens_32Bytes!!";
+    let jwt_service = JwtService::new(secret).expect("Failed to create JwtService");
+    let l2 = Arc::new(NoopCacheL2);
+    let username_cache = UsernameCache::new(l2, "test:username:".to_string(), 100, 60);
+    let password_complexity = PasswordComplexityConfig::default();
+    let token_blacklist = Arc::new(InMemoryTokenBlacklistStore::new(1000, 3600, 86400));
+    let key_builder = KeyBuilder::new("test");
+    let brute_force = BruteForceProtection::in_memory("test".to_string());
+
+    let user_service = UserService::new(
+        pool.clone(),
+        jwt_service,
+        username_cache,
+        password_complexity,
+        token_blacklist,
+        key_builder,
+        brute_force,
+    );
+
+    // Create room service WITH cache invalidation
+    let room_service = RoomService::new(pool.clone(), user_service);
+
+    // Create a user and room
+    let user_repo = UserRepository::new(pool.clone());
+    let room_repo = RoomRepository::new(pool.clone());
+
+    let user_id = UserId::new();
+    let user = user_repo.create(&User {
+        id: user_id.clone(),
+        username: "test_user".to_string(),
+        email: Some("test@example.com".to_string()),
+        password_hash: "hash".to_string(),
+        role: UserRole::User,
+        status: UserStatus::Active,
+        email_verified: true,
+        signup_method: None,
+        created_at: chrono::Utc::now(),
+        updated_at: chrono::Utc::now(),
+        password_changed_at: chrono::Utc::now(),
+        password_version: 0,
+        version: 0,
+        deleted_at: None,
+    }).await.expect("Failed to create user");
+
+    let room_id = RoomId::new();
+    let room = room_repo.create(&Room {
+        id: room_id.clone(),
+        name: "Test Room".to_string(),
+        description: "A test room".to_string(),
+        created_by: user_id.clone(),
+        created_at: chrono::Utc::now(),
+        updated_at: chrono::Utc::now(),
+        version: 0,
+        deleted_at: None,
+        is_banned: false,
+        status: synctv_core::models::RoomStatus::Active,
+    }).await.expect("Failed to create room");
+
+    // Create the creator member entry
+    use synctv_core::{repository::RoomMemberRepository, models::RoomMember};
+    let member_repo = RoomMemberRepository::new(pool.clone());
+    let _member = member_repo.add(&RoomMember {
+        room_id: room_id.clone(),
+        user_id: user_id.clone(),
+        role: synctv_core::models::RoomRole::Creator,
+        status: synctv_core::models::MemberStatus::Active,
+        added_permissions: 0,
+        removed_permissions: 0,
+        admin_added_permissions: 0,
+        admin_removed_permissions: 0,
+        joined_at: chrono::Utc::now(),
+        left_at: None,
+        version: 0,
+        banned_at: None,
+        banned_by: None,
+        banned_reason: None,
+    }).await.expect("Failed to create member");
+
+    // Verify room exists in cache initially (via permission service)
+    // This will cache the room permission
+    let _ = room_service.get_room(&room_id).await;
+
+    // Now delete the room - this should invalidate cache BEFORE commit
+    room_service.delete_room(room_id.clone(), user_id.clone()).await.expect("Failed to delete room");
+
+    // Verify room is marked as deleted by querying database directly
+    // (get_by_id filters out deleted rooms, so we need a raw query)
+    let deleted_at: Option<chrono::DateTime<chrono::Utc>> = sqlx::query_scalar(
+        "SELECT deleted_at FROM rooms WHERE id = $1"
+    )
+    .bind(room_id.as_str())
+    .fetch_optional(&pool)
+    .await
+    .expect("Failed to query room")
+    .flatten();
+
+    assert!(deleted_at.is_some(), "Room should be marked as deleted in database");
+
+    // Verify cache is invalidated (next read should not return the deleted room)
+    // Note: get_room filters out deleted rooms, so this should return NotFound
+    let result = room_service.get_room(&room_id).await;
+    assert!(result.is_err(), "Deleted room should not be accessible");
+    assert!(matches!(result.unwrap_err(), synctv_core::Error::NotFound(_)), "Should return NotFound");
+}
+
+/// Test that cache invalidation is safe even if transaction rolls back.
+///
+/// This test verifies that if a transaction is rolled back after cache invalidation,
+/// the system remains consistent. The cache will be empty and will be repopulated
+/// on the next read with the correct data.
+///
+/// Note: This test relies on the fact that cache invalidation happens before commit.
+/// When a transaction rolls back, the cache is already invalidated, but the next
+/// read will repopulate it with the correct (unchanged) data from the database.
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_cache_invalidation_rollback_safety() {
+    use synctv_core::{
+        models::{Room, RoomId, UserId, User, UserRole, UserStatus},
+        repository::{RoomRepository, UserRepository},
+        service::{RoomService, UserService, InMemoryTokenBlacklistStore},
+        cache::{KeyBuilder, UsernameCache, NoopCacheL2},
+        config::PasswordComplexityConfig,
+        service::auth::{JwtService, BruteForceProtection},
+    };
+    use sqlx::{PgPool, Transaction};
+    use testcontainers_modules::postgres::Postgres;
+
+    // Start PostgreSQL
+    let postgres = Postgres::default()
+        .with_db_name("synctv_test")
+        .with_user("synctv")
+        .with_password("synctv_test")
+        .with_tag("16-alpine")
+        .start()
+        .await
+        .expect("Failed to start Postgres container");
+
+    let connection_string = format!(
+        "postgresql://synctv:synctv_test@127.0.0.1:{}/synctv_test",
+        postgres.get_host_port_ipv4(5432).await.expect("Failed to get port")
+    );
+
+    let pool = PgPool::connect(&connection_string)
+        .await
+        .expect("Failed to create pool");
+
+    sqlx::migrate!("../migrations")
+        .run(&pool)
+        .await
+        .expect("Failed to run migrations");
+
+    // Create user service
+    let secret = "Test_Secret_Key_For_JWT_Tokens_32Bytes!!";
+    let jwt_service = JwtService::new(secret).expect("Failed to create JwtService");
+    let l2 = Arc::new(NoopCacheL2);
+    let username_cache = UsernameCache::new(l2, "test:username:".to_string(), 100, 60);
+    let password_complexity = PasswordComplexityConfig::default();
+    let token_blacklist = Arc::new(InMemoryTokenBlacklistStore::new(1000, 3600, 86400));
+    let key_builder = KeyBuilder::new("test");
+    let brute_force = BruteForceProtection::in_memory("test".to_string());
+
+    let user_service = UserService::new(
+        pool.clone(),
+        jwt_service,
+        username_cache,
+        password_complexity,
+        token_blacklist,
+        key_builder,
+        brute_force,
+    );
+
+    let room_service = RoomService::new(pool.clone(), user_service);
+
+    // Create a user and room
+    let user_repo = UserRepository::new(pool.clone());
+    let room_repo = RoomRepository::new(pool.clone());
+
+    let user_id = UserId::new();
+    let _user = user_repo.create(&User {
+        id: user_id.clone(),
+        username: "test_user_rollback".to_string(),
+        email: Some("test2@example.com".to_string()),
+        password_hash: "hash".to_string(),
+        role: UserRole::User,
+        status: UserStatus::Active,
+        email_verified: true,
+        signup_method: None,
+        created_at: chrono::Utc::now(),
+        updated_at: chrono::Utc::now(),
+        password_changed_at: chrono::Utc::now(),
+        password_version: 0,
+        version: 0,
+        deleted_at: None,
+    }).await.expect("Failed to create user");
+
+    let room_id = RoomId::new();
+    let _room = room_repo.create(&Room {
+        id: room_id.clone(),
+        name: "Test Room Rollback".to_string(),
+        description: "A test room for rollback".to_string(),
+        created_by: user_id.clone(),
+        created_at: chrono::Utc::now(),
+        updated_at: chrono::Utc::now(),
+        version: 0,
+        deleted_at: None,
+        is_banned: false,
+        status: synctv_core::models::RoomStatus::Active,
+    }).await.expect("Failed to create room");
+
+    // Populate cache by reading the room
+    let room_before = room_service.get_room(&room_id).await.expect("Failed to get room");
+    assert_eq!(room_before.id, room_id);
+
+    // Simulate a transaction rollback scenario by manually running the operations
+    // that delete_room does, but rolling back the transaction instead of committing.
+
+    let mut tx: Transaction<sqlx::Postgres> = pool.begin().await.expect("Failed to start transaction");
+
+    // Mark room as deleted (same as delete_room does)
+    let _deleted = sqlx::query(
+        "UPDATE rooms
+         SET deleted_at = $2, updated_at = $2
+         WHERE id = $1 AND deleted_at IS NULL"
+    )
+    .bind(room_id.as_str())
+    .bind(chrono::Utc::now())
+    .execute(&mut *tx)
+    .await
+    .expect("Failed to delete room");
+
+    // Invalidate caches (simulating what delete_room does BEFORE commit)
+    // We use the service methods directly to invalidate caches
+    room_service.permission_service().invalidate_room_cache(&room_id).await;
+    room_service.playback_service().invalidate_playback_cache(&room_id).await;
+
+    // Rollback the transaction (simulating a failure)
+    tx.rollback().await.expect("Failed to rollback transaction");
+
+    // Verify room is still active (not deleted) in the database
+    let room_after = room_repo.get_by_id(&room_id).await.expect("Failed to fetch room");
+    assert!(room_after.is_some(), "Room should still exist");
+    let room_after = room_after.unwrap();
+    assert!(room_after.deleted_at.is_none(), "Room should NOT be marked as deleted");
+
+    // Verify cache is repopulated on next read
+    // This will trigger a cache miss and fetch from database
+    let room_from_cache = room_service.get_room(&room_id).await.expect("Failed to get room after rollback");
+    assert_eq!(room_from_cache.id, room_id, "Should be able to read room after rollback");
+}

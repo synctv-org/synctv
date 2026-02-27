@@ -76,6 +76,7 @@ service RoomService {
 service MediaService {
     // Playlist Management (room-scoped operations, use x-room-id)
     rpc CreatePlaylist(CreatePlaylistRequest) returns (CreatePlaylistResponse);
+    rpc GetPlaylist(GetPlaylistRequest) returns (GetPlaylistResponse);
     rpc UpdatePlaylist(UpdatePlaylistRequest) returns (UpdatePlaylistResponse);
     rpc DeletePlaylist(DeletePlaylistRequest) returns (DeletePlaylistResponse);
     rpc ListPlaylists(ListPlaylistsRequest) returns (ListPlaylistsResponse);
@@ -809,6 +810,8 @@ message ServerMessage {
         // SFU migration: server requests existing P2P peer to renegotiate via SFU
         SfuMigrationOffer sfu_migration_offer = 20;
         SfuMigrationStatus sfu_migration_status = 21;
+        // User notification push (replaces NOTIFICATION_PUSH error code abuse)
+        UserNotification notification = 22;
     }
 }
 
@@ -864,6 +867,30 @@ message ErrorMessage {
     string message = 1;
     synctv.common.ErrorCode code = 2; // Application-level error code for programmatic handling
     string detail = 3; // Optional detailed/debug info (may be empty in production)
+}
+
+// User Notification
+// Push notification delivered to user's WebSocket connection.
+//
+// This message type replaces the historical abuse of ErrorMessage with code 5000
+// (NOTIFICATION_PUSH). Clients should handle this variant separately from errors.
+//
+// The notification is pushed in real-time when a database-backed notification is
+// created via UserNotificationService. The notification_id allows clients to
+// deduplicate notifications if they receive them multiple times (e.g., during
+// reconnection).
+//
+// Example notification types:
+// - "room_invitation": User invited to join a room
+// - "system": System-wide announcement
+// - "room_event": Room-specific event (e.g., room closed, settings changed)
+message UserNotification {
+    string notification_id = 1; // Unique notification ID (UUID string) for client-side deduplication
+    string notification_type = 2; // Notification type (e.g., "room_invitation", "system", "room_event")
+    string title = 3; // Notification title for display
+    string content = 4; // Notification content for display
+    string data = 5; // JSON-encoded additional data (e.g., room_id, inviter_name for invitations)
+    int64 timestamp = 6; // Unix timestamp in milliseconds when notification was created
 }
 
 // Chat History

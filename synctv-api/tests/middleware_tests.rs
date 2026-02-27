@@ -209,3 +209,70 @@ async fn test_request_id_middleware_rejects_invalid_id() {
         .unwrap();
     assert_ne!(id, "invalid id with spaces!");
 }
+
+// ============================================================================
+// Request ID in error response tests
+// ============================================================================
+
+#[tokio::test]
+async fn test_request_id_in_error_response_json() {
+    use synctv_api::http::middleware::request_id_middleware;
+
+    let app = Router::new()
+        .route("/error", get(|| async {
+            Err::<(), AppError>(AppError::bad_request("Test error"))
+        }))
+        .layer(axum::middleware::from_fn(request_id_middleware));
+
+    let req = Request::get("/error")
+        .header("x-request-id", "test-request-123")
+        .body(Body::empty())
+        .unwrap();
+    let resp = app.oneshot(req).await.unwrap();
+
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+
+    // Check that the response header has the request ID
+    let req_id_header = resp.headers()
+        .get("x-request-id")
+        .unwrap()
+        .to_str()
+        .unwrap();
+    assert_eq!(req_id_header, "test-request-123");
+
+    // Check that the error response JSON body includes the request_id
+    let body = body_json(resp).await;
+    assert_eq!(body["error"], "Test error");
+    assert_eq!(body["status"], 400);
+    assert_eq!(body["request_id"], "test-request-123");
+}
+
+#[tokio::test]
+async fn test_request_id_in_generated_error_response() {
+    use synctv_api::http::middleware::request_id_middleware;
+
+    let app = Router::new()
+        .route("/error", get(|| async {
+            Err::<(), AppError>(AppError::not_found("Resource not found"))
+        }))
+        .layer(axum::middleware::from_fn(request_id_middleware));
+
+    let req = Request::get("/error").body(Body::empty()).unwrap();
+    let resp = app.oneshot(req).await.unwrap();
+
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+
+    // Get the generated request ID from the header
+    let req_id_header = resp.headers()
+        .get("x-request-id")
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_string();  // Clone to avoid borrow issue
+
+    // Verify the request_id is in the JSON body
+    let body = body_json(resp).await;
+    assert_eq!(body["error"], "Resource not found");
+    assert_eq!(body["status"], 404);
+    assert_eq!(body["request_id"], req_id_header);
+}

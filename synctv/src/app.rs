@@ -67,6 +67,7 @@ struct ServerComponents {
     livestream_state: Option<LivestreamState>,
     live_infra: Option<Arc<synctv_livestream::api::LiveStreamingInfrastructure>>,
     stun_server: Option<Arc<synctv_core::service::StunServer>>,
+    turn_health_checker: Option<Arc<synctv_core::service::TurnHealthChecker>>,
     alist_provider: Arc<AlistProvider>,
     bilibili_provider: Arc<BilibiliProvider>,
     emby_provider: Arc<EmbyProvider>,
@@ -162,8 +163,13 @@ impl Application {
         // - No Redis: PostgreSQL advisory lock (safe for single-node)
         let migration_lock: Box<dyn synctv_core::service::MigrationLock> = if let Some(ref rh) = infra.redis_handles {
             info!("Using Redis distributed lock for migrations");
-            Box::new(synctv_core::service::DistributedLock::new(
+            let is_sentinel = matches!(
+                infra.config.redis.deployment_mode,
+                synctv_core::config::RedisDeploymentMode::Sentinel
+            );
+            Box::new(synctv_core::service::DistributedLock::new_with_mode(
                 rh.conn_snapshot().await,
+                is_sentinel,
             ))
         } else {
             info!("Using PostgreSQL advisory lock for migrations");
@@ -407,10 +413,15 @@ impl Application {
                     }
 
                     let plain_conn = redis_conn.read().await.clone();
+                    let is_sentinel = matches!(
+                        infra.config.redis.deployment_mode,
+                        synctv_core::config::RedisDeploymentMode::Sentinel
+                    );
                     let elector = LeaderElector::new(
                         plain_conn,
                         infra.node_id.clone(),
                         &infra.config.redis.key_prefix,
+                        is_sentinel,
                     );
                     let handle = elector.start(leader_cancel.clone());
                     info!(
@@ -518,6 +529,7 @@ impl Application {
             max_duration: Duration::from_secs(
                 infra.config.connection_limits.max_duration_seconds,
             ),
+            webrtc_session_timeout: Duration::from_secs(2 * 60 * 60), // 2 hours (matches ConnectionLimits::default())
         };
         let connection_manager = ConnectionManager::new(connection_limits);
         info!(
@@ -536,7 +548,7 @@ impl Application {
                 redis_client: Some(rh.client.clone()),
                 redis_conn: Some(rh.conn_snapshot().await),
                 node_id: infra.node_id.clone(),
-                dedup_window: Duration::from_secs(infra.config.cluster.catchup_window_secs.saturating_mul(2).max(600)),
+                dedup_window: Duration::from_secs(infra.config.cluster.catchup_window_secs.saturating_mul(3).max(900)),
                 cleanup_interval: Duration::from_secs(30),
                 critical_channel_capacity: infra.config.cluster.critical_channel_capacity,
                 publish_channel_capacity: infra.config.cluster.publish_channel_capacity,
@@ -642,8 +654,9 @@ impl Application {
             );
         }
 
-        // WebRTC (STUN server)
-        let stun_server = init_webrtc(&infra.config).await;
+        // WebRTC (STUN server and TURN health checker)
+        let webrtc_cancel = shutdown.register_token("webrtc");
+        let webrtc_components = init_webrtc(&infra.config, webrtc_cancel).await;
 
         // Media providers
         let pim = core.services.provider_instance_manager.clone();
@@ -654,7 +667,8 @@ impl Application {
         Ok(ServerComponents {
             livestream_state,
             live_infra,
-            stun_server,
+            stun_server: webrtc_components.stun_server,
+            turn_health_checker: webrtc_components.turn_health_checker,
             alist_provider,
             bilibili_provider,
             emby_provider,
@@ -700,6 +714,7 @@ impl Application {
             audit_service: core.services.audit_service.clone(),
             live_streaming_infrastructure: servers.live_infra,
             stun_server: servers.stun_server,
+            turn_health_checker: servers.turn_health_checker,
             node_registry: cluster.node_registry,
             health_monitor: cluster.health_monitor,
             load_balancer: cluster.load_balancer,

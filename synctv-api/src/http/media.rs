@@ -41,10 +41,12 @@ pub async fn list_media(
     Path(room_id): Path<String>,
     Query(params): Query<ListPlaylistQuery>,
 ) -> AppResult<impl IntoResponse> {
+    let page_size = super::validation::validate_page_size(params.page_size);
+
     let req = crate::proto::client::ListPlaylistRequest {
         playlist_id: String::new(), // Not used by list_media (uses room's root playlist)
-        page: params.page.unwrap_or(0).max(0),
-        page_size: params.page_size.unwrap_or(50).clamp(1, 200),
+        page: params.page.unwrap_or(0).max(0), // 0-based page for this endpoint
+        page_size,
     };
 
     let response = state
@@ -66,11 +68,13 @@ pub async fn list_playlist_items(
     Path((room_id, playlist_id)): Path<(String, String)>,
     Query(params): Query<ListPlaylistItemsQuery>,
 ) -> AppResult<impl IntoResponse> {
+    let page_size = super::validation::validate_page_size(params.page_size);
+
     let req = crate::proto::client::ListPlaylistItemsRequest {
         playlist_id: playlist_id.clone(),
         relative_path: params.relative_path.unwrap_or_default(),
-        page: params.page.unwrap_or(0).max(0),
-        page_size: params.page_size.unwrap_or(50).clamp(1, 100),
+        page: params.page.unwrap_or(0).max(0), // 0-based page for this endpoint
+        page_size,
     };
 
     let response = state

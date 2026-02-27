@@ -199,6 +199,8 @@ pub struct GrpcServerConfig<'a> {
     /// Resolved built-in STUN URL (e.g. "stun:203.0.113.1:3478") from a successfully started
     /// STUN server. When `None`, the built-in STUN entry is omitted from ICE server lists.
     pub builtin_stun_url: Option<String>,
+    /// TURN health checker for filtering unhealthy TURN servers
+    pub turn_health_checker: Option<Arc<synctv_core::service::TurnHealthChecker>>,
 }
 
 /// Build and start the gRPC server
@@ -231,6 +233,7 @@ pub async fn serve(grpc_config: GrpcServerConfig<'_>) -> anyhow::Result<()> {
         redis_conn,
         shutdown_rx,
         builtin_stun_url,
+        turn_health_checker,
     } = grpc_config;
     let addr = config.grpc_address().parse()?;
 
@@ -282,6 +285,14 @@ pub async fn serve(grpc_config: GrpcServerConfig<'_>) -> anyhow::Result<()> {
     let client_api = if let Some(stun_url) = builtin_stun_url {
         let inner = Arc::try_unwrap(client_api).unwrap_or_else(|arc| (*arc).clone());
         Arc::new(inner.with_builtin_stun_url(stun_url))
+    } else {
+        client_api
+    };
+
+    // Wire in the TURN health checker
+    let client_api = if turn_health_checker.is_some() {
+        let inner = Arc::try_unwrap(client_api).unwrap_or_else(|arc| (*arc).clone());
+        Arc::new(inner.with_turn_health_checker(turn_health_checker.clone()))
     } else {
         client_api
     };
@@ -564,6 +575,7 @@ pub async fn serve(grpc_config: GrpcServerConfig<'_>) -> anyhow::Result<()> {
             ws_ticket_service: None,
             redis_conn: redis_conn.clone(),
             builtin_stun_url: None,
+            turn_health_checker: None,
             credential_encryption: None,
         });
 

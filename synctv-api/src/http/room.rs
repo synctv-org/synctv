@@ -343,8 +343,7 @@ pub async fn list_rooms(
     let search = params.get("search").cloned().unwrap_or_default();
     if search.len() > LIST_ROOMS_MAX_SEARCH_LENGTH {
         return Err(super::error::AppError::bad_request(format!(
-            "search query must not exceed {} characters",
-            LIST_ROOMS_MAX_SEARCH_LENGTH
+            "search query must not exceed {LIST_ROOMS_MAX_SEARCH_LENGTH} characters"
         )));
     }
 

@@ -65,7 +65,7 @@ pub async fn get_authorize_url(
 
     // Validate redirect_url length and format
     let redirect_url = validation::validate_oauth2_redirect_url(params.redirect_url.as_deref())
-        .map_err(|e| super::AppError::bad_request(format!("Invalid redirect_url: {}", e)))?;
+        .map_err(|e| super::AppError::bad_request(format!("Invalid redirect_url: {e}")))?;
 
     let (authorization_url, state_token) = oauth2_api
         .get_authorization_url(&provider, redirect_url)
@@ -106,11 +106,11 @@ pub async fn exchange_authorization_code(
     // Validate state parameter format (CSRF protection)
     // State must be exactly 32 characters from the URL-safe alphabet
     let validated_state = validation::validate_oauth2_state(&req.state)
-        .map_err(|e| super::AppError::bad_request(format!("Invalid state parameter: {}", e)))?;
+        .map_err(|e| super::AppError::bad_request(format!("Invalid state parameter: {e}")))?;
 
     // Validate authorization code format
     let validated_code = validation::validate_oauth2_code(&req.code)
-        .map_err(|e| super::AppError::bad_request(format!("Invalid authorization code: {}", e)))?;
+        .map_err(|e| super::AppError::bad_request(format!("Invalid authorization code: {e}")))?;
 
     let current_user_id = maybe_auth.as_ref().map(|a| &a.user_id);
 
@@ -174,7 +174,7 @@ pub async fn get_bind_authorize_url(
 
     // Validate redirect_url length and format
     let redirect_url = validation::validate_oauth2_redirect_url(params.redirect_url.as_deref())
-        .map_err(|e| super::AppError::bad_request(format!("Invalid redirect_url: {}", e)))?;
+        .map_err(|e| super::AppError::bad_request(format!("Invalid redirect_url: {e}")))?;
 
     let (authorization_url, state_token) = oauth2_api
         .get_authorization_url_for_bind(&auth.user_id, &provider, redirect_url)
@@ -211,7 +211,7 @@ pub async fn unlink_provider(
 
     // Validate provider_user_id length
     let provider_user_id = validation::validate_oauth2_provider_user_id(params.provider_user_id.as_deref())
-        .map_err(|e| super::AppError::bad_request(format!("Invalid provider_user_id: {}", e)))?;
+        .map_err(|e| super::AppError::bad_request(format!("Invalid provider_user_id: {e}")))?;
 
     let result = oauth2_api
         .unlink_provider(&auth.user_id, &provider, provider_user_id.as_deref())

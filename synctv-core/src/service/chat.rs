@@ -179,8 +179,8 @@ impl ChatService {
     /// * `limit` - Maximum number of messages to return (max 100)
     ///
     /// # Returns
-    /// Tuple of (messages, next_cursor) where messages are in reverse chronological order
-    /// (newest first), and next_cursor is the `(created_at, id)` of the oldest message
+    /// Tuple of (messages, `next_cursor`) where messages are in reverse chronological order
+    /// (newest first), and `next_cursor` is the `(created_at, id)` of the oldest message
     /// in this page to be used in the next call, or `None` when no more messages exist.
     pub async fn get_history(
         &self,

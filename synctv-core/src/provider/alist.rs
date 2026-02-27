@@ -41,7 +41,7 @@ impl AlistProvider {
 
     /// Create a new `AlistProvider` with custom timeout configuration
     #[must_use]
-    pub fn with_timeout(provider_instance_manager: Arc<RemoteProviderManager>, timeout_seconds: u64) -> Self {
+    pub const fn with_timeout(provider_instance_manager: Arc<RemoteProviderManager>, timeout_seconds: u64) -> Self {
         Self {
             provider_instance_manager,
             timeout_seconds: Some(timeout_seconds),
@@ -398,9 +398,9 @@ impl MediaProvider for AlistProvider {
         // Different users have different tokens and may see different files.
         if let Ok(config) = AlistSourceConfig::try_from(&decrypted) {
             let identifier = format!("{}:{}:{}", config.host, config.token, config.path);
-            super::build_playback_cache_key(&ctx.key_prefix, "alist", &identifier)
+            super::build_playback_cache_key(ctx.key_prefix, "alist", &identifier)
         } else {
-            super::build_unknown_cache_key(&ctx.key_prefix, "alist")
+            super::build_unknown_cache_key(ctx.key_prefix, "alist")
         }
     }
 
@@ -433,7 +433,7 @@ impl DynamicFolder for AlistProvider {
         // Validate relative_path BEFORE any path concatenation to prevent traversal attacks
         if let Some(rel) = relative_path {
             validate_path_for_traversal(rel).map_err(|e| ProviderError::InvalidConfig(
-                format!("Invalid relative path: {}", e)
+                format!("Invalid relative path: {e}")
             ))?;
         }
 
@@ -527,7 +527,7 @@ impl DynamicFolder for AlistProvider {
 
         // Validate relative_path BEFORE any path operations to prevent traversal attacks
         validate_path_for_traversal(relative_path).map_err(|e| ProviderError::InvalidConfig(
-            format!("Invalid relative path: {}", e)
+            format!("Invalid relative path: {e}")
         ))?;
 
         match play_mode {
@@ -556,49 +556,7 @@ impl DynamicFolder for AlistProvider {
                     }
 
                     // If we haven't found current item yet, search for it
-                    if !found_current {
-                        if let Some(idx) = page_items.iter().position(|item| item.path == relative_path) {
-                            found_current = true;
-                            // Look for next media item in remaining items of this page
-                            if let Some(next) = page_items.iter().skip(idx + 1).find(|item| item.item_type == ItemType::Media) {
-                                let config = playlist
-                                    .source_config
-                                    .as_ref()
-                                    .ok_or_else(|| {
-                                        ProviderError::InvalidConfig("Missing source_config".to_string())
-                                    })?;
-                                let base_config = AlistSourceConfig::try_from(config)?;
-
-                                let full_path = format!(
-                                    "{}{}",
-                                    base_config.path.trim_end_matches('/'),
-                                    next.path
-                                );
-
-                                let source_config = json!({
-                                    "host": base_config.host,
-                                    "token": base_config.token,
-                                    "path": full_path,
-                                    "password": base_config.password,
-                                    "provider_instance_name": base_config.provider_instance_name,
-                                });
-
-                                return Ok(Some(NextPlayItem {
-                                    name: next.name.clone(),
-                                    item_type: next.item_type,
-                                    source_config,
-                                    metadata: json!({
-                                        "size": next.size,
-                                        "thumbnail": next.thumbnail,
-                                        "modified_at": next.modified_at,
-                                    }),
-                                    provider_data: json!({}),
-                                    relative_path: next.path.clone(),
-                                }.strip_credentials()));
-                            }
-                            // Current is at end of page, need to check next page
-                        }
-                    } else {
+                    if found_current {
                         // We've already found current, look for next media in this page
                         if let Some(next) = page_items.iter().find(|item| item.item_type == ItemType::Media) {
                             let config = playlist
@@ -636,6 +594,46 @@ impl DynamicFolder for AlistProvider {
                                 relative_path: next.path.clone(),
                             }.strip_credentials()));
                         }
+                    } else if let Some(idx) = page_items.iter().position(|item| item.path == relative_path) {
+                        found_current = true;
+                        // Look for next media item in remaining items of this page
+                        if let Some(next) = page_items.iter().skip(idx + 1).find(|item| item.item_type == ItemType::Media) {
+                            let config = playlist
+                                .source_config
+                                .as_ref()
+                                .ok_or_else(|| {
+                                    ProviderError::InvalidConfig("Missing source_config".to_string())
+                                })?;
+                            let base_config = AlistSourceConfig::try_from(config)?;
+
+                            let full_path = format!(
+                                "{}{}",
+                                base_config.path.trim_end_matches('/'),
+                                next.path
+                            );
+
+                            let source_config = json!({
+                                "host": base_config.host,
+                                "token": base_config.token,
+                                "path": full_path,
+                                "password": base_config.password,
+                                "provider_instance_name": base_config.provider_instance_name,
+                            });
+
+                            return Ok(Some(NextPlayItem {
+                                name: next.name.clone(),
+                                item_type: next.item_type,
+                                source_config,
+                                metadata: json!({
+                                    "size": next.size,
+                                    "thumbnail": next.thumbnail,
+                                    "modified_at": next.modified_at,
+                                }),
+                                provider_data: json!({}),
+                                relative_path: next.path.clone(),
+                            }.strip_credentials()));
+                        }
+                        // Current is at end of page, need to check next page
                     }
 
                     // Check if this is the last page

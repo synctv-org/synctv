@@ -23,7 +23,7 @@ impl Amf0Reader {
         Self { reader, depth: 0 }
     }
 
-    fn check_depth(&self) -> Result<(), Amf0ReadError> {
+    const fn check_depth(&self) -> Result<(), Amf0ReadError> {
         if self.depth > MAX_DEPTH {
             return Err(Amf0ReadError {
                 value: Amf0ReadErrorValue::DepthLimitExceeded {
@@ -35,12 +35,12 @@ impl Amf0Reader {
         Ok(())
     }
 
-    fn enter_nested(&mut self) -> Result<(), Amf0ReadError> {
+    const fn enter_nested(&mut self) -> Result<(), Amf0ReadError> {
         self.depth += 1;
         self.check_depth()
     }
 
-    fn exit_nested(&mut self) {
+    const fn exit_nested(&mut self) {
         self.depth = self.depth.saturating_sub(1);
     }
 

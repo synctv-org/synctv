@@ -40,7 +40,7 @@ pub struct UserValidationResult {
 
 /// Trait for validating user status during ticket consumption.
 ///
-/// Implemented by the caller (typically UserService) to check user status
+/// Implemented by the caller (typically `UserService`) to check user status
 /// atomically with ticket validation, preventing TOCTOU race conditions.
 #[async_trait]
 pub trait UserValidator: Send + Sync {

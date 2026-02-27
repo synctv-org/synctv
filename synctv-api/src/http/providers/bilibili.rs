@@ -270,7 +270,7 @@ async fn resolve_danmu_info(
 
 /// Parse Bilibili URL
 ///
-/// Rate limiting is handled by the global read_rate_limit middleware.
+/// Rate limiting is handled by the global `read_rate_limit` middleware.
 async fn parse(
     _auth: AuthUser,
     State(state): State<AppState>,
@@ -294,7 +294,7 @@ async fn parse(
 
 /// Generate Bilibili QR code for login
 ///
-/// Rate limiting is handled by the global read_rate_limit middleware.
+/// Rate limiting is handled by the global `read_rate_limit` middleware.
 async fn login_qr(
     _auth: AuthUser,
     State(state): State<AppState>,
@@ -318,7 +318,7 @@ async fn login_qr(
 
 /// Check Bilibili QR code login status
 ///
-/// Rate limiting is handled by the global read_rate_limit middleware.
+/// Rate limiting is handled by the global `read_rate_limit` middleware.
 async fn qr_check(
     _auth: AuthUser,
     State(state): State<AppState>,
@@ -342,7 +342,7 @@ async fn qr_check(
 
 /// Get captcha for SMS login
 ///
-/// Rate limiting is handled by the global read_rate_limit middleware.
+/// Rate limiting is handled by the global `read_rate_limit` middleware.
 async fn new_captcha(
     _auth: AuthUser,
     State(state): State<AppState>,
@@ -366,7 +366,7 @@ async fn new_captcha(
 
 /// Send SMS verification code
 ///
-/// Rate limiting is handled by the global read_rate_limit middleware.
+/// Rate limiting is handled by the global `read_rate_limit` middleware.
 async fn sms_send(
     _auth: AuthUser,
     State(state): State<AppState>,
@@ -390,7 +390,7 @@ async fn sms_send(
 
 /// Login with SMS code
 ///
-/// Rate limiting is handled by the global read_rate_limit middleware.
+/// Rate limiting is handled by the global `read_rate_limit` middleware.
 async fn sms_login(
     _auth: AuthUser,
     State(state): State<AppState>,

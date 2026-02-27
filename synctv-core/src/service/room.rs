@@ -139,7 +139,7 @@ pub struct RoomService {
     /// Optional brute-force protection for room password verification
     brute_force_service: Option<crate::service::auth::BruteForceProtection>,
 
-    /// Optional settings registry for reading create_room_need_review setting
+    /// Optional settings registry for reading `create_room_need_review` setting
     settings_registry: Option<Arc<crate::service::SettingsRegistry>>,
 }
 
@@ -157,7 +157,7 @@ impl RoomService {
     /// Total timeout for settings updates with retries (seconds)
     /// Prevents unbounded wait times when database operations are slow.
     const SETTINGS_UPDATE_TIMEOUT_SECS: u64 = 5;
-    /// TTL for create_room distributed lock (seconds)
+    /// TTL for `create_room` distributed lock (seconds)
     /// Increased from 15s to 30s to account for:
     /// - bcrypt password hashing (1-3 seconds)
     /// - database transaction latency
@@ -280,7 +280,7 @@ impl RoomService {
         self.brute_force_service = Some(service);
     }
 
-    /// Inject the settings registry for reading create_room_need_review and other global settings.
+    /// Inject the settings registry for reading `create_room_need_review` and other global settings.
     pub fn set_settings_registry(&mut self, registry: Arc<crate::service::SettingsRegistry>) {
         self.settings_registry = Some(registry);
     }
@@ -388,8 +388,7 @@ impl RoomService {
         // Determine initial room status based on create_room_need_review setting
         let need_review = self.settings_registry
             .as_ref()
-            .map(|r| r.create_room_need_review.get().unwrap_or(false))
-            .unwrap_or(false);
+            .is_some_and(|r| r.create_room_need_review.get().unwrap_or(false));
         let initial_status = if need_review {
             RoomStatus::Pending
         } else {
@@ -772,11 +771,11 @@ impl RoomService {
     /// 1. This method sets `rooms.deleted_at = NOW()` (room becomes invisible to queries)
     /// 2. IMMEDIATELY deletes non-critical related data to free storage:
     ///    - playlists (cascades to media via FK)
-    ///    - room_members
-    ///    - room_settings
-    ///    - room_playback_state
-    ///    - chat_messages
-    /// 3. Preserves only the room row (for audit) and audit_logs entries
+    ///    - `room_members`
+    ///    - `room_settings`
+    ///    - `room_playback_state`
+    ///    - `chat_messages`
+    /// 3. Preserves only the room row (for audit) and `audit_logs` entries
     /// 4. `CleanupService::purge_soft_deleted_rooms()` eventually purges the room row
     ///    after `room_soft_delete_retention_days` (default: 90 days)
     pub async fn delete_room(&self, room_id: RoomId, user_id: UserId) -> Result<()> {
@@ -1112,7 +1111,7 @@ impl RoomService {
 
                     // Notify clients
                     let settings_json = serde_json::to_value(&settings)
-                        .map_err(|e| crate::Error::Internal(format!("Failed to serialize settings: {}", e)))?;
+                        .map_err(|e| crate::Error::Internal(format!("Failed to serialize settings: {e}")))?;
                     let _ = notification_service.notify_settings_updated(&room_id, settings_json.clone()).await;
 
                     // Audit log
@@ -1734,8 +1733,7 @@ impl RoomService {
         )
         .bind(media_id.as_str())
         .fetch_optional(&mut *tx)
-        .await?
-        .map(|(id, creator_id, room_id)| (id, creator_id, room_id));
+        .await?;
 
         let (media_id, media_creator_id, media_room_id) = media_row
             .ok_or_else(|| Error::NotFound("Media not found".to_string()))?;
@@ -2097,7 +2095,7 @@ impl RoomService {
     /// Delete room (admin use, bypasses permission checks)
     ///
     /// Uses a transaction for atomicity, matching the pattern of `delete_room`.
-    /// Immediately cleans up non-critical related data (see delete_room for details).
+    /// Immediately cleans up non-critical related data (see `delete_room` for details).
     ///
     /// # Security
     /// Verifies that the caller has admin or root role before proceeding.
@@ -2594,7 +2592,7 @@ impl RoomService {
     /// Returns per-room results with success/failure status.
     ///
     /// # Errors
-    /// - `InvalidInput` if room_ids is empty or exceeds `BATCH_SIZE_LIMIT`
+    /// - `InvalidInput` if `room_ids` is empty or exceeds `BATCH_SIZE_LIMIT`
     pub async fn batch_ban_rooms(
         &self,
         room_ids: &[String],
@@ -2629,7 +2627,7 @@ impl RoomService {
     /// Returns per-room results with success/failure status.
     ///
     /// # Errors
-    /// - `InvalidInput` if room_ids is empty or exceeds `BATCH_SIZE_LIMIT`
+    /// - `InvalidInput` if `room_ids` is empty or exceeds `BATCH_SIZE_LIMIT`
     pub async fn batch_delete_rooms(
         &self,
         room_ids: &[String],

@@ -429,7 +429,7 @@ pub struct LivestreamConfig {
     pub hls_storage_path: String,
     /// Maximum HTTP-FLV connection duration in seconds.
     ///
-    /// Prevents slow-client DoS attacks by enforcing a maximum connection lifetime.
+    /// Prevents slow-client `DoS` attacks by enforcing a maximum connection lifetime.
     /// Set to 0 for no limit (not recommended for production).
     /// Default: 86400 (24 hours).
     pub flv_max_connection_duration_seconds: u64,

@@ -30,7 +30,7 @@ pub struct BroadcastResult {
 impl BroadcastResult {
     /// Check if the broadcast reached any destination
     #[must_use]
-    pub fn is_success(&self) -> bool {
+    pub const fn is_success(&self) -> bool {
         self.local_sent > 0 || self.redis_sent
     }
 }
@@ -48,14 +48,14 @@ pub struct SeekResponse {
     /// When `false`, the state contains the latest known position, which
     /// may differ from the requested position.
     pub seek_applied: bool,
-    /// Optional message explaining why the seek was not applied (when seek_applied is false).
+    /// Optional message explaining why the seek was not applied (when `seek_applied` is false).
     pub message: Option<String>,
 }
 
 impl SeekResponse {
     /// Create a successful seek response.
     #[must_use]
-    pub fn success(state: RoomPlaybackState) -> Self {
+    pub const fn success(state: RoomPlaybackState) -> Self {
         Self {
             state,
             seek_applied: true,
@@ -191,39 +191,36 @@ impl PlaybackService {
                             cache
                                 .entry(room_id.clone())
                                 .and_upsert_with(|maybe_entry| {
-                                    let result = match maybe_entry {
-                                        Some(entry) => {
-                                            let current = entry.into_value();
-                                            let current_version = current.version;
-                                            if new_version > current_version {
-                                                // New state is newer, update the cache
-                                                tracing::debug!(
-                                                    room_id = %room_id,
-                                                    new_version,
-                                                    current_version,
-                                                    "Playback state cache updated (cross-replica, version upgrade)"
-                                                );
-                                                new_state.clone()
-                                            } else {
-                                                // Current cached state is same or newer, keep it
-                                                tracing::debug!(
-                                                    room_id = %room_id,
-                                                    new_version,
-                                                    current_version,
-                                                    "Playback state cache not updated (cross-replica, stale or duplicate version)"
-                                                );
-                                                current
-                                            }
-                                        }
-                                        None => {
-                                            // No cached entry, insert the new state
+                                    let result = if let Some(entry) = maybe_entry {
+                                        let current = entry.into_value();
+                                        let current_version = current.version;
+                                        if new_version > current_version {
+                                            // New state is newer, update the cache
                                             tracing::debug!(
                                                 room_id = %room_id,
                                                 new_version,
-                                                "Playback state cache inserted (cross-replica, no prior entry)"
+                                                current_version,
+                                                "Playback state cache updated (cross-replica, version upgrade)"
                                             );
                                             new_state.clone()
+                                        } else {
+                                            // Current cached state is same or newer, keep it
+                                            tracing::debug!(
+                                                room_id = %room_id,
+                                                new_version,
+                                                current_version,
+                                                "Playback state cache not updated (cross-replica, stale or duplicate version)"
+                                            );
+                                            current
                                         }
+                                    } else {
+                                        // No cached entry, insert the new state
+                                        tracing::debug!(
+                                            room_id = %room_id,
+                                            new_version,
+                                            "Playback state cache inserted (cross-replica, no prior entry)"
+                                        );
+                                        new_state.clone()
                                     };
                                     std::future::ready(result)
                                 })
@@ -484,7 +481,7 @@ impl PlaybackService {
 
         // Validate speed range (UI bounds: 0.25 to 4.0)
         // Note: DB allows wider range (0 < speed <= 16.0) but UI restricts to practical values
-        if speed < 0.25 || speed > 4.0 {
+        if !(0.25..=4.0).contains(&speed) {
             return Err(Error::InvalidInput("Speed must be between 0.25 and 4.0".to_string()));
         }
 
@@ -877,7 +874,7 @@ impl PlaybackService {
     }
 
     /// Maximum retry attempts for optimistic lock conflicts
-    /// Matches optimistic_retry::DEFAULT_MAX_RETRIES
+    /// Matches `optimistic_retry::DEFAULT_MAX_RETRIES`
     const MAX_RETRIES: u32 = 3;
     /// Base delay for exponential backoff (milliseconds)
     const BACKOFF_BASE_MS: u64 = 5;

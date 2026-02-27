@@ -4,13 +4,13 @@
 //! that can be used by both HTTP and gRPC endpoints.
 
 use synctv_core::models::RoomId;
-use crate::http::validation::{ValidationError, ValidationResult, validate_room_id as http_validate_room_id};
+use crate::http::validation::{ValidationError, validate_room_id as http_validate_room_id};
 
 /// Validate and parse a room ID string
 ///
 /// This function validates the room ID format according to the rules:
 /// - Must not be empty
-/// - Must not exceed ID_MAX length
+/// - Must not exceed `ID_MAX` length
 /// - Must contain only alphanumeric characters, underscores, and hyphens
 ///
 /// # Arguments

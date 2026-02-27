@@ -129,7 +129,7 @@ where
             .headers
             .get(axum::http::header::USER_AGENT)
             .and_then(|v| v.to_str().ok())
-            .map(|s| s.to_string());
+            .map(std::string::ToString::to_string);
         Ok(Self(crate::impls::admin::RequestContext { ip_address, user_agent }))
     }
 }

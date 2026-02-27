@@ -174,6 +174,7 @@ impl ProviderClientManager {
     /// Resolve an Alist client: use remote if channel provided, otherwise local.
     ///
     /// This is the preferred method for obtaining an Alist client.
+    #[must_use] 
     pub fn resolve_alist_client(&self, remote_channel: Option<tonic::transport::Channel>) -> AlistClientArc {
         match remote_channel {
             Some(channel) => create_remote_alist_client(channel),
@@ -184,6 +185,7 @@ impl ProviderClientManager {
     /// Resolve a Bilibili client: use remote if channel provided, otherwise local.
     ///
     /// This is the preferred method for obtaining a Bilibili client.
+    #[must_use] 
     pub fn resolve_bilibili_client(&self, remote_channel: Option<tonic::transport::Channel>) -> BilibiliClientArc {
         match remote_channel {
             Some(channel) => create_remote_bilibili_client(channel),
@@ -194,6 +196,7 @@ impl ProviderClientManager {
     /// Resolve an Emby client: use remote if channel provided, otherwise local.
     ///
     /// This is the preferred method for obtaining an Emby client.
+    #[must_use] 
     pub fn resolve_emby_client(&self, remote_channel: Option<tonic::transport::Channel>) -> EmbyClientArc {
         match remote_channel {
             Some(channel) => create_remote_emby_client(channel),

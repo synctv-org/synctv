@@ -289,7 +289,7 @@ impl ChatRepository {
     /// # Partition Pruning (Task #26)
     ///
     /// The redundant `created_at > NOW() - INTERVAL '90 days'` filter on the outer DELETE
-    /// ensures PostgreSQL can apply partition pruning at the top-level query without
+    /// ensures `PostgreSQL` can apply partition pruning at the top-level query without
     /// relying on constraint exclusion from the subquery.
     pub async fn cleanup_all_rooms(&self, keep_count: i32, activity_window_minutes: i32) -> Result<u64> {
         // If keep_count is 0, no cleanup needed

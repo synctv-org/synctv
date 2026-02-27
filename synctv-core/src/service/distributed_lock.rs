@@ -934,10 +934,10 @@ impl Redlock {
         let mut connections = Vec::with_capacity(config.master_urls.len());
         for url in &config.master_urls {
             let client = redis::Client::open(url.as_str())
-                .internal_with_err(&format!("Failed to create Redis client for {}", url))?;
+                .internal_with_err(&format!("Failed to create Redis client for {url}"))?;
             let conn = RedisConnectionManager::new(client)
                 .await
-                .internal_with_err(&format!("Failed to connect to Redis at {}", url))?;
+                .internal_with_err(&format!("Failed to connect to Redis at {url}"))?;
             connections.push(conn);
         }
 
@@ -953,8 +953,7 @@ impl Redlock {
     fn now_ms() -> u64 {
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_millis() as u64)
-            .unwrap_or(0)
+            .map_or(0, |d| d.as_millis() as u64)
     }
 
     /// Release lock on a single Redis instance (best-effort).
@@ -1053,17 +1052,16 @@ impl Redlock {
                         lock_value,
                         connections_to_release: conns_to_release,
                     }));
-                } else {
-                    // Lock already expired during acquisition
-                    tracing::warn!(
-                        lock_key = %lock_key,
-                        elapsed_ms = %elapsed,
-                        "Redlock acquisition took longer than TTL"
-                    );
-                    // Release any locks we acquired
-                    self.release_on_connections(&lock_key, &lock_value, &conns_to_release)
-                        .await;
                 }
+                // Lock already expired during acquisition
+                tracing::warn!(
+                    lock_key = %lock_key,
+                    elapsed_ms = %elapsed,
+                    "Redlock acquisition took longer than TTL"
+                );
+                // Release any locks we acquired
+                self.release_on_connections(&lock_key, &lock_value, &conns_to_release)
+                    .await;
             } else {
                 // Didn't get quorum - release any locks we did acquire
                 self.release_on_connections(&lock_key, &lock_value, &conns_to_release)
@@ -1109,7 +1107,7 @@ impl Redlock {
         )
         .await
         .ok()
-        .and_then(|r| r.ok())
+        .and_then(std::result::Result::ok)
         .flatten();
 
         result.is_some()

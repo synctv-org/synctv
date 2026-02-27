@@ -184,7 +184,7 @@ pub fn build_playback_cache_key(key_prefix: &str, provider_name: &str, identifie
 /// A cache key string: `{key_prefix}:playback:{provider}:unknown`
 #[must_use]
 pub fn build_unknown_cache_key(key_prefix: &str, provider_name: &str) -> String {
-    format!("{}:playback:{}:unknown", key_prefix, provider_name)
+    format!("{key_prefix}:playback:{provider_name}:unknown")
 }
 
 /// Credential field names that must never be included in API responses.

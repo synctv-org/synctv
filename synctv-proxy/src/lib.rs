@@ -44,7 +44,7 @@ pub fn is_retryable_status(status: StatusCode) -> bool {
 
 /// Calculate a random delay for retry attempts.
 ///
-/// Returns a duration between RETRY_DELAY_MIN_MS and RETRY_DELAY_MAX_MS.
+/// Returns a duration between `RETRY_DELAY_MIN_MS` and `RETRY_DELAY_MAX_MS`.
 /// Using random delay helps prevent thundering herd when multiple clients
 /// retry simultaneously.
 fn calculate_retry_delay() -> Duration {
@@ -54,7 +54,7 @@ fn calculate_retry_delay() -> Duration {
     static COUNTER: AtomicU32 = AtomicU32::new(0);
     let count = COUNTER.fetch_add(1, Ordering::Relaxed);
     let range = RETRY_DELAY_MAX_MS - RETRY_DELAY_MIN_MS;
-    let jitter = (count as u64 * 17) % range; // Simple linear congruential step
+    let jitter = (u64::from(count) * 17) % range; // Simple linear congruential step
     Duration::from_millis(RETRY_DELAY_MIN_MS + jitter)
 }
 
@@ -576,8 +576,8 @@ pub struct RateLimiter {
     limit: usize,
     /// Window duration for rate limiting.
     window: Duration,
-    /// Map of IP addresses to (count, window_start).
-    /// Uses DashMap for concurrent access.
+    /// Map of IP addresses to (count, `window_start`).
+    /// Uses `DashMap` for concurrent access.
     counters: std::sync::Arc<
         dashmap::DashMap<String, (usize, std::time::Instant)>
     >,
@@ -605,6 +605,7 @@ impl RateLimiter {
     /// `false` if the limit has been exceeded.
     ///
     /// This method is thread-safe and can be called from multiple threads.
+    #[must_use] 
     pub fn check(&self, ip: &str) -> bool {
         let now = std::time::Instant::now();
 
@@ -807,7 +808,7 @@ impl CorsConfig {
     /// ]);
     /// ```
     #[must_use]
-    pub fn new(allowed_origins: Vec<String>) -> Self {
+    pub const fn new(allowed_origins: Vec<String>) -> Self {
         Self {
             allowed_origins,
             wildcard: false,
@@ -819,7 +820,7 @@ impl CorsConfig {
     /// **Warning**: This is less secure than explicit origin lists.
     /// Use only in development or when you intentionally want to allow all origins.
     #[must_use]
-    pub fn new_wildcard() -> Self {
+    pub const fn new_wildcard() -> Self {
         Self {
             allowed_origins: vec![],
             wildcard: true,

@@ -37,8 +37,7 @@ where
     match tokio::time::timeout(Duration::from_secs(REDIS_OPERATION_TIMEOUT_SECS), future()).await {
         Ok(result) => result,
         Err(_) => Err(anyhow!(
-            "Redis operation timed out after {}s",
-            REDIS_OPERATION_TIMEOUT_SECS
+            "Redis operation timed out after {REDIS_OPERATION_TIMEOUT_SECS}s"
         )),
     }
 }

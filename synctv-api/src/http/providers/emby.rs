@@ -183,7 +183,7 @@ struct ThumbnailQuery {
     token: String,
 }
 
-/// GET /thumbnail/{item_id} - Proxy Emby/Jellyfin thumbnail images
+/// GET /`thumbnail/{item_id`} - Proxy Emby/Jellyfin thumbnail images
 ///
 /// This endpoint fetches thumbnail images from Emby/Jellyfin servers and
 /// forwards them to the client while:
@@ -195,13 +195,13 @@ struct ThumbnailQuery {
 ///
 /// The Emby host URL is validated using `validate_url_for_ssrf` which blocks:
 /// - Private IP addresses (192.168.x.x, 10.x.x.x, 172.16-31.x.x)
-/// - Localhost variants (localhost, 127.0.0.1, ::1)
+/// - Localhost variants (localhost, 127.0.0.1, `::1`)
 /// - Cloud metadata endpoints (AWS, GCP, Azure)
 /// - Link-local addresses (169.254.x.x)
 ///
 /// # Query Parameters
 ///
-/// - `host`: Emby server base URL (e.g., "https://emby.example.com")
+/// - `host`: Emby server base URL (e.g., "<https://emby.example.com>")
 /// - `token`: Emby API key for authentication
 /// - `instance_name`: Optional provider instance name
 /// - `max_height`: Optional maximum thumbnail height (default: 300)
@@ -246,14 +246,12 @@ async fn thumbnail(
     let thumbnail_path = if max_width > 0 {
         // Both width and height specified
         format!(
-            "/Items/{}/Images/Primary?maxHeight={}&maxWidth={}&quality=90",
-            item_id, max_height, max_width
+            "/Items/{item_id}/Images/Primary?maxHeight={max_height}&maxWidth={max_width}&quality=90"
         )
     } else {
         // Only height specified (default)
         format!(
-            "/Items/{}/Images/Primary?maxHeight={}&quality=90",
-            item_id, max_height
+            "/Items/{item_id}/Images/Primary?maxHeight={max_height}&quality=90"
         )
     };
 

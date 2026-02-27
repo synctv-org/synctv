@@ -84,7 +84,7 @@ impl ProvidersManager {
                 // Read optional timeout from config (in seconds)
                 let timeout_seconds = config
                     .get("timeout_seconds")
-                    .and_then(|v| v.as_u64());
+                    .and_then(serde_json::Value::as_u64);
 
                 let provider = if let Some(secs) = timeout_seconds {
                     AlistProvider::with_timeout(instance_manager, secs)
@@ -102,7 +102,7 @@ impl ProvidersManager {
                 // Read optional timeout from config (in seconds)
                 let timeout_seconds = config
                     .get("timeout_seconds")
-                    .and_then(|v| v.as_u64());
+                    .and_then(serde_json::Value::as_u64);
 
                 let provider = if let Some(secs) = timeout_seconds {
                     BilibiliProvider::with_timeout(instance_manager, secs)
@@ -120,7 +120,7 @@ impl ProvidersManager {
                 // Read optional timeout from config (in seconds)
                 let timeout_seconds = config
                     .get("timeout_seconds")
-                    .and_then(|v| v.as_u64());
+                    .and_then(serde_json::Value::as_u64);
 
                 let provider = if let Some(secs) = timeout_seconds {
                     EmbyProvider::with_timeout(instance_manager, secs)

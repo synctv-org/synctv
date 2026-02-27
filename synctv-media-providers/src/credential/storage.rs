@@ -63,7 +63,7 @@ pub enum CredentialStorageError {
 
 impl From<super::encryption::EncryptionError> for CredentialStorageError {
     fn from(err: super::encryption::EncryptionError) -> Self {
-        CredentialStorageError::Encryption(err.to_string())
+        Self::Encryption(err.to_string())
     }
 }
 
@@ -92,7 +92,7 @@ pub struct StoredCredential {
 /// Credential Storage Trait
 ///
 /// Defines the interface for persisting and retrieving provider credentials.
-/// Implementations can use different backends (in-memory, PostgreSQL, Redis, etc.)
+/// Implementations can use different backends (in-memory, `PostgreSQL`, Redis, etc.)
 #[async_trait]
 pub trait CredentialStorage: Send + Sync {
     /// Get a credential by user, provider, and server
@@ -143,7 +143,7 @@ pub trait CredentialStorage: Send + Sync {
 /// In-Memory Credential Storage
 ///
 /// Simple in-memory implementation for testing purposes.
-/// Uses a HashMap protected by RwLock for thread safety.
+/// Uses a `HashMap` protected by `RwLock` for thread safety.
 ///
 /// # Encryption
 ///
@@ -328,7 +328,7 @@ impl CredentialStorage for InMemoryCredentialStorage {
             user_id: user_id.to_string(),
             provider,
             server_id: server_id.clone(),
-            provider_instance_name: provider_instance_name.map(|s| s.to_string()),
+            provider_instance_name: provider_instance_name.map(std::string::ToString::to_string),
             data: encrypted_data,
             expires_at: None,
         };

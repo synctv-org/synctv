@@ -47,14 +47,14 @@
 //! ## Deadlock Prevention
 //!
 //! When updating multiple rows across different tables in a transaction, deadlocks can occur
-//! if concurrent transactions lock rows in different orders. PostgreSQL detects deadlocks
+//! if concurrent transactions lock rows in different orders. `PostgreSQL` detects deadlocks
 //! and will abort one transaction with error code 40P01.
 //!
 //! ### Lock Ordering Rules
 //!
 //! To prevent deadlocks, **always acquire locks in a consistent order**:
 //!
-//! 1. **Lock parent entities before child entities** (e.g., room before room_members)
+//! 1. **Lock parent entities before child entities** (e.g., room before `room_members`)
 //! 2. **Lock by ID in ascending order** when updating multiple rows of the same table
 //! 3. **Use FOR UPDATE explicitly** when reading before updating
 //!
@@ -231,7 +231,7 @@ impl UnitOfWork {
 
     /// Check if the transaction was explicitly handled (committed or rolled back)
     #[inline]
-    fn is_handled(&self) -> bool {
+    const fn is_handled(&self) -> bool {
         self.committed || self.rolled_back
     }
 
@@ -273,30 +273,17 @@ impl Drop for UnitOfWork {
         #[cfg(test)]
         let needs_handling = (self.tx.is_some() || self._test_simulate_uncommitted) && !self.is_handled();
 
-        if needs_handling {
-            // Transaction was not explicitly committed/rolled back.
-            // sqlx will automatically rollback when the Transaction is dropped,
-            // but this is likely a bug in the caller.
-            //
-            // In debug mode, panic to catch the bug early.
-            // In release mode, just log a warning.
-            #[cfg(debug_assertions)]
-            {
-                panic!(
-                    "UnitOfWork dropped without explicit commit or rollback! \
-                     This is likely a bug - transactions should be explicitly committed or rolled back. \
-                     The transaction will be rolled back automatically."
-                );
-            }
-
-            #[cfg(not(debug_assertions))]
-            {
-                tracing::warn!(
-                    "UnitOfWork dropped without explicit commit or rollback; \
-                     transaction will be rolled back automatically"
-                );
-            }
-        }
+        // Transaction was not explicitly committed/rolled back.
+        // sqlx will automatically rollback when the Transaction is dropped,
+        // but this is likely a bug in the caller.
+        //
+        // In debug mode, panic to catch the bug early.
+        // In release mode, just log a warning.
+        assert!(!needs_handling, 
+                            "UnitOfWork dropped without explicit commit or rollback! \
+                             This is likely a bug - transactions should be explicitly committed or rolled back. \
+                             The transaction will be rolled back automatically."
+                        );
     }
 }
 

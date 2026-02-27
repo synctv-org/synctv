@@ -631,7 +631,7 @@ impl PublisherManager {
     /// that were cleaned up from Redis would remain stale until TTL expiry.
     ///
     /// This method also cleans up zombie entries (local entries that no longer
-    /// exist in the registry) to prevent memory leaks when UnPublish events are lost.
+    /// exist in the registry) to prevent memory leaks when `UnPublish` events are lost.
     ///
     /// Sets `is_restarting` before re-registration and clears it after,
     /// suppressing silent-publisher cleanup during the restart window.

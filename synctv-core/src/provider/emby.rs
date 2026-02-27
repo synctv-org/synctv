@@ -39,7 +39,7 @@ impl EmbyProvider {
 
     /// Create a new `EmbyProvider` with custom timeout configuration
     #[must_use]
-    pub fn with_timeout(provider_instance_manager: Arc<RemoteProviderManager>, timeout_seconds: u64) -> Self {
+    pub const fn with_timeout(provider_instance_manager: Arc<RemoteProviderManager>, timeout_seconds: u64) -> Self {
         Self {
             provider_instance_manager,
             timeout_seconds: Some(timeout_seconds),
@@ -422,9 +422,9 @@ impl MediaProvider for EmbyProvider {
         // Different users have different tokens and may see different content.
         if let Ok(config) = EmbySourceConfig::try_from(&decrypted) {
             let identifier = format!("{}:{}:{}", config.host, config.token, config.item_id);
-            super::build_playback_cache_key(&ctx.key_prefix, "emby", &identifier)
+            super::build_playback_cache_key(ctx.key_prefix, "emby", &identifier)
         } else {
-            super::build_unknown_cache_key(&ctx.key_prefix, "emby")
+            super::build_unknown_cache_key(ctx.key_prefix, "emby")
         }
     }
 
@@ -730,30 +730,7 @@ impl DynamicFolder for EmbyProvider {
                     }
 
                     // If we haven't found current item yet, search for it
-                    if !found_current {
-                        if let Some(idx) = page_items.iter().position(|item| item.path == relative_path) {
-                            found_current = true;
-                            // Look for next media item in remaining items of this page
-                            if let Some(next) = page_items.iter().skip(idx + 1).find(|item| item.item_type == ItemType::Media) {
-                                let source_config = json!({
-                                    "host": base_config.host,
-                                    "token": base_config.token,
-                                    "user_id": base_config.user_id,
-                                    "item_id": next.path,
-                                    "provider_instance_name": base_config.provider_instance_name,
-                                });
-                                return Ok(Some(NextPlayItem {
-                                    name: next.name.clone(),
-                                    item_type: next.item_type,
-                                    source_config,
-                                    metadata: json!({}),
-                                    provider_data: json!({}),
-                                    relative_path: next.path.clone(),
-                                }.strip_credentials()));
-                            }
-                            // Current is at end of page, need to check next page
-                        }
-                    } else {
+                    if found_current {
                         // We've already found current, look for next media in this page
                         if let Some(next) = page_items.iter().find(|item| item.item_type == ItemType::Media) {
                             let source_config = json!({
@@ -772,6 +749,27 @@ impl DynamicFolder for EmbyProvider {
                                 relative_path: next.path.clone(),
                             }.strip_credentials()));
                         }
+                    } else if let Some(idx) = page_items.iter().position(|item| item.path == relative_path) {
+                        found_current = true;
+                        // Look for next media item in remaining items of this page
+                        if let Some(next) = page_items.iter().skip(idx + 1).find(|item| item.item_type == ItemType::Media) {
+                            let source_config = json!({
+                                "host": base_config.host,
+                                "token": base_config.token,
+                                "user_id": base_config.user_id,
+                                "item_id": next.path,
+                                "provider_instance_name": base_config.provider_instance_name,
+                            });
+                            return Ok(Some(NextPlayItem {
+                                name: next.name.clone(),
+                                item_type: next.item_type,
+                                source_config,
+                                metadata: json!({}),
+                                provider_data: json!({}),
+                                relative_path: next.path.clone(),
+                            }.strip_credentials()));
+                        }
+                        // Current is at end of page, need to check next page
                     }
 
                     // Check if this is the last page

@@ -43,7 +43,7 @@ fn grpc_request_context<T: std::fmt::Debug>(request: &Request<T>) -> RequestCont
         .metadata()
         .get("user-agent")
         .and_then(|v| v.to_str().ok())
-        .map(|s| s.to_string());
+        .map(std::string::ToString::to_string);
     RequestContext { ip_address, user_agent }
 }
 

@@ -40,7 +40,7 @@ impl std::str::FromStr for ProviderType {
             "bilibili" => Ok(Self::Bilibili),
             "alist" => Ok(Self::Alist),
             "emby" => Ok(Self::Emby),
-            _ => Err(format!("Unknown provider type: {}", s)),
+            _ => Err(format!("Unknown provider type: {s}")),
         }
     }
 }
@@ -72,13 +72,13 @@ pub enum CredentialData {
 impl CredentialData {
     /// Create Bilibili credential data from cookies
     #[must_use]
-    pub fn bilibili(cookies: HashMap<String, String>) -> Self {
+    pub const fn bilibili(cookies: HashMap<String, String>) -> Self {
         Self::Bilibili { cookies }
     }
 
     /// Create Alist credential data
     #[must_use]
-    pub fn alist(host: String, username: String, password: String) -> Self {
+    pub const fn alist(host: String, username: String, password: String) -> Self {
         Self::Alist {
             host,
             username,
@@ -88,7 +88,7 @@ impl CredentialData {
 
     /// Create Emby credential data
     #[must_use]
-    pub fn emby(host: String, api_key: String, emby_user_id: String) -> Self {
+    pub const fn emby(host: String, api_key: String, emby_user_id: String) -> Self {
         Self::Emby {
             host,
             api_key,

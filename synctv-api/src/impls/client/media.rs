@@ -8,9 +8,9 @@ use super::ClientApiImpl;
 use super::convert::{media_to_proto, playlist_to_proto};
 
 impl ClientApiImpl {
-    /// Validate source_config URLs for SSRF protection.
+    /// Validate `source_config` URLs for SSRF protection.
     ///
-    /// Checks `url` and `urls` fields in the source_config JSON to prevent
+    /// Checks `url` and `urls` fields in the `source_config` JSON to prevent
     /// attackers from forcing the server to make requests to internal network addresses.
     fn validate_source_config_urls(source_config_bytes: &[u8]) -> Result<(), ApiError> {
         if source_config_bytes.is_empty() {

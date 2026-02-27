@@ -99,7 +99,7 @@ pub struct CacheInvalidationService {
     /// Shutdown flag
     shutdown: Arc<std::sync::atomic::AtomicBool>,
     /// Flag indicating if we need to broadcast a state sync on next successful Redis connection
-    /// This is set when broadcast_remote fails due to Redis being unavailable
+    /// This is set when `broadcast_remote` fails due to Redis being unavailable
     needs_state_sync: Arc<std::sync::atomic::AtomicBool>,
 }
 

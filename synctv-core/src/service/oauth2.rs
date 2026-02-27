@@ -277,7 +277,7 @@ impl OAuth2Service {
     /// # Errors
     /// Returns `Error::Internal` if `cluster_mode` is true but `state_store` is not
     /// [`RedisOAuthStateStore`]. In-memory state storage is not safe in cluster mode
-    /// because OAuth2 callbacks may hit different replicas.
+    /// because `OAuth2` callbacks may hit different replicas.
     pub fn new(
         repository: UserOAuthProviderRepository,
         state_store: Arc<dyn OAuthStateStore>,

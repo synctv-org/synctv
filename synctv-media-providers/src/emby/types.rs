@@ -62,13 +62,13 @@ pub struct ImageTags {
 impl ImageTags {
     /// Check if any image tag is available
     #[must_use]
-    pub fn has_any(&self) -> bool {
+    pub const fn has_any(&self) -> bool {
         self.primary.is_some() || self.thumb.is_some()
     }
 
     /// Get the preferred image tag (Primary first, then Thumb)
     #[must_use]
-    pub fn preferred_tag(&self) -> Option<(&str, &str)> {
+    pub const fn preferred_tag(&self) -> Option<(&str, &str)> {
         if let Some(ref tag) = self.primary {
             Some(("Primary", tag.as_str()))
         } else if let Some(ref tag) = self.thumb {

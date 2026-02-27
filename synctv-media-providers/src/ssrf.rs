@@ -1,4 +1,4 @@
-//! SSRF (Server-Side Request Forgery) protection using url_jail.
+//! SSRF (Server-Side Request Forgery) protection using `url_jail`.
 //!
 //! This module wraps the `url_jail` crate to provide SSRF protection for
 //! Provider URLs that are fetched server-side.
@@ -74,7 +74,7 @@ pub fn ssrf_safe_dns_resolver() -> Arc<SsrfSafeDnsResolver> {
 
 /// Check if an IPv4 address is private, reserved, or otherwise blocked.
 ///
-/// This is used internally by SsrfSafeDnsResolver to filter DNS responses.
+/// This is used internally by `SsrfSafeDnsResolver` to filter DNS responses.
 #[must_use]
 pub fn is_blocked_ipv4(ip: &Ipv4Addr) -> bool {
     let o = ip.octets();
@@ -169,13 +169,13 @@ pub fn is_blocked_ip(ip: IpAddr) -> bool {
 
 /// Check if an IP address should be blocked regardless of policy.
 ///
-/// This only blocks ranges that url_jail doesn't handle:
+/// This only blocks ranges that `url_jail` doesn't handle:
 /// - Multicast (224.0.0.0/4)
 /// - Reserved (240.0.0.0/4)
 /// - Link-local cloud metadata (169.254.169.254/32)
 ///
 /// It does NOT block RFC1918 private IPs (10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16)
-/// because those should be controlled by Policy::AllowPrivate.
+/// because those should be controlled by `Policy::AllowPrivate`.
 /// It does NOT block CGNAT (100.64.0.0/10) as it's technically routable.
 #[must_use]
 fn is_always_blocked_ip(ip: IpAddr) -> bool {
@@ -212,7 +212,7 @@ fn is_always_blocked_ipv4(ip: &Ipv4Addr) -> bool {
 
 /// Check if an IPv6 address should be blocked regardless of policy.
 #[must_use]
-fn is_always_blocked_ipv6(ip: &Ipv6Addr) -> bool {
+const fn is_always_blocked_ipv6(ip: &Ipv6Addr) -> bool {
     // Unspecified (::)
     if ip.is_unspecified() {
         return true;
@@ -254,7 +254,7 @@ impl SsrfCheckResult {
     }
 }
 
-/// Validate a URL for SSRF protection using url_jail.
+/// Validate a URL for SSRF protection using `url_jail`.
 ///
 /// This is the primary SSRF validation function. It:
 /// - Parses the URL
@@ -273,6 +273,7 @@ impl SsrfCheckResult {
 ///     SsrfCheckResult::Blocked(reason) => println!("Blocked: {}", reason),
 /// }
 /// ```
+#[must_use] 
 pub fn check_url_with_policy(url: &str, policy: Policy) -> SsrfCheckResult {
     // Parse URL to check host for additional IP ranges not covered by url_jail
     if let Ok(parsed) = url::Url::parse(url) {
@@ -380,10 +381,10 @@ pub async fn check_url_with_policy_async(url: &str, policy: Policy) -> SsrfCheck
     }
 }
 
-/// Validate a URL with a custom policy built from PolicyBuilder.
+/// Validate a URL with a custom policy built from `PolicyBuilder`.
 ///
 /// This accepts a `CustomPolicy` created via `PolicyBuilder`.
-/// Note: This is async because url_jail's CustomPolicy validation is async-only.
+/// Note: This is async because `url_jail`'s `CustomPolicy` validation is async-only.
 pub async fn check_url_with_custom_policy(url: &str, policy: CustomPolicy) -> SsrfCheckResult {
     match url_jail::validate_custom(url, &policy).await {
         Ok(_) => SsrfCheckResult::Ok,
@@ -402,7 +403,7 @@ pub async fn check_url_with_custom_policy(url: &str, policy: CustomPolicy) -> Ss
 
 /// Validate a hostname against known internal/suspicious patterns.
 ///
-/// Note: url_jail handles this internally during URL validation.
+/// Note: `url_jail` handles this internally during URL validation.
 /// This function is provided for compatibility with existing code.
 #[must_use]
 pub fn check_hostname(host: &str) -> SsrfCheckResult {

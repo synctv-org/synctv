@@ -38,7 +38,7 @@ fn validate_path(path: &str) -> Result<(), AlistError> {
 
 /// Shared HTTP client for all Alist requests (connection pooling)
 /// Redirects are disabled to prevent SSRF via redirect to private IPs.
-/// Uses SsrfSafeDnsResolver to check resolved IPs at connection time,
+/// Uses `SsrfSafeDnsResolver` to check resolved IPs at connection time,
 /// preventing DNS rebinding attacks.
 static SHARED_CLIENT: LazyLock<Client> = LazyLock::new(|| {
     Client::builder()

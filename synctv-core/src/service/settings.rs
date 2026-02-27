@@ -193,24 +193,18 @@ impl SettingsService {
                 .collect();
 
             let must_need_pwd = batch_map
-                .get("room.room_must_need_pwd")
-                .map(|v| *v == "true")
-                .unwrap_or_else(|| {
+                .get("room.room_must_need_pwd").map_or_else(|| {
                     self.cache
                         .get("room.room_must_need_pwd")
-                        .map(|s| s.value == "true")
-                        .unwrap_or(false)
-                });
+                        .is_some_and(|s| s.value == "true")
+                }, |v| *v == "true");
 
             let must_no_need_pwd = batch_map
-                .get("room.room_must_no_need_pwd")
-                .map(|v| *v == "true")
-                .unwrap_or_else(|| {
+                .get("room.room_must_no_need_pwd").map_or_else(|| {
                     self.cache
                         .get("room.room_must_no_need_pwd")
-                        .map(|s| s.value == "true")
-                        .unwrap_or(false)
-                });
+                        .is_some_and(|s| s.value == "true")
+                }, |v| *v == "true");
 
             if must_need_pwd && must_no_need_pwd {
                 return Err(Error::InvalidInput(

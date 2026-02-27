@@ -352,10 +352,10 @@ impl AuthCallback for RtmpAuthCallbackImpl {
         );
     }
 
-    /// Rollback publisher registration when StreamHub publish fails after auth success.
+    /// Rollback publisher registration when `StreamHub` publish fails after auth success.
     ///
     /// This is critical for maintaining consistency: `on_publish` registers the publisher
-    /// in Redis BEFORE StreamHub, so if StreamHub fails, we must clean up Redis immediately.
+    /// in Redis BEFORE `StreamHub`, so if `StreamHub` fails, we must clean up Redis immediately.
     async fn on_publish_rollback(
         &self,
         app_name: &str,

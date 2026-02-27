@@ -528,7 +528,7 @@ impl AuditService {
             actor_username,
             AuditAction::StreamKicked,
             AuditTargetType::Stream,
-            Some(format!("{}:{}", room_id, media_id)),
+            Some(format!("{room_id}:{media_id}")),
             serde_json::json!({
                 "room_id": room_id,
                 "media_id": media_id,
@@ -627,7 +627,7 @@ impl AuditService {
 
     /// Log a token issuance event.
     ///
-    /// Records when tokens are issued (login, OAuth2, or refresh).
+    /// Records when tokens are issued (login, `OAuth2`, or refresh).
     /// The JTI is recorded for token tracing and revocation investigations.
     #[allow(clippy::too_many_arguments)]
     pub async fn log_token_issued(
@@ -645,7 +645,7 @@ impl AuditService {
             username,
             AuditAction::TokenIssued,
             AuditTargetType::Token,
-            Some(format!("{}:{}", user_id, jti)),
+            Some(format!("{user_id}:{jti}")),
             serde_json::json!({
                 "token_type": token_type,
                 "jti": jti,
@@ -676,7 +676,7 @@ impl AuditService {
             username,
             AuditAction::TokenRefreshed,
             AuditTargetType::Token,
-            Some(format!("{}:{}", user_id, new_jti)),
+            Some(format!("{user_id}:{new_jti}")),
             serde_json::json!({
                 "old_jti": old_jti,
                 "new_jti": new_jti

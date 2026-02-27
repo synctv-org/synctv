@@ -34,12 +34,13 @@ use crate::proto::client::{ClientMessage, ServerMessage};
 /// With a 30-second TTL and 25-35 second heartbeat interval, we ensure:
 /// - At most 1 DB query per connection per 30 seconds (vs. every heartbeat without cache)
 /// - Banned/removed users are disconnected within ~30-65 seconds worst case
-/// - The disconnect signal channel (Redis PubSub) provides immediate notification in most cases
+/// - The disconnect signal channel (Redis `PubSub`) provides immediate notification in most cases
 const MEMBERSHIP_CACHE_TTL: Duration = Duration::from_secs(30);
 
 /// Default maximum concurrent message processing operations across all connections.
+///
 /// This provides backpressure when the system is under heavy load.
-/// When exceeded, new messages receive a ResourceExhausted error.
+/// When exceeded, new messages receive a `ResourceExhausted` error.
 pub const DEFAULT_MAX_CONCURRENT_MESSAGE_PROCESSING: usize = 1000;
 
 // ============================================================================
@@ -74,7 +75,7 @@ pub const DEFAULT_MAX_CONCURRENT_MESSAGE_PROCESSING: usize = 1000;
 #[derive(Clone, Debug)]
 pub struct MessageConcurrencyConfig {
     /// Semaphore for limiting concurrent message processing.
-    /// This is shared across all connections for the same AppState.
+    /// This is shared across all connections for the same `AppState`.
     semaphore: Arc<Semaphore>,
     /// The maximum number of concurrent message processing operations.
     max_concurrent: usize,
@@ -86,7 +87,7 @@ impl MessageConcurrencyConfig {
     /// # Arguments
     ///
     /// * `max_concurrent` - Maximum number of concurrent message processing operations.
-    ///   When this limit is reached, new messages will receive a ResourceExhausted error.
+    ///   When this limit is reached, new messages will receive a `ResourceExhausted` error.
     ///
     /// # Example
     ///
@@ -96,6 +97,7 @@ impl MessageConcurrencyConfig {
     /// let config = MessageConcurrencyConfig::new(500);
     /// assert_eq!(config.max_concurrent(), 500);
     /// ```
+    #[must_use] 
     pub fn new(max_concurrent: usize) -> Self {
         Self {
             semaphore: Arc::new(Semaphore::new(max_concurrent)),
@@ -107,18 +109,21 @@ impl MessageConcurrencyConfig {
     ///
     /// Returns a cloned `Arc<Semaphore>` that can be used to acquire permits
     /// for message processing.
+    #[must_use] 
     pub fn semaphore(&self) -> Arc<Semaphore> {
         Arc::clone(&self.semaphore)
     }
 
     /// Get the maximum concurrent limit.
-    pub fn max_concurrent(&self) -> usize {
+    #[must_use] 
+    pub const fn max_concurrent(&self) -> usize {
         self.max_concurrent
     }
 
     /// Get the number of available permits.
     ///
     /// This is useful for monitoring and health checks.
+    #[must_use] 
     pub fn available_permits(&self) -> usize {
         self.semaphore.available_permits()
     }
@@ -243,10 +248,10 @@ pub struct StreamMessageHandler {
     username: String,
     connection_id: String,
     room_service: Arc<RoomService>,
-    /// Optional ChatService for proper chat message handling with business logic.
-    /// When set, chat messages are processed through ChatService::send_message()
+    /// Optional `ChatService` for proper chat message handling with business logic.
+    /// When set, chat messages are processed through `ChatService::send_message()`
     /// which handles permission checks, content filtering, rate limiting, and persistence.
-    /// When not set, falls back to direct persistence via room_service.save_chat_message().
+    /// When not set, falls back to direct persistence via `room_service.save_chat_message()`.
     chat_service: Option<Arc<ChatService>>,
     cluster_manager: Arc<ClusterManager>,
     connection_manager: ConnectionManager,
@@ -259,17 +264,17 @@ pub struct StreamMessageHandler {
     /// Tracks whether this connection has an active WebRTC session.
     /// Used by `cleanup()` to decrement `WEBRTC_PEERS_ACTIVE` on ungraceful disconnect.
     has_webrtc_session: Arc<std::sync::atomic::AtomicBool>,
-    /// R-10/R-11: When true, `cleanup()` skips broadcasting UserLeft because the
-    /// event was already published by an explicit API call (leave_room/delete_room)
+    /// R-10/R-11: When true, `cleanup()` skips broadcasting `UserLeft` because the
+    /// event was already published by an explicit API call (`leave_room/delete_room`)
     /// and the WS handler is disconnecting in response to that cluster event.
     skip_cleanup_user_left: Arc<std::sync::atomic::AtomicBool>,
     /// Cached membership status for heartbeat validation.
     /// Uses TTL-based expiration (30 seconds) to reduce database load while
     /// maintaining reasonable responsiveness to membership changes.
-    /// Key: (room_id, user_id) tuple for O(1) lookup.
+    /// Key: (`room_id`, `user_id`) tuple for O(1) lookup.
     membership_cache: Arc<moka::sync::Cache<(String, String), CachedMembership>>,
     /// Instance-level concurrency configuration for backpressure control.
-    /// This replaces the global MESSAGE_PROCESSING_SEMAPHORE with per-AppState configuration.
+    /// This replaces the global `MESSAGE_PROCESSING_SEMAPHORE` with per-AppState configuration.
     concurrency_config: Arc<MessageConcurrencyConfig>,
 }
 
@@ -501,27 +506,24 @@ impl StreamMessageHandler {
                             // Backpressure control: try to acquire a semaphore permit.
                             // If the system is overloaded, return ResourceExhausted error instead of processing.
                             let semaphore = self.concurrency_config.semaphore();
-                            let permit = match semaphore.try_acquire_owned() {
-                                Ok(permit) => permit,
-                                Err(_) => {
-                                    tracing::warn!(
-                                        user_id = %self.user_id.as_str(),
-                                        room_id = %self.room_id.as_str(),
-                                        "System overloaded: message processing semaphore exhausted, returning ResourceExhausted"
-                                    );
-                                    // Send ResourceExhausted error to client
-                                    let error_msg = ServerMessage {
-                                        message: Some(crate::proto::client::server_message::Message::Error(
-                                            crate::proto::client::ErrorMessage {
-                                                message: "System overloaded, please retry later".to_string(),
-                                                code: crate::impls::error_codes::RESOURCE_EXHAUSTED,
-                                                detail: String::new(),
-                                            },
-                                        )),
-                                    };
-                                    let _ = stream.send(error_msg);
-                                    continue;
-                                }
+                            let permit = if let Ok(permit) = semaphore.try_acquire_owned() { permit } else {
+                                tracing::warn!(
+                                    user_id = %self.user_id.as_str(),
+                                    room_id = %self.room_id.as_str(),
+                                    "System overloaded: message processing semaphore exhausted, returning ResourceExhausted"
+                                );
+                                // Send ResourceExhausted error to client
+                                let error_msg = ServerMessage {
+                                    message: Some(crate::proto::client::server_message::Message::Error(
+                                        crate::proto::client::ErrorMessage {
+                                            message: "System overloaded, please retry later".to_string(),
+                                            code: crate::impls::error_codes::RESOURCE_EXHAUSTED,
+                                            detail: String::new(),
+                                        },
+                                    )),
+                                };
+                                let _ = stream.send(error_msg);
+                                continue;
                             };
 
                             // Process message with semaphore permit held
@@ -967,8 +969,7 @@ impl StreamMessageHandler {
             let is_still_rtc_joined = self
                 .connection_manager
                 .get_connection(&self.connection_id)
-                .map(|conn| conn.rtc_joined)
-                .unwrap_or(false);
+                .is_some_and(|conn| conn.rtc_joined);
 
             if is_still_rtc_joined {
                 // Only decrement the metric if the connection was still RTC-joined
@@ -1273,15 +1274,12 @@ impl StreamMessageHandler {
                                 // Backpressure control: try to acquire a semaphore permit.
                                 // If the system is overloaded, skip this message.
                                 let semaphore = handler.concurrency_config.semaphore();
-                                let permit = match semaphore.try_acquire_owned() {
-                                    Ok(permit) => permit,
-                                    Err(_) => {
-                                        tracing::warn!(
-                                            connection_id = %handler.connection_id,
-                                            "System overloaded: message processing semaphore exhausted in start()"
-                                        );
-                                        continue;
-                                    }
+                                let permit = if let Ok(permit) = semaphore.try_acquire_owned() { permit } else {
+                                    tracing::warn!(
+                                        connection_id = %handler.connection_id,
+                                        "System overloaded: message processing semaphore exhausted in start()"
+                                    );
+                                    continue;
                                 };
 
                                 // Process message with semaphore permit held

@@ -547,6 +547,7 @@ pub mod cluster {
     });
 
     /// Leader election epoch (fencing token), incremented on each leadership acquisition.
+    ///
     /// Used to detect split-brain scenarios: if two nodes report the same epoch,
     /// or if a node performs singleton tasks with an outdated epoch.
     pub static LEADER_ELECTION_EPOCH: std::sync::LazyLock<IntGauge> = std::sync::LazyLock::new(|| {
@@ -569,6 +570,7 @@ pub mod cluster {
     });
 
     /// Epoch mismatch quarantine state (1 = quarantined, 0 = normal).
+    ///
     /// When set to 1, this node has detected split-brain (epoch mismatch) and
     /// should reject fan-out requests and leadership operations until successfully
     /// re-registered with a new epoch.
@@ -580,7 +582,7 @@ pub mod cluster {
         ).expect("Failed to register CLUSTER_EPOCH_MISMATCH_QUARANTINE")
     });
 
-    /// Leader election mode (0 = standalone/always_leader, 1 = redis, 2 = k8s_lease).
+    /// Leader election mode (0 = `standalone/always_leader`, 1 = redis, 2 = `k8s_lease`).
     /// Helps operators understand the active election strategy at a glance.
     pub static LEADER_ELECTION_MODE: std::sync::LazyLock<IntGauge> = std::sync::LazyLock::new(|| {
         register_int_gauge_with_registry!(

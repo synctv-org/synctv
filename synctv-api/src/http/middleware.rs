@@ -16,7 +16,7 @@ use super::{AppError, AppState};
 
 /// Request ID extracted from request extensions
 ///
-/// This is set by the request_id_middleware and can be used in handlers
+/// This is set by the `request_id_middleware` and can be used in handlers
 /// to correlate errors with the request ID.
 #[derive(Debug, Clone)]
 pub struct RequestId(pub String);
@@ -77,10 +77,10 @@ pub async fn request_id_middleware(
     response
 }
 
-/// Inject request_id into error response JSON bodies
+/// Inject `request_id` into error response JSON bodies
 ///
 /// This function inspects the response and, if it's an error response with JSON body
-/// from AppError, rewrites it to include the request_id field.
+/// from `AppError`, rewrites it to include the `request_id` field.
 async fn inject_request_id_into_error_response(
     response: Response,
     request_id: &str,
@@ -119,9 +119,9 @@ async fn inject_request_id_into_error_response(
     }
 }
 
-/// Try to inject request_id into a JSON response body (async version)
+/// Try to inject `request_id` into a JSON response body (async version)
 ///
-/// Returns a new Response with the injected request_id, or an error if
+/// Returns a new Response with the injected `request_id`, or an error if
 /// deserialization/serialization failed.
 async fn try_inject_request_id_async(
     response: Response,

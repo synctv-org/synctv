@@ -477,7 +477,7 @@ impl ClientApiImpl {
         let elapsed = start.elapsed();
         let min_delay = std::time::Duration::from_millis(MIN_PASSWORD_CHECK_DELAY_MS);
         if elapsed < min_delay {
-            tokio::time::sleep(min_delay - elapsed).await;
+            tokio::time::sleep(min_delay.checked_sub(elapsed).unwrap()).await;
         }
 
         Ok(crate::proto::client::CheckRoomPasswordResponse { valid })

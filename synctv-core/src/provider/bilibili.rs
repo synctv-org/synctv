@@ -57,7 +57,7 @@ impl BilibiliProvider {
 
     /// Create a new `BilibiliProvider` with custom timeout configuration
     #[must_use]
-    pub fn with_timeout(provider_instance_manager: Arc<RemoteProviderManager>, timeout_seconds: u64) -> Self {
+    pub const fn with_timeout(provider_instance_manager: Arc<RemoteProviderManager>, timeout_seconds: u64) -> Self {
         Self {
             provider_instance_manager,
             timeout_seconds: Some(timeout_seconds),
@@ -277,10 +277,10 @@ impl BilibiliSourceConfig {
             }
 
             // URL-decode both key and value to catch encoded injection attempts
-            let decoded_key = urlencoding::decode(&key).map_err(|_| ProviderError::InvalidConfig(
+            let decoded_key = urlencoding::decode(key).map_err(|_| ProviderError::InvalidConfig(
                 format!("Bilibili cookie key '{key}' contains invalid URL encoding")
             ))?;
-            let decoded_value = urlencoding::decode(&value).map_err(|_| ProviderError::InvalidConfig(
+            let decoded_value = urlencoding::decode(value).map_err(|_| ProviderError::InvalidConfig(
                 format!("Bilibili cookie value for key '{key}' contains invalid URL encoding")
             ))?;
 
@@ -722,9 +722,9 @@ impl MediaProvider for BilibiliProvider {
                     .chars().take(16).collect::<String>()
             };
             let full_id = format!("{identifier}:{user_hash}");
-            super::build_playback_cache_key(&ctx.key_prefix, "bilibili", &full_id)
+            super::build_playback_cache_key(ctx.key_prefix, "bilibili", &full_id)
         } else {
-            super::build_unknown_cache_key(&ctx.key_prefix, "bilibili")
+            super::build_unknown_cache_key(ctx.key_prefix, "bilibili")
         }
     }
 }

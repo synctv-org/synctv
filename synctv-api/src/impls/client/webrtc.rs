@@ -70,17 +70,17 @@ impl ClientApiImpl {
             };
 
             // Only add TURN entry if we have healthy servers
-            if !turn_urls.is_empty() {
+            if turn_urls.is_empty() {
+                tracing::warn!(
+                    "All configured TURN servers are unhealthy - excluding TURN from ICE server list"
+                );
+            } else {
                 servers.push(IceServer {
                     urls: turn_urls,
                     username: Some(cred.username),
                     credential: Some(cred.password),
                     expiry_time: cred.expiry_timestamp as i64,
                 });
-            } else {
-                tracing::warn!(
-                    "All configured TURN servers are unhealthy - excluding TURN from ICE server list"
-                );
             }
         } else if let Some(registry) = &self.settings_registry {
             // Fallback: static TURN credentials from dynamic settings

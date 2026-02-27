@@ -303,7 +303,7 @@ const fn is_critical_message(message: &ServerMessage) -> bool {
 }
 
 /// Returns a human-readable message type name for logging purposes.
-fn message_type_name(message: &ServerMessage) -> &'static str {
+const fn message_type_name(message: &ServerMessage) -> &'static str {
     use crate::proto::client::server_message::Message;
     match &message.message {
         Some(Message::Chat(_)) => "Chat",

@@ -39,7 +39,7 @@ type BoxError = Box<dyn std::error::Error + Send + Sync>;
 /// # Security
 ///
 /// For authenticated requests, the rate limit key is derived from the verified
-/// user_id in the JWT claims, not from the token hash. This ensures that a user
+/// `user_id` in the JWT claims, not from the token hash. This ensures that a user
 /// with multiple valid tokens shares a single rate limit quota, preventing quota
 /// bypass through multiple token issuance.
 #[derive(Clone)]
@@ -59,7 +59,7 @@ impl GrpcRateLimitLayer {
     /// # Arguments
     /// * `rate_limiter` - The rate limiter service
     /// * `config` - Application configuration
-    /// * `jwt_validator` - JWT validator for extracting user_id from tokens
+    /// * `jwt_validator` - JWT validator for extracting `user_id` from tokens
     #[must_use]
     pub fn new(rate_limiter: RateLimiter, config: Arc<Config>, jwt_validator: JwtValidator) -> Self {
         Self {
@@ -257,7 +257,7 @@ fn room_service_tier(method: Option<&str>) -> GrpcRateLimitTier {
 
 /// Derive a stable rate limit key for a verified user.
 ///
-/// Uses the verified user_id from JWT claims, ensuring that all tokens
+/// Uses the verified `user_id` from JWT claims, ensuring that all tokens
 /// belonging to the same user share a single rate limit quota.
 ///
 /// Returns `"user:{user_id}"` format.
@@ -268,8 +268,8 @@ fn user_rate_limit_key(user_id: &str) -> String {
 /// Extract a stable client identifier from HTTP headers.
 ///
 /// Priority:
-/// 1. Verified user_id from JWT (authenticated users) - validates the JWT signature
-///    and extracts the user_id from claims. This ensures all tokens belonging to
+/// 1. Verified `user_id` from JWT (authenticated users) - validates the JWT signature
+///    and extracts the `user_id` from claims. This ensures all tokens belonging to
 ///    the same user share a single rate limit quota.
 /// 2. Client IP from X-Forwarded-For or X-Real-IP headers (only if from a trusted proxy)
 /// 3. Remote socket address (direct connection)
@@ -281,7 +281,7 @@ fn user_rate_limit_key(user_id: &str) -> String {
 ///
 /// # Security
 ///
-/// This function validates the JWT before extracting user_id to prevent spoofing.
+/// This function validates the JWT before extracting `user_id` to prevent spoofing.
 /// Invalid or expired tokens fall back to IP-based rate limiting.
 fn extract_client_id(headers: &http::HeaderMap, config: &Config, jwt_validator: &JwtValidator) -> String {
     // For authenticated requests, validate JWT and extract verified user_id.

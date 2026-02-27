@@ -402,7 +402,7 @@ impl RedisAttemptTracker {
 
     /// Check if this tracker is in fail-closed mode.
     #[must_use]
-    pub fn is_fail_closed(&self) -> bool {
+    pub const fn is_fail_closed(&self) -> bool {
         self.fail_closed
     }
 
@@ -416,7 +416,7 @@ impl RedisAttemptTracker {
 
         // Log a warning about the degradation. Include guidance for multi-replica setups.
         // Throttle logging: only log every 10 degraded operations to avoid log spam.
-        if prev % 10 == 0 {
+        if prev.is_multiple_of(10) {
             tracing::warn!(
                 degraded_count = prev + 1,
                 "Redis degraded to fallback for brute-force tracking. \
@@ -760,14 +760,14 @@ impl BruteForceProtection {
 
     /// Get a reference to the current config.
     #[must_use]
-    pub fn config(&self) -> &BruteForceConfig {
+    pub const fn config(&self) -> &BruteForceConfig {
         &self.config
     }
 
     /// Determine lockout duration based on failure count using the stored config.
     ///
     /// Returns `Some(seconds)` if locked out, `None` if allowed.
-    fn lockout_duration_with_config(&self, attempts: u64) -> Option<u64> {
+    const fn lockout_duration_with_config(&self, attempts: u64) -> Option<u64> {
         if attempts >= self.config.tier3_threshold {
             Some(self.config.tier3_lockout_secs)
         } else if attempts >= self.config.tier2_threshold {

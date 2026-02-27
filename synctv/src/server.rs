@@ -450,12 +450,12 @@ impl SyncTvServer {
 
         // Parse and bind HTTP address before spawning the task to propagate errors properly
         let http_addr: std::net::SocketAddr = http_address.parse().map_err(|e| {
-            anyhow::anyhow!("Invalid HTTP address '{}': {}", http_address, e)
+            anyhow::anyhow!("Invalid HTTP address '{http_address}': {e}")
         })?;
 
         let listener = tokio::net::TcpListener::bind(http_addr)
             .await
-            .map_err(|e| anyhow::anyhow!("Failed to bind HTTP address {}: {}", http_addr, e))?;
+            .map_err(|e| anyhow::anyhow!("Failed to bind HTTP address {http_addr}: {e}"))?;
 
         info!("HTTP server listening on {}", http_addr);
 

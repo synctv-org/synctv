@@ -28,13 +28,13 @@ pub mod limits {
     pub const EMAIL_MAX: usize = 254;
     /// Maximum ID length (`room_id`, `user_id`, `media_id`)
     pub const ID_MAX: usize = 64;
-    /// Maximum OAuth2 redirect URL length
+    /// Maximum `OAuth2` redirect URL length
     pub const OAUTH2_REDIRECT_URL_MAX: usize = 2048;
-    /// Maximum OAuth2 provider user ID length
+    /// Maximum `OAuth2` provider user ID length
     pub const OAUTH2_PROVIDER_USER_ID_MAX: usize = 256;
-    /// OAuth2 state token length (nanoid generates 32 chars)
+    /// `OAuth2` state token length (nanoid generates 32 chars)
     pub const OAUTH2_STATE_LENGTH: usize = 32;
-    /// OAuth2 authorization code max length
+    /// `OAuth2` authorization code max length
     pub const OAUTH2_CODE_MAX: usize = 256;
 }
 
@@ -460,7 +460,7 @@ pub const DEFAULT_PAGE_SIZE: i32 = 20;
 /// Set to 200 as a reasonable upper bound for list endpoints.
 pub const MAX_PAGE_SIZE: i32 = 200;
 
-/// Maximum allowed page number to prevent deep pagination DoS
+/// Maximum allowed page number to prevent deep pagination `DoS`
 ///
 /// Beyond this limit, the database must scan too many rows, causing performance issues.
 /// Most users don't navigate beyond page 1000 legitimately.
@@ -481,6 +481,7 @@ pub const MAX_PAGE: i32 = 10000;
 /// assert_eq!(validate_page(Some(5)), 5);
 /// assert_eq!(validate_page(Some(100000)), MAX_PAGE); // Clamped to max
 /// ```
+#[must_use] 
 pub fn validate_page(page: Option<i32>) -> i32 {
     page.unwrap_or(DEFAULT_PAGE).clamp(1, MAX_PAGE)
 }
@@ -500,11 +501,12 @@ pub fn validate_page(page: Option<i32>) -> i32 {
 /// assert_eq!(validate_page_size(Some(50)), 50);
 /// assert_eq!(validate_page_size(Some(1000)), MAX_PAGE_SIZE); // Clamped to max
 /// ```
+#[must_use] 
 pub fn validate_page_size(page_size: Option<i32>) -> i32 {
     page_size.unwrap_or(DEFAULT_PAGE_SIZE).clamp(1, MAX_PAGE_SIZE)
 }
 
-/// Validate both page and page_size, returning normalized values
+/// Validate both page and `page_size`, returning normalized values
 ///
 /// This is a convenience function for endpoints that need both values validated.
 ///
@@ -520,6 +522,7 @@ pub fn validate_page_size(page_size: Option<i32>) -> i32 {
 /// assert_eq!(page, 1); // DEFAULT_PAGE
 /// assert_eq!(page_size, 20); // DEFAULT_PAGE_SIZE
 /// ```
+#[must_use] 
 pub fn validate_pagination(page: Option<i32>, page_size: Option<i32>) -> (i32, i32) {
     (validate_page(page), validate_page_size(page_size))
 }
@@ -573,10 +576,14 @@ pub fn validate_id(id: &str, field_name: &'static str) -> ValidationResult<Strin
     Ok(sanitized.into_owned())
 }
 
-/// Validate OAuth2 redirect URL (optional field)
+/// Validate `OAuth2` redirect URL (optional field)
 ///
-/// This is a lenient validation that only checks length if the URL is provided.
-/// The actual URL format validation is done by the OAuth2 service.
+/// Supports:
+/// - HTTP/HTTPS URLs for web applications (e.g., `https://example.com/callback`)
+/// - Custom schemes for native/mobile apps (e.g., `mysynctv://oauth2/callback`)
+///
+/// This is a lenient validation that only checks length and basic format.
+/// The actual URL format validation is done by the `OAuth2` provider.
 pub fn validate_oauth2_redirect_url(url: Option<&str>) -> ValidationResult<Option<String>> {
     let Some(url) = url else {
         return Ok(None);
@@ -598,15 +605,66 @@ pub fn validate_oauth2_redirect_url(url: Option<&str>) -> ValidationResult<Optio
         });
     }
 
-    // Only allow http/https URLs to prevent javascript: and data: attacks
-    if !sanitized.starts_with("http://") && !sanitized.starts_with("https://") {
-        return Err(ValidationError::InvalidFormat { field: "redirect_url" });
+    // Reject dangerous protocols first (javascript:, data:, ftp:, file:, etc.)
+    // These should never be accepted as redirect_uri
+    let lower = sanitized.to_lowercase();
+    if lower.starts_with("javascript:") || lower.starts_with("data:") ||
+       lower.starts_with("vbscript:") || lower.starts_with("file:") ||
+       lower.starts_with("ftp:") || lower.starts_with("mailto:") {
+        return Err(ValidationError::InvalidFormat {
+            field: "redirect_url (dangerous protocol not allowed)"
+        });
     }
 
-    Ok(Some(sanitized.into_owned()))
+    // Allow http/https URLs for web applications
+    if sanitized.starts_with("http://") || sanitized.starts_with("https://") {
+        return Ok(Some(sanitized.into_owned()));
+    }
+
+    // Allow custom schemes for native/mobile apps (e.g., mysynctv://callback)
+    // Format: scheme://path (must contain ://)
+    // Scheme requirements:
+    // - Starts with a letter or digit
+    // - Contains only letters, digits, hyphens, plus signs, or dots
+    // - At least 2 characters
+    if let Some(pos) = sanitized.find("://") {
+        let scheme = &sanitized[..pos];
+
+        // Validate scheme format
+        if scheme.len() < 2 {
+            return Err(ValidationError::InvalidFormat {
+                field: "redirect_url (custom scheme too short)"
+            });
+        }
+
+        // Scheme must start with a letter (not digit) and contain only safe characters
+        if !scheme.chars().next().is_some_and(|c| c.is_ascii_alphabetic()) {
+            return Err(ValidationError::InvalidFormat {
+                field: "redirect_url (custom scheme must start with a letter)"
+            });
+        }
+
+        if !scheme.chars().all(|c| c.is_alphanumeric() || c == '-' || c == '+' || c == '.') {
+            return Err(ValidationError::InvalidFormat {
+                field: "redirect_url (invalid characters in custom scheme)"
+            });
+        }
+
+        // Path after :// must exist
+        if pos + 3 >= sanitized.len() {
+            return Err(ValidationError::InvalidFormat {
+                field: "redirect_url (custom scheme missing path)"
+            });
+        }
+
+        return Ok(Some(sanitized.into_owned()));
+    }
+
+    // Reject anything else
+    Err(ValidationError::InvalidFormat { field: "redirect_url" })
 }
 
-/// Validate OAuth2 provider user ID (optional field)
+/// Validate `OAuth2` provider user ID (optional field)
 ///
 /// This is a lenient validation that only checks length if the ID is provided.
 pub fn validate_oauth2_provider_user_id(id: Option<&str>) -> ValidationResult<Option<String>> {
@@ -633,7 +691,7 @@ pub fn validate_oauth2_provider_user_id(id: Option<&str>) -> ValidationResult<Op
     Ok(Some(sanitized.into_owned()))
 }
 
-/// Validate OAuth2 state token (required for CSRF protection)
+/// Validate `OAuth2` state token (required for CSRF protection)
 ///
 /// State tokens are generated using nanoid with 32 characters from the
 /// URL-safe alphabet: A-Za-z0-9_-
@@ -665,7 +723,7 @@ pub fn validate_oauth2_state(state: &str) -> ValidationResult<String> {
     Ok(sanitized.into_owned())
 }
 
-/// Validate OAuth2 authorization code (required)
+/// Validate `OAuth2` authorization code (required)
 ///
 /// Authorization codes are provider-specific but should be reasonably
 /// sized alphanumeric strings.
@@ -1031,6 +1089,61 @@ mod tests {
         // Valid: exactly at max length
         let exact_url = "https://example.com/".to_string() + &"a".repeat(limits::OAUTH2_REDIRECT_URL_MAX - 20);
         assert!(validate_oauth2_redirect_url(Some(&exact_url)).is_ok());
+
+        // ============ Native/Mobile App Custom Schemes ============
+
+        // Valid custom scheme for mobile app
+        let result = validate_oauth2_redirect_url(Some("mysynctv://oauth2/callback"));
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), Some("mysynctv://oauth2/callback".to_string()));
+
+        // Valid custom scheme with query parameters
+        let result = validate_oauth2_redirect_url(Some("com.example.app://auth?param=value"));
+        assert!(result.is_ok());
+
+        // Valid custom scheme with path
+        let result = validate_oauth2_redirect_url(Some("io.github.synctv://oauth2/callback"));
+        assert!(result.is_ok());
+
+        // Valid reverse-domain notation
+        let result = validate_oauth2_redirect_url(Some("com.google.android.gms://oauth2/callback"));
+        assert!(result.is_ok());
+
+        // Valid custom scheme with hyphen
+        let result = validate_oauth2_redirect_url(Some("my-custom-app://callback"));
+        assert!(result.is_ok());
+
+        // Valid custom scheme with plus
+        let result = validate_oauth2_redirect_url(Some("app+custom://callback"));
+        assert!(result.is_ok());
+
+        // Valid custom scheme with dot
+        let result = validate_oauth2_redirect_url(Some("app.custom://callback"));
+        assert!(result.is_ok());
+
+        // Invalid: custom scheme too short (1 char)
+        assert!(validate_oauth2_redirect_url(Some("a://callback")).is_err());
+
+        // Invalid: custom scheme starts with number
+        assert!(validate_oauth2_redirect_url(Some("1app://callback")).is_err());
+
+        // Invalid: custom scheme starts with special character
+        assert!(validate_oauth2_redirect_url(Some("-app://callback")).is_err());
+        assert!(validate_oauth2_redirect_url(Some("_app://callback")).is_err());
+
+        // Invalid: custom scheme contains invalid characters
+        assert!(validate_oauth2_redirect_url(Some("app@name://callback")).is_err());
+        assert!(validate_oauth2_redirect_url(Some("app name://callback")).is_err());
+
+        // Invalid: custom scheme missing path after ://
+        assert!(validate_oauth2_redirect_url(Some("mysynctv://")).is_err());
+
+        // Invalid: missing :// separator
+        assert!(validate_oauth2_redirect_url(Some("mysynctv/callback")).is_err());
+
+        // Invalid: still rejected dangerous protocols even with custom scheme
+        assert!(validate_oauth2_redirect_url(Some("javascript://callback")).is_err());
+        assert!(validate_oauth2_redirect_url(Some("data://callback")).is_err());
     }
 
     #[test]

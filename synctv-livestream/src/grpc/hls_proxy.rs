@@ -87,7 +87,7 @@ pub struct HlsProxyClient {
     /// Cache miss counter for monitoring
     cache_misses: Arc<AtomicU64>,
     /// Per-stream cache version for synchronous invalidation consistency.
-    /// Key: "{room_id}:{media_id}", Value: version number
+    /// Key: "{`room_id}:{media_id`}", Value: version number
     /// When a stream is invalidated, the version is incremented synchronously,
     /// and any cached entries with older versions are considered stale.
     cache_versions: Arc<DashMap<String, u64>>,
@@ -170,6 +170,7 @@ impl HlsProxyClient {
     ///
     /// Format: `{room_id}:{media_id}:{epoch}:{segment_name}`
     #[inline]
+    #[must_use] 
     pub fn build_segment_cache_key(&self, room_id: &str, media_id: &str, epoch: u64, segment_name: &str) -> String {
         format!("{room_id}:{media_id}:{epoch}:{segment_name}")
     }
@@ -178,6 +179,7 @@ impl HlsProxyClient {
     ///
     /// Format: `{room_id}:{media_id}:{epoch}:{segment_url_base}`
     #[inline]
+    #[must_use] 
     pub fn build_playlist_cache_key(&self, room_id: &str, media_id: &str, epoch: u64, segment_url_base: &str) -> String {
         format!("{room_id}:{media_id}:{epoch}:{segment_url_base}")
     }
@@ -431,6 +433,7 @@ impl HlsProxyClient {
     /// The version component ensures that entries from old cache versions
     /// are not returned after synchronous invalidation.
     #[inline]
+    #[must_use] 
     pub fn build_segment_cache_key_with_version(
         &self,
         room_id: &str,
@@ -446,6 +449,7 @@ impl HlsProxyClient {
     ///
     /// Format: `{room_id}:{media_id}:{epoch}:{version}:{segment_url_base}`
     #[inline]
+    #[must_use] 
     pub fn build_playlist_cache_key_with_version(
         &self,
         room_id: &str,
@@ -463,7 +467,7 @@ impl HlsProxyClient {
     #[must_use]
     pub fn get_cache_version(&self, room_id: &str, media_id: &str) -> u64 {
         let key = format!("{room_id}:{media_id}");
-        self.cache_versions.get(&key).map(|v| *v).unwrap_or(0)
+        self.cache_versions.get(&key).map_or(0, |v| *v)
     }
 
     /// Increment and return the cache version for a stream.
@@ -520,7 +524,7 @@ impl HlsProxyClient {
     /// Synchronously invalidate all cached segments and playlists for a stream.
     ///
     /// This method provides immediate consistency by:
-    /// 1. Incrementing the cache version (synchronous, lock-free via DashMap)
+    /// 1. Incrementing the cache version (synchronous, lock-free via `DashMap`)
     /// 2. Removing entries from both caches using `invalidate_entries_if`
     /// 3. Running pending tasks to ensure immediate removal
     ///

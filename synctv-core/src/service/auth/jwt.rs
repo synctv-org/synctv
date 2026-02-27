@@ -87,7 +87,7 @@ pub struct GuestClaims {
     /// Expiration time (Unix timestamp)
     pub exp: i64,
     /// Room guest version at time of token issuance.
-    /// Tokens with a `gv` lower than the room's current guest_version are rejected.
+    /// Tokens with a `gv` lower than the room's current `guest_version` are rejected.
     /// This allows revoking all guest tokens for a room by incrementing the version.
     #[serde(default)]
     pub gv: i64,
@@ -351,10 +351,8 @@ impl JwtService {
 
         if entropy < MIN_SHANNON_ENTROPY {
             return Err(Error::Internal(format!(
-                "JWT secret has low entropy ({:.1} bits/char, need at least {:.1}). \
-                 Use a more random secret with varied characters.",
-                entropy,
-                MIN_SHANNON_ENTROPY
+                "JWT secret has low entropy ({entropy:.1} bits/char, need at least {MIN_SHANNON_ENTROPY:.1}). \
+                 Use a more random secret with varied characters."
             )));
         }
 
@@ -364,10 +362,8 @@ impl JwtService {
 
         if estimated_entropy_bits < MIN_JWT_SECRET_ENTROPY_BITS as f64 {
             return Err(Error::Internal(format!(
-                "JWT secret has insufficient total entropy ({:.0} bits, need at least {} bits). \
-                 Use a longer secret or one with more character variety.",
-                estimated_entropy_bits,
-                MIN_JWT_SECRET_ENTROPY_BITS
+                "JWT secret has insufficient total entropy ({estimated_entropy_bits:.0} bits, need at least {MIN_JWT_SECRET_ENTROPY_BITS} bits). \
+                 Use a longer secret or one with more character variety."
             )));
         }
 
@@ -427,7 +423,7 @@ impl JwtService {
 
         // If more than 70% of adjacent chars are sequential, reject
         let threshold = (chars.len() - 1) as f64 * 0.7;
-        ascending_count as f64 > threshold || descending_count as f64 > threshold
+        f64::from(ascending_count) > threshold || f64::from(descending_count) > threshold
     }
 
     /// Check if the string has a repeating pattern
@@ -453,7 +449,7 @@ impl JwtService {
                     }
                 }
                 // If more than 80% match, it's a repeating pattern
-                if matches as f64 / repetitions as f64 > 0.8 {
+                if f64::from(matches) / repetitions as f64 > 0.8 {
                     return true;
                 }
             }

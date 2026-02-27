@@ -28,7 +28,7 @@ const REFERER: &str = "https://www.bilibili.com";
 
 /// Shared HTTP client for all Bilibili requests (connection pooling)
 /// Redirects are disabled to prevent SSRF via redirect to private IPs.
-/// Uses SsrfSafeDnsResolver to check resolved IPs at connection time,
+/// Uses `SsrfSafeDnsResolver` to check resolved IPs at connection time,
 /// preventing DNS rebinding attacks.
 static SHARED_CLIENT: LazyLock<Client> = LazyLock::new(|| {
     Client::builder()

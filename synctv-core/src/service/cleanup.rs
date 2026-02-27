@@ -1,7 +1,7 @@
 //! Data cleanup service for periodic maintenance tasks
 //!
 //! Coordinates cleanup of:
-//! - Rooms past room_ttl threshold (soft-delete)
+//! - Rooms past `room_ttl` threshold (soft-delete)
 //! - Soft-deleted records (users, rooms) past retention period
 //! - Expired email verification tokens
 //! - Expired media provider credentials
@@ -21,7 +21,7 @@ use super::LeaderCheck;
 /// Configuration for data cleanup retention periods
 #[derive(Debug, Clone)]
 pub struct CleanupConfig {
-    /// Room TTL in seconds (0 = never expire). Rooms with updated_at older than this are soft-deleted.
+    /// Room TTL in seconds (0 = never expire). Rooms with `updated_at` older than this are soft-deleted.
     pub room_ttl_seconds: i64,
     /// Days to retain soft-deleted users before permanent deletion (0 = never purge)
     pub soft_delete_retention_days: u32,
@@ -61,7 +61,7 @@ pub struct CleanupResult {
     pub users_purged: u64,
     /// Number of soft-deleted rooms permanently deleted
     pub rooms_purged: u64,
-    /// Number of rooms soft-deleted due to room_ttl expiration
+    /// Number of rooms soft-deleted due to `room_ttl` expiration
     pub rooms_expired: u64,
     /// Number of expired email tokens deleted
     pub tokens_deleted: u64,
@@ -204,7 +204,7 @@ impl CleanupService {
         result
     }
 
-    /// Soft-delete rooms that have exceeded the room_ttl threshold.
+    /// Soft-delete rooms that have exceeded the `room_ttl` threshold.
     ///
     /// Rooms with `updated_at` older than `room_ttl_seconds` ago are soft-deleted
     /// by setting `deleted_at = CURRENT_TIMESTAMP`. This prevents unbounded room

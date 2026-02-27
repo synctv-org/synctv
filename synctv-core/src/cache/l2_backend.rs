@@ -71,7 +71,7 @@ pub struct RedisCacheL2 {
 impl RedisCacheL2 {
     /// Create from a shared, hot-swappable connection (recommended for Sentinel mode).
     #[must_use]
-    pub fn new_shared(conn: std::sync::Arc<tokio::sync::RwLock<redis::aio::ConnectionManager>>) -> Self {
+    pub const fn new_shared(conn: std::sync::Arc<tokio::sync::RwLock<redis::aio::ConnectionManager>>) -> Self {
         Self { conn }
     }
 

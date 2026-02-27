@@ -448,7 +448,7 @@ fn check_memory_health_macos() -> Option<MemoryHealth> {
                 .trim()
                 .trim_end_matches('.')
                 .chars()
-                .filter(|c| c.is_ascii_digit())
+                .filter(char::is_ascii_digit)
                 .collect();
             free_pages = num_str.parse().ok()?;
         } else if line.starts_with("Pages inactive:") {
@@ -458,7 +458,7 @@ fn check_memory_health_macos() -> Option<MemoryHealth> {
                 .trim()
                 .trim_end_matches('.')
                 .chars()
-                .filter(|c| c.is_ascii_digit())
+                .filter(char::is_ascii_digit)
                 .collect();
             inactive_pages = num_str.parse().ok()?;
         }

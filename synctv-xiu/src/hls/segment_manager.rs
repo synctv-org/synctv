@@ -46,10 +46,10 @@ pub struct SegmentManager {
 }
 
 /// Trait for checking which streams are marked for cleanup.
-/// Implemented by the stream registry to allow SegmentManager
+/// Implemented by the stream registry to allow `SegmentManager`
 /// to query cleanup eligibility without tight coupling.
 pub trait StreamCleanupChecker: Send + Sync {
-    /// Returns list of (app_name, stream_name) tuples for streams
+    /// Returns list of (`app_name`, `stream_name`) tuples for streams
     /// that are marked for cleanup (handler ended, grace period started).
     fn get_streams_marked_for_cleanup(&self) -> Vec<(String, String)>;
 }
@@ -66,6 +66,7 @@ impl SegmentManager {
     /// to delete expired segments. The task stops when the `CancellationToken` is cancelled.
     ///
     /// Returns the `JoinHandle` so callers can wait for graceful shutdown or abort if needed.
+    #[must_use] 
     pub fn start_cleanup_task(self: Arc<Self>, shutdown_token: CancellationToken) -> tokio::task::JoinHandle<()> {
         let manager = Arc::clone(&self);
         tokio::spawn(async move {

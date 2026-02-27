@@ -692,9 +692,9 @@ impl MediaRepository {
     ///
     /// # Lock Key Strategy
     ///
-    /// The lock key is computed from playlist_id using a hash function, ensuring
+    /// The lock key is computed from `playlist_id` using a hash function, ensuring
     /// different playlists get different locks. This is simpler than the
-    /// playlist position lock (which needs room_id + parent_id) because media
+    /// playlist position lock (which needs `room_id` + `parent_id`) because media
     /// positions only need to be unique within a single playlist.
     pub async fn get_next_position_with_tx(
         &self,

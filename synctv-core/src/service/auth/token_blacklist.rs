@@ -76,7 +76,7 @@ pub trait TokenBlacklistStore: Send + Sync {
     ///
     /// The default implementation uses `is_blacklisted` + `blacklist` which
     /// is NOT atomic. Implementations should override this with proper atomic
-    /// operations (e.g., Redis SETNX, PostgreSQL INSERT ... ON CONFLICT DO NOTHING).
+    /// operations (e.g., Redis SETNX, `PostgreSQL` INSERT ... ON CONFLICT DO NOTHING).
     async fn blacklist_if_not_exists(&self, key: &str, ttl_secs: u64) -> Result<bool> {
         // Default: non-atomic check-then-set (has TOCTOU race condition)
         if self.is_blacklisted(key).await {
@@ -117,8 +117,8 @@ pub struct InMemoryTokenBlacklistStore {
     jti_blacklist: Arc<moka::future::Cache<String, Instant>>,
     /// `user_key` -> (`revoked_at` timestamp, expiry Instant)
     family_revoked: Arc<moka::future::Cache<String, (i64, Instant)>>,
-    /// Per-key mutex for atomic blacklist_if_not_exists operations
-    /// Uses DashMap for O(1) lock acquisition without global contention
+    /// Per-key mutex for atomic `blacklist_if_not_exists` operations
+    /// Uses `DashMap` for O(1) lock acquisition without global contention
     blacklist_locks: Arc<dashmap::DashMap<String, Arc<tokio::sync::Mutex<()>>>>,
 }
 
@@ -246,7 +246,7 @@ impl PgTokenBlacklistStore {
 
     /// Clean up expired token blacklist entries.
     ///
-    /// This calls the `cleanup_expired_token_blacklist()` PostgreSQL function
+    /// This calls the `cleanup_expired_token_blacklist()` `PostgreSQL` function
     /// which deletes all rows where `expires_at < CURRENT_TIMESTAMP`.
     ///
     /// Should be called periodically to prevent unbounded table growth.
@@ -301,7 +301,7 @@ impl TokenBlacklistStore for PgTokenBlacklistStore {
 
     /// Atomically blacklist the key if it doesn't already exist.
     ///
-    /// Uses PostgreSQL's `INSERT ... ON CONFLICT DO NOTHING` with `xmax` check
+    /// Uses `PostgreSQL`'s `INSERT ... ON CONFLICT DO NOTHING` with `xmax` check
     /// to atomically detect whether the insert was successful or the key existed.
     /// Returns:
     /// - `Ok(true)` if key already existed (replay detected)
@@ -386,7 +386,7 @@ impl TokenBlacklistStore for PgTokenBlacklistStore {
         // We encode the timestamp as a DateTime for storage.
         let ts_key = format!("_ts:{key}");
         let revoked_at = chrono::DateTime::from_timestamp(timestamp, 0)
-            .unwrap_or_else(|| chrono::Utc::now());
+            .unwrap_or_else(chrono::Utc::now);
         let _ = sqlx::query(
             "INSERT INTO token_blacklist (jti, expires_at) VALUES ($1, $2) \
              ON CONFLICT (jti) DO UPDATE SET expires_at = EXCLUDED.expires_at"
@@ -403,7 +403,7 @@ impl TokenBlacklistStore for PgTokenBlacklistStore {
 // ============================================================================
 
 /// L1 positive cache TTL (how long a "is blacklisted = true" entry lives in moka).
-const L1_POSITIVE_TTL: Duration = Duration::from_secs(120);
+const L1_POSITIVE_TTL: Duration = Duration::from_mins(2);
 /// L1 negative cache TTL (how long a "is blacklisted = false" sentinel lives in moka).
 const L1_NEGATIVE_TTL: Duration = Duration::from_secs(10);
 /// L2 (Redis) negative sentinel TTL in seconds.
@@ -442,9 +442,9 @@ const L2_TTL_MARGIN_SECS: u64 = 30;
 pub struct TieredTokenBlacklistStore {
     pg: PgTokenBlacklistStore,
     redis_conn: Option<redis::aio::ConnectionManager>,
-    /// L1 cache: JTI key -> (is_blacklisted, expiry)
+    /// L1 cache: JTI key -> (`is_blacklisted`, expiry)
     l1_blacklist: moka::future::Cache<String, (bool, Instant)>,
-    /// L1 cache: family key -> (Option<revoked_at_timestamp>, expiry)
+    /// L1 cache: family key -> (Option<`revoked_at_timestamp`>, expiry)
     l1_family: moka::future::Cache<String, (Option<i64>, Instant)>,
     /// Redis key prefix (e.g., "synctv:")
     key_prefix: String,
@@ -453,7 +453,7 @@ pub struct TieredTokenBlacklistStore {
 impl TieredTokenBlacklistStore {
     /// Create a new tiered token blacklist store.
     ///
-    /// - `pg`: The PostgreSQL store used as durable primary.
+    /// - `pg`: The `PostgreSQL` store used as durable primary.
     /// - `redis_conn`: Optional Redis connection for L2 caching.
     /// - `key_prefix`: Redis key prefix (e.g., `"synctv:"`).
     #[must_use]
@@ -587,7 +587,7 @@ impl TokenBlacklistStore for TieredTokenBlacklistStore {
 
     /// Atomically blacklist the key if it doesn't already exist.
     ///
-    /// Uses PostgreSQL as the authoritative source for atomicity, then
+    /// Uses `PostgreSQL` as the authoritative source for atomicity, then
     /// propagates the result to L2 (Redis) and L1 (moka) caches.
     ///
     /// Returns:
@@ -657,35 +657,32 @@ impl TokenBlacklistStore for TieredTokenBlacklistStore {
         // --- PG check (primary) ---
         let result = self.pg.get_family_revoked_at(key).await;
 
-        match result {
-            Some(ts) => {
-                // Positive: populate L1 + L2
-                self.l1_family
-                    .insert(key.to_string(), (Some(ts), Instant::now() + L1_POSITIVE_TTL))
+        if let Some(ts) = result {
+            // Positive: populate L1 + L2
+            self.l1_family
+                .insert(key.to_string(), (Some(ts), Instant::now() + L1_POSITIVE_TTL))
+                .await;
+            if let Some(ref redis_conn) = self.redis_conn {
+                let redis_key = self.fam_key(key);
+                let mut conn = redis_conn.clone();
+                let _: redis::RedisResult<()> = conn
+                    .set_ex(&redis_key, ts.to_string(), L1_POSITIVE_TTL.as_secs())
                     .await;
-                if let Some(ref redis_conn) = self.redis_conn {
-                    let redis_key = self.fam_key(key);
-                    let mut conn = redis_conn.clone();
-                    let _: redis::RedisResult<()> = conn
-                        .set_ex(&redis_key, ts.to_string(), L1_POSITIVE_TTL.as_secs())
-                        .await;
-                }
-                Some(ts)
             }
-            None => {
-                // Negative sentinel: populate L1 + L2
-                self.l1_family
-                    .insert(key.to_string(), (None, Instant::now() + L1_NEGATIVE_TTL))
+            Some(ts)
+        } else {
+            // Negative sentinel: populate L1 + L2
+            self.l1_family
+                .insert(key.to_string(), (None, Instant::now() + L1_NEGATIVE_TTL))
+                .await;
+            if let Some(ref redis_conn) = self.redis_conn {
+                let redis_key = self.fam_key(key);
+                let mut conn = redis_conn.clone();
+                let _: redis::RedisResult<()> = conn
+                    .set_ex(&redis_key, "_", L2_NEGATIVE_TTL_SECS)
                     .await;
-                if let Some(ref redis_conn) = self.redis_conn {
-                    let redis_key = self.fam_key(key);
-                    let mut conn = redis_conn.clone();
-                    let _: redis::RedisResult<()> = conn
-                        .set_ex(&redis_key, "_", L2_NEGATIVE_TTL_SECS)
-                        .await;
-                }
-                None
             }
+            None
         }
     }
 
@@ -741,7 +738,7 @@ impl TokenBlacklistStore for TieredTokenBlacklistStore {
 ///
 /// Used in production to ensure token blacklist works even when:
 /// - Redis is temporarily unavailable
-/// - PostgreSQL is temporarily unavailable
+/// - `PostgreSQL` is temporarily unavailable
 /// - Network issues cause timeouts
 ///
 /// The in-memory fallback provides graceful degradation with the trade-off
@@ -926,7 +923,7 @@ pub struct SyncStats {
 ///
 /// Used in production to ensure token blacklist works even when:
 /// - Redis is temporarily unavailable (network issues, restart)
-/// - PostgreSQL is temporarily unavailable
+/// - `PostgreSQL` is temporarily unavailable
 ///
 /// When Redis recovers, call `sync_pending_writes()` to sync the buffered writes.
 /// This can be triggered by a health check or manual intervention.
@@ -1064,6 +1061,7 @@ impl RedisSyncableTokenBlacklistStore {
     ///
     /// Note: This is an approximate count based on iterating the cache.
     /// It's primarily intended for testing and diagnostics.
+    #[must_use] 
     pub fn pending_write_count(&self) -> usize {
         self.pending_blacklist.iter().count()
     }
@@ -1072,6 +1070,7 @@ impl RedisSyncableTokenBlacklistStore {
     ///
     /// Note: This is an approximate count based on iterating the cache.
     /// It's primarily intended for testing and diagnostics.
+    #[must_use] 
     pub fn pending_family_count(&self) -> usize {
         self.pending_family.iter().count()
     }

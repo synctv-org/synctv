@@ -58,8 +58,7 @@ pub fn encrypt_field_in_value(
                         .encrypt(&Value::String(field_str.to_string()))
                         .map_err(|e| {
                             ProviderError::ApiError(format!(
-                                "Failed to encrypt {} {}: {e}",
-                                provider_name, field_name
+                                "Failed to encrypt {provider_name} {field_name}: {e}"
                             ))
                         })?;
                     obj.insert(field_name.to_string(), Value::String(encrypted));
@@ -71,8 +70,7 @@ pub fn encrypt_field_in_value(
                 if !field_obj.is_empty() {
                     let encrypted = encryption.encrypt(field_value).map_err(|e| {
                         ProviderError::ApiError(format!(
-                            "Failed to encrypt {} {}: {e}",
-                            provider_name, field_name
+                            "Failed to encrypt {provider_name} {field_name}: {e}"
                         ))
                     })?;
                     obj.insert(field_name.to_string(), Value::String(encrypted));
@@ -118,8 +116,7 @@ pub fn decrypt_field_in_value(
                 if encrypted_str.starts_with("enc:") {
                     let decrypted = encryption.decrypt(encrypted_str).map_err(|e| {
                         ProviderError::ApiError(format!(
-                            "Failed to decrypt {} {}: {e}",
-                            provider_name, field_name
+                            "Failed to decrypt {provider_name} {field_name}: {e}"
                         ))
                     })?;
                     // For string fields, extract the inner string value

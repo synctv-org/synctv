@@ -111,7 +111,7 @@ where
         Err(Error::Internal(error_msg.to_string()))
     })
     .await
-    .map_err(|_| Error::Timeout(format!("{} (timeout after {:?})", error_msg, timeout)))?
+    .map_err(|_| Error::Timeout(format!("{error_msg} (timeout after {timeout:?})")))?
 }
 
 #[cfg(test)]

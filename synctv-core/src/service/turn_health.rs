@@ -23,7 +23,6 @@
 //! is sufficient to detect most failure modes.
 
 use std::collections::HashMap;
-use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::RwLock;
@@ -126,7 +125,7 @@ struct ServerHealthState {
 }
 
 impl ServerHealthState {
-    fn new() -> Self {
+    const fn new() -> Self {
         Self {
             health: TurnServerHealth::Healthy,
             consecutive_failures: 0,
@@ -248,7 +247,7 @@ impl TurnHealthChecker {
         let addr_without_scheme = url
             .strip_prefix("turn:")
             .or_else(|| url.strip_prefix("turns:"))
-            .ok_or_else(|| format!("URL must start with 'turn:' or 'turns:'"))?;
+            .ok_or_else(|| "URL must start with 'turn:' or 'turns:'".to_string())?;
 
         // Validate that the address part is not empty and contains a port
         if addr_without_scheme.is_empty() {
@@ -366,7 +365,7 @@ impl TurnHealthChecker {
 
             loop {
                 tokio::select! {
-                    _ = cancel.cancelled() => {
+                    () = cancel.cancelled() => {
                         tracing::info!("TURN health check task stopped");
                         break;
                     }

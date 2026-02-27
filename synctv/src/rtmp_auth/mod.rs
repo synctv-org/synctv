@@ -153,7 +153,7 @@ impl AuthCallback for SyncTvRtmpAuth {
 
     /// RTMP pull (play) authorization based on room settings.
     ///
-    /// By default, RTMP play is disabled (rtmp_player = false) because:
+    /// By default, RTMP play is disabled (`rtmp_player` = false) because:
     /// - RTMP has no authentication mechanism
     /// - Viewers should use HTTP-FLV or HLS endpoints which enforce JWT + room membership auth
     ///
@@ -176,7 +176,7 @@ impl AuthCallback for SyncTvRtmpAuth {
                         "RTMP play rejected: rtmp_player is disabled in room settings"
                     );
                     return Err(
-                        format!("RTMP play rejected for room {}: rtmp_player is disabled in room settings. Use HTTP-FLV or HLS.", app_name).into()
+                        format!("RTMP play rejected for room {app_name}: rtmp_player is disabled in room settings. Use HTTP-FLV or HLS.").into()
                     );
                 }
                 // RTMP player is enabled - allow the connection

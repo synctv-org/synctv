@@ -7,7 +7,7 @@
 //!
 //! The `new_validated()` constructor validates the `base_url` against private/internal
 //! IP ranges to prevent Server-Side Request Forgery attacks. Use this constructor
-//! when the base_url comes from an untrusted source (e.g., user configuration).
+//! when the `base_url` comes from an untrusted source (e.g., user configuration).
 
 use super::{
     MediaProvider, PlaybackResult, ProviderContext, ProviderError,
@@ -16,8 +16,8 @@ use crate::validation::{validate_url_for_ssrf, ValidationError};
 use async_trait::async_trait;
 use serde_json::Value;
 
-/// Fields that should not be allowed in source_config to prevent SSRF.
-/// RtmpProvider only uses room_id and media_id; any URL field could be abused.
+/// Fields that should not be allowed in `source_config` to prevent SSRF.
+/// `RtmpProvider` only uses `room_id` and `media_id`; any URL field could be abused.
 const FORBIDDEN_URL_FIELDS: &[&str] = &[
     "url",
     "rtmp_url",
@@ -33,19 +33,19 @@ pub struct RtmpProvider {
 }
 
 impl RtmpProvider {
-    /// Create a new RtmpProvider without SSRF validation.
+    /// Create a new `RtmpProvider` without SSRF validation.
     ///
-    /// Use this when the base_url is trusted (e.g., from server configuration).
+    /// Use this when the `base_url` is trusted (e.g., from server configuration).
     pub fn new(base_url: impl Into<String>) -> Self {
         Self {
             base_url: base_url.into(),
         }
     }
 
-    /// Create a new RtmpProvider with SSRF validation.
+    /// Create a new `RtmpProvider` with SSRF validation.
     ///
-    /// Validates that the base_url does not point to a private/internal IP address
-    /// or blocked hostname. Use this when the base_url may come from an untrusted source.
+    /// Validates that the `base_url` does not point to a private/internal IP address
+    /// or blocked hostname. Use this when the `base_url` may come from an untrusted source.
     ///
     /// # Errors
     ///
@@ -133,18 +133,15 @@ impl MediaProvider for RtmpProvider {
         let room_id = source_config.get("room_id").and_then(|v| v.as_str());
         let media_id = source_config.get("media_id").and_then(|v| v.as_str());
 
-        match (room_id, media_id) {
-            (Some(room_id), Some(media_id)) => {
-                // Normal case: both fields present
-                format!("{}:playback:rtmp:{room_id}:{media_id}", ctx.key_prefix)
-            }
-            _ => {
-                // Fallback: include hash of source_config to ensure uniqueness
-                // This prevents cache collisions when room_id or media_id are missing
-                use sha2::{Digest, Sha256};
-                let config_hash = hex::encode(Sha256::digest(source_config.to_string().as_bytes()));
-                format!("{}:playback:rtmp:fallback:{config_hash}", ctx.key_prefix)
-            }
+        if let (Some(room_id), Some(media_id)) = (room_id, media_id) {
+            // Normal case: both fields present
+            format!("{}:playback:rtmp:{room_id}:{media_id}", ctx.key_prefix)
+        } else {
+            // Fallback: include hash of source_config to ensure uniqueness
+            // This prevents cache collisions when room_id or media_id are missing
+            use sha2::{Digest, Sha256};
+            let config_hash = hex::encode(Sha256::digest(source_config.to_string().as_bytes()));
+            format!("{}:playback:rtmp:fallback:{config_hash}", ctx.key_prefix)
         }
     }
 }

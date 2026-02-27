@@ -396,7 +396,7 @@ impl StreamTracker {
 
     /// Clear all tracking entries.
     ///
-    /// Called during StreamHub restart cleanup to ensure stale entries
+    /// Called during `StreamHub` restart cleanup to ensure stale entries
     /// don't persist after Redis publishers are cleaned up.
     /// Without this, the tracker retains entries for publishers that
     /// no longer exist in Redis, causing incorrect stream lookups.

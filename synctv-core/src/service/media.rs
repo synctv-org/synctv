@@ -19,7 +19,7 @@ use std::sync::Arc;
 
 /// Maximum number of items allowed in a single batch operation
 ///
-/// This limit prevents DoS attacks and ensures reasonable resource usage
+/// This limit prevents `DoS` attacks and ensures reasonable resource usage
 /// for bulk operations like add, delete, and reorder.
 const MAX_BATCH_SIZE: usize = 100;
 
@@ -95,7 +95,7 @@ impl MediaService {
 
     /// Get a reference to the providers manager
     #[must_use]
-    pub fn providers_manager(&self) -> &Arc<ProvidersManager> {
+    pub const fn providers_manager(&self) -> &Arc<ProvidersManager> {
         &self.providers_manager
     }
 
@@ -168,12 +168,10 @@ impl MediaService {
         // Limit: 1MB max (JSONB can grow large with embedded metadata)
         const MAX_SOURCE_CONFIG_SIZE: usize = 1024 * 1024; // 1MB
         let config_size = serde_json::to_string(&request.source_config)
-            .map(|s| s.len())
-            .unwrap_or(0);
+            .map_or(0, |s| s.len());
         if config_size > MAX_SOURCE_CONFIG_SIZE {
             return Err(Error::InvalidInput(format!(
-                "source_config too large: {} bytes (max {} bytes / 1MB)",
-                config_size, MAX_SOURCE_CONFIG_SIZE
+                "source_config too large: {config_size} bytes (max {MAX_SOURCE_CONFIG_SIZE} bytes / 1MB)"
             )));
         }
 
@@ -266,7 +264,7 @@ impl MediaService {
 
         if items.len() > MAX_BATCH_SIZE {
             return Err(Error::InvalidInput(
-                format!("Batch size exceeds maximum of {}", MAX_BATCH_SIZE),
+                format!("Batch size exceeds maximum of {MAX_BATCH_SIZE}"),
             ));
         }
 
@@ -637,7 +635,7 @@ impl MediaService {
 
         if media_ids.len() > MAX_BATCH_SIZE {
             return Err(Error::InvalidInput(
-                format!("Batch size exceeds maximum of {}", MAX_BATCH_SIZE),
+                format!("Batch size exceeds maximum of {MAX_BATCH_SIZE}"),
             ));
         }
 
@@ -735,7 +733,7 @@ impl MediaService {
 
         if updates.len() > MAX_BATCH_SIZE {
             return Err(Error::InvalidInput(
-                format!("Batch size exceeds maximum of {}", MAX_BATCH_SIZE),
+                format!("Batch size exceeds maximum of {MAX_BATCH_SIZE}"),
             ));
         }
 

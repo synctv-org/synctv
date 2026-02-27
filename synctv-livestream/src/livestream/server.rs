@@ -64,7 +64,7 @@ pub struct LivestreamHandle {
     hub_handle: JoinHandle<()>,
     hls_remuxer_handle: JoinHandle<()>,
     publisher_manager_handle: JoinHandle<()>,
-    /// Inner re-registration task spawned inside publisher_manager_handle.
+    /// Inner re-registration task spawned inside `publisher_manager_handle`.
     /// Must be tracked separately to prevent task leaks on shutdown.
     reregister_task_handle: JoinHandle<()>,
     /// Cancellation token for the inner re-registration task.
@@ -73,7 +73,7 @@ pub struct LivestreamHandle {
     external_publish_cleanup: JoinHandle<()>,
     hls_shutdown_token: CancellationToken,
     /// HLS segment cleanup task handle.
-    /// Must be tracked to prevent task leaks when LivestreamHandle is dropped.
+    /// Must be tracked to prevent task leaks when `LivestreamHandle` is dropped.
     hls_cleanup_handle: JoinHandle<()>,
 }
 
@@ -655,12 +655,12 @@ impl LivestreamServer {
                 loop {
                     // Use tokio::select to respond to both signals and cancellation
                     tokio::select! {
-                        _ = reregister_token_clone.cancelled() => {
+                        () = reregister_token_clone.cancelled() => {
                             // Shutdown signal received - exit cleanly
                             info!("Re-registration task received shutdown signal");
                             break;
                         }
-                        _ = reregister.notified() => {
+                        () = reregister.notified() => {
                             pm_for_reregister.reregister_all_publishers().await;
                         }
                     }

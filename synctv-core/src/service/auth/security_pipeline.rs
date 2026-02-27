@@ -38,7 +38,7 @@ pub struct BlacklistEnforcement {
 }
 
 impl BlacklistEnforcement {
-    /// Create a new BlacklistEnforcement with default values.
+    /// Create a new `BlacklistEnforcement` with default values.
     ///
     /// By default, `require_blacklist` is true to ensure logout tokens
     /// are properly invalidated in production deployments.
@@ -49,7 +49,7 @@ impl BlacklistEnforcement {
         }
     }
 
-    /// Create a BlacklistEnforcement that allows requests without blacklist store.
+    /// Create a `BlacklistEnforcement` that allows requests without blacklist store.
     ///
     /// Use this only for development/testing where token blacklist is not needed.
     #[must_use]
@@ -421,7 +421,7 @@ impl SecurityPipelineBuilder {
 
     /// Configure blacklist enforcement policy.
     #[must_use]
-    pub fn with_blacklist_enforcement(mut self, enforcement: BlacklistEnforcement) -> Self {
+    pub const fn with_blacklist_enforcement(mut self, enforcement: BlacklistEnforcement) -> Self {
         self.blacklist_enforcement = enforcement;
         self
     }

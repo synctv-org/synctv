@@ -36,7 +36,7 @@ pub struct UserService {
     token_blacklist: Arc<dyn TokenBlacklistStore>,
     /// Key builder for Redis keys
     key_builder: KeyBuilder,
-    /// Rate limiter for refresh token endpoint (prevents abuse/stolen token DoS)
+    /// Rate limiter for refresh token endpoint (prevents abuse/stolen token `DoS`)
     refresh_rate_limiter: RateLimiter,
 }
 
@@ -771,7 +771,7 @@ impl UserService {
     /// Returns per-user results with success/failure status.
     ///
     /// # Errors
-    /// - `InvalidInput` if user_ids is empty or exceeds `BATCH_SIZE_LIMIT`
+    /// - `InvalidInput` if `user_ids` is empty or exceeds `BATCH_SIZE_LIMIT`
     pub async fn batch_ban_users(
         &self,
         user_ids: &[String],
@@ -825,7 +825,7 @@ impl UserService {
     /// Returns per-user results with success/failure status.
     ///
     /// # Errors
-    /// - `InvalidInput` if user_ids is empty or exceeds `BATCH_SIZE_LIMIT`
+    /// - `InvalidInput` if `user_ids` is empty or exceeds `BATCH_SIZE_LIMIT`
     pub async fn batch_delete_users(
         &self,
         user_ids: &[String],
@@ -1113,15 +1113,15 @@ impl UserService {
         &self.username_cache
     }
 
-    /// Get the token blacklist store (for configuring SecurityPipeline)
+    /// Get the token blacklist store (for configuring `SecurityPipeline`)
     #[must_use]
     pub fn token_blacklist_store(&self) -> Arc<dyn crate::service::auth::TokenBlacklistStore> {
         Arc::clone(&self.token_blacklist)
     }
 
-    /// Get the key builder (for configuring SecurityPipeline)
+    /// Get the key builder (for configuring `SecurityPipeline`)
     #[must_use]
-    pub fn key_builder(&self) -> &KeyBuilder {
+    pub const fn key_builder(&self) -> &KeyBuilder {
         &self.key_builder
     }
 

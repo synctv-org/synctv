@@ -241,9 +241,8 @@ impl Application {
                 // In standalone mode, we can continue with local-only caching.
                 if infra.config.cluster.enabled {
                     return Err(anyhow::anyhow!(
-                        "Failed to start cache invalidation listener (cluster mode): {}. \
-                         Cache consistency is required when cluster.enabled=true.",
-                        e
+                        "Failed to start cache invalidation listener (cluster mode): {e}. \
+                         Cache consistency is required when cluster.enabled=true."
                     ));
                 }
                 warn!("Failed to start cache invalidation listener (continuing in standalone mode): {}", e);
@@ -381,10 +380,9 @@ impl Application {
                                  Fix the K8s configuration or switch to 'redis' leader election mode."
                             );
                             return Err(anyhow::anyhow!(
-                                "K8s leader election initialization failed: {}. \
+                                "K8s leader election initialization failed: {e}. \
                                  Cannot safely continue in cluster mode. \
-                                 Either fix K8s RBAC/env vars or set cluster.leader_election_mode='redis'",
-                                e
+                                 Either fix K8s RBAC/env vars or set cluster.leader_election_mode='redis'"
                             ));
                         }
                     }
@@ -529,7 +527,7 @@ impl Application {
             max_duration: Duration::from_secs(
                 infra.config.connection_limits.max_duration_seconds,
             ),
-            webrtc_session_timeout: Duration::from_secs(2 * 60 * 60), // 2 hours (matches ConnectionLimits::default())
+            webrtc_session_timeout: Duration::from_hours(2), // 2 hours (matches ConnectionLimits::default())
         };
         let connection_manager = ConnectionManager::new(connection_limits);
         info!(
@@ -573,9 +571,8 @@ impl Application {
                     // In standalone mode, we can continue without cluster features.
                     if infra.config.cluster.enabled {
                         return Err(anyhow::anyhow!(
-                            "Failed to create ClusterManager (cluster mode): {}. \
-                             ClusterManager is required when cluster.enabled=true.",
-                            e
+                            "Failed to create ClusterManager (cluster mode): {e}. \
+                             ClusterManager is required when cluster.enabled=true."
                         ));
                     }
                     error!("Failed to create ClusterManager: {}", e);

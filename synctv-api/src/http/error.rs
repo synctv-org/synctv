@@ -129,7 +129,7 @@ struct ErrorResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
     code: Option<i32>,
     /// Request ID for correlating the error with the request.
-    /// Present when the request has passed through request_id_middleware.
+    /// Present when the request has passed through `request_id_middleware`.
     #[serde(skip_serializing_if = "Option::is_none")]
     request_id: Option<String>,
 }

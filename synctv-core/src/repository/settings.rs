@@ -148,28 +148,25 @@ impl SettingsRepository {
         .fetch_optional(&self.pool)
         .await?;
 
-        match row {
-            Some(row) => {
-                debug!(
-                    "Updated setting '{}' with optimistic lock (version {} -> {})",
-                    key, expected_version, row.try_get::<i32, _>("version")?
-                );
-                Ok(SettingsGroup {
-                    key: row.try_get("key")?,
-                    group_name: row.try_get("group_name")?,
-                    value: row.try_get("value")?,
-                    version: row.try_get("version")?,
-                    created_at: row.try_get("created_at")?,
-                    updated_at: row.try_get("updated_at")?,
-                })
-            }
-            None => {
-                debug!(
-                    "Optimistic lock conflict for setting '{}' (expected version {})",
-                    key, expected_version
-                );
-                Err(Error::OptimisticLockConflict)
-            }
+        if let Some(row) = row {
+            debug!(
+                "Updated setting '{}' with optimistic lock (version {} -> {})",
+                key, expected_version, row.try_get::<i32, _>("version")?
+            );
+            Ok(SettingsGroup {
+                key: row.try_get("key")?,
+                group_name: row.try_get("group_name")?,
+                value: row.try_get("value")?,
+                version: row.try_get("version")?,
+                created_at: row.try_get("created_at")?,
+                updated_at: row.try_get("updated_at")?,
+            })
+        } else {
+            debug!(
+                "Optimistic lock conflict for setting '{}' (expected version {})",
+                key, expected_version
+            );
+            Err(Error::OptimisticLockConflict)
         }
     }
 }

@@ -12,7 +12,7 @@
 //! - Private IP range blocking
 //! - Custom blocklist support
 
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+use std::net::{IpAddr, Ipv6Addr};
 use std::sync::LazyLock;
 
 // ============================================================================
@@ -502,7 +502,7 @@ pub use url_jail::{Policy, PolicyBuilder, Validated};
 /// ```
 #[derive(Debug, Clone)]
 pub struct SSRFValidator {
-    /// The url_jail policy to use for validation
+    /// The `url_jail` policy to use for validation
     policy: Policy,
     /// Additional blocked IPs (for custom blocklists)
     blocked_ips: Vec<IpAddr>,
@@ -549,7 +549,7 @@ impl SSRFValidator {
 
     /// Create a validator with a custom policy.
     #[must_use]
-    pub fn with_policy(policy: Policy) -> Self {
+    pub const fn with_policy(policy: Policy) -> Self {
         Self {
             policy,
             blocked_ips: Vec::new(),
@@ -562,7 +562,7 @@ impl SSRFValidator {
     /// Use this for internal services that need to access private networks.
     /// Still blocks loopback and cloud metadata endpoints.
     #[must_use]
-    pub fn allow_private() -> Self {
+    pub const fn allow_private() -> Self {
         Self::with_policy(Policy::AllowPrivate)
     }
 
@@ -775,7 +775,7 @@ pub fn validate_url_with_policy(url: &str, policy: Policy) -> ValidationResult<(
 ///
 /// # Arguments
 ///
-/// * `raw` - The RTMP/RTMPS URL to validate (e.g., "rtmp://example.com/live/stream")
+/// * `raw` - The RTMP/RTMPS URL to validate (e.g., "<rtmp://example.com/live/stream>")
 ///
 /// # Returns
 ///
@@ -825,7 +825,7 @@ pub fn validate_rtmp_url_for_ssrf(raw: &str) -> ValidationResult<()> {
     use synctv_media_providers::ssrf::{check_hostname, SsrfCheckResult};
     match check_hostname(host_str) {
         SsrfCheckResult::Ok => Ok(()),
-        SsrfCheckResult::Blocked(reason) => Err(ValidationError::SSRF(reason.to_string())),
+        SsrfCheckResult::Blocked(reason) => Err(ValidationError::SSRF(reason)),
     }
 }
 

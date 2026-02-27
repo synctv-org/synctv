@@ -34,7 +34,7 @@ pub struct PermissionService {
     /// Optional invalidation service for cross-replica cache sync
     invalidation_service: Option<Arc<CacheInvalidationService>>,
     /// When true, cache is considered unreliable due to Pub/Sub lag;
-    /// all permission checks use degraded_cache with short TTL.
+    /// all permission checks use `degraded_cache` with short TTL.
     cache_degraded: Arc<AtomicBool>,
     /// Tracks last `invalidate_all()` time to rate-limit flushes
     last_flush_time: Arc<parking_lot::Mutex<Instant>>,
@@ -296,11 +296,11 @@ impl PermissionService {
     /// When `false`, permission checks will fall back to default `RoomSettings`,
     /// which may ignore room-specific permission customizations.
     #[must_use]
-    pub fn has_room_settings_repo(&self) -> bool {
+    pub const fn has_room_settings_repo(&self) -> bool {
         self.room_settings_repo.is_some()
     }
 
-    /// Log a warning if room_settings_repo is not configured
+    /// Log a warning if `room_settings_repo` is not configured
     ///
     /// Call this during application startup to ensure operators are aware
     /// that room-specific permission settings will be ignored.

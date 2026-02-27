@@ -183,11 +183,11 @@ impl PlaylistRepository {
                 };
 
                 // Hash parent_id to get second 32 bits
-                let parent_hash = parent_id_str.map(|pid| {
+                let parent_hash = parent_id_str.map_or(0, |pid| {
                     let mut h = std::collections::hash_map::DefaultHasher::new();
                     pid.hash(&mut h);
                     h.finish()
-                }).unwrap_or(0);
+                });
 
                 // Combine using upper 32 bits for room and lower 32 bits for parent
                 // This significantly reduces collision probability compared to hashing
@@ -373,11 +373,11 @@ impl PlaylistRepository {
             };
 
             // Hash parent_id to get second 32 bits
-            let parent_hash = parent_id_str.map(|pid| {
+            let parent_hash = parent_id_str.map_or(0, |pid| {
                 let mut h = std::collections::hash_map::DefaultHasher::new();
                 pid.hash(&mut h);
                 h.finish()
-            }).unwrap_or(0);
+            });
 
             // Combine using upper 32 bits for room and lower 32 bits for parent
             // This is IDENTICAL to the strategy in create() method.

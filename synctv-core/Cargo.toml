@@ -122,6 +122,7 @@ criterion.workspace = true
 rand.workspace = true
 testcontainers.workspace = true
 testcontainers-modules.workspace = true
+synctv-core-testing = { path = "testing" }
 
 [[bench]]
 name = "auth_service"

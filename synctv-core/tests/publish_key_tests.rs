@@ -139,12 +139,10 @@ async fn test_publish_key_single_use() {
 #[ignore = "Requires Docker"]
 async fn test_redis_jti_store_cross_service_dedup() {
     use synctv_core::service::publish_key::RedisJtiStore;
-    use testcontainers::core::ImageExt;
-    use testcontainers::runners::AsyncRunner;
-    use testcontainers_modules::redis::Redis;
+            use testcontainers::runners::AsyncRunner;
+use testcontainers_modules::redis::Redis;
 
     let container = Redis::default()
-        .with_tag("7-alpine")
         .start()
         .await
         .expect("Failed to start Redis container");
@@ -175,12 +173,10 @@ async fn test_redis_jti_store_cross_service_dedup() {
 async fn test_publish_key_service_with_redis_full_lifecycle() {
     use synctv_core::service::publish_key::PublishKeyService;
     use synctv_core::service::auth::JwtService;
-    use testcontainers::core::ImageExt;
-    use testcontainers::runners::AsyncRunner;
-    use testcontainers_modules::redis::Redis;
+            use testcontainers::runners::AsyncRunner;
+use testcontainers_modules::redis::Redis;
 
     let container = Redis::default()
-        .with_tag("7-alpine")
         .start()
         .await
         .expect("Failed to start Redis container");

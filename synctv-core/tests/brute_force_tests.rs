@@ -20,6 +20,7 @@ use std::sync::Arc;
 use synctv_core::service::{
     AttemptTracker, BruteForceProtection, InMemoryAttemptTracker, RedisAttemptTracker,
 };
+use synctv_core_testing::constants::{brute_force, network};
 
 // ============================================================================
 // InMemoryAttemptTracker tests
@@ -72,8 +73,8 @@ async fn test_brute_force_below_threshold_allowed() {
     let protection = BruteForceProtection::in_memory("test".to_string());
     let ip = Some(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)));
 
-    // Record 4 failures (below tier1 threshold of 5)
-    for _ in 0..4 {
+    // Record 4 failures (below tier1 threshold)
+    for _ in 0..(brute_force::TIER1_THRESHOLD - 1) {
         protection.record_failure("alice", ip).await.unwrap();
     }
 
@@ -86,10 +87,10 @@ async fn test_brute_force_below_threshold_allowed() {
 #[ignore = "Requires Docker"]
 async fn test_brute_force_at_tier1_threshold_locked() {
     let protection = BruteForceProtection::in_memory("test".to_string());
-    let ip = Some(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2)));
+    let ip = Some(network::PROXY_IP.parse().unwrap());
 
-    // Record exactly 5 failures (tier1 threshold)
-    for _ in 0..5 {
+    // Record exactly tier1 threshold failures
+    for _ in 0..brute_force::TIER1_THRESHOLD {
         protection.record_failure("bob", ip).await.unwrap();
     }
 
@@ -176,15 +177,13 @@ async fn test_brute_force_reset_unlocks() {
 // RedisAttemptTracker tests (require testcontainers)
 // ============================================================================
 
-use testcontainers::core::ImageExt;
-use testcontainers::runners::AsyncRunner;
 use testcontainers_modules::redis::Redis;
+use testcontainers::runners::AsyncRunner;
 
 const REDIS_VERSION: &str = "7-alpine";
 
 async fn start_redis() -> (testcontainers::ContainerAsync<Redis>, redis::aio::ConnectionManager) {
     let container = Redis::default()
-        .with_tag(REDIS_VERSION)
         .start()
         .await
         .expect("Failed to start Redis");

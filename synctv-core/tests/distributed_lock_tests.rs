@@ -17,7 +17,6 @@
 use synctv_core::service::distributed_lock::{DistributedLock, MigrationLock};
 use synctv_core::Error;
 use std::time::Duration;
-use testcontainers::core::ImageExt;
 use testcontainers::runners::AsyncRunner;
 use testcontainers_modules::redis::Redis;
 
@@ -26,7 +25,6 @@ const REDIS_VERSION: &str = "7-alpine";
 /// Start a Redis container and return connection manager
 async fn start_redis() -> (testcontainers::ContainerAsync<Redis>, redis::aio::ConnectionManager) {
     let container = Redis::default()
-        .with_tag(REDIS_VERSION)
         .start()
         .await
         .expect("Failed to start Redis");

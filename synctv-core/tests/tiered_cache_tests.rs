@@ -12,15 +12,13 @@ use synctv_core::cache::{
     user_cache::CachedUser,
 };
 use synctv_core::models::{UserId, UserRole, UserStatus};
-use testcontainers::core::ImageExt;
-use testcontainers::runners::AsyncRunner;
 use testcontainers_modules::redis::Redis;
+use testcontainers::runners::AsyncRunner;
 
 const REDIS_VERSION: &str = "7-alpine";
 
 async fn start_redis() -> (testcontainers::ContainerAsync<Redis>, redis::aio::ConnectionManager) {
     let container = Redis::default()
-        .with_tag(REDIS_VERSION)
         .start()
         .await
         .expect("Failed to start Redis");

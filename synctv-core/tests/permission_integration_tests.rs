@@ -5,44 +5,14 @@
 //! Run with: cargo test --test permission_integration_tests
 //! Requires Docker for testcontainers.
 
+use synctv_core_testing::{create_test_pool, create_test_jwt_service};
 use synctv_core::{
     models::{Room, RoomId, RoomMember, RoomRole, UserId, MemberStatus, PermissionBits, User, UserStatus, SignupMethod},
     repository::{RoomRepository, RoomMemberRepository, UserRepository},
     service::permission::PermissionService,
 };
 use sqlx::PgPool;
-use testcontainers::core::ImageExt;
-use testcontainers::runners::AsyncRunner;
-use testcontainers_modules::postgres::Postgres;
-
 /// Default PostgreSQL version for test containers
-const POSTGRES_VERSION: &str = "16-alpine";
-
-async fn create_test_pool() -> (testcontainers::ContainerAsync<Postgres>, PgPool) {
-    let container = Postgres::default()
-        .with_tag(POSTGRES_VERSION)
-        .start()
-        .await
-        .expect("Failed to start postgres");
-
-    let port = container.get_host_port_ipv4(5432).await.expect("Failed to get port");
-    let connection_string = format!(
-        "postgresql://postgres:postgres@127.0.0.1:{}/postgres",
-        port,
-    );
-
-    let pool = PgPool::connect(&connection_string)
-        .await
-        .expect("Failed to create pool");
-
-    sqlx::migrate!("../migrations")
-        .run(&pool)
-        .await
-        .expect("Failed to run migrations");
-
-    (container, pool)
-}
-
 /// Create a test user in the database (required for FK constraints)
 async fn create_test_user(pool: &PgPool, user_id: &UserId) {
     let username = format!("test_user_{}", user_id.as_str());

@@ -3,6 +3,7 @@ members = [
     # SyncTV crates
     "synctv-proto",
     "synctv-core",
+    "synctv-core/testing",
     "synctv-proxy",
     "synctv-api",
     "synctv-livestream",

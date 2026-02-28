@@ -7,15 +7,13 @@
 
 use std::sync::Arc;
 use synctv_core::service::{OAuthStateStore, OAuth2State, RedisOAuthStateStore};
-use testcontainers::core::ImageExt;
-use testcontainers::runners::AsyncRunner;
 use testcontainers_modules::redis::Redis;
 
-const REDIS_VERSION: &str = "7-alpine";
 
 async fn start_redis() -> (testcontainers::ContainerAsync<Redis>, redis::aio::ConnectionManager) {
+    use testcontainers::runners::AsyncRunner;
+    
     let container = Redis::default()
-        .with_tag(REDIS_VERSION)
         .start()
         .await
         .expect("Failed to start Redis");

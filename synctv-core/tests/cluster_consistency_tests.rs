@@ -34,16 +34,13 @@ use synctv_core::{
 use chrono::Utc;
 use sqlx::PgPool;
 use std::sync::Arc;
-use testcontainers::core::ImageExt;
-use testcontainers::runners::AsyncRunner;
 use testcontainers::ContainerAsync;
 use testcontainers_modules::postgres::Postgres;
 use testcontainers_modules::redis::Redis;
+use testcontainers::runners::AsyncRunner;
 
 /// Default PostgreSQL version for test containers
-const POSTGRES_VERSION: &str = "16-alpine";
 /// Default Redis version for test containers
-const REDIS_VERSION: &str = "7-alpine";
 
 // ============================================================================
 // Test Infrastructure
@@ -60,10 +57,6 @@ pub struct TestInfra {
 async fn create_test_infra() -> TestInfra {
     // Start PostgreSQL
     let postgres = Postgres::default()
-        .with_db_name("synctv_test")
-        .with_user("synctv")
-        .with_password("synctv_test")
-        .with_tag(POSTGRES_VERSION)
         .start()
         .await
         .expect("Failed to start Postgres container");
@@ -90,7 +83,6 @@ async fn create_test_infra() -> TestInfra {
 
     // Start Redis
     let redis = Redis::default()
-        .with_tag(REDIS_VERSION)
         .start()
         .await
         .expect("Failed to start Redis container");
@@ -205,9 +197,6 @@ async fn test_permission_change_cross_replica_sync() {
     ));
 
     // Start cache invalidation services
-    cache_invalidation_1.start().await.expect("Failed to start node_a cache invalidation");
-    cache_invalidation_2.start().await.expect("Failed to start node_b cache invalidation");
-
     // Create permission services with cache invalidation using with_invalidation constructor
     let permission_service_a = PermissionService::with_invalidation(
         member_repo.clone(),
@@ -335,10 +324,6 @@ async fn test_playback_state_cross_replica_sync() {
         "node_b".to_string(),
         "test:cache:playback".to_string(),
     ));
-
-    cache_invalidation_1.start().await.expect("Failed to start node_a cache invalidation");
-    cache_invalidation_2.start().await.expect("Failed to start node_b cache invalidation");
-
     // Create playback services
     let playback_repo = RoomPlaybackStateRepository::new(pool.clone());
     let member_repo = RoomMemberRepository::new(pool.clone());
@@ -447,8 +432,6 @@ async fn test_playback_state_invalidation_message_content() {
         "test:cache:playback_msg".to_string(),
     ));
 
-    service1.start().await.expect("Failed to start service1");
-    service2.start().await.expect("Failed to start service2");
 
     let mut receiver = service2.subscribe();
 
@@ -511,10 +494,6 @@ async fn test_room_settings_cross_replica_sync() {
         "node_b".to_string(),
         "test:cache:settings".to_string(),
     ));
-
-    cache_invalidation_1.start().await.expect("Failed to start node_a cache invalidation");
-    cache_invalidation_2.start().await.expect("Failed to start node_b cache invalidation");
-
     // Node B: Query settings (simulates caching)
     let settings_b_initial = room_settings_repo.get(&room.id).await.expect("Failed to get settings");
     assert_eq!(settings_b_initial.max_members.0, 10, "Initial max_members should be 10");
@@ -561,8 +540,6 @@ async fn test_room_settings_invalidation_message_broadcast() {
         "test:cache:room_settings".to_string(),
     ));
 
-    service1.start().await.expect("Failed to start service1");
-    service2.start().await.expect("Failed to start service2");
 
     let mut receiver = service2.subscribe();
 
@@ -612,8 +589,6 @@ async fn test_concurrent_invalidation_messages() {
         "test:cache:concurrent".to_string(),
     ));
 
-    service1.start().await.expect("Failed to start service1");
-    service2.start().await.expect("Failed to start service2");
 
     let mut receiver = service2.subscribe();
 
@@ -734,7 +709,6 @@ async fn test_cache_consistency_without_redis() {
 
 async fn start_redis() -> (testcontainers::ContainerAsync<Redis>, String) {
     let container = Redis::default()
-        .with_tag(REDIS_VERSION)
         .start()
         .await
         .expect("Failed to start Redis");

@@ -95,7 +95,7 @@ fn test_error_messages_still_work() {
     let error = ServerMessage {
         message: Some(Message::Error(synctv_api::proto::client::ErrorMessage {
             message: "Actual error".to_string(),
-            code: synctv_proto::common::ErrorCode::Unauthenticated as i32,
+            code: synctv_proto::common::ErrorCode::Unauthorized as i32,
             detail: "Invalid token".to_string(),
         })),
     };
@@ -109,7 +109,7 @@ fn test_error_messages_still_work() {
     match decoded.message {
         Some(Message::Error(err)) => {
             assert_eq!(err.message, "Actual error");
-            assert_eq!(err.code, synctv_proto::common::ErrorCode::Unauthenticated as i32);
+            assert_eq!(err.code, synctv_proto::common::ErrorCode::Unauthorized as i32);
             assert_eq!(err.detail, "Invalid token");
         }
         _ => panic!("Expected Error variant"),

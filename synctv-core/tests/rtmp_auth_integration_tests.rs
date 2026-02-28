@@ -33,14 +33,10 @@ use synctv_core::{
         InMemoryTokenBlacklistStore, PublishKeyService, RoomService, UserService,
     },
 };
-use testcontainers::core::ImageExt;
-use testcontainers::runners::AsyncRunner;
 use testcontainers::ContainerAsync;
 use testcontainers_modules::postgres::Postgres;
 use testcontainers_modules::redis::Redis;
 
-const POSTGRES_VERSION: &str = "16-alpine";
-const REDIS_VERSION: &str = "7-alpine";
 
 // ============================================================================
 // Test Infrastructure
@@ -57,7 +53,6 @@ async fn create_test_infra() -> (
         .with_db_name("synctv_test")
         .with_user("synctv")
         .with_password("synctv_test")
-        .with_tag(POSTGRES_VERSION)
         .start()
         .await
         .expect("Failed to start Postgres container");
@@ -83,8 +78,8 @@ async fn create_test_infra() -> (
         .expect("Failed to run migrations");
 
     // Start Redis
+    use testcontainers::runners::AsyncRunner;
     let redis = Redis::default()
-        .with_tag(REDIS_VERSION)
         .start()
         .await
         .expect("Failed to start Redis container");

@@ -794,6 +794,7 @@ mod websocket_e2e {
         let emby_api = Arc::new(synctv_api::impls::EmbyApiImpl::new(emby_provider.clone()));
 
         let router_config = synctv_api::http::RouterConfig {
+            turn_health_checker: Default::default(),
             config,
             user_service: user_service.clone(),
             room_service: room_service.clone(),
@@ -2569,6 +2570,7 @@ mod websocket_connection_limit_timing {
 
         // CRITICAL: Set max_per_user = 1 to trigger the limit easily
         let connection_limits = ConnectionLimits {
+            webrtc_session_timeout: Default::default(),
             max_per_user: 1,
             max_per_room: 200,
             max_total: 10000,
@@ -2610,6 +2612,7 @@ mod websocket_connection_limit_timing {
         let emby_api = Arc::new(synctv_api::impls::EmbyApiImpl::new(emby_provider.clone()));
 
         let router_config = synctv_api::http::RouterConfig {
+            turn_health_checker: Default::default(),
             config,
             user_service: user_service.clone(),
             room_service: room_service.clone(),

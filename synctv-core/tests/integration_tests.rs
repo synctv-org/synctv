@@ -4,6 +4,7 @@
 //!
 //! Run with: cargo test --test integration_tests
 
+use synctv_core_testing::{create_test_pool, create_test_jwt_service};
 use synctv_core::{
     models::UserId,
     service::{
@@ -12,10 +13,6 @@ use synctv_core::{
 };
 
 /// Helper to create a test JWT service with a test secret
-fn create_test_jwt_service() -> JwtService {
-    JwtService::new("test-secret-key-for-integration-tests-long-enough-1234567890").expect("Failed to create JWT service")
-}
-
 #[tokio::test]
 async fn test_user_registration_and_authentication() {
     let jwt_service = create_test_jwt_service();

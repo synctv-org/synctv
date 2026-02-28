@@ -28,7 +28,6 @@ struct TestRedis {
 impl TestRedis {
     async fn start() -> Self {
         let redis_container = Redis::default()
-            .with_tag(REDIS_VERSION)
             .start()
             .await
             .expect("Failed to start Redis container");

@@ -17,6 +17,10 @@
 //!
 //! - Docker for testcontainers (PostgreSQL)
 
+use synctv_core_testing::create_test_jwt_service;
+use testcontainers::ContainerAsync;
+use testcontainers_modules::postgres::Postgres;
+use testcontainers::runners::AsyncRunner;
 use synctv_core::{
     models::{
         Room, RoomId, RoomMember, RoomRole, RoomStatus,
@@ -31,14 +35,7 @@ use synctv_core::{
 };
 use chrono::Utc;
 use sqlx::PgPool;
-use testcontainers::core::ImageExt;
-use testcontainers::runners::AsyncRunner;
-use testcontainers::ContainerAsync;
-use testcontainers_modules::postgres::Postgres;
-
 /// Default PostgreSQL version for test containers
-const POSTGRES_VERSION: &str = "16-alpine";
-
 // ============================================================================
 // Test Infrastructure
 // ============================================================================
@@ -54,7 +51,6 @@ async fn create_test_pool() -> TestPostgres {
         .with_db_name("synctv_test")
         .with_user("synctv")
         .with_password("synctv_test")
-        .with_tag(POSTGRES_VERSION)
         .start()
         .await
         .expect("Failed to start Postgres container");

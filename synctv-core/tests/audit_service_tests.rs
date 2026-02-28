@@ -5,43 +5,10 @@
 //! Run with: cargo test --test audit_service_tests
 //! Run Docker tests: cargo test --test audit_service_tests -- --ignored
 
+use synctv_core_testing::{create_test_pool, create_test_jwt_service};
 use synctv_core::service::{
     AuditService, AuditAction, AuditTargetType,
 };
-
-async fn create_test_pool() -> (sqlx::PgPool, testcontainers::ContainerAsync<testcontainers_modules::postgres::Postgres>) {
-    use testcontainers::core::ImageExt;
-    use testcontainers::runners::AsyncRunner;
-    use testcontainers_modules::postgres::Postgres;
-
-    let container = Postgres::default()
-        .with_db_name("synctv_test")
-        .with_user("synctv")
-        .with_password("synctv_test")
-        .with_tag("16-alpine")
-        .start()
-        .await
-        .expect("Failed to start Postgres container");
-
-    let host = container.get_host().await.expect("Failed to get Postgres host");
-    let port = container.get_host_port_ipv4(5432).await.expect("Failed to get Postgres port");
-
-    let database_url = format!(
-        "postgresql://synctv:synctv_test@{}:{}/synctv_test",
-        host, port
-    );
-
-    let pool = sqlx::PgPool::connect(&database_url)
-        .await
-        .expect("Failed to connect to Postgres container");
-
-    sqlx::migrate!("../migrations")
-        .run(&pool)
-        .await
-        .expect("Failed to run migrations");
-
-    (pool, container)
-}
 
 // ============================================================================
 // Unbuffered write tests (require Docker)
@@ -50,7 +17,7 @@ async fn create_test_pool() -> (sqlx::PgPool, testcontainers::ContainerAsync<tes
 #[tokio::test]
 #[ignore = "Requires Docker"]
 async fn test_audit_unbuffered_writes_immediately() {
-    let (pool, _container) = create_test_pool().await;
+    let (_container, pool) = create_test_pool().await;
 
     let service = AuditService::new_unbuffered(pool.clone());
 
@@ -81,7 +48,7 @@ async fn test_audit_unbuffered_writes_immediately() {
 #[tokio::test]
 #[ignore = "Requires Docker"]
 async fn test_audit_query_filter_by_action() {
-    let (pool, _container) = create_test_pool().await;
+    let (_container, pool) = create_test_pool().await;
 
     let service = AuditService::new_unbuffered(pool.clone());
 
@@ -144,7 +111,7 @@ async fn test_audit_query_filter_by_action() {
 #[tokio::test]
 #[ignore = "Requires Docker"]
 async fn test_audit_query_date_range() {
-    let (pool, _container) = create_test_pool().await;
+    let (_container, pool) = create_test_pool().await;
 
     let service = AuditService::new_unbuffered(pool.clone());
 
@@ -225,7 +192,7 @@ async fn test_buffered_service_enqueues_without_error() {
 #[tokio::test]
 async fn test_unbuffered_service_dropped_count_zero() {
     let pool = sqlx::PgPool::connect_lazy("postgresql://fake").unwrap();
-    let service = AuditService::new_unbuffered(pool);
+    let service = AuditService::new_unbuffered(pool.clone());
     assert_eq!(service.dropped_count(), 0);
 }
 
@@ -234,7 +201,7 @@ async fn test_unbuffered_service_dropped_count_zero() {
 #[tokio::test]
 #[ignore = "Requires Docker"]
 async fn test_log_stream_kicked_writes_audit_log() {
-    let (pool, _container) = create_test_pool().await;
+    let (_container, pool) = create_test_pool().await;
 
     let service = AuditService::new_unbuffered(pool.clone());
 
@@ -280,7 +247,7 @@ async fn test_log_stream_kicked_writes_audit_log() {
 #[tokio::test]
 #[ignore = "Requires Docker"]
 async fn test_log_stream_kicked_without_reason() {
-    let (pool, _container) = create_test_pool().await;
+    let (_container, pool) = create_test_pool().await;
 
     let service = AuditService::new_unbuffered(pool.clone());
 
@@ -322,7 +289,7 @@ async fn test_log_stream_kicked_without_reason() {
 #[tokio::test]
 #[ignore = "Requires Docker"]
 async fn test_log_stream_kicked_records_actor_username() {
-    let (pool, _container) = create_test_pool().await;
+    let (_container, pool) = create_test_pool().await;
 
     let service = AuditService::new_unbuffered(pool.clone());
 
@@ -354,7 +321,7 @@ async fn test_log_stream_kicked_records_actor_username() {
 #[tokio::test]
 #[ignore = "Requires Docker"]
 async fn test_log_stream_kicked_multiple_kicks_are_logged_separately() {
-    let (pool, _container) = create_test_pool().await;
+    let (_container, pool) = create_test_pool().await;
 
     let service = AuditService::new_unbuffered(pool.clone());
 

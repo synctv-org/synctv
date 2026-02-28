@@ -5606,6 +5606,7 @@ dependencies = [
  "sha1",
  "sha2",
  "sqlx",
+ "synctv-core-testing",
  "synctv-media-providers",
  "synctv-proto",
  "testcontainers",
@@ -5627,6 +5628,19 @@ dependencies = [
  "url_jail",
  "urlencoding",
  "uuid",
+]
+
+[[package]]
+name = "synctv-core-testing"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "nanoid",
+ "sqlx",
+ "synctv-core",
+ "testcontainers",
+ "testcontainers-modules",
+ "tokio",
 ]
 
 [[package]]

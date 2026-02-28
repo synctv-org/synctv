@@ -114,12 +114,10 @@ async fn test_in_memory_distributed_fails_closed() {
 // ============================================================================
 
 async fn create_redis_connection_manager() -> (redis::aio::ConnectionManager, testcontainers::ContainerAsync<testcontainers_modules::redis::Redis>) {
-    use testcontainers::core::ImageExt;
     use testcontainers::runners::AsyncRunner;
     use testcontainers_modules::redis::Redis;
 
     let container = Redis::default()
-        .with_tag("7-alpine")
         .start()
         .await
         .expect("Failed to start Redis container");

@@ -10,9 +10,10 @@ use synctv_core::{
     cache::{CacheInvalidationService, InvalidationMessage},
     models::{RoomId, UserId},
 };
-use testcontainers::core::ImageExt;
-use testcontainers::runners::AsyncRunner;
+use testcontainers::ContainerAsync;
+use testcontainers_modules::postgres::Postgres;
 use testcontainers_modules::redis::Redis;
+use testcontainers::runners::AsyncRunner;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
@@ -21,7 +22,6 @@ const REDIS_VERSION: &str = "7-alpine";
 
 async fn start_redis() -> (testcontainers::ContainerAsync<Redis>, String) {
     let container = Redis::default()
-        .with_tag(REDIS_VERSION)
         .start()
         .await
         .expect("Failed to start Redis");
@@ -399,14 +399,11 @@ async fn test_cache_invalidation_before_commit() {
         service::auth::{JwtService, BruteForceProtection},
     };
     use sqlx::PgPool;
-    use testcontainers_modules::postgres::Postgres;
-
-    // Start PostgreSQL
+        // Start PostgreSQL
     let postgres = Postgres::default()
         .with_db_name("synctv_test")
         .with_user("synctv")
         .with_password("synctv_test")
-        .with_tag("16-alpine")
         .start()
         .await
         .expect("Failed to start Postgres container");
@@ -552,14 +549,11 @@ async fn test_cache_invalidation_rollback_safety() {
         service::auth::{JwtService, BruteForceProtection},
     };
     use sqlx::{PgPool, Transaction};
-    use testcontainers_modules::postgres::Postgres;
-
-    // Start PostgreSQL
+        // Start PostgreSQL
     let postgres = Postgres::default()
         .with_db_name("synctv_test")
         .with_user("synctv")
         .with_password("synctv_test")
-        .with_tag("16-alpine")
         .start()
         .await
         .expect("Failed to start Postgres container");

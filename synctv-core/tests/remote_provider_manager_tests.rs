@@ -16,11 +16,10 @@ use synctv_core::{
 use sqlx::PgPool;
 use std::sync::Arc;
 use std::time::Duration;
+use testcontainers::runners::AsyncRunner;
 
 // Test utilities
 
-const POSTGRES_VERSION: &str = "16-alpine";
-const REDIS_VERSION: &str = "7-alpine";
 
 /// Test infrastructure with PostgreSQL and Redis
 struct TestInfra {
@@ -35,24 +34,16 @@ struct TestInfra {
 
 impl TestInfra {
     async fn new() -> Self {
-        use testcontainers::core::ImageExt;
-        use testcontainers::runners::AsyncRunner;
+        // Start containers
+        let pg_container = testcontainers_modules::postgres::Postgres::default()
+            .start()
+            .await
+            .expect("Failed to start Postgres");
+        let redis_container = testcontainers_modules::redis::Redis::default()
+            .start()
+            .await
+            .expect("Failed to start Redis");
 
-        // Start containers in parallel
-        let (pg_container, redis_container) = tokio::join!(
-            testcontainers_modules::postgres::Postgres::default()
-                .with_db_name("synctv_test")
-                .with_user("synctv")
-                .with_password("synctv_test")
-                .with_tag(POSTGRES_VERSION)
-                .start(),
-            testcontainers_modules::redis::Redis::default()
-                .with_tag(REDIS_VERSION)
-                .start(),
-        );
-
-        let pg_container = pg_container.expect("Failed to start Postgres");
-        let redis_container = redis_container.expect("Failed to start Redis");
 
         // Get mapped ports
         let pg_host = pg_container.get_host().await.expect("Failed to get Postgres host");

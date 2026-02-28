@@ -6,7 +6,6 @@
 //! Run with: cargo test --test redis_cache_l2_tests
 
 use synctv_core::cache::{CacheL2Backend, RedisCacheL2};
-use testcontainers::core::ImageExt;
 use testcontainers::runners::AsyncRunner;
 use testcontainers_modules::redis::Redis;
 
@@ -14,7 +13,6 @@ const REDIS_VERSION: &str = "7-alpine";
 
 async fn start_redis() -> (testcontainers::ContainerAsync<Redis>, redis::aio::ConnectionManager) {
     let container = Redis::default()
-        .with_tag(REDIS_VERSION)
         .start()
         .await
         .expect("Failed to start Redis");

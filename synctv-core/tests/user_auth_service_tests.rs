@@ -10,6 +10,7 @@
 
 use std::sync::Arc;
 
+use synctv_core_testing::{create_test_pool, create_test_jwt_service};
 use synctv_core::{
     cache::{KeyBuilder, NoopCacheL2, UsernameCache},
     config::PasswordComplexityConfig,
@@ -22,12 +23,6 @@ use synctv_core::{
     Error,
 };
 use sqlx::PgPool;
-use testcontainers::core::ImageExt;
-use testcontainers::runners::AsyncRunner;
-use testcontainers::ContainerAsync;
-use testcontainers_modules::postgres::Postgres;
-
-const POSTGRES_VERSION: &str = "16-alpine";
 const JWT_SECRET: &str = "test-secret-key-for-user-auth-service-tests-long-enough-1234567890";
 
 fn create_jwt_service() -> JwtService {
@@ -65,36 +60,6 @@ fn create_user_service_with_email_verification(pool: PgPool) -> UserService {
     let mut service = create_user_service(pool);
     service.set_email_verification_required(true);
     service
-}
-
-async fn create_test_pool() -> (ContainerAsync<Postgres>, PgPool) {
-    let postgres = Postgres::default()
-        .with_db_name("synctv_test")
-        .with_user("synctv")
-        .with_password("synctv_test")
-        .with_tag(POSTGRES_VERSION)
-        .start()
-        .await
-        .expect("Failed to start Postgres container");
-
-    let connection_string = format!(
-        "postgresql://synctv:synctv_test@127.0.0.1:{}/synctv_test",
-        postgres
-            .get_host_port_ipv4(5432)
-            .await
-            .expect("Failed to get port")
-    );
-
-    let pool = PgPool::connect(&connection_string)
-        .await
-        .expect("Failed to create pool");
-
-    sqlx::migrate!("../migrations")
-        .run(&pool)
-        .await
-        .expect("Failed to run migrations");
-
-    (postgres, pool)
 }
 
 // ============================================================================

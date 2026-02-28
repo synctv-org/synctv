@@ -5,6 +5,7 @@
 //!
 //! Run with: cargo test -p synctv-core --test notification_repository_tests
 
+use synctv_core_testing::{create_test_pool, create_test_jwt_service};
 use synctv_core::{
     models::{
         UserId, User, UserRole, UserStatus,
@@ -14,43 +15,6 @@ use synctv_core::{
 };
 use chrono::{Utc, Duration};
 use sqlx::PgPool;
-use testcontainers::core::ImageExt;
-use testcontainers::runners::AsyncRunner;
-use testcontainers::ContainerAsync;
-use testcontainers_modules::postgres::Postgres;
-
-const POSTGRES_VERSION: &str = "16-alpine";
-
-async fn create_test_pool() -> (ContainerAsync<Postgres>, PgPool) {
-    let postgres = Postgres::default()
-        .with_db_name("synctv_test")
-        .with_user("synctv")
-        .with_password("synctv_test")
-        .with_tag(POSTGRES_VERSION)
-        .start()
-        .await
-        .expect("Failed to start Postgres container");
-
-    let connection_string = format!(
-        "postgresql://synctv:synctv_test@127.0.0.1:{}/synctv_test",
-        postgres
-            .get_host_port_ipv4(5432)
-            .await
-            .expect("Failed to get port")
-    );
-
-    let pool = PgPool::connect(&connection_string)
-        .await
-        .expect("Failed to create pool");
-
-    sqlx::migrate!("../migrations")
-        .run(&pool)
-        .await
-        .expect("Failed to run migrations");
-
-    (postgres, pool)
-}
-
 fn make_user(username: &str) -> User {
     let now = Utc::now();
     User {

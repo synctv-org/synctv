@@ -1,4 +1,4 @@
-//! PostgreSQL test container helpers
+//! `PostgreSQL` test container helpers
 
 use sqlx::PgPool;
 use testcontainers::core::ImageExt;
@@ -6,16 +6,16 @@ use testcontainers::runners::AsyncRunner;
 use testcontainers::ContainerAsync;
 use testcontainers_modules::postgres::Postgres;
 
-/// Default PostgreSQL version for test containers
+/// Default `PostgreSQL` version for test containers
 pub const POSTGRES_VERSION: &str = "16-alpine";
 
-/// Type alias for PostgreSQL test container
+/// Type alias for `PostgreSQL` test container
 pub type TestContainer = ContainerAsync<Postgres>;
 
-/// Creates a PostgreSQL test container and connection pool
+/// Creates a `PostgreSQL` test container and connection pool
 ///
 /// This function:
-/// 1. Starts a PostgreSQL Docker container
+/// 1. Starts a `PostgreSQL` Docker container
 /// 2. Creates a connection pool
 /// 3. Runs database migrations
 ///
@@ -63,7 +63,7 @@ pub async fn create_test_pool() -> (TestContainer, PgPool) {
     (postgres, pool)
 }
 
-/// Creates a PostgreSQL test pool with a custom database name
+/// Creates a `PostgreSQL` test pool with a custom database name
 ///
 /// # Arguments
 ///

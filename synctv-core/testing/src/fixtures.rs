@@ -34,7 +34,7 @@ impl Default for TestUser {
 }
 
 impl TestUser {
-    /// Creates a new TestUser builder with default values
+    /// Creates a new `TestUser` builder with default values
     pub fn new() -> Self {
         Self {
             username: format!("test_user_{}", nanoid::nanoid!(10)),
@@ -65,19 +65,22 @@ impl TestUser {
     }
 
     /// Sets the user role
-    pub fn with_role(mut self, role: UserRole) -> Self {
+    #[must_use] 
+    pub const fn with_role(mut self, role: UserRole) -> Self {
         self.role = role;
         self
     }
 
     /// Sets the user status
-    pub fn with_status(mut self, status: UserStatus) -> Self {
+    #[must_use] 
+    pub const fn with_status(mut self, status: UserStatus) -> Self {
         self.status = status;
         self
     }
 
     /// Sets email verification status
-    pub fn with_email_verified(mut self, verified: bool) -> Self {
+    #[must_use] 
+    pub const fn with_email_verified(mut self, verified: bool) -> Self {
         self.email_verified = verified;
         self
     }
@@ -86,11 +89,12 @@ impl TestUser {
     ///
     /// Note: This is a synchronous method for password hashing.
     /// In async tests, use `build_async` instead.
+    #[must_use] 
     pub fn build(self) -> User {
         let password_hash = if let Some(pwd) = &self.password {
             // Use a simple hash for sync tests
             // For async tests, use build_async()
-            format!("hashed_{}", pwd)
+            format!("hashed_{pwd}")
         } else {
             "default_hash".to_string()
         };
@@ -175,7 +179,7 @@ impl Default for TestRoom {
 }
 
 impl TestRoom {
-    /// Creates a new TestRoom builder with default values
+    /// Creates a new `TestRoom` builder with default values
     pub fn new() -> Self {
         Self {
             name: format!("Test Room {}", nanoid::nanoid!(6)),
@@ -192,13 +196,15 @@ impl TestRoom {
     }
 
     /// Sets the creator user ID
+    #[must_use] 
     pub fn with_creator(mut self, created_by: UserId) -> Self {
         self.created_by = created_by;
         self
     }
 
     /// Sets the room status
-    pub fn with_status(mut self, status: synctv_core::models::RoomStatus) -> Self {
+    #[must_use] 
+    pub const fn with_status(mut self, status: synctv_core::models::RoomStatus) -> Self {
         self.status = status;
         self
     }
@@ -210,6 +216,7 @@ impl TestRoom {
     }
 
     /// Builds the Room model
+    #[must_use] 
     pub fn build(self) -> Room {
         let now = Utc::now();
         Room {

@@ -126,9 +126,9 @@ pub mod redis {
     pub const POOL_SIZE: u32 = 10;
 }
 
-/// PostgreSQL test constants
+/// `PostgreSQL` test constants
 pub mod postgres {
-    /// Default PostgreSQL port for testing
+    /// Default `PostgreSQL` port for testing
     pub const DEFAULT_PORT: u16 = 5432;
 
     /// Connection pool size for tests

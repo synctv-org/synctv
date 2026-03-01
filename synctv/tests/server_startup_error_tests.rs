@@ -197,8 +197,16 @@ async fn test_full_startup_sequence_pattern() {
     let http_startup = http_result.unwrap().unwrap();
     let grpc_startup = grpc_result.unwrap().unwrap();
 
-    assert!(http_startup.is_ok(), "HTTP startup should succeed: {:?}", http_startup);
-    assert!(grpc_startup.is_ok(), "gRPC startup should succeed: {:?}", grpc_startup);
+    assert!(
+        http_startup.is_ok(),
+        "HTTP startup should succeed: {:?}",
+        http_startup
+    );
+    assert!(
+        grpc_startup.is_ok(),
+        "gRPC startup should succeed: {:?}",
+        grpc_startup
+    );
 
     // Clean up
     let _ = http_handle.await;
@@ -276,12 +284,7 @@ async fn test_grpc_pre_binding_detects_port_conflict() {
 /// Test that gRPC address parsing rejects invalid addresses.
 #[test]
 fn test_grpc_server_address_parsing_rejects_invalid() {
-    let invalid_addresses = vec![
-        "not an address",
-        "256.256.256.256:50051",
-        ":invalid",
-        "",
-    ];
+    let invalid_addresses = vec!["not an address", "256.256.256.256:50051", ":invalid", ""];
 
     for addr in invalid_addresses {
         let result: Result<SocketAddr, _> = addr.parse();

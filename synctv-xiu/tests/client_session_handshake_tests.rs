@@ -16,8 +16,7 @@ use tokio::time::{timeout, Instant};
 
 use synctv_xiu::bytesio::bytesio::{TNetIO, TcpIO};
 use synctv_xiu::rtmp::handshake::{
-    define::ClientHandshakeState,
-    handshake_client::SimpleHandshakeClient,
+    define::ClientHandshakeState, handshake_client::SimpleHandshakeClient,
 };
 use synctv_xiu::rtmp::session::errors::{SessionError, SessionErrorValue};
 

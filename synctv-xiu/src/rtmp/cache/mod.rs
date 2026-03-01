@@ -108,11 +108,7 @@ impl SplitCache {
 
     /// Save audio data (high frequency operation).
     /// Uses separate locks for audio_seq and gops to minimize contention.
-    pub fn save_audio_data(
-        &self,
-        chunk_body: &BytesMut,
-        timestamp: u32,
-    ) -> Result<(), CacheError> {
+    pub fn save_audio_data(&self, chunk_body: &BytesMut, timestamp: u32) -> Result<(), CacheError> {
         // Save to GOP cache first (most frequent operation)
         let channel_data = FrameData::Audio {
             timestamp,
@@ -199,11 +195,7 @@ impl SplitCache {
 
     /// Save video data (high frequency operation).
     /// Uses separate locks for video_seq and gops to minimize contention.
-    pub fn save_video_data(
-        &self,
-        chunk_body: &BytesMut,
-        timestamp: u32,
-    ) -> Result<(), CacheError> {
+    pub fn save_video_data(&self, chunk_body: &BytesMut, timestamp: u32) -> Result<(), CacheError> {
         // Parse header first (before acquiring GOP lock)
         let mut reader = BytesReader::new(chunk_body.clone());
         let tag_header = VideoTagHeader::unmarshal(&mut reader)?;
@@ -214,7 +206,9 @@ impl SplitCache {
             timestamp,
             data: bytes::Bytes::copy_from_slice(chunk_body),
         };
-        self.gops.write().save_frame_data(channel_data, is_key_frame);
+        self.gops
+            .write()
+            .save_frame_data(channel_data, is_key_frame);
 
         // Update video sequence header if this is an AVC config (infrequent)
         if is_key_frame && tag_header.avc_packet_type == define::avc_packet_type::AVC_SEQHDR {

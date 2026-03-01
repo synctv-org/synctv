@@ -313,7 +313,11 @@ async fn get_settings_group(
 ) -> AppResult<Json<admin::GetSettingsGroupResponse>> {
     let api = require_admin_api(&state)?;
     let resp = api
-        .get_settings_group(admin::GetSettingsGroupRequest { group }, &auth.user_id, &rctx.0)
+        .get_settings_group(
+            admin::GetSettingsGroupRequest { group },
+            &auth.user_id,
+            &rctx.0,
+        )
         .await
         .map_err(admin_err_to_app_error)?;
     Ok(Json(resp))

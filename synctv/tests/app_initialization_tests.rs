@@ -6,10 +6,10 @@
 
 #![allow(clippy::unwrap_used)]
 
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
-use std::pin::Pin;
-use std::future::Future;
 
 use tokio_util::sync::CancellationToken;
 
@@ -303,7 +303,10 @@ async fn test_shutdown_order() {
     assert!(final_order.contains(&"hook_run"), "Hook should run");
 
     // Verify relative order
-    let task_idx = final_order.iter().position(|&x| x == "task_completed").unwrap();
+    let task_idx = final_order
+        .iter()
+        .position(|&x| x == "task_completed")
+        .unwrap();
     let hook_idx = final_order.iter().position(|&x| x == "hook_run").unwrap();
 
     assert!(
@@ -498,17 +501,11 @@ mod config_initialization_tests {
         config.jwt.secret = String::new();
 
         let result = config.validate();
-        assert!(
-            result.is_err(),
-            "Empty JWT secret should fail validation"
-        );
+        assert!(result.is_err(), "Empty JWT secret should fail validation");
 
         let errors = result.unwrap_err();
         let has_jwt_error = errors.iter().any(|e| e.contains("JWT secret"));
-        assert!(
-            has_jwt_error,
-            "Error should mention JWT secret: {errors:?}"
-        );
+        assert!(has_jwt_error, "Error should mention JWT secret: {errors:?}");
     }
 
     /// Test that JWT secret must not be the default value
@@ -518,17 +515,11 @@ mod config_initialization_tests {
         config.jwt.secret = "change-me-in-production".to_string();
 
         let result = config.validate();
-        assert!(
-            result.is_err(),
-            "Default JWT secret should fail validation"
-        );
+        assert!(result.is_err(), "Default JWT secret should fail validation");
 
         let errors = result.unwrap_err();
         let has_jwt_error = errors.iter().any(|e| e.contains("JWT secret"));
-        assert!(
-            has_jwt_error,
-            "Error should mention JWT secret: {errors:?}"
-        );
+        assert!(has_jwt_error, "Error should mention JWT secret: {errors:?}");
     }
 
     /// Test that valid cluster config passes validation
@@ -564,16 +555,16 @@ mod node_id_tests {
 
         for _ in 0..100 {
             // We simulate the uniqueness property
-            let id = format!(
-                "test_{}-{}",
-                std::process::id(),
-                nanoid::nanoid!(6)
-            );
+            let id = format!("test_{}-{}", std::process::id(), nanoid::nanoid!(6));
             node_ids.insert(id);
         }
 
         // All IDs should be unique
-        assert_eq!(node_ids.len(), 100, "All generated node IDs should be unique");
+        assert_eq!(
+            node_ids.len(),
+            100,
+            "All generated node IDs should be unique"
+        );
     }
 
     /// Test that POD_NAME is preferred when set
@@ -600,10 +591,7 @@ mod node_id_tests {
 
         for id in sample_node_ids {
             // Redis keys can contain most characters, but we avoid spaces and newlines
-            assert!(
-                !id.contains(' '),
-                "Node ID should not contain spaces: {id}"
-            );
+            assert!(!id.contains(' '), "Node ID should not contain spaces: {id}");
             assert!(
                 !id.contains('\n'),
                 "Node ID should not contain newlines: {id}"

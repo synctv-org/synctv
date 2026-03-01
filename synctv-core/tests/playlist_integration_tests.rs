@@ -645,7 +645,12 @@ async fn test_count_by_room() {
     // Add more playlists
     for i in 0..10 {
         playlist_repo
-            .create(&make_playlist(&room.id, &format!("Playlist {}", i), Some(&root.id), i))
+            .create(&make_playlist(
+                &room.id,
+                &format!("Playlist {}", i),
+                Some(&root.id),
+                i,
+            ))
             .await
             .unwrap();
     }
@@ -679,7 +684,12 @@ async fn test_get_by_room_paginated_first_page() {
     // Create 5 children
     for i in 0..5 {
         playlist_repo
-            .create(&make_playlist(&room.id, &format!("Playlist {}", i), Some(&root.id), i))
+            .create(&make_playlist(
+                &room.id,
+                &format!("Playlist {}", i),
+                Some(&root.id),
+                i,
+            ))
             .await
             .unwrap();
     }
@@ -718,7 +728,12 @@ async fn test_get_by_room_paginated_second_page() {
     // Create 5 children
     for i in 0..5 {
         playlist_repo
-            .create(&make_playlist(&room.id, &format!("Playlist {}", i), Some(&root.id), i))
+            .create(&make_playlist(
+                &room.id,
+                &format!("Playlist {}", i),
+                Some(&root.id),
+                i,
+            ))
             .await
             .unwrap();
     }
@@ -758,7 +773,12 @@ async fn test_get_by_room_paginated_last_partial_page() {
     // Create 5 children (total 6)
     for i in 0..5 {
         playlist_repo
-            .create(&make_playlist(&room.id, &format!("Playlist {}", i), Some(&root.id), i))
+            .create(&make_playlist(
+                &room.id,
+                &format!("Playlist {}", i),
+                Some(&root.id),
+                i,
+            ))
             .await
             .unwrap();
     }
@@ -798,7 +818,12 @@ async fn test_get_by_room_paginated_large_dataset() {
     // Create 149 children (total 150)
     for i in 0..149 {
         playlist_repo
-            .create(&make_playlist(&room.id, &format!("Playlist {:03}", i), Some(&root.id), i))
+            .create(&make_playlist(
+                &room.id,
+                &format!("Playlist {:03}", i),
+                Some(&root.id),
+                i,
+            ))
             .await
             .unwrap();
     }
@@ -886,7 +911,12 @@ async fn test_get_by_room_paginated_respects_page_size_limit() {
     // Create 150 children
     for i in 0..150 {
         playlist_repo
-            .create(&make_playlist(&room.id, &format!("Playlist {:03}", i), Some(&root.id), i))
+            .create(&make_playlist(
+                &room.id,
+                &format!("Playlist {:03}", i),
+                Some(&root.id),
+                i,
+            ))
             .await
             .unwrap();
     }

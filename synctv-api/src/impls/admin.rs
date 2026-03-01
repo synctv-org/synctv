@@ -730,19 +730,23 @@ impl AdminApiImpl {
             .await
             .map_err(ApiError::from)?;
 
-        if let Err(e) = self.audit_service.log(
-            admin_user_id.as_str().to_string(),
-            admin_user.username.clone(),
-            synctv_core::service::AuditAction::SettingsViewed,
-            synctv_core::service::AuditTargetType::Settings,
-            None,
-            serde_json::json!({
-                "group_count": group_names.len(),
-                "groups": group_names,
-            }),
-            ctx.ip_address.clone(),
-            ctx.user_agent.clone(),
-        ).await {
+        if let Err(e) = self
+            .audit_service
+            .log(
+                admin_user_id.as_str().to_string(),
+                admin_user.username.clone(),
+                synctv_core::service::AuditAction::SettingsViewed,
+                synctv_core::service::AuditTargetType::Settings,
+                None,
+                serde_json::json!({
+                    "group_count": group_names.len(),
+                    "groups": group_names,
+                }),
+                ctx.ip_address.clone(),
+                ctx.user_agent.clone(),
+            )
+            .await
+        {
             tracing::error!("Failed to write settings_viewed audit log: {}", e);
         }
 
@@ -771,18 +775,22 @@ impl AdminApiImpl {
             .await
             .map_err(ApiError::from)?;
 
-        if let Err(e) = self.audit_service.log(
-            admin_user_id.as_str().to_string(),
-            admin_user.username.clone(),
-            synctv_core::service::AuditAction::SettingsGroupViewed,
-            synctv_core::service::AuditTargetType::Settings,
-            None,
-            serde_json::json!({
-                "group": group_name,
-            }),
-            ctx.ip_address.clone(),
-            ctx.user_agent.clone(),
-        ).await {
+        if let Err(e) = self
+            .audit_service
+            .log(
+                admin_user_id.as_str().to_string(),
+                admin_user.username.clone(),
+                synctv_core::service::AuditAction::SettingsGroupViewed,
+                synctv_core::service::AuditTargetType::Settings,
+                None,
+                serde_json::json!({
+                    "group": group_name,
+                }),
+                ctx.ip_address.clone(),
+                ctx.user_agent.clone(),
+            )
+            .await
+        {
             tracing::error!("Failed to write settings_group_viewed audit log: {}", e);
         }
 

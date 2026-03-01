@@ -586,7 +586,12 @@ impl EmbyClient {
             let body = body.clone();
             let client = client.clone();
             async move {
-                let resp = client.post(&url).headers(headers).json(&body).send().await?;
+                let resp = client
+                    .post(&url)
+                    .headers(headers)
+                    .json(&body)
+                    .send()
+                    .await?;
                 check_response(resp).await?;
                 Ok(())
             }
@@ -621,7 +626,12 @@ impl EmbyClient {
             let body = body.clone();
             let client = client.clone();
             async move {
-                let resp = client.post(&url).headers(headers).json(&body).send().await?;
+                let resp = client
+                    .post(&url)
+                    .headers(headers)
+                    .json(&body)
+                    .send()
+                    .await?;
                 check_response(resp).await?;
                 Ok(())
             }
@@ -663,7 +673,12 @@ impl EmbyClient {
             let body = body.clone();
             let client = client.clone();
             async move {
-                let resp = client.post(&url).headers(headers).json(&body).send().await?;
+                let resp = client
+                    .post(&url)
+                    .headers(headers)
+                    .json(&body)
+                    .send()
+                    .await?;
                 check_response(resp).await?;
                 Ok(())
             }

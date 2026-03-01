@@ -755,7 +755,7 @@ async fn test_settings_viewed_audit_log() {
     // Log a settings view event
     service
         .log(
-            "settings_viewer".to_string(),
+            "set_viewer".to_string(),
             "admin_user".to_string(),
             AuditAction::SettingsViewed,
             AuditTargetType::Settings,
@@ -770,11 +770,17 @@ async fn test_settings_viewed_audit_log() {
         .await
         .expect("Settings viewed log should succeed");
 
-    let row: (String, String, Option<String>, Option<String>, serde_json::Value) = sqlx::query_as(
+    let row: (
+        String,
+        String,
+        Option<String>,
+        Option<String>,
+        serde_json::Value,
+    ) = sqlx::query_as(
         r"
         SELECT action, target_type, ip_address, user_agent, details
         FROM audit_logs
-        WHERE actor_id = 'settings_viewer'
+        WHERE actor_id = 'set_viewer'
         ",
     )
     .fetch_one(&pool)

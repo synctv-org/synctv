@@ -13,9 +13,9 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 // Import the actual SplitCache from the library
+use bytes::BytesMut;
 use synctv_xiu::rtmp::cache::SplitCache;
 use synctv_xiu::streamhub::define::FrameData;
-use bytes::BytesMut;
 
 // ==================================================================
 // Simulated Split Lock Architecture (for performance baseline)
@@ -248,7 +248,10 @@ fn test_no_deadlock_under_contention() {
             break;
         }
         if start.elapsed() > timeout {
-            panic!("Deadlock detected: test did not complete within {:?}", timeout);
+            panic!(
+                "Deadlock detected: test did not complete within {:?}",
+                timeout
+            );
         }
         thread::sleep(Duration::from_millis(100));
     }
@@ -360,7 +363,10 @@ fn test_split_cache_metadata() {
 
     // Retrieve metadata
     let meta = cache.get_metadata();
-    assert!(meta.is_some(), "Metadata should be saved for valid onMetaData");
+    assert!(
+        meta.is_some(),
+        "Metadata should be saved for valid onMetaData"
+    );
     if let Some(FrameData::MetaData { timestamp, .. }) = meta {
         assert_eq!(timestamp, 1000);
     } else {

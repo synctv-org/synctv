@@ -41,22 +41,21 @@ impl MockMigrationLock {
     }
 
     fn was_acquire_called(&self) -> bool {
-        self.acquire_called.load(std::sync::atomic::Ordering::SeqCst)
+        self.acquire_called
+            .load(std::sync::atomic::Ordering::SeqCst)
     }
 
     fn was_release_called(&self) -> bool {
-        self.release_called.load(std::sync::atomic::Ordering::SeqCst)
+        self.release_called
+            .load(std::sync::atomic::Ordering::SeqCst)
     }
 }
 
 #[async_trait::async_trait]
 impl synctv_core::service::MigrationLock for MockMigrationLock {
-    async fn acquire(
-        &self,
-        _key: &str,
-        _ttl_secs: u64,
-    ) -> anyhow::Result<Option<String>> {
-        self.acquire_called.store(true, std::sync::atomic::Ordering::SeqCst);
+    async fn acquire(&self, _key: &str, _ttl_secs: u64) -> anyhow::Result<Option<String>> {
+        self.acquire_called
+            .store(true, std::sync::atomic::Ordering::SeqCst);
         if self.acquire_succeeds {
             Ok(Some(self.lock_value.clone()))
         } else {
@@ -65,7 +64,8 @@ impl synctv_core::service::MigrationLock for MockMigrationLock {
     }
 
     async fn release(&self, _key: &str, _lock_value: &str) -> anyhow::Result<bool> {
-        self.release_called.store(true, std::sync::atomic::Ordering::SeqCst);
+        self.release_called
+            .store(true, std::sync::atomic::Ordering::SeqCst);
         Ok(self.release_succeeds)
     }
 }
@@ -214,8 +214,7 @@ mod migration_constants_tests {
         const PG_ADVISORY_LOCK_KEY_DISTRIBUTED: i64 = 0x73796E63_74766D69_u64 as i64;
 
         assert_eq!(
-            PG_ADVISORY_LOCK_KEY_MIGRATIONS,
-            PG_ADVISORY_LOCK_KEY_DISTRIBUTED,
+            PG_ADVISORY_LOCK_KEY_MIGRATIONS, PG_ADVISORY_LOCK_KEY_DISTRIBUTED,
             "PG advisory lock keys must be consistent across modules"
         );
 
@@ -283,7 +282,10 @@ mod pg_advisory_lock_backoff_tests {
             }
         }
 
-        assert!(total_wait <= max_wait, "Total wait should not exceed max wait");
+        assert!(
+            total_wait <= max_wait,
+            "Total wait should not exceed max wait"
+        );
     }
 }
 
@@ -310,9 +312,7 @@ mod migration_state_tests {
         assert!(!all_applied);
 
         let only_applied = vec![20240101000000_i64, 20240102000000];
-        let all_applied = only_applied
-            .iter()
-            .all(|v| applied_versions.contains(v));
+        let all_applied = only_applied.iter().all(|v| applied_versions.contains(v));
 
         assert!(all_applied);
     }
@@ -324,12 +324,16 @@ mod migration_state_tests {
         let pending_versions: Vec<i64> = vec![];
 
         // Empty pending should be "all applied"
-        let all_applied = pending_versions.iter().all(|v| applied_versions.contains(v));
+        let all_applied = pending_versions
+            .iter()
+            .all(|v| applied_versions.contains(v));
         assert!(all_applied);
 
         // But with pending migrations, should be false
         let pending_versions = vec![20240101000000_i64];
-        let all_applied = pending_versions.iter().all(|v| applied_versions.contains(v));
+        let all_applied = pending_versions
+            .iter()
+            .all(|v| applied_versions.contains(v));
         assert!(!all_applied);
     }
 }

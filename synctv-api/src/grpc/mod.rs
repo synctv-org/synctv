@@ -152,8 +152,8 @@ use crate::proto::client::{
     public_service_server::PublicServiceServer, room_service_server::RoomServiceServer,
     user_service_server::UserServiceServer,
 };
-use tonic::transport::Server;
 use tokio_stream::wrappers::TcpListenerStream;
+use tonic::transport::Server;
 
 use std::sync::Arc;
 use synctv_cluster::sync::{ClusterManager, ConnectionManager, PublishRequest};

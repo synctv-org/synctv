@@ -2,9 +2,9 @@
 
 use std::collections::HashMap;
 use std::fmt::Write;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::sync::LazyLock;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Duration;
 
 use futures_util::{SinkExt, StreamExt};
@@ -90,7 +90,10 @@ const WBI_KEY_TTL: Duration = Duration::from_mins(30);
 /// Get a valid cached WBI key if available and not expired.
 async fn get_valid_wbi_key() -> Option<String> {
     let guard = WBI_KEY_CACHE.lock().await;
-    guard.as_ref().filter(|k| k.expires_at > std::time::Instant::now()).map(|k| k.mixin_key.clone())
+    guard
+        .as_ref()
+        .filter(|k| k.expires_at > std::time::Instant::now())
+        .map(|k| k.mixin_key.clone())
 }
 
 /// Store a new WBI key in the cache with expiration.
@@ -106,7 +109,9 @@ async fn set_wbi_key(mixin_key: String) {
 /// Uses compare_exchange for atomic coordination.
 fn try_claim_refresh_lock() -> bool {
     // Try to transition from 0 to 1
-    WBI_REFRESH_IN_PROGRESS.compare_exchange(0, 1, Ordering::AcqRel, Ordering::Acquire).is_ok()
+    WBI_REFRESH_IN_PROGRESS
+        .compare_exchange(0, 1, Ordering::AcqRel, Ordering::Acquire)
+        .is_ok()
 }
 
 /// Release the refresh lock after refresh completes.
@@ -1833,9 +1838,7 @@ impl LiveDanmakuConnection {
     /// Check if the heartbeat loop is currently running
     pub async fn is_heartbeat_running(&self) -> bool {
         let handle_guard = self.heartbeat_handle.lock().await;
-        handle_guard
-            .as_ref()
-            .is_some_and(|h| !h.is_finished())
+        handle_guard.as_ref().is_some_and(|h| !h.is_finished())
     }
 }
 
@@ -3183,9 +3186,15 @@ mod tests {
     fn test_refresh_lock_basic() {
         // Test that the refresh lock can be claimed and released
         assert!(try_claim_refresh_lock(), "First claim should succeed");
-        assert!(!try_claim_refresh_lock(), "Second claim should fail while lock is held");
+        assert!(
+            !try_claim_refresh_lock(),
+            "Second claim should fail while lock is held"
+        );
         release_refresh_lock();
-        assert!(try_claim_refresh_lock(), "Claim should succeed after release");
+        assert!(
+            try_claim_refresh_lock(),
+            "Claim should succeed after release"
+        );
         release_refresh_lock();
     }
 
@@ -3254,7 +3263,10 @@ mod tests {
         }
 
         let results = futures_util::future::join_all(handles).await;
-        let successful_claims = results.iter().filter(|r| r.is_ok() && *r.as_ref().unwrap()).count();
+        let successful_claims = results
+            .iter()
+            .filter(|r| r.is_ok() && *r.as_ref().unwrap())
+            .count();
 
         // Only one task should have successfully claimed the lock at a time
         // Note: Due to timing, multiple tasks might succeed in sequence,

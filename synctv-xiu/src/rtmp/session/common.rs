@@ -263,8 +263,7 @@ impl Common {
         }
 
         // Save to GOP cache first (borrows data), then zero-copy into channel.
-        self.stream_handler
-            .save_video_data(data, *timestamp)?;
+        self.stream_handler.save_video_data(data, *timestamp)?;
 
         // Zero-copy: split+freeze avoids a full memcpy on the hot path.
         let channel_data = FrameData::Video {
@@ -308,8 +307,7 @@ impl Common {
         }
 
         // Save to GOP cache first (borrows data), then zero-copy into channel.
-        self.stream_handler
-            .save_audio_data(data, *timestamp)?;
+        self.stream_handler.save_audio_data(data, *timestamp)?;
 
         // Zero-copy: split+freeze avoids a full memcpy on the hot path.
         let channel_data = FrameData::Audio {
@@ -622,11 +620,7 @@ impl RtmpStreamHandler {
 
     /// Save video data to cache.
     /// Acquires write locks only on video_seq and gops, not on audio_seq or metadata.
-    pub fn save_video_data(
-        &self,
-        chunk_body: &BytesMut,
-        timestamp: u32,
-    ) -> Result<(), CacheError> {
+    pub fn save_video_data(&self, chunk_body: &BytesMut, timestamp: u32) -> Result<(), CacheError> {
         if let Some(cache) = &*self.cache.read() {
             cache.save_video_data(chunk_body, timestamp)?;
         }
@@ -635,11 +629,7 @@ impl RtmpStreamHandler {
 
     /// Save audio data to cache.
     /// Acquires write locks only on audio_seq and gops, not on video_seq or metadata.
-    pub fn save_audio_data(
-        &self,
-        chunk_body: &BytesMut,
-        timestamp: u32,
-    ) -> Result<(), CacheError> {
+    pub fn save_audio_data(&self, chunk_body: &BytesMut, timestamp: u32) -> Result<(), CacheError> {
         if let Some(cache) = &*self.cache.read() {
             cache.save_audio_data(chunk_body, timestamp)?;
         }

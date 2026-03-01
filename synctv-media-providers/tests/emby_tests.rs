@@ -631,7 +631,10 @@ async fn test_emby_logout_retries_on_5xx() {
 
     let client = EmbyClient::with_credentials(server.uri(), "token123", "user-uuid-123").unwrap();
     let result = client.logout().await;
-    assert!(result.is_ok(), "Logout should succeed after retry: {result:?}");
+    assert!(
+        result.is_ok(),
+        "Logout should succeed after retry: {result:?}"
+    );
 }
 
 /// Test that delete_active_encodings retries on 5xx server errors

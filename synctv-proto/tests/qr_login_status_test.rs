@@ -27,9 +27,15 @@ fn test_qr_login_status_values() {
 #[test]
 fn test_qr_login_status_from_i32() {
     // Prost uses try_from for i32 -> enum conversion
-    assert_eq!(QrLoginStatus::try_from(0).unwrap(), QrLoginStatus::Unspecified);
+    assert_eq!(
+        QrLoginStatus::try_from(0).unwrap(),
+        QrLoginStatus::Unspecified
+    );
     assert_eq!(QrLoginStatus::try_from(1).unwrap(), QrLoginStatus::Expired);
-    assert_eq!(QrLoginStatus::try_from(2).unwrap(), QrLoginStatus::NotScanned);
+    assert_eq!(
+        QrLoginStatus::try_from(2).unwrap(),
+        QrLoginStatus::NotScanned
+    );
     assert_eq!(QrLoginStatus::try_from(3).unwrap(), QrLoginStatus::Scanned);
     assert_eq!(QrLoginStatus::try_from(4).unwrap(), QrLoginStatus::Success);
 
@@ -41,21 +47,51 @@ fn test_qr_login_status_from_i32() {
 /// Test string name conversion
 #[test]
 fn test_qr_login_status_str_name() {
-    assert_eq!(QrLoginStatus::Unspecified.as_str_name(), "QR_LOGIN_STATUS_UNSPECIFIED");
-    assert_eq!(QrLoginStatus::Expired.as_str_name(), "QR_LOGIN_STATUS_EXPIRED");
-    assert_eq!(QrLoginStatus::NotScanned.as_str_name(), "QR_LOGIN_STATUS_NOT_SCANNED");
-    assert_eq!(QrLoginStatus::Scanned.as_str_name(), "QR_LOGIN_STATUS_SCANNED");
-    assert_eq!(QrLoginStatus::Success.as_str_name(), "QR_LOGIN_STATUS_SUCCESS");
+    assert_eq!(
+        QrLoginStatus::Unspecified.as_str_name(),
+        "QR_LOGIN_STATUS_UNSPECIFIED"
+    );
+    assert_eq!(
+        QrLoginStatus::Expired.as_str_name(),
+        "QR_LOGIN_STATUS_EXPIRED"
+    );
+    assert_eq!(
+        QrLoginStatus::NotScanned.as_str_name(),
+        "QR_LOGIN_STATUS_NOT_SCANNED"
+    );
+    assert_eq!(
+        QrLoginStatus::Scanned.as_str_name(),
+        "QR_LOGIN_STATUS_SCANNED"
+    );
+    assert_eq!(
+        QrLoginStatus::Success.as_str_name(),
+        "QR_LOGIN_STATUS_SUCCESS"
+    );
 }
 
 /// Test from_str_name conversion
 #[test]
 fn test_qr_login_status_from_str_name() {
-    assert_eq!(QrLoginStatus::from_str_name("QR_LOGIN_STATUS_UNSPECIFIED"), Some(QrLoginStatus::Unspecified));
-    assert_eq!(QrLoginStatus::from_str_name("QR_LOGIN_STATUS_EXPIRED"), Some(QrLoginStatus::Expired));
-    assert_eq!(QrLoginStatus::from_str_name("QR_LOGIN_STATUS_NOT_SCANNED"), Some(QrLoginStatus::NotScanned));
-    assert_eq!(QrLoginStatus::from_str_name("QR_LOGIN_STATUS_SCANNED"), Some(QrLoginStatus::Scanned));
-    assert_eq!(QrLoginStatus::from_str_name("QR_LOGIN_STATUS_SUCCESS"), Some(QrLoginStatus::Success));
+    assert_eq!(
+        QrLoginStatus::from_str_name("QR_LOGIN_STATUS_UNSPECIFIED"),
+        Some(QrLoginStatus::Unspecified)
+    );
+    assert_eq!(
+        QrLoginStatus::from_str_name("QR_LOGIN_STATUS_EXPIRED"),
+        Some(QrLoginStatus::Expired)
+    );
+    assert_eq!(
+        QrLoginStatus::from_str_name("QR_LOGIN_STATUS_NOT_SCANNED"),
+        Some(QrLoginStatus::NotScanned)
+    );
+    assert_eq!(
+        QrLoginStatus::from_str_name("QR_LOGIN_STATUS_SCANNED"),
+        Some(QrLoginStatus::Scanned)
+    );
+    assert_eq!(
+        QrLoginStatus::from_str_name("QR_LOGIN_STATUS_SUCCESS"),
+        Some(QrLoginStatus::Success)
+    );
     assert_eq!(QrLoginStatus::from_str_name("INVALID"), None);
 }
 

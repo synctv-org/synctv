@@ -17,9 +17,8 @@ use synctv_xiu::bytesio::bytesio::{NetType, TNetIO};
 use synctv_xiu::bytesio::bytesio_errors::BytesIOError;
 use synctv_xiu::rtmp::handshake::{
     define::{
-        ClientHandshakeState, RTMP_CLIENT_KEY_FIRST_HALF, RTMP_DIGEST_LENGTH,
+        ClientHandshakeState, ServerHandshakeState, RTMP_CLIENT_KEY_FIRST_HALF, RTMP_DIGEST_LENGTH,
         RTMP_HANDSHAKE_SIZE, RTMP_SERVER_KEY_FIRST_HALF, RTMP_VERSION,
-        ServerHandshakeState,
     },
     digest::DigestProcessor,
     errors::{DigestErrorValue, HandshakeError, HandshakeErrorValue},
@@ -73,10 +72,7 @@ impl TNetIO for MockNetIO {
         Ok(BytesMut::from(&self.read_data[start..end]))
     }
 
-    async fn read_timeout(
-        &mut self,
-        _duration: Duration,
-    ) -> Result<BytesMut, BytesIOError> {
+    async fn read_timeout(&mut self, _duration: Duration) -> Result<BytesMut, BytesIOError> {
         self.read().await
     }
 
@@ -633,10 +629,7 @@ mod timeout_tests {
 
         let elapsed = start.elapsed();
 
-        assert!(
-            read_result.is_err(),
-            "Expected timeout when server is slow"
-        );
+        assert!(read_result.is_err(), "Expected timeout when server is slow");
         assert!(
             elapsed < Duration::from_secs(6),
             "Timeout should occur within ~5 seconds"
@@ -736,4 +729,3 @@ mod integration_tests {
         assert!(result.is_ok(), "Handshake should succeed after fallback");
     }
 }
-

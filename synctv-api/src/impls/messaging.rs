@@ -771,7 +771,7 @@ impl StreamMessageHandler {
                                             title: title.clone(),
                                             content: content.clone(),
                                             data: data.to_string(),
-                                            timestamp: timestamp.timestamp_millis(),
+                                            timestamp: timestamp.timestamp(),
                                         },
                                     )),
                                 };
@@ -1484,7 +1484,7 @@ impl StreamMessageHandler {
                                                 title: title.clone(),
                                                 content: content.clone(),
                                                 data: data.to_string(),
-                                                timestamp: timestamp.timestamp_millis(),
+                                                timestamp: timestamp.timestamp(),
                                             },
                                         )),
                                     };
@@ -2379,7 +2379,7 @@ fn cluster_event_to_server_message(
                 user_id: user_id.as_str().to_string(),
                 username: username.clone(),
                 content: message.clone(),
-                timestamp: timestamp.timestamp_micros(),
+                timestamp: timestamp.timestamp(),
                 position: *position,
                 color: color.clone(),
             })),

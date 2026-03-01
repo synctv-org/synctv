@@ -427,7 +427,7 @@ mod tests {
             title: "Room Invitation".to_string(),
             content: "You have been invited to join a room".to_string(),
             data: r#"{"room_id":"room123","room_name":"Test Room"}"#.to_string(),
-            timestamp: 1_704_067_200_000, // 2024-01-01 00:00:00 UTC
+            timestamp: 1_704_067_200, // 2024-01-01 00:00:00 UTC (seconds)
         };
         let bytes = notification.encode_to_vec();
         let decoded = crate::client::UserNotification::decode(bytes.as_slice()).unwrap();
@@ -449,7 +449,7 @@ mod tests {
             title: "System Update".to_string(),
             content: "Server will restart in 10 minutes".to_string(),
             data: String::new(),
-            timestamp: 1_704_067_200_000,
+            timestamp: 1_704_067_200,
         };
 
         let server_msg = crate::client::ServerMessage {
@@ -523,6 +523,42 @@ mod tests {
                 panic!("Expected Error variant");
             }
         }
+    }
+
+    // === Timestamp Unit Consistency Tests ===
+
+    /// Verify that UserNotification.timestamp uses Unix seconds (not milliseconds).
+    /// This test ensures consistency with other timestamp fields in the proto.
+    /// A valid Unix timestamp in seconds for year 2024 should be around 1.7 billion,
+    /// while milliseconds would be around 1.7 trillion.
+    #[test]
+    fn notification_timestamp_uses_seconds_not_millis() {
+        // 2024-01-01 00:00:00 UTC in SECONDS
+        let timestamp_seconds = 1_704_067_200_i64;
+
+        let notification = crate::client::UserNotification {
+            notification_id: "test-id".to_string(),
+            notification_type: "system".to_string(),
+            title: "Test".to_string(),
+            content: "Test".to_string(),
+            data: String::new(),
+            timestamp: timestamp_seconds,
+        };
+
+        // Roundtrip encode/decode
+        let bytes = notification.encode_to_vec();
+        let decoded = crate::client::UserNotification::decode(bytes.as_slice()).unwrap();
+
+        // Verify the timestamp is preserved as seconds
+        assert_eq!(decoded.timestamp, timestamp_seconds);
+
+        // Sanity check: a second-based timestamp for 2024 should be < 2 billion
+        // A millisecond-based timestamp would be > 1 trillion
+        assert!(
+            decoded.timestamp < 2_000_000_000,
+            "Timestamp {} looks like milliseconds, expected seconds",
+            decoded.timestamp
+        );
     }
 
     // === Admin Proto Tests ===

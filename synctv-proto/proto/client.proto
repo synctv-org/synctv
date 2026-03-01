@@ -830,17 +830,17 @@ message ChatMessageReceive {
     string user_id = 3;
     string username = 4;
     string content = 5;
-    int64 timestamp = 6;
+    int64 timestamp = 6; // Unix timestamp (seconds)
     optional double position = 7; // Video position in seconds (for danmaku display)
     optional string color = 8; // Hex color for danmaku
 }
 
 message HeartbeatMessage {
-    int64 timestamp = 1;
+    int64 timestamp = 1; // Unix timestamp (seconds)
 }
 
 message HeartbeatAck {
-    int64 timestamp = 1;
+    int64 timestamp = 1; // Unix timestamp (seconds)
 }
 
 message PlaybackStateChanged {
@@ -890,7 +890,7 @@ message UserNotification {
     string title = 3; // Notification title for display
     string content = 4; // Notification content for display
     string data = 5; // JSON-encoded additional data (e.g., room_id, inviter_name for invitations)
-    int64 timestamp = 6; // Unix timestamp in milliseconds when notification was created
+    int64 timestamp = 6; // Unix timestamp (seconds) when notification was created
 }
 
 // Chat History

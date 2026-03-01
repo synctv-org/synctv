@@ -43,42 +43,34 @@ impl MetaData {
             Err(_) => return false,
         }
 
-        if values.len() < 2 {
+        if values.is_empty() {
             return false;
         }
 
         tracing::info!("metadata: {values:?}");
 
-        let mut is_metadata = false;
+        let first = match &values[0] {
+            Amf0ValueType::UTF8String(s) => s.as_str(),
+            _ => return false,
+        };
 
-        if let Amf0ValueType::UTF8String(str) = values.remove(0) {
-            if str == "@setDataFrame" || str == "onMetaData" {
-                is_metadata = true;
+        // RTMP metadata can be:
+        // 1. "@setDataFrame" followed by "onMetaData" (2 strings minimum)
+        // 2. "onMetaData" alone
+        match first {
+            "@setDataFrame" => {
+                // Must have at least 2 values and second must be "onMetaData"
+                if values.len() < 2 {
+                    return false;
+                }
+                match &values[1] {
+                    Amf0ValueType::UTF8String(s) => s == "onMetaData",
+                    _ => false,
+                }
             }
+            "onMetaData" => true,
+            _ => false,
         }
-
-        // match values.remove(0) {
-        //     Amf0ValueType::UTF8String(str) => {
-        //         if str == "@setDataFrame" || str == "onMetaData" {
-        //             is_metadata = true;
-        //         }
-        //     }
-        //     _ => {
-        //         //return false;
-        //     }
-        // }
-        // match values.remove(0) {
-        //     Amf0ValueType::UTF8String(str) => {
-        //         if str != "onMetaData" {
-        //             //return false;
-        //         }
-        //     }
-        //     _ => {
-        //         //return false;
-        //     }
-        // }
-
-        is_metadata
     }
 
     #[must_use]

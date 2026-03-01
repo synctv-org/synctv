@@ -544,25 +544,8 @@ pub async fn proxy_m3u8_and_rewrite(
     note = "Use `proxy_options_preflight_with_cors` with explicit origin list for security"
 )]
 #[allow(clippy::unused_async)]
-pub async fn proxy_options_preflight() -> impl IntoResponse {
-    (
-        StatusCode::NO_CONTENT,
-        [
-            ("Access-Control-Allow-Origin", "*"),
-            ("Access-Control-Allow-Methods", "GET, OPTIONS"),
-            (
-                "Access-Control-Allow-Headers",
-                "Authorization, Content-Type, Accept, Range",
-            ),
-            ("Access-Control-Max-Age", "86400"),
-            // Deprecation warning header to alert developers
-            ("Deprecation", "true"),
-            (
-                "X-Deprecated",
-                "Use proxy_options_preflight_with_cors with explicit CORS config",
-            ),
-        ],
-    )
+pub async fn proxy_options_preflight() -> Response {
+    build_deprecated_preflight_response()
 }
 
 // ------------------------------------------------------------------
@@ -626,9 +609,24 @@ impl RateLimiter {
     /// `false` if the limit has been exceeded.
     ///
     /// This method is thread-safe and can be called from multiple threads.
+    ///
+    /// Note: This method performs lazy cleanup of expired entries to prevent
+    /// memory leaks. Periodically, expired entries are removed from the internal
+    /// map.
     #[must_use]
     pub fn check(&self, ip: &str) -> bool {
+        use std::sync::atomic::{AtomicU64, Ordering};
+
         let now = std::time::Instant::now();
+
+        // Periodically cleanup expired entries to prevent memory leaks.
+        // Use an atomic counter to trigger cleanup every ~100 checks when map is large.
+        // This amortizes the cleanup cost across many operations.
+        static CHECK_COUNTER: AtomicU64 = AtomicU64::new(0);
+        let check_count = CHECK_COUNTER.fetch_add(1, Ordering::Relaxed);
+        if self.counters.len() > 100 && check_count % 100 == 0 {
+            self.cleanup_expired();
+        }
 
         // Try to get existing entry
         if let Some(mut entry) = self.counters.get_mut(ip) {
@@ -662,6 +660,23 @@ impl RateLimiter {
     pub fn get_count(&self, ip: &str) -> Option<usize> {
         self.counters.get(ip).map(|e| e.value().0)
     }
+
+    /// Get the total number of entries (for testing/debugging).
+    #[cfg(test)]
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.counters.len()
+    }
+
+    /// Remove expired entries from the counters.
+    ///
+    /// This is called lazily during check operations to prevent memory leaks.
+    fn cleanup_expired(&self) {
+        let now = std::time::Instant::now();
+        // Retain only entries that haven't expired
+        self.counters
+            .retain(|_, (_, window_start)| now.duration_since(*window_start) <= self.window);
+    }
 }
 
 /// Preflight handler with rate limiting based on source IP.
@@ -689,31 +704,10 @@ pub async fn proxy_options_preflight_rate_limited(
     let ip_key = client_ip.unwrap_or("unknown");
 
     if !limiter.check(ip_key) {
-        return Response::builder()
-            .status(StatusCode::TOO_MANY_REQUESTS)
-            .header("Content-Type", "text/plain")
-            .header("Retry-After", "60")
-            .body(Body::from("Rate limit exceeded"))
-            .expect("Failed to build rate limit response");
+        return build_rate_limit_response();
     }
 
-    Response::builder()
-        .status(StatusCode::NO_CONTENT)
-        .header("Access-Control-Allow-Origin", "*")
-        .header("Access-Control-Allow-Methods", "GET, OPTIONS")
-        .header(
-            "Access-Control-Allow-Headers",
-            "Authorization, Content-Type, Accept, Range",
-        )
-        .header("Access-Control-Max-Age", "86400")
-        // Deprecation warning header
-        .header("Deprecation", "true")
-        .header(
-            "X-Deprecated",
-            "Use proxy_options_preflight_rate_limited_with_cors",
-        )
-        .body(Body::empty())
-        .expect("Failed to build preflight response")
+    build_deprecated_preflight_response()
 }
 
 /// Preflight handler with rate limiting and explicit CORS origin validation.
@@ -747,68 +741,129 @@ pub async fn proxy_options_preflight_rate_limited_with_cors(
     let ip_key = client_ip.unwrap_or("unknown");
 
     if !limiter.check(ip_key) {
-        return Response::builder()
-            .status(StatusCode::TOO_MANY_REQUESTS)
-            .header("Content-Type", "text/plain")
-            .header("Retry-After", "60")
-            .body(Body::from("Rate limit exceeded"))
-            .expect("Failed to build rate limit response");
+        return build_rate_limit_response();
     }
 
-    // Then check CORS (reuse the logic from proxy_options_preflight_with_cors)
+    // Then check CORS
+    handle_cors_preflight(origin, &config)
+}
+
+// ------------------------------------------------------------------
+// CORS preflight helper functions
+// ------------------------------------------------------------------
+
+/// Standard CORS headers for preflight requests.
+const CORS_ALLOW_METHODS: &str = "GET, OPTIONS";
+const CORS_ALLOW_HEADERS: &str = "Authorization, Content-Type, Accept, Range";
+const CORS_MAX_AGE: &str = "86400";
+
+/// Build a rate limit exceeded response.
+///
+/// Returns 429 Too Many Requests with Retry-After header.
+fn build_rate_limit_response() -> Response {
+    Response::builder()
+        .status(StatusCode::TOO_MANY_REQUESTS)
+        .header("Content-Type", "text/plain")
+        .header("Retry-After", "60")
+        .body(Body::from("Rate limit exceeded"))
+        .expect("Failed to build rate limit response")
+}
+
+/// Build a CORS preflight response for wildcard mode.
+///
+/// Returns 204 No Content with `Access-Control-Allow-Origin: *`.
+fn build_wildcard_cors_response() -> Response {
+    Response::builder()
+        .status(StatusCode::NO_CONTENT)
+        .header("Access-Control-Allow-Origin", "*")
+        .header("Access-Control-Allow-Methods", CORS_ALLOW_METHODS)
+        .header("Access-Control-Allow-Headers", CORS_ALLOW_HEADERS)
+        .header("Access-Control-Max-Age", CORS_MAX_AGE)
+        .body(Body::empty())
+        .expect("Failed to build wildcard CORS response")
+}
+
+/// Build a CORS preflight response when no Origin header is present.
+///
+/// Returns 204 No Content without Access-Control-Allow-Origin header.
+fn build_no_origin_cors_response() -> Response {
+    Response::builder()
+        .status(StatusCode::NO_CONTENT)
+        .header("Access-Control-Allow-Methods", CORS_ALLOW_METHODS)
+        .header("Access-Control-Allow-Headers", CORS_ALLOW_HEADERS)
+        .header("Access-Control-Max-Age", CORS_MAX_AGE)
+        .body(Body::empty())
+        .expect("Failed to build no-origin CORS response")
+}
+
+/// Build a CORS preflight response for a forbidden origin.
+///
+/// Returns 403 Forbidden with plain text error message.
+fn build_forbidden_cors_response() -> Response {
+    Response::builder()
+        .status(StatusCode::FORBIDDEN)
+        .header("Content-Type", "text/plain")
+        .body(Body::from("Origin not allowed"))
+        .expect("Failed to build forbidden CORS response")
+}
+
+/// Build a CORS preflight response for an allowed origin.
+///
+/// Returns 204 No Content with the origin echoed back and credentials allowed.
+fn build_allowed_cors_response(origin: &str) -> Response {
+    Response::builder()
+        .status(StatusCode::NO_CONTENT)
+        .header("Access-Control-Allow-Origin", origin)
+        .header("Access-Control-Allow-Methods", CORS_ALLOW_METHODS)
+        .header("Access-Control-Allow-Headers", CORS_ALLOW_HEADERS)
+        .header("Access-Control-Allow-Credentials", "true")
+        .header("Access-Control-Max-Age", CORS_MAX_AGE)
+        .header("Vary", "Origin")
+        .body(Body::empty())
+        .expect("Failed to build allowed CORS response")
+}
+
+/// Build a deprecated preflight response with deprecation headers.
+///
+/// Used by deprecated functions to warn users to migrate to the new API.
+fn build_deprecated_preflight_response() -> Response {
+    Response::builder()
+        .status(StatusCode::NO_CONTENT)
+        .header("Access-Control-Allow-Origin", "*")
+        .header("Access-Control-Allow-Methods", CORS_ALLOW_METHODS)
+        .header("Access-Control-Allow-Headers", CORS_ALLOW_HEADERS)
+        .header("Access-Control-Max-Age", CORS_MAX_AGE)
+        .header("Deprecation", "true")
+        .header(
+            "X-Deprecated",
+            "Use proxy_options_preflight_with_cors with explicit CORS config",
+        )
+        .body(Body::empty())
+        .expect("Failed to build deprecated preflight response")
+}
+
+/// Core CORS preflight logic shared between all preflight handlers.
+///
+/// Returns the appropriate response based on the CORS configuration and origin.
+fn handle_cors_preflight(origin: Option<&str>, config: &CorsConfig) -> Response {
     // Handle wildcard mode
     if config.wildcard {
-        return Response::builder()
-            .status(StatusCode::NO_CONTENT)
-            .header("Access-Control-Allow-Origin", "*")
-            .header("Access-Control-Allow-Methods", "GET, OPTIONS")
-            .header(
-                "Access-Control-Allow-Headers",
-                "Authorization, Content-Type, Accept, Range",
-            )
-            .header("Access-Control-Max-Age", "86400")
-            .body(Body::empty())
-            .expect("Failed to build wildcard CORS response");
+        return build_wildcard_cors_response();
     }
 
     // Check if origin is provided
     let Some(origin) = origin else {
-        // No origin header - return minimal response without CORS headers
-        return Response::builder()
-            .status(StatusCode::NO_CONTENT)
-            .header("Access-Control-Allow-Methods", "GET, OPTIONS")
-            .header(
-                "Access-Control-Allow-Headers",
-                "Authorization, Content-Type, Accept, Range",
-            )
-            .header("Access-Control-Max-Age", "86400")
-            .body(Body::empty())
-            .expect("Failed to build no-origin CORS response");
+        // No origin header - return minimal response without Allow-Origin header
+        return build_no_origin_cors_response();
     };
 
     // Check if origin is allowed
     if !config.is_allowed(origin) {
-        return Response::builder()
-            .status(StatusCode::FORBIDDEN)
-            .header("Content-Type", "text/plain")
-            .body(Body::from("Origin not allowed"))
-            .expect("Failed to build forbidden CORS response");
+        return build_forbidden_cors_response();
     }
 
     // Origin is allowed - return proper CORS headers
-    Response::builder()
-        .status(StatusCode::NO_CONTENT)
-        .header("Access-Control-Allow-Origin", origin)
-        .header("Access-Control-Allow-Methods", "GET, OPTIONS")
-        .header(
-            "Access-Control-Allow-Headers",
-            "Authorization, Content-Type, Accept, Range",
-        )
-        .header("Access-Control-Allow-Credentials", "true")
-        .header("Access-Control-Max-Age", "86400")
-        .header("Vary", "Origin")
-        .body(Body::empty())
-        .expect("Failed to build allowed CORS response")
+    build_allowed_cors_response(origin)
 }
 
 // ------------------------------------------------------------------
@@ -900,59 +955,7 @@ pub async fn proxy_options_preflight_with_cors(
     origin: Option<&str>,
     config: std::sync::Arc<CorsConfig>,
 ) -> Response {
-    // Handle wildcard mode
-    if config.wildcard {
-        return Response::builder()
-            .status(StatusCode::NO_CONTENT)
-            .header("Access-Control-Allow-Origin", "*")
-            .header("Access-Control-Allow-Methods", "GET, OPTIONS")
-            .header(
-                "Access-Control-Allow-Headers",
-                "Authorization, Content-Type, Accept, Range",
-            )
-            .header("Access-Control-Max-Age", "86400")
-            .body(Body::empty())
-            .expect("Failed to build wildcard CORS response");
-    }
-
-    // Check if origin is provided
-    let Some(origin) = origin else {
-        // No origin header - return minimal response without CORS headers
-        return Response::builder()
-            .status(StatusCode::NO_CONTENT)
-            .header("Access-Control-Allow-Methods", "GET, OPTIONS")
-            .header(
-                "Access-Control-Allow-Headers",
-                "Authorization, Content-Type, Accept, Range",
-            )
-            .header("Access-Control-Max-Age", "86400")
-            .body(Body::empty())
-            .expect("Failed to build no-origin CORS response");
-    };
-
-    // Check if origin is allowed
-    if !config.is_allowed(origin) {
-        return Response::builder()
-            .status(StatusCode::FORBIDDEN)
-            .header("Content-Type", "text/plain")
-            .body(Body::from("Origin not allowed"))
-            .expect("Failed to build forbidden CORS response");
-    }
-
-    // Origin is allowed - return proper CORS headers
-    Response::builder()
-        .status(StatusCode::NO_CONTENT)
-        .header("Access-Control-Allow-Origin", origin)
-        .header("Access-Control-Allow-Methods", "GET, OPTIONS")
-        .header(
-            "Access-Control-Allow-Headers",
-            "Authorization, Content-Type, Accept, Range",
-        )
-        .header("Access-Control-Allow-Credentials", "true")
-        .header("Access-Control-Max-Age", "86400")
-        .header("Vary", "Origin")
-        .body(Body::empty())
-        .expect("Failed to build allowed CORS response")
+    handle_cors_preflight(origin, &config)
 }
 
 // ------------------------------------------------------------------
@@ -1227,7 +1230,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_options_preflight_returns_cors_headers() {
-        let response = proxy_options_preflight().await.into_response();
+        let response = proxy_options_preflight().await;
 
         assert_eq!(response.status(), StatusCode::NO_CONTENT);
 
@@ -1251,6 +1254,230 @@ mod tests {
             headers.get("Access-Control-Max-Age").is_some(),
             "OPTIONS preflight should include Access-Control-Max-Age for caching"
         );
+    }
+
+    // ------------------------------------------------------------------
+    // CORS preflight helper function tests
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn test_build_rate_limit_response() {
+        let response = build_rate_limit_response();
+
+        assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(
+            response
+                .headers()
+                .get("Content-Type")
+                .map(|v| v.to_str().unwrap()),
+            Some("text/plain")
+        );
+        assert_eq!(
+            response
+                .headers()
+                .get("Retry-After")
+                .map(|v| v.to_str().unwrap()),
+            Some("60")
+        );
+    }
+
+    #[test]
+    fn test_build_wildcard_cors_response() {
+        let response = build_wildcard_cors_response();
+
+        assert_eq!(response.status(), StatusCode::NO_CONTENT);
+        assert_eq!(
+            response
+                .headers()
+                .get("Access-Control-Allow-Origin")
+                .map(|v| v.to_str().unwrap()),
+            Some("*")
+        );
+        assert_eq!(
+            response
+                .headers()
+                .get("Access-Control-Allow-Methods")
+                .map(|v| v.to_str().unwrap()),
+            Some("GET, OPTIONS")
+        );
+        assert_eq!(
+            response
+                .headers()
+                .get("Access-Control-Allow-Headers")
+                .map(|v| v.to_str().unwrap()),
+            Some("Authorization, Content-Type, Accept, Range")
+        );
+        assert_eq!(
+            response
+                .headers()
+                .get("Access-Control-Max-Age")
+                .map(|v| v.to_str().unwrap()),
+            Some("86400")
+        );
+        // Wildcard response should NOT have Allow-Credentials or Vary
+        assert!(response
+            .headers()
+            .get("Access-Control-Allow-Credentials")
+            .is_none());
+        assert!(response.headers().get("Vary").is_none());
+    }
+
+    #[test]
+    fn test_build_no_origin_cors_response() {
+        let response = build_no_origin_cors_response();
+
+        assert_eq!(response.status(), StatusCode::NO_CONTENT);
+        // No origin header when origin is not provided
+        assert!(response
+            .headers()
+            .get("Access-Control-Allow-Origin")
+            .is_none());
+        assert_eq!(
+            response
+                .headers()
+                .get("Access-Control-Allow-Methods")
+                .map(|v| v.to_str().unwrap()),
+            Some("GET, OPTIONS")
+        );
+        assert_eq!(
+            response
+                .headers()
+                .get("Access-Control-Allow-Headers")
+                .map(|v| v.to_str().unwrap()),
+            Some("Authorization, Content-Type, Accept, Range")
+        );
+    }
+
+    #[test]
+    fn test_build_forbidden_cors_response() {
+        let response = build_forbidden_cors_response();
+
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        assert_eq!(
+            response
+                .headers()
+                .get("Content-Type")
+                .map(|v| v.to_str().unwrap()),
+            Some("text/plain")
+        );
+    }
+
+    #[test]
+    fn test_build_allowed_cors_response() {
+        let origin = "https://example.com";
+        let response = build_allowed_cors_response(origin);
+
+        assert_eq!(response.status(), StatusCode::NO_CONTENT);
+        assert_eq!(
+            response
+                .headers()
+                .get("Access-Control-Allow-Origin")
+                .map(|v| v.to_str().unwrap()),
+            Some(origin)
+        );
+        assert_eq!(
+            response
+                .headers()
+                .get("Access-Control-Allow-Credentials")
+                .map(|v| v.to_str().unwrap()),
+            Some("true")
+        );
+        assert_eq!(
+            response.headers().get("Vary").map(|v| v.to_str().unwrap()),
+            Some("Origin")
+        );
+    }
+
+    #[test]
+    fn test_build_deprecated_preflight_response() {
+        let response = build_deprecated_preflight_response();
+
+        assert_eq!(response.status(), StatusCode::NO_CONTENT);
+        assert_eq!(
+            response
+                .headers()
+                .get("Access-Control-Allow-Origin")
+                .map(|v| v.to_str().unwrap()),
+            Some("*")
+        );
+        assert_eq!(
+            response
+                .headers()
+                .get("Deprecation")
+                .map(|v| v.to_str().unwrap()),
+            Some("true")
+        );
+        assert!(response.headers().get("X-Deprecated").is_some());
+    }
+
+    #[test]
+    fn test_handle_cors_preflight_wildcard_mode() {
+        let config = CorsConfig::new_wildcard();
+        let response = handle_cors_preflight(Some("https://example.com"), &config);
+
+        assert_eq!(response.status(), StatusCode::NO_CONTENT);
+        assert_eq!(
+            response
+                .headers()
+                .get("Access-Control-Allow-Origin")
+                .map(|v| v.to_str().unwrap()),
+            Some("*")
+        );
+    }
+
+    #[test]
+    fn test_handle_cors_preflight_no_origin_header() {
+        let config = CorsConfig::new(vec!["https://example.com".to_string()]);
+        let response = handle_cors_preflight(None, &config);
+
+        assert_eq!(response.status(), StatusCode::NO_CONTENT);
+        assert!(response
+            .headers()
+            .get("Access-Control-Allow-Origin")
+            .is_none());
+    }
+
+    #[test]
+    fn test_handle_cors_preflight_origin_not_allowed() {
+        let config = CorsConfig::new(vec!["https://allowed.com".to_string()]);
+        let response = handle_cors_preflight(Some("https://evil.com"), &config);
+
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[test]
+    fn test_handle_cors_preflight_origin_allowed() {
+        let allowed_origin = "https://allowed.com";
+        let config = CorsConfig::new(vec![allowed_origin.to_string()]);
+        let response = handle_cors_preflight(Some(allowed_origin), &config);
+
+        assert_eq!(response.status(), StatusCode::NO_CONTENT);
+        assert_eq!(
+            response
+                .headers()
+                .get("Access-Control-Allow-Origin")
+                .map(|v| v.to_str().unwrap()),
+            Some(allowed_origin)
+        );
+        assert_eq!(
+            response
+                .headers()
+                .get("Access-Control-Allow-Credentials")
+                .map(|v| v.to_str().unwrap()),
+            Some("true")
+        );
+        assert_eq!(
+            response.headers().get("Vary").map(|v| v.to_str().unwrap()),
+            Some("Origin")
+        );
+    }
+
+    #[test]
+    fn test_handle_cors_preflight_empty_allowed_list_rejects_all() {
+        let config = CorsConfig::new(vec![]); // Empty allowed list
+        let response = handle_cors_preflight(Some("https://example.com"), &config);
+
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
     }
 
     // ------------------------------------------------------------------
@@ -1328,5 +1555,127 @@ mod tests {
     fn test_validate_proxy_url_static_blocks_non_http() {
         assert!(validate_proxy_url_static("ftp://example.com/file").is_err());
         assert!(validate_proxy_url_static("file:///etc/passwd").is_err());
+    }
+
+    // ------------------------------------------------------------------
+    // RateLimiter tests
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn test_rate_limiter_allows_within_limit() {
+        let limiter = RateLimiter::new(3, std::time::Duration::from_secs(60));
+        assert!(limiter.check("192.168.1.1"));
+        assert!(limiter.check("192.168.1.1"));
+        assert!(limiter.check("192.168.1.1"));
+    }
+
+    #[test]
+    fn test_rate_limiter_blocks_over_limit() {
+        let limiter = RateLimiter::new(2, std::time::Duration::from_secs(60));
+        assert!(limiter.check("192.168.1.1"));
+        assert!(limiter.check("192.168.1.1"));
+        assert!(!limiter.check("192.168.1.1")); // Should be blocked
+    }
+
+    #[test]
+    fn test_rate_limiter_resets_after_window() {
+        let limiter = RateLimiter::new(2, std::time::Duration::from_millis(50));
+        assert!(limiter.check("192.168.1.1"));
+        assert!(limiter.check("192.168.1.1"));
+        assert!(!limiter.check("192.168.1.1")); // Blocked
+
+        // Wait for window to expire
+        std::thread::sleep(std::time::Duration::from_millis(60));
+        assert!(limiter.check("192.168.1.1")); // Should be allowed again
+    }
+
+    #[test]
+    fn test_rate_limiter_independent_per_ip() {
+        let limiter = RateLimiter::new(1, std::time::Duration::from_secs(60));
+        assert!(limiter.check("192.168.1.1"));
+        assert!(!limiter.check("192.168.1.1")); // Blocked
+
+        // Different IP should have its own limit
+        assert!(limiter.check("192.168.1.2"));
+    }
+
+    // ------------------------------------------------------------------
+    // P1: RateLimiter memory leak - expired entry cleanup tests
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn test_rate_limiter_cleanup_removes_expired_entries() {
+        // Test that old entries are cleaned up to prevent memory leaks
+        // Cleanup triggers when len() > 100 and every 100th check (global counter)
+        let limiter = RateLimiter::new(1, std::time::Duration::from_millis(50));
+
+        // Add 101 entries to trigger cleanup threshold
+        for i in 0..101 {
+            let _ = limiter.check(&format!("ip{}", i));
+        }
+
+        // All 101 entries should exist
+        assert_eq!(limiter.len(), 101);
+
+        // Wait for window to expire
+        std::thread::sleep(std::time::Duration::from_millis(60));
+
+        // Make 100 checks to ensure we hit check_count % 100 == 0 at least once
+        // (since the counter is global, we need to ensure cleanup triggers)
+        for i in 0..100 {
+            let _ = limiter.check(&format!("trigger_{}", i));
+        }
+
+        // After cleanup, expired entries should be removed
+        // The implementation cleans up expired entries during check when thresholds are met
+        assert!(
+            limiter.len() <= 110, // At most the 100 trigger entries + some remaining
+            "Expired entries should be cleaned up, got {} entries",
+            limiter.len()
+        );
+    }
+
+    #[test]
+    fn test_rate_limiter_cleanup_does_not_remove_valid_entries() {
+        // Test that valid entries are not removed during cleanup
+        let limiter = RateLimiter::new(5, std::time::Duration::from_secs(60));
+
+        // Add entries
+        let _ = limiter.check("ip1");
+        let _ = limiter.check("ip2");
+
+        // Both entries should exist and be valid
+        assert_eq!(limiter.len(), 2);
+        assert!(limiter.check("ip1")); // Should still be within limit
+        assert_eq!(limiter.get_count("ip1"), Some(2));
+    }
+
+    #[test]
+    fn test_rate_limiter_no_memory_leak_with_many_ips() {
+        // Simulate many different IPs over time to verify no memory leak
+        let limiter = RateLimiter::new(1, std::time::Duration::from_millis(10));
+
+        // Simulate 1000 different IPs
+        for i in 0..1000_u64 {
+            let _ = limiter.check(&format!("ip{}", i));
+        }
+
+        // Should have 1000 entries
+        assert_eq!(limiter.len(), 1000);
+
+        // Wait for all to expire
+        std::thread::sleep(std::time::Duration::from_millis(20));
+
+        // Make 100 checks to ensure cleanup triggers (global counter % 100 == 0)
+        for i in 0..100 {
+            let _ = limiter.check(&format!("trigger_{}", i));
+        }
+
+        // After cleanup, expired entries should be removed
+        assert!(
+            limiter.len() <= 110, // At most the 100 trigger entries + some remaining
+            "Most expired entries should be cleaned up, got {} entries",
+            limiter.len()
+        );
     }
 }

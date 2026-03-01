@@ -627,3 +627,117 @@ fn test_pgc_url_resp_deserialize() {
     assert_eq!(resp.result.quality, 80);
     assert_eq!(resp.result.durl.len(), 1);
 }
+
+// ============================================================================
+// Danmaku heartbeat packet tests
+// ============================================================================
+
+/// Test that build_heartbeat_packet produces correct binary format
+/// Header format: packet_length (4) + header_length (2) + version (2) + operation (4) + sequence (4)
+#[test]
+fn test_heartbeat_packet_format() {
+    use synctv_media_providers::bilibili::client::build_heartbeat_packet;
+
+    let packet = build_heartbeat_packet();
+
+    // Heartbeat packet is exactly 16 bytes (header only, no body)
+    assert_eq!(packet.len(), 16);
+
+    // Packet length (big-endian u32) = 16
+    assert_eq!(&packet[0..4], &[0, 0, 0, 16]);
+
+    // Header length (big-endian u16) = 16
+    assert_eq!(&packet[4..6], &[0, 16]);
+
+    // Protocol version (big-endian u16) = 1
+    assert_eq!(&packet[6..8], &[0, 1]);
+
+    // Operation (big-endian u32) = 2 (heartbeat)
+    assert_eq!(&packet[8..12], &[0, 0, 0, 2]);
+
+    // Sequence (big-endian u32) = 1
+    assert_eq!(&packet[12..16], &[0, 0, 0, 1]);
+}
+
+/// Test that build_auth_packet produces correct format
+#[test]
+fn test_auth_packet_format() {
+    use synctv_media_providers::bilibili::client::build_auth_packet;
+
+    let packet = build_auth_packet(12345, "test_token");
+
+    // Minimum size is 16 byte header + some JSON body
+    assert!(packet.len() > 16);
+
+    // Header length (big-endian u16) = 16
+    assert_eq!(&packet[4..6], &[0, 16]);
+
+    // Protocol version (big-endian u16) = 1
+    assert_eq!(&packet[6..8], &[0, 1]);
+
+    // Operation (big-endian u32) = 7 (auth)
+    assert_eq!(&packet[8..12], &[0, 0, 0, 7]);
+
+    // Sequence (big-endian u32) = 1
+    assert_eq!(&packet[12..16], &[0, 0, 0, 1]);
+
+    // Body should contain JSON with roomid
+    let body = &packet[16..];
+    let json: serde_json::Value = serde_json::from_slice(body).unwrap();
+    assert_eq!(json["roomid"], 12345);
+    assert_eq!(json["key"], "test_token");
+}
+
+// ============================================================================
+// DanmakuMessage tests
+// ============================================================================
+
+#[test]
+fn test_danmaku_message_debug() {
+    use synctv_media_providers::bilibili::DanmakuMessage;
+
+    let chat = DanmakuMessage::Chat {
+        user: "test_user".to_string(),
+        message: "hello".to_string(),
+        timestamp: 12345,
+    };
+    let debug_str = format!("{:?}", chat);
+    assert!(debug_str.contains("test_user"));
+    assert!(debug_str.contains("hello"));
+}
+
+#[test]
+fn test_danmaku_message_heartbeat() {
+    use synctv_media_providers::bilibili::DanmakuMessage;
+
+    let heartbeat = DanmakuMessage::Heartbeat { online_count: 1000 };
+    if let DanmakuMessage::Heartbeat { online_count } = heartbeat {
+        assert_eq!(online_count, 1000);
+    } else {
+        panic!("Expected Heartbeat variant");
+    }
+}
+
+// ============================================================================
+// HeartbeatConfig tests
+// ============================================================================
+
+#[test]
+fn test_heartbeat_config_default() {
+    use std::time::Duration;
+    use synctv_media_providers::bilibili::HeartbeatConfig;
+
+    let config = HeartbeatConfig::default();
+    assert_eq!(config.interval, Duration::from_secs(30));
+}
+
+#[test]
+fn test_heartbeat_config_custom() {
+    use std::time::Duration;
+    use synctv_media_providers::bilibili::HeartbeatConfig;
+
+    let config = HeartbeatConfig {
+        interval: Duration::from_secs(10),
+    };
+    assert_eq!(config.interval, Duration::from_secs(10));
+}

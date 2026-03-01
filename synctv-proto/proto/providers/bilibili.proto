@@ -83,9 +83,19 @@ message CheckQRRequest {
   string instance_name = 2; // Optional provider instance name
 }
 
+// QR login status enum
+// Values match synctv-media-providers QRCodeStatus for compatibility
+enum QRLoginStatus {
+  QR_LOGIN_STATUS_UNSPECIFIED = 0;
+  QR_LOGIN_STATUS_EXPIRED = 1;
+  QR_LOGIN_STATUS_NOT_SCANNED = 2;
+  QR_LOGIN_STATUS_SCANNED = 3;
+  QR_LOGIN_STATUS_SUCCESS = 4;
+}
+
 // QR status response
 message QRStatusResponse {
-  int32 status = 1; // 0=success, 1=expired, 2=not_scanned, 3=scanned_not_confirmed
+  QRLoginStatus status = 1;
   map<string, string> cookies = 2; // SENSITIVE: Session cookies - do not log
 }
 

@@ -1144,6 +1144,7 @@ pub struct ChatMessageReceive {
     pub username: ::prost::alloc::string::String,
     #[prost(string, tag = "5")]
     pub content: ::prost::alloc::string::String,
+    /// Unix timestamp (seconds)
     #[prost(int64, tag = "6")]
     pub timestamp: i64,
     /// Video position in seconds (for danmaku display)
@@ -1156,12 +1157,14 @@ pub struct ChatMessageReceive {
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct HeartbeatMessage {
+    /// Unix timestamp (seconds)
     #[prost(int64, tag = "1")]
     pub timestamp: i64,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct HeartbeatAck {
+    /// Unix timestamp (seconds)
     #[prost(int64, tag = "1")]
     pub timestamp: i64,
 }
@@ -1244,7 +1247,7 @@ pub struct UserNotification {
     /// JSON-encoded additional data (e.g., room_id, inviter_name for invitations)
     #[prost(string, tag = "5")]
     pub data: ::prost::alloc::string::String,
-    /// Unix timestamp in milliseconds when notification was created
+    /// Unix timestamp (seconds) when notification was created
     #[prost(int64, tag = "6")]
     pub timestamp: i64,
 }

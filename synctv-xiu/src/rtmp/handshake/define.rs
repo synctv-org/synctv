@@ -3,7 +3,7 @@ pub enum SchemaVersion {
     Schema1,
     Unknown,
 }
-#[derive(PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum ClientHandshakeState {
     WriteC0C1,
     ReadS0S1S2,

@@ -234,6 +234,9 @@ impl ClientApiImpl {
     }
 
     /// List playlists (folders) in a room or under a parent
+    ///
+    /// Supports pagination via `page` and `page_size` fields.
+    /// Default page_size is 50, maximum is 100.
     pub async fn list_playlists(
         &self,
         user_id: &str,
@@ -249,21 +252,44 @@ impl ClientApiImpl {
             .await
             .map_err(|e| ApiError::Authorization(format!("Forbidden: {e}")))?;
 
-        let playlists = if req.parent_id.is_empty() {
-            // Get all playlists in room
-            self.room_service
-                .playlist_service()
-                .get_room_playlists(&rid)
-                .await
-                .map_err(ApiError::from)?
+        // Pagination defaults and limits
+        const DEFAULT_PAGE_SIZE: i32 = 50;
+        const MAX_PAGE_SIZE: i32 = 100;
+
+        let page = if req.page <= 0 { 1 } else { req.page };
+        let page_size = if req.page_size <= 0 {
+            DEFAULT_PAGE_SIZE
         } else {
-            // Get children of specific playlist
+            req.page_size.min(MAX_PAGE_SIZE)
+        };
+        let offset = (page - 1) as i64 * page_size as i64;
+
+        let (playlists, total) = if req.parent_id.is_empty() {
+            // Get all playlists in room with pagination
+            let total = self
+                .room_service
+                .playlist_service()
+                .count_room_playlists(&rid)
+                .await
+                .map_err(ApiError::from)? as i32;
+            let playlists = self
+                .room_service
+                .playlist_service()
+                .get_room_playlists_paginated(&rid, page_size as i64, offset)
+                .await
+                .map_err(ApiError::from)?;
+            (playlists, total)
+        } else {
+            // Get children of specific playlist (no pagination for children)
             let parent_id = synctv_core::models::PlaylistId::from_string(req.parent_id);
-            self.room_service
+            let playlists = self
+                .room_service
                 .playlist_service()
                 .get_children(&parent_id)
                 .await
-                .map_err(ApiError::from)?
+                .map_err(ApiError::from)?;
+            let total = playlists.len() as i32;
+            (playlists, total)
         };
 
         // Batch-fetch media counts to avoid N+1 queries.
@@ -283,7 +309,6 @@ impl ClientApiImpl {
             })
             .collect();
 
-        let total = proto_playlists.len() as i32;
         Ok(crate::proto::client::ListPlaylistsResponse {
             playlists: proto_playlists,
             total,

@@ -144,6 +144,49 @@ impl PlaylistRepository {
             .collect()
     }
 
+    /// Count all playlists in a room
+    pub async fn count_by_room(&self, room_id: &RoomId) -> Result<i64> {
+        let count: i64 = sqlx::query_scalar(
+            r"
+            SELECT COUNT(*) FROM playlists WHERE room_id = $1
+            ",
+        )
+        .bind(room_id.as_str())
+        .fetch_one(&self.pool)
+        .await?;
+
+        Ok(count)
+    }
+
+    /// Get paginated playlists in a room
+    pub async fn get_by_room_paginated(
+        &self,
+        room_id: &RoomId,
+        limit: i64,
+        offset: i64,
+    ) -> Result<Vec<Playlist>> {
+        let rows = sqlx::query(
+            r"
+            SELECT id, room_id, creator_id, name, parent_id, position,
+                   source_provider, source_config, provider_instance_name,
+                   created_at, updated_at, version
+            FROM playlists
+            WHERE room_id = $1
+            ORDER BY parent_id NULLS FIRST, position ASC
+            LIMIT $2 OFFSET $3
+            ",
+        )
+        .bind(room_id.as_str())
+        .bind(limit)
+        .bind(offset)
+        .fetch_all(&self.pool)
+        .await?;
+
+        rows.into_iter()
+            .map(|row| Ok(Playlist::from_row(&row)?))
+            .collect()
+    }
+
     /// Create a new playlist
     ///
     /// If `playlist.position` is negative, the position is computed within a

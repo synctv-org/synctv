@@ -703,12 +703,16 @@ impl AdminApiImpl {
     pub async fn get_settings(
         &self,
         _req: crate::proto::admin::GetSettingsRequest,
+        admin_user_id: &UserId,
+        ctx: &RequestContext,
     ) -> Result<crate::proto::admin::GetSettingsResponse, ApiError> {
         let groups = self
             .settings_service
             .get_all()
             .await
             .map_err(ApiError::from)?;
+
+        let group_names: Vec<String> = groups.iter().map(|g| g.group_name.clone()).collect();
 
         let group_list: Vec<_> = groups
             .into_iter()
@@ -718,18 +722,69 @@ impl AdminApiImpl {
             })
             .collect();
 
+        // Audit log for settings view. Settings access is a sensitive operation
+        // that should be tracked for security compliance.
+        let admin_user = self
+            .user_service
+            .get_user(admin_user_id)
+            .await
+            .map_err(ApiError::from)?;
+
+        if let Err(e) = self.audit_service.log(
+            admin_user_id.as_str().to_string(),
+            admin_user.username.clone(),
+            synctv_core::service::AuditAction::SettingsViewed,
+            synctv_core::service::AuditTargetType::Settings,
+            None,
+            serde_json::json!({
+                "group_count": group_names.len(),
+                "groups": group_names,
+            }),
+            ctx.ip_address.clone(),
+            ctx.user_agent.clone(),
+        ).await {
+            tracing::error!("Failed to write settings_viewed audit log: {}", e);
+        }
+
         Ok(crate::proto::admin::GetSettingsResponse { groups: group_list })
     }
 
     pub async fn get_settings_group(
         &self,
         req: crate::proto::admin::GetSettingsGroupRequest,
+        admin_user_id: &UserId,
+        ctx: &RequestContext,
     ) -> Result<crate::proto::admin::GetSettingsGroupResponse, ApiError> {
         let group = self
             .settings_service
             .get(&req.group)
             .await
             .map_err(ApiError::from)?;
+
+        let group_name = group.group_name.clone();
+
+        // Audit log for settings group view. Settings access is a sensitive operation
+        // that should be tracked for security compliance.
+        let admin_user = self
+            .user_service
+            .get_user(admin_user_id)
+            .await
+            .map_err(ApiError::from)?;
+
+        if let Err(e) = self.audit_service.log(
+            admin_user_id.as_str().to_string(),
+            admin_user.username.clone(),
+            synctv_core::service::AuditAction::SettingsGroupViewed,
+            synctv_core::service::AuditTargetType::Settings,
+            None,
+            serde_json::json!({
+                "group": group_name,
+            }),
+            ctx.ip_address.clone(),
+            ctx.user_agent.clone(),
+        ).await {
+            tracing::error!("Failed to write settings_group_viewed audit log: {}", e);
+        }
 
         Ok(crate::proto::admin::GetSettingsGroupResponse {
             group: Some(crate::proto::admin::SettingsGroup {

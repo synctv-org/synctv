@@ -231,6 +231,23 @@ impl PlaylistService {
         self.playlist_repo.get_by_room(room_id).await
     }
 
+    /// Count all playlists in a room
+    pub async fn count_room_playlists(&self, room_id: &RoomId) -> Result<i64> {
+        self.playlist_repo.count_by_room(room_id).await
+    }
+
+    /// Get paginated playlists in a room
+    pub async fn get_room_playlists_paginated(
+        &self,
+        room_id: &RoomId,
+        limit: i64,
+        offset: i64,
+    ) -> Result<Vec<Playlist>> {
+        self.playlist_repo
+            .get_by_room_paginated(room_id, limit, offset)
+            .await
+    }
+
     /// Set playlist properties
     ///
     /// Uses optimistic locking with automatic retry on version conflicts.

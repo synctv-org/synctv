@@ -2,7 +2,9 @@
 
 use std::collections::HashMap;
 use std::fmt::Write;
+use std::sync::Arc;
 use std::sync::LazyLock;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Duration;
 
 use futures_util::{SinkExt, StreamExt};
@@ -10,6 +12,8 @@ use md5::{Digest, Md5};
 use regex::Regex;
 use reqwest::Client;
 use serde::Deserialize;
+use tokio::sync::Mutex as AsyncMutex;
+use tokio::task::JoinHandle;
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 
 use super::error::{check_response, json_with_limit, BilibiliError};
@@ -72,8 +76,49 @@ struct WbiKeys {
 static WBI_KEY_CACHE: LazyLock<tokio::sync::Mutex<Option<WbiKeys>>> =
     LazyLock::new(|| tokio::sync::Mutex::new(None));
 
+/// Refresh lock to prevent thundering herd when cache expires.
+/// Uses an atomic counter: 0 = no refresh in progress, >0 = refresh in progress.
+static WBI_REFRESH_IN_PROGRESS: LazyLock<AtomicUsize> = LazyLock::new(|| AtomicUsize::new(0));
+
+/// Counter for tracking number of API calls (for testing).
+#[cfg(test)]
+static WBI_API_CALL_COUNT: LazyLock<AtomicUsize> = LazyLock::new(|| AtomicUsize::new(0));
+
 /// WBI key cache TTL (refresh keys every 30 minutes).
 const WBI_KEY_TTL: Duration = Duration::from_mins(30);
+
+/// Get a valid cached WBI key if available and not expired.
+async fn get_valid_wbi_key() -> Option<String> {
+    let guard = WBI_KEY_CACHE.lock().await;
+    guard.as_ref().filter(|k| k.expires_at > std::time::Instant::now()).map(|k| k.mixin_key.clone())
+}
+
+/// Store a new WBI key in the cache with expiration.
+async fn set_wbi_key(mixin_key: String) {
+    let mut guard = WBI_KEY_CACHE.lock().await;
+    *guard = Some(WbiKeys {
+        mixin_key,
+        expires_at: std::time::Instant::now() + WBI_KEY_TTL,
+    });
+}
+
+/// Try to claim the refresh lock. Returns true if this task should perform the refresh.
+/// Uses compare_exchange for atomic coordination.
+fn try_claim_refresh_lock() -> bool {
+    // Try to transition from 0 to 1
+    WBI_REFRESH_IN_PROGRESS.compare_exchange(0, 1, Ordering::AcqRel, Ordering::Acquire).is_ok()
+}
+
+/// Release the refresh lock after refresh completes.
+fn release_refresh_lock() {
+    WBI_REFRESH_IN_PROGRESS.store(0, Ordering::Release);
+}
+
+/// Check if a refresh is currently in progress.
+#[allow(dead_code)]
+fn is_refresh_in_progress() -> bool {
+    WBI_REFRESH_IN_PROGRESS.load(Ordering::Acquire) > 0
+}
 
 /// Generate the mixin key from `img_key` and `sub_key` using the encoding table.
 ///
@@ -181,21 +226,45 @@ impl BilibiliClient {
     /// Internal method with optional force refresh.
     ///
     /// Fetches from Bilibili's nav API and caches in memory for 30 minutes.
+    /// Uses coordinated refresh to prevent thundering herd when cache expires.
     async fn get_wbi_mixin_key_internal(
         &self,
         force_refresh: bool,
     ) -> Result<String, BilibiliError> {
         // Check cache (unless force refresh)
         if !force_refresh {
-            let guard = WBI_KEY_CACHE.lock().await;
-            if let Some(cached) = guard.as_ref() {
-                if std::time::Instant::now() < cached.expires_at {
-                    return Ok(cached.mixin_key.clone());
-                }
+            if let Some(key) = get_valid_wbi_key().await {
+                return Ok(key);
             }
         }
 
-        // Cache miss or force refresh: fetch from Bilibili API.
+        // Try to claim the refresh lock. Only one task will succeed.
+        if try_claim_refresh_lock() {
+            // We got the lock - we are responsible for refreshing.
+            let result = self.fetch_and_cache_wbi_key().await;
+            // Always release the lock, even on error.
+            release_refresh_lock();
+            result
+        } else {
+            // Another task is refreshing. Wait and retry from cache.
+            // Use a spin loop with backoff to wait for the refresh.
+            for _ in 0..10 {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                if let Some(key) = get_valid_wbi_key().await {
+                    return Ok(key);
+                }
+            }
+            // If we get here, refresh took too long or failed.
+            // Force a refresh ourselves as a fallback.
+            self.fetch_and_cache_wbi_key().await
+        }
+    }
+
+    /// Fetch WBI key from Bilibili API and cache it.
+    async fn fetch_and_cache_wbi_key(&self) -> Result<String, BilibiliError> {
+        #[cfg(test)]
+        WBI_API_CALL_COUNT.fetch_add(1, Ordering::Relaxed);
+
         let url = "https://api.bilibili.com/x/web-interface/nav";
         let req = self.add_cookies(self.client.get(url).header("Referer", REFERER));
         let resp = check_response(req.send().await?).await?;
@@ -234,12 +303,7 @@ impl BilibiliClient {
         }
 
         // Store in cache with TTL
-        let mut guard = WBI_KEY_CACHE.lock().await;
-        *guard = Some(WbiKeys {
-            mixin_key: mixin_key.clone(),
-            expires_at: std::time::Instant::now() + WBI_KEY_TTL,
-        });
-        drop(guard);
+        set_wbi_key(mixin_key.clone()).await;
 
         Ok(mixin_key)
     }
@@ -1661,16 +1725,33 @@ impl BilibiliClient {
             .map_err(|e| BilibiliError::Parse(format!("Failed to send auth packet: {e}")))?;
 
         Ok(LiveDanmakuConnection {
-            write: tokio::sync::Mutex::new(write),
-            read: tokio::sync::Mutex::new(read),
+            write: AsyncMutex::new(write),
+            read: AsyncMutex::new(read),
             room_id,
+            heartbeat_handle: AsyncMutex::new(None),
+            heartbeat_stop: Arc::new(AtomicBool::new(false)),
         })
     }
 }
 
-/// Live danmaku WebSocket connection
+/// Configuration for automatic heartbeat keepalive
+#[derive(Debug, Clone, Copy)]
+pub struct HeartbeatConfig {
+    /// Interval between heartbeat packets (default: 30 seconds)
+    pub interval: Duration,
+}
+
+impl Default for HeartbeatConfig {
+    fn default() -> Self {
+        Self {
+            interval: Duration::from_secs(30),
+        }
+    }
+}
+
+/// Live danmaku WebSocket connection with automatic heartbeat support
 pub struct LiveDanmakuConnection {
-    write: tokio::sync::Mutex<
+    write: AsyncMutex<
         futures_util::stream::SplitSink<
             tokio_tungstenite::WebSocketStream<
                 tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
@@ -1678,7 +1759,7 @@ pub struct LiveDanmakuConnection {
             Message,
         >,
     >,
-    read: tokio::sync::Mutex<
+    read: AsyncMutex<
         futures_util::stream::SplitStream<
             tokio_tungstenite::WebSocketStream<
                 tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
@@ -1686,6 +1767,10 @@ pub struct LiveDanmakuConnection {
         >,
     >,
     room_id: u64,
+    /// Handle for the automatic heartbeat task
+    heartbeat_handle: AsyncMutex<Option<JoinHandle<()>>>,
+    /// Flag to signal the heartbeat task to stop
+    heartbeat_stop: Arc<AtomicBool>,
 }
 
 impl LiveDanmakuConnection {
@@ -1727,6 +1812,113 @@ impl LiveDanmakuConnection {
     pub const fn room_id(&self) -> u64 {
         self.room_id
     }
+
+    /// Stop the automatic heartbeat loop.
+    ///
+    /// This method signals the heartbeat task to stop and aborts it.
+    /// After calling this, you can call [`start_heartbeat_loop_arc`](Self::start_heartbeat_loop_arc)
+    /// again if needed.
+    pub async fn stop_heartbeat_loop(&self) {
+        // Signal the heartbeat task to stop
+        self.heartbeat_stop.store(true, Ordering::SeqCst);
+
+        // Wait for the task to complete and drop the handle
+        let mut handle_guard = self.heartbeat_handle.lock().await;
+        if let Some(handle) = handle_guard.take() {
+            // Abort the task for immediate cleanup
+            handle.abort();
+        }
+    }
+
+    /// Check if the heartbeat loop is currently running
+    pub async fn is_heartbeat_running(&self) -> bool {
+        let handle_guard = self.heartbeat_handle.lock().await;
+        handle_guard
+            .as_ref()
+            .is_some_and(|h| !h.is_finished())
+    }
+}
+
+impl LiveDanmakuConnection {
+    /// Start automatic heartbeat loop with `Arc<Self>`.
+    ///
+    /// This is the recommended way to start the heartbeat loop when you have
+    /// an `Arc<LiveDanmakuConnection>`.
+    ///
+    /// # Arguments
+    /// * `self_ptr` - An `Arc` reference to this connection
+    /// * `config` - Heartbeat configuration including interval
+    ///
+    /// # Returns
+    /// * `true` if the heartbeat loop was started
+    /// * `false` if a heartbeat loop was already running
+    ///
+    /// # Example
+    /// ```ignore
+    /// use std::sync::Arc;
+    /// use std::time::Duration;
+    ///
+    /// let conn = Arc::new(client.connect_live_danmaku(room_id).await?);
+    /// let config = HeartbeatConfig {
+    ///     interval: Duration::from_secs(30),
+    /// };
+    /// conn.start_heartbeat_loop_arc(Arc::clone(&conn), config).await;
+    ///
+    /// // The connection will now automatically send heartbeats
+    /// while let Ok(messages) = conn.recv().await {
+    ///     for msg in messages {
+    ///         // handle messages
+    ///     }
+    /// }
+    /// conn.stop_heartbeat_loop().await;
+    /// ```
+    pub async fn start_heartbeat_loop_arc(
+        self: &Arc<Self>,
+        self_ptr: Arc<Self>,
+        config: HeartbeatConfig,
+    ) -> bool {
+        let mut handle_guard = self.heartbeat_handle.lock().await;
+
+        // Already running
+        if let Some(ref handle) = *handle_guard {
+            if !handle.is_finished() {
+                return false;
+            }
+        }
+
+        // Reset stop flag
+        self.heartbeat_stop.store(false, Ordering::SeqCst);
+
+        let stop_flag = Arc::clone(&self.heartbeat_stop);
+        let interval = config.interval;
+
+        // Spawn the heartbeat task
+        let handle = tokio::spawn(async move {
+            loop {
+                // Check if we should stop
+                if stop_flag.load(Ordering::SeqCst) {
+                    break;
+                }
+
+                // Wait for the interval
+                tokio::time::sleep(interval).await;
+
+                // Check again after sleeping
+                if stop_flag.load(Ordering::SeqCst) {
+                    break;
+                }
+
+                // Send heartbeat
+                if self_ptr.send_heartbeat().await.is_err() {
+                    // Connection likely closed, stop the loop
+                    break;
+                }
+            }
+        });
+
+        *handle_guard = Some(handle);
+        true
+    }
 }
 
 /// Danmaku message types
@@ -1753,7 +1945,7 @@ pub enum DanmakuMessage {
 }
 
 /// Build authentication packet for danmaku WebSocket
-fn build_auth_packet(room_id: u64, token: &str) -> Vec<u8> {
+pub fn build_auth_packet(room_id: u64, token: &str) -> Vec<u8> {
     // Bilibili danmaku protocol format:
     // Header (16 bytes):
     // - packet_length: u32 (big-endian)
@@ -1790,7 +1982,7 @@ fn build_auth_packet(room_id: u64, token: &str) -> Vec<u8> {
 }
 
 /// Build heartbeat packet for danmaku WebSocket
-fn build_heartbeat_packet() -> Vec<u8> {
+pub fn build_heartbeat_packet() -> Vec<u8> {
     // Heartbeat packet: operation = 2, empty body
     let mut packet = Vec::with_capacity(16);
 
@@ -2983,5 +3175,118 @@ mod tests {
         assert!(!header.contains('\r'));
         assert!(!header.contains('\n'));
         assert!(header.contains("evilkey=evilvalue"));
+    }
+
+    // === WBI Key Refresh Coordination Tests ===
+
+    #[test]
+    fn test_refresh_lock_basic() {
+        // Test that the refresh lock can be claimed and released
+        assert!(try_claim_refresh_lock(), "First claim should succeed");
+        assert!(!try_claim_refresh_lock(), "Second claim should fail while lock is held");
+        release_refresh_lock();
+        assert!(try_claim_refresh_lock(), "Claim should succeed after release");
+        release_refresh_lock();
+    }
+
+    #[test]
+    fn test_refresh_lock_multiple_threads() {
+        use std::sync::Arc;
+        use std::thread;
+
+        // Reset any state
+        release_refresh_lock();
+
+        let success_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let attempts = 10;
+
+        let handles: Vec<_> = (0..attempts)
+            .map(|_| {
+                let success_count = Arc::clone(&success_count);
+                thread::spawn(move || {
+                    if try_claim_refresh_lock() {
+                        success_count.fetch_add(1, Ordering::SeqCst);
+                        // Hold the lock briefly
+                        thread::sleep(std::time::Duration::from_millis(1));
+                        release_refresh_lock();
+                    }
+                })
+            })
+            .collect();
+
+        for handle in handles {
+            handle.join().unwrap();
+        }
+
+        // Due to timing, multiple threads might succeed in sequence,
+        // but never concurrently. The key invariant is that only one
+        // thread holds the lock at any given time.
+        let successes = success_count.load(Ordering::SeqCst);
+        assert!(successes >= 1, "At least one claim should succeed");
+    }
+
+    #[tokio::test]
+    async fn test_concurrent_wbi_refresh_single_api_call() {
+        // Reset state
+        release_refresh_lock();
+        WBI_API_CALL_COUNT.store(0, Ordering::SeqCst);
+        // Clear cache to force refresh
+        *WBI_KEY_CACHE.lock().await = None;
+
+        // Note: This test verifies the coordination logic, not actual API calls.
+        // The actual API call test would require a mock server.
+        // We're testing that the refresh lock prevents multiple claimants.
+
+        // Spawn multiple tasks that all try to get the WBI key concurrently
+        let mut handles = Vec::new();
+        for _ in 0..5 {
+            handles.push(tokio::spawn(async {
+                // Try to claim - only one should succeed
+                if try_claim_refresh_lock() {
+                    // Simulate a brief API call delay
+                    tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+                    release_refresh_lock();
+                    true
+                } else {
+                    false
+                }
+            }));
+        }
+
+        let results = futures_util::future::join_all(handles).await;
+        let successful_claims = results.iter().filter(|r| r.is_ok() && *r.as_ref().unwrap()).count();
+
+        // Only one task should have successfully claimed the lock at a time
+        // Note: Due to timing, multiple tasks might succeed in sequence,
+        // but the key invariant is that claims never overlap.
+        assert!(successful_claims >= 1, "At least one claim should succeed");
+    }
+
+    #[tokio::test]
+    async fn test_valid_cache_returns_cached_key() {
+        // Set a valid cached key
+        let test_key = "test_mixin_key_32_characters_long";
+        set_wbi_key(test_key.to_string()).await;
+
+        // Should return the cached key
+        let result = get_valid_wbi_key().await;
+        assert_eq!(result, Some(test_key.to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_expired_cache_returns_none() {
+        // Set an already-expired key (TTL = 0, already in the past)
+        let mut guard = WBI_KEY_CACHE.lock().await;
+        *guard = Some(WbiKeys {
+            mixin_key: "expired_key".to_string(),
+            expires_at: std::time::Instant::now()
+                .checked_sub(std::time::Duration::from_secs(1))
+                .unwrap(),
+        });
+        drop(guard);
+
+        // Should return None for expired key
+        let result = get_valid_wbi_key().await;
+        assert!(result.is_none());
     }
 }

@@ -153,6 +153,7 @@ use crate::proto::client::{
     user_service_server::UserServiceServer,
 };
 use tonic::transport::Server;
+use tokio_stream::wrappers::TcpListenerStream;
 
 use std::sync::Arc;
 use synctv_cluster::sync::{ClusterManager, ConnectionManager, PublishRequest};
@@ -166,7 +167,6 @@ use synctv_core::service::{
 use synctv_core::Config;
 
 /// Configuration for the gRPC server
-#[derive(Clone)]
 pub struct GrpcServerConfig<'a> {
     pub config: &'a Config,
     pub jwt_service: JwtService,
@@ -205,6 +205,10 @@ pub struct GrpcServerConfig<'a> {
     pub builtin_stun_url: Option<String>,
     /// TURN health checker for filtering unhealthy TURN servers
     pub turn_health_checker: Option<Arc<synctv_core::service::TurnHealthChecker>>,
+    /// Pre-bound TCP listener for the gRPC server.
+    /// When provided, the server will use this listener instead of binding internally.
+    /// This allows the caller to detect port-in-use errors before spawning the server task.
+    pub grpc_listener: Option<tokio::net::TcpListener>,
 }
 
 /// Build and start the gRPC server
@@ -238,6 +242,8 @@ pub async fn serve(grpc_config: GrpcServerConfig<'_>) -> anyhow::Result<()> {
         shutdown_rx,
         builtin_stun_url,
         turn_health_checker,
+        // grpc_listener is reserved for future use to support pre-bound listeners
+        grpc_listener,
     } = grpc_config;
     let addr = config.grpc_address().parse()?;
 
@@ -739,18 +745,35 @@ pub async fn serve(grpc_config: GrpcServerConfig<'_>) -> anyhow::Result<()> {
     }
 
     // Start server with graceful shutdown support
-    router
-        .serve_with_shutdown(addr, async move {
-            if let Some(mut rx) = shutdown_rx {
-                // Use centralized shutdown signal from the server
-                let _ = rx.changed().await;
-            } else {
-                // Fallback: listen for Ctrl+C
-                tokio::signal::ctrl_c().await.ok();
-            }
-        })
-        .await
-        .map_err(|e| anyhow::anyhow!("gRPC server error: {e}"))?;
+    // Use pre-bound listener if provided (for proper error propagation), otherwise bind internally
+    if let Some(listener) = grpc_listener {
+        let incoming = TcpListenerStream::new(listener);
+        router
+            .serve_with_incoming_shutdown(incoming, async move {
+                if let Some(mut rx) = shutdown_rx {
+                    // Use centralized shutdown signal from the server
+                    let _ = rx.changed().await;
+                } else {
+                    // Fallback: listen for Ctrl+C
+                    tokio::signal::ctrl_c().await.ok();
+                }
+            })
+            .await
+            .map_err(|e| anyhow::anyhow!("gRPC server error: {e}"))?;
+    } else {
+        router
+            .serve_with_shutdown(addr, async move {
+                if let Some(mut rx) = shutdown_rx {
+                    // Use centralized shutdown signal from the server
+                    let _ = rx.changed().await;
+                } else {
+                    // Fallback: listen for Ctrl+C
+                    tokio::signal::ctrl_c().await.ok();
+                }
+            })
+            .await
+            .map_err(|e| anyhow::anyhow!("gRPC server error: {e}"))?;
+    }
 
     Ok(())
 }

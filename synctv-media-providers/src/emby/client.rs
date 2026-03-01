@@ -445,16 +445,20 @@ impl EmbyClient {
     pub async fn logout(&self) -> Result<(), EmbyError> {
         let prefix = self.get_api_prefix();
         let url = format!("{}{}/Sessions/Logout", self.host, prefix);
+        let headers = self.build_headers()?;
+        let client = self.client.clone();
 
-        let resp = self
-            .client
-            .post(&url)
-            .headers(self.build_headers()?)
-            .send()
-            .await?;
-
-        check_response(resp).await?;
-        Ok(())
+        with_retry(|| {
+            let url = url.clone();
+            let headers = headers.clone();
+            let client = client.clone();
+            async move {
+                let resp = client.post(&url).headers(headers).send().await?;
+                check_response(resp).await?;
+                Ok(())
+            }
+        })
+        .await
     }
 
     /// Get playback information
@@ -534,16 +538,20 @@ impl EmbyClient {
             prefix,
             url_encode(play_session_id)
         );
+        let headers = self.build_headers()?;
+        let client = self.client.clone();
 
-        let resp = self
-            .client
-            .delete(&url)
-            .headers(self.build_headers()?)
-            .send()
-            .await?;
-
-        check_response(resp).await?;
-        Ok(())
+        with_retry(|| {
+            let url = url.clone();
+            let headers = headers.clone();
+            let client = client.clone();
+            async move {
+                let resp = client.delete(&url).headers(headers).send().await?;
+                check_response(resp).await?;
+                Ok(())
+            }
+        })
+        .await
     }
 
     /// Report playback start to Emby server
@@ -569,16 +577,21 @@ impl EmbyClient {
             body["MediaSourceId"] = json!(source_id);
         }
 
-        let resp = self
-            .client
-            .post(&url)
-            .headers(self.build_headers()?)
-            .json(&body)
-            .send()
-            .await?;
+        let headers = self.build_headers()?;
+        let client = self.client.clone();
 
-        check_response(resp).await?;
-        Ok(())
+        with_retry(|| {
+            let url = url.clone();
+            let headers = headers.clone();
+            let body = body.clone();
+            let client = client.clone();
+            async move {
+                let resp = client.post(&url).headers(headers).json(&body).send().await?;
+                check_response(resp).await?;
+                Ok(())
+            }
+        })
+        .await
     }
 
     /// Report playback stop to Emby server
@@ -599,16 +612,21 @@ impl EmbyClient {
             "PositionTicks": position_ticks,
         });
 
-        let resp = self
-            .client
-            .post(&url)
-            .headers(self.build_headers()?)
-            .json(&body)
-            .send()
-            .await?;
+        let headers = self.build_headers()?;
+        let client = self.client.clone();
 
-        check_response(resp).await?;
-        Ok(())
+        with_retry(|| {
+            let url = url.clone();
+            let headers = headers.clone();
+            let body = body.clone();
+            let client = client.clone();
+            async move {
+                let resp = client.post(&url).headers(headers).json(&body).send().await?;
+                check_response(resp).await?;
+                Ok(())
+            }
+        })
+        .await
     }
 
     /// Report playback progress to Emby server
@@ -636,16 +654,21 @@ impl EmbyClient {
             body["MediaSourceId"] = json!(source_id);
         }
 
-        let resp = self
-            .client
-            .post(&url)
-            .headers(self.build_headers()?)
-            .json(&body)
-            .send()
-            .await?;
+        let headers = self.build_headers()?;
+        let client = self.client.clone();
 
-        check_response(resp).await?;
-        Ok(())
+        with_retry(|| {
+            let url = url.clone();
+            let headers = headers.clone();
+            let body = body.clone();
+            let client = client.clone();
+            async move {
+                let resp = client.post(&url).headers(headers).json(&body).send().await?;
+                check_response(resp).await?;
+                Ok(())
+            }
+        })
+        .await
     }
 
     /// Get host URL

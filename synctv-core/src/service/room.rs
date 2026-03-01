@@ -946,12 +946,13 @@ impl RoomService {
             .execute(&mut *tx)
             .await?;
 
-        // Invalidate caches BEFORE committing the transaction.
-        // See `invalidate_room_caches` for detailed rationale.
-        self.invalidate_room_caches(&room_id).await;
-
         // Commit transaction - all or nothing
         tx.commit().await?;
+
+        // Invalidate caches AFTER committing the transaction.
+        // This ensures cache state is always consistent with committed database state.
+        // If commit had failed, we would NOT invalidate (cache remains valid).
+        self.invalidate_room_caches(&room_id).await;
 
         // Notify after commit so notifications are only sent for successful deletions
         let _ = self
@@ -2398,11 +2399,11 @@ impl RoomService {
             .execute(&mut *tx)
             .await?;
 
-        // Invalidate caches BEFORE committing the transaction.
-        // See `invalidate_room_caches` for detailed rationale.
-        self.invalidate_room_caches(room_id).await;
-
         tx.commit().await?;
+
+        // Invalidate caches AFTER committing the transaction.
+        // This ensures cache state is always consistent with committed database state.
+        self.invalidate_room_caches(room_id).await;
 
         // Notify after commit so notifications are only sent for successful deletions
         let _ = self.notification_service.notify_room_deleted(room_id).await;
@@ -2548,11 +2549,11 @@ impl RoomService {
             .execute(&mut *tx)
             .await?;
 
-        // Invalidate caches BEFORE committing the transaction.
-        // See `invalidate_room_caches` for detailed rationale.
-        self.invalidate_room_caches(room_id).await;
-
         tx.commit().await?;
+
+        // Invalidate caches AFTER committing the transaction.
+        // This ensures cache state is always consistent with committed database state.
+        self.invalidate_room_caches(room_id).await;
 
         // Notify after commit
         let _ = self.notification_service.notify_room_deleted(room_id).await;

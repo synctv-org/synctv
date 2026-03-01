@@ -164,11 +164,12 @@ impl AdminService for AdminServiceImpl {
         &self,
         request: Request<GetSettingsRequest>,
     ) -> Result<Response<GetSettingsResponse>, Status> {
-        self.check_admin(&request).await?;
+        let validated = self.check_admin_get_validated(&request).await?;
+        let ctx = grpc_request_context(&request);
         let req = request.into_inner();
         let resp = self
             .admin_api
-            .get_settings(req)
+            .get_settings(req, &validated.user_id, &ctx)
             .await
             .map_err(map_api_error)?;
         Ok(Response::new(resp))
@@ -178,11 +179,12 @@ impl AdminService for AdminServiceImpl {
         &self,
         request: Request<GetSettingsGroupRequest>,
     ) -> Result<Response<GetSettingsGroupResponse>, Status> {
-        self.check_admin(&request).await?;
+        let validated = self.check_admin_get_validated(&request).await?;
+        let ctx = grpc_request_context(&request);
         let req = request.into_inner();
         let resp = self
             .admin_api
-            .get_settings_group(req)
+            .get_settings_group(req, &validated.user_id, &ctx)
             .await
             .map_err(map_api_error)?;
         Ok(Response::new(resp))

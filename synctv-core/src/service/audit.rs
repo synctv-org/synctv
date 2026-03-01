@@ -147,6 +147,9 @@ pub enum AuditAction {
     TokenIssued,
     TokenRefreshed,
     TokenFamilyRevoked,
+    // Settings access audit (read operations)
+    SettingsViewed,
+    SettingsGroupViewed,
 }
 
 impl AuditAction {
@@ -190,6 +193,9 @@ impl AuditAction {
             Self::TokenIssued => "token_issued",
             Self::TokenRefreshed => "token_refreshed",
             Self::TokenFamilyRevoked => "token_family_revoked",
+            // Settings access audit (read operations)
+            Self::SettingsViewed => "settings_viewed",
+            Self::SettingsGroupViewed => "settings_group_viewed",
         }
     }
 }
@@ -1026,6 +1032,9 @@ mod tests {
             (AuditAction::TokenIssued, "token_issued"),
             (AuditAction::TokenRefreshed, "token_refreshed"),
             (AuditAction::TokenFamilyRevoked, "token_family_revoked"),
+            // Settings access audit
+            (AuditAction::SettingsViewed, "settings_viewed"),
+            (AuditAction::SettingsGroupViewed, "settings_group_viewed"),
         ];
 
         for (action, expected) in actions {
@@ -1089,6 +1098,9 @@ mod tests {
             AuditAction::TokenIssued,
             AuditAction::TokenRefreshed,
             AuditAction::TokenFamilyRevoked,
+            // Settings access audit
+            AuditAction::SettingsViewed,
+            AuditAction::SettingsGroupViewed,
         ];
 
         for action in actions {

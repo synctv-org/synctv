@@ -293,25 +293,27 @@ async fn get_system_stats(
 // ------------------------------------------------------------------
 
 async fn get_settings(
-    _auth: AuthAdmin,
+    auth: AuthAdmin,
+    rctx: ReqCtx,
     State(state): State<AppState>,
 ) -> AppResult<Json<admin::GetSettingsResponse>> {
     let api = require_admin_api(&state)?;
     let resp = api
-        .get_settings(admin::GetSettingsRequest {})
+        .get_settings(admin::GetSettingsRequest {}, &auth.user_id, &rctx.0)
         .await
         .map_err(admin_err_to_app_error)?;
     Ok(Json(resp))
 }
 
 async fn get_settings_group(
-    _auth: AuthAdmin,
+    auth: AuthAdmin,
+    rctx: ReqCtx,
     State(state): State<AppState>,
     Path(group): Path<String>,
 ) -> AppResult<Json<admin::GetSettingsGroupResponse>> {
     let api = require_admin_api(&state)?;
     let resp = api
-        .get_settings_group(admin::GetSettingsGroupRequest { group })
+        .get_settings_group(admin::GetSettingsGroupRequest { group }, &auth.user_id, &rctx.0)
         .await
         .map_err(admin_err_to_app_error)?;
     Ok(Json(resp))

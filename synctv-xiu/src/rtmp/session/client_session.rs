@@ -256,6 +256,14 @@ impl ClientSession {
     }
 
     async fn handshake(&mut self) -> Result<(), SessionError> {
+        // Timeout to prevent malicious servers from indefinitely hanging the connection
+        // (consistent with ServerSession's 10-second handshake timeout)
+        const HANDSHAKE_TIMEOUT: tokio::time::Duration = tokio::time::Duration::from_secs(10);
+        // Maximum buffer size during handshake to prevent memory exhaustion
+        const MAX_HANDSHAKE_BUFFER: usize = 8192;
+
+        let handshake_start = tokio::time::Instant::now();
+
         loop {
             self.handshaker.handshake().await?;
             if self.handshaker.state == ClientHandshakeState::Finish {
@@ -265,8 +273,32 @@ impl ClientSession {
 
             let mut bytes_len = 0;
             while bytes_len < handshake::define::RTMP_HANDSHAKE_SIZE * 2 {
-                let data = self.io.lock().await.read().await?;
+                // Check remaining time before each read
+                let remaining = HANDSHAKE_TIMEOUT
+                    .checked_sub(handshake_start.elapsed())
+                    .ok_or(SessionError {
+                        value: SessionErrorValue::Timeout,
+                    })?;
+
+                let data = match tokio::time::timeout(remaining, self.io.lock().await.read()).await
+                {
+                    Ok(result) => result?,
+                    Err(_) => {
+                        return Err(SessionError {
+                            value: SessionErrorValue::Timeout,
+                        })
+                    }
+                };
+
                 bytes_len += data.len();
+                if bytes_len > MAX_HANDSHAKE_BUFFER {
+                    tracing::warn!(
+                        "RTMP client handshake buffer exceeded {MAX_HANDSHAKE_BUFFER} bytes, rejecting"
+                    );
+                    return Err(SessionError {
+                        value: SessionErrorValue::Timeout,
+                    });
+                }
                 self.handshaker.extend_data(&data[..])?;
             }
         }

@@ -255,6 +255,7 @@ async fn test_logout_returns_error_on_401() {
 }
 
 /// Test that logout returns an error when the server responds with 500 Internal Server Error.
+/// Note: The retry mechanism will attempt 4 requests total (1 initial + 3 retries) on 5xx errors.
 #[tokio::test]
 async fn test_logout_returns_error_on_500() {
     let server = MockServer::start().await;
@@ -262,7 +263,7 @@ async fn test_logout_returns_error_on_500() {
     Mock::given(method("POST"))
         .and(path("/emby/Sessions/Logout"))
         .respond_with(ResponseTemplate::new(500).set_body_string("Internal Server Error"))
-        .expect(1)
+        .expect(4) // 1 initial + 3 retries
         .mount(&server)
         .await;
 
@@ -276,13 +277,14 @@ async fn test_logout_returns_error_on_500() {
 }
 
 /// Test that `delete_active_encodings` returns an error on non-success response.
+/// Note: The retry mechanism will attempt 4 requests total (1 initial + 3 retries) on 5xx errors.
 #[tokio::test]
 async fn test_delete_active_encodings_returns_error_on_500() {
     let server = MockServer::start().await;
 
     Mock::given(method("DELETE"))
         .respond_with(ResponseTemplate::new(500).set_body_string("Internal Server Error"))
-        .expect(1)
+        .expect(4) // 1 initial + 3 retries
         .mount(&server)
         .await;
 
@@ -316,6 +318,7 @@ async fn test_delete_active_encodings_returns_error_on_404() {
 }
 
 /// Test that `report_playback_start` returns an error on non-success response.
+/// Note: The retry mechanism will attempt 4 requests total (1 initial + 3 retries) on 5xx errors.
 #[tokio::test]
 async fn test_report_playback_start_returns_error_on_500() {
     let server = MockServer::start().await;
@@ -323,7 +326,7 @@ async fn test_report_playback_start_returns_error_on_500() {
     Mock::given(method("POST"))
         .and(path("/emby/Sessions/Playing"))
         .respond_with(ResponseTemplate::new(500).set_body_string("Internal Server Error"))
-        .expect(1)
+        .expect(4) // 1 initial + 3 retries
         .mount(&server)
         .await;
 
@@ -339,6 +342,7 @@ async fn test_report_playback_start_returns_error_on_500() {
 }
 
 /// Test that `report_playback_stop` returns an error on non-success response.
+/// Note: The retry mechanism will attempt 4 requests total (1 initial + 3 retries) on 5xx errors.
 #[tokio::test]
 async fn test_report_playback_stop_returns_error_on_500() {
     let server = MockServer::start().await;
@@ -346,7 +350,7 @@ async fn test_report_playback_stop_returns_error_on_500() {
     Mock::given(method("POST"))
         .and(path("/emby/Sessions/Playing/Stopped"))
         .respond_with(ResponseTemplate::new(500).set_body_string("Internal Server Error"))
-        .expect(1)
+        .expect(4) // 1 initial + 3 retries
         .mount(&server)
         .await;
 
@@ -362,6 +366,7 @@ async fn test_report_playback_stop_returns_error_on_500() {
 }
 
 /// Test that `report_playback_progress` returns an error on non-success response.
+/// Note: The retry mechanism will attempt 4 requests total (1 initial + 3 retries) on 5xx errors.
 #[tokio::test]
 async fn test_report_playback_progress_returns_error_on_500() {
     let server = MockServer::start().await;
@@ -369,7 +374,7 @@ async fn test_report_playback_progress_returns_error_on_500() {
     Mock::given(method("POST"))
         .and(path("/emby/Sessions/Playing/Progress"))
         .respond_with(ResponseTemplate::new(500).set_body_string("Internal Server Error"))
-        .expect(1)
+        .expect(4) // 1 initial + 3 retries
         .mount(&server)
         .await;
 

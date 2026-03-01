@@ -296,7 +296,10 @@ impl AuthCallback for SyncTvRtmpAuth {
 
 /// Extract and URL-decode the `token` parameter from a query string.
 ///
-/// Returns `None` if no `token=` parameter is present.
+/// Returns `None` if:
+/// - No `token=` parameter is present
+/// - The token value is empty or contains only whitespace
+///
 /// The token value is percent-decoded (e.g. `%2B` → `+`) so that JWT tokens
 /// containing `+` characters survive URL encoding in RTMP query strings.
 fn extract_token_from_query(query: &str) -> Option<String> {
@@ -308,6 +311,13 @@ fn extract_token_from_query(query: &str) -> Option<String> {
             let decoded = percent_decode_str(encoded_value)
                 .decode_utf8_lossy()
                 .into_owned();
+
+            // Return None for empty or whitespace-only tokens to avoid
+            // meaningless JWT validation errors downstream.
+            if decoded.trim().is_empty() {
+                return None;
+            }
+
             return Some(decoded);
         }
     }
@@ -669,9 +679,31 @@ mod tests {
     }
 
     #[test]
-    fn test_extract_token_empty_value() {
+    fn test_extract_token_empty_value_returns_none() {
+        // Empty token should return None to avoid meaningless JWT validation errors
         let result = extract_token_from_query("token=");
-        assert_eq!(result.as_deref(), Some(""));
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_extract_token_empty_value_with_other_params() {
+        // Empty token among other params should also return None
+        let result = extract_token_from_query("foo=bar&token=&baz=qux");
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_extract_token_whitespace_only_returns_none() {
+        // Whitespace-only token should return None (whitespace is not meaningful)
+        let result = extract_token_from_query("token=   ");
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_extract_token_url_encoded_empty_returns_none() {
+        // URL-encoded empty/whitespace should return None
+        let result = extract_token_from_query("token=%20%20");
+        assert_eq!(result, None);
     }
 
     #[test]

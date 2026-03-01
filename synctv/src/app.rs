@@ -61,7 +61,6 @@ struct ClusterState {
     redis_publish_tx: Option<tokio::sync::mpsc::Sender<synctv_cluster::sync::PublishRequest>>,
     node_registry: Option<Arc<synctv_cluster::discovery::NodeRegistry>>,
     health_monitor: Option<Arc<synctv_cluster::discovery::HealthMonitor>>,
-    load_balancer: Option<Arc<synctv_cluster::discovery::LoadBalancer>>,
 }
 
 /// Server components (livestream, WebRTC, providers).
@@ -604,8 +603,8 @@ impl Application {
             info!("PlaybackService wired with cluster broadcaster");
         }
 
-        // Cluster discovery (NodeRegistry, HealthMonitor, LoadBalancer) — requires Redis
-        let (node_registry, health_monitor, load_balancer, dns_refresh_handle) =
+        // Cluster discovery (NodeRegistry, HealthMonitor) — requires Redis
+        let (node_registry, health_monitor, _load_balancer, dns_refresh_handle) =
             if let (Some(ref cm), Some(ref rh)) = (&cluster_manager, &infra.redis_handles) {
                 init_cluster_discovery(&infra.config, rh, cm, &connection_manager).await
             } else {
@@ -627,7 +626,6 @@ impl Application {
             redis_publish_tx,
             node_registry,
             health_monitor,
-            load_balancer,
         })
     }
 
@@ -700,7 +698,6 @@ impl Application {
             connection_manager: cluster.connection_manager,
             providers_manager: core.services.providers_manager.clone(),
             provider_instance_manager: core.services.provider_instance_manager.clone(),
-            provider_instance_repository: core.services.provider_instance_repo.clone(),
             user_provider_credential_repository: core
                 .services
                 .user_provider_credential_repo
@@ -721,7 +718,6 @@ impl Application {
             turn_health_checker: servers.turn_health_checker,
             node_registry: cluster.node_registry,
             health_monitor: cluster.health_monitor,
-            load_balancer: cluster.load_balancer,
             redis_client: infra.redis_handles.as_ref().map(|h| h.client.clone()),
             redis_conn: core.services.redis_conn.clone(), // already Option
             credential_encryption: core.services.credential_encryption,

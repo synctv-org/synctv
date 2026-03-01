@@ -13,7 +13,7 @@ pub mod error;
 pub mod service;
 pub mod types;
 
-pub use client::BilibiliClient;
+pub use client::{BilibiliClient, DanmakuMessage, HeartbeatConfig, LiveDanmakuConnection};
 pub use error::BilibiliError;
 pub use service::{BilibiliInterface, BilibiliService};
 pub use types::*;

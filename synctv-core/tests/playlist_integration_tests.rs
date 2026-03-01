@@ -613,3 +613,292 @@ async fn test_same_room_parent_id_allowed() {
     assert_eq!(created.parent_id.as_ref().unwrap(), &root.id);
     assert_eq!(created.room_id, room.id);
 }
+
+// ========== Pagination Tests for get_room_playlists ==========
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_count_by_room() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let room_repo = RoomRepository::new(pool.clone());
+    let playlist_repo = PlaylistRepository::new(pool.clone());
+
+    let owner = user_repo
+        .create(&make_user("pl_count_owner"))
+        .await
+        .unwrap();
+    let room = room_repo
+        .create(&make_room("Room Count", &owner.id))
+        .await
+        .unwrap();
+
+    // Initially only root playlist
+    let root = playlist_repo
+        .create(&make_playlist(&room.id, "", None, 0))
+        .await
+        .unwrap();
+
+    let count = playlist_repo.count_by_room(&room.id).await.unwrap();
+    assert_eq!(count, 1, "Should have 1 playlist (root)");
+
+    // Add more playlists
+    for i in 0..10 {
+        playlist_repo
+            .create(&make_playlist(&room.id, &format!("Playlist {}", i), Some(&root.id), i))
+            .await
+            .unwrap();
+    }
+
+    let count = playlist_repo.count_by_room(&room.id).await.unwrap();
+    assert_eq!(count, 11, "Should have 11 playlists (root + 10 children)");
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_get_by_room_paginated_first_page() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let room_repo = RoomRepository::new(pool.clone());
+    let playlist_repo = PlaylistRepository::new(pool.clone());
+
+    let owner = user_repo
+        .create(&make_user("pl_page_owner_1"))
+        .await
+        .unwrap();
+    let room = room_repo
+        .create(&make_room("Room Page 1", &owner.id))
+        .await
+        .unwrap();
+
+    let root = playlist_repo
+        .create(&make_playlist(&room.id, "", None, 0))
+        .await
+        .unwrap();
+
+    // Create 5 children
+    for i in 0..5 {
+        playlist_repo
+            .create(&make_playlist(&room.id, &format!("Playlist {}", i), Some(&root.id), i))
+            .await
+            .unwrap();
+    }
+
+    // Get first page with page_size=3
+    let playlists = playlist_repo
+        .get_by_room_paginated(&room.id, 3, 0)
+        .await
+        .unwrap();
+
+    assert_eq!(playlists.len(), 3, "First page should have 3 items");
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_get_by_room_paginated_second_page() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let room_repo = RoomRepository::new(pool.clone());
+    let playlist_repo = PlaylistRepository::new(pool.clone());
+
+    let owner = user_repo
+        .create(&make_user("pl_page_owner_2"))
+        .await
+        .unwrap();
+    let room = room_repo
+        .create(&make_room("Room Page 2", &owner.id))
+        .await
+        .unwrap();
+
+    let root = playlist_repo
+        .create(&make_playlist(&room.id, "", None, 0))
+        .await
+        .unwrap();
+
+    // Create 5 children
+    for i in 0..5 {
+        playlist_repo
+            .create(&make_playlist(&room.id, &format!("Playlist {}", i), Some(&root.id), i))
+            .await
+            .unwrap();
+    }
+
+    // Get second page with page_size=3 (offset=3)
+    let playlists = playlist_repo
+        .get_by_room_paginated(&room.id, 3, 3)
+        .await
+        .unwrap();
+
+    assert_eq!(playlists.len(), 3, "Second page should have 3 items");
+    // Total is 6 (root + 5 children), offset 3 means we get items 4, 5, 6
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_get_by_room_paginated_last_partial_page() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let room_repo = RoomRepository::new(pool.clone());
+    let playlist_repo = PlaylistRepository::new(pool.clone());
+
+    let owner = user_repo
+        .create(&make_user("pl_page_owner_3"))
+        .await
+        .unwrap();
+    let room = room_repo
+        .create(&make_room("Room Page 3", &owner.id))
+        .await
+        .unwrap();
+
+    let root = playlist_repo
+        .create(&make_playlist(&room.id, "", None, 0))
+        .await
+        .unwrap();
+
+    // Create 5 children (total 6)
+    for i in 0..5 {
+        playlist_repo
+            .create(&make_playlist(&room.id, &format!("Playlist {}", i), Some(&root.id), i))
+            .await
+            .unwrap();
+    }
+
+    // Get third page with page_size=5 (offset=10) - should be empty
+    let playlists = playlist_repo
+        .get_by_room_paginated(&room.id, 5, 10)
+        .await
+        .unwrap();
+
+    assert_eq!(playlists.len(), 0, "Page beyond data should be empty");
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_get_by_room_paginated_large_dataset() {
+    // Test with 150 playlists to verify pagination works with large datasets
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let room_repo = RoomRepository::new(pool.clone());
+    let playlist_repo = PlaylistRepository::new(pool.clone());
+
+    let owner = user_repo
+        .create(&make_user("pl_large_owner"))
+        .await
+        .unwrap();
+    let room = room_repo
+        .create(&make_room("Room Large", &owner.id))
+        .await
+        .unwrap();
+
+    let root = playlist_repo
+        .create(&make_playlist(&room.id, "", None, 0))
+        .await
+        .unwrap();
+
+    // Create 149 children (total 150)
+    for i in 0..149 {
+        playlist_repo
+            .create(&make_playlist(&room.id, &format!("Playlist {:03}", i), Some(&root.id), i))
+            .await
+            .unwrap();
+    }
+
+    // Verify total count
+    let count = playlist_repo.count_by_room(&room.id).await.unwrap();
+    assert_eq!(count, 150, "Should have 150 playlists total");
+
+    // Get first page with max page_size=100
+    let page1 = playlist_repo
+        .get_by_room_paginated(&room.id, 100, 0)
+        .await
+        .unwrap();
+    assert_eq!(page1.len(), 100, "First page should have 100 items");
+
+    // Get second page
+    let page2 = playlist_repo
+        .get_by_room_paginated(&room.id, 100, 100)
+        .await
+        .unwrap();
+    assert_eq!(page2.len(), 50, "Second page should have 50 items");
+
+    // Verify no overlap between pages
+    let page1_ids: std::collections::HashSet<_> = page1.iter().map(|p| p.id.clone()).collect();
+    let page2_ids: std::collections::HashSet<_> = page2.iter().map(|p| p.id.clone()).collect();
+    let intersection: Vec<_> = page1_ids.intersection(&page2_ids).collect();
+    assert!(
+        intersection.is_empty(),
+        "Pages should not have overlapping items"
+    );
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_get_by_room_paginated_empty_room() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let room_repo = RoomRepository::new(pool.clone());
+    let playlist_repo = PlaylistRepository::new(pool.clone());
+
+    let owner = user_repo
+        .create(&make_user("pl_empty_owner"))
+        .await
+        .unwrap();
+    let room = room_repo
+        .create(&make_room("Room Empty", &owner.id))
+        .await
+        .unwrap();
+
+    // Don't create root - room is completely empty
+
+    let count = playlist_repo.count_by_room(&room.id).await.unwrap();
+    assert_eq!(count, 0, "Empty room should have 0 playlists");
+
+    let playlists = playlist_repo
+        .get_by_room_paginated(&room.id, 50, 0)
+        .await
+        .unwrap();
+    assert_eq!(playlists.len(), 0, "Empty room should return empty page");
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_get_by_room_paginated_respects_page_size_limit() {
+    // Verify that requesting more than max (100) still only returns 100
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let room_repo = RoomRepository::new(pool.clone());
+    let playlist_repo = PlaylistRepository::new(pool.clone());
+
+    let owner = user_repo
+        .create(&make_user("pl_limit_owner"))
+        .await
+        .unwrap();
+    let room = room_repo
+        .create(&make_room("Room Limit", &owner.id))
+        .await
+        .unwrap();
+
+    let root = playlist_repo
+        .create(&make_playlist(&room.id, "", None, 0))
+        .await
+        .unwrap();
+
+    // Create 150 children
+    for i in 0..150 {
+        playlist_repo
+            .create(&make_playlist(&room.id, &format!("Playlist {:03}", i), Some(&root.id), i))
+            .await
+            .unwrap();
+    }
+
+    // Try to get 200 items (should work at repository level - API enforces limit)
+    let playlists = playlist_repo
+        .get_by_room_paginated(&room.id, 200, 0)
+        .await
+        .unwrap();
+    assert_eq!(
+        playlists.len(),
+        151,
+        "Repository returns all items when limit > count"
+    );
+}

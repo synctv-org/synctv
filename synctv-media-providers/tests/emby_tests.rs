@@ -514,3 +514,258 @@ fn emby_thumbnail_url_construction() {
         "https://emby.example.com/Items/item-abc/Images/Thumb?tag=thumb-tag-456&maxHeight=300"
     );
 }
+
+// ============================================================================
+// Retry mechanism tests for report_playback_* and logout methods
+// ============================================================================
+
+/// Test that report_playback_start retries on 5xx server errors
+#[tokio::test]
+async fn test_emby_report_playback_start_retries_on_5xx() {
+    let server = MockServer::start().await;
+
+    // First request returns 500, second returns 204
+    Mock::given(method("POST"))
+        .and(path("/emby/Sessions/Playing"))
+        .respond_with(ResponseTemplate::new(500).set_body_string("Internal error"))
+        .up_to_n_times(1)
+        .mount(&server)
+        .await;
+
+    Mock::given(method("POST"))
+        .and(path("/emby/Sessions/Playing"))
+        .respond_with(ResponseTemplate::new(204))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let client = EmbyClient::with_credentials(server.uri(), "token123", "user-uuid-123").unwrap();
+    let result = client
+        .report_playback_start("item-abc", "session-1", Some("source-1"), 0)
+        .await;
+    assert!(
+        result.is_ok(),
+        "Playback start should succeed after retry: {result:?}"
+    );
+}
+
+/// Test that report_playback_stop retries on 5xx server errors
+#[tokio::test]
+async fn test_emby_report_playback_stop_retries_on_5xx() {
+    let server = MockServer::start().await;
+
+    // First request returns 502, second returns 204
+    Mock::given(method("POST"))
+        .and(path("/emby/Sessions/Playing/Stopped"))
+        .respond_with(ResponseTemplate::new(502).set_body_string("Bad Gateway"))
+        .up_to_n_times(1)
+        .mount(&server)
+        .await;
+
+    Mock::given(method("POST"))
+        .and(path("/emby/Sessions/Playing/Stopped"))
+        .respond_with(ResponseTemplate::new(204))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let client = EmbyClient::with_credentials(server.uri(), "token123", "user-uuid-123").unwrap();
+    let result = client
+        .report_playback_stop("item-abc", "session-1", 50000)
+        .await;
+    assert!(
+        result.is_ok(),
+        "Playback stop should succeed after retry: {result:?}"
+    );
+}
+
+/// Test that report_playback_progress retries on 5xx server errors
+#[tokio::test]
+async fn test_emby_report_playback_progress_retries_on_5xx() {
+    let server = MockServer::start().await;
+
+    // First request returns 503, second returns 204
+    Mock::given(method("POST"))
+        .and(path("/emby/Sessions/Playing/Progress"))
+        .respond_with(ResponseTemplate::new(503).set_body_string("Service Unavailable"))
+        .up_to_n_times(1)
+        .mount(&server)
+        .await;
+
+    Mock::given(method("POST"))
+        .and(path("/emby/Sessions/Playing/Progress"))
+        .respond_with(ResponseTemplate::new(204))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let client = EmbyClient::with_credentials(server.uri(), "token123", "user-uuid-123").unwrap();
+    let result = client
+        .report_playback_progress("item-abc", "session-1", Some("source-1"), 25000, false)
+        .await;
+    assert!(
+        result.is_ok(),
+        "Playback progress should succeed after retry: {result:?}"
+    );
+}
+
+/// Test that logout retries on 5xx server errors
+#[tokio::test]
+async fn test_emby_logout_retries_on_5xx() {
+    let server = MockServer::start().await;
+
+    // First request returns 500, second returns 204
+    Mock::given(method("POST"))
+        .and(path("/emby/Sessions/Logout"))
+        .respond_with(ResponseTemplate::new(500).set_body_string("Internal error"))
+        .up_to_n_times(1)
+        .mount(&server)
+        .await;
+
+    Mock::given(method("POST"))
+        .and(path("/emby/Sessions/Logout"))
+        .respond_with(ResponseTemplate::new(204))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let client = EmbyClient::with_credentials(server.uri(), "token123", "user-uuid-123").unwrap();
+    let result = client.logout().await;
+    assert!(result.is_ok(), "Logout should succeed after retry: {result:?}");
+}
+
+/// Test that delete_active_encodings retries on 5xx server errors
+#[tokio::test]
+async fn test_emby_delete_active_encodings_retries_on_5xx() {
+    let server = MockServer::start().await;
+
+    // First request returns 500, second returns 204
+    Mock::given(method("DELETE"))
+        .respond_with(ResponseTemplate::new(500).set_body_string("Internal error"))
+        .up_to_n_times(1)
+        .mount(&server)
+        .await;
+
+    Mock::given(method("DELETE"))
+        .respond_with(ResponseTemplate::new(204))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let client = EmbyClient::with_credentials(server.uri(), "token123", "user-uuid-123").unwrap();
+    let result = client.delete_active_encodings("session-1").await;
+    assert!(
+        result.is_ok(),
+        "Delete active encodings should succeed after retry: {result:?}"
+    );
+}
+
+/// Test that report_playback_start does NOT retry on 4xx client errors
+#[tokio::test]
+async fn test_emby_report_playback_start_no_retry_on_4xx() {
+    let server = MockServer::start().await;
+
+    // 401 should NOT be retried
+    Mock::given(method("POST"))
+        .and(path("/emby/Sessions/Playing"))
+        .respond_with(ResponseTemplate::new(401).set_body_string("Unauthorized"))
+        .expect(1) // Should only be called once (no retries)
+        .mount(&server)
+        .await;
+
+    let client = EmbyClient::with_credentials(server.uri(), "token123", "user-uuid-123").unwrap();
+    let result = client
+        .report_playback_start("item-abc", "session-1", None, 0)
+        .await;
+    assert!(result.is_err(), "4xx errors should fail immediately");
+    let err = result.unwrap_err();
+    // Verify it's an HTTP error with 401 status
+    let err_string = err.to_string();
+    assert!(
+        err_string.contains("401"),
+        "Expected 401 error, got: {err_string}"
+    );
+}
+
+/// Test that logout does NOT retry on 4xx client errors
+#[tokio::test]
+async fn test_emby_logout_no_retry_on_4xx() {
+    let server = MockServer::start().await;
+
+    // 403 should NOT be retried
+    Mock::given(method("POST"))
+        .and(path("/emby/Sessions/Logout"))
+        .respond_with(ResponseTemplate::new(403).set_body_string("Forbidden"))
+        .expect(1) // Should only be called once (no retries)
+        .mount(&server)
+        .await;
+
+    let client = EmbyClient::with_credentials(server.uri(), "token123", "user-uuid-123").unwrap();
+    let result = client.logout().await;
+    assert!(result.is_err(), "4xx errors should fail immediately");
+    let err = result.unwrap_err();
+    let err_string = err.to_string();
+    assert!(
+        err_string.contains("403"),
+        "Expected 403 error, got: {err_string}"
+    );
+}
+
+/// Test that report_playback_start retries on 429 (Too Many Requests)
+#[tokio::test]
+async fn test_emby_report_playback_start_retries_on_429() {
+    let server = MockServer::start().await;
+
+    // First request returns 429, second returns 204
+    Mock::given(method("POST"))
+        .and(path("/emby/Sessions/Playing"))
+        .respond_with(ResponseTemplate::new(429).set_body_string("Rate limited"))
+        .up_to_n_times(1)
+        .mount(&server)
+        .await;
+
+    Mock::given(method("POST"))
+        .and(path("/emby/Sessions/Playing"))
+        .respond_with(ResponseTemplate::new(204))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let client = EmbyClient::with_credentials(server.uri(), "token123", "user-uuid-123").unwrap();
+    let result = client
+        .report_playback_start("item-abc", "session-1", None, 0)
+        .await;
+    assert!(
+        result.is_ok(),
+        "429 should be retried and succeed: {result:?}"
+    );
+}
+
+/// Test that multiple 5xx errors are retried up to max times
+#[tokio::test]
+async fn test_emby_report_playback_stop_multiple_retries_exhausted() {
+    let server = MockServer::start().await;
+
+    // All requests return 500 (more than max retries)
+    Mock::given(method("POST"))
+        .and(path("/emby/Sessions/Playing/Stopped"))
+        .respond_with(ResponseTemplate::new(500).set_body_string("Internal error"))
+        .expect(4) // 1 initial + 3 retries = 4 total calls
+        .mount(&server)
+        .await;
+
+    let client = EmbyClient::with_credentials(server.uri(), "token123", "user-uuid-123").unwrap();
+    let result = client
+        .report_playback_stop("item-abc", "session-1", 50000)
+        .await;
+    assert!(
+        result.is_err(),
+        "Should fail after exhausting retries: {result:?}"
+    );
+    let err = result.unwrap_err();
+    let err_string = err.to_string();
+    assert!(
+        err_string.contains("500"),
+        "Expected 500 error, got: {err_string}"
+    );
+}

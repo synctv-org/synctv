@@ -20,7 +20,7 @@ fn test_notification_message_encode_decode() {
                 content: "You have been invited to join a room".to_string(),
                 data: r#"{"room_id":"room123","room_name":"Test Room","inviter_name":"Alice"}"#
                     .to_string(),
-                timestamp: 1_704_067_200_000, // 2024-01-01 00:00:00 UTC
+                timestamp: 1_704_067_200, // 2024-01-01 00:00:00 UTC (seconds)
             },
         )),
     };
@@ -40,7 +40,7 @@ fn test_notification_message_encode_decode() {
             assert_eq!(notif.notification_type, "room_invitation");
             assert_eq!(notif.title, "Room Invitation");
             assert_eq!(notif.content, "You have been invited to join a room");
-            assert_eq!(notif.timestamp, 1_704_067_200_000);
+            assert_eq!(notif.timestamp, 1_704_067_200);
         }
         _ => panic!("Expected Notification variant, got {:?}", decoded.message),
     }
@@ -144,7 +144,7 @@ fn test_notification_with_serialized_data() {
                 title: format!("Room Invitation: {room_name}"),
                 content: format!("{inviter} invited you to join the room \"{room_name}\""),
                 data: data.to_string(),
-                timestamp: chrono::Utc::now().timestamp_millis(),
+                timestamp: chrono::Utc::now().timestamp(),
             },
         )),
     };

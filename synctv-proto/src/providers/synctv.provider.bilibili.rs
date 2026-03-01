@@ -74,8 +74,7 @@ pub struct CheckQrRequest {
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct QrStatusResponse {
-    /// 0=success, 1=expired, 2=not_scanned, 3=scanned_not_confirmed
-    #[prost(int32, tag = "1")]
+    #[prost(enumeration = "QrLoginStatus", tag = "1")]
     pub status: i32,
     /// SENSITIVE: Session cookies - do not log
     #[prost(map = "string, string", tag = "2")]
@@ -192,6 +191,44 @@ pub struct LogoutRequest {
 pub struct LogoutResponse {
     #[prost(string, tag = "1")]
     pub message: ::prost::alloc::string::String,
+}
+/// QR login status enum
+/// Values match synctv-media-providers QRCodeStatus for compatibility
+#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, ::prost::Enumeration)]
+#[repr(i32)]
+pub enum QrLoginStatus {
+    Unspecified = 0,
+    Expired = 1,
+    NotScanned = 2,
+    Scanned = 3,
+    Success = 4,
+}
+impl QrLoginStatus {
+    /// String value of the enum field names used in the ProtoBuf definition.
+    ///
+    /// The values are not transformed in any way and thus are considered stable
+    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
+    pub fn as_str_name(&self) -> &'static str {
+        match self {
+            Self::Unspecified => "QR_LOGIN_STATUS_UNSPECIFIED",
+            Self::Expired => "QR_LOGIN_STATUS_EXPIRED",
+            Self::NotScanned => "QR_LOGIN_STATUS_NOT_SCANNED",
+            Self::Scanned => "QR_LOGIN_STATUS_SCANNED",
+            Self::Success => "QR_LOGIN_STATUS_SUCCESS",
+        }
+    }
+    /// Creates an enum from field names used in the ProtoBuf definition.
+    pub fn from_str_name(value: &str) -> ::core::option::Option<Self> {
+        match value {
+            "QR_LOGIN_STATUS_UNSPECIFIED" => Some(Self::Unspecified),
+            "QR_LOGIN_STATUS_EXPIRED" => Some(Self::Expired),
+            "QR_LOGIN_STATUS_NOT_SCANNED" => Some(Self::NotScanned),
+            "QR_LOGIN_STATUS_SCANNED" => Some(Self::Scanned),
+            "QR_LOGIN_STATUS_SUCCESS" => Some(Self::Success),
+            _ => None,
+        }
+    }
 }
 /// Generated client implementations.
 pub mod bilibili_provider_service_client {

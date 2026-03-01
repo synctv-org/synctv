@@ -35,7 +35,6 @@ pub struct LivestreamState {
 /// (cancellation tokens, background task handles, flush hooks) are managed by
 /// `ShutdownCoordinator`.
 #[derive(Clone)]
-#[allow(dead_code)]
 pub struct Services {
     pub user_service: Arc<UserService>,
     pub room_service: Arc<RoomService>,
@@ -48,7 +47,6 @@ pub struct Services {
     pub connection_manager: synctv_cluster::sync::ConnectionManager,
     pub providers_manager: Arc<synctv_core::service::ProvidersManager>,
     pub provider_instance_manager: Arc<synctv_core::service::RemoteProviderManager>,
-    pub provider_instance_repository: Arc<synctv_core::repository::ProviderInstanceRepository>,
     pub user_provider_credential_repository: Arc<UserProviderCredentialRepository>,
     pub alist_provider: Arc<AlistProvider>,
     pub bilibili_provider: Arc<BilibiliProvider>,
@@ -67,7 +65,6 @@ pub struct Services {
     pub turn_health_checker: Option<Arc<synctv_core::service::TurnHealthChecker>>,
     pub node_registry: Option<Arc<synctv_cluster::discovery::NodeRegistry>>,
     pub health_monitor: Option<Arc<synctv_cluster::discovery::HealthMonitor>>,
-    pub load_balancer: Option<Arc<synctv_cluster::discovery::LoadBalancer>>,
     /// Shared Redis connection for playback caching (optional in standalone mode).
     pub redis_client: Option<redis::Client>,
     pub redis_conn: Option<Arc<tokio::sync::RwLock<redis::aio::ConnectionManager>>>,
@@ -288,7 +285,7 @@ impl SyncTvServer {
         // Shut down remaining infrastructure components
         self.shutdown_components().await;
 
-        // Centralized shutdown: cancel tokens → drain tasks → run hooks
+        // Centralized shutdown: cancel tokens -> drain tasks -> run hooks
         coordinator.shutdown().await;
 
         // Close the database connection pool (after audit flush and settings task)
@@ -355,9 +352,18 @@ impl SyncTvServer {
         let config = self.config.clone();
         let cluster_manager = self.services.cluster_manager.clone();
 
+        // Pre-bind gRPC listener to catch port-in-use errors before spawning the task
+        let grpc_address = config.grpc_address();
+        let grpc_addr: std::net::SocketAddr = grpc_address
+            .parse()
+            .map_err(|e| anyhow::anyhow!("Invalid gRPC address '{grpc_address}': {e}"))?;
+        let grpc_listener = tokio::net::TcpListener::bind(grpc_addr)
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to bind gRPC address {grpc_addr}: {e}"))?;
+        info!("gRPC server listening on {}", grpc_addr);
+
         let services = self.services.clone();
         let handle = tokio::spawn(async move {
-            info!("Starting gRPC server on {}...", config.grpc_address());
             let grpc_config = synctv_api::grpc::GrpcServerConfig {
                 config: &config,
                 jwt_service: services.jwt_service,
@@ -390,6 +396,7 @@ impl SyncTvServer {
                     format!("stun:{}:{}", addr.ip(), addr.port())
                 }),
                 turn_health_checker: services.turn_health_checker.clone(),
+                grpc_listener: Some(grpc_listener),
             };
             if let Err(e) = synctv_api::grpc::serve(grpc_config).await {
                 error!("gRPC server error: {}", e);

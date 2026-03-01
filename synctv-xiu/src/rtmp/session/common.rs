@@ -8,7 +8,7 @@ use {
     },
     crate::rtmp::{
         cache::errors::CacheError,
-        cache::Cache,
+        cache::SplitCache,
         chunk::{
             define::{chunk_type, csid_type},
             packetizer::ChunkPacketizer,
@@ -27,11 +27,12 @@ use {
     },
     async_trait::async_trait,
     bytes::BytesMut,
+    parking_lot::RwLock,
     std::collections::VecDeque,
     std::fmt,
     std::time::{Duration, Instant},
     std::{net::SocketAddr, sync::Arc},
-    tokio::sync::{mpsc, Mutex},
+    tokio::sync::mpsc,
 };
 
 // Fixed #107: Rate limiting constants for DoS prevention
@@ -263,8 +264,7 @@ impl Common {
 
         // Save to GOP cache first (borrows data), then zero-copy into channel.
         self.stream_handler
-            .save_video_data(data, *timestamp)
-            .await?;
+            .save_video_data(data, *timestamp)?;
 
         // Zero-copy: split+freeze avoids a full memcpy on the hot path.
         let channel_data = FrameData::Video {
@@ -309,8 +309,7 @@ impl Common {
 
         // Save to GOP cache first (borrows data), then zero-copy into channel.
         self.stream_handler
-            .save_audio_data(data, *timestamp)
-            .await?;
+            .save_audio_data(data, *timestamp)?;
 
         // Zero-copy: split+freeze avoids a full memcpy on the hot path.
         let channel_data = FrameData::Audio {
@@ -345,7 +344,7 @@ impl Common {
         timestamp: &u32,
     ) -> Result<(), SessionError> {
         // Save to cache first (borrows data), then zero-copy into channel.
-        self.stream_handler.save_metadata(data, *timestamp).await;
+        self.stream_handler.save_metadata(data, *timestamp);
 
         let channel_data = FrameData::MetaData {
             timestamp: *timestamp,
@@ -543,8 +542,8 @@ impl Common {
             }
         }
 
-        let cache = Cache::new(gop_num, per_stream_max_bytes, statistic_data_sender);
-        self.stream_handler.set_cache(cache).await;
+        let cache = SplitCache::new(gop_num, per_stream_max_bytes, statistic_data_sender);
+        self.stream_handler.set_cache(cache);
         Ok(())
     }
 
@@ -580,6 +579,23 @@ impl Common {
     }
 }
 
+/// RTMP stream handler with split cache for reduced lock contention.
+///
+/// Uses `parking_lot::RwLock` instead of `tokio::sync::Mutex` because:
+/// 1. Cache operations are synchronous (no async points inside)
+/// 2. RwLock allows concurrent reads from multiple subscribers
+/// 3. parking_lot has better performance under contention
+///
+/// The cache is split into independent components:
+/// - `video_seq`: Video sequence header (infrequent updates)
+/// - `audio_seq`: Audio sequence header (infrequent updates)
+/// - `metadata`: Stream metadata (infrequent updates)
+/// - `gops`: GOP cache (frequent updates, shared by audio and video)
+///
+/// This design allows:
+/// - Concurrent reads from different subscribers
+/// - Video and audio saves to proceed in parallel (except for GOP)
+/// - Metadata reads without blocking frame processing
 #[derive(Default)]
 pub struct RtmpStreamHandler {
     /*cache is used to save RTMP sequence/gops/meta data
@@ -587,45 +603,53 @@ pub struct RtmpStreamHandler {
     /*The cache will be used in different threads(save
     cache in one thread and send cache data to different clients
     in other threads) */
-    pub cache: Mutex<Option<Cache>>,
+    pub cache: RwLock<Option<Arc<SplitCache>>>,
 }
 
 impl RtmpStreamHandler {
     #[must_use]
     pub fn new() -> Self {
         Self {
-            cache: Mutex::new(None),
+            cache: RwLock::new(None),
         }
     }
 
-    pub async fn set_cache(&self, cache: Cache) {
-        *self.cache.lock().await = Some(cache);
+    /// Set the cache (called once when publishing starts).
+    /// Uses a blocking write lock but is only called once per stream.
+    pub fn set_cache(&self, cache: SplitCache) {
+        *self.cache.write() = Some(Arc::new(cache));
     }
 
-    pub async fn save_video_data(
+    /// Save video data to cache.
+    /// Acquires write locks only on video_seq and gops, not on audio_seq or metadata.
+    pub fn save_video_data(
         &self,
         chunk_body: &BytesMut,
         timestamp: u32,
     ) -> Result<(), CacheError> {
-        if let Some(cache) = &mut *self.cache.lock().await {
-            cache.save_video_data(chunk_body, timestamp).await?;
+        if let Some(cache) = &*self.cache.read() {
+            cache.save_video_data(chunk_body, timestamp)?;
         }
         Ok(())
     }
 
-    pub async fn save_audio_data(
+    /// Save audio data to cache.
+    /// Acquires write locks only on audio_seq and gops, not on video_seq or metadata.
+    pub fn save_audio_data(
         &self,
         chunk_body: &BytesMut,
         timestamp: u32,
     ) -> Result<(), CacheError> {
-        if let Some(cache) = &mut *self.cache.lock().await {
-            cache.save_audio_data(chunk_body, timestamp).await?;
+        if let Some(cache) = &*self.cache.read() {
+            cache.save_audio_data(chunk_body, timestamp)?;
         }
         Ok(())
     }
 
-    pub async fn save_metadata(&self, chunk_body: &BytesMut, timestamp: u32) {
-        if let Some(cache) = &mut *self.cache.lock().await {
+    /// Save metadata to cache.
+    /// Acquires write lock only on metadata, not on video_seq, audio_seq, or gops.
+    pub fn save_metadata(&self, chunk_body: &BytesMut, timestamp: u32) {
+        if let Some(cache) = &*self.cache.read() {
             cache.save_metadata(chunk_body, timestamp);
         }
     }
@@ -665,23 +689,37 @@ impl TStreamHandler for RtmpStreamHandler {
             }
         }
 
-        if let Some(cache) = &mut *self.cache.lock().await {
+        // Read cache reference with minimal lock time
+        let cache_ref = {
+            let guard = self.cache.read();
+            guard.clone()
+        };
+
+        if let Some(cache) = cache_ref {
+            // Send metadata (uses separate read lock from audio/video seq)
             if let Some(meta_body_data) = cache.get_metadata() {
                 tracing::info!("send_prior_data: meta_body_data: ");
                 try_send_prior(&sender, meta_body_data, "metadata")?;
             }
+
+            // Send audio sequence header (uses separate read lock)
             if let Some(audio_seq_data) = cache.get_audio_seq() {
                 tracing::info!("send_prior_data: audio_seq_data: ",);
                 try_send_prior(&sender, audio_seq_data, "audio seq")?;
             }
+
+            // Send video sequence header (uses separate read lock)
             if let Some(video_seq_data) = cache.get_video_seq() {
                 tracing::info!("send_prior_data: video_seq_data:");
                 try_send_prior(&sender, video_seq_data, "video seq")?;
             }
+
+            // Send GOP data for relevant subscriber types
             match sub_type {
                 SubscribeType::RtmpPull
                 | SubscribeType::RtmpRemux2HttpFlv
                 | SubscribeType::RtmpRemux2Hls => {
+                    // get_gops_data clones the GOPs, so we can send without holding the lock
                     if let Some(gops_data) = cache.get_gops_data() {
                         for gop in gops_data {
                             for channel_data in gop.frame_data() {

@@ -740,3 +740,91 @@ async fn test_log_stream_kicked_without_reason() {
     assert_eq!(row.0["media_id"], "media_xyz");
     assert_eq!(row.0["reason"], "");
 }
+
+// ============================================================================
+// Test: Settings viewed audit logging
+// ============================================================================
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_settings_viewed_audit_log() {
+    let (_container, pool) = create_test_pool().await;
+
+    let service = AuditService::new_unbuffered(pool.clone());
+
+    // Log a settings view event
+    service
+        .log(
+            "settings_viewer".to_string(),
+            "admin_user".to_string(),
+            AuditAction::SettingsViewed,
+            AuditTargetType::Settings,
+            None,
+            serde_json::json!({
+                "group_count": 5,
+                "groups": ["general", "security", "proxy", "email", "p2p"],
+            }),
+            Some("192.168.1.50".to_string()),
+            Some("Mozilla/5.0 AdminClient/1.0".to_string()),
+        )
+        .await
+        .expect("Settings viewed log should succeed");
+
+    let row: (String, String, Option<String>, Option<String>, serde_json::Value) = sqlx::query_as(
+        r"
+        SELECT action, target_type, ip_address, user_agent, details
+        FROM audit_logs
+        WHERE actor_id = 'settings_viewer'
+        ",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("Query should succeed");
+
+    assert_eq!(row.0, "settings_viewed");
+    assert_eq!(row.1, "settings");
+    assert_eq!(row.2, Some("192.168.1.50".to_string()));
+    assert_eq!(row.3, Some("Mozilla/5.0 AdminClient/1.0".to_string()));
+    assert_eq!(row.4["group_count"], 5);
+    assert_eq!(row.4["groups"].as_array().unwrap().len(), 5);
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_settings_group_viewed_audit_log() {
+    let (_container, pool) = create_test_pool().await;
+
+    let service = AuditService::new_unbuffered(pool.clone());
+
+    // Log a settings group view event
+    service
+        .log(
+            "group_viewer".to_string(),
+            "admin_user".to_string(),
+            AuditAction::SettingsGroupViewed,
+            AuditTargetType::Settings,
+            None,
+            serde_json::json!({
+                "group": "security",
+            }),
+            Some("10.0.0.1".to_string()),
+            None,
+        )
+        .await
+        .expect("Settings group viewed log should succeed");
+
+    let row: (String, String, serde_json::Value) = sqlx::query_as(
+        r"
+        SELECT action, target_type, details
+        FROM audit_logs
+        WHERE actor_id = 'group_viewer'
+        ",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("Query should succeed");
+
+    assert_eq!(row.0, "settings_group_viewed");
+    assert_eq!(row.1, "settings");
+    assert_eq!(row.2["group"], "security");
+}

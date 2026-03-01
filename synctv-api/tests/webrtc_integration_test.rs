@@ -82,7 +82,7 @@ mod ice_servers {
             ],
             username: Some("1234567890:user123".to_string()),
             credential: Some("secret_credential_here".to_string()),
-            expiry_time: 1640995200,
+            expiry_time: 1_640_995_200,
         };
 
         let json = serde_json::to_string(&server).expect("Should serialize");
@@ -107,7 +107,7 @@ mod ice_servers {
                     urls: vec!["turn:turn.example.com:3478".to_string()],
                     username: Some("user:pass".to_string()),
                     credential: Some("cred123".to_string()),
-                    expiry_time: 1640995200,
+                    expiry_time: 1_640_995_200,
                 },
             ],
         };

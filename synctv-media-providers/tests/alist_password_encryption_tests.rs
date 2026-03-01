@@ -84,7 +84,7 @@ fn test_field_encryption_backward_compat() {
 #[tokio::test]
 async fn test_alist_password_round_trip_with_encryption() {
     let encryption_key = test_encryption_key();
-    let storage = InMemoryCredentialStorage::with_encryption(encryption_key);
+    let storage = InMemoryCredentialStorage::with_encryption(&encryption_key);
 
     let plain_password = "my_secret_password_456";
     let host = "https://alist.example.com";
@@ -129,7 +129,7 @@ async fn test_alist_password_round_trip_with_encryption() {
 #[tokio::test]
 async fn test_multiple_alist_credentials_encrypted() {
     let encryption_key = test_encryption_key();
-    let storage = InMemoryCredentialStorage::with_encryption(encryption_key);
+    let storage = InMemoryCredentialStorage::with_encryption(&encryption_key);
 
     let password1 = "password_for_server1";
     let password2 = "password_for_server2";
@@ -220,7 +220,7 @@ async fn test_storage_without_encryption_backward_compat() {
 #[tokio::test]
 async fn test_emby_api_key_round_trip_with_encryption() {
     let encryption_key = test_encryption_key();
-    let storage = InMemoryCredentialStorage::with_encryption(encryption_key);
+    let storage = InMemoryCredentialStorage::with_encryption(&encryption_key);
 
     let api_key = "secret_api_key_67890";
     let host = "https://emby.example.com";
@@ -265,7 +265,7 @@ async fn test_emby_api_key_round_trip_with_encryption() {
 #[tokio::test]
 async fn test_list_credentials_are_decrypted() {
     let encryption_key = test_encryption_key();
-    let storage = InMemoryCredentialStorage::with_encryption(encryption_key);
+    let storage = InMemoryCredentialStorage::with_encryption(&encryption_key);
 
     let password1 = "alist_password";
     let api_key = "emby_api_key";
@@ -310,7 +310,7 @@ async fn test_list_credentials_are_decrypted() {
             CredentialData::Emby { api_key: key, .. } => {
                 assert_eq!(key, api_key, "Emby api_key should be decrypted in list");
             }
-            _ => {}
+            CredentialData::Bilibili { .. } => {}
         }
     }
 

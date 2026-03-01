@@ -9,12 +9,10 @@
 
 /// Replicate the `derive_http_address` logic from `StaticDiscovery`.
 fn derive_http_address(grpc_address: &str, default_http_port: u16) -> String {
-    if let Some(colon_pos) = grpc_address.rfind(':') {
+    grpc_address.rfind(':').map_or_else(|| format!("{grpc_address}:{default_http_port}"), |colon_pos| {
         let host = &grpc_address[..colon_pos];
         format!("{host}:{default_http_port}")
-    } else {
-        format!("{grpc_address}:{default_http_port}")
-    }
+    })
 }
 
 // ============================================================================

@@ -96,7 +96,7 @@ async fn test_non_leader_periodic_skips() {
 #[test]
 fn test_cleanup_config_defaults() {
     let config = CleanupConfig::default();
-    assert_eq!(config.room_ttl_seconds, 172800); // 48 hours
+    assert_eq!(config.room_ttl_seconds, 172_800); // 48 hours
     assert_eq!(config.soft_delete_retention_days, 90);
     assert_eq!(config.room_soft_delete_retention_days, 90);
     assert_eq!(config.expired_token_retention_days, 7);

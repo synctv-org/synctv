@@ -89,17 +89,12 @@ pub async fn check_response(resp: reqwest::Response) -> Result<reqwest::Response
         let url = resp.url().to_string();
         // Read response body for debugging; truncate to 1 KB to avoid OOM.
         // Use char-safe truncation to avoid panicking on multi-byte UTF-8.
-        let body = match resp.text().await {
-            Ok(text) => {
-                if text.len() > 1024 {
+        let body = resp.text().await.map_or_else(|_| String::new(), |text| if text.len() > 1024 {
                     let truncated: String = text.chars().take(1024).collect();
                     format!("{truncated}...(truncated)")
                 } else {
                     text
-                }
-            }
-            Err(_) => String::new(),
-        };
+                });
         return Err(ProviderClientError::Http {
             status,
             url,

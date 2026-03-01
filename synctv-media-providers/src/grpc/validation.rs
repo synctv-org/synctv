@@ -67,7 +67,7 @@ pub async fn validate_host_with_dns(host: &str) -> Result<(), Status> {
 
     let port = parsed
         .port()
-        .unwrap_or(if parsed.scheme() == "https" { 443 } else { 80 });
+        .unwrap_or_else(|| if parsed.scheme() == "https" { 443 } else { 80 });
 
     let addrs = tokio::net::lookup_host((url_host, port))
         .await

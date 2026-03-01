@@ -685,13 +685,13 @@ mod hsts_headers {
 
     #[test]
     fn test_basic_max_age() {
-        assert_eq!(hsts_header(31536000, false, false), "max-age=31536000");
+        assert_eq!(hsts_header(31_536_000, false, false), "max-age=31536000");
     }
 
     #[test]
     fn test_with_subdomains() {
         assert_eq!(
-            hsts_header(31536000, true, false),
+            hsts_header(31_536_000, true, false),
             "max-age=31536000; includeSubDomains"
         );
     }
@@ -699,7 +699,7 @@ mod hsts_headers {
     #[test]
     fn test_with_preload() {
         assert_eq!(
-            hsts_header(31536000, false, true),
+            hsts_header(31_536_000, false, true),
             "max-age=31536000; preload"
         );
     }
@@ -707,7 +707,7 @@ mod hsts_headers {
     #[test]
     fn test_full_hsts() {
         assert_eq!(
-            hsts_header(63072000, true, true),
+            hsts_header(63_072_000, true, true),
             "max-age=63072000; includeSubDomains; preload"
         );
     }

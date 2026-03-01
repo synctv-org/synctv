@@ -68,9 +68,8 @@ async fn test_redis_pubsub_no_message_loss() {
                     received_messages.push(message.clone());
                 }
             }
-            Ok(None) => break,
-            Err(_) => break,
-        }
+            Ok(None) | Err(_) => break,
+            }
     }
 
     assert_eq!(
@@ -386,8 +385,8 @@ async fn test_redis_reconnection_event_preservation() {
         match tokio::time::timeout(remaining, rx_b.recv()).await {
             Ok(Some(ClusterEvent::ChatMessage { .. })) => received_count += 1,
             Ok(Some(_)) => {} // Other event types
-            Ok(None) => break, // Channel closed
-            Err(_) => break,   // Timeout
+            Ok(None) | Err(_) => break, // Channel closed
+            // Timeout
         }
     }
 

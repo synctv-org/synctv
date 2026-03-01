@@ -205,7 +205,9 @@ fn matches_hls_segment_pattern(path: &str, expected_room: &str, expected_media: 
     path.starts_with("/api/room/movie/live/hls/data/")
         && path.contains(expected_room)
         && path.contains(expected_media)
-        && path.ends_with(".ts")
+        && std::path::Path::new(path)
+            .extension()
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("ts"))
 }
 
 #[test]

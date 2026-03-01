@@ -46,7 +46,7 @@ impl MediaProvider for MockBilibiliProvider {
         // Return a minimal playback result
         Ok(PlaybackResult {
             default_mode: "default".to_string(),
-            playback_infos: [(
+            playback_infos: std::iter::once((
                 "default".to_string(),
                 PlaybackInfo {
                     urls: vec!["https://example.com/video.m3u8".to_string()],
@@ -56,8 +56,7 @@ impl MediaProvider for MockBilibiliProvider {
                     expires_at: None,
                     cors_proxy_required: false,
                 },
-            )]
-            .into_iter()
+            ))
             .collect(),
             metadata: std::collections::HashMap::new(),
         })

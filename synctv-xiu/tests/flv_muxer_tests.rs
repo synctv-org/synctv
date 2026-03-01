@@ -100,7 +100,7 @@ fn test_flv_tag_large_timestamp() {
 
     // Timestamp > 24 bits to test extended timestamp
     // 0x01234567 = timestamp with extended byte = 0x01
-    let timestamp: u32 = 0x01234567;
+    let timestamp: u32 = 0x0123_4567;
     muxer.write_flv_tag_header(0x08, 50, timestamp).unwrap();
 
     let bytes = muxer.writer.extract_current_bytes();

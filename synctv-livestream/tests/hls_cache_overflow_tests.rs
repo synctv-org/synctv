@@ -77,6 +77,7 @@ fn test_overflow_clears_cache() {
         cache_versions.remove(&key);
     } else {
         *entry = current + 1;
+        drop(entry);
     }
 
     // Verify the entry was removed

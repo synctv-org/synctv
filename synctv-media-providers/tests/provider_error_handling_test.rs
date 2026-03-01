@@ -357,7 +357,7 @@ mod alist_type_tests {
         }"#;
         let resp: HttpFsGetResp = serde_json::from_str(json).unwrap();
         assert_eq!(resp.name, "video.mp4");
-        assert_eq!(resp.size, 1024000);
+        assert_eq!(resp.size, 1_024_000);
         assert!(!resp.is_dir);
         assert_eq!(resp.raw_url, "https://cdn.example.com/video.mp4");
     }
@@ -651,7 +651,7 @@ mod emby_type_tests {
         let item: Item = serde_json::from_str(json).unwrap();
         assert_eq!(item.parent_id, Some("season1".to_string()));
         assert_eq!(item.series_name, Some("Test Show".to_string()));
-        assert_eq!(item.run_time_ticks, Some(18000000000));
+        assert_eq!(item.run_time_ticks, Some(18_000_000_000));
         assert_eq!(item.production_year, Some(2024));
     }
 }

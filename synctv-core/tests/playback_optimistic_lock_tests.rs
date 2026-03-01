@@ -643,16 +643,16 @@ async fn test_version_handles_large_values() {
 
     // Get state (should have version 999998)
     let mut state = playback_repo.get(&room.id).await.unwrap().unwrap();
-    assert_eq!(state.version, 999998);
+    assert_eq!(state.version, 999_998);
 
     // Update should work and version should increment
     state.current_time = 100.0;
     let result = playback_repo.update(&state).await.unwrap();
-    assert_eq!(result.version, 999999, "Version should be 999999");
+    assert_eq!(result.version, 999_999, "Version should be 999999");
 
     // One more update
     let mut state = result;
     state.current_time = 200.0;
     let result = playback_repo.update(&state).await.unwrap();
-    assert_eq!(result.version, 1000000, "Version should be 1000000");
+    assert_eq!(result.version, 1_000_000, "Version should be 1000000");
 }

@@ -184,14 +184,14 @@ pub fn is_blocked_ip(ip: IpAddr) -> bool {
 #[must_use]
 fn is_always_blocked_ip(ip: IpAddr) -> bool {
     match ip {
-        IpAddr::V4(v4) => is_always_blocked_ipv4(&v4),
+        IpAddr::V4(v4) => is_always_blocked_ipv4(v4),
         IpAddr::V6(v6) => is_always_blocked_ipv6(&v6),
     }
 }
 
 /// Check if an IPv4 address should be blocked regardless of policy.
 #[must_use]
-fn is_always_blocked_ipv4(ip: &Ipv4Addr) -> bool {
+fn is_always_blocked_ipv4(ip: Ipv4Addr) -> bool {
     let o = ip.octets();
 
     // Cloud metadata endpoint: 169.254.169.254 (not entire link-local range)

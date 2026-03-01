@@ -80,7 +80,7 @@ impl CircuitBreaker {
         }
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |d| d.as_secs() as i64);
+            .map_or(0, |d| d.as_secs().cast_signed());
         now.saturating_sub(opened_at) >= CIRCUIT_BREAKER_TIMEOUT_SECS
     }
 
@@ -96,7 +96,7 @@ impl CircuitBreaker {
         if prev + 1 >= CIRCUIT_BREAKER_THRESHOLD {
             let now = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
-                .map_or(0, |d| d.as_secs() as i64);
+                .map_or(0, |d| d.as_secs().cast_signed());
             // Only update opened_at when transitioning to Open
             if prev + 1 == CIRCUIT_BREAKER_THRESHOLD {
                 self.opened_at.store(now, Ordering::SeqCst);

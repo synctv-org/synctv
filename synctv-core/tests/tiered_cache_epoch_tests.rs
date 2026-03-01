@@ -85,14 +85,16 @@ impl CacheL2Backend for DelayedL2 {
     }
 
     async fn set(&self, key: &str, json: &str, _ttl_secs: u64) -> Result<()> {
-        let mut store = self.store.write().await;
-        store.insert(key.to_string(), json.to_string());
+        
+        self.store.write().await.insert(key.to_string(), json.to_string());
+        
         Ok(())
     }
 
     async fn delete(&self, key: &str) -> Result<()> {
-        let mut store = self.store.write().await;
-        store.remove(key);
+        
+        self.store.write().await.remove(key);
+        
         Ok(())
     }
 
@@ -112,8 +114,9 @@ impl CacheL2Backend for DelayedL2 {
     }
 
     async fn delete_by_prefix(&self, prefix: &str) -> Result<()> {
-        let mut store = self.store.write().await;
-        store.retain(|k, _| !k.starts_with(prefix));
+        
+        self.store.write().await.retain(|k, _| !k.starts_with(prefix));
+        
         Ok(())
     }
 

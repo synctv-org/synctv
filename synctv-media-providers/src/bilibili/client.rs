@@ -1,5 +1,6 @@
 //! Bilibili HTTP Client
 
+use std::fmt::Write;
 use std::collections::HashMap;
 use std::sync::LazyLock;
 use std::time::Duration;
@@ -220,6 +221,7 @@ impl BilibiliClient {
             mixin_key: mixin_key.clone(),
             expires_at: std::time::Instant::now() + WBI_KEY_TTL,
         });
+        drop(guard);
 
         Ok(mixin_key)
     }
@@ -1525,7 +1527,7 @@ fn build_auth_packet(room_id: u64, token: &str) -> Vec<u8> {
     let mut packet = Vec::with_capacity(packet_length);
 
     // Header
-    packet.extend_from_slice(&(packet_length as u32).to_be_bytes());
+    packet.extend_from_slice(&u32::try_from(packet_length).expect("REASON").to_be_bytes());
     packet.extend_from_slice(&16u16.to_be_bytes()); // header length
     packet.extend_from_slice(&1u16.to_be_bytes());  // protocol version
     packet.extend_from_slice(&7u32.to_be_bytes());  // operation = auth
@@ -1992,9 +1994,9 @@ pub fn generate_mpd_xml(dash_data: &DashData) -> String {
     mpd.push_str(r#"<MPD xmlns="urn:mpeg:dash:schema:mpd:2011" "#);
     mpd.push_str(r#"xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" "#);
     mpd.push_str(r#"xsi:schemaLocation="urn:mpeg:dash:schema:mpd:2011 DASH-MPD.xsd" "#);
-    mpd.push_str(&format!(r#"minBufferTime="PT{:.1}S" "#, dash_data.min_buffer_time));
+    let _ = write!(mpd, r#"minBufferTime="PT{:.1}S" "#, dash_data.min_buffer_time);
     mpd.push_str(r#"type="static" "#);
-    mpd.push_str(&format!(r#"mediaPresentationDuration="PT{:.1}S" "#, dash_data.duration));
+    let _ = write!(mpd, r#"mediaPresentationDuration="PT{:.1}S" "#, dash_data.duration);
     mpd.push_str(r#"profiles="urn:mpeg:dash:profile:isoff-on-demand:2011">"#);
     mpd.push('\n');
 
@@ -2009,38 +2011,32 @@ pub fn generate_mpd_xml(dash_data: &DashData) -> String {
         mpd.push('\n');
 
         for video in &dash_data.video_streams {
-            mpd.push_str(&format!(
-                r#"      <Representation id="{}" "#,
-                video.id
-            ));
-            mpd.push_str(&format!(r#"codecs="{}" "#, video.codecs));
-            mpd.push_str(&format!(r#"width="{}" "#, video.width));
-            mpd.push_str(&format!(r#"height="{}" "#, video.height));
-            mpd.push_str(&format!(r#"frameRate="{}" "#, video.frame_rate));
-            mpd.push_str(&format!(r#"sar="{}" "#, video.sar));
-            mpd.push_str(&format!(r#"bandwidth="{}">"#, video.bandwidth));
+            let _ = write!(mpd, r#"      <Representation id="{}" "#,
+                video.id);
+            let _ = write!(mpd, r#"codecs="{}" "#, video.codecs);
+            let _ = write!(mpd, r#"width="{}" "#, video.width);
+            let _ = write!(mpd, r#"height="{}" "#, video.height);
+            let _ = write!(mpd, r#"frameRate="{}" "#, video.frame_rate);
+            let _ = write!(mpd, r#"sar="{}" "#, video.sar);
+            let _ = write!(mpd, r#"bandwidth="{}">"#, video.bandwidth);
             mpd.push('\n');
 
             // BaseURL
-            mpd.push_str(&format!(r"        <BaseURL>{}</BaseURL>", escape_xml(&video.base_url)));
+            let _ = write!(mpd, r"        <BaseURL>{}</BaseURL>", escape_xml(&video.base_url));
             mpd.push('\n');
 
             // Backup URLs
             for backup_url in &video.backup_urls {
-                mpd.push_str(&format!(r"        <BaseURL>{}</BaseURL>", escape_xml(backup_url)));
+                let _ = write!(mpd, r"        <BaseURL>{}</BaseURL>", escape_xml(backup_url));
                 mpd.push('\n');
             }
 
             // SegmentBase
-            mpd.push_str(&format!(
-                r#"        <SegmentBase indexRange="{}">"#,
-                video.segment_base.index_range
-            ));
+            let _ = write!(mpd, r#"        <SegmentBase indexRange="{}">"#,
+                video.segment_base.index_range);
             mpd.push('\n');
-            mpd.push_str(&format!(
-                r#"          <Initialization range="{}"/>"#,
-                video.segment_base.initialization_range
-            ));
+            let _ = write!(mpd, r#"          <Initialization range="{}"/>"#,
+                video.segment_base.initialization_range);
             mpd.push('\n');
             mpd.push_str(r"        </SegmentBase>");
             mpd.push('\n');
@@ -2060,35 +2056,29 @@ pub fn generate_mpd_xml(dash_data: &DashData) -> String {
         mpd.push('\n');
 
         for audio in &dash_data.audio_streams {
-            mpd.push_str(&format!(
-                r#"      <Representation id="{}" "#,
-                audio.id
-            ));
-            mpd.push_str(&format!(r#"codecs="{}" "#, audio.codecs));
-            mpd.push_str(&format!(r#"audioSamplingRate="{}" "#, audio.audio_sampling_rate));
-            mpd.push_str(&format!(r#"bandwidth="{}">"#, audio.bandwidth));
+            let _ = write!(mpd, r#"      <Representation id="{}" "#,
+                audio.id);
+            let _ = write!(mpd, r#"codecs="{}" "#, audio.codecs);
+            let _ = write!(mpd, r#"audioSamplingRate="{}" "#, audio.audio_sampling_rate);
+            let _ = write!(mpd, r#"bandwidth="{}">"#, audio.bandwidth);
             mpd.push('\n');
 
             // BaseURL
-            mpd.push_str(&format!(r"        <BaseURL>{}</BaseURL>", escape_xml(&audio.base_url)));
+            let _ = write!(mpd, r"        <BaseURL>{}</BaseURL>", escape_xml(&audio.base_url));
             mpd.push('\n');
 
             // Backup URLs
             for backup_url in &audio.backup_urls {
-                mpd.push_str(&format!(r"        <BaseURL>{}</BaseURL>", escape_xml(backup_url)));
+                let _ = write!(mpd, r"        <BaseURL>{}</BaseURL>", escape_xml(backup_url));
                 mpd.push('\n');
             }
 
             // SegmentBase
-            mpd.push_str(&format!(
-                r#"        <SegmentBase indexRange="{}">"#,
-                audio.segment_base.index_range
-            ));
+            let _ = write!(mpd, r#"        <SegmentBase indexRange="{}">"#,
+                audio.segment_base.index_range);
             mpd.push('\n');
-            mpd.push_str(&format!(
-                r#"          <Initialization range="{}"/>"#,
-                audio.segment_base.initialization_range
-            ));
+            let _ = write!(mpd, r#"          <Initialization range="{}"/>"#,
+                audio.segment_base.initialization_range);
             mpd.push('\n');
             mpd.push_str(r"        </SegmentBase>");
             mpd.push('\n');

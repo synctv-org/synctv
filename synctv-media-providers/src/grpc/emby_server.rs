@@ -15,7 +15,7 @@ use crate::emby::error::EmbyError;
 use tonic::{Request, Response, Status};
 
 /// Map Emby errors to appropriate gRPC status codes using the shared mapper.
-fn map_emby_error(context: &str, e: EmbyError) -> Status {
+fn map_emby_error(context: &str, e: &EmbyError) -> Status {
     map_provider_error(context, &e)
 }
 
@@ -47,7 +47,7 @@ impl Emby for EmbyService {
         let req = request.into_inner();
         validate_host_with_dns(&req.host).await?;
         let resp = self.service.login(req).await
-            .map_err(|e| map_emby_error("login", e))?;
+            .map_err(|e| map_emby_error("login", &e))?;
         Ok(Response::new(resp))
     }
 
@@ -55,7 +55,7 @@ impl Emby for EmbyService {
         let req = request.into_inner();
         validate_host_with_dns(&req.host).await?;
         let resp = self.service.me(req).await
-            .map_err(|e| map_emby_error("me", e))?;
+            .map_err(|e| map_emby_error("me", &e))?;
         Ok(Response::new(resp))
     }
 
@@ -66,7 +66,7 @@ impl Emby for EmbyService {
         let req = request.into_inner();
         validate_host_with_dns(&req.host).await?;
         let resp = self.service.get_items(req).await
-            .map_err(|e| map_emby_error("get_items", e))?;
+            .map_err(|e| map_emby_error("get_items", &e))?;
         Ok(Response::new(resp))
     }
 
@@ -74,7 +74,7 @@ impl Emby for EmbyService {
         let req = request.into_inner();
         validate_host_with_dns(&req.host).await?;
         let resp = self.service.get_item(req).await
-            .map_err(|e| map_emby_error("get_item", e))?;
+            .map_err(|e| map_emby_error("get_item", &e))?;
         Ok(Response::new(resp))
     }
 
@@ -85,7 +85,7 @@ impl Emby for EmbyService {
         let req = request.into_inner();
         validate_host_with_dns(&req.host).await?;
         let resp = self.service.get_system_info(req).await
-            .map_err(|e| map_emby_error("get_system_info", e))?;
+            .map_err(|e| map_emby_error("get_system_info", &e))?;
         Ok(Response::new(resp))
     }
 
@@ -93,7 +93,7 @@ impl Emby for EmbyService {
         let req = request.into_inner();
         validate_host_with_dns(&req.host).await?;
         let resp = self.service.fs_list(req).await
-            .map_err(|e| map_emby_error("fs_list", e))?;
+            .map_err(|e| map_emby_error("fs_list", &e))?;
         Ok(Response::new(resp))
     }
 
@@ -101,7 +101,7 @@ impl Emby for EmbyService {
         let req = request.into_inner();
         validate_host_with_dns(&req.host).await?;
         let resp = self.service.logout(req).await
-            .map_err(|e| map_emby_error("logout", e))?;
+            .map_err(|e| map_emby_error("logout", &e))?;
         Ok(Response::new(resp))
     }
 
@@ -112,7 +112,7 @@ impl Emby for EmbyService {
         let req = request.into_inner();
         validate_host_with_dns(&req.host).await?;
         let resp = self.service.playback_info(req).await
-            .map_err(|e| map_emby_error("playback_info", e))?;
+            .map_err(|e| map_emby_error("playback_info", &e))?;
         Ok(Response::new(resp))
     }
 
@@ -123,7 +123,7 @@ impl Emby for EmbyService {
         let req = request.into_inner();
         validate_host_with_dns(&req.host).await?;
         let resp = self.service.delete_active_encodings(req).await
-            .map_err(|e| map_emby_error("delete_active_encodings", e))?;
+            .map_err(|e| map_emby_error("delete_active_encodings", &e))?;
         Ok(Response::new(resp))
     }
 
@@ -134,7 +134,7 @@ impl Emby for EmbyService {
         let req = request.into_inner();
         validate_host_with_dns(&req.host).await?;
         let resp = self.service.report_playback_start(req).await
-            .map_err(|e| map_emby_error("report_playback_start", e))?;
+            .map_err(|e| map_emby_error("report_playback_start", &e))?;
         Ok(Response::new(resp))
     }
 
@@ -145,7 +145,7 @@ impl Emby for EmbyService {
         let req = request.into_inner();
         validate_host_with_dns(&req.host).await?;
         let resp = self.service.report_playback_stop(req).await
-            .map_err(|e| map_emby_error("report_playback_stop", e))?;
+            .map_err(|e| map_emby_error("report_playback_stop", &e))?;
         Ok(Response::new(resp))
     }
 
@@ -156,7 +156,7 @@ impl Emby for EmbyService {
         let req = request.into_inner();
         validate_host_with_dns(&req.host).await?;
         let resp = self.service.report_playback_progress(req).await
-            .map_err(|e| map_emby_error("report_playback_progress", e))?;
+            .map_err(|e| map_emby_error("report_playback_progress", &e))?;
         Ok(Response::new(resp))
     }
 }

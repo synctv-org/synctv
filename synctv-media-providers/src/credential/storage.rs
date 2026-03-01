@@ -179,7 +179,7 @@ impl InMemoryCredentialStorage {
     /// # Panics
     /// Panics if the key is not exactly 32 bytes.
     #[must_use]
-    pub fn with_encryption(key_bytes: Vec<u8>) -> Self {
+    pub fn with_encryption(key_bytes: &[u8]) -> Self {
         let encryption = FieldEncryption::new(&key_bytes)
             .expect("Encryption key must be exactly 32 bytes");
         Self {
@@ -224,7 +224,7 @@ impl InMemoryCredentialStorage {
                 })
             }
             // Bilibili cookies don't need field-level encryption (no password-like secrets)
-            other => Ok(other),
+            other @ CredentialData::Bilibili { .. } => Ok(other),
         }
     }
 
@@ -262,7 +262,7 @@ impl InMemoryCredentialStorage {
                 })
             }
             // Bilibili cookies pass through unchanged
-            other => Ok(other),
+            other @ CredentialData::Bilibili { .. } => Ok(other),
         }
     }
 }
@@ -297,8 +297,7 @@ impl CredentialStorage for InMemoryCredentialStorage {
     ) -> Result<StoredCredential> {
         // SSRF validation: Check host URL for Alist and Emby credentials
         let host_url = match &data {
-            CredentialData::Alist { host, .. } => Some(host.as_str()),
-            CredentialData::Emby { host, .. } => Some(host.as_str()),
+            CredentialData::Alist { host, .. } | CredentialData::Emby { host, .. } => Some(host.as_str()),
             CredentialData::Bilibili { .. } => None, // Bilibili has no host URL
         };
 
@@ -333,8 +332,9 @@ impl CredentialStorage for InMemoryCredentialStorage {
             expires_at: None,
         };
 
-        let mut credentials = self.credentials.write().await;
-        credentials.insert(key, credential.clone());
+        
+        self.credentials.write().await.insert(key, credential.clone());
+        
 
         // Return credential with decrypted data for caller convenience
         let decrypted_data = self.decrypt_data(credential.data.clone())?;
@@ -368,6 +368,7 @@ impl CredentialStorage for InMemoryCredentialStorage {
                 })
             })
             .collect::<Result<Vec<_>>>()?;
+        drop(credentials);
         Ok(result)
     }
 
@@ -388,6 +389,7 @@ impl CredentialStorage for InMemoryCredentialStorage {
                 })
             })
             .collect::<Result<Vec<_>>>()?;
+        drop(credentials);
         Ok(result)
     }
 }
@@ -660,7 +662,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_encryption_alist_password_round_trip() {
-        let storage = InMemoryCredentialStorage::with_encryption(test_encryption_key());
+        let storage = InMemoryCredentialStorage::with_encryption(&test_encryption_key());
 
         let plain_password = "my_secret_password_123";
 
@@ -696,7 +698,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_encryption_emby_api_key_round_trip() {
-        let storage = InMemoryCredentialStorage::with_encryption(test_encryption_key());
+        let storage = InMemoryCredentialStorage::with_encryption(&test_encryption_key());
 
         let api_key = "secret_api_key_12345";
 
@@ -732,7 +734,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_encryption_bilibili_unaffected() {
-        let storage = InMemoryCredentialStorage::with_encryption(test_encryption_key());
+        let storage = InMemoryCredentialStorage::with_encryption(&test_encryption_key());
 
         let mut cookies = HashMap::new();
         cookies.insert("SESSDATA".to_string(), "test_session".to_string());

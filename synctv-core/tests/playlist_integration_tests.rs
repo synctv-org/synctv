@@ -277,8 +277,8 @@ fn test_advisory_lock_key_consistency_between_methods() {
             h.finish()
         });
 
-        let room_bits = (room_hash & 0x7FFFFFFF) as i64;
-        let parent_bits = (parent_hash & 0x7FFFFFFF) as i64;
+        let room_bits = (room_hash & 0x7FFF_FFFF).cast_signed();
+        let parent_bits = (parent_hash & 0x7FFF_FFFF).cast_signed();
         (room_bits << 31) | parent_bits
     };
 
@@ -333,7 +333,7 @@ fn test_advisory_lock_key_no_collision_between_different_parents() {
         let mut h = std::collections::hash_map::DefaultHasher::new();
         room_id.hash(&mut h);
         parent_id.hash(&mut h);
-        h.finish() as i64
+        h.finish().cast_signed()
     };
 
     // Test multiple pairs to find potential collisions
@@ -368,8 +368,8 @@ fn test_advisory_lock_key_no_collision_between_different_parents() {
 
         // Combine using a method that reduces collision probability
         // This uses prime number multiplication to spread values
-        ((room_hash % (1 << 32)) << 32) as i64
-            | ((parent_hash % (1 << 32)) & 0x7FFFFFFF) as i64
+        ((room_hash % (1 << 32)) << 32).cast_signed()
+            | ((parent_hash % (1 << 32)) & 0x7FFF_FFFF).cast_signed()
     };
 
     let new_key1 = compute_lock_key_new("room_abc", Some("parent_1"));

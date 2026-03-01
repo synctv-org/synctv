@@ -740,8 +740,8 @@ async fn test_many_concurrent_clients() {
         .map(|r| r.unwrap())
         .collect();
 
-    let winners: Vec<_> = results.iter().filter(|(_, won)| *won).collect();
-    assert_eq!(winners.len(), 1, "Only 1 of 100 clients should acquire lock");
+    
+    assert_eq!(results.iter().filter(|(_, won)| *won).count(), 1, "Only 1 of 100 clients should acquire lock");
 }
 
 // ============================================================================

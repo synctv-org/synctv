@@ -134,13 +134,12 @@ async fn test_healthy_endpoints_filters_open() {
         .collect();
 
     // All endpoints start healthy (closed circuit)
-    let healthy: Vec<_> = endpoints
+    
+    assert_eq!(endpoints
         .iter()
         .zip(&breakers)
         .filter(|(_, cb)| cb.is_call_permitted())
-        .map(|(ep, _)| *ep)
-        .collect();
-    assert_eq!(healthy.len(), 3, "All endpoints should be healthy initially");
+        .map(|(ep, _)| *ep).count(), 3, "All endpoints should be healthy initially");
 
     // Open one endpoint's circuit
     breakers[1].on_error();

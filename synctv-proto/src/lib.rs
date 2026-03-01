@@ -427,7 +427,7 @@ mod tests {
             title: "Room Invitation".to_string(),
             content: "You have been invited to join a room".to_string(),
             data: r#"{"room_id":"room123","room_name":"Test Room"}"#.to_string(),
-            timestamp: 1704067200000, // 2024-01-01 00:00:00 UTC
+            timestamp: 1_704_067_200_000, // 2024-01-01 00:00:00 UTC
         };
         let bytes = notification.encode_to_vec();
         let decoded = crate::client::UserNotification::decode(bytes.as_slice()).unwrap();
@@ -449,7 +449,7 @@ mod tests {
             title: "System Update".to_string(),
             content: "Server will restart in 10 minutes".to_string(),
             data: String::new(),
-            timestamp: 1704067200000,
+            timestamp: 1_704_067_200_000,
         };
 
         let server_msg = crate::client::ServerMessage {
@@ -559,7 +559,7 @@ mod tests {
     fn roundtrip_bilibili_parse_request() {
         let req = crate::providers::bilibili::ParseRequest {
             url: "https://bilibili.com/video/BV123".into(),
-            cookies: [("SESSDATA".into(), "abc123".into())].into_iter().collect(),
+            cookies: std::iter::once(("SESSDATA".into(), "abc123".into())).collect(),
             instance_name: "bilibili_main".into(),
         };
         let bytes = req.encode_to_vec();

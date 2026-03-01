@@ -164,8 +164,8 @@ async fn test_alist_client_fs_get_success() {
                     "name": "movie.mkv",
                     "size": 2_000_000_000_u64,
                     "is_dir": false,
-                    "modified": 1700000000,
-                    "created": 1699000000,
+                    "modified": 1_700_000_000,
+                    "created": 1_699_000_000,
                     "sign": "sig123",
                     "thumb": "",
                     "type": 6,
@@ -366,7 +366,7 @@ async fn test_alist_client_fs_search_success() {
                             "parent": "/movies",
                             "name": "inception.mkv",
                             "is_dir": false,
-                            "size": 3000000000_u64,
+                            "size": 3_000_000_000_u64,
                             "type": 6
                         },
                         {

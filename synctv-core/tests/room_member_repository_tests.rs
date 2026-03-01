@@ -710,7 +710,7 @@ async fn test_update_permissions_after_member_left_should_fail() {
         .update_permissions(
             &room.id,
             &member_user.id,
-            0b00000001, // Add permission bit 0
+            0b0000_0001, // Add permission bit 0
             0,          // Remove nothing
             left_member.version,
         )
@@ -757,7 +757,7 @@ async fn test_update_permissions_for_active_member_should_succeed() {
         .update_permissions(
             &room.id,
             &member_user.id,
-            0b00000001, // Add permission bit 0
+            0b0000_0001, // Add permission bit 0
             0,          // Remove nothing
             member.version,
         )
@@ -769,6 +769,6 @@ async fn test_update_permissions_for_active_member_should_succeed() {
     );
 
     let updated_member = updated.unwrap();
-    assert_eq!(updated_member.added_permissions, 0b00000001);
+    assert_eq!(updated_member.added_permissions, 0b0000_0001);
     assert_eq!(updated_member.version, member.version + 1);
 }

@@ -654,7 +654,7 @@ mod tests {
         }"#;
         let resp: crate::alist::types::HttpFsGetResp = serde_json::from_str(json).unwrap();
         assert_eq!(resp.name, "video.mp4");
-        assert_eq!(resp.size, 5000000);
+        assert_eq!(resp.size, 5_000_000);
         assert!(!resp.is_dir);
         assert_eq!(resp.raw_url, "https://cdn.example.com/video.mp4");
         assert_eq!(resp.provider, "s3");
@@ -699,7 +699,7 @@ mod tests {
             name: "video.mp4".to_string(),
             size: 1024,
             is_dir: false,
-            modified: 1700000000,
+            modified: 1_700_000_000,
             sign: "abc".to_string(),
             thumb: String::new(),
             r#type: 2,

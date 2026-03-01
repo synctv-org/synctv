@@ -269,7 +269,7 @@ async fn test_room_lifecycle_events_across_replicas() {
         RoomLifecycleEvent::RoomActivated(rid) => {
             assert_eq!(rid.as_str(), "lifecycle_room");
         }
-        other => panic!("Expected RoomActivated, got {other:?}"),
+        other @ RoomLifecycleEvent::RoomDeactivated(_) => panic!("Expected RoomActivated, got {other:?}"),
     }
 
     // Second subscriber in same room should NOT trigger another RoomActivated
@@ -308,7 +308,7 @@ async fn test_room_lifecycle_events_across_replicas() {
         RoomLifecycleEvent::RoomDeactivated(rid) => {
             assert_eq!(rid.as_str(), "lifecycle_room");
         }
-        other => panic!("Expected RoomDeactivated, got {other:?}"),
+        other @ RoomLifecycleEvent::RoomActivated(_) => panic!("Expected RoomDeactivated, got {other:?}"),
     }
 }
 

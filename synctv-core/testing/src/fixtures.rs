@@ -91,13 +91,7 @@ impl TestUser {
     /// In async tests, use `build_async` instead.
     #[must_use] 
     pub fn build(self) -> User {
-        let password_hash = if let Some(pwd) = &self.password {
-            // Use a simple hash for sync tests
-            // For async tests, use build_async()
-            format!("hashed_{pwd}")
-        } else {
-            "default_hash".to_string()
-        };
+        let password_hash = self.password.as_ref().map_or_else(|| "default_hash".to_string(), |pwd| format!("hashed_{pwd}"));
 
         User {
             id: UserId::new(),

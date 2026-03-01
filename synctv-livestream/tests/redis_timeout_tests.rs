@@ -15,14 +15,11 @@ where
     Fut: std::future::Future<Output = Result<T, E>>,
     E: From<std::io::Error>,
 {
-    match timeout(duration, future()).await {
-        Ok(result) => result,
-        Err(_) => Err(std::io::Error::new(
+    timeout(duration, future()).await.map_or_else(|_| Err(std::io::Error::new(
             std::io::ErrorKind::TimedOut,
             "Operation timed out",
         )
-        .into()),
-    }
+        .into()), |result| result)
 }
 
 /// Test that timeout helper works correctly.

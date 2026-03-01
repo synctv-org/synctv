@@ -176,7 +176,7 @@ fn test_max_members_per_room_validation() {
 
 fn validate_max_members_per_room(v: i64) -> synctv_core::Result<()> {
     use synctv_core::models::room_settings::MaxMembers;
-    if v > 0 && v <= MaxMembers::MAX as i64 {
+    if v > 0 && v <= MaxMembers::MAX.cast_signed() {
         Ok(())
     } else {
         Err(synctv_core::Error::InvalidInput(
@@ -216,7 +216,7 @@ fn validate_max_chat_messages(v: u64) -> synctv_core::Result<()> {
 #[test]
 fn test_room_ttl_validation() {
     // Valid range: >= 0
-    let valid_values = [0, 60, 3600, 86400, 172800];
+    let valid_values = [0, 60, 3600, 86400, 172_800];
     for v in valid_values {
         let result = validate_room_ttl(v);
         assert!(result.is_ok(), "Value {v} should be valid");
@@ -241,14 +241,14 @@ fn validate_room_ttl(v: i64) -> synctv_core::Result<()> {
 #[test]
 fn test_max_chat_messages_per_room_validation() {
     // Valid range: 0 to 100000
-    let valid_values = [0, 1, 100, 1000, 10000, 100000];
+    let valid_values = [0, 1, 100, 1000, 10000, 100_000];
     for v in valid_values {
         let result = validate_max_chat_messages_per_room(v);
         assert!(result.is_ok(), "Value {v} should be valid");
     }
 
     // Invalid values
-    let invalid_values = [100001, 1000000];
+    let invalid_values = [100_001, 1_000_000];
     for v in invalid_values {
         let result = validate_max_chat_messages_per_room(v);
         assert!(result.is_err(), "Value {v} should be invalid");
@@ -256,7 +256,7 @@ fn test_max_chat_messages_per_room_validation() {
 }
 
 fn validate_max_chat_messages_per_room(v: u64) -> synctv_core::Result<()> {
-    if v <= 100000 {
+    if v <= 100_000 {
         Ok(())
     } else {
         Err(synctv_core::Error::InvalidInput("max_chat_messages_per_room must be <= 100000 (0 = unlimited)".into()))
@@ -497,7 +497,7 @@ fn test_public_settings_defaults() {
     assert_eq!(defaults.max_members_per_room, 100);
     assert!(!defaults.disable_create_room);
     assert!(!defaults.create_room_need_review);
-    assert_eq!(defaults.room_ttl, 172800); // 48 hours
+    assert_eq!(defaults.room_ttl, 172_800); // 48 hours
     assert!(!defaults.room_must_need_pwd);
     assert!(!defaults.room_must_no_need_pwd);
     assert!(!defaults.signup_need_review);
@@ -956,7 +956,7 @@ fn test_default_values_are_valid() {
     assert!(validate_max_chat_messages(500).is_ok());
 
     // room_ttl default: 172800 (48 hours)
-    assert!(validate_room_ttl(172800).is_ok());
+    assert!(validate_room_ttl(172_800).is_ok());
 
     // max_chat_messages_per_room default: 500
     assert!(validate_max_chat_messages_per_room(500).is_ok());

@@ -323,9 +323,9 @@ async fn test_emby_get_playback_info_success() {
                         "Name": "1080P",
                         "Path": "/media/movie.mkv",
                         "Container": "mkv",
-                        "Size": 5000000000_u64,
-                        "Bitrate": 8000000,
-                        "RunTimeTicks": 72000000000_i64,
+                        "Size": 5_000_000_000_u64,
+                        "Bitrate": 8_000_000,
+                        "RunTimeTicks": 72_000_000_000_i64,
                         "MediaStreams": [
                             {
                                 "Type": "Video",

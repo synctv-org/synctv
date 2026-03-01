@@ -1,5 +1,6 @@
 //! Emby/Jellyfin HTTP Client
 
+use std::fmt::Write;
 use std::sync::LazyLock;
 use std::time::Duration;
 
@@ -258,11 +259,11 @@ impl EmbyClient {
             self.host, prefix, url_encode(user_id));
 
         if let Some(pid) = parent_id {
-            url.push_str(&format!("&ParentId={}", url_encode(pid)));
+            let _ = write!(url, "&ParentId={}", url_encode(pid));
         }
 
         if let Some(term) = search_term {
-            url.push_str(&format!("&SearchTerm={}&Recursive=true", url_encode(term)));
+            let _ = write!(url, "&SearchTerm={}&Recursive=true", url_encode(term));
         } else {
             url.push_str("&Filters=IsNotFolder");
         }
@@ -373,11 +374,11 @@ impl EmbyClient {
         );
 
         if let Some(p) = path {
-            url.push_str(&format!("&ParentId={}", url_encode(p)));
+            let _ = write!(url, "&ParentId={}", url_encode(p));
         }
 
         if let Some(term) = search_term {
-            url.push_str(&format!("&SearchTerm={}&Recursive=true", url_encode(term)));
+            let _ = write!(url, "&SearchTerm={}&Recursive=true", url_encode(term));
         }
 
         let headers = self.build_headers()?;
@@ -766,7 +767,7 @@ mod tests {
         assert_eq!(item.media_sources[0].container, "mkv");
         assert_eq!(item.media_sources[0].media_streams.len(), 2);
         assert!(item.media_sources[0].supports_direct_play);
-        assert_eq!(item.run_time_ticks, Some(72000000000));
+        assert_eq!(item.run_time_ticks, Some(72_000_000_000));
     }
 
     #[test]

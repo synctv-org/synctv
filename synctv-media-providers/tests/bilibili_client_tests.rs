@@ -173,8 +173,8 @@ fn test_video_id_bvid() {
 #[test]
 fn test_video_id_aid() {
     use synctv_media_providers::bilibili::types::VideoId;
-    let vid = VideoId::Aid(170001);
-    assert_eq!(vid, VideoId::Aid(170001));
+    let vid = VideoId::Aid(170_001);
+    assert_eq!(vid, VideoId::Aid(170_001));
 }
 
 #[test]
@@ -199,8 +199,8 @@ fn test_video_page_info_resp_deserialize() {
             "title": "Test Video",
             "pic": "https://i0.hdslb.com/bfs/archive/test.jpg",
             "bvid": "BV1xx411c7mD",
-            "aid": 170001,
-            "cid": 279786,
+            "aid": 170_001,
+            "cid": 279_786,
             "owner": {
                 "name": "TestUser",
                 "face": "https://i0.hdslb.com/bfs/face/test.jpg",
@@ -208,7 +208,7 @@ fn test_video_page_info_resp_deserialize() {
             },
             "pages": [
                 {
-                    "cid": 279786,
+                    "cid": 279_786,
                     "page": 1,
                     "part": "Part 1",
                     "duration": 300,
@@ -222,8 +222,8 @@ fn test_video_page_info_resp_deserialize() {
     assert_eq!(resp.code, 0);
     assert_eq!(resp.data.title, "Test Video");
     assert_eq!(resp.data.bvid, "BV1xx411c7mD");
-    assert_eq!(resp.data.aid, 170001);
-    assert_eq!(resp.data.cid, 279786);
+    assert_eq!(resp.data.aid, 170_001);
+    assert_eq!(resp.data.cid, 279_786);
     assert_eq!(resp.data.owner.name, "TestUser");
     assert_eq!(resp.data.pages.len(), 1);
     assert_eq!(resp.data.pages[0].part, "Part 1");
@@ -244,8 +244,8 @@ fn test_video_url_resp_deserialize() {
             "durl": [
                 {
                     "url": "https://cdn.bilibili.com/video/test.flv",
-                    "size": 12345678,
-                    "length": 300000
+                    "size": 12_345_678,
+                    "length": 300_000
                 }
             ]
         }
@@ -255,7 +255,7 @@ fn test_video_url_resp_deserialize() {
     assert_eq!(resp.data.accept_quality, vec![80, 64, 32, 16]);
     assert_eq!(resp.data.quality, 80);
     assert_eq!(resp.data.durl.len(), 1);
-    assert_eq!(resp.data.durl[0].size, 12345678);
+    assert_eq!(resp.data.durl[0].size, 12_345_678);
 }
 
 #[test]
@@ -279,7 +279,7 @@ fn test_dash_video_resp_deserialize() {
                         "width": 1920,
                         "height": 1080,
                         "frameRate": "30",
-                        "bandwidth": 2000000,
+                        "bandwidth": 2_000_000,
                         "sar": "1:1",
                         "startWithSap": 1,
                         "SegmentBase": {
@@ -295,7 +295,7 @@ fn test_dash_video_resp_deserialize() {
                         "backupUrl": [],
                         "mimeType": "audio/mp4",
                         "codecs": "mp4a.40.2",
-                        "bandwidth": 128000,
+                        "bandwidth": 128_000,
                         "startWithSap": 1,
                         "SegmentBase": {
                             "Initialization": "0-500",
@@ -384,11 +384,11 @@ fn test_season_info_resp_deserialize() {
                     "title": "Episode 1",
                     "long_title": "The Beginning",
                     "bvid": "BV1test123",
-                    "cid": 100001,
-                    "ep_id": 200001,
-                    "aid": 300001,
+                    "cid": 100_001,
+                    "ep_id": 200_001,
+                    "aid": 300_001,
                     "cover": "https://i0.hdslb.com/bfs/archive/ep1.jpg",
-                    "duration": 1440000
+                    "duration": 1_440_000
                 }
             ]
         }
@@ -397,7 +397,7 @@ fn test_season_info_resp_deserialize() {
     assert_eq!(resp.code, 0);
     assert_eq!(resp.result.title, "Test Anime");
     assert_eq!(resp.result.episodes.len(), 1);
-    assert_eq!(resp.result.episodes[0].ep_id, 200001);
+    assert_eq!(resp.result.episodes[0].ep_id, 200_001);
     assert_eq!(resp.result.episodes[0].long_title, "The Beginning");
 }
 
@@ -482,8 +482,8 @@ fn test_video_page_info_with_ugc_season() {
             "title": "Series Video",
             "pic": "https://i0.hdslb.com/bfs/archive/test.jpg",
             "bvid": "BV1series",
-            "aid": 170002,
-            "cid": 279787,
+            "aid": 170_002,
+            "cid": 279_787,
             "owner": {
                 "name": "SeriesCreator",
                 "face": "https://i0.hdslb.com/bfs/face/test.jpg",
@@ -491,7 +491,7 @@ fn test_video_page_info_with_ugc_season() {
             },
             "pages": [
                 {
-                    "cid": 279787,
+                    "cid": 279_787,
                     "page": 1,
                     "part": "Part 1",
                     "duration": 600,
@@ -616,8 +616,8 @@ fn test_pgc_url_resp_deserialize() {
             "durl": [
                 {
                     "url": "https://cdn.bilibili.com/pgc/test.flv",
-                    "size": 50000000,
-                    "length": 1440000
+                    "size": 50_000_000,
+                    "length": 1_440_000
                 }
             ]
         }

@@ -20,7 +20,7 @@ use tonic::{Request, Response, Status};
 ///
 /// Bilibili has special API error codes (-101 for auth, -412 for rate limit) that
 /// are handled by the shared mapper's `api_error_code()` classification.
-fn map_bilibili_error(context: &str, e: ProviderClientError) -> Status {
+fn map_bilibili_error(context: &str, e: &ProviderClientError) -> Status {
     // Special handling for Bilibili-specific API error codes
     if let ProviderClientError::Api { code, .. } = &e {
         match code {
@@ -59,7 +59,7 @@ impl Bilibili for BilibiliService {
     async fn new_qr_code(&self, request: Request<Empty>) -> Result<Response<NewQrCodeResp>, Status> {
         let req = request.into_inner();
         let resp = self.service.new_qr_code(req).await
-            .map_err(|e| map_bilibili_error("new_qr_code", e))?;
+            .map_err(|e| map_bilibili_error("new_qr_code", &e))?;
         Ok(Response::new(resp))
     }
 
@@ -70,7 +70,7 @@ impl Bilibili for BilibiliService {
         let req = request.into_inner();
         validate_required("key", &req.key)?;
         let resp = self.service.login_with_qr_code(req).await
-            .map_err(|e| map_bilibili_error("login_with_qr_code", e))?;
+            .map_err(|e| map_bilibili_error("login_with_qr_code", &e))?;
         Ok(Response::new(resp))
     }
 
@@ -80,7 +80,7 @@ impl Bilibili for BilibiliService {
     ) -> Result<Response<NewCaptchaResp>, Status> {
         let req = request.into_inner();
         let resp = self.service.new_captcha(req).await
-            .map_err(|e| map_bilibili_error("new_captcha", e))?;
+            .map_err(|e| map_bilibili_error("new_captcha", &e))?;
         Ok(Response::new(resp))
     }
 
@@ -88,7 +88,7 @@ impl Bilibili for BilibiliService {
         let req = request.into_inner();
         validate_required("phone", &req.phone)?;
         let resp = self.service.new_sms(req).await
-            .map_err(|e| map_bilibili_error("new_sms", e))?;
+            .map_err(|e| map_bilibili_error("new_sms", &e))?;
         Ok(Response::new(resp))
     }
 
@@ -100,7 +100,7 @@ impl Bilibili for BilibiliService {
         validate_required("phone", &req.phone)?;
         validate_required("code", &req.code)?;
         let resp = self.service.login_with_sms(req).await
-            .map_err(|e| map_bilibili_error("login_with_sms", e))?;
+            .map_err(|e| map_bilibili_error("login_with_sms", &e))?;
         Ok(Response::new(resp))
     }
 
@@ -110,7 +110,7 @@ impl Bilibili for BilibiliService {
     ) -> Result<Response<VideoPageInfo>, Status> {
         let req = request.into_inner();
         let resp = self.service.parse_video_page(req).await
-            .map_err(|e| map_bilibili_error("parse_video_page", e))?;
+            .map_err(|e| map_bilibili_error("parse_video_page", &e))?;
         Ok(Response::new(resp))
     }
 
@@ -120,7 +120,7 @@ impl Bilibili for BilibiliService {
     ) -> Result<Response<VideoUrl>, Status> {
         let req = request.into_inner();
         let resp = self.service.get_video_url(req).await
-            .map_err(|e| map_bilibili_error("get_video_url", e))?;
+            .map_err(|e| map_bilibili_error("get_video_url", &e))?;
         Ok(Response::new(resp))
     }
 
@@ -130,7 +130,7 @@ impl Bilibili for BilibiliService {
     ) -> Result<Response<GetDashVideoUrlResp>, Status> {
         let req = request.into_inner();
         let resp = self.service.get_dash_video_url(req).await
-            .map_err(|e| map_bilibili_error("get_dash_video_url", e))?;
+            .map_err(|e| map_bilibili_error("get_dash_video_url", &e))?;
         Ok(Response::new(resp))
     }
 
@@ -140,7 +140,7 @@ impl Bilibili for BilibiliService {
     ) -> Result<Response<GetSubtitlesResp>, Status> {
         let req = request.into_inner();
         let resp = self.service.get_subtitles(req).await
-            .map_err(|e| map_bilibili_error("get_subtitles", e))?;
+            .map_err(|e| map_bilibili_error("get_subtitles", &e))?;
         Ok(Response::new(resp))
     }
 
@@ -150,7 +150,7 @@ impl Bilibili for BilibiliService {
     ) -> Result<Response<VideoPageInfo>, Status> {
         let req = request.into_inner();
         let resp = self.service.parse_pgc_page(req).await
-            .map_err(|e| map_bilibili_error("parse_pgc_page", e))?;
+            .map_err(|e| map_bilibili_error("parse_pgc_page", &e))?;
         Ok(Response::new(resp))
     }
 
@@ -160,7 +160,7 @@ impl Bilibili for BilibiliService {
     ) -> Result<Response<VideoUrl>, Status> {
         let req = request.into_inner();
         let resp = self.service.get_pgcurl(req).await
-            .map_err(|e| map_bilibili_error("get_pgcurl", e))?;
+            .map_err(|e| map_bilibili_error("get_pgcurl", &e))?;
         Ok(Response::new(resp))
     }
 
@@ -170,7 +170,7 @@ impl Bilibili for BilibiliService {
     ) -> Result<Response<GetDashPgcurlResp>, Status> {
         let req = request.into_inner();
         let resp = self.service.get_dash_pgcurl(req).await
-            .map_err(|e| map_bilibili_error("get_dash_pgcurl", e))?;
+            .map_err(|e| map_bilibili_error("get_dash_pgcurl", &e))?;
         Ok(Response::new(resp))
     }
 
@@ -180,7 +180,7 @@ impl Bilibili for BilibiliService {
     ) -> Result<Response<UserInfoResp>, Status> {
         let req = request.into_inner();
         let resp = self.service.user_info(req).await
-            .map_err(|e| map_bilibili_error("user_info", e))?;
+            .map_err(|e| map_bilibili_error("user_info", &e))?;
         Ok(Response::new(resp))
     }
 
@@ -188,7 +188,7 @@ impl Bilibili for BilibiliService {
         let req = request.into_inner();
         validate_required("url", &req.url)?;
         let resp = self.service.r#match(req).await
-            .map_err(|e| map_bilibili_error("match", e))?;
+            .map_err(|e| map_bilibili_error("match", &e))?;
         Ok(Response::new(resp))
     }
 
@@ -198,7 +198,7 @@ impl Bilibili for BilibiliService {
     ) -> Result<Response<GetLiveStreamsResp>, Status> {
         let req = request.into_inner();
         let resp = self.service.get_live_streams(req).await
-            .map_err(|e| map_bilibili_error("get_live_streams", e))?;
+            .map_err(|e| map_bilibili_error("get_live_streams", &e))?;
         Ok(Response::new(resp))
     }
 
@@ -208,7 +208,7 @@ impl Bilibili for BilibiliService {
     ) -> Result<Response<VideoPageInfo>, Status> {
         let req = request.into_inner();
         let resp = self.service.parse_live_page(req).await
-            .map_err(|e| map_bilibili_error("parse_live_page", e))?;
+            .map_err(|e| map_bilibili_error("parse_live_page", &e))?;
         Ok(Response::new(resp))
     }
 
@@ -218,7 +218,7 @@ impl Bilibili for BilibiliService {
     ) -> Result<Response<GetLiveDanmuInfoResp>, Status> {
         let req = request.into_inner();
         let resp = self.service.get_live_danmu_info(req).await
-            .map_err(|e| map_bilibili_error("get_live_danmu_info", e))?;
+            .map_err(|e| map_bilibili_error("get_live_danmu_info", &e))?;
         Ok(Response::new(resp))
     }
 }

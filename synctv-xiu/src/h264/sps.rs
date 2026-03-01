@@ -1,6 +1,6 @@
 use {
-    super::errors::H264Error, super::utils, bytes::BytesMut, crate::bytesio::bits_reader::BitsReader,
-    crate::bytesio::bytes_reader::BytesReader, std::vec::Vec,
+    super::errors::H264Error, super::utils, crate::bytesio::bits_reader::BitsReader,
+    crate::bytesio::bytes_reader::BytesReader, bytes::BytesMut, std::vec::Vec,
 };
 
 #[derive(Default, Debug)]
@@ -62,7 +62,7 @@ pub struct SpsParser {
 }
 
 impl SpsParser {
-    #[must_use] 
+    #[must_use]
     pub fn new(reader: BytesReader) -> Self {
         Self {
             bytes_reader: BytesReader::new(BytesMut::new()),
@@ -133,7 +133,9 @@ impl SpsParser {
                 self.sps.offset_for_ref_frame.clear();
                 self.sps.offset_for_ref_frame.reserve(count);
                 for _ in 0..count {
-                    self.sps.offset_for_ref_frame.push(utils::read_sev(&mut self.bits_reader)?);
+                    self.sps
+                        .offset_for_ref_frame
+                        .push(utils::read_sev(&mut self.bits_reader)?);
                 }
             }
             _ => {}

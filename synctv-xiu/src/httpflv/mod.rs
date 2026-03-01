@@ -4,7 +4,8 @@
 // (which may depend on application-specific state like Redis) lives
 // in the downstream crate (e.g., synctv-livestream).
 
-use bytes::BytesMut;
+use crate::flv::amf0::amf0_writer::Amf0Writer;
+use crate::flv::muxer::{FlvMuxer, HEADER_LENGTH};
 use crate::streamhub::{
     define::{
         FrameData, FrameDataReceiver, NotifyInfo, StreamHubEvent, StreamHubEventSender,
@@ -13,10 +14,9 @@ use crate::streamhub::{
     stream::StreamIdentifier,
     utils::Uuid,
 };
+use bytes::BytesMut;
 use tokio::sync::{mpsc, oneshot};
 use tracing::{error, info, warn};
-use crate::flv::amf0::amf0_writer::Amf0Writer;
-use crate::flv::muxer::{FlvMuxer, HEADER_LENGTH};
 
 /// Capacity for the HTTP response channel (bounded to prevent OOM with slow clients).
 /// At ~8KB per FLV tag (typical video frame), 512 entries ≈ 4MB buffer per client.
@@ -87,8 +87,10 @@ impl HttpFlvSession {
         loop {
             match tokio::time::timeout(
                 std::time::Duration::from_secs(RECV_TIMEOUT_SECS),
-                data_receiver.recv()
-            ).await {
+                data_receiver.recv(),
+            )
+            .await
+            {
                 Ok(Some(data)) => {
                     // Detect audio/video before sending header
                     if !self.has_send_header {
@@ -114,7 +116,9 @@ impl HttpFlvSession {
                             // Write FLV header
                             self.muxer
                                 .write_flv_header(self.has_audio, self.has_video)
-                                .map_err(|e| anyhow::anyhow!("Failed to write FLV header: {e:?}"))?;
+                                .map_err(|e| {
+                                    anyhow::anyhow!("Failed to write FLV header: {e:?}")
+                                })?;
                             self.muxer
                                 .write_previous_tag_size(0)
                                 .map_err(|e| anyhow::anyhow!("Failed to write tag size: {e:?}"))?;
@@ -236,10 +240,12 @@ impl HttpFlvSession {
             .await
             .map_err(|e| anyhow::anyhow!("Event result channel error: {e}"))?
             .map_err(|e| anyhow::anyhow!("Subscribe failed: {e:?}"))?;
-        self.data_receiver = Some(result
-            .0
-            .frame_receiver
-            .ok_or_else(|| anyhow::anyhow!("No frame receiver"))?);
+        self.data_receiver = Some(
+            result
+                .0
+                .frame_receiver
+                .ok_or_else(|| anyhow::anyhow!("No frame receiver"))?,
+        );
 
         info!(
             subscriber_id = %self.subscriber_id,

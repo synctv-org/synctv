@@ -6,15 +6,14 @@
 //! Run with: cargo test --test `credential_encryption_tests`
 #![allow(clippy::unwrap_used)]
 
-use synctv_core::service::credential_encryption::CredentialEncryption;
 use serde_json::json;
+use synctv_core::service::credential_encryption::CredentialEncryption;
 
 fn test_key() -> Vec<u8> {
     vec![
-        0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07,
-        0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f,
-        0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17,
-        0x18, 0x19, 0x1a, 0x1b, 0x1c, 0x1d, 0x1e, 0x1f,
+        0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e,
+        0x0f, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19, 0x1a, 0x1b, 0x1c, 0x1d,
+        0x1e, 0x1f,
     ]
 }
 
@@ -29,7 +28,10 @@ fn test_encrypt_decrypt_round_trip() {
     });
 
     let encrypted = enc.encrypt(&original).unwrap();
-    assert!(encrypted.starts_with("enc:"), "Encrypted string should have enc: prefix");
+    assert!(
+        encrypted.starts_with("enc:"),
+        "Encrypted string should have enc: prefix"
+    );
 
     let decrypted = enc.decrypt(&encrypted).unwrap();
     assert_eq!(original, decrypted);
@@ -108,10 +110,22 @@ fn test_each_encryption_unique_ciphertext() {
 
 #[test]
 fn test_invalid_key_lengths() {
-    assert!(CredentialEncryption::new(&[0u8; 16]).is_err(), "16-byte key should fail");
-    assert!(CredentialEncryption::new(&[0u8; 0]).is_err(), "Empty key should fail");
-    assert!(CredentialEncryption::new(&[0u8; 64]).is_err(), "64-byte key should fail");
-    assert!(CredentialEncryption::new(&[0u8; 32]).is_ok(), "32-byte key should succeed");
+    assert!(
+        CredentialEncryption::new(&[0u8; 16]).is_err(),
+        "16-byte key should fail"
+    );
+    assert!(
+        CredentialEncryption::new(&[0u8; 0]).is_err(),
+        "Empty key should fail"
+    );
+    assert!(
+        CredentialEncryption::new(&[0u8; 64]).is_err(),
+        "64-byte key should fail"
+    );
+    assert!(
+        CredentialEncryption::new(&[0u8; 32]).is_ok(),
+        "32-byte key should succeed"
+    );
 }
 
 #[test]
@@ -128,7 +142,9 @@ fn test_decrypt_plaintext_backward_compatibility() {
 fn test_is_encrypted_detection() {
     assert!(CredentialEncryption::is_encrypted(&json!("enc:AAAA")));
     assert!(!CredentialEncryption::is_encrypted(&json!("not encrypted")));
-    assert!(!CredentialEncryption::is_encrypted(&json!({"key": "value"})));
+    assert!(!CredentialEncryption::is_encrypted(
+        &json!({"key": "value"})
+    ));
     assert!(!CredentialEncryption::is_encrypted(&json!(42)));
     assert!(!CredentialEncryption::is_encrypted(&json!(null)));
 }

@@ -12,14 +12,12 @@ use synctv_core::service::UserNotificationService;
 use uuid::Uuid;
 
 use crate::impls::ApiError;
-use crate::proto::client::{
-    NotificationProto, NotificationType as ProtoNotificationType,
-};
+use crate::proto::client::{NotificationProto, NotificationType as ProtoNotificationType};
 
 /// Convert a domain Notification to a proto `NotificationProto`.
 ///
 /// Shared by both HTTP and gRPC handlers.
-#[must_use] 
+#[must_use]
 pub fn notification_to_proto(n: Notification) -> NotificationProto {
     let notification_type = match n.notification_type {
         CoreNotificationType::RoomInvitation => ProtoNotificationType::RoomInvitation,
@@ -45,14 +43,18 @@ pub fn notification_to_proto(n: Notification) -> NotificationProto {
 /// Convert a proto `NotificationType` enum value to a domain `NotificationType`.
 ///
 /// Shared by both HTTP and gRPC handlers.
-#[must_use] 
+#[must_use]
 pub fn proto_notification_type_to_core(value: i32) -> Option<CoreNotificationType> {
     match ProtoNotificationType::try_from(value) {
         Ok(ProtoNotificationType::RoomInvitation) => Some(CoreNotificationType::RoomInvitation),
-        Ok(ProtoNotificationType::SystemAnnouncement) => Some(CoreNotificationType::SystemAnnouncement),
+        Ok(ProtoNotificationType::SystemAnnouncement) => {
+            Some(CoreNotificationType::SystemAnnouncement)
+        }
         Ok(ProtoNotificationType::RoomEvent) => Some(CoreNotificationType::RoomEvent),
         Ok(ProtoNotificationType::PasswordReset) => Some(CoreNotificationType::PasswordReset),
-        Ok(ProtoNotificationType::EmailVerification) => Some(CoreNotificationType::EmailVerification),
+        Ok(ProtoNotificationType::EmailVerification) => {
+            Some(CoreNotificationType::EmailVerification)
+        }
         _ => None,
     }
 }
@@ -154,7 +156,9 @@ impl NotificationApiImpl {
             .mark_all_as_read(user_id, MarkAllAsReadRequest { before })
             .await
             .map(|_| ())
-            .map_err(|e| ApiError::Internal(format!("Failed to mark all notifications as read: {e}")))
+            .map_err(|e| {
+                ApiError::Internal(format!("Failed to mark all notifications as read: {e}"))
+            })
     }
 
     /// Delete a specific notification.
@@ -180,6 +184,8 @@ impl NotificationApiImpl {
             .delete_all_read(user_id)
             .await
             .map(|_| ())
-            .map_err(|e| ApiError::Internal(format!("Failed to delete all read notifications: {e}")))
+            .map_err(|e| {
+                ApiError::Internal(format!("Failed to delete all read notifications: {e}"))
+            })
     }
 }

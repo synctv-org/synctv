@@ -8,23 +8,20 @@
 
 use std::sync::Arc;
 
-use synctv_core_testing::{create_test_pool};
+use chrono::Utc;
+use sqlx::PgPool;
 use synctv_core::{
-    cache::{KeyBuilder, UsernameCache, NoopCacheL2},
+    cache::{KeyBuilder, NoopCacheL2, UsernameCache},
     config::PasswordComplexityConfig,
-    models::{
-        UserId, User, UserRole, UserStatus,
-        PermissionBits,
-    },
-    repository::{UserRepository, RoomMemberRepository},
+    models::{PermissionBits, User, UserId, UserRole, UserStatus},
+    repository::{RoomMemberRepository, UserRepository},
     service::{
-        RoomService, UserService, InMemoryTokenBlacklistStore,
-        auth::{JwtService, BruteForceProtection},
+        auth::{BruteForceProtection, JwtService},
+        InMemoryTokenBlacklistStore, RoomService, UserService,
     },
     Error,
 };
-use chrono::Utc;
-use sqlx::PgPool;
+use synctv_core_testing::create_test_pool;
 fn make_user_service(pool: PgPool) -> UserService {
     let secret = "Test_Secret_Key_For_JWT_Tokens_32Bytes!!";
     let jwt_service = JwtService::new(secret).expect("Failed to create JwtService");
@@ -85,25 +82,42 @@ async fn test_set_member_permissions_requires_grant_permission() {
     let target = user_repo.create(&make_user("smp_target")).await.unwrap();
 
     let (room, _) = room_service
-        .create_room("SMP Room".to_string(), String::new(), creator.id.clone(), None, None)
+        .create_room(
+            "SMP Room".to_string(),
+            String::new(),
+            creator.id.clone(),
+            None,
+            None,
+        )
         .await
         .unwrap();
 
-    room_service.join_room(room.id.clone(), member.id.clone(), None).await.unwrap();
-    room_service.join_room(room.id.clone(), target.id.clone(), None).await.unwrap();
+    room_service
+        .join_room(room.id.clone(), member.id.clone(), None)
+        .await
+        .unwrap();
+    room_service
+        .join_room(room.id.clone(), target.id.clone(), None)
+        .await
+        .unwrap();
 
     let member_service = room_service.member_service();
 
     // Member does NOT have GRANT_PERMISSION by default
-    let result = member_service.set_member_permissions(
-        room.id.clone(),
-        member.id.clone(),
-        target.id.clone(),
-        PermissionBits::SEND_CHAT,
-        0,
-    ).await;
+    let result = member_service
+        .set_member_permissions(
+            room.id.clone(),
+            member.id.clone(),
+            target.id.clone(),
+            PermissionBits::SEND_CHAT,
+            0,
+        )
+        .await;
 
-    assert!(result.is_err(), "Member without GRANT_PERMISSION should be denied");
+    assert!(
+        result.is_err(),
+        "Member without GRANT_PERMISSION should be denied"
+    );
     match result.unwrap_err() {
         Error::Authorization(_) => {}
         other => panic!("Expected Authorization error, got: {other:?}"),
@@ -121,27 +135,43 @@ async fn test_set_member_permissions_creator_can_set() {
     let target = user_repo.create(&make_user("smp2_target")).await.unwrap();
 
     let (room, _) = room_service
-        .create_room("SMP2 Room".to_string(), String::new(), creator.id.clone(), None, None)
+        .create_room(
+            "SMP2 Room".to_string(),
+            String::new(),
+            creator.id.clone(),
+            None,
+            None,
+        )
         .await
         .unwrap();
 
-    room_service.join_room(room.id.clone(), target.id.clone(), None).await.unwrap();
+    room_service
+        .join_room(room.id.clone(), target.id.clone(), None)
+        .await
+        .unwrap();
 
     let member_service = room_service.member_service();
 
     // Creator has GRANT_PERMISSION
-    let updated = member_service.set_member_permissions(
-        room.id.clone(),
-        creator.id.clone(),
-        target.id.clone(),
-        PermissionBits::BAN_MEMBER | PermissionBits::KICK_USER,
-        0,
-    ).await.unwrap();
+    let updated = member_service
+        .set_member_permissions(
+            room.id.clone(),
+            creator.id.clone(),
+            target.id.clone(),
+            PermissionBits::BAN_MEMBER | PermissionBits::KICK_USER,
+            0,
+        )
+        .await
+        .unwrap();
 
-    assert!(updated.added_permissions & PermissionBits::BAN_MEMBER != 0,
-        "BAN_MEMBER should be added");
-    assert!(updated.added_permissions & PermissionBits::KICK_USER != 0,
-        "KICK_USER should be added");
+    assert!(
+        updated.added_permissions & PermissionBits::BAN_MEMBER != 0,
+        "BAN_MEMBER should be added"
+    );
+    assert!(
+        updated.added_permissions & PermissionBits::KICK_USER != 0,
+        "KICK_USER should be added"
+    );
 }
 
 // ========== set_member_permissions: optimistic lock retry ==========
@@ -157,11 +187,20 @@ async fn test_set_member_permissions_optimistic_lock_retry() {
     let target = user_repo.create(&make_user("olr_target")).await.unwrap();
 
     let (room, _) = room_service
-        .create_room("OLR Room".to_string(), String::new(), creator.id.clone(), None, None)
+        .create_room(
+            "OLR Room".to_string(),
+            String::new(),
+            creator.id.clone(),
+            None,
+            None,
+        )
         .await
         .unwrap();
 
-    room_service.join_room(room.id.clone(), target.id.clone(), None).await.unwrap();
+    room_service
+        .join_room(room.id.clone(), target.id.clone(), None)
+        .await
+        .unwrap();
 
     // Bump version concurrently to trigger retries
     let room_id_str = room.id.as_str().to_string();
@@ -173,7 +212,7 @@ async fn test_set_member_permissions_optimistic_lock_retry() {
     let bumper = tokio::spawn(async move {
         while !stop_clone.load(std::sync::atomic::Ordering::Relaxed) {
             let _ = sqlx::query(
-                "UPDATE room_members SET version = version + 1 WHERE room_id = $1 AND user_id = $2"
+                "UPDATE room_members SET version = version + 1 WHERE room_id = $1 AND user_id = $2",
             )
             .bind(&room_id_str)
             .bind(&target_id_str)
@@ -184,23 +223,27 @@ async fn test_set_member_permissions_optimistic_lock_retry() {
     });
 
     let member_service = room_service.member_service();
-    let result = member_service.set_member_permissions(
-        room.id.clone(),
-        creator.id.clone(),
-        target.id.clone(),
-        PermissionBits::BAN_MEMBER,
-        0,
-    ).await;
+    let result = member_service
+        .set_member_permissions(
+            room.id.clone(),
+            creator.id.clone(),
+            target.id.clone(),
+            PermissionBits::BAN_MEMBER,
+            0,
+        )
+        .await;
 
     stop.store(true, std::sync::atomic::Ordering::Relaxed);
     let _ = bumper.await;
 
     // Either succeeds (retries worked) or returns Internal (retry exhaustion)
     match result {
-        Ok(_) => {}  // Retries succeeded
+        Ok(_) => {} // Retries succeeded
         Err(Error::Internal(msg)) => {
-            assert!(msg.contains("retry") || msg.contains("maximum"),
-                "Should mention retry exhaustion: {msg}");
+            assert!(
+                msg.contains("retry") || msg.contains("maximum"),
+                "Should mention retry exhaustion: {msg}"
+            );
         }
         Err(Error::OptimisticLockConflict) => {
             panic!("OptimisticLockConflict should not leak to caller");
@@ -224,40 +267,65 @@ async fn test_reset_member_permissions_clears_all_overrides() {
     let target = user_repo.create(&make_user("reset_target")).await.unwrap();
 
     let (room, _) = room_service
-        .create_room("Reset Perm Room".to_string(), String::new(), creator.id.clone(), None, None)
+        .create_room(
+            "Reset Perm Room".to_string(),
+            String::new(),
+            creator.id.clone(),
+            None,
+            None,
+        )
         .await
         .unwrap();
 
-    room_service.join_room(room.id.clone(), target.id.clone(), None).await.unwrap();
+    room_service
+        .join_room(room.id.clone(), target.id.clone(), None)
+        .await
+        .unwrap();
 
     let member_service = room_service.member_service();
 
     // First, set some permissions
-    member_service.set_member_permissions(
-        room.id.clone(),
-        creator.id.clone(),
-        target.id.clone(),
-        PermissionBits::BAN_MEMBER | PermissionBits::KICK_USER,
-        PermissionBits::SEND_CHAT,
-    ).await.unwrap();
+    member_service
+        .set_member_permissions(
+            room.id.clone(),
+            creator.id.clone(),
+            target.id.clone(),
+            PermissionBits::BAN_MEMBER | PermissionBits::KICK_USER,
+            PermissionBits::SEND_CHAT,
+        )
+        .await
+        .unwrap();
 
     // Verify overrides were applied
     let member_repo = RoomMemberRepository::new(pool.clone());
-    let member_before = member_repo.get(&room.id, &target.id).await.unwrap().unwrap();
-    assert!(member_before.added_permissions & PermissionBits::BAN_MEMBER != 0,
-        "Should have BAN_MEMBER added before reset");
-    assert!(member_before.removed_permissions & PermissionBits::SEND_CHAT != 0,
-        "Should have SEND_CHAT removed before reset");
+    let member_before = member_repo
+        .get(&room.id, &target.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        member_before.added_permissions & PermissionBits::BAN_MEMBER != 0,
+        "Should have BAN_MEMBER added before reset"
+    );
+    assert!(
+        member_before.removed_permissions & PermissionBits::SEND_CHAT != 0,
+        "Should have SEND_CHAT removed before reset"
+    );
 
     // Reset all permissions
-    let updated = member_service.reset_member_permissions(
-        room.id.clone(),
-        creator.id.clone(),
-        target.id.clone(),
-    ).await.unwrap();
+    let updated = member_service
+        .reset_member_permissions(room.id.clone(), creator.id.clone(), target.id.clone())
+        .await
+        .unwrap();
 
-    assert_eq!(updated.added_permissions, 0, "Added permissions should be 0 after reset");
-    assert_eq!(updated.removed_permissions, 0, "Removed permissions should be 0 after reset");
+    assert_eq!(
+        updated.added_permissions, 0,
+        "Added permissions should be 0 after reset"
+    );
+    assert_eq!(
+        updated.removed_permissions, 0,
+        "Removed permissions should be 0 after reset"
+    );
 }
 
 // ========== reset_member_permissions: requires GRANT_PERMISSION ==========
@@ -269,28 +337,44 @@ async fn test_reset_member_permissions_requires_grant_permission() {
     let user_repo = UserRepository::new(pool.clone());
     let room_service = make_room_service(pool.clone());
 
-    let creator = user_repo.create(&make_user("resetp_creator")).await.unwrap();
+    let creator = user_repo
+        .create(&make_user("resetp_creator"))
+        .await
+        .unwrap();
     let member = user_repo.create(&make_user("resetp_member")).await.unwrap();
     let target = user_repo.create(&make_user("resetp_target")).await.unwrap();
 
     let (room, _) = room_service
-        .create_room("Reset Perm Check Room".to_string(), String::new(), creator.id.clone(), None, None)
+        .create_room(
+            "Reset Perm Check Room".to_string(),
+            String::new(),
+            creator.id.clone(),
+            None,
+            None,
+        )
         .await
         .unwrap();
 
-    room_service.join_room(room.id.clone(), member.id.clone(), None).await.unwrap();
-    room_service.join_room(room.id.clone(), target.id.clone(), None).await.unwrap();
+    room_service
+        .join_room(room.id.clone(), member.id.clone(), None)
+        .await
+        .unwrap();
+    room_service
+        .join_room(room.id.clone(), target.id.clone(), None)
+        .await
+        .unwrap();
 
     let member_service = room_service.member_service();
 
     // Member without GRANT_PERMISSION cannot reset
-    let result = member_service.reset_member_permissions(
-        room.id.clone(),
-        member.id.clone(),
-        target.id.clone(),
-    ).await;
+    let result = member_service
+        .reset_member_permissions(room.id.clone(), member.id.clone(), target.id.clone())
+        .await;
 
-    assert!(result.is_err(), "Member without GRANT_PERMISSION should be denied");
+    assert!(
+        result.is_err(),
+        "Member without GRANT_PERMISSION should be denied"
+    );
     match result.unwrap_err() {
         Error::Authorization(_) => {}
         other => panic!("Expected Authorization error, got: {other:?}"),

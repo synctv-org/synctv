@@ -4,17 +4,17 @@
 // the local StreamHub. GOP cache is handled by StreamHub internally.
 
 use crate::{
-    relay::registry_trait::StreamRegistryTrait,
     error::StreamResult,
     grpc::{GrpcConnectionPool, GrpcStreamPuller, HlsProxyClient},
     livestream::managed_stream::{ManagedStream, StreamLifecycle},
+    relay::registry_trait::StreamRegistryTrait,
 };
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use synctv_xiu::streamhub::define::{StreamHubEvent, StreamHubEventSender};
 use synctv_xiu::streamhub::stream::StreamIdentifier;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
 
 /// Pull stream instance (pulls RTMP from publisher via gRPC, serves FLV to local clients)
 ///
@@ -65,8 +65,12 @@ impl PullStream {
         epoch: u64,
     ) -> Self {
         Self::with_pool(
-            room_id, media_id, publisher_node,
-            registry, stream_hub_event_sender, epoch,
+            room_id,
+            media_id,
+            publisher_node,
+            registry,
+            stream_hub_event_sender,
+            epoch,
             GrpcConnectionPool::with_defaults(),
         )
     }
@@ -116,13 +120,15 @@ impl PullStream {
     /// Start the pull stream - connects to publisher via gRPC
     pub async fn start(&self) -> StreamResult<()> {
         // Validate epoch before starting to detect split-brain
-        match self.registry.validate_epoch(&self.room_id, &self.media_id, self.epoch).await {
+        match self
+            .registry
+            .validate_epoch(&self.room_id, &self.media_id, self.epoch)
+            .await
+        {
             Ok(true) => {
                 debug!(
                     "Epoch {} validated for pull stream {}/{}",
-                    self.epoch,
-                    self.room_id,
-                    self.media_id
+                    self.epoch, self.room_id, self.media_id
                 );
             }
             Ok(false) => {
@@ -150,9 +156,7 @@ impl PullStream {
                     "Failed to validate epoch for pull stream {}/{}: {}. \
                      Failing closed to prevent potential split-brain. \
                      Stream will retry when Redis is available.",
-                    self.room_id,
-                    self.media_id,
-                    e
+                    self.room_id, self.media_id, e
                 );
                 return Err(crate::error::StreamError::RegistryError(format!(
                     "Epoch validation failed for {}/{}: {e}",
@@ -186,7 +190,8 @@ impl PullStream {
             const REBUILD_DELAY: std::time::Duration = std::time::Duration::from_secs(5);
 
             /// Interval for periodic epoch re-validation during streaming.
-            const EPOCH_REVALIDATION_INTERVAL: std::time::Duration = std::time::Duration::from_secs(30);
+            const EPOCH_REVALIDATION_INTERVAL: std::time::Duration =
+                std::time::Duration::from_secs(30);
 
             /// L-04: Maximum consecutive Redis failures before treating epoch as potentially stale.
             /// After this many failures, the stream is terminated to avoid running with stale data.
@@ -340,7 +345,9 @@ impl PullStream {
                                     epoch, room_id, media_id
                                 );
                                 if let Some(ref hls_proxy) = hls_proxy {
-                                    hls_proxy.invalidate_stream_cache_sync(&room_id, &media_id).await;
+                                    hls_proxy
+                                        .invalidate_stream_cache_sync(&room_id, &media_id)
+                                        .await;
                                 }
                                 break Err(anyhow::anyhow!(
                                     "Stale epoch on reconnect: publisher changed for {room_id} / {media_id}"
@@ -380,7 +387,10 @@ impl PullStream {
 
         self.lifecycle.set_task_handle(handle).await;
 
-        info!("Pull stream started for room {} / media {}", self.room_id, self.media_id);
+        info!(
+            "Pull stream started for room {} / media {}",
+            self.room_id, self.media_id
+        );
         Ok(())
     }
 
@@ -401,12 +411,21 @@ impl PullStream {
             app_name: self.room_id.clone(),
             stream_name: self.media_id.clone(),
         };
-        if let Err(e) = self.stream_hub_event_sender.try_send(StreamHubEvent::UnPublish { identifier }) {
-            warn!("Failed to send UnPublish to StreamHub for {} / {}: {}", self.room_id, self.media_id, e);
+        if let Err(e) = self
+            .stream_hub_event_sender
+            .try_send(StreamHubEvent::UnPublish { identifier })
+        {
+            warn!(
+                "Failed to send UnPublish to StreamHub for {} / {}: {}",
+                self.room_id, self.media_id, e
+            );
         }
 
         self.lifecycle.abort_task().await;
-        info!("Pull stream stopped for room {} / media {}", self.room_id, self.media_id);
+        info!(
+            "Pull stream stopped for room {} / media {}",
+            self.room_id, self.media_id
+        );
         Ok(())
     }
 

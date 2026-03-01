@@ -13,8 +13,8 @@ mod inner {
     use crate::storage::HlsStorage;
     use async_trait::async_trait;
     use bytes::Bytes;
-    use opendal::{Operator, services::S3};
-    use std::io::{Result, Error, ErrorKind};
+    use opendal::{services::S3, Operator};
+    use std::io::{Error, ErrorKind, Result};
     use std::sync::Arc;
     use std::time::Duration;
 
@@ -105,7 +105,8 @@ mod inner {
 
         /// Delete all objects matching a prefix using `OpenDAL` lister.
         async fn delete_by_prefix_internal(&self, prefix: &str) -> Result<usize> {
-            let lister = self.operator
+            let lister = self
+                .operator
                 .lister(prefix)
                 .await
                 .map_err(|e| Error::other(format!("OSS list failed: {e}")))?;
@@ -113,8 +114,11 @@ mod inner {
             use futures::TryStreamExt;
             let mut entries = lister;
             let mut deleted = 0;
-            while let Some(entry) = entries.try_next().await
-                .map_err(|e| Error::other(format!("OSS list iteration failed: {e}")))? {
+            while let Some(entry) = entries
+                .try_next()
+                .await
+                .map_err(|e| Error::other(format!("OSS list iteration failed: {e}")))?
+            {
                 let path = entry.path();
                 if self.operator.delete(path).await.is_ok() {
                     deleted += 1;
@@ -135,7 +139,14 @@ mod inner {
                 .await
                 .map_err(|e| Error::other(format!("OSS write failed: {e}")))?;
 
-            tracing::trace!("Wrote to OSS: {} ({} bytes) for {}/{}/{}", object_key, size, app, stream, name);
+            tracing::trace!(
+                "Wrote to OSS: {} ({} bytes) for {}/{}/{}",
+                object_key,
+                size,
+                app,
+                stream,
+                name
+            );
 
             Ok(())
         }
@@ -143,14 +154,21 @@ mod inner {
         async fn read(&self, app: &str, stream: &str, name: &str) -> Result<Bytes> {
             let object_key = self.get_object_key(app, stream, name);
 
-            let buffer = self.operator
-                .read(&object_key)
-                .await
-                .map_err(|e| Error::new(ErrorKind::NotFound, format!("OSS read failed: {e}")))?;
+            let buffer =
+                self.operator.read(&object_key).await.map_err(|e| {
+                    Error::new(ErrorKind::NotFound, format!("OSS read failed: {e}"))
+                })?;
 
             let data = Bytes::from(buffer.to_vec());
 
-            tracing::trace!("Read from OSS: {} ({} bytes) for {}/{}/{}", object_key, data.len(), app, stream, name);
+            tracing::trace!(
+                "Read from OSS: {} ({} bytes) for {}/{}/{}",
+                object_key,
+                data.len(),
+                app,
+                stream,
+                name
+            );
 
             Ok(data)
         }
@@ -163,7 +181,13 @@ mod inner {
                 .await
                 .map_err(|e| Error::other(format!("OSS delete failed: {e}")))?;
 
-            tracing::trace!("Deleted from OSS: {} for {}/{}/{}", object_key, app, stream, name);
+            tracing::trace!(
+                "Deleted from OSS: {} for {}/{}/{}",
+                object_key,
+                app,
+                stream,
+                name
+            );
 
             Ok(())
         }
@@ -183,7 +207,12 @@ mod inner {
         async fn delete_app_stream(&self, app: &str, stream: &str) -> Result<usize> {
             let prefix = self.get_stream_prefix(app, stream);
             let deleted = self.delete_by_prefix_internal(&prefix).await?;
-            tracing::debug!("delete_app_stream {}/{}: deleted {} objects", app, stream, deleted);
+            tracing::debug!(
+                "delete_app_stream {}/{}: deleted {} objects",
+                app,
+                stream,
+                deleted
+            );
             Ok(deleted)
         }
 
@@ -211,26 +240,31 @@ mod inner {
             // When upgrading opendal to a version that supports
             // `lister_with().metakey(Metakey::LastModified)`, replace the
             // stat() calls to reduce API requests from O(2N) to O(N).
-            let lister = self.operator
+            let lister = self
+                .operator
                 .lister(&base_path)
                 .await
                 .map_err(|e| Error::other(format!("OSS list failed: {e}")))?;
 
             use futures::TryStreamExt;
             let mut entries = lister;
-            while let Some(entry) = entries.try_next().await
-                .map_err(|e| Error::other(format!("OSS list iteration failed: {e}")))? {
-
+            while let Some(entry) = entries
+                .try_next()
+                .await
+                .map_err(|e| Error::other(format!("OSS list iteration failed: {e}")))?
+            {
                 let path = entry.path();
-                let metadata = self.operator.stat(path).await
+                let metadata = self
+                    .operator
+                    .stat(path)
+                    .await
                     .map_err(|e| Error::other(format!("OSS stat failed for {path}: {e}")))?;
 
                 if let Some(last_modified) = metadata.last_modified() {
-                    if last_modified < cutoff_time
-                        && self.operator.delete(path).await.is_ok() {
-                            deleted += 1;
-                            tracing::trace!("Deleted expired OSS object: {}", path);
-                        }
+                    if last_modified < cutoff_time && self.operator.delete(path).await.is_ok() {
+                        deleted += 1;
+                        tracing::trace!("Deleted expired OSS object: {}", path);
+                    }
                 }
             }
 
@@ -244,20 +278,32 @@ mod inner {
             Ok(deleted)
         }
 
-        async fn get_public_url(&self, app: &str, stream: &str, name: &str) -> Result<Option<String>> {
+        async fn get_public_url(
+            &self,
+            app: &str,
+            stream: &str,
+            name: &str,
+        ) -> Result<Option<String>> {
             let object_key = self.get_object_key(app, stream, name);
 
             // If CDN is configured, return CDN URL
             if !self.config.public_url_prefix.is_empty() {
                 let cdn_url = format!("{}{}", self.config.public_url_prefix, object_key);
-                tracing::trace!("Generated CDN URL for {}/{}/{}: {}", app, stream, name, cdn_url);
+                tracing::trace!(
+                    "Generated CDN URL for {}/{}/{}: {}",
+                    app,
+                    stream,
+                    name,
+                    cdn_url
+                );
                 return Ok(Some(cdn_url));
             }
 
             // No CDN, generate presigned URL with expiration
             let expires_in = Duration::from_secs(self.config.presign_expires_in);
 
-            let presigned_req = self.operator
+            let presigned_req = self
+                .operator
                 .presign_read(&object_key, expires_in)
                 .await
                 .map_err(|e| Error::other(format!("Failed to presign URL: {e}")))?;
@@ -266,7 +312,9 @@ mod inner {
 
             tracing::trace!(
                 "Generated presigned URL for {}/{}/{}: expires in {}s",
-                app, stream, name,
+                app,
+                stream,
+                name,
                 self.config.presign_expires_in
             );
 
@@ -294,7 +342,10 @@ mod inner {
             let storage = OssStorage::new(config).unwrap();
 
             // With CDN configured, should return CDN URL with structured path
-            let url = storage.get_public_url("live", "room_123", "segment_0").await.unwrap();
+            let url = storage
+                .get_public_url("live", "room_123", "segment_0")
+                .await
+                .unwrap();
             assert!(url.is_some());
             let url_str = url.unwrap();
             assert!(url_str.starts_with("https://cdn.example.com/hls/"));
@@ -317,7 +368,10 @@ mod inner {
 
             let storage = OssStorage::new(config).unwrap();
 
-            let url = storage.get_public_url("room_123", "media_456", "segment_0").await.unwrap();
+            let url = storage
+                .get_public_url("room_123", "media_456", "segment_0")
+                .await
+                .unwrap();
             assert!(url.is_some());
             let url_str = url.unwrap();
             assert!(url_str.starts_with("https://minio.example.com:9000/hls/"));

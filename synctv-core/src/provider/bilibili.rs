@@ -57,7 +57,10 @@ impl BilibiliProvider {
 
     /// Create a new `BilibiliProvider` with custom timeout configuration
     #[must_use]
-    pub const fn with_timeout(provider_instance_manager: Arc<RemoteProviderManager>, timeout_seconds: u64) -> Self {
+    pub const fn with_timeout(
+        provider_instance_manager: Arc<RemoteProviderManager>,
+        timeout_seconds: u64,
+    ) -> Self {
         Self {
             provider_instance_manager,
             timeout_seconds: Some(timeout_seconds),
@@ -73,7 +76,11 @@ impl BilibiliProvider {
     /// Get Bilibili client for the given instance name (remote if available, local fallback)
     async fn get_client(&self, instance_name: Option<&str>) -> BilibiliClientArc {
         self.provider_instance_manager
-            .resolve_client(instance_name, create_remote_bilibili_client, load_local_bilibili_client)
+            .resolve_client(
+                instance_name,
+                create_remote_bilibili_client,
+                load_local_bilibili_client,
+            )
             .await
     }
 
@@ -97,7 +104,10 @@ impl BilibiliProvider {
         instance_name: Option<&str>,
     ) -> Result<synctv_media_providers::grpc::bilibili::VideoPageInfo, ProviderError> {
         let client = self.get_client(instance_name).await;
-        client.parse_video_page(req).await.map_err(std::convert::Into::into)
+        client
+            .parse_video_page(req)
+            .await
+            .map_err(std::convert::Into::into)
     }
 
     /// Parse PGC page
@@ -107,7 +117,10 @@ impl BilibiliProvider {
         instance_name: Option<&str>,
     ) -> Result<synctv_media_providers::grpc::bilibili::VideoPageInfo, ProviderError> {
         let client = self.get_client(instance_name).await;
-        client.parse_pgc_page(req).await.map_err(std::convert::Into::into)
+        client
+            .parse_pgc_page(req)
+            .await
+            .map_err(std::convert::Into::into)
     }
 
     /// Parse live page
@@ -117,7 +130,10 @@ impl BilibiliProvider {
         instance_name: Option<&str>,
     ) -> Result<synctv_media_providers::grpc::bilibili::VideoPageInfo, ProviderError> {
         let client = self.get_client(instance_name).await;
-        client.parse_live_page(req).await.map_err(std::convert::Into::into)
+        client
+            .parse_live_page(req)
+            .await
+            .map_err(std::convert::Into::into)
     }
 
     /// Generate QR code for login
@@ -139,7 +155,10 @@ impl BilibiliProvider {
         instance_name: Option<&str>,
     ) -> Result<synctv_media_providers::grpc::bilibili::LoginWithQrCodeResp, ProviderError> {
         let client = self.get_client(instance_name).await;
-        client.login_with_qr_code(req).await.map_err(std::convert::Into::into)
+        client
+            .login_with_qr_code(req)
+            .await
+            .map_err(std::convert::Into::into)
     }
 
     /// Get new captcha
@@ -171,7 +190,10 @@ impl BilibiliProvider {
         instance_name: Option<&str>,
     ) -> Result<synctv_media_providers::grpc::bilibili::LoginWithSmsResp, ProviderError> {
         let client = self.get_client(instance_name).await;
-        client.login_with_sms(req).await.map_err(std::convert::Into::into)
+        client
+            .login_with_sms(req)
+            .await
+            .map_err(std::convert::Into::into)
     }
 
     /// Get user info
@@ -181,7 +203,10 @@ impl BilibiliProvider {
         instance_name: Option<&str>,
     ) -> Result<synctv_media_providers::grpc::bilibili::UserInfoResp, ProviderError> {
         let client = self.get_client(instance_name).await;
-        client.user_info(req).await.map_err(std::convert::Into::into)
+        client
+            .user_info(req)
+            .await
+            .map_err(std::convert::Into::into)
     }
 
     /// Get live danmu (弹幕) server info for WebSocket connection
@@ -192,10 +217,7 @@ impl BilibiliProvider {
         instance_name: Option<&str>,
     ) -> Result<synctv_media_providers::grpc::bilibili::GetLiveDanmuInfoResp, ProviderError> {
         let client = self.get_client(instance_name).await;
-        let req = synctv_media_providers::grpc::bilibili::GetLiveDanmuInfoReq {
-            cookies,
-            room_id,
-        };
+        let req = synctv_media_providers::grpc::bilibili::GetLiveDanmuInfoReq { cookies, room_id };
         client
             .get_live_danmu_info(req)
             .await
@@ -277,15 +299,22 @@ impl BilibiliSourceConfig {
             }
 
             // URL-decode both key and value to catch encoded injection attempts
-            let decoded_key = urlencoding::decode(key).map_err(|_| ProviderError::InvalidConfig(
-                format!("Bilibili cookie key '{key}' contains invalid URL encoding")
-            ))?;
-            let decoded_value = urlencoding::decode(value).map_err(|_| ProviderError::InvalidConfig(
-                format!("Bilibili cookie value for key '{key}' contains invalid URL encoding")
-            ))?;
+            let decoded_key = urlencoding::decode(key).map_err(|_| {
+                ProviderError::InvalidConfig(format!(
+                    "Bilibili cookie key '{key}' contains invalid URL encoding"
+                ))
+            })?;
+            let decoded_value = urlencoding::decode(value).map_err(|_| {
+                ProviderError::InvalidConfig(format!(
+                    "Bilibili cookie value for key '{key}' contains invalid URL encoding"
+                ))
+            })?;
 
             // Check decoded key for invalid characters
-            if decoded_key.chars().any(|c| c.is_control() || c == ';' || c == '=' || c == ' ') {
+            if decoded_key
+                .chars()
+                .any(|c| c.is_control() || c == ';' || c == '=' || c == ' ')
+            {
                 return Err(ProviderError::InvalidConfig(format!(
                     "Bilibili cookie key '{key}' contains invalid characters (control chars, ';', '=', or spaces, including URL-encoded forms)"
                 )));
@@ -308,12 +337,12 @@ impl BilibiliSourceConfig {
             .iter()
             .filter(|(k, _)| !k.is_empty())
             .map(|(k, v)| {
-                let clean_key: String = k.chars()
+                let clean_key: String = k
+                    .chars()
                     .filter(|c| !c.is_control() && *c != ';' && *c != '=' && *c != ' ')
                     .collect();
-                let clean_value: String = v.chars()
-                    .filter(|c| !c.is_control() && *c != ';')
-                    .collect();
+                let clean_value: String =
+                    v.chars().filter(|c| !c.is_control() && *c != ';').collect();
                 (clean_key, clean_value)
             })
             .collect()
@@ -321,7 +350,7 @@ impl BilibiliSourceConfig {
 }
 
 // Use shared credential encryption utilities from crypto_utils module
-use super::crypto_utils::{encrypt_field_in_value, decrypt_field_in_value};
+use super::crypto_utils::{decrypt_field_in_value, encrypt_field_in_value};
 
 impl TryFrom<&Value> for BilibiliSourceConfig {
     type Error = ProviderError;
@@ -359,12 +388,7 @@ impl MediaProvider for BilibiliProvider {
         let client = self.get_client(config.provider_instance_name()).await;
 
         match config {
-            BilibiliSourceConfig::Video {
-                bvid,
-                aid,
-                cid,
-                ..
-            } => {
+            BilibiliSourceConfig::Video { bvid, aid, cid, .. } => {
                 let bvid = bvid.unwrap_or_default();
                 let aid = aid.unwrap_or(0);
 
@@ -442,9 +466,7 @@ impl MediaProvider for BilibiliProvider {
                 })
             }
 
-            BilibiliSourceConfig::Pgc {
-                epid, cid, ..
-            } => {
+            BilibiliSourceConfig::Pgc { epid, cid, .. } => {
                 let request = synctv_media_providers::grpc::bilibili::GetDashPgcurlReq {
                     epid,
                     cid,
@@ -514,9 +536,7 @@ impl MediaProvider for BilibiliProvider {
                 })
             }
 
-            BilibiliSourceConfig::Live {
-                room_id, ..
-            } => {
+            BilibiliSourceConfig::Live { room_id, .. } => {
                 // Live streams use HLS — no DASH
                 //
                 // Note: `GetLiveStreamsReq.cid` is named `cid` in the protobuf definition
@@ -571,7 +591,10 @@ impl MediaProvider for BilibiliProvider {
                 let default_mode = {
                     let mut keys: Vec<&String> = playback_infos.keys().collect();
                     keys.sort();
-                    keys.into_iter().next().cloned().unwrap_or_else(|| "direct".to_string())
+                    keys.into_iter()
+                        .next()
+                        .cloned()
+                        .unwrap_or_else(|| "direct".to_string())
                 };
 
                 Ok(PlaybackResult {
@@ -621,7 +644,8 @@ impl MediaProvider for BilibiliProvider {
                         }
                         if !bv.chars().all(|c| c.is_ascii_alphanumeric()) {
                             return Err(ProviderError::InvalidConfig(
-                                "Bilibili bvid must contain only alphanumeric characters".to_string(),
+                                "Bilibili bvid must contain only alphanumeric characters"
+                                    .to_string(),
                             ));
                         }
                     }
@@ -696,22 +720,35 @@ impl MediaProvider for BilibiliProvider {
         // Include a hash of the user's cookies in the cache key to prevent
         // cross-user cache pollution (VIP vs non-VIP get different results).
         if let Ok(config) = BilibiliSourceConfig::try_from(&decrypted) {
-            use sha2::{Sha256, Digest};
+            use sha2::{Digest, Sha256};
             let (identifier, cookies) = match &config {
-                BilibiliSourceConfig::Video { bvid, aid, cid, cookies, .. } => {
-                    (format!("video:{}:{}:{}", bvid.as_deref().unwrap_or(""), aid.unwrap_or(0), cid), cookies)
-                }
-                BilibiliSourceConfig::Pgc { epid, cid, cookies, .. } => {
-                    (format!("pgc:{epid}:{cid}"), cookies)
-                }
-                BilibiliSourceConfig::Live { room_id, cookies, .. } => {
-                    (format!("live:{room_id}"), cookies)
-                }
+                BilibiliSourceConfig::Video {
+                    bvid,
+                    aid,
+                    cid,
+                    cookies,
+                    ..
+                } => (
+                    format!(
+                        "video:{}:{}:{}",
+                        bvid.as_deref().unwrap_or(""),
+                        aid.unwrap_or(0),
+                        cid
+                    ),
+                    cookies,
+                ),
+                BilibiliSourceConfig::Pgc {
+                    epid, cid, cookies, ..
+                } => (format!("pgc:{epid}:{cid}"), cookies),
+                BilibiliSourceConfig::Live {
+                    room_id, cookies, ..
+                } => (format!("live:{room_id}"), cookies),
             };
             // Build a stable string from cookies for hashing
             let mut cookie_parts: Vec<_> = cookies.iter().collect();
             cookie_parts.sort_by_key(|(k, _)| k.as_str());
-            let cookies_str: String = cookie_parts.iter()
+            let cookies_str: String = cookie_parts
+                .iter()
                 .map(|(k, v)| format!("{k}={v}"))
                 .collect::<Vec<_>>()
                 .join(";");
@@ -719,7 +756,9 @@ impl MediaProvider for BilibiliProvider {
                 "anon".to_string()
             } else {
                 format!("{:x}", Sha256::digest(cookies_str.as_bytes()))
-                    .chars().take(16).collect::<String>()
+                    .chars()
+                    .take(16)
+                    .collect::<String>()
             };
             let full_id = format!("{identifier}:{user_hash}");
             super::build_playback_cache_key(ctx.key_prefix, "bilibili", &full_id)
@@ -763,7 +802,8 @@ mod tests {
                         }
                         if !bv.chars().all(|c| c.is_ascii_alphanumeric()) {
                             return Err(ProviderError::InvalidConfig(
-                                "Bilibili bvid must contain only alphanumeric characters".to_string(),
+                                "Bilibili bvid must contain only alphanumeric characters"
+                                    .to_string(),
                             ));
                         }
                     }

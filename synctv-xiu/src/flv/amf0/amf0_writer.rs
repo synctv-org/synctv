@@ -1,8 +1,8 @@
 use {
     super::{amf0_markers, errors::Amf0WriteErrorValue, Amf0ValueType, Amf0WriteError},
+    crate::bytesio::bytes_writer::BytesWriter,
     byteorder::BigEndian,
     bytes::BytesMut,
-    crate::bytesio::bytes_writer::BytesWriter,
     indexmap::IndexMap,
 };
 
@@ -12,7 +12,7 @@ pub struct Amf0Writer {
 }
 
 impl Amf0Writer {
-    #[must_use] 
+    #[must_use]
     pub const fn new() -> Self {
         Self {
             writer: BytesWriter::new(),
@@ -120,11 +120,11 @@ impl Amf0Writer {
         self.writer.get_current_bytes()
     }
 
-    #[must_use] 
+    #[must_use]
     pub const fn len(&self) -> usize {
         self.writer.len()
     }
-    #[must_use] 
+    #[must_use]
     pub const fn is_empty(&self) -> bool {
         self.len() == 0
     }

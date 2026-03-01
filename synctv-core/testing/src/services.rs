@@ -1,14 +1,10 @@
 //! Service factory helpers for tests
 
-use synctv_core::{
-    service::{
-        auth::jwt::JwtService,
-        BruteForceProtection,
-        InMemoryAttemptTracker,
-        InMemoryTokenBlacklistStore,
-    },
-};
 use crate::constants;
+use synctv_core::service::{
+    auth::jwt::JwtService, BruteForceProtection, InMemoryAttemptTracker,
+    InMemoryTokenBlacklistStore,
+};
 
 /// Creates a JWT service for testing
 ///
@@ -22,7 +18,7 @@ use crate::constants;
 /// let jwt_service = create_test_jwt_service();
 /// let token = jwt_service.sign_token(user_id, UserRole::User, TokenType::Access)?;
 /// ```
-#[must_use] 
+#[must_use]
 pub fn create_test_jwt_service() -> JwtService {
     JwtService::new("test-secret-key-for-integration-tests-minimum-length-32-chars")
         .expect("Failed to create JWT service")
@@ -39,7 +35,7 @@ pub fn create_test_jwt_service() -> JwtService {
 /// ```text
 /// let jwt_service = create_test_jwt_service_with_secret("my-custom-secret-32-chars-long!!");
 /// ```
-#[must_use] 
+#[must_use]
 pub fn create_test_jwt_service_with_secret(secret: &str) -> JwtService {
     JwtService::new(secret).expect("Failed to create JWT service")
 }
@@ -56,7 +52,7 @@ pub fn create_test_jwt_service_with_secret(secret: &str) -> JwtService {
 /// let protection = create_test_brute_force_protection();
 /// protection.record_failure("user", ip).await?;
 /// ```
-#[must_use] 
+#[must_use]
 pub fn create_test_brute_force_protection() -> BruteForceProtection {
     BruteForceProtection::in_memory("test".to_string())
 }
@@ -73,7 +69,7 @@ pub fn create_test_brute_force_protection() -> BruteForceProtection {
 /// let tracker = create_test_attempt_tracker();
 /// tracker.record_failure("user", now, ttl).await?;
 /// ```
-#[must_use] 
+#[must_use]
 pub fn create_test_attempt_tracker() -> InMemoryAttemptTracker {
     InMemoryAttemptTracker::new(1000, 900)
 }
@@ -90,7 +86,7 @@ pub fn create_test_attempt_tracker() -> InMemoryAttemptTracker {
 /// let store = create_test_token_blacklist_store();
 /// store.blacklist("jti:123", ttl).await?;
 /// ```
-#[must_use] 
+#[must_use]
 pub fn create_test_token_blacklist_store() -> InMemoryTokenBlacklistStore {
     InMemoryTokenBlacklistStore::new(
         constants::token_blacklist::CAPACITY as u64,

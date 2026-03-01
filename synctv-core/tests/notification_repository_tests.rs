@@ -6,16 +6,16 @@
 //! Run with: cargo test -p synctv-core --test `notification_repository_tests`
 #![allow(clippy::unwrap_used)]
 
-use synctv_core_testing::{create_test_pool};
+use chrono::{Duration, Utc};
+use sqlx::PgPool;
 use synctv_core::{
     models::{
-        UserId, User, UserRole, UserStatus,
-        CreateNotificationRequest, NotificationType, NotificationListQuery, PageParams,
+        CreateNotificationRequest, NotificationListQuery, NotificationType, PageParams, User,
+        UserId, UserRole, UserStatus,
     },
     repository::{NotificationRepository, UserRepository},
 };
-use chrono::{Utc, Duration};
-use sqlx::PgPool;
+use synctv_core_testing::create_test_pool;
 fn make_user(username: &str) -> User {
     let now = Utc::now();
     User {
@@ -74,7 +74,10 @@ async fn test_mark_as_read_cross_user_guard() {
         .mark_as_read(&user_b.id, &[notif_a.id])
         .await
         .unwrap();
-    assert_eq!(affected, 0, "Foreign user should not be able to mark other user's notifications");
+    assert_eq!(
+        affected, 0,
+        "Foreign user should not be able to mark other user's notifications"
+    );
 
     // Verify it's still unread
     let fetched = notif_repo.get_by_id(notif_a.id).await.unwrap().unwrap();
@@ -121,7 +124,10 @@ async fn test_mark_all_as_read_before_parameter() {
         .mark_all_as_read(&user.id, Some(cutoff))
         .await
         .unwrap();
-    assert_eq!(affected, 1, "Only n1 should be marked as read (before cutoff)");
+    assert_eq!(
+        affected, 1,
+        "Only n1 should be marked as read (before cutoff)"
+    );
 
     // n1 should be read
     let fetched_n1 = notif_repo.get_by_id(n1.id).await.unwrap().unwrap();
@@ -189,7 +195,10 @@ async fn test_delete_older_than_boundary() {
     assert_eq!(deleted, 1, "Should delete only the old notification");
 
     // Recent notification should remain
-    let count = notif_repo.count_by_user(&user.id, None, None).await.unwrap();
+    let count = notif_repo
+        .count_by_user(&user.id, None, None)
+        .await
+        .unwrap();
     assert_eq!(count, 1);
 }
 

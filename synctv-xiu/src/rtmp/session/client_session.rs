@@ -7,6 +7,11 @@ use {
         define::SessionType,
         errors::{SessionError, SessionErrorValue},
     },
+    crate::bytesio::{
+        bytes_writer::AsyncBytesWriter,
+        bytesio::{TNetIO, TcpIO},
+    },
+    crate::flv::amf0::Amf0ValueType,
     crate::rtmp::{
         chunk::{
             define::CHUNK_SIZE,
@@ -21,16 +26,11 @@ use {
         user_control_messages::writer::EventMessagesWriter,
         utils::RtmpUrlParser,
     },
-    crate::bytesio::{
-        bytes_writer::AsyncBytesWriter,
-        bytesio::{TNetIO, TcpIO},
-    },
+    crate::streamhub::define::StreamHubEventSender,
     indexmap::IndexMap,
     std::sync::Arc,
     std::time::Duration,
-    crate::streamhub::define::StreamHubEventSender,
     tokio::{net::TcpStream, sync::Mutex},
-    crate::flv::amf0::Amf0ValueType,
 };
 
 #[allow(dead_code)]
@@ -142,8 +142,8 @@ impl ClientSession {
             per_stream_max_bytes,
         }
     }
-    
-    pub const fn set_timeout(&mut self, timeout: Duration){
+
+    pub const fn set_timeout(&mut self, timeout: Duration) {
         self.timeout = Some(timeout);
     }
 
@@ -163,7 +163,8 @@ impl ClientSession {
         if self.is_publishing {
             tracing::info!(
                 "ClientSession cleanup: unpublishing app={} stream={}",
-                self.app_name, self.stream_name
+                self.app_name,
+                self.stream_name
             );
             self.common
                 .unpublish_to_stream_hub(self.app_name.clone(), self.stream_name.clone())
@@ -171,20 +172,18 @@ impl ClientSession {
             self.is_publishing = false;
         }
         if self.is_subscribed {
-            let (app, stream) = if let (Some(app), Some(stream)) =
-                (&self.sub_app_name, &self.sub_stream_name)
-            {
-                (app.clone(), stream.clone())
-            } else {
-                (self.app_name.clone(), self.stream_name.clone())
-            };
+            let (app, stream) =
+                if let (Some(app), Some(stream)) = (&self.sub_app_name, &self.sub_stream_name) {
+                    (app.clone(), stream.clone())
+                } else {
+                    (self.app_name.clone(), self.stream_name.clone())
+                };
             tracing::info!(
                 "ClientSession cleanup: unsubscribing app={} stream={}",
-                app, stream
+                app,
+                stream
             );
-            self.common
-                .unsubscribe_from_stream_hub(app, stream)
-                .await?;
+            self.common.unsubscribe_from_stream_hub(app, stream).await?;
             self.is_subscribed = false;
         }
         Ok(())
@@ -524,10 +523,16 @@ impl ClientSession {
 
         let mut netstream = NetStreamWriter::new(Arc::clone(&self.io));
         netstream
-            .write_release_stream(&f64::from(define::TRANSACTION_ID_CONNECT), &self.stream_name)
+            .write_release_stream(
+                &f64::from(define::TRANSACTION_ID_CONNECT),
+                &self.stream_name,
+            )
             .await?;
         netstream
-            .write_fcpublish(&f64::from(define::TRANSACTION_ID_CONNECT), &self.stream_name)
+            .write_fcpublish(
+                &f64::from(define::TRANSACTION_ID_CONNECT),
+                &self.stream_name,
+            )
             .await?;
 
         self.state = ClientSessionState::CreateStream;
@@ -558,8 +563,7 @@ impl ClientSession {
                 clamped
             );
         }
-        self.unpacketizer
-            .update_max_chunk_size(clamped as usize);
+        self.unpacketizer.update_max_chunk_size(clamped as usize);
         Ok(())
     }
 

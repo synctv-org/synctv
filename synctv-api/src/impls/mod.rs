@@ -16,9 +16,9 @@ pub mod providers;
 
 // Re-export for convenience
 pub use admin::AdminApiImpl;
-pub use client::{ClientApiImpl, ClientApiConfig};
+pub use client::{ClientApiConfig, ClientApiImpl};
 pub use email::EmailApiImpl;
-pub use messaging::{MessageConcurrencyConfig, StreamMessageHandler, MessageSender, ProtoCodec};
+pub use messaging::{MessageConcurrencyConfig, MessageSender, ProtoCodec, StreamMessageHandler};
 pub use notification::NotificationApiImpl;
 pub use oauth2::OAuth2ApiImpl;
 pub use providers::{AlistApiImpl, BilibiliApiImpl, EmbyApiImpl};
@@ -55,14 +55,16 @@ pub fn try_publish_cluster_event(
 /// Shared utility used by both `ClientApiImpl` and `AdminApiImpl` after media
 /// deletion to terminate any active RTMP stream.
 pub fn kick_stream_cluster(
-    live_streaming_infrastructure: Option<&std::sync::Arc<synctv_livestream::api::LiveStreamingInfrastructure>>,
+    live_streaming_infrastructure: Option<
+        &std::sync::Arc<synctv_livestream::api::LiveStreamingInfrastructure>,
+    >,
     redis_publish_tx: Option<&tokio::sync::mpsc::Sender<synctv_cluster::sync::PublishRequest>>,
     room_id: &str,
     media_id: &str,
     reason: &str,
 ) {
     use synctv_cluster::sync::{ClusterEvent, PublishRequest};
-    use synctv_core::models::{RoomId as Rid, MediaId as Mid};
+    use synctv_core::models::{MediaId as Mid, RoomId as Rid};
 
     // 1. Local kick (no-op if stream not on this node)
     if let Some(infra) = live_streaming_infrastructure {
@@ -73,16 +75,23 @@ pub fn kick_stream_cluster(
 
     // 2. Cluster-wide via Redis
     if let Some(tx) = redis_publish_tx {
-        if tx.try_send(PublishRequest {
-            event: ClusterEvent::KickPublisher {
-                event_id: nanoid::nanoid!(16),
-                room_id: Rid::from_string(room_id.to_string()),
-                media_id: Mid::from_string(media_id.to_string()),
-                reason: reason.to_string(),
-                timestamp: chrono::Utc::now(),
-            },
-        }).is_err() {
-            tracing::warn!(room_id, media_id, "Failed to send cluster-wide kick event (Redis channel closed or full)");
+        if tx
+            .try_send(PublishRequest {
+                event: ClusterEvent::KickPublisher {
+                    event_id: nanoid::nanoid!(16),
+                    room_id: Rid::from_string(room_id.to_string()),
+                    media_id: Mid::from_string(media_id.to_string()),
+                    reason: reason.to_string(),
+                    timestamp: chrono::Utc::now(),
+                },
+            })
+            .is_err()
+        {
+            tracing::warn!(
+                room_id,
+                media_id,
+                "Failed to send cluster-wide kick event (Redis channel closed or full)"
+            );
         }
     }
 }
@@ -134,7 +143,10 @@ pub mod error_codes {
     //   - content: Display content
     //   - data: JSON-encoded additional data
     //   - timestamp: Unix timestamp in milliseconds
-    #[deprecated(since = "0.1.0", note = "Use ServerMessage::Notification variant instead")]
+    #[deprecated(
+        since = "0.1.0",
+        note = "Use ServerMessage::Notification variant instead"
+    )]
     pub const NOTIFICATION_PUSH: i32 = 5000;
 
     // Internal errors (9xxx)
@@ -159,7 +171,7 @@ pub enum ErrorKind {
 
 impl ErrorKind {
     /// Convert this error kind to an application-level error code.
-    #[must_use] 
+    #[must_use]
     pub const fn to_code(&self) -> i32 {
         match self {
             Self::NotFound => error_codes::NOT_FOUND,
@@ -203,7 +215,7 @@ impl From<synctv_core::Error> for ApiError {
 
 impl ApiError {
     /// Convert this structured error into an `ErrorKind`.
-    #[must_use] 
+    #[must_use]
     pub const fn classify(&self) -> ErrorKind {
         match self {
             Self::NotFound(_) => ErrorKind::NotFound,
@@ -216,7 +228,7 @@ impl ApiError {
     }
 
     /// Get the error message.
-    #[must_use] 
+    #[must_use]
     pub fn message(&self) -> &str {
         match self {
             Self::NotFound(msg)
@@ -229,7 +241,7 @@ impl ApiError {
     }
 
     /// Get the application-level error code for this error.
-    #[must_use] 
+    #[must_use]
     pub const fn code(&self) -> i32 {
         self.classify().to_code()
     }
@@ -287,7 +299,7 @@ impl ApiError {
     /// Convert this error into a proto `ErrorMessage` with proper code and detail.
     ///
     /// The detail field is left empty to avoid leaking sensitive information.
-    #[must_use] 
+    #[must_use]
     pub fn to_proto_error(&self) -> crate::proto::client::ErrorMessage {
         // Sanitize Internal errors to avoid leaking sensitive implementation details
         // (e.g. database connection strings, stack traces) to clients.
@@ -308,7 +320,7 @@ impl ApiError {
 /// First attempts to match known `synctv_core::Error` display prefixes
 /// for structured classification. Falls back to keyword matching for
 /// errors that don't originate from the core layer.
-#[must_use] 
+#[must_use]
 pub fn classify_error(err: &str) -> ErrorKind {
     // Try structured prefix matching first (matches synctv_core::Error::Display output)
     if let Some(kind) = classify_by_prefix(err) {
@@ -319,21 +331,30 @@ pub fn classify_error(err: &str) -> ErrorKind {
     let lower = err.to_lowercase();
     if lower.contains("not found") {
         ErrorKind::NotFound
-    } else if lower.contains("unauthenticated") || lower.contains("invalid token")
-        || lower.contains("token expired") || lower.contains("not authenticated")
+    } else if lower.contains("unauthenticated")
+        || lower.contains("invalid token")
+        || lower.contains("token expired")
+        || lower.contains("not authenticated")
     {
         ErrorKind::Unauthenticated
-    } else if lower.contains("permission") || lower.contains("forbidden")
-        || lower.contains("not allowed") || lower.contains("banned")
+    } else if lower.contains("permission")
+        || lower.contains("forbidden")
+        || lower.contains("not allowed")
+        || lower.contains("banned")
     {
         ErrorKind::PermissionDenied
-    } else if lower.contains("already exists") || lower.contains("already taken")
+    } else if lower.contains("already exists")
+        || lower.contains("already taken")
         || lower.contains("already registered")
     {
         ErrorKind::AlreadyExists
-    } else if lower.contains("invalid") || lower.contains("too short") || lower.contains("too long")
-        || lower.contains("cannot be empty") || lower.contains("too many")
-        || lower.contains("required") || lower.contains("must be")
+    } else if lower.contains("invalid")
+        || lower.contains("too short")
+        || lower.contains("too long")
+        || lower.contains("cannot be empty")
+        || lower.contains("too many")
+        || lower.contains("required")
+        || lower.contains("must be")
     {
         ErrorKind::InvalidArgument
     } else {
@@ -355,8 +376,10 @@ fn classify_by_prefix(err: &str) -> Option<ErrorKind> {
         Some(ErrorKind::AlreadyExists)
     } else if err.starts_with("Invalid input: ") {
         Some(ErrorKind::InvalidArgument)
-    } else if err.starts_with("Internal error: ") || err.starts_with("Database error: ")
-        || err.starts_with("Redis error: ") || err.starts_with("Serialization error: ")
+    } else if err.starts_with("Internal error: ")
+        || err.starts_with("Database error: ")
+        || err.starts_with("Redis error: ")
+        || err.starts_with("Serialization error: ")
     {
         Some(ErrorKind::Internal)
     } else {
@@ -370,57 +393,135 @@ mod tests {
 
     #[test]
     fn test_classify_error_not_found() {
-        assert!(matches!(classify_error("User not found"), ErrorKind::NotFound));
-        assert!(matches!(classify_error("Room Not Found"), ErrorKind::NotFound));
-        assert!(matches!(classify_error("resource NOT FOUND"), ErrorKind::NotFound));
+        assert!(matches!(
+            classify_error("User not found"),
+            ErrorKind::NotFound
+        ));
+        assert!(matches!(
+            classify_error("Room Not Found"),
+            ErrorKind::NotFound
+        ));
+        assert!(matches!(
+            classify_error("resource NOT FOUND"),
+            ErrorKind::NotFound
+        ));
     }
 
     #[test]
     fn test_classify_error_unauthenticated() {
-        assert!(matches!(classify_error("Unauthenticated"), ErrorKind::Unauthenticated));
-        assert!(matches!(classify_error("invalid token"), ErrorKind::Unauthenticated));
-        assert!(matches!(classify_error("Token expired"), ErrorKind::Unauthenticated));
-        assert!(matches!(classify_error("Not authenticated"), ErrorKind::Unauthenticated));
+        assert!(matches!(
+            classify_error("Unauthenticated"),
+            ErrorKind::Unauthenticated
+        ));
+        assert!(matches!(
+            classify_error("invalid token"),
+            ErrorKind::Unauthenticated
+        ));
+        assert!(matches!(
+            classify_error("Token expired"),
+            ErrorKind::Unauthenticated
+        ));
+        assert!(matches!(
+            classify_error("Not authenticated"),
+            ErrorKind::Unauthenticated
+        ));
     }
 
     #[test]
     fn test_classify_error_permission_denied() {
-        assert!(matches!(classify_error("Permission denied"), ErrorKind::PermissionDenied));
-        assert!(matches!(classify_error("Forbidden access"), ErrorKind::PermissionDenied));
-        assert!(matches!(classify_error("Operation not allowed"), ErrorKind::PermissionDenied));
-        assert!(matches!(classify_error("User is banned"), ErrorKind::PermissionDenied));
+        assert!(matches!(
+            classify_error("Permission denied"),
+            ErrorKind::PermissionDenied
+        ));
+        assert!(matches!(
+            classify_error("Forbidden access"),
+            ErrorKind::PermissionDenied
+        ));
+        assert!(matches!(
+            classify_error("Operation not allowed"),
+            ErrorKind::PermissionDenied
+        ));
+        assert!(matches!(
+            classify_error("User is banned"),
+            ErrorKind::PermissionDenied
+        ));
     }
 
     #[test]
     fn test_classify_error_already_exists() {
-        assert!(matches!(classify_error("User already exists"), ErrorKind::AlreadyExists));
-        assert!(matches!(classify_error("Username already taken"), ErrorKind::AlreadyExists));
-        assert!(matches!(classify_error("Email already registered"), ErrorKind::AlreadyExists));
+        assert!(matches!(
+            classify_error("User already exists"),
+            ErrorKind::AlreadyExists
+        ));
+        assert!(matches!(
+            classify_error("Username already taken"),
+            ErrorKind::AlreadyExists
+        ));
+        assert!(matches!(
+            classify_error("Email already registered"),
+            ErrorKind::AlreadyExists
+        ));
     }
 
     #[test]
     fn test_classify_error_invalid_argument() {
-        assert!(matches!(classify_error("Invalid email format"), ErrorKind::InvalidArgument));
-        assert!(matches!(classify_error("Password too short"), ErrorKind::InvalidArgument));
-        assert!(matches!(classify_error("Username too long"), ErrorKind::InvalidArgument));
-        assert!(matches!(classify_error("Field cannot be empty"), ErrorKind::InvalidArgument));
-        assert!(matches!(classify_error("Too many rooms"), ErrorKind::InvalidArgument));
-        assert!(matches!(classify_error("Email required"), ErrorKind::InvalidArgument));
-        assert!(matches!(classify_error("Password must be alphanumeric"), ErrorKind::InvalidArgument));
+        assert!(matches!(
+            classify_error("Invalid email format"),
+            ErrorKind::InvalidArgument
+        ));
+        assert!(matches!(
+            classify_error("Password too short"),
+            ErrorKind::InvalidArgument
+        ));
+        assert!(matches!(
+            classify_error("Username too long"),
+            ErrorKind::InvalidArgument
+        ));
+        assert!(matches!(
+            classify_error("Field cannot be empty"),
+            ErrorKind::InvalidArgument
+        ));
+        assert!(matches!(
+            classify_error("Too many rooms"),
+            ErrorKind::InvalidArgument
+        ));
+        assert!(matches!(
+            classify_error("Email required"),
+            ErrorKind::InvalidArgument
+        ));
+        assert!(matches!(
+            classify_error("Password must be alphanumeric"),
+            ErrorKind::InvalidArgument
+        ));
     }
 
     #[test]
     fn test_classify_error_internal() {
-        assert!(matches!(classify_error("Something went wrong"), ErrorKind::Internal));
-        assert!(matches!(classify_error("Database connection failed"), ErrorKind::Internal));
-        assert!(matches!(classify_error("Unexpected error"), ErrorKind::Internal));
+        assert!(matches!(
+            classify_error("Something went wrong"),
+            ErrorKind::Internal
+        ));
+        assert!(matches!(
+            classify_error("Database connection failed"),
+            ErrorKind::Internal
+        ));
+        assert!(matches!(
+            classify_error("Unexpected error"),
+            ErrorKind::Internal
+        ));
     }
 
     #[test]
     fn test_classify_error_case_insensitive() {
         assert!(matches!(classify_error("NOT FOUND"), ErrorKind::NotFound));
-        assert!(matches!(classify_error("PERMISSION denied"), ErrorKind::PermissionDenied));
-        assert!(matches!(classify_error("INVALID token"), ErrorKind::Unauthenticated));
+        assert!(matches!(
+            classify_error("PERMISSION denied"),
+            ErrorKind::PermissionDenied
+        ));
+        assert!(matches!(
+            classify_error("INVALID token"),
+            ErrorKind::Unauthenticated
+        ));
     }
 
     // ========== Priority / Ordering Edge Cases ==========
@@ -428,19 +529,28 @@ mod tests {
     #[test]
     fn test_classify_error_not_found_takes_priority_over_invalid() {
         // "not found" contains "not" but should match NotFound, not InvalidArgument
-        assert!(matches!(classify_error("Resource not found"), ErrorKind::NotFound));
+        assert!(matches!(
+            classify_error("Resource not found"),
+            ErrorKind::NotFound
+        ));
     }
 
     #[test]
     fn test_classify_error_invalid_token_is_unauthenticated_not_invalid_argument() {
         // "invalid token" should match Unauthenticated (checked before InvalidArgument)
-        assert!(matches!(classify_error("invalid token supplied"), ErrorKind::Unauthenticated));
+        assert!(matches!(
+            classify_error("invalid token supplied"),
+            ErrorKind::Unauthenticated
+        ));
     }
 
     #[test]
     fn test_classify_error_banned_is_permission_denied() {
         // "banned" should match PermissionDenied
-        assert!(matches!(classify_error("User has been banned from the room"), ErrorKind::PermissionDenied));
+        assert!(matches!(
+            classify_error("User has been banned from the room"),
+            ErrorKind::PermissionDenied
+        ));
     }
 
     #[test]
@@ -455,29 +565,50 @@ mod tests {
 
     #[test]
     fn test_classify_error_must_be_is_invalid_argument() {
-        assert!(matches!(classify_error("Username must be alphanumeric"), ErrorKind::InvalidArgument));
+        assert!(matches!(
+            classify_error("Username must be alphanumeric"),
+            ErrorKind::InvalidArgument
+        ));
     }
 
     #[test]
     fn test_classify_error_not_allowed_is_permission_denied() {
-        assert!(matches!(classify_error("This action is not allowed"), ErrorKind::PermissionDenied));
+        assert!(matches!(
+            classify_error("This action is not allowed"),
+            ErrorKind::PermissionDenied
+        ));
     }
 
     #[test]
     fn test_classify_error_already_registered_is_already_exists() {
-        assert!(matches!(classify_error("User already registered"), ErrorKind::AlreadyExists));
+        assert!(matches!(
+            classify_error("User already registered"),
+            ErrorKind::AlreadyExists
+        ));
     }
 
     #[test]
     fn test_classify_error_not_authenticated_is_unauthenticated() {
-        assert!(matches!(classify_error("User is not authenticated"), ErrorKind::Unauthenticated));
+        assert!(matches!(
+            classify_error("User is not authenticated"),
+            ErrorKind::Unauthenticated
+        ));
     }
 
     #[test]
     fn test_classify_error_mixed_case_keywords() {
-        assert!(matches!(classify_error("Token Expired"), ErrorKind::Unauthenticated));
-        assert!(matches!(classify_error("Already Taken"), ErrorKind::AlreadyExists));
-        assert!(matches!(classify_error("Cannot Be Empty"), ErrorKind::InvalidArgument));
+        assert!(matches!(
+            classify_error("Token Expired"),
+            ErrorKind::Unauthenticated
+        ));
+        assert!(matches!(
+            classify_error("Already Taken"),
+            ErrorKind::AlreadyExists
+        ));
+        assert!(matches!(
+            classify_error("Cannot Be Empty"),
+            ErrorKind::InvalidArgument
+        ));
     }
 
     // ========== Structured prefix classification ==========
@@ -485,13 +616,34 @@ mod tests {
     #[test]
     fn test_classify_by_prefix_core_error_display() {
         // These match the exact Display output of synctv_core::Error variants
-        assert!(matches!(classify_error("Not found: room 123"), ErrorKind::NotFound));
-        assert!(matches!(classify_error("Authentication error: expired"), ErrorKind::Unauthenticated));
-        assert!(matches!(classify_error("Authorization error: forbidden"), ErrorKind::PermissionDenied));
-        assert!(matches!(classify_error("Already exists: user"), ErrorKind::AlreadyExists));
-        assert!(matches!(classify_error("Invalid input: bad field"), ErrorKind::InvalidArgument));
-        assert!(matches!(classify_error("Internal error: oops"), ErrorKind::Internal));
-        assert!(matches!(classify_error("Database error: connection refused"), ErrorKind::Internal));
+        assert!(matches!(
+            classify_error("Not found: room 123"),
+            ErrorKind::NotFound
+        ));
+        assert!(matches!(
+            classify_error("Authentication error: expired"),
+            ErrorKind::Unauthenticated
+        ));
+        assert!(matches!(
+            classify_error("Authorization error: forbidden"),
+            ErrorKind::PermissionDenied
+        ));
+        assert!(matches!(
+            classify_error("Already exists: user"),
+            ErrorKind::AlreadyExists
+        ));
+        assert!(matches!(
+            classify_error("Invalid input: bad field"),
+            ErrorKind::InvalidArgument
+        ));
+        assert!(matches!(
+            classify_error("Internal error: oops"),
+            ErrorKind::Internal
+        ));
+        assert!(matches!(
+            classify_error("Database error: connection refused"),
+            ErrorKind::Internal
+        ));
     }
 
     #[test]
@@ -521,17 +673,32 @@ mod tests {
     fn test_api_error_display_roundtrips_through_classify() {
         // ApiError::Display produces prefixed strings that classify_by_prefix recognizes
         let cases: Vec<(ApiError, fn(&ErrorKind) -> bool)> = vec![
-            (ApiError::NotFound("room".into()), |k| matches!(k, ErrorKind::NotFound)),
-            (ApiError::Authentication("bad".into()), |k| matches!(k, ErrorKind::Unauthenticated)),
-            (ApiError::Authorization("denied".into()), |k| matches!(k, ErrorKind::PermissionDenied)),
-            (ApiError::AlreadyExists("dup".into()), |k| matches!(k, ErrorKind::AlreadyExists)),
-            (ApiError::InvalidInput("bad".into()), |k| matches!(k, ErrorKind::InvalidArgument)),
-            (ApiError::Internal("boom".into()), |k| matches!(k, ErrorKind::Internal)),
+            (ApiError::NotFound("room".into()), |k| {
+                matches!(k, ErrorKind::NotFound)
+            }),
+            (ApiError::Authentication("bad".into()), |k| {
+                matches!(k, ErrorKind::Unauthenticated)
+            }),
+            (ApiError::Authorization("denied".into()), |k| {
+                matches!(k, ErrorKind::PermissionDenied)
+            }),
+            (ApiError::AlreadyExists("dup".into()), |k| {
+                matches!(k, ErrorKind::AlreadyExists)
+            }),
+            (ApiError::InvalidInput("bad".into()), |k| {
+                matches!(k, ErrorKind::InvalidArgument)
+            }),
+            (ApiError::Internal("boom".into()), |k| {
+                matches!(k, ErrorKind::Internal)
+            }),
         ];
         for (api_err, check) in cases {
             let as_string = api_err.to_string();
             let classified = classify_error(&as_string);
-            assert!(check(&classified), "ApiError '{as_string}' misclassified after Display roundtrip");
+            assert!(
+                check(&classified),
+                "ApiError '{as_string}' misclassified after Display roundtrip"
+            );
         }
     }
 

@@ -124,12 +124,7 @@ impl K8sDnsDiscovery {
     }
 
     /// Create with explicit parameters (for testing or non-standard setups).
-    pub fn new(
-        dns_name: String,
-        grpc_port: u16,
-        http_port: u16,
-        self_ip: String,
-    ) -> Self {
+    pub fn new(dns_name: String, grpc_port: u16, http_port: u16, self_ip: String) -> Self {
         Self {
             dns_name,
             grpc_port,
@@ -154,14 +149,9 @@ impl K8sDnsDiscovery {
     pub async fn resolve_once(&self) -> Result<Vec<DnsPeer>> {
         let lookup_addr = format!("{}:{}", self.dns_name, self.grpc_port);
 
-        let addrs = tokio::net::lookup_host(&lookup_addr)
-            .await
-            .map_err(|e| {
-                Error::Configuration(format!(
-                    "DNS lookup failed for '{}': {}",
-                    self.dns_name, e
-                ))
-            })?;
+        let addrs = tokio::net::lookup_host(&lookup_addr).await.map_err(|e| {
+            Error::Configuration(format!("DNS lookup failed for '{}': {}", self.dns_name, e))
+        })?;
 
         let mut peers = Vec::new();
         let mut seen_ips = std::collections::HashSet::new();
@@ -226,7 +216,8 @@ impl K8sDnsDiscovery {
                                 peer.grpc_address.clone(),
                                 peer.http_address.clone(),
                             );
-                            info.metadata.insert("discovery".to_string(), "k8s_dns".to_string());
+                            info.metadata
+                                .insert("discovery".to_string(), "k8s_dns".to_string());
                             let registration_epoch = info.epoch;
                             if let Err(e) = registry.register_remote(info).await {
                                 tracing::warn!(
@@ -236,7 +227,10 @@ impl K8sDnsDiscovery {
                                 );
                             } else {
                                 // Track the epoch used for registration
-                                self.peer_epochs.write().await.insert(peer.ip.clone(), registration_epoch);
+                                self.peer_epochs
+                                    .write()
+                                    .await
+                                    .insert(peer.ip.clone(), registration_epoch);
                                 tracing::info!(
                                     peer_ip = %peer.ip,
                                     grpc_address = %peer.grpc_address,
@@ -250,8 +244,11 @@ impl K8sDnsDiscovery {
                     // Unregister disappeared peers with their tracked epoch
                     for peer in old_peers.iter() {
                         if !new_ips.contains(peer.ip.as_str()) {
-                            let tracked_epoch = self.peer_epochs.read().await.get(&peer.ip).copied();
-                            if let Err(e) = registry.unregister_remote(&peer.ip, tracked_epoch).await {
+                            let tracked_epoch =
+                                self.peer_epochs.read().await.get(&peer.ip).copied();
+                            if let Err(e) =
+                                registry.unregister_remote(&peer.ip, tracked_epoch).await
+                            {
                                 tracing::warn!(
                                     peer_ip = %peer.ip,
                                     epoch = ?tracked_epoch,
@@ -319,10 +316,7 @@ impl K8sDnsDiscovery {
     /// scaling events (pod additions/removals).
     ///
     /// Returns the `JoinHandle` for the background task.
-    pub async fn start_refresh_loop(
-        &self,
-        interval_secs: u64,
-    ) -> tokio::task::JoinHandle<()> {
+    pub async fn start_refresh_loop(&self, interval_secs: u64) -> tokio::task::JoinHandle<()> {
         let this = self.clone();
 
         tokio::spawn(async move {

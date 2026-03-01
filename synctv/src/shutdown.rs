@@ -82,7 +82,10 @@ impl ShutdownCoordinator {
 
         // Phase 2: Drain background tasks
         if !self.tasks.is_empty() {
-            info!("Waiting for {} background task(s) to finish...", self.tasks.len());
+            info!(
+                "Waiting for {} background task(s) to finish...",
+                self.tasks.len()
+            );
             for (name, handle) in self.tasks {
                 match tokio::time::timeout(Duration::from_secs(30), handle).await {
                     Ok(Ok(())) => {
@@ -104,13 +107,19 @@ impl ShutdownCoordinator {
             for hook in self.hooks {
                 let name = hook.name().to_string();
                 let timeout = hook.timeout();
-                info!("Running shutdown hook '{name}' (timeout: {}s)...", timeout.as_secs());
+                info!(
+                    "Running shutdown hook '{name}' (timeout: {}s)...",
+                    timeout.as_secs()
+                );
                 match tokio::time::timeout(timeout, hook.run()).await {
                     Ok(()) => {
                         info!("Shutdown hook '{name}' completed");
                     }
                     Err(_) => {
-                        warn!("Shutdown hook '{name}' timed out after {}s, proceeding", timeout.as_secs());
+                        warn!(
+                            "Shutdown hook '{name}' timed out after {}s, proceeding",
+                            timeout.as_secs()
+                        );
                     }
                 }
             }

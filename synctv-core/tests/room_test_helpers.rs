@@ -4,23 +4,23 @@
 //! to reduce code duplication and improve maintainability.
 #![allow(clippy::unwrap_used)]
 
+use chrono::Utc;
+use sqlx::PgPool;
 use std::sync::Arc;
 use synctv_core::{
-    cache::{KeyBuilder, UsernameCache, NoopCacheL2},
+    cache::{KeyBuilder, NoopCacheL2, UsernameCache},
     config::PasswordComplexityConfig,
     models::{User, UserId, UserRole, UserStatus},
     service::{
-        RoomService, UserService, InMemoryTokenBlacklistStore,
-        auth::{JwtService, BruteForceProtection},
+        auth::{BruteForceProtection, JwtService},
+        InMemoryTokenBlacklistStore, RoomService, UserService,
     },
 };
-use chrono::Utc;
-use sqlx::PgPool;
 
 /// Creates a `UserService` for testing
 ///
 /// Uses test-specific configurations for JWT, caching, and brute force protection.
-#[must_use] 
+#[must_use]
 pub fn make_user_service(pool: PgPool) -> UserService {
     // 32-byte secret for HS256
     let secret = "Test_Secret_Key_For_JWT_Tokens_32Bytes!!";
@@ -46,7 +46,7 @@ pub fn make_user_service(pool: PgPool) -> UserService {
 /// Creates a `RoomService` for testing
 ///
 /// Convenience function that creates both `UserService` and `RoomService`.
-#[must_use] 
+#[must_use]
 pub fn make_room_service(pool: PgPool) -> RoomService {
     let user_service = make_user_service(pool.clone());
     RoomService::new(pool, user_service)
@@ -64,7 +64,7 @@ pub fn make_room_service(pool: PgPool) -> RoomService {
 /// let user = make_test_user("alice");
 /// let user = user_repo.create(&user).await.unwrap();
 /// ```
-#[must_use] 
+#[must_use]
 pub fn make_test_user(username: &str) -> User {
     let now = Utc::now();
     User {
@@ -99,11 +99,8 @@ pub fn make_test_user(username: &str) -> User {
 /// let admin = make_test_user_with_role("bob", UserRole::Admin);
 /// let admin = user_repo.create(&admin).await.unwrap();
 /// ```
-#[must_use] 
-pub fn make_test_user_with_role(
-    username: &str,
-    role: UserRole,
-) -> User {
+#[must_use]
+pub fn make_test_user_with_role(username: &str, role: UserRole) -> User {
     let now = Utc::now();
     User {
         id: UserId::new(),
@@ -126,7 +123,7 @@ pub fn make_test_user_with_role(
 /// Creates a test User with inactive status
 ///
 /// Useful for testing banned/suspended user scenarios.
-#[must_use] 
+#[must_use]
 pub fn make_test_user_inactive(username: &str) -> User {
     let now = Utc::now();
     User {

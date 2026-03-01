@@ -23,7 +23,7 @@ pub struct ConfigLoader {
 
 impl ConfigLoader {
     /// Create a new empty loader
-    #[must_use] 
+    #[must_use]
     pub fn new() -> Self {
         Self {
             raw_config: HashMap::new(),
@@ -32,11 +32,10 @@ impl ConfigLoader {
 
     /// Load configuration from JSON file
     pub fn from_file<P: AsRef<Path>>(path: P) -> Result<Self> {
-        let content = std::fs::read_to_string(path)
-            .context("Failed to read config file")?;
+        let content = std::fs::read_to_string(path).context("Failed to read config file")?;
 
-        let raw_config: HashMap<String, serde_json::Value> = serde_json::from_str(&content)
-            .context("Failed to parse JSON config")?;
+        let raw_config: HashMap<String, serde_json::Value> =
+            serde_json::from_str(&content).context("Failed to parse JSON config")?;
 
         info!("Loaded OAuth2 configuration from file");
 
@@ -61,8 +60,9 @@ impl ConfigLoader {
     /// ```
     pub fn load_section<T: DeserializeOwned>(&self, section_key: &str) -> Result<T> {
         let value = self.navigate_to_section(section_key)?;
-        serde_json::from_value(value.clone())
-            .context(format!("Failed to decode section '{section_key}' into target type"))
+        serde_json::from_value(value.clone()).context(format!(
+            "Failed to decode section '{section_key}' into target type"
+        ))
     }
 
     /// Navigate to a section key (e.g., "oauth2.github")

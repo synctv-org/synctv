@@ -6,10 +6,10 @@
 //! Run with: cargo test --test `config_edge_case_tests`
 #![allow(clippy::unwrap_used)]
 
-use synctv_core::config::{
-    BootstrapConfig, Config, ServerConfig, DatabaseConfig, RedisConfig, RedisDeploymentMode,
-};
 use std::net::IpAddr;
+use synctv_core::config::{
+    BootstrapConfig, Config, DatabaseConfig, RedisConfig, RedisDeploymentMode, ServerConfig,
+};
 
 // ============================================================================
 // Trusted proxy matching
@@ -26,7 +26,10 @@ fn make_server_config(proxies: Vec<String>) -> ServerConfig {
 fn test_is_trusted_proxy_empty_list() {
     let config = make_server_config(vec![]);
     let ip: IpAddr = "10.0.0.1".parse().unwrap();
-    assert!(!config.is_trusted_proxy(&ip), "Empty proxy list should trust nothing");
+    assert!(
+        !config.is_trusted_proxy(&ip),
+        "Empty proxy list should trust nothing"
+    );
 }
 
 #[test]
@@ -46,10 +49,7 @@ fn test_is_trusted_proxy_cidr() {
 
 #[test]
 fn test_is_trusted_proxy_multiple_entries() {
-    let config = make_server_config(vec![
-        "10.0.0.0/8".to_string(),
-        "192.168.1.100".to_string(),
-    ]);
+    let config = make_server_config(vec!["10.0.0.0/8".to_string(), "192.168.1.100".to_string()]);
     assert!(config.is_trusted_proxy(&"10.1.2.3".parse().unwrap()));
     assert!(config.is_trusted_proxy(&"192.168.1.100".parse().unwrap()));
     assert!(!config.is_trusted_proxy(&"192.168.1.101".parse().unwrap()));
@@ -92,8 +92,14 @@ fn test_database_config_debug_masks_password() {
         ..DatabaseConfig::default()
     };
     let debug = format!("{config:?}");
-    assert!(!debug.contains("secret_password"), "Password should be masked in Debug output");
-    assert!(debug.contains("****"), "Masked password should appear as ****");
+    assert!(
+        !debug.contains("secret_password"),
+        "Password should be masked in Debug output"
+    );
+    assert!(
+        debug.contains("****"),
+        "Masked password should appear as ****"
+    );
     assert!(debug.contains("synctv"), "Username should still be visible");
 }
 
@@ -119,8 +125,14 @@ fn test_redis_config_debug_masks_password() {
         ..RedisConfig::default()
     };
     let debug = format!("{config:?}");
-    assert!(!debug.contains("my_secret"), "Redis password should be masked in Debug output");
-    assert!(debug.contains("****"), "Masked password should appear as ****");
+    assert!(
+        !debug.contains("my_secret"),
+        "Redis password should be masked in Debug output"
+    );
+    assert!(
+        debug.contains("****"),
+        "Masked password should appear as ****"
+    );
 }
 
 // ============================================================================
@@ -129,7 +141,10 @@ fn test_redis_config_debug_masks_password() {
 
 #[test]
 fn test_redis_deployment_mode_default() {
-    assert_eq!(RedisDeploymentMode::default(), RedisDeploymentMode::Standalone);
+    assert_eq!(
+        RedisDeploymentMode::default(),
+        RedisDeploymentMode::Standalone
+    );
 }
 
 #[test]
@@ -168,7 +183,10 @@ fn test_config_default_has_sane_values() {
     assert_eq!(config.server.http_port, 8080);
     assert_eq!(config.database.max_connections, 20);
     assert!(config.database.max_connections >= config.database.min_connections);
-    assert!(config.server.disable_ws_token_query, "WS token query should be disabled by default for security");
+    assert!(
+        config.server.disable_ws_token_query,
+        "WS token query should be disabled by default for security"
+    );
 }
 
 #[test]
@@ -186,7 +204,10 @@ fn test_config_debug_redacts_secrets() {
     let config = Config::default();
     let debug = format!("{config:?}");
     // Config Debug impl should redact database and jwt
-    assert!(debug.contains("<redacted>"), "Secrets should be redacted in Config Debug output");
+    assert!(
+        debug.contains("<redacted>"),
+        "Secrets should be redacted in Config Debug output"
+    );
 }
 
 // ============================================================================
@@ -197,14 +218,20 @@ fn test_config_debug_redacts_secrets() {
 fn test_bootstrap_config_default_does_not_create_root_user() {
     // Security: default should NOT create root user automatically
     let config = BootstrapConfig::default();
-    assert!(!config.create_root_user, "create_root_user should default to false for security");
+    assert!(
+        !config.create_root_user,
+        "create_root_user should default to false for security"
+    );
 }
 
 #[test]
 fn test_bootstrap_config_default_has_empty_password() {
     // Security: default password should be empty, not "root"
     let config = BootstrapConfig::default();
-    assert!(config.root_password.is_empty(), "root_password should default to empty string for security");
+    assert!(
+        config.root_password.is_empty(),
+        "root_password should default to empty string for security"
+    );
 }
 
 #[test]
@@ -222,7 +249,15 @@ fn test_config_validate_rejects_empty_root_password_when_creating_root() {
     config.bootstrap.root_password = String::new();
 
     let result = config.validate();
-    assert!(result.is_err(), "Validation should fail with empty root password");
+    assert!(
+        result.is_err(),
+        "Validation should fail with empty root password"
+    );
     let errors = result.unwrap_err();
-    assert!(errors.iter().any(|e| e.to_lowercase().contains("root password")), "Error should mention root password");
+    assert!(
+        errors
+            .iter()
+            .any(|e| e.to_lowercase().contains("root password")),
+        "Error should mention root password"
+    );
 }

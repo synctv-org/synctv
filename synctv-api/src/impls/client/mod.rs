@@ -33,16 +33,15 @@ mod tests;
 use std::sync::Arc;
 use synctv_cluster::sync::ConnectionManager;
 use synctv_core::models::{RoomId, UserId};
-use synctv_core::service::{UserService, RoomService};
+use synctv_core::service::{RoomService, UserService};
 
 // Re-export public items from convert module
 pub use convert::{
-    media_to_proto, proto_role_to_room_role, proto_role_to_user_role,
-    room_role_to_proto,
+    media_to_proto, proto_role_to_room_role, proto_role_to_user_role, room_role_to_proto,
 };
 
 // Room password limits imported from the single source of truth in synctv-core
-use synctv_core::validation::{ROOM_PASSWORD_MIN, ROOM_PASSWORD_MAX};
+use synctv_core::validation::{ROOM_PASSWORD_MAX, ROOM_PASSWORD_MIN};
 
 use crate::impls::ApiError;
 
@@ -57,10 +56,14 @@ fn validate_password_for_set(password: &str) -> Result<(), ApiError> {
         ));
     }
     if trimmed.chars().count() < ROOM_PASSWORD_MIN {
-        return Err(ApiError::InvalidInput(format!("Password too short (minimum {ROOM_PASSWORD_MIN} characters)")));
+        return Err(ApiError::InvalidInput(format!(
+            "Password too short (minimum {ROOM_PASSWORD_MIN} characters)"
+        )));
     }
     if password.chars().count() > ROOM_PASSWORD_MAX {
-        return Err(ApiError::InvalidInput(format!("Password too long (maximum {ROOM_PASSWORD_MAX} characters)")));
+        return Err(ApiError::InvalidInput(format!(
+            "Password too long (maximum {ROOM_PASSWORD_MAX} characters)"
+        )));
     }
     Ok(())
 }
@@ -68,7 +71,9 @@ fn validate_password_for_set(password: &str) -> Result<(), ApiError> {
 /// Validate a password that is being **verified** (join room, check password).
 fn validate_password_for_verify(password: &str) -> Result<(), ApiError> {
     if password.chars().count() > ROOM_PASSWORD_MAX {
-        return Err(ApiError::InvalidInput(format!("Password too long (maximum {ROOM_PASSWORD_MAX} characters)")));
+        return Err(ApiError::InvalidInput(format!(
+            "Password too long (maximum {ROOM_PASSWORD_MAX} characters)"
+        )));
     }
     Ok(())
 }
@@ -83,7 +88,8 @@ pub struct ClientApiConfig {
     pub config: Arc<synctv_core::Config>,
     pub publish_key_service: Option<Arc<synctv_core::service::PublishKeyService>>,
     pub jwt_service: synctv_core::service::JwtService,
-    pub live_streaming_infrastructure: Option<Arc<synctv_livestream::api::LiveStreamingInfrastructure>>,
+    pub live_streaming_infrastructure:
+        Option<Arc<synctv_livestream::api::LiveStreamingInfrastructure>>,
     pub providers_manager: Option<Arc<synctv_core::service::ProvidersManager>>,
     pub settings_registry: Option<Arc<synctv_core::service::SettingsRegistry>>,
     pub credential_encryption: Option<synctv_core::service::CredentialEncryption>,
@@ -98,7 +104,8 @@ pub struct ClientApiImpl {
     pub config: Arc<synctv_core::Config>,
     pub publish_key_service: Option<Arc<synctv_core::service::PublishKeyService>>,
     pub jwt_service: synctv_core::service::JwtService,
-    pub live_streaming_infrastructure: Option<Arc<synctv_livestream::api::LiveStreamingInfrastructure>>,
+    pub live_streaming_infrastructure:
+        Option<Arc<synctv_livestream::api::LiveStreamingInfrastructure>>,
     pub providers_manager: Option<Arc<synctv_core::service::ProvidersManager>>,
     pub settings_registry: Option<Arc<synctv_core::service::SettingsRegistry>>,
     pub redis_publish_tx: Option<tokio::sync::mpsc::Sender<synctv_cluster::sync::PublishRequest>>,
@@ -129,7 +136,9 @@ impl ClientApiImpl {
         config: Arc<synctv_core::Config>,
         publish_key_service: Option<Arc<synctv_core::service::PublishKeyService>>,
         jwt_service: synctv_core::service::JwtService,
-        live_streaming_infrastructure: Option<Arc<synctv_livestream::api::LiveStreamingInfrastructure>>,
+        live_streaming_infrastructure: Option<
+            Arc<synctv_livestream::api::LiveStreamingInfrastructure>,
+        >,
         providers_manager: Option<Arc<synctv_core::service::ProvidersManager>>,
         settings_registry: Option<Arc<synctv_core::service::SettingsRegistry>>,
     ) -> Self {
@@ -176,7 +185,10 @@ impl ClientApiImpl {
 
     /// Set the Redis publish channel for cross-replica cache invalidation
     #[must_use]
-    pub fn with_redis_publish_tx(mut self, tx: Option<tokio::sync::mpsc::Sender<synctv_cluster::sync::PublishRequest>>) -> Self {
+    pub fn with_redis_publish_tx(
+        mut self,
+        tx: Option<tokio::sync::mpsc::Sender<synctv_cluster::sync::PublishRequest>>,
+    ) -> Self {
         self.redis_publish_tx = tx;
         self
     }
@@ -190,7 +202,10 @@ impl ClientApiImpl {
 
     /// Set credential encryption for protecting sensitive data in `source_config`
     #[must_use]
-    pub fn with_credential_encryption(mut self, enc: Option<synctv_core::service::CredentialEncryption>) -> Self {
+    pub fn with_credential_encryption(
+        mut self,
+        enc: Option<synctv_core::service::CredentialEncryption>,
+    ) -> Self {
         self.credential_encryption = enc;
         self
     }
@@ -209,7 +224,10 @@ impl ClientApiImpl {
 
     /// Set the rate limiter for per-endpoint rate limiting (password checks, etc.)
     #[must_use]
-    pub fn with_rate_limiter(mut self, rate_limiter: synctv_core::service::rate_limit::RateLimiter) -> Self {
+    pub fn with_rate_limiter(
+        mut self,
+        rate_limiter: synctv_core::service::rate_limit::RateLimiter,
+    ) -> Self {
         self.rate_limiter = Some(rate_limiter);
         self
     }
@@ -224,7 +242,10 @@ impl ClientApiImpl {
 
     /// Set the TURN health checker for filtering unhealthy TURN servers.
     #[must_use]
-    pub fn with_turn_health_checker(mut self, checker: Option<Arc<synctv_core::service::TurnHealthChecker>>) -> Self {
+    pub fn with_turn_health_checker(
+        mut self,
+        checker: Option<Arc<synctv_core::service::TurnHealthChecker>>,
+    ) -> Self {
         self.turn_health_checker = checker;
         self
     }
@@ -254,36 +275,62 @@ impl ClientApiImpl {
     ) {
         if let Some(ref tx) = self.redis_publish_tx {
             // Fetch room settings for proper three-layer permission calculation
-            let room_settings = self.room_service.get_room_settings(room_id).await
+            let room_settings = self
+                .room_service
+                .get_room_settings(room_id)
+                .await
                 .unwrap_or_default();
 
             // Fetch actual usernames and permissions for the event
-            let (target_username, new_permissions, role, added_permissions, removed_permissions) = match self
-                .room_service
-                .member_service()
-                .get_member(room_id, target_user_id)
-                .await
-            {
-                Ok(Some(member)) => {
-                    let username = self
-                        .user_service
-                        .get_user(target_user_id)
-                        .await
-                        .map(|u| u.username)
-                        .unwrap_or_default();
-                    let role_default = self.room_service.permission_service()
-                        .calculate_role_default_permissions(&member.role, &room_settings);
-                    let perms = member.effective_permissions(role_default);
-                    let role_i32 = match member.role {
-                        synctv_core::models::RoomRole::Creator => synctv_proto::common::RoomMemberRole::Creator as i32,
-                        synctv_core::models::RoomRole::Admin => synctv_proto::common::RoomMemberRole::Admin as i32,
-                        synctv_core::models::RoomRole::Member => synctv_proto::common::RoomMemberRole::Member as i32,
-                        synctv_core::models::RoomRole::Guest => synctv_proto::common::RoomMemberRole::Guest as i32,
-                    };
-                    (username, perms, role_i32, member.added_permissions, member.removed_permissions)
-                }
-                _ => (String::new(), synctv_core::models::PermissionBits::empty(), synctv_proto::common::RoomMemberRole::Member as i32, 0u64, 0u64),
-            };
+            let (target_username, new_permissions, role, added_permissions, removed_permissions) =
+                match self
+                    .room_service
+                    .member_service()
+                    .get_member(room_id, target_user_id)
+                    .await
+                {
+                    Ok(Some(member)) => {
+                        let username = self
+                            .user_service
+                            .get_user(target_user_id)
+                            .await
+                            .map(|u| u.username)
+                            .unwrap_or_default();
+                        let role_default = self
+                            .room_service
+                            .permission_service()
+                            .calculate_role_default_permissions(&member.role, &room_settings);
+                        let perms = member.effective_permissions(role_default);
+                        let role_i32 = match member.role {
+                            synctv_core::models::RoomRole::Creator => {
+                                synctv_proto::common::RoomMemberRole::Creator as i32
+                            }
+                            synctv_core::models::RoomRole::Admin => {
+                                synctv_proto::common::RoomMemberRole::Admin as i32
+                            }
+                            synctv_core::models::RoomRole::Member => {
+                                synctv_proto::common::RoomMemberRole::Member as i32
+                            }
+                            synctv_core::models::RoomRole::Guest => {
+                                synctv_proto::common::RoomMemberRole::Guest as i32
+                            }
+                        };
+                        (
+                            username,
+                            perms,
+                            role_i32,
+                            member.added_permissions,
+                            member.removed_permissions,
+                        )
+                    }
+                    _ => (
+                        String::new(),
+                        synctv_core::models::PermissionBits::empty(),
+                        synctv_proto::common::RoomMemberRole::Member as i32,
+                        0u64,
+                        0u64,
+                    ),
+                };
 
             let changed_by_username = self
                 .user_service
@@ -292,21 +339,26 @@ impl ClientApiImpl {
                 .map(|u| u.username)
                 .unwrap_or_default();
 
-            crate::impls::try_publish_cluster_event(tx, synctv_cluster::sync::PublishRequest {
-                event: synctv_cluster::sync::ClusterEvent::PermissionChanged {
-                    event_id: nanoid::nanoid!(16),
-                    room_id: room_id.clone(),
-                    target_user_id: target_user_id.clone(),
-                    target_username,
-                    changed_by: changed_by.clone(),
-                    changed_by_username,
-                    new_permissions,
-                    role,
-                    added_permissions: synctv_core::models::PermissionBits(added_permissions),
-                    removed_permissions: synctv_core::models::PermissionBits(removed_permissions),
-                    timestamp: chrono::Utc::now(),
+            crate::impls::try_publish_cluster_event(
+                tx,
+                synctv_cluster::sync::PublishRequest {
+                    event: synctv_cluster::sync::ClusterEvent::PermissionChanged {
+                        event_id: nanoid::nanoid!(16),
+                        room_id: room_id.clone(),
+                        target_user_id: target_user_id.clone(),
+                        target_username,
+                        changed_by: changed_by.clone(),
+                        changed_by_username,
+                        new_permissions,
+                        role,
+                        added_permissions: synctv_core::models::PermissionBits(added_permissions),
+                        removed_permissions: synctv_core::models::PermissionBits(
+                            removed_permissions,
+                        ),
+                        timestamp: chrono::Utc::now(),
+                    },
                 },
-            });
+            );
         }
     }
 }

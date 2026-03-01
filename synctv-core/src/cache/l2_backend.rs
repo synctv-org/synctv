@@ -7,8 +7,8 @@
 //! - `RedisCacheL2`: Redis-backed L2 with TTL, retry logic, and atomic set-if-newer.
 //! - `NoopCacheL2`: No-op backend (L1-only mode). All reads return None, all writes are no-ops.
 
-use async_trait::async_trait;
 use crate::{Error, Result};
+use async_trait::async_trait;
 
 /// Backend for the L2 (remote) cache layer in `TieredCache`.
 ///
@@ -35,7 +35,13 @@ pub trait CacheL2Backend: Send + Sync {
     ///
     /// `new_ts_iso` is the ISO-8601 timestamp string of the new value's `updated_at` field.
     /// Returns `true` if the value was set (new is newer), `false` if skipped.
-    async fn set_if_newer(&self, key: &str, json: &str, ttl_secs: u64, new_ts_iso: &str) -> Result<bool>;
+    async fn set_if_newer(
+        &self,
+        key: &str,
+        json: &str,
+        ttl_secs: u64,
+        new_ts_iso: &str,
+    ) -> Result<bool>;
 
     /// Delete all keys matching the given prefix using a Redis SCAN + DEL loop.
     ///
@@ -71,7 +77,9 @@ pub struct RedisCacheL2 {
 impl RedisCacheL2 {
     /// Create from a shared, hot-swappable connection (recommended for Sentinel mode).
     #[must_use]
-    pub const fn new_shared(conn: std::sync::Arc<tokio::sync::RwLock<redis::aio::ConnectionManager>>) -> Self {
+    pub const fn new_shared(
+        conn: std::sync::Arc<tokio::sync::RwLock<redis::aio::ConnectionManager>>,
+    ) -> Self {
         Self { conn }
     }
 
@@ -117,7 +125,9 @@ impl CacheL2Backend for RedisCacheL2 {
     async fn delete(&self, key: &str) -> Result<()> {
         use redis::AsyncCommands;
         let mut conn = self.conn().await;
-        let _: () = conn.del(key).await
+        let _: () = conn
+            .del(key)
+            .await
             .map_err(|e| Error::Internal(format!("Failed to delete from L2 cache: {e}")))?;
         Ok(())
     }
@@ -141,7 +151,9 @@ impl CacheL2Backend for RedisCacheL2 {
                             cache_type = %cache_type,
                             "Failed to delete from Redis L2 cache after retries"
                         );
-                        return Err(Error::Internal(format!("Failed to delete from Redis cache: {e}")));
+                        return Err(Error::Internal(format!(
+                            "Failed to delete from Redis cache: {e}"
+                        )));
                     } else {
                         let backoff_ms = 10 * u64::pow(5, attempt);
                         tracing::warn!(
@@ -174,7 +186,13 @@ impl CacheL2Backend for RedisCacheL2 {
         Ok(results)
     }
 
-    async fn set_if_newer(&self, key: &str, json: &str, ttl_secs: u64, new_ts_iso: &str) -> Result<bool> {
+    async fn set_if_newer(
+        &self,
+        key: &str,
+        json: &str,
+        ttl_secs: u64,
+        new_ts_iso: &str,
+    ) -> Result<bool> {
         let mut conn = self.conn().await;
 
         // Lua script: atomically GET existing JSON, parse its updated_at inside
@@ -204,9 +222,7 @@ impl CacheL2Backend for RedisCacheL2 {
             .arg(new_ts_iso)
             .invoke_async(&mut conn)
             .await
-            .map_err(|e| {
-                Error::Internal(format!("Failed to run set_if_newer Lua script: {e}"))
-            })?;
+            .map_err(|e| Error::Internal(format!("Failed to run set_if_newer Lua script: {e}")))?;
 
         Ok(result == 1)
     }
@@ -231,10 +247,9 @@ impl CacheL2Backend for RedisCacheL2 {
                 .map_err(|e| Error::Internal(format!("SCAN failed for prefix '{prefix}': {e}")))?;
 
             if !keys.is_empty() {
-                let _: () = conn
-                    .del(keys.as_slice())
-                    .await
-                    .map_err(|e| Error::Internal(format!("DEL failed for prefix '{prefix}': {e}")))?;
+                let _: () = conn.del(keys.as_slice()).await.map_err(|e| {
+                    Error::Internal(format!("DEL failed for prefix '{prefix}': {e}"))
+                })?;
             }
 
             cursor = next_cursor;
@@ -277,7 +292,12 @@ impl CacheL2Backend for NoopCacheL2 {
         Ok(())
     }
 
-    async fn delete_with_retry(&self, _key: &str, _max_retries: u32, _cache_type: &str) -> Result<()> {
+    async fn delete_with_retry(
+        &self,
+        _key: &str,
+        _max_retries: u32,
+        _cache_type: &str,
+    ) -> Result<()> {
         Ok(())
     }
 
@@ -285,7 +305,13 @@ impl CacheL2Backend for NoopCacheL2 {
         Ok(vec![None; keys.len()])
     }
 
-    async fn set_if_newer(&self, _key: &str, _json: &str, _ttl_secs: u64, _new_ts_iso: &str) -> Result<bool> {
+    async fn set_if_newer(
+        &self,
+        _key: &str,
+        _json: &str,
+        _ttl_secs: u64,
+        _new_ts_iso: &str,
+    ) -> Result<bool> {
         // No L2 — always allow the caller to proceed with L1 update
         Ok(true)
     }

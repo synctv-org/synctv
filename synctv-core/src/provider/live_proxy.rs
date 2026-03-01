@@ -6,9 +6,7 @@
 //!
 //! The `PullStreamManager` handles the actual pulling from the external source.
 
-use super::{
-    MediaProvider, PlaybackResult, ProviderContext, ProviderError,
-};
+use super::{MediaProvider, PlaybackResult, ProviderContext, ProviderError};
 use crate::validation::{validate_rtmp_url_host_with_dns, validate_url_for_ssrf, ValidationError};
 use async_trait::async_trait;
 use serde_json::{json, Value};
@@ -63,8 +61,12 @@ impl MediaProvider for LiveProxyProvider {
             .ok_or_else(|| ProviderError::InvalidConfig("Missing url".to_string()))?;
 
         let mut result = super::build_live_playback(&self.base_url, media_id, room_id);
-        result.metadata.insert("source_url".to_string(), json!(source_url));
-        result.metadata.insert("provider".to_string(), json!("live_proxy"));
+        result
+            .metadata
+            .insert("source_url".to_string(), json!(source_url));
+        result
+            .metadata
+            .insert("provider".to_string(), json!("live_proxy"));
 
         Ok(result)
     }
@@ -94,7 +96,8 @@ impl MediaProvider for LiveProxyProvider {
         // Use URL path parsing to avoid false positives from `.flv` appearing
         // in query parameters or other URL parts.
         let is_rtmp = url.starts_with("rtmp://");
-        let is_flv = url::Url::parse(url).map_or_else(|_| url.ends_with(".flv"), |u| u.path().ends_with(".flv"));
+        let is_flv = url::Url::parse(url)
+            .map_or_else(|_| url.ends_with(".flv"), |u| u.path().ends_with(".flv"));
         if !is_rtmp && !is_flv {
             return Err(ProviderError::InvalidConfig(format!(
                 "Unsupported source URL format: {url}. Expected rtmp:// or *.flv"
@@ -116,7 +119,10 @@ impl MediaProvider for LiveProxyProvider {
             .get("media_id")
             .and_then(|v| v.as_str())
             .unwrap_or("unknown");
-        format!("{}:playback:live_proxy:{room_id}:{media_id}", ctx.key_prefix)
+        format!(
+            "{}:playback:live_proxy:{room_id}:{media_id}",
+            ctx.key_prefix
+        )
     }
 }
 
@@ -140,12 +146,14 @@ async fn validate_source_url_host(raw: &str) -> Result<(), ProviderError> {
 
     // For RTMP URLs, use the shared async validator with DNS resolution
     if raw.starts_with("rtmp://") || raw.starts_with("rtmps://") {
-        return validate_rtmp_url_host_with_dns(raw).await.map_err(|e| match e {
-            ValidationError::SSRF(msg) => {
-                ProviderError::InvalidConfig(format!("SSRF protection: {msg}"))
-            }
-            _ => ProviderError::InvalidConfig(e.to_string()),
-        });
+        return validate_rtmp_url_host_with_dns(raw)
+            .await
+            .map_err(|e| match e {
+                ValidationError::SSRF(msg) => {
+                    ProviderError::InvalidConfig(format!("SSRF protection: {msg}"))
+                }
+                _ => ProviderError::InvalidConfig(e.to_string()),
+            });
     }
 
     Err(ProviderError::InvalidConfig(format!(

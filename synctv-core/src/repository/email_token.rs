@@ -1,12 +1,8 @@
 //! Email token repository for database operations
 
+use crate::{models::UserId, service::email_token::EmailTokenType, Error, Result};
 use chrono::Utc;
 use sqlx::PgPool;
-use crate::{
-    models::UserId,
-    service::email_token::EmailTokenType,
-    Error, Result,
-};
 
 /// Email token record
 #[derive(Debug, Clone, sqlx::FromRow)]
@@ -27,7 +23,7 @@ pub struct EmailTokenRepository {
 }
 
 impl EmailTokenRepository {
-    #[must_use] 
+    #[must_use]
     pub const fn new(pool: PgPool) -> Self {
         Self { pool }
     }
@@ -167,9 +163,7 @@ impl EmailTokenRepository {
 
         Ok(result.rows_affected() as usize)
     }
-
 }
 
 #[cfg(test)]
-mod tests {
-}
+mod tests {}

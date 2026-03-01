@@ -60,12 +60,7 @@ pub trait AuthCallback: Send + Sync {
     /// * `app_name` - RTMP application name (e.g. `room_id`)
     /// * `stream_name` - Stream name (e.g. `media_id`)
     /// * `query` - Optional query string from the RTMP URL
-    async fn on_unpublish(
-        &self,
-        _app_name: &str,
-        _stream_name: &str,
-        _query: Option<&str>,
-    ) {
+    async fn on_unpublish(&self, _app_name: &str, _stream_name: &str, _query: Option<&str>) {
         // Default: no-op
     }
 
@@ -78,12 +73,7 @@ pub trait AuthCallback: Send + Sync {
     /// * `app_name` - RTMP application name (e.g. `room_id`)
     /// * `stream_name` - Stream name (e.g. `media_id`)
     /// * `query` - Optional query string from the RTMP URL
-    async fn on_unplay(
-        &self,
-        _app_name: &str,
-        _stream_name: &str,
-        _query: Option<&str>,
-    ) {
+    async fn on_unplay(&self, _app_name: &str, _stream_name: &str, _query: Option<&str>) {
         // Default: no-op
     }
 
@@ -105,12 +95,7 @@ pub trait AuthCallback: Send + Sync {
     ///
     /// This ensures that any registration done in `on_publish` is cleaned up
     /// immediately rather than waiting for TTL expiry or `on_unpublish`.
-    async fn on_publish_rollback(
-        &self,
-        _app_name: &str,
-        _stream_name: &str,
-        _query: Option<&str>,
-    ) {
+    async fn on_publish_rollback(&self, _app_name: &str, _stream_name: &str, _query: Option<&str>) {
         // Default: no-op
     }
 }

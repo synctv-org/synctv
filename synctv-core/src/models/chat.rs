@@ -70,7 +70,7 @@ pub enum DanmakuPosition {
 }
 
 impl DanmakuMessage {
-    #[must_use] 
+    #[must_use]
     pub fn new(
         room_id: RoomId,
         user_id: UserId,

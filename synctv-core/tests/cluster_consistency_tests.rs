@@ -16,30 +16,26 @@
 //! - Docker for testcontainers (`PostgreSQL` + Redis)
 #![allow(clippy::unwrap_used)]
 
-use synctv_core::{
-    cache::{CacheInvalidationService, InvalidationMessage},
-    models::{
-        Room, RoomId, RoomMember, RoomRole, RoomSettings, RoomStatus,
-        UserId, User, UserRole, UserStatus,
-        room_settings::MaxMembers,
-    },
-    repository::{
-        RoomMemberRepository, RoomPlaybackStateRepository, RoomRepository,
-        RoomSettingsRepository, UserRepository,
-    },
-    service::{
-        permission::PermissionService,
-        playback::PlaybackService,
-    },
-};
 use chrono::Utc;
 use sqlx::PgPool;
 use std::sync::Arc;
+use synctv_core::{
+    cache::{CacheInvalidationService, InvalidationMessage},
+    models::{
+        room_settings::MaxMembers, Room, RoomId, RoomMember, RoomRole, RoomSettings, RoomStatus,
+        User, UserId, UserRole, UserStatus,
+    },
+    repository::{
+        RoomMemberRepository, RoomPlaybackStateRepository, RoomRepository, RoomSettingsRepository,
+        UserRepository,
+    },
+    service::{permission::PermissionService, playback::PlaybackService},
+};
+use testcontainers::core::ImageExt;
+use testcontainers::runners::AsyncRunner;
 use testcontainers::ContainerAsync;
 use testcontainers_modules::postgres::Postgres;
 use testcontainers_modules::redis::Redis;
-use testcontainers::core::ImageExt;
-use testcontainers::runners::AsyncRunner;
 
 // ============================================================================
 // Test Infrastructure
@@ -65,11 +61,12 @@ async fn create_test_infra() -> TestInfra {
         .expect("Failed to start Postgres container");
 
     let pg_host = postgres.get_host().await.expect("Failed to get host");
-    let pg_port = postgres.get_host_port_ipv4(5432).await.expect("Failed to get port");
+    let pg_port = postgres
+        .get_host_port_ipv4(5432)
+        .await
+        .expect("Failed to get port");
 
-    let database_url = format!(
-        "postgres://synctv:synctv_test@{pg_host}:{pg_port}/synctv_test"
-    );
+    let database_url = format!("postgres://synctv:synctv_test@{pg_host}:{pg_port}/synctv_test");
 
     let pool = {
         let mut retries = 0u32;
@@ -102,7 +99,10 @@ async fn create_test_infra() -> TestInfra {
         .await
         .expect("Failed to start Redis container");
 
-    let redis_port = redis.get_host_port_ipv4(6379).await.expect("Failed to get port");
+    let redis_port = redis
+        .get_host_port_ipv4(6379)
+        .await
+        .expect("Failed to get port");
     let redis_url = format!("redis://127.0.0.1:{redis_port}");
 
     TestInfra {
@@ -156,15 +156,22 @@ async fn setup_test_room(pool: &PgPool) -> (User, Room) {
     let user_repo = UserRepository::new(pool.clone());
     let room_repo = RoomRepository::new(pool.clone());
 
-    let owner = user_repo.create(&make_user("room_owner")).await.expect("Failed to create owner");
-    let room = room_repo.create(&make_room("Test Room", "Test", &owner.id))
+    let owner = user_repo
+        .create(&make_user("room_owner"))
+        .await
+        .expect("Failed to create owner");
+    let room = room_repo
+        .create(&make_room("Test Room", "Test", &owner.id))
         .await
         .expect("Failed to create room");
 
     // Add owner as member (Creator)
     let member_repo = RoomMemberRepository::new(pool.clone());
     let owner_member = RoomMember::new(room.id.clone(), owner.id.clone(), RoomRole::Creator);
-    member_repo.add(&owner_member).await.expect("Failed to add owner as member");
+    member_repo
+        .add(&owner_member)
+        .await
+        .expect("Failed to add owner as member");
 
     (owner, room)
 }
@@ -186,18 +193,25 @@ async fn setup_test_room(pool: &PgPool) -> (User, Room) {
 async fn test_permission_change_cross_replica_sync() {
     let infra = create_test_infra().await;
     let pool = &infra.pool;
-    let redis_client = redis::Client::open(infra.redis_url.clone()).expect("Failed to create Redis client");
+    let redis_client =
+        redis::Client::open(infra.redis_url.clone()).expect("Failed to create Redis client");
 
     let (_owner, room) = setup_test_room(pool).await;
 
     // Create a member user
     let user_repo = UserRepository::new(pool.clone());
-    let member_user = user_repo.create(&make_user("member_user")).await.expect("Failed to create member");
+    let member_user = user_repo
+        .create(&make_user("member_user"))
+        .await
+        .expect("Failed to create member");
 
     // Add member to room
     let member_repo = RoomMemberRepository::new(pool.clone());
     let member = RoomMember::new(room.id.clone(), member_user.id.clone(), RoomRole::Member);
-    member_repo.add(&member).await.expect("Failed to add member");
+    member_repo
+        .add(&member)
+        .await
+        .expect("Failed to add member");
 
     // Create two PermissionService instances (simulating two replicas)
     let cache_invalidation_1 = Arc::new(CacheInvalidationService::new(
@@ -212,7 +226,10 @@ async fn test_permission_change_cross_replica_sync() {
     ));
 
     // Start cache invalidation services so the XREADGROUP listener runs
-    cache_invalidation_2.start().await.expect("Failed to start cache invalidation service 2");
+    cache_invalidation_2
+        .start()
+        .await
+        .expect("Failed to start cache invalidation service 2");
     // Give subscriber time to connect
     tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
 
@@ -245,15 +262,20 @@ async fn test_permission_change_cross_replica_sync() {
     assert!(perms_b_initial.0 > 0, "Member should have some permissions");
 
     // Node A: Modify user permissions directly in DB (need version for optimistic lock)
-    let existing_member = member_repo.get(&room.id, &member_user.id).await
+    let existing_member = member_repo
+        .get(&room.id, &member_user.id)
+        .await
         .expect("Failed to get member")
         .expect("Member should exist");
-    member_repo.update_permissions(&room.id, &member_user.id, 12345, 0, existing_member.version)
+    member_repo
+        .update_permissions(&room.id, &member_user.id, 12345, 0, existing_member.version)
         .await
         .expect("Failed to update permissions");
 
     // Node A: Invalidate cache (broadcasts to Redis)
-    permission_service_a.invalidate_cache(&room.id, &member_user.id).await;
+    permission_service_a
+        .invalidate_cache(&room.id, &member_user.id)
+        .await;
 
     // Wait for invalidation to propagate
     tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
@@ -267,8 +289,15 @@ async fn test_permission_change_cross_replica_sync() {
     // Verify Node B sees the updated permissions.
     // effective_permissions = (role_default | added_permissions) & !removed_permissions
     // So the result should have the added bits set (but also role_default bits).
-    assert_ne!(perms_b_after, perms_b_initial, "Node B permissions should have changed");
-    assert_eq!(perms_b_after.0 & 12345, 12345, "Node B should see the added permission bits");
+    assert_ne!(
+        perms_b_after, perms_b_initial,
+        "Node B permissions should have changed"
+    );
+    assert_eq!(
+        perms_b_after.0 & 12345,
+        12345,
+        "Node B should see the added permission bits"
+    );
 }
 
 /// Test permission cache hit after first query.
@@ -282,12 +311,18 @@ async fn test_permission_cache_hit_on_same_node() {
 
     // Create a member user
     let user_repo = UserRepository::new(pool.clone());
-    let member_user = user_repo.create(&make_user("cached_member")).await.expect("Failed to create member");
+    let member_user = user_repo
+        .create(&make_user("cached_member"))
+        .await
+        .expect("Failed to create member");
 
     // Add member to room
     let member_repo = RoomMemberRepository::new(pool.clone());
     let member = RoomMember::new(room.id.clone(), member_user.id.clone(), RoomRole::Member);
-    member_repo.add(&member).await.expect("Failed to add member");
+    member_repo
+        .add(&member)
+        .await
+        .expect("Failed to add member");
 
     // Create permission service
     let permission_service = PermissionService::new(
@@ -331,7 +366,8 @@ async fn test_permission_cache_hit_on_same_node() {
 async fn test_playback_state_cross_replica_sync() {
     let infra = create_test_infra().await;
     let pool = &infra.pool;
-    let redis_client = redis::Client::open(infra.redis_url.clone()).expect("Failed to create Redis client");
+    let redis_client =
+        redis::Client::open(infra.redis_url.clone()).expect("Failed to create Redis client");
 
     let (_owner, room) = setup_test_room(pool).await;
 
@@ -348,7 +384,10 @@ async fn test_playback_state_cross_replica_sync() {
     ));
 
     // Start cache invalidation service 2 so node B receives cross-replica messages
-    cache_invalidation_2.start().await.expect("Failed to start cache invalidation service 2");
+    cache_invalidation_2
+        .start()
+        .await
+        .expect("Failed to start cache invalidation service 2");
     tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
 
     // Create playback services
@@ -356,13 +395,8 @@ async fn test_playback_state_cross_replica_sync() {
     let member_repo = RoomMemberRepository::new(pool.clone());
     let room_repo = RoomRepository::new(pool.clone());
 
-    let permission_service = PermissionService::new(
-        member_repo.clone(),
-        room_repo.clone(),
-        None,
-        1000,
-        300,
-    );
+    let permission_service =
+        PermissionService::new(member_repo.clone(), room_repo.clone(), None, 1000, 300);
 
     let mut playback_service_a = PlaybackService::new(
         playback_repo.clone(),
@@ -373,7 +407,9 @@ async fn test_playback_state_cross_replica_sync() {
             permission_service.clone(),
             Arc::new(synctv_core::service::ProvidersManager::new(Arc::new(
                 synctv_core::service::RemoteProviderManager::new(
-                    Arc::new(synctv_core::repository::ProviderInstanceRepository::new(pool.clone())),
+                    Arc::new(synctv_core::repository::ProviderInstanceRepository::new(
+                        pool.clone(),
+                    )),
                     None,
                     None,
                 ),
@@ -392,7 +428,9 @@ async fn test_playback_state_cross_replica_sync() {
             permission_service.clone(),
             Arc::new(synctv_core::service::ProvidersManager::new(Arc::new(
                 synctv_core::service::RemoteProviderManager::new(
-                    Arc::new(synctv_core::repository::ProviderInstanceRepository::new(pool.clone())),
+                    Arc::new(synctv_core::repository::ProviderInstanceRepository::new(
+                        pool.clone(),
+                    )),
                     None,
                     None,
                 ),
@@ -403,14 +441,20 @@ async fn test_playback_state_cross_replica_sync() {
     playback_service_b.set_invalidation_service(cache_invalidation_2.clone());
 
     // Node A: Initialize playback state
-    let initial_state = playback_repo.create_or_get(&room.id).await.expect("Failed to create initial state");
+    let initial_state = playback_repo
+        .create_or_get(&room.id)
+        .await
+        .expect("Failed to create initial state");
 
     // Node B: Query initial state (caches it)
     let state_b_initial = playback_service_b
         .get_state(&room.id)
         .await
         .expect("Failed to get initial playback state");
-    assert!(!state_b_initial.is_playing, "Initial state should not be playing");
+    assert!(
+        !state_b_initial.is_playing,
+        "Initial state should not be playing"
+    );
 
     // Node A: Update playback state
     let mut updated_state = initial_state.clone();
@@ -418,7 +462,10 @@ async fn test_playback_state_cross_replica_sync() {
     updated_state.current_time = 42.5;
     updated_state.speed = 1.5;
 
-    playback_repo.update(&updated_state).await.expect("Failed to update state");
+    playback_repo
+        .update(&updated_state)
+        .await
+        .expect("Failed to update state");
 
     // Node A: Broadcast invalidation
     cache_invalidation_1
@@ -436,8 +483,14 @@ async fn test_playback_state_cross_replica_sync() {
         .expect("Failed to get updated playback state");
 
     // Verify Node B sees the updated state
-    assert!(state_b_after.is_playing, "Node B should see is_playing = true");
-    assert!((state_b_after.current_time - 42.5).abs() < 0.01, "Node B should see current_time = 42.5");
+    assert!(
+        state_b_after.is_playing,
+        "Node B should see is_playing = true"
+    );
+    assert!(
+        (state_b_after.current_time - 42.5).abs() < 0.01,
+        "Node B should see current_time = 42.5"
+    );
 }
 
 /// Test playback state invalidation message contains correct `room_id`.
@@ -466,7 +519,8 @@ async fn test_playback_state_invalidation_message_content() {
     tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
 
     let room_id = RoomId::new();
-    service1.invalidate_playback_state(&room_id)
+    service1
+        .invalidate_playback_state(&room_id)
         .await
         .expect("Failed to broadcast invalidation");
 
@@ -503,14 +557,21 @@ async fn test_playback_state_invalidation_message_content() {
 async fn test_room_settings_cross_replica_sync() {
     let infra = create_test_infra().await;
     let pool = &infra.pool;
-    let redis_client = redis::Client::open(infra.redis_url.clone()).expect("Failed to create Redis client");
+    let redis_client =
+        redis::Client::open(infra.redis_url.clone()).expect("Failed to create Redis client");
 
     let (_owner, room) = setup_test_room(pool).await;
 
     // Create room settings
     let room_settings_repo = RoomSettingsRepository::new(pool.clone());
-    let initial_settings = RoomSettings { max_members: MaxMembers(10), ..Default::default() };
-    room_settings_repo.set_settings(&room.id, &initial_settings).await.expect("Failed to create settings");
+    let initial_settings = RoomSettings {
+        max_members: MaxMembers(10),
+        ..Default::default()
+    };
+    room_settings_repo
+        .set_settings(&room.id, &initial_settings)
+        .await
+        .expect("Failed to create settings");
 
     // Create cache invalidation services
     let cache_invalidation_1 = Arc::new(CacheInvalidationService::new(
@@ -524,13 +585,22 @@ async fn test_room_settings_cross_replica_sync() {
         "test:cache:settings".to_string(),
     ));
     // Node B: Query settings (simulates caching)
-    let settings_b_initial = room_settings_repo.get(&room.id).await.expect("Failed to get settings");
-    assert_eq!(settings_b_initial.max_members.0, 10, "Initial max_members should be 10");
+    let settings_b_initial = room_settings_repo
+        .get(&room.id)
+        .await
+        .expect("Failed to get settings");
+    assert_eq!(
+        settings_b_initial.max_members.0, 10,
+        "Initial max_members should be 10"
+    );
 
     // Node A: Update settings
     let mut updated_settings = initial_settings.clone();
     updated_settings.max_members = MaxMembers(50);
-    room_settings_repo.set_settings(&room.id, &updated_settings).await.expect("Failed to update settings");
+    room_settings_repo
+        .set_settings(&room.id, &updated_settings)
+        .await
+        .expect("Failed to update settings");
 
     // Node A: Broadcast invalidation
     cache_invalidation_1
@@ -542,12 +612,18 @@ async fn test_room_settings_cross_replica_sync() {
     tokio::time::sleep(tokio::time::Duration::from_millis(300)).await;
 
     // Node B: Query settings again
-    let settings_b_after = room_settings_repo.get(&room.id).await.expect("Failed to get updated settings");
+    let settings_b_after = room_settings_repo
+        .get(&room.id)
+        .await
+        .expect("Failed to get updated settings");
 
     // Note: RoomSettingsRepository doesn't have its own cache, it reads from DB each time.
     // In a real scenario, there would be a cache layer above this repository.
     // This test verifies the invalidation message is broadcast correctly.
-    assert_eq!(settings_b_after.max_members.0, 50, "Node B should see updated max_members");
+    assert_eq!(
+        settings_b_after.max_members.0, 50,
+        "Node B should see updated max_members"
+    );
 }
 
 /// Test room settings invalidation message is broadcast correctly.
@@ -577,7 +653,8 @@ async fn test_room_settings_invalidation_message_broadcast() {
     let room_id = RoomId::new();
 
     // Broadcast room settings invalidation
-    service1.invalidate_room_settings(&room_id)
+    service1
+        .invalidate_room_settings(&room_id)
         .await
         .expect("Failed to broadcast invalidation");
 
@@ -633,19 +710,25 @@ async fn test_concurrent_invalidation_messages() {
     let s1 = service1.clone();
     let r1 = room1.clone();
     let h1 = tokio::spawn(async move {
-        s1.invalidate_room(&r1).await.expect("Failed to invalidate room1");
+        s1.invalidate_room(&r1)
+            .await
+            .expect("Failed to invalidate room1");
     });
 
     let s2 = service1.clone();
     let r2 = room2.clone();
     let h2 = tokio::spawn(async move {
-        s2.invalidate_room(&r2).await.expect("Failed to invalidate room2");
+        s2.invalidate_room(&r2)
+            .await
+            .expect("Failed to invalidate room2");
     });
 
     let s3 = service1.clone();
     let u1 = user1.clone();
     let h3 = tokio::spawn(async move {
-        s3.invalidate_user(&u1).await.expect("Failed to invalidate user");
+        s3.invalidate_user(&u1)
+            .await
+            .expect("Failed to invalidate user");
     });
 
     // Wait for all broadcasts to complete
@@ -669,8 +752,14 @@ async fn test_concurrent_invalidation_messages() {
     assert_eq!(received.len(), 3, "Should receive 3 messages");
 
     // Verify message types (order may vary)
-    let room_count = received.iter().filter(|m| matches!(m, InvalidationMessage::Room { .. })).count();
-    let user_count = received.iter().filter(|m| matches!(m, InvalidationMessage::User { .. })).count();
+    let room_count = received
+        .iter()
+        .filter(|m| matches!(m, InvalidationMessage::Room { .. }))
+        .count();
+    let user_count = received
+        .iter()
+        .filter(|m| matches!(m, InvalidationMessage::User { .. }))
+        .count();
 
     assert_eq!(room_count, 2, "Should receive 2 Room messages");
     assert_eq!(user_count, 1, "Should receive 1 User message");
@@ -701,12 +790,18 @@ async fn test_cache_consistency_without_redis() {
 
     // Create a member user
     let user_repo = UserRepository::new(pool.clone());
-    let member_user = user_repo.create(&make_user("isolated_member")).await.expect("Failed to create member");
+    let member_user = user_repo
+        .create(&make_user("isolated_member"))
+        .await
+        .expect("Failed to create member");
 
     // Add member to room
     let member_repo = RoomMemberRepository::new(pool.clone());
     let member = RoomMember::new(room.id.clone(), member_user.id.clone(), RoomRole::Member);
-    member_repo.add(&member).await.expect("Failed to add member");
+    member_repo
+        .add(&member)
+        .await
+        .expect("Failed to add member");
 
     // Query permissions (should work without Redis)
     let perms = permission_service
@@ -714,18 +809,26 @@ async fn test_cache_consistency_without_redis() {
         .await
         .expect("Failed to get permissions without Redis");
 
-    assert!(perms.0 > 0, "Should be able to get permissions without Redis");
+    assert!(
+        perms.0 > 0,
+        "Should be able to get permissions without Redis"
+    );
 
     // Modify permissions directly in DB (need version for optimistic lock)
-    let existing_member = member_repo.get(&room.id, &member_user.id).await
+    let existing_member = member_repo
+        .get(&room.id, &member_user.id)
+        .await
         .expect("Failed to get member")
         .expect("Member should exist");
-    member_repo.update_permissions(&room.id, &member_user.id, 99999, 0, existing_member.version)
+    member_repo
+        .update_permissions(&room.id, &member_user.id, 99999, 0, existing_member.version)
         .await
         .expect("Failed to update permissions");
 
     // Invalidate cache locally (no Redis broadcast)
-    permission_service.invalidate_cache(&room.id, &member_user.id).await;
+    permission_service
+        .invalidate_cache(&room.id, &member_user.id)
+        .await;
 
     // Query again (should fetch fresh from DB)
     let perms_after = permission_service
@@ -735,8 +838,15 @@ async fn test_cache_consistency_without_redis() {
 
     // effective_permissions = (role_default | added_permissions) & !removed_permissions
     // So the result should have the added bits set and differ from the initial value.
-    assert_ne!(perms_after, perms, "Permissions should have changed after invalidation");
-    assert_eq!(perms_after.0 & 99999, 99999, "Should see the added permission bits after local invalidation");
+    assert_ne!(
+        perms_after, perms,
+        "Permissions should have changed after invalidation"
+    );
+    assert_eq!(
+        perms_after.0 & 99999,
+        99999,
+        "Should see the added permission bits after local invalidation"
+    );
 }
 
 // ============================================================================
@@ -748,7 +858,10 @@ async fn start_redis() -> (testcontainers::ContainerAsync<Redis>, String) {
         .start()
         .await
         .expect("Failed to start Redis");
-    let port = container.get_host_port_ipv4(6379).await.expect("Failed to get port");
+    let port = container
+        .get_host_port_ipv4(6379)
+        .await
+        .expect("Failed to get port");
     let redis_url = format!("redis://127.0.0.1:{port}");
     (container, redis_url)
 }

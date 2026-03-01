@@ -93,7 +93,10 @@ impl sqlx::Type<sqlx::Postgres> for RoomStatus {
 }
 
 impl sqlx::Encode<'_, sqlx::Postgres> for RoomStatus {
-    fn encode_by_ref(&self, buf: &mut sqlx::postgres::PgArgumentBuffer) -> Result<sqlx::encode::IsNull, Box<dyn std::error::Error + Send + Sync>> {
+    fn encode_by_ref(
+        &self,
+        buf: &mut sqlx::postgres::PgArgumentBuffer,
+    ) -> Result<sqlx::encode::IsNull, Box<dyn std::error::Error + Send + Sync>> {
         let val: i16 = match self {
             Self::Active => 1,
             Self::Pending => 2,
@@ -104,7 +107,9 @@ impl sqlx::Encode<'_, sqlx::Postgres> for RoomStatus {
 }
 
 impl<'r> sqlx::Decode<'r, sqlx::Postgres> for RoomStatus {
-    fn decode(value: sqlx::postgres::PgValueRef<'r>) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
+    fn decode(
+        value: sqlx::postgres::PgValueRef<'r>,
+    ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
         let val = <i16 as sqlx::Decode<sqlx::Postgres>>::decode(value)?;
         match val {
             1 => Ok(Self::Active),
@@ -160,7 +165,6 @@ pub enum PlayMode {
     /// Random playback
     Shuffle,
 }
-
 
 /// Auto-play settings
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -250,7 +254,12 @@ impl Room {
     /// Used when `create_room_need_review=true` to create rooms in Pending status
     /// that require admin approval before becoming active.
     #[must_use]
-    pub fn new_with_status(name: String, description: String, created_by: UserId, status: RoomStatus) -> Self {
+    pub fn new_with_status(
+        name: String,
+        description: String,
+        created_by: UserId,
+        status: RoomStatus,
+    ) -> Self {
         let now = Utc::now();
         Self {
             id: RoomId::new(),
@@ -369,7 +378,6 @@ pub struct RoomSettingsJson {
     // Rooms can override global default permissions from SettingsRegistry
     // Each role has added/removed permissions that modify the global defaults
     // Formula: (global_default | added) & ~removed
-
     /// Additional permissions for Admin role (on top of global default)
     #[serde(default)]
     pub admin_added_permissions: Option<u64>,
@@ -412,7 +420,7 @@ impl RoomSettingsJson {
     /// - `global_default`: Default permissions from global settings
     /// - `added_permissions`: Additional permissions from room settings (Optional)
     /// - `removed_permissions`: Removed permissions from room settings (Optional)
-    #[must_use] 
+    #[must_use]
     pub const fn effective_permissions_for_role(
         global_default: PermissionBits,
         added_permissions: Option<u64>,
@@ -436,7 +444,7 @@ impl RoomSettingsJson {
     /// Get effective permissions for Admin role
     ///
     /// Requires global default admin permissions from `SettingsRegistry`
-    #[must_use] 
+    #[must_use]
     pub const fn admin_permissions(&self, global_default: PermissionBits) -> PermissionBits {
         Self::effective_permissions_for_role(
             global_default,
@@ -448,7 +456,7 @@ impl RoomSettingsJson {
     /// Get effective permissions for Member role
     ///
     /// Requires global default member permissions from `SettingsRegistry`
-    #[must_use] 
+    #[must_use]
     pub const fn member_permissions(&self, global_default: PermissionBits) -> PermissionBits {
         Self::effective_permissions_for_role(
             global_default,
@@ -460,7 +468,7 @@ impl RoomSettingsJson {
     /// Get effective permissions for Guest
     ///
     /// Requires global default guest permissions from `SettingsRegistry`
-    #[must_use] 
+    #[must_use]
     pub const fn guest_permissions(&self, global_default: PermissionBits) -> PermissionBits {
         Self::effective_permissions_for_role(
             global_default,
@@ -512,8 +520,7 @@ impl std::str::FromStr for PlayMode {
 impl Display for AutoPlaySettings {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         // Use JSON representation for complex types
-        let json = serde_json::to_string(self)
-            .map_err(|_| std::fmt::Error)?;
+        let json = serde_json::to_string(self).map_err(|_| std::fmt::Error)?;
         write!(f, "{json}")
     }
 }
@@ -530,8 +537,7 @@ impl std::str::FromStr for AutoPlaySettings {
 impl Display for RoomSettingsJson {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         // Use JSON representation for the entire settings struct
-        let json = serde_json::to_string(self)
-            .map_err(|_| std::fmt::Error)?;
+        let json = serde_json::to_string(self).map_err(|_| std::fmt::Error)?;
         write!(f, "{json}")
     }
 }

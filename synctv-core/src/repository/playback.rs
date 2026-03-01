@@ -59,8 +59,11 @@ impl RoomPlaybackStateRepository {
     ///
     /// Accepts `&mut PgConnection` so the connection can be reborrowed for
     /// the follow-up SELECT query within the same transaction.
-    pub async fn create_or_get_with_executor(&self, room_id: &RoomId, conn: &mut sqlx::PgConnection) -> Result<RoomPlaybackState>
-    {
+    pub async fn create_or_get_with_executor(
+        &self,
+        room_id: &RoomId,
+        conn: &mut sqlx::PgConnection,
+    ) -> Result<RoomPlaybackState> {
         let state = RoomPlaybackState::new(room_id.clone());
 
         sqlx::query(
@@ -105,8 +108,14 @@ impl RoomPlaybackStateRepository {
 
     /// Update playback state with optimistic locking
     pub async fn update(&self, state: &RoomPlaybackState) -> Result<RoomPlaybackState> {
-        let media_id_str = state.playing_media_id.as_ref().map(super::super::models::id::MediaId::as_str);
-        let playlist_id_str = state.playing_playlist_id.as_ref().map(super::super::models::id::PlaylistId::as_str);
+        let media_id_str = state
+            .playing_media_id
+            .as_ref()
+            .map(super::super::models::id::MediaId::as_str);
+        let playlist_id_str = state
+            .playing_playlist_id
+            .as_ref()
+            .map(super::super::models::id::PlaylistId::as_str);
 
         let result = sqlx::query_as::<_, RoomPlaybackState>(
             "UPDATE room_playback_state
@@ -170,9 +179,9 @@ mod tests {
     #[tokio::test]
     #[ignore = "Requires Docker"]
     async fn test_create_or_get_playback_state() {
-        use crate::test_helpers::{RoomFixture, UserFixture};
-        use crate::repository::user::UserRepository;
         use crate::repository::room::RoomRepository;
+        use crate::repository::user::UserRepository;
+        use crate::test_helpers::{RoomFixture, UserFixture};
 
         let infra = crate::test_helpers::containers::TestInfra::postgres_only().await;
         let user_repo = UserRepository::new(infra.pool.clone());
@@ -219,12 +228,12 @@ mod tests {
     #[tokio::test]
     #[ignore = "Requires Docker"]
     async fn test_update_playback_state() {
-        use crate::test_helpers::{RoomFixture, UserFixture};
-        use crate::repository::user::UserRepository;
-        use crate::repository::room::RoomRepository;
-        use crate::repository::playlist::PlaylistRepository;
-        use crate::repository::media::MediaRepository;
         use crate::models::Media;
+        use crate::repository::media::MediaRepository;
+        use crate::repository::playlist::PlaylistRepository;
+        use crate::repository::room::RoomRepository;
+        use crate::repository::user::UserRepository;
+        use crate::test_helpers::{RoomFixture, UserFixture};
 
         let infra = crate::test_helpers::containers::TestInfra::postgres_only().await;
         let user_repo = UserRepository::new(infra.pool.clone());
@@ -234,7 +243,9 @@ mod tests {
         let playback_repo = RoomPlaybackStateRepository::new(infra.pool.clone());
 
         // Create owner and room
-        let owner = UserFixture::new().with_username("playback_update_owner").build();
+        let owner = UserFixture::new()
+            .with_username("playback_update_owner")
+            .build();
         let owner = user_repo.create(&owner).await.unwrap();
 
         let room = RoomFixture::new()
@@ -248,7 +259,8 @@ mod tests {
             &playlist_repo,
             room.id.clone(),
             "Playback Playlist",
-        ).await;
+        )
+        .await;
 
         // Create media for playback reference (required by FK constraint)
         let media = Media::from_provider(
@@ -284,9 +296,9 @@ mod tests {
     #[tokio::test]
     #[ignore = "Requires Docker"]
     async fn test_optimistic_lock_conflict() {
-        use crate::test_helpers::{RoomFixture, UserFixture};
-        use crate::repository::user::UserRepository;
         use crate::repository::room::RoomRepository;
+        use crate::repository::user::UserRepository;
+        use crate::test_helpers::{RoomFixture, UserFixture};
 
         let infra = crate::test_helpers::containers::TestInfra::postgres_only().await;
         let user_repo = UserRepository::new(infra.pool.clone());
@@ -323,9 +335,9 @@ mod tests {
     #[tokio::test]
     #[ignore = "Requires Docker"]
     async fn test_version_increments_on_update() {
-        use crate::test_helpers::{RoomFixture, UserFixture};
-        use crate::repository::user::UserRepository;
         use crate::repository::room::RoomRepository;
+        use crate::repository::user::UserRepository;
+        use crate::test_helpers::{RoomFixture, UserFixture};
 
         let infra = crate::test_helpers::containers::TestInfra::postgres_only().await;
         let user_repo = UserRepository::new(infra.pool.clone());
@@ -358,9 +370,9 @@ mod tests {
     #[tokio::test]
     #[ignore = "Requires Docker"]
     async fn test_boundary_conditions() {
-        use crate::test_helpers::{RoomFixture, UserFixture};
-        use crate::repository::user::UserRepository;
         use crate::repository::room::RoomRepository;
+        use crate::repository::user::UserRepository;
+        use crate::test_helpers::{RoomFixture, UserFixture};
 
         let infra = crate::test_helpers::containers::TestInfra::postgres_only().await;
         let user_repo = UserRepository::new(infra.pool.clone());

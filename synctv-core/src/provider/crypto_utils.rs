@@ -16,9 +16,9 @@
 //!
 //! Encrypted values are prefixed with "enc:" to distinguish from plaintext.
 
-use serde_json::Value;
-use crate::service::CredentialEncryption;
 use super::error::ProviderError;
+use crate::service::CredentialEncryption;
+use serde_json::Value;
 
 /// Encrypt a field in a JSON object if encryption is available.
 ///
@@ -226,7 +226,12 @@ mod tests {
 
         // Empty cookies object should not be encrypted
         assert!(result.get("cookies").unwrap().is_object());
-        assert!(result.get("cookies").unwrap().as_object().unwrap().is_empty());
+        assert!(result
+            .get("cookies")
+            .unwrap()
+            .as_object()
+            .unwrap()
+            .is_empty());
     }
 
     #[test]
@@ -319,7 +324,10 @@ mod tests {
         let result = decrypt_field_in_value(&config, &enc, "cookies", "Test").unwrap();
 
         // Plaintext cookies object should pass through unchanged
-        assert_eq!(result.get("cookies").unwrap().get("SESSDATA").unwrap(), "session_value");
+        assert_eq!(
+            result.get("cookies").unwrap().get("SESSDATA").unwrap(),
+            "session_value"
+        );
     }
 
     #[test]

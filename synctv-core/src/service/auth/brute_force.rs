@@ -153,16 +153,36 @@ pub struct BruteForceConfig {
 }
 
 // Helper functions for serde defaults
-const fn default_tier1_threshold() -> u64 { TIER1_THRESHOLD }
-const fn default_tier1_lockout_secs() -> u64 { TIER1_LOCKOUT_SECS }
-const fn default_tier2_threshold() -> u64 { TIER2_THRESHOLD }
-const fn default_tier2_lockout_secs() -> u64 { TIER2_LOCKOUT_SECS }
-const fn default_tier3_threshold() -> u64 { TIER3_THRESHOLD }
-const fn default_tier3_lockout_secs() -> u64 { TIER3_LOCKOUT_SECS }
-const fn default_ip_threshold() -> u64 { IP_THRESHOLD }
-const fn default_ip_lockout_secs() -> u64 { IP_LOCKOUT_SECS }
-const fn default_attempts_ttl_secs() -> u64 { ATTEMPTS_TTL_SECS }
-const fn default_ip_attempts_ttl_secs() -> u64 { IP_ATTEMPTS_TTL_SECS }
+const fn default_tier1_threshold() -> u64 {
+    TIER1_THRESHOLD
+}
+const fn default_tier1_lockout_secs() -> u64 {
+    TIER1_LOCKOUT_SECS
+}
+const fn default_tier2_threshold() -> u64 {
+    TIER2_THRESHOLD
+}
+const fn default_tier2_lockout_secs() -> u64 {
+    TIER2_LOCKOUT_SECS
+}
+const fn default_tier3_threshold() -> u64 {
+    TIER3_THRESHOLD
+}
+const fn default_tier3_lockout_secs() -> u64 {
+    TIER3_LOCKOUT_SECS
+}
+const fn default_ip_threshold() -> u64 {
+    IP_THRESHOLD
+}
+const fn default_ip_lockout_secs() -> u64 {
+    IP_LOCKOUT_SECS
+}
+const fn default_attempts_ttl_secs() -> u64 {
+    ATTEMPTS_TTL_SECS
+}
+const fn default_ip_attempts_ttl_secs() -> u64 {
+    IP_ATTEMPTS_TTL_SECS
+}
 
 impl Default for BruteForceConfig {
     fn default() -> Self {
@@ -360,7 +380,11 @@ impl RedisAttemptTracker {
     /// Required for cluster mode to prevent security degradation from
     /// per-replica independent counters.
     #[must_use]
-    pub fn new_fail_closed(conn: redis::aio::ConnectionManager, max_capacity: u64, ttl_secs: u64) -> Self {
+    pub fn new_fail_closed(
+        conn: redis::aio::ConnectionManager,
+        max_capacity: u64,
+        ttl_secs: u64,
+    ) -> Self {
         Self {
             conn,
             fallback: Arc::new(
@@ -453,18 +477,18 @@ impl AttemptTracker for RedisAttemptTracker {
     async fn get_attempts(&self, key: &str) -> Result<(u64, i64)> {
         let mut conn = self.conn.clone();
 
-        let redis_result = tokio::time::timeout(
-            REDIS_OPERATION_TIMEOUT,
-            conn.get::<_, Option<String>>(key),
-        )
-        .await;
+        let redis_result =
+            tokio::time::timeout(REDIS_OPERATION_TIMEOUT, conn.get::<_, Option<String>>(key)).await;
 
-        let redis_result = if let Ok(inner) = redis_result { inner } else {
+        let redis_result = if let Ok(inner) = redis_result {
+            inner
+        } else {
             // Timeout
             if self.fail_closed {
                 self.log_fail_closed_rejection("get_attempts", "Redis timeout", key);
                 return Err(Error::Internal(
-                    "Brute-force protection temporarily unavailable. Please try again later.".to_string()
+                    "Brute-force protection temporarily unavailable. Please try again later."
+                        .to_string(),
                 ));
             }
             self.mark_degraded();
@@ -496,7 +520,8 @@ impl AttemptTracker for RedisAttemptTracker {
                 if self.fail_closed {
                     self.log_fail_closed_rejection("get_attempts", &e.to_string(), key);
                     return Err(Error::Internal(
-                        "Brute-force protection temporarily unavailable. Please try again later.".to_string()
+                        "Brute-force protection temporarily unavailable. Please try again later."
+                            .to_string(),
                     ));
                 }
                 self.mark_degraded();
@@ -537,10 +562,12 @@ impl AttemptTracker for RedisAttemptTracker {
                 .invoke_async(&mut conn),
         )
         .await
-        .unwrap_or_else(|_| Err(redis::RedisError::from((
-            redis::ErrorKind::Io,
-            "Redis timeout: record_failure",
-        ))));
+        .unwrap_or_else(|_| {
+            Err(redis::RedisError::from((
+                redis::ErrorKind::Io,
+                "Redis timeout: record_failure",
+            )))
+        });
 
         match result {
             Ok(count) => {
@@ -554,13 +581,16 @@ impl AttemptTracker for RedisAttemptTracker {
                     self.log_fail_closed_rejection("record_failure", &e.to_string(), key);
                     // Still return error - caller should know tracking failed
                     return Err(Error::Internal(
-                        "Brute-force protection temporarily unavailable. Please try again later.".to_string()
+                        "Brute-force protection temporarily unavailable. Please try again later."
+                            .to_string(),
                     ));
                 }
                 self.mark_degraded();
                 tracing::warn!(key = %key, error = %e, "Redis error in record_failure, using fallback");
                 let (count, _) = self.fallback.get(key).await.unwrap_or((0, now));
-                self.fallback.insert(key.to_string(), (count + 1, now)).await;
+                self.fallback
+                    .insert(key.to_string(), (count + 1, now))
+                    .await;
                 Ok(())
             }
         }
@@ -580,7 +610,7 @@ impl AttemptTracker for RedisAttemptTracker {
                 if self.fail_closed {
                     self.log_fail_closed_rejection("reset", &e.to_string(), key);
                     return Err(Error::Internal(
-                        "Brute-force protection temporarily unavailable.".to_string()
+                        "Brute-force protection temporarily unavailable.".to_string(),
                     ));
                 }
                 self.mark_degraded();
@@ -591,7 +621,7 @@ impl AttemptTracker for RedisAttemptTracker {
                 if self.fail_closed {
                     self.log_fail_closed_rejection("reset", &e.to_string(), key);
                     return Err(Error::Internal(
-                        "Brute-force protection temporarily unavailable.".to_string()
+                        "Brute-force protection temporarily unavailable.".to_string(),
                     ));
                 }
                 self.mark_degraded();
@@ -630,8 +660,7 @@ pub struct BruteForceProtection {
 
 impl std::fmt::Debug for BruteForceProtection {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("BruteForceProtection")
-            .finish()
+        f.debug_struct("BruteForceProtection").finish()
     }
 }
 
@@ -685,10 +714,14 @@ impl BruteForceProtection {
     pub fn with_redis(conn: redis::aio::ConnectionManager, key_prefix: String) -> Self {
         let config = BruteForceConfig::default();
         let username_tracker = Arc::new(RedisAttemptTracker::new(
-            conn.clone(), 50_000, config.attempts_ttl_secs,
+            conn.clone(),
+            50_000,
+            config.attempts_ttl_secs,
         ));
         let ip_tracker = Arc::new(RedisAttemptTracker::new(
-            conn, 100_000, config.ip_attempts_ttl_secs,
+            conn,
+            100_000,
+            config.ip_attempts_ttl_secs,
         ));
         Self::new_with_config(key_prefix, username_tracker, ip_tracker, config)
     }
@@ -720,10 +753,14 @@ impl BruteForceProtection {
         );
         let config = BruteForceConfig::default();
         let username_tracker = Arc::new(RedisAttemptTracker::new_fail_closed(
-            conn.clone(), 50_000, config.attempts_ttl_secs,
+            conn.clone(),
+            50_000,
+            config.attempts_ttl_secs,
         ));
         let ip_tracker = Arc::new(RedisAttemptTracker::new_fail_closed(
-            conn, 100_000, config.ip_attempts_ttl_secs,
+            conn,
+            100_000,
+            config.ip_attempts_ttl_secs,
         ));
         Self::new_with_config(key_prefix, username_tracker, ip_tracker, config)
     }
@@ -739,8 +776,14 @@ impl BruteForceProtection {
     #[must_use]
     pub fn in_memory(key_prefix: String) -> Self {
         let config = BruteForceConfig::default();
-        let username_tracker = Arc::new(InMemoryAttemptTracker::new(50_000, config.attempts_ttl_secs));
-        let ip_tracker = Arc::new(InMemoryAttemptTracker::new(100_000, config.ip_attempts_ttl_secs));
+        let username_tracker = Arc::new(InMemoryAttemptTracker::new(
+            50_000,
+            config.attempts_ttl_secs,
+        ));
+        let ip_tracker = Arc::new(InMemoryAttemptTracker::new(
+            100_000,
+            config.ip_attempts_ttl_secs,
+        ));
         Self::new_with_config(key_prefix, username_tracker, ip_tracker, config)
     }
 
@@ -753,8 +796,14 @@ impl BruteForceProtection {
     /// to bypass lockouts by distributing requests across replicas.
     #[must_use]
     pub fn in_memory_with_config(key_prefix: String, config: BruteForceConfig) -> Self {
-        let username_tracker = Arc::new(InMemoryAttemptTracker::new(50_000, config.attempts_ttl_secs));
-        let ip_tracker = Arc::new(InMemoryAttemptTracker::new(100_000, config.ip_attempts_ttl_secs));
+        let username_tracker = Arc::new(InMemoryAttemptTracker::new(
+            50_000,
+            config.attempts_ttl_secs,
+        ));
+        let ip_tracker = Arc::new(InMemoryAttemptTracker::new(
+            100_000,
+            config.ip_attempts_ttl_secs,
+        ));
         Self::new_with_config(key_prefix, username_tracker, ip_tracker, config)
     }
 
@@ -852,12 +901,16 @@ impl BruteForceProtection {
         // Record IP-level failure
         if let Some(ip_addr) = ip {
             let ip_key = self.key_builder.login_attempts_ip(&ip_addr.to_string());
-            self.ip_tracker.record_failure(&ip_key, now, self.config.ip_attempts_ttl_secs).await?;
+            self.ip_tracker
+                .record_failure(&ip_key, now, self.config.ip_attempts_ttl_secs)
+                .await?;
         }
 
         // Record username-level failure
         let key = self.key_builder.login_attempts(username);
-        self.username_tracker.record_failure(&key, now, self.config.attempts_ttl_secs).await?;
+        self.username_tracker
+            .record_failure(&key, now, self.config.attempts_ttl_secs)
+            .await?;
         Ok(())
     }
 
@@ -875,7 +928,9 @@ impl BruteForceProtection {
         if let Some(ip_addr) = ip {
             let now = chrono::Utc::now().timestamp();
             let ip_key = self.key_builder.login_attempts_ip(&ip_addr.to_string());
-            self.ip_tracker.record_failure(&ip_key, now, self.config.ip_attempts_ttl_secs).await?;
+            self.ip_tracker
+                .record_failure(&ip_key, now, self.config.ip_attempts_ttl_secs)
+                .await?;
         }
         Ok(())
     }
@@ -951,12 +1006,30 @@ mod tests {
     fn test_lockout_duration_standard_thresholds() {
         let protection = BruteForceProtection::in_memory("test".to_string());
         assert_eq!(protection.lockout_duration_for_test(4), None);
-        assert_eq!(protection.lockout_duration_for_test(5), Some(TIER1_LOCKOUT_SECS));
-        assert_eq!(protection.lockout_duration_for_test(9), Some(TIER1_LOCKOUT_SECS));
-        assert_eq!(protection.lockout_duration_for_test(10), Some(TIER2_LOCKOUT_SECS));
-        assert_eq!(protection.lockout_duration_for_test(14), Some(TIER2_LOCKOUT_SECS));
-        assert_eq!(protection.lockout_duration_for_test(15), Some(TIER3_LOCKOUT_SECS));
-        assert_eq!(protection.lockout_duration_for_test(100), Some(TIER3_LOCKOUT_SECS));
+        assert_eq!(
+            protection.lockout_duration_for_test(5),
+            Some(TIER1_LOCKOUT_SECS)
+        );
+        assert_eq!(
+            protection.lockout_duration_for_test(9),
+            Some(TIER1_LOCKOUT_SECS)
+        );
+        assert_eq!(
+            protection.lockout_duration_for_test(10),
+            Some(TIER2_LOCKOUT_SECS)
+        );
+        assert_eq!(
+            protection.lockout_duration_for_test(14),
+            Some(TIER2_LOCKOUT_SECS)
+        );
+        assert_eq!(
+            protection.lockout_duration_for_test(15),
+            Some(TIER3_LOCKOUT_SECS)
+        );
+        assert_eq!(
+            protection.lockout_duration_for_test(100),
+            Some(TIER3_LOCKOUT_SECS)
+        );
     }
 
     // ========================================================================
@@ -1052,7 +1125,10 @@ mod tests {
 
         // All operations should succeed
         assert!(tracker.get_attempts(key).await.is_ok());
-        assert!(tracker.record_failure(key, chrono::Utc::now().timestamp(), 900).await.is_ok());
+        assert!(tracker
+            .record_failure(key, chrono::Utc::now().timestamp(), 900)
+            .await
+            .is_ok());
         assert!(tracker.reset(key).await.is_ok());
     }
 }

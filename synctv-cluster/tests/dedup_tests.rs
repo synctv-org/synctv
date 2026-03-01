@@ -5,7 +5,7 @@
 //! timestamp produce different dedup keys.
 
 #![allow(clippy::unwrap_used)]
-use synctv_cluster::{MessageDeduplicator, DedupKey};
+use synctv_cluster::{DedupKey, MessageDeduplicator};
 
 fn make_key(event_type: &str, room: &str, user: &str, ts: i64, hash: u64) -> DedupKey {
     DedupKey {
@@ -28,10 +28,7 @@ async fn test_mark_processed_prevents_reprocessing() {
     let key = make_key("chat", "room1", "user1", 1000, 42);
 
     // Before marking, should_process returns true
-    assert!(
-        dedup.should_process(&key),
-        "First call should return true"
-    );
+    assert!(dedup.should_process(&key), "First call should return true");
 
     // After should_process returned true and the entry is now in the cache,
     // should_process returns false

@@ -116,7 +116,7 @@ pub struct RedisTicketStore {
 }
 
 impl RedisTicketStore {
-    #[must_use] 
+    #[must_use]
     pub const fn new(conn: redis::aio::ConnectionManager) -> Self {
         Self { conn }
     }
@@ -131,18 +131,17 @@ impl TicketStore for RedisTicketStore {
         use redis::AsyncCommands;
 
         let key = format!("{WS_TICKET_PREFIX}{ticket}");
-        let json = serde_json::to_string(data).map_err(|e| {
-            Error::Internal(format!("Failed to serialize ticket data: {e}"))
-        })?;
+        let json = serde_json::to_string(data)
+            .map_err(|e| Error::Internal(format!("Failed to serialize ticket data: {e}")))?;
 
         let mut conn = self.conn.clone();
         let _: () = tokio::time::timeout(
             crate::resilience::timeout::REDIS_OPERATION_TIMEOUT,
             conn.set_ex(&key, json, ttl_secs),
         )
-            .await
-            .map_err(|_| Error::Internal("Redis timeout: store ticket".to_string()))?
-            .map_err(|e| Error::Internal(format!("Failed to store ticket: {e}")))?;
+        .await
+        .map_err(|_| Error::Internal("Redis timeout: store ticket".to_string()))?
+        .map_err(|e| Error::Internal(format!("Failed to store ticket: {e}")))?;
 
         Ok(())
     }
@@ -152,29 +151,30 @@ impl TicketStore for RedisTicketStore {
         let mut conn = self.conn.clone();
 
         // Get and delete atomically using Lua script
-        let lua_script = redis::Script::new(r#"
+        let lua_script = redis::Script::new(
+            r#"
             local value = redis.call("GET", KEYS[1])
             if value then
                 redis.call("DEL", KEYS[1])
             end
             return value
-        "#);
+        "#,
+        );
 
         let json: Option<String> = tokio::time::timeout(
             crate::resilience::timeout::REDIS_OPERATION_TIMEOUT,
             lua_script.key(&key).invoke_async(&mut conn),
         )
-            .await
-            .map_err(|_| Error::Internal("Redis timeout: validate ticket".to_string()))?
-            .map_err(|e| Error::Internal(format!("Failed to validate ticket: {e}")))?;
+        .await
+        .map_err(|_| Error::Internal("Redis timeout: validate ticket".to_string()))?
+        .map_err(|e| Error::Internal(format!("Failed to validate ticket: {e}")))?;
 
         let Some(json) = json else {
             return Ok(None);
         };
 
-        let data: WsTicketData = serde_json::from_str(&json).map_err(|e| {
-            Error::Internal(format!("Failed to deserialize ticket data: {e}"))
-        })?;
+        let data: WsTicketData = serde_json::from_str(&json)
+            .map_err(|e| Error::Internal(format!("Failed to deserialize ticket data: {e}")))?;
 
         Ok(Some(data))
     }
@@ -195,7 +195,7 @@ pub struct InMemoryTicketStore {
 }
 
 impl InMemoryTicketStore {
-    #[must_use] 
+    #[must_use]
     pub fn new(ttl_secs: u64) -> Self {
         Self {
             cache: moka::future::Cache::builder()
@@ -272,21 +272,18 @@ impl WsTicketService {
 
     /// Create a new WebSocket ticket service with Redis (multi-replica mode).
     #[must_use]
-    pub fn with_redis(redis_conn: redis::aio::ConnectionManager, ticket_ttl_secs: Option<u64>) -> Self {
-        Self::from_store(
-            Arc::new(RedisTicketStore::new(redis_conn)),
-            ticket_ttl_secs,
-        )
+    pub fn with_redis(
+        redis_conn: redis::aio::ConnectionManager,
+        ticket_ttl_secs: Option<u64>,
+    ) -> Self {
+        Self::from_store(Arc::new(RedisTicketStore::new(redis_conn)), ticket_ttl_secs)
     }
 
     /// Create a new WebSocket ticket service with memory storage (single-replica mode).
     #[must_use]
     pub fn with_memory(ticket_ttl_secs: Option<u64>) -> Self {
         let ttl = ticket_ttl_secs.unwrap_or(DEFAULT_TICKET_TTL_SECS);
-        Self::from_store(
-            Arc::new(InMemoryTicketStore::new(ttl)),
-            ticket_ttl_secs,
-        )
+        Self::from_store(Arc::new(InMemoryTicketStore::new(ttl)), ticket_ttl_secs)
     }
 
     /// Create a new WebSocket ticket service, choosing backend based on Redis availability.
@@ -349,7 +346,12 @@ impl WsTicketService {
     ///
     /// The `password_version` is stored in the ticket and validated during consumption
     /// to ensure tickets are invalidated when the user changes their password.
-    pub async fn create_ticket(&self, user_id: &UserId, room_id: &RoomId, password_version: i32) -> Result<String> {
+    pub async fn create_ticket(
+        &self,
+        user_id: &UserId,
+        room_id: &RoomId,
+        password_version: i32,
+    ) -> Result<String> {
         let ticket = Self::generate_ticket();
 
         let ticket_data = WsTicketData {
@@ -362,7 +364,9 @@ impl WsTicketService {
             password_version,
         };
 
-        self.store.store(&ticket, &ticket_data, self.ticket_ttl_secs).await?;
+        self.store
+            .store(&ticket, &ticket_data, self.ticket_ttl_secs)
+            .await?;
 
         debug!(
             user_id = %user_id.as_str(),
@@ -384,12 +388,18 @@ impl WsTicketService {
     /// The caller is responsible for checking that the `password_version` in the returned
     /// [`ValidatedTicket`] matches the current user's password version to ensure the ticket
     /// is invalidated if the user changed their password after the ticket was issued.
-    pub async fn validate_and_consume(&self, ticket: &str, expected_room_id: &RoomId) -> Result<ValidatedTicket> {
+    pub async fn validate_and_consume(
+        &self,
+        ticket: &str,
+        expected_room_id: &RoomId,
+    ) -> Result<ValidatedTicket> {
         let mode = self.store.backend_name();
 
         let Some(ticket_data) = self.store.consume(ticket).await? else {
             debug!(ticket = %ticket, mode = %mode, "WebSocket ticket not found or expired");
-            return Err(Error::Authorization("Invalid or expired ticket".to_string()));
+            return Err(Error::Authorization(
+                "Invalid or expired ticket".to_string(),
+            ));
         };
 
         // Room-bound validation: reject the ticket if it was issued for a different room.
@@ -400,7 +410,9 @@ impl WsTicketService {
                 mode = %mode,
                 "WebSocket ticket rejected: room mismatch"
             );
-            return Err(Error::Authorization("Ticket not valid for this room".to_string()));
+            return Err(Error::Authorization(
+                "Ticket not valid for this room".to_string(),
+            ));
         }
 
         debug!(
@@ -439,7 +451,9 @@ impl WsTicketService {
 
         let Some(ticket_data) = self.store.consume(ticket).await? else {
             debug!(ticket = %ticket, mode = %mode, "WebSocket ticket not found or expired");
-            return Err(Error::Authorization("Invalid or expired ticket".to_string()));
+            return Err(Error::Authorization(
+                "Invalid or expired ticket".to_string(),
+            ));
         };
 
         // Step 2: Validate room binding
@@ -450,21 +464,26 @@ impl WsTicketService {
                 mode = %mode,
                 "WebSocket ticket rejected: room mismatch"
             );
-            return Err(Error::Authorization("Ticket not valid for this room".to_string()));
+            return Err(Error::Authorization(
+                "Ticket not valid for this room".to_string(),
+            ));
         }
 
         let user_id = UserId::from_string(ticket_data.user_id.clone());
 
         // Step 3: Validate user status (TOCTOU-safe: happens after ticket consumption)
-        let user_validation = user_validator.validate_for_ticket(&user_id).await.map_err(|e| {
-            debug!(
-                user_id = %user_id.as_str(),
-                error = %e,
-                mode = %mode,
-                "WebSocket ticket rejected: user validation failed"
-            );
-            Error::Authorization("Authentication failed".to_string())
-        })?;
+        let user_validation = user_validator
+            .validate_for_ticket(&user_id)
+            .await
+            .map_err(|e| {
+                debug!(
+                    user_id = %user_id.as_str(),
+                    error = %e,
+                    mode = %mode,
+                    "WebSocket ticket rejected: user validation failed"
+                );
+                Error::Authorization("Authentication failed".to_string())
+            })?;
 
         // Step 4: Check password version (ticket must be invalidated if password changed)
         if ticket_data.password_version < user_validation.password_version {
@@ -570,7 +589,9 @@ mod tests {
         let ticket = service.create_ticket(&user_id, &room_id, 0).await;
         assert!(ticket.is_ok());
 
-        let result = service.validate_and_consume(&ticket.unwrap(), &room_id).await;
+        let result = service
+            .validate_and_consume(&ticket.unwrap(), &room_id)
+            .await;
         assert!(result.is_ok());
         let validated = result.unwrap();
         assert_eq!(validated.user_id.as_str(), "user1");
@@ -602,7 +623,10 @@ mod tests {
         let ticket = service.create_ticket(&user_id, &room_a, 0).await.unwrap();
 
         let result = service.validate_and_consume(&ticket, &room_b).await;
-        assert!(result.is_err(), "Ticket for room A should not be valid for room B");
+        assert!(
+            result.is_err(),
+            "Ticket for room A should not be valid for room B"
+        );
     }
 
     #[tokio::test]
@@ -624,7 +648,9 @@ mod tests {
         let service = WsTicketService::with_memory(Some(30));
         let room_id = create_test_room_id("room1");
 
-        let result = service.validate_and_consume("invalid_ticket", &room_id).await;
+        let result = service
+            .validate_and_consume("invalid_ticket", &room_id)
+            .await;
         assert!(result.is_err());
     }
 
@@ -744,10 +770,7 @@ mod tests {
     fn test_non_cluster_mode_without_redis_succeeds() {
         let result = WsTicketService::new(None, Some(30), false);
 
-        assert!(
-            result.is_ok(),
-            "Non-cluster mode should work without Redis"
-        );
+        assert!(result.is_ok(), "Non-cluster mode should work without Redis");
 
         let service = result.unwrap();
         assert_eq!(

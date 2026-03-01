@@ -121,10 +121,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_succeeds_on_first_try() {
-        let result = retry_with_optimistic_lock(3, 5, "failed", || async {
-            Ok::<_, Error>(42)
-        })
-        .await;
+        let result =
+            retry_with_optimistic_lock(3, 5, "failed", || async { Ok::<_, Error>(42) }).await;
 
         assert_eq!(result.unwrap(), 42);
     }
@@ -232,10 +230,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_one_retry_succeeds() {
-        let result = retry_with_optimistic_lock(1, 1, "single attempt", || async {
-            Ok::<_, Error>(42)
-        })
-        .await;
+        let result =
+            retry_with_optimistic_lock(1, 1, "single attempt", || async { Ok::<_, Error>(42) })
+                .await;
 
         assert_eq!(result.unwrap(), 42);
     }
@@ -284,10 +281,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_returns_unit_type() {
-        let result = retry_with_optimistic_lock(3, 1, "failed", || async {
-            Ok::<_, Error>(())
-        })
-        .await;
+        let result =
+            retry_with_optimistic_lock(3, 1, "failed", || async { Ok::<_, Error>(()) }).await;
 
         assert!(result.is_ok());
     }
@@ -332,20 +327,17 @@ mod tests {
 
     #[tokio::test]
     async fn test_option_return_type() {
-        let result = retry_with_optimistic_lock(3, 1, "failed", || async {
-            Ok::<_, Error>(Some(42))
-        })
-        .await;
+        let result =
+            retry_with_optimistic_lock(3, 1, "failed", || async { Ok::<_, Error>(Some(42)) }).await;
 
         assert_eq!(result.unwrap(), Some(42));
     }
 
     #[tokio::test]
     async fn test_vec_return_type() {
-        let result = retry_with_optimistic_lock(3, 1, "failed", || async {
-            Ok::<_, Error>(vec![1, 2, 3])
-        })
-        .await;
+        let result =
+            retry_with_optimistic_lock(3, 1, "failed", || async { Ok::<_, Error>(vec![1, 2, 3]) })
+                .await;
 
         assert_eq!(result.unwrap(), vec![1, 2, 3]);
     }
@@ -401,14 +393,11 @@ mod tests {
 
     #[tokio::test]
     async fn test_timeout_succeeds_on_first_try() {
-        let result = retry_with_optimistic_lock_timeout(
-            3,
-            5,
-            Duration::from_secs(5),
-            "failed",
-            || async { Ok::<_, Error>(42) },
-        )
-        .await;
+        let result =
+            retry_with_optimistic_lock_timeout(3, 5, Duration::from_secs(5), "failed", || async {
+                Ok::<_, Error>(42)
+            })
+            .await;
 
         assert_eq!(result.unwrap(), 42);
     }
@@ -417,12 +406,8 @@ mod tests {
     async fn test_timeout_succeeds_after_retry() {
         let attempts = AtomicU32::new(0);
 
-        let result = retry_with_optimistic_lock_timeout(
-            3,
-            1,
-            Duration::from_secs(5),
-            "failed",
-            || {
+        let result =
+            retry_with_optimistic_lock_timeout(3, 1, Duration::from_secs(5), "failed", || {
                 let attempt = attempts.fetch_add(1, Ordering::SeqCst);
                 async move {
                     if attempt < 2 {
@@ -431,9 +416,8 @@ mod tests {
                         Ok(42)
                     }
                 }
-            },
-        )
-        .await;
+            })
+            .await;
 
         assert_eq!(result.unwrap(), 42);
         assert_eq!(attempts.load(Ordering::SeqCst), 3);
@@ -465,8 +449,8 @@ mod tests {
 
         // Use a very short timeout (50ms) with slow operations
         let result = retry_with_optimistic_lock_timeout(
-            10, // Many retries
-            10, // 10ms base backoff
+            10,                        // Many retries
+            10,                        // 10ms base backoff
             Duration::from_millis(50), // 50ms timeout
             "timeout test",
             || async {
@@ -497,14 +481,11 @@ mod tests {
 
     #[tokio::test]
     async fn test_timeout_preserves_non_conflict_error() {
-        let result = retry_with_optimistic_lock_timeout(
-            3,
-            1,
-            Duration::from_secs(5),
-            "failed",
-            || async { Err::<i32, _>(Error::NotFound("not found".to_string())) },
-        )
-        .await;
+        let result =
+            retry_with_optimistic_lock_timeout(3, 1, Duration::from_secs(5), "failed", || async {
+                Err::<i32, _>(Error::NotFound("not found".to_string()))
+            })
+            .await;
 
         assert!(result.is_err());
         match result.unwrap_err() {
@@ -520,14 +501,11 @@ mod tests {
         let start = Instant::now();
 
         // Fast operations with generous timeout should complete quickly
-        let result = retry_with_optimistic_lock_timeout(
-            3,
-            1,
-            Duration::from_secs(5),
-            "failed",
-            || async { Ok::<_, Error>(42) },
-        )
-        .await;
+        let result =
+            retry_with_optimistic_lock_timeout(3, 1, Duration::from_secs(5), "failed", || async {
+                Ok::<_, Error>(42)
+            })
+            .await;
 
         let elapsed = start.elapsed();
 

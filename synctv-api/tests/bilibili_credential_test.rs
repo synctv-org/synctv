@@ -6,9 +6,11 @@
 //! Run with: cargo test --package synctv-api `bilibili_credential`
 
 #![allow(clippy::unwrap_used)]
-use synctv_core::provider::{MediaProvider, PlaybackResult, PlaybackInfo, ProviderContext, ProviderError};
-use synctv_core::service::CredentialEncryption;
 use async_trait::async_trait;
+use synctv_core::provider::{
+    MediaProvider, PlaybackInfo, PlaybackResult, ProviderContext, ProviderError,
+};
+use synctv_core::service::CredentialEncryption;
 
 // ============================================================================
 // Mock provider that checks if credential_encryption is passed
@@ -22,7 +24,9 @@ struct MockBilibiliProvider {
 
 impl MockBilibiliProvider {
     const fn new(encryption_was_provided: std::sync::Arc<std::sync::atomic::AtomicBool>) -> Self {
-        Self { encryption_was_provided }
+        Self {
+            encryption_was_provided,
+        }
     }
 }
 
@@ -110,7 +114,9 @@ async fn test_bilibili_proxy_m3u8_passes_credential_encryption() {
     let source_config = serde_json::json!({});
 
     // With encryption
-    let _ = provider.generate_playback(&ctx_with_enc, &source_config).await;
+    let _ = provider
+        .generate_playback(&ctx_with_enc, &source_config)
+        .await;
     assert!(
         encryption_was_provided.load(std::sync::atomic::Ordering::SeqCst),
         "Provider should see credential_encryption as Some when passed"
@@ -120,7 +126,9 @@ async fn test_bilibili_proxy_m3u8_passes_credential_encryption() {
     encryption_was_provided.store(false, std::sync::atomic::Ordering::SeqCst);
 
     // Without encryption
-    let _ = provider.generate_playback(&ctx_without_enc, &source_config).await;
+    let _ = provider
+        .generate_playback(&ctx_without_enc, &source_config)
+        .await;
     assert!(
         !encryption_was_provided.load(std::sync::atomic::Ordering::SeqCst),
         "Provider should see credential_encryption as None when not passed"

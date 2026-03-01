@@ -8,23 +8,20 @@
 
 use std::sync::Arc;
 
-use synctv_core_testing::create_test_pool;
+use chrono::Utc;
+use sqlx::PgPool;
 use synctv_core::{
-    cache::{KeyBuilder, UsernameCache, NoopCacheL2},
+    cache::{KeyBuilder, NoopCacheL2, UsernameCache},
     config::PasswordComplexityConfig,
-    models::{
-        UserId, User, UserRole, UserStatus,
-        Media, MediaId, Playlist,
-    },
-    repository::{UserRepository, MediaRepository},
+    models::{Media, MediaId, Playlist, User, UserId, UserRole, UserStatus},
+    repository::{MediaRepository, UserRepository},
     service::{
-        RoomService, UserService, InMemoryTokenBlacklistStore,
-        auth::{JwtService, BruteForceProtection},
+        auth::{BruteForceProtection, JwtService},
+        InMemoryTokenBlacklistStore, RoomService, UserService,
     },
     Error,
 };
-use chrono::Utc;
-use sqlx::PgPool;
+use synctv_core_testing::create_test_pool;
 fn make_user_service(pool: PgPool) -> UserService {
     let secret = "Test_Secret_Key_For_JWT_Tokens_32Bytes!!";
     let jwt_service = JwtService::new(secret).expect("Failed to create JwtService");
@@ -80,7 +77,10 @@ async fn test_seek_negative_rejected() {
     let user_repo = UserRepository::new(pool.clone());
     let room_service = make_room_service(pool.clone());
 
-    let owner = user_repo.create(&make_user("seek_neg_owner")).await.unwrap();
+    let owner = user_repo
+        .create(&make_user("seek_neg_owner"))
+        .await
+        .unwrap();
 
     let (room, _) = room_service
         .create_room(
@@ -102,8 +102,10 @@ async fn test_seek_negative_rejected() {
     assert!(result.is_err());
     match result.unwrap_err() {
         Error::InvalidInput(msg) => {
-            assert!(msg.contains("non-negative") || msg.contains("negative"),
-                "Error should mention non-negative: {msg}");
+            assert!(
+                msg.contains("non-negative") || msg.contains("negative"),
+                "Error should mention non-negative: {msg}"
+            );
         }
         other => panic!("Expected InvalidInput error, got: {other:?}"),
     }
@@ -118,7 +120,10 @@ async fn test_speed_zero_rejected() {
     let user_repo = UserRepository::new(pool.clone());
     let room_service = make_room_service(pool.clone());
 
-    let owner = user_repo.create(&make_user("speed_zero_owner")).await.unwrap();
+    let owner = user_repo
+        .create(&make_user("speed_zero_owner"))
+        .await
+        .unwrap();
 
     let (room, _) = room_service
         .create_room(
@@ -140,8 +145,10 @@ async fn test_speed_zero_rejected() {
     assert!(result.is_err());
     match result.unwrap_err() {
         Error::InvalidInput(msg) => {
-            assert!(msg.contains("Speed") || msg.contains("speed"),
-                "Error should mention speed: {msg}");
+            assert!(
+                msg.contains("Speed") || msg.contains("speed"),
+                "Error should mention speed: {msg}"
+            );
         }
         other => panic!("Expected InvalidInput error, got: {other:?}"),
     }
@@ -154,7 +161,10 @@ async fn test_speed_above_max_rejected() {
     let user_repo = UserRepository::new(pool.clone());
     let room_service = make_room_service(pool.clone());
 
-    let owner = user_repo.create(&make_user("speed_max_owner")).await.unwrap();
+    let owner = user_repo
+        .create(&make_user("speed_max_owner"))
+        .await
+        .unwrap();
 
     let (room, _) = room_service
         .create_room(
@@ -176,8 +186,10 @@ async fn test_speed_above_max_rejected() {
     assert!(result.is_err());
     match result.unwrap_err() {
         Error::InvalidInput(msg) => {
-            assert!(msg.contains("Speed") || msg.contains("16"),
-                "Error should mention speed limit: {msg}");
+            assert!(
+                msg.contains("Speed") || msg.contains("16"),
+                "Error should mention speed limit: {msg}"
+            );
         }
         other => panic!("Expected InvalidInput error, got: {other:?}"),
     }
@@ -207,13 +219,11 @@ async fn test_switch_media_resets_position() {
         .unwrap();
 
     // Get the root playlist that was created with the room
-    let playlists: Vec<Playlist> = sqlx::query_as(
-        "SELECT * FROM playlists WHERE room_id = $1"
-    )
-    .bind(room.id.as_str())
-    .fetch_all(&pool)
-    .await
-    .unwrap();
+    let playlists: Vec<Playlist> = sqlx::query_as("SELECT * FROM playlists WHERE room_id = $1")
+        .bind(room.id.as_str())
+        .fetch_all(&pool)
+        .await
+        .unwrap();
     let root_playlist = &playlists[0];
 
     // Add a media item
@@ -245,8 +255,11 @@ async fn test_switch_media_resets_position() {
         .await
         .unwrap();
 
-    assert!((state.current_time - 0.0).abs() < f64::EPSILON,
-        "Current time should be reset to 0 after media switch, got: {}", state.current_time);
+    assert!(
+        (state.current_time - 0.0).abs() < f64::EPSILON,
+        "Current time should be reset to 0 after media switch, got: {}",
+        state.current_time
+    );
     assert_eq!(state.playing_media_id, Some(media.id));
     assert!(state.is_playing, "Should be playing after media switch");
 }
@@ -281,11 +294,8 @@ async fn test_playback_optimistic_lock_concurrent() {
         let uid = owner.id.clone();
         let position = f64::from(i) * 10.0;
 
-        let handle = tokio::spawn(async move {
-            rs.playback_service()
-                .seek(rid, uid, position)
-                .await
-        });
+        let handle =
+            tokio::spawn(async move { rs.playback_service().seek(rid, uid, position).await });
         handles.push(handle);
     }
 
@@ -298,8 +308,10 @@ async fn test_playback_optimistic_lock_concurrent() {
             Ok(Ok(_)) => success_count += 1,
             Ok(Err(e)) => {
                 // Some may fail with Internal error if retries exhausted, which is OK
-                assert!(!matches!(e, Error::OptimisticLockConflict),
-                    "OptimisticLockConflict should not leak to caller");
+                assert!(
+                    !matches!(e, Error::OptimisticLockConflict),
+                    "OptimisticLockConflict should not leak to caller"
+                );
             }
             Err(e) => panic!("Task panicked: {e:?}"),
         }
@@ -310,7 +322,10 @@ async fn test_playback_optimistic_lock_concurrent() {
     // Final state should be valid
     let playback_service = room_service.playback_service();
     let state = playback_service.get_state(&room.id).await.unwrap();
-    assert!(state.current_time >= 0.0, "Final position should be non-negative");
+    assert!(
+        state.current_time >= 0.0,
+        "Final position should be non-negative"
+    );
 }
 
 // ============================================================================
@@ -330,7 +345,10 @@ async fn test_rapid_sequential_seek_operations() {
     let user_repo = UserRepository::new(pool.clone());
     let room_service = Arc::new(make_room_service(pool.clone()));
 
-    let owner = user_repo.create(&make_user("rapid_seek_owner")).await.unwrap();
+    let owner = user_repo
+        .create(&make_user("rapid_seek_owner"))
+        .await
+        .unwrap();
 
     let (room, _) = room_service
         .create_room(
@@ -356,9 +374,7 @@ async fn test_rapid_sequential_seek_operations() {
 
         let handle = tokio::spawn(async move {
             b.wait().await;
-            rs.playback_service()
-                .seek(rid, uid, position)
-                .await
+            rs.playback_service().seek(rid, uid, position).await
         });
         handles.push(handle);
     }
@@ -385,8 +401,14 @@ async fn test_rapid_sequential_seek_operations() {
     // Final state should be valid
     let playback_service = room_service.playback_service();
     let state = playback_service.get_state(&room.id).await.unwrap();
-    assert!(state.current_time >= 0.0, "Final position should be non-negative");
-    assert!(state.current_time <= 300.0, "Final position should be <= 300 (max seek)");
+    assert!(
+        state.current_time >= 0.0,
+        "Final position should be non-negative"
+    );
+    assert!(
+        state.current_time <= 300.0,
+        "Final position should be <= 300 (max seek)"
+    );
 }
 
 // ============================================================================
@@ -408,7 +430,10 @@ async fn test_play_next_concurrent_playlist_modification() {
     let media_repo = MediaRepository::new(pool.clone());
     let room_service = Arc::new(make_room_service(pool.clone()));
 
-    let owner = user_repo.create(&make_user("playnext_owner")).await.unwrap();
+    let owner = user_repo
+        .create(&make_user("playnext_owner"))
+        .await
+        .unwrap();
 
     let (room, _) = room_service
         .create_room(
@@ -422,13 +447,11 @@ async fn test_play_next_concurrent_playlist_modification() {
         .unwrap();
 
     // Get the root playlist
-    let playlists: Vec<Playlist> = sqlx::query_as(
-        "SELECT * FROM playlists WHERE room_id = $1"
-    )
-    .bind(room.id.as_str())
-    .fetch_all(&pool)
-    .await
-    .unwrap();
+    let playlists: Vec<Playlist> = sqlx::query_as("SELECT * FROM playlists WHERE room_id = $1")
+        .bind(room.id.as_str())
+        .fetch_all(&pool)
+        .await
+        .unwrap();
     let root_playlist = &playlists[0];
 
     // Add 5 media items
@@ -495,7 +518,10 @@ async fn test_play_next_at_end_of_playlist() {
     let media_repo = MediaRepository::new(pool.clone());
     let room_service = Arc::new(make_room_service(pool.clone()));
 
-    let owner = user_repo.create(&make_user("playlist_end_owner")).await.unwrap();
+    let owner = user_repo
+        .create(&make_user("playlist_end_owner"))
+        .await
+        .unwrap();
 
     let (room, _) = room_service
         .create_room(
@@ -509,13 +535,11 @@ async fn test_play_next_at_end_of_playlist() {
         .unwrap();
 
     // Get the root playlist
-    let playlists: Vec<Playlist> = sqlx::query_as(
-        "SELECT * FROM playlists WHERE room_id = $1"
-    )
-    .bind(room.id.as_str())
-    .fetch_all(&pool)
-    .await
-    .unwrap();
+    let playlists: Vec<Playlist> = sqlx::query_as("SELECT * FROM playlists WHERE room_id = $1")
+        .bind(room.id.as_str())
+        .fetch_all(&pool)
+        .await
+        .unwrap();
     let root_playlist = &playlists[0];
 
     // Add 3 media items
@@ -591,13 +615,11 @@ async fn test_play_next_with_loop_enabled() {
         .unwrap();
 
     // Get the root playlist
-    let playlists: Vec<Playlist> = sqlx::query_as(
-        "SELECT * FROM playlists WHERE room_id = $1"
-    )
-    .bind(room.id.as_str())
-    .fetch_all(&pool)
-    .await
-    .unwrap();
+    let playlists: Vec<Playlist> = sqlx::query_as("SELECT * FROM playlists WHERE room_id = $1")
+        .bind(room.id.as_str())
+        .fetch_all(&pool)
+        .await
+        .unwrap();
     let root_playlist = &playlists[0];
 
     // Add 3 media items
@@ -628,7 +650,10 @@ async fn test_play_next_with_loop_enabled() {
         .unwrap();
 
     // Loop mode enabled
-    let settings = RoomSettings { loop_playlist: room_settings::LoopPlaylist(true), ..Default::default() };
+    let settings = RoomSettings {
+        loop_playlist: room_settings::LoopPlaylist(true),
+        ..Default::default()
+    };
 
     let result = playback_service
         .play_next(&room.id, &settings)
@@ -653,7 +678,10 @@ async fn test_empty_playlist_handling() {
     let user_repo = UserRepository::new(pool.clone());
     let room_service = Arc::new(make_room_service(pool.clone()));
 
-    let owner = user_repo.create(&make_user("empty_playlist_owner")).await.unwrap();
+    let owner = user_repo
+        .create(&make_user("empty_playlist_owner"))
+        .await
+        .unwrap();
 
     let (room, _) = room_service
         .create_room(
@@ -675,11 +703,17 @@ async fn test_empty_playlist_handling() {
         .await
         .unwrap();
 
-    assert!(result.is_none(), "play_next on empty playlist should return None");
+    assert!(
+        result.is_none(),
+        "play_next on empty playlist should return None"
+    );
 
     // Get state should work
     let state = playback_service.get_state(&room.id).await.unwrap();
-    assert!(state.playing_media_id.is_none(), "No media should be playing");
+    assert!(
+        state.playing_media_id.is_none(),
+        "No media should be playing"
+    );
 }
 
 // ============================================================================
@@ -699,7 +733,10 @@ async fn test_concurrent_speed_changes() {
     let user_repo = UserRepository::new(pool.clone());
     let room_service = Arc::new(make_room_service(pool.clone()));
 
-    let owner = user_repo.create(&make_user("speed_concurrent_owner")).await.unwrap();
+    let owner = user_repo
+        .create(&make_user("speed_concurrent_owner"))
+        .await
+        .unwrap();
 
     let (room, _) = room_service
         .create_room(
@@ -726,9 +763,7 @@ async fn test_concurrent_speed_changes() {
 
         let handle = tokio::spawn(async move {
             b.wait().await;
-            rs.playback_service()
-                .change_speed(rid, uid, speed)
-                .await
+            rs.playback_service().change_speed(rid, uid, speed).await
         });
         handles.push(handle);
     }
@@ -744,7 +779,10 @@ async fn test_concurrent_speed_changes() {
         }
     }
 
-    assert!(success_count > 0, "At least one speed change should succeed");
+    assert!(
+        success_count > 0,
+        "At least one speed change should succeed"
+    );
 
     // Final state should have a valid speed
     let playback_service = room_service.playback_service();
@@ -766,7 +804,10 @@ async fn test_state_consistency_after_mixed_operations() {
     let media_repo = MediaRepository::new(pool.clone());
     let room_service = Arc::new(make_room_service(pool.clone()));
 
-    let owner = user_repo.create(&make_user("mixed_ops_owner")).await.unwrap();
+    let owner = user_repo
+        .create(&make_user("mixed_ops_owner"))
+        .await
+        .unwrap();
 
     let (room, _) = room_service
         .create_room(
@@ -780,13 +821,11 @@ async fn test_state_consistency_after_mixed_operations() {
         .unwrap();
 
     // Get the root playlist
-    let playlists: Vec<Playlist> = sqlx::query_as(
-        "SELECT * FROM playlists WHERE room_id = $1"
-    )
-    .bind(room.id.as_str())
-    .fetch_all(&pool)
-    .await
-    .unwrap();
+    let playlists: Vec<Playlist> = sqlx::query_as("SELECT * FROM playlists WHERE room_id = $1")
+        .bind(room.id.as_str())
+        .fetch_all(&pool)
+        .await
+        .unwrap();
     let root_playlist = &playlists[0];
 
     // Add media
@@ -841,8 +880,14 @@ async fn test_state_consistency_after_mixed_operations() {
     let state = playback_service.get_state(&room.id).await.unwrap();
 
     assert_eq!(state.playing_media_id, Some(media.id));
-    assert!((state.current_time - 50.0).abs() < f64::EPSILON, "Position should be 50");
-    assert!((state.speed - 1.5).abs() < f64::EPSILON, "Speed should be 1.5");
+    assert!(
+        (state.current_time - 50.0).abs() < f64::EPSILON,
+        "Position should be 50"
+    );
+    assert!(
+        (state.speed - 1.5).abs() < f64::EPSILON,
+        "Speed should be 1.5"
+    );
     assert!(state.is_playing, "Should be playing");
 }
 
@@ -863,7 +908,10 @@ async fn test_seek_success_returns_applied_true() {
     let user_repo = UserRepository::new(pool.clone());
     let room_service = make_room_service(pool.clone());
 
-    let owner = user_repo.create(&make_user("seek_response_owner")).await.unwrap();
+    let owner = user_repo
+        .create(&make_user("seek_response_owner"))
+        .await
+        .unwrap();
 
     let (room, _) = room_service
         .create_room(
@@ -884,9 +932,15 @@ async fn test_seek_success_returns_applied_true() {
         .await
         .unwrap();
 
-    assert!(response.seek_applied, "Successful seek should have seek_applied=true");
-    assert!((response.state.current_time - 42.5).abs() < f64::EPSILON,
-        "Position should be 42.5, got: {}", response.state.current_time);
+    assert!(
+        response.seek_applied,
+        "Successful seek should have seek_applied=true"
+    );
+    assert!(
+        (response.state.current_time - 42.5).abs() < f64::EPSILON,
+        "Position should be 42.5, got: {}",
+        response.state.current_time
+    );
 }
 
 /// Test that seek returns `seek_applied=false` with degraded response on retry exhaustion.
@@ -901,7 +955,10 @@ async fn test_seek_retry_exhaustion_returns_applied_false() {
     let user_repo = UserRepository::new(pool.clone());
     let room_service = Arc::new(make_room_service(pool.clone()));
 
-    let owner = user_repo.create(&make_user("seek_retry_owner")).await.unwrap();
+    let owner = user_repo
+        .create(&make_user("seek_retry_owner"))
+        .await
+        .unwrap();
 
     let (room, _) = room_service
         .create_room(
@@ -929,9 +986,7 @@ async fn test_seek_retry_exhaustion_returns_applied_false() {
 
         let handle = tokio::spawn(async move {
             b.wait().await;
-            rs.playback_service()
-                .seek(rid, uid, position)
-                .await
+            rs.playback_service().seek(rid, uid, position).await
         });
         handles.push(handle);
     }
@@ -948,8 +1003,10 @@ async fn test_seek_retry_exhaustion_returns_applied_false() {
                     success_count += 1;
                 } else {
                     // Degraded response should still have valid state
-                    assert!(response.state.current_time >= 0.0,
-                        "Degraded response should have valid position");
+                    assert!(
+                        response.state.current_time >= 0.0,
+                        "Degraded response should have valid position"
+                    );
                 }
             }
             Ok(Err(_)) => {} // Other errors are OK
@@ -962,7 +1019,10 @@ async fn test_seek_retry_exhaustion_returns_applied_false() {
 
     // Final state should be valid
     let final_state = playback_service.get_state(&room.id).await.unwrap();
-    assert!(final_state.current_time >= 0.0, "Final position should be non-negative");
+    assert!(
+        final_state.current_time >= 0.0,
+        "Final position should be non-negative"
+    );
 }
 
 /// Test that `SeekResponse` contains the state even when seek fails.
@@ -976,7 +1036,10 @@ async fn test_seek_response_always_contains_valid_state() {
     let user_repo = UserRepository::new(pool.clone());
     let room_service = make_room_service(pool.clone());
 
-    let owner = user_repo.create(&make_user("seek_state_owner")).await.unwrap();
+    let owner = user_repo
+        .create(&make_user("seek_state_owner"))
+        .await
+        .unwrap();
 
     let (room, _) = room_service
         .create_room(
@@ -1004,7 +1067,10 @@ async fn test_seek_response_always_contains_valid_state() {
         .unwrap();
 
     // Response should have valid state (either at 200 if applied, or current position)
-    assert!(response.state.current_time >= 0.0, "State should have valid position");
+    assert!(
+        response.state.current_time >= 0.0,
+        "State should have valid position"
+    );
     assert!(response.state.speed > 0.0, "State should have valid speed");
 }
 
@@ -1018,7 +1084,10 @@ async fn test_seek_degraded_response_has_informative_message() {
     let user_repo = UserRepository::new(pool.clone());
     let room_service = Arc::new(make_room_service(pool.clone()));
 
-    let owner = user_repo.create(&make_user("seek_msg_owner")).await.unwrap();
+    let owner = user_repo
+        .create(&make_user("seek_msg_owner"))
+        .await
+        .unwrap();
 
     let (room, _) = room_service
         .create_room(
@@ -1044,9 +1113,7 @@ async fn test_seek_degraded_response_has_informative_message() {
 
         let handle = tokio::spawn(async move {
             b.wait().await;
-            rs.playback_service()
-                .seek(rid, uid, position)
-                .await
+            rs.playback_service().seek(rid, uid, position).await
         });
         handles.push(handle);
     }
@@ -1061,7 +1128,10 @@ async fn test_seek_degraded_response_has_informative_message() {
                     // Degraded response should have an informative message
                     if let Some(msg) = &response.message {
                         assert!(
-                            msg.contains("retry") || msg.contains("contention") || msg.contains("failed") || msg.contains("concurrent"),
+                            msg.contains("retry")
+                                || msg.contains("contention")
+                                || msg.contains("failed")
+                                || msg.contains("concurrent"),
                             "Degraded response message should explain failure: {msg}"
                         );
                     }

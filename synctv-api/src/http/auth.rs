@@ -5,14 +5,17 @@
 use axum::{extract::State, Json};
 
 use super::{AppResult, AppState};
-use crate::proto::client::{RegisterRequest, RegisterResponse, LoginRequest, LoginResponse, RefreshTokenRequest, RefreshTokenResponse};
+use crate::proto::client::{
+    LoginRequest, LoginResponse, RefreshTokenRequest, RefreshTokenResponse, RegisterRequest,
+    RegisterResponse,
+};
 
 /// Extract the real client IP from a request.
 ///
 /// Only trusts `X-Forwarded-For` / `X-Real-IP` headers when the direct
 /// connection comes from a configured trusted proxy. This prevents
 /// attackers from forging their IP to bypass per-IP brute-force protection.
-#[must_use] 
+#[must_use]
 pub fn extract_client_ip(
     config: &synctv_core::Config,
     socket_addr: std::net::SocketAddr,
@@ -206,7 +209,8 @@ mod tests {
     fn test_register_request_from_json_with_extra_fields() {
         // Proto types with serde should ignore unknown fields
         let json = r#"{"username":"user","password":"pass","email":"e@x.com","extra":"ignored"}"#;
-        let req: RegisterRequest = serde_json::from_str(json).expect("deserialize with extra fields");
+        let req: RegisterRequest =
+            serde_json::from_str(json).expect("deserialize with extra fields");
         assert_eq!(req.username, "user");
     }
 

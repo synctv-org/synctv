@@ -19,9 +19,7 @@ use crate::http::middleware::AuthUser;
 use crate::http::AppState;
 use crate::impls::notification::{notification_to_proto, proto_notification_type_to_core};
 use crate::proto::client::{
-    ListNotificationsResponse,
-    MarkAsReadRequest, MarkAllAsReadRequest,
-    GetNotificationResponse,
+    GetNotificationResponse, ListNotificationsResponse, MarkAllAsReadRequest, MarkAsReadRequest,
 };
 
 /// Query parameters for listing notifications (HTTP-specific, not in proto)
@@ -33,13 +31,19 @@ pub struct ListNotificationsQuery {
     pub notification_type: Option<String>,
 }
 
-fn get_notification_api(state: &AppState) -> Result<&crate::impls::NotificationApiImpl, crate::http::AppError> {
-    state.notification_api.as_ref()
+fn get_notification_api(
+    state: &AppState,
+) -> Result<&crate::impls::NotificationApiImpl, crate::http::AppError> {
+    state
+        .notification_api
+        .as_ref()
         .map(std::convert::AsRef::as_ref)
-        .ok_or_else(|| crate::http::AppError::new(
-            axum::http::StatusCode::SERVICE_UNAVAILABLE,
-            "Notification service not available",
-        ))
+        .ok_or_else(|| {
+            crate::http::AppError::new(
+                axum::http::StatusCode::SERVICE_UNAVAILABLE,
+                "Notification service not available",
+            )
+        })
 }
 
 /// GET /api/notifications - List user's notifications
@@ -70,7 +74,11 @@ pub async fn list_notifications(
         .map_err(crate::http::error::map_api_error)?;
 
     Ok(Json(ListNotificationsResponse {
-        notifications: result.notifications.into_iter().map(notification_to_proto).collect(),
+        notifications: result
+            .notifications
+            .into_iter()
+            .map(notification_to_proto)
+            .collect(),
         total: result.total as i32,
         unread_count: result.unread_count as i32,
     }))
@@ -106,8 +114,9 @@ pub async fn mark_as_read(
         .notification_ids
         .iter()
         .map(|id| {
-            Uuid::parse_str(id)
-                .map_err(|_| crate::http::AppError::bad_request(format!("Invalid notification_id: {id}")))
+            Uuid::parse_str(id).map_err(|_| {
+                crate::http::AppError::bad_request(format!("Invalid notification_id: {id}"))
+            })
         })
         .collect::<Result<Vec<_>, _>>()?;
 

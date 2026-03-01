@@ -3,8 +3,8 @@
 use crate::impls::ApiError;
 use synctv_core::models::UserId;
 
-use super::ClientApiImpl;
 use super::convert::user_to_proto;
+use super::ClientApiImpl;
 
 impl ClientApiImpl {
     pub async fn get_profile(
@@ -12,7 +12,10 @@ impl ClientApiImpl {
         user_id: &str,
     ) -> Result<crate::proto::client::GetProfileResponse, ApiError> {
         let uid = UserId::from_string(user_id.to_string());
-        let user = self.user_service.get_user(&uid).await
+        let user = self
+            .user_service
+            .get_user(&uid)
+            .await
             .map_err(ApiError::from)?;
 
         Ok(crate::proto::client::GetProfileResponse {
@@ -39,24 +42,34 @@ impl ClientApiImpl {
                 synctv_core::validation::USERNAME_MAX
             )));
         }
-        if !username.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '-') {
-            return Err(ApiError::InvalidInput("Username can only contain letters, numbers, underscores, and hyphens".to_string()));
+        if !username
+            .chars()
+            .all(|c| c.is_alphanumeric() || c == '_' || c == '-')
+        {
+            return Err(ApiError::InvalidInput(
+                "Username can only contain letters, numbers, underscores, and hyphens".to_string(),
+            ));
         }
         if username.starts_with('_') || username.starts_with('-') {
-            return Err(ApiError::InvalidInput("Username cannot start with underscore or hyphen".to_string()));
+            return Err(ApiError::InvalidInput(
+                "Username cannot start with underscore or hyphen".to_string(),
+            ));
         }
 
         let uid = UserId::from_string(user_id.to_string());
-        let user = self.user_service.get_user(&uid).await
+        let user = self
+            .user_service
+            .get_user(&uid)
+            .await
             .map_err(ApiError::from)?;
 
         let old_version = user.version;
-        let updated_user = synctv_core::models::User {
-            username,
-            ..user
-        };
+        let updated_user = synctv_core::models::User { username, ..user };
 
-        let result_user = self.user_service.update_user(&updated_user, old_version).await
+        let result_user = self
+            .user_service
+            .update_user(&updated_user, old_version)
+            .await
             .map_err(ApiError::from)?;
 
         Ok(crate::proto::client::SetUsernameResponse {
@@ -72,11 +85,11 @@ impl ClientApiImpl {
         let uid = UserId::from_string(user_id.to_string());
 
         // Verify old password before allowing change
-        self.user_service.change_password(&uid, &req.old_password, &req.new_password).await
+        self.user_service
+            .change_password(&uid, &req.old_password, &req.new_password)
+            .await
             .map_err(ApiError::from)?;
 
-        Ok(crate::proto::client::SetPasswordResponse {
-            success: true,
-        })
+        Ok(crate::proto::client::SetPasswordResponse { success: true })
     }
 }

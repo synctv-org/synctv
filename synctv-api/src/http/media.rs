@@ -10,7 +10,7 @@ use axum::{
     response::{IntoResponse, Json},
 };
 
-use crate::http::{AppState, AppResult, middleware::AuthUser};
+use crate::http::{middleware::AuthUser, AppResult, AppState};
 
 /// Get current playing media for a room
 ///
@@ -47,7 +47,7 @@ pub async fn list_media(
 
     let req = crate::proto::client::ListPlaylistRequest {
         playlist_id: String::new(), // Not used by list_media (uses room's root playlist)
-        page, // 1-based page per proto contract (page=0 treated as page=1)
+        page,                       // 1-based page per proto contract (page=0 treated as page=1)
         page_size,
     };
 
@@ -100,9 +100,7 @@ pub async fn set_playing_media(
     State(state): State<AppState>,
     Path((room_id, media_id)): Path<(String, String)>,
 ) -> AppResult<impl IntoResponse> {
-    let req = crate::proto::client::StartPlaybackRequest {
-        media_id,
-    };
+    let req = crate::proto::client::StartPlaybackRequest { media_id };
 
     let response = state
         .client_api

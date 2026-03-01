@@ -17,7 +17,7 @@ fn test_flv_header_av() {
     assert_eq!(bytes[0], 0x46); // 'F'
     assert_eq!(bytes[1], 0x4C); // 'L'
     assert_eq!(bytes[2], 0x56); // 'V'
-    // Version
+                                // Version
     assert_eq!(bytes[3], 0x01);
     // Flags: audio+video = 0x05 (bit 2 = audio, bit 0 = video)
     assert_eq!(bytes[4], 0x05);

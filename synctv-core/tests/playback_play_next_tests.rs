@@ -11,25 +11,24 @@
 
 use std::sync::Arc;
 
-use synctv_core_testing::create_test_pool;
-use synctv_core::{
-    cache::{KeyBuilder, UsernameCache, NoopCacheL2},
-    config::PasswordComplexityConfig,
-    models::{
-        UserId, User, UserRole, UserStatus,
-        Media, MediaId, Playlist, PlaylistId,
-        RoomId, RoomSettings, PlayMode,
-        room::AutoPlaySettings,
-        room_settings::{AutoPlay, AutoPlayNext, LoopPlaylist, ShufflePlaylist},
-    },
-    repository::{UserRepository, MediaRepository},
-    service::{
-        RoomService, UserService, InMemoryTokenBlacklistStore,
-        auth::{JwtService, BruteForceProtection},
-    },
-};
 use chrono::Utc;
 use sqlx::PgPool;
+use synctv_core::{
+    cache::{KeyBuilder, NoopCacheL2, UsernameCache},
+    config::PasswordComplexityConfig,
+    models::{
+        room::AutoPlaySettings,
+        room_settings::{AutoPlay, AutoPlayNext, LoopPlaylist, ShufflePlaylist},
+        Media, MediaId, PlayMode, Playlist, PlaylistId, RoomId, RoomSettings, User, UserId,
+        UserRole, UserStatus,
+    },
+    repository::{MediaRepository, UserRepository},
+    service::{
+        auth::{BruteForceProtection, JwtService},
+        InMemoryTokenBlacklistStore, RoomService, UserService,
+    },
+};
+use synctv_core_testing::create_test_pool;
 fn make_user_service(pool: PgPool) -> UserService {
     let secret = "Test_Secret_Key_For_JWT_Tokens_32Bytes!!";
     let jwt_service = JwtService::new(secret).expect("Failed to create JwtService");
@@ -98,7 +97,13 @@ async fn get_root_playlist(pool: &PgPool, room_id: &RoomId) -> Playlist {
 }
 
 /// Helper: insert a media item into the playlist at a given position
-async fn insert_media(pool: &PgPool, playlist_id: &PlaylistId, room_id: &RoomId, name: &str, position: i32) -> Media {
+async fn insert_media(
+    pool: &PgPool,
+    playlist_id: &PlaylistId,
+    room_id: &RoomId,
+    name: &str,
+    position: i32,
+) -> Media {
     let media = Media {
         id: MediaId::new(),
         playlist_id: playlist_id.clone(),
@@ -113,7 +118,10 @@ async fn insert_media(pool: &PgPool, playlist_id: &PlaylistId, room_id: &RoomId,
         version: 0,
     };
     let media_repo = MediaRepository::new(pool.clone());
-    media_repo.create(&media).await.expect("Failed to create media")
+    media_repo
+        .create(&media)
+        .await
+        .expect("Failed to create media")
 }
 
 // ========== Sequential Mode Tests ==========
@@ -125,9 +133,18 @@ async fn test_sequential_advance_to_next() {
     let user_repo = UserRepository::new(pool.clone());
     let room_service = make_room_service(pool.clone());
 
-    let owner = user_repo.create(&make_user("seq_next_owner")).await.unwrap();
+    let owner = user_repo
+        .create(&make_user("seq_next_owner"))
+        .await
+        .unwrap();
     let (room, _) = room_service
-        .create_room("Seq Next".to_string(), String::new(), owner.id.clone(), None, None)
+        .create_room(
+            "Seq Next".to_string(),
+            String::new(),
+            owner.id.clone(),
+            None,
+            None,
+        )
         .await
         .unwrap();
 
@@ -137,14 +154,21 @@ async fn test_sequential_advance_to_next() {
 
     // Set currently playing to media1
     let playback = room_service.playback_service();
-    playback.switch_media(room.id.clone(), owner.id.clone(), media1.id.clone()).await.unwrap();
+    playback
+        .switch_media(room.id.clone(), owner.id.clone(), media1.id.clone())
+        .await
+        .unwrap();
 
     let settings = make_settings_with_mode(PlayMode::Sequential);
     let result = playback.play_next(&room.id, &settings).await.unwrap();
 
     assert!(result.is_some(), "Should advance to next media");
     let state = result.unwrap();
-    assert_eq!(state.playing_media_id, Some(media2.id), "Should be playing media2");
+    assert_eq!(
+        state.playing_media_id,
+        Some(media2.id),
+        "Should be playing media2"
+    );
 }
 
 #[tokio::test]
@@ -156,7 +180,13 @@ async fn test_sequential_end_of_playlist_returns_none() {
 
     let owner = user_repo.create(&make_user("seq_end_owner")).await.unwrap();
     let (room, _) = room_service
-        .create_room("Seq End".to_string(), String::new(), owner.id.clone(), None, None)
+        .create_room(
+            "Seq End".to_string(),
+            String::new(),
+            owner.id.clone(),
+            None,
+            None,
+        )
         .await
         .unwrap();
 
@@ -164,7 +194,10 @@ async fn test_sequential_end_of_playlist_returns_none() {
     let media1 = insert_media(&pool, &playlist.id, &room.id, "last_video", 0).await;
 
     let playback = room_service.playback_service();
-    playback.switch_media(room.id.clone(), owner.id.clone(), media1.id.clone()).await.unwrap();
+    playback
+        .switch_media(room.id.clone(), owner.id.clone(), media1.id.clone())
+        .await
+        .unwrap();
 
     let settings = make_settings_with_mode(PlayMode::Sequential);
     let result = playback.play_next(&room.id, &settings).await.unwrap();
@@ -181,7 +214,13 @@ async fn test_sequential_deleted_current_falls_back_to_first() {
 
     let owner = user_repo.create(&make_user("seq_del_owner")).await.unwrap();
     let (room, _) = room_service
-        .create_room("Seq Del".to_string(), String::new(), owner.id.clone(), None, None)
+        .create_room(
+            "Seq Del".to_string(),
+            String::new(),
+            owner.id.clone(),
+            None,
+            None,
+        )
         .await
         .unwrap();
 
@@ -191,7 +230,10 @@ async fn test_sequential_deleted_current_falls_back_to_first() {
 
     // Set playing to a non-existent media ID (simulating deletion)
     let playback = room_service.playback_service();
-    playback.switch_media(room.id.clone(), owner.id.clone(), media1.id.clone()).await.unwrap();
+    playback
+        .switch_media(room.id.clone(), owner.id.clone(), media1.id.clone())
+        .await
+        .unwrap();
 
     // Delete media1 from the database to simulate concurrent deletion
     sqlx::query("DELETE FROM media WHERE id = $1")
@@ -203,9 +245,16 @@ async fn test_sequential_deleted_current_falls_back_to_first() {
     let settings = make_settings_with_mode(PlayMode::Sequential);
     let result = playback.play_next(&room.id, &settings).await.unwrap();
 
-    assert!(result.is_some(), "Should fall back to first item when current is deleted");
+    assert!(
+        result.is_some(),
+        "Should fall back to first item when current is deleted"
+    );
     let state = result.unwrap();
-    assert_eq!(state.playing_media_id, Some(_media2.id), "Should fall back to first remaining item");
+    assert_eq!(
+        state.playing_media_id,
+        Some(_media2.id),
+        "Should fall back to first remaining item"
+    );
 }
 
 // ========== RepeatOne Mode Tests ==========
@@ -219,7 +268,13 @@ async fn test_repeat_one_replays_current() {
 
     let owner = user_repo.create(&make_user("rep1_owner")).await.unwrap();
     let (room, _) = room_service
-        .create_room("Rep1".to_string(), String::new(), owner.id.clone(), None, None)
+        .create_room(
+            "Rep1".to_string(),
+            String::new(),
+            owner.id.clone(),
+            None,
+            None,
+        )
         .await
         .unwrap();
 
@@ -228,15 +283,25 @@ async fn test_repeat_one_replays_current() {
     let _media2 = insert_media(&pool, &playlist.id, &room.id, "other", 1).await;
 
     let playback = room_service.playback_service();
-    playback.switch_media(room.id.clone(), owner.id.clone(), media1.id.clone()).await.unwrap();
+    playback
+        .switch_media(room.id.clone(), owner.id.clone(), media1.id.clone())
+        .await
+        .unwrap();
 
     let settings = make_settings_with_mode(PlayMode::RepeatOne);
     let result = playback.play_next(&room.id, &settings).await.unwrap();
 
     assert!(result.is_some(), "RepeatOne should replay current");
     let state = result.unwrap();
-    assert_eq!(state.playing_media_id, Some(media1.id), "Should replay the same media");
-    assert!((state.current_time - 0.0).abs() < f64::EPSILON, "Should reset to start");
+    assert_eq!(
+        state.playing_media_id,
+        Some(media1.id),
+        "Should replay the same media"
+    );
+    assert!(
+        (state.current_time - 0.0).abs() < f64::EPSILON,
+        "Should reset to start"
+    );
 }
 
 #[tokio::test]
@@ -246,9 +311,18 @@ async fn test_repeat_one_deleted_current_falls_back_to_first() {
     let user_repo = UserRepository::new(pool.clone());
     let room_service = make_room_service(pool.clone());
 
-    let owner = user_repo.create(&make_user("rep1_del_owner")).await.unwrap();
+    let owner = user_repo
+        .create(&make_user("rep1_del_owner"))
+        .await
+        .unwrap();
     let (room, _) = room_service
-        .create_room("Rep1 Del".to_string(), String::new(), owner.id.clone(), None, None)
+        .create_room(
+            "Rep1 Del".to_string(),
+            String::new(),
+            owner.id.clone(),
+            None,
+            None,
+        )
         .await
         .unwrap();
 
@@ -257,7 +331,10 @@ async fn test_repeat_one_deleted_current_falls_back_to_first() {
     let media2 = insert_media(&pool, &playlist.id, &room.id, "fallback", 1).await;
 
     let playback = room_service.playback_service();
-    playback.switch_media(room.id.clone(), owner.id.clone(), media1.id.clone()).await.unwrap();
+    playback
+        .switch_media(room.id.clone(), owner.id.clone(), media1.id.clone())
+        .await
+        .unwrap();
 
     // Delete media1
     sqlx::query("DELETE FROM media WHERE id = $1")
@@ -270,9 +347,16 @@ async fn test_repeat_one_deleted_current_falls_back_to_first() {
     let result = playback.play_next(&room.id, &settings).await.unwrap();
 
     // Issue #29: RepeatOne with deleted media should fall back to first item
-    assert!(result.is_some(), "Should fall back when RepeatOne media deleted");
+    assert!(
+        result.is_some(),
+        "Should fall back when RepeatOne media deleted"
+    );
     let state = result.unwrap();
-    assert_eq!(state.playing_media_id, Some(media2.id), "Should fall back to first remaining item");
+    assert_eq!(
+        state.playing_media_id,
+        Some(media2.id),
+        "Should fall back to first remaining item"
+    );
 }
 
 // ========== RepeatAll Mode Tests ==========
@@ -286,7 +370,13 @@ async fn test_repeat_all_wraps_around_at_end() {
 
     let owner = user_repo.create(&make_user("repa_owner")).await.unwrap();
     let (room, _) = room_service
-        .create_room("RepAll".to_string(), String::new(), owner.id.clone(), None, None)
+        .create_room(
+            "RepAll".to_string(),
+            String::new(),
+            owner.id.clone(),
+            None,
+            None,
+        )
         .await
         .unwrap();
 
@@ -297,14 +387,21 @@ async fn test_repeat_all_wraps_around_at_end() {
 
     let playback = room_service.playback_service();
     // Start at last item
-    playback.switch_media(room.id.clone(), owner.id.clone(), media3.id.clone()).await.unwrap();
+    playback
+        .switch_media(room.id.clone(), owner.id.clone(), media3.id.clone())
+        .await
+        .unwrap();
 
     let settings = make_settings_with_mode(PlayMode::RepeatAll);
     let result = playback.play_next(&room.id, &settings).await.unwrap();
 
     assert!(result.is_some(), "RepeatAll should wrap around");
     let state = result.unwrap();
-    assert_eq!(state.playing_media_id, Some(media1.id), "Should wrap back to first item");
+    assert_eq!(
+        state.playing_media_id,
+        Some(media1.id),
+        "Should wrap back to first item"
+    );
 }
 
 #[tokio::test]
@@ -314,9 +411,18 @@ async fn test_repeat_all_middle_advances_to_next() {
     let user_repo = UserRepository::new(pool.clone());
     let room_service = make_room_service(pool.clone());
 
-    let owner = user_repo.create(&make_user("repa_mid_owner")).await.unwrap();
+    let owner = user_repo
+        .create(&make_user("repa_mid_owner"))
+        .await
+        .unwrap();
     let (room, _) = room_service
-        .create_room("RepAll Mid".to_string(), String::new(), owner.id.clone(), None, None)
+        .create_room(
+            "RepAll Mid".to_string(),
+            String::new(),
+            owner.id.clone(),
+            None,
+            None,
+        )
         .await
         .unwrap();
 
@@ -326,14 +432,21 @@ async fn test_repeat_all_middle_advances_to_next() {
     let _media3 = insert_media(&pool, &playlist.id, &room.id, "vid_c", 2).await;
 
     let playback = room_service.playback_service();
-    playback.switch_media(room.id.clone(), owner.id.clone(), media1.id.clone()).await.unwrap();
+    playback
+        .switch_media(room.id.clone(), owner.id.clone(), media1.id.clone())
+        .await
+        .unwrap();
 
     let settings = make_settings_with_mode(PlayMode::RepeatAll);
     let result = playback.play_next(&room.id, &settings).await.unwrap();
 
     assert!(result.is_some());
     let state = result.unwrap();
-    assert_eq!(state.playing_media_id, Some(media2.id), "RepeatAll mid-playlist should advance normally");
+    assert_eq!(
+        state.playing_media_id,
+        Some(media2.id),
+        "RepeatAll mid-playlist should advance normally"
+    );
 }
 
 // ========== Shuffle Mode Tests ==========
@@ -347,7 +460,13 @@ async fn test_shuffle_returns_different_item() {
 
     let owner = user_repo.create(&make_user("shuf_owner")).await.unwrap();
     let (room, _) = room_service
-        .create_room("Shuffle".to_string(), String::new(), owner.id.clone(), None, None)
+        .create_room(
+            "Shuffle".to_string(),
+            String::new(),
+            owner.id.clone(),
+            None,
+            None,
+        )
         .await
         .unwrap();
 
@@ -359,7 +478,10 @@ async fn test_shuffle_returns_different_item() {
     }
 
     let playback = room_service.playback_service();
-    playback.switch_media(room.id.clone(), owner.id.clone(), media1.id.clone()).await.unwrap();
+    playback
+        .switch_media(room.id.clone(), owner.id.clone(), media1.id.clone())
+        .await
+        .unwrap();
 
     let settings = make_settings_with_mode(PlayMode::Shuffle);
 
@@ -367,7 +489,10 @@ async fn test_shuffle_returns_different_item() {
     let mut got_different = false;
     for _ in 0..10 {
         // Re-set the current to media1 before each try
-        playback.switch_media(room.id.clone(), owner.id.clone(), media1.id.clone()).await.unwrap();
+        playback
+            .switch_media(room.id.clone(), owner.id.clone(), media1.id.clone())
+            .await
+            .unwrap();
 
         let result = playback.play_next(&room.id, &settings).await.unwrap();
         assert!(result.is_some(), "Shuffle should always return some item");
@@ -377,7 +502,10 @@ async fn test_shuffle_returns_different_item() {
             break;
         }
     }
-    assert!(got_different, "Shuffle should eventually return a different item");
+    assert!(
+        got_different,
+        "Shuffle should eventually return a different item"
+    );
 }
 
 // ========== Auto-Play Disabled ==========
@@ -391,7 +519,13 @@ async fn test_auto_play_disabled_returns_none() {
 
     let owner = user_repo.create(&make_user("noauto_owner")).await.unwrap();
     let (room, _) = room_service
-        .create_room("No Auto".to_string(), String::new(), owner.id.clone(), None, None)
+        .create_room(
+            "No Auto".to_string(),
+            String::new(),
+            owner.id.clone(),
+            None,
+            None,
+        )
         .await
         .unwrap();
 
@@ -400,7 +534,10 @@ async fn test_auto_play_disabled_returns_none() {
     insert_media(&pool, &playlist.id, &room.id, "vid2", 1).await;
 
     let playback = room_service.playback_service();
-    playback.switch_media(room.id.clone(), owner.id.clone(), media1.id.clone()).await.unwrap();
+    playback
+        .switch_media(room.id.clone(), owner.id.clone(), media1.id.clone())
+        .await
+        .unwrap();
 
     // Disabled: auto_play.enabled = false AND auto_play_next = false
     let settings = RoomSettings {
@@ -414,7 +551,10 @@ async fn test_auto_play_disabled_returns_none() {
     };
 
     let result = playback.play_next(&room.id, &settings).await.unwrap();
-    assert!(result.is_none(), "play_next should return None when auto_play disabled");
+    assert!(
+        result.is_none(),
+        "play_next should return None when auto_play disabled"
+    );
 }
 
 // ========== Legacy Field Mapping Tests ==========
@@ -426,9 +566,18 @@ async fn test_legacy_loop_playlist_maps_to_repeat_all() {
     let user_repo = UserRepository::new(pool.clone());
     let room_service = make_room_service(pool.clone());
 
-    let owner = user_repo.create(&make_user("legacy_loop_owner")).await.unwrap();
+    let owner = user_repo
+        .create(&make_user("legacy_loop_owner"))
+        .await
+        .unwrap();
     let (room, _) = room_service
-        .create_room("Legacy Loop".to_string(), String::new(), owner.id.clone(), None, None)
+        .create_room(
+            "Legacy Loop".to_string(),
+            String::new(),
+            owner.id.clone(),
+            None,
+            None,
+        )
         .await
         .unwrap();
 
@@ -436,7 +585,10 @@ async fn test_legacy_loop_playlist_maps_to_repeat_all() {
     let media1 = insert_media(&pool, &playlist.id, &room.id, "loop_last", 0).await;
 
     let playback = room_service.playback_service();
-    playback.switch_media(room.id.clone(), owner.id.clone(), media1.id.clone()).await.unwrap();
+    playback
+        .switch_media(room.id.clone(), owner.id.clone(), media1.id.clone())
+        .await
+        .unwrap();
 
     // Use legacy field: loop_playlist = true, auto_play.mode = Sequential (default)
     let settings = RoomSettings {
@@ -448,9 +600,16 @@ async fn test_legacy_loop_playlist_maps_to_repeat_all() {
 
     let result = playback.play_next(&room.id, &settings).await.unwrap();
     // Single item + RepeatAll should wrap to itself
-    assert!(result.is_some(), "Legacy loop_playlist should enable RepeatAll behavior");
+    assert!(
+        result.is_some(),
+        "Legacy loop_playlist should enable RepeatAll behavior"
+    );
     let state = result.unwrap();
-    assert_eq!(state.playing_media_id, Some(media1.id), "Should wrap around (RepeatAll from legacy field)");
+    assert_eq!(
+        state.playing_media_id,
+        Some(media1.id),
+        "Should wrap around (RepeatAll from legacy field)"
+    );
 }
 
 #[tokio::test]
@@ -460,9 +619,18 @@ async fn test_legacy_shuffle_playlist_maps_to_shuffle() {
     let user_repo = UserRepository::new(pool.clone());
     let room_service = make_room_service(pool.clone());
 
-    let owner = user_repo.create(&make_user("legacy_shuf_owner")).await.unwrap();
+    let owner = user_repo
+        .create(&make_user("legacy_shuf_owner"))
+        .await
+        .unwrap();
     let (room, _) = room_service
-        .create_room("Legacy Shuf".to_string(), String::new(), owner.id.clone(), None, None)
+        .create_room(
+            "Legacy Shuf".to_string(),
+            String::new(),
+            owner.id.clone(),
+            None,
+            None,
+        )
         .await
         .unwrap();
 
@@ -473,7 +641,10 @@ async fn test_legacy_shuffle_playlist_maps_to_shuffle() {
     }
 
     let playback = room_service.playback_service();
-    playback.switch_media(room.id.clone(), owner.id.clone(), media1.id.clone()).await.unwrap();
+    playback
+        .switch_media(room.id.clone(), owner.id.clone(), media1.id.clone())
+        .await
+        .unwrap();
 
     // Legacy shuffle_playlist = true
     let settings = RoomSettings {
@@ -483,7 +654,10 @@ async fn test_legacy_shuffle_playlist_maps_to_shuffle() {
     };
 
     let result = playback.play_next(&room.id, &settings).await.unwrap();
-    assert!(result.is_some(), "Legacy shuffle_playlist should enable shuffle behavior");
+    assert!(
+        result.is_some(),
+        "Legacy shuffle_playlist should enable shuffle behavior"
+    );
 }
 
 // ========== Empty Playlist ==========
@@ -495,9 +669,18 @@ async fn test_empty_playlist_returns_none() {
     let user_repo = UserRepository::new(pool.clone());
     let room_service = make_room_service(pool.clone());
 
-    let owner = user_repo.create(&make_user("empty_pl_owner")).await.unwrap();
+    let owner = user_repo
+        .create(&make_user("empty_pl_owner"))
+        .await
+        .unwrap();
     let (room, _) = room_service
-        .create_room("Empty PL".to_string(), String::new(), owner.id.clone(), None, None)
+        .create_room(
+            "Empty PL".to_string(),
+            String::new(),
+            owner.id.clone(),
+            None,
+            None,
+        )
         .await
         .unwrap();
 
@@ -520,7 +703,13 @@ async fn test_no_current_media_plays_first() {
 
     let owner = user_repo.create(&make_user("nocur_owner")).await.unwrap();
     let (room, _) = room_service
-        .create_room("No Current".to_string(), String::new(), owner.id.clone(), None, None)
+        .create_room(
+            "No Current".to_string(),
+            String::new(),
+            owner.id.clone(),
+            None,
+            None,
+        )
         .await
         .unwrap();
 
@@ -533,7 +722,14 @@ async fn test_no_current_media_plays_first() {
     let settings = make_settings_with_mode(PlayMode::Sequential);
     let result = playback.play_next(&room.id, &settings).await.unwrap();
 
-    assert!(result.is_some(), "Should play first item when nothing is playing");
+    assert!(
+        result.is_some(),
+        "Should play first item when nothing is playing"
+    );
     let state = result.unwrap();
-    assert_eq!(state.playing_media_id, Some(media1.id), "Should start with first item");
+    assert_eq!(
+        state.playing_media_id,
+        Some(media1.id),
+        "Should start with first item"
+    );
 }

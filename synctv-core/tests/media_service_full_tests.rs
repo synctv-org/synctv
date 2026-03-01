@@ -8,24 +8,21 @@
 
 use std::sync::Arc;
 
-use synctv_core_testing::{create_test_pool};
+use chrono::Utc;
+use sqlx::PgPool;
 use synctv_core::{
-    cache::{KeyBuilder, UsernameCache, NoopCacheL2},
+    cache::{KeyBuilder, NoopCacheL2, UsernameCache},
     config::PasswordComplexityConfig,
-    models::{
-        UserId, User, UserRole, UserStatus,
-        PermissionBits, Playlist,
-    },
+    models::{PermissionBits, Playlist, User, UserId, UserRole, UserStatus},
     repository::UserRepository,
     service::{
-        RoomService, UserService, InMemoryTokenBlacklistStore,
+        auth::{BruteForceProtection, JwtService},
         media::{AddMediaRequest, EditMediaRequest},
-        auth::{JwtService, BruteForceProtection},
+        InMemoryTokenBlacklistStore, RoomService, UserService,
     },
     Error,
 };
-use chrono::Utc;
-use sqlx::PgPool;
+use synctv_core_testing::create_test_pool;
 fn make_user_service(pool: PgPool) -> UserService {
     let secret = "Test_Secret_Key_For_JWT_Tokens_32Bytes!!";
     let jwt_service = JwtService::new(secret).expect("Failed to create JwtService");
@@ -103,20 +100,33 @@ async fn test_add_media_without_permission_denied() {
     let member = user_repo.create(&make_user("addm_member")).await.unwrap();
 
     let (room, _) = room_service
-        .create_room("Add Media Room".to_string(), String::new(), creator.id.clone(), None, None)
+        .create_room(
+            "Add Media Room".to_string(),
+            String::new(),
+            creator.id.clone(),
+            None,
+            None,
+        )
         .await
         .unwrap();
 
-    room_service.join_room(room.id.clone(), member.id.clone(), None).await.unwrap();
+    room_service
+        .join_room(room.id.clone(), member.id.clone(), None)
+        .await
+        .unwrap();
     register_direct_url_provider(&room_service).await;
 
     // Revoke ADD_MOVIE from member
-    room_service.member_service().revoke_permission(
-        room.id.clone(),
-        creator.id.clone(),
-        member.id.clone(),
-        PermissionBits::ADD_MOVIE,
-    ).await.unwrap();
+    room_service
+        .member_service()
+        .revoke_permission(
+            room.id.clone(),
+            creator.id.clone(),
+            member.id.clone(),
+            PermissionBits::ADD_MOVIE,
+        )
+        .await
+        .unwrap();
 
     let playlist = get_root_playlist(&pool, &room.id).await;
     let media_service = room_service.media_service();
@@ -149,7 +159,13 @@ async fn test_add_media_with_permission_succeeds() {
     let creator = user_repo.create(&make_user("addm2_creator")).await.unwrap();
 
     let (room, _) = room_service
-        .create_room("Add Media OK Room".to_string(), String::new(), creator.id.clone(), None, None)
+        .create_room(
+            "Add Media OK Room".to_string(),
+            String::new(),
+            creator.id.clone(),
+            None,
+            None,
+        )
         .await
         .unwrap();
     register_direct_url_provider(&room_service).await;
@@ -186,11 +202,23 @@ async fn test_add_media_cross_room_playlist_rejected() {
 
     // Create two rooms
     let (room_a, _) = room_service
-        .create_room("Room A".to_string(), String::new(), creator.id.clone(), None, None)
+        .create_room(
+            "Room A".to_string(),
+            String::new(),
+            creator.id.clone(),
+            None,
+            None,
+        )
         .await
         .unwrap();
     let (room_b, _) = room_service
-        .create_room("Room B".to_string(), String::new(), creator.id.clone(), None, None)
+        .create_room(
+            "Room B".to_string(),
+            String::new(),
+            creator.id.clone(),
+            None,
+            None,
+        )
         .await
         .unwrap();
 
@@ -212,7 +240,10 @@ async fn test_add_media_cross_room_playlist_rejected() {
         .add_media(room_a.id.clone(), creator.id.clone(), request)
         .await;
 
-    assert!(result.is_err(), "Should fail when adding to cross-room playlist");
+    assert!(
+        result.is_err(),
+        "Should fail when adding to cross-room playlist"
+    );
 }
 
 // ========== add_media_batch: size limit (>100 items rejected) ==========
@@ -227,7 +258,13 @@ async fn test_add_media_batch_over_100_rejected() {
     let creator = user_repo.create(&make_user("batch_creator")).await.unwrap();
 
     let (room, _) = room_service
-        .create_room("Batch Room".to_string(), String::new(), creator.id.clone(), None, None)
+        .create_room(
+            "Batch Room".to_string(),
+            String::new(),
+            creator.id.clone(),
+            None,
+            None,
+        )
         .await
         .unwrap();
 
@@ -246,14 +283,21 @@ async fn test_add_media_batch_over_100_rejected() {
         .collect();
 
     let result = media_service
-        .add_media_batch(room.id.clone(), creator.id.clone(), playlist.id.clone(), requests)
+        .add_media_batch(
+            room.id.clone(),
+            creator.id.clone(),
+            playlist.id.clone(),
+            requests,
+        )
         .await;
 
     assert!(result.is_err(), "Batch of 101 items should be rejected");
     match result.unwrap_err() {
         Error::InvalidInput(msg) => {
-            assert!(msg.contains("100") || msg.contains("batch") || msg.contains("exceed"),
-                "Should mention batch size limit: {msg}");
+            assert!(
+                msg.contains("100") || msg.contains("batch") || msg.contains("exceed"),
+                "Should mention batch size limit: {msg}"
+            );
         }
         other => panic!("Expected InvalidInput error, got: {other:?}"),
     }
@@ -268,10 +312,19 @@ async fn test_add_media_batch_empty_returns_empty() {
     let user_repo = UserRepository::new(pool.clone());
     let room_service = make_room_service(pool.clone());
 
-    let creator = user_repo.create(&make_user("batch_empty_creator")).await.unwrap();
+    let creator = user_repo
+        .create(&make_user("batch_empty_creator"))
+        .await
+        .unwrap();
 
     let (room, _) = room_service
-        .create_room("Batch Empty Room".to_string(), String::new(), creator.id.clone(), None, None)
+        .create_room(
+            "Batch Empty Room".to_string(),
+            String::new(),
+            creator.id.clone(),
+            None,
+            None,
+        )
         .await
         .unwrap();
 
@@ -279,7 +332,12 @@ async fn test_add_media_batch_empty_returns_empty() {
 
     let playlist = get_root_playlist(&pool, &room.id).await;
     let result = media_service
-        .add_media_batch(room.id.clone(), creator.id.clone(), playlist.id.clone(), vec![])
+        .add_media_batch(
+            room.id.clone(),
+            creator.id.clone(),
+            playlist.id.clone(),
+            vec![],
+        )
         .await;
 
     assert!(result.is_ok(), "Empty batch should succeed");
@@ -296,10 +354,19 @@ async fn test_add_media_batch_exactly_100_accepted() {
     let user_repo = UserRepository::new(pool.clone());
     let room_service = make_room_service(pool.clone());
 
-    let creator = user_repo.create(&make_user("batch100_creator")).await.unwrap();
+    let creator = user_repo
+        .create(&make_user("batch100_creator"))
+        .await
+        .unwrap();
 
     let (room, _) = room_service
-        .create_room("Batch 100 Room".to_string(), String::new(), creator.id.clone(), None, None)
+        .create_room(
+            "Batch 100 Room".to_string(),
+            String::new(),
+            creator.id.clone(),
+            None,
+            None,
+        )
         .await
         .unwrap();
 
@@ -318,12 +385,24 @@ async fn test_add_media_batch_exactly_100_accepted() {
         .collect();
 
     let result = media_service
-        .add_media_batch(room.id.clone(), creator.id.clone(), playlist.id.clone(), requests)
+        .add_media_batch(
+            room.id.clone(),
+            creator.id.clone(),
+            playlist.id.clone(),
+            requests,
+        )
         .await;
 
-    assert!(result.is_ok(), "Batch of exactly 100 items should be accepted");
+    assert!(
+        result.is_ok(),
+        "Batch of exactly 100 items should be accepted"
+    );
     let media_list = result.unwrap();
-    assert_eq!(media_list.len(), 100, "Should return 100 created media items");
+    assert_eq!(
+        media_list.len(),
+        100,
+        "Should return 100 created media items"
+    );
 }
 
 // ========== edit_media: optimistic lock retry exhaustion ==========
@@ -335,10 +414,19 @@ async fn test_edit_media_optimistic_lock_retry_exhaustion() {
     let user_repo = UserRepository::new(pool.clone());
     let room_service = Arc::new(make_room_service(pool.clone()));
 
-    let creator = user_repo.create(&make_user("edit_olr_creator")).await.unwrap();
+    let creator = user_repo
+        .create(&make_user("edit_olr_creator"))
+        .await
+        .unwrap();
 
     let (room, _) = room_service
-        .create_room("Edit OLR Room".to_string(), String::new(), creator.id.clone(), None, None)
+        .create_room(
+            "Edit OLR Room".to_string(),
+            String::new(),
+            creator.id.clone(),
+            None,
+            None,
+        )
         .await
         .unwrap();
 
@@ -353,7 +441,10 @@ async fn test_edit_media_optimistic_lock_retry_exhaustion() {
         provider_instance_name: "direct_url".to_string(),
         source_config: serde_json::json!({"url": "https://example.com/edit.mp4"}),
     };
-    let media = media_service.add_media(room.id.clone(), creator.id.clone(), add_req).await.unwrap();
+    let media = media_service
+        .add_media(room.id.clone(), creator.id.clone(), add_req)
+        .await
+        .unwrap();
 
     // Continuously bump media version to trigger retry exhaustion
     let media_id_str = media.id.as_str().to_string();
@@ -388,8 +479,13 @@ async fn test_edit_media_optimistic_lock_retry_exhaustion() {
     match result {
         Ok(_) => {}
         Err(Error::Internal(msg)) => {
-            assert!(msg.contains("retri") || msg.contains("retry") || msg.contains("maximum") || msg.contains("concurrent"),
-                "Should mention retry exhaustion: {msg}");
+            assert!(
+                msg.contains("retri")
+                    || msg.contains("retry")
+                    || msg.contains("maximum")
+                    || msg.contains("concurrent"),
+                "Should mention retry exhaustion: {msg}"
+            );
         }
         Err(Error::OptimisticLockConflict) => {
             panic!("OptimisticLockConflict should not leak to caller");
@@ -416,7 +512,10 @@ async fn test_reorder_media_rejects_negative_position() {
     let user_repo = UserRepository::new(pool.clone());
     let room_service = make_room_service(pool.clone());
 
-    let owner = user_repo.create(&make_user("reorder_neg_owner")).await.unwrap();
+    let owner = user_repo
+        .create(&make_user("reorder_neg_owner"))
+        .await
+        .unwrap();
 
     // Create room
     let (room, _) = room_service
@@ -484,7 +583,10 @@ async fn test_reorder_media_rejects_overflow_position() {
     let user_repo = UserRepository::new(pool.clone());
     let room_service = make_room_service(pool.clone());
 
-    let owner = user_repo.create(&make_user("reorder_overflow_owner")).await.unwrap();
+    let owner = user_repo
+        .create(&make_user("reorder_overflow_owner"))
+        .await
+        .unwrap();
 
     // Create room
     let (room, _) = room_service
@@ -547,7 +649,10 @@ async fn test_reorder_media_accepts_valid_positions() {
     let user_repo = UserRepository::new(pool.clone());
     let room_service = make_room_service(pool.clone());
 
-    let owner = user_repo.create(&make_user("reorder_valid_owner")).await.unwrap();
+    let owner = user_repo
+        .create(&make_user("reorder_valid_owner"))
+        .await
+        .unwrap();
 
     // Create room
     let (room, _) = room_service
@@ -610,7 +715,11 @@ async fn test_reorder_media_accepts_valid_positions() {
         )
         .await;
 
-    assert!(result.is_ok(), "Valid positions should be accepted: {:?}", result.err());
+    assert!(
+        result.is_ok(),
+        "Valid positions should be accepted: {:?}",
+        result.err()
+    );
 
     // Verify the new positions
     let updated1 = media_repo.get_by_id(&media1.id).await.unwrap().unwrap();

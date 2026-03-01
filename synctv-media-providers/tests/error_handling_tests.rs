@@ -39,9 +39,7 @@ async fn test_json_with_limit_exceeds_max() {
     // to set a large CL with a matching body.
     let large_body = "x".repeat(MAX_RESPONSE_SIZE + 1);
     Mock::given(method("GET"))
-        .respond_with(
-            ResponseTemplate::new(200).set_body_string(large_body),
-        )
+        .respond_with(ResponseTemplate::new(200).set_body_string(large_body))
         .mount(&server)
         .await;
 
@@ -110,7 +108,8 @@ async fn test_check_response_500_captures_body() {
 
     Mock::given(method("GET"))
         .respond_with(
-            ResponseTemplate::new(500).set_body_string("Internal Server Error: db connection failed"),
+            ResponseTemplate::new(500)
+                .set_body_string("Internal Server Error: db connection failed"),
         )
         .mount(&server)
         .await;
@@ -143,8 +142,7 @@ async fn test_with_retry_succeeds_first_attempt() {
 
     Mock::given(method("GET"))
         .respond_with(
-            ResponseTemplate::new(200)
-                .set_body_json(serde_json::json!({"result": "success"})),
+            ResponseTemplate::new(200).set_body_json(serde_json::json!({"result": "success"})),
         )
         .expect(1)
         .mount(&server)
@@ -179,8 +177,7 @@ async fn test_with_retry_retries_on_5xx() {
 
     Mock::given(method("GET"))
         .respond_with(
-            ResponseTemplate::new(200)
-                .set_body_json(serde_json::json!({"result": "recovered"})),
+            ResponseTemplate::new(200).set_body_json(serde_json::json!({"result": "recovered"})),
         )
         .mount(&server)
         .await;

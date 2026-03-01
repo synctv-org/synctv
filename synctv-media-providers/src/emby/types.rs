@@ -270,7 +270,7 @@ pub struct MediaStream {
 }
 
 /// Device profile for codec negotiation
-#[must_use] 
+#[must_use]
 pub fn default_device_profile() -> Value {
     serde_json::json!({
         "DirectPlayProfiles": [
@@ -355,7 +355,8 @@ impl From<MediaSource> for crate::grpc::emby::MediaSourceInfo {
             protocol: source.protocol,
             default_subtitle_stream_index: source.default_subtitle_stream_index,
             default_audio_stream_index: source.default_audio_stream_index,
-            media_stream_info: source.media_streams
+            media_stream_info: source
+                .media_streams
                 .into_iter()
                 .map(std::convert::Into::into)
                 .collect(),
@@ -377,7 +378,8 @@ impl From<Item> for crate::grpc::emby::Item {
             season_name: item.season_name.unwrap_or_default(),
             season_id: item.season_id.unwrap_or_default(),
             is_folder: item.is_folder,
-            media_source_info: item.media_sources
+            media_source_info: item
+                .media_sources
                 .into_iter()
                 .map(std::convert::Into::into)
                 .collect(),
@@ -455,8 +457,16 @@ impl From<UserInfo> for crate::grpc::emby::MeResp {
 impl From<FsListResponse> for crate::grpc::emby::FsListResp {
     fn from(response: FsListResponse) -> Self {
         Self {
-            paths: response.paths.into_iter().map(std::convert::Into::into).collect(),
-            items: response.items.into_iter().map(std::convert::Into::into).collect(),
+            paths: response
+                .paths
+                .into_iter()
+                .map(std::convert::Into::into)
+                .collect(),
+            items: response
+                .items
+                .into_iter()
+                .map(std::convert::Into::into)
+                .collect(),
             total: response.total,
         }
     }
@@ -465,7 +475,11 @@ impl From<FsListResponse> for crate::grpc::emby::FsListResp {
 impl From<ItemsResponse> for crate::grpc::emby::GetItemsResp {
     fn from(response: ItemsResponse) -> Self {
         Self {
-            items: response.items.into_iter().map(std::convert::Into::into).collect(),
+            items: response
+                .items
+                .into_iter()
+                .map(std::convert::Into::into)
+                .collect(),
             total_record_count: response.total_record_count,
         }
     }
@@ -475,7 +489,11 @@ impl From<PlaybackInfoResponse> for crate::grpc::emby::PlaybackInfoResp {
     fn from(response: PlaybackInfoResponse) -> Self {
         Self {
             play_session_id: response.play_session_id,
-            media_source_info: response.media_sources.into_iter().map(std::convert::Into::into).collect(),
+            media_source_info: response
+                .media_sources
+                .into_iter()
+                .map(std::convert::Into::into)
+                .collect(),
         }
     }
 }

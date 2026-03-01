@@ -8,13 +8,16 @@
 //! Requires Docker for testcontainers.
 #![allow(clippy::unwrap_used)]
 
-use synctv_core_testing::{create_test_pool};
-use synctv_core::{
-    models::{Room, RoomId, RoomMember, RoomRole, RoomStatus, UserId, MemberStatus, User, UserStatus, SignupMethod},
-    repository::{RoomRepository, RoomMemberRepository, UserRepository},
-};
 use sqlx::PgPool;
 use std::sync::Arc;
+use synctv_core::{
+    models::{
+        MemberStatus, Room, RoomId, RoomMember, RoomRole, RoomStatus, SignupMethod, User, UserId,
+        UserStatus,
+    },
+    repository::{RoomMemberRepository, RoomRepository, UserRepository},
+};
+use synctv_core_testing::create_test_pool;
 use tokio::sync::Barrier;
 
 /// Default `PostgreSQL` version for test containers
@@ -39,7 +42,10 @@ async fn create_test_user(pool: &PgPool, user_id: &UserId) {
         email_verified: true,
     };
     let user_repo = UserRepository::new(pool.clone());
-    user_repo.create(&user).await.expect("Failed to create test user");
+    user_repo
+        .create(&user)
+        .await
+        .expect("Failed to create test user");
 }
 
 fn make_member(room_id: RoomId, user_id: UserId) -> RoomMember {
@@ -84,7 +90,10 @@ async fn test_concurrent_member_role_updates_isolated() {
         deleted_at: None,
         version: 0,
     };
-    room_repo.create(&room).await.expect("Failed to create room");
+    room_repo
+        .create(&room)
+        .await
+        .expect("Failed to create room");
 
     // Create test members (need to create users first for FK constraint)
     let user1 = UserId::new();
@@ -95,8 +104,14 @@ async fn test_concurrent_member_role_updates_isolated() {
     let member1 = make_member(room.id.clone(), user1.clone());
     let member2 = make_member(room.id.clone(), user2.clone());
 
-    member_repo.add(&member1).await.expect("Failed to create member1");
-    member_repo.add(&member2).await.expect("Failed to create member2");
+    member_repo
+        .add(&member1)
+        .await
+        .expect("Failed to create member1");
+    member_repo
+        .add(&member2)
+        .await
+        .expect("Failed to create member2");
 
     // Concurrent role updates using added_permissions column
     let barrier = Arc::new(Barrier::new(2));
@@ -114,7 +129,7 @@ async fn test_concurrent_member_role_updates_isolated() {
 
         sqlx::query(
             "UPDATE room_members SET added_permissions = $1
-             WHERE room_id = $2 AND user_id = $3"
+             WHERE room_id = $2 AND user_id = $3",
         )
         .bind(0xFF_i64)
         .bind(room_id.as_str())
@@ -137,7 +152,7 @@ async fn test_concurrent_member_role_updates_isolated() {
 
         sqlx::query(
             "UPDATE room_members SET added_permissions = $1
-             WHERE room_id = $2 AND user_id = $3"
+             WHERE room_id = $2 AND user_id = $3",
         )
         .bind(0xFF_i64)
         .bind(room_id2.as_str())
@@ -155,11 +170,13 @@ async fn test_concurrent_member_role_updates_isolated() {
     handle2.await.expect("Task 2 failed");
 
     // Verify both updates succeeded
-    let member1_updated = member_repo.get(&room.id, &user1)
+    let member1_updated = member_repo
+        .get(&room.id, &user1)
         .await
         .expect("Failed to get member1")
         .expect("Member1 not found");
-    let member2_updated = member_repo.get(&room.id, &user2)
+    let member2_updated = member_repo
+        .get(&room.id, &user2)
         .await
         .expect("Failed to get member2")
         .expect("Member2 not found");
@@ -190,7 +207,10 @@ async fn test_serializable_isolation_prevents_phantom_reads() {
         deleted_at: None,
         version: 0,
     };
-    room_repo.create(&room).await.expect("Failed to create room");
+    room_repo
+        .create(&room)
+        .await
+        .expect("Failed to create room");
 
     // Transaction 1: Count members, then re-count
     let pool1 = pool.clone();
@@ -198,25 +218,22 @@ async fn test_serializable_isolation_prevents_phantom_reads() {
     let handle1 = tokio::spawn(async move {
         let mut tx = pool1.begin().await.expect("Failed to begin transaction");
 
-        let count: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM room_members WHERE room_id = $1"
-        )
-        .bind(room_id1.as_str())
-        .fetch_one(&mut *tx)
-        .await
-        .expect("Failed to count");
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM room_members WHERE room_id = $1")
+            .bind(room_id1.as_str())
+            .fetch_one(&mut *tx)
+            .await
+            .expect("Failed to count");
 
         assert_eq!(count, 0);
 
         tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
 
-        let count2: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM room_members WHERE room_id = $1"
-        )
-        .bind(room_id1.as_str())
-        .fetch_one(&mut *tx)
-        .await
-        .expect("Failed to count");
+        let count2: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM room_members WHERE room_id = $1")
+                .bind(room_id1.as_str())
+                .fetch_one(&mut *tx)
+                .await
+                .expect("Failed to count");
 
         tx.commit().await.expect("Failed to commit");
 
@@ -234,7 +251,10 @@ async fn test_serializable_isolation_prevents_phantom_reads() {
     let handle2 = tokio::spawn(async move {
         let member = make_member(room_id2, user_id);
         let member_repo = RoomMemberRepository::new(pool2);
-        member_repo.add(&member).await.expect("Failed to create member");
+        member_repo
+            .add(&member)
+            .await
+            .expect("Failed to create member");
     });
 
     handle2.await.expect("Task 2 failed");

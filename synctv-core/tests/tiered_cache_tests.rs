@@ -7,16 +7,15 @@
 #![allow(clippy::unwrap_used)]
 
 use std::sync::Arc;
-use synctv_core::cache::{
-    l2_backend::RedisCacheL2,
-    UserCache,
-    user_cache::CachedUser,
-};
+use synctv_core::cache::{l2_backend::RedisCacheL2, user_cache::CachedUser, UserCache};
 use synctv_core::models::{UserId, UserRole, UserStatus};
-use testcontainers_modules::redis::Redis;
 use testcontainers::runners::AsyncRunner;
+use testcontainers_modules::redis::Redis;
 
-async fn start_redis() -> (testcontainers::ContainerAsync<Redis>, redis::aio::ConnectionManager) {
+async fn start_redis() -> (
+    testcontainers::ContainerAsync<Redis>,
+    redis::aio::ConnectionManager,
+) {
     let container = Redis::default()
         .start()
         .await
@@ -66,7 +65,10 @@ async fn test_tiered_cache_l2_set_and_get() {
 
     // Get should hit L2
     let retrieved = cache.get(&user_id).await.unwrap();
-    assert!(retrieved.is_some(), "Should retrieve from L2 after L1 clear");
+    assert!(
+        retrieved.is_some(),
+        "Should retrieve from L2 after L1 clear"
+    );
     let retrieved = retrieved.unwrap();
     assert_eq!(retrieved.password_version(), 0);
 }

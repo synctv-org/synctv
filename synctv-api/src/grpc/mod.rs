@@ -1,5 +1,5 @@
 // Re-export proto types from synctv-proto
-pub use synctv_proto::{client, admin};
+pub use synctv_proto::{admin, client};
 
 // Re-export cluster proto from synctv-cluster (internal)
 pub use synctv_cluster::grpc::synctv::cluster;
@@ -17,11 +17,9 @@ pub mod rate_limit_layer;
 pub mod providers;
 
 pub use admin_service::AdminServiceImpl;
-pub use client_service::{ClientServiceImpl, ClientServiceConfig};
+pub use client_service::{ClientServiceConfig, ClientServiceImpl};
+pub use interceptors::{AuthInterceptor, ClusterAuthInterceptor, LoggingInterceptor};
 pub use notification_service::NotificationServiceImpl;
-pub use interceptors::{
-    AuthInterceptor, ClusterAuthInterceptor, LoggingInterceptor,
-};
 
 /// Trait to apply gRPC message size limits to tonic service servers.
 ///
@@ -123,18 +121,22 @@ pub(crate) fn map_provider_error(err: synctv_core::provider::ProviderError) -> t
                 tonic::Status::unavailable(msg)
             }
         }
-        ProviderError::ParseError(_) | ProviderError::InvalidConfig(_)
-        | ProviderError::InvalidUrl(_) | ProviderError::MissingField(_)
-        | ProviderError::InvalidCredentialType | ProviderError::UnsupportedFormat(_) => {
-            tonic::Status::invalid_argument(msg)
-        }
-        ProviderError::NotFound | ProviderError::InstanceNotFound(_) | ProviderError::MissingInstance => {
-            tonic::Status::not_found(msg)
-        }
+        ProviderError::ParseError(_)
+        | ProviderError::InvalidConfig(_)
+        | ProviderError::InvalidUrl(_)
+        | ProviderError::MissingField(_)
+        | ProviderError::InvalidCredentialType
+        | ProviderError::UnsupportedFormat(_) => tonic::Status::invalid_argument(msg),
+        ProviderError::NotFound
+        | ProviderError::InstanceNotFound(_)
+        | ProviderError::MissingInstance => tonic::Status::not_found(msg),
         ProviderError::AuthRequired | ProviderError::CredentialRequired => {
             tonic::Status::unauthenticated(msg)
         }
-        ProviderError::RouteRegistrationFailed(_) | ProviderError::IoError(_) | ProviderError::JsonError(_) | ProviderError::EncryptionRequired(_) => {
+        ProviderError::RouteRegistrationFailed(_)
+        | ProviderError::IoError(_)
+        | ProviderError::JsonError(_)
+        | ProviderError::EncryptionRequired(_) => {
             tracing::error!("Provider internal error: {msg}");
             tonic::Status::internal("Internal error")
         }
@@ -157,9 +159,9 @@ use synctv_cluster::sync::{ClusterManager, ConnectionManager, PublishRequest};
 use synctv_core::provider::{AlistProvider, BilibiliProvider, EmbyProvider};
 use synctv_core::service::auth::JwtService;
 use synctv_core::service::{
-    ContentFilter, EmailService, EmailTokenService, RemoteProviderManager, ProvidersManager,
-    RateLimitConfig, RateLimiter, RoomService as CoreRoomService, SettingsRegistry,
-    SettingsService, UserService as CoreUserService,
+    ContentFilter, EmailService, EmailTokenService, ProvidersManager, RateLimitConfig, RateLimiter,
+    RemoteProviderManager, RoomService as CoreRoomService, SettingsRegistry, SettingsService,
+    UserService as CoreUserService,
 };
 use synctv_core::Config;
 
@@ -178,12 +180,14 @@ pub struct GrpcServerConfig<'a> {
     pub connection_manager: ConnectionManager,
     pub providers_manager: Option<Arc<ProvidersManager>>,
     pub provider_instance_manager: Arc<RemoteProviderManager>,
-    pub user_provider_credential_repository: Arc<synctv_core::repository::UserProviderCredentialRepository>,
+    pub user_provider_credential_repository:
+        Arc<synctv_core::repository::UserProviderCredentialRepository>,
     pub settings_service: Arc<SettingsService>,
     pub settings_registry: Option<Arc<SettingsRegistry>>,
     pub email_service: Option<Arc<EmailService>>,
     pub email_token_service: Option<Arc<EmailTokenService>>,
-    pub live_streaming_infrastructure: Option<Arc<synctv_livestream::api::LiveStreamingInfrastructure>>,
+    pub live_streaming_infrastructure:
+        Option<Arc<synctv_livestream::api::LiveStreamingInfrastructure>>,
     pub publish_key_service: Option<Arc<synctv_core::service::PublishKeyService>>,
     pub notification_service: Option<Arc<synctv_core::service::UserNotificationService>>,
     pub oauth2_service: Option<Arc<synctv_core::service::OAuth2Service>>,
@@ -257,7 +261,8 @@ pub async fn serve(grpc_config: GrpcServerConfig<'_>) -> anyhow::Result<()> {
 
     // Extract node_id reference before moving cluster_manager
     let cluster_node_id = cluster_manager
-        .as_ref().map_or_else(|| "single-node".to_string(), |cm| cm.node_id().to_string());
+        .as_ref()
+        .map_or_else(|| "single-node".to_string(), |cm| cm.node_id().to_string());
 
     // Clone connection_manager for later use
     let connection_manager_for_provider = connection_manager.clone();
@@ -267,19 +272,22 @@ pub async fn serve(grpc_config: GrpcServerConfig<'_>) -> anyhow::Result<()> {
     let rate_limiter_for_provider = rate_limiter.clone();
 
     // Build the shared ClientApiImpl for gRPC handlers
-    let client_api = Arc::new(crate::impls::ClientApiImpl::new(
-        user_service.clone(),
-        room_service.clone(),
-        Arc::new(connection_manager.clone()),
-        Arc::new(config.clone()),
-        publish_key_service,
-        jwt_service.clone(),
-        live_streaming_infrastructure.clone(),
-        providers_manager_for_client.clone(),
-        settings_registry.clone(),
-    ).with_redis_publish_tx(redis_publish_tx.clone())
-     .with_redis_conn(redis_conn.clone())
-     .with_rate_limiter(rate_limiter.clone()));
+    let client_api = Arc::new(
+        crate::impls::ClientApiImpl::new(
+            user_service.clone(),
+            room_service.clone(),
+            Arc::new(connection_manager.clone()),
+            Arc::new(config.clone()),
+            publish_key_service,
+            jwt_service.clone(),
+            live_streaming_infrastructure.clone(),
+            providers_manager_for_client.clone(),
+            settings_registry.clone(),
+        )
+        .with_redis_publish_tx(redis_publish_tx.clone())
+        .with_redis_conn(redis_conn.clone())
+        .with_rate_limiter(rate_limiter.clone()),
+    );
 
     // Wire in the resolved STUN URL if the built-in STUN server started successfully
     let client_api = if let Some(stun_url) = builtin_stun_url {
@@ -318,8 +326,9 @@ pub async fn serve(grpc_config: GrpcServerConfig<'_>) -> anyhow::Result<()> {
     // Build the shared AdminApiImpl for gRPC handlers (same impls layer used by HTTP)
     // AdminApiImpl requires EmailService; if not configured, create with None config
     // so send_test_email fails gracefully.
-    let email_svc_for_admin_api = email_service_for_admin
-        .unwrap_or_else(|| Arc::new(EmailService::new(None).expect("EmailService::new(None) should not fail")));
+    let email_svc_for_admin_api = email_service_for_admin.unwrap_or_else(|| {
+        Arc::new(EmailService::new(None).expect("EmailService::new(None) should not fail"))
+    });
 
     let admin_api = Arc::new(crate::impls::AdminApiImpl::new(
         room_service.clone(),
@@ -334,18 +343,14 @@ pub async fn serve(grpc_config: GrpcServerConfig<'_>) -> anyhow::Result<()> {
         audit_service.clone(),
     ));
 
-    let admin_service = AdminServiceImpl::new(
-        user_service_for_admin,
-        admin_api,
-    );
+    let admin_service = AdminServiceImpl::new(user_service_for_admin, admin_api);
 
     // Create auth interceptor for authenticated services (clone jwt_service for blacklist layer)
     let auth_interceptor = AuthInterceptor::new(jwt_service.clone());
 
     // Create JwtValidator for rate limiting layer (needs to verify JWT to extract user_id)
-    let jwt_validator_for_rate_limit = synctv_core::service::auth::JwtValidator::new(
-        std::sync::Arc::new(jwt_service.clone()),
-    );
+    let jwt_validator_for_rate_limit =
+        synctv_core::service::auth::JwtValidator::new(std::sync::Arc::new(jwt_service.clone()));
 
     // Create server builder with the security checking tower layer.
     // This layer extracts the raw JWT bearer token from the HTTP Authorization
@@ -355,16 +360,12 @@ pub async fn serve(grpc_config: GrpcServerConfig<'_>) -> anyhow::Result<()> {
     // 3. User status check (banned/pending/deleted)
     // It runs before tonic routes and interceptors, so public endpoints (no Authorization header)
     // pass through without security checks.
-    let security_pipeline = synctv_core::service::SecurityPipeline::new(
-        user_service.clone(),
-    ).with_token_blacklist(
-        user_service.token_blacklist_store(),
-        user_service.key_builder().clone(),
-    );
-    let blacklist_layer = blacklist_layer::BlacklistCheckLayer::new(
-        jwt_service,
-        security_pipeline,
-    );
+    let security_pipeline = synctv_core::service::SecurityPipeline::new(user_service.clone())
+        .with_token_blacklist(
+            user_service.token_blacklist_store(),
+            user_service.key_builder().clone(),
+        );
+    let blacklist_layer = blacklist_layer::BlacklistCheckLayer::new(jwt_service, security_pipeline);
     // Distributed rate limiting layer: uses Redis when available (shared across
     // replicas), falls back to in-memory governor when Redis is unavailable.
     // Determines tier per-request from the gRPC service path.
@@ -406,7 +407,9 @@ pub async fn serve(grpc_config: GrpcServerConfig<'_>) -> anyhow::Result<()> {
 
     let mut router = server_builder
         // AuthService (public: register, login, refresh_token)
-        .add_service(AuthServiceServer::new(client_service).with_message_size_limit(max_message_size))
+        .add_service(
+            AuthServiceServer::new(client_service).with_message_size_limit(max_message_size),
+        )
         // UserService - JWT authentication (inject UserContext)
         // Use tonic::codegen::InterceptedService::new to preserve message size limits set on the service
         .add_service(tonic::codegen::InterceptedService::new(
@@ -420,13 +423,20 @@ pub async fn serve(grpc_config: GrpcServerConfig<'_>) -> anyhow::Result<()> {
         ))
         // MediaService - JWT + room_id (inject RoomContext)
         .add_service(tonic::codegen::InterceptedService::new(
-            MediaServiceServer::new(client_service_clone3).with_message_size_limit(max_message_size),
+            MediaServiceServer::new(client_service_clone3)
+                .with_message_size_limit(max_message_size),
             move |req| room_interceptor2.inject_room(req),
         ))
         // PublicService (public room discovery)
-        .add_service(PublicServiceServer::new(client_service_clone4).with_message_size_limit(max_message_size))
+        .add_service(
+            PublicServiceServer::new(client_service_clone4)
+                .with_message_size_limit(max_message_size),
+        )
         // EmailService (send codes, confirm with token)
-        .add_service(EmailServiceServer::new(client_service_clone5).with_message_size_limit(max_message_size))
+        .add_service(
+            EmailServiceServer::new(client_service_clone5)
+                .with_message_size_limit(max_message_size),
+        )
         // AdminService - JWT authentication (inject UserContext)
         .add_service(tonic::codegen::InterceptedService::new(
             AdminServiceServer::new(admin_service).with_message_size_limit(max_message_size),
@@ -463,11 +473,14 @@ pub async fn serve(grpc_config: GrpcServerConfig<'_>) -> anyhow::Result<()> {
                     // Build a future that resolves when the shutdown signal fires.
                     // When no receiver is available, use a pending future so the
                     // select falls through to the notification arm.
-                    let shutdown_future: std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> =
-                        match bridge_shutdown_rx.as_mut() {
-                            Some(rx) => Box::pin(async move { let _ = rx.changed().await; }),
-                            None => Box::pin(std::future::pending()),
-                        };
+                    let shutdown_future: std::pin::Pin<
+                        Box<dyn std::future::Future<Output = ()> + Send>,
+                    > = match bridge_shutdown_rx.as_mut() {
+                        Some(rx) => Box::pin(async move {
+                            let _ = rx.changed().await;
+                        }),
+                        None => Box::pin(std::future::pending()),
+                    };
 
                     tokio::select! {
                         // Honour the server-wide shutdown signal.
@@ -504,7 +517,9 @@ pub async fn serve(grpc_config: GrpcServerConfig<'_>) -> anyhow::Result<()> {
                     }
                 }
             });
-            tracing::info!("Notification-to-cluster bridge task spawned for real-time WebSocket push");
+            tracing::info!(
+                "Notification-to-cluster bridge task spawned for real-time WebSocket push"
+            );
         }
     }
 
@@ -521,10 +536,13 @@ pub async fn serve(grpc_config: GrpcServerConfig<'_>) -> anyhow::Result<()> {
             oauth2_svc,
             user_service.clone(),
         ));
-        let oauth2_impl = oauth2_service::OAuth2GrpcService::new(oauth2_api, oauth2_auth_interceptor);
+        let oauth2_impl =
+            oauth2_service::OAuth2GrpcService::new(oauth2_api, oauth2_auth_interceptor);
         // No global interceptor: public endpoints are unauthenticated,
         // private endpoints call require_auth() inline.
-        router = router.add_service(OAuth2ServiceServer::new(oauth2_impl).with_message_size_limit(max_message_size));
+        router = router.add_service(
+            OAuth2ServiceServer::new(oauth2_impl).with_message_size_limit(max_message_size),
+        );
         tracing::info!("OAuth2Service gRPC registered (public + authenticated split)");
     }
 
@@ -540,9 +558,7 @@ pub async fn serve(grpc_config: GrpcServerConfig<'_>) -> anyhow::Result<()> {
         let bilibili_provider = Arc::new(BilibiliProvider::new(
             provider_instance_manager_for_provider.clone(),
         ));
-        let emby_provider = Arc::new(EmbyProvider::new(
-            provider_instance_manager_for_provider,
-        ));
+        let emby_provider = Arc::new(EmbyProvider::new(provider_instance_manager_for_provider));
 
         let provider_jwt_validator = Arc::new(synctv_core::service::auth::JwtValidator::new(
             Arc::new(jwt_service_for_provider.clone()),
@@ -584,12 +600,13 @@ pub async fn serve(grpc_config: GrpcServerConfig<'_>) -> anyhow::Result<()> {
             router_config: provider_router_config,
             rate_limit_config: Arc::new(config.http_rate_limits.clone()),
             jwt_validator: provider_jwt_validator,
-            security_pipeline: Arc::new(synctv_core::service::SecurityPipeline::new(
-                user_service.clone(),
-            ).with_token_blacklist(
-                user_service.token_blacklist_store(),
-                user_service.key_builder().clone(),
-            )),
+            security_pipeline: Arc::new(
+                synctv_core::service::SecurityPipeline::new(user_service.clone())
+                    .with_token_blacklist(
+                        user_service.token_blacklist_store(),
+                        user_service.key_builder().clone(),
+                    ),
+            ),
             client_api: client_api.clone(),
             admin_api: None,
             notification_api: None,
@@ -631,12 +648,11 @@ pub async fn serve(grpc_config: GrpcServerConfig<'_>) -> anyhow::Result<()> {
              Cluster coordination will be disabled. Set cluster_secret in config to enable."
         );
     } else if let Some(ref nr) = node_registry {
-        let cluster_server = synctv_cluster::grpc::ClusterServer::new(
-            nr.clone(),
-            cluster_node_id.clone(),
-        ).with_connection_manager(
-            std::sync::Arc::new(connection_manager_for_provider.clone()),
-        );
+        let cluster_server =
+            synctv_cluster::grpc::ClusterServer::new(nr.clone(), cluster_node_id.clone())
+                .with_connection_manager(std::sync::Arc::new(
+                    connection_manager_for_provider.clone(),
+                ));
         let cluster_interceptor = ClusterAuthInterceptor::new(config.server.cluster_secret.clone());
         router = router.add_service(
             synctv_cluster::grpc::ClusterServiceServer::with_interceptor(
@@ -644,20 +660,29 @@ pub async fn serve(grpc_config: GrpcServerConfig<'_>) -> anyhow::Result<()> {
                 move |req| cluster_interceptor.validate(req),
             ),
         );
-        tracing::info!("Cluster gRPC service registered with shared-secret auth (using shared NodeRegistry)");
+        tracing::info!(
+            "Cluster gRPC service registered with shared-secret auth (using shared NodeRegistry)"
+        );
     } else if let Some(redis_client) = redis_client {
         // Fallback: create a standalone NodeRegistry for cluster gRPC (single-node mode with Redis)
-        let fallback_result = synctv_cluster::discovery::NodeRegistry::new(redis_client, cluster_node_id.clone(), 30, &config.redis.key_prefix)
-            .map_err(|e| e.to_string());
+        let fallback_result = synctv_cluster::discovery::NodeRegistry::new(
+            redis_client,
+            cluster_node_id.clone(),
+            30,
+            &config.redis.key_prefix,
+        )
+        .map_err(|e| e.to_string());
         match fallback_result {
             Ok(fallback_registry) => {
                 let cluster_server = synctv_cluster::grpc::ClusterServer::new(
                     std::sync::Arc::new(fallback_registry),
                     cluster_node_id.clone(),
-                ).with_connection_manager(
-                    std::sync::Arc::new(connection_manager_for_provider.clone()),
-                );
-                let cluster_interceptor = ClusterAuthInterceptor::new(config.server.cluster_secret.clone());
+                )
+                .with_connection_manager(std::sync::Arc::new(
+                    connection_manager_for_provider.clone(),
+                ));
+                let cluster_interceptor =
+                    ClusterAuthInterceptor::new(config.server.cluster_secret.clone());
                 router = router.add_service(
                     synctv_cluster::grpc::ClusterServiceServer::with_interceptor(
                         cluster_server,
@@ -729,4 +754,3 @@ pub async fn serve(grpc_config: GrpcServerConfig<'_>) -> anyhow::Result<()> {
 
     Ok(())
 }
-

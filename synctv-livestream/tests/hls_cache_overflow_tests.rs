@@ -4,8 +4,8 @@
 //! handles overflow correctly when approaching `u64::MAX`.
 
 #![allow(clippy::unwrap_used)]
-use std::sync::Arc;
 use dashmap::DashMap;
+use std::sync::Arc;
 
 /// Test that cache version can reach near `u64::MAX`.
 #[test]
@@ -55,7 +55,10 @@ fn test_checked_add_detects_overflow() {
     let result = entry.checked_add(1);
 
     // checked_add should return None on overflow
-    assert!(result.is_none(), "checked_add should return None on overflow");
+    assert!(
+        result.is_none(),
+        "checked_add should return None on overflow"
+    );
 }
 
 /// Test proper overflow handling: clear cache when overflow occurs.
@@ -138,8 +141,6 @@ fn test_multiple_overflow_handling() {
     assert!(!cache_versions.contains_key("room1:media1"));
     assert!(!cache_versions.contains_key("room2:media2"));
 
-    let room3_version = cache_versions
-        .get("room3:media3")
-        .map_or(0, |v| *v);
+    let room3_version = cache_versions.get("room3:media3").map_or(0, |v| *v);
     assert_eq!(room3_version, 101);
 }

@@ -3,8 +3,8 @@
 use std::sync::Arc;
 use synctv_core::models::{RoomId, UserId};
 
-use crate::impls::ApiError;
 use super::ClientApiImpl;
+use crate::impls::ApiError;
 
 impl ClientApiImpl {
     pub async fn create_publish_key(
@@ -26,19 +26,25 @@ impl ClientApiImpl {
         let media_id = synctv_core::models::MediaId::from_string(req.id.clone());
 
         // Verify media exists and belongs to this room
-        let media = self.room_service.media_service()
-            .get_media(&media_id).await
+        let media = self
+            .room_service
+            .media_service()
+            .get_media(&media_id)
+            .await
             .map_err(|e| ApiError::Internal(format!("Failed to get media: {e}")))?
             .ok_or_else(|| ApiError::NotFound(format!("Media {} not found", req.id)))?;
 
         if media.room_id.as_str() != room_id {
             return Err(ApiError::InvalidInput(
-                "Media does not belong to this room".to_string()
+                "Media does not belong to this room".to_string(),
             ));
         }
 
         // Check room exists
-        let _room = self.room_service.get_room(&rid).await
+        let _room = self
+            .room_service
+            .get_room(&rid)
+            .await
             .map_err(ApiError::from)?;
 
         // Check permission to start live stream
@@ -48,7 +54,9 @@ impl ClientApiImpl {
             .map_err(|e| ApiError::Authorization(format!("Permission denied: {e}")))?;
 
         // Get publish key service
-        let publish_key_service = self.publish_key_service.as_ref()
+        let publish_key_service = self
+            .publish_key_service
+            .as_ref()
             .ok_or_else(|| ApiError::Internal("Publish key service not configured".to_string()))?;
 
         // Generate publish key
@@ -104,7 +112,9 @@ impl ClientApiImpl {
             .map_err(|e| ApiError::Internal(format!("Failed to check membership: {e}")))?;
 
         if !is_member {
-            return Err(ApiError::Authorization("Not a member of this room".to_string()));
+            return Err(ApiError::Authorization(
+                "Not a member of this room".to_string(),
+            ));
         }
 
         Ok(user_id)
@@ -121,13 +131,21 @@ impl ClientApiImpl {
         let rid = RoomId::from_string(room_id.to_string());
 
         // Check membership before returning stream info
-        self.room_service.check_membership(&rid, &uid).await
+        self.room_service
+            .check_membership(&rid, &uid)
+            .await
             .map_err(|e| ApiError::Authorization(format!("Forbidden: {e}")))?;
 
-        let infrastructure = self.live_streaming_infrastructure.as_ref()
+        let infrastructure = self
+            .live_streaming_infrastructure
+            .as_ref()
             .ok_or_else(|| ApiError::Internal("Live streaming not configured".to_string()))?;
 
-        match infrastructure.registry.get_publisher(room_id, media_id).await {
+        match infrastructure
+            .registry
+            .get_publisher(room_id, media_id)
+            .await
+        {
             Ok(Some(pub_info)) => Ok(crate::proto::client::GetStreamInfoResponse {
                 active: true,
                 publisher: Some(crate::proto::client::StreamPublisherInfo {
@@ -141,7 +159,9 @@ impl ClientApiImpl {
             }),
             Err(e) => {
                 tracing::error!("Failed to query stream info: {e}");
-                Err(ApiError::Internal("Failed to query stream info".to_string()))
+                Err(ApiError::Internal(
+                    "Failed to query stream info".to_string(),
+                ))
             }
         }
     }
@@ -156,10 +176,14 @@ impl ClientApiImpl {
         let rid = RoomId::from_string(room_id.to_string());
 
         // Check membership before listing streams
-        self.room_service.check_membership(&rid, &uid).await
+        self.room_service
+            .check_membership(&rid, &uid)
+            .await
             .map_err(|e| ApiError::Authorization(format!("Forbidden: {e}")))?;
 
-        let infrastructure = self.live_streaming_infrastructure.as_ref()
+        let infrastructure = self
+            .live_streaming_infrastructure
+            .as_ref()
             .ok_or_else(|| ApiError::Internal("Live streaming not configured".to_string()))?;
 
         let media_ids = infrastructure
@@ -182,7 +206,9 @@ impl ClientApiImpl {
 
     /// Get a reference to the live streaming infrastructure, if configured.
     #[must_use]
-    pub const fn live_infrastructure(&self) -> Option<&Arc<synctv_livestream::api::LiveStreamingInfrastructure>> {
+    pub const fn live_infrastructure(
+        &self,
+    ) -> Option<&Arc<synctv_livestream::api::LiveStreamingInfrastructure>> {
         self.live_streaming_infrastructure.as_ref()
     }
 
@@ -191,8 +217,12 @@ impl ClientApiImpl {
     /// or does not belong to the specified room.
     pub async fn get_live_proxy_source_url(&self, room_id: &str, media_id: &str) -> Option<String> {
         let mid = synctv_core::models::MediaId::from_string(media_id.to_string());
-        let media = self.room_service.media_service()
-            .get_media(&mid).await.ok()??;
+        let media = self
+            .room_service
+            .media_service()
+            .get_media(&mid)
+            .await
+            .ok()??;
         // Verify media belongs to the requested room
         if media.room_id.as_str() != room_id {
             tracing::warn!(
@@ -206,7 +236,9 @@ impl ClientApiImpl {
         if media.source_provider != "live_proxy" {
             return None;
         }
-        media.source_config.get("url")
+        media
+            .source_config
+            .get("url")
             .and_then(|v| v.as_str())
             .map(String::from)
     }

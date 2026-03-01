@@ -25,17 +25,13 @@ pub async fn hash_password(password: &str) -> Result<String> {
         // Configure Argon2id parameters (PHC 2023 recommended)
         let params = ParamsBuilder::new()
             .m_cost(65536) // 64 MB
-            .t_cost(3)     // 3 iterations
-            .p_cost(4)     // 4 parallel threads
+            .t_cost(3) // 3 iterations
+            .p_cost(4) // 4 parallel threads
             .output_len(32) // 32 bytes output
             .build()
             .map_err(|e| Error::Internal(format!("Failed to build Argon2 params: {e}")))?;
 
-        let argon2 = Argon2::new(
-            argon2::Algorithm::Argon2id,
-            Version::V0x13,
-            params,
-        );
+        let argon2 = Argon2::new(argon2::Algorithm::Argon2id, Version::V0x13, params);
 
         // Hash the password
         let password_hash = argon2
@@ -66,7 +62,9 @@ pub async fn verify_password(password: &str, hash: &str) -> Result<bool> {
         match argon2.verify_password(password.as_bytes(), &parsed_hash) {
             Ok(()) => Ok(true),
             Err(argon2::password_hash::Error::Password) => Ok(false),
-            Err(e) => Err(Error::Internal(format!("Password verification failed: {e}"))),
+            Err(e) => Err(Error::Internal(format!(
+                "Password verification failed: {e}"
+            ))),
         }
     })
     .await

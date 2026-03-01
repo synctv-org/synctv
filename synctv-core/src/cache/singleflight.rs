@@ -55,7 +55,7 @@ where
     E: Clone + Send + Sync + 'static,
 {
     /// Create a new `SingleFlight` instance
-    #[must_use] 
+    #[must_use]
     pub fn new() -> Self {
         Self {
             group: Arc::new(async_singleflight::Group::new()),
@@ -77,10 +77,13 @@ where
         //   Ok(v)       => success
         //   Err(Some(e)) => inner error from the function
         //   Err(None)    => leader failed/dropped (after retry attempts)
-        self.group.work(&key, f).await.map_err(|opt_err| match opt_err {
-            Some(inner) => SingleFlightError::Inner(inner),
-            None => SingleFlightError::WorkerFailed,
-        })
+        self.group
+            .work(&key, f)
+            .await
+            .map_err(|opt_err| match opt_err {
+                Some(inner) => SingleFlightError::Inner(inner),
+                None => SingleFlightError::WorkerFailed,
+            })
     }
 
     /// Execute a function only once for a given key, with legacy error type
@@ -249,9 +252,7 @@ mod tests {
         assert!(result.is_err());
 
         // Second request with same key should work
-        let result = sf
-            .do_work("fail_key".to_string(), async { Ok(42) })
-            .await;
+        let result = sf.do_work("fail_key".to_string(), async { Ok(42) }).await;
         assert_eq!(result.unwrap(), 42);
     }
 
@@ -283,7 +284,10 @@ mod tests {
         // The function should have been called only once (or very few times
         // if the library retries on leader failure)
         let actual = counter.load(Ordering::SeqCst);
-        assert!(actual <= 3, "Expected at most 3 executions (leader + retries), got {actual}");
+        assert!(
+            actual <= 3,
+            "Expected at most 3 executions (leader + retries), got {actual}"
+        );
     }
 
     /// Stress test: multiple keys concurrently

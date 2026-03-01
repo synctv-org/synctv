@@ -43,7 +43,11 @@ async fn test_register_duplicate_returns_false() {
     assert!(!second);
 
     // Original publisher should still be there
-    let info = registry.get_publisher("room1", "media1").await.unwrap().unwrap();
+    let info = registry
+        .get_publisher("room1", "media1")
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(info.node_id, "node1");
 }
 
@@ -58,10 +62,17 @@ async fn test_unregister_removes() {
 
     assert!(registry.is_stream_active("room1", "media1").await.unwrap());
 
-    registry.unregister_publisher("room1", "media1").await.unwrap();
+    registry
+        .unregister_publisher("room1", "media1")
+        .await
+        .unwrap();
 
     assert!(!registry.is_stream_active("room1", "media1").await.unwrap());
-    assert!(registry.get_publisher("room1", "media1").await.unwrap().is_none());
+    assert!(registry
+        .get_publisher("room1", "media1")
+        .await
+        .unwrap()
+        .is_none());
 }
 
 #[tokio::test]
@@ -73,8 +84,15 @@ async fn test_validate_epoch_correct() {
         .await
         .unwrap();
 
-    let info = registry.get_publisher("room1", "media1").await.unwrap().unwrap();
-    let valid = registry.validate_epoch("room1", "media1", info.epoch).await.unwrap();
+    let info = registry
+        .get_publisher("room1", "media1")
+        .await
+        .unwrap()
+        .unwrap();
+    let valid = registry
+        .validate_epoch("room1", "media1", info.epoch)
+        .await
+        .unwrap();
     assert!(valid);
 }
 
@@ -88,11 +106,17 @@ async fn test_validate_epoch_stale() {
         .unwrap();
 
     // Wrong epoch should be invalid
-    let valid = registry.validate_epoch("room1", "media1", 999).await.unwrap();
+    let valid = registry
+        .validate_epoch("room1", "media1", 999)
+        .await
+        .unwrap();
     assert!(!valid);
 
     // Non-existent stream should be invalid
-    let valid = registry.validate_epoch("nonexistent", "media", 1).await.unwrap();
+    let valid = registry
+        .validate_epoch("nonexistent", "media", 1)
+        .await
+        .unwrap();
     assert!(!valid);
 }
 
@@ -146,7 +170,10 @@ async fn test_cleanup_all_for_node() {
         .unwrap();
 
     // Cleanup node1
-    registry.cleanup_all_publishers_for_node("node1").await.unwrap();
+    registry
+        .cleanup_all_publishers_for_node("node1")
+        .await
+        .unwrap();
 
     // node1 publishers should be gone
     assert!(!registry.is_stream_active("room1", "media1").await.unwrap());
@@ -165,11 +192,18 @@ async fn test_epoch_increments_on_reregistration() {
         .try_register_publisher("room1", "media1", "node1", "user1", "localhost:50051")
         .await
         .unwrap();
-    let info1 = registry.get_publisher("room1", "media1").await.unwrap().unwrap();
+    let info1 = registry
+        .get_publisher("room1", "media1")
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(info1.epoch, 1);
 
     // Unregister and re-register: epoch should increment
-    registry.unregister_publisher("room1", "media1").await.unwrap();
+    registry
+        .unregister_publisher("room1", "media1")
+        .await
+        .unwrap();
 
     // Note: InMemoryStreamRegistry removes epoch counters on unregister,
     // so re-registration starts from epoch 1 again (different from Redis behavior).
@@ -178,7 +212,11 @@ async fn test_epoch_increments_on_reregistration() {
         .try_register_publisher("room1", "media1", "node2", "user2", "localhost:50052")
         .await
         .unwrap();
-    let info2 = registry.get_publisher("room1", "media1").await.unwrap().unwrap();
+    let info2 = registry
+        .get_publisher("room1", "media1")
+        .await
+        .unwrap()
+        .unwrap();
     // After unregister, the epoch counter is removed, so new registration starts at 1
     assert!(info2.epoch >= 1);
     assert_eq!(info2.node_id, "node2");
@@ -195,7 +233,11 @@ async fn test_register_publisher_via_register_publisher_method() {
         .unwrap();
     assert!(registered);
 
-    let info = registry.get_publisher("room1", "media1").await.unwrap().unwrap();
+    let info = registry
+        .get_publisher("room1", "media1")
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(info.node_id, "node1");
     assert_eq!(info.grpc_address, "localhost:50051");
     assert_eq!(info.app_name, "live");
@@ -245,7 +287,10 @@ async fn test_unregister_all_user_publishers() {
         .await
         .unwrap();
 
-    registry.unregister_all_user_publishers("user1").await.unwrap();
+    registry
+        .unregister_all_user_publishers("user1")
+        .await
+        .unwrap();
 
     assert!(!registry.is_stream_active("room1", "media1").await.unwrap());
     assert!(!registry.is_stream_active("room2", "media2").await.unwrap());
@@ -466,7 +511,10 @@ async fn test_concurrent_user_publishers() {
     assert_eq!(user_pubs.len(), 5);
 
     // Unregister all for user concurrently
-    registry.unregister_all_user_publishers("user1").await.unwrap();
+    registry
+        .unregister_all_user_publishers("user1")
+        .await
+        .unwrap();
 
     let user_pubs = registry.get_user_publishers("user1").await.unwrap();
     assert!(user_pubs.is_empty());
@@ -482,7 +530,9 @@ async fn test_refresh_publisher_ttl_no_error() {
         .unwrap();
 
     // refresh_publisher_ttl should succeed (no-op for in-memory)
-    let result = registry.refresh_publisher_ttl("room1", "media1", "user1").await;
+    let result = registry
+        .refresh_publisher_ttl("room1", "media1", "user1")
+        .await;
     assert!(result.is_ok());
 }
 
@@ -491,6 +541,8 @@ async fn test_refresh_publisher_ttl_nonexistent() {
     let registry = InMemoryStreamRegistry::new();
 
     // Should not error even for non-existent publishers
-    let result = registry.refresh_publisher_ttl("nonexistent", "media", "user").await;
+    let result = registry
+        .refresh_publisher_ttl("nonexistent", "media", "user")
+        .await;
     assert!(result.is_ok());
 }

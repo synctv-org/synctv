@@ -1,28 +1,32 @@
 //! Bilibili HTTP Client
 
-use std::fmt::Write;
 use std::collections::HashMap;
+use std::fmt::Write;
 use std::sync::LazyLock;
 use std::time::Duration;
 
+use futures_util::{SinkExt, StreamExt};
+use md5::{Digest, Md5};
 use regex::Regex;
 use reqwest::Client;
 use serde::Deserialize;
-use md5::{Md5, Digest};
 use tokio_tungstenite::{connect_async, tungstenite::Message};
-use futures_util::{SinkExt, StreamExt};
 
-use super::error::{BilibiliError, check_response, json_with_limit};
-use super::types::{self as types, VideoInfo, Quality, PlayUrlInfo, DurlItem, AnimeInfo};
+use super::error::{check_response, json_with_limit, BilibiliError};
+use super::types::{self as types, AnimeInfo, DurlItem, PlayUrlInfo, Quality, VideoInfo};
 use crate::error::with_retry;
 use crate::ssrf::ssrf_safe_dns_resolver;
 
 // Pre-compiled regexes using std::sync::LazyLock (no external crate needed).
 // These patterns are compile-time constants; Regex::new cannot fail on them.
-static RE_BVID: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"BV[a-zA-Z0-9]+").expect("invalid BVID regex"));
-static RE_EPID: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"ep(\d+)").expect("invalid EPID regex"));
-static RE_SSID: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"ss(\d+)").expect("invalid SSID regex"));
-static RE_LIVE_ROOM: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"/live/(\d+)").expect("invalid live room regex"));
+static RE_BVID: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"BV[a-zA-Z0-9]+").expect("invalid BVID regex"));
+static RE_EPID: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"ep(\d+)").expect("invalid EPID regex"));
+static RE_SSID: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"ss(\d+)").expect("invalid SSID regex"));
+static RE_LIVE_ROOM: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"/live/(\d+)").expect("invalid live room regex"));
 
 use crate::error::PROVIDER_USER_AGENT as USER_AGENT;
 const REFERER: &str = "https://www.bilibili.com";
@@ -52,10 +56,9 @@ static SHARED_CLIENT: LazyLock<Client> = LazyLock::new(|| {
 /// positions in the concatenated `img_key + sub_key` string to positions
 /// in the resulting mixin key.
 const MIXIN_KEY_ENC_TAB: [u8; 64] = [
-    46, 47, 18,  2, 53,  8, 23, 32, 15, 50, 10, 31, 58,  3, 45, 35,
-    27, 43,  5, 49, 33,  9, 42, 19, 29, 28, 14, 39, 12, 38, 41, 13,
-    37, 48,  7, 16, 24, 55, 40, 61, 26, 17,  0,  1, 60, 51, 30,  4,
-    22, 25, 54, 21, 56, 59,  6, 63, 57, 62, 11, 36, 20, 34, 44, 52,
+    46, 47, 18, 2, 53, 8, 23, 32, 15, 50, 10, 31, 58, 3, 45, 35, 27, 43, 5, 49, 33, 9, 42, 19, 29,
+    28, 14, 39, 12, 38, 41, 13, 37, 48, 7, 16, 24, 55, 40, 61, 26, 17, 0, 1, 60, 51, 30, 4, 22, 25,
+    54, 21, 56, 59, 6, 63, 57, 62, 11, 36, 20, 34, 44, 52,
 ];
 
 /// Cached WBI keys with expiration timestamp.
@@ -178,7 +181,10 @@ impl BilibiliClient {
     /// Internal method with optional force refresh.
     ///
     /// Fetches from Bilibili's nav API and caches in memory for 30 minutes.
-    async fn get_wbi_mixin_key_internal(&self, force_refresh: bool) -> Result<String, BilibiliError> {
+    async fn get_wbi_mixin_key_internal(
+        &self,
+        force_refresh: bool,
+    ) -> Result<String, BilibiliError> {
         // Check cache (unless force refresh)
         if !force_refresh {
             let guard = WBI_KEY_CACHE.lock().await;
@@ -196,23 +202,35 @@ impl BilibiliClient {
         let json: types::NavResp = json_with_limit(resp).await?;
 
         if json.code != 0 {
-            return Err(BilibiliError::Api { code: i64::from(json.code), message: json.message });
+            return Err(BilibiliError::Api {
+                code: i64::from(json.code),
+                message: json.message,
+            });
         }
 
-        let wbi_img = json.data.wbi_img.ok_or_else(|| {
-            BilibiliError::Parse("Missing wbi_img in nav response".to_string())
-        })?;
+        let wbi_img = json
+            .data
+            .wbi_img
+            .ok_or_else(|| BilibiliError::Parse("Missing wbi_img in nav response".to_string()))?;
 
         let img_key = extract_key_from_url(&wbi_img.img_url).ok_or_else(|| {
-            BilibiliError::Parse(format!("Cannot extract img_key from URL: {}", wbi_img.img_url))
+            BilibiliError::Parse(format!(
+                "Cannot extract img_key from URL: {}",
+                wbi_img.img_url
+            ))
         })?;
         let sub_key = extract_key_from_url(&wbi_img.sub_url).ok_or_else(|| {
-            BilibiliError::Parse(format!("Cannot extract sub_key from URL: {}", wbi_img.sub_url))
+            BilibiliError::Parse(format!(
+                "Cannot extract sub_key from URL: {}",
+                wbi_img.sub_url
+            ))
         })?;
 
         let mixin_key = gen_mixin_key(&img_key, &sub_key);
         if mixin_key.is_empty() {
-            return Err(BilibiliError::Parse("Generated empty mixin key".to_string()));
+            return Err(BilibiliError::Parse(
+                "Generated empty mixin key".to_string(),
+            ));
         }
 
         // Store in cache with TTL
@@ -289,7 +307,8 @@ impl BilibiliClient {
         }
 
         let url = "https://passport.bilibili.com/x/passport-login/web/qrcode/generate";
-        let req = self.client
+        let req = self
+            .client
             .get(url)
             .header("Referer", "https://passport.bilibili.com/login");
 
@@ -297,15 +316,23 @@ impl BilibiliClient {
         let json: QrCodeResp = json_with_limit(resp).await?;
 
         if json.code != 0 {
-            return Err(BilibiliError::Api { code: i64::from(json.code), message: json.message });
+            return Err(BilibiliError::Api {
+                code: i64::from(json.code),
+                message: json.message,
+            });
         }
 
-        let data = json.data.ok_or_else(|| BilibiliError::Parse("Missing QR code data".to_string()))?;
+        let data = json
+            .data
+            .ok_or_else(|| BilibiliError::Parse("Missing QR code data".to_string()))?;
         Ok((data.url, data.qrcode_key))
     }
 
     /// Check QR code login status
-    pub async fn login_with_qr_code(&self, key: &str) -> Result<(u32, Option<HashMap<String, String>>), BilibiliError> {
+    pub async fn login_with_qr_code(
+        &self,
+        key: &str,
+    ) -> Result<(u32, Option<HashMap<String, String>>), BilibiliError> {
         #[derive(Deserialize)]
         struct LoginData {
             code: u32,
@@ -320,7 +347,8 @@ impl BilibiliClient {
             data: Option<LoginData>,
         }
 
-        let req = self.client
+        let req = self
+            .client
             .get("https://passport.bilibili.com/x/passport-login/web/qrcode/poll")
             .query(&[("qrcode_key", key)])
             .header("Referer", "https://passport.bilibili.com/login");
@@ -330,25 +358,45 @@ impl BilibiliClient {
         if status.is_client_error() || status.is_server_error() {
             let url = resp.url().to_string();
             let body = resp.text().await.unwrap_or_default();
-            return Err(BilibiliError::Http { status, url, retry_after_secs: None, body });
+            return Err(BilibiliError::Http {
+                status,
+                url,
+                retry_after_secs: None,
+                body,
+            });
         }
 
         // Extract ALL relevant cookies (SESSDATA, bili_jct, DedeUserID, DedeUserID__ckMd5)
         let cookies = {
-            let relevant: HashMap<String, String> = resp.cookies()
-                .filter(|c| matches!(c.name(), "SESSDATA" | "bili_jct" | "DedeUserID" | "DedeUserID__ckMd5"))
+            let relevant: HashMap<String, String> = resp
+                .cookies()
+                .filter(|c| {
+                    matches!(
+                        c.name(),
+                        "SESSDATA" | "bili_jct" | "DedeUserID" | "DedeUserID__ckMd5"
+                    )
+                })
                 .map(|c| (c.name().to_string(), c.value().to_string()))
                 .collect();
-            if relevant.is_empty() { None } else { Some(relevant) }
+            if relevant.is_empty() {
+                None
+            } else {
+                Some(relevant)
+            }
         };
 
         let json: LoginResp = json_with_limit(resp).await?;
 
         if json.code != 0 {
-            return Err(BilibiliError::Api { code: i64::from(json.code), message: json.message });
+            return Err(BilibiliError::Api {
+                code: i64::from(json.code),
+                message: json.message,
+            });
         }
 
-        let data = json.data.ok_or_else(|| BilibiliError::Parse("Missing login data".to_string()))?;
+        let data = json
+            .data
+            .ok_or_else(|| BilibiliError::Parse("Missing login data".to_string()))?;
 
         // QR code status codes:
         // 0: success
@@ -380,7 +428,8 @@ impl BilibiliClient {
         }
 
         let url = "https://passport.bilibili.com/x/passport-login/captcha";
-        let req = self.client
+        let req = self
+            .client
             .get(url)
             .header("Referer", "https://passport.bilibili.com/login");
 
@@ -388,10 +437,15 @@ impl BilibiliClient {
         let json: CaptchaResp = json_with_limit(resp).await?;
 
         if json.code != 0 {
-            return Err(BilibiliError::Api { code: i64::from(json.code), message: json.message });
+            return Err(BilibiliError::Api {
+                code: i64::from(json.code),
+                message: json.message,
+            });
         }
 
-        let data = json.data.ok_or_else(|| BilibiliError::Parse("Missing captcha data".to_string()))?;
+        let data = json
+            .data
+            .ok_or_else(|| BilibiliError::Parse("Missing captcha data".to_string()))?;
         Ok((data.token, data.geetest.gt, data.geetest.challenge))
     }
 
@@ -413,7 +467,8 @@ impl BilibiliClient {
         }
 
         let url = "https://api.bilibili.com/x/frontend/finger/spi";
-        let req = self.client
+        let req = self
+            .client
             .get(url)
             .header("User-Agent", USER_AGENT)
             .header("Referer", "https://www.bilibili.com");
@@ -422,10 +477,15 @@ impl BilibiliClient {
         let json: SpiResp = json_with_limit(resp).await?;
 
         if json.code != 0 {
-            return Err(BilibiliError::Api { code: i64::from(json.code), message: json.message });
+            return Err(BilibiliError::Api {
+                code: i64::from(json.code),
+                message: json.message,
+            });
         }
 
-        let data = json.data.ok_or_else(|| BilibiliError::Parse("Missing BUVID data".to_string()))?;
+        let data = json
+            .data
+            .ok_or_else(|| BilibiliError::Parse("Missing BUVID data".to_string()))?;
         let mut cookies = HashMap::new();
         cookies.insert("buvid3".to_string(), data.b3);
         cookies.insert("buvid4".to_string(), data.b4);
@@ -467,7 +527,8 @@ impl BilibiliClient {
         ];
 
         let url = "https://passport.bilibili.com/x/passport-login/web/sms/send";
-        let mut req = self.client
+        let mut req = self
+            .client
             .post(url)
             .header("Referer", "https://passport.bilibili.com/login")
             .header("Content-Type", "application/x-www-form-urlencoded")
@@ -479,7 +540,8 @@ impl BilibiliClient {
             .iter()
             .map(|(name, value)| {
                 let safe_name: String = name.chars().filter(|c| *c != '\r' && *c != '\n').collect();
-                let safe_value: String = value.chars().filter(|c| *c != '\r' && *c != '\n').collect();
+                let safe_value: String =
+                    value.chars().filter(|c| *c != '\r' && *c != '\n').collect();
                 format!("{safe_name}={safe_value}")
             })
             .collect::<Vec<_>>()
@@ -492,10 +554,15 @@ impl BilibiliClient {
         let json: SmsResp = json_with_limit(resp).await?;
 
         if json.code != 0 {
-            return Err(BilibiliError::Api { code: i64::from(json.code), message: json.message });
+            return Err(BilibiliError::Api {
+                code: i64::from(json.code),
+                message: json.message,
+            });
         }
 
-        let data = json.data.ok_or_else(|| BilibiliError::Parse("Missing SMS data".to_string()))?;
+        let data = json
+            .data
+            .ok_or_else(|| BilibiliError::Parse("Missing SMS data".to_string()))?;
         Ok(data.captcha_key)
     }
 
@@ -527,7 +594,8 @@ impl BilibiliClient {
         ];
 
         let url = "https://passport.bilibili.com/x/passport-login/web/login/sms";
-        let req = self.client
+        let req = self
+            .client
             .post(url)
             .header("Referer", "https://passport.bilibili.com/login")
             .header("Content-Type", "application/x-www-form-urlencoded")
@@ -538,13 +606,24 @@ impl BilibiliClient {
         if status.is_client_error() || status.is_server_error() {
             let url = resp.url().to_string();
             let body = resp.text().await.unwrap_or_default();
-            return Err(BilibiliError::Http { status, url, retry_after_secs: None, body });
+            return Err(BilibiliError::Http {
+                status,
+                url,
+                retry_after_secs: None,
+                body,
+            });
         }
 
         // Extract cookies from headers BEFORE consuming body.
         // Cookies are in Set-Cookie headers, so we must read them before json_with_limit.
-        let cookies: HashMap<String, String> = resp.cookies()
-            .filter(|c| matches!(c.name(), "SESSDATA" | "bili_jct" | "DedeUserID" | "DedeUserID__ckMd5"))
+        let cookies: HashMap<String, String> = resp
+            .cookies()
+            .filter(|c| {
+                matches!(
+                    c.name(),
+                    "SESSDATA" | "bili_jct" | "DedeUserID" | "DedeUserID__ckMd5"
+                )
+            })
             .map(|c| (c.name().to_string(), c.value().to_string()))
             .collect();
 
@@ -552,7 +631,10 @@ impl BilibiliClient {
 
         // Check API-level status before trusting the cookies
         if json.code != 0 {
-            return Err(BilibiliError::Api { code: i64::from(json.code), message: json.message });
+            return Err(BilibiliError::Api {
+                code: i64::from(json.code),
+                message: json.message,
+            });
         }
 
         // Check data.status field -- non-zero indicates SMS login failure
@@ -566,7 +648,9 @@ impl BilibiliClient {
         }
 
         if cookies.is_empty() {
-            return Err(BilibiliError::Parse("No auth cookies found in response".to_string()));
+            return Err(BilibiliError::Parse(
+                "No auth cookies found in response".to_string(),
+            ));
         }
 
         Ok(cookies)
@@ -581,7 +665,9 @@ impl BilibiliClient {
     /// Extract EPID from URL
     #[must_use]
     pub fn extract_epid(url: &str) -> Option<String> {
-        RE_EPID.captures(url).and_then(|cap| cap.get(1))
+        RE_EPID
+            .captures(url)
+            .and_then(|cap| cap.get(1))
             .map(|m| format!("ep{}", m.as_str()))
     }
 
@@ -604,7 +690,8 @@ impl BilibiliClient {
     /// The resolved URL is validated against SSRF rules before returning.
     pub async fn resolve_short_link(&self, url: &str) -> Result<String, BilibiliError> {
         // Validate the initial URL before making the HTTP request (SSRF protection)
-        crate::grpc::validation::validate_host_with_dns(url).await
+        crate::grpc::validation::validate_host_with_dns(url)
+            .await
             .map_err(|e| BilibiliError::InvalidConfig(e.to_string()))?;
         let response = self.client.get(url).send().await?;
         let status = response.status();
@@ -612,12 +699,17 @@ impl BilibiliClient {
         // b23.tv returns a 302 redirect; extract the Location header
         if status.is_redirection() {
             if let Some(location) = response.headers().get("location") {
-                let resolved = location.to_str().map_err(|e| {
-                    BilibiliError::Parse(format!("Invalid Location header: {e}"))
-                })?;
+                let resolved = location
+                    .to_str()
+                    .map_err(|e| BilibiliError::Parse(format!("Invalid Location header: {e}")))?;
                 // Validate resolved URL against SSRF rules (with DNS resolution to prevent rebinding)
-                crate::grpc::validation::validate_host_with_dns(resolved).await
-                    .map_err(|e| BilibiliError::InvalidConfig(format!("Resolved URL blocked by SSRF check: {e}")))?;
+                crate::grpc::validation::validate_host_with_dns(resolved)
+                    .await
+                    .map_err(|e| {
+                        BilibiliError::InvalidConfig(format!(
+                            "Resolved URL blocked by SSRF check: {e}"
+                        ))
+                    })?;
                 return Ok(resolved.to_string());
             }
         }
@@ -627,7 +719,12 @@ impl BilibiliClient {
             return Ok(response.url().to_string());
         }
 
-        Err(BilibiliError::Http { status, url: response.url().to_string(), retry_after_secs: None, body: String::new() })
+        Err(BilibiliError::Http {
+            status,
+            url: response.url().to_string(),
+            retry_after_secs: None,
+            body: String::new(),
+        })
     }
 
     /// Get video information by BVID
@@ -641,7 +738,8 @@ impl BilibiliClient {
             let bvid = bvid.clone();
             let cookie_header = cookie_header.clone();
             async move {
-                let mut req = client.get("https://api.bilibili.com/x/web-interface/view")
+                let mut req = client
+                    .get("https://api.bilibili.com/x/web-interface/view")
                     .query(&[("bvid", &bvid)]);
                 if let Some(ref cookies) = cookie_header {
                     req = req.header("Cookie", cookies.as_str());
@@ -653,7 +751,10 @@ impl BilibiliClient {
                 if json["code"].as_i64() != Some(0) {
                     return Err(BilibiliError::Api {
                         code: json["code"].as_i64().unwrap_or(0),
-                        message: json["message"].as_str().unwrap_or("Unknown error").to_string(),
+                        message: json["message"]
+                            .as_str()
+                            .unwrap_or("Unknown error")
+                            .to_string(),
                     });
                 }
 
@@ -668,7 +769,8 @@ impl BilibiliClient {
                     duration: data["duration"].as_u64().unwrap_or(0),
                 })
             }
-        }).await
+        })
+        .await
     }
 
     /// Get playback URL
@@ -691,7 +793,8 @@ impl BilibiliClient {
             let cid_str = cid_str.clone();
             let qn_str = qn_str.clone();
             async move {
-                let mut req = client.get("https://api.bilibili.com/x/player/playurl")
+                let mut req = client
+                    .get("https://api.bilibili.com/x/player/playurl")
                     .query(&[("bvid", bvid.as_str()), ("cid", &cid_str), ("qn", &qn_str)]);
                 if let Some(ref cookies) = cookie_header {
                     req = req.header("Cookie", cookies.as_str());
@@ -702,11 +805,15 @@ impl BilibiliClient {
                 if json["code"].as_i64() != Some(0) {
                     return Err(BilibiliError::Api {
                         code: json["code"].as_i64().unwrap_or(0),
-                        message: json["message"].as_str().unwrap_or("Unknown error").to_string(),
+                        message: json["message"]
+                            .as_str()
+                            .unwrap_or("Unknown error")
+                            .to_string(),
                     });
                 }
 
-                let durl = json["data"]["durl"].as_array()
+                let durl = json["data"]["durl"]
+                    .as_array()
                     .ok_or_else(|| BilibiliError::Parse("Missing durl array".to_string()))?
                     .iter()
                     .filter_map(|item| {
@@ -719,7 +826,8 @@ impl BilibiliClient {
 
                 Ok(PlayUrlInfo { durl })
             }
-        }).await
+        })
+        .await
     }
 
     /// Get anime information by EPID
@@ -733,7 +841,8 @@ impl BilibiliClient {
             let cookie_header = cookie_header.clone();
             let epid = epid.clone();
             async move {
-                let mut req = client.get("https://api.bilibili.com/pgc/view/web/season")
+                let mut req = client
+                    .get("https://api.bilibili.com/pgc/view/web/season")
                     .query(&[("ep_id", epid.as_str())]);
                 if let Some(ref cookies) = cookie_header {
                     req = req.header("Cookie", cookies.as_str());
@@ -744,7 +853,10 @@ impl BilibiliClient {
                 if json["code"].as_i64() != Some(0) {
                     return Err(BilibiliError::Api {
                         code: json["code"].as_i64().unwrap_or(0),
-                        message: json["message"].as_str().unwrap_or("Unknown error").to_string(),
+                        message: json["message"]
+                            .as_str()
+                            .unwrap_or("Unknown error")
+                            .to_string(),
                     });
                 }
 
@@ -753,17 +865,24 @@ impl BilibiliClient {
 
                 Ok(AnimeInfo {
                     season_id: data["season_id"].as_u64().unwrap_or(0),
-                    ep_id: first_episode.and_then(|ep| ep["ep_id"].as_u64()).unwrap_or(0),
+                    ep_id: first_episode
+                        .and_then(|ep| ep["ep_id"].as_u64())
+                        .unwrap_or(0),
                     cid: first_episode.and_then(|ep| ep["cid"].as_u64()).unwrap_or(0),
                     title: data["title"].as_str().unwrap_or("").to_string(),
                     cover: data["cover"].as_str().unwrap_or("").to_string(),
                 })
             }
-        }).await
+        })
+        .await
     }
 
     /// Parse video page to get video information
-    pub async fn parse_video_page(&self, aid: u64, bvid: &str) -> Result<VideoPageInfo, BilibiliError> {
+    pub async fn parse_video_page(
+        &self,
+        aid: u64,
+        bvid: &str,
+    ) -> Result<VideoPageInfo, BilibiliError> {
         let client = self.client.clone();
         let cookie_header = self.build_cookie_header();
         let bvid = bvid.to_string();
@@ -787,7 +906,10 @@ impl BilibiliClient {
                 let json: types::VideoPageInfoResp = json_with_limit(resp).await?;
 
                 if json.code != 0 {
-                    return Err(BilibiliError::Api { code: i64::from(json.code), message: json.message });
+                    return Err(BilibiliError::Api {
+                        code: i64::from(json.code),
+                        message: json.message,
+                    });
                 }
 
                 let data = json.data;
@@ -812,11 +934,18 @@ impl BilibiliClient {
                     video_infos,
                 })
             }
-        }).await
+        })
+        .await
     }
 
     /// Get video playback URL (normal video, not DASH)
-    pub async fn get_video_url(&self, aid: u64, bvid: &str, cid: u64, quality: Option<u32>) -> Result<VideoUrlInfo, BilibiliError> {
+    pub async fn get_video_url(
+        &self,
+        aid: u64,
+        bvid: &str,
+        cid: u64,
+        quality: Option<u32>,
+    ) -> Result<VideoUrlInfo, BilibiliError> {
         let client = self.client.clone();
         let cookie_header = self.build_cookie_header();
         let bvid = bvid.to_string();
@@ -833,7 +962,11 @@ impl BilibiliClient {
             async move {
                 let mut req = client.get("https://api.bilibili.com/x/player/playurl");
                 if bvid.is_empty() {
-                    req = req.query(&[("aid", &aid.to_string()), ("cid", &cid_str), ("qn", &qn_str)]);
+                    req = req.query(&[
+                        ("aid", &aid.to_string()),
+                        ("cid", &cid_str),
+                        ("qn", &qn_str),
+                    ]);
                 } else {
                     req = req.query(&[("bvid", &bvid), ("cid", &cid_str), ("qn", &qn_str)]);
                 }
@@ -845,19 +978,26 @@ impl BilibiliClient {
                 let json: types::VideoUrlResp = json_with_limit(resp).await?;
 
                 if json.code != 0 {
-                    return Err(BilibiliError::Api { code: i64::from(json.code), message: json.message });
+                    return Err(BilibiliError::Api {
+                        code: i64::from(json.code),
+                        message: json.message,
+                    });
                 }
 
                 let data = json.data;
-                let accept_quality: Vec<u32> = data.accept_quality.iter().map(|&q| q as u32).collect();
+                let accept_quality: Vec<u32> =
+                    data.accept_quality.iter().map(|&q| q as u32).collect();
                 let accept_description = data.accept_description;
                 let current_quality = data.quality as u32;
-                let segments: Vec<VideoSegment> = data.durl.iter()
-                    .map(|d| VideoSegment { url: d.url.clone(), size: d.size })
+                let segments: Vec<VideoSegment> = data
+                    .durl
+                    .iter()
+                    .map(|d| VideoSegment {
+                        url: d.url.clone(),
+                        size: d.size,
+                    })
                     .collect();
-                let url = segments.first()
-                    .map(|s| s.url.clone())
-                    .unwrap_or_default();
+                let url = segments.first().map(|s| s.url.clone()).unwrap_or_default();
 
                 Ok(VideoUrlInfo {
                     accept_quality,
@@ -867,7 +1007,8 @@ impl BilibiliClient {
                     segments,
                 })
             }
-        }).await
+        })
+        .await
     }
 
     /// Get DASH video URL - returns structured DASH data for upper layer to generate MPD.
@@ -875,9 +1016,16 @@ impl BilibiliClient {
     /// This endpoint (`/x/player/wbi/playurl`) requires WBI parameter signing.
     /// Query parameters are signed with the WBI mixin key before sending.
     /// Automatically detects and retries on stale WBI key errors.
-    pub async fn get_dash_video_url(&self, aid: u64, bvid: &str, cid: u64) -> Result<(DashData, DashData), BilibiliError> {
+    pub async fn get_dash_video_url(
+        &self,
+        aid: u64,
+        bvid: &str,
+        cid: u64,
+    ) -> Result<(DashData, DashData), BilibiliError> {
         // First attempt with cached key
-        let result = self.get_dash_video_url_internal(aid, bvid, cid, false).await;
+        let result = self
+            .get_dash_video_url_internal(aid, bvid, cid, false)
+            .await;
 
         // If we get a WBI stale error, retry once with fresh key
         if let Err(ref e) = result {
@@ -891,7 +1039,13 @@ impl BilibiliClient {
     }
 
     /// Internal method for DASH video URL with optional key refresh
-    async fn get_dash_video_url_internal(&self, aid: u64, bvid: &str, cid: u64, force_key_refresh: bool) -> Result<(DashData, DashData), BilibiliError> {
+    async fn get_dash_video_url_internal(
+        &self,
+        aid: u64,
+        bvid: &str,
+        cid: u64,
+        force_key_refresh: bool,
+    ) -> Result<(DashData, DashData), BilibiliError> {
         // Obtain the WBI mixin key (cached, refreshed on expiry or if forced)
         let mixin_key = self.get_wbi_mixin_key_internal(force_key_refresh).await?;
         let client = self.client.clone();
@@ -905,10 +1059,8 @@ impl BilibiliClient {
             let bvid = bvid.clone();
             async move {
                 // Build query parameters
-                let mut params: Vec<(&str, String)> = vec![
-                    ("cid", cid.to_string()),
-                    ("fnval", "4048".to_string()),
-                ];
+                let mut params: Vec<(&str, String)> =
+                    vec![("cid", cid.to_string()), ("fnval", "4048".to_string())];
                 if bvid.is_empty() {
                     params.push(("aid", aid.to_string()));
                 } else {
@@ -928,20 +1080,30 @@ impl BilibiliClient {
                 let json: types::DashVideoResp = json_with_limit(resp).await?;
 
                 if json.code != 0 {
-                    return Err(BilibiliError::Api { code: i64::from(json.code), message: json.message });
+                    return Err(BilibiliError::Api {
+                        code: i64::from(json.code),
+                        message: json.message,
+                    });
                 }
 
                 // Parse DASH data into structured format
                 let dash_info = json.data.dash;
-                let (regular_dash, hevc_dash) = parse_dash_info(&dash_info, &json.data.support_formats)?;
+                let (regular_dash, hevc_dash) =
+                    parse_dash_info(&dash_info, &json.data.support_formats)?;
 
                 Ok((regular_dash, hevc_dash))
             }
-        }).await
+        })
+        .await
     }
 
     /// Get subtitles for a video
-    pub async fn get_subtitles(&self, aid: u64, bvid: &str, cid: u64) -> Result<HashMap<String, String>, BilibiliError> {
+    pub async fn get_subtitles(
+        &self,
+        aid: u64,
+        bvid: &str,
+        cid: u64,
+    ) -> Result<HashMap<String, String>, BilibiliError> {
         let client = self.client.clone();
         let cookie_header = self.build_cookie_header();
         let bvid = bvid.to_string();
@@ -967,7 +1129,10 @@ impl BilibiliClient {
                 let json: types::PlayerV2InfoResp = json_with_limit(resp).await?;
 
                 if json.code != 0 {
-                    return Err(BilibiliError::Api { code: i64::from(json.code), message: json.message });
+                    return Err(BilibiliError::Api {
+                        code: i64::from(json.code),
+                        message: json.message,
+                    });
                 }
 
                 let mut subtitles = HashMap::new();
@@ -983,7 +1148,11 @@ impl BilibiliClient {
                     }
                     // Validate subtitle URL against SSRF
                     if let Err(e) = crate::grpc::validation::validate_host(&url) {
-                        tracing::warn!("Skipping subtitle with blocked URL: {} ({})", url, e.message());
+                        tracing::warn!(
+                            "Skipping subtitle with blocked URL: {} ({})",
+                            url,
+                            e.message()
+                        );
                         continue;
                     }
                     subtitles.insert(name, url);
@@ -991,7 +1160,8 @@ impl BilibiliClient {
 
                 Ok(subtitles)
             }
-        }).await
+        })
+        .await
     }
 
     /// Get user information
@@ -1003,7 +1173,8 @@ impl BilibiliClient {
             let client = client.clone();
             let cookie_header = cookie_header.clone();
             async move {
-                let mut req = client.get("https://api.bilibili.com/x/web-interface/nav")
+                let mut req = client
+                    .get("https://api.bilibili.com/x/web-interface/nav")
                     .header("Referer", REFERER);
                 if let Some(ref cookies) = cookie_header {
                     req = req.header("Cookie", cookies.as_str());
@@ -1012,7 +1183,10 @@ impl BilibiliClient {
                 let json: types::NavResp = json_with_limit(resp).await?;
 
                 if json.code != 0 {
-                    return Err(BilibiliError::Api { code: i64::from(json.code), message: json.message });
+                    return Err(BilibiliError::Api {
+                        code: i64::from(json.code),
+                        message: json.message,
+                    });
                 }
 
                 let data = json.data;
@@ -1023,11 +1197,16 @@ impl BilibiliClient {
                     is_vip: data.vip_status == 1,
                 })
             }
-        }).await
+        })
+        .await
     }
 
     /// Parse PGC (anime/bangumi) page
-    pub async fn parse_pgc_page(&self, epid: u64, ssid: u64) -> Result<VideoPageInfo, BilibiliError> {
+    pub async fn parse_pgc_page(
+        &self,
+        epid: u64,
+        ssid: u64,
+    ) -> Result<VideoPageInfo, BilibiliError> {
         let client = self.client.clone();
         let cookie_header = self.build_cookie_header();
 
@@ -1049,7 +1228,10 @@ impl BilibiliClient {
                 let json: types::SeasonInfoResp = json_with_limit(resp).await?;
 
                 if json.code != 0 {
-                    return Err(BilibiliError::Api { code: i64::from(json.code), message: json.message });
+                    return Err(BilibiliError::Api {
+                        code: i64::from(json.code),
+                        message: json.message,
+                    });
                 }
 
                 let result = json.result;
@@ -1067,7 +1249,11 @@ impl BilibiliClient {
                         bvid: ep.bvid,
                         cid: ep.cid,
                         epid: ep.ep_id,
-                        name: if ep.long_title.is_empty() { ep.title } else { ep.long_title },
+                        name: if ep.long_title.is_empty() {
+                            ep.title
+                        } else {
+                            ep.long_title
+                        },
                         cover_image: ep.cover,
                         live: false,
                     });
@@ -1079,11 +1265,17 @@ impl BilibiliClient {
                     video_infos,
                 })
             }
-        }).await
+        })
+        .await
     }
 
     /// Get PGC playback URL
-    pub async fn get_pgc_url(&self, epid: u64, cid: u64, quality: Option<u32>) -> Result<VideoUrlInfo, BilibiliError> {
+    pub async fn get_pgc_url(
+        &self,
+        epid: u64,
+        cid: u64,
+        quality: Option<u32>,
+    ) -> Result<VideoUrlInfo, BilibiliError> {
         let client = self.client.clone();
         let cookie_header = self.build_cookie_header();
         let qn = quality.unwrap_or(80);
@@ -1092,7 +1284,8 @@ impl BilibiliClient {
             let client = client.clone();
             let cookie_header = cookie_header.clone();
             async move {
-                let mut req = client.get("https://api.bilibili.com/pgc/player/web/playurl")
+                let mut req = client
+                    .get("https://api.bilibili.com/pgc/player/web/playurl")
                     .query(&[("ep_id", epid), ("cid", cid), ("qn", u64::from(qn))]);
                 req = req.header("Referer", REFERER);
                 if let Some(ref cookies) = cookie_header {
@@ -1102,19 +1295,26 @@ impl BilibiliClient {
                 let json: types::PgcUrlResp = json_with_limit(resp).await?;
 
                 if json.code != 0 {
-                    return Err(BilibiliError::Api { code: i64::from(json.code), message: json.message });
+                    return Err(BilibiliError::Api {
+                        code: i64::from(json.code),
+                        message: json.message,
+                    });
                 }
 
                 let result = json.result;
-                let accept_quality: Vec<u32> = result.accept_quality.iter().map(|&q| q as u32).collect();
+                let accept_quality: Vec<u32> =
+                    result.accept_quality.iter().map(|&q| q as u32).collect();
                 let accept_description = result.accept_description;
                 let current_quality = result.quality as u32;
-                let segments: Vec<VideoSegment> = result.durl.iter()
-                    .map(|d| VideoSegment { url: d.url.clone(), size: d.size })
+                let segments: Vec<VideoSegment> = result
+                    .durl
+                    .iter()
+                    .map(|d| VideoSegment {
+                        url: d.url.clone(),
+                        size: d.size,
+                    })
                     .collect();
-                let url = segments.first()
-                    .map(|s| s.url.clone())
-                    .unwrap_or_default();
+                let url = segments.first().map(|s| s.url.clone()).unwrap_or_default();
 
                 Ok(VideoUrlInfo {
                     accept_quality,
@@ -1124,11 +1324,16 @@ impl BilibiliClient {
                     segments,
                 })
             }
-        }).await
+        })
+        .await
     }
 
     /// Get DASH PGC URL - returns structured DASH data for upper layer to generate MPD
-    pub async fn get_dash_pgc_url(&self, epid: u64, cid: u64) -> Result<(DashData, DashData), BilibiliError> {
+    pub async fn get_dash_pgc_url(
+        &self,
+        epid: u64,
+        cid: u64,
+    ) -> Result<(DashData, DashData), BilibiliError> {
         let client = self.client.clone();
         let cookie_header = self.build_cookie_header();
 
@@ -1136,7 +1341,8 @@ impl BilibiliClient {
             let client = client.clone();
             let cookie_header = cookie_header.clone();
             async move {
-                let mut req = client.get("https://api.bilibili.com/pgc/player/web/playurl")
+                let mut req = client
+                    .get("https://api.bilibili.com/pgc/player/web/playurl")
                     .query(&[("ep_id", epid), ("cid", cid), ("fnval", 4048u64)]);
                 req = req.header("Referer", REFERER);
                 if let Some(ref cookies) = cookie_header {
@@ -1146,15 +1352,20 @@ impl BilibiliClient {
                 let json: types::DashPgcResp = json_with_limit(resp).await?;
 
                 if json.code != 0 {
-                    return Err(BilibiliError::Api { code: i64::from(json.code), message: json.message });
+                    return Err(BilibiliError::Api {
+                        code: i64::from(json.code),
+                        message: json.message,
+                    });
                 }
 
                 let dash_info = json.result.dash;
-                let (regular_dash, hevc_dash) = parse_dash_info(&dash_info, &json.result.support_formats)?;
+                let (regular_dash, hevc_dash) =
+                    parse_dash_info(&dash_info, &json.result.support_formats)?;
 
                 Ok((regular_dash, hevc_dash))
             }
-        }).await
+        })
+        .await
     }
 
     /// Match URL to extract video type and ID
@@ -1199,7 +1410,8 @@ impl BilibiliClient {
             let client = client.clone();
             let cookie_header = cookie_header.clone();
             async move {
-                let mut req = client.get("https://api.live.bilibili.com/room/v1/Room/get_info")
+                let mut req = client
+                    .get("https://api.live.bilibili.com/room/v1/Room/get_info")
                     .query(&[("room_id", room_id)]);
                 req = req.header("Referer", REFERER);
                 if let Some(ref cookies) = cookie_header {
@@ -1209,7 +1421,10 @@ impl BilibiliClient {
                 let json: types::ParseLivePageResp = json_with_limit(resp).await?;
 
                 if json.code != 0 {
-                    return Err(BilibiliError::Api { code: i64::from(json.code), message: json.message });
+                    return Err(BilibiliError::Api {
+                        code: i64::from(json.code),
+                        message: json.message,
+                    });
                 }
 
                 let data = json.data;
@@ -1218,7 +1433,8 @@ impl BilibiliClient {
                 // Fetch streamer name from master info API using uid from room info
                 let uname = {
                     let uid = data.uid;
-                    let mut master_req = client.get("https://api.live.bilibili.com/live_user/v1/Master/info")
+                    let mut master_req = client
+                        .get("https://api.live.bilibili.com/live_user/v1/Master/info")
                         .query(&[("uid", uid)]);
                     master_req = master_req.header("Referer", REFERER);
                     if let Some(ref cookies) = cookie_header {
@@ -1226,8 +1442,12 @@ impl BilibiliClient {
                     }
                     match check_response(master_req.send().await?).await {
                         Ok(master_resp) => {
-                            match json_with_limit::<types::GetLiveMasterInfoResp>(master_resp).await {
-                                Ok(master_json) if master_json.code == 0 && !master_json.data.info.uname.is_empty() => {
+                            match json_with_limit::<types::GetLiveMasterInfoResp>(master_resp).await
+                            {
+                                Ok(master_json)
+                                    if master_json.code == 0
+                                        && !master_json.data.info.uname.is_empty() =>
+                                {
                                     master_json.data.info.uname
                                 }
                                 _ => uid.to_string(),
@@ -1252,11 +1472,16 @@ impl BilibiliClient {
                     video_infos: vec![video_info],
                 })
             }
-        }).await
+        })
+        .await
     }
 
     /// Get live streams
-    pub async fn get_live_streams(&self, room_id: u64, hls: bool) -> Result<Vec<LiveStream>, BilibiliError> {
+    pub async fn get_live_streams(
+        &self,
+        room_id: u64,
+        hls: bool,
+    ) -> Result<Vec<LiveStream>, BilibiliError> {
         let client = self.client.clone();
         let cookie_header = self.build_cookie_header();
         let room_id_str = room_id.to_string();
@@ -1266,7 +1491,8 @@ impl BilibiliClient {
             let cookie_header = cookie_header.clone();
             let room_id_str = room_id_str.clone();
             async move {
-                let mut req = client.get("https://api.live.bilibili.com/xlive/web-room/v2/index/getRoomPlayInfo")
+                let mut req = client
+                    .get("https://api.live.bilibili.com/xlive/web-room/v2/index/getRoomPlayInfo")
                     .query(&[
                         ("room_id", room_id_str.as_str()),
                         ("protocol", "0,1"),
@@ -1292,7 +1518,9 @@ impl BilibiliClient {
 
                 let mut streams = Vec::new();
 
-                let stream_list = json.data.playurl_info
+                let stream_list = json
+                    .data
+                    .playurl_info
                     .as_ref()
                     .and_then(|info| info.playurl.as_ref())
                     .map(|playurl| &playurl.stream[..])
@@ -1308,12 +1536,18 @@ impl BilibiliClient {
                     for format in &stream.format {
                         for codec in &format.codec {
                             let quality = codec.current_qn as u32;
-                            let desc = codec.accept_qn.first()
+                            let desc = codec
+                                .accept_qn
+                                .first()
                                 .map_or_else(|| "Unknown".to_string(), |q| format!("{q}P"));
 
-                            let urls: Vec<String> = codec.url_info.iter()
+                            let urls: Vec<String> = codec
+                                .url_info
+                                .iter()
                                 .filter(|info| !info.host.is_empty())
-                                .map(|info| format!("{}{}{}", info.host, codec.base_url, info.extra))
+                                .map(|info| {
+                                    format!("{}{}{}", info.host, codec.base_url, info.extra)
+                                })
                                 .collect();
 
                             if !urls.is_empty() {
@@ -1329,7 +1563,8 @@ impl BilibiliClient {
 
                 Ok(streams)
             }
-        }).await
+        })
+        .await
     }
 
     /// Get live danmaku server info
@@ -1341,7 +1576,8 @@ impl BilibiliClient {
             let client = client.clone();
             let cookie_header = cookie_header.clone();
             async move {
-                let mut req = client.get("https://api.live.bilibili.com/xlive/web-room/v1/index/getDanmuInfo")
+                let mut req = client
+                    .get("https://api.live.bilibili.com/xlive/web-room/v1/index/getDanmuInfo")
                     .query(&[("id", room_id)]);
                 req = req.header("Referer", REFERER);
                 if let Some(ref cookies) = cookie_header {
@@ -1351,12 +1587,16 @@ impl BilibiliClient {
                 let json: types::GetLiveDanmuInfoResp = json_with_limit(resp).await?;
 
                 if json.code != 0 {
-                    return Err(BilibiliError::Api { code: i64::from(json.code), message: json.message });
+                    return Err(BilibiliError::Api {
+                        code: i64::from(json.code),
+                        message: json.message,
+                    });
                 }
 
                 let data = json.data;
                 let token = data.token;
-                let host_list: Vec<DanmuHost> = data.host_list
+                let host_list: Vec<DanmuHost> = data
+                    .host_list
                     .into_iter()
                     .map(|h| DanmuHost {
                         host: h.host,
@@ -1366,12 +1606,10 @@ impl BilibiliClient {
                     })
                     .collect();
 
-                Ok(LiveDanmuInfo {
-                    token,
-                    host_list,
-                })
+                Ok(LiveDanmuInfo { token, host_list })
             }
-        }).await
+        })
+        .await
     }
 
     /// Connect to live danmaku WebSocket and return a message stream
@@ -1385,35 +1623,42 @@ impl BilibiliClient {
         let danmu_info = self.get_live_danmu_info(room_id).await?;
 
         // Select first available host with wss_port
-        let host = danmu_info.host_list.first().ok_or_else(|| {
-            BilibiliError::Parse("No danmaku host available".to_string())
-        })?;
+        let host = danmu_info
+            .host_list
+            .first()
+            .ok_or_else(|| BilibiliError::Parse("No danmaku host available".to_string()))?;
 
         // Build WebSocket URL (use wss:// for secure connection)
         let ws_url = format!("wss://{}:{}/sub", host.host, host.wss_port);
 
         // Validate WebSocket URL against SSRF (convert wss to https for validation)
         let validation_url = format!("https://{}:{}/sub", host.host, host.wss_port);
-        crate::grpc::validation::validate_host_with_dns(&validation_url).await
-            .map_err(|e| BilibiliError::InvalidConfig(format!("Danmaku WebSocket URL blocked by SSRF check: {}", e.message())))?;
+        crate::grpc::validation::validate_host_with_dns(&validation_url)
+            .await
+            .map_err(|e| {
+                BilibiliError::InvalidConfig(format!(
+                    "Danmaku WebSocket URL blocked by SSRF check: {}",
+                    e.message()
+                ))
+            })?;
 
         // Connect to WebSocket with timeout
         let ws_connect_timeout = Duration::from_secs(10);
-        let (ws_stream, _) = tokio::time::timeout(
-            ws_connect_timeout,
-            connect_async(&ws_url)
-        )
-        .await
-        .map_err(|_| BilibiliError::Network("WebSocket connection timeout".to_string()))?
-        .map_err(|e| BilibiliError::Parse(format!("Failed to connect to danmaku WebSocket: {e}")))?;
+        let (ws_stream, _) = tokio::time::timeout(ws_connect_timeout, connect_async(&ws_url))
+            .await
+            .map_err(|_| BilibiliError::Network("WebSocket connection timeout".to_string()))?
+            .map_err(|e| {
+                BilibiliError::Parse(format!("Failed to connect to danmaku WebSocket: {e}"))
+            })?;
 
         let (mut write, read) = ws_stream.split();
 
         // Send authentication packet
         let auth_packet = build_auth_packet(room_id, &danmu_info.token);
-        write.send(Message::Binary(auth_packet.into())).await.map_err(|e| {
-            BilibiliError::Parse(format!("Failed to send auth packet: {e}"))
-        })?;
+        write
+            .send(Message::Binary(auth_packet.into()))
+            .await
+            .map_err(|e| BilibiliError::Parse(format!("Failed to send auth packet: {e}")))?;
 
         Ok(LiveDanmakuConnection {
             write: tokio::sync::Mutex::new(write),
@@ -1425,13 +1670,21 @@ impl BilibiliClient {
 
 /// Live danmaku WebSocket connection
 pub struct LiveDanmakuConnection {
-    write: tokio::sync::Mutex<futures_util::stream::SplitSink<
-        tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>,
-        Message
-    >>,
-    read: tokio::sync::Mutex<futures_util::stream::SplitStream<
-        tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>
-    >>,
+    write: tokio::sync::Mutex<
+        futures_util::stream::SplitSink<
+            tokio_tungstenite::WebSocketStream<
+                tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+            >,
+            Message,
+        >,
+    >,
+    read: tokio::sync::Mutex<
+        futures_util::stream::SplitStream<
+            tokio_tungstenite::WebSocketStream<
+                tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+            >,
+        >,
+    >,
     room_id: u64,
 }
 
@@ -1445,17 +1698,17 @@ impl LiveDanmakuConnection {
         let mut read = self.read.lock().await;
 
         match read.next().await {
-            Some(Ok(Message::Binary(data))) => {
-                parse_danmaku_packet(&data)
-            }
-            Some(Ok(Message::Close(_))) => {
-                Err(BilibiliError::Parse("Danmaku WebSocket connection closed by server".to_string()))
-            }
+            Some(Ok(Message::Binary(data))) => parse_danmaku_packet(&data),
+            Some(Ok(Message::Close(_))) => Err(BilibiliError::Parse(
+                "Danmaku WebSocket connection closed by server".to_string(),
+            )),
             Some(Ok(_)) => Ok(Vec::new()), // Ignore non-binary messages (ping/pong/text)
             Some(Err(e)) => Err(BilibiliError::Parse(format!("WebSocket error: {e}"))),
             None => {
                 // Stream ended = connection closed unexpectedly
-                Err(BilibiliError::Parse("Danmaku WebSocket connection closed".to_string()))
+                Err(BilibiliError::Parse(
+                    "Danmaku WebSocket connection closed".to_string(),
+                ))
             }
         }
     }
@@ -1464,9 +1717,10 @@ impl LiveDanmakuConnection {
     pub async fn send_heartbeat(&self) -> Result<(), BilibiliError> {
         let mut write = self.write.lock().await;
         let heartbeat_packet = build_heartbeat_packet();
-        write.send(Message::Binary(heartbeat_packet.into())).await.map_err(|e| {
-            BilibiliError::Parse(format!("Failed to send heartbeat: {e}"))
-        })
+        write
+            .send(Message::Binary(heartbeat_packet.into()))
+            .await
+            .map_err(|e| BilibiliError::Parse(format!("Failed to send heartbeat: {e}")))
     }
 
     /// Get room ID
@@ -1485,9 +1739,7 @@ pub enum DanmakuMessage {
         timestamp: u64,
     },
     /// User entered room
-    UserEnter {
-        user: String,
-    },
+    UserEnter { user: String },
     /// Gift sent
     Gift {
         user: String,
@@ -1495,9 +1747,7 @@ pub enum DanmakuMessage {
         count: u32,
     },
     /// Heartbeat response (online viewer count)
-    Heartbeat {
-        online_count: u32,
-    },
+    Heartbeat { online_count: u32 },
     /// Unknown message type
     Unknown,
 }
@@ -1529,9 +1779,9 @@ fn build_auth_packet(room_id: u64, token: &str) -> Vec<u8> {
     // Header
     packet.extend_from_slice(&u32::try_from(packet_length).expect("REASON").to_be_bytes());
     packet.extend_from_slice(&16u16.to_be_bytes()); // header length
-    packet.extend_from_slice(&1u16.to_be_bytes());  // protocol version
-    packet.extend_from_slice(&7u32.to_be_bytes());  // operation = auth
-    packet.extend_from_slice(&1u32.to_be_bytes());  // sequence
+    packet.extend_from_slice(&1u16.to_be_bytes()); // protocol version
+    packet.extend_from_slice(&7u32.to_be_bytes()); // operation = auth
+    packet.extend_from_slice(&1u32.to_be_bytes()); // sequence
 
     // Body
     packet.extend_from_slice(&body);
@@ -1544,11 +1794,11 @@ fn build_heartbeat_packet() -> Vec<u8> {
     // Heartbeat packet: operation = 2, empty body
     let mut packet = Vec::with_capacity(16);
 
-    packet.extend_from_slice(&16u32.to_be_bytes());  // packet length
-    packet.extend_from_slice(&16u16.to_be_bytes());  // header length
-    packet.extend_from_slice(&1u16.to_be_bytes());   // protocol version
-    packet.extend_from_slice(&2u32.to_be_bytes());   // operation = heartbeat
-    packet.extend_from_slice(&1u32.to_be_bytes());   // sequence
+    packet.extend_from_slice(&16u32.to_be_bytes()); // packet length
+    packet.extend_from_slice(&16u16.to_be_bytes()); // header length
+    packet.extend_from_slice(&1u16.to_be_bytes()); // protocol version
+    packet.extend_from_slice(&2u32.to_be_bytes()); // operation = heartbeat
+    packet.extend_from_slice(&1u32.to_be_bytes()); // sequence
 
     packet
 }
@@ -1667,7 +1917,11 @@ fn parse_danmaku_cmd(cmd: &str, json: &serde_json::Value) -> DanmakuMessage {
             // Chat message
             let info = json.get("info").and_then(|v| v.as_array());
             if let Some(info) = info {
-                let message = info.get(1).and_then(|v| v.as_str()).unwrap_or("").to_string();
+                let message = info
+                    .get(1)
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
                 let user_info = info.get(2).and_then(|v| v.as_array());
                 let user = user_info
                     .and_then(|arr| arr.get(1))
@@ -1690,7 +1944,11 @@ fn parse_danmaku_cmd(cmd: &str, json: &serde_json::Value) -> DanmakuMessage {
             // User enter room
             let data = json.get("data");
             if let Some(data) = data {
-                let user = data.get("uname").and_then(|v| v.as_str()).unwrap_or("Unknown").to_string();
+                let user = data
+                    .get("uname")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("Unknown")
+                    .to_string();
                 return DanmakuMessage::UserEnter { user };
             }
         }
@@ -1698,9 +1956,20 @@ fn parse_danmaku_cmd(cmd: &str, json: &serde_json::Value) -> DanmakuMessage {
             // Gift sent
             let data = json.get("data");
             if let Some(data) = data {
-                let user = data.get("uname").and_then(|v| v.as_str()).unwrap_or("Unknown").to_string();
-                let gift_name = data.get("giftName").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                let count = data.get("num").and_then(serde_json::Value::as_u64).unwrap_or(1) as u32;
+                let user = data
+                    .get("uname")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("Unknown")
+                    .to_string();
+                let gift_name = data
+                    .get("giftName")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let count = data
+                    .get("num")
+                    .and_then(serde_json::Value::as_u64)
+                    .unwrap_or(1) as u32;
                 return DanmakuMessage::Gift {
                     user,
                     gift_name,
@@ -1884,14 +2153,21 @@ impl From<&AudioStreamData> for crate::grpc::bilibili::AudioStream {
     }
 }
 
-
 impl From<&DashData> for crate::grpc::bilibili::DashInfo {
     fn from(data: &DashData) -> Self {
         Self {
             duration: data.duration,
             min_buffer_time: data.min_buffer_time,
-            video_streams: data.video_streams.iter().map(std::convert::Into::into).collect(),
-            audio_streams: data.audio_streams.iter().map(std::convert::Into::into).collect(),
+            video_streams: data
+                .video_streams
+                .iter()
+                .map(std::convert::Into::into)
+                .collect(),
+            audio_streams: data
+                .audio_streams
+                .iter()
+                .map(std::convert::Into::into)
+                .collect(),
         }
     }
 }
@@ -1912,7 +2188,8 @@ fn parse_dash_info(
         .collect();
 
     // Parse audio streams (shared by both regular and HEVC)
-    let parsed_audios: Vec<AudioStreamData> = dash_info.audio
+    let parsed_audios: Vec<AudioStreamData> = dash_info
+        .audio
         .iter()
         .map(|audio| AudioStreamData {
             id: audio.id,
@@ -1984,7 +2261,7 @@ fn parse_dash_info(
 }
 
 /// Generate DASH MPD XML from structured data
-#[must_use] 
+#[must_use]
 pub fn generate_mpd_xml(dash_data: &DashData) -> String {
     let mut mpd = String::new();
 
@@ -1994,9 +2271,17 @@ pub fn generate_mpd_xml(dash_data: &DashData) -> String {
     mpd.push_str(r#"<MPD xmlns="urn:mpeg:dash:schema:mpd:2011" "#);
     mpd.push_str(r#"xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" "#);
     mpd.push_str(r#"xsi:schemaLocation="urn:mpeg:dash:schema:mpd:2011 DASH-MPD.xsd" "#);
-    let _ = write!(mpd, r#"minBufferTime="PT{:.1}S" "#, dash_data.min_buffer_time);
+    let _ = write!(
+        mpd,
+        r#"minBufferTime="PT{:.1}S" "#,
+        dash_data.min_buffer_time
+    );
     mpd.push_str(r#"type="static" "#);
-    let _ = write!(mpd, r#"mediaPresentationDuration="PT{:.1}S" "#, dash_data.duration);
+    let _ = write!(
+        mpd,
+        r#"mediaPresentationDuration="PT{:.1}S" "#,
+        dash_data.duration
+    );
     mpd.push_str(r#"profiles="urn:mpeg:dash:profile:isoff-on-demand:2011">"#);
     mpd.push('\n');
 
@@ -2011,8 +2296,7 @@ pub fn generate_mpd_xml(dash_data: &DashData) -> String {
         mpd.push('\n');
 
         for video in &dash_data.video_streams {
-            let _ = write!(mpd, r#"      <Representation id="{}" "#,
-                video.id);
+            let _ = write!(mpd, r#"      <Representation id="{}" "#, video.id);
             let _ = write!(mpd, r#"codecs="{}" "#, video.codecs);
             let _ = write!(mpd, r#"width="{}" "#, video.width);
             let _ = write!(mpd, r#"height="{}" "#, video.height);
@@ -2022,21 +2306,35 @@ pub fn generate_mpd_xml(dash_data: &DashData) -> String {
             mpd.push('\n');
 
             // BaseURL
-            let _ = write!(mpd, r"        <BaseURL>{}</BaseURL>", escape_xml(&video.base_url));
+            let _ = write!(
+                mpd,
+                r"        <BaseURL>{}</BaseURL>",
+                escape_xml(&video.base_url)
+            );
             mpd.push('\n');
 
             // Backup URLs
             for backup_url in &video.backup_urls {
-                let _ = write!(mpd, r"        <BaseURL>{}</BaseURL>", escape_xml(backup_url));
+                let _ = write!(
+                    mpd,
+                    r"        <BaseURL>{}</BaseURL>",
+                    escape_xml(backup_url)
+                );
                 mpd.push('\n');
             }
 
             // SegmentBase
-            let _ = write!(mpd, r#"        <SegmentBase indexRange="{}">"#,
-                video.segment_base.index_range);
+            let _ = write!(
+                mpd,
+                r#"        <SegmentBase indexRange="{}">"#,
+                video.segment_base.index_range
+            );
             mpd.push('\n');
-            let _ = write!(mpd, r#"          <Initialization range="{}"/>"#,
-                video.segment_base.initialization_range);
+            let _ = write!(
+                mpd,
+                r#"          <Initialization range="{}"/>"#,
+                video.segment_base.initialization_range
+            );
             mpd.push('\n');
             mpd.push_str(r"        </SegmentBase>");
             mpd.push('\n');
@@ -2056,29 +2354,42 @@ pub fn generate_mpd_xml(dash_data: &DashData) -> String {
         mpd.push('\n');
 
         for audio in &dash_data.audio_streams {
-            let _ = write!(mpd, r#"      <Representation id="{}" "#,
-                audio.id);
+            let _ = write!(mpd, r#"      <Representation id="{}" "#, audio.id);
             let _ = write!(mpd, r#"codecs="{}" "#, audio.codecs);
             let _ = write!(mpd, r#"audioSamplingRate="{}" "#, audio.audio_sampling_rate);
             let _ = write!(mpd, r#"bandwidth="{}">"#, audio.bandwidth);
             mpd.push('\n');
 
             // BaseURL
-            let _ = write!(mpd, r"        <BaseURL>{}</BaseURL>", escape_xml(&audio.base_url));
+            let _ = write!(
+                mpd,
+                r"        <BaseURL>{}</BaseURL>",
+                escape_xml(&audio.base_url)
+            );
             mpd.push('\n');
 
             // Backup URLs
             for backup_url in &audio.backup_urls {
-                let _ = write!(mpd, r"        <BaseURL>{}</BaseURL>", escape_xml(backup_url));
+                let _ = write!(
+                    mpd,
+                    r"        <BaseURL>{}</BaseURL>",
+                    escape_xml(backup_url)
+                );
                 mpd.push('\n');
             }
 
             // SegmentBase
-            let _ = write!(mpd, r#"        <SegmentBase indexRange="{}">"#,
-                audio.segment_base.index_range);
+            let _ = write!(
+                mpd,
+                r#"        <SegmentBase indexRange="{}">"#,
+                audio.segment_base.index_range
+            );
             mpd.push('\n');
-            let _ = write!(mpd, r#"          <Initialization range="{}"/>"#,
-                audio.segment_base.initialization_range);
+            let _ = write!(
+                mpd,
+                r#"          <Initialization range="{}"/>"#,
+                audio.segment_base.initialization_range
+            );
             mpd.push('\n');
             mpd.push_str(r"        </SegmentBase>");
             mpd.push('\n');
@@ -2131,7 +2442,9 @@ mod tests {
     #[test]
     fn test_is_short_link() {
         assert!(BilibiliClient::is_short_link("https://b23.tv/abc123"));
-        assert!(!BilibiliClient::is_short_link("https://www.bilibili.com/video/BV123"));
+        assert!(!BilibiliClient::is_short_link(
+            "https://www.bilibili.com/video/BV123"
+        ));
     }
 
     #[test]
@@ -2169,7 +2482,10 @@ mod tests {
 
     #[test]
     fn test_extract_bvid_invalid() {
-        assert_eq!(BilibiliClient::extract_bvid("https://www.bilibili.com/video/av12345"), None);
+        assert_eq!(
+            BilibiliClient::extract_bvid("https://www.bilibili.com/video/av12345"),
+            None
+        );
         assert_eq!(BilibiliClient::extract_bvid("not-a-url"), None);
         assert_eq!(BilibiliClient::extract_bvid(""), None);
     }
@@ -2181,14 +2497,19 @@ mod tests {
             Some("ep12345".to_string())
         );
         assert_eq!(
-            BilibiliClient::extract_epid("https://www.bilibili.com/bangumi/play/ep99999?from=search"),
+            BilibiliClient::extract_epid(
+                "https://www.bilibili.com/bangumi/play/ep99999?from=search"
+            ),
             Some("ep99999".to_string())
         );
     }
 
     #[test]
     fn test_extract_epid_invalid() {
-        assert_eq!(BilibiliClient::extract_epid("https://www.bilibili.com/video/BV123"), None);
+        assert_eq!(
+            BilibiliClient::extract_epid("https://www.bilibili.com/video/BV123"),
+            None
+        );
         assert_eq!(BilibiliClient::extract_epid(""), None);
     }
 
@@ -2196,40 +2517,52 @@ mod tests {
     fn test_is_short_link_variations() {
         assert!(BilibiliClient::is_short_link("https://b23.tv/abc123"));
         assert!(BilibiliClient::is_short_link("http://b23.tv/xyz"));
-        assert!(BilibiliClient::is_short_link("https://b23.tv/episode/12345"));
-        assert!(!BilibiliClient::is_short_link("https://www.bilibili.com/video/BV123"));
+        assert!(BilibiliClient::is_short_link(
+            "https://b23.tv/episode/12345"
+        ));
+        assert!(!BilibiliClient::is_short_link(
+            "https://www.bilibili.com/video/BV123"
+        ));
         assert!(!BilibiliClient::is_short_link(""));
         // These must NOT match: "b23.tv" appearing in path or as subdomain of another host
-        assert!(!BilibiliClient::is_short_link("https://evil.com/b23.tv/abc"));
-        assert!(!BilibiliClient::is_short_link("https://b23.tv.evil.com/abc"));
+        assert!(!BilibiliClient::is_short_link(
+            "https://evil.com/b23.tv/abc"
+        ));
+        assert!(!BilibiliClient::is_short_link(
+            "https://b23.tv.evil.com/abc"
+        ));
     }
 
     // === URL Matching Tests ===
 
     #[test]
     fn test_match_url_video() {
-        let (media_type, id) = BilibiliClient::match_url("https://www.bilibili.com/video/BV1xx411c7XZ").unwrap();
+        let (media_type, id) =
+            BilibiliClient::match_url("https://www.bilibili.com/video/BV1xx411c7XZ").unwrap();
         assert_eq!(media_type, "video");
         assert_eq!(id, "BV1xx411c7XZ");
     }
 
     #[test]
     fn test_match_url_bangumi_ep() {
-        let (media_type, id) = BilibiliClient::match_url("https://www.bilibili.com/bangumi/play/ep12345").unwrap();
+        let (media_type, id) =
+            BilibiliClient::match_url("https://www.bilibili.com/bangumi/play/ep12345").unwrap();
         assert_eq!(media_type, "bangumi");
         assert_eq!(id, "ep12345");
     }
 
     #[test]
     fn test_match_url_bangumi_ss() {
-        let (media_type, id) = BilibiliClient::match_url("https://www.bilibili.com/bangumi/play/ss67890").unwrap();
+        let (media_type, id) =
+            BilibiliClient::match_url("https://www.bilibili.com/bangumi/play/ss67890").unwrap();
         assert_eq!(media_type, "bangumi");
         assert_eq!(id, "ss67890");
     }
 
     #[test]
     fn test_match_url_live() {
-        let (media_type, id) = BilibiliClient::match_url("https://live.bilibili.com/live/12345").unwrap();
+        let (media_type, id) =
+            BilibiliClient::match_url("https://live.bilibili.com/live/12345").unwrap();
         assert_eq!(media_type, "live");
         assert_eq!(id, "12345");
     }
@@ -2293,7 +2626,10 @@ mod tests {
         cookies.insert("SESSDATA".to_string(), "abc123".to_string());
         let client = BilibiliClient::with_cookies(cookies.clone()).unwrap();
         assert!(client.cookies.is_some());
-        assert_eq!(client.cookies.as_ref().unwrap().get("SESSDATA"), Some(&"abc123".to_string()));
+        assert_eq!(
+            client.cookies.as_ref().unwrap().get("SESSDATA"),
+            Some(&"abc123".to_string())
+        );
     }
 
     // === Type Deserialization Tests ===
@@ -2374,11 +2710,15 @@ mod tests {
     #[test]
     fn test_extract_key_from_url() {
         assert_eq!(
-            extract_key_from_url("https://i0.hdslb.com/bfs/wbi/7cd084941338484aae1ad9425b84077c.png"),
+            extract_key_from_url(
+                "https://i0.hdslb.com/bfs/wbi/7cd084941338484aae1ad9425b84077c.png"
+            ),
             Some("7cd084941338484aae1ad9425b84077c".to_string())
         );
         assert_eq!(
-            extract_key_from_url("https://i0.hdslb.com/bfs/wbi/4932caff0ff746eab6f01bf08b70ac45.png"),
+            extract_key_from_url(
+                "https://i0.hdslb.com/bfs/wbi/4932caff0ff746eab6f01bf08b70ac45.png"
+            ),
             Some("4932caff0ff746eab6f01bf08b70ac45".to_string())
         );
         assert_eq!(extract_key_from_url(""), None);
@@ -2420,28 +2760,43 @@ mod tests {
 
         // Should contain w_rid and wts in addition to original params
         let keys: Vec<&str> = signed.iter().map(|(k, _)| k.as_str()).collect();
-        assert!(keys.contains(&"w_rid"), "signed params should contain w_rid");
+        assert!(
+            keys.contains(&"w_rid"),
+            "signed params should contain w_rid"
+        );
         assert!(keys.contains(&"wts"), "signed params should contain wts");
         assert!(keys.contains(&"bvid"), "signed params should contain bvid");
         assert!(keys.contains(&"cid"), "signed params should contain cid");
-        assert!(keys.contains(&"fnval"), "signed params should contain fnval");
+        assert!(
+            keys.contains(&"fnval"),
+            "signed params should contain fnval"
+        );
 
         // w_rid should be a 32-char hex MD5 hash
-        let w_rid = signed.iter().find(|(k, _)| k == "w_rid").map(|(_, v)| v.as_str()).expect("w_rid missing");
+        let w_rid = signed
+            .iter()
+            .find(|(k, _)| k == "w_rid")
+            .map(|(_, v)| v.as_str())
+            .expect("w_rid missing");
         assert_eq!(w_rid.len(), 32);
-        assert!(w_rid.chars().all(|c| c.is_ascii_hexdigit()), "w_rid should be hex");
+        assert!(
+            w_rid.chars().all(|c| c.is_ascii_hexdigit()),
+            "w_rid should be hex"
+        );
     }
 
     #[test]
     fn test_wbi_sign_filters_special_chars() {
-        let params = vec![
-            ("key", "hello!'()*world".to_string()),
-        ];
+        let params = vec![("key", "hello!'()*world".to_string())];
         let mixin_key = "testkey12345678901234567890123456";
         let signed = wbi_sign(&params, mixin_key);
 
         // The value should have !'()* removed
-        let val = signed.iter().find(|(k, _)| k == "key").map(|(_, v)| v.as_str()).expect("key missing");
+        let val = signed
+            .iter()
+            .find(|(k, _)| k == "key")
+            .map(|(_, v)| v.as_str())
+            .expect("key missing");
         assert_eq!(val, "helloworld");
     }
 
@@ -2456,38 +2811,58 @@ mod tests {
         let signed = wbi_sign(&params, mixin_key);
 
         // Params before w_rid should be sorted alphabetically
-        let keys_before_wrid: Vec<&str> = signed.iter()
+        let keys_before_wrid: Vec<&str> = signed
+            .iter()
             .filter(|(k, _)| k != "w_rid")
             .map(|(k, _)| k.as_str())
             .collect();
         // a_param, m_param, wts, z_param (alphabetically sorted)
         let mut sorted = keys_before_wrid.clone();
         sorted.sort_unstable();
-        assert_eq!(keys_before_wrid, sorted, "params should be sorted alphabetically");
+        assert_eq!(
+            keys_before_wrid, sorted,
+            "params should be sorted alphabetically"
+        );
     }
 
     #[test]
     fn test_wbi_sign_deterministic_for_same_timestamp() {
         // The same params + mixin_key should produce consistent signing
         // (modulo the wts which depends on system time)
-        let params = vec![
-            ("bvid", "BV1test".to_string()),
-            ("cid", "999".to_string()),
-        ];
+        let params = vec![("bvid", "BV1test".to_string()), ("cid", "999".to_string())];
         let mixin_key = "ea1db124af3c7062474693fa704f4ff8";
         let signed1 = wbi_sign(&params, mixin_key);
         let signed2 = wbi_sign(&params, mixin_key);
 
         // The wts values should be very close (same second)
-        let wts1 = signed1.iter().find(|(k, _)| k == "wts").map(|(_, v)| v.clone()).expect("wts missing");
-        let wts2 = signed2.iter().find(|(k, _)| k == "wts").map(|(_, v)| v.clone()).expect("wts missing");
+        let wts1 = signed1
+            .iter()
+            .find(|(k, _)| k == "wts")
+            .map(|(_, v)| v.clone())
+            .expect("wts missing");
+        let wts2 = signed2
+            .iter()
+            .find(|(k, _)| k == "wts")
+            .map(|(_, v)| v.clone())
+            .expect("wts missing");
         // They should be the same if run within the same second
         assert_eq!(wts1, wts2, "wts should be same within the same second");
 
         // If wts is the same, w_rid must be the same too
-        let w_rid1 = signed1.iter().find(|(k, _)| k == "w_rid").map(|(_, v)| v.clone()).expect("w_rid missing");
-        let w_rid2 = signed2.iter().find(|(k, _)| k == "w_rid").map(|(_, v)| v.clone()).expect("w_rid missing");
-        assert_eq!(w_rid1, w_rid2, "w_rid should be deterministic for same inputs");
+        let w_rid1 = signed1
+            .iter()
+            .find(|(k, _)| k == "w_rid")
+            .map(|(_, v)| v.clone())
+            .expect("w_rid missing");
+        let w_rid2 = signed2
+            .iter()
+            .find(|(k, _)| k == "w_rid")
+            .map(|(_, v)| v.clone())
+            .expect("w_rid missing");
+        assert_eq!(
+            w_rid1, w_rid2,
+            "w_rid should be deterministic for same inputs"
+        );
     }
 
     #[test]
@@ -2537,22 +2912,34 @@ mod tests {
 
     #[test]
     fn test_is_wbi_stale_error_minus_352() {
-        let err = BilibiliError::Api { code: -352, message: "signature error".to_string() };
+        let err = BilibiliError::Api {
+            code: -352,
+            message: "signature error".to_string(),
+        };
         assert!(BilibiliClient::is_wbi_stale_error(&err));
     }
 
     #[test]
     fn test_is_wbi_stale_error_minus_401() {
-        let err = BilibiliError::Api { code: -401, message: "unauthorized".to_string() };
+        let err = BilibiliError::Api {
+            code: -401,
+            message: "unauthorized".to_string(),
+        };
         assert!(BilibiliClient::is_wbi_stale_error(&err));
     }
 
     #[test]
     fn test_is_wbi_stale_error_other_codes() {
-        let err = BilibiliError::Api { code: -101, message: "not logged in".to_string() };
+        let err = BilibiliError::Api {
+            code: -101,
+            message: "not logged in".to_string(),
+        };
         assert!(!BilibiliClient::is_wbi_stale_error(&err));
 
-        let err = BilibiliError::Api { code: 0, message: "success".to_string() };
+        let err = BilibiliError::Api {
+            code: 0,
+            message: "success".to_string(),
+        };
         assert!(!BilibiliClient::is_wbi_stale_error(&err));
 
         let err = BilibiliError::Network("timeout".to_string());

@@ -464,7 +464,10 @@ mod tests {
         match decoded.message {
             Some(Message::Notification(decoded_notif)) => {
                 assert_eq!(decoded_notif.notification_id, notification.notification_id);
-                assert_eq!(decoded_notif.notification_type, notification.notification_type);
+                assert_eq!(
+                    decoded_notif.notification_type,
+                    notification.notification_type
+                );
                 assert_eq!(decoded_notif.title, notification.title);
                 assert_eq!(decoded_notif.content, notification.content);
                 assert_eq!(decoded_notif.timestamp, notification.timestamp);

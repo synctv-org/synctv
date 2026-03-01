@@ -46,11 +46,19 @@ async fn test_startup_reconciliation_removes_stale_local_entries() {
     // The key insight is that only the actual registry owner matters
 
     // Verify room1/media1 is owned by other-node
-    let info1 = registry.get_publisher("room1", "media1").await.unwrap().unwrap();
+    let info1 = registry
+        .get_publisher("room1", "media1")
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(info1.node_id, "other-node");
 
     // Verify room2/media2 is owned by local-node
-    let info2 = registry.get_publisher("room2", "media2").await.unwrap().unwrap();
+    let info2 = registry
+        .get_publisher("room2", "media2")
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(info2.node_id, "local-node");
 }
 
@@ -81,7 +89,11 @@ async fn test_startup_reconciliation_adds_missing_entries_from_registry() {
 
     // Verify we can look up entries by node ownership
     for (room_id, media_id) in &streams {
-        let info = registry.get_publisher(room_id, media_id).await.unwrap().unwrap();
+        let info = registry
+            .get_publisher(room_id, media_id)
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(info.node_id, "local-node");
     }
 }
@@ -100,11 +112,18 @@ async fn test_startup_reconciliation_handles_ownership_changes() {
         .await
         .unwrap();
 
-    let info1 = registry.get_publisher("room1", "media1").await.unwrap().unwrap();
+    let info1 = registry
+        .get_publisher("room1", "media1")
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(info1.node_id, "node1");
 
     // Unregister (simulates original publisher going away)
-    registry.unregister_publisher("room1", "media1").await.unwrap();
+    registry
+        .unregister_publisher("room1", "media1")
+        .await
+        .unwrap();
 
     // Second registration (simulates takeover by another node)
     registry
@@ -112,14 +131,22 @@ async fn test_startup_reconciliation_handles_ownership_changes() {
         .await
         .unwrap();
 
-    let info2 = registry.get_publisher("room1", "media1").await.unwrap().unwrap();
+    let info2 = registry
+        .get_publisher("room1", "media1")
+        .await
+        .unwrap()
+        .unwrap();
 
     // Ownership should have changed
     assert_eq!(info2.node_id, "node2");
 
     // The key consistency check: node1 should recognize it no longer owns this stream
     // by checking the registry's node_id field
-    let current_info = registry.get_publisher("room1", "media1").await.unwrap().unwrap();
+    let current_info = registry
+        .get_publisher("room1", "media1")
+        .await
+        .unwrap()
+        .unwrap();
     assert_ne!(
         current_info.node_id, "node1",
         "node1 should detect it no longer owns the stream"
@@ -136,7 +163,10 @@ async fn test_startup_reconciliation_empty_registry() {
     assert!(streams.is_empty());
 
     // Cleanup for non-existent node should succeed
-    registry.cleanup_all_publishers_for_node("local-node").await.unwrap();
+    registry
+        .cleanup_all_publishers_for_node("local-node")
+        .await
+        .unwrap();
 }
 
 /// Test that startup reconciliation handles node cleanup correctly.
@@ -164,7 +194,10 @@ async fn test_startup_cleanup_removes_stale_node_registrations() {
         .unwrap();
 
     // Simulate startup cleanup - remove all publishers for local-node
-    registry.cleanup_all_publishers_for_node("local-node").await.unwrap();
+    registry
+        .cleanup_all_publishers_for_node("local-node")
+        .await
+        .unwrap();
 
     // local-node's publishers should be gone
     assert!(!registry.is_stream_active("room1", "media1").await.unwrap());
@@ -198,7 +231,10 @@ async fn test_periodic_sync_detects_removed_registry_entries() {
     assert!(registry.is_stream_active("room1", "media1").await.unwrap());
 
     // Simulate external removal (e.g., TTL expiry or admin cleanup)
-    registry.unregister_publisher("room1", "media1").await.unwrap();
+    registry
+        .unregister_publisher("room1", "media1")
+        .await
+        .unwrap();
 
     // Verify it's gone
     assert!(!registry.is_stream_active("room1", "media1").await.unwrap());
@@ -225,18 +261,29 @@ async fn test_periodic_sync_detects_ownership_change() {
         .unwrap();
 
     // Verify ownership
-    let info = registry.get_publisher("room1", "media1").await.unwrap().unwrap();
+    let info = registry
+        .get_publisher("room1", "media1")
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(info.node_id, "local-node");
 
     // Simulate ownership change (unregister + re-register by another node)
-    registry.unregister_publisher("room1", "media1").await.unwrap();
+    registry
+        .unregister_publisher("room1", "media1")
+        .await
+        .unwrap();
     registry
         .try_register_publisher("room1", "media1", "other-node", "user2", "other:50051")
         .await
         .unwrap();
 
     // Periodic sync should detect ownership change
-    let info = registry.get_publisher("room1", "media1").await.unwrap().unwrap();
+    let info = registry
+        .get_publisher("room1", "media1")
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(
         info.node_id, "other-node",
         "Periodic sync should detect ownership change to other-node"
@@ -307,7 +354,11 @@ async fn test_periodic_sync_multiple_publishers_mixed_ownership() {
     let mut node2_count = 0;
 
     for (room_id, media_id) in &all_streams {
-        let info = registry.get_publisher(room_id, media_id).await.unwrap().unwrap();
+        let info = registry
+            .get_publisher(room_id, media_id)
+            .await
+            .unwrap()
+            .unwrap();
         match info.node_id.as_str() {
             "node1" => node1_count += 1,
             "node2" => node2_count += 1,
@@ -338,7 +389,10 @@ async fn test_periodic_sync_concurrent_safety() {
     let handle = tokio::spawn(async move {
         // Wait a tiny bit then modify
         tokio::time::sleep(tokio::time::Duration::from_millis(1)).await;
-        registry_clone.unregister_publisher("room1", "media1").await.unwrap();
+        registry_clone
+            .unregister_publisher("room1", "media1")
+            .await
+            .unwrap();
         registry_clone
             .try_register_publisher("room2", "media2", "local-node", "user2", "local:50051")
             .await
@@ -381,12 +435,19 @@ async fn test_network_partition_recovery_detects_ownership_loss() {
         .await
         .unwrap();
 
-    let info = registry.get_publisher("room1", "media1").await.unwrap().unwrap();
+    let info = registry
+        .get_publisher("room1", "media1")
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(info.node_id, "nodeA");
 
     // Phase 2: Simulate partition - TTL expires and entry is removed
     // (In real Redis, this would happen automatically after PUBLISHER_TTL_SECS)
-    registry.unregister_publisher("room1", "media1").await.unwrap();
+    registry
+        .unregister_publisher("room1", "media1")
+        .await
+        .unwrap();
 
     // Phase 3: Node B takes over (new registration)
     registry
@@ -394,7 +455,11 @@ async fn test_network_partition_recovery_detects_ownership_loss() {
         .await
         .unwrap();
 
-    let info = registry.get_publisher("room1", "media1").await.unwrap().unwrap();
+    let info = registry
+        .get_publisher("room1", "media1")
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(info.node_id, "nodeB");
 
     // Phase 4: Network heals - Node A reconnects and checks ownership
@@ -402,7 +467,11 @@ async fn test_network_partition_recovery_detects_ownership_loss() {
     // 1. The publisher exists in registry
     // 2. But it's owned by nodeB, not nodeA
 
-    let current_info = registry.get_publisher("room1", "media1").await.unwrap().unwrap();
+    let current_info = registry
+        .get_publisher("room1", "media1")
+        .await
+        .unwrap()
+        .unwrap();
     assert_ne!(
         current_info.node_id, "nodeA",
         "Node A should detect it no longer owns the stream"
@@ -433,24 +502,41 @@ async fn test_split_brain_prevention() {
         .try_register_publisher("room1", "media1", "nodeB", "userB", "nodeB:50051")
         .await
         .unwrap();
-    assert!(!registered_b, "Node B should fail to register - stream already taken");
+    assert!(
+        !registered_b,
+        "Node B should fail to register - stream already taken"
+    );
 
     // Verify Node A still owns it
-    let info = registry.get_publisher("room1", "media1").await.unwrap().unwrap();
+    let info = registry
+        .get_publisher("room1", "media1")
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(info.node_id, "nodeA");
 
     // Now simulate Node A crashing and being cleaned up
-    registry.cleanup_all_publishers_for_node("nodeA").await.unwrap();
+    registry
+        .cleanup_all_publishers_for_node("nodeA")
+        .await
+        .unwrap();
 
     // Node B can now register
     let registered_b_retry = registry
         .try_register_publisher("room1", "media1", "nodeB", "userB", "nodeB:50051")
         .await
         .unwrap();
-    assert!(registered_b_retry, "Node B should now successfully register");
+    assert!(
+        registered_b_retry,
+        "Node B should now successfully register"
+    );
 
     // Verify Node B owns it
-    let info = registry.get_publisher("room1", "media1").await.unwrap().unwrap();
+    let info = registry
+        .get_publisher("room1", "media1")
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(info.node_id, "nodeB");
 }
 
@@ -529,7 +615,10 @@ async fn test_reconciliation_partial_stale_entries() {
         .unwrap();
 
     // Simulate partial partition: room2 was taken over by another node
-    registry.unregister_publisher("room2", "media2").await.unwrap();
+    registry
+        .unregister_publisher("room2", "media2")
+        .await
+        .unwrap();
     registry
         .try_register_publisher("room2", "media2", "other-node", "user2b", "other:50051")
         .await
@@ -540,13 +629,25 @@ async fn test_reconciliation_partial_stale_entries() {
     // - room2: now owned by other-node (stale for local)
     // - room3: still owned by local-node (valid)
 
-    let info1 = registry.get_publisher("room1", "media1").await.unwrap().unwrap();
+    let info1 = registry
+        .get_publisher("room1", "media1")
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(info1.node_id, "local-node");
 
-    let info2 = registry.get_publisher("room2", "media2").await.unwrap().unwrap();
+    let info2 = registry
+        .get_publisher("room2", "media2")
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(info2.node_id, "other-node");
 
-    let info3 = registry.get_publisher("room3", "media3").await.unwrap().unwrap();
+    let info3 = registry
+        .get_publisher("room3", "media3")
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(info3.node_id, "local-node");
 }
 
@@ -636,7 +737,11 @@ async fn test_periodic_sync_high_churn() {
 
     // All remaining should belong to local-node
     for (room_id, media_id) in &streams {
-        let info = registry.get_publisher(room_id, media_id).await.unwrap().unwrap();
+        let info = registry
+            .get_publisher(room_id, media_id)
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(info.node_id, "local-node");
     }
 }
@@ -716,7 +821,10 @@ async fn test_startup_reconciliation_after_state_loss() {
     // Initially empty (simulating Redis flush)
 
     // Node cleanup should succeed even with no state
-    registry.cleanup_all_publishers_for_node("local-node").await.unwrap();
+    registry
+        .cleanup_all_publishers_for_node("local-node")
+        .await
+        .unwrap();
 
     // List should be empty
     let streams = registry.list_active_streams().await.unwrap();
@@ -780,7 +888,10 @@ async fn test_consistency_validation_helper() {
 
     // Only room1/media1 should remain
     assert_eq!(local_tracking.len(), 1);
-    assert_eq!(local_tracking[0], ("room1".to_string(), "media1".to_string()));
+    assert_eq!(
+        local_tracking[0],
+        ("room1".to_string(), "media1".to_string())
+    );
 }
 
 /// Test helper to find missing entries from registry.
@@ -805,9 +916,7 @@ async fn test_find_missing_entries_helper() {
         .unwrap();
 
     // Simulate local tracking that's missing room2
-    let mut local_tracking = vec![
-        ("room1".to_string(), "media1".to_string()),
-    ];
+    let mut local_tracking = vec![("room1".to_string(), "media1".to_string())];
 
     // Find entries in registry that should be in local tracking
     let all_streams = registry.list_active_streams().await.unwrap();

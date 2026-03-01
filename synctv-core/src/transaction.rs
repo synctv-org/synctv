@@ -220,7 +220,9 @@ impl UnitOfWork {
     /// Returns an error if the transaction has already been consumed
     /// (committed or rolled back).
     pub fn transaction(&mut self) -> Result<&mut Transaction<'static, Postgres>> {
-        self.tx.as_mut().ok_or(crate::error::Error::Internal("Transaction already consumed".to_string()))
+        self.tx.as_mut().ok_or(crate::error::Error::Internal(
+            "Transaction already consumed".to_string(),
+        ))
     }
 
     /// Check if the transaction is still active (not consumed)
@@ -239,7 +241,7 @@ impl UnitOfWork {
     ///
     /// This allows testing the panic behavior without a real database connection.
     #[cfg(test)]
-    #[must_use] 
+    #[must_use]
     pub const fn new_uncommitted_for_testing() -> Self {
         Self {
             tx: None,
@@ -272,7 +274,8 @@ impl Drop for UnitOfWork {
         let needs_handling = self.tx.is_some() && !self.is_handled();
 
         #[cfg(test)]
-        let needs_handling = (self.tx.is_some() || self._test_simulate_uncommitted) && !self.is_handled();
+        let needs_handling =
+            (self.tx.is_some() || self._test_simulate_uncommitted) && !self.is_handled();
 
         // Transaction was not explicitly committed/rolled back.
         // sqlx will automatically rollback when the Transaction is dropped,
@@ -293,7 +296,9 @@ impl Drop for UnitOfWork {
 /// This helper allows for clean transaction handling with automatic commit/rollback.
 pub async fn with_transaction<F, R>(pool: &PgPool, f: F) -> Result<R>
 where
-    F: for<'e> FnOnce(&mut Transaction<'e, Postgres>) -> futures::future::BoxFuture<'e, Result<R>> + Send + Sync,
+    F: for<'e> FnOnce(&mut Transaction<'e, Postgres>) -> futures::future::BoxFuture<'e, Result<R>>
+        + Send
+        + Sync,
     R: Send + Sync + 'static,
 {
     let mut tx = pool.begin().await?;
@@ -470,7 +475,10 @@ mod tests {
             drop(uow);
         }));
 
-        assert!(result.is_ok(), "Double committed UnitOfWork should drop safely");
+        assert!(
+            result.is_ok(),
+            "Double committed UnitOfWork should drop safely"
+        );
     }
 
     /// Test: Double rollback is safe (no panic on drop).
@@ -484,7 +492,10 @@ mod tests {
             drop(uow);
         }));
 
-        assert!(result.is_ok(), "Double rolled back UnitOfWork should drop safely");
+        assert!(
+            result.is_ok(),
+            "Double rolled back UnitOfWork should drop safely"
+        );
     }
 
     /// Test: Commit after rollback is safe (no panic on drop).
@@ -498,7 +509,10 @@ mod tests {
             drop(uow);
         }));
 
-        assert!(result.is_ok(), "UnitOfWork with both flags should drop safely");
+        assert!(
+            result.is_ok(),
+            "UnitOfWork with both flags should drop safely"
+        );
     }
 
     /// Test: `is_handled` method returns correct state.

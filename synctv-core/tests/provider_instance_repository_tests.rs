@@ -6,23 +6,24 @@
 //! Run with: cargo test -p synctv-core --test `provider_instance_repository_tests`
 #![allow(clippy::unwrap_used)]
 
-use synctv_core_testing::{create_test_pool};
-use synctv_core::{
-    models::ProviderInstance,
-    repository::ProviderInstanceRepository,
-    service::CredentialEncryption,
-};
 use chrono::Utc;
+use synctv_core::{
+    models::ProviderInstance, repository::ProviderInstanceRepository, service::CredentialEncryption,
+};
+use synctv_core_testing::create_test_pool;
 fn test_key() -> Vec<u8> {
     vec![
-        0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07,
-        0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f,
-        0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17,
-        0x18, 0x19, 0x1a, 0x1b, 0x1c, 0x1d, 0x1e, 0x1f,
+        0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e,
+        0x0f, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19, 0x1a, 0x1b, 0x1c, 0x1d,
+        0x1e, 0x1f,
     ]
 }
 
-fn make_instance(name: &str, jwt_secret: Option<&str>, custom_ca: Option<&str>) -> ProviderInstance {
+fn make_instance(
+    name: &str,
+    jwt_secret: Option<&str>,
+    custom_ca: Option<&str>,
+) -> ProviderInstance {
     let now = Utc::now();
     ProviderInstance {
         name: name.to_string(),
@@ -55,14 +56,21 @@ async fn test_migrate_plaintext_to_encrypted_idempotent() {
 
     // First migration should migrate 0 instances (already encrypted)
     let count1 = enc_repo.migrate_plaintext_to_encrypted().await.unwrap();
-    assert_eq!(count1, 0, "First migration should find no plaintext to migrate");
+    assert_eq!(
+        count1, 0,
+        "First migration should find no plaintext to migrate"
+    );
 
     // Second migration should also migrate 0 (idempotent)
     let count2 = enc_repo.migrate_plaintext_to_encrypted().await.unwrap();
     assert_eq!(count2, 0, "Second migration should be idempotent");
 
     // Verify decryption works
-    let fetched = enc_repo.get_by_name("idempotent_test").await.unwrap().unwrap();
+    let fetched = enc_repo
+        .get_by_name("idempotent_test")
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(fetched.jwt_secret.as_deref(), Some("my_secret"));
     assert_eq!(fetched.custom_ca.as_deref(), Some("my_ca_cert"));
 }
@@ -84,10 +92,17 @@ async fn test_migrate_plaintext_to_encrypted_none_fields() {
 
     // Migration should skip this instance
     let count = enc_repo.migrate_plaintext_to_encrypted().await.unwrap();
-    assert_eq!(count, 0, "Instance with None secrets should not need migration");
+    assert_eq!(
+        count, 0,
+        "Instance with None secrets should not need migration"
+    );
 
     // Verify it still reads correctly
-    let fetched = enc_repo.get_by_name("none_fields_test").await.unwrap().unwrap();
+    let fetched = enc_repo
+        .get_by_name("none_fields_test")
+        .await
+        .unwrap()
+        .unwrap();
     assert!(fetched.jwt_secret.is_none());
     assert!(fetched.custom_ca.is_none());
 }
@@ -101,7 +116,10 @@ async fn test_migrate_without_encryption_returns_error() {
     let repo = ProviderInstanceRepository::new(pool.clone());
 
     let result = repo.migrate_plaintext_to_encrypted().await;
-    assert!(result.is_err(), "Migration without encryption configured should fail");
+    assert!(
+        result.is_err(),
+        "Migration without encryption configured should fail"
+    );
 }
 
 // ─── encryption prefix edge case ─────────────────────────────────────
@@ -122,7 +140,10 @@ async fn test_encryption_prefix_edge_case() {
     // This value already starts with "enc:" so migration should skip it
     // (it looks like an already-encrypted value)
     let count = enc_repo.migrate_plaintext_to_encrypted().await.unwrap();
-    assert_eq!(count, 0, "Value starting with 'enc:' should be treated as already encrypted");
+    assert_eq!(
+        count, 0,
+        "Value starting with 'enc:' should be treated as already encrypted"
+    );
 }
 
 // ─── CHECK constraint: plaintext jwt_secret rejected ─────────────────
@@ -266,13 +287,12 @@ async fn test_create_and_read_with_encryption() {
     enc_repo.create(&instance).await.unwrap();
 
     // Verify the stored value is encrypted (not plaintext)
-    let raw: Option<(Option<String>,)> = sqlx::query_as(
-        "SELECT jwt_secret FROM media_provider_instances WHERE name = $1",
-    )
-    .bind("enc_create_test")
-    .fetch_optional(&pool)
-    .await
-    .unwrap();
+    let raw: Option<(Option<String>,)> =
+        sqlx::query_as("SELECT jwt_secret FROM media_provider_instances WHERE name = $1")
+            .bind("enc_create_test")
+            .fetch_optional(&pool)
+            .await
+            .unwrap();
     let raw_jwt = raw.unwrap().0.unwrap();
     assert!(
         raw_jwt.starts_with("enc:"),
@@ -281,7 +301,11 @@ async fn test_create_and_read_with_encryption() {
     );
 
     // Read back with decryption
-    let fetched = enc_repo.get_by_name("enc_create_test").await.unwrap().unwrap();
+    let fetched = enc_repo
+        .get_by_name("enc_create_test")
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(fetched.jwt_secret.as_deref(), Some("secret_jwt"));
     assert_eq!(fetched.custom_ca.as_deref(), Some("secret_ca"));
 }

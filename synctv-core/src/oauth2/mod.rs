@@ -14,9 +14,9 @@ pub use config::ConfigLoader;
 pub use providers::{GitHubConfig, GoogleConfig, LogtoConfig, OidcConfig};
 
 use crate::Error;
+use async_trait::async_trait;
 use std::collections::HashMap;
 use std::sync::Arc;
-use async_trait::async_trait;
 
 // ============================================================================
 // Provider Trait
@@ -51,7 +51,8 @@ pub trait Provider: Send + Sync {
     /// 3. Returns user info (token is discarded)
     ///
     /// Similar to Go's `GetUserInfo()` method, extended with PKCE (RFC 7636).
-    async fn get_user_info(&self, code: &str, pkce_verifier: &str) -> Result<OAuth2UserInfo, Error>;
+    async fn get_user_info(&self, code: &str, pkce_verifier: &str)
+        -> Result<OAuth2UserInfo, Error>;
 }
 
 /// `OAuth2` user info from provider
@@ -107,7 +108,7 @@ impl ProviderRegistry {
     }
 
     /// Get a registered factory function by type.
-    #[must_use] 
+    #[must_use]
     pub fn get_factory(&self, provider_type: &str) -> Option<ProviderFactory> {
         let registry = self.factories.read();
         registry.get(provider_type).copied()
@@ -121,8 +122,9 @@ impl ProviderRegistry {
         provider_type: &str,
         config: &serde_json::Value,
     ) -> Result<Box<dyn Provider>, Error> {
-        let factory = self.get_factory(provider_type)
-            .ok_or_else(|| Error::InvalidInput(format!("Unknown provider type: {provider_type}")))?;
+        let factory = self.get_factory(provider_type).ok_or_else(|| {
+            Error::InvalidInput(format!("Unknown provider type: {provider_type}"))
+        })?;
         factory(config)
     }
 }

@@ -153,8 +153,8 @@ async fn test_reregister_after_unregister() {
 async fn test_register_order_redis_first_then_local() {
     let (_container, conn) = setup_redis().await;
 
-    let registry = StreamRegistry::new("replica1".to_string())
-        .with_redis(conn.clone(), "consistency:");
+    let registry =
+        StreamRegistry::new("replica1".to_string()).with_redis(conn.clone(), "consistency:");
 
     // Register a stream
     registry
@@ -183,8 +183,8 @@ async fn test_register_order_redis_first_then_local() {
 async fn test_unregister_order_redis_first_then_local() {
     let (_container, conn) = setup_redis().await;
 
-    let registry = StreamRegistry::new("replica1".to_string())
-        .with_redis(conn.clone(), "consistency2:");
+    let registry =
+        StreamRegistry::new("replica1".to_string()).with_redis(conn.clone(), "consistency2:");
 
     // Register a stream first
     registry
@@ -205,7 +205,10 @@ async fn test_unregister_order_redis_first_then_local() {
         .query_async(&mut test_conn)
         .await
         .unwrap();
-    assert!(!exists, "Stream should be removed from Redis after unregister");
+    assert!(
+        !exists,
+        "Stream should be removed from Redis after unregister"
+    );
 
     // Verify it's removed from local cache
     assert!(
@@ -220,10 +223,8 @@ async fn test_unregister_order_redis_first_then_local() {
 async fn test_cross_instance_visibility() {
     let (_container, conn) = setup_redis().await;
 
-    let registry1 = StreamRegistry::new("replica1".to_string())
-        .with_redis(conn.clone(), "cross:");
-    let registry2 = StreamRegistry::new("replica2".to_string())
-        .with_redis(conn.clone(), "cross:");
+    let registry1 = StreamRegistry::new("replica1".to_string()).with_redis(conn.clone(), "cross:");
+    let registry2 = StreamRegistry::new("replica2".to_string()).with_redis(conn.clone(), "cross:");
 
     // Register on replica1
     registry1
@@ -255,10 +256,10 @@ async fn test_cross_instance_visibility() {
 async fn test_get_stream_local_first_then_redis() {
     let (_container, conn) = setup_redis().await;
 
-    let registry1 = StreamRegistry::new("replica1".to_string())
-        .with_redis(conn.clone(), "getstream:");
-    let registry2 = StreamRegistry::new("replica2".to_string())
-        .with_redis(conn.clone(), "getstream:");
+    let registry1 =
+        StreamRegistry::new("replica1".to_string()).with_redis(conn.clone(), "getstream:");
+    let registry2 =
+        StreamRegistry::new("replica2".to_string()).with_redis(conn.clone(), "getstream:");
 
     // Register on replica1
     registry1

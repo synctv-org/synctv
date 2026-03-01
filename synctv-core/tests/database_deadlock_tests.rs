@@ -6,17 +6,19 @@
 //! Requires Docker for testcontainers.
 #![allow(clippy::unwrap_used)]
 
-use synctv_core::{
-    models::{Room, RoomId, RoomMember, RoomRole, UserId, MemberStatus, UserStatus, User, SignupMethod},
-    repository::{RoomRepository, RoomMemberRepository, UserRepository},
-};
 use sqlx::PgPool;
 use std::sync::Arc;
-use tokio::sync::Barrier;
-use testcontainers::ContainerAsync;
-use testcontainers_modules::postgres::Postgres;
+use synctv_core::{
+    models::{
+        MemberStatus, Room, RoomId, RoomMember, RoomRole, SignupMethod, User, UserId, UserStatus,
+    },
+    repository::{RoomMemberRepository, RoomRepository, UserRepository},
+};
 use testcontainers::core::ImageExt;
 use testcontainers::runners::AsyncRunner;
+use testcontainers::ContainerAsync;
+use testcontainers_modules::postgres::Postgres;
+use tokio::sync::Barrier;
 
 /// Test container wrapper for Postgres
 pub struct TestPostgres {
@@ -35,11 +37,12 @@ async fn create_test_pool() -> TestPostgres {
         .expect("Failed to start Postgres container");
 
     let host = container.get_host().await.expect("Failed to get host");
-    let port = container.get_host_port_ipv4(5432).await.expect("Failed to get port");
+    let port = container
+        .get_host_port_ipv4(5432)
+        .await
+        .expect("Failed to get port");
 
-    let database_url = format!(
-        "postgres://synctv:synctv_test@{host}:{port}/synctv_test"
-    );
+    let database_url = format!("postgres://synctv:synctv_test@{host}:{port}/synctv_test");
 
     let pool = {
         let mut retries = 0u32;
@@ -66,7 +69,10 @@ async fn create_test_pool() -> TestPostgres {
         .await
         .expect("Failed to run migrations");
 
-    TestPostgres { pool, _container: container }
+    TestPostgres {
+        pool,
+        _container: container,
+    }
 }
 
 /// Create a test user in the database (required for FK constraints)
@@ -89,7 +95,10 @@ async fn create_test_user(pool: &PgPool, user_id: &UserId) {
         email_verified: true,
     };
     let user_repo = UserRepository::new(pool.clone());
-    user_repo.create(&user).await.expect("Failed to create test user");
+    user_repo
+        .create(&user)
+        .await
+        .expect("Failed to create test user");
 }
 
 fn make_member(room_id: RoomId, user_id: UserId) -> RoomMember {
@@ -138,7 +147,10 @@ async fn test_deadlock_detection_opposite_lock_order() {
     let creator_id = UserId::new();
     create_test_user(pool, &creator_id).await;
     let room = make_room(creator_id);
-    room_repo.create(&room).await.expect("Failed to create room");
+    room_repo
+        .create(&room)
+        .await
+        .expect("Failed to create room");
 
     let user1 = UserId::new();
     let user2 = UserId::new();
@@ -147,8 +159,14 @@ async fn test_deadlock_detection_opposite_lock_order() {
 
     let member1 = make_member(room.id.clone(), user1.clone());
     let member2 = make_member(room.id.clone(), user2.clone());
-    member_repo.add(&member1).await.expect("Failed to create member1");
-    member_repo.add(&member2).await.expect("Failed to create member2");
+    member_repo
+        .add(&member1)
+        .await
+        .expect("Failed to create member1");
+    member_repo
+        .add(&member2)
+        .await
+        .expect("Failed to create member2");
 
     // Try to cause deadlock with opposite lock order
     let barrier = Arc::new(Barrier::new(2));
@@ -168,7 +186,7 @@ async fn test_deadlock_detection_opposite_lock_order() {
             // Lock user1 first
             sqlx::query(
                 "UPDATE room_members SET added_permissions = $1
-                 WHERE room_id = $2 AND user_id = $3"
+                 WHERE room_id = $2 AND user_id = $3",
             )
             .bind(100i64)
             .bind(room_id1.as_str())
@@ -181,7 +199,7 @@ async fn test_deadlock_detection_opposite_lock_order() {
             // Then lock user2
             sqlx::query(
                 "UPDATE room_members SET added_permissions = $1
-                 WHERE room_id = $2 AND user_id = $3"
+                 WHERE room_id = $2 AND user_id = $3",
             )
             .bind(200i64)
             .bind(room_id1.as_str())
@@ -191,7 +209,8 @@ async fn test_deadlock_detection_opposite_lock_order() {
 
             tx.commit().await?;
             Ok(())
-        }.await;
+        }
+        .await;
 
         result
     });
@@ -211,7 +230,7 @@ async fn test_deadlock_detection_opposite_lock_order() {
             // Lock user2 first (opposite order)
             sqlx::query(
                 "UPDATE room_members SET added_permissions = $1
-                 WHERE room_id = $2 AND user_id = $3"
+                 WHERE room_id = $2 AND user_id = $3",
             )
             .bind(300i64)
             .bind(room_id2.as_str())
@@ -224,7 +243,7 @@ async fn test_deadlock_detection_opposite_lock_order() {
             // Then lock user1 (creates potential deadlock)
             sqlx::query(
                 "UPDATE room_members SET added_permissions = $1
-                 WHERE room_id = $2 AND user_id = $3"
+                 WHERE room_id = $2 AND user_id = $3",
             )
             .bind(400i64)
             .bind(room_id2.as_str())
@@ -234,7 +253,8 @@ async fn test_deadlock_detection_opposite_lock_order() {
 
             tx.commit().await?;
             Ok(())
-        }.await;
+        }
+        .await;
 
         result
     });
@@ -273,12 +293,18 @@ async fn test_deadlock_with_for_update_nowait() {
     let creator_id = UserId::new();
     create_test_user(pool, &creator_id).await;
     let room = make_room(creator_id);
-    room_repo.create(&room).await.expect("Failed to create room");
+    room_repo
+        .create(&room)
+        .await
+        .expect("Failed to create room");
 
     let user_id = UserId::new();
     create_test_user(pool, &user_id).await;
     let member = make_member(room.id.clone(), user_id.clone());
-    member_repo.add(&member).await.expect("Failed to create member");
+    member_repo
+        .add(&member)
+        .await
+        .expect("Failed to create member");
 
     let barrier = Arc::new(Barrier::new(2));
 
@@ -297,7 +323,7 @@ async fn test_deadlock_with_for_update_nowait() {
             sqlx::query(
                 "SELECT * FROM room_members
                  WHERE room_id = $1 AND user_id = $2
-                 FOR UPDATE"
+                 FOR UPDATE",
             )
             .bind(room_id1.as_str())
             .bind(user_id1.as_str())
@@ -308,7 +334,8 @@ async fn test_deadlock_with_for_update_nowait() {
 
             tx.commit().await?;
             Ok(())
-        }.await;
+        }
+        .await;
 
         result
     });
@@ -330,7 +357,7 @@ async fn test_deadlock_with_for_update_nowait() {
             let result = sqlx::query(
                 "SELECT * FROM room_members
                  WHERE room_id = $1 AND user_id = $2
-                 FOR UPDATE NOWAIT"
+                 FOR UPDATE NOWAIT",
             )
             .bind(room_id2.as_str())
             .bind(user_id2.as_str())
@@ -344,7 +371,8 @@ async fn test_deadlock_with_for_update_nowait() {
                 }
                 Err(e) => Err(e),
             }
-        }.await;
+        }
+        .await;
 
         result
     });
@@ -377,7 +405,10 @@ async fn test_deadlock_avoidance_with_ordered_locks() {
     let creator_id = UserId::new();
     create_test_user(pool, &creator_id).await;
     let room = make_room(creator_id);
-    room_repo.create(&room).await.expect("Failed to create room");
+    room_repo
+        .create(&room)
+        .await
+        .expect("Failed to create room");
 
     let user1 = UserId::new();
     let user2 = UserId::new();
@@ -393,8 +424,14 @@ async fn test_deadlock_avoidance_with_ordered_locks() {
 
     let member1 = make_member(room.id.clone(), first_user.clone());
     let member2 = make_member(room.id.clone(), second_user.clone());
-    member_repo.add(&member1).await.expect("Failed to create member1");
-    member_repo.add(&member2).await.expect("Failed to create member2");
+    member_repo
+        .add(&member1)
+        .await
+        .expect("Failed to create member1");
+    member_repo
+        .add(&member2)
+        .await
+        .expect("Failed to create member2");
 
     let barrier = Arc::new(Barrier::new(2));
 
@@ -414,7 +451,7 @@ async fn test_deadlock_avoidance_with_ordered_locks() {
             // Lock in consistent order
             sqlx::query(
                 "UPDATE room_members SET added_permissions = $1
-                 WHERE room_id = $2 AND user_id = $3"
+                 WHERE room_id = $2 AND user_id = $3",
             )
             .bind(100i64)
             .bind(room_id1.as_str())
@@ -424,7 +461,7 @@ async fn test_deadlock_avoidance_with_ordered_locks() {
 
             sqlx::query(
                 "UPDATE room_members SET added_permissions = $1
-                 WHERE room_id = $2 AND user_id = $3"
+                 WHERE room_id = $2 AND user_id = $3",
             )
             .bind(200i64)
             .bind(room_id1.as_str())
@@ -434,7 +471,8 @@ async fn test_deadlock_avoidance_with_ordered_locks() {
 
             tx.commit().await?;
             Ok(())
-        }.await;
+        }
+        .await;
 
         result
     });
@@ -454,7 +492,7 @@ async fn test_deadlock_avoidance_with_ordered_locks() {
             // Lock in same consistent order
             sqlx::query(
                 "UPDATE room_members SET added_permissions = $1
-                 WHERE room_id = $2 AND user_id = $3"
+                 WHERE room_id = $2 AND user_id = $3",
             )
             .bind(300i64)
             .bind(room_id2.as_str())
@@ -464,7 +502,7 @@ async fn test_deadlock_avoidance_with_ordered_locks() {
 
             sqlx::query(
                 "UPDATE room_members SET added_permissions = $1
-                 WHERE room_id = $2 AND user_id = $3"
+                 WHERE room_id = $2 AND user_id = $3",
             )
             .bind(400i64)
             .bind(room_id2.as_str())
@@ -474,7 +512,8 @@ async fn test_deadlock_avoidance_with_ordered_locks() {
 
             tx.commit().await?;
             Ok(())
-        }.await;
+        }
+        .await;
 
         result
     });
@@ -484,7 +523,10 @@ async fn test_deadlock_avoidance_with_ordered_locks() {
 
     // With consistent ordering, no deadlock should occur
     // One will complete, then the other
-    assert!(result1.is_ok() || result2.is_ok(), "At least one should succeed");
+    assert!(
+        result1.is_ok() || result2.is_ok(),
+        "At least one should succeed"
+    );
 }
 
 #[tokio::test]
@@ -499,12 +541,18 @@ async fn test_transaction_timeout_prevents_indefinite_wait() {
     let creator_id = UserId::new();
     create_test_user(pool, &creator_id).await;
     let room = make_room(creator_id);
-    room_repo.create(&room).await.expect("Failed to create room");
+    room_repo
+        .create(&room)
+        .await
+        .expect("Failed to create room");
 
     let user_id = UserId::new();
     create_test_user(pool, &user_id).await;
     let member = make_member(room.id.clone(), user_id.clone());
-    member_repo.add(&member).await.expect("Failed to create member");
+    member_repo
+        .add(&member)
+        .await
+        .expect("Failed to create member");
 
     // Start a long-running transaction
     let pool1 = pool.clone();
@@ -518,7 +566,7 @@ async fn test_transaction_timeout_prevents_indefinite_wait() {
         sqlx::query(
             "SELECT * FROM room_members
              WHERE room_id = $1 AND user_id = $2
-             FOR UPDATE"
+             FOR UPDATE",
         )
         .bind(room_id1.as_str())
         .bind(user_id1.as_str())
@@ -539,25 +587,23 @@ async fn test_transaction_timeout_prevents_indefinite_wait() {
     let room_id2 = room.id.clone();
     let user_id2 = user_id.clone();
 
-    let timeout_result = tokio::time::timeout(
-        tokio::time::Duration::from_secs(1),
-        async move {
-            let mut tx = pool2.begin().await?;
+    let timeout_result = tokio::time::timeout(tokio::time::Duration::from_secs(1), async move {
+        let mut tx = pool2.begin().await?;
 
-            sqlx::query(
-                "SELECT * FROM room_members
+        sqlx::query(
+            "SELECT * FROM room_members
                  WHERE room_id = $1 AND user_id = $2
-                 FOR UPDATE"
-            )
-            .bind(room_id2.as_str())
-            .bind(user_id2.as_str())
-            .fetch_optional(&mut *tx)
-            .await?;
+                 FOR UPDATE",
+        )
+        .bind(room_id2.as_str())
+        .bind(user_id2.as_str())
+        .fetch_optional(&mut *tx)
+        .await?;
 
-            tx.commit().await?;
-            Ok::<(), sqlx::Error>(())
-        }
-    ).await;
+        tx.commit().await?;
+        Ok::<(), sqlx::Error>(())
+    })
+    .await;
 
     // Should timeout waiting for lock
     assert!(timeout_result.is_err(), "Should timeout waiting for lock");

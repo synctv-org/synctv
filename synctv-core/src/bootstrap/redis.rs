@@ -77,7 +77,10 @@ async fn init_standalone(config: &Config) -> Result<RedisHandles, anyhow::Error>
     let client = redis::Client::open(config.redis.url.clone())?;
     let conn = redis::aio::ConnectionManager::new(client.clone()).await?;
     let shared = Arc::new(RwLock::new(conn));
-    Ok(RedisHandles { client, conn: shared })
+    Ok(RedisHandles {
+        client,
+        conn: shared,
+    })
 }
 
 async fn init_sentinel(
@@ -177,8 +180,7 @@ async fn init_sentinel(
                     consecutive_ping_failures
                 );
 
-                let addrs: Vec<&str> =
-                    sentinel_addresses.iter().map(String::as_str).collect();
+                let addrs: Vec<&str> = sentinel_addresses.iter().map(String::as_str).collect();
                 let sentinel_result = redis::sentinel::Sentinel::build(addrs);
                 let mut sentinel = match sentinel_result {
                     Ok(s) => s,
@@ -191,17 +193,13 @@ async fn init_sentinel(
                     }
                 };
 
-                let node_info: Option<&redis::sentinel::SentinelNodeConnectionInfo> =
-                    None;
+                let node_info: Option<&redis::sentinel::SentinelNodeConnectionInfo> = None;
                 match sentinel
                     .async_master_for(master_name.as_str(), node_info)
                     .await
                 {
                     Ok(new_master_client) => {
-                        let new_addr = new_master_client
-                            .get_connection_info()
-                            .addr()
-                            .to_string();
+                        let new_addr = new_master_client.get_connection_info().addr().to_string();
                         if new_addr == known_master {
                             tracing::info!(
                                 master = %new_addr,
@@ -215,9 +213,7 @@ async fn init_sentinel(
                             );
                         }
 
-                        match redis::aio::ConnectionManager::new(new_master_client)
-                            .await
-                        {
+                        match redis::aio::ConnectionManager::new(new_master_client).await {
                             Ok(new_conn) => {
                                 *shared_conn_clone.write().await = new_conn;
                                 known_master = new_addr;
@@ -244,7 +240,9 @@ async fn init_sentinel(
                 }
             }
         });
-        info!("Sentinel master health check started (interval: 5s, failover threshold: 3 failures)");
+        info!(
+            "Sentinel master health check started (interval: 5s, failover threshold: 3 failures)"
+        );
     }
 
     Ok(RedisHandles {

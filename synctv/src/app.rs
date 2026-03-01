@@ -11,19 +11,19 @@ use anyhow::Result;
 use sqlx::PgPool;
 use tracing::{error, info, warn};
 
+use synctv_cluster::leader::LeaderElector;
+#[cfg(feature = "k8s")]
+use synctv_cluster::leader::{K8sLeaderElector, K8sLeaderElectorConfig};
+use synctv_cluster::sync::{ClusterConfig, ClusterManager, ConnectionLimits, ConnectionManager};
 use synctv_core::{
     bootstrap::{
-        database::init_database_with_cancel, has_any_users, init_redis, init_services,
-        bootstrap_root_user, RedisHandles,
+        bootstrap_root_user, database::init_database_with_cancel, has_any_users, init_redis,
+        init_services, RedisHandles,
     },
     cache::{CacheInvalidationService, KeyBuilder},
     provider::{AlistProvider, BilibiliProvider, EmbyProvider},
     Config,
 };
-use synctv_cluster::leader::LeaderElector;
-#[cfg(feature = "k8s")]
-use synctv_cluster::leader::{K8sLeaderElector, K8sLeaderElectorConfig};
-use synctv_cluster::sync::{ClusterConfig, ClusterManager, ConnectionLimits, ConnectionManager};
 
 use crate::bootstrap::cluster::init_cluster_discovery;
 use crate::bootstrap::livestream::init_livestream;
@@ -31,7 +31,9 @@ use crate::bootstrap::node_id::generate_node_id;
 use crate::bootstrap::webrtc::init_webrtc;
 use crate::cluster_bridge::ClusterPlaybackBroadcaster;
 use crate::server::{LivestreamState, Services, SyncTvServer};
-use crate::shutdown::{AuditFlushHook, CacheInvalidationStopHook, SettingsListenHook, ShutdownCoordinator};
+use crate::shutdown::{
+    AuditFlushHook, CacheInvalidationStopHook, SettingsListenHook, ShutdownCoordinator,
+};
 
 /// Infrastructure: Redis (optional), Database, `NodeID`.
 struct Infrastructure {
@@ -114,12 +116,8 @@ impl Application {
 
     /// Start all servers and wait for shutdown.
     pub async fn run(self) -> Result<()> {
-        let server = SyncTvServer::new(
-            self.config,
-            self.services,
-            self.livestream_state,
-            self.pool,
-        );
+        let server =
+            SyncTvServer::new(self.config, self.services, self.livestream_state, self.pool);
         server.start_with_coordinator(self.shutdown).await
     }
 
@@ -161,22 +159,23 @@ impl Application {
         // Run migrations with appropriate lock strategy:
         // - Redis available: distributed lock (safe for multi-replica)
         // - No Redis: PostgreSQL advisory lock (safe for single-node)
-        let migration_lock: Box<dyn synctv_core::service::MigrationLock> = if let Some(ref rh) = infra.redis_handles {
-            info!("Using Redis distributed lock for migrations");
-            let is_sentinel = matches!(
-                infra.config.redis.deployment_mode,
-                synctv_core::config::RedisDeploymentMode::Sentinel
-            );
-            Box::new(synctv_core::service::DistributedLock::new_with_mode(
-                rh.conn_snapshot().await,
-                is_sentinel,
-            ))
-        } else {
-            info!("Using PostgreSQL advisory lock for migrations");
-            Box::new(synctv_core::service::PgAdvisoryMigrationLock::new(
-                infra.pool.clone(),
-            ))
-        };
+        let migration_lock: Box<dyn synctv_core::service::MigrationLock> =
+            if let Some(ref rh) = infra.redis_handles {
+                info!("Using Redis distributed lock for migrations");
+                let is_sentinel = matches!(
+                    infra.config.redis.deployment_mode,
+                    synctv_core::config::RedisDeploymentMode::Sentinel
+                );
+                Box::new(synctv_core::service::DistributedLock::new_with_mode(
+                    rh.conn_snapshot().await,
+                    is_sentinel,
+                ))
+            } else {
+                info!("Using PostgreSQL advisory lock for migrations");
+                Box::new(synctv_core::service::PgAdvisoryMigrationLock::new(
+                    infra.pool.clone(),
+                ))
+            };
         crate::migrations::run_migrations(
             &infra.pool,
             migration_lock.as_ref(),
@@ -202,8 +201,7 @@ impl Application {
 
         // Initialize audit log partitions (non-fatal)
         info!("Initializing audit log partitions...");
-        if let Err(e) =
-            synctv_core::service::ensure_audit_partitions_on_startup(&infra.pool).await
+        if let Err(e) = synctv_core::service::ensure_audit_partitions_on_startup(&infra.pool).await
         {
             error!(
                 "Failed to initialize audit partitions (non-fatal, continuing startup): {}",
@@ -368,8 +366,10 @@ impl Application {
                             );
                             error!(
                                 "Required env vars: POD_NAME={}, POD_NAMESPACE={}",
-                                std::env::var("POD_NAME").unwrap_or_else(|_| "<not set>".to_string()),
-                                std::env::var("POD_NAMESPACE").unwrap_or_else(|_| "<not set>".to_string()),
+                                std::env::var("POD_NAME")
+                                    .unwrap_or_else(|_| "<not set>".to_string()),
+                                std::env::var("POD_NAMESPACE")
+                                    .unwrap_or_else(|_| "<not set>".to_string()),
                             );
                             error!(
                                 "Ensure the service account has RBAC permissions: \
@@ -489,7 +489,12 @@ impl Application {
         let cleanup_service = synctv_core::service::CleanupService::new(
             infra.pool.clone(),
             synctv_core::service::cleanup::CleanupConfig {
-                room_ttl_seconds: core.services.settings_registry.room_ttl.get().unwrap_or(172800),
+                room_ttl_seconds: core
+                    .services
+                    .settings_registry
+                    .room_ttl
+                    .get()
+                    .unwrap_or(172800),
                 ..synctv_core::service::cleanup::CleanupConfig::default()
             },
             leader.leader_check.clone(),
@@ -524,9 +529,7 @@ impl Application {
             max_per_room: infra.config.connection_limits.max_per_room,
             max_total: infra.config.connection_limits.max_total,
             idle_timeout: Duration::from_secs(infra.config.connection_limits.idle_timeout_seconds),
-            max_duration: Duration::from_secs(
-                infra.config.connection_limits.max_duration_seconds,
-            ),
+            max_duration: Duration::from_secs(infra.config.connection_limits.max_duration_seconds),
             webrtc_session_timeout: Duration::from_hours(2), // 2 hours (matches ConnectionLimits::default())
         };
         let connection_manager = ConnectionManager::new(connection_limits);
@@ -538,15 +541,21 @@ impl Application {
         );
 
         // ClusterManager (requires Redis)
-        let permission_service =
-            Some(core.services.room_service.permission_service().clone());
+        let permission_service = Some(core.services.room_service.permission_service().clone());
 
         let cluster_manager = if let Some(ref rh) = infra.redis_handles {
             let cluster_config = ClusterConfig {
                 redis_client: Some(rh.client.clone()),
                 redis_conn: Some(rh.conn_snapshot().await),
                 node_id: infra.node_id.clone(),
-                dedup_window: Duration::from_secs(infra.config.cluster.catchup_window_secs.saturating_mul(3).max(900)),
+                dedup_window: Duration::from_secs(
+                    infra
+                        .config
+                        .cluster
+                        .catchup_window_secs
+                        .saturating_mul(3)
+                        .max(900),
+                ),
                 cleanup_interval: Duration::from_secs(30),
                 critical_channel_capacity: infra.config.cluster.critical_channel_capacity,
                 publish_channel_capacity: infra.config.cluster.publish_channel_capacity,
@@ -598,13 +607,7 @@ impl Application {
         // Cluster discovery (NodeRegistry, HealthMonitor, LoadBalancer) — requires Redis
         let (node_registry, health_monitor, load_balancer, dns_refresh_handle) =
             if let (Some(ref cm), Some(ref rh)) = (&cluster_manager, &infra.redis_handles) {
-                init_cluster_discovery(
-                    &infra.config,
-                    rh,
-                    cm,
-                    &connection_manager,
-                )
-                .await
+                init_cluster_discovery(&infra.config, rh, cm, &connection_manager).await
             } else {
                 (None, None, None, None)
             };
@@ -636,9 +639,13 @@ impl Application {
         shutdown: &mut ShutdownCoordinator,
     ) -> Result<ServerComponents> {
         // Livestream
-        let (livestream_state, live_infra, background_handles) =
-            init_livestream(&infra.config, &core.services, infra.redis_handles.as_ref(), &infra.node_id)
-                .await?;
+        let (livestream_state, live_infra, background_handles) = init_livestream(
+            &infra.config,
+            &core.services,
+            infra.redis_handles.as_ref(),
+            &infra.node_id,
+        )
+        .await?;
         for (i, handle) in background_handles.into_iter().enumerate() {
             shutdown.register_task(
                 // Use a static string per convention; the index disambiguates in logs
@@ -716,7 +723,7 @@ impl Application {
             health_monitor: cluster.health_monitor,
             load_balancer: cluster.load_balancer,
             redis_client: infra.redis_handles.as_ref().map(|h| h.client.clone()),
-            redis_conn: core.services.redis_conn.clone(),  // already Option
+            redis_conn: core.services.redis_conn.clone(), // already Option
             credential_encryption: core.services.credential_encryption,
         };
 

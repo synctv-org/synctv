@@ -5,20 +5,20 @@
 //! - HTTP/REST server
 //! - RTMP livestream server
 
+use sqlx::PgPool;
 use std::sync::Arc;
 use std::time::Duration;
-use sqlx::PgPool;
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
 use tracing::{error, info, warn};
 
+use synctv_cluster::sync::ClusterEvent;
 use synctv_core::{
-    service::{RoomService, UserService},
-    repository::UserProviderCredentialRepository,
     provider::{AlistProvider, BilibiliProvider, EmbyProvider},
+    repository::UserProviderCredentialRepository,
+    service::{RoomService, UserService},
     Config,
 };
-use synctv_cluster::sync::ClusterEvent;
 
 use crate::shutdown::ShutdownCoordinator;
 
@@ -61,7 +61,8 @@ pub struct Services {
     pub publish_key_service: Arc<synctv_core::service::PublishKeyService>,
     pub notification_service: Option<Arc<synctv_core::service::UserNotificationService>>,
     pub audit_service: Arc<synctv_core::service::AuditService>,
-    pub live_streaming_infrastructure: Option<Arc<synctv_livestream::api::LiveStreamingInfrastructure>>,
+    pub live_streaming_infrastructure:
+        Option<Arc<synctv_livestream::api::LiveStreamingInfrastructure>>,
     pub stun_server: Option<Arc<synctv_core::service::StunServer>>,
     pub turn_health_checker: Option<Arc<synctv_core::service::TurnHealthChecker>>,
     pub node_registry: Option<Arc<synctv_cluster::discovery::NodeRegistry>>,
@@ -104,7 +105,10 @@ impl SyncTvServer {
 
     /// Start all servers and wait for shutdown signal, using a `ShutdownCoordinator`
     /// for centralized shutdown orchestration.
-    pub async fn start_with_coordinator(mut self, coordinator: ShutdownCoordinator) -> anyhow::Result<()> {
+    pub async fn start_with_coordinator(
+        mut self,
+        coordinator: ShutdownCoordinator,
+    ) -> anyhow::Result<()> {
         info!("Starting SyncTV server...");
 
         // Create shutdown signal channel
@@ -120,10 +124,10 @@ impl SyncTvServer {
 
         // Start background connection cleanup (every 60 seconds)
         let cleanup_cancel = tokio_util::sync::CancellationToken::new();
-        let _conn_cleanup = self.services.connection_manager.spawn_cleanup_task(
-            Duration::from_mins(1),
-            cleanup_cancel.clone(),
-        );
+        let _conn_cleanup = self
+            .services
+            .connection_manager
+            .spawn_cleanup_task(Duration::from_mins(1), cleanup_cancel.clone());
 
         // Start gRPC server
         let grpc_handle = self.start_grpc_server(shutdown_rx.clone()).await?;
@@ -134,34 +138,42 @@ impl SyncTvServer {
         self.http_handle = Some(http_handle);
 
         // Spawn streaming event listener for cluster-wide kicks
-        let admin_event_handle: Option<JoinHandle<()>> = if let (Some(cluster_mgr), Some(infra)) = (&self.services.cluster_manager, &self.services.live_streaming_infrastructure) {
+        let admin_event_handle: Option<JoinHandle<()>> = if let (Some(cluster_mgr), Some(infra)) = (
+            &self.services.cluster_manager,
+            &self.services.live_streaming_infrastructure,
+        ) {
             let mut admin_rx = cluster_mgr.subscribe_admin_events();
             let infra = infra.clone();
             let handle = tokio::spawn(async move {
                 loop {
                     match admin_rx.recv().await {
-                        Ok(event) => {
-                            match &event {
-                                ClusterEvent::KickPublisher { room_id, media_id, reason, .. } => {
-                                    info!(
-                                        room_id = %room_id.as_str(),
-                                        media_id = %media_id.as_str(),
-                                        reason = %reason,
-                                        "Received cluster-wide stream kick"
-                                    );
-                                    let _ = infra.kick_publisher(room_id.as_str(), media_id.as_str());
-                                }
-                                ClusterEvent::KickUser { user_id, reason, .. } => {
-                                    info!(
-                                        user_id = %user_id.as_str(),
-                                        reason = %reason,
-                                        "Received cluster-wide user kick"
-                                    );
-                                    infra.kick_user_publishers(user_id.as_str()).await;
-                                }
-                                _ => {}
+                        Ok(event) => match &event {
+                            ClusterEvent::KickPublisher {
+                                room_id,
+                                media_id,
+                                reason,
+                                ..
+                            } => {
+                                info!(
+                                    room_id = %room_id.as_str(),
+                                    media_id = %media_id.as_str(),
+                                    reason = %reason,
+                                    "Received cluster-wide stream kick"
+                                );
+                                let _ = infra.kick_publisher(room_id.as_str(), media_id.as_str());
                             }
-                        }
+                            ClusterEvent::KickUser {
+                                user_id, reason, ..
+                            } => {
+                                info!(
+                                    user_id = %user_id.as_str(),
+                                    reason = %reason,
+                                    "Received cluster-wide user kick"
+                                );
+                                infra.kick_user_publishers(user_id.as_str()).await;
+                            }
+                            _ => {}
+                        },
                         Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
                             warn!("Admin event listener lagged by {} events", n);
                         }
@@ -181,9 +193,13 @@ impl SyncTvServer {
         info!("All servers started successfully");
 
         // Wait for either a server to stop or a shutdown signal
-        let mut grpc_handle = self.grpc_handle.take()
+        let mut grpc_handle = self
+            .grpc_handle
+            .take()
             .ok_or_else(|| anyhow::anyhow!("gRPC server handle missing after startup"))?;
-        let mut http_handle = self.http_handle.take()
+        let mut http_handle = self
+            .http_handle
+            .take()
             .ok_or_else(|| anyhow::anyhow!("HTTP server handle missing after startup"))?;
 
         tokio::select! {
@@ -204,21 +220,23 @@ impl SyncTvServer {
 
         // Wait for gRPC and HTTP servers to finish with a timeout
         let drain_timeout = self.config.server.shutdown_drain_timeout_seconds;
-        info!("Waiting up to {}s for gRPC and HTTP servers to shut down...", drain_timeout);
-        let _ = tokio::time::timeout(
-            Duration::from_secs(drain_timeout),
-            async {
-                let _ = grpc_handle.await;
-                let _ = http_handle.await;
-            },
-        ).await;
+        info!(
+            "Waiting up to {}s for gRPC and HTTP servers to shut down...",
+            drain_timeout
+        );
+        let _ = tokio::time::timeout(Duration::from_secs(drain_timeout), async {
+            let _ = grpc_handle.await;
+            let _ = http_handle.await;
+        })
+        .await;
         info!("gRPC and HTTP servers shut down");
 
         // Drain active connections BEFORE shutting down the cluster manager.
         // Events generated during drain (UserLeft, etc.) need the pub/sub
         // system to be alive so they can be broadcast to other replicas.
         {
-            let drain_timeout = Duration::from_secs(self.config.server.shutdown_drain_timeout_seconds);
+            let drain_timeout =
+                Duration::from_secs(self.config.server.shutdown_drain_timeout_seconds);
             let drain_poll_interval = Duration::from_millis(500);
             let active = self.services.connection_manager.connection_count();
             if active > 0 {
@@ -258,8 +276,12 @@ impl SyncTvServer {
         if let Some(handle) = admin_event_handle {
             info!("Waiting for admin event listener to stop...");
             match tokio::time::timeout(Duration::from_secs(5), handle).await {
-                Ok(_) => { info!("Admin event listener stopped"); }
-                Err(_) => { warn!("Admin event listener did not stop within 5s, proceeding"); }
+                Ok(_) => {
+                    info!("Admin event listener stopped");
+                }
+                Err(_) => {
+                    warn!("Admin event listener did not stop within 5s, proceeding");
+                }
             }
         }
 
@@ -326,7 +348,10 @@ impl SyncTvServer {
     }
 
     /// Start gRPC server
-    async fn start_grpc_server(&self, shutdown_rx: watch::Receiver<bool>) -> anyhow::Result<JoinHandle<()>> {
+    async fn start_grpc_server(
+        &self,
+        shutdown_rx: watch::Receiver<bool>,
+    ) -> anyhow::Result<JoinHandle<()>> {
         let config = self.config.clone();
         let cluster_manager = self.services.cluster_manager.clone();
 
@@ -375,12 +400,16 @@ impl SyncTvServer {
     }
 
     /// Start HTTP server with graceful shutdown support
-    async fn start_http_server(&self, shutdown_rx: watch::Receiver<bool>) -> anyhow::Result<JoinHandle<()>> {
+    async fn start_http_server(
+        &self,
+        shutdown_rx: watch::Receiver<bool>,
+    ) -> anyhow::Result<JoinHandle<()>> {
         let http_address = self.config.http_address();
         let user_service = self.services.user_service.clone();
         let room_service = self.services.room_service.clone();
         let provider_instance_manager = self.services.provider_instance_manager.clone();
-        let user_provider_credential_repository = self.services.user_provider_credential_repository.clone();
+        let user_provider_credential_repository =
+            self.services.user_provider_credential_repository.clone();
         let cluster_manager = self.services.cluster_manager.clone();
         let jwt_service = self.services.jwt_service.clone();
         let redis_publish_tx = self.services.redis_publish_tx.clone();
@@ -410,11 +439,13 @@ impl SyncTvServer {
                 }
             }
         } else {
-            Some(Arc::new(synctv_core::service::WsTicketService::with_memory(None)))
+            Some(Arc::new(
+                synctv_core::service::WsTicketService::with_memory(None),
+            ))
         };
 
-        let http_router = synctv_api::http::create_router_from_config(
-            synctv_api::http::RouterConfig {
+        let http_router =
+            synctv_api::http::create_router_from_config(synctv_api::http::RouterConfig {
                 config: Arc::new(self.config.clone()),
                 user_service,
                 room_service,
@@ -445,13 +476,12 @@ impl SyncTvServer {
                 }),
                 turn_health_checker: self.services.turn_health_checker.clone(),
                 credential_encryption: self.services.credential_encryption.clone(),
-            },
-        );
+            });
 
         // Parse and bind HTTP address before spawning the task to propagate errors properly
-        let http_addr: std::net::SocketAddr = http_address.parse().map_err(|e| {
-            anyhow::anyhow!("Invalid HTTP address '{http_address}': {e}")
-        })?;
+        let http_addr: std::net::SocketAddr = http_address
+            .parse()
+            .map_err(|e| anyhow::anyhow!("Invalid HTTP address '{http_address}': {e}"))?;
 
         let listener = tokio::net::TcpListener::bind(http_addr)
             .await
@@ -460,7 +490,6 @@ impl SyncTvServer {
         info!("HTTP server listening on {}", http_addr);
 
         let handle = tokio::spawn(async move {
-
             let mut rx = shutdown_rx;
             let graceful = async move {
                 let _ = rx.changed().await;
@@ -470,8 +499,8 @@ impl SyncTvServer {
                 listener,
                 http_router.into_make_service_with_connect_info::<std::net::SocketAddr>(),
             )
-                .with_graceful_shutdown(graceful)
-                .await
+            .with_graceful_shutdown(graceful)
+            .await
             {
                 error!("HTTP server error: {}", e);
             }
@@ -520,7 +549,6 @@ async fn shutdown_signal() {
 
 #[cfg(test)]
 mod tests {
-    
 
     /// Test that invalid HTTP address format returns an error
     #[test]

@@ -210,12 +210,7 @@ async fn test_multiple_nodes_mixed_states() {
         "localhost:8082".to_string(),
     );
 
-    HealthMonitor::process_heartbeats(
-        &health_status,
-        &[stale_a, fresh_b, fresh_c],
-        30,
-    )
-    .await;
+    HealthMonitor::process_heartbeats(&health_status, &[stale_a, fresh_b, fresh_c], 30).await;
 
     let status = health_status.read().await;
     assert_eq!(

@@ -227,7 +227,11 @@ impl From<HttpFsGetResp> for crate::grpc::alist::FsGetResp {
             raw_url: resp.raw_url,
             readme: resp.readme,
             provider: resp.provider,
-            related: resp.related.into_iter().map(std::convert::Into::into).collect(),
+            related: resp
+                .related
+                .into_iter()
+                .map(std::convert::Into::into)
+                .collect(),
         }
     }
 }
@@ -249,7 +253,11 @@ impl From<HttpFsListContent> for crate::grpc::alist::fs_list_resp::FsListContent
 impl From<HttpFsListResp> for crate::grpc::alist::FsListResp {
     fn from(resp: HttpFsListResp) -> Self {
         Self {
-            content: resp.content.into_iter().map(std::convert::Into::into).collect(),
+            content: resp
+                .content
+                .into_iter()
+                .map(std::convert::Into::into)
+                .collect(),
             total: resp.total,
             readme: resp.readme,
             write: resp.write,
@@ -268,7 +276,9 @@ impl From<HttpVideoMeta> for crate::grpc::alist::fs_other_resp::video_preview_pl
     }
 }
 
-impl From<HttpSubtitleTask> for crate::grpc::alist::fs_other_resp::video_preview_play_info::LiveTranscodingSubtitleTaskList {
+impl From<HttpSubtitleTask>
+    for crate::grpc::alist::fs_other_resp::video_preview_play_info::LiveTranscodingSubtitleTaskList
+{
     fn from(sub: HttpSubtitleTask) -> Self {
         Self {
             language: sub.language,
@@ -278,7 +288,9 @@ impl From<HttpSubtitleTask> for crate::grpc::alist::fs_other_resp::video_preview
     }
 }
 
-impl From<HttpTranscodingTask> for crate::grpc::alist::fs_other_resp::video_preview_play_info::LiveTranscodingTaskList {
+impl From<HttpTranscodingTask>
+    for crate::grpc::alist::fs_other_resp::video_preview_play_info::LiveTranscodingTaskList
+{
     fn from(task: HttpTranscodingTask) -> Self {
         Self {
             stage: task.stage,
@@ -296,11 +308,13 @@ impl From<HttpVideoPreviewPlayInfo> for crate::grpc::alist::fs_other_resp::Video
     fn from(preview: HttpVideoPreviewPlayInfo) -> Self {
         Self {
             category: preview.category,
-            live_transcoding_subtitle_task_list: preview.live_transcoding_subtitle_task_list
+            live_transcoding_subtitle_task_list: preview
+                .live_transcoding_subtitle_task_list
                 .into_iter()
                 .map(std::convert::Into::into)
                 .collect(),
-            live_transcoding_task_list: preview.live_transcoding_task_list
+            live_transcoding_task_list: preview
+                .live_transcoding_task_list
                 .into_iter()
                 .map(std::convert::Into::into)
                 .collect(),
@@ -349,7 +363,11 @@ impl From<HttpFsSearchContent> for crate::grpc::alist::fs_search_resp::FsSearchC
 impl From<HttpFsSearchResp> for crate::grpc::alist::FsSearchResp {
     fn from(resp: HttpFsSearchResp) -> Self {
         Self {
-            content: resp.content.into_iter().map(std::convert::Into::into).collect(),
+            content: resp
+                .content
+                .into_iter()
+                .map(std::convert::Into::into)
+                .collect(),
             total: resp.total,
         }
     }

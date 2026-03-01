@@ -61,16 +61,10 @@ fn test_rate_limiter_tracks_ips_separately() {
     assert!(limiter.check("192.168.1.2"));
 
     // Third request from IP1 should be blocked
-    assert!(
-        !limiter.check("192.168.1.1"),
-        "IP1 should be at its limit"
-    );
+    assert!(!limiter.check("192.168.1.1"), "IP1 should be at its limit");
 
     // Third request from IP2 should also be blocked
-    assert!(
-        !limiter.check("192.168.1.2"),
-        "IP2 should be at its limit"
-    );
+    assert!(!limiter.check("192.168.1.2"), "IP2 should be at its limit");
 }
 
 #[test]
@@ -103,10 +97,8 @@ async fn test_rate_limited_preflight_returns_429_when_over_limit() {
     let limiter = std::sync::Arc::new(RateLimiter::new(1, Duration::from_mins(1)));
 
     // First request should succeed
-    let response = proxy_options_preflight_rate_limited(
-        Some("192.168.1.50"),
-        limiter.clone(),
-    ).await;
+    let response =
+        proxy_options_preflight_rate_limited(Some("192.168.1.50"), limiter.clone()).await;
     assert_eq!(
         response.status(),
         axum::http::StatusCode::NO_CONTENT,
@@ -114,10 +106,8 @@ async fn test_rate_limited_preflight_returns_429_when_over_limit() {
     );
 
     // Second request from same IP should return 429
-    let response = proxy_options_preflight_rate_limited(
-        Some("192.168.1.50"),
-        limiter.clone(),
-    ).await;
+    let response =
+        proxy_options_preflight_rate_limited(Some("192.168.1.50"), limiter.clone()).await;
     assert_eq!(
         response.status(),
         axum::http::StatusCode::TOO_MANY_REQUESTS,
@@ -131,17 +121,11 @@ async fn test_rate_limited_preflight_allows_different_ips() {
     let limiter = std::sync::Arc::new(RateLimiter::new(1, Duration::from_mins(1)));
 
     // Request from IP1
-    let response = proxy_options_preflight_rate_limited(
-        Some("10.0.0.1"),
-        limiter.clone(),
-    ).await;
+    let response = proxy_options_preflight_rate_limited(Some("10.0.0.1"), limiter.clone()).await;
     assert_eq!(response.status(), axum::http::StatusCode::NO_CONTENT);
 
     // Request from IP2 (should be allowed - different IP)
-    let response = proxy_options_preflight_rate_limited(
-        Some("10.0.0.2"),
-        limiter.clone(),
-    ).await;
+    let response = proxy_options_preflight_rate_limited(Some("10.0.0.2"), limiter.clone()).await;
     assert_eq!(
         response.status(),
         axum::http::StatusCode::NO_CONTENT,
@@ -155,17 +139,11 @@ async fn test_rate_limited_preflight_missing_ip_uses_unknown() {
     let limiter = std::sync::Arc::new(RateLimiter::new(1, Duration::from_mins(1)));
 
     // Request without IP
-    let response = proxy_options_preflight_rate_limited(
-        None,
-        limiter.clone(),
-    ).await;
+    let response = proxy_options_preflight_rate_limited(None, limiter.clone()).await;
     assert_eq!(response.status(), axum::http::StatusCode::NO_CONTENT);
 
     // Second request without IP should be rate limited
-    let response = proxy_options_preflight_rate_limited(
-        None,
-        limiter.clone(),
-    ).await;
+    let response = proxy_options_preflight_rate_limited(None, limiter.clone()).await;
     assert_eq!(
         response.status(),
         axum::http::StatusCode::TOO_MANY_REQUESTS,
@@ -184,10 +162,8 @@ async fn test_rate_limit_normal_request_succeeds() {
 
     // Multiple requests from same IP within limit should all succeed
     for _ in 0..10 {
-        let response = proxy_options_preflight_rate_limited(
-            Some("172.16.0.1"),
-            limiter.clone(),
-        ).await;
+        let response =
+            proxy_options_preflight_rate_limited(Some("172.16.0.1"), limiter.clone()).await;
         assert_eq!(
             response.status(),
             axum::http::StatusCode::NO_CONTENT,

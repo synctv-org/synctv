@@ -5,12 +5,12 @@
 //!
 //! Design reference: /Volumes/workspace/rust/synctv-rs-design/19-配置管理系统.md §6.3
 
-use std::sync::Arc;
 use dashmap::DashMap;
-use tokio::sync::{RwLock, broadcast};
-use tokio_util::sync::CancellationToken;
-use tracing::{debug, info, warn, error};
 use sqlx::{PgPool, Row};
+use std::sync::Arc;
+use tokio::sync::{broadcast, RwLock};
+use tokio_util::sync::CancellationToken;
+use tracing::{debug, error, info, warn};
 
 use crate::models::settings::{get_default_settings, SettingsGroup};
 use crate::repository::SettingsRepository;
@@ -21,7 +21,8 @@ use crate::{Error, InternalExt};
 pub type SettingsChangeListener = Arc<dyn Fn(&str, &serde_json::Value) + Send + Sync>;
 
 /// Type alias for the shared setting providers map
-pub(crate) type SettingProviders = Arc<parking_lot::RwLock<std::collections::HashMap<String, Arc<dyn SettingProvider>>>>;
+pub(crate) type SettingProviders =
+    Arc<parking_lot::RwLock<std::collections::HashMap<String, Arc<dyn SettingProvider>>>>;
 
 /// System settings service
 #[derive(Clone)]
@@ -98,9 +99,11 @@ impl SettingsService {
     pub async fn initialize(&self) -> Result<(), Error> {
         info!("Initializing settings service");
 
-        let settings = self.repository.get_all().await.map_err(|e| {
-            Error::Internal(format!("Failed to load settings: {e}"))
-        })?;
+        let settings = self
+            .repository
+            .get_all()
+            .await
+            .map_err(|e| Error::Internal(format!("Failed to load settings: {e}")))?;
 
         self.cache.clear();
 
@@ -121,7 +124,11 @@ impl SettingsService {
 
     /// Get all settings groups
     pub async fn get_all(&self) -> Result<Vec<SettingsGroup>, Error> {
-        let mut groups: Vec<_> = self.cache.iter().map(|entry| entry.value().clone()).collect();
+        let mut groups: Vec<_> = self
+            .cache
+            .iter()
+            .map(|entry| entry.value().clone())
+            .collect();
         groups.sort_by(|a, b| a.group_name.cmp(&b.group_name));
         Ok(groups)
     }
@@ -146,10 +153,7 @@ impl SettingsService {
         }
 
         // Not in cache, load from database
-        debug!(
-            "Setting '{}' not in cache, loading from database",
-            key
-        );
+        debug!("Setting '{}' not in cache, loading from database", key);
 
         let setting = self
             .repository
@@ -167,11 +171,7 @@ impl SettingsService {
     ///
     /// Validates the value against the registered provider (if any) before
     /// persisting to the database.
-    pub async fn update(
-        &self,
-        key: &str,
-        value: String,
-    ) -> Result<SettingsGroup, Error> {
+    pub async fn update(&self, key: &str, value: String) -> Result<SettingsGroup, Error> {
         debug!("Updating setting '{}'", key);
 
         // Validate before writing to database
@@ -193,16 +193,18 @@ impl SettingsService {
 
         // Notify SettingsStorage subscribers so their inner HashMap stays in sync
         // immediately, without waiting for the PG NOTIFY round-trip.
-        let _ = self.reload_sender.send((key.to_string(), Some(setting.value.clone())));
+        let _ = self
+            .reload_sender
+            .send((key.to_string(), Some(setting.value.clone())));
 
         // Notify local listeners
-        let json_value: serde_json::Value = value.parse().unwrap_or_else(|_| serde_json::json!(value));
+        let json_value: serde_json::Value =
+            value.parse().unwrap_or_else(|_| serde_json::json!(value));
         self.notify_listeners(key, &json_value).await;
 
         info!("Updated setting '{}'", setting.key);
         Ok(setting)
     }
-
 
     /// Atomically update multiple settings in a single database transaction.
     ///
@@ -229,8 +231,10 @@ impl SettingsService {
             self.validate_setting(key, value)?;
         }
 
-        let mut tx = self.pool.begin().await
-            .map_err(|e| Error::Internal(format!("Failed to start settings transaction: {e}")))?;
+        let mut tx =
+            self.pool.begin().await.map_err(|e| {
+                Error::Internal(format!("Failed to start settings transaction: {e}"))
+            })?;
 
         // Cross-validate contradictory room password settings.
         // Build effective values: use the batch value if present, otherwise read
@@ -247,7 +251,7 @@ impl SettingsService {
             } else {
                 // Read from DB within the transaction for consistency
                 sqlx::query_scalar::<_, String>(
-                    "SELECT value FROM settings WHERE key = $1 FOR UPDATE"
+                    "SELECT value FROM settings WHERE key = $1 FOR UPDATE",
                 )
                 .bind("room.room_must_need_pwd")
                 .fetch_optional(&mut *tx)
@@ -261,7 +265,7 @@ impl SettingsService {
             } else {
                 // Read from DB within the transaction for consistency
                 sqlx::query_scalar::<_, String>(
-                    "SELECT value FROM settings WHERE key = $1 FOR UPDATE"
+                    "SELECT value FROM settings WHERE key = $1 FOR UPDATE",
                 )
                 .bind("room.room_must_no_need_pwd")
                 .fetch_optional(&mut *tx)
@@ -292,23 +296,30 @@ impl SettingsService {
             .map_err(|e| Error::Internal(format!("Failed to update setting '{key}': {e}")))?;
 
             let setting = crate::models::settings::SettingsGroup {
-                key: row.try_get("key")
+                key: row
+                    .try_get("key")
                     .map_err(|e| Error::Internal(format!("Failed to read setting key: {e}")))?,
-                group_name: row.try_get("group_name")
+                group_name: row
+                    .try_get("group_name")
                     .map_err(|e| Error::Internal(format!("Failed to read setting group: {e}")))?,
-                value: row.try_get("value")
+                value: row
+                    .try_get("value")
                     .map_err(|e| Error::Internal(format!("Failed to read setting value: {e}")))?,
-                version: row.try_get("version")
+                version: row
+                    .try_get("version")
                     .map_err(|e| Error::Internal(format!("Failed to read setting version: {e}")))?,
-                created_at: row.try_get("created_at")
-                    .map_err(|e| Error::Internal(format!("Failed to read setting created_at: {e}")))?,
-                updated_at: row.try_get("updated_at")
-                    .map_err(|e| Error::Internal(format!("Failed to read setting updated_at: {e}")))?,
+                created_at: row.try_get("created_at").map_err(|e| {
+                    Error::Internal(format!("Failed to read setting created_at: {e}"))
+                })?,
+                updated_at: row.try_get("updated_at").map_err(|e| {
+                    Error::Internal(format!("Failed to read setting updated_at: {e}"))
+                })?,
             };
             updated.push(setting);
         }
 
-        tx.commit().await
+        tx.commit()
+            .await
             .map_err(|e| Error::Internal(format!("Failed to commit settings transaction: {e}")))?;
 
         // Update cache and notify listeners only after the transaction committed.
@@ -317,9 +328,13 @@ impl SettingsService {
 
             // Notify SettingsStorage subscribers so their inner HashMap stays in sync
             // immediately, without waiting for the PG NOTIFY round-trip.
-            let _ = self.reload_sender.send((setting.key.clone(), Some(setting.value.clone())));
+            let _ = self
+                .reload_sender
+                .send((setting.key.clone(), Some(setting.value.clone())));
 
-            let json_value: serde_json::Value = setting.value.parse()
+            let json_value: serde_json::Value = setting
+                .value
+                .parse()
                 .unwrap_or_else(|_| serde_json::json!(&setting.value));
             self.notify_listeners(&setting.key, &json_value).await;
             info!("Updated setting '{}' (batch)", setting.key);
@@ -334,12 +349,14 @@ impl SettingsService {
         Some(setting.value)
     }
 
-
     /// Register a change listener
     pub async fn register_listener(&self, listener: SettingsChangeListener) {
         let mut listeners = self.listeners.write().await;
         listeners.push(listener);
-        debug!("Registered settings change listener, total: {}", listeners.len());
+        debug!(
+            "Registered settings change listener, total: {}",
+            listeners.len()
+        );
     }
 
     /// Notify all listeners of a settings change
@@ -488,10 +505,14 @@ impl SettingsService {
                 self.cache.insert(setting.key.clone(), setting.clone());
 
                 // Notify SettingsStorage subscribers so their inner HashMap stays in sync
-                let _ = self.reload_sender.send((key.to_string(), Some(setting.value.clone())));
+                let _ = self
+                    .reload_sender
+                    .send((key.to_string(), Some(setting.value.clone())));
 
                 // Notify local listeners
-                let json_value: serde_json::Value = setting.value.parse()
+                let json_value: serde_json::Value = setting
+                    .value
+                    .parse()
                     .unwrap_or_else(|_| serde_json::json!(setting.value));
                 self.notify_listeners(key, &json_value).await;
 
@@ -516,11 +537,10 @@ impl SettingsService {
             }
         }
     }
-
 }
 
 /// Helper to get default settings for a group
-#[must_use] 
+#[must_use]
 pub fn get_default_settings_json(group: &str) -> Option<serde_json::Value> {
     get_default_settings(group)
 }
@@ -529,8 +549,8 @@ pub fn get_default_settings_json(group: &str) -> Option<serde_json::Value> {
 mod tests {
     use super::*;
     use crate::models::settings::{
-        SettingsGroup, get_default_settings, default_server_settings,
-        default_email_settings, default_oauth_settings,
+        default_email_settings, default_oauth_settings, default_server_settings,
+        get_default_settings, SettingsGroup,
     };
 
     #[tokio::test]
@@ -630,10 +650,7 @@ mod tests {
 
     #[test]
     fn test_settings_group_parse_json_invalid() {
-        let group = SettingsGroup::new(
-            "test".to_string(),
-            "not valid json {{{".to_string(),
-        );
+        let group = SettingsGroup::new("test".to_string(), "not valid json {{{".to_string());
 
         assert!(group.parse_json().is_err());
     }
@@ -653,20 +670,15 @@ mod tests {
 
     #[test]
     fn test_settings_group_as_object_not_object() {
-        let group = SettingsGroup::new(
-            "test".to_string(),
-            serde_json::json!([1, 2, 3]).to_string(),
-        );
+        let group =
+            SettingsGroup::new("test".to_string(), serde_json::json!([1, 2, 3]).to_string());
 
         assert!(group.as_object().is_err());
     }
 
     #[test]
     fn test_settings_group_as_object_string_value() {
-        let group = SettingsGroup::new(
-            "test".to_string(),
-            r#""just a string""#.to_string(),
-        );
+        let group = SettingsGroup::new("test".to_string(), r#""just a string""#.to_string());
 
         assert!(group.as_object().is_err());
     }
@@ -723,7 +735,8 @@ mod tests {
                     "port": 5432,
                     "pool": {"max": 10, "min": 2}
                 }
-            }).to_string(),
+            })
+            .to_string(),
         );
 
         let parsed = group.parse_json().unwrap();
@@ -736,7 +749,13 @@ mod tests {
 
     #[test]
     fn test_get_default_settings_json_returns_same_as_get_default_settings() {
-        for group_name in &["server", "email", "oauth", "rate_limit", "content_moderation"] {
+        for group_name in &[
+            "server",
+            "email",
+            "oauth",
+            "rate_limit",
+            "content_moderation",
+        ] {
             let from_helper = get_default_settings_json(group_name);
             let from_model = get_default_settings(group_name);
             assert_eq!(from_helper, from_model, "Mismatch for group: {group_name}");
@@ -760,7 +779,9 @@ mod tests {
             if value == "valid" {
                 Ok(())
             } else {
-                Err(crate::Error::InvalidInput("Only 'valid' is accepted".into()))
+                Err(crate::Error::InvalidInput(
+                    "Only 'valid' is accepted".into(),
+                ))
             }
         }
     }
@@ -771,16 +792,20 @@ mod tests {
         // We cannot easily construct a PgPool without a running DB, but
         // validate_setting is purely in-memory. We can build the providers
         // map directly.
-        let providers: SettingProviders = Arc::new(parking_lot::RwLock::new(
-            std::collections::HashMap::new(),
-        ));
-        providers.write().insert(key.to_string(), Arc::new(MockProvider) as Arc<dyn crate::service::settings_vars::SettingProvider>);
+        let providers: SettingProviders =
+            Arc::new(parking_lot::RwLock::new(std::collections::HashMap::new()));
+        providers.write().insert(
+            key.to_string(),
+            Arc::new(MockProvider) as Arc<dyn crate::service::settings_vars::SettingProvider>,
+        );
 
         // Build a minimal SettingsService (pool will never be used).
         // Safety: we use the lazy pool option from sqlx which won't connect
         // until a query is executed.
         let pool_opts = sqlx::postgres::PgPoolOptions::new().max_connections(1);
-        let pool = pool_opts.connect_lazy("postgres://fake:fake@localhost/fake").unwrap();
+        let pool = pool_opts
+            .connect_lazy("postgres://fake:fake@localhost/fake")
+            .unwrap();
         let repo = crate::repository::SettingsRepository::new(pool.clone());
         let service = SettingsService::new(repo, pool);
         service.set_providers(providers);
@@ -818,12 +843,17 @@ mod tests {
     async fn test_validate_setting_no_providers_set() {
         // Build a SettingsService without any providers wired up
         let pool_opts = sqlx::postgres::PgPoolOptions::new().max_connections(1);
-        let pool = pool_opts.connect_lazy("postgres://fake:fake@localhost/fake").unwrap();
+        let pool = pool_opts
+            .connect_lazy("postgres://fake:fake@localhost/fake")
+            .unwrap();
         let repo = crate::repository::SettingsRepository::new(pool.clone());
         let service = SettingsService::new(repo, pool);
         // No set_providers call - providers is None
 
         let result = service.validate_setting("any.key", "any_value");
-        assert!(result.is_ok(), "Should pass when no providers are registered");
+        assert!(
+            result.is_ok(),
+            "Should pass when no providers are registered"
+        );
     }
 }

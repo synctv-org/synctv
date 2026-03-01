@@ -1,5 +1,5 @@
-use chrono::{DateTime, Local};
 use crate::flv::define::{AacProfile, AvcCodecId, AvcLevel, AvcProfile, SoundFormat};
+use chrono::{DateTime, Local};
 
 use {
     super::errors::StreamHubError,
@@ -122,10 +122,24 @@ impl MediaInfo {
 /// Publishers create `BytesMut` and call `.freeze()` before wrapping in `FrameData`.
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub enum FrameData {
-    Video { timestamp: u32, #[serde(with = "bytes_serde")] data: Bytes },
-    Audio { timestamp: u32, #[serde(with = "bytes_serde")] data: Bytes },
-    MetaData { timestamp: u32, #[serde(with = "bytes_serde")] data: Bytes },
-    MediaInfo { media_info: MediaInfo },
+    Video {
+        timestamp: u32,
+        #[serde(with = "bytes_serde")]
+        data: Bytes,
+    },
+    Audio {
+        timestamp: u32,
+        #[serde(with = "bytes_serde")]
+        data: Bytes,
+    },
+    MetaData {
+        timestamp: u32,
+        #[serde(with = "bytes_serde")]
+        data: Bytes,
+    },
+    MediaInfo {
+        media_info: MediaInfo,
+    },
 }
 
 /// Serde support for Bytes (serialize as Vec<u8>)

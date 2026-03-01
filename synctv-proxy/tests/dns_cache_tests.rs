@@ -18,7 +18,10 @@ async fn test_validate_proxy_url_dns_resolution_once() {
     // Use a well-known public IP that won't be blocked by SSRF protection
     // 1.1.1.1 is Cloudflare's public DNS, a safe public IP for testing
     let result = validate_proxy_url("https://1.1.1.1/test").await;
-    assert!(result.is_ok(), "Public IP should pass validation: {result:?}");
+    assert!(
+        result.is_ok(),
+        "Public IP should pass validation: {result:?}"
+    );
 }
 
 /// Test that hostname-based URLs get DNS resolution for SSRF protection.

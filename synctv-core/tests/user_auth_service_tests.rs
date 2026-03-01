@@ -11,19 +11,18 @@
 
 use std::sync::Arc;
 
-use synctv_core_testing::create_test_pool;
+use sqlx::PgPool;
 use synctv_core::{
     cache::{KeyBuilder, NoopCacheL2, UsernameCache},
     config::PasswordComplexityConfig,
     models::UserId,
     service::{
-        auth::jwt::JwtService,
-        InMemoryTokenBlacklistStore, TokenBlacklistStore, UserService,
-        BruteForceProtection,
+        auth::jwt::JwtService, BruteForceProtection, InMemoryTokenBlacklistStore,
+        TokenBlacklistStore, UserService,
     },
     Error,
 };
-use sqlx::PgPool;
+use synctv_core_testing::create_test_pool;
 const JWT_SECRET: &str = "test-secret-key-for-user-auth-service-tests-long-enough-1234567890";
 
 fn create_jwt_service() -> JwtService {
@@ -95,8 +94,12 @@ async fn test_refresh_token_happy_path() {
 
     // Verify new tokens are valid
     let jwt = create_jwt_service();
-    let access_claims = jwt.verify_access_token(&new_access).expect("New access token valid");
-    let refresh_claims = jwt.verify_refresh_token(&new_refresh).expect("New refresh token valid");
+    let access_claims = jwt
+        .verify_access_token(&new_access)
+        .expect("New access token valid");
+    let refresh_claims = jwt
+        .verify_refresh_token(&new_refresh)
+        .expect("New refresh token valid");
 
     assert_eq!(access_claims.sub, user.id.as_str());
     assert_eq!(refresh_claims.sub, user.id.as_str());
@@ -267,10 +270,7 @@ async fn test_refresh_token_banned_user_rejected() {
 
     // Try to refresh
     let result = service.refresh_token(refresh_token).await;
-    assert!(
-        result.is_err(),
-        "Banned user should not be able to refresh"
-    );
+    assert!(result.is_err(), "Banned user should not be able to refresh");
     assert!(matches!(result.unwrap_err(), Error::Authentication(_)));
 }
 
@@ -419,10 +419,7 @@ async fn test_login_pending_user_rejected() {
     let result = service
         .login(username, "StrongPass1".to_string(), None)
         .await;
-    assert!(
-        result.is_err(),
-        "Pending user should not be able to login"
-    );
+    assert!(result.is_err(), "Pending user should not be able to login");
     assert!(matches!(result.unwrap_err(), Error::Authentication(_)));
 }
 
@@ -597,7 +594,7 @@ async fn test_login_email_verification_no_account_enumeration() {
 
     // Set OAuth2 user status to Active (they start as Pending)
     // This simulates an admin-approved OAuth2 user or one that bypasses review
-    sqlx::query("UPDATE users SET status = 1 WHERE id = $1")  // 1 = Active
+    sqlx::query("UPDATE users SET status = 1 WHERE id = $1") // 1 = Active
         .bind(oauth_user.id.as_str())
         .execute(&pool)
         .await
@@ -614,8 +611,14 @@ async fn test_login_email_verification_no_account_enumeration() {
         .await;
 
     // Both should fail (CRITICAL: before fix, oauth_result would succeed!)
-    assert!(email_result.is_err(), "Email user with unverified email should be blocked");
-    assert!(oauth_result.is_err(), "OAuth2 user with no email should also be blocked (VULNERABILITY: currently passes)");
+    assert!(
+        email_result.is_err(),
+        "Email user with unverified email should be blocked"
+    );
+    assert!(
+        oauth_result.is_err(),
+        "OAuth2 user with no email should also be blocked (VULNERABILITY: currently passes)"
+    );
 
     // Both should return the SAME error type and message
     let email_err = email_result.unwrap_err();
@@ -628,7 +631,9 @@ async fn test_login_email_verification_no_account_enumeration() {
                 "Both users should receive identical error messages to prevent enumeration"
             );
         }
-        _ => panic!("Both errors should be Authentication errors, got: {email_err:?} and {oauth_err:?}"),
+        _ => panic!(
+            "Both errors should be Authentication errors, got: {email_err:?} and {oauth_err:?}"
+        ),
     }
 }
 
@@ -666,7 +671,7 @@ async fn test_login_no_verification_required_both_user_types_allowed() {
         .expect("Setting password should succeed");
 
     // Set OAuth2 user status to Active (they start as Pending)
-    sqlx::query("UPDATE users SET status = 1 WHERE id = $1")  // 1 = Active
+    sqlx::query("UPDATE users SET status = 1 WHERE id = $1") // 1 = Active
         .bind(oauth_user.id.as_str())
         .execute(&pool)
         .await
@@ -681,8 +686,16 @@ async fn test_login_no_verification_required_both_user_types_allowed() {
         .login(oauth_user.username.clone(), "StrongPass1".to_string(), None)
         .await;
 
-    assert!(email_result.is_ok(), "Email user should be allowed when verification not required: {:?}", email_result.err());
-    assert!(oauth_result.is_ok(), "OAuth2 user should be allowed when verification not required: {:?}", oauth_result.err());
+    assert!(
+        email_result.is_ok(),
+        "Email user should be allowed when verification not required: {:?}",
+        email_result.err()
+    );
+    assert!(
+        oauth_result.is_ok(),
+        "OAuth2 user should be allowed when verification not required: {:?}",
+        oauth_result.err()
+    );
 }
 
 // ============================================================================
@@ -871,7 +884,12 @@ async fn test_create_or_load_by_oauth2_username_sanitization() {
     // Username with special chars that should be stripped
     let provider = synctv_core::models::oauth2_client::OAuth2Provider::Google;
     let result = service
-        .create_or_load_by_oauth2(&provider, "provider_user_123", "user@special!chars.test", None)
+        .create_or_load_by_oauth2(
+            &provider,
+            "provider_user_123",
+            "user@special!chars.test",
+            None,
+        )
         .await
         .expect("Should create user with sanitized username");
 
@@ -1049,7 +1067,10 @@ async fn test_refresh_token_rate_limiting_per_user() {
     let (_user, _access, Some(refresh_token)) = service
         .register(
             format!("rate_limit_refresh_{}", nanoid::nanoid!(6)),
-            Some(format!("rate_limit_refresh_{}@test.com", nanoid::nanoid!(6))),
+            Some(format!(
+                "rate_limit_refresh_{}@test.com",
+                nanoid::nanoid!(6)
+            )),
             "StrongPass1".to_string(),
             None,
         )
@@ -1089,7 +1110,10 @@ async fn test_refresh_token_rate_limiting_per_user() {
     );
 
     // Should have had at least some successful refreshes before hitting limit
-    assert!(success_count > 0, "Should allow at least some refresh requests before rate limiting");
+    assert!(
+        success_count > 0,
+        "Should allow at least some refresh requests before rate limiting"
+    );
 }
 
 // ============================================================================
@@ -1257,7 +1281,10 @@ async fn test_refresh_token_rate_limit_recovers() {
     let (_user, _access, Some(refresh_token)) = service
         .register(
             format!("rate_limit_recover_{}", nanoid::nanoid!(6)),
-            Some(format!("rate_limit_recover_{}@test.com", nanoid::nanoid!(6))),
+            Some(format!(
+                "rate_limit_recover_{}@test.com",
+                nanoid::nanoid!(6)
+            )),
             "StrongPass1".to_string(),
             None,
         )
@@ -1328,8 +1355,16 @@ async fn test_login_timing_attack_prevention() {
     let nonexistent_username = format!("nonexistent_{}", nanoid::nanoid!(6));
 
     // Warm up - run both paths once to ensure any lazy initialization is done
-    let _ = service.login(nonexistent_username.clone(), "AnyPassword123!".to_string(), None).await;
-    let _ = service.login(username.clone(), "WrongPassword123!".to_string(), None).await;
+    let _ = service
+        .login(
+            nonexistent_username.clone(),
+            "AnyPassword123!".to_string(),
+            None,
+        )
+        .await;
+    let _ = service
+        .login(username.clone(), "WrongPassword123!".to_string(), None)
+        .await;
 
     // Measure time for login with nonexistent user (should still do Argon2)
     let num_samples = 5;
@@ -1337,7 +1372,13 @@ async fn test_login_timing_attack_prevention() {
 
     for _ in 0..num_samples {
         let start = std::time::Instant::now();
-        let _ = service.login(nonexistent_username.clone(), "AnyPassword123!".to_string(), None).await;
+        let _ = service
+            .login(
+                nonexistent_username.clone(),
+                "AnyPassword123!".to_string(),
+                None,
+            )
+            .await;
         nonexistent_times.push(start.elapsed());
     }
 
@@ -1346,13 +1387,17 @@ async fn test_login_timing_attack_prevention() {
 
     for _ in 0..num_samples {
         let start = std::time::Instant::now();
-        let _ = service.login(username.clone(), "WrongPassword123!".to_string(), None).await;
+        let _ = service
+            .login(username.clone(), "WrongPassword123!".to_string(), None)
+            .await;
         wrong_password_times.push(start.elapsed());
     }
 
     // Calculate average times
-    let avg_nonexistent: std::time::Duration = nonexistent_times.iter().sum::<std::time::Duration>() / num_samples as u32;
-    let avg_wrong_password: std::time::Duration = wrong_password_times.iter().sum::<std::time::Duration>() / num_samples as u32;
+    let avg_nonexistent: std::time::Duration =
+        nonexistent_times.iter().sum::<std::time::Duration>() / num_samples as u32;
+    let avg_wrong_password: std::time::Duration =
+        wrong_password_times.iter().sum::<std::time::Duration>() / num_samples as u32;
 
     // Log for debugging
     println!("Avg nonexistent user time: {avg_nonexistent:?}");
@@ -1412,7 +1457,9 @@ async fn test_login_uses_constant_time_verification() {
     // Argon2 with the configured parameters should take at least 100ms
     // If no Argon2 is performed (user not found path), it would be much faster (< 10ms)
     let start = std::time::Instant::now();
-    let _ = service.login(nonexistent_username, "TestPassword123!".to_string(), None).await;
+    let _ = service
+        .login(nonexistent_username, "TestPassword123!".to_string(), None)
+        .await;
     let elapsed = start.elapsed();
 
     // SECURITY REQUIREMENT: Should take at least 50ms due to Argon2 verification

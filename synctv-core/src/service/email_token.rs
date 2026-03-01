@@ -7,11 +7,7 @@ use nanoid::nanoid;
 use sqlx::PgPool;
 use tracing::{debug, info};
 
-use crate::{
-    models::UserId,
-    repository::EmailTokenRepository,
-    Error, Result,
-};
+use crate::{models::UserId, repository::EmailTokenRepository, Error, Result};
 
 /// Token type
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -21,7 +17,7 @@ pub enum EmailTokenType {
 }
 
 impl EmailTokenType {
-    #[must_use] 
+    #[must_use]
     pub const fn as_str(&self) -> &'static str {
         match self {
             Self::EmailVerification => "email_verification",
@@ -29,10 +25,10 @@ impl EmailTokenType {
         }
     }
 
-    #[must_use] 
+    #[must_use]
     pub const fn expiration_duration(&self) -> Duration {
         match self {
-            Self::EmailVerification => Duration::hours(24),  // 24 hours
+            Self::EmailVerification => Duration::hours(24), // 24 hours
             Self::PasswordReset => Duration::hours(1),      // 1 hour
         }
     }
@@ -45,7 +41,7 @@ pub struct EmailTokenService {
 }
 
 impl EmailTokenService {
-    #[must_use] 
+    #[must_use]
     pub const fn new(pool: PgPool) -> Self {
         Self {
             repository: EmailTokenRepository::new(pool),
@@ -91,11 +87,7 @@ impl EmailTokenService {
     /// Returns the `user_id` if token is valid.
     /// Uses a single UPDATE with WHERE conditions to atomically check validity
     /// and mark as used, preventing concurrent token reuse.
-    pub async fn validate_token(
-        &self,
-        token: &str,
-        token_type: EmailTokenType,
-    ) -> Result<UserId> {
+    pub async fn validate_token(&self, token: &str, token_type: EmailTokenType) -> Result<UserId> {
         let token_record = self
             .repository
             .validate_and_consume(token, token_type)

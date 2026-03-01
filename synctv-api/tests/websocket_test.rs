@@ -198,10 +198,10 @@ mod ticket_types {
 // ============================================================================
 
 mod jwt_auth {
+    use std::sync::Arc;
+    use synctv_core::models::id::UserId;
     use synctv_core::service::auth::jwt::{JwtService, TokenType};
     use synctv_core::service::auth::JwtValidator;
-    use synctv_core::models::id::UserId;
-    use std::sync::Arc;
 
     // Use a 32+ character secret for testing
     const TEST_SECRET: &str = "this-is-a-test-secret-with-enough-entropy-for-jwt-signing-32chars";
@@ -259,9 +259,8 @@ mod jwt_auth {
     #[test]
     fn test_verify_with_wrong_secret_fails() {
         let svc1 = test_jwt_service();
-        let svc2 = JwtService::new(
-            "another-secret-that-is-different-and-long-enough-for-the-test"
-        ).unwrap();
+        let svc2 = JwtService::new("another-secret-that-is-different-and-long-enough-for-the-test")
+            .unwrap();
 
         let user_id = UserId::from_string("user_xyz".to_string());
         let token = svc1.sign_token(&user_id, TokenType::Access, 0).unwrap();
@@ -334,7 +333,10 @@ mod jwt_auth {
         let token2 = svc.sign_token(&user_id, TokenType::Access, 0).unwrap();
         let claims1 = svc.verify_access_token(&token1).unwrap();
         let claims2 = svc.verify_access_token(&token2).unwrap();
-        assert_ne!(claims1.jti, claims2.jti, "Each token should have a unique jti");
+        assert_ne!(
+            claims1.jti, claims2.jti,
+            "Each token should have a unique jti"
+        );
     }
 
     #[test]
@@ -345,7 +347,10 @@ mod jwt_auth {
         let claims = svc.verify_access_token(&token).unwrap();
 
         let now = chrono::Utc::now().timestamp();
-        assert!((now - claims.iat).abs() < 10, "iat should be within 10 seconds of now");
+        assert!(
+            (now - claims.iat).abs() < 10,
+            "iat should be within 10 seconds of now"
+        );
     }
 
     #[test]
@@ -378,9 +383,7 @@ mod rate_limiter {
     #[tokio::test]
     async fn test_in_memory_allows_within_limit() {
         let limiter = RateLimiter::in_memory_only("test:".to_string());
-        let result = limiter
-            .check_rate_limit("test_key", 5, 60)
-            .await;
+        let result = limiter.check_rate_limit("test_key", 5, 60).await;
         assert!(result.is_ok(), "First request should be allowed");
     }
 
@@ -396,7 +399,10 @@ mod rate_limiter {
 
         // Next request should be rate limited
         let result = limiter.check_rate_limit(key, 5, 60).await;
-        assert!(result.is_err(), "Should be rate limited after exceeding limit");
+        assert!(
+            result.is_err(),
+            "Should be rate limited after exceeding limit"
+        );
     }
 
     #[tokio::test]
@@ -444,7 +450,7 @@ mod rate_limiter {
 // ============================================================================
 
 mod health_types {
-    use synctv_api::http::health::{HealthResponse, HealthDetails};
+    use synctv_api::http::health::{HealthDetails, HealthResponse};
 
     #[test]
     fn test_health_response_ok_serializes() {
@@ -499,7 +505,10 @@ mod health_types {
         let json = serde_json::to_value(&resp).unwrap();
         assert_eq!(json["status"], "unhealthy");
         assert_eq!(json["details"]["database"], "unhealthy");
-        assert!(json["details"]["message"].as_str().unwrap().contains("Database"));
+        assert!(json["details"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("Database"));
     }
 }
 
@@ -508,8 +517,8 @@ mod health_types {
 // ============================================================================
 
 mod ws_auth_scenarios {
-    use synctv_api::http::error::AppError;
     use axum::http::StatusCode;
+    use synctv_api::http::error::AppError;
 
     #[test]
     fn test_missing_all_auth_methods() {
@@ -593,9 +602,9 @@ mod proto_messages {
 
 #[cfg(test)]
 mod websocket_e2e {
-    use std::sync::Arc;
     use futures::{SinkExt, StreamExt};
     use prost::Message;
+    use std::sync::Arc;
     use tokio::net::TcpListener;
     use tokio_tungstenite::tungstenite;
 
@@ -606,12 +615,13 @@ mod websocket_e2e {
     use synctv_core::service::auth::jwt::{JwtService, TokenType};
     use synctv_core::service::rate_limit::RateLimiter;
     // Security checks (password version, user status) handled by SecurityPipeline
+    use synctv_cluster::sync::{
+        ClusterConfig, ClusterManager, ConnectionLimits, ConnectionManager,
+    };
     use synctv_core::config::PasswordComplexityConfig;
     use synctv_core::service::{RoomService, UserService};
-    use synctv_cluster::sync::{ClusterConfig, ClusterManager, ConnectionManager, ConnectionLimits};
     use synctv_proto::client::{
-        ClientMessage, ServerMessage, HeartbeatMessage,
-        client_message, server_message,
+        client_message, server_message, ClientMessage, HeartbeatMessage, ServerMessage,
     };
 
     use sqlx::PgPool;
@@ -621,7 +631,8 @@ mod websocket_e2e {
     use testcontainers_modules::postgres::Postgres;
     use testcontainers_modules::redis::Redis;
 
-    const TEST_JWT_SECRET: &str = "this-is-a-test-secret-with-enough-entropy-for-jwt-signing-32chars";
+    const TEST_JWT_SECRET: &str =
+        "this-is-a-test-secret-with-enough-entropy-for-jwt-signing-32chars";
 
     /// Default `PostgreSQL` version for test containers
     const POSTGRES_VERSION: &str = "16-alpine";
@@ -646,21 +657,24 @@ mod websocket_e2e {
                     .with_password("synctv_test")
                     .with_tag(POSTGRES_VERSION)
                     .start(),
-                Redis::default()
-                    .with_tag(REDIS_VERSION)
-                    .start(),
+                Redis::default().with_tag(REDIS_VERSION).start(),
             );
             let pg_container = pg_container.expect("Failed to start Postgres");
             let redis_container = redis_container.expect("Failed to start Redis");
 
             let pg_host = pg_container.get_host().await.expect("pg host");
-            let pg_port = pg_container.get_host_port_ipv4(5432).await.expect("pg port");
+            let pg_port = pg_container
+                .get_host_port_ipv4(5432)
+                .await
+                .expect("pg port");
             let redis_host = redis_container.get_host().await.expect("redis host");
-            let redis_port = redis_container.get_host_port_ipv4(6379).await.expect("redis port");
+            let redis_port = redis_container
+                .get_host_port_ipv4(6379)
+                .await
+                .expect("redis port");
 
-            let database_url = format!(
-                "postgresql://synctv:synctv_test@{pg_host}:{pg_port}/synctv_test"
-            );
+            let database_url =
+                format!("postgresql://synctv:synctv_test@{pg_host}:{pg_port}/synctv_test");
             let redis_url = format!("redis://{redis_host}:{redis_port}");
 
             // Wait for PostgreSQL to be ready (testcontainer port may be mapped
@@ -678,7 +692,10 @@ mod websocket_e2e {
                     }
                 }
             };
-            sqlx::migrate!("../migrations").run(&pool).await.expect("migrations");
+            sqlx::migrate!("../migrations")
+                .run(&pool)
+                .await
+                .expect("migrations");
 
             Self {
                 pool,
@@ -714,19 +731,28 @@ mod websocket_e2e {
         // Create services
         let jwt_service = JwtService::new(TEST_JWT_SECRET).expect("JwtService");
         let redis_client = redis::Client::open(infra.redis_url.as_str()).expect("Redis client");
-        let redis_conn = redis::aio::ConnectionManager::new(redis_client.clone()).await.expect("Redis ConnectionManager");
+        let redis_conn = redis::aio::ConnectionManager::new(redis_client.clone())
+            .await
+            .expect("Redis ConnectionManager");
 
         // UsernameCache with Redis L2 backend
-        let l2_backend = Arc::new(synctv_core::cache::l2_backend::RedisCacheL2::new(redis_conn.clone()));
+        let l2_backend = Arc::new(synctv_core::cache::l2_backend::RedisCacheL2::new(
+            redis_conn.clone(),
+        ));
         let username_cache = UsernameCache::new(l2_backend, "test_un:".to_string(), 100, 300);
 
         let key_builder = synctv_core::cache::KeyBuilder::new("test:".to_string());
 
         // BruteForceProtection with Redis backend
-        let brute_force = synctv_core::service::auth::BruteForceProtection::with_redis(redis_conn.clone(), "test:".to_string());
+        let brute_force = synctv_core::service::auth::BruteForceProtection::with_redis(
+            redis_conn.clone(),
+            "test:".to_string(),
+        );
 
         // Token blacklist with in-memory backend (sufficient for tests)
-        let token_blacklist: Arc<dyn synctv_core::service::TokenBlacklistStore> = Arc::new(synctv_core::service::InMemoryTokenBlacklistStore::new(10_000, 3600, 86400));
+        let token_blacklist: Arc<dyn synctv_core::service::TokenBlacklistStore> = Arc::new(
+            synctv_core::service::InMemoryTokenBlacklistStore::new(10_000, 3600, 86400),
+        );
 
         let user_service = Arc::new(UserService::new(
             pool.clone(),
@@ -740,8 +766,12 @@ mod websocket_e2e {
         let room_service = Arc::new(RoomService::new(pool.clone(), (*user_service).clone()));
 
         // Create cluster manager (single-node mode with Redis for Pub/Sub)
-        let redis_client_for_cluster = redis::Client::open(redis_url.clone()).expect("Failed to open Redis client");
-        let redis_conn_for_cluster = redis_client_for_cluster.get_connection_manager().await.expect("Failed to get ConnectionManager");
+        let redis_client_for_cluster =
+            redis::Client::open(redis_url.clone()).expect("Failed to open Redis client");
+        let redis_conn_for_cluster = redis_client_for_cluster
+            .get_connection_manager()
+            .await
+            .expect("Failed to get ConnectionManager");
         let cluster_config = ClusterConfig {
             redis_client: Some(redis_client_for_cluster),
             redis_conn: Some(redis_conn_for_cluster),
@@ -760,21 +790,22 @@ mod websocket_e2e {
         let rate_limiter = RateLimiter::in_memory_only("test_ws:".to_string());
 
         // Build AppState
-        let jwt_validator = Arc::new(synctv_core::service::auth::JwtValidator::new(
-            Arc::new(jwt_service.clone()),
-        ));
+        let jwt_validator = Arc::new(synctv_core::service::auth::JwtValidator::new(Arc::new(
+            jwt_service.clone(),
+        )));
         let rate_limit_config = Arc::new(synctv_api::http::middleware::RateLimitConfig::default());
 
         // Minimal providers (unused in WebSocket tests but required by AppState)
         let provider_instance_repo = Arc::new(
             synctv_core::repository::ProviderInstanceRepository::new(pool.clone()),
         );
-        let provider_instance_manager = Arc::new(
-            synctv_core::service::RemoteProviderManager::new(provider_instance_repo, None, None),
-        );
-        let user_provider_credential_repo = Arc::new(
-            synctv_core::repository::UserProviderCredentialRepository::new(pool.clone()),
-        );
+        let provider_instance_manager = Arc::new(synctv_core::service::RemoteProviderManager::new(
+            provider_instance_repo,
+            None,
+            None,
+        ));
+        let user_provider_credential_repo =
+            Arc::new(synctv_core::repository::UserProviderCredentialRepository::new(pool.clone()));
         let bilibili_provider = Arc::new(synctv_core::provider::BilibiliProvider::new(
             provider_instance_manager.clone(),
         ));
@@ -804,7 +835,9 @@ mod websocket_e2e {
         ));
 
         // BilibiliApiImpl, AlistApiImpl, EmbyApiImpl
-        let bilibili_api = Arc::new(synctv_api::impls::BilibiliApiImpl::new(bilibili_provider.clone()));
+        let bilibili_api = Arc::new(synctv_api::impls::BilibiliApiImpl::new(
+            bilibili_provider.clone(),
+        ));
         let alist_api = Arc::new(synctv_api::impls::AlistApiImpl::new(alist_provider.clone()));
         let emby_api = Arc::new(synctv_api::impls::EmbyApiImpl::new(emby_provider.clone()));
 
@@ -830,7 +863,8 @@ mod websocket_e2e {
             publish_key_service: None,
             notification_service: None,
             audit_service: {
-                let (audit_svc, _audit_handle) = synctv_core::service::AuditService::new(pool.clone());
+                let (audit_svc, _audit_handle) =
+                    synctv_core::service::AuditService::new(pool.clone());
                 Arc::new(audit_svc)
             },
             live_streaming_infrastructure: None,
@@ -845,12 +879,13 @@ mod websocket_e2e {
             router_config: Arc::new(router_config),
             rate_limit_config,
             jwt_validator,
-            security_pipeline: Arc::new(synctv_core::service::SecurityPipeline::new(
-                user_service.clone(),
-            ).with_token_blacklist(
-                user_service.token_blacklist_store(),
-                user_service.key_builder().clone(),
-            )),
+            security_pipeline: Arc::new(
+                synctv_core::service::SecurityPipeline::new(user_service.clone())
+                    .with_token_blacklist(
+                        user_service.token_blacklist_store(),
+                        user_service.key_builder().clone(),
+                    ),
+            ),
             client_api,
             admin_api: None,
             notification_api: None,
@@ -862,10 +897,7 @@ mod websocket_e2e {
 
         // Build a minimal router with just the WebSocket endpoint
         let app = axum::Router::new()
-            .route(
-                "/ws/rooms/{room_id}",
-                axum::routing::get(websocket_handler),
-            )
+            .route("/ws/rooms/{room_id}", axum::routing::get(websocket_handler))
             .with_state(state);
 
         // Bind to a random port
@@ -875,9 +907,7 @@ mod websocket_e2e {
 
         // Spawn server
         tokio::spawn(async move {
-            axum::serve(listener, app)
-                .await
-                .expect("server error");
+            axum::serve(listener, app).await.expect("server error");
         });
 
         E2EServer {
@@ -934,9 +964,8 @@ mod websocket_e2e {
         addr: &str,
         room_id: &str,
         token: &str,
-    ) -> tokio_tungstenite::WebSocketStream<
-        tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
-    > {
+    ) -> tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>
+    {
         let url = format!("ws://{addr}/ws/rooms/{room_id}?token={token}");
         let (ws_stream, response) = tokio_tungstenite::connect_async(&url)
             .await
@@ -957,8 +986,7 @@ mod websocket_e2e {
             match msg {
                 Ok(tungstenite::Message::Binary(bytes)) => {
                     return Some(
-                        ProtoCodec::decode_server_message(&bytes)
-                            .expect("decode server message"),
+                        ProtoCodec::decode_server_message(&bytes).expect("decode server message"),
                     );
                 }
                 Ok(tungstenite::Message::Ping(_)) => continue,
@@ -1027,16 +1055,20 @@ mod websocket_e2e {
         let infra = TestInfra::new().await;
         let server = setup_e2e_server(&infra).await;
 
-        let (user_id, token) = register_test_user(&server.user_service, &server.jwt_service, "alice_ws").await;
+        let (user_id, token) =
+            register_test_user(&server.user_service, &server.jwt_service, "alice_ws").await;
         let room_id = create_test_room(&server.room_service, &user_id, "Test Room WS").await;
 
         let mut ws = ws_connect(&server.addr, &room_id, &token).await;
 
         // The first message should be a UserJoined notification for this user
-        let msg = tokio::time::timeout(std::time::Duration::from_secs(5), recv_server_message(&mut ws))
-            .await
-            .expect("timeout waiting for initial message")
-            .expect("stream ended unexpectedly");
+        let msg = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            recv_server_message(&mut ws),
+        )
+        .await
+        .expect("timeout waiting for initial message")
+        .expect("stream ended unexpectedly");
 
         match msg.message {
             Some(server_message::Message::UserJoined(joined)) => {
@@ -1062,7 +1094,8 @@ mod websocket_e2e {
         let infra = TestInfra::new().await;
         let server = setup_e2e_server(&infra).await;
 
-        let (user_id, token) = register_test_user(&server.user_service, &server.jwt_service, "bob_hb").await;
+        let (user_id, token) =
+            register_test_user(&server.user_service, &server.jwt_service, "bob_hb").await;
         let room_id = create_test_room(&server.room_service, &user_id, "Heartbeat Room").await;
 
         let mut ws = ws_connect(&server.addr, &room_id, &token).await;
@@ -1079,14 +1112,20 @@ mod websocket_e2e {
         send_client_message(&mut ws, &heartbeat).await;
 
         // Expect a HeartbeatAck response
-        let ack = tokio::time::timeout(std::time::Duration::from_secs(5), recv_server_message_skip_membership(&mut ws))
-            .await
-            .expect("timeout waiting for heartbeat ack")
-            .expect("stream ended");
+        let ack = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            recv_server_message_skip_membership(&mut ws),
+        )
+        .await
+        .expect("timeout waiting for heartbeat ack")
+        .expect("stream ended");
 
         match ack.message {
             Some(server_message::Message::HeartbeatAck(ack)) => {
-                assert!(ack.timestamp > 0, "HeartbeatAck should have a valid timestamp");
+                assert!(
+                    ack.timestamp > 0,
+                    "HeartbeatAck should have a valid timestamp"
+                );
             }
             other => panic!("Expected HeartbeatAck, got: {other:?}"),
         }
@@ -1104,7 +1143,8 @@ mod websocket_e2e {
         let infra = TestInfra::new().await;
         let server = setup_e2e_server(&infra).await;
 
-        let (user_id, token) = register_test_user(&server.user_service, &server.jwt_service, "carol_dc").await;
+        let (user_id, token) =
+            register_test_user(&server.user_service, &server.jwt_service, "carol_dc").await;
         let room_id = create_test_room(&server.room_service, &user_id, "Disconnect Room").await;
 
         let mut ws = ws_connect(&server.addr, &room_id, &token).await;
@@ -1121,11 +1161,7 @@ mod websocket_e2e {
         .expect("close");
 
         // After close, the next recv should return None or a Close frame
-        let result = tokio::time::timeout(
-            std::time::Duration::from_secs(5),
-            ws.next(),
-        )
-        .await;
+        let result = tokio::time::timeout(std::time::Duration::from_secs(5), ws.next()).await;
 
         match result {
             Ok(Some(Ok(tungstenite::Message::Close(_))) | None) | Err(_) => {
@@ -1159,7 +1195,10 @@ mod websocket_e2e {
         let result = tokio_tungstenite::connect_async(&url).await;
 
         // Should fail with a non-101 status (likely 401)
-        assert!(result.is_err(), "Connection without auth should be rejected");
+        assert!(
+            result.is_err(),
+            "Connection without auth should be rejected"
+        );
     }
 
     // ========================================================================
@@ -1172,10 +1211,16 @@ mod websocket_e2e {
         let infra = TestInfra::new().await;
         let server = setup_e2e_server(&infra).await;
 
-        let url = format!("ws://{}/ws/rooms/fake_room?token=invalid.jwt.token", server.addr);
+        let url = format!(
+            "ws://{}/ws/rooms/fake_room?token=invalid.jwt.token",
+            server.addr
+        );
         let result = tokio_tungstenite::connect_async(&url).await;
 
-        assert!(result.is_err(), "Connection with invalid token should be rejected");
+        assert!(
+            result.is_err(),
+            "Connection with invalid token should be rejected"
+        );
     }
 
     // ========================================================================
@@ -1226,7 +1271,8 @@ mod websocket_e2e {
         let (user2_id, user2_token) =
             register_test_user(&server.user_service, &server.jwt_service, "user2_mc").await;
         let rid = synctv_core::models::RoomId::from_string(room_id.clone());
-        server.room_service
+        server
+            .room_service
             .join_room(rid, user2_id.clone(), None)
             .await
             .expect("user2 join room");
@@ -1243,19 +1289,17 @@ mod websocket_e2e {
 
         // user1 should receive a UserJoined event for user2 (via cluster broadcast)
         // Read messages from ws1 until we find UserJoined with user2's ID
-        let user2_join_event = tokio::time::timeout(
-            std::time::Duration::from_secs(5),
-            async {
-                loop {
-                    let msg = recv_server_message(&mut ws1).await.expect("stream ended");
-                    if let Some(server_message::Message::UserJoined(ref joined)) = msg.message {
-                        if joined.member.as_ref().map(|m| m.user_id.as_str()) == Some(user2_id.as_str()) {
-                            return msg;
-                        }
+        let user2_join_event = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                let msg = recv_server_message(&mut ws1).await.expect("stream ended");
+                if let Some(server_message::Message::UserJoined(ref joined)) = msg.message {
+                    if joined.member.as_ref().map(|m| m.user_id.as_str()) == Some(user2_id.as_str())
+                    {
+                        return msg;
                     }
                 }
-            },
-        )
+            }
+        })
         .await
         .expect("timeout waiting for user2 join event on ws1");
 
@@ -1292,7 +1336,8 @@ mod websocket_e2e {
         let (user2_id, user2_token) =
             register_test_user(&server.user_service, &server.jwt_service, "receiver_cb").await;
         let rid = synctv_core::models::RoomId::from_string(room_id.clone());
-        server.room_service
+        server
+            .room_service
             .join_room(rid, user2_id.clone(), None)
             .await
             .expect("user2 join");
@@ -1354,7 +1399,8 @@ mod websocket_e2e {
         let infra = TestInfra::new().await;
         let server = setup_e2e_server(&infra).await;
 
-        let (user_id, token) = register_test_user(&server.user_service, &server.jwt_service, "hb_multi").await;
+        let (user_id, token) =
+            register_test_user(&server.user_service, &server.jwt_service, "hb_multi").await;
         let room_id = create_test_room(&server.room_service, &user_id, "Multi HB Room").await;
 
         let mut ws = ws_connect(&server.addr, &room_id, &token).await;
@@ -1407,7 +1453,8 @@ mod websocket_e2e {
         let (user2_id, user2_token) =
             register_test_user(&server.user_service, &server.jwt_service, "leaver_ul").await;
         let rid = synctv_core::models::RoomId::from_string(room_id.clone());
-        server.room_service
+        server
+            .room_service
             .join_room(rid, user2_id.clone(), None)
             .await
             .expect("join");
@@ -1475,8 +1522,16 @@ mod websocket_e2e {
         let mut ws2 = ws_connect(&server.addr, &room_b_id, &user2_token).await;
 
         // Drain initial UserJoined for both
-        let _ = tokio::time::timeout(std::time::Duration::from_secs(5), recv_server_message(&mut ws1)).await;
-        let _ = tokio::time::timeout(std::time::Duration::from_secs(5), recv_server_message(&mut ws2)).await;
+        let _ = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            recv_server_message(&mut ws1),
+        )
+        .await;
+        let _ = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            recv_server_message(&mut ws2),
+        )
+        .await;
 
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
 
@@ -1539,11 +1594,17 @@ mod websocket_e2e {
 
         // First connection
         let mut ws = ws_connect(&server.addr, &room_id, &token).await;
-        let initial = tokio::time::timeout(std::time::Duration::from_secs(5), recv_server_message(&mut ws))
-            .await
-            .expect("timeout")
-            .expect("no initial msg");
-        assert!(matches!(initial.message, Some(server_message::Message::UserJoined(_))));
+        let initial = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            recv_server_message(&mut ws),
+        )
+        .await
+        .expect("timeout")
+        .expect("no initial msg");
+        assert!(matches!(
+            initial.message,
+            Some(server_message::Message::UserJoined(_))
+        ));
 
         // Graceful disconnect
         ws.close(None).await.expect("close");
@@ -1552,10 +1613,13 @@ mod websocket_e2e {
 
         // Reconnect with the same token
         let mut ws2 = ws_connect(&server.addr, &room_id, &token).await;
-        let rejoined = tokio::time::timeout(std::time::Duration::from_secs(5), recv_server_message(&mut ws2))
-            .await
-            .expect("timeout on reconnect")
-            .expect("no msg on reconnect");
+        let rejoined = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            recv_server_message(&mut ws2),
+        )
+        .await
+        .expect("timeout on reconnect")
+        .expect("no msg on reconnect");
 
         // Should get a UserJoined event again
         match rejoined.message {
@@ -1611,7 +1675,8 @@ mod websocket_e2e {
         let (user2_id, user2_token) =
             register_test_user(&server.user_service, &server.jwt_service, "victim_kick").await;
         let rid = synctv_core::models::RoomId::from_string(room_id.clone());
-        server.room_service
+        server
+            .room_service
             .join_room(rid.clone(), user2_id.clone(), None)
             .await
             .expect("join");
@@ -1619,29 +1684,32 @@ mod websocket_e2e {
         // user2 connects
         let mut ws2 = ws_connect(&server.addr, &room_id, &user2_token).await;
         // Drain initial UserJoined
-        let _ = tokio::time::timeout(std::time::Duration::from_secs(5), recv_server_message(&mut ws2)).await;
+        let _ = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            recv_server_message(&mut ws2),
+        )
+        .await;
 
         // Force disconnect user2 from the room via ConnectionManager
-        server.connection_manager.disconnect_user_from_room(&user2_id, &rid);
+        server
+            .connection_manager
+            .disconnect_user_from_room(&user2_id, &rid);
 
         // user2's connection should be terminated (receive Close or stream ends)
-        let result = tokio::time::timeout(
-            std::time::Duration::from_secs(5),
-            async {
-                loop {
-                    match ws2.next().await {
-                        Some(Ok(tungstenite::Message::Close(_))) => return true,
-                        None => return true,
-                        Some(Err(_)) => return true,
-                        Some(Ok(tungstenite::Message::Binary(_))) => {
-                            // May still receive buffered messages; keep draining
-                            continue;
-                        }
-                        Some(Ok(_)) => continue,
+        let result = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                match ws2.next().await {
+                    Some(Ok(tungstenite::Message::Close(_))) => return true,
+                    None => return true,
+                    Some(Err(_)) => return true,
+                    Some(Ok(tungstenite::Message::Binary(_))) => {
+                        // May still receive buffered messages; keep draining
+                        continue;
                     }
+                    Some(Ok(_)) => continue,
                 }
-            },
-        )
+            }
+        })
         .await;
 
         assert!(
@@ -1666,13 +1734,15 @@ mod websocket_e2e {
         // Create user1 and room via server1's services (shared DB)
         let (user1_id, user1_token) =
             register_test_user(&server1.user_service, &server1.jwt_service, "xrep_u1").await;
-        let room_id = create_test_room(&server1.room_service, &user1_id, "Cross Replica Room").await;
+        let room_id =
+            create_test_room(&server1.room_service, &user1_id, "Cross Replica Room").await;
 
         // Create user2 and join room (uses same DB)
         let (user2_id, user2_token) =
             register_test_user(&server1.user_service, &server1.jwt_service, "xrep_u2").await;
         let rid = synctv_core::models::RoomId::from_string(room_id.clone());
-        server1.room_service
+        server1
+            .room_service
             .join_room(rid, user2_id.clone(), None)
             .await
             .expect("user2 join");
@@ -1975,7 +2045,9 @@ mod websocket_e2e {
             );
 
             // Graceful disconnect
-            ws.close(None).await.unwrap_or_else(|_| panic!("close in cycle {cycle}"));
+            ws.close(None)
+                .await
+                .unwrap_or_else(|_| panic!("close in cycle {cycle}"));
 
             // Wait for server to process the disconnect and clean up state
             tokio::time::sleep(std::time::Duration::from_millis(500)).await;
@@ -2061,8 +2133,12 @@ mod websocket_e2e {
         let room_id = create_test_room(&server.room_service, &user1_id, "Danmaku Room").await;
 
         // Create second user and join room
-        let (user2_id, user2_token) =
-            register_test_user(&server.user_service, &server.jwt_service, "danmaku_receiver").await;
+        let (user2_id, user2_token) = register_test_user(
+            &server.user_service,
+            &server.jwt_service,
+            "danmaku_receiver",
+        )
+        .await;
         let rid = synctv_core::models::RoomId::from_string(room_id.clone());
         server
             .room_service
@@ -2108,10 +2184,7 @@ mod websocket_e2e {
                 assert_eq!(chat.content, "LOL");
                 assert_eq!(chat.room_id, room_id);
                 assert_eq!(chat.user_id, user1_id.as_str());
-                assert!(
-                    chat.position.is_some(),
-                    "Danmaku should have a position"
-                );
+                assert!(chat.position.is_some(), "Danmaku should have a position");
                 assert!(
                     (chat.position.unwrap() - 42.5).abs() < f64::EPSILON,
                     "Position should be 42.5"
@@ -2148,19 +2221,25 @@ mod websocket_e2e {
         let mut ws2 = ws_connect(&server.addr, &room_id, &token).await;
 
         // Both should get UserJoined
-        let msg1 = tokio::time::timeout(std::time::Duration::from_secs(5), recv_server_message(&mut ws1))
-            .await
-            .expect("timeout")
-            .expect("no initial msg for conn1");
+        let msg1 = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            recv_server_message(&mut ws1),
+        )
+        .await
+        .expect("timeout")
+        .expect("no initial msg for conn1");
         assert!(
             matches!(msg1.message, Some(server_message::Message::UserJoined(_))),
             "Connection 1 should get UserJoined"
         );
 
-        let msg2 = tokio::time::timeout(std::time::Duration::from_secs(5), recv_server_message(&mut ws2))
-            .await
-            .expect("timeout")
-            .expect("no initial msg for conn2");
+        let msg2 = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            recv_server_message(&mut ws2),
+        )
+        .await
+        .expect("timeout")
+        .expect("no initial msg for conn2");
         assert!(
             matches!(msg2.message, Some(server_message::Message::UserJoined(_))),
             "Connection 2 should get UserJoined"
@@ -2287,7 +2366,10 @@ mod websocket_e2e {
         .expect("stream ended");
 
         assert!(
-            matches!(initial.message, Some(server_message::Message::UserJoined(_))),
+            matches!(
+                initial.message,
+                Some(server_message::Message::UserJoined(_))
+            ),
             "Expected UserJoined after successful auth, got: {:?}",
             initial.message,
         );
@@ -2305,8 +2387,12 @@ mod websocket_e2e {
         let infra = TestInfra::new().await;
         let server = setup_e2e_server(&infra).await;
 
-        let (user_id, token) =
-            register_test_user(&server.user_service, &server.jwt_service, "invalid_msg_user").await;
+        let (user_id, token) = register_test_user(
+            &server.user_service,
+            &server.jwt_service,
+            "invalid_msg_user",
+        )
+        .await;
         let room_id = create_test_room(&server.room_service, &user_id, "Invalid Msg Room").await;
 
         let mut ws = ws_connect(&server.addr, &room_id, &token).await;
@@ -2324,31 +2410,28 @@ mod websocket_e2e {
         //   a) Send an Error ServerMessage back, OR
         //   b) Close the connection
         // In either case the connection should handle the bad input gracefully.
-        let result = tokio::time::timeout(
-            std::time::Duration::from_secs(5),
-            async {
-                loop {
-                    match ws.next().await {
-                        Some(Ok(tungstenite::Message::Binary(bytes))) => {
-                            // Decode and check if it is an error response
-                            if let Ok(msg) = ProtoCodec::decode_server_message(&bytes) {
-                                if matches!(msg.message, Some(server_message::Message::Error(_))) {
-                                    return "error_message";
-                                }
-                                // Other message types (e.g. buffered events) keep draining
+        let result = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                match ws.next().await {
+                    Some(Ok(tungstenite::Message::Binary(bytes))) => {
+                        // Decode and check if it is an error response
+                        if let Ok(msg) = ProtoCodec::decode_server_message(&bytes) {
+                            if matches!(msg.message, Some(server_message::Message::Error(_))) {
+                                return "error_message";
                             }
+                            // Other message types (e.g. buffered events) keep draining
                         }
-                        Some(Ok(tungstenite::Message::Close(_))) | None => {
-                            return "connection_closed";
-                        }
-                        Some(Err(_)) => {
-                            return "connection_error";
-                        }
-                        _ => continue,
                     }
+                    Some(Ok(tungstenite::Message::Close(_))) | None => {
+                        return "connection_closed";
+                    }
+                    Some(Err(_)) => {
+                        return "connection_error";
+                    }
+                    _ => continue,
                 }
-            },
-        )
+            }
+        })
         .await;
 
         match result {
@@ -2462,18 +2545,20 @@ mod websocket_e2e {
 #[cfg(test)]
 mod websocket_connection_limit_timing {
     use std::sync::Arc;
-    
+
     use tokio::net::TcpListener;
     use tokio_tungstenite::tungstenite;
 
     use synctv_api::http::websocket::websocket_handler;
+    use synctv_cluster::sync::{
+        ClusterConfig, ClusterManager, ConnectionLimits, ConnectionManager,
+    };
     use synctv_core::cache::UsernameCache;
+    use synctv_core::config::PasswordComplexityConfig;
     use synctv_core::models::id::UserId;
     use synctv_core::service::auth::jwt::{JwtService, TokenType};
     use synctv_core::service::rate_limit::RateLimiter;
-    use synctv_core::config::PasswordComplexityConfig;
     use synctv_core::service::{RoomService, UserService};
-    use synctv_cluster::sync::{ClusterConfig, ClusterManager, ConnectionManager, ConnectionLimits};
 
     use sqlx::PgPool;
     use testcontainers::core::ImageExt;
@@ -2482,7 +2567,8 @@ mod websocket_connection_limit_timing {
     use testcontainers_modules::postgres::Postgres;
     use testcontainers_modules::redis::Redis;
 
-    const TEST_JWT_SECRET: &str = "this-is-a-test-secret-with-enough-entropy-for-jwt-signing-32chars";
+    const TEST_JWT_SECRET: &str =
+        "this-is-a-test-secret-with-enough-entropy-for-jwt-signing-32chars";
     const POSTGRES_VERSION: &str = "16-alpine";
     const REDIS_VERSION: &str = "7-alpine";
 
@@ -2502,21 +2588,24 @@ mod websocket_connection_limit_timing {
                     .with_password("synctv_test")
                     .with_tag(POSTGRES_VERSION)
                     .start(),
-                Redis::default()
-                    .with_tag(REDIS_VERSION)
-                    .start(),
+                Redis::default().with_tag(REDIS_VERSION).start(),
             );
             let pg_container = pg_container.expect("Failed to start Postgres");
             let redis_container = redis_container.expect("Failed to start Redis");
 
             let pg_host = pg_container.get_host().await.expect("pg host");
-            let pg_port = pg_container.get_host_port_ipv4(5432).await.expect("pg port");
+            let pg_port = pg_container
+                .get_host_port_ipv4(5432)
+                .await
+                .expect("pg port");
             let redis_host = redis_container.get_host().await.expect("redis host");
-            let redis_port = redis_container.get_host_port_ipv4(6379).await.expect("redis port");
+            let redis_port = redis_container
+                .get_host_port_ipv4(6379)
+                .await
+                .expect("redis port");
 
-            let database_url = format!(
-                "postgresql://synctv:synctv_test@{pg_host}:{pg_port}/synctv_test"
-            );
+            let database_url =
+                format!("postgresql://synctv:synctv_test@{pg_host}:{pg_port}/synctv_test");
             let redis_url = format!("redis://{redis_host}:{redis_port}");
 
             // Wait for PostgreSQL to be ready (testcontainer port may be mapped
@@ -2534,7 +2623,10 @@ mod websocket_connection_limit_timing {
                     }
                 }
             };
-            sqlx::migrate!("../migrations").run(&pool).await.expect("migrations");
+            sqlx::migrate!("../migrations")
+                .run(&pool)
+                .await
+                .expect("migrations");
 
             Self {
                 pool,
@@ -2560,13 +2652,22 @@ mod websocket_connection_limit_timing {
 
         let jwt_service = JwtService::new(TEST_JWT_SECRET).expect("JwtService");
         let redis_client = redis::Client::open(infra.redis_url.as_str()).expect("Redis client");
-        let redis_conn = redis::aio::ConnectionManager::new(redis_client.clone()).await.expect("Redis ConnectionManager");
+        let redis_conn = redis::aio::ConnectionManager::new(redis_client.clone())
+            .await
+            .expect("Redis ConnectionManager");
 
-        let l2_backend = Arc::new(synctv_core::cache::l2_backend::RedisCacheL2::new(redis_conn.clone()));
+        let l2_backend = Arc::new(synctv_core::cache::l2_backend::RedisCacheL2::new(
+            redis_conn.clone(),
+        ));
         let username_cache = UsernameCache::new(l2_backend, "test_un:".to_string(), 100, 300);
         let key_builder = synctv_core::cache::KeyBuilder::new("test:".to_string());
-        let brute_force = synctv_core::service::auth::BruteForceProtection::with_redis(redis_conn.clone(), "test:".to_string());
-        let token_blacklist: Arc<dyn synctv_core::service::TokenBlacklistStore> = Arc::new(synctv_core::service::InMemoryTokenBlacklistStore::new(10_000, 3600, 86400));
+        let brute_force = synctv_core::service::auth::BruteForceProtection::with_redis(
+            redis_conn.clone(),
+            "test:".to_string(),
+        );
+        let token_blacklist: Arc<dyn synctv_core::service::TokenBlacklistStore> = Arc::new(
+            synctv_core::service::InMemoryTokenBlacklistStore::new(10_000, 3600, 86400),
+        );
 
         let user_service = Arc::new(UserService::new(
             pool.clone(),
@@ -2579,8 +2680,12 @@ mod websocket_connection_limit_timing {
         ));
         let room_service = Arc::new(RoomService::new(pool.clone(), (*user_service).clone()));
 
-        let redis_client_for_cluster = redis::Client::open(redis_url.clone()).expect("Redis client");
-        let redis_conn_for_cluster = redis_client_for_cluster.get_connection_manager().await.expect("ConnectionManager");
+        let redis_client_for_cluster =
+            redis::Client::open(redis_url.clone()).expect("Redis client");
+        let redis_conn_for_cluster = redis_client_for_cluster
+            .get_connection_manager()
+            .await
+            .expect("ConnectionManager");
         let cluster_config = ClusterConfig {
             redis_client: Some(redis_client_for_cluster),
             redis_conn: Some(redis_conn_for_cluster),
@@ -2588,7 +2693,9 @@ mod websocket_connection_limit_timing {
             ..Default::default()
         };
         let cluster_manager = Arc::new(
-            ClusterManager::new(cluster_config, None, None).await.expect("ClusterManager"),
+            ClusterManager::new(cluster_config, None, None)
+                .await
+                .expect("ClusterManager"),
         );
 
         // CRITICAL: Set max_per_user = 1 to trigger the limit easily
@@ -2604,15 +2711,30 @@ mod websocket_connection_limit_timing {
         let connection_manager_ret = connection_manager.clone();
 
         let rate_limiter = RateLimiter::in_memory_only("test_ws:".to_string());
-        let jwt_validator = Arc::new(synctv_core::service::auth::JwtValidator::new(Arc::new(jwt_service.clone())));
+        let jwt_validator = Arc::new(synctv_core::service::auth::JwtValidator::new(Arc::new(
+            jwt_service.clone(),
+        )));
         let rate_limit_config = Arc::new(synctv_api::http::middleware::RateLimitConfig::default());
 
-        let provider_instance_repo = Arc::new(synctv_core::repository::ProviderInstanceRepository::new(pool.clone()));
-        let provider_instance_manager = Arc::new(synctv_core::service::RemoteProviderManager::new(provider_instance_repo, None, None));
-        let user_provider_credential_repo = Arc::new(synctv_core::repository::UserProviderCredentialRepository::new(pool.clone()));
-        let bilibili_provider = Arc::new(synctv_core::provider::BilibiliProvider::new(provider_instance_manager.clone()));
-        let alist_provider = Arc::new(synctv_core::provider::AlistProvider::new(provider_instance_manager.clone()));
-        let emby_provider = Arc::new(synctv_core::provider::EmbyProvider::new(provider_instance_manager.clone()));
+        let provider_instance_repo = Arc::new(
+            synctv_core::repository::ProviderInstanceRepository::new(pool.clone()),
+        );
+        let provider_instance_manager = Arc::new(synctv_core::service::RemoteProviderManager::new(
+            provider_instance_repo,
+            None,
+            None,
+        ));
+        let user_provider_credential_repo =
+            Arc::new(synctv_core::repository::UserProviderCredentialRepository::new(pool.clone()));
+        let bilibili_provider = Arc::new(synctv_core::provider::BilibiliProvider::new(
+            provider_instance_manager.clone(),
+        ));
+        let alist_provider = Arc::new(synctv_core::provider::AlistProvider::new(
+            provider_instance_manager.clone(),
+        ));
+        let emby_provider = Arc::new(synctv_core::provider::EmbyProvider::new(
+            provider_instance_manager.clone(),
+        ));
 
         let mut config = synctv_core::Config::default();
         config.server.disable_ws_token_query = false;
@@ -2630,7 +2752,9 @@ mod websocket_connection_limit_timing {
             None,
         ));
 
-        let bilibili_api = Arc::new(synctv_api::impls::BilibiliApiImpl::new(bilibili_provider.clone()));
+        let bilibili_api = Arc::new(synctv_api::impls::BilibiliApiImpl::new(
+            bilibili_provider.clone(),
+        ));
         let alist_api = Arc::new(synctv_api::impls::AlistApiImpl::new(alist_provider.clone()));
         let emby_api = Arc::new(synctv_api::impls::EmbyApiImpl::new(emby_provider.clone()));
 
@@ -2656,7 +2780,8 @@ mod websocket_connection_limit_timing {
             publish_key_service: None,
             notification_service: None,
             audit_service: {
-                let (audit_svc, _audit_handle) = synctv_core::service::AuditService::new(pool.clone());
+                let (audit_svc, _audit_handle) =
+                    synctv_core::service::AuditService::new(pool.clone());
                 Arc::new(audit_svc)
             },
             live_streaming_infrastructure: None,
@@ -2671,10 +2796,13 @@ mod websocket_connection_limit_timing {
             router_config: Arc::new(router_config),
             rate_limit_config,
             jwt_validator,
-            security_pipeline: Arc::new(synctv_core::service::SecurityPipeline::new(user_service.clone()).with_token_blacklist(
-                user_service.token_blacklist_store(),
-                user_service.key_builder().clone(),
-            )),
+            security_pipeline: Arc::new(
+                synctv_core::service::SecurityPipeline::new(user_service.clone())
+                    .with_token_blacklist(
+                        user_service.token_blacklist_store(),
+                        user_service.key_builder().clone(),
+                    ),
+            ),
             client_api,
             admin_api: None,
             notification_api: None,
@@ -2719,7 +2847,9 @@ mod websocket_connection_limit_timing {
             )
             .await
             .expect("register user");
-        let token = jwt_service.sign_token(&user.id, TokenType::Access, 0).expect("sign token");
+        let token = jwt_service
+            .sign_token(&user.id, TokenType::Access, 0)
+            .expect("sign token");
         (user.id, token)
     }
 
@@ -2763,7 +2893,8 @@ mod websocket_connection_limit_timing {
         let server = setup_server_with_low_user_limit(&infra).await;
 
         // Create a user and room
-        let (user_id, token) = register_test_user(&server.user_service, &server.jwt_service, "limit_user").await;
+        let (user_id, token) =
+            register_test_user(&server.user_service, &server.jwt_service, "limit_user").await;
         let room_id = create_test_room(&server.room_service, &user_id, "Limit Test Room").await;
 
         // First connection should succeed (HTTP 101)
@@ -2829,7 +2960,8 @@ mod websocket_connection_limit_timing {
         let server = setup_server_with_low_user_limit(&infra).await;
 
         // Create a user and room
-        let (user_id, token) = register_test_user(&server.user_service, &server.jwt_service, "normal_user").await;
+        let (user_id, token) =
+            register_test_user(&server.user_service, &server.jwt_service, "normal_user").await;
         let room_id = create_test_room(&server.room_service, &user_id, "Normal Flow Room").await;
 
         // Connection should succeed (HTTP 101)
@@ -2862,18 +2994,27 @@ mod websocket_connection_limit_timing {
         let server = setup_server_with_low_user_limit(&infra).await;
 
         // Create two different users
-        let (user1_id, user1_token) = register_test_user(&server.user_service, &server.jwt_service, "user1").await;
-        let (user2_id, user2_token) = register_test_user(&server.user_service, &server.jwt_service, "user2").await;
+        let (user1_id, user1_token) =
+            register_test_user(&server.user_service, &server.jwt_service, "user1").await;
+        let (user2_id, user2_token) =
+            register_test_user(&server.user_service, &server.jwt_service, "user2").await;
 
         // Create a room with user1 as owner
         let room_id = create_test_room(&server.room_service, &user1_id, "Multi User Room").await;
 
         // Join user2 to the room
         let rid = synctv_core::models::RoomId::from_string(room_id.clone());
-        server.room_service.join_room(rid, user2_id.clone(), None).await.expect("user2 join room");
+        server
+            .room_service
+            .join_room(rid, user2_id.clone(), None)
+            .await
+            .expect("user2 join room");
 
         // Both users should be able to connect (HTTP 101)
-        let url1 = format!("ws://{}/ws/rooms/{}?token={}", server.addr, room_id, user1_token);
+        let url1 = format!(
+            "ws://{}/ws/rooms/{}?token={}",
+            server.addr, room_id, user1_token
+        );
         let (_ws1, response1) = tokio_tungstenite::connect_async(&url1)
             .await
             .expect("User1 WebSocket connect should succeed");
@@ -2884,7 +3025,10 @@ mod websocket_connection_limit_timing {
             "User1 should get HTTP 101"
         );
 
-        let url2 = format!("ws://{}/ws/rooms/{}?token={}", server.addr, room_id, user2_token);
+        let url2 = format!(
+            "ws://{}/ws/rooms/{}?token={}",
+            server.addr, room_id, user2_token
+        );
         let (_ws2, response2) = tokio_tungstenite::connect_async(&url2)
             .await
             .expect("User2 WebSocket connect should succeed");
@@ -2899,8 +3043,14 @@ mod websocket_connection_limit_timing {
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
 
         // Verify both connections are tracked
-        assert_eq!(server.connection_manager.user_connection_count(&user1_id), 1);
-        assert_eq!(server.connection_manager.user_connection_count(&user2_id), 1);
+        assert_eq!(
+            server.connection_manager.user_connection_count(&user1_id),
+            1
+        );
+        assert_eq!(
+            server.connection_manager.user_connection_count(&user2_id),
+            1
+        );
     }
 
     // ========================================================================
@@ -2914,7 +3064,8 @@ mod websocket_connection_limit_timing {
         let server = setup_server_with_low_user_limit(&infra).await;
 
         // Create a user and room
-        let (user_id, token) = register_test_user(&server.user_service, &server.jwt_service, "reconnect_user").await;
+        let (user_id, token) =
+            register_test_user(&server.user_service, &server.jwt_service, "reconnect_user").await;
         let room_id = create_test_room(&server.room_service, &user_id, "Reconnect Room").await;
 
         // First connection
@@ -2923,7 +3074,10 @@ mod websocket_connection_limit_timing {
             .await
             .expect("First connect should succeed");
 
-        assert_eq!(response1.status(), tungstenite::http::StatusCode::SWITCHING_PROTOCOLS);
+        assert_eq!(
+            response1.status(),
+            tungstenite::http::StatusCode::SWITCHING_PROTOCOLS
+        );
 
         // Wait for registration
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
@@ -2988,7 +3142,10 @@ mod slow_client_disconnect_tests {
         // Simulate 9 drops - should NOT trigger disconnect
         for _i in 0..9 {
             let drops = counter.fetch_add(1, Ordering::Relaxed) + 1;
-            assert!(drops < THRESHOLD, "Drop {drops} should not trigger disconnect");
+            assert!(
+                drops < THRESHOLD,
+                "Drop {drops} should not trigger disconnect"
+            );
         }
 
         // 10th drop - should trigger disconnect
@@ -2997,7 +3154,11 @@ mod slow_client_disconnect_tests {
 
         // Reset counter (successful send)
         counter.store(0, Ordering::Relaxed);
-        assert_eq!(counter.load(Ordering::Relaxed), 0, "Counter should reset to 0");
+        assert_eq!(
+            counter.load(Ordering::Relaxed),
+            0,
+            "Counter should reset to 0"
+        );
 
         // Verify we can count again after reset
         let drops = counter.fetch_add(1, Ordering::Relaxed) + 1;
@@ -3160,8 +3321,10 @@ mod membership_cache_ttl_tests {
         const MEMBERSHIP_CACHE_TTL_SECS: u64 = 30;
 
         // TTL should be 30 seconds for balance between DB load and responsiveness
-        assert_eq!(MEMBERSHIP_CACHE_TTL_SECS, 30,
-            "Membership cache TTL should be 30 seconds for optimal balance");
+        assert_eq!(
+            MEMBERSHIP_CACHE_TTL_SECS, 30,
+            "Membership cache TTL should be 30 seconds for optimal balance"
+        );
     }
 
     /// Test that cache TTL allows at least one heartbeat check.
@@ -3196,8 +3359,10 @@ mod membership_cache_ttl_tests {
         let worst_case_disconnect_secs = MEMBERSHIP_CACHE_TTL_SECS + MAX_HEARTBEAT_INTERVAL_SECS;
 
         // Worst case should be under 70 seconds (down from ~95 with 60s TTL)
-        assert!(worst_case_disconnect_secs < 70,
-            "Worst case disconnect time ({worst_case_disconnect_secs}) should be under 70 seconds");
+        assert!(
+            worst_case_disconnect_secs < 70,
+            "Worst case disconnect time ({worst_case_disconnect_secs}) should be under 70 seconds"
+        );
 
         // This is a significant improvement from 60s TTL (95s worst case)
         let old_worst_case = 60 + MAX_HEARTBEAT_INTERVAL_SECS;
@@ -3268,7 +3433,9 @@ mod danmu_sse_tests {
 
         // Verify structure
         assert!(event_data.get("token").is_some());
-        assert!(event_data.get("host_list").is_some_and(serde_json::Value::is_array));
+        assert!(event_data
+            .get("host_list")
+            .is_some_and(serde_json::Value::is_array));
     }
 
     /// Test that documents the future enhancement for continuous streaming.
@@ -3300,10 +3467,10 @@ mod danmu_sse_tests {
         // 4. Forwards to all connected SSE clients
 
         const EXPECTED_DANMU_EVENT_TYPES: &[&str] = &[
-            "danmu_info",  // Initial connection info (current behavior)
-            "danmu",       // Individual danmaku messages (future)
-            "gift",        // Gift notifications (future)
-            "error",       // Error messages (current)
+            "danmu_info", // Initial connection info (current behavior)
+            "danmu",      // Individual danmaku messages (future)
+            "gift",       // Gift notifications (future)
+            "error",      // Error messages (current)
         ];
 
         assert!(EXPECTED_DANMU_EVENT_TYPES.contains(&"danmu_info"));
@@ -3343,4 +3510,3 @@ mod danmu_sse_tests {
         const { assert!(!KEEP_ALIVE_TEXT.is_empty()) };
     }
 }
-

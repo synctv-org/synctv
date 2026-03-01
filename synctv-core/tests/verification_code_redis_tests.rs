@@ -7,8 +7,8 @@
 #![allow(clippy::unwrap_used)]
 
 use std::sync::Arc;
-use synctv_core::service::{EmailService, RedisVerificationCodeStore, VerificationCodeStore};
 use synctv_core::service::email::VerificationCode;
+use synctv_core::service::{EmailService, RedisVerificationCodeStore, VerificationCodeStore};
 use testcontainers::runners::AsyncRunner;
 use testcontainers_modules::redis::Redis;
 
@@ -64,7 +64,10 @@ async fn test_redis_verification_code_store_and_verify_roundtrip() {
 
     // After successful verification, code should be deleted
     let result = store.verify_code(email, "123456", 3, 10).await;
-    assert!(result.is_err(), "Code should be consumed after successful verification");
+    assert!(
+        result.is_err(),
+        "Code should be consumed after successful verification"
+    );
 }
 
 #[tokio::test]
@@ -121,7 +124,9 @@ async fn test_redis_verification_code_ttl_expiry() {
     // Use the EmailService with_redis which uses 10-minute TTL by default.
     // For TTL testing, we just verify that after storing, the key eventually expires.
     // Since we can't wait 60 seconds, we test the store returns -1 (not found) for missing keys.
-    let result = store.verify_code("nonexistent@test.com", "999999", 3, 1).await;
+    let result = store
+        .verify_code("nonexistent@test.com", "999999", 3, 1)
+        .await;
     assert!(result.is_err(), "Non-existent code should return error");
 }
 

@@ -3,14 +3,14 @@ use {
         define::{msg_type_id, RtmpMessageData},
         errors::MessageError,
     },
+    crate::bytesio::bytes_reader::BytesReader,
+    crate::flv::amf0::{amf0_markers, amf0_reader::Amf0Reader},
     crate::rtmp::{
         chunk::ChunkInfo,
         protocol_control_messages::reader::ProtocolControlMessageReader,
         user_control_messages::reader::EventMessagesReader,
         // utils,
     },
-    crate::bytesio::bytes_reader::BytesReader,
-    crate::flv::amf0::{amf0_markers, amf0_reader::Amf0Reader},
 };
 
 pub struct MessageParser {
@@ -18,7 +18,7 @@ pub struct MessageParser {
 }
 
 impl MessageParser {
-    #[must_use] 
+    #[must_use]
     pub const fn new(chunk_info: ChunkInfo) -> Self {
         Self { chunk_info }
     }
@@ -188,7 +188,13 @@ mod tests {
             }
         }
 
-        assert!(chunk_count > 0, "Should have parsed at least one chunk from RTMP data");
-        assert!(parsed_count > 0, "Should have successfully parsed at least one RTMP message");
+        assert!(
+            chunk_count > 0,
+            "Should have parsed at least one chunk from RTMP data"
+        );
+        assert!(
+            parsed_count > 0,
+            "Should have successfully parsed at least one RTMP message"
+        );
     }
 }

@@ -21,7 +21,7 @@ impl Default for BytesWriter {
 }
 
 impl BytesWriter {
-    #[must_use] 
+    #[must_use]
     pub const fn new() -> Self {
         Self { bytes: Vec::new() }
     }
@@ -126,7 +126,7 @@ impl BytesWriter {
         self.bytes.clear();
     }
 
-    #[must_use] 
+    #[must_use]
     pub fn get_current_bytes(&self) -> BytesMut {
         let mut rv_data = BytesMut::new();
         rv_data.extend_from_slice(&self.bytes[..]);
@@ -139,12 +139,12 @@ impl BytesWriter {
         }
     }
 
-    #[must_use] 
+    #[must_use]
     pub const fn len(&self) -> usize {
         self.bytes.len()
     }
 
-    #[must_use] 
+    #[must_use]
     pub const fn is_empty(&self) -> bool {
         self.len() == 0
     }
@@ -197,24 +197,13 @@ impl AsyncBytesWriter {
 
     pub async fn flush(&mut self) -> Result<(), BytesWriteError> {
         let data = std::mem::take(&mut self.bytes_writer.bytes);
-        self.io
-            .lock()
-            .await
-            .write(data.into())
-            .await?;
+        self.io.lock().await.write(data.into()).await?;
         Ok(())
     }
 
     pub async fn flush_timeout(&mut self, duration: Duration) -> Result<(), BytesWriteError> {
         let data = std::mem::take(&mut self.bytes_writer.bytes);
-        let message = timeout(
-            duration,
-            self.io
-                .lock()
-                .await
-                .write(data.into()),
-        )
-        .await;
+        let message = timeout(duration, self.io.lock().await.write(data.into())).await;
 
         match message {
             Ok(_) => {}

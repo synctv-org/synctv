@@ -19,24 +19,30 @@ pub async fn init_livestream(
     synctv_services: &synctv_core::bootstrap::services::Services,
     redis_handles: Option<&RedisHandles>,
     node_id: &str,
-) -> Result<(Option<server::LivestreamState>, Option<Arc<synctv_livestream::api::LiveStreamingInfrastructure>>, Vec<tokio::task::JoinHandle<()>>)> {
+) -> Result<(
+    Option<server::LivestreamState>,
+    Option<Arc<synctv_livestream::api::LiveStreamingInfrastructure>>,
+    Vec<tokio::task::JoinHandle<()>>,
+)> {
     info!("Initializing livestream infrastructure...");
 
     // Publisher registry: Redis-backed when available, in-memory otherwise
-    let (publisher_registry, redis_conn_for_auth): (Arc<dyn synctv_livestream::relay::StreamRegistryTrait>, _) =
-        if let Some(rh) = redis_handles {
-            let redis_conn = rh.conn_snapshot().await;
-            let redis_conn_for_auth = redis_conn.clone();
-            let registry = Arc::new(synctv_livestream::relay::StreamRegistry::new(redis_conn))
-                as Arc<dyn synctv_livestream::relay::StreamRegistryTrait>;
-            info!("Livestream publisher registry: Redis-backed");
-            (registry, Some(redis_conn_for_auth))
-        } else {
-            let registry = Arc::new(synctv_livestream::relay::InMemoryStreamRegistry::new())
-                as Arc<dyn synctv_livestream::relay::StreamRegistryTrait>;
-            info!("Livestream publisher registry: in-memory");
-            (registry, None)
-        };
+    let (publisher_registry, redis_conn_for_auth): (
+        Arc<dyn synctv_livestream::relay::StreamRegistryTrait>,
+        _,
+    ) = if let Some(rh) = redis_handles {
+        let redis_conn = rh.conn_snapshot().await;
+        let redis_conn_for_auth = redis_conn.clone();
+        let registry = Arc::new(synctv_livestream::relay::StreamRegistry::new(redis_conn))
+            as Arc<dyn synctv_livestream::relay::StreamRegistryTrait>;
+        info!("Livestream publisher registry: Redis-backed");
+        (registry, Some(redis_conn_for_auth))
+    } else {
+        let registry = Arc::new(synctv_livestream::relay::InMemoryStreamRegistry::new())
+            as Arc<dyn synctv_livestream::relay::StreamRegistryTrait>;
+        info!("Livestream publisher registry: in-memory");
+        (registry, None)
+    };
 
     // Shared tracker for user->stream mapping (kick-on-ban)
     let user_stream_tracker: synctv_livestream::api::UserStreamTracker =
@@ -51,15 +57,18 @@ pub async fn init_livestream(
     // Start periodic cleanup of stale stream tracker entries.
     // When a publisher crashes without a clean on_unpublish, secondary indexes
     // can retain orphaned references. This background task cleans them up.
-    let tracker_cleanup_handle = user_stream_tracker.start_periodic_cleanup(
-        std::time::Duration::from_mins(1),
-    );
+    let tracker_cleanup_handle =
+        user_stream_tracker.start_periodic_cleanup(std::time::Duration::from_mins(1));
     background_handles.push(tracker_cleanup_handle);
 
     let lifecycle_handle = tokio::spawn(async move {
         while let Ok(event) = stream_lifecycle_rx.recv().await {
             match event {
-                rtmp_auth::StreamLifecycleEvent::Started { room_id, media_id, user_id } => {
+                rtmp_auth::StreamLifecycleEvent::Started {
+                    room_id,
+                    media_id,
+                    user_id,
+                } => {
                     info!(
                         room_id = %room_id,
                         media_id = %media_id,
@@ -67,7 +76,11 @@ pub async fn init_livestream(
                         "Stream started"
                     );
                 }
-                rtmp_auth::StreamLifecycleEvent::Stopped { room_id, media_id, user_id } => {
+                rtmp_auth::StreamLifecycleEvent::Stopped {
+                    room_id,
+                    media_id,
+                    user_id,
+                } => {
                     info!(
                         room_id = %room_id,
                         media_id = %media_id,

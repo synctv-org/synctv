@@ -36,7 +36,7 @@ pub trait AlistInterface: Send + Sync {
 pub struct AlistService;
 
 impl AlistService {
-    #[must_use] 
+    #[must_use]
     pub const fn new() -> Self {
         Self
     }
@@ -120,6 +120,8 @@ impl AlistInterface for AlistService {
 
     async fn login(&self, request: LoginReq) -> Result<String, AlistError> {
         let mut client = AlistClient::new(&request.host)?;
-        client.login(&request.username, &request.password, request.hashed).await
+        client
+            .login(&request.username, &request.password, request.hashed)
+            .await
     }
 }

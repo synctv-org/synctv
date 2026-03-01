@@ -6,7 +6,7 @@
 //! Run Docker tests: cargo test --test `rate_limiter_tests` -- --ignored
 #![allow(clippy::unwrap_used)]
 
-use synctv_core::service::{RateLimiter, RateLimitError};
+use synctv_core::service::{RateLimitError, RateLimiter};
 
 // ============================================================================
 // In-memory rate limiter tests
@@ -65,7 +65,10 @@ async fn test_in_memory_rate_limiter_window_expiry() {
 
     // Should be able to make requests again
     let result = limiter.check_rate_limit(key, 3, 1).await;
-    assert!(result.is_ok(), "Requests should succeed after window expiry");
+    assert!(
+        result.is_ok(),
+        "Requests should succeed after window expiry"
+    );
 }
 
 #[tokio::test]
@@ -105,7 +108,12 @@ async fn test_in_memory_distributed_fails_closed() {
     // Without Redis, distributed check should fail closed
     let result = limiter.check_rate_limit_distributed("key", 10, 1).await;
     assert!(
-        matches!(result, Err(RateLimitError::RateLimitExceeded { retry_after_seconds: 1 })),
+        matches!(
+            result,
+            Err(RateLimitError::RateLimitExceeded {
+                retry_after_seconds: 1
+            })
+        ),
         "Distributed check without Redis should fail closed"
     );
 }
@@ -114,7 +122,10 @@ async fn test_in_memory_distributed_fails_closed() {
 // Redis rate limiter tests (require Docker)
 // ============================================================================
 
-async fn create_redis_connection_manager() -> (redis::aio::ConnectionManager, testcontainers::ContainerAsync<testcontainers_modules::redis::Redis>) {
+async fn create_redis_connection_manager() -> (
+    redis::aio::ConnectionManager,
+    testcontainers::ContainerAsync<testcontainers_modules::redis::Redis>,
+) {
     use testcontainers::runners::AsyncRunner;
     use testcontainers_modules::redis::Redis;
 
@@ -123,8 +134,14 @@ async fn create_redis_connection_manager() -> (redis::aio::ConnectionManager, te
         .await
         .expect("Failed to start Redis container");
 
-    let host = container.get_host().await.expect("Failed to get Redis host");
-    let port = container.get_host_port_ipv4(6379).await.expect("Failed to get Redis port");
+    let host = container
+        .get_host()
+        .await
+        .expect("Failed to get Redis host");
+    let port = container
+        .get_host_port_ipv4(6379)
+        .await
+        .expect("Failed to get Redis port");
     let redis_url = format!("redis://{host}:{port}");
     let client = redis::Client::open(redis_url.as_str()).expect("Failed to create Redis client");
     let conn = redis::aio::ConnectionManager::new(client)
@@ -187,9 +204,9 @@ async fn test_redis_rate_limiter_concurrent_requests() {
     let mut handles = Vec::new();
     for _ in 0..20 {
         let l = limiter.clone();
-        handles.push(tokio::spawn(async move {
-            l.check_rate_limit(key, 10, 1).await
-        }));
+        handles.push(tokio::spawn(
+            async move { l.check_rate_limit(key, 10, 1).await },
+        ));
     }
 
     let results: Vec<_> = futures::future::join_all(handles)
@@ -201,7 +218,10 @@ async fn test_redis_rate_limiter_concurrent_requests() {
     let successes = results.iter().filter(|r| r.is_ok()).count();
     let failures = results.iter().filter(|r| r.is_err()).count();
 
-    assert_eq!(successes, 10, "Only 10 of 20 concurrent requests should succeed");
+    assert_eq!(
+        successes, 10,
+        "Only 10 of 20 concurrent requests should succeed"
+    );
     assert_eq!(failures, 10, "10 requests should be rate limited");
 }
 
@@ -237,7 +257,12 @@ async fn test_redis_rate_limiter_fail_closed_without_redis() {
 
     let result = limiter.check_rate_limit_distributed("key", 10, 1).await;
     assert!(
-        matches!(result, Err(RateLimitError::RateLimitExceeded { retry_after_seconds: 1 })),
+        matches!(
+            result,
+            Err(RateLimitError::RateLimitExceeded {
+                retry_after_seconds: 1
+            })
+        ),
         "Distributed check without Redis should fail closed"
     );
 }

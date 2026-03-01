@@ -14,8 +14,7 @@ use crate::{
         },
     },
     repository::NotificationRepository,
-    Error,
-    Result,
+    Error, Result,
 };
 
 /// Event emitted when a notification is created, for real-time push.
@@ -39,7 +38,10 @@ impl UserNotificationService {
     #[must_use]
     pub fn new(repository: NotificationRepository) -> Self {
         let (event_tx, _) = tokio::sync::broadcast::channel(256);
-        Self { repository, event_tx }
+        Self {
+            repository,
+            event_tx,
+        }
     }
 
     /// Subscribe to notification creation events.
@@ -47,7 +49,7 @@ impl UserNotificationService {
     /// Returns a receiver that will emit `NotificationCreatedEvent` whenever
     /// a new notification is created. Used by the messaging layer to push
     /// notifications to connected WebSocket clients.
-    #[must_use] 
+    #[must_use]
     pub fn subscribe_events(&self) -> tokio::sync::broadcast::Receiver<NotificationCreatedEvent> {
         self.event_tx.subscribe()
     }
@@ -149,7 +151,9 @@ impl UserNotificationService {
         user_id: &UserId,
         query: NotificationListQuery,
     ) -> Result<(Vec<Notification>, i64)> {
-        self.repository.list_by_user_with_count(user_id, &query).await
+        self.repository
+            .list_by_user_with_count(user_id, &query)
+            .await
     }
 
     /// Get unread count for a user
@@ -158,12 +162,11 @@ impl UserNotificationService {
     }
 
     /// Mark notifications as read
-    pub async fn mark_as_read(
-        &self,
-        user_id: &UserId,
-        req: MarkAsReadRequest,
-    ) -> Result<usize> {
-        let affected = self.repository.mark_as_read(user_id, &req.notification_ids).await?;
+    pub async fn mark_as_read(&self, user_id: &UserId, req: MarkAsReadRequest) -> Result<usize> {
+        let affected = self
+            .repository
+            .mark_as_read(user_id, &req.notification_ids)
+            .await?;
         Ok(affected as usize)
     }
 

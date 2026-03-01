@@ -6,10 +6,8 @@
 //! Run Docker tests: cargo test --test `audit_service_tests` -- --ignored
 #![allow(clippy::unwrap_used)]
 
+use synctv_core::service::{AuditAction, AuditService, AuditTargetType};
 use synctv_core_testing::create_test_pool;
-use synctv_core::service::{
-    AuditService, AuditAction, AuditTargetType,
-};
 
 // ============================================================================
 // Unbuffered write tests (require Docker)
@@ -222,7 +220,14 @@ async fn test_log_stream_kicked_writes_audit_log() {
 
     // Verify the audit log was written correctly
     #[allow(clippy::type_complexity)]
-    let row: (String, Option<String>, Option<String>, Option<String>, Option<String>, Option<String>) = sqlx::query_as(
+    let row: (
+        String,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+    ) = sqlx::query_as(
         r"
         SELECT action, target_type, target_id, ip_address, user_agent, details::text
         FROM audit_logs
@@ -234,10 +239,26 @@ async fn test_log_stream_kicked_writes_audit_log() {
     .expect("Query should succeed");
 
     assert_eq!(row.0, "stream_kicked", "Action should be stream_kicked");
-    assert_eq!(row.1, Some("stream".to_string()), "Target type should be stream");
-    assert_eq!(row.2, Some("room_abc123:media_xyz789".to_string()), "Target ID should be room_id:media_id");
-    assert_eq!(row.3, Some("192.168.1.100".to_string()), "IP address should be recorded");
-    assert_eq!(row.4, Some("Mozilla/5.0 AdminPanel/1.0".to_string()), "User-Agent should be recorded");
+    assert_eq!(
+        row.1,
+        Some("stream".to_string()),
+        "Target type should be stream"
+    );
+    assert_eq!(
+        row.2,
+        Some("room_abc123:media_xyz789".to_string()),
+        "Target ID should be room_id:media_id"
+    );
+    assert_eq!(
+        row.3,
+        Some("192.168.1.100".to_string()),
+        "IP address should be recorded"
+    );
+    assert_eq!(
+        row.4,
+        Some("Mozilla/5.0 AdminPanel/1.0".to_string()),
+        "User-Agent should be recorded"
+    );
 
     // Verify details JSON contains room_id, media_id, and reason
     let details: serde_json::Value = serde_json::from_str(&row.5.unwrap_or_default()).unwrap();
@@ -285,7 +306,10 @@ async fn test_log_stream_kicked_without_reason() {
     let details: serde_json::Value = serde_json::from_str(&row.1.unwrap_or_default()).unwrap();
     assert_eq!(details["room_id"], "room_def456");
     assert_eq!(details["media_id"], "media_uvw321");
-    assert_eq!(details["reason"], "", "Reason should be empty string when None is provided");
+    assert_eq!(
+        details["reason"], "",
+        "Reason should be empty string when None is provided"
+    );
 }
 
 #[tokio::test]
@@ -317,7 +341,10 @@ async fn test_log_stream_kicked_records_actor_username() {
     .await
     .expect("Query should succeed");
 
-    assert_eq!(row.0, "test_admin_user", "Actor username should be recorded");
+    assert_eq!(
+        row.0, "test_admin_user",
+        "Actor username should be recorded"
+    );
 }
 
 #[tokio::test]

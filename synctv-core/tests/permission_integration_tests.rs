@@ -6,13 +6,16 @@
 //! Requires Docker for testcontainers.
 #![allow(clippy::unwrap_used)]
 
-use synctv_core_testing::create_test_pool;
+use sqlx::PgPool;
 use synctv_core::{
-    models::{Room, RoomId, RoomMember, RoomRole, UserId, MemberStatus, PermissionBits, User, UserStatus, SignupMethod},
-    repository::{RoomRepository, RoomMemberRepository, UserRepository},
+    models::{
+        MemberStatus, PermissionBits, Room, RoomId, RoomMember, RoomRole, SignupMethod, User,
+        UserId, UserStatus,
+    },
+    repository::{RoomMemberRepository, RoomRepository, UserRepository},
     service::permission::PermissionService,
 };
-use sqlx::PgPool;
+use synctv_core_testing::create_test_pool;
 /// Default `PostgreSQL` version for test containers
 /// Create a test user in the database (required for FK constraints)
 async fn create_test_user(pool: &PgPool, user_id: &UserId) {
@@ -34,10 +37,18 @@ async fn create_test_user(pool: &PgPool, user_id: &UserId) {
         email_verified: true,
     };
     let user_repo = UserRepository::new(pool.clone());
-    user_repo.create(&user).await.expect("Failed to create test user");
+    user_repo
+        .create(&user)
+        .await
+        .expect("Failed to create test user");
 }
 
-fn make_member(room_id: RoomId, user_id: UserId, role: RoomRole, status: MemberStatus) -> RoomMember {
+fn make_member(
+    room_id: RoomId,
+    user_id: UserId,
+    role: RoomRole,
+    status: MemberStatus,
+) -> RoomMember {
     RoomMember {
         room_id,
         user_id,
@@ -71,14 +82,11 @@ fn make_room(creator_id: UserId) -> Room {
     }
 }
 
-fn make_perm_service(member_repo: RoomMemberRepository, room_repo: RoomRepository) -> PermissionService {
-    PermissionService::new(
-        member_repo,
-        room_repo,
-        None,
-        1000,
-        300,
-    )
+fn make_perm_service(
+    member_repo: RoomMemberRepository,
+    room_repo: RoomRepository,
+) -> PermissionService {
+    PermissionService::new(member_repo, room_repo, None, 1000, 300)
 }
 
 #[tokio::test]
@@ -92,28 +100,45 @@ async fn test_permission_check_with_database_member() {
     let creator_id = UserId::new();
     create_test_user(&pool, &creator_id).await;
     let room = make_room(creator_id);
-    room_repo.create(&room).await.expect("Failed to create room");
+    room_repo
+        .create(&room)
+        .await
+        .expect("Failed to create room");
 
     let user_id = UserId::new();
     create_test_user(&pool, &user_id).await;
-    let mut member = make_member(room.id.clone(), user_id.clone(), RoomRole::Member, MemberStatus::Active);
+    let mut member = make_member(
+        room.id.clone(),
+        user_id.clone(),
+        RoomRole::Member,
+        MemberStatus::Active,
+    );
     member.added_permissions = PermissionBits::SEND_CHAT | PermissionBits::ADD_MEDIA;
-    member_repo.add(&member).await.expect("Failed to create member");
+    member_repo
+        .add(&member)
+        .await
+        .expect("Failed to create member");
 
     let perm_service = make_perm_service(member_repo, room_repo);
 
     // check_permission_no_cache returns Ok(()) if granted, Err if denied
-    perm_service.check_permission_no_cache(&room.id, &user_id, PermissionBits::SEND_CHAT)
+    perm_service
+        .check_permission_no_cache(&room.id, &user_id, PermissionBits::SEND_CHAT)
         .await
         .expect("User should have SEND_CHAT permission");
 
-    perm_service.check_permission_no_cache(&room.id, &user_id, PermissionBits::ADD_MEDIA)
+    perm_service
+        .check_permission_no_cache(&room.id, &user_id, PermissionBits::ADD_MEDIA)
         .await
         .expect("User should have ADD_MEDIA permission");
 
-    let kick_result = perm_service.check_permission_no_cache(&room.id, &user_id, PermissionBits::KICK_MEMBER)
+    let kick_result = perm_service
+        .check_permission_no_cache(&room.id, &user_id, PermissionBits::KICK_MEMBER)
         .await;
-    assert!(kick_result.is_err(), "User should not have KICK_MEMBER permission");
+    assert!(
+        kick_result.is_err(),
+        "User should not have KICK_MEMBER permission"
+    );
 }
 
 #[tokio::test]
@@ -127,27 +152,51 @@ async fn test_permission_allow_deny_pattern() {
     let creator_id = UserId::new();
     create_test_user(&pool, &creator_id).await;
     let room = make_room(creator_id);
-    room_repo.create(&room).await.expect("Failed to create room");
+    room_repo
+        .create(&room)
+        .await
+        .expect("Failed to create room");
 
     let admin_id = UserId::new();
     create_test_user(&pool, &admin_id).await;
-    let admin_member = make_member(room.id.clone(), admin_id.clone(), RoomRole::Admin, MemberStatus::Active);
-    member_repo.add(&admin_member).await.expect("Failed to create admin");
+    let admin_member = make_member(
+        room.id.clone(),
+        admin_id.clone(),
+        RoomRole::Admin,
+        MemberStatus::Active,
+    );
+    member_repo
+        .add(&admin_member)
+        .await
+        .expect("Failed to create admin");
 
     let guest_id = UserId::new();
     create_test_user(&pool, &guest_id).await;
-    let guest_member = make_member(room.id.clone(), guest_id.clone(), RoomRole::Guest, MemberStatus::Active);
-    member_repo.add(&guest_member).await.expect("Failed to create guest");
+    let guest_member = make_member(
+        room.id.clone(),
+        guest_id.clone(),
+        RoomRole::Guest,
+        MemberStatus::Active,
+    );
+    member_repo
+        .add(&guest_member)
+        .await
+        .expect("Failed to create guest");
 
     let perm_service = make_perm_service(member_repo, room_repo);
 
-    perm_service.check_permission_no_cache(&room.id, &admin_id, PermissionBits::KICK_MEMBER)
+    perm_service
+        .check_permission_no_cache(&room.id, &admin_id, PermissionBits::KICK_MEMBER)
         .await
         .expect("Admin should be able to kick members");
 
-    let guest_chat_result = perm_service.check_permission_no_cache(&room.id, &guest_id, PermissionBits::SEND_CHAT)
+    let guest_chat_result = perm_service
+        .check_permission_no_cache(&room.id, &guest_id, PermissionBits::SEND_CHAT)
         .await;
-    assert!(guest_chat_result.is_err(), "Guest should not be able to send chat");
+    assert!(
+        guest_chat_result.is_err(),
+        "Guest should not be able to send chat"
+    );
 }
 
 #[tokio::test]
@@ -161,19 +210,39 @@ async fn test_permission_banned_member_denied() {
     let creator_id = UserId::new();
     create_test_user(&pool, &creator_id).await;
     let room = make_room(creator_id.clone());
-    room_repo.create(&room).await.expect("Failed to create room");
+    room_repo
+        .create(&room)
+        .await
+        .expect("Failed to create room");
 
     let user_id = UserId::new();
     create_test_user(&pool, &user_id).await;
     // First add as active member, then ban them (the add() method doesn't support setting banned_at/left_at)
-    let member = make_member(room.id.clone(), user_id.clone(), RoomRole::Member, MemberStatus::Active);
-    member_repo.add(&member).await.expect("Failed to create member");
+    let member = make_member(
+        room.id.clone(),
+        user_id.clone(),
+        RoomRole::Member,
+        MemberStatus::Active,
+    );
+    member_repo
+        .add(&member)
+        .await
+        .expect("Failed to create member");
     // Now ban the member (this sets banned_at, left_at, and status properly)
-    member_repo.ban_member(&room.id, &user_id, &creator_id, Some("Test ban".to_string())).await.expect("Failed to ban member");
+    member_repo
+        .ban_member(
+            &room.id,
+            &user_id,
+            &creator_id,
+            Some("Test ban".to_string()),
+        )
+        .await
+        .expect("Failed to ban member");
 
     let perm_service = make_perm_service(member_repo, room_repo);
 
-    let result = perm_service.check_permission_no_cache(&room.id, &user_id, PermissionBits::SEND_CHAT)
+    let result = perm_service
+        .check_permission_no_cache(&room.id, &user_id, PermissionBits::SEND_CHAT)
         .await;
     assert!(result.is_err(), "Banned member should not have permissions");
 }
@@ -189,12 +258,16 @@ async fn test_permission_non_member_denied() {
     let creator_id = UserId::new();
     create_test_user(&pool, &creator_id).await;
     let room = make_room(creator_id);
-    room_repo.create(&room).await.expect("Failed to create room");
+    room_repo
+        .create(&room)
+        .await
+        .expect("Failed to create room");
 
     let perm_service = make_perm_service(member_repo, room_repo);
 
     let non_member_id = UserId::new();
-    let result = perm_service.check_permission_no_cache(&room.id, &non_member_id, PermissionBits::SEND_CHAT)
+    let result = perm_service
+        .check_permission_no_cache(&room.id, &non_member_id, PermissionBits::SEND_CHAT)
         .await;
     assert!(result.is_err(), "Non-member should not have permissions");
 }
@@ -234,12 +307,23 @@ async fn test_concurrent_permission_checks() {
     let creator_id = UserId::new();
     create_test_user(&pool, &creator_id).await;
     let room = make_room(creator_id);
-    room_repo.create(&room).await.expect("Failed to create room");
+    room_repo
+        .create(&room)
+        .await
+        .expect("Failed to create room");
 
     let user_id = UserId::new();
     create_test_user(&pool, &user_id).await;
-    let member = make_member(room.id.clone(), user_id.clone(), RoomRole::Member, MemberStatus::Active);
-    member_repo.add(&member).await.expect("Failed to create member");
+    let member = make_member(
+        room.id.clone(),
+        user_id.clone(),
+        RoomRole::Member,
+        MemberStatus::Active,
+    );
+    member_repo
+        .add(&member)
+        .await
+        .expect("Failed to create member");
 
     let perm_service = Arc::new(make_perm_service(member_repo, room_repo));
 
@@ -250,7 +334,8 @@ async fn test_concurrent_permission_checks() {
         let uid = user_id.clone();
 
         let handle = tokio::spawn(async move {
-            service.check_permission(&room_id, &uid, PermissionBits::SEND_CHAT)
+            service
+                .check_permission(&room_id, &uid, PermissionBits::SEND_CHAT)
                 .await
                 .expect("Permission check should succeed");
         });

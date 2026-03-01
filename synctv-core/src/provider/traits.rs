@@ -80,8 +80,8 @@ pub struct PlaybackResult {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ItemType {
-    Playlist,  // Folder/directory (playlist)
-    Media,     // File (video/audio/live stream)
+    Playlist, // Folder/directory (playlist)
+    Media,    // File (video/audio/live stream)
 }
 
 /// Directory item (file or folder)
@@ -167,7 +167,7 @@ pub trait MediaProvider: Send + Sync {
     /// - Shared: "synctv:playback:{provider}:{hash}:shared"
     /// - User: "`synctv:playback:{provider}:{hash}:user:{user_id`}"
     fn cache_key(&self, ctx: &ProviderContext<'_>, source_config: &Value) -> String {
-        use sha2::{Sha256, Digest};
+        use sha2::{Digest, Sha256};
 
         tracing::debug!(
             provider = self.name(),

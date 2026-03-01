@@ -4,10 +4,10 @@
 //! through the `Amf0Writer` and `Amf0Reader`.
 
 #![allow(clippy::unwrap_used)]
-use synctv_xiu::flv::amf0::amf0_writer::Amf0Writer;
-use synctv_xiu::flv::amf0::amf0_reader::Amf0Reader;
-use synctv_xiu::flv::amf0::Amf0ValueType;
 use synctv_xiu::bytesio::bytes_reader::BytesReader;
+use synctv_xiu::flv::amf0::amf0_reader::Amf0Reader;
+use synctv_xiu::flv::amf0::amf0_writer::Amf0Writer;
+use synctv_xiu::flv::amf0::Amf0ValueType;
 
 /// Helper: write a value with `Amf0Writer`, then read it back with `Amf0Reader`.
 fn roundtrip(value: &Amf0ValueType) -> Amf0ValueType {
@@ -118,8 +118,14 @@ fn test_amf0_object_roundtrip() {
     use indexmap::IndexMap;
 
     let mut properties = IndexMap::new();
-    properties.insert("app".to_string(), Amf0ValueType::UTF8String("live".to_string()));
-    properties.insert("type".to_string(), Amf0ValueType::UTF8String("nonprivate".to_string()));
+    properties.insert(
+        "app".to_string(),
+        Amf0ValueType::UTF8String("live".to_string()),
+    );
+    properties.insert(
+        "type".to_string(),
+        Amf0ValueType::UTF8String("nonprivate".to_string()),
+    );
     properties.insert("fpad".to_string(), Amf0ValueType::Boolean(false));
     properties.insert("capabilities".to_string(), Amf0ValueType::Number(15.0));
 

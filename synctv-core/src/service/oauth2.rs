@@ -11,18 +11,18 @@
 //! - [`InMemoryOAuthStateStore`]: In-memory, for standalone mode without
 //!   Redis. Uses `Mutex<HashMap>` for atomic single-use consumption.
 
-use std::sync::Arc;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::sync::Arc;
 use tokio::sync::RwLock;
 use tracing::{debug, info};
-use serde::{Deserialize, Serialize};
 
 use crate::{
-    models::{oauth2_client::OAuth2Provider, User, UserId, SignupMethod},
-    repository::UserOAuthProviderRepository,
+    models::{oauth2_client::OAuth2Provider, SignupMethod, User, UserId},
     oauth2::Provider as OAuth2ProviderTrait,
+    repository::UserOAuthProviderRepository,
     service::UserService,
-    Error, Result, InternalExt,
+    Error, InternalExt, Result,
 };
 
 // ============================================================================
@@ -41,7 +41,12 @@ use crate::{
 #[async_trait::async_trait]
 pub trait OAuthStateStore: Send + Sync {
     /// Persist `state` under `token_id`, expiring it after `ttl`.
-    async fn store(&self, token_id: &str, state: &OAuth2State, ttl: std::time::Duration) -> Result<()>;
+    async fn store(
+        &self,
+        token_id: &str,
+        state: &OAuth2State,
+        ttl: std::time::Duration,
+    ) -> Result<()>;
 
     /// Atomically retrieve **and remove** the state for `token_id`.
     ///
@@ -67,7 +72,7 @@ pub struct RedisOAuthStateStore {
 
 impl RedisOAuthStateStore {
     /// Create from an existing Redis `ConnectionManager`.
-    #[must_use] 
+    #[must_use]
     pub const fn new(conn: redis::aio::ConnectionManager) -> Self {
         Self { conn }
     }
@@ -82,10 +87,15 @@ impl OAuthStateStore for RedisOAuthStateStore {
         "redis"
     }
 
-    async fn store(&self, token_id: &str, state: &OAuth2State, ttl: std::time::Duration) -> Result<()> {
+    async fn store(
+        &self,
+        token_id: &str,
+        state: &OAuth2State,
+        ttl: std::time::Duration,
+    ) -> Result<()> {
         let key = format!("{OAUTH2_STATE_KEY_PREFIX}{token_id}");
-        let value = serde_json::to_string(state)
-            .internal_with_err("Failed to serialize OAuth2 state")?;
+        let value =
+            serde_json::to_string(state).internal_with_err("Failed to serialize OAuth2 state")?;
 
         let mut conn = self.conn.clone();
         use redis::AsyncCommands;
@@ -97,7 +107,10 @@ impl OAuthStateStore for RedisOAuthStateStore {
         .map_err(|_| Error::Internal("Redis timeout: store OAuth2 state".to_string()))?
         .internal_with_err("Failed to store OAuth2 state in Redis")?;
 
-        debug!("Stored OAuth2 state in Redis for token {}", &token_id[..8.min(token_id.len())]);
+        debug!(
+            "Stored OAuth2 state in Redis for token {}",
+            &token_id[..8.min(token_id.len())]
+        );
         Ok(())
     }
 
@@ -106,13 +119,15 @@ impl OAuthStateStore for RedisOAuthStateStore {
         let mut conn = self.conn.clone();
 
         // Atomic GET + DEL via Lua script (same pattern as WsTicketService)
-        let lua_script = redis::Script::new(r#"
+        let lua_script = redis::Script::new(
+            r#"
             local value = redis.call("GET", KEYS[1])
             if value then
                 redis.call("DEL", KEYS[1])
             end
             return value
-        "#);
+        "#,
+        );
 
         let value: Option<String> = tokio::time::timeout(
             crate::resilience::timeout::REDIS_OPERATION_TIMEOUT,
@@ -155,7 +170,9 @@ impl InMemoryOAuthStateStore {
     /// Create a new in-memory OAuth state store.
     #[must_use]
     pub fn new() -> Self {
-        Self { states: std::sync::Mutex::new(HashMap::new()) }
+        Self {
+            states: std::sync::Mutex::new(HashMap::new()),
+        }
     }
 
     /// Remove all entries whose TTL has expired.
@@ -177,7 +194,12 @@ impl OAuthStateStore for InMemoryOAuthStateStore {
         "memory"
     }
 
-    async fn store(&self, token_id: &str, state: &OAuth2State, ttl: std::time::Duration) -> Result<()> {
+    async fn store(
+        &self,
+        token_id: &str,
+        state: &OAuth2State,
+        ttl: std::time::Duration,
+    ) -> Result<()> {
         let expiry = std::time::Instant::now() + ttl;
         let mut map = self.states.lock().expect("OAuth state lock poisoned");
         Self::sweep_expired(&mut map);
@@ -261,7 +283,10 @@ pub struct OAuth2Service {
 impl std::fmt::Debug for OAuth2Service {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("OAuth2Service")
-            .field("repository", &std::any::type_name::<UserOAuthProviderRepository>())
+            .field(
+                "repository",
+                &std::any::type_name::<UserOAuthProviderRepository>(),
+            )
             .finish_non_exhaustive()
     }
 }
@@ -297,7 +322,10 @@ impl OAuth2Service {
             }
         }
 
-        info!("OAuth2 service initialized (backend: {})", state_store.backend_name());
+        info!(
+            "OAuth2 service initialized (backend: {})",
+            state_store.backend_name()
+        );
 
         Ok(Self {
             repository,
@@ -324,7 +352,10 @@ impl OAuth2Service {
                 std::time::Duration::from_secs(OAUTH2_STATE_TTL_SECONDS),
             )
             .await?;
-        debug!("Stored OAuth2 state for token {}", &state_token[..8.min(state_token.len())]);
+        debug!(
+            "Stored OAuth2 state for token {}",
+            &state_token[..8.min(state_token.len())]
+        );
         Ok(())
     }
 
@@ -348,7 +379,9 @@ impl OAuth2Service {
                         age.num_seconds(),
                         OAUTH2_STATE_TTL_SECONDS
                     );
-                    return Err(Error::Authentication("Invalid or expired OAuth2 state".to_string()));
+                    return Err(Error::Authentication(
+                        "Invalid or expired OAuth2 state".to_string(),
+                    ));
                 }
 
                 debug!(
@@ -357,7 +390,9 @@ impl OAuth2Service {
                 );
                 Ok(state)
             }
-            None => Err(Error::Authentication("Invalid or expired OAuth2 state".to_string())),
+            None => Err(Error::Authentication(
+                "Invalid or expired OAuth2 state".to_string(),
+            )),
         }
     }
 
@@ -375,12 +410,19 @@ impl OAuth2Service {
     ) {
         let mut providers = self.providers.write().await;
 
-        info!("Registered OAuth2 provider: {} (type: {})", instance_name, provider_type.as_str());
+        info!(
+            "Registered OAuth2 provider: {} (type: {})",
+            instance_name,
+            provider_type.as_str()
+        );
         // Wrap in Arc so we can clone the reference while holding the read lock (Issue #74)
-        providers.insert(instance_name, OAuth2ProviderEntry {
-            provider: Arc::from(provider),
-            provider_type,
-        });
+        providers.insert(
+            instance_name,
+            OAuth2ProviderEntry {
+                provider: Arc::from(provider),
+                provider_type,
+            },
+        );
     }
 
     /// Generate authorization URL with PKCE challenge
@@ -389,7 +431,8 @@ impl OAuth2Service {
         instance_name: &str,
         redirect_url: Option<String>,
     ) -> Result<(String, String)> {
-        self.build_authorization_url(instance_name, redirect_url, None).await
+        self.build_authorization_url(instance_name, redirect_url, None)
+            .await
     }
 
     /// Generate authorization URL for bind flow (associates with an authenticated user)
@@ -399,7 +442,8 @@ impl OAuth2Service {
         redirect_url: Option<String>,
         user_id: Option<UserId>,
     ) -> Result<(String, String)> {
-        self.build_authorization_url(instance_name, redirect_url, user_id).await
+        self.build_authorization_url(instance_name, redirect_url, user_id)
+            .await
     }
 
     /// Shared implementation for building an `OAuth2` authorization URL.
@@ -425,7 +469,11 @@ impl OAuth2Service {
             providers
                 .get(instance_name)
                 .map(|entry| Arc::clone(&entry.provider))
-                .ok_or_else(|| Error::InvalidInput(format!("OAuth2 provider instance not found: {instance_name}")))?
+                .ok_or_else(|| {
+                    Error::InvalidInput(format!(
+                        "OAuth2 provider instance not found: {instance_name}"
+                    ))
+                })?
             // read lock dropped here
         };
 
@@ -433,7 +481,9 @@ impl OAuth2Service {
         let state_token = nanoid::nanoid!(32);
 
         // Generate authorization URL with PKCE challenge (lock is NOT held here)
-        let (auth_url, pkce_verifier) = provider.new_auth_url(&state_token).await
+        let (auth_url, pkce_verifier) = provider
+            .new_auth_url(&state_token)
+            .await
             .internal_with_err("Failed to generate authorization URL")?;
 
         // Store state (including PKCE verifier) for verification during callback
@@ -461,7 +511,9 @@ impl OAuth2Service {
     fn validate_redirect_url_with_allowlist(url: &str, allowed_domains: &[String]) -> Result<()> {
         // Empty or whitespace-only URLs are rejected
         if url.trim().is_empty() {
-            return Err(Error::InvalidInput("Redirect URL cannot be empty".to_string()));
+            return Err(Error::InvalidInput(
+                "Redirect URL cannot be empty".to_string(),
+            ));
         }
 
         // Allow relative paths (must start with '/')
@@ -469,7 +521,7 @@ impl OAuth2Service {
             // Reject URLs with '//' (protocol-relative URLs can be used for open redirect)
             if url.starts_with("//") {
                 return Err(Error::InvalidInput(
-                    "Protocol-relative URLs are not allowed for security reasons".to_string()
+                    "Protocol-relative URLs are not allowed for security reasons".to_string(),
                 ));
             }
             // Valid relative path
@@ -490,7 +542,7 @@ impl OAuth2Service {
                 // Reject URLs with authentication credentials (user:pass@host)
                 if parsed_url.username() != "" || parsed_url.password().is_some() {
                     return Err(Error::InvalidInput(
-                        "URLs with embedded credentials are not allowed".to_string()
+                        "URLs with embedded credentials are not allowed".to_string(),
                     ));
                 }
 
@@ -498,7 +550,8 @@ impl OAuth2Service {
                 let host = parsed_url.host_str().unwrap_or("");
                 if allowed_domains.is_empty() {
                     return Err(Error::InvalidInput(
-                        "Absolute redirect URLs are not allowed. Use a relative path instead.".to_string()
+                        "Absolute redirect URLs are not allowed. Use a relative path instead."
+                            .to_string(),
                     ));
                 }
                 let domain_matched = allowed_domains.iter().any(|d| {
@@ -528,11 +581,9 @@ impl OAuth2Service {
 
                 Ok(())
             }
-            Err(_) => {
-                Err(Error::InvalidInput(format!(
-                    "Invalid redirect URL format: {url}"
-                )))
-            }
+            Err(_) => Err(Error::InvalidInput(format!(
+                "Invalid redirect URL format: {url}"
+            ))),
         }
     }
 
@@ -558,9 +609,11 @@ impl OAuth2Service {
         // `unlink_provider` or `register_provider`.
         let (provider, provider_type): (Arc<dyn OAuth2ProviderTrait>, OAuth2Provider) = {
             let providers = self.providers.read().await;
-            let entry = providers
-                .get(instance_name)
-                .ok_or_else(|| Error::InvalidInput(format!("OAuth2 provider instance not found: {instance_name}")))?;
+            let entry = providers.get(instance_name).ok_or_else(|| {
+                Error::InvalidInput(format!(
+                    "OAuth2 provider instance not found: {instance_name}"
+                ))
+            })?;
             (Arc::clone(&entry.provider), entry.provider_type.clone())
             // read lock dropped here
         };
@@ -568,7 +621,9 @@ impl OAuth2Service {
         debug!("Exchanging code for user info from {}", instance_name);
 
         // Network I/O without holding the lock
-        let user_info = provider.get_user_info(code, pkce_verifier).await
+        let user_info = provider
+            .get_user_info(code, pkce_verifier)
+            .await
             .internal_with_err("Failed to get user info")?;
 
         // Convert provider user info to service user info
@@ -627,7 +682,13 @@ impl OAuth2Service {
         };
 
         self.repository
-            .upsert_with_executor(user_id, provider, provider_user_id, &repo_user_info, executor)
+            .upsert_with_executor(
+                user_id,
+                provider,
+                provider_user_id,
+                &repo_user_info,
+                executor,
+            )
             .await
     }
 
@@ -673,7 +734,10 @@ impl OAuth2Service {
         user_info: &OAuth2UserInfo,
     ) -> Result<(UserId, bool)> {
         // Fast path: user already linked — no transaction needed.
-        if let Some(user_id) = self.find_user_by_provider(provider, &user_info.provider_user_id).await? {
+        if let Some(user_id) = self
+            .find_user_by_provider(provider, &user_info.provider_user_id)
+            .await?
+        {
             return Ok((user_id, false));
         }
 
@@ -683,7 +747,8 @@ impl OAuth2Service {
 
         // Re-check inside the transaction to guard against the race where another
         // concurrent request created the user between our initial lookup and here.
-        let existing = self.repository
+        let existing = self
+            .repository
             .find_by_provider_with_executor(provider, &user_info.provider_user_id, &mut *tx)
             .await?;
 
@@ -747,7 +812,10 @@ impl OAuth2Service {
     }
 
     /// Get all `OAuth2` provider mappings with complete information for a user
-    pub async fn get_user_provider_mappings(&self, user_id: &UserId) -> Result<Vec<crate::models::oauth2_client::UserOAuthProviderMapping>> {
+    pub async fn get_user_provider_mappings(
+        &self,
+        user_id: &UserId,
+    ) -> Result<Vec<crate::models::oauth2_client::UserOAuthProviderMapping>> {
         self.repository.find_by_user(user_id).await
     }
 
@@ -782,7 +850,9 @@ impl OAuth2Service {
         user_id: &UserId,
         provider: &OAuth2Provider,
     ) -> Result<bool> {
-        self.repository.delete_by_user_and_provider(user_id, provider).await
+        self.repository
+            .delete_by_user_and_provider(user_id, provider)
+            .await
     }
 
     /// Remove all `OAuth2` provider mappings for a user.
@@ -868,9 +938,9 @@ mod tests {
             if let Some(ref err) = self.exchange_error {
                 return Err(Error::Internal(err.clone()));
             }
-            self.user_info.clone().ok_or_else(|| {
-                Error::Internal("No user info configured in mock".to_string())
-            })
+            self.user_info
+                .clone()
+                .ok_or_else(|| Error::Internal("No user info configured in mock".to_string()))
         }
     }
 
@@ -902,24 +972,19 @@ mod tests {
 
     #[test]
     fn test_redirect_relative_path_allowed() {
-        let result =
-            OAuth2Service::validate_redirect_url_with_allowlist("/dashboard", &[]);
+        let result = OAuth2Service::validate_redirect_url_with_allowlist("/dashboard", &[]);
         assert!(result.is_ok());
     }
 
     #[test]
     fn test_redirect_relative_path_with_query_allowed() {
-        let result = OAuth2Service::validate_redirect_url_with_allowlist(
-            "/rooms?sort=name",
-            &[],
-        );
+        let result = OAuth2Service::validate_redirect_url_with_allowlist("/rooms?sort=name", &[]);
         assert!(result.is_ok());
     }
 
     #[test]
     fn test_redirect_protocol_relative_url_rejected() {
-        let result =
-            OAuth2Service::validate_redirect_url_with_allowlist("//evil.com/steal", &[]);
+        let result = OAuth2Service::validate_redirect_url_with_allowlist("//evil.com/steal", &[]);
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(
@@ -986,20 +1051,16 @@ mod tests {
     #[test]
     fn test_redirect_javascript_scheme_rejected() {
         let domains = vec!["example.com".to_string()];
-        let result = OAuth2Service::validate_redirect_url_with_allowlist(
-            "javascript:alert(1)",
-            &domains,
-        );
+        let result =
+            OAuth2Service::validate_redirect_url_with_allowlist("javascript:alert(1)", &domains);
         assert!(result.is_err());
     }
 
     #[test]
     fn test_redirect_ftp_scheme_rejected() {
         let domains = vec!["example.com".to_string()];
-        let result = OAuth2Service::validate_redirect_url_with_allowlist(
-            "ftp://example.com/file",
-            &domains,
-        );
+        let result =
+            OAuth2Service::validate_redirect_url_with_allowlist("ftp://example.com/file", &domains);
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(matches!(&err, Error::InvalidInput(msg) if msg.contains("Invalid URL scheme")));
@@ -1020,10 +1081,8 @@ mod tests {
     #[test]
     fn test_redirect_malformed_url_rejected() {
         let domains = vec!["example.com".to_string()];
-        let result = OAuth2Service::validate_redirect_url_with_allowlist(
-            "not a valid url at all",
-            &domains,
-        );
+        let result =
+            OAuth2Service::validate_redirect_url_with_allowlist("not a valid url at all", &domains);
         assert!(result.is_err());
     }
 
@@ -1254,10 +1313,7 @@ mod tests {
             )
             .await;
 
-        let (auth_url, state_token) = service
-            .get_authorization_url("github", None)
-            .await
-            .unwrap();
+        let (auth_url, state_token) = service.get_authorization_url("github", None).await.unwrap();
 
         // Auth URL should contain the mock base URL and the state parameter
         assert!(auth_url.contains("https://provider.example.com/auth"));
@@ -1334,9 +1390,7 @@ mod tests {
     async fn test_get_authorization_url_unknown_provider() {
         let service = create_test_service();
 
-        let result = service
-            .get_authorization_url("nonexistent", None)
-            .await;
+        let result = service.get_authorization_url("nonexistent", None).await;
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(
@@ -1439,11 +1493,7 @@ mod tests {
             .await;
 
         let result = service
-            .get_authorization_url_with_user(
-                "github",
-                Some("//evil.com".to_string()),
-                None,
-            )
+            .get_authorization_url_with_user("github", Some("//evil.com".to_string()), None)
             .await;
         assert!(result.is_err());
     }
@@ -1608,10 +1658,8 @@ mod tests {
     #[tokio::test]
     async fn test_set_allowed_redirect_domains() {
         let mut service = create_test_service();
-        service.set_allowed_redirect_domains(vec![
-            "example.com".to_string(),
-            "myapp.io".to_string(),
-        ]);
+        service
+            .set_allowed_redirect_domains(vec!["example.com".to_string(), "myapp.io".to_string()]);
 
         service
             .register_provider(
@@ -1708,10 +1756,7 @@ mod tests {
 
         // Each state should be independently consumable
         for i in 0..10 {
-            let state = service
-                .consume_state(&format!("token_{i}"))
-                .await
-                .unwrap();
+            let state = service.consume_state(&format!("token_{i}")).await.unwrap();
             assert_eq!(state.instance_name, format!("provider_{i}"));
             assert_eq!(state.pkce_verifier, format!("verifier_{i}"));
         }
@@ -1776,16 +1821,13 @@ mod tests {
             )
             .await;
 
-        let (_, token1) = service
-            .get_authorization_url("github", None)
-            .await
-            .unwrap();
-        let (_, token2) = service
-            .get_authorization_url("github", None)
-            .await
-            .unwrap();
+        let (_, token1) = service.get_authorization_url("github", None).await.unwrap();
+        let (_, token2) = service.get_authorization_url("github", None).await.unwrap();
 
-        assert_ne!(token1, token2, "Each authorization request must get a unique state token");
+        assert_ne!(
+            token1, token2,
+            "Each authorization request must get a unique state token"
+        );
     }
 
     // ========================================================================
@@ -1803,7 +1845,10 @@ mod tests {
             pkce_verifier: "concurrent_verifier".to_string(),
         };
 
-        service.store_state("concurrent_token", &state).await.unwrap();
+        service
+            .store_state("concurrent_token", &state)
+            .await
+            .unwrap();
 
         // Spawn multiple concurrent consumers
         let mut handles = Vec::new();
@@ -1829,14 +1874,8 @@ mod tests {
         }
 
         // With the Mutex-based store, exactly one consumer must succeed.
-        assert_eq!(
-            success_count, 1,
-            "Exactly one consumer must succeed"
-        );
-        assert_eq!(
-            failure_count, 19,
-            "All other consumers must fail"
-        );
+        assert_eq!(success_count, 1, "Exactly one consumer must succeed");
+        assert_eq!(failure_count, 19, "All other consumers must fail");
 
         // Token is fully consumed -- no further consumption should succeed
         let replay = service.consume_state("concurrent_token").await;
@@ -1855,19 +1894,14 @@ mod tests {
             .await;
 
         // Generate an auth URL (stores state internally)
-        let (_, state_token) = service
-            .get_authorization_url("github", None)
-            .await
-            .unwrap();
+        let (_, state_token) = service.get_authorization_url("github", None).await.unwrap();
 
         // Spawn concurrent verify_state attempts
         let mut handles = Vec::new();
         for _ in 0..10 {
             let svc = service.clone();
             let tok = state_token.clone();
-            handles.push(tokio::spawn(async move {
-                svc.verify_state(&tok).await
-            }));
+            handles.push(tokio::spawn(async move { svc.verify_state(&tok).await }));
         }
 
         let mut success_count = 0;
@@ -1901,7 +1935,10 @@ mod tests {
                 bind_user_id: None,
                 pkce_verifier: format!("verifier_{i}"),
             };
-            service.store_state(&format!("isolated_token_{i}"), &state).await.unwrap();
+            service
+                .store_state(&format!("isolated_token_{i}"), &state)
+                .await
+                .unwrap();
         }
 
         // Consume token 2
@@ -1910,7 +1947,10 @@ mod tests {
 
         // Other tokens should still be available
         for i in [0, 1, 3, 4] {
-            let state = service.consume_state(&format!("isolated_token_{i}")).await.unwrap();
+            let state = service
+                .consume_state(&format!("isolated_token_{i}"))
+                .await
+                .unwrap();
             assert_eq!(state.instance_name, format!("provider_{i}"));
         }
 
@@ -1969,7 +2009,10 @@ mod tests {
             pkce_verifier: "valid_verifier".to_string(),
         };
 
-        service.store_state("within_ttl_token", &state).await.unwrap();
+        service
+            .store_state("within_ttl_token", &state)
+            .await
+            .unwrap();
 
         // Consumption should succeed
         let result = service.consume_state("within_ttl_token").await;
@@ -1985,7 +2028,8 @@ mod tests {
 
         // Create a state just past the TTL boundary (TTL + 1 second ago)
         // This ensures the test is deterministic regardless of execution timing
-        let past_boundary_time = chrono::Utc::now() - chrono::Duration::seconds(OAUTH2_STATE_TTL_SECONDS as i64 + 1);
+        let past_boundary_time =
+            chrono::Utc::now() - chrono::Duration::seconds(OAUTH2_STATE_TTL_SECONDS as i64 + 1);
         let state = OAuth2State {
             instance_name: "github".to_string(),
             redirect_url: None,
@@ -2023,7 +2067,10 @@ mod tests {
             pkce_verifier: "expired".to_string(),
         };
 
-        service.store_state("verify_expired_token", &state).await.unwrap();
+        service
+            .store_state("verify_expired_token", &state)
+            .await
+            .unwrap();
 
         // verify_state should also reject expired tokens
         let result = service.verify_state("verify_expired_token").await;
@@ -2055,10 +2102,7 @@ mod tests {
             .await;
 
         // Generate state for github
-        let (_, state_token) = service
-            .get_authorization_url("github", None)
-            .await
-            .unwrap();
+        let (_, state_token) = service.get_authorization_url("github", None).await.unwrap();
 
         // Verify the state contains github as provider
         let state = service.verify_state(&state_token).await.unwrap();

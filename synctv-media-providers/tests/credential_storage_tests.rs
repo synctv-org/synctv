@@ -98,17 +98,24 @@ async fn test_in_memory_storage_multiple_providers() {
         .unwrap();
     assert!(bilibili.is_some());
 
-    let alist_server_id =
-        CredentialData::alist("https://alist.example.com".into(), String::new(), String::new())
-            .server_id();
+    let alist_server_id = CredentialData::alist(
+        "https://alist.example.com".into(),
+        String::new(),
+        String::new(),
+    )
+    .server_id();
     let alist = storage
         .get("user1", ProviderType::Alist, &alist_server_id)
         .await
         .unwrap();
     assert!(alist.is_some());
 
-    let emby_server_id =
-        CredentialData::emby("https://emby.example.com".into(), String::new(), String::new()).server_id();
+    let emby_server_id = CredentialData::emby(
+        "https://emby.example.com".into(),
+        String::new(),
+        String::new(),
+    )
+    .server_id();
     let emby = storage
         .get("user1", ProviderType::Emby, &emby_server_id)
         .await
@@ -188,14 +195,21 @@ async fn test_bilibili_credential_flow_pattern() {
 
     // Step 2: Store credentials
     let stored = storage
-        .set("user123", Some("my_bilibili"), CredentialData::bilibili(login_cookies.clone()))
+        .set(
+            "user123",
+            Some("my_bilibili"),
+            CredentialData::bilibili(login_cookies.clone()),
+        )
         .await
         .unwrap();
 
     assert_eq!(stored.user_id, "user123");
     assert_eq!(stored.provider, ProviderType::Bilibili);
     assert_eq!(stored.server_id, "bilibili");
-    assert_eq!(stored.provider_instance_name, Some("my_bilibili".to_string()));
+    assert_eq!(
+        stored.provider_instance_name,
+        Some("my_bilibili".to_string())
+    );
 
     // Step 3: Retrieve credentials for subsequent requests
     let retrieved = storage
@@ -207,7 +221,10 @@ async fn test_bilibili_credential_flow_pattern() {
     assert_eq!(retrieved.id, stored.id);
 
     // Step 4: Extract cookies for API calls
-    let cookies = retrieved.data.as_bilibili().expect("Expected Bilibili credential data");
+    let cookies = retrieved
+        .data
+        .as_bilibili()
+        .expect("Expected Bilibili credential data");
     assert_eq!(cookies.get("SESSDATA"), Some(&"sess_value_123".to_string()));
     assert_eq!(cookies.get("bili_jct"), Some(&"csrf_token_456".to_string()));
     // These cookies would be passed to BilibiliService methods
@@ -266,7 +283,10 @@ async fn test_alist_credential_flow_pattern() {
         .unwrap()
         .expect("first alist credential should exist");
 
-    let (host, username, password) = retrieved1.data.as_alist().expect("Expected Alist credential data");
+    let (host, username, password) = retrieved1
+        .data
+        .as_alist()
+        .expect("Expected Alist credential data");
     assert_eq!(host, host1);
     assert_eq!(username, "admin");
     assert_eq!(password, "hashed_password_1");
@@ -279,7 +299,10 @@ async fn test_alist_credential_flow_pattern() {
         .unwrap()
         .expect("second alist credential should exist");
 
-    let (host, username, password) = retrieved2.data.as_alist().expect("Expected Alist credential data");
+    let (host, username, password) = retrieved2
+        .data
+        .as_alist()
+        .expect("Expected Alist credential data");
     assert_eq!(host, host2);
     assert_eq!(username, "user");
     assert_eq!(password, "hashed_password_2");
@@ -316,7 +339,10 @@ async fn test_emby_credential_flow_pattern() {
         .expect("emby credential should exist");
 
     // Step 3: Verify credential data for API calls
-    let (h, api_key, emby_user_id) = retrieved.data.as_emby().expect("Expected Emby credential data");
+    let (h, api_key, emby_user_id) = retrieved
+        .data
+        .as_emby()
+        .expect("Expected Emby credential data");
     assert_eq!(h, host);
     assert_eq!(api_key, "api_token_abc123");
     assert_eq!(emby_user_id, "emby_user_id_456");
@@ -343,7 +369,11 @@ async fn test_credential_update_pattern() {
     new_cookies.insert("refreshed".to_string(), "true".to_string());
 
     storage
-        .set("user123", None, CredentialData::bilibili(new_cookies.clone()))
+        .set(
+            "user123",
+            None,
+            CredentialData::bilibili(new_cookies.clone()),
+        )
         .await
         .unwrap();
 
@@ -352,7 +382,10 @@ async fn test_credential_update_pattern() {
     assert_eq!(all.len(), 1);
 
     // Verify updated data
-    let cookies = all[0].data.as_bilibili().expect("Expected Bilibili credential data");
+    let cookies = all[0]
+        .data
+        .as_bilibili()
+        .expect("Expected Bilibili credential data");
     assert_eq!(cookies.get("SESSDATA"), Some(&"new_session".to_string()));
     assert_eq!(cookies.get("refreshed"), Some(&"true".to_string()));
 }
@@ -397,7 +430,11 @@ async fn test_list_credentials_for_ui() {
 
     // User connects multiple providers
     storage
-        .set("user123", Some("我的B站"), CredentialData::bilibili(HashMap::new()))
+        .set(
+            "user123",
+            Some("我的B站"),
+            CredentialData::bilibili(HashMap::new()),
+        )
         .await
         .unwrap();
 
@@ -405,7 +442,11 @@ async fn test_list_credentials_for_ui() {
         .set(
             "user123",
             Some("个人Alist"),
-            CredentialData::alist("https://alist.example.com".into(), "admin".into(), "pass".into()),
+            CredentialData::alist(
+                "https://alist.example.com".into(),
+                "admin".into(),
+                "pass".into(),
+            ),
         )
         .await
         .unwrap();
@@ -414,7 +455,11 @@ async fn test_list_credentials_for_ui() {
         .set(
             "user123",
             Some("家庭Emby"),
-            CredentialData::emby("https://emby.example.com".into(), "key".into(), "uid".into()),
+            CredentialData::emby(
+                "https://emby.example.com".into(),
+                "key".into(),
+                "uid".into(),
+            ),
         )
         .await
         .unwrap();

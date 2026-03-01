@@ -13,10 +13,10 @@ pub mod logto;
 pub mod oidc;
 
 // Re-export provider structs and config structs for convenience
-pub use github::{GitHubProvider, GitHubConfig};
-pub use google::{GoogleProvider, GoogleConfig};
-pub use logto::{LogtoProvider, LogtoConfig};
-pub use oidc::{OidcProvider, OidcConfig};
+pub use github::{GitHubConfig, GitHubProvider};
+pub use google::{GoogleConfig, GoogleProvider};
+pub use logto::{LogtoConfig, LogtoProvider};
+pub use oidc::{OidcConfig, OidcProvider};
 
 /// Initialize `OAuth2` provider registry
 ///

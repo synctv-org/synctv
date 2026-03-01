@@ -21,7 +21,7 @@ use axum::http;
 use tonic::body::Body as TonicBody;
 use tower::{Layer, Service};
 
-use synctv_core::service::{SecurityPipeline, auth::JwtService};
+use synctv_core::service::{auth::JwtService, SecurityPipeline};
 
 type BoxError = Box<dyn std::error::Error + Send + Sync>;
 
@@ -33,7 +33,7 @@ pub struct BlacklistCheckLayer {
 }
 
 impl BlacklistCheckLayer {
-    #[must_use] 
+    #[must_use]
     pub fn new(jwt_service: JwtService, security_pipeline: SecurityPipeline) -> Self {
         Self {
             jwt_service: Arc::new(jwt_service),
@@ -75,7 +75,10 @@ fn extract_bearer_token(headers: &http::HeaderMap) -> Option<String> {
 
 impl<S> Service<http::Request<TonicBody>> for BlacklistCheckService<S>
 where
-    S: Service<http::Request<TonicBody>, Response = http::Response<TonicBody>> + Clone + Send + 'static,
+    S: Service<http::Request<TonicBody>, Response = http::Response<TonicBody>>
+        + Clone
+        + Send
+        + 'static,
     S::Future: Send + 'static,
     S::Error: Into<BoxError> + Send,
 {
@@ -109,8 +112,8 @@ where
                     Ok(claims) => claims,
                     Err(e) => {
                         tracing::warn!("gRPC request rejected: JWT validation failed: {e}");
-                        let response = tonic::Status::unauthenticated("Invalid or expired token")
-                            .into_http();
+                        let response =
+                            tonic::Status::unauthenticated("Invalid or expired token").into_http();
                         return Ok(response);
                     }
                 };
@@ -118,8 +121,7 @@ where
                 // Steps 2-3: Shared security pipeline (password invalidation, user status)
                 if let Err(e) = security_pipeline.check(&claims).await {
                     tracing::warn!("gRPC request rejected by security pipeline: {e}");
-                    let response = tonic::Status::unauthenticated(format!("{e}"))
-                        .into_http();
+                    let response = tonic::Status::unauthenticated(format!("{e}")).into_http();
                     return Ok(response);
                 }
             }

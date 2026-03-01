@@ -13,7 +13,7 @@ pub struct ChatRepository {
 }
 
 impl ChatRepository {
-    #[must_use] 
+    #[must_use]
     pub const fn new(pool: PgPool) -> Self {
         Self { pool }
     }
@@ -291,7 +291,11 @@ impl ChatRepository {
     /// The redundant `created_at > NOW() - INTERVAL '90 days'` filter on the outer DELETE
     /// ensures `PostgreSQL` can apply partition pruning at the top-level query without
     /// relying on constraint exclusion from the subquery.
-    pub async fn cleanup_all_rooms(&self, keep_count: i32, activity_window_minutes: i32) -> Result<u64> {
+    pub async fn cleanup_all_rooms(
+        &self,
+        keep_count: i32,
+        activity_window_minutes: i32,
+    ) -> Result<u64> {
         // If keep_count is 0, no cleanup needed
         if keep_count <= 0 {
             return Ok(0);
@@ -324,6 +328,4 @@ impl ChatRepository {
 
         Ok(result.rows_affected())
     }
-
 }
-

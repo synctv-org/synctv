@@ -7,7 +7,9 @@
 
 use std::collections::HashMap;
 use synctv_core::models::{Media, MediaId, RoomId, UserId};
-use synctv_core::provider::{MediaProvider, PlaybackResult as ProviderPlaybackResult, ProviderContext, ProviderError};
+use synctv_core::provider::{
+    MediaProvider, PlaybackResult as ProviderPlaybackResult, ProviderContext, ProviderError,
+};
 use synctv_core::service::{ProvidersManager, RoomService};
 
 use super::ApiError;
@@ -56,7 +58,8 @@ pub async fn cached_generate_playback(
                         // Check if any expires_at indicates the cached data is stale
                         let now = chrono::Utc::now().timestamp();
                         let still_valid = result.playback_infos.values().all(|pi| {
-                            pi.expires_at.is_none_or(|exp| exp > now + CACHE_TTL_SAFETY_MARGIN_SECS)
+                            pi.expires_at
+                                .is_none_or(|exp| exp > now + CACHE_TTL_SAFETY_MARGIN_SECS)
                         });
                         if still_valid {
                             tracing::debug!(key = %cache_key, "playback cache hit");
@@ -235,7 +238,9 @@ pub async fn resolve_media_from_playlist(
 
     // Verify the media belongs to the requested room
     if media.room_id != *room_id {
-        return Err(ApiError::NotFound("Media not found in playlist".to_string()));
+        return Err(ApiError::NotFound(
+            "Media not found in playlist".to_string(),
+        ));
     }
 
     Ok(media)
@@ -265,14 +270,12 @@ pub async fn resolve_provider_playback_url(
         ctx = ctx.with_credential_encryption(enc);
     }
 
-    let playback_result = cached_generate_playback(
-        provider,
-        &ctx,
-        &media.source_config,
-        redis_conn,
-    )
-    .await
-    .map_err(|e| ApiError::Internal(format!("{} generate_playback failed: {e}", provider.name())))?;
+    let playback_result =
+        cached_generate_playback(provider, &ctx, &media.source_config, redis_conn)
+            .await
+            .map_err(|e| {
+                ApiError::Internal(format!("{} generate_playback failed: {e}", provider.name()))
+            })?;
 
     let default_mode = &playback_result.default_mode;
     let playback_info = playback_result
@@ -313,12 +316,9 @@ pub async fn resolve_provider_playback_result(
         ctx = ctx.with_credential_encryption(enc);
     }
 
-    cached_generate_playback(
-        provider,
-        &ctx,
-        &media.source_config,
-        redis_conn,
-    )
-    .await
-    .map_err(|e| ApiError::Internal(format!("{} generate_playback failed: {e}", provider.name())))
+    cached_generate_playback(provider, &ctx, &media.source_config, redis_conn)
+        .await
+        .map_err(|e| {
+            ApiError::Internal(format!("{} generate_playback failed: {e}", provider.name()))
+        })
 }

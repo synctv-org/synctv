@@ -85,20 +85,26 @@ impl CacheL2Backend for DelayedL2 {
     }
 
     async fn set(&self, key: &str, json: &str, _ttl_secs: u64) -> Result<()> {
-        
-        self.store.write().await.insert(key.to_string(), json.to_string());
-        
+        self.store
+            .write()
+            .await
+            .insert(key.to_string(), json.to_string());
+
         Ok(())
     }
 
     async fn delete(&self, key: &str) -> Result<()> {
-        
         self.store.write().await.remove(key);
-        
+
         Ok(())
     }
 
-    async fn delete_with_retry(&self, key: &str, _max_retries: u32, _cache_type: &str) -> Result<()> {
+    async fn delete_with_retry(
+        &self,
+        key: &str,
+        _max_retries: u32,
+        _cache_type: &str,
+    ) -> Result<()> {
         self.delete(key).await
     }
 
@@ -108,15 +114,23 @@ impl CacheL2Backend for DelayedL2 {
         Ok(keys.iter().map(|k| store.get(k).cloned()).collect())
     }
 
-    async fn set_if_newer(&self, key: &str, json: &str, ttl_secs: u64, _new_ts_iso: &str) -> Result<bool> {
+    async fn set_if_newer(
+        &self,
+        key: &str,
+        json: &str,
+        ttl_secs: u64,
+        _new_ts_iso: &str,
+    ) -> Result<bool> {
         self.set(key, json, ttl_secs).await?;
         Ok(true)
     }
 
     async fn delete_by_prefix(&self, prefix: &str) -> Result<()> {
-        
-        self.store.write().await.retain(|k, _| !k.starts_with(prefix));
-        
+        self.store
+            .write()
+            .await
+            .retain(|k, _| !k.starts_with(prefix));
+
         Ok(())
     }
 
@@ -158,9 +172,7 @@ async fn test_epoch_prevents_stale_l1_write() {
     // Start a get() that will take ~200ms (due to delayed L2)
     let cache_clone = cache.clone();
     let key_clone = key.clone();
-    let get_handle = tokio::spawn(async move {
-        cache_clone.get(&key_clone).await
-    });
+    let get_handle = tokio::spawn(async move { cache_clone.get(&key_clone).await });
 
     // Wait a bit for the get() to be in-flight, then invalidate
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
@@ -170,7 +182,10 @@ async fn test_epoch_prevents_stale_l1_write() {
     let result = get_handle.await.unwrap().unwrap();
 
     // The get() should return the stale value from L2 (it was already in-flight)
-    assert!(result.is_some(), "The in-flight fetch should still return the L2 value");
+    assert!(
+        result.is_some(),
+        "The in-flight fetch should still return the L2 value"
+    );
     assert_eq!(result.unwrap().name, "stale");
 
     // But L1 should NOT have been populated with the stale value because

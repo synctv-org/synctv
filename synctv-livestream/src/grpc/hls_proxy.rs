@@ -9,8 +9,8 @@ use bytes::Bytes;
 use dashmap::DashMap;
 use moka::future::Cache;
 use moka::Expiry;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tonic::Request;
 use tracing::debug;
@@ -46,8 +46,8 @@ impl Expiry<String, Option<String>> for PlaylistCacheExpiry {
 
 use super::connection_pool::GrpcConnectionPool;
 use super::proto::{
-    stream_relay_service_client::StreamRelayServiceClient,
-    GetHlsPlaylistRequest, GetHlsSegmentRequest,
+    stream_relay_service_client::StreamRelayServiceClient, GetHlsPlaylistRequest,
+    GetHlsSegmentRequest,
 };
 
 /// HLS proxy client that fetches playlists and segments from publisher nodes via gRPC.
@@ -170,8 +170,14 @@ impl HlsProxyClient {
     ///
     /// Format: `{room_id}:{media_id}:{epoch}:{segment_name}`
     #[inline]
-    #[must_use] 
-    pub fn build_segment_cache_key(&self, room_id: &str, media_id: &str, epoch: u64, segment_name: &str) -> String {
+    #[must_use]
+    pub fn build_segment_cache_key(
+        &self,
+        room_id: &str,
+        media_id: &str,
+        epoch: u64,
+        segment_name: &str,
+    ) -> String {
         format!("{room_id}:{media_id}:{epoch}:{segment_name}")
     }
 
@@ -179,8 +185,14 @@ impl HlsProxyClient {
     ///
     /// Format: `{room_id}:{media_id}:{epoch}:{segment_url_base}`
     #[inline]
-    #[must_use] 
-    pub fn build_playlist_cache_key(&self, room_id: &str, media_id: &str, epoch: u64, segment_url_base: &str) -> String {
+    #[must_use]
+    pub fn build_playlist_cache_key(
+        &self,
+        room_id: &str,
+        media_id: &str,
+        epoch: u64,
+        segment_url_base: &str,
+    ) -> String {
         format!("{room_id}:{media_id}:{epoch}:{segment_url_base}")
     }
 
@@ -305,20 +317,20 @@ impl HlsProxyClient {
     }
 
     /// Returns the number of segment cache hits since startup.
-    #[must_use] 
+    #[must_use]
     pub fn cache_hits(&self) -> u64 {
         self.cache_hits.load(Ordering::Relaxed)
     }
 
     /// Returns the number of segment cache misses since startup.
-    #[must_use] 
+    #[must_use]
     pub fn cache_misses(&self) -> u64 {
         self.cache_misses.load(Ordering::Relaxed)
     }
 
     /// Returns the cache hit rate as a percentage (0.0 - 100.0).
     /// Returns 0.0 if no requests have been made.
-    #[must_use] 
+    #[must_use]
     pub fn cache_hit_rate(&self) -> f64 {
         let hits = self.cache_hits.load(Ordering::Relaxed);
         let misses = self.cache_misses.load(Ordering::Relaxed);
@@ -338,7 +350,10 @@ impl HlsProxyClient {
         &self,
         grpc_address: &str,
     ) -> anyhow::Result<StreamRelayServiceClient<tonic::transport::Channel>> {
-        let channel = self.connection_pool.get_channel(grpc_address).await
+        let channel = self
+            .connection_pool
+            .get_channel(grpc_address)
+            .await
             .map_err(|e| {
                 self.connection_pool.invalidate(grpc_address);
                 anyhow::anyhow!("Failed to connect to publisher gRPC at {grpc_address}: {e}")
@@ -387,7 +402,12 @@ impl HlsProxyClient {
     /// * `room_id` - Room identifier
     /// * `media_id` - Media/stream identifier
     /// * `delay` - Duration to wait before invalidating (typically 2-3 seconds)
-    pub fn invalidate_stream_cache_delayed(&self, room_id: String, media_id: String, delay: Duration) {
+    pub fn invalidate_stream_cache_delayed(
+        &self,
+        room_id: String,
+        media_id: String,
+        delay: Duration,
+    ) {
         // Immediately increment version to ensure synchronous consistency.
         // Even if the cache cleanup is delayed, version-aware getters will
         // reject stale entries.
@@ -433,7 +453,7 @@ impl HlsProxyClient {
     /// The version component ensures that entries from old cache versions
     /// are not returned after synchronous invalidation.
     #[inline]
-    #[must_use] 
+    #[must_use]
     pub fn build_segment_cache_key_with_version(
         &self,
         room_id: &str,
@@ -449,7 +469,7 @@ impl HlsProxyClient {
     ///
     /// Format: `{room_id}:{media_id}:{epoch}:{version}:{segment_url_base}`
     #[inline]
-    #[must_use] 
+    #[must_use]
     pub fn build_playlist_cache_key_with_version(
         &self,
         room_id: &str,
@@ -593,7 +613,13 @@ impl HlsProxyClient {
             return None;
         }
 
-        let key = self.build_segment_cache_key_with_version(room_id, media_id, epoch, entry_version, segment_name);
+        let key = self.build_segment_cache_key_with_version(
+            room_id,
+            media_id,
+            epoch,
+            entry_version,
+            segment_name,
+        );
         self.segment_cache.get(&key).await
     }
 
@@ -627,7 +653,13 @@ impl HlsProxyClient {
             return None;
         }
 
-        let key = self.build_playlist_cache_key_with_version(room_id, media_id, epoch, entry_version, segment_url_base);
+        let key = self.build_playlist_cache_key_with_version(
+            room_id,
+            media_id,
+            epoch,
+            entry_version,
+            segment_url_base,
+        );
         self.playlist_cache.get(&key).await
     }
 
@@ -668,7 +700,10 @@ mod tests {
         let data = Bytes::from_static(b"test segment data");
 
         // Insert into cache
-        client.segment_cache.insert(cache_key.clone(), data.clone()).await;
+        client
+            .segment_cache
+            .insert(cache_key.clone(), data.clone())
+            .await;
 
         // Verify cache hit
         let cached = client.segment_cache.get(&cache_key).await;
@@ -708,12 +743,18 @@ mod tests {
         client.segment_cache.insert(new_key, new_data.clone()).await;
 
         // Verify that requesting with epoch 0 gets old data
-        let cached_old = client.segment_cache.get(&format!("{room_id}:{media_id}:0:{segment_name}")).await;
+        let cached_old = client
+            .segment_cache
+            .get(&format!("{room_id}:{media_id}:0:{segment_name}"))
+            .await;
         assert!(cached_old.is_some());
         assert_eq!(cached_old.unwrap(), old_data);
 
         // Verify that requesting with epoch 1 gets new data
-        let cached_new = client.segment_cache.get(&format!("{room_id}:{media_id}:1:{segment_name}")).await;
+        let cached_new = client
+            .segment_cache
+            .get(&format!("{room_id}:{media_id}:1:{segment_name}"))
+            .await;
         assert!(cached_new.is_some());
         assert_eq!(cached_new.unwrap(), new_data);
     }
@@ -732,7 +773,10 @@ mod tests {
 
         // Insert with epoch 0 key
         let epoch0_key = client.build_segment_cache_key(room_id, media_id, 0, segment_name);
-        client.segment_cache.insert(epoch0_key.clone(), old_data.clone()).await;
+        client
+            .segment_cache
+            .insert(epoch0_key.clone(), old_data.clone())
+            .await;
 
         // Verify epoch 0 data is cached
         let cached = client.segment_cache.get(&epoch0_key).await;
@@ -743,17 +787,28 @@ mod tests {
         let epoch1_key = client.build_segment_cache_key(room_id, media_id, 1, segment_name);
 
         // Insert new data with epoch 1
-        client.segment_cache.insert(epoch1_key.clone(), new_data.clone()).await;
+        client
+            .segment_cache
+            .insert(epoch1_key.clone(), new_data.clone())
+            .await;
 
         // Verify that epoch 1 request gets new data, not old
         let cached_new = client.segment_cache.get(&epoch1_key).await;
         assert!(cached_new.is_some());
-        assert_eq!(cached_new.unwrap(), new_data, "Epoch 1 should return new data, not stale epoch 0 data");
+        assert_eq!(
+            cached_new.unwrap(),
+            new_data,
+            "Epoch 1 should return new data, not stale epoch 0 data"
+        );
 
         // Verify epoch 0 data still exists but won't be accessed by epoch 1 key
         let cached_old = client.segment_cache.get(&epoch0_key).await;
         assert!(cached_old.is_some());
-        assert_eq!(cached_old.unwrap(), old_data, "Epoch 0 data still exists but is isolated");
+        assert_eq!(
+            cached_old.unwrap(),
+            old_data,
+            "Epoch 0 data still exists but is isolated"
+        );
     }
 
     #[test]
@@ -783,11 +838,23 @@ mod tests {
 
         // Insert playlist with epoch 0
         let epoch0_key = client.build_playlist_cache_key(room_id, media_id, 0, url_base);
-        client.playlist_cache.insert(epoch0_key.clone(), Some("#EXTM3U\nold playlist".to_string())).await;
+        client
+            .playlist_cache
+            .insert(
+                epoch0_key.clone(),
+                Some("#EXTM3U\nold playlist".to_string()),
+            )
+            .await;
 
         // Insert playlist with epoch 1
         let epoch1_key = client.build_playlist_cache_key(room_id, media_id, 1, url_base);
-        client.playlist_cache.insert(epoch1_key.clone(), Some("#EXTM3U\nnew playlist".to_string())).await;
+        client
+            .playlist_cache
+            .insert(
+                epoch1_key.clone(),
+                Some("#EXTM3U\nnew playlist".to_string()),
+            )
+            .await;
 
         // Verify epoch isolation
         let cached0 = client.playlist_cache.get(&epoch0_key).await;
@@ -815,22 +882,38 @@ mod tests {
 
         // Insert cache entry with version 0
         let key = client.build_segment_cache_key_with_version(room_id, media_id, 0, 0, "seg1.ts");
-        client.segment_cache.insert(key.clone(), Bytes::from_static(b"data")).await;
+        client
+            .segment_cache
+            .insert(key.clone(), Bytes::from_static(b"data"))
+            .await;
 
         // Verify entry is accessible via version-aware getter
-        let result = client.get_segment_with_version_check(room_id, media_id, "seg1.ts", 0, 0).await;
-        assert!(result.is_some(), "Entry with current version should be accessible");
+        let result = client
+            .get_segment_with_version_check(room_id, media_id, "seg1.ts", 0, 0)
+            .await;
+        assert!(
+            result.is_some(),
+            "Entry with current version should be accessible"
+        );
 
         // Invalidate - this should increment version synchronously
         client.invalidate_stream_cache_sync(room_id, media_id).await;
 
         // Version should be incremented immediately
         let new_version = client.get_cache_version(room_id, media_id);
-        assert!(new_version > initial_version, "Version should be incremented after invalidation");
+        assert!(
+            new_version > initial_version,
+            "Version should be incremented after invalidation"
+        );
 
         // Version-aware getter should reject stale entry (version 0 < current version)
-        let stale_result = client.get_segment_with_version_check(room_id, media_id, "seg1.ts", 0, 0).await;
-        assert!(stale_result.is_none(), "Stale entry should be rejected after invalidation");
+        let stale_result = client
+            .get_segment_with_version_check(room_id, media_id, "seg1.ts", 0, 0)
+            .await;
+        assert!(
+            stale_result.is_none(),
+            "Stale entry should be rejected after invalidation"
+        );
     }
 
     #[tokio::test]
@@ -845,8 +928,14 @@ mod tests {
         let key2 = client.build_segment_cache_key(room_id, media_id, 0, "seg2.ts");
         let data = Bytes::from_static(b"segment data");
 
-        client.segment_cache.insert(key1.clone(), data.clone()).await;
-        client.segment_cache.insert(key2.clone(), data.clone()).await;
+        client
+            .segment_cache
+            .insert(key1.clone(), data.clone())
+            .await;
+        client
+            .segment_cache
+            .insert(key2.clone(), data.clone())
+            .await;
 
         // Verify entries exist
         assert!(client.segment_cache.get(&key1).await.is_some());
@@ -874,25 +963,43 @@ mod tests {
 
         // Insert entries for stream1 with version 0
         let key1 = client.build_segment_cache_key_with_version("room1", "stream1", 0, 0, "seg1.ts");
-        client.segment_cache.insert(key1.clone(), Bytes::from_static(b"data1")).await;
+        client
+            .segment_cache
+            .insert(key1.clone(), Bytes::from_static(b"data1"))
+            .await;
 
         // Insert entries for stream2 with version 0
         let key2 = client.build_segment_cache_key_with_version("room1", "stream2", 0, 0, "seg1.ts");
-        client.segment_cache.insert(key2.clone(), Bytes::from_static(b"data2")).await;
+        client
+            .segment_cache
+            .insert(key2.clone(), Bytes::from_static(b"data2"))
+            .await;
 
         // Verify both entries are accessible
-        assert!(client.get_segment_with_version_check("room1", "stream1", "seg1.ts", 0, 0).await.is_some());
-        assert!(client.get_segment_with_version_check("room1", "stream2", "seg1.ts", 0, 0).await.is_some());
+        assert!(client
+            .get_segment_with_version_check("room1", "stream1", "seg1.ts", 0, 0)
+            .await
+            .is_some());
+        assert!(client
+            .get_segment_with_version_check("room1", "stream2", "seg1.ts", 0, 0)
+            .await
+            .is_some());
 
         // Invalidate only stream1
-        client.invalidate_stream_cache_sync("room1", "stream1").await;
+        client
+            .invalidate_stream_cache_sync("room1", "stream1")
+            .await;
 
         // stream1 should be invalidated (version check fails)
-        let stale = client.get_segment_with_version_check("room1", "stream1", "seg1.ts", 0, 0).await;
+        let stale = client
+            .get_segment_with_version_check("room1", "stream1", "seg1.ts", 0, 0)
+            .await;
         assert!(stale.is_none(), "stream1 should be invalidated");
 
         // stream2 should remain accessible (version still matches)
-        let fresh = client.get_segment_with_version_check("room1", "stream2", "seg1.ts", 0, 0).await;
+        let fresh = client
+            .get_segment_with_version_check("room1", "stream2", "seg1.ts", 0, 0)
+            .await;
         assert!(fresh.is_some(), "stream2 should not be affected");
     }
 
@@ -909,7 +1016,10 @@ mod tests {
 
         // Insert entry with initial version embedded in key
         let key = client.build_segment_cache_key_with_version(room_id, media_id, 0, 0, "seg1.ts");
-        client.segment_cache.insert(key.clone(), Bytes::from_static(b"data")).await;
+        client
+            .segment_cache
+            .insert(key.clone(), Bytes::from_static(b"data"))
+            .await;
 
         // Entry should be accessible
         assert!(client.segment_cache.get(&key).await.is_some());
@@ -920,18 +1030,28 @@ mod tests {
 
         // Old key should still exist in cache but be considered stale
         // when accessed through version-aware methods
-        let stale_entry = client.get_segment_with_version_check(
-            room_id, media_id, "seg1.ts", 0, 0
-        ).await;
-        assert!(stale_entry.is_none(), "Stale entry with old version should be rejected");
+        let stale_entry = client
+            .get_segment_with_version_check(room_id, media_id, "seg1.ts", 0, 0)
+            .await;
+        assert!(
+            stale_entry.is_none(),
+            "Stale entry with old version should be rejected"
+        );
 
         // New version key should work
-        let new_key = client.build_segment_cache_key_with_version(room_id, media_id, 0, 1, "seg1.ts");
-        client.segment_cache.insert(new_key.clone(), Bytes::from_static(b"new_data")).await;
-        let fresh_entry = client.get_segment_with_version_check(
-            room_id, media_id, "seg1.ts", 0, 1
-        ).await;
-        assert!(fresh_entry.is_some(), "Entry with current version should be returned");
+        let new_key =
+            client.build_segment_cache_key_with_version(room_id, media_id, 0, 1, "seg1.ts");
+        client
+            .segment_cache
+            .insert(new_key.clone(), Bytes::from_static(b"new_data"))
+            .await;
+        let fresh_entry = client
+            .get_segment_with_version_check(room_id, media_id, "seg1.ts", 0, 1)
+            .await;
+        assert!(
+            fresh_entry.is_some(),
+            "Entry with current version should be returned"
+        );
     }
 
     #[tokio::test]
@@ -965,10 +1085,15 @@ mod tests {
 
         // Insert entry with version 0
         let _key = client.build_segment_cache_key_with_version(room_id, media_id, 0, 0, "seg1.ts");
-        client.segment_cache.insert(_key.clone(), Bytes::from_static(b"data")).await;
+        client
+            .segment_cache
+            .insert(_key.clone(), Bytes::from_static(b"data"))
+            .await;
 
         // Verify initial accessibility
-        let initial = client.get_segment_with_version_check(room_id, media_id, "seg1.ts", 0, 0).await;
+        let initial = client
+            .get_segment_with_version_check(room_id, media_id, "seg1.ts", 0, 0)
+            .await;
         assert!(initial.is_some(), "Entry should be accessible initially");
 
         // Spawn multiple concurrent invalidation tasks
@@ -989,11 +1114,19 @@ mod tests {
 
         // After invalidation, version should be >= 10 (once per invalidation call)
         let version = client.get_cache_version(room_id, media_id);
-        assert!(version >= 10, "Version should be incremented by each invalidation call");
+        assert!(
+            version >= 10,
+            "Version should be incremented by each invalidation call"
+        );
 
         // Entry with version 0 should be rejected (stale)
-        let stale = client.get_segment_with_version_check(room_id, media_id, "seg1.ts", 0, 0).await;
-        assert!(stale.is_none(), "Entry with old version should be rejected after invalidation");
+        let stale = client
+            .get_segment_with_version_check(room_id, media_id, "seg1.ts", 0, 0)
+            .await;
+        assert!(
+            stale.is_none(),
+            "Entry with old version should be rejected after invalidation"
+        );
     }
 
     #[tokio::test]
@@ -1006,22 +1139,32 @@ mod tests {
 
         // Insert entry with version 0
         let key_v0 = client.build_segment_cache_key_with_version(room_id, media_id, 0, 0, segment);
-        client.segment_cache.insert(key_v0.clone(), Bytes::from_static(b"old")).await;
+        client
+            .segment_cache
+            .insert(key_v0.clone(), Bytes::from_static(b"old"))
+            .await;
 
         // Increment version to 1
         client.increment_cache_version(room_id, media_id);
 
         // Insert entry with version 1
         let key_v1 = client.build_segment_cache_key_with_version(room_id, media_id, 0, 1, segment);
-        client.segment_cache.insert(key_v1.clone(), Bytes::from_static(b"new")).await;
+        client
+            .segment_cache
+            .insert(key_v1.clone(), Bytes::from_static(b"new"))
+            .await;
 
         // Version-aware get with current version should return new data
-        let result = client.get_segment_with_version_check(room_id, media_id, segment, 0, 1).await;
+        let result = client
+            .get_segment_with_version_check(room_id, media_id, segment, 0, 1)
+            .await;
         assert!(result.is_some());
         assert_eq!(result.unwrap(), Bytes::from_static(b"new"));
 
         // Version-aware get with old version should return None (stale)
-        let stale = client.get_segment_with_version_check(room_id, media_id, segment, 0, 0).await;
+        let stale = client
+            .get_segment_with_version_check(room_id, media_id, segment, 0, 0)
+            .await;
         assert!(stale.is_none(), "Old version should be considered stale");
     }
 
@@ -1034,23 +1177,35 @@ mod tests {
         let url_base = "http://example.com";
 
         // Insert playlist with version 0
-        let key_v0 = client.build_playlist_cache_key_with_version(room_id, media_id, 0, 0, url_base);
-        client.playlist_cache.insert(key_v0.clone(), Some("#EXTM3U\nold".to_string())).await;
+        let key_v0 =
+            client.build_playlist_cache_key_with_version(room_id, media_id, 0, 0, url_base);
+        client
+            .playlist_cache
+            .insert(key_v0.clone(), Some("#EXTM3U\nold".to_string()))
+            .await;
 
         // Increment version to 1
         client.increment_cache_version(room_id, media_id);
 
         // Insert playlist with version 1
-        let key_v1 = client.build_playlist_cache_key_with_version(room_id, media_id, 0, 1, url_base);
-        client.playlist_cache.insert(key_v1.clone(), Some("#EXTM3U\nnew".to_string())).await;
+        let key_v1 =
+            client.build_playlist_cache_key_with_version(room_id, media_id, 0, 1, url_base);
+        client
+            .playlist_cache
+            .insert(key_v1.clone(), Some("#EXTM3U\nnew".to_string()))
+            .await;
 
         // Version-aware get with current version should return new data
-        let result = client.get_playlist_with_version_check(room_id, media_id, url_base, 0, 1).await;
+        let result = client
+            .get_playlist_with_version_check(room_id, media_id, url_base, 0, 1)
+            .await;
         assert!(result.is_some());
         assert_eq!(result.unwrap(), Some("#EXTM3U\nnew".to_string()));
 
         // Version-aware get with old version should return None (stale)
-        let stale = client.get_playlist_with_version_check(room_id, media_id, url_base, 0, 0).await;
+        let stale = client
+            .get_playlist_with_version_check(room_id, media_id, url_base, 0, 0)
+            .await;
         assert!(stale.is_none(), "Old version should be considered stale");
     }
 }

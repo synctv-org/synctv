@@ -11,14 +11,13 @@ use std::time::Duration;
 
 use chrono::Utc;
 use synctv_cluster::sync::events::ClusterEvent;
-use synctv_cluster::{MessageDeduplicator, RoomMessageHub};
 use synctv_cluster::sync::redis_pubsub::RedisPubSub;
+use synctv_cluster::{MessageDeduplicator, RoomMessageHub};
 use synctv_core::models::id::{RoomId, UserId};
 use tokio::sync::broadcast;
 
 mod integration_test_helpers;
 use integration_test_helpers::{create_node, TestRedis};
-
 
 #[tokio::test]
 #[ignore = "requires Docker"]
@@ -69,7 +68,7 @@ async fn test_redis_pubsub_no_message_loss() {
                 }
             }
             Ok(None) | Err(_) => break,
-            }
+        }
     }
 
     assert_eq!(
@@ -83,11 +82,7 @@ async fn test_redis_pubsub_no_message_loss() {
 
     // Verify ordering is preserved
     for (i, msg) in received_messages.iter().enumerate() {
-        assert_eq!(
-            msg,
-            &format!("Message {i}"),
-            "Message {i} out of order"
-        );
+        assert_eq!(msg, &format!("Message {i}"), "Message {i} out of order");
     }
 
     node_a.unsubscribe(&conn_id);
@@ -109,11 +104,9 @@ async fn test_redis_stream_catchup() {
     let user_id = UserId::from_string("catchup_user".to_string());
 
     // Subscribe a user to the room in the hub
-    let mut rx = message_hub.subscribe(
-        room_id.clone(),
-        user_id.clone(),
-        "catchup_conn".to_string(),
-    ).await;
+    let mut rx = message_hub
+        .subscribe(room_id.clone(), user_id.clone(), "catchup_conn".to_string())
+        .await;
 
     // Create the publisher node separately to write events to Redis streams
     let publisher = create_node(&redis.redis_url, "publisher_node").await;
@@ -141,7 +134,8 @@ async fn test_redis_stream_catchup() {
     // Now start a subscriber node that connects to the same Redis.
     // On first connect it snapshots stream tips, so pre-existing messages
     // won't be delivered. But any new messages should arrive via pub/sub.
-    let redis_client = redis::Client::open(redis.redis_url.clone()).expect("Failed to open Redis client");
+    let redis_client =
+        redis::Client::open(redis.redis_url.clone()).expect("Failed to open Redis client");
     let subscriber_node = Arc::new(
         RedisPubSub::new(
             redis_client,
@@ -205,14 +199,18 @@ async fn test_redis_failure_and_recovery() {
     let room_id = RoomId::from_string("recovery_room".to_string());
 
     // Subscribe on both nodes
-    let (mut rx_a, conn_a) = node_a.subscribe(
-        room_id.clone(),
-        UserId::from_string("recovery_user_a".to_string()),
-    ).await;
-    let (mut rx_b, conn_b) = node_b.subscribe(
-        room_id.clone(),
-        UserId::from_string("recovery_user_b".to_string()),
-    ).await;
+    let (mut rx_a, conn_a) = node_a
+        .subscribe(
+            room_id.clone(),
+            UserId::from_string("recovery_user_a".to_string()),
+        )
+        .await;
+    let (mut rx_b, conn_b) = node_b
+        .subscribe(
+            room_id.clone(),
+            UserId::from_string("recovery_user_b".to_string()),
+        )
+        .await;
 
     tokio::time::sleep(Duration::from_millis(500)).await;
 
@@ -240,10 +238,12 @@ async fn test_redis_failure_and_recovery() {
     // (We can't actually stop the Redis container, but we can verify local delivery)
 
     // Subscribe a second client on node A
-    let (mut rx_a2, conn_a2) = node_a.subscribe(
-        room_id.clone(),
-        UserId::from_string("recovery_user_a2".to_string()),
-    ).await;
+    let (mut rx_a2, conn_a2) = node_a
+        .subscribe(
+            room_id.clone(),
+            UserId::from_string("recovery_user_a2".to_string()),
+        )
+        .await;
 
     tokio::time::sleep(Duration::from_millis(100)).await;
 
@@ -261,7 +261,10 @@ async fn test_redis_failure_and_recovery() {
 
     let result = node_a.broadcast(local_event);
     // Both local subscribers should receive the message
-    assert_eq!(result.local_sent, 2, "Both local subscribers should receive the message");
+    assert_eq!(
+        result.local_sent, 2,
+        "Both local subscribers should receive the message"
+    );
 
     // Verify both local subscribers received the message
     let _ = tokio::time::timeout(Duration::from_secs(2), rx_a.recv())
@@ -306,7 +309,11 @@ async fn test_redis_failure_and_recovery() {
 
     // Verify ordering
     for (i, msg) in received_messages.iter().enumerate() {
-        assert_eq!(msg, &format!("Ordered message {i}"), "Message {i} should be in order");
+        assert_eq!(
+            msg,
+            &format!("Ordered message {i}"),
+            "Message {i} should be in order"
+        );
     }
 
     // Cleanup
@@ -329,10 +336,12 @@ async fn test_redis_reconnection_event_preservation() {
     let room_id = RoomId::from_string("reconnect_room".to_string());
 
     // Subscribe on node B
-    let (mut rx_b, conn_b) = node_b.subscribe(
-        room_id.clone(),
-        UserId::from_string("reconnect_listener".to_string()),
-    ).await;
+    let (mut rx_b, conn_b) = node_b
+        .subscribe(
+            room_id.clone(),
+            UserId::from_string("reconnect_listener".to_string()),
+        )
+        .await;
 
     tokio::time::sleep(Duration::from_millis(500)).await;
 
@@ -386,7 +395,7 @@ async fn test_redis_reconnection_event_preservation() {
             Ok(Some(ClusterEvent::ChatMessage { .. })) => received_count += 1,
             Ok(Some(_)) => {} // Other event types
             Ok(None) | Err(_) => break, // Channel closed
-            // Timeout
+                               // Timeout
         }
     }
 
@@ -454,4 +463,3 @@ async fn test_cross_replica_deduplication() {
     node_a.unsubscribe(&conn_id);
     node_a.shutdown().await;
 }
-

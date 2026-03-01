@@ -12,17 +12,17 @@ pub fn generate_id() -> String {
 pub struct UserId(pub String);
 
 impl UserId {
-    #[must_use] 
+    #[must_use]
     pub fn new() -> Self {
         Self(generate_id())
     }
 
-    #[must_use] 
+    #[must_use]
     pub const fn from_string(id: String) -> Self {
         Self(id)
     }
 
-    #[must_use] 
+    #[must_use]
     pub fn as_str(&self) -> &str {
         &self.0
     }
@@ -54,13 +54,18 @@ impl sqlx::Type<sqlx::Postgres> for UserId {
 }
 
 impl sqlx::Encode<'_, sqlx::Postgres> for UserId {
-    fn encode_by_ref(&self, buf: &mut sqlx::postgres::PgArgumentBuffer) -> Result<sqlx::encode::IsNull, Box<dyn std::error::Error + Send + Sync>> {
+    fn encode_by_ref(
+        &self,
+        buf: &mut sqlx::postgres::PgArgumentBuffer,
+    ) -> Result<sqlx::encode::IsNull, Box<dyn std::error::Error + Send + Sync>> {
         <String as sqlx::Encode<sqlx::Postgres>>::encode_by_ref(&self.0, buf)
     }
 }
 
 impl<'r> sqlx::Decode<'r, sqlx::Postgres> for UserId {
-    fn decode(value: sqlx::postgres::PgValueRef<'r>) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
+    fn decode(
+        value: sqlx::postgres::PgValueRef<'r>,
+    ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
         let s = <String as sqlx::Decode<sqlx::Postgres>>::decode(value)?;
         Ok(Self(s))
     }
@@ -72,17 +77,17 @@ impl<'r> sqlx::Decode<'r, sqlx::Postgres> for UserId {
 pub struct RoomId(pub String);
 
 impl RoomId {
-    #[must_use] 
+    #[must_use]
     pub fn new() -> Self {
         Self(generate_id())
     }
 
-    #[must_use] 
+    #[must_use]
     pub const fn from_string(id: String) -> Self {
         Self(id)
     }
 
-    #[must_use] 
+    #[must_use]
     pub fn as_str(&self) -> &str {
         &self.0
     }
@@ -114,13 +119,18 @@ impl sqlx::Type<sqlx::Postgres> for RoomId {
 }
 
 impl sqlx::Encode<'_, sqlx::Postgres> for RoomId {
-    fn encode_by_ref(&self, buf: &mut sqlx::postgres::PgArgumentBuffer) -> Result<sqlx::encode::IsNull, Box<dyn std::error::Error + Send + Sync>> {
+    fn encode_by_ref(
+        &self,
+        buf: &mut sqlx::postgres::PgArgumentBuffer,
+    ) -> Result<sqlx::encode::IsNull, Box<dyn std::error::Error + Send + Sync>> {
         <String as sqlx::Encode<sqlx::Postgres>>::encode_by_ref(&self.0, buf)
     }
 }
 
 impl<'r> sqlx::Decode<'r, sqlx::Postgres> for RoomId {
-    fn decode(value: sqlx::postgres::PgValueRef<'r>) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
+    fn decode(
+        value: sqlx::postgres::PgValueRef<'r>,
+    ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
         let s = <String as sqlx::Decode<sqlx::Postgres>>::decode(value)?;
         Ok(Self(s))
     }
@@ -132,17 +142,17 @@ impl<'r> sqlx::Decode<'r, sqlx::Postgres> for RoomId {
 pub struct MediaId(pub String);
 
 impl MediaId {
-    #[must_use] 
+    #[must_use]
     pub fn new() -> Self {
         Self(generate_id())
     }
 
-    #[must_use] 
+    #[must_use]
     pub const fn from_string(id: String) -> Self {
         Self(id)
     }
 
-    #[must_use] 
+    #[must_use]
     pub fn as_str(&self) -> &str {
         &self.0
     }
@@ -174,13 +184,18 @@ impl sqlx::Type<sqlx::Postgres> for MediaId {
 }
 
 impl sqlx::Encode<'_, sqlx::Postgres> for MediaId {
-    fn encode_by_ref(&self, buf: &mut sqlx::postgres::PgArgumentBuffer) -> Result<sqlx::encode::IsNull, Box<dyn std::error::Error + Send + Sync>> {
+    fn encode_by_ref(
+        &self,
+        buf: &mut sqlx::postgres::PgArgumentBuffer,
+    ) -> Result<sqlx::encode::IsNull, Box<dyn std::error::Error + Send + Sync>> {
         <String as sqlx::Encode<sqlx::Postgres>>::encode_by_ref(&self.0, buf)
     }
 }
 
 impl<'r> sqlx::Decode<'r, sqlx::Postgres> for MediaId {
-    fn decode(value: sqlx::postgres::PgValueRef<'r>) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
+    fn decode(
+        value: sqlx::postgres::PgValueRef<'r>,
+    ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
         let s = <String as sqlx::Decode<sqlx::Postgres>>::decode(value)?;
         Ok(Self(s))
     }
@@ -234,13 +249,18 @@ impl sqlx::Type<sqlx::Postgres> for PlaylistId {
 }
 
 impl sqlx::Encode<'_, sqlx::Postgres> for PlaylistId {
-    fn encode_by_ref(&self, buf: &mut sqlx::postgres::PgArgumentBuffer) -> Result<sqlx::encode::IsNull, Box<dyn std::error::Error + Send + Sync>> {
+    fn encode_by_ref(
+        &self,
+        buf: &mut sqlx::postgres::PgArgumentBuffer,
+    ) -> Result<sqlx::encode::IsNull, Box<dyn std::error::Error + Send + Sync>> {
         <String as sqlx::Encode<sqlx::Postgres>>::encode_by_ref(&self.0, buf)
     }
 }
 
 impl<'r> sqlx::Decode<'r, sqlx::Postgres> for PlaylistId {
-    fn decode(value: sqlx::postgres::PgValueRef<'r>) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
+    fn decode(
+        value: sqlx::postgres::PgValueRef<'r>,
+    ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
         let s = <String as sqlx::Decode<sqlx::Postgres>>::decode(value)?;
         Ok(Self(s))
     }

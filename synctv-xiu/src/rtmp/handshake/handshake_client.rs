@@ -3,9 +3,9 @@ use {
         define, define::ClientHandshakeState, errors::HandshakeError,
         handshake_trait::THandshakeClient, utils,
     },
+    crate::bytesio::{bytes_reader::BytesReader, bytes_writer::AsyncBytesWriter, bytesio::TNetIO},
     byteorder::BigEndian,
     bytes::BytesMut,
-    crate::bytesio::{bytes_reader::BytesReader, bytes_writer::AsyncBytesWriter, bytesio::TNetIO},
     std::sync::Arc,
     tokio::sync::Mutex,
 };

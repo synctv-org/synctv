@@ -31,18 +31,18 @@ pub enum UserRole {
 
 impl UserRole {
     /// Check if this role can manage another role
-    #[must_use] 
+    #[must_use]
     pub const fn can_manage(&self, other: &Self) -> bool {
         matches!((self, other), (Self::Root, _) | (Self::Admin, Self::User))
     }
 
     /// Check if this role is admin or above
-    #[must_use] 
+    #[must_use]
     pub const fn is_admin_or_above(&self) -> bool {
         matches!(self, Self::Root | Self::Admin)
     }
 
-    #[must_use] 
+    #[must_use]
     pub const fn as_str(&self) -> &'static str {
         match self {
             Self::Root => "root",
@@ -79,7 +79,10 @@ impl sqlx::Type<sqlx::Postgres> for UserRole {
 }
 
 impl sqlx::Encode<'_, sqlx::Postgres> for UserRole {
-    fn encode_by_ref(&self, buf: &mut sqlx::postgres::PgArgumentBuffer) -> Result<sqlx::encode::IsNull, Box<dyn std::error::Error + Send + Sync>> {
+    fn encode_by_ref(
+        &self,
+        buf: &mut sqlx::postgres::PgArgumentBuffer,
+    ) -> Result<sqlx::encode::IsNull, Box<dyn std::error::Error + Send + Sync>> {
         let val: i16 = match self {
             Self::Root => 1,
             Self::Admin => 2,
@@ -90,7 +93,9 @@ impl sqlx::Encode<'_, sqlx::Postgres> for UserRole {
 }
 
 impl<'r> sqlx::Decode<'r, sqlx::Postgres> for UserRole {
-    fn decode(value: sqlx::postgres::PgValueRef<'r>) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
+    fn decode(
+        value: sqlx::postgres::PgValueRef<'r>,
+    ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
         let val = <i16 as sqlx::Decode<sqlx::Postgres>>::decode(value)?;
         match val {
             1 => Ok(Self::Root),
@@ -124,7 +129,7 @@ pub enum UserStatus {
 }
 
 impl UserStatus {
-    #[must_use] 
+    #[must_use]
     pub const fn as_str(&self) -> &'static str {
         match self {
             Self::Active => "active",
@@ -144,28 +149,28 @@ impl UserStatus {
     }
 
     /// Check if user can create rooms with this status
-    #[must_use] 
+    #[must_use]
     pub const fn can_create_room(&self) -> bool {
         matches!(self, Self::Active)
     }
 
     /// Check if user can join rooms with this status
-    #[must_use] 
+    #[must_use]
     pub const fn can_join_room(&self) -> bool {
         matches!(self, Self::Active)
     }
 
-    #[must_use] 
+    #[must_use]
     pub const fn is_active(&self) -> bool {
         matches!(self, Self::Active)
     }
 
-    #[must_use] 
+    #[must_use]
     pub const fn is_pending(&self) -> bool {
         matches!(self, Self::Pending)
     }
 
-    #[must_use] 
+    #[must_use]
     pub const fn is_banned(&self) -> bool {
         matches!(self, Self::Banned)
     }
@@ -198,7 +203,10 @@ impl sqlx::Type<sqlx::Postgres> for UserStatus {
 }
 
 impl sqlx::Encode<'_, sqlx::Postgres> for UserStatus {
-    fn encode_by_ref(&self, buf: &mut sqlx::postgres::PgArgumentBuffer) -> Result<sqlx::encode::IsNull, Box<dyn std::error::Error + Send + Sync>> {
+    fn encode_by_ref(
+        &self,
+        buf: &mut sqlx::postgres::PgArgumentBuffer,
+    ) -> Result<sqlx::encode::IsNull, Box<dyn std::error::Error + Send + Sync>> {
         let val: i16 = match self {
             Self::Active => 1,
             Self::Pending => 2,
@@ -209,7 +217,9 @@ impl sqlx::Encode<'_, sqlx::Postgres> for UserStatus {
 }
 
 impl<'r> sqlx::Decode<'r, sqlx::Postgres> for UserStatus {
-    fn decode(value: sqlx::postgres::PgValueRef<'r>) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
+    fn decode(
+        value: sqlx::postgres::PgValueRef<'r>,
+    ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
         let val = <i16 as sqlx::Decode<sqlx::Postgres>>::decode(value)?;
         match val {
             1 => Ok(Self::Active),
@@ -229,7 +239,7 @@ pub enum SignupMethod {
 }
 
 impl SignupMethod {
-    #[must_use] 
+    #[must_use]
     pub const fn as_str(&self) -> &'static str {
         match self {
             Self::Email => "email",
@@ -259,16 +269,20 @@ impl sqlx::Type<sqlx::Postgres> for SignupMethod {
 }
 
 impl sqlx::Encode<'_, sqlx::Postgres> for SignupMethod {
-    fn encode_by_ref(&self, buf: &mut sqlx::postgres::PgArgumentBuffer) -> Result<sqlx::encode::IsNull, Box<dyn std::error::Error + Send + Sync>> {
+    fn encode_by_ref(
+        &self,
+        buf: &mut sqlx::postgres::PgArgumentBuffer,
+    ) -> Result<sqlx::encode::IsNull, Box<dyn std::error::Error + Send + Sync>> {
         <&str as sqlx::Encode<sqlx::Postgres>>::encode_by_ref(&self.as_str(), buf)
     }
 }
 
 impl<'r> sqlx::Decode<'r, sqlx::Postgres> for SignupMethod {
-    fn decode(value: sqlx::postgres::PgValueRef<'r>) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
+    fn decode(
+        value: sqlx::postgres::PgValueRef<'r>,
+    ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
         let s = <String as sqlx::Decode<sqlx::Postgres>>::decode(value)?;
-        Self::from_str_name(&s)
-            .ok_or_else(|| format!("Unknown SignupMethod value: {s}").into())
+        Self::from_str_name(&s).ok_or_else(|| format!("Unknown SignupMethod value: {s}").into())
     }
 }
 
@@ -276,7 +290,7 @@ impl<'r> sqlx::Decode<'r, sqlx::Postgres> for SignupMethod {
 pub struct User {
     pub id: UserId,
     pub username: String,
-    pub email: Option<String>,  // NULL allowed for OAuth2 users
+    pub email: Option<String>, // NULL allowed for OAuth2 users
     #[serde(skip_serializing)]
     pub password_hash: String,
 
@@ -286,11 +300,11 @@ pub struct User {
     /// User status (account state) - SEPARATE from role
     pub status: UserStatus,
 
-    pub signup_method: Option<SignupMethod>,  // NULL for legacy users
-    pub email_verified: bool,  // Whether email has been verified
+    pub signup_method: Option<SignupMethod>, // NULL for legacy users
+    pub email_verified: bool,                // Whether email has been verified
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
-    pub password_changed_at: DateTime<Utc>,  // Timestamp of last password change (for token invalidation)
+    pub password_changed_at: DateTime<Utc>, // Timestamp of last password change (for token invalidation)
     /// Monotonically increasing counter, incremented on each password change.
     /// Used to invalidate JWTs via the `pv` claim.
     pub password_version: i32,
@@ -302,8 +316,19 @@ pub struct User {
 
 impl User {
     #[must_use]
-    pub fn new(username: String, email: Option<String>, password_hash: String, signup_method: Option<SignupMethod>) -> Self {
-        Self::new_with_status(username, email, password_hash, signup_method, UserStatus::Pending)
+    pub fn new(
+        username: String,
+        email: Option<String>,
+        password_hash: String,
+        signup_method: Option<SignupMethod>,
+    ) -> Self {
+        Self::new_with_status(
+            username,
+            email,
+            password_hash,
+            signup_method,
+            UserStatus::Pending,
+        )
     }
 
     /// Create a new user with an explicit initial status.
@@ -324,48 +349,48 @@ impl User {
             username,
             email,
             password_hash,
-            role: UserRole::User,  // Default role
+            role: UserRole::User, // Default role
             status: initial_status,
             signup_method,
-            email_verified: false,  // Default to not verified
+            email_verified: false, // Default to not verified
             created_at: now,
             updated_at: now,
-            password_changed_at: now,  // Initialize to creation time
+            password_changed_at: now, // Initialize to creation time
             password_version: 0,
             version: 0,
             deleted_at: None,
         }
     }
 
-    #[must_use] 
+    #[must_use]
     pub const fn is_deleted(&self) -> bool {
         self.deleted_at.is_some()
     }
 
     /// Check if user has specific role level (RBAC)
-    #[must_use] 
+    #[must_use]
     pub const fn is_root(&self) -> bool {
         matches!(self.role, UserRole::Root)
     }
 
-    #[must_use] 
+    #[must_use]
     pub const fn is_admin(&self) -> bool {
         matches!(self.role, UserRole::Admin)
     }
 
-    #[must_use] 
+    #[must_use]
     pub const fn is_admin_or_above(&self) -> bool {
         self.role.is_admin_or_above()
     }
 
     /// Check if user can login (checks status, not role)
-    #[must_use] 
+    #[must_use]
     pub const fn can_login(&self) -> bool {
         self.status.can_login()
     }
 
     /// Check if user can create rooms (checks both role and status)
-    #[must_use] 
+    #[must_use]
     pub const fn can_create_room(&self, allow_user: bool) -> bool {
         if !self.status.can_create_room() {
             return false;
@@ -378,7 +403,7 @@ impl User {
     }
 
     /// Check if user can join rooms (checks status)
-    #[must_use] 
+    #[must_use]
     pub const fn can_join_room(&self) -> bool {
         self.status.can_join_room()
     }
@@ -440,14 +465,14 @@ impl User {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CreateUserRequest {
     pub username: String,
-    pub email: Option<String>,  // Optional email
+    pub email: Option<String>, // Optional email
     pub password: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UpdateUserRequest {
     pub username: Option<String>,
-    pub email: Option<Option<String>>,  // Option<Option<String>>: Some(None) means set to NULL, None means don't update
+    pub email: Option<Option<String>>, // Option<Option<String>>: Some(None) means set to NULL, None means don't update
     pub password: Option<String>,
 }
 
@@ -463,7 +488,11 @@ pub struct UserListQuery {
 mod tests {
     use super::*;
 
-    fn make_test_user(signup_method: Option<SignupMethod>, password_hash: &str, password_version: i32) -> User {
+    fn make_test_user(
+        signup_method: Option<SignupMethod>,
+        password_hash: &str,
+        password_version: i32,
+    ) -> User {
         let now = Utc::now();
         User {
             id: UserId::new(),

@@ -32,8 +32,6 @@ const HEALTH_CHECK_TIMEOUT: Duration = Duration::from_secs(5);
 /// To expose the `/metrics` endpoint, set `server.metrics_enabled = true`
 /// in the application config (or `metrics.enabled` in Helm values).
 pub fn create_health_router() -> Router<AppState> {
-    
-
     // Metrics are conditionally registered via create_health_router_with_config
     Router::new()
         .route("/health", get(liveness_check))
@@ -173,21 +171,25 @@ pub async fn readiness_check(State(state): State<AppState>) -> impl IntoResponse
     });
 
     // Check email service (if configured) - validates SMTP config is present
-    let email_status = state.email_service.as_ref().map(|svc| {
-        check_email_health(svc)
-    });
+    let email_status = state
+        .email_service
+        .as_ref()
+        .map(|svc| check_email_health(svc));
 
     // Check livestream infrastructure (if configured)
-    let livestream_status = state.live_streaming_infrastructure.as_ref().map(|_| {
-        "configured".to_string()
-    });
+    let livestream_status = state
+        .live_streaming_infrastructure
+        .as_ref()
+        .map(|_| "configured".to_string());
 
     // Check memory pressure - high memory usage should mark node as unhealthy
     let memory_health = check_memory_health();
     if let Some(ref mem) = memory_health {
         if mem.status == "unhealthy" {
-            error_messages.push(format!("Memory: usage at {:.1}% (threshold: {:.0}%)",
-                mem.usage_percent, MEMORY_UNHEALTHY_THRESHOLD_PERCENT));
+            error_messages.push(format!(
+                "Memory: usage at {:.1}% (threshold: {:.0}%)",
+                mem.usage_percent, MEMORY_UNHEALTHY_THRESHOLD_PERCENT
+            ));
             is_healthy = false;
             warn!("Memory pressure detected: {:.1}% usage", mem.usage_percent);
         }
@@ -200,7 +202,11 @@ pub async fn readiness_check(State(state): State<AppState>) -> impl IntoResponse
     };
 
     let response = HealthResponse {
-        status: if is_healthy { "healthy".to_string() } else { "unhealthy".to_string() },
+        status: if is_healthy {
+            "healthy".to_string()
+        } else {
+            "unhealthy".to_string()
+        },
         details: Some(HealthDetails {
             database: db_status,
             redis: redis_status,
@@ -229,8 +235,14 @@ async fn check_database_health(state: &AppState) -> Result<(), String> {
             Err(format!("Database connection failed: {e}"))
         }
         Err(_) => {
-            warn!("Database health check timed out after {}s", HEALTH_CHECK_TIMEOUT.as_secs());
-            Err(format!("Database health check timed out after {}s", HEALTH_CHECK_TIMEOUT.as_secs()))
+            warn!(
+                "Database health check timed out after {}s",
+                HEALTH_CHECK_TIMEOUT.as_secs()
+            );
+            Err(format!(
+                "Database health check timed out after {}s",
+                HEALTH_CHECK_TIMEOUT.as_secs()
+            ))
         }
     }
 }
@@ -299,8 +311,14 @@ async fn check_redis_health(state: &AppState) -> Result<(), String> {
             Err(format!("Redis ping failed: {e}"))
         }
         Err(_) => {
-            warn!("Redis health check timed out after {}s", HEALTH_CHECK_TIMEOUT.as_secs());
-            Err(format!("Redis health check timed out after {}s", HEALTH_CHECK_TIMEOUT.as_secs()))
+            warn!(
+                "Redis health check timed out after {}s",
+                HEALTH_CHECK_TIMEOUT.as_secs()
+            );
+            Err(format!(
+                "Redis health check timed out after {}s",
+                HEALTH_CHECK_TIMEOUT.as_secs()
+            ))
         }
     }
 }
@@ -500,9 +518,7 @@ pub async fn prometheus_metrics(
         let provided = headers
             .get(axum::http::header::AUTHORIZATION)
             .and_then(|v| v.to_str().ok())
-            .and_then(|s| {
-                synctv_core::service::auth::JwtValidator::extract_bearer_token(s).ok()
-            });
+            .and_then(|s| synctv_core::service::auth::JwtValidator::extract_bearer_token(s).ok());
 
         match provided {
             Some(ref token) if token == expected_token => {
@@ -511,7 +527,10 @@ pub async fn prometheus_metrics(
             _ => {
                 return (
                     StatusCode::UNAUTHORIZED,
-                    [(axum::http::header::CONTENT_TYPE, "text/plain; charset=utf-8")],
+                    [(
+                        axum::http::header::CONTENT_TYPE,
+                        "text/plain; charset=utf-8",
+                    )],
                     "Unauthorized".to_string(),
                 )
                     .into_response();
@@ -520,7 +539,10 @@ pub async fn prometheus_metrics(
     }
 
     (
-        [(axum::http::header::CONTENT_TYPE, "text/plain; version=0.0.4; charset=utf-8")],
+        [(
+            axum::http::header::CONTENT_TYPE,
+            "text/plain; version=0.0.4; charset=utf-8",
+        )],
         metrics::gather_metrics(),
     )
         .into_response()

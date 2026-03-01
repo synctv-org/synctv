@@ -18,7 +18,6 @@ pub struct StreamEventCallbacks {
     pub on_viewer_leave: Option<Arc<dyn Fn() + Send + Sync>>,
 }
 
-
 impl std::fmt::Debug for StreamEventCallbacks {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("StreamEventCallbacks")

@@ -35,9 +35,9 @@ pub fn read_sev(bit_reader: &mut BitsReader) -> Result<i32, H264Error> {
 mod tests {
 
     use super::read_uev;
-    use bytes::BytesMut;
     use crate::bytesio::bits_reader::BitsReader;
     use crate::bytesio::bytes_reader::BytesReader;
+    use bytes::BytesMut;
 
     #[test]
     fn test_read_uev() {

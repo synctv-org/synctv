@@ -14,12 +14,7 @@
 //! - Single-use (consumed on first use)
 //! - Does not expose the actual JWT token
 
-use axum::{
-    extract::State,
-    http::StatusCode,
-    response::IntoResponse,
-    Json,
-};
+use axum::{extract::State, http::StatusCode, response::IntoResponse, Json};
 use serde::{Deserialize, Serialize};
 use synctv_core::models::RoomId;
 
@@ -89,9 +84,7 @@ pub async fn create_ticket(
 
     // Check if ticket service is available
     let ws_ticket_service = state.ws_ticket_service.as_ref().ok_or_else(|| {
-        AppError::internal_server_error(
-            "WebSocket ticket service not configured (Redis required)",
-        )
+        AppError::internal_server_error("WebSocket ticket service not configured (Redis required)")
     })?;
 
     // Create a new room-bound ticket for this user (Issue #65)
@@ -107,7 +100,10 @@ pub async fn create_ticket(
         ticket,
         room_id: req.room_id.clone(),
         expires_in_secs: ws_ticket_service.ticket_ttl_secs(),
-        usage: format!("Use in WebSocket URL: ws://host/ws/room/{}?ticket=xxx", req.room_id),
+        usage: format!(
+            "Use in WebSocket URL: ws://host/ws/room/{}?ticket=xxx",
+            req.room_id
+        ),
     };
 
     Ok((StatusCode::OK, Json(response)))

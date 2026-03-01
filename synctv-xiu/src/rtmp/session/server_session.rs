@@ -9,6 +9,11 @@ use {
         define::SessionType,
         errors::{SessionError, SessionErrorValue},
     },
+    crate::bytesio::{
+        bytes_writer::AsyncBytesWriter,
+        bytesio::{TNetIO, TcpIO},
+    },
+    crate::flv::amf0::Amf0ValueType,
     crate::rtmp::{
         chunk::{
             define::CHUNK_SIZE,
@@ -23,16 +28,11 @@ use {
         user_control_messages::writer::EventMessagesWriter,
         utils::RtmpUrlParser,
     },
+    crate::streamhub::define::StreamHubEventSender,
     bytes::BytesMut,
-    crate::bytesio::{
-        bytes_writer::AsyncBytesWriter,
-        bytesio::{TNetIO, TcpIO},
-    },
     indexmap::IndexMap,
     std::{sync::Arc, time::Duration},
-    crate::streamhub::define::StreamHubEventSender,
     tokio::{net::TcpStream, sync::Mutex},
-    crate::flv::amf0::Amf0ValueType,
 };
 
 enum ServerSessionState {
@@ -149,16 +149,20 @@ impl ServerSession {
         const MAX_HANDSHAKE_BUFFER: usize = 8192;
 
         while bytes_len < handshake::define::RTMP_HANDSHAKE_SIZE {
-            let remaining = handshake_timeout.checked_sub(handshake_start.elapsed())
+            let remaining = handshake_timeout
+                .checked_sub(handshake_start.elapsed())
                 .ok_or(SessionError {
                     value: super::errors::SessionErrorValue::Timeout,
                 })?;
-            self.bytesio_data = match tokio::time::timeout(remaining, self.io.lock().await.read()).await {
-                Ok(result) => result?,
-                Err(_) => return Err(SessionError {
-                    value: super::errors::SessionErrorValue::Timeout,
-                }),
-            };
+            self.bytesio_data =
+                match tokio::time::timeout(remaining, self.io.lock().await.read()).await {
+                    Ok(result) => result?,
+                    Err(_) => {
+                        return Err(SessionError {
+                            value: super::errors::SessionErrorValue::Timeout,
+                        })
+                    }
+                };
             bytes_len += self.bytesio_data.len();
             if bytes_len > MAX_HANDSHAKE_BUFFER {
                 tracing::warn!(
@@ -224,7 +228,10 @@ impl ServerSession {
                             .await;
                         }
                         self.common
-                            .unpublish_to_stream_hub(self.app_name.clone(), self.stream_name.clone())
+                            .unpublish_to_stream_hub(
+                                self.app_name.clone(),
+                                self.stream_name.clone(),
+                            )
                             .await?;
                         if let Some(cb) = &self.callbacks.on_publisher_stop {
                             cb();
@@ -239,7 +246,10 @@ impl ServerSession {
                             .await;
                         }
                         self.common
-                            .unsubscribe_from_stream_hub(self.app_name.clone(), self.stream_name.clone())
+                            .unsubscribe_from_stream_hub(
+                                self.app_name.clone(),
+                                self.stream_name.clone(),
+                            )
                             .await?;
                         if let Some(cb) = &self.callbacks.on_viewer_leave {
                             cb();
@@ -287,7 +297,10 @@ impl ServerSession {
                                 .await;
                             }
                             self.common
-                                .unpublish_to_stream_hub(self.app_name.clone(), self.stream_name.clone())
+                                .unpublish_to_stream_hub(
+                                    self.app_name.clone(),
+                                    self.stream_name.clone(),
+                                )
                                 .await?;
                             if let Some(cb) = &self.callbacks.on_publisher_stop {
                                 cb();
@@ -302,7 +315,10 @@ impl ServerSession {
                                 .await;
                             }
                             self.common
-                                .unsubscribe_from_stream_hub(self.app_name.clone(), self.stream_name.clone())
+                                .unsubscribe_from_stream_hub(
+                                    self.app_name.clone(),
+                                    self.stream_name.clone(),
+                                )
                                 .await?;
                             if let Some(cb) = &self.callbacks.on_viewer_leave {
                                 cb();
@@ -322,12 +338,8 @@ impl ServerSession {
             Ok(()) => {}
             Err(err) => {
                 if let Some(auth) = &self.auth {
-                    auth.on_unplay(
-                        &self.app_name,
-                        &self.stream_name,
-                        self.query.as_deref(),
-                    )
-                    .await;
+                    auth.on_unplay(&self.app_name, &self.stream_name, self.query.as_deref())
+                        .await;
                 }
                 self.common
                     .unsubscribe_from_stream_hub(self.app_name.clone(), self.stream_name.clone())
@@ -424,22 +436,21 @@ impl ServerSession {
                 tracing::info!("[ S<-C ] [create stream] ");
                 self.on_create_stream(transaction_id).await?;
             }
-            "deleteStream"
-                if !others.is_empty() => {
-                    let stream_id = match others.pop() {
-                        Some(Amf0ValueType::Number(streamid)) => streamid,
-                        _ => 0.0,
-                    };
+            "deleteStream" if !others.is_empty() => {
+                let stream_id = match others.pop() {
+                    Some(Amf0ValueType::Number(streamid)) => streamid,
+                    _ => 0.0,
+                };
 
-                    tracing::info!(
-                        "[ S<-C ] [delete stream] app_name: {}, stream_name: {}",
-                        self.app_name,
-                        self.stream_name
-                    );
+                tracing::info!(
+                    "[ S<-C ] [delete stream] app_name: {}, stream_name: {}",
+                    self.app_name,
+                    self.stream_name
+                );
 
-                    self.on_delete_stream(transaction_id, &stream_id).await?;
-                    self.state = ServerSessionState::DeleteStream;
-                }
+                self.on_delete_stream(transaction_id, &stream_id).await?;
+                self.state = ServerSessionState::DeleteStream;
+            }
             "play" => {
                 tracing::info!(
                     "[ S<-C ] [play]  app_name: {}, stream_name: {}",
@@ -634,12 +645,8 @@ impl ServerSession {
                 .await?;
 
             if let Some(auth) = &self.auth {
-                auth.on_unpublish(
-                    &self.app_name,
-                    &self.stream_name,
-                    self.query.as_deref(),
-                )
-                .await;
+                auth.on_unpublish(&self.app_name, &self.stream_name, self.query.as_deref())
+                    .await;
             }
 
             // Fixed #116: Notify publisher disconnect via callback
@@ -652,12 +659,8 @@ impl ServerSession {
                 .await?;
 
             if let Some(auth) = &self.auth {
-                auth.on_unplay(
-                    &self.app_name,
-                    &self.stream_name,
-                    self.query.as_deref(),
-                )
-                .await;
+                auth.on_unplay(&self.app_name, &self.stream_name, self.query.as_deref())
+                    .await;
             }
 
             // Fixed #116: Notify viewer disconnect via callback
@@ -810,15 +813,11 @@ impl ServerSession {
         (self.stream_name, self.query) =
             RtmpUrlParser::parse_stream_name_with_query(&raw_stream_name);
         if let Some(auth) = &self.auth {
-            auth.on_play(
-                &self.app_name,
-                &self.stream_name,
-                self.query.as_deref(),
-            )
-            .await
-            .map_err(|e| SessionError {
-                value: SessionErrorValue::AuthFailed(e.to_string()),
-            })?;
+            auth.on_play(&self.app_name, &self.stream_name, self.query.as_deref())
+                .await
+                .map_err(|e| SessionError {
+                    value: SessionErrorValue::AuthFailed(e.to_string()),
+                })?;
         }
 
         let query = if let Some(query_val) = &self.query {
@@ -881,13 +880,11 @@ impl ServerSession {
         };
 
         if stream_name_with_query.is_empty() {
-            tracing::warn!("stream_name_with_query is empty, extracing info from swf_url instead...");
-            let mut url = RtmpUrlParser::new(
-                self.connect_properties
-                    .swf_url
-                    .clone()
-                    .unwrap_or_default(),
+            tracing::warn!(
+                "stream_name_with_query is empty, extracing info from swf_url instead..."
             );
+            let mut url =
+                RtmpUrlParser::new(self.connect_properties.swf_url.clone().unwrap_or_default());
 
             match url.parse_url() {
                 Ok(()) => {
@@ -903,23 +900,22 @@ impl ServerSession {
                 RtmpUrlParser::parse_stream_name_with_query(&stream_name_with_query);
         }
         if let Some(auth) = &self.auth {
-            let rewrite = auth.on_publish(
-                &self.app_name,
-                &self.stream_name,
-                self.query.as_deref(),
-            )
-            .await
-            .map_err(|e| SessionError {
-                value: SessionErrorValue::AuthFailed(e.to_string()),
-            })?;
+            let rewrite = auth
+                .on_publish(&self.app_name, &self.stream_name, self.query.as_deref())
+                .await
+                .map_err(|e| SessionError {
+                    value: SessionErrorValue::AuthFailed(e.to_string()),
+                })?;
 
             // Apply identifier rewrite if the auth callback resolved a JWT token
             // to a canonical (room_id, media_id) pair.
             if let Some(rewrite) = rewrite {
                 tracing::info!(
                     "Auth rewrite: ({}, {}) -> ({}, {})",
-                    self.app_name, self.stream_name,
-                    rewrite.app_name, rewrite.stream_name
+                    self.app_name,
+                    self.stream_name,
+                    rewrite.app_name,
+                    rewrite.stream_name
                 );
                 self.app_name = rewrite.app_name;
                 self.stream_name = rewrite.stream_name;
@@ -966,12 +962,8 @@ impl ServerSession {
                 // 2. on_unpublish intentionally does NOT clean up Redis (PublisherManager does)
                 // 3. When StreamHub fails, PublisherManager never gets called
                 // 4. So we need rollback to clean up Redis immediately
-                auth.on_publish_rollback(
-                    &self.app_name,
-                    &self.stream_name,
-                    self.query.as_deref(),
-                )
-                .await;
+                auth.on_publish_rollback(&self.app_name, &self.stream_name, self.query.as_deref())
+                    .await;
             }
         };
 

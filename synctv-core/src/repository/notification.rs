@@ -1,14 +1,15 @@
 use chrono::{DateTime, Utc};
-use sqlx::{PgPool, Row, FromRow};
+use sqlx::{FromRow, PgPool, Row};
 use uuid::Uuid;
 
 use crate::{
     models::{
         id::UserId,
-        notification::{CreateNotificationRequest, Notification, NotificationListQuery, NotificationType},
+        notification::{
+            CreateNotificationRequest, Notification, NotificationListQuery, NotificationType,
+        },
     },
-    Error,
-    Result,
+    Error, Result,
 };
 
 /// Notification repository for database operations
@@ -18,7 +19,7 @@ pub struct NotificationRepository {
 }
 
 impl NotificationRepository {
-    #[must_use] 
+    #[must_use]
     pub const fn new(pool: PgPool) -> Self {
         Self { pool }
     }
@@ -94,7 +95,7 @@ impl NotificationRepository {
         let mut qb: sqlx::QueryBuilder<sqlx::Postgres> = sqlx::QueryBuilder::new(
             "SELECT id, user_id, type, title, content, data, is_read, created_at, updated_at, \
              COUNT(*) OVER() AS total_count \
-             FROM notifications WHERE user_id = "
+             FROM notifications WHERE user_id = ",
         );
         qb.push_bind(user_id.as_str());
 
@@ -114,8 +115,11 @@ impl NotificationRepository {
 
         let rows = qb.build().fetch_all(&self.pool).await?;
 
-        let total = rows.first().map_or(0i64, |row| row.try_get("total_count").unwrap_or(0));
-        let notifications: Result<Vec<Notification>> = rows.into_iter()
+        let total = rows
+            .first()
+            .map_or(0i64, |row| row.try_get("total_count").unwrap_or(0));
+        let notifications: Result<Vec<Notification>> = rows
+            .into_iter()
             .map(|row| Ok(Notification::from_row(&row)?))
             .collect();
 
@@ -129,9 +133,8 @@ impl NotificationRepository {
         is_read: Option<bool>,
         notification_type: Option<&NotificationType>,
     ) -> Result<i64> {
-        let mut qb: sqlx::QueryBuilder<sqlx::Postgres> = sqlx::QueryBuilder::new(
-            "SELECT COUNT(*) FROM notifications WHERE user_id = "
-        );
+        let mut qb: sqlx::QueryBuilder<sqlx::Postgres> =
+            sqlx::QueryBuilder::new("SELECT COUNT(*) FROM notifications WHERE user_id = ");
         qb.push_bind(user_id.as_str());
 
         if let Some(notification_type) = notification_type {
@@ -143,9 +146,7 @@ impl NotificationRepository {
             qb.push_bind(is_read);
         }
 
-        let count: i64 = qb.build_query_scalar()
-            .fetch_one(&self.pool)
-            .await?;
+        let count: i64 = qb.build_query_scalar().fetch_one(&self.pool).await?;
 
         Ok(count)
     }
@@ -272,5 +273,4 @@ impl NotificationRepository {
 
         Ok(result.rows_affected())
     }
-
 }

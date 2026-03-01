@@ -18,7 +18,6 @@
 use std::sync::Arc;
 
 use anyhow::Result;
-use url::Url;
 use bytes::{Buf, BytesMut};
 use synctv_core::validation::SSRFValidator;
 use synctv_xiu::rtmp::session::client_session::{ClientSession, ClientSessionType};
@@ -36,6 +35,7 @@ use tokio::sync::{mpsc, oneshot};
 use tokio::time::Duration;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
+use url::Url;
 
 const MAX_RETRIES: u32 = 10;
 /// Global maximum retry attempts to prevent infinite retry loops.
@@ -66,7 +66,7 @@ pub enum ExternalSourceType {
 
 impl ExternalSourceType {
     /// Detect source type from URL
-    #[must_use] 
+    #[must_use]
     pub fn from_url(url: &str) -> Option<Self> {
         if url.starts_with("rtmp://") {
             Some(Self::Rtmp)
@@ -111,10 +111,11 @@ impl ExternalStreamPuller {
         source_url: String,
         stream_hub_event_sender: StreamHubEventSender,
     ) -> Result<Self> {
-        let source_type = ExternalSourceType::from_url(&source_url)
-            .ok_or_else(|| anyhow::anyhow!(
+        let source_type = ExternalSourceType::from_url(&source_url).ok_or_else(|| {
+            anyhow::anyhow!(
                 "Unsupported source URL format: {source_url}. Expected rtmp:// or *.flv"
-            ))?;
+            )
+        })?;
 
         // Async SSRF validation: resolves hostname and checks all IPs
         // Note: url_jail only supports http/https schemes. For RTMP URLs, we extract
@@ -122,13 +123,16 @@ impl ExternalStreamPuller {
         let ssrf_check_url = match source_type {
             ExternalSourceType::Rtmp => {
                 let parsed = Url::parse(&source_url)?;
-                let host = parsed.host_str()
+                let host = parsed
+                    .host_str()
                     .ok_or_else(|| anyhow::anyhow!("URL has no host"))?;
                 format!("http://{host}/")
             }
             ExternalSourceType::HttpFlv => source_url.clone(),
         };
-        SSRFValidator::new().validate_url_async(&ssrf_check_url).await
+        SSRFValidator::new()
+            .validate_url_async(&ssrf_check_url)
+            .await
             .map_err(|e| anyhow::anyhow!("SSRF protection blocked URL: {e}"))?;
 
         // Pin the resolved IP to prevent DNS rebinding attacks: the actual connection
@@ -140,7 +144,13 @@ impl ExternalStreamPuller {
             // It's a hostname (not a literal IP), resolve and pin
             let port = parsed.port().unwrap_or(match source_type {
                 ExternalSourceType::Rtmp => 1935,
-                ExternalSourceType::HttpFlv => if parsed.scheme() == "https" { 443 } else { 80 },
+                ExternalSourceType::HttpFlv => {
+                    if parsed.scheme() == "https" {
+                        443
+                    } else {
+                        80
+                    }
+                }
             });
             let addrs: Vec<std::net::SocketAddr> =
                 tokio::net::lookup_host(format!("{host}:{port}"))
@@ -406,17 +416,21 @@ impl ExternalStreamPuller {
     async fn connect_and_stream_rtmp(&mut self, data_sender: &FrameDataSender) -> Result<()> {
         // Parse RTMP URL to extract host, port, app_name, stream_name
         let mut parser = RtmpUrlParser::new(self.source_url.clone());
-        parser.parse_url()
+        parser
+            .parse_url()
             .map_err(|e| anyhow::anyhow!("Invalid RTMP URL: {e:?}"))?;
 
         // REQUIRE pinned resolved address - prevents DNS rebinding attacks.
         // This field must be set via new_async(); if using new(), this will fail.
-        let connect_addr = self.resolved_addr
+        let connect_addr = self
+            .resolved_addr
             .as_ref()
-            .ok_or_else(|| anyhow::anyhow!(
-                "Resolved address not available. SSRF validation may have failed. \
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "Resolved address not available. SSRF validation may have failed. \
                  Use new_async() instead of new() for proper DNS pinning."
-            ))?
+                )
+            })?
             .to_string();
 
         info!(
@@ -430,10 +444,14 @@ impl ExternalStreamPuller {
         const TCP_CONNECT_TIMEOUT_SECS: u64 = 10;
         let tcp_stream = tokio::time::timeout(
             std::time::Duration::from_secs(TCP_CONNECT_TIMEOUT_SECS),
-            tokio::net::TcpStream::connect(&connect_addr)
+            tokio::net::TcpStream::connect(&connect_addr),
         )
         .await
-        .map_err(|_| anyhow::anyhow!("TCP connection to {connect_addr} timed out after {TCP_CONNECT_TIMEOUT_SECS}s"))?
+        .map_err(|_| {
+            anyhow::anyhow!(
+                "TCP connection to {connect_addr} timed out after {TCP_CONNECT_TIMEOUT_SECS}s"
+            )
+        })?
         .map_err(|e| anyhow::anyhow!("Failed to connect to {connect_addr}: {e}"))?;
 
         // TCP connection established — signal confirmation
@@ -485,7 +503,7 @@ impl ExternalStreamPuller {
             parser.app_name.clone(),
             parser.stream_name_with_query.clone(),
             bridge_tx,
-            2, // gop_num (GOP cache on bridge side; real caching happens in local StreamHub)
+            2,    // gop_num (GOP cache on bridge side; real caching happens in local StreamHub)
             None, // per_stream_max_bytes: use default for external pulls
         );
 
@@ -524,22 +542,24 @@ impl ExternalStreamPuller {
 
         // REQUIRE pinned resolved address - prevents DNS rebinding attacks.
         // This field must be set via new_async(); if using new(), this will fail.
-        let addr = self.resolved_addr
-            .ok_or_else(|| anyhow::anyhow!(
+        let addr = self.resolved_addr.ok_or_else(|| {
+            anyhow::anyhow!(
                 "Resolved address not available. SSRF validation may have failed. \
                  Use new_async() instead of new() for proper DNS pinning."
-            ))?;
+            )
+        })?;
 
         // Use the shared HTTP client if configured (connection pooling, TLS reuse).
         // Otherwise create a new client with pinned DNS resolution.
         let client = if let Some(ref client) = self.http_client {
             client.clone()
         } else {
-            let builder = reqwest::Client::builder()
-                .connect_timeout(std::time::Duration::from_secs(10));
+            let builder =
+                reqwest::Client::builder().connect_timeout(std::time::Duration::from_secs(10));
             let parsed = reqwest::Url::parse(&self.source_url)?;
             let host = parsed.host_str().unwrap_or("");
-            builder.resolve(host, addr)
+            builder
+                .resolve(host, addr)
                 .build()
                 .map_err(|e| anyhow::anyhow!("Failed to create HTTP client: {e}"))?
         };
@@ -666,9 +686,18 @@ impl ExternalStreamPuller {
 
                 // Convert to FrameData based on tag type and send to StreamHub
                 let frame = match tag_type {
-                    FLV_TAG_VIDEO => FrameData::Video { timestamp, data: tag_data },
-                    FLV_TAG_AUDIO => FrameData::Audio { timestamp, data: tag_data },
-                    FLV_TAG_SCRIPT_DATA => FrameData::MetaData { timestamp, data: tag_data },
+                    FLV_TAG_VIDEO => FrameData::Video {
+                        timestamp,
+                        data: tag_data,
+                    },
+                    FLV_TAG_AUDIO => FrameData::Audio {
+                        timestamp,
+                        data: tag_data,
+                    },
+                    FLV_TAG_SCRIPT_DATA => FrameData::MetaData {
+                        timestamp,
+                        data: tag_data,
+                    },
                     _ => {
                         debug!("Skipping unknown FLV tag type: {tag_type}");
                         continue;
@@ -787,9 +816,7 @@ impl ExternalStreamPuller {
 /// Validate that a URL is a supported external source format and is SSRF-safe
 pub fn validate_source_url(url: &str) -> Result<ExternalSourceType, String> {
     let source_type = ExternalSourceType::from_url(url)
-        .ok_or_else(|| format!(
-            "Unsupported source URL: {url}. Expected rtmp:// or *.flv"
-        ))?;
+        .ok_or_else(|| format!("Unsupported source URL: {url}. Expected rtmp:// or *.flv"))?;
 
     // SSRF validation: block private IPs, loopback, link-local, metadata endpoints
     // Note: url_jail only supports http/https schemes. For RTMP URLs, we extract
@@ -797,9 +824,9 @@ pub fn validate_source_url(url: &str) -> Result<ExternalSourceType, String> {
     let ssrf_check_url = match source_type {
         ExternalSourceType::Rtmp => {
             // Extract host from RTMP URL for SSRF validation
-            let parsed = Url::parse(url)
-                .map_err(|e| format!("Invalid URL: {e}"))?;
-            let host = parsed.host_str()
+            let parsed = Url::parse(url).map_err(|e| format!("Invalid URL: {e}"))?;
+            let host = parsed
+                .host_str()
                 .ok_or_else(|| "URL has no host".to_string())?;
             // Use http:// to validate the host (we only care about IP validation)
             format!("http://{host}/")
@@ -807,7 +834,8 @@ pub fn validate_source_url(url: &str) -> Result<ExternalSourceType, String> {
         ExternalSourceType::HttpFlv => url.to_string(),
     };
 
-    SSRFValidator::new().validate_url(&ssrf_check_url)
+    SSRFValidator::new()
+        .validate_url(&ssrf_check_url)
         .map_err(|e| format!("SSRF protection blocked URL: {e}"))?;
 
     Ok(source_type)
@@ -832,7 +860,10 @@ mod tests {
             Some(ExternalSourceType::HttpFlv)
         ));
         // m3u8/HLS is not supported
-        assert!(ExternalSourceType::from_url("https://live.example.com/app/stream/index.m3u8").is_none());
+        assert!(
+            ExternalSourceType::from_url("https://live.example.com/app/stream/index.m3u8")
+                .is_none()
+        );
         assert!(ExternalSourceType::from_url("http://example.com/video.mp4").is_none());
     }
 
@@ -866,7 +897,8 @@ mod tests {
             "media456".to_string(),
             "rtmp://example.com/app/stream".to_string(),
             sender,
-        ).await;
+        )
+        .await;
 
         assert!(puller.is_ok());
         let puller = puller.unwrap();
@@ -884,10 +916,14 @@ mod tests {
             "media456".to_string(),
             "http://example.com/app/stream.flv".to_string(),
             sender,
-        ).await;
+        )
+        .await;
 
         assert!(puller.is_ok());
-        assert!(matches!(puller.unwrap().source_type, ExternalSourceType::HttpFlv));
+        assert!(matches!(
+            puller.unwrap().source_type,
+            ExternalSourceType::HttpFlv
+        ));
     }
 
     #[tokio::test]
@@ -899,7 +935,8 @@ mod tests {
             "media456".to_string(),
             "http://example.com/video.mp4".to_string(),
             sender,
-        ).await;
+        )
+        .await;
 
         assert!(puller.is_err());
     }
@@ -913,7 +950,8 @@ mod tests {
             "media456".to_string(),
             "https://live.example.com/app/stream/index.m3u8".to_string(),
             sender,
-        ).await;
+        )
+        .await;
 
         assert!(puller.is_err());
     }
@@ -930,14 +968,18 @@ mod tests {
             "media456".to_string(),
             "rtmp://example.com/app/stream".to_string(),
             sender,
-        ).await;
+        )
+        .await;
 
         // The URL should parse correctly
         assert!(puller.is_ok(), "new_async should succeed for valid URL");
         let puller = puller.unwrap();
 
         // resolved_addr should be set (DNS resolution was successful)
-        assert!(puller.resolved_addr.is_some(), "resolved_addr should be set by new_async");
+        assert!(
+            puller.resolved_addr.is_some(),
+            "resolved_addr should be set by new_async"
+        );
     }
 
     /// Test that `new_async()` rejects SSRF-protected URLs (private IPs, localhost, etc.)
@@ -951,8 +993,12 @@ mod tests {
             "media456".to_string(),
             "rtmp://localhost/app/stream".to_string(),
             sender.clone(),
-        ).await;
-        assert!(puller.is_err(), "localhost should be blocked by SSRF protection");
+        )
+        .await;
+        assert!(
+            puller.is_err(),
+            "localhost should be blocked by SSRF protection"
+        );
 
         // 127.0.0.1 should be blocked
         let puller = ExternalStreamPuller::new_async(
@@ -960,8 +1006,12 @@ mod tests {
             "media456".to_string(),
             "http://127.0.0.1/stream.flv".to_string(),
             sender.clone(),
-        ).await;
-        assert!(puller.is_err(), "127.0.0.1 should be blocked by SSRF protection");
+        )
+        .await;
+        assert!(
+            puller.is_err(),
+            "127.0.0.1 should be blocked by SSRF protection"
+        );
 
         // Private IP should be blocked
         let puller = ExternalStreamPuller::new_async(
@@ -969,7 +1019,11 @@ mod tests {
             "media456".to_string(),
             "rtmp://192.168.1.1/app/stream".to_string(),
             sender.clone(),
-        ).await;
-        assert!(puller.is_err(), "192.168.1.1 should be blocked by SSRF protection");
+        )
+        .await;
+        assert!(
+            puller.is_err(),
+            "192.168.1.1 should be blocked by SSRF protection"
+        );
     }
 }

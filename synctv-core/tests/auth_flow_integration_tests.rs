@@ -5,12 +5,15 @@
 //! Run with: cargo test --test `auth_flow_integration_tests`
 #![allow(clippy::unwrap_used)]
 
-use synctv_core_testing::{create_test_pool, create_test_jwt_service};
 use synctv_core::{
-    models::{User, UserId, UserRole, UserStatus, SignupMethod},
+    models::{SignupMethod, User, UserId, UserRole, UserStatus},
     repository::UserRepository,
-    service::auth::{password::{hash_password, verify_password}, TokenType},
+    service::auth::{
+        password::{hash_password, verify_password},
+        TokenType,
+    },
 };
+use synctv_core_testing::{create_test_jwt_service, create_test_pool};
 /// Default `PostgreSQL` version for test containers
 #[tokio::test]
 #[ignore = "Requires Docker"]
@@ -23,7 +26,9 @@ async fn test_complete_registration_flow() {
     let email = format!("{username}@test.com");
     let password = "SecurePassword123!";
 
-    let password_hash = hash_password(password).await.expect("Failed to hash password");
+    let password_hash = hash_password(password)
+        .await
+        .expect("Failed to hash password");
 
     let user = User {
         id: UserId::new(),
@@ -42,7 +47,10 @@ async fn test_complete_registration_flow() {
         deleted_at: None,
     };
 
-    let created_user = user_repo.create(&user).await.expect("Failed to create user");
+    let created_user = user_repo
+        .create(&user)
+        .await
+        .expect("Failed to create user");
     assert_eq!(created_user.status, UserStatus::Pending);
     assert!(!created_user.email_verified);
 
@@ -52,31 +60,41 @@ async fn test_complete_registration_flow() {
     verified_user.email_verified = true;
 
     let old_version = verified_user.version;
-    let updated_user = user_repo.update(&verified_user, old_version).await.expect("Failed to update user");
+    let updated_user = user_repo
+        .update(&verified_user, old_version)
+        .await
+        .expect("Failed to update user");
     assert_eq!(updated_user.status, UserStatus::Active);
     assert!(updated_user.email_verified);
 
     // Step 3: Login
-    let fetched_user = user_repo.get_by_username(&username)
+    let fetched_user = user_repo
+        .get_by_username(&username)
         .await
         .expect("Failed to fetch user")
         .expect("User not found");
 
-    assert!(verify_password(password, &fetched_user.password_hash).await.unwrap());
+    assert!(verify_password(password, &fetched_user.password_hash)
+        .await
+        .unwrap());
 
     // Generate tokens
     let jwt_service = create_test_jwt_service();
-    let access_token = jwt_service.sign_token(&fetched_user.id, TokenType::Access, 0)
+    let access_token = jwt_service
+        .sign_token(&fetched_user.id, TokenType::Access, 0)
         .expect("Failed to sign access token");
-    let refresh_token = jwt_service.sign_token(&fetched_user.id, TokenType::Refresh, 0)
+    let refresh_token = jwt_service
+        .sign_token(&fetched_user.id, TokenType::Refresh, 0)
         .expect("Failed to sign refresh token");
 
     // Verify tokens
-    let access_claims = jwt_service.verify_access_token(&access_token)
+    let access_claims = jwt_service
+        .verify_access_token(&access_token)
         .expect("Failed to verify access token");
     assert_eq!(access_claims.sub, fetched_user.id.as_str());
 
-    let refresh_claims = jwt_service.verify_refresh_token(&refresh_token)
+    let refresh_claims = jwt_service
+        .verify_refresh_token(&refresh_token)
         .expect("Failed to verify refresh token");
     assert_eq!(refresh_claims.sub, fetched_user.id.as_str());
 }
@@ -90,7 +108,9 @@ async fn test_login_with_wrong_password() {
     // Create user
     let username = format!("test_user_{}", nanoid::nanoid!(10));
     let password = "CorrectPassword123!";
-    let password_hash = hash_password(password).await.expect("Failed to hash password");
+    let password_hash = hash_password(password)
+        .await
+        .expect("Failed to hash password");
 
     let user = User {
         id: UserId::new(),
@@ -109,16 +129,22 @@ async fn test_login_with_wrong_password() {
         deleted_at: None,
     };
 
-    user_repo.create(&user).await.expect("Failed to create user");
+    user_repo
+        .create(&user)
+        .await
+        .expect("Failed to create user");
 
     // Try to login with wrong password
-    let fetched_user = user_repo.get_by_username(&username)
+    let fetched_user = user_repo
+        .get_by_username(&username)
         .await
         .expect("Failed to fetch user")
         .expect("User not found");
 
     let wrong_password = "WrongPassword123!";
-    let verify_result = verify_password(wrong_password, &fetched_user.password_hash).await.unwrap();
+    let verify_result = verify_password(wrong_password, &fetched_user.password_hash)
+        .await
+        .unwrap();
     assert!(!verify_result, "Wrong password should not verify");
 }
 
@@ -131,7 +157,9 @@ async fn test_login_unverified_user_rejected() {
     // Create unverified user
     let username = format!("test_user_{}", nanoid::nanoid!(10));
     let password = "Password123!";
-    let password_hash = hash_password(password).await.expect("Failed to hash password");
+    let password_hash = hash_password(password)
+        .await
+        .expect("Failed to hash password");
 
     let user = User {
         id: UserId::new(),
@@ -150,10 +178,14 @@ async fn test_login_unverified_user_rejected() {
         deleted_at: None,
     };
 
-    user_repo.create(&user).await.expect("Failed to create user");
+    user_repo
+        .create(&user)
+        .await
+        .expect("Failed to create user");
 
     // Fetch user
-    let fetched_user = user_repo.get_by_username(&username)
+    let fetched_user = user_repo
+        .get_by_username(&username)
         .await
         .expect("Failed to fetch user")
         .expect("User not found");
@@ -173,23 +205,28 @@ async fn test_token_refresh_flow() {
     let user_id = UserId::new();
 
     // Step 1: Initial login - get access and refresh tokens
-    let access_token = jwt_service.sign_token(&user_id, TokenType::Access, 0)
+    let access_token = jwt_service
+        .sign_token(&user_id, TokenType::Access, 0)
         .expect("Failed to sign access token");
-    let refresh_token = jwt_service.sign_token(&user_id, TokenType::Refresh, 0)
+    let refresh_token = jwt_service
+        .sign_token(&user_id, TokenType::Refresh, 0)
         .expect("Failed to sign refresh token");
 
     // Step 2: Access token expires (simulated by time passing)
     // In real scenario, we would wait or use expired token
 
     // Step 3: Use refresh token to get new access token
-    let refresh_claims = jwt_service.verify_refresh_token(&refresh_token)
+    let refresh_claims = jwt_service
+        .verify_refresh_token(&refresh_token)
         .expect("Failed to verify refresh token");
 
-    let new_access_token = jwt_service.sign_token(&refresh_claims.user_id(), TokenType::Access, 0)
+    let new_access_token = jwt_service
+        .sign_token(&refresh_claims.user_id(), TokenType::Access, 0)
         .expect("Failed to sign new access token");
 
     // Step 4: Verify new access token works
-    let new_claims = jwt_service.verify_access_token(&new_access_token)
+    let new_claims = jwt_service
+        .verify_access_token(&new_access_token)
         .expect("Failed to verify new access token");
     assert_eq!(new_claims.sub, user_id.as_str());
 
@@ -207,7 +244,9 @@ async fn test_password_change_invalidates_tokens() {
     // Create user
     let username = format!("test_user_{}", nanoid::nanoid!(10));
     let old_password = "OldPassword123!";
-    let password_hash = hash_password(old_password).await.expect("Failed to hash password");
+    let password_hash = hash_password(old_password)
+        .await
+        .expect("Failed to hash password");
 
     let user = User {
         id: UserId::new(),
@@ -226,38 +265,53 @@ async fn test_password_change_invalidates_tokens() {
         deleted_at: None,
     };
 
-    let created_user = user_repo.create(&user).await.expect("Failed to create user");
+    let created_user = user_repo
+        .create(&user)
+        .await
+        .expect("Failed to create user");
 
     // Generate token
-    let old_token = jwt_service.sign_token(&created_user.id, TokenType::Access, 0)
+    let old_token = jwt_service
+        .sign_token(&created_user.id, TokenType::Access, 0)
         .expect("Failed to sign token");
 
-    let _old_token_claims = jwt_service.verify_access_token(&old_token)
+    let _old_token_claims = jwt_service
+        .verify_access_token(&old_token)
         .expect("Failed to verify old token");
 
     // Change password
     tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
 
     let new_password = "NewPassword123!";
-    let new_password_hash = hash_password(new_password).await.expect("Failed to hash new password");
+    let new_password_hash = hash_password(new_password)
+        .await
+        .expect("Failed to hash new password");
 
     let mut updated_user = created_user.clone();
     updated_user.password_hash = new_password_hash;
     updated_user.updated_at = chrono::Utc::now();
 
     let old_version = updated_user.version;
-    user_repo.update(&updated_user, old_version).await.expect("Failed to update user");
+    user_repo
+        .update(&updated_user, old_version)
+        .await
+        .expect("Failed to update user");
 
     // In a real system, old tokens should be invalidated by checking updated_at
     // against token issued_at (iat) or using a token revocation list
-    let fetched_user = user_repo.get_by_id(&created_user.id)
+    let fetched_user = user_repo
+        .get_by_id(&created_user.id)
         .await
         .expect("Failed to fetch user")
         .expect("User not found");
 
     // Verify password was changed
-    assert!(verify_password(new_password, &fetched_user.password_hash).await.unwrap());
-    assert!(!verify_password(old_password, &fetched_user.password_hash).await.unwrap());
+    assert!(verify_password(new_password, &fetched_user.password_hash)
+        .await
+        .unwrap());
+    assert!(!verify_password(old_password, &fetched_user.password_hash)
+        .await
+        .unwrap());
 }
 
 #[tokio::test]
@@ -272,7 +326,9 @@ async fn test_concurrent_login_attempts() {
     // Create user
     let username = format!("test_user_{}", nanoid::nanoid!(10));
     let password = "Password123!";
-    let password_hash = hash_password(password).await.expect("Failed to hash password");
+    let password_hash = hash_password(password)
+        .await
+        .expect("Failed to hash password");
 
     let user = User {
         id: UserId::new(),
@@ -291,7 +347,10 @@ async fn test_concurrent_login_attempts() {
         deleted_at: None,
     };
 
-    let created_user = user_repo.create(&user).await.expect("Failed to create user");
+    let created_user = user_repo
+        .create(&user)
+        .await
+        .expect("Failed to create user");
     let user_id = created_user.id.clone();
 
     // Simulate 10 concurrent login attempts
@@ -302,12 +361,14 @@ async fn test_concurrent_login_attempts() {
         let username = username.clone();
 
         let handle = tokio::spawn(async move {
-            let user = repo.get_by_username(&username)
+            let user = repo
+                .get_by_username(&username)
                 .await
                 .expect("Failed to fetch user")
                 .expect("User not found");
 
-            let token = jwt.sign_token(&user.id, TokenType::Access, 0)
+            let token = jwt
+                .sign_token(&user.id, TokenType::Access, 0)
                 .expect("Failed to sign token");
 
             jwt.verify_access_token(&token)
@@ -337,7 +398,9 @@ async fn test_banned_user_login_rejected() {
     // Create banned user
     let username = format!("test_user_{}", nanoid::nanoid!(10));
     let password = "Password123!";
-    let password_hash = hash_password(password).await.expect("Failed to hash password");
+    let password_hash = hash_password(password)
+        .await
+        .expect("Failed to hash password");
 
     let user = User {
         id: UserId::new(),
@@ -356,10 +419,14 @@ async fn test_banned_user_login_rejected() {
         deleted_at: None,
     };
 
-    user_repo.create(&user).await.expect("Failed to create user");
+    user_repo
+        .create(&user)
+        .await
+        .expect("Failed to create user");
 
     // Fetch user
-    let fetched_user = user_repo.get_by_username(&username)
+    let fetched_user = user_repo
+        .get_by_username(&username)
         .await
         .expect("Failed to fetch user")
         .expect("User not found");
@@ -380,7 +447,9 @@ async fn test_username_case_insensitive_login() {
     // Create user with lowercase username
     let username = format!("testuser_{}", nanoid::nanoid!(10));
     let password = "Password123!";
-    let password_hash = hash_password(password).await.expect("Failed to hash password");
+    let password_hash = hash_password(password)
+        .await
+        .expect("Failed to hash password");
 
     let user = User {
         id: UserId::new(),
@@ -399,11 +468,16 @@ async fn test_username_case_insensitive_login() {
         deleted_at: None,
     };
 
-    user_repo.create(&user).await.expect("Failed to create user");
+    user_repo
+        .create(&user)
+        .await
+        .expect("Failed to create user");
 
     // Try to fetch with different case
     let uppercase_username = username.to_uppercase();
-    let result = user_repo.get_by_username(&uppercase_username).await
+    let result = user_repo
+        .get_by_username(&uppercase_username)
+        .await
         .expect("Failed to query database");
 
     // Depending on database collation, this may or may not find the user

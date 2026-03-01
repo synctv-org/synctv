@@ -9,11 +9,11 @@
 #![allow(clippy::unwrap_used)]
 use std::collections::HashMap;
 
-use synctv_proxy::{
-    is_retryable_status, validate_proxy_url_static, CorsConfig, NoopMetrics, ProxyConfig,
-    proxy_fetch_and_forward, proxy_options_preflight_with_cors,
-};
 use axum::http::StatusCode;
+use synctv_proxy::{
+    is_retryable_status, proxy_fetch_and_forward, proxy_options_preflight_with_cors,
+    validate_proxy_url_static, CorsConfig, NoopMetrics, ProxyConfig,
+};
 
 // ==================================================================
 // Response Size Validation Tests
@@ -160,7 +160,10 @@ fn test_ipv6_unique_local_blocked() {
 #[test]
 fn test_ipv4_mapped_ipv6_private_blocked() {
     let result = validate_proxy_url_static("http://[::ffff:192.168.1.1]/admin");
-    assert!(result.is_err(), "IPv4-mapped private IPv6 should be blocked");
+    assert!(
+        result.is_err(),
+        "IPv4-mapped private IPv6 should be blocked"
+    );
 }
 
 /// Test URL scheme restrictions
@@ -226,10 +229,9 @@ async fn test_cors_wildcard_allows_all() {
     let cors_config = std::sync::Arc::new(CorsConfig::new_wildcard());
 
     // Test that wildcard allows any origin
-    let response = proxy_options_preflight_with_cors(
-        Some("https://any-random-site.com"),
-        cors_config.clone(),
-    ).await;
+    let response =
+        proxy_options_preflight_with_cors(Some("https://any-random-site.com"), cors_config.clone())
+            .await;
 
     assert_eq!(response.status(), StatusCode::NO_CONTENT);
 }
@@ -241,10 +243,9 @@ async fn test_cors_specific_origins_reject_unknown() {
     let cors_config = std::sync::Arc::new(CorsConfig::new(allowed));
 
     // Test that unknown origin is rejected
-    let response = proxy_options_preflight_with_cors(
-        Some("https://unknown-site.com"),
-        cors_config.clone(),
-    ).await;
+    let response =
+        proxy_options_preflight_with_cors(Some("https://unknown-site.com"), cors_config.clone())
+            .await;
 
     assert_eq!(response.status(), StatusCode::FORBIDDEN);
 }
@@ -252,18 +253,21 @@ async fn test_cors_specific_origins_reject_unknown() {
 /// Test CORS preflight with allowed origin
 #[tokio::test]
 async fn test_cors_preflight_allowed_origin() {
-    let allowed = vec!["https://example.com".to_string(), "https://app.example.com".to_string()];
+    let allowed = vec![
+        "https://example.com".to_string(),
+        "https://app.example.com".to_string(),
+    ];
     let cors_config = std::sync::Arc::new(CorsConfig::new(allowed));
 
-    let response = proxy_options_preflight_with_cors(
-        Some("https://example.com"),
-        cors_config,
-    ).await;
+    let response =
+        proxy_options_preflight_with_cors(Some("https://example.com"), cors_config).await;
 
     assert_eq!(response.status(), StatusCode::NO_CONTENT);
     let headers = response.headers();
     assert_eq!(
-        headers.get("Access-Control-Allow-Origin").map(|v| v.to_str().unwrap()),
+        headers
+            .get("Access-Control-Allow-Origin")
+            .map(|v| v.to_str().unwrap()),
         Some("https://example.com")
     );
 }
@@ -274,10 +278,7 @@ async fn test_cors_preflight_disallowed_origin() {
     let allowed = vec!["https://example.com".to_string()];
     let cors_config = std::sync::Arc::new(CorsConfig::new(allowed));
 
-    let response = proxy_options_preflight_with_cors(
-        Some("https://evil.com"),
-        cors_config,
-    ).await;
+    let response = proxy_options_preflight_with_cors(Some("https://evil.com"), cors_config).await;
 
     assert_eq!(response.status(), StatusCode::FORBIDDEN);
 }
@@ -288,14 +289,13 @@ async fn test_cors_preflight_no_origin() {
     let allowed = vec!["https://example.com".to_string()];
     let cors_config = std::sync::Arc::new(CorsConfig::new(allowed));
 
-    let response = proxy_options_preflight_with_cors(
-        None,
-        cors_config,
-    ).await;
+    let response = proxy_options_preflight_with_cors(None, cors_config).await;
 
     // Missing origin should be handled gracefully
     // Exact behavior depends on implementation
-    assert!(response.status() == StatusCode::NO_CONTENT || response.status() == StatusCode::FORBIDDEN);
+    assert!(
+        response.status() == StatusCode::NO_CONTENT || response.status() == StatusCode::FORBIDDEN
+    );
 }
 
 /// Test CORS wildcard allows any origin
@@ -303,10 +303,8 @@ async fn test_cors_preflight_no_origin() {
 async fn test_cors_wildcard_allows_any() {
     let cors_config = std::sync::Arc::new(CorsConfig::new_wildcard());
 
-    let response = proxy_options_preflight_with_cors(
-        Some("https://any-random-site.com"),
-        cors_config,
-    ).await;
+    let response =
+        proxy_options_preflight_with_cors(Some("https://any-random-site.com"), cors_config).await;
 
     assert_eq!(response.status(), StatusCode::NO_CONTENT);
 }
@@ -317,10 +315,8 @@ async fn test_cors_headers_set_correctly() {
     let allowed = vec!["https://example.com".to_string()];
     let cors_config = std::sync::Arc::new(CorsConfig::new(allowed));
 
-    let response = proxy_options_preflight_with_cors(
-        Some("https://example.com"),
-        cors_config,
-    ).await;
+    let response =
+        proxy_options_preflight_with_cors(Some("https://example.com"), cors_config).await;
 
     let headers = response.headers();
 
@@ -404,14 +400,20 @@ fn test_scheme_only_url_rejected() {
 fn test_url_with_credentials_validated() {
     // URL with credentials should still be validated for SSRF
     let result = validate_proxy_url_static("http://user:pass@192.168.1.1/admin");
-    assert!(result.is_err(), "Private IP with credentials should be blocked");
+    assert!(
+        result.is_err(),
+        "Private IP with credentials should be blocked"
+    );
 }
 
 /// Test URL with port
 #[test]
 fn test_url_with_custom_port() {
     let result = validate_proxy_url_static("https://example.com:8443/video.mp4");
-    assert!(result.is_ok(), "Public URL with custom port should be allowed");
+    assert!(
+        result.is_ok(),
+        "Public URL with custom port should be allowed"
+    );
 }
 
 /// Test URL with query parameters
@@ -433,7 +435,10 @@ fn test_url_with_fragment() {
 fn test_url_with_path_traversal() {
     // Path traversal doesn't bypass IP validation
     let result = validate_proxy_url_static("http://192.168.1.1/../etc/passwd");
-    assert!(result.is_err(), "Private IP with path traversal should still be blocked");
+    assert!(
+        result.is_err(),
+        "Private IP with path traversal should still be blocked"
+    );
 }
 
 /// Test multicast IP is blocked

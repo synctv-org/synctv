@@ -28,9 +28,9 @@
 
 use crate::models::permission::PermissionBits;
 use crate::{Error, Result};
+use parking_lot::RwLock;
 use std::collections::HashMap;
 use std::sync::Arc;
-use parking_lot::RwLock;
 
 // Forward-declare RoomSettings so the trait can reference it.
 // The actual struct definition is below, after the setting type definitions.
@@ -371,9 +371,8 @@ impl RoomSetting for AutoPlay {
     }
 
     fn parse_from_str(value: &str) -> Result<AutoPlaySettings> {
-        serde_json::from_str(value).map_err(|_| {
-            crate::Error::InvalidInput(format!("Invalid JSON for auto_play: {value}"))
-        })
+        serde_json::from_str(value)
+            .map_err(|_| crate::Error::InvalidInput(format!("Invalid JSON for auto_play: {value}")))
     }
 
     fn format_value(value: &AutoPlaySettings) -> String {
@@ -424,7 +423,6 @@ fn _auto_play_register() {
     let default_instance: AutoPlay = std::default::Default::default();
     RoomSettingsRegistry::register("auto_play", std::sync::Arc::new(default_instance));
 }
-
 
 use serde::{Deserialize, Serialize};
 
@@ -513,14 +511,14 @@ impl RoomSettings {
         let guest_overflow = self.guest_added_permissions.0 & !PermissionBits::DEFAULT_MEMBER;
         if guest_overflow != 0 {
             return Err(Error::InvalidInput(
-                "Guest added permissions cannot exceed member-level permissions".to_string()
+                "Guest added permissions cannot exceed member-level permissions".to_string(),
             ));
         }
 
         let member_overflow = self.member_added_permissions.0 & !PermissionBits::DEFAULT_ADMIN;
         if member_overflow != 0 {
             return Err(Error::InvalidInput(
-                "Member added permissions cannot exceed admin-level permissions".to_string()
+                "Member added permissions cannot exceed admin-level permissions".to_string(),
             ));
         }
 

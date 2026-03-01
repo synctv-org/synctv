@@ -16,11 +16,7 @@ use synctv_cluster::HeartbeatResult;
 const REDIS_VERSION: &str = "7-alpine";
 
 /// Helper to create a Redis container and client.
-async fn setup_redis() -> (
-    testcontainers::ContainerAsync<Redis>,
-    redis::Client,
-    String,
-) {
+async fn setup_redis() -> (testcontainers::ContainerAsync<Redis>, redis::Client, String) {
     let redis_container = Redis::default()
         .start()
         .await
@@ -69,8 +65,13 @@ async fn test_heartbeat_reregisters_after_key_deletion() {
     let (_container, redis_client, _url) = setup_redis().await;
 
     let registry = Arc::new(
-        NodeRegistry::new(redis_client.clone(), "test-node".to_string(), 30, "cl2test:")
-            .unwrap(),
+        NodeRegistry::new(
+            redis_client.clone(),
+            "test-node".to_string(),
+            30,
+            "cl2test:",
+        )
+        .unwrap(),
     );
 
     // Register the node
@@ -137,8 +138,13 @@ async fn test_heartbeat_auto_retries_on_epoch_mismatch() {
     let (_container, redis_client, _url) = setup_redis().await;
 
     let registry = Arc::new(
-        NodeRegistry::new(redis_client.clone(), "epoch-node".to_string(), 30, "cl2epoch:")
-            .unwrap(),
+        NodeRegistry::new(
+            redis_client.clone(),
+            "epoch-node".to_string(),
+            30,
+            "cl2epoch:",
+        )
+        .unwrap(),
     );
 
     // Register the node (gets epoch from atomic Lua script)
@@ -160,8 +166,7 @@ async fn test_heartbeat_auto_retries_on_epoch_mismatch() {
         .expect("GET should succeed");
 
     // Parse, modify epoch to a different value, write back
-    let mut node_info: serde_json::Value =
-        serde_json::from_str(&json_str).expect("should parse");
+    let mut node_info: serde_json::Value = serde_json::from_str(&json_str).expect("should parse");
     let original_epoch = node_info["epoch"].as_u64().unwrap();
     let modified_epoch = original_epoch + 100;
     node_info["epoch"] = serde_json::Value::Number(serde_json::Number::from(modified_epoch));

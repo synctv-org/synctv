@@ -8,8 +8,8 @@ use super::alist::{
 };
 use super::error_mapper::map_provider_error;
 use super::validation::validate_host_with_dns;
-use crate::alist::{AlistInterface, AlistService as AlistServiceImpl};
 use crate::alist::error::AlistError;
+use crate::alist::{AlistInterface, AlistService as AlistServiceImpl};
 use tonic::{Request, Response, Status};
 
 /// Map Alist errors to appropriate gRPC status codes using the shared mapper.

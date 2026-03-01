@@ -5,9 +5,9 @@ use {
         errors::MpegTsError,
         pes,
     },
+    crate::bytesio::bytes_writer::BytesWriter,
     byteorder::{BigEndian, LittleEndian},
     bytes::BytesMut,
-    crate::bytesio::bytes_writer::BytesWriter,
 };
 #[derive(Debug, Clone)]
 pub struct Pmt {
@@ -27,7 +27,7 @@ impl Default for Pmt {
 }
 
 impl Pmt {
-    #[must_use] 
+    #[must_use]
     pub fn new() -> Self {
         Self {
             pid: 0,
@@ -52,7 +52,7 @@ impl Default for PmtMuxer {
 }
 
 impl PmtMuxer {
-    #[must_use] 
+    #[must_use]
     pub const fn new() -> Self {
         Self {
             bytes_writer: BytesWriter::new(),

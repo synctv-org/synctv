@@ -46,7 +46,13 @@ macro_rules! impl_grpc_method {
         fn $method<'life0, 'async_trait>(
             &'life0 self,
             request: $req,
-        ) -> ::core::pin::Pin<Box<dyn ::core::future::Future<Output = Result<$resp, $error>> + ::core::marker::Send + 'async_trait>>
+        ) -> ::core::pin::Pin<
+            Box<
+                dyn ::core::future::Future<Output = Result<$resp, $error>>
+                    + ::core::marker::Send
+                    + 'async_trait,
+            >,
+        >
         where
             'life0: 'async_trait,
             Self: 'async_trait,
@@ -59,11 +65,13 @@ macro_rules! impl_grpc_method {
                     client.$method(tonic::Request::new(request)),
                 )
                 .await
-                .map_err(|_| <$error>::Network(format!(
-                    "gRPC request timeout ({}s) for {}",
-                    GRPC_REQUEST_TIMEOUT.as_secs(),
-                    stringify!($method),
-                )))?
+                .map_err(|_| {
+                    <$error>::Network(format!(
+                        "gRPC request timeout ({}s) for {}",
+                        GRPC_REQUEST_TIMEOUT.as_secs(),
+                        stringify!($method),
+                    ))
+                })?
                 .map_err(|e| <$error>::Network(format!("gRPC error: {e}")))?;
                 Ok(response.into_inner())
             })
@@ -174,8 +182,11 @@ impl ProviderClientManager {
     /// Resolve an Alist client: use remote if channel provided, otherwise local.
     ///
     /// This is the preferred method for obtaining an Alist client.
-    #[must_use] 
-    pub fn resolve_alist_client(&self, remote_channel: Option<tonic::transport::Channel>) -> AlistClientArc {
+    #[must_use]
+    pub fn resolve_alist_client(
+        &self,
+        remote_channel: Option<tonic::transport::Channel>,
+    ) -> AlistClientArc {
         match remote_channel {
             Some(channel) => create_remote_alist_client(channel),
             None => self.local_alist_client(),
@@ -185,8 +196,11 @@ impl ProviderClientManager {
     /// Resolve a Bilibili client: use remote if channel provided, otherwise local.
     ///
     /// This is the preferred method for obtaining a Bilibili client.
-    #[must_use] 
-    pub fn resolve_bilibili_client(&self, remote_channel: Option<tonic::transport::Channel>) -> BilibiliClientArc {
+    #[must_use]
+    pub fn resolve_bilibili_client(
+        &self,
+        remote_channel: Option<tonic::transport::Channel>,
+    ) -> BilibiliClientArc {
         match remote_channel {
             Some(channel) => create_remote_bilibili_client(channel),
             None => self.local_bilibili_client(),
@@ -196,8 +210,11 @@ impl ProviderClientManager {
     /// Resolve an Emby client: use remote if channel provided, otherwise local.
     ///
     /// This is the preferred method for obtaining an Emby client.
-    #[must_use] 
-    pub fn resolve_emby_client(&self, remote_channel: Option<tonic::transport::Channel>) -> EmbyClientArc {
+    #[must_use]
+    pub fn resolve_emby_client(
+        &self,
+        remote_channel: Option<tonic::transport::Channel>,
+    ) -> EmbyClientArc {
         match remote_channel {
             Some(channel) => create_remote_emby_client(channel),
             None => self.local_emby_client(),
@@ -214,7 +231,8 @@ impl ProviderClientManager {
 /// This is used by `load_local_xxx_client()` functions for backward compatibility.
 /// New code should prefer creating a `ProviderClientManager` explicitly and
 /// passing it through the dependency injection system.
-static GLOBAL_CLIENT_MANAGER: std::sync::LazyLock<ProviderClientManager> = std::sync::LazyLock::new(ProviderClientManager::new);
+static GLOBAL_CLIENT_MANAGER: std::sync::LazyLock<ProviderClientManager> =
+    std::sync::LazyLock::new(ProviderClientManager::new);
 
 /// Get the global `ProviderClientManager` instance.
 ///
@@ -252,7 +270,7 @@ pub struct GrpcAlistClient {
 }
 
 impl GrpcAlistClient {
-    #[must_use] 
+    #[must_use]
     pub const fn new(channel: tonic::transport::Channel) -> Self {
         Self { channel }
     }
@@ -260,14 +278,52 @@ impl GrpcAlistClient {
 
 #[async_trait]
 impl AlistInterface for GrpcAlistClient {
-    impl_grpc_method!(synctv_media_providers::grpc::alist::alist_client, AlistClient, AlistError, fs_get, synctv_media_providers::grpc::alist::FsGetReq, FsGetResp);
-    impl_grpc_method!(synctv_media_providers::grpc::alist::alist_client, AlistClient, AlistError, fs_list, synctv_media_providers::grpc::alist::FsListReq, FsListResp);
-    impl_grpc_method!(synctv_media_providers::grpc::alist::alist_client, AlistClient, AlistError, fs_other, synctv_media_providers::grpc::alist::FsOtherReq, FsOtherResp);
-    impl_grpc_method!(synctv_media_providers::grpc::alist::alist_client, AlistClient, AlistError, fs_search, synctv_media_providers::grpc::alist::FsSearchReq, synctv_media_providers::grpc::alist::FsSearchResp);
-    impl_grpc_method!(synctv_media_providers::grpc::alist::alist_client, AlistClient, AlistError, me, synctv_media_providers::grpc::alist::MeReq, synctv_media_providers::grpc::alist::MeResp);
+    impl_grpc_method!(
+        synctv_media_providers::grpc::alist::alist_client,
+        AlistClient,
+        AlistError,
+        fs_get,
+        synctv_media_providers::grpc::alist::FsGetReq,
+        FsGetResp
+    );
+    impl_grpc_method!(
+        synctv_media_providers::grpc::alist::alist_client,
+        AlistClient,
+        AlistError,
+        fs_list,
+        synctv_media_providers::grpc::alist::FsListReq,
+        FsListResp
+    );
+    impl_grpc_method!(
+        synctv_media_providers::grpc::alist::alist_client,
+        AlistClient,
+        AlistError,
+        fs_other,
+        synctv_media_providers::grpc::alist::FsOtherReq,
+        FsOtherResp
+    );
+    impl_grpc_method!(
+        synctv_media_providers::grpc::alist::alist_client,
+        AlistClient,
+        AlistError,
+        fs_search,
+        synctv_media_providers::grpc::alist::FsSearchReq,
+        synctv_media_providers::grpc::alist::FsSearchResp
+    );
+    impl_grpc_method!(
+        synctv_media_providers::grpc::alist::alist_client,
+        AlistClient,
+        AlistError,
+        me,
+        synctv_media_providers::grpc::alist::MeReq,
+        synctv_media_providers::grpc::alist::MeResp
+    );
 
     // login has a non-standard return: extracts `.token` from response
-    async fn login(&self, request: synctv_media_providers::grpc::alist::LoginReq) -> Result<String, AlistError> {
+    async fn login(
+        &self,
+        request: synctv_media_providers::grpc::alist::LoginReq,
+    ) -> Result<String, AlistError> {
         use synctv_media_providers::grpc::alist::alist_client::AlistClient;
         let mut client = AlistClient::new(self.channel.clone());
         let response = tokio::time::timeout(
@@ -275,10 +331,12 @@ impl AlistInterface for GrpcAlistClient {
             client.login(tonic::Request::new(request)),
         )
         .await
-        .map_err(|_| AlistError::Network(format!(
-            "gRPC request timeout ({}s) for login",
-            GRPC_REQUEST_TIMEOUT.as_secs(),
-        )))?
+        .map_err(|_| {
+            AlistError::Network(format!(
+                "gRPC request timeout ({}s) for login",
+                GRPC_REQUEST_TIMEOUT.as_secs(),
+            ))
+        })?
         .map_err(|e| AlistError::Network(format!("gRPC error: {e}")))?;
         Ok(response.into_inner().token)
     }
@@ -370,8 +428,9 @@ impl AlistClientExt for Arc<dyn AlistInterface> {
             .await
             .map_err(|e| ProviderError::NetworkError(e.to_string()))?;
 
-        Ok(other_data.video_preview_play_info.map(|preview| {
-            AlistVideoPreview {
+        Ok(other_data
+            .video_preview_play_info
+            .map(|preview| AlistVideoPreview {
                 transcoding_tasks: preview
                     .live_transcoding_task_list
                     .into_iter()
@@ -391,8 +450,7 @@ impl AlistClientExt for Arc<dyn AlistInterface> {
                 duration: preview.meta.as_ref().map_or(0.0, |m| m.duration),
                 width: preview.meta.as_ref().map_or(0, |m| m.width),
                 height: preview.meta.as_ref().map_or(0, |m| m.height),
-            }
-        }))
+            }))
     }
 }
 
@@ -407,9 +465,16 @@ impl From<synctv_media_providers::ProviderClientError> for ProviderError {
             ProviderClientError::Auth(msg) => Self::ApiError(msg),
             ProviderClientError::InvalidConfig(msg) => Self::InvalidConfig(msg),
             ProviderClientError::InvalidHeader(msg) => Self::ParseError(msg),
-            ProviderClientError::NotImplemented(msg) => Self::ApiError(format!("Not implemented: {msg}")),
-            ProviderClientError::Http { status, url, .. } => Self::UpstreamHttp { status: status.as_u16(), url },
-            ProviderClientError::ResponseTooLarge { size } => Self::ApiError(format!("Response too large ({size} bytes)")),
+            ProviderClientError::NotImplemented(msg) => {
+                Self::ApiError(format!("Not implemented: {msg}"))
+            }
+            ProviderClientError::Http { status, url, .. } => Self::UpstreamHttp {
+                status: status.as_u16(),
+                url,
+            },
+            ProviderClientError::ResponseTooLarge { size } => {
+                Self::ApiError(format!("Response too large ({size} bytes)"))
+            }
         }
     }
 }
@@ -442,7 +507,7 @@ pub struct GrpcBilibiliClient {
 }
 
 impl GrpcBilibiliClient {
-    #[must_use] 
+    #[must_use]
     pub const fn new(channel: tonic::transport::Channel) -> Self {
         Self { channel }
     }
@@ -450,25 +515,143 @@ impl GrpcBilibiliClient {
 
 #[async_trait]
 impl BilibiliInterface for GrpcBilibiliClient {
-    impl_grpc_method!(synctv_media_providers::grpc::bilibili::bilibili_client, BilibiliClient, BilibiliError, new_qr_code, synctv_media_providers::grpc::bilibili::Empty, synctv_media_providers::grpc::bilibili::NewQrCodeResp);
-    impl_grpc_method!(synctv_media_providers::grpc::bilibili::bilibili_client, BilibiliClient, BilibiliError, login_with_qr_code, synctv_media_providers::grpc::bilibili::LoginWithQrCodeReq, synctv_media_providers::grpc::bilibili::LoginWithQrCodeResp);
-    impl_grpc_method!(synctv_media_providers::grpc::bilibili::bilibili_client, BilibiliClient, BilibiliError, new_captcha, synctv_media_providers::grpc::bilibili::Empty, synctv_media_providers::grpc::bilibili::NewCaptchaResp);
-    impl_grpc_method!(synctv_media_providers::grpc::bilibili::bilibili_client, BilibiliClient, BilibiliError, new_sms, synctv_media_providers::grpc::bilibili::NewSmsReq, synctv_media_providers::grpc::bilibili::NewSmsResp);
-    impl_grpc_method!(synctv_media_providers::grpc::bilibili::bilibili_client, BilibiliClient, BilibiliError, login_with_sms, synctv_media_providers::grpc::bilibili::LoginWithSmsReq, synctv_media_providers::grpc::bilibili::LoginWithSmsResp);
-    impl_grpc_method!(synctv_media_providers::grpc::bilibili::bilibili_client, BilibiliClient, BilibiliError, parse_video_page, synctv_media_providers::grpc::bilibili::ParseVideoPageReq, synctv_media_providers::grpc::bilibili::VideoPageInfo);
-    impl_grpc_method!(synctv_media_providers::grpc::bilibili::bilibili_client, BilibiliClient, BilibiliError, get_video_url, synctv_media_providers::grpc::bilibili::GetVideoUrlReq, synctv_media_providers::grpc::bilibili::VideoUrl);
-    impl_grpc_method!(synctv_media_providers::grpc::bilibili::bilibili_client, BilibiliClient, BilibiliError, get_dash_video_url, synctv_media_providers::grpc::bilibili::GetDashVideoUrlReq, synctv_media_providers::grpc::bilibili::GetDashVideoUrlResp);
-    impl_grpc_method!(synctv_media_providers::grpc::bilibili::bilibili_client, BilibiliClient, BilibiliError, get_subtitles, synctv_media_providers::grpc::bilibili::GetSubtitlesReq, synctv_media_providers::grpc::bilibili::GetSubtitlesResp);
-    impl_grpc_method!(synctv_media_providers::grpc::bilibili::bilibili_client, BilibiliClient, BilibiliError, parse_pgc_page, synctv_media_providers::grpc::bilibili::ParsePgcPageReq, synctv_media_providers::grpc::bilibili::VideoPageInfo);
-    impl_grpc_method!(synctv_media_providers::grpc::bilibili::bilibili_client, BilibiliClient, BilibiliError, get_pgcurl, synctv_media_providers::grpc::bilibili::GetPgcurlReq, synctv_media_providers::grpc::bilibili::VideoUrl);
-    impl_grpc_method!(synctv_media_providers::grpc::bilibili::bilibili_client, BilibiliClient, BilibiliError, get_dash_pgcurl, synctv_media_providers::grpc::bilibili::GetDashPgcurlReq, synctv_media_providers::grpc::bilibili::GetDashPgcurlResp);
-    impl_grpc_method!(synctv_media_providers::grpc::bilibili::bilibili_client, BilibiliClient, BilibiliError, user_info, synctv_media_providers::grpc::bilibili::UserInfoReq, synctv_media_providers::grpc::bilibili::UserInfoResp);
-    impl_grpc_method!(synctv_media_providers::grpc::bilibili::bilibili_client, BilibiliClient, BilibiliError, r#match, synctv_media_providers::grpc::bilibili::MatchReq, synctv_media_providers::grpc::bilibili::MatchResp);
-    impl_grpc_method!(synctv_media_providers::grpc::bilibili::bilibili_client, BilibiliClient, BilibiliError, get_live_streams, synctv_media_providers::grpc::bilibili::GetLiveStreamsReq, synctv_media_providers::grpc::bilibili::GetLiveStreamsResp);
-    impl_grpc_method!(synctv_media_providers::grpc::bilibili::bilibili_client, BilibiliClient, BilibiliError, parse_live_page, synctv_media_providers::grpc::bilibili::ParseLivePageReq, synctv_media_providers::grpc::bilibili::VideoPageInfo);
-    impl_grpc_method!(synctv_media_providers::grpc::bilibili::bilibili_client, BilibiliClient, BilibiliError, get_live_danmu_info, synctv_media_providers::grpc::bilibili::GetLiveDanmuInfoReq, synctv_media_providers::grpc::bilibili::GetLiveDanmuInfoResp);
+    impl_grpc_method!(
+        synctv_media_providers::grpc::bilibili::bilibili_client,
+        BilibiliClient,
+        BilibiliError,
+        new_qr_code,
+        synctv_media_providers::grpc::bilibili::Empty,
+        synctv_media_providers::grpc::bilibili::NewQrCodeResp
+    );
+    impl_grpc_method!(
+        synctv_media_providers::grpc::bilibili::bilibili_client,
+        BilibiliClient,
+        BilibiliError,
+        login_with_qr_code,
+        synctv_media_providers::grpc::bilibili::LoginWithQrCodeReq,
+        synctv_media_providers::grpc::bilibili::LoginWithQrCodeResp
+    );
+    impl_grpc_method!(
+        synctv_media_providers::grpc::bilibili::bilibili_client,
+        BilibiliClient,
+        BilibiliError,
+        new_captcha,
+        synctv_media_providers::grpc::bilibili::Empty,
+        synctv_media_providers::grpc::bilibili::NewCaptchaResp
+    );
+    impl_grpc_method!(
+        synctv_media_providers::grpc::bilibili::bilibili_client,
+        BilibiliClient,
+        BilibiliError,
+        new_sms,
+        synctv_media_providers::grpc::bilibili::NewSmsReq,
+        synctv_media_providers::grpc::bilibili::NewSmsResp
+    );
+    impl_grpc_method!(
+        synctv_media_providers::grpc::bilibili::bilibili_client,
+        BilibiliClient,
+        BilibiliError,
+        login_with_sms,
+        synctv_media_providers::grpc::bilibili::LoginWithSmsReq,
+        synctv_media_providers::grpc::bilibili::LoginWithSmsResp
+    );
+    impl_grpc_method!(
+        synctv_media_providers::grpc::bilibili::bilibili_client,
+        BilibiliClient,
+        BilibiliError,
+        parse_video_page,
+        synctv_media_providers::grpc::bilibili::ParseVideoPageReq,
+        synctv_media_providers::grpc::bilibili::VideoPageInfo
+    );
+    impl_grpc_method!(
+        synctv_media_providers::grpc::bilibili::bilibili_client,
+        BilibiliClient,
+        BilibiliError,
+        get_video_url,
+        synctv_media_providers::grpc::bilibili::GetVideoUrlReq,
+        synctv_media_providers::grpc::bilibili::VideoUrl
+    );
+    impl_grpc_method!(
+        synctv_media_providers::grpc::bilibili::bilibili_client,
+        BilibiliClient,
+        BilibiliError,
+        get_dash_video_url,
+        synctv_media_providers::grpc::bilibili::GetDashVideoUrlReq,
+        synctv_media_providers::grpc::bilibili::GetDashVideoUrlResp
+    );
+    impl_grpc_method!(
+        synctv_media_providers::grpc::bilibili::bilibili_client,
+        BilibiliClient,
+        BilibiliError,
+        get_subtitles,
+        synctv_media_providers::grpc::bilibili::GetSubtitlesReq,
+        synctv_media_providers::grpc::bilibili::GetSubtitlesResp
+    );
+    impl_grpc_method!(
+        synctv_media_providers::grpc::bilibili::bilibili_client,
+        BilibiliClient,
+        BilibiliError,
+        parse_pgc_page,
+        synctv_media_providers::grpc::bilibili::ParsePgcPageReq,
+        synctv_media_providers::grpc::bilibili::VideoPageInfo
+    );
+    impl_grpc_method!(
+        synctv_media_providers::grpc::bilibili::bilibili_client,
+        BilibiliClient,
+        BilibiliError,
+        get_pgcurl,
+        synctv_media_providers::grpc::bilibili::GetPgcurlReq,
+        synctv_media_providers::grpc::bilibili::VideoUrl
+    );
+    impl_grpc_method!(
+        synctv_media_providers::grpc::bilibili::bilibili_client,
+        BilibiliClient,
+        BilibiliError,
+        get_dash_pgcurl,
+        synctv_media_providers::grpc::bilibili::GetDashPgcurlReq,
+        synctv_media_providers::grpc::bilibili::GetDashPgcurlResp
+    );
+    impl_grpc_method!(
+        synctv_media_providers::grpc::bilibili::bilibili_client,
+        BilibiliClient,
+        BilibiliError,
+        user_info,
+        synctv_media_providers::grpc::bilibili::UserInfoReq,
+        synctv_media_providers::grpc::bilibili::UserInfoResp
+    );
+    impl_grpc_method!(
+        synctv_media_providers::grpc::bilibili::bilibili_client,
+        BilibiliClient,
+        BilibiliError,
+        r#match,
+        synctv_media_providers::grpc::bilibili::MatchReq,
+        synctv_media_providers::grpc::bilibili::MatchResp
+    );
+    impl_grpc_method!(
+        synctv_media_providers::grpc::bilibili::bilibili_client,
+        BilibiliClient,
+        BilibiliError,
+        get_live_streams,
+        synctv_media_providers::grpc::bilibili::GetLiveStreamsReq,
+        synctv_media_providers::grpc::bilibili::GetLiveStreamsResp
+    );
+    impl_grpc_method!(
+        synctv_media_providers::grpc::bilibili::bilibili_client,
+        BilibiliClient,
+        BilibiliError,
+        parse_live_page,
+        synctv_media_providers::grpc::bilibili::ParseLivePageReq,
+        synctv_media_providers::grpc::bilibili::VideoPageInfo
+    );
+    impl_grpc_method!(
+        synctv_media_providers::grpc::bilibili::bilibili_client,
+        BilibiliClient,
+        BilibiliError,
+        get_live_danmu_info,
+        synctv_media_providers::grpc::bilibili::GetLiveDanmuInfoReq,
+        synctv_media_providers::grpc::bilibili::GetLiveDanmuInfoResp
+    );
 }
-
 
 // Note: Local moka-based `CachedBilibiliClient` was removed.
 // Caching is handled solely by the Redis cache-aside layer in the API/service
@@ -504,7 +687,7 @@ pub struct GrpcEmbyClient {
 }
 
 impl GrpcEmbyClient {
-    #[must_use] 
+    #[must_use]
     pub const fn new(channel: tonic::transport::Channel) -> Self {
         Self { channel }
     }
@@ -512,18 +695,102 @@ impl GrpcEmbyClient {
 
 #[async_trait]
 impl EmbyInterface for GrpcEmbyClient {
-    impl_grpc_method!(synctv_media_providers::grpc::emby::emby_client, EmbyClient, EmbyError, login, synctv_media_providers::grpc::emby::LoginReq, synctv_media_providers::grpc::emby::LoginResp);
-    impl_grpc_method!(synctv_media_providers::grpc::emby::emby_client, EmbyClient, EmbyError, me, synctv_media_providers::grpc::emby::MeReq, synctv_media_providers::grpc::emby::MeResp);
-    impl_grpc_method!(synctv_media_providers::grpc::emby::emby_client, EmbyClient, EmbyError, get_items, synctv_media_providers::grpc::emby::GetItemsReq, synctv_media_providers::grpc::emby::GetItemsResp);
-    impl_grpc_method!(synctv_media_providers::grpc::emby::emby_client, EmbyClient, EmbyError, get_item, synctv_media_providers::grpc::emby::GetItemReq, synctv_media_providers::grpc::emby::Item);
-    impl_grpc_method!(synctv_media_providers::grpc::emby::emby_client, EmbyClient, EmbyError, fs_list, synctv_media_providers::grpc::emby::FsListReq, synctv_media_providers::grpc::emby::FsListResp);
-    impl_grpc_method!(synctv_media_providers::grpc::emby::emby_client, EmbyClient, EmbyError, get_system_info, synctv_media_providers::grpc::emby::SystemInfoReq, synctv_media_providers::grpc::emby::SystemInfoResp);
-    impl_grpc_method!(synctv_media_providers::grpc::emby::emby_client, EmbyClient, EmbyError, logout, synctv_media_providers::grpc::emby::LogoutReq, synctv_media_providers::grpc::emby::Empty);
-    impl_grpc_method!(synctv_media_providers::grpc::emby::emby_client, EmbyClient, EmbyError, playback_info, synctv_media_providers::grpc::emby::PlaybackInfoReq, synctv_media_providers::grpc::emby::PlaybackInfoResp);
-    impl_grpc_method!(synctv_media_providers::grpc::emby::emby_client, EmbyClient, EmbyError, delete_active_encodings, synctv_media_providers::grpc::emby::DeleteActiveEncodingsReq, synctv_media_providers::grpc::emby::Empty);
-    impl_grpc_method!(synctv_media_providers::grpc::emby::emby_client, EmbyClient, EmbyError, report_playback_start, synctv_media_providers::grpc::emby::ReportPlaybackStartReq, synctv_media_providers::grpc::emby::Empty);
-    impl_grpc_method!(synctv_media_providers::grpc::emby::emby_client, EmbyClient, EmbyError, report_playback_stop, synctv_media_providers::grpc::emby::ReportPlaybackStopReq, synctv_media_providers::grpc::emby::Empty);
-    impl_grpc_method!(synctv_media_providers::grpc::emby::emby_client, EmbyClient, EmbyError, report_playback_progress, synctv_media_providers::grpc::emby::ReportPlaybackProgressReq, synctv_media_providers::grpc::emby::Empty);
+    impl_grpc_method!(
+        synctv_media_providers::grpc::emby::emby_client,
+        EmbyClient,
+        EmbyError,
+        login,
+        synctv_media_providers::grpc::emby::LoginReq,
+        synctv_media_providers::grpc::emby::LoginResp
+    );
+    impl_grpc_method!(
+        synctv_media_providers::grpc::emby::emby_client,
+        EmbyClient,
+        EmbyError,
+        me,
+        synctv_media_providers::grpc::emby::MeReq,
+        synctv_media_providers::grpc::emby::MeResp
+    );
+    impl_grpc_method!(
+        synctv_media_providers::grpc::emby::emby_client,
+        EmbyClient,
+        EmbyError,
+        get_items,
+        synctv_media_providers::grpc::emby::GetItemsReq,
+        synctv_media_providers::grpc::emby::GetItemsResp
+    );
+    impl_grpc_method!(
+        synctv_media_providers::grpc::emby::emby_client,
+        EmbyClient,
+        EmbyError,
+        get_item,
+        synctv_media_providers::grpc::emby::GetItemReq,
+        synctv_media_providers::grpc::emby::Item
+    );
+    impl_grpc_method!(
+        synctv_media_providers::grpc::emby::emby_client,
+        EmbyClient,
+        EmbyError,
+        fs_list,
+        synctv_media_providers::grpc::emby::FsListReq,
+        synctv_media_providers::grpc::emby::FsListResp
+    );
+    impl_grpc_method!(
+        synctv_media_providers::grpc::emby::emby_client,
+        EmbyClient,
+        EmbyError,
+        get_system_info,
+        synctv_media_providers::grpc::emby::SystemInfoReq,
+        synctv_media_providers::grpc::emby::SystemInfoResp
+    );
+    impl_grpc_method!(
+        synctv_media_providers::grpc::emby::emby_client,
+        EmbyClient,
+        EmbyError,
+        logout,
+        synctv_media_providers::grpc::emby::LogoutReq,
+        synctv_media_providers::grpc::emby::Empty
+    );
+    impl_grpc_method!(
+        synctv_media_providers::grpc::emby::emby_client,
+        EmbyClient,
+        EmbyError,
+        playback_info,
+        synctv_media_providers::grpc::emby::PlaybackInfoReq,
+        synctv_media_providers::grpc::emby::PlaybackInfoResp
+    );
+    impl_grpc_method!(
+        synctv_media_providers::grpc::emby::emby_client,
+        EmbyClient,
+        EmbyError,
+        delete_active_encodings,
+        synctv_media_providers::grpc::emby::DeleteActiveEncodingsReq,
+        synctv_media_providers::grpc::emby::Empty
+    );
+    impl_grpc_method!(
+        synctv_media_providers::grpc::emby::emby_client,
+        EmbyClient,
+        EmbyError,
+        report_playback_start,
+        synctv_media_providers::grpc::emby::ReportPlaybackStartReq,
+        synctv_media_providers::grpc::emby::Empty
+    );
+    impl_grpc_method!(
+        synctv_media_providers::grpc::emby::emby_client,
+        EmbyClient,
+        EmbyError,
+        report_playback_stop,
+        synctv_media_providers::grpc::emby::ReportPlaybackStopReq,
+        synctv_media_providers::grpc::emby::Empty
+    );
+    impl_grpc_method!(
+        synctv_media_providers::grpc::emby::emby_client,
+        EmbyClient,
+        EmbyError,
+        report_playback_progress,
+        synctv_media_providers::grpc::emby::ReportPlaybackProgressReq,
+        synctv_media_providers::grpc::emby::Empty
+    );
 }
 
 // ============================================================================
@@ -654,8 +921,10 @@ mod tests {
     #[test]
     fn test_custom_clients_injection() {
         // Create custom clients
-        let custom_alist: AlistClientArc = Arc::new(synctv_media_providers::alist::AlistService::new());
-        let custom_bilibili: BilibiliClientArc = Arc::new(synctv_media_providers::bilibili::BilibiliService::new());
+        let custom_alist: AlistClientArc =
+            Arc::new(synctv_media_providers::alist::AlistService::new());
+        let custom_bilibili: BilibiliClientArc =
+            Arc::new(synctv_media_providers::bilibili::BilibiliService::new());
         let custom_emby: EmbyClientArc = Arc::new(synctv_media_providers::emby::EmbyService::new());
 
         // Store Arc pointers for comparison
@@ -664,11 +933,8 @@ mod tests {
         let emby_ptr = Arc::as_ptr(&custom_emby);
 
         // Create manager with custom clients
-        let manager = ProviderClientManager::with_custom_clients(
-            custom_alist,
-            custom_bilibili,
-            custom_emby,
-        );
+        let manager =
+            ProviderClientManager::with_custom_clients(custom_alist, custom_bilibili, custom_emby);
 
         // Verify the manager uses the custom clients
         let alist = manager.local_alist_client();
@@ -680,4 +946,3 @@ mod tests {
         assert_eq!(Arc::as_ptr(&emby), emby_ptr);
     }
 }
-

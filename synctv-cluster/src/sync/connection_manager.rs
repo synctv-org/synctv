@@ -51,16 +51,15 @@ struct ConnectionInfoPersistent {
 impl From<&ConnectionInfo> for ConnectionInfoPersistent {
     fn from(info: &ConnectionInfo) -> Self {
         let now = SystemTime::now();
-        let now_unix = now.duration_since(UNIX_EPOCH)
+        let now_unix = now
+            .duration_since(UNIX_EPOCH)
             .expect("SystemTime is before UNIX_EPOCH")
             .as_secs();
-        let connected_at_unix = now_unix
-            .saturating_sub(info.connected_at.elapsed().as_secs());
-        let last_activity_unix = now_unix
-            .saturating_sub(info.last_activity.elapsed().as_secs());
-        let rtc_joined_at_unix = info.rtc_joined_at.map(|joined| {
-            now_unix.saturating_sub(joined.elapsed().as_secs())
-        });
+        let connected_at_unix = now_unix.saturating_sub(info.connected_at.elapsed().as_secs());
+        let last_activity_unix = now_unix.saturating_sub(info.last_activity.elapsed().as_secs());
+        let rtc_joined_at_unix = info
+            .rtc_joined_at
+            .map(|joined| now_unix.saturating_sub(joined.elapsed().as_secs()));
 
         Self {
             connection_id: info.connection_id.clone(),
@@ -326,7 +325,8 @@ impl ConnectionManager {
         // Take the receiver that was stored in new() so it is not dropped.
         // If for any reason it was already taken (e.g. with_redis called twice),
         // fall back to creating a fresh channel.
-        let rx = self.pending_retries_rx
+        let rx = self
+            .pending_retries_rx
             .try_lock()
             .ok()
             .and_then(|mut guard| guard.take());
@@ -548,7 +548,8 @@ impl ConnectionManager {
                 // Channel is full - store for retry
                 if self.pending_disconnects.len() >= PENDING_DISCONNECT_QUEUE_CAPACITY {
                     // Queue is full, have to drop the signal
-                    self.dropped_disconnect_signals.fetch_add(1, Ordering::Relaxed);
+                    self.dropped_disconnect_signals
+                        .fetch_add(1, Ordering::Relaxed);
                     warn!(
                         signal = ?signal,
                         queue_size = self.pending_disconnects.len(),
@@ -560,7 +561,8 @@ impl ConnectionManager {
 
                 // Store signal for retry
                 let id = self.pending_disconnect_id.fetch_add(1, Ordering::Relaxed);
-                self.pending_disconnects.insert(id, (signal.clone(), Instant::now()));
+                self.pending_disconnects
+                    .insert(id, (signal.clone(), Instant::now()));
 
                 warn!(
                     signal = ?signal,
@@ -658,8 +660,7 @@ impl ConnectionManager {
         if current_count >= self.limits.max_per_user {
             return Err(format!(
                 "User at capacity ({} connections, max: {})",
-                current_count,
-                self.limits.max_per_user
+                current_count, self.limits.max_per_user
             ));
         }
 
@@ -680,8 +681,7 @@ impl ConnectionManager {
         if current_count >= self.limits.max_per_room {
             return Err(format!(
                 "Room at capacity ({} connections, max: {})",
-                current_count,
-                self.limits.max_per_room
+                current_count, self.limits.max_per_room
             ));
         }
 
@@ -717,7 +717,7 @@ impl ConnectionManager {
             let script = redis::Script::new(
                 "local count = redis.call('INCR', KEYS[1]) \
                  redis.call('EXPIRE', KEYS[1], ARGV[1]) \
-                 return count"
+                 return count",
             );
             let _ = script
                 .key(&total_key)
@@ -735,8 +735,15 @@ impl ConnectionManager {
         //
         // When Redis is not configured, fall back to the local DashMap count.
         if let Some(ref conn) = self.redis_conn {
-            let redis_key = format!("{}connections:user:{}", self.redis_key_prefix, user_id.as_str());
-            match self.redis_incr_and_check(&redis_key, self.limits.max_per_user).await {
+            let redis_key = format!(
+                "{}connections:user:{}",
+                self.redis_key_prefix,
+                user_id.as_str()
+            );
+            match self
+                .redis_incr_and_check(&redis_key, self.limits.max_per_user)
+                .await
+            {
                 Ok(true) => {
                     // Distributed limit not exceeded; proceed.
                 }
@@ -754,9 +761,7 @@ impl ConnectionManager {
                     // Redis error -- fall back to local-only check below.
                     warn!("Distributed user connection check failed, using local fallback: {e}");
                     // Fall through to local check.
-                    let user_count = self.user_connections
-                        .get(&user_id)
-                        .map_or(0, |c| c.len());
+                    let user_count = self.user_connections.get(&user_id).map_or(0, |c| c.len());
                     if user_count >= self.limits.max_per_user {
                         self.total_connections.fetch_sub(1, Ordering::AcqRel);
                         return Err(format!(
@@ -768,9 +773,7 @@ impl ConnectionManager {
             }
         } else {
             // No Redis: enforce limit using the local DashMap count only.
-            let user_count = self.user_connections
-                .get(&user_id)
-                .map_or(0, |c| c.len());
+            let user_count = self.user_connections.get(&user_id).map_or(0, |c| c.len());
             if user_count >= self.limits.max_per_user {
                 self.total_connections.fetch_sub(1, Ordering::AcqRel);
                 return Err(format!(
@@ -789,12 +792,17 @@ impl ConnectionManager {
 
         // Create and register connection info
         let conn_info = ConnectionInfo::new(connection_id.clone(), user_id.clone());
-        self.connections.insert(connection_id.clone(), conn_info.clone());
+        self.connections
+            .insert(connection_id.clone(), conn_info.clone());
 
         // Persist connection metadata to Redis (best-effort)
         if let Some(ref conn) = self.redis_conn {
             let conn_key = format!("{}conn_mgr:conn:{}", self.redis_key_prefix, connection_id);
-            let user_index_key = format!("{}conn_mgr:user:{}", self.redis_key_prefix, user_id.as_str());
+            let user_index_key = format!(
+                "{}conn_mgr:user:{}",
+                self.redis_key_prefix,
+                user_id.as_str()
+            );
 
             let persistent = ConnectionInfoPersistent::from(&conn_info);
             let mut conn_clone = conn.clone();
@@ -818,20 +826,24 @@ impl ConnectionManager {
                 }
 
                 // Add to user's connection set for distributed queries
-                if let Err(e) = conn_clone.sadd::<_, _, ()>(&user_index_key, &connection_id_clone).await {
+                if let Err(e) = conn_clone
+                    .sadd::<_, _, ()>(&user_index_key, &connection_id_clone)
+                    .await
+                {
                     warn!("Failed to add connection to user index: {e}");
                 }
                 // Set TTL on user index set
-                let _: Result<(), _> = conn_clone.expire(&user_index_key, CONNECTION_METADATA_TTL_SECONDS).await;
+                let _: Result<(), _> = conn_clone
+                    .expire(&user_index_key, CONNECTION_METADATA_TTL_SECONDS)
+                    .await;
             });
         }
 
         // Update metrics
         self.total_connections_ever.fetch_add(1, Ordering::Relaxed);
         synctv_core::metrics::ACTIVE_CONNECTIONS.inc();
-        synctv_core::metrics::cluster::CLUSTER_CONNECTIONS.set(
-            self.total_connections.load(Ordering::Relaxed) as i64,
-        );
+        synctv_core::metrics::cluster::CLUSTER_CONNECTIONS
+            .set(self.total_connections.load(Ordering::Relaxed) as i64);
 
         info!(
             connection_id = %connection_id,
@@ -879,7 +891,11 @@ impl ConnectionManager {
         // Decrement old room's distributed counter if we left a room
         if let Some(ref old_room) = old_room_id {
             if let Some(ref conn) = self.redis_conn {
-                let old_key = format!("{}connections:room:{}", self.redis_key_prefix, old_room.as_str());
+                let old_key = format!(
+                    "{}connections:room:{}",
+                    self.redis_key_prefix,
+                    old_room.as_str()
+                );
                 let _ = self.redis_decr(conn, &old_key).await;
             }
         }
@@ -907,8 +923,15 @@ impl ConnectionManager {
 
         // Step 2: Check distributed per-room limit via Redis (no DashMap lock held)
         let redis_room_incremented = if let Some(ref _conn) = self.redis_conn {
-            let redis_key = format!("{}connections:room:{}", self.redis_key_prefix, room_id.as_str());
-            match self.redis_incr_and_check(&redis_key, self.limits.max_per_room).await {
+            let redis_key = format!(
+                "{}connections:room:{}",
+                self.redis_key_prefix,
+                room_id.as_str()
+            );
+            match self
+                .redis_incr_and_check(&redis_key, self.limits.max_per_room)
+                .await
+            {
                 Ok(true) => true,
                 Ok(false) => {
                     let _ = self.redis_decr(_conn, &redis_key).await;
@@ -945,7 +968,11 @@ impl ConnectionManager {
             // Roll back Redis counter
             if redis_room_incremented {
                 if let Some(ref conn) = self.redis_conn {
-                    let redis_key = format!("{}connections:room:{}", self.redis_key_prefix, room_id.as_str());
+                    let redis_key = format!(
+                        "{}connections:room:{}",
+                        self.redis_key_prefix,
+                        room_id.as_str()
+                    );
                     let _ = self.redis_decr(conn, &redis_key).await;
                 }
             }
@@ -955,7 +982,11 @@ impl ConnectionManager {
         // Update Redis metadata with new room_id (best-effort)
         if let (Some(info), Some(ref conn)) = (conn_info_updated, &self.redis_conn) {
             let conn_key = format!("{}conn_mgr:conn:{}", self.redis_key_prefix, connection_id);
-            let room_index_key = format!("{}conn_mgr:room:{}", self.redis_key_prefix, room_id.as_str());
+            let room_index_key = format!(
+                "{}conn_mgr:room:{}",
+                self.redis_key_prefix,
+                room_id.as_str()
+            );
 
             let persistent = ConnectionInfoPersistent::from(&info);
             let mut conn_clone = conn.clone();
@@ -977,17 +1008,20 @@ impl ConnectionManager {
                 }
 
                 // Add to room's connection set
-                if let Err(e) = conn_clone.sadd::<_, _, ()>(&room_index_key, &connection_id_clone).await {
+                if let Err(e) = conn_clone
+                    .sadd::<_, _, ()>(&room_index_key, &connection_id_clone)
+                    .await
+                {
                     warn!("Failed to add connection to room index: {e}");
                 }
                 // Set TTL on room index set
-                let _: Result<(), _> = conn_clone.expire(&room_index_key, CONNECTION_METADATA_TTL_SECONDS).await;
+                let _: Result<(), _> = conn_clone
+                    .expire(&room_index_key, CONNECTION_METADATA_TTL_SECONDS)
+                    .await;
             });
         }
 
-        synctv_core::metrics::cluster::NODE_ACTIVE_ROOMS.set(
-            self.room_connections.len() as i64,
-        );
+        synctv_core::metrics::cluster::NODE_ACTIVE_ROOMS.set(self.room_connections.len() as i64);
 
         debug!(
             connection_id = %connection_id,
@@ -1073,7 +1107,8 @@ impl ConnectionManager {
                     // Remove metadata and index entries
                     let conn_key = format!("{key_prefix}conn_mgr:conn:{connection_id_owned}");
                     let user_index_key = format!("{key_prefix}conn_mgr:user:{user_id_str}");
-                    let room_index_key = room_id_str.as_ref()
+                    let room_index_key = room_id_str
+                        .as_ref()
                         .map(|r| format!("{key_prefix}conn_mgr:room:{r}"));
 
                     let mut mc = conn_clone.clone();
@@ -1084,7 +1119,10 @@ impl ConnectionManager {
                     }
                 };
 
-                if tokio::time::timeout(Duration::from_secs(2), cleanup).await.is_err() {
+                if tokio::time::timeout(Duration::from_secs(2), cleanup)
+                    .await
+                    .is_err()
+                {
                     warn!(
                         connection_id = %connection_id,
                         "Redis cleanup timed out during unregister, enqueueing retries"
@@ -1092,22 +1130,22 @@ impl ConnectionManager {
                     // Enqueue all decrement operations for retry
                     let total_key = format!("{}connections:total", self.redis_key_prefix);
                     self.enqueue_retry(PendingRedisOp::Decr(total_key));
-                    let user_key = format!("{}connections:user:{}", self.redis_key_prefix, user_id_str);
+                    let user_key =
+                        format!("{}connections:user:{}", self.redis_key_prefix, user_id_str);
                     self.enqueue_retry(PendingRedisOp::Decr(user_key));
                     if let Some(ref room_id) = room_id_str {
-                        let room_key = format!("{}connections:room:{room_id}", self.redis_key_prefix);
+                        let room_key =
+                            format!("{}connections:room:{room_id}", self.redis_key_prefix);
                         self.enqueue_retry(PendingRedisOp::Decr(room_key));
                     }
                 }
             }
 
             synctv_core::metrics::ACTIVE_CONNECTIONS.dec();
-            synctv_core::metrics::cluster::CLUSTER_CONNECTIONS.set(
-                self.total_connections.load(Ordering::Relaxed) as i64,
-            );
-            synctv_core::metrics::cluster::NODE_ACTIVE_ROOMS.set(
-                self.room_connections.len() as i64,
-            );
+            synctv_core::metrics::cluster::CLUSTER_CONNECTIONS
+                .set(self.total_connections.load(Ordering::Relaxed) as i64);
+            synctv_core::metrics::cluster::NODE_ACTIVE_ROOMS
+                .set(self.room_connections.len() as i64);
 
             info!(
                 connection_id = %connection_id,
@@ -1168,7 +1206,11 @@ impl ConnectionManager {
                         );
                         // Defer mutation to after iteration to avoid DashMap deadlock
                         if let Some(room_id) = &conn.room_id {
-                            rtc_timeouts.push((room_id.clone(), conn.user_id.clone(), conn.connection_id.clone()));
+                            rtc_timeouts.push((
+                                room_id.clone(),
+                                conn.user_id.clone(),
+                                conn.connection_id.clone(),
+                            ));
                         }
                         // Add to disconnect list to force reconnection
                         to_disconnect.push(conn.connection_id.clone());
@@ -1213,7 +1255,7 @@ impl ConnectionManager {
     }
 
     /// Get connection count for a user
-    #[must_use] 
+    #[must_use]
     pub fn user_connection_count(&self, user_id: &UserId) -> usize {
         self.user_connections
             .get(user_id)
@@ -1235,7 +1277,11 @@ impl ConnectionManager {
     /// local-only count if Redis is not configured or unavailable.
     pub async fn room_connection_count_distributed(&self, room_id: &RoomId) -> usize {
         if let Some(ref conn) = self.redis_conn {
-            let redis_key = format!("{}connections:room:{}", self.redis_key_prefix, room_id.as_str());
+            let redis_key = format!(
+                "{}connections:room:{}",
+                self.redis_key_prefix,
+                room_id.as_str()
+            );
             let mut conn_clone = conn.clone();
             match conn_clone.get::<_, Option<i64>>(&redis_key).await {
                 Ok(Some(count)) if count > 0 => return count as usize,
@@ -1254,7 +1300,10 @@ impl ConnectionManager {
     /// Uses Redis MGET to fetch all room counters in a single round-trip,
     /// avoiding N+1 queries. Falls back to sequential local-only counts if
     /// Redis is not configured or unavailable.
-    pub async fn room_connection_count_distributed_batch(&self, room_ids: &[&RoomId]) -> Vec<usize> {
+    pub async fn room_connection_count_distributed_batch(
+        &self,
+        room_ids: &[&RoomId],
+    ) -> Vec<usize> {
         if room_ids.is_empty() {
             return Vec::new();
         }
@@ -1297,13 +1346,13 @@ impl ConnectionManager {
     }
 
     /// Get total messages processed
-    #[must_use] 
+    #[must_use]
     pub fn total_messages(&self) -> u64 {
         self.total_messages.load(Ordering::Relaxed)
     }
 
     /// Get connection info
-    #[must_use] 
+    #[must_use]
     pub fn get_connection(&self, connection_id: &str) -> Option<ConnectionInfo> {
         self.connections.get(connection_id).map(|c| c.clone())
     }
@@ -1313,7 +1362,8 @@ impl ConnectionManager {
     pub fn get_user_connections(&self, user_id: &UserId) -> Vec<ConnectionInfo> {
         // Collect IDs first, then release the index DashMap lock before accessing
         // `connections` to avoid cross-DashMap lock ordering issues.
-        let conn_ids: Vec<String> = self.user_connections
+        let conn_ids: Vec<String> = self
+            .user_connections
             .get(user_id)
             .map(|ids| ids.clone())
             .unwrap_or_default();
@@ -1329,7 +1379,8 @@ impl ConnectionManager {
     pub fn get_room_connections(&self, room_id: &RoomId) -> Vec<ConnectionInfo> {
         // Collect IDs first, then release the index DashMap lock before accessing
         // `connections` to avoid cross-DashMap lock ordering issues.
-        let conn_ids: Vec<String> = self.room_connections
+        let conn_ids: Vec<String> = self
+            .room_connections
             .get(room_id)
             .map(|ids| ids.clone())
             .unwrap_or_default();
@@ -1453,11 +1504,9 @@ impl ConnectionManager {
 
         // Use batched Lua script for efficient TTL refresh
         // This reduces network round-trips compared to individual EXPIRE commands
-        let result = self.batch_refresh_ttls_with_lua(
-            &mut conn,
-            &counter_keys,
-            &metadata_keys,
-        ).await;
+        let result = self
+            .batch_refresh_ttls_with_lua(&mut conn, &counter_keys, &metadata_keys)
+            .await;
 
         match result {
             Ok(refreshed) => {
@@ -1479,8 +1528,11 @@ impl ConnectionManager {
             synctv_core::metrics::cluster::DISTRIBUTED_COUNTER_TTL_REFRESHES
                 .with_label_values(&["failure"])
                 .inc_by(failure_count);
-            let consecutive = synctv_core::metrics::cluster::DISTRIBUTED_COUNTER_TTL_CONSECUTIVE_FAILURES.get() + 1;
-            synctv_core::metrics::cluster::DISTRIBUTED_COUNTER_TTL_CONSECUTIVE_FAILURES.set(consecutive);
+            let consecutive =
+                synctv_core::metrics::cluster::DISTRIBUTED_COUNTER_TTL_CONSECUTIVE_FAILURES.get()
+                    + 1;
+            synctv_core::metrics::cluster::DISTRIBUTED_COUNTER_TTL_CONSECUTIVE_FAILURES
+                .set(consecutive);
             if consecutive >= 3 {
                 warn!(
                     consecutive_failures = consecutive,
@@ -1552,7 +1604,7 @@ impl ConnectionManager {
             end
 
             return refreshed
-            "#
+            "#,
         );
 
         let counter_keys_vec: Vec<&String> = counter_keys.iter().collect();
@@ -1571,14 +1623,18 @@ impl ConnectionManager {
             let mut batch_metadata_count = 0usize;
 
             // Add counter keys to batch
-            while counter_offset < counter_keys_vec.len() && batch_keys.len() < TTL_REFRESH_BATCH_SIZE {
+            while counter_offset < counter_keys_vec.len()
+                && batch_keys.len() < TTL_REFRESH_BATCH_SIZE
+            {
                 batch_keys.push(counter_keys_vec[counter_offset]);
                 batch_counter_count += 1;
                 counter_offset += 1;
             }
 
             // Add metadata keys to batch
-            while metadata_offset < metadata_keys_vec.len() && batch_keys.len() < TTL_REFRESH_BATCH_SIZE {
+            while metadata_offset < metadata_keys_vec.len()
+                && batch_keys.len() < TTL_REFRESH_BATCH_SIZE
+            {
                 batch_keys.push(metadata_keys_vec[metadata_offset]);
                 batch_metadata_count += 1;
                 metadata_offset += 1;
@@ -1626,20 +1682,30 @@ impl ConnectionManager {
     /// conditions with concurrent connection operations.
     async fn sync_local_counts_to_redis(&self, conn: &mut redis::aio::ConnectionManager) {
         // Collect local counts first (avoid holding locks during Redis operations)
-        let mut user_counts: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+        let mut user_counts: std::collections::HashMap<String, usize> =
+            std::collections::HashMap::new();
         for entry in self.user_connections.iter() {
             let count = entry.value().len();
             if count > 0 {
-                let key = format!("{}connections:user:{}", self.redis_key_prefix, entry.key().as_str());
+                let key = format!(
+                    "{}connections:user:{}",
+                    self.redis_key_prefix,
+                    entry.key().as_str()
+                );
                 user_counts.insert(key, count);
             }
         }
 
-        let mut room_counts: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+        let mut room_counts: std::collections::HashMap<String, usize> =
+            std::collections::HashMap::new();
         for entry in self.room_connections.iter() {
             let count = entry.value().len();
             if count > 0 {
-                let key = format!("{}connections:room:{}", self.redis_key_prefix, entry.key().as_str());
+                let key = format!(
+                    "{}connections:room:{}",
+                    self.redis_key_prefix,
+                    entry.key().as_str()
+                );
                 room_counts.insert(key, count);
             }
         }
@@ -1660,7 +1726,7 @@ impl ConnectionManager {
                 redis.call('EXPIRE', KEYS[1], ARGV[2])
                 return {current_num, 1}
               end
-              return {current_num, 0}"
+              return {current_num, 0}",
         );
 
         let mut sync_count = 0u64;
@@ -1826,8 +1892,7 @@ impl ConnectionManager {
             let conn_info = entry.value();
             let key = format!(
                 "{}conn_mgr:conn:{}",
-                self.redis_key_prefix,
-                conn_info.connection_id
+                self.redis_key_prefix, conn_info.connection_id
             );
             let persistent = ConnectionInfoPersistent::from(conn_info);
 
@@ -1902,10 +1967,9 @@ impl ConnectionManager {
                     for key in keys {
                         // Extract connection_id from key
                         // Key format: {prefix}conn_mgr:conn:{connection_id}
-                        if let Some(conn_id) = key.strip_prefix(&format!(
-                            "{}conn_mgr:conn:",
-                            self.redis_key_prefix
-                        )) {
+                        if let Some(conn_id) =
+                            key.strip_prefix(&format!("{}conn_mgr:conn:", self.redis_key_prefix))
+                        {
                             // Check if this connection exists locally
                             if !self.connections.contains_key(conn_id) {
                                 // Connection doesn't exist locally - delete from Redis
@@ -1991,7 +2055,8 @@ impl ConnectionManager {
     #[must_use]
     pub fn get_connection_id(&self, room_id: &RoomId, user_id: &UserId) -> Option<String> {
         // Collect IDs first to avoid holding cross-DashMap locks
-        let conn_ids: Vec<String> = self.user_connections
+        let conn_ids: Vec<String> = self
+            .user_connections
             .get(user_id)
             .map(|ids| ids.clone())
             .unwrap_or_default();
@@ -2016,11 +2081,7 @@ impl ConnectionManager {
             if &conn.user_id == user_id && conn.room_id.as_ref() == Some(room_id) {
                 conn.rtc_joined = joined;
                 // Set or clear the RTC join timestamp
-                conn.rtc_joined_at = if joined {
-                    Some(Instant::now())
-                } else {
-                    None
-                };
+                conn.rtc_joined_at = if joined { Some(Instant::now()) } else { None };
                 debug!(
                     connection_id = %conn_id,
                     user_id = %user_id.as_str(),
@@ -2036,7 +2097,8 @@ impl ConnectionManager {
     #[must_use]
     pub fn get_rtc_connections(&self, room_id: &RoomId) -> Vec<ConnectionInfo> {
         // Collect IDs first to avoid holding cross-DashMap locks
-        let conn_ids: Vec<String> = self.room_connections
+        let conn_ids: Vec<String> = self
+            .room_connections
             .get(room_id)
             .map(|ids| ids.clone())
             .unwrap_or_default();
@@ -2093,13 +2155,19 @@ impl ConnectionManager {
     /// all replicas in the cluster. Falls back to local-only if Redis fails.
     pub async fn get_user_connections_distributed(&self, user_id: &UserId) -> Vec<String> {
         if let Some(ref conn) = self.redis_conn {
-            let user_index_key = format!("{}conn_mgr:user:{}", self.redis_key_prefix, user_id.as_str());
+            let user_index_key = format!(
+                "{}conn_mgr:user:{}",
+                self.redis_key_prefix,
+                user_id.as_str()
+            );
             let mut conn_clone = conn.clone();
 
             match conn_clone.smembers::<_, Vec<String>>(&user_index_key).await {
                 Ok(conn_ids) => return conn_ids,
                 Err(e) => {
-                    warn!("Failed to fetch user connections from Redis, falling back to local: {e}");
+                    warn!(
+                        "Failed to fetch user connections from Redis, falling back to local: {e}"
+                    );
                 }
             }
         }
@@ -2117,13 +2185,19 @@ impl ConnectionManager {
     /// all replicas in the cluster. Falls back to local-only if Redis fails.
     pub async fn get_room_connections_distributed(&self, room_id: &RoomId) -> Vec<String> {
         if let Some(ref conn) = self.redis_conn {
-            let room_index_key = format!("{}conn_mgr:room:{}", self.redis_key_prefix, room_id.as_str());
+            let room_index_key = format!(
+                "{}conn_mgr:room:{}",
+                self.redis_key_prefix,
+                room_id.as_str()
+            );
             let mut conn_clone = conn.clone();
 
             match conn_clone.smembers::<_, Vec<String>>(&room_index_key).await {
                 Ok(conn_ids) => return conn_ids,
                 Err(e) => {
-                    warn!("Failed to fetch room connections from Redis, falling back to local: {e}");
+                    warn!(
+                        "Failed to fetch room connections from Redis, falling back to local: {e}"
+                    );
                 }
             }
         }
@@ -2155,7 +2229,7 @@ impl ConnectionManager {
         let script = redis::Script::new(
             "local count = redis.call('INCR', KEYS[1]) \
              redis.call('EXPIRE', KEYS[1], ARGV[1]) \
-             return count"
+             return count",
         );
         let count: i64 = script
             .key(key)
@@ -2171,14 +2245,18 @@ impl ConnectionManager {
     ///
     /// Uses a Lua script to atomically DECR and DEL if the result is negative,
     /// avoiding a race where a concurrent INCR between DECR and SET(0) would be lost.
-    async fn redis_decr(&self, conn: &redis::aio::ConnectionManager, key: &str) -> Result<(), String> {
+    async fn redis_decr(
+        &self,
+        conn: &redis::aio::ConnectionManager,
+        key: &str,
+    ) -> Result<(), String> {
         let mut conn = conn.clone();
         let script = redis::Script::new(
             r"local v = redis.call('DECR', KEYS[1])
               if v < 0 then
                 redis.call('DEL', KEYS[1])
               end
-              return v"
+              return v",
         );
         script
             .key(key)
@@ -2316,7 +2394,10 @@ mod tests {
         let manager = ConnectionManager::default();
         let user_id = UserId::from_string("user1".to_string());
 
-        manager.register("conn1".to_string(), user_id).await.unwrap();
+        manager
+            .register("conn1".to_string(), user_id)
+            .await
+            .unwrap();
 
         manager.record_message("conn1");
         manager.record_message("conn1");
@@ -2377,7 +2458,10 @@ mod tests {
         let manager = ConnectionManager::new(limits);
         let user_id = UserId::from_string("user1".to_string());
 
-        manager.register("conn1".to_string(), user_id).await.unwrap();
+        manager
+            .register("conn1".to_string(), user_id)
+            .await
+            .unwrap();
 
         // Wait for idle timeout
         tokio::time::sleep(Duration::from_millis(150)).await;
@@ -2407,8 +2491,7 @@ mod tests {
             }
         };
 
-        let manager = ConnectionManager::new(ConnectionLimits::default())
-            .with_redis(conn, "test:");
+        let manager = ConnectionManager::new(ConnectionLimits::default()).with_redis(conn, "test:");
 
         let user_id = UserId::from_string("user1".to_string());
         let room_id = RoomId::from_string("room1".to_string());
@@ -2469,8 +2552,8 @@ mod tests {
             }
         };
 
-        let manager = ConnectionManager::new(ConnectionLimits::default())
-            .with_redis(conn, "test2:");
+        let manager =
+            ConnectionManager::new(ConnectionLimits::default()).with_redis(conn, "test2:");
 
         let _user_id = UserId::from_string("user1".to_string());
 
@@ -2524,8 +2607,8 @@ mod tests {
             }
         };
 
-        let manager = ConnectionManager::new(ConnectionLimits::default())
-            .with_redis(conn, "test3:");
+        let manager =
+            ConnectionManager::new(ConnectionLimits::default()).with_redis(conn, "test3:");
 
         let user_id = UserId::from_string("user1".to_string());
 
@@ -2546,7 +2629,10 @@ mod tests {
         assert_eq!(user_count, 1);
 
         // Manually corrupt the counter (simulating partial failure)
-        let _: () = redis_conn.set("test3:connections:user:user1", 0).await.unwrap();
+        let _: () = redis_conn
+            .set("test3:connections:user:user1", 0)
+            .await
+            .unwrap();
 
         // Local state says 1, Redis says 0
         assert_eq!(manager.user_connection_count(&user_id), 1);

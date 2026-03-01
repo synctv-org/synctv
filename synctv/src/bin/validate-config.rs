@@ -83,7 +83,10 @@ fn main() {
             process::exit(0);
         }
         Err(errors) => {
-            eprintln!("❌ Configuration validation failed with {} error(s):\n", errors.len());
+            eprintln!(
+                "❌ Configuration validation failed with {} error(s):\n",
+                errors.len()
+            );
             for (i, error) in errors.iter().enumerate() {
                 eprintln!("  {}. {}", i + 1, error);
             }

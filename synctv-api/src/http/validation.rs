@@ -3,17 +3,15 @@
 //! This module provides validation functions for common input types to ensure
 //! data integrity and prevent security issues like injection attacks.
 
-use std::sync::LazyLock;
 use regex::Regex;
 use std::borrow::Cow;
+use std::sync::LazyLock;
 
 /// Maximum lengths for various input types
 pub mod limits {
     // Core limits imported from the single source of truth in synctv-core
     pub use synctv_core::validation::{
-        USERNAME_MIN, USERNAME_MAX,
-        PASSWORD_MIN, PASSWORD_MAX,
-        ROOM_NAME_MIN, ROOM_NAME_MAX,
+        PASSWORD_MAX, PASSWORD_MIN, ROOM_NAME_MAX, ROOM_NAME_MIN, USERNAME_MAX, USERNAME_MIN,
     };
 
     /// Maximum room description length
@@ -43,24 +41,20 @@ mod patterns {
     use super::{LazyLock, Regex};
 
     /// Valid username: alphanumeric, underscores, hyphens, and CJK characters
-    pub static USERNAME: LazyLock<Regex> = LazyLock::new(|| {
-        Regex::new(r"^[\p{L}\p{N}_-]+$").expect("Invalid username regex")
-    });
+    pub static USERNAME: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"^[\p{L}\p{N}_-]+$").expect("Invalid username regex"));
 
     /// Valid room ID: alphanumeric, underscores, hyphens
-    pub static ROOM_ID: LazyLock<Regex> = LazyLock::new(|| {
-        Regex::new(r"^[a-zA-Z0-9_-]+$").expect("Invalid room_id regex")
-    });
+    pub static ROOM_ID: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"^[a-zA-Z0-9_-]+$").expect("Invalid room_id regex"));
 
     /// URL format (http/https only)
-    pub static URL: LazyLock<Regex> = LazyLock::new(|| {
-        Regex::new(r"^https?://[^\s]+$").expect("Invalid URL regex")
-    });
+    pub static URL: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"^https?://[^\s]+$").expect("Invalid URL regex"));
 
     /// HTML/script tag detection for XSS prevention
-    pub static HTML_TAGS: LazyLock<Regex> = LazyLock::new(|| {
-        Regex::new(r"<[^>]+>").expect("Invalid HTML regex")
-    });
+    pub static HTML_TAGS: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"<[^>]+>").expect("Invalid HTML regex"));
 
     /// Control characters that should be stripped
     pub static CONTROL_CHARS: LazyLock<Regex> = LazyLock::new(|| {
@@ -75,18 +69,47 @@ mod patterns {
 /// for an O(n) linear scan (sub-microsecond for ~40 entries).
 const COMMON_PASSWORDS: &[&str] = &[
     // Top-10 most breached
-    "password", "123456", "12345678", "123456789", "1234567890",
-    "qwerty", "abc123", "111111", "password1", "iloveyou",
+    "password",
+    "123456",
+    "12345678",
+    "123456789",
+    "1234567890",
+    "qwerty",
+    "abc123",
+    "111111",
+    "password1",
+    "iloveyou",
     // Common words / names
-    "admin", "letmein", "welcome", "monkey", "dragon",
-    "master", "login", "princess", "football", "shadow",
-    "sunshine", "trustno1", "baseball", "superman", "michael",
-    "access", "mustang", "batman", "passw0rd",
+    "admin",
+    "letmein",
+    "welcome",
+    "monkey",
+    "dragon",
+    "master",
+    "login",
+    "princess",
+    "football",
+    "shadow",
+    "sunshine",
+    "trustno1",
+    "baseball",
+    "superman",
+    "michael",
+    "access",
+    "mustang",
+    "batman",
+    "passw0rd",
     // Keyboard walks
-    "qwerty123", "qwertyuiop", "1q2w3e4r", "zxcvbnm",
-    "asdfghjkl", "1qaz2wsx",
+    "qwerty123",
+    "qwertyuiop",
+    "1q2w3e4r",
+    "zxcvbnm",
+    "asdfghjkl",
+    "1qaz2wsx",
     // Numeric sequences
-    "12345678901", "00000000", "11111111",
+    "12345678901",
+    "00000000",
+    "11111111",
     // Year-based
     "password123",
 ];
@@ -132,7 +155,11 @@ pub fn sanitize_string(input: &str) -> Cow<'_, str> {
         Cow::Owned(trimmed.to_string())
     } else {
         // Remove control characters
-        Cow::Owned(patterns::CONTROL_CHARS.replace_all(trimmed, "").into_owned())
+        Cow::Owned(
+            patterns::CONTROL_CHARS
+                .replace_all(trimmed, "")
+                .into_owned(),
+        )
     }
 }
 
@@ -431,7 +458,10 @@ pub fn validate_email(email: &str) -> ValidationResult<String> {
     }
 
     // Local part character validation: alphanumeric, dots, hyphens, underscores, plus
-    if !local.chars().all(|c| c.is_alphanumeric() || c == '.' || c == '-' || c == '_' || c == '+') {
+    if !local
+        .chars()
+        .all(|c| c.is_alphanumeric() || c == '.' || c == '-' || c == '_' || c == '+')
+    {
         return Err(ValidationError::InvalidFormat { field: "email" });
     }
 
@@ -451,7 +481,11 @@ pub fn validate_email(email: &str) -> ValidationResult<String> {
     }
 
     // Domain must not start/end with dot or hyphen
-    if domain.starts_with('.') || domain.ends_with('.') || domain.starts_with('-') || domain.ends_with('-') {
+    if domain.starts_with('.')
+        || domain.ends_with('.')
+        || domain.starts_with('-')
+        || domain.ends_with('-')
+    {
         return Err(ValidationError::InvalidFormat { field: "email" });
     }
 
@@ -488,14 +522,18 @@ pub fn validate_email(email: &str) -> ValidationResult<String> {
 /// Validate playback position (in seconds)
 pub fn validate_playback_position(position: f64) -> ValidationResult<f64> {
     if position.is_nan() || position.is_infinite() {
-        return Err(ValidationError::InvalidValue("Position must be a finite number"));
+        return Err(ValidationError::InvalidValue(
+            "Position must be a finite number",
+        ));
     }
     if position < 0.0 {
         return Err(ValidationError::InvalidValue("Position cannot be negative"));
     }
     // Max 24 hours in seconds - reasonable upper limit
     if position > 86400.0 {
-        return Err(ValidationError::InvalidValue("Position exceeds maximum (24 hours)"));
+        return Err(ValidationError::InvalidValue(
+            "Position exceeds maximum (24 hours)",
+        ));
     }
     Ok(position)
 }
@@ -503,7 +541,9 @@ pub fn validate_playback_position(position: f64) -> ValidationResult<f64> {
 /// Validate playback speed
 pub fn validate_playback_speed(speed: f64) -> ValidationResult<f64> {
     if speed.is_nan() || speed.is_infinite() {
-        return Err(ValidationError::InvalidValue("Speed must be a finite number"));
+        return Err(ValidationError::InvalidValue(
+            "Speed must be a finite number",
+        ));
     }
     // Reasonable range: 0.25x to 4x
     if !(0.25..=4.0).contains(&speed) {
@@ -551,7 +591,7 @@ pub const MAX_PAGE: i32 = 10000;
 /// assert_eq!(validate_page(Some(5)), 5);
 /// assert_eq!(validate_page(Some(100000)), MAX_PAGE); // Clamped to max
 /// ```
-#[must_use] 
+#[must_use]
 pub fn validate_page(page: Option<i32>) -> i32 {
     page.unwrap_or(DEFAULT_PAGE).clamp(1, MAX_PAGE)
 }
@@ -571,9 +611,11 @@ pub fn validate_page(page: Option<i32>) -> i32 {
 /// assert_eq!(validate_page_size(Some(50)), 50);
 /// assert_eq!(validate_page_size(Some(1000)), MAX_PAGE_SIZE); // Clamped to max
 /// ```
-#[must_use] 
+#[must_use]
 pub fn validate_page_size(page_size: Option<i32>) -> i32 {
-    page_size.unwrap_or(DEFAULT_PAGE_SIZE).clamp(1, MAX_PAGE_SIZE)
+    page_size
+        .unwrap_or(DEFAULT_PAGE_SIZE)
+        .clamp(1, MAX_PAGE_SIZE)
 }
 
 /// Validate both page and `page_size`, returning normalized values
@@ -592,7 +634,7 @@ pub fn validate_page_size(page_size: Option<i32>) -> i32 {
 /// assert_eq!(page, 1); // DEFAULT_PAGE
 /// assert_eq!(page_size, 20); // DEFAULT_PAGE_SIZE
 /// ```
-#[must_use] 
+#[must_use]
 pub fn validate_pagination(page: Option<i32>, page_size: Option<i32>) -> (i32, i32) {
     (validate_page(page), validate_page_size(page_size))
 }
@@ -678,11 +720,15 @@ pub fn validate_oauth2_redirect_url(url: Option<&str>) -> ValidationResult<Optio
     // Reject dangerous protocols first (javascript:, data:, ftp:, file:, etc.)
     // These should never be accepted as redirect_uri
     let lower = sanitized.to_lowercase();
-    if lower.starts_with("javascript:") || lower.starts_with("data:") ||
-       lower.starts_with("vbscript:") || lower.starts_with("file:") ||
-       lower.starts_with("ftp:") || lower.starts_with("mailto:") {
+    if lower.starts_with("javascript:")
+        || lower.starts_with("data:")
+        || lower.starts_with("vbscript:")
+        || lower.starts_with("file:")
+        || lower.starts_with("ftp:")
+        || lower.starts_with("mailto:")
+    {
         return Err(ValidationError::InvalidFormat {
-            field: "redirect_url (dangerous protocol not allowed)"
+            field: "redirect_url (dangerous protocol not allowed)",
         });
     }
 
@@ -703,27 +749,34 @@ pub fn validate_oauth2_redirect_url(url: Option<&str>) -> ValidationResult<Optio
         // Validate scheme format
         if scheme.len() < 2 {
             return Err(ValidationError::InvalidFormat {
-                field: "redirect_url (custom scheme too short)"
+                field: "redirect_url (custom scheme too short)",
             });
         }
 
         // Scheme must start with a letter (not digit) and contain only safe characters
-        if !scheme.chars().next().is_some_and(|c| c.is_ascii_alphabetic()) {
+        if !scheme
+            .chars()
+            .next()
+            .is_some_and(|c| c.is_ascii_alphabetic())
+        {
             return Err(ValidationError::InvalidFormat {
-                field: "redirect_url (custom scheme must start with a letter)"
+                field: "redirect_url (custom scheme must start with a letter)",
             });
         }
 
-        if !scheme.chars().all(|c| c.is_alphanumeric() || c == '-' || c == '+' || c == '.') {
+        if !scheme
+            .chars()
+            .all(|c| c.is_alphanumeric() || c == '-' || c == '+' || c == '.')
+        {
             return Err(ValidationError::InvalidFormat {
-                field: "redirect_url (invalid characters in custom scheme)"
+                field: "redirect_url (invalid characters in custom scheme)",
             });
         }
 
         // Path after :// must exist
         if pos + 3 >= sanitized.len() {
             return Err(ValidationError::InvalidFormat {
-                field: "redirect_url (custom scheme missing path)"
+                field: "redirect_url (custom scheme missing path)",
             });
         }
 
@@ -731,7 +784,9 @@ pub fn validate_oauth2_redirect_url(url: Option<&str>) -> ValidationResult<Optio
     }
 
     // Reject anything else
-    Err(ValidationError::InvalidFormat { field: "redirect_url" })
+    Err(ValidationError::InvalidFormat {
+        field: "redirect_url",
+    })
 }
 
 /// Validate `OAuth2` provider user ID (optional field)
@@ -854,7 +909,7 @@ mod tests {
         assert!(validate_password("qwerty12345").is_ok()); // Not exact match to any common password
         assert!(validate_password("short").is_err()); // Too short
         assert!(validate_password(&"a".repeat(limits::PASSWORD_MAX + 1)).is_err()); // Too long
-        // Exact matches to common weak passwords should be rejected
+                                                                                    // Exact matches to common weak passwords should be rejected
         assert!(validate_password("password").is_err());
         assert!(validate_password("12345678").is_err()); // In expanded common password list
         assert!(validate_password("password123").is_err()); // In expanded common password list
@@ -886,7 +941,7 @@ mod tests {
         assert!(validate_chat_message("Hello world").is_ok());
         assert!(validate_chat_message("").is_err()); // Empty
         assert!(validate_chat_message(&"a".repeat(5001)).is_err()); // Too long
-        // Safe HTML (like <b>) is preserved by ammonia
+                                                                    // Safe HTML (like <b>) is preserved by ammonia
         let result = validate_chat_message("<b>Hello</b>").unwrap();
         assert_eq!(result, "<b>Hello</b>");
         // Dangerous HTML (like <script>) is stripped
@@ -955,7 +1010,10 @@ mod tests {
     fn test_validate_email() {
         assert!(validate_email("user@example.com").is_ok());
         assert!(validate_email("USER@EXAMPLE.COM").is_ok()); // Should be lowercased
-        assert_eq!(validate_email("USER@EXAMPLE.COM").unwrap(), "user@example.com");
+        assert_eq!(
+            validate_email("USER@EXAMPLE.COM").unwrap(),
+            "user@example.com"
+        );
         assert!(validate_email("invalid-email").is_err());
         assert!(validate_email("").is_err());
     }
@@ -1203,7 +1261,10 @@ mod tests {
         // Valid HTTP URL
         let result = validate_oauth2_redirect_url(Some("http://example.com/callback"));
         assert!(result.is_ok());
-        assert_eq!(result.unwrap(), Some("http://example.com/callback".to_string()));
+        assert_eq!(
+            result.unwrap(),
+            Some("http://example.com/callback".to_string())
+        );
 
         // Valid HTTPS URL
         let result = validate_oauth2_redirect_url(Some("https://example.com/callback?state=abc"));
@@ -1215,11 +1276,13 @@ mod tests {
         assert!(validate_oauth2_redirect_url(Some("data:text/html,<script>")).is_err());
 
         // Invalid: too long
-        let long_url = "https://example.com/".to_string() + &"a".repeat(limits::OAUTH2_REDIRECT_URL_MAX);
+        let long_url =
+            "https://example.com/".to_string() + &"a".repeat(limits::OAUTH2_REDIRECT_URL_MAX);
         assert!(validate_oauth2_redirect_url(Some(&long_url)).is_err());
 
         // Valid: exactly at max length
-        let exact_url = "https://example.com/".to_string() + &"a".repeat(limits::OAUTH2_REDIRECT_URL_MAX - 20);
+        let exact_url =
+            "https://example.com/".to_string() + &"a".repeat(limits::OAUTH2_REDIRECT_URL_MAX - 20);
         assert!(validate_oauth2_redirect_url(Some(&exact_url)).is_ok());
 
         // ============ Native/Mobile App Custom Schemes ============
@@ -1227,7 +1290,10 @@ mod tests {
         // Valid custom scheme for mobile app
         let result = validate_oauth2_redirect_url(Some("mysynctv://oauth2/callback"));
         assert!(result.is_ok());
-        assert_eq!(result.unwrap(), Some("mysynctv://oauth2/callback".to_string()));
+        assert_eq!(
+            result.unwrap(),
+            Some("mysynctv://oauth2/callback".to_string())
+        );
 
         // Valid custom scheme with query parameters
         let result = validate_oauth2_redirect_url(Some("com.example.app://auth?param=value"));

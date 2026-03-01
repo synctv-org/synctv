@@ -28,12 +28,12 @@ pub mod emby;
 pub mod grpc;
 
 // Re-export client types for convenience
-pub use alist::AlistClient;
 pub use alist::error::AlistError;
-pub use bilibili::BilibiliClient;
+pub use alist::AlistClient;
 pub use bilibili::error::BilibiliError;
-pub use emby::EmbyClient;
+pub use bilibili::BilibiliClient;
 pub use emby::error::EmbyError;
+pub use emby::EmbyClient;
 pub use error::ProviderClientError;
 
 // Re-export credential types

@@ -13,11 +13,7 @@
 
 use std::sync::Arc;
 
-use crate::{
-    cache::KeyBuilder,
-    service::TokenBlacklistStore,
-    Error, Result,
-};
+use crate::{cache::KeyBuilder, service::TokenBlacklistStore, Error, Result};
 
 use super::jwt::{GuestClaims, JwtService};
 
@@ -112,7 +108,11 @@ impl GuestTokenValidator {
     ///
     /// # Returns
     /// The validated [`GuestClaims`] on success, or an error on failure.
-    pub fn validate_with_version(&self, token: &str, current_room_guest_version: i64) -> Result<GuestClaims> {
+    pub fn validate_with_version(
+        &self,
+        token: &str,
+        current_room_guest_version: i64,
+    ) -> Result<GuestClaims> {
         let claims = self.validate(token)?;
 
         // Check room version - if the token's version is lower than the room's
@@ -139,7 +139,11 @@ impl GuestTokenValidator {
     ///
     /// # Returns
     /// The validated [`GuestClaims`] on success, or an error on failure.
-    pub async fn validate_with_version_async(&self, token: &str, current_room_guest_version: i64) -> Result<GuestClaims> {
+    pub async fn validate_with_version_async(
+        &self,
+        token: &str,
+        current_room_guest_version: i64,
+    ) -> Result<GuestClaims> {
         let claims = self.validate_async(token).await?;
 
         // Check room version
@@ -193,9 +197,9 @@ impl std::fmt::Debug for GuestTokenValidator {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::models::{RoomId, UserId};
     use crate::service::auth::jwt::TokenType;
     use crate::service::auth::token_blacklist::InMemoryTokenBlacklistStore;
-    use crate::models::{UserId, RoomId};
 
     fn create_test_jwt_service() -> Arc<JwtService> {
         Arc::new(
@@ -236,11 +240,17 @@ mod tests {
 
         // Token with version 5
         let token = jwt.sign_guest_token_with_version(&room_id, 5).unwrap();
-        let claims = validator.validate_with_version_async(&token, 5).await.unwrap();
+        let claims = validator
+            .validate_with_version_async(&token, 5)
+            .await
+            .unwrap();
         assert_eq!(claims.gv, 5);
 
         // Version check passes when token version >= room version
-        let claims = validator.validate_with_version_async(&token, 3).await.unwrap();
+        let claims = validator
+            .validate_with_version_async(&token, 3)
+            .await
+            .unwrap();
         assert_eq!(claims.gv, 5);
 
         // Version check fails when token version < room version

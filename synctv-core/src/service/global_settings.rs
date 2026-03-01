@@ -27,12 +27,15 @@
 //! }
 //! ```
 
-use std::sync::Arc;
-use std::fmt;
-use serde::{Deserialize, Serialize};
 use crate::models::room_settings::MaxMembers;
-use crate::service::{SettingsService, settings_vars::{Setting, SettingsStorage}};
+use crate::service::{
+    settings_vars::{Setting, SettingsStorage},
+    SettingsService,
+};
 use crate::setting;
+use serde::{Deserialize, Serialize};
+use std::fmt;
+use std::sync::Arc;
 
 /// Maximum allowed value for `max_chat_messages` setting (0 = unlimited)
 const MAX_CHAT_MESSAGES_LIMIT: u64 = 10_000;
@@ -64,7 +67,7 @@ pub struct TurnServer {
 pub struct TurnServerList(pub Vec<TurnServer>);
 
 impl TurnServerList {
-    #[must_use] 
+    #[must_use]
     pub const fn new() -> Self {
         Self(Vec::new())
     }
@@ -79,8 +82,7 @@ impl Default for TurnServerList {
 impl fmt::Display for TurnServerList {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         // Serialize to JSON; unwrap is safe because the type is always serializable
-        let json = serde_json::to_string(&self.0)
-            .unwrap_or_else(|_| "[]".to_string());
+        let json = serde_json::to_string(&self.0).unwrap_or_else(|_| "[]".to_string());
         f.write_str(&json)
     }
 }
@@ -109,7 +111,7 @@ impl std::str::FromStr for TurnServerList {
 pub struct StunServerList(pub Vec<String>);
 
 impl StunServerList {
-    #[must_use] 
+    #[must_use]
     pub fn new() -> Self {
         Self(vec![
             "stun:stun.l.google.com:19302".to_string(),
@@ -126,8 +128,7 @@ impl Default for StunServerList {
 
 impl fmt::Display for StunServerList {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let json = serde_json::to_string(&self.0)
-            .unwrap_or_else(|_| "[]".to_string());
+        let json = serde_json::to_string(&self.0).unwrap_or_else(|_| "[]".to_string());
         f.write_str(&json)
     }
 }
@@ -170,8 +171,7 @@ impl Default for CorsAllowedOrigins {
 
 impl fmt::Display for CorsAllowedOrigins {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let json = serde_json::to_string(&self.0)
-            .unwrap_or_else(|_| "[]".to_string());
+        let json = serde_json::to_string(&self.0).unwrap_or_else(|_| "[]".to_string());
         f.write_str(&json)
     }
 }
@@ -311,14 +311,13 @@ pub struct SettingsRegistry {
 
 impl std::fmt::Debug for SettingsRegistry {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("SettingsRegistry")
-            .finish()
+        f.debug_struct("SettingsRegistry").finish()
     }
 }
 
 impl SettingsRegistry {
     /// Create a new settings registry with all setting instances
-    #[must_use] 
+    #[must_use]
     pub fn new(settings_service: Arc<SettingsService>) -> Self {
         let storage = Arc::new(SettingsStorage::new(settings_service));
 
@@ -328,26 +327,48 @@ impl SettingsRegistry {
             // Server settings using the setting! macro
             // Each setting auto-registers its provider to storage
             signup_enabled: setting!(bool, "server.signup_enabled", storage.clone(), true),
-            allow_room_creation: setting!(bool, "server.allow_room_creation", storage.clone(), true),
-            max_rooms_per_user: setting!(i64, "server.max_rooms_per_user", storage.clone(), 10,
+            allow_room_creation: setting!(
+                bool,
+                "server.allow_room_creation",
+                storage.clone(),
+                true
+            ),
+            max_rooms_per_user: setting!(
+                i64,
+                "server.max_rooms_per_user",
+                storage.clone(),
+                10,
                 |v: &i64| -> crate::Result<()> {
                     if *v > 0 && *v <= 1000 {
                         Ok(())
                     } else {
-                        Err(crate::Error::InvalidInput("max_rooms_per_user must be between 1 and 1000".into()))
+                        Err(crate::Error::InvalidInput(
+                            "max_rooms_per_user must be between 1 and 1000".into(),
+                        ))
                     }
                 }
             ),
-            max_members_per_room: setting!(i64, "server.max_members_per_room", storage.clone(), 100,
+            max_members_per_room: setting!(
+                i64,
+                "server.max_members_per_room",
+                storage.clone(),
+                100,
                 |v: &i64| -> crate::Result<()> {
                     if *v > 0 && *v <= MaxMembers::MAX as i64 {
                         Ok(())
                     } else {
-                        Err(crate::Error::InvalidInput(format!("max_members_per_room must be between 1 and {}", MaxMembers::MAX)))
+                        Err(crate::Error::InvalidInput(format!(
+                            "max_members_per_room must be between 1 and {}",
+                            MaxMembers::MAX
+                        )))
                     }
                 }
             ),
-            max_chat_messages: setting!(u64, "server.max_chat_messages", storage.clone(), 500,
+            max_chat_messages: setting!(
+                u64,
+                "server.max_chat_messages",
+                storage.clone(),
+                500,
                 |v: &u64| -> crate::Result<()> {
                     if *v <= MAX_CHAT_MESSAGES_LIMIT {
                         Ok(())
@@ -360,64 +381,141 @@ impl SettingsRegistry {
             // Permission settings - global defaults for each role
             // These are base permissions that rooms can override with added/removed permissions
             // Admin default: All permissions except System::ADMIN (1073741823 = 0x3FFFFFFF)
-            admin_default_permissions: setting!(u64, "permissions.admin_default", storage.clone(), 1073741823),
+            admin_default_permissions: setting!(
+                u64,
+                "permissions.admin_default",
+                storage.clone(),
+                1073741823
+            ),
             // Member default: Basic member permissions (262143 = 0x3FFFF)
-            member_default_permissions: setting!(u64, "permissions.member_default", storage.clone(), 262143),
+            member_default_permissions: setting!(
+                u64,
+                "permissions.member_default",
+                storage.clone(),
+                262143
+            ),
             // Guest default: Read-only permissions (511 = 0x1FF)
-            guest_default_permissions: setting!(u64, "permissions.guest_default", storage.clone(), 511),
+            guest_default_permissions: setting!(
+                u64,
+                "permissions.guest_default",
+                storage.clone(),
+                511
+            ),
 
             // Room settings
             disable_create_room: setting!(bool, "room.disable_create_room", storage.clone(), false),
-            create_room_need_review: setting!(bool, "room.create_room_need_review", storage.clone(), false),
-            room_ttl: setting!(i64, "room.room_ttl", storage.clone(), 172800, // 48 hours in seconds
+            create_room_need_review: setting!(
+                bool,
+                "room.create_room_need_review",
+                storage.clone(),
+                false
+            ),
+            room_ttl: setting!(
+                i64,
+                "room.room_ttl",
+                storage.clone(),
+                172800, // 48 hours in seconds
                 |v: &i64| -> crate::Result<()> {
                     if *v >= 0 {
                         Ok(())
                     } else {
-                        Err(crate::Error::InvalidInput("room_ttl must be non-negative (0 = never expire)".into()))
+                        Err(crate::Error::InvalidInput(
+                            "room_ttl must be non-negative (0 = never expire)".into(),
+                        ))
                     }
                 }
             ),
             room_must_need_pwd: setting!(bool, "room.room_must_need_pwd", storage.clone(), false),
-            room_must_no_need_pwd: setting!(bool, "room.room_must_no_need_pwd", storage.clone(), false),
+            room_must_no_need_pwd: setting!(
+                bool,
+                "room.room_must_no_need_pwd",
+                storage.clone(),
+                false
+            ),
 
             // User settings
             signup_need_review: setting!(bool, "user.signup_need_review", storage.clone(), false),
-            enable_password_signup: setting!(bool, "user.enable_password_signup", storage.clone(), true),
-            password_signup_need_review: setting!(bool, "user.password_signup_need_review", storage.clone(), false),
+            enable_password_signup: setting!(
+                bool,
+                "user.enable_password_signup",
+                storage.clone(),
+                true
+            ),
+            password_signup_need_review: setting!(
+                bool,
+                "user.password_signup_need_review",
+                storage.clone(),
+                false
+            ),
             enable_guest: setting!(bool, "user.enable_guest", storage.clone(), true),
 
             // Proxy settings
             movie_proxy: setting!(bool, "proxy.movie_proxy", storage.clone(), true),
             live_proxy: setting!(bool, "proxy.live_proxy", storage.clone(), true),
-            allow_proxy_to_local: setting!(bool, "proxy.allow_proxy_to_local", storage.clone(), false),
+            allow_proxy_to_local: setting!(
+                bool,
+                "proxy.allow_proxy_to_local",
+                storage.clone(),
+                false
+            ),
             proxy_cache_enable: setting!(bool, "proxy.proxy_cache_enable", storage.clone(), false),
 
             // RTMP settings
-            custom_publish_host: setting!(String, "rtmp.custom_publish_host", storage.clone(), String::new()),
+            custom_publish_host: setting!(
+                String,
+                "rtmp.custom_publish_host",
+                storage.clone(),
+                String::new()
+            ),
             ts_disguised_as_png: setting!(bool, "rtmp.ts_disguised_as_png", storage.clone(), true),
 
             // Email settings
-            email_whitelist_enabled: setting!(bool, "email.whitelist_enabled", storage.clone(), false),
+            email_whitelist_enabled: setting!(
+                bool,
+                "email.whitelist_enabled",
+                storage.clone(),
+                false
+            ),
             email_whitelist: setting!(String, "email.whitelist", storage.clone(), String::new()),
 
             // WebRTC settings
-            external_stun_servers: setting!(StunServerList, "webrtc.external_stun_servers", storage.clone(), StunServerList::new()),
-            turn_servers: setting!(TurnServerList, "webrtc.turn_servers", storage.clone(), TurnServerList::new()),
+            external_stun_servers: setting!(
+                StunServerList,
+                "webrtc.external_stun_servers",
+                storage.clone(),
+                StunServerList::new()
+            ),
+            turn_servers: setting!(
+                TurnServerList,
+                "webrtc.turn_servers",
+                storage.clone(),
+                TurnServerList::new()
+            ),
 
             // Chat message retention settings
-            max_chat_messages_per_room: setting!(u64, "chat.max_messages_per_room", storage.clone(), 500,
+            max_chat_messages_per_room: setting!(
+                u64,
+                "chat.max_messages_per_room",
+                storage.clone(),
+                500,
                 |v: &u64| -> crate::Result<()> {
                     if *v <= 100000 {
                         Ok(())
                     } else {
-                        Err(crate::Error::InvalidInput("max_chat_messages_per_room must be <= 100000 (0 = unlimited)".into()))
+                        Err(crate::Error::InvalidInput(
+                            "max_chat_messages_per_room must be <= 100000 (0 = unlimited)".into(),
+                        ))
                     }
                 }
             ),
 
             // CORS settings
-            cors_allowed_origins: setting!(CorsAllowedOrigins, "cors.allowed_origins", storage, CorsAllowedOrigins::new()),
+            cors_allowed_origins: setting!(
+                CorsAllowedOrigins,
+                "cors.allowed_origins",
+                storage,
+                CorsAllowedOrigins::new()
+            ),
         }
     }
 
@@ -444,9 +542,13 @@ impl SettingsRegistry {
     /// race conditions in multi-replica deployments where two replicas could
     /// simultaneously set contradictory values based on stale cache reads.
     pub async fn set_room_must_need_pwd(&self, value: bool) -> crate::Result<()> {
-        self.storage.settings_service().update_batch(vec![
-            ("room.room_must_need_pwd".to_string(), value.to_string()),
-        ]).await?;
+        self.storage
+            .settings_service()
+            .update_batch(vec![(
+                "room.room_must_need_pwd".to_string(),
+                value.to_string(),
+            )])
+            .await?;
         Ok(())
     }
 
@@ -457,9 +559,13 @@ impl SettingsRegistry {
     /// race conditions in multi-replica deployments where two replicas could
     /// simultaneously set contradictory values based on stale cache reads.
     pub async fn set_room_must_no_need_pwd(&self, value: bool) -> crate::Result<()> {
-        self.storage.settings_service().update_batch(vec![
-            ("room.room_must_no_need_pwd".to_string(), value.to_string()),
-        ]).await?;
+        self.storage
+            .settings_service()
+            .update_batch(vec![(
+                "room.room_must_no_need_pwd".to_string(),
+                value.to_string(),
+            )])
+            .await?;
         Ok(())
     }
 

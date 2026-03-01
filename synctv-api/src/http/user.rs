@@ -9,10 +9,8 @@ use axum::{
 
 use super::{middleware::AuthUser, AppResult, AppState};
 use crate::proto::client::{
-    GetProfileResponse, SetUsernameRequest,
-    SetPasswordRequest, ListParticipatedRoomsResponse,
-    DeleteRoomResponse,
-    ListCreatedRoomsResponse,
+    DeleteRoomResponse, GetProfileResponse, ListCreatedRoomsResponse,
+    ListParticipatedRoomsResponse, SetPasswordRequest, SetUsernameRequest,
 };
 
 /// Typed request for PATCH /api/user
@@ -61,8 +59,14 @@ pub async fn update_user(
             .await
             .map_err(super::error::map_api_error)?;
 
-        let new_username = response.user.as_ref().map_or_else(|| username.clone(), |u| u.username.clone());
-        result.insert("username".to_string(), serde_json::Value::String(new_username));
+        let new_username = response
+            .user
+            .as_ref()
+            .map_or_else(|| username.clone(), |u| u.username.clone());
+        result.insert(
+            "username".to_string(),
+            serde_json::Value::String(new_username),
+        );
         updated_fields.push("username");
     }
 
@@ -70,11 +74,12 @@ pub async fn update_user(
     if let Some(ref password) = req.password {
         // Old password is required to prevent unauthorized password changes
         // from stolen session tokens.
-        let old_password = req.old_password
+        let old_password = req
+            .old_password
             .as_deref()
-            .ok_or_else(|| super::AppError::bad_request(
-                "old_password is required when changing password"
-            ))?
+            .ok_or_else(|| {
+                super::AppError::bad_request("old_password is required when changing password")
+            })?
             .to_string();
 
         let set_password_req = SetPasswordRequest {
@@ -92,12 +97,17 @@ pub async fn update_user(
     }
 
     if updated_fields.is_empty() {
-        return Err(super::AppError::bad_request("No valid update fields provided (username or password)"));
+        return Err(super::AppError::bad_request(
+            "No valid update fields provided (username or password)",
+        ));
     }
 
     result.insert(
         "message".to_string(),
-        serde_json::Value::String(format!("{} updated successfully", updated_fields.join(" and "))),
+        serde_json::Value::String(format!(
+            "{} updated successfully",
+            updated_fields.join(" and ")
+        )),
     );
     Ok(Json(serde_json::Value::Object(result)))
 }

@@ -30,7 +30,7 @@ use crate::error::ProviderClientError;
 /// - Not implemented -> `UNIMPLEMENTED`
 /// - Response too large -> `RESOURCE_EXHAUSTED`
 /// - API errors -> mapped by code (401/403/404 -> corresponding status, others -> `INTERNAL`)
-#[must_use] 
+#[must_use]
 pub fn map_provider_error(context: &str, e: &ProviderClientError) -> Status {
     match e {
         ProviderClientError::Auth(_) => {
@@ -43,9 +43,7 @@ pub fn map_provider_error(context: &str, e: &ProviderClientError) -> Status {
             s if s >= 500 => Status::unavailable(format!("{context}: upstream server error")),
             _ => Status::internal(format!("{context}: request failed")),
         },
-        ProviderClientError::Network(_) => {
-            Status::unavailable(format!("{context}: network error"))
-        }
+        ProviderClientError::Network(_) => Status::unavailable(format!("{context}: network error")),
         ProviderClientError::Parse(_) => {
             Status::internal(format!("{context}: failed to parse response"))
         }

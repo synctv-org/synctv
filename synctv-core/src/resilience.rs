@@ -144,7 +144,7 @@ pub mod circuit_breaker {
     ///
     /// Opens after `failure_threshold` consecutive failures.
     /// Uses exponential backoff from `min_backoff` to `max_backoff` in open state.
-    #[must_use] 
+    #[must_use]
     pub fn create(
         failure_threshold: u32,
         min_backoff: Duration,
@@ -159,7 +159,7 @@ pub mod circuit_breaker {
     }
 
     /// Create a circuit breaker with default settings (5 failures, 10-60s backoff)
-    #[must_use] 
+    #[must_use]
     pub fn create_default() -> failsafe::StateMachine<
         failsafe::failure_policy::ConsecutiveFailures<failsafe::backoff::Exponential>,
         (),
@@ -176,8 +176,7 @@ mod tests {
 
     #[test]
     fn test_timeout_config() {
-        let config = TimeoutConfig::new()
-            .with_db_query_timeout(Duration::from_mins(1));
+        let config = TimeoutConfig::new().with_db_query_timeout(Duration::from_mins(1));
 
         assert_eq!(config.db_query.as_secs(), 60);
     }

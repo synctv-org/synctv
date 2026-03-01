@@ -11,10 +11,10 @@
 //! Uses the existing SQL functions defined in migrations but previously uncalled
 //! by application code.
 
-use std::sync::Arc;
 use sqlx::PgPool;
+use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
-use tracing::{info, error};
+use tracing::{error, info};
 
 use super::LeaderCheck;
 
@@ -37,12 +37,11 @@ impl DatabaseMaintenanceService {
 
     /// Create audit log partitions for the next `months_ahead` months.
     pub async fn run_audit_partition_maintenance(&self) -> Result<(), sqlx::Error> {
-        let result = sqlx::query_scalar::<_, serde_json::Value>(
-            "SELECT create_audit_logs_partitions($1)",
-        )
-        .bind(3i32)
-        .fetch_one(&self.pool)
-        .await?;
+        let result =
+            sqlx::query_scalar::<_, serde_json::Value>("SELECT create_audit_logs_partitions($1)")
+                .bind(3i32)
+                .fetch_one(&self.pool)
+                .await?;
 
         let success = result["success_count"].as_i64().unwrap_or(0);
         let total = result["total_requested"].as_i64().unwrap_or(0);
@@ -61,18 +60,20 @@ impl DatabaseMaintenanceService {
 
     /// Delete old notifications with 90-day retention.
     pub async fn run_cleanup_notifications(&self) -> Result<(), sqlx::Error> {
-        let result = sqlx::query_scalar::<_, serde_json::Value>(
-            "SELECT cleanup_old_notifications($1, $2)",
-        )
-        .bind(30i32)  // read_retention_days
-        .bind(90i32)  // max_retention_days
-        .fetch_one(&self.pool)
-        .await?;
+        let result =
+            sqlx::query_scalar::<_, serde_json::Value>("SELECT cleanup_old_notifications($1, $2)")
+                .bind(30i32) // read_retention_days
+                .bind(90i32) // max_retention_days
+                .fetch_one(&self.pool)
+                .await?;
 
         let read_deleted = result["read_deleted"].as_i64().unwrap_or(0);
         let expired_deleted = result["expired_deleted"].as_i64().unwrap_or(0);
         if read_deleted > 0 || expired_deleted > 0 {
-            info!(read_deleted, expired_deleted, "Old notification cleanup completed");
+            info!(
+                read_deleted,
+                expired_deleted, "Old notification cleanup completed"
+            );
         }
         Ok(())
     }
@@ -84,11 +85,10 @@ impl DatabaseMaintenanceService {
     /// targets rooms with recent activity). Partition pruning makes this fast
     /// because the `created_at` filter maps directly to daily partitions.
     pub async fn run_cleanup_old_chat_messages(&self) -> Result<(), sqlx::Error> {
-        let result = sqlx::query(
-            "DELETE FROM chat_messages WHERE created_at <= NOW() - INTERVAL '90 days'",
-        )
-        .execute(&self.pool)
-        .await?;
+        let result =
+            sqlx::query("DELETE FROM chat_messages WHERE created_at <= NOW() - INTERVAL '90 days'")
+                .execute(&self.pool)
+                .await?;
 
         let deleted = result.rows_affected();
         if deleted > 0 {
@@ -99,12 +99,11 @@ impl DatabaseMaintenanceService {
 
     /// Delete expired provider credentials.
     pub async fn run_cleanup_credentials(&self) -> Result<(), sqlx::Error> {
-        let result = sqlx::query_scalar::<_, serde_json::Value>(
-            "SELECT cleanup_expired_credentials($1)",
-        )
-        .bind(1i32)  // buffer_hours
-        .fetch_one(&self.pool)
-        .await?;
+        let result =
+            sqlx::query_scalar::<_, serde_json::Value>("SELECT cleanup_expired_credentials($1)")
+                .bind(1i32) // buffer_hours
+                .fetch_one(&self.pool)
+                .await?;
 
         let deleted = result["deleted_count"].as_i64().unwrap_or(0);
         if deleted > 0 {
@@ -145,10 +144,7 @@ impl DatabaseMaintenanceService {
     /// Only executes when this node is the leader.
     /// Stops when the `CancellationToken` is cancelled.
     #[must_use]
-    pub fn spawn_maintenance_loop(
-        &self,
-        cancel: CancellationToken,
-    ) -> tokio::task::JoinHandle<()> {
+    pub fn spawn_maintenance_loop(&self, cancel: CancellationToken) -> tokio::task::JoinHandle<()> {
         let service = Self {
             pool: self.pool.clone(),
             leader_check: self.leader_check.clone(),
@@ -163,8 +159,7 @@ impl DatabaseMaintenanceService {
 
             let mut partition_interval =
                 tokio::time::interval(tokio::time::Duration::from_hours(12));
-            let mut cleanup_interval =
-                tokio::time::interval(tokio::time::Duration::from_hours(1));
+            let mut cleanup_interval = tokio::time::interval(tokio::time::Duration::from_hours(1));
 
             // Skip the first immediate tick (we already ran at startup)
             partition_interval.tick().await;
@@ -234,7 +229,10 @@ mod tests {
     #[allow(clippy::type_complexity)]
     fn test_email_token_cleanup_method_exists() {
         // Verify the cleanup method has the expected signature
-        let _: fn(&DatabaseMaintenanceService) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), sqlx::Error>> + Send + '_>> =
-            |svc| Box::pin(svc.run_cleanup_email_tokens());
+        let _: fn(
+            &DatabaseMaintenanceService,
+        ) -> std::pin::Pin<
+            Box<dyn std::future::Future<Output = Result<(), sqlx::Error>> + Send + '_>,
+        > = |svc| Box::pin(svc.run_cleanup_email_tokens());
     }
 }

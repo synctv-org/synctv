@@ -2,12 +2,15 @@ use std::sync::Arc;
 use std::time::Duration;
 use tracing::{error, info, warn};
 
-use synctv_core::bootstrap::RedisHandles;
-use synctv_core::Config;
-use synctv_cluster::sync::{ConnectionManager, ClusterManager};
-use synctv_cluster::discovery::{NodeRegistry, HealthMonitor, LoadBalancer, LoadBalancingStrategy, StaticDiscovery, StaticDiscoveryConfig, StaticPeerConfig};
 #[cfg(feature = "k8s")]
 use synctv_cluster::discovery::K8sDnsDiscovery;
+use synctv_cluster::discovery::{
+    HealthMonitor, LoadBalancer, LoadBalancingStrategy, NodeRegistry, StaticDiscovery,
+    StaticDiscoveryConfig, StaticPeerConfig,
+};
+use synctv_cluster::sync::{ClusterManager, ConnectionManager};
+use synctv_core::bootstrap::RedisHandles;
+use synctv_core::Config;
 
 /// Initialize the shared cluster components: `NodeRegistry`, heartbeat loop,
 /// `HealthMonitor`, and `LoadBalancer`.
@@ -19,11 +22,20 @@ pub async fn init_cluster_components(
     cm: &Arc<ClusterManager>,
     config: &Config,
     connection_manager: &ConnectionManager,
-) -> (Option<Arc<NodeRegistry>>, Option<Arc<HealthMonitor>>, Option<Arc<LoadBalancer>>) {
+) -> (
+    Option<Arc<NodeRegistry>>,
+    Option<Arc<HealthMonitor>>,
+    Option<Arc<LoadBalancer>>,
+) {
     let node_id = cm.node_id().to_string();
     let heartbeat_timeout_secs: i64 = 30;
 
-    let registry = match NodeRegistry::new(redis_handles.client.clone(), node_id.clone(), heartbeat_timeout_secs, &config.redis.key_prefix) {
+    let registry = match NodeRegistry::new(
+        redis_handles.client.clone(),
+        node_id.clone(),
+        heartbeat_timeout_secs,
+        &config.redis.key_prefix,
+    ) {
         Ok(r) => Arc::new(r),
         Err(e) => {
             warn!("Failed to create NodeRegistry: {}", e);
@@ -34,7 +46,10 @@ pub async fn init_cluster_components(
     let advertise_grpc = config.advertise_grpc_address();
     let advertise_http = config.advertise_http_address();
 
-    if let Err(e) = registry.register(advertise_grpc.clone(), advertise_http.clone()).await {
+    if let Err(e) = registry
+        .register(advertise_grpc.clone(), advertise_http.clone())
+        .await
+    {
         warn!("Failed to register node in Redis: {}", e);
         return (None, None, None);
     }
@@ -52,7 +67,8 @@ pub async fn init_cluster_components(
         advertise_grpc,
         advertise_http,
         Some(move || conn_mgr_for_hb.connection_count()),
-    ).await;
+    )
+    .await;
 
     let health_monitor = Arc::new(HealthMonitor::new(registry.clone(), 15));
     match health_monitor.start().await {
@@ -67,7 +83,7 @@ pub async fn init_cluster_components(
 
     let lb = Arc::new(
         LoadBalancer::new(registry.clone(), LoadBalancingStrategy::LeastConnections)
-            .with_health_monitor(health_monitor.clone())
+            .with_health_monitor(health_monitor.clone()),
     );
     info!("Load balancer initialized with LeastConnections strategy");
 
@@ -86,7 +102,12 @@ pub async fn init_cluster_discovery(
     redis_handles: &RedisHandles,
     cm: &Arc<ClusterManager>,
     connection_manager: &ConnectionManager,
-) -> (Option<Arc<NodeRegistry>>, Option<Arc<HealthMonitor>>, Option<Arc<LoadBalancer>>, Option<tokio::task::JoinHandle<()>>) {
+) -> (
+    Option<Arc<NodeRegistry>>,
+    Option<Arc<HealthMonitor>>,
+    Option<Arc<LoadBalancer>>,
+    Option<tokio::task::JoinHandle<()>>,
+) {
     let discovery_mode = config.cluster.discovery_mode.as_str();
 
     match discovery_mode {
@@ -109,7 +130,9 @@ pub async fn init_cluster_discovery(
                     // Start background refresh loop (re-resolve every 10 seconds)
                     let dns_refresh_handle = k8s_discovery.start_refresh_loop(10).await;
 
-                    let (nr, hm, lb) = init_cluster_components(redis_handles, cm, config, connection_manager).await;
+                    let (nr, hm, lb) =
+                        init_cluster_components(redis_handles, cm, config, connection_manager)
+                            .await;
 
                     // Bridge: periodically merge DNS-discovered peers into the
                     // NodeRegistry so HealthMonitor/LoadBalancer see newly-scaled
@@ -157,16 +180,20 @@ pub async fn init_cluster_discovery(
         }
         "static" => {
             info!("Using static peer discovery mode");
-            let (nr, hm, lb) = init_cluster_components(redis_handles, cm, config, connection_manager).await;
+            let (nr, hm, lb) =
+                init_cluster_components(redis_handles, cm, config, connection_manager).await;
 
             // Start static discovery background probe loop if we have a NodeRegistry
             let static_handle = if let Some(ref registry) = nr {
-                let peer_configs: Vec<StaticPeerConfig> = config.cluster.peers.iter().map(|addr| {
-                    StaticPeerConfig {
+                let peer_configs: Vec<StaticPeerConfig> = config
+                    .cluster
+                    .peers
+                    .iter()
+                    .map(|addr| StaticPeerConfig {
                         grpc_address: addr.clone(),
                         http_address: None,
-                    }
-                }).collect();
+                    })
+                    .collect();
 
                 if peer_configs.is_empty() {
                     warn!("Static discovery mode selected but no peers configured (cluster.peers is empty)");
@@ -180,11 +207,8 @@ pub async fn init_cluster_discovery(
                     default_http_port: config.server.http_port,
                 };
 
-                let static_discovery = StaticDiscovery::new(
-                    static_config,
-                    registry.clone(),
-                    cm.cancel_token(),
-                );
+                let static_discovery =
+                    StaticDiscovery::new(static_config, registry.clone(), cm.cancel_token());
 
                 let handle = static_discovery.start();
                 info!("Static peer discovery started");
@@ -204,7 +228,8 @@ pub async fn init_cluster_discovery(
                 );
             }
 
-            let (nr, hm, lb) = init_cluster_components(redis_handles, cm, config, connection_manager).await;
+            let (nr, hm, lb) =
+                init_cluster_components(redis_handles, cm, config, connection_manager).await;
             (nr, hm, lb, None)
         }
     }

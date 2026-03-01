@@ -72,8 +72,14 @@ fn test_edit_media_owner_vs_non_owner_permission() {
     let owner = UserId::from_string("owner_user".to_string());
     let other = UserId::from_string("other_user".to_string());
 
-    assert_eq!(required_edit_permission(Some(&owner), &owner), "EDIT_MOVIE_SELF");
-    assert_eq!(required_edit_permission(Some(&owner), &other), "EDIT_MOVIE_ANY");
+    assert_eq!(
+        required_edit_permission(Some(&owner), &owner),
+        "EDIT_MOVIE_SELF"
+    );
+    assert_eq!(
+        required_edit_permission(Some(&owner), &other),
+        "EDIT_MOVIE_ANY"
+    );
     assert_eq!(required_edit_permission(None, &other), "EDIT_MOVIE_ANY");
 }
 
@@ -112,10 +118,7 @@ fn test_remove_media_owner_vs_non_owner_permission() {
     );
 
     // Media with no creator (legacy) needs DELETE_MOVIE_ANY
-    assert_eq!(
-        required_delete_permission(None, &other),
-        "DELETE_MOVIE_ANY"
-    );
+    assert_eq!(required_delete_permission(None, &other), "DELETE_MOVIE_ANY");
 }
 
 #[test]

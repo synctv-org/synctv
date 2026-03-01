@@ -27,19 +27,19 @@ pub mod provider_common;
 pub mod providers;
 
 use axum::{
-    http::{Method, HeaderName, HeaderValue},
+    http::{HeaderName, HeaderValue, Method},
     middleware as axum_middleware,
     routing::{get, post},
     Router,
 };
 use std::sync::Arc;
-use tower_http::cors::CorsLayer;
 use synctv_cluster::sync::PublishRequest;
 use synctv_core::provider::{AlistProvider, BilibiliProvider, EmbyProvider};
 use synctv_core::repository::UserProviderCredentialRepository;
 use synctv_core::service::{RemoteProviderManager, RoomService, UserService};
 use synctv_livestream::api::LiveStreamingInfrastructure;
 use tokio::sync::mpsc;
+use tower_http::cors::CorsLayer;
 use tower_http::timeout::TimeoutLayer;
 use tower_http::trace::TraceLayer;
 
@@ -139,27 +139,31 @@ pub fn create_router_from_config(config: RouterConfig) -> axum::Router {
 /// Build `AppState` from `RouterConfig`, creating the shared API implementation layers.
 fn build_app_state(config: RouterConfig) -> AppState {
     // Create shared security pipeline for post-JWT checks (password version, user status, access token blacklist)
-    let security_pipeline = Arc::new(synctv_core::service::SecurityPipeline::new(
-        config.user_service.clone(),
-    ).with_token_blacklist(
-        config.user_service.token_blacklist_store(),
-        config.user_service.key_builder().clone(),
-    ));
+    let security_pipeline = Arc::new(
+        synctv_core::service::SecurityPipeline::new(config.user_service.clone())
+            .with_token_blacklist(
+                config.user_service.token_blacklist_store(),
+                config.user_service.key_builder().clone(),
+            ),
+    );
 
-    let client_api = Arc::new(crate::impls::ClientApiImpl::new(
-        config.user_service.clone(),
-        config.room_service.clone(),
-        config.connection_manager.clone(),
-        config.config.clone(),
-        config.publish_key_service.clone(),
-        config.jwt_service.clone(),
-        config.live_streaming_infrastructure.clone(),
-        None,
-        config.settings_registry.clone(),
-    ).with_redis_publish_tx(config.redis_publish_tx.clone())
-     .with_redis_conn(config.redis_conn.clone())
-     .with_rate_limiter(config.rate_limiter.clone())
-     .with_credential_encryption(config.credential_encryption.clone()));
+    let client_api = Arc::new(
+        crate::impls::ClientApiImpl::new(
+            config.user_service.clone(),
+            config.room_service.clone(),
+            config.connection_manager.clone(),
+            config.config.clone(),
+            config.publish_key_service.clone(),
+            config.jwt_service.clone(),
+            config.live_streaming_infrastructure.clone(),
+            None,
+            config.settings_registry.clone(),
+        )
+        .with_redis_publish_tx(config.redis_publish_tx.clone())
+        .with_redis_conn(config.redis_conn.clone())
+        .with_rate_limiter(config.rate_limiter.clone())
+        .with_credential_encryption(config.credential_encryption.clone()),
+    );
 
     // Wire in the resolved STUN URL if the built-in STUN server started successfully
     let client_api = if let Some(ref stun_url) = config.builtin_stun_url {
@@ -179,8 +183,10 @@ fn build_app_state(config: RouterConfig) -> AppState {
 
     let admin_api = config.settings_service.as_ref().map(|settings_svc| {
         let email_svc = config.email_service.clone().unwrap_or_else(|| {
-            Arc::new(synctv_core::service::EmailService::new(None)
-                .expect("EmailService::new(None) should not fail"))
+            Arc::new(
+                synctv_core::service::EmailService::new(None)
+                    .expect("EmailService::new(None) should not fail"),
+            )
         });
         Arc::new(crate::impls::AdminApiImpl::new(
             config.room_service.clone(),
@@ -197,9 +203,10 @@ fn build_app_state(config: RouterConfig) -> AppState {
     });
 
     // C-1: Create shared NotificationApiImpl (matches HTTP and gRPC)
-    let notification_api = config.notification_service.as_ref().map(|notif_svc| {
-        Arc::new(crate::impls::NotificationApiImpl::new(notif_svc.clone()))
-    });
+    let notification_api = config
+        .notification_service
+        .as_ref()
+        .map(|notif_svc| Arc::new(crate::impls::NotificationApiImpl::new(notif_svc.clone())));
 
     // Create shared OAuth2ApiImpl
     let oauth2_api = config.oauth2_service.as_ref().map(|oauth2_svc| {
@@ -213,13 +220,17 @@ fn build_app_state(config: RouterConfig) -> AppState {
     let rate_limit_config = Arc::new(config.config.http_rate_limits.clone());
 
     // H-5: Create shared JwtValidator once at startup (not per-request)
-    let jwt_validator = Arc::new(synctv_core::service::auth::JwtValidator::new(
-        Arc::new(config.jwt_service.clone()),
-    ));
+    let jwt_validator = Arc::new(synctv_core::service::auth::JwtValidator::new(Arc::new(
+        config.jwt_service.clone(),
+    )));
 
     // H-2: Create shared provider ApiImpls once at startup (not per-request)
-    let bilibili_api = Arc::new(crate::impls::BilibiliApiImpl::new(config.bilibili_provider.clone()));
-    let alist_api = Arc::new(crate::impls::AlistApiImpl::new(config.alist_provider.clone()));
+    let bilibili_api = Arc::new(crate::impls::BilibiliApiImpl::new(
+        config.bilibili_provider.clone(),
+    ));
+    let alist_api = Arc::new(crate::impls::AlistApiImpl::new(
+        config.alist_provider.clone(),
+    ));
     let emby_api = Arc::new(crate::impls::EmbyApiImpl::new(config.emby_provider.clone()));
 
     AppState {
@@ -262,8 +273,14 @@ fn register_auth_routes(state: &AppState) -> Router<AppState> {
         .route("/api/auth/register", post(auth::register))
         .route("/api/auth/login", post(auth::login))
         .route("/api/auth/refresh", post(auth::refresh_token))
-        .route("/api/oauth2/{provider}/exchange", post(oauth2::exchange_authorization_code))
-        .route("/api/rooms/{room_id}/password/verify", post(room::check_password))
+        .route(
+            "/api/oauth2/{provider}/exchange",
+            post(oauth2::exchange_authorization_code),
+        )
+        .route(
+            "/api/rooms/{room_id}/password/verify",
+            post(room::check_password),
+        )
         // Tighter body limit for authentication endpoints (64 KB)
         .layer(axum::extract::DefaultBodyLimit::max(body_limits::AUTH))
         .route_layer(axum_middleware::from_fn_with_state(
@@ -277,14 +294,38 @@ fn register_auth_routes(state: &AppState) -> Router<AppState> {
 fn register_media_routes(state: &AppState) -> Router<AppState> {
     Router::new()
         .route("/api/rooms/{room_id}/media", post(room::add_media))
-        .route("/api/rooms/{room_id}/media", axum::routing::delete(room::clear_playlist))
-        .route("/api/rooms/{room_id}/media", axum::routing::patch(room::update_media_batch))
-        .route("/api/rooms/{room_id}/media/batch", post(room::push_media_batch))
-        .route("/api/rooms/{room_id}/media/batch", axum::routing::delete(room::delete_media_batch))
-        .route("/api/rooms/{room_id}/media/reorder", post(room::reorder_media_batch))
-        .route("/api/rooms/{room_id}/media/swap", post(room::swap_media_items))
-        .route("/api/rooms/{room_id}/media/{media_id}", axum::routing::delete(room::delete_media))
-        .route("/api/rooms/{room_id}/media/{media_id}", axum::routing::patch(room::edit_media))
+        .route(
+            "/api/rooms/{room_id}/media",
+            axum::routing::delete(room::clear_playlist),
+        )
+        .route(
+            "/api/rooms/{room_id}/media",
+            axum::routing::patch(room::update_media_batch),
+        )
+        .route(
+            "/api/rooms/{room_id}/media/batch",
+            post(room::push_media_batch),
+        )
+        .route(
+            "/api/rooms/{room_id}/media/batch",
+            axum::routing::delete(room::delete_media_batch),
+        )
+        .route(
+            "/api/rooms/{room_id}/media/reorder",
+            post(room::reorder_media_batch),
+        )
+        .route(
+            "/api/rooms/{room_id}/media/swap",
+            post(room::swap_media_items),
+        )
+        .route(
+            "/api/rooms/{room_id}/media/{media_id}",
+            axum::routing::delete(room::delete_media),
+        )
+        .route(
+            "/api/rooms/{room_id}/media/{media_id}",
+            axum::routing::patch(room::edit_media),
+        )
         // Media metadata bodies are small (URLs, titles, subtitles)
         .layer(axum::extract::DefaultBodyLimit::max(body_limits::MEDIA))
         .route_layer(axum_middleware::from_fn_with_state(
@@ -298,27 +339,78 @@ fn register_media_routes(state: &AppState) -> Router<AppState> {
 fn register_write_routes(state: &AppState) -> Router<AppState> {
     Router::new()
         .route("/api/rooms", post(room::create_room))
-        .route("/api/rooms/{room_id}", axum::routing::delete(room::delete_room))
-        .route("/api/rooms/{room_id}/members/@me", axum::routing::put(room::join_room))
-        .route("/api/rooms/{room_id}/members/@me", axum::routing::delete(room::leave_room))
-        .route("/api/rooms/{room_id}/settings", axum::routing::patch(room::update_room_settings))
-        .route("/api/rooms/{room_id}/password", axum::routing::patch(room::set_room_password))
-        .route("/api/rooms/{room_id}/playback/start", post(room::start_playback))
-        .route("/api/rooms/{room_id}/playback/stop", post(room::stop_playback))
+        .route(
+            "/api/rooms/{room_id}",
+            axum::routing::delete(room::delete_room),
+        )
+        .route(
+            "/api/rooms/{room_id}/members/@me",
+            axum::routing::put(room::join_room),
+        )
+        .route(
+            "/api/rooms/{room_id}/members/@me",
+            axum::routing::delete(room::leave_room),
+        )
+        .route(
+            "/api/rooms/{room_id}/settings",
+            axum::routing::patch(room::update_room_settings),
+        )
+        .route(
+            "/api/rooms/{room_id}/password",
+            axum::routing::patch(room::set_room_password),
+        )
+        .route(
+            "/api/rooms/{room_id}/playback/start",
+            post(room::start_playback),
+        )
+        .route(
+            "/api/rooms/{room_id}/playback/stop",
+            post(room::stop_playback),
+        )
         .route("/api/user", axum::routing::patch(user::update_user))
         .route("/api/user/me", axum::routing::delete(user::delete_me))
-        .route("/api/user/rooms/{room_id}", axum::routing::delete(user::delete_my_room))
-        .route("/api/oauth2/{provider}/bind", get(oauth2::get_bind_authorize_url))
-        .route("/api/oauth2/{provider}/unlink", axum::routing::delete(oauth2::unlink_provider))
+        .route(
+            "/api/user/rooms/{room_id}",
+            axum::routing::delete(user::delete_my_room),
+        )
+        .route(
+            "/api/oauth2/{provider}/bind",
+            get(oauth2::get_bind_authorize_url),
+        )
+        .route(
+            "/api/oauth2/{provider}/unlink",
+            axum::routing::delete(oauth2::unlink_provider),
+        )
         .route("/api/oauth2/linked", get(oauth2::get_linked_providers))
-        .route("/api/rooms/{room_id}/members/{user_id}", axum::routing::delete(room_extra::kick_member))
-        .route("/api/rooms/{room_id}/members/{user_id}", axum::routing::patch(room_extra::set_member_permissions))
+        .route(
+            "/api/rooms/{room_id}/members/{user_id}",
+            axum::routing::delete(room_extra::kick_member),
+        )
+        .route(
+            "/api/rooms/{room_id}/members/{user_id}",
+            axum::routing::patch(room_extra::set_member_permissions),
+        )
         .route("/api/rooms/{room_id}/bans", post(room_extra::ban_member))
-        .route("/api/rooms/{room_id}/bans/{user_id}", axum::routing::delete(room_extra::unban_member))
-        .route("/api/rooms/{room_id}/playlists", post(room::create_playlist))
-        .route("/api/rooms/{room_id}/playlists/{playlist_id}", axum::routing::patch(room::update_playlist))
-        .route("/api/rooms/{room_id}/playlists/{playlist_id}", axum::routing::delete(room::delete_playlist))
-        .route("/api/rooms/{room_id}/settings/reset", post(room::reset_room_settings))
+        .route(
+            "/api/rooms/{room_id}/bans/{user_id}",
+            axum::routing::delete(room_extra::unban_member),
+        )
+        .route(
+            "/api/rooms/{room_id}/playlists",
+            post(room::create_playlist),
+        )
+        .route(
+            "/api/rooms/{room_id}/playlists/{playlist_id}",
+            axum::routing::patch(room::update_playlist),
+        )
+        .route(
+            "/api/rooms/{room_id}/playlists/{playlist_id}",
+            axum::routing::delete(room::delete_playlist),
+        )
+        .route(
+            "/api/rooms/{room_id}/settings/reset",
+            post(room::reset_room_settings),
+        )
         // Room/user write bodies should be small (room metadata, settings, passwords)
         .layer(axum::extract::DefaultBodyLimit::max(body_limits::ROOM))
         .route_layer(axum_middleware::from_fn_with_state(
@@ -339,15 +431,30 @@ fn register_read_routes(state: &AppState) -> Router<AppState> {
         .route("/api/rooms/hot", get(room::get_hot_rooms))
         .route("/api/rooms/{room_id}/check", get(room::check_room))
         .route("/api/rooms/{room_id}", get(room::get_room))
-        .route("/api/rooms/{room_id}/settings", get(room::get_room_settings))
+        .route(
+            "/api/rooms/{room_id}/settings",
+            get(room::get_room_settings),
+        )
         .route("/api/rooms/{room_id}/members", get(room::get_room_members))
-        .route("/api/rooms/{room_id}/chat/history", get(room::get_chat_history))
+        .route(
+            "/api/rooms/{room_id}/chat/history",
+            get(room::get_chat_history),
+        )
         // Playlist and Media APIs
         .route("/api/rooms/{room_id}/playlists", get(room::list_playlists))
-        .route("/api/rooms/{room_id}/playlists/{playlist_id}", get(room::get_playlist))
-        .route("/api/rooms/{room_id}/playlists/{playlist_id}/items", get(media::list_playlist_items))
+        .route(
+            "/api/rooms/{room_id}/playlists/{playlist_id}",
+            get(room::get_playlist),
+        )
+        .route(
+            "/api/rooms/{room_id}/playlists/{playlist_id}/items",
+            get(media::list_playlist_items),
+        )
         .route("/api/rooms/{room_id}/media", get(room::list_media))
-        .route("/api/rooms/{room_id}/media/{media_id}", get(room::get_media))
+        .route(
+            "/api/rooms/{room_id}/media/{media_id}",
+            get(room::get_media),
+        )
         .route("/api/rooms/{room_id}/playback", get(room::get_playback))
         .route_layer(axum_middleware::from_fn_with_state(
             state.clone(),
@@ -363,38 +470,26 @@ fn register_all_routes(state: AppState) -> Router<AppState> {
         health::create_health_router()
     };
 
-    let email_routes = email_verification::create_email_router()
-        .route_layer(axum_middleware::from_fn_with_state(
-            state.clone(),
-            middleware::auth_rate_limit,
-        ));
-
-    
+    let email_routes = email_verification::create_email_router().route_layer(
+        axum_middleware::from_fn_with_state(state.clone(), middleware::auth_rate_limit),
+    );
 
     Router::new()
         .merge(health_router)
         .merge(public::create_public_router())
         .merge(email_routes)
+        .merge(publish_key::create_publish_key_router().route_layer(
+            axum_middleware::from_fn_with_state(state.clone(), middleware::auth_rate_limit),
+        ))
         .merge(
-            publish_key::create_publish_key_router()
-                .route_layer(axum_middleware::from_fn_with_state(
-                    state.clone(),
-                    middleware::auth_rate_limit,
-                ))
+            notifications::create_notification_read_router().route_layer(
+                axum_middleware::from_fn_with_state(state.clone(), middleware::read_rate_limit),
+            ),
         )
         .merge(
-            notifications::create_notification_read_router()
-                .route_layer(axum_middleware::from_fn_with_state(
-                    state.clone(),
-                    middleware::read_rate_limit,
-                ))
-        )
-        .merge(
-            notifications::create_notification_write_router()
-                .route_layer(axum_middleware::from_fn_with_state(
-                    state.clone(),
-                    middleware::write_rate_limit,
-                ))
+            notifications::create_notification_write_router().route_layer(
+                axum_middleware::from_fn_with_state(state.clone(), middleware::write_rate_limit),
+            ),
         )
         .merge(register_auth_routes(&state))
         .merge(register_media_routes(&state))
@@ -402,12 +497,18 @@ fn register_all_routes(state: AppState) -> Router<AppState> {
         // OAuth2 read-only routes
         .merge(
             Router::new()
-                .route("/api/oauth2/{provider}/authorize", get(oauth2::get_authorize_url))
-                .route("/api/oauth2/providers", get(oauth2::list_available_providers))
+                .route(
+                    "/api/oauth2/{provider}/authorize",
+                    get(oauth2::get_authorize_url),
+                )
+                .route(
+                    "/api/oauth2/providers",
+                    get(oauth2::list_available_providers),
+                )
                 .route_layer(axum_middleware::from_fn_with_state(
                     state.clone(),
                     middleware::read_rate_limit,
-                ))
+                )),
         )
         .merge(register_read_routes(&state))
         // Live streaming routes
@@ -417,25 +518,31 @@ fn register_all_routes(state: AppState) -> Router<AppState> {
                 .route_layer(axum_middleware::from_fn_with_state(
                     state.clone(),
                     middleware::streaming_rate_limit,
-                ))
+                )),
         )
         // WebSocket endpoint
         .merge(
             Router::new()
-                .route("/ws/rooms/{room_id}", axum::routing::get(websocket::websocket_handler))
+                .route(
+                    "/ws/rooms/{room_id}",
+                    axum::routing::get(websocket::websocket_handler),
+                )
                 .route_layer(axum_middleware::from_fn_with_state(
                     state.clone(),
                     middleware::websocket_rate_limit,
-                ))
+                )),
         )
         // WebRTC configuration endpoints
         .merge(
             Router::new()
-                .route("/api/rooms/{room_id}/webrtc/ice-servers", get(webrtc::get_ice_servers))
+                .route(
+                    "/api/rooms/{room_id}/webrtc/ice-servers",
+                    get(webrtc::get_ice_servers),
+                )
                 .route_layer(axum_middleware::from_fn_with_state(
                     state.clone(),
                     middleware::read_rate_limit,
-                ))
+                )),
         )
         // Admin routes
         .merge(
@@ -444,20 +551,26 @@ fn register_all_routes(state: AppState) -> Router<AppState> {
                 .route_layer(axum_middleware::from_fn_with_state(
                     state.clone(),
                     middleware::admin_rate_limit,
-                ))
+                )),
         )
         // Provider routes
         .merge(
             Router::new()
                 .nest("/api/provider", provider_common::register_common_routes())
-                .nest("/api/providers/bilibili", providers::bilibili::bilibili_routes())
+                .nest(
+                    "/api/providers/bilibili",
+                    providers::bilibili::bilibili_routes(),
+                )
                 .nest("/api/providers/alist", providers::alist::alist_routes())
                 .nest("/api/providers/emby", providers::emby::emby_routes())
-                .nest("/api/providers/direct_url", providers::direct_url::direct_url_routes())
+                .nest(
+                    "/api/providers/direct_url",
+                    providers::direct_url::direct_url_routes(),
+                )
                 .route_layer(axum_middleware::from_fn_with_state(
                     state.clone(),
                     middleware::read_rate_limit,
-                ))
+                )),
         )
 }
 
@@ -483,10 +596,19 @@ fn build_cors_layer(config: &synctv_core::Config) -> CorsLayer {
             "CORS: Configured with {} allowed origin(s)",
             origins.len()
         );
-        let x_room_id: HeaderName = "x-room-id".parse().unwrap_or_else(|_| HeaderName::from_static("x-room-id"));
+        let x_room_id: HeaderName = "x-room-id"
+            .parse()
+            .unwrap_or_else(|_| HeaderName::from_static("x-room-id"));
         CorsLayer::new()
             .allow_origin(origins)
-            .allow_methods([Method::GET, Method::POST, Method::PUT, Method::PATCH, Method::DELETE, Method::OPTIONS])
+            .allow_methods([
+                Method::GET,
+                Method::POST,
+                Method::PUT,
+                Method::PATCH,
+                Method::DELETE,
+                Method::OPTIONS,
+            ])
             .allow_headers([
                 axum::http::header::AUTHORIZATION,
                 axum::http::header::CONTENT_TYPE,
@@ -519,23 +641,26 @@ fn apply_global_layers(router: Router<AppState>, state: &AppState) -> axum::Rout
         ))
         // Request ID: generates/propagates X-Request-ID per request (Issue #22)
         .layer(axum_middleware::from_fn(middleware::request_id_middleware))
-        .layer(axum_middleware::from_fn(middleware::security_headers_middleware));
+        .layer(axum_middleware::from_fn(
+            middleware::security_headers_middleware,
+        ));
 
     // Apply HSTS
     let hsts_value = middleware::hsts_header(63_072_000, true, false);
-    let router = router.layer(axum_middleware::from_fn(move |request: axum::extract::Request, next: axum::middleware::Next| {
-        let hsts = hsts_value.clone();
-        async move {
-            let mut response = next.run(request).await;
-            if let Ok(value) = axum::http::HeaderValue::from_str(&hsts) {
-                response.headers_mut().insert(
-                    axum::http::header::STRICT_TRANSPORT_SECURITY,
-                    value,
-                );
+    let router = router.layer(axum_middleware::from_fn(
+        move |request: axum::extract::Request, next: axum::middleware::Next| {
+            let hsts = hsts_value.clone();
+            async move {
+                let mut response = next.run(request).await;
+                if let Ok(value) = axum::http::HeaderValue::from_str(&hsts) {
+                    response
+                        .headers_mut()
+                        .insert(axum::http::header::STRICT_TRANSPORT_SECURITY, value);
+                }
+                response
             }
-            response
-        }
-    }));
+        },
+    ));
 
     router
         .layer(axum_middleware::from_fn(
@@ -544,4 +669,3 @@ fn apply_global_layers(router: Router<AppState>, state: &AppState) -> axum::Rout
         .layer(TraceLayer::new_for_http())
         .with_state(state.clone())
 }
-

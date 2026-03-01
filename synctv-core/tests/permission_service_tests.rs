@@ -8,22 +8,19 @@
 
 use std::sync::Arc;
 
-use synctv_core_testing::create_test_pool;
-use synctv_core::{
-    cache::{KeyBuilder, UsernameCache, NoopCacheL2},
-    config::PasswordComplexityConfig,
-    models::{
-        UserId, User, UserRole, UserStatus,
-        RoomRole, PermissionBits,
-    },
-    repository::UserRepository,
-    service::{
-        RoomService, UserService, InMemoryTokenBlacklistStore,
-        auth::{JwtService, BruteForceProtection},
-    },
-};
 use chrono::Utc;
 use sqlx::PgPool;
+use synctv_core::{
+    cache::{KeyBuilder, NoopCacheL2, UsernameCache},
+    config::PasswordComplexityConfig,
+    models::{PermissionBits, RoomRole, User, UserId, UserRole, UserStatus},
+    repository::UserRepository,
+    service::{
+        auth::{BruteForceProtection, JwtService},
+        InMemoryTokenBlacklistStore, RoomService, UserService,
+    },
+};
+use synctv_core_testing::create_test_pool;
 fn make_user_service(pool: PgPool) -> UserService {
     let secret = "Test_Secret_Key_For_JWT_Tokens_32Bytes!!";
     let jwt_service = JwtService::new(secret).expect("Failed to create JwtService");
@@ -98,7 +95,11 @@ async fn test_creator_has_all_permissions() {
         .await
         .unwrap();
 
-    assert_eq!(perms.0, PermissionBits::ALL, "Creator should have ALL permissions");
+    assert_eq!(
+        perms.0,
+        PermissionBits::ALL,
+        "Creator should have ALL permissions"
+    );
 
     // Check specific permissions
     assert!(perms.has(PermissionBits::DELETE_ROOM));
@@ -119,8 +120,14 @@ async fn test_admin_default_bits() {
     let user_repo = UserRepository::new(pool.clone());
     let room_service = make_room_service(pool.clone());
 
-    let creator = user_repo.create(&make_user("admin_perm_creator")).await.unwrap();
-    let admin = user_repo.create(&make_user("admin_perm_user")).await.unwrap();
+    let creator = user_repo
+        .create(&make_user("admin_perm_creator"))
+        .await
+        .unwrap();
+    let admin = user_repo
+        .create(&make_user("admin_perm_user"))
+        .await
+        .unwrap();
 
     let (room, _) = room_service
         .create_room(
@@ -133,15 +140,22 @@ async fn test_admin_default_bits() {
         .await
         .unwrap();
 
-    room_service.join_room(room.id.clone(), admin.id.clone(), None).await.unwrap();
+    room_service
+        .join_room(room.id.clone(), admin.id.clone(), None)
+        .await
+        .unwrap();
 
     // Promote to admin
-    room_service.member_service().set_member_role(
-        room.id.clone(),
-        creator.id.clone(),
-        admin.id.clone(),
-        RoomRole::Admin,
-    ).await.unwrap();
+    room_service
+        .member_service()
+        .set_member_role(
+            room.id.clone(),
+            creator.id.clone(),
+            admin.id.clone(),
+            RoomRole::Admin,
+        )
+        .await
+        .unwrap();
 
     let perm_service = room_service.permission_service();
     let perms = perm_service
@@ -150,12 +164,25 @@ async fn test_admin_default_bits() {
         .unwrap();
 
     // Admin should have common admin permissions
-    assert!(perms.has(PermissionBits::BAN_MEMBER), "Admin should have BAN_MEMBER");
-    assert!(perms.has(PermissionBits::KICK_USER), "Admin should have KICK_USER");
-    assert!(perms.has(PermissionBits::SEND_CHAT), "Admin should have SEND_CHAT");
+    assert!(
+        perms.has(PermissionBits::BAN_MEMBER),
+        "Admin should have BAN_MEMBER"
+    );
+    assert!(
+        perms.has(PermissionBits::KICK_USER),
+        "Admin should have KICK_USER"
+    );
+    assert!(
+        perms.has(PermissionBits::SEND_CHAT),
+        "Admin should have SEND_CHAT"
+    );
 
     // Admin should NOT have ALL permissions (that's creator-only)
-    assert_ne!(perms.0, PermissionBits::ALL, "Admin should not have ALL permissions");
+    assert_ne!(
+        perms.0,
+        PermissionBits::ALL,
+        "Admin should not have ALL permissions"
+    );
 }
 
 // ========== Member Permissions Test ==========
@@ -167,8 +194,14 @@ async fn test_member_default_bits() {
     let user_repo = UserRepository::new(pool.clone());
     let room_service = make_room_service(pool.clone());
 
-    let creator = user_repo.create(&make_user("member_perm_creator")).await.unwrap();
-    let member = user_repo.create(&make_user("member_perm_user")).await.unwrap();
+    let creator = user_repo
+        .create(&make_user("member_perm_creator"))
+        .await
+        .unwrap();
+    let member = user_repo
+        .create(&make_user("member_perm_user"))
+        .await
+        .unwrap();
 
     let (room, _) = room_service
         .create_room(
@@ -181,7 +214,10 @@ async fn test_member_default_bits() {
         .await
         .unwrap();
 
-    room_service.join_room(room.id.clone(), member.id.clone(), None).await.unwrap();
+    room_service
+        .join_room(room.id.clone(), member.id.clone(), None)
+        .await
+        .unwrap();
 
     let perm_service = room_service.permission_service();
     let perms = perm_service
@@ -190,13 +226,28 @@ async fn test_member_default_bits() {
         .unwrap();
 
     // Member should have basic permissions
-    assert!(perms.has(PermissionBits::SEND_CHAT), "Member should have SEND_CHAT");
-    assert!(perms.has(PermissionBits::ADD_MOVIE), "Member should have ADD_MOVIE");
-    assert!(perms.has(PermissionBits::VIEW_PLAYLIST), "Member should have VIEW_PLAYLIST");
+    assert!(
+        perms.has(PermissionBits::SEND_CHAT),
+        "Member should have SEND_CHAT"
+    );
+    assert!(
+        perms.has(PermissionBits::ADD_MOVIE),
+        "Member should have ADD_MOVIE"
+    );
+    assert!(
+        perms.has(PermissionBits::VIEW_PLAYLIST),
+        "Member should have VIEW_PLAYLIST"
+    );
 
     // Member should NOT have admin/creator-only permissions
-    assert!(!perms.has(PermissionBits::BAN_MEMBER), "Member should not have BAN_MEMBER");
-    assert!(!perms.has(PermissionBits::DELETE_ROOM), "Member should not have DELETE_ROOM");
+    assert!(
+        !perms.has(PermissionBits::BAN_MEMBER),
+        "Member should not have BAN_MEMBER"
+    );
+    assert!(
+        !perms.has(PermissionBits::DELETE_ROOM),
+        "Member should not have DELETE_ROOM"
+    );
 }
 
 // ========== Guest Permissions Test ==========
@@ -219,13 +270,28 @@ async fn test_guest_default_no_permissions() {
     let perms = perm_service.calculate_role_default_permissions(&RoomRole::Guest, &settings);
 
     // Guest should have VIEW_PLAYLIST
-    assert!(perms.has(PermissionBits::VIEW_PLAYLIST), "Guest should have VIEW_PLAYLIST");
+    assert!(
+        perms.has(PermissionBits::VIEW_PLAYLIST),
+        "Guest should have VIEW_PLAYLIST"
+    );
 
     // Guest should NOT have these
-    assert!(!perms.has(PermissionBits::SEND_CHAT), "Guest should not have SEND_CHAT");
-    assert!(!perms.has(PermissionBits::ADD_MOVIE), "Guest should not have ADD_MOVIE");
-    assert!(!perms.has(PermissionBits::BAN_MEMBER), "Guest should not have BAN_MEMBER");
-    assert!(!perms.has(PermissionBits::DELETE_ROOM), "Guest should not have DELETE_ROOM");
+    assert!(
+        !perms.has(PermissionBits::SEND_CHAT),
+        "Guest should not have SEND_CHAT"
+    );
+    assert!(
+        !perms.has(PermissionBits::ADD_MOVIE),
+        "Guest should not have ADD_MOVIE"
+    );
+    assert!(
+        !perms.has(PermissionBits::BAN_MEMBER),
+        "Guest should not have BAN_MEMBER"
+    );
+    assert!(
+        !perms.has(PermissionBits::DELETE_ROOM),
+        "Guest should not have DELETE_ROOM"
+    );
 }
 
 // ========== Allow Override Test ==========
@@ -251,7 +317,10 @@ async fn test_allow_override_role_default() {
         .await
         .unwrap();
 
-    room_service.join_room(room.id.clone(), member.id.clone(), None).await.unwrap();
+    room_service
+        .join_room(room.id.clone(), member.id.clone(), None)
+        .await
+        .unwrap();
 
     // Member by default should NOT have BAN_MEMBER
     let perm_service = room_service.permission_service();
@@ -262,24 +331,32 @@ async fn test_allow_override_role_default() {
     assert!(!perms_before.has(PermissionBits::BAN_MEMBER));
 
     // Grant BAN_MEMBER to the member (Allow override)
-    room_service.member_service().grant_permission(
-        room.id.clone(),
-        creator.id.clone(),
-        member.id.clone(),
-        PermissionBits::BAN_MEMBER,
-    ).await.unwrap();
+    room_service
+        .member_service()
+        .grant_permission(
+            room.id.clone(),
+            creator.id.clone(),
+            member.id.clone(),
+            PermissionBits::BAN_MEMBER,
+        )
+        .await
+        .unwrap();
 
     // Now member should have BAN_MEMBER
     let perms_after = perm_service
         .get_user_permissions_no_cache(&room.id, &member.id)
         .await
         .unwrap();
-    assert!(perms_after.has(PermissionBits::BAN_MEMBER),
-        "Member should have BAN_MEMBER after Allow override");
+    assert!(
+        perms_after.has(PermissionBits::BAN_MEMBER),
+        "Member should have BAN_MEMBER after Allow override"
+    );
 
     // Original permissions should still be present
-    assert!(perms_after.has(PermissionBits::SEND_CHAT),
-        "Member should still have SEND_CHAT");
+    assert!(
+        perms_after.has(PermissionBits::SEND_CHAT),
+        "Member should still have SEND_CHAT"
+    );
 }
 
 // ========== Deny Override Test ==========
@@ -305,7 +382,10 @@ async fn test_deny_override_role_default() {
         .await
         .unwrap();
 
-    room_service.join_room(room.id.clone(), member.id.clone(), None).await.unwrap();
+    room_service
+        .join_room(room.id.clone(), member.id.clone(), None)
+        .await
+        .unwrap();
 
     // Member should have SEND_CHAT by default
     let perm_service = room_service.permission_service();
@@ -316,24 +396,32 @@ async fn test_deny_override_role_default() {
     assert!(perms_before.has(PermissionBits::SEND_CHAT));
 
     // Revoke SEND_CHAT (Deny override)
-    room_service.member_service().revoke_permission(
-        room.id.clone(),
-        creator.id.clone(),
-        member.id.clone(),
-        PermissionBits::SEND_CHAT,
-    ).await.unwrap();
+    room_service
+        .member_service()
+        .revoke_permission(
+            room.id.clone(),
+            creator.id.clone(),
+            member.id.clone(),
+            PermissionBits::SEND_CHAT,
+        )
+        .await
+        .unwrap();
 
     // Now member should NOT have SEND_CHAT
     let perms_after = perm_service
         .get_user_permissions_no_cache(&room.id, &member.id)
         .await
         .unwrap();
-    assert!(!perms_after.has(PermissionBits::SEND_CHAT),
-        "Member should not have SEND_CHAT after Deny override");
+    assert!(
+        !perms_after.has(PermissionBits::SEND_CHAT),
+        "Member should not have SEND_CHAT after Deny override"
+    );
 
     // Other permissions should still be present
-    assert!(perms_after.has(PermissionBits::ADD_MOVIE),
-        "Member should still have ADD_MOVIE");
+    assert!(
+        perms_after.has(PermissionBits::ADD_MOVIE),
+        "Member should still have ADD_MOVIE"
+    );
 }
 
 // ========== check_permissions batch (S11) ==========
@@ -345,7 +433,10 @@ async fn test_check_permissions_batch_all_present() {
     let user_repo = UserRepository::new(pool.clone());
     let room_service = make_room_service(pool.clone());
 
-    let creator = user_repo.create(&make_user("batch_perm_creator")).await.unwrap();
+    let creator = user_repo
+        .create(&make_user("batch_perm_creator"))
+        .await
+        .unwrap();
 
     let (room, _) = room_service
         .create_room(
@@ -365,11 +456,18 @@ async fn test_check_permissions_batch_all_present() {
         .check_permissions(
             &room.id,
             &creator.id,
-            &[PermissionBits::SEND_CHAT, PermissionBits::ADD_MOVIE, PermissionBits::DELETE_ROOM],
+            &[
+                PermissionBits::SEND_CHAT,
+                PermissionBits::ADD_MOVIE,
+                PermissionBits::DELETE_ROOM,
+            ],
         )
         .await;
 
-    assert!(result.is_ok(), "Creator should have all checked permissions");
+    assert!(
+        result.is_ok(),
+        "Creator should have all checked permissions"
+    );
 }
 
 #[tokio::test]
@@ -379,8 +477,14 @@ async fn test_check_permissions_batch_one_missing_fails() {
     let user_repo = UserRepository::new(pool.clone());
     let room_service = make_room_service(pool.clone());
 
-    let creator = user_repo.create(&make_user("batch_miss_creator")).await.unwrap();
-    let member = user_repo.create(&make_user("batch_miss_member")).await.unwrap();
+    let creator = user_repo
+        .create(&make_user("batch_miss_creator"))
+        .await
+        .unwrap();
+    let member = user_repo
+        .create(&make_user("batch_miss_member"))
+        .await
+        .unwrap();
 
     let (room, _) = room_service
         .create_room(
@@ -409,7 +513,10 @@ async fn test_check_permissions_batch_one_missing_fails() {
         )
         .await;
 
-    assert!(result.is_err(), "Should fail when any one permission is missing");
+    assert!(
+        result.is_err(),
+        "Should fail when any one permission is missing"
+    );
 }
 
 // ========== check_role (S11) ==========
@@ -421,7 +528,10 @@ async fn test_check_role_creator_passes() {
     let user_repo = UserRepository::new(pool.clone());
     let room_service = make_room_service(pool.clone());
 
-    let creator = user_repo.create(&make_user("checkrole_creator")).await.unwrap();
+    let creator = user_repo
+        .create(&make_user("checkrole_creator"))
+        .await
+        .unwrap();
 
     let (room, _) = room_service
         .create_room(
@@ -450,8 +560,14 @@ async fn test_check_role_member_not_creator_fails() {
     let user_repo = UserRepository::new(pool.clone());
     let room_service = make_room_service(pool.clone());
 
-    let creator = user_repo.create(&make_user("checkrole2_creator")).await.unwrap();
-    let member = user_repo.create(&make_user("checkrole2_member")).await.unwrap();
+    let creator = user_repo
+        .create(&make_user("checkrole2_creator"))
+        .await
+        .unwrap();
+    let member = user_repo
+        .create(&make_user("checkrole2_member"))
+        .await
+        .unwrap();
 
     let (room, _) = room_service
         .create_room(
@@ -475,7 +591,10 @@ async fn test_check_role_member_not_creator_fails() {
         .check_role(&room.id, &member.id, RoomRole::Creator)
         .await;
 
-    assert!(result.is_err(), "Member should NOT pass check_role for Creator");
+    assert!(
+        result.is_err(),
+        "Member should NOT pass check_role for Creator"
+    );
 }
 
 // ========== is_admin_or_creator (S11) ==========
@@ -487,7 +606,10 @@ async fn test_is_admin_or_creator_for_creator() {
     let user_repo = UserRepository::new(pool.clone());
     let room_service = make_room_service(pool.clone());
 
-    let creator = user_repo.create(&make_user("isadmin_creator")).await.unwrap();
+    let creator = user_repo
+        .create(&make_user("isadmin_creator"))
+        .await
+        .unwrap();
 
     let (room, _) = room_service
         .create_room(
@@ -501,7 +623,10 @@ async fn test_is_admin_or_creator_for_creator() {
         .unwrap();
 
     let perm_service = room_service.permission_service();
-    let result = perm_service.is_admin_or_creator(&room.id, &creator.id).await.unwrap();
+    let result = perm_service
+        .is_admin_or_creator(&room.id, &creator.id)
+        .await
+        .unwrap();
 
     assert!(result, "Creator should be admin_or_creator");
 }
@@ -513,8 +638,14 @@ async fn test_is_admin_or_creator_for_regular_member() {
     let user_repo = UserRepository::new(pool.clone());
     let room_service = make_room_service(pool.clone());
 
-    let creator = user_repo.create(&make_user("isadmin2_creator")).await.unwrap();
-    let member = user_repo.create(&make_user("isadmin2_member")).await.unwrap();
+    let creator = user_repo
+        .create(&make_user("isadmin2_creator"))
+        .await
+        .unwrap();
+    let member = user_repo
+        .create(&make_user("isadmin2_member"))
+        .await
+        .unwrap();
 
     let (room, _) = room_service
         .create_room(
@@ -533,7 +664,10 @@ async fn test_is_admin_or_creator_for_regular_member() {
         .unwrap();
 
     let perm_service = room_service.permission_service();
-    let result = perm_service.is_admin_or_creator(&room.id, &member.id).await.unwrap();
+    let result = perm_service
+        .is_admin_or_creator(&room.id, &member.id)
+        .await
+        .unwrap();
 
     assert!(!result, "Regular member should NOT be admin_or_creator");
 }
@@ -545,8 +679,14 @@ async fn test_is_admin_or_creator_for_non_member() {
     let user_repo = UserRepository::new(pool.clone());
     let room_service = make_room_service(pool.clone());
 
-    let creator = user_repo.create(&make_user("isadmin3_creator")).await.unwrap();
-    let outsider = user_repo.create(&make_user("isadmin3_outsider")).await.unwrap();
+    let creator = user_repo
+        .create(&make_user("isadmin3_creator"))
+        .await
+        .unwrap();
+    let outsider = user_repo
+        .create(&make_user("isadmin3_outsider"))
+        .await
+        .unwrap();
 
     let (room, _) = room_service
         .create_room(
@@ -560,7 +700,10 @@ async fn test_is_admin_or_creator_for_non_member() {
         .unwrap();
 
     let perm_service = room_service.permission_service();
-    let result = perm_service.is_admin_or_creator(&room.id, &outsider.id).await.unwrap();
+    let result = perm_service
+        .is_admin_or_creator(&room.id, &outsider.id)
+        .await
+        .unwrap();
 
     assert!(!result, "Non-member should NOT be admin_or_creator");
 }

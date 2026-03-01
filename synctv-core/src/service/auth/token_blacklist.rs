@@ -192,7 +192,8 @@ impl TokenBlacklistStore for InMemoryTokenBlacklistStore {
     async fn blacklist_if_not_exists(&self, key: &str, ttl_secs: u64) -> Result<bool> {
         // Get or create a mutex for this specific key
         // Using entry API to avoid race between get and insert
-        let mutex: Arc<tokio::sync::Mutex<()>> = self.blacklist_locks
+        let mutex: Arc<tokio::sync::Mutex<()>> = self
+            .blacklist_locks
             .entry(key.to_string())
             .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
             .value()
@@ -286,7 +287,7 @@ impl PgTokenBlacklistStore {
 impl TokenBlacklistStore for PgTokenBlacklistStore {
     async fn is_blacklisted(&self, key: &str) -> bool {
         sqlx::query_scalar::<_, bool>(
-            "SELECT EXISTS(SELECT 1 FROM token_blacklist WHERE jti = $1 AND expires_at > NOW())"
+            "SELECT EXISTS(SELECT 1 FROM token_blacklist WHERE jti = $1 AND expires_at > NOW())",
         )
         .bind(key)
         .fetch_one(&self.pool)
@@ -296,7 +297,7 @@ impl TokenBlacklistStore for PgTokenBlacklistStore {
 
     async fn is_blacklisted_checked(&self, key: &str) -> Result<bool> {
         sqlx::query_scalar::<_, bool>(
-            "SELECT EXISTS(SELECT 1 FROM token_blacklist WHERE jti = $1 AND expires_at > NOW())"
+            "SELECT EXISTS(SELECT 1 FROM token_blacklist WHERE jti = $1 AND expires_at > NOW())",
         )
         .bind(key)
         .fetch_one(&self.pool)
@@ -315,7 +316,7 @@ impl TokenBlacklistStore for PgTokenBlacklistStore {
         let expires_at = chrono::Utc::now() + chrono::Duration::seconds(ttl_secs as i64);
         sqlx::query(
             "INSERT INTO token_blacklist (jti, expires_at) VALUES ($1, $2) \
-             ON CONFLICT (jti) DO UPDATE SET expires_at = EXCLUDED.expires_at"
+             ON CONFLICT (jti) DO UPDATE SET expires_at = EXCLUDED.expires_at",
         )
         .bind(key)
         .bind(expires_at)
@@ -348,7 +349,7 @@ impl TokenBlacklistStore for PgTokenBlacklistStore {
         let inserted: bool = sqlx::query_scalar(
             "INSERT INTO token_blacklist (jti, expires_at) VALUES ($1, $2) \
              ON CONFLICT (jti) DO NOTHING \
-             RETURNING (xmax = 0)"
+             RETURNING (xmax = 0)",
         )
         .bind(key)
         .bind(expires_at)
@@ -374,7 +375,7 @@ impl TokenBlacklistStore for PgTokenBlacklistStore {
         // special `family:<key>` entry. The actual revocation timestamp is
         // stored by encoding it in a separate query.
         let row: Option<(chrono::DateTime<chrono::Utc>,)> = sqlx::query_as(
-            "SELECT expires_at FROM token_blacklist WHERE jti = $1 AND expires_at > NOW()"
+            "SELECT expires_at FROM token_blacklist WHERE jti = $1 AND expires_at > NOW()",
         )
         .bind(key)
         .fetch_optional(&self.pool)
@@ -384,13 +385,12 @@ impl TokenBlacklistStore for PgTokenBlacklistStore {
         // We store family revocation as: jti = "family:<user_key>", expires_at = actual expiry.
         // The revocation timestamp is stored as a second entry with jti = "family_ts:<user_key>".
         let ts_key = format!("_ts:{key}");
-        let ts_row: Option<(chrono::DateTime<chrono::Utc>,)> = sqlx::query_as(
-            "SELECT expires_at FROM token_blacklist WHERE jti = $1"
-        )
-        .bind(&ts_key)
-        .fetch_optional(&self.pool)
-        .await
-        .ok()?;
+        let ts_row: Option<(chrono::DateTime<chrono::Utc>,)> =
+            sqlx::query_as("SELECT expires_at FROM token_blacklist WHERE jti = $1")
+                .bind(&ts_key)
+                .fetch_optional(&self.pool)
+                .await
+                .ok()?;
 
         // If the main family key exists (not expired) and we have a timestamp entry,
         // return the timestamp. The ts entry stores the revoked_at as epoch seconds
@@ -408,7 +408,7 @@ impl TokenBlacklistStore for PgTokenBlacklistStore {
         // Store the family revocation marker
         let _ = sqlx::query(
             "INSERT INTO token_blacklist (jti, expires_at) VALUES ($1, $2) \
-             ON CONFLICT (jti) DO UPDATE SET expires_at = EXCLUDED.expires_at"
+             ON CONFLICT (jti) DO UPDATE SET expires_at = EXCLUDED.expires_at",
         )
         .bind(key)
         .bind(expires_at)
@@ -418,11 +418,11 @@ impl TokenBlacklistStore for PgTokenBlacklistStore {
         // Store the revocation timestamp in a companion entry.
         // We encode the timestamp as a DateTime for storage.
         let ts_key = format!("_ts:{key}");
-        let revoked_at = chrono::DateTime::from_timestamp(timestamp, 0)
-            .unwrap_or_else(chrono::Utc::now);
+        let revoked_at =
+            chrono::DateTime::from_timestamp(timestamp, 0).unwrap_or_else(chrono::Utc::now);
         let _ = sqlx::query(
             "INSERT INTO token_blacklist (jti, expires_at) VALUES ($1, $2) \
-             ON CONFLICT (jti) DO UPDATE SET expires_at = EXCLUDED.expires_at"
+             ON CONFLICT (jti) DO UPDATE SET expires_at = EXCLUDED.expires_at",
         )
         .bind(&ts_key)
         .bind(revoked_at)
@@ -549,7 +549,11 @@ impl TokenBlacklistStore for TieredTokenBlacklistStore {
             match result {
                 Ok(Some(val)) => {
                     let is_bl = val == "1";
-                    let l1_ttl = if is_bl { L1_POSITIVE_TTL } else { L1_NEGATIVE_TTL };
+                    let l1_ttl = if is_bl {
+                        L1_POSITIVE_TTL
+                    } else {
+                        L1_NEGATIVE_TTL
+                    };
                     self.l1_blacklist
                         .insert(key.to_string(), (is_bl, Instant::now() + l1_ttl))
                         .await;
@@ -589,9 +593,8 @@ impl TokenBlacklistStore for TieredTokenBlacklistStore {
             if let Some(ref redis_conn) = self.redis_conn {
                 let redis_key = self.bl_key(key);
                 let mut conn = redis_conn.clone();
-                let _: redis::RedisResult<()> = conn
-                    .set_ex(&redis_key, "0", L2_NEGATIVE_TTL_SECS)
-                    .await;
+                let _: redis::RedisResult<()> =
+                    conn.set_ex(&redis_key, "0", L2_NEGATIVE_TTL_SECS).await;
             }
         }
 
@@ -617,7 +620,11 @@ impl TokenBlacklistStore for TieredTokenBlacklistStore {
             match result {
                 Ok(Some(val)) => {
                     let is_bl = val == "1";
-                    let l1_ttl = if is_bl { L1_POSITIVE_TTL } else { L1_NEGATIVE_TTL };
+                    let l1_ttl = if is_bl {
+                        L1_POSITIVE_TTL
+                    } else {
+                        L1_NEGATIVE_TTL
+                    };
                     self.l1_blacklist
                         .insert(key.to_string(), (is_bl, Instant::now() + l1_ttl))
                         .await;
@@ -655,9 +662,8 @@ impl TokenBlacklistStore for TieredTokenBlacklistStore {
             if let Some(ref redis_conn) = self.redis_conn {
                 let redis_key = self.bl_key(key);
                 let mut conn = redis_conn.clone();
-                let _: redis::RedisResult<()> = conn
-                    .set_ex(&redis_key, "0", L2_NEGATIVE_TTL_SECS)
-                    .await;
+                let _: redis::RedisResult<()> =
+                    conn.set_ex(&redis_key, "0", L2_NEGATIVE_TTL_SECS).await;
             }
         }
 
@@ -737,7 +743,10 @@ impl TokenBlacklistStore for TieredTokenBlacklistStore {
                     // Positive: parse timestamp
                     if let Ok(ts) = val.parse::<i64>() {
                         self.l1_family
-                            .insert(key.to_string(), (Some(ts), Instant::now() + L1_POSITIVE_TTL))
+                            .insert(
+                                key.to_string(),
+                                (Some(ts), Instant::now() + L1_POSITIVE_TTL),
+                            )
                             .await;
                         return Some(ts);
                     }
@@ -759,7 +768,10 @@ impl TokenBlacklistStore for TieredTokenBlacklistStore {
         if let Some(ts) = result {
             // Positive: populate L1 + L2
             self.l1_family
-                .insert(key.to_string(), (Some(ts), Instant::now() + L1_POSITIVE_TTL))
+                .insert(
+                    key.to_string(),
+                    (Some(ts), Instant::now() + L1_POSITIVE_TTL),
+                )
                 .await;
             if let Some(ref redis_conn) = self.redis_conn {
                 let redis_key = self.fam_key(key);
@@ -777,9 +789,8 @@ impl TokenBlacklistStore for TieredTokenBlacklistStore {
             if let Some(ref redis_conn) = self.redis_conn {
                 let redis_key = self.fam_key(key);
                 let mut conn = redis_conn.clone();
-                let _: redis::RedisResult<()> = conn
-                    .set_ex(&redis_key, "_", L2_NEGATIVE_TTL_SECS)
-                    .await;
+                let _: redis::RedisResult<()> =
+                    conn.set_ex(&redis_key, "_", L2_NEGATIVE_TTL_SECS).await;
             }
             None
         }
@@ -794,14 +805,16 @@ impl TokenBlacklistStore for TieredTokenBlacklistStore {
             let redis_key = self.fam_key(key);
             let l2_ttl = Self::l2_positive_ttl(ttl_secs);
             let mut conn = redis_conn.clone();
-            let _: redis::RedisResult<()> = conn
-                .set_ex(&redis_key, timestamp.to_string(), l2_ttl)
-                .await;
+            let _: redis::RedisResult<()> =
+                conn.set_ex(&redis_key, timestamp.to_string(), l2_ttl).await;
         }
 
         // 3. Write to L1 moka (positive, overwrites any stale negative sentinel)
         self.l1_family
-            .insert(key.to_string(), (Some(timestamp), Instant::now() + L1_POSITIVE_TTL))
+            .insert(
+                key.to_string(),
+                (Some(timestamp), Instant::now() + L1_POSITIVE_TTL),
+            )
             .await;
     }
 }
@@ -953,10 +966,14 @@ impl TokenBlacklistStore for FallbackTokenBlacklistStore {
 
     async fn set_family_revoked(&self, key: &str, timestamp: i64, ttl_secs: u64) {
         // Always write to fallback first
-        self.fallback.set_family_revoked(key, timestamp, ttl_secs).await;
+        self.fallback
+            .set_family_revoked(key, timestamp, ttl_secs)
+            .await;
 
         // Try to write to primary
-        self.primary.set_family_revoked(key, timestamp, ttl_secs).await;
+        self.primary
+            .set_family_revoked(key, timestamp, ttl_secs)
+            .await;
     }
 }
 
@@ -1098,12 +1115,14 @@ impl RedisSyncableTokenBlacklistStore {
         let mut stats = SyncStats::default();
 
         // Collect keys to process (to avoid holding the cache during async operations)
-        let blacklist_keys: Vec<String> = self.pending_blacklist
+        let blacklist_keys: Vec<String> = self
+            .pending_blacklist
             .iter()
             .map(|(key, _)| (*key).clone())
             .collect();
 
-        let family_keys: Vec<String> = self.pending_family
+        let family_keys: Vec<String> = self
+            .pending_family
             .iter()
             .map(|(key, _)| (*key).clone())
             .collect();
@@ -1147,7 +1166,9 @@ impl RedisSyncableTokenBlacklistStore {
 
                 // set_family_revoked doesn't return Result, so we can't detect failure
                 // We'll check if it's still in the fallback after the call
-                self.primary.set_family_revoked(&key, pending.timestamp, pending.ttl_secs).await;
+                self.primary
+                    .set_family_revoked(&key, pending.timestamp, pending.ttl_secs)
+                    .await;
                 self.pending_family.remove(&key).await;
                 stats.family_synced += 1;
             }
@@ -1169,7 +1190,7 @@ impl RedisSyncableTokenBlacklistStore {
     ///
     /// Note: This is an approximate count based on iterating the cache.
     /// It's primarily intended for testing and diagnostics.
-    #[must_use] 
+    #[must_use]
     pub fn pending_write_count(&self) -> usize {
         self.pending_blacklist.iter().count()
     }
@@ -1178,7 +1199,7 @@ impl RedisSyncableTokenBlacklistStore {
     ///
     /// Note: This is an approximate count based on iterating the cache.
     /// It's primarily intended for testing and diagnostics.
-    #[must_use] 
+    #[must_use]
     pub fn pending_family_count(&self) -> usize {
         self.pending_family.iter().count()
     }
@@ -1228,7 +1249,9 @@ impl TokenBlacklistStore for RedisSyncableTokenBlacklistStore {
                     ttl_secs,
                     expires_at: Instant::now() + Duration::from_secs(ttl_secs),
                 };
-                self.pending_blacklist.insert(key.to_string(), pending).await;
+                self.pending_blacklist
+                    .insert(key.to_string(), pending)
+                    .await;
 
                 // Still return Ok since we successfully wrote to fallback
                 Ok(())
@@ -1263,7 +1286,9 @@ impl TokenBlacklistStore for RedisSyncableTokenBlacklistStore {
                     ttl_secs,
                     expires_at: Instant::now() + Duration::from_secs(ttl_secs),
                 };
-                self.pending_blacklist.insert(key.to_string(), pending).await;
+                self.pending_blacklist
+                    .insert(key.to_string(), pending)
+                    .await;
             }
         }
 
@@ -1281,13 +1306,17 @@ impl TokenBlacklistStore for RedisSyncableTokenBlacklistStore {
 
     async fn set_family_revoked(&self, key: &str, timestamp: i64, ttl_secs: u64) {
         // Always write to fallback first
-        self.fallback.set_family_revoked(key, timestamp, ttl_secs).await;
+        self.fallback
+            .set_family_revoked(key, timestamp, ttl_secs)
+            .await;
 
         // Try to write to primary
         // Note: set_family_revoked doesn't return Result, so we can't detect failure directly.
         // For now, we always add to pending and let sync handle duplicates.
         // This is safe because set_family_revoked is idempotent.
-        self.primary.set_family_revoked(key, timestamp, ttl_secs).await;
+        self.primary
+            .set_family_revoked(key, timestamp, ttl_secs)
+            .await;
 
         // Add to pending for potential sync (idempotent, will be no-op if primary succeeded)
         let pending = PendingFamilyWrite {
@@ -1320,11 +1349,7 @@ mod tests {
             .acquire_timeout(Duration::from_secs(1))
             .connect_lazy("postgres://dummy:dummy@localhost/dummy")
             .expect("connect_lazy should not fail");
-        TieredTokenBlacklistStore::new(
-            PgTokenBlacklistStore::new(pool),
-            None,
-            "test:".to_string(),
-        )
+        TieredTokenBlacklistStore::new(PgTokenBlacklistStore::new(pool), None, "test:".to_string())
     }
 
     // Helper: create an InMemoryTokenBlacklistStore for testing fallback scenarios.
@@ -1375,7 +1400,10 @@ mod tests {
             .l1_blacklist
             .insert(
                 "jti:expired".to_string(),
-                (true, Instant::now().checked_sub(Duration::from_secs(1)).unwrap()),
+                (
+                    true,
+                    Instant::now().checked_sub(Duration::from_secs(1)).unwrap(),
+                ),
             )
             .await;
 
@@ -1444,14 +1472,22 @@ mod tests {
         let store = make_tiered_l1_only();
 
         // Verify L1 starts empty
-        assert!(store.get_family_revoked_at("family:write_test").await.is_none());
+        assert!(store
+            .get_family_revoked_at("family:write_test")
+            .await
+            .is_none());
 
         // set_family_revoked writes to PG (fails silently) then L1
         let ts = 1700000000_i64;
-        store.set_family_revoked("family:write_test", ts, 3600).await;
+        store
+            .set_family_revoked("family:write_test", ts, 3600)
+            .await;
 
         // L1 should now have the entry
-        assert_eq!(store.get_family_revoked_at("family:write_test").await, Some(ts));
+        assert_eq!(
+            store.get_family_revoked_at("family:write_test").await,
+            Some(ts)
+        );
     }
 
     #[tokio::test]
@@ -1663,10 +1699,16 @@ mod tests {
         let fallback_inner = make_in_memory_store();
 
         // Blacklist in primary only
-        primary_inner.blacklist("jti:primary_only", 3600).await.unwrap();
+        primary_inner
+            .blacklist("jti:primary_only", 3600)
+            .await
+            .unwrap();
 
         // Blacklist in fallback only
-        fallback_inner.blacklist("jti:fallback_only", 3600).await.unwrap();
+        fallback_inner
+            .blacklist("jti:fallback_only", 3600)
+            .await
+            .unwrap();
 
         // Create FallbackTokenBlacklistStore
         // Note: For this test, we need to use a different approach since

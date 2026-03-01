@@ -19,10 +19,13 @@ pub fn pcr_write(pcr_result: &mut BytesWriter, pcr: i64) -> Result<(), BytesWrit
 
 #[must_use]
 pub const fn is_steam_type_video(stream_type: u8) -> bool {
-    matches!(stream_type, epsi_stream_type::PSI_STREAM_H264 | epsi_stream_type::PSI_STREAM_HEVC)
+    matches!(
+        stream_type,
+        epsi_stream_type::PSI_STREAM_H264 | epsi_stream_type::PSI_STREAM_HEVC
+    )
 }
 
-#[must_use] 
+#[must_use]
 pub const fn is_steam_type_audio(stream_type: u8) -> bool {
     matches!(
         stream_type,

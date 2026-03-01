@@ -6,10 +6,13 @@ use std::sync::Arc;
 use crate::{
     cache::{CacheInvalidationService, KeyBuilder, UsernameCache},
     config::PasswordComplexityConfig,
-    models::{User, UserId, SignupMethod, UserStatus},
     models::oauth2_client::OAuth2Provider,
-    repository::{UserRepository, UserOAuthProviderRepository},
-    service::auth::{hash_password, verify_password, JwtService, TokenType, BruteForceProtection, TokenBlacklistStore},
+    models::{SignupMethod, User, UserId, UserStatus},
+    repository::{UserOAuthProviderRepository, UserRepository},
+    service::auth::{
+        hash_password, verify_password, BruteForceProtection, JwtService, TokenBlacklistStore,
+        TokenType,
+    },
     service::rate_limit::RateLimiter,
     Error, Result,
 };
@@ -95,7 +98,11 @@ impl UserService {
     ///
     /// When Redis is unavailable at runtime, the Redis-backed limiter gracefully
     /// degrades to in-memory limiting (same as the default behavior).
-    pub fn set_refresh_rate_limiter_redis(&mut self, redis_conn: redis::aio::ConnectionManager, key_prefix: String) {
+    pub fn set_refresh_rate_limiter_redis(
+        &mut self,
+        redis_conn: redis::aio::ConnectionManager,
+        key_prefix: String,
+    ) {
         self.refresh_rate_limiter = RateLimiter::new(Some(redis_conn), key_prefix);
     }
 
@@ -122,25 +129,39 @@ impl UserService {
         // mass-registration attempts (credential stuffing, spam account creation).
         // Use a fixed key instead of the attacker-controlled username to prevent
         // bypassing per-account lockout by varying the username on each attempt.
-        self.brute_force.check_allowed("__registration__", client_ip).await?;
+        self.brute_force
+            .check_allowed("__registration__", client_ip)
+            .await?;
 
         // Validate input - record failures for validation errors (potential attacks)
         if let Err(e) = self.validate_username(&username) {
-            if let Err(err) = self.brute_force.record_failure("__registration__", client_ip).await {
+            if let Err(err) = self
+                .brute_force
+                .record_failure("__registration__", client_ip)
+                .await
+            {
                 tracing::warn!(error = %err, "Failed to record registration brute-force failure");
             }
             return Err(e);
         }
         if let Some(ref email) = email {
             if let Err(e) = self.validate_email(email) {
-                if let Err(err) = self.brute_force.record_failure("__registration__", client_ip).await {
+                if let Err(err) = self
+                    .brute_force
+                    .record_failure("__registration__", client_ip)
+                    .await
+                {
                     tracing::warn!(error = %err, "Failed to record registration brute-force failure");
                 }
                 return Err(e);
             }
         }
         if let Err(e) = self.validate_password(&password) {
-            if let Err(err) = self.brute_force.record_failure("__registration__", client_ip).await {
+            if let Err(err) = self
+                .brute_force
+                .record_failure("__registration__", client_ip)
+                .await
+            {
                 tracing::warn!(error = %err, "Failed to record registration brute-force failure");
             }
             return Err(e);
@@ -166,16 +187,28 @@ impl UserService {
         // IMPORTANT: AlreadyExists errors (username/email taken) are NOT recorded
         // as brute-force failures. A legitimate user trying to register with a
         // common username shouldn't be locked out - they just need to pick another.
-        let user = User::new_with_status(username.clone(), email.clone(), password_hash, Some(SignupMethod::Email), initial_status);
+        let user = User::new_with_status(
+            username.clone(),
+            email.clone(),
+            password_hash,
+            Some(SignupMethod::Email),
+            initial_status,
+        );
         let created_user = match self.repository.create(&user).await {
             Ok(user) => user,
             Err(Error::AlreadyExists(_)) => {
                 // Don't record failure for AlreadyExists - user just picked a taken username
-                return Err(Error::AlreadyExists("Username or email already taken".to_string()));
+                return Err(Error::AlreadyExists(
+                    "Username or email already taken".to_string(),
+                ));
             }
             Err(e) => {
                 // Record failure for other database errors (could indicate attack)
-                if let Err(err) = self.brute_force.record_failure("__registration__", client_ip).await {
+                if let Err(err) = self
+                    .brute_force
+                    .record_failure("__registration__", client_ip)
+                    .await
+                {
                     tracing::warn!(error = %err, "Failed to record registration brute-force failure");
                 }
                 return Err(e);
@@ -192,12 +225,16 @@ impl UserService {
         }
 
         // Generate JWT tokens (role will be fetched from DB on each request)
-        let access_token = self
-            .jwt_service
-            .sign_token(&created_user.id, TokenType::Access, created_user.password_version)?;
-        let refresh_token = self
-            .jwt_service
-            .sign_token(&created_user.id, TokenType::Refresh, created_user.password_version)?;
+        let access_token = self.jwt_service.sign_token(
+            &created_user.id,
+            TokenType::Access,
+            created_user.password_version,
+        )?;
+        let refresh_token = self.jwt_service.sign_token(
+            &created_user.id,
+            TokenType::Refresh,
+            created_user.password_version,
+        )?;
 
         Ok((created_user, Some(access_token), Some(refresh_token)))
     }
@@ -233,7 +270,13 @@ impl UserService {
                 }
             }
         };
-        let user = User::new_with_status(username, email, password_hash, Some(signup_method), initial_status);
+        let user = User::new_with_status(
+            username,
+            email,
+            password_hash,
+            Some(signup_method),
+            initial_status,
+        );
         self.repository.create_with_executor(&user, executor).await
     }
 
@@ -255,7 +298,12 @@ impl UserService {
         self.validate_password(&password)?;
 
         let password_hash = hash_password(&password).await?;
-        let mut user = User::new(username.clone(), email, password_hash, Some(SignupMethod::Email));
+        let mut user = User::new(
+            username.clone(),
+            email,
+            password_hash,
+            Some(SignupMethod::Email),
+        );
         if let Some(role) = role {
             user.role = role;
         }
@@ -267,12 +315,12 @@ impl UserService {
     /// Generate JWT tokens and populate username cache for a newly created user.
     pub async fn finalize_registration(&self, user: &User) -> Result<(String, String)> {
         self.username_cache.set(&user.id, &user.username).await?;
-        let access_token = self
-            .jwt_service
-            .sign_token(&user.id, TokenType::Access, user.password_version)?;
-        let refresh_token = self
-            .jwt_service
-            .sign_token(&user.id, TokenType::Refresh, user.password_version)?;
+        let access_token =
+            self.jwt_service
+                .sign_token(&user.id, TokenType::Access, user.password_version)?;
+        let refresh_token =
+            self.jwt_service
+                .sign_token(&user.id, TokenType::Refresh, user.password_version)?;
         Ok((access_token, refresh_token))
     }
 
@@ -302,10 +350,7 @@ impl UserService {
         self.brute_force.check_allowed(&username, client_ip).await?;
 
         // Get user by username
-        let maybe_user = self
-            .repository
-            .get_by_username(&username)
-            .await?;
+        let maybe_user = self.repository.get_by_username(&username).await?;
 
         // Track whether user existed for differentiated failure recording (Task #74)
         let user_existed = maybe_user.is_some();
@@ -372,9 +417,7 @@ impl UserService {
         // - Email users with unverified email: blocked
         // - OAuth2 users (no email, email_verified=false): blocked
         if self.email_verification_required && !user.email_verified {
-            return Err(Error::Authentication(
-                "Authentication failed".to_string(),
-            ));
+            return Err(Error::Authentication("Authentication failed".to_string()));
         }
 
         // Successful login: reset brute-force counters (username + IP)
@@ -388,12 +431,12 @@ impl UserService {
         }
 
         // Generate JWT tokens (role will be fetched from DB on each request)
-        let access_token = self
-            .jwt_service
-            .sign_token(&user.id, TokenType::Access, user.password_version)?;
-        let refresh_token = self
-            .jwt_service
-            .sign_token(&user.id, TokenType::Refresh, user.password_version)?;
+        let access_token =
+            self.jwt_service
+                .sign_token(&user.id, TokenType::Access, user.password_version)?;
+        let refresh_token =
+            self.jwt_service
+                .sign_token(&user.id, TokenType::Refresh, user.password_version)?;
 
         Ok((user, access_token, refresh_token))
     }
@@ -413,10 +456,13 @@ impl UserService {
         client_ip: Option<std::net::IpAddr>,
     ) -> Result<(User, String, String)> {
         // Check per-IP and per-account brute-force before token issuance.
-        self.brute_force.check_allowed(provider_user_id, client_ip).await?;
+        self.brute_force
+            .check_allowed(provider_user_id, client_ip)
+            .await?;
 
         // Get user to ensure they exist and are active
-        let user = self.repository
+        let user = self
+            .repository
             .get_by_id(user_id)
             .await?
             .ok_or_else(|| Error::Authentication("Authentication failed".to_string()))?;
@@ -427,7 +473,11 @@ impl UserService {
             || user.status == crate::models::UserStatus::Pending
         {
             // Record failure so repeated attempts against locked accounts are throttled
-            if let Err(e) = self.brute_force.record_failure(provider_user_id, client_ip).await {
+            if let Err(e) = self
+                .brute_force
+                .record_failure(provider_user_id, client_ip)
+                .await
+            {
                 tracing::warn!(error = %e, "Failed to record OAuth2 login failure for brute-force tracking");
             }
             return Err(Error::Authentication("Authentication failed".to_string()));
@@ -444,12 +494,12 @@ impl UserService {
         }
 
         // Generate JWT tokens
-        let access_token = self
-            .jwt_service
-            .sign_token(&user.id, TokenType::Access, user.password_version)?;
-        let refresh_token = self
-            .jwt_service
-            .sign_token(&user.id, TokenType::Refresh, user.password_version)?;
+        let access_token =
+            self.jwt_service
+                .sign_token(&user.id, TokenType::Access, user.password_version)?;
+        let refresh_token =
+            self.jwt_service
+                .sign_token(&user.id, TokenType::Refresh, user.password_version)?;
 
         Ok((user, access_token, refresh_token))
     }
@@ -476,7 +526,11 @@ impl UserService {
         // Rate limit key is per-user: "refresh:<user_id>"
         let rate_limit_key = format!("refresh:{}", user_id.as_str());
         self.refresh_rate_limiter
-            .check_rate_limit(&rate_limit_key, REFRESH_RATE_LIMIT_REQUESTS, REFRESH_RATE_LIMIT_WINDOW_SECS)
+            .check_rate_limit(
+                &rate_limit_key,
+                REFRESH_RATE_LIMIT_REQUESTS,
+                REFRESH_RATE_LIMIT_WINDOW_SECS,
+            )
             .await
             .map_err(|e| {
                 tracing::warn!(
@@ -508,9 +562,7 @@ impl UserService {
         // IMPORTANT: Same logic as login() - check email_verified without email.is_some()
         // to prevent account enumeration. Use generic error message for consistency.
         if self.email_verification_required && !user.email_verified {
-            return Err(Error::Authentication(
-                "Authentication failed".to_string(),
-            ));
+            return Err(Error::Authentication("Authentication failed".to_string()));
         }
 
         // Reject refresh tokens issued with an old password version
@@ -531,8 +583,13 @@ impl UserService {
 
             // Check if the entire refresh token family for this user has been revoked
             // (triggered when a blacklisted JTI is replayed, indicating possible token theft).
-            let family_key = self.key_builder.refresh_token_family_revoked(user_id.as_str());
-            let family_revoked_at = self.token_blacklist.get_family_revoked_at(&family_key).await;
+            let family_key = self
+                .key_builder
+                .refresh_token_family_revoked(user_id.as_str());
+            let family_revoked_at = self
+                .token_blacklist
+                .get_family_revoked_at(&family_key)
+                .await;
             if let Some(revoked_at) = family_revoked_at {
                 // Reject any refresh token issued at or before the family revocation timestamp.
                 // Using <= ensures tokens issued in the same second as revocation are blocked,
@@ -558,7 +615,8 @@ impl UserService {
                 let remaining_ttl = (claims.exp - now).max(60) as u64;
 
                 // Atomic operation: returns true if key already existed (replay detected)
-                let already_existed = self.token_blacklist
+                let already_existed = self
+                    .token_blacklist
                     .blacklist_if_not_exists(&blacklist_key, remaining_ttl)
                     .await?;
 
@@ -572,8 +630,13 @@ impl UserService {
                         "Blacklisted refresh token JTI replayed — revoking entire token family"
                     );
 
-                    let family_ttl = self.jwt_service.refresh_token_duration_seconds().saturating_add(3600);
-                    self.token_blacklist.set_family_revoked(&family_key, now, family_ttl).await;
+                    let family_ttl = self
+                        .jwt_service
+                        .refresh_token_duration_seconds()
+                        .saturating_add(3600);
+                    self.token_blacklist
+                        .set_family_revoked(&family_key, now, family_ttl)
+                        .await;
 
                     return Err(Error::Authentication("Authentication failed".to_string()));
                 }
@@ -582,12 +645,12 @@ impl UserService {
 
         // Generate new tokens (role will be fetched from DB on each request)
         // The old JTI is now atomically blacklisted, so concurrent replays will be detected.
-        let new_access_token = self
-            .jwt_service
-            .sign_token(&user.id, TokenType::Access, user.password_version)?;
-        let new_refresh_token = self
-            .jwt_service
-            .sign_token(&user.id, TokenType::Refresh, user.password_version)?;
+        let new_access_token =
+            self.jwt_service
+                .sign_token(&user.id, TokenType::Access, user.password_version)?;
+        let new_refresh_token =
+            self.jwt_service
+                .sign_token(&user.id, TokenType::Refresh, user.password_version)?;
 
         Ok((new_access_token, new_refresh_token))
     }
@@ -619,14 +682,21 @@ impl UserService {
     }
 
     /// Change user password (requires old password verification)
-    pub async fn change_password(&self, user_id: &UserId, old_password: &str, new_password: &str) -> Result<User> {
+    pub async fn change_password(
+        &self,
+        user_id: &UserId,
+        old_password: &str,
+        new_password: &str,
+    ) -> Result<User> {
         // Get user to verify old password
         let user = self.get_user(user_id).await?;
 
         // Verify old password
         let is_valid = verify_password(old_password, &user.password_hash).await?;
         if !is_valid {
-            return Err(Error::Authentication("Invalid current password".to_string()));
+            return Err(Error::Authentication(
+                "Invalid current password".to_string(),
+            ));
         }
 
         // Delegate to set_password for the actual update
@@ -648,7 +718,10 @@ impl UserService {
 
         // Update password in database (this also updates password_changed_at,
         // which invalidates all tokens issued before this moment)
-        let updated_user = self.repository.update_password(user_id, &password_hash).await?;
+        let updated_user = self
+            .repository
+            .update_password(user_id, &password_hash)
+            .await?;
 
         // Invalidate user cache across all replicas
         self.notify_user_invalidation(user_id).await;
@@ -660,7 +733,10 @@ impl UserService {
 
     /// Set user email verification status
     pub async fn set_email_verified(&self, user_id: &UserId, email_verified: bool) -> Result<User> {
-        let updated_user = self.repository.update_email_verified(user_id, email_verified).await?;
+        let updated_user = self
+            .repository
+            .update_email_verified(user_id, email_verified)
+            .await?;
 
         // Invalidate user cache across all replicas
         self.notify_user_invalidation(user_id).await;
@@ -675,7 +751,10 @@ impl UserService {
     }
 
     /// List users with query (admin function)
-    pub async fn list_users(&self, query: &crate::models::UserListQuery) -> Result<(Vec<User>, i64)> {
+    pub async fn list_users(
+        &self,
+        query: &crate::models::UserListQuery,
+    ) -> Result<(Vec<User>, i64)> {
         self.repository.list(query).await
     }
 
@@ -731,13 +810,18 @@ impl UserService {
 
         // delete_with_executor returns false if user was already deleted
         // (WHERE deleted_at IS NULL condition)
-        let deleted = self.repository.delete_with_executor(user_id, &mut *tx).await?;
+        let deleted = self
+            .repository
+            .delete_with_executor(user_id, &mut *tx)
+            .await?;
         if !deleted {
             return Err(Error::InvalidInput("User is already deleted".to_string()));
         }
 
         let oauth_repo = UserOAuthProviderRepository::new(pool.clone());
-        oauth_repo.delete_all_for_user_with_executor(user_id, &mut *tx).await?;
+        oauth_repo
+            .delete_all_for_user_with_executor(user_id, &mut *tx)
+            .await?;
 
         tx.commit().await?;
 
@@ -763,7 +847,11 @@ impl UserService {
     /// This method updates the user's account status and invalidates
     /// relevant caches. Changing status to Banned or Pending will
     /// prevent the user from logging in or using WebSocket connections.
-    pub async fn set_user_status(&self, user_id: &UserId, status: crate::models::UserStatus) -> Result<User> {
+    pub async fn set_user_status(
+        &self,
+        user_id: &UserId,
+        status: crate::models::UserStatus,
+    ) -> Result<User> {
         let user = self.repository.update_status(user_id, status).await?;
         self.notify_user_invalidation(user_id).await;
         Ok(user)
@@ -783,10 +871,7 @@ impl UserService {
     ///
     /// # Errors
     /// - `InvalidInput` if `user_ids` is empty or exceeds `BATCH_SIZE_LIMIT`
-    pub async fn batch_ban_users(
-        &self,
-        user_ids: &[String],
-    ) -> Result<Vec<(String, Result<()>)>> {
+    pub async fn batch_ban_users(&self, user_ids: &[String]) -> Result<Vec<(String, Result<()>)>> {
         if user_ids.is_empty() {
             return Err(Error::InvalidInput("user_ids cannot be empty".to_string()));
         }
@@ -887,7 +972,9 @@ impl crate::service::ws_ticket::UserValidator for UserService {
 
         // Check soft-delete
         if user.is_deleted() {
-            return Err(crate::Error::Authorization("Authentication failed".to_string()));
+            return Err(crate::Error::Authorization(
+                "Authentication failed".to_string(),
+            ));
         }
 
         // Check user status
@@ -896,7 +983,9 @@ impl crate::service::ws_ticket::UserValidator for UserService {
                 // User is active, continue
             }
             crate::models::UserStatus::Banned | crate::models::UserStatus::Pending => {
-                return Err(crate::Error::Authorization("Authentication failed".to_string()));
+                return Err(crate::Error::Authorization(
+                    "Authentication failed".to_string(),
+                ));
             }
         }
 
@@ -939,7 +1028,10 @@ impl UserService {
 
         // If sanitization resulted in empty username, use provider user ID
         let base_username = if sanitized_username.is_empty() {
-            format!("user_{}", &provider_user_id[..provider_user_id.len().min(20)])
+            format!(
+                "user_{}",
+                &provider_user_id[..provider_user_id.len().min(20)]
+            )
         } else {
             sanitized_username
         };
@@ -1012,7 +1104,9 @@ impl UserService {
 
                     return Ok(created_user);
                 }
-                Err(Error::AlreadyExists(ref msg)) if msg.contains("username") || msg.contains("Username") => {
+                Err(Error::AlreadyExists(ref msg))
+                    if msg.contains("username") || msg.contains("Username") =>
+                {
                     // Username conflict -- try next candidate
                     continue;
                 }
@@ -1146,9 +1240,7 @@ impl UserService {
     /// - `Err` if the database connection fails
     pub async fn health_check(&self) -> Result<()> {
         // Execute a simple query to verify database connectivity
-        sqlx::query("SELECT 1")
-            .execute(self.pool())
-            .await?;
+        sqlx::query("SELECT 1").execute(self.pool()).await?;
 
         Ok(())
     }
@@ -1370,10 +1462,12 @@ mod tests {
     #[tokio::test]
     async fn test_refresh_rate_limiter_default_is_in_memory() {
         // When no Redis is provided, the refresh rate limiter should use in-memory backend
-        let pool = PgPool::connect_lazy("postgresql://invalid:invalid@127.0.0.1:1/invalid").unwrap();
+        let pool =
+            PgPool::connect_lazy("postgresql://invalid:invalid@127.0.0.1:1/invalid").unwrap();
         let jwt_service = crate::service::auth::JwtService::new(
-            "test-secret-key-minimum-length-32-chars-required"
-        ).unwrap();
+            "test-secret-key-minimum-length-32-chars-required",
+        )
+        .unwrap();
         let username_cache = crate::cache::UsernameCache::new(
             Arc::new(crate::cache::NoopCacheL2),
             "test:".to_string(),
@@ -1381,7 +1475,7 @@ mod tests {
             0,
         );
         let token_blacklist: Arc<dyn TokenBlacklistStore> = Arc::new(
-            crate::service::InMemoryTokenBlacklistStore::new(100, 3600, 86400)
+            crate::service::InMemoryTokenBlacklistStore::new(100, 3600, 86400),
         );
         let key_builder = crate::cache::KeyBuilder::new("test");
         let brute_force = BruteForceProtection::in_memory("test".to_string());
@@ -1402,5 +1496,4 @@ mod tests {
             "Default refresh rate limiter should be in-memory"
         );
     }
-
 }

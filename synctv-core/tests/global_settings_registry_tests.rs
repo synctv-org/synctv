@@ -13,9 +13,9 @@
 #![allow(clippy::unwrap_used)]
 
 use std::time::Duration;
-use tokio::time::sleep;
 use synctv_core::service::global_settings::*;
 use synctv_core::service::turn_server::generate_turn_credentials;
+use tokio::time::sleep;
 
 // ============================================================================
 // Type Conversion Tests (string ↔ T)
@@ -153,7 +153,9 @@ fn validate_max_rooms_per_user(v: i64) -> synctv_core::Result<()> {
     if v > 0 && v <= 1000 {
         Ok(())
     } else {
-        Err(synctv_core::Error::InvalidInput("max_rooms_per_user must be between 1 and 1000".into()))
+        Err(synctv_core::Error::InvalidInput(
+            "max_rooms_per_user must be between 1 and 1000".into(),
+        ))
     }
 }
 
@@ -179,9 +181,10 @@ fn validate_max_members_per_room(v: i64) -> synctv_core::Result<()> {
     if v > 0 && v <= MaxMembers::MAX.cast_signed() {
         Ok(())
     } else {
-        Err(synctv_core::Error::InvalidInput(
-            format!("max_members_per_room must be between 1 and {}", MaxMembers::MAX)
-        ))
+        Err(synctv_core::Error::InvalidInput(format!(
+            "max_members_per_room must be between 1 and {}",
+            MaxMembers::MAX
+        )))
     }
 }
 
@@ -207,9 +210,9 @@ fn validate_max_chat_messages(v: u64) -> synctv_core::Result<()> {
     if v <= MAX_CHAT_MESSAGES_LIMIT {
         Ok(())
     } else {
-        Err(synctv_core::Error::InvalidInput(
-            format!("max_chat_messages must be at most {MAX_CHAT_MESSAGES_LIMIT} (0 = unlimited)")
-        ))
+        Err(synctv_core::Error::InvalidInput(format!(
+            "max_chat_messages must be at most {MAX_CHAT_MESSAGES_LIMIT} (0 = unlimited)"
+        )))
     }
 }
 
@@ -234,7 +237,9 @@ fn validate_room_ttl(v: i64) -> synctv_core::Result<()> {
     if v >= 0 {
         Ok(())
     } else {
-        Err(synctv_core::Error::InvalidInput("room_ttl must be non-negative (0 = never expire)".into()))
+        Err(synctv_core::Error::InvalidInput(
+            "room_ttl must be non-negative (0 = never expire)".into(),
+        ))
     }
 }
 
@@ -259,7 +264,9 @@ fn validate_max_chat_messages_per_room(v: u64) -> synctv_core::Result<()> {
     if v <= 100_000 {
         Ok(())
     } else {
-        Err(synctv_core::Error::InvalidInput("max_chat_messages_per_room must be <= 100000 (0 = unlimited)".into()))
+        Err(synctv_core::Error::InvalidInput(
+            "max_chat_messages_per_room must be <= 100000 (0 = unlimited)".into(),
+        ))
     }
 }
 
@@ -270,8 +277,14 @@ fn test_cross_validation_room_password_settings() {
     let must_no_need_pwd = true;
 
     let result = validate_room_password_settings(must_need_pwd, must_no_need_pwd);
-    assert!(result.is_err(), "Both settings cannot be true simultaneously");
-    assert!(result.unwrap_err().to_string().contains("cannot both be true"));
+    assert!(
+        result.is_err(),
+        "Both settings cannot be true simultaneously"
+    );
+    assert!(result
+        .unwrap_err()
+        .to_string()
+        .contains("cannot both be true"));
 
     // Valid combinations
     assert!(validate_room_password_settings(true, false).is_ok());
@@ -279,10 +292,13 @@ fn test_cross_validation_room_password_settings() {
     assert!(validate_room_password_settings(false, false).is_ok());
 }
 
-fn validate_room_password_settings(must_need_pwd: bool, must_no_need_pwd: bool) -> synctv_core::Result<()> {
+fn validate_room_password_settings(
+    must_need_pwd: bool,
+    must_no_need_pwd: bool,
+) -> synctv_core::Result<()> {
     if must_need_pwd && must_no_need_pwd {
         Err(synctv_core::Error::InvalidInput(
-            "room_must_need_pwd and room_must_no_need_pwd cannot both be true".into()
+            "room_must_need_pwd and room_must_no_need_pwd cannot both be true".into(),
         ))
     } else {
         Ok(())
@@ -380,9 +396,10 @@ fn test_turn_credential_base64_encoding() {
     let cred = generate_turn_credentials("secret", "user1", 3600);
 
     // Verify password is valid Base64 containing only valid characters
-    assert!(cred.password.chars().all(|c| {
-        c.is_alphanumeric() || c == '+' || c == '/' || c == '='
-    }));
+    assert!(cred
+        .password
+        .chars()
+        .all(|c| { c.is_alphanumeric() || c == '+' || c == '/' || c == '=' }));
 
     // Should be decodable
     use base64::Engine;
@@ -405,13 +422,11 @@ fn test_turn_server_list_updates() {
     assert!(list.0.is_empty());
 
     // Add server
-    let updated = TurnServerList(vec![
-        TurnServer {
-            urls: vec!["turn:turn1.example.com:3478".to_string()],
-            username: Some("user1".to_string()),
-            credential: Some("pass1".to_string()),
-        }
-    ]);
+    let updated = TurnServerList(vec![TurnServer {
+        urls: vec!["turn:turn1.example.com:3478".to_string()],
+        username: Some("user1".to_string()),
+        credential: Some("pass1".to_string()),
+    }]);
     assert_eq!(updated.0.len(), 1);
 
     // Add more servers
@@ -425,7 +440,7 @@ fn test_turn_server_list_updates() {
             urls: vec!["turn:turn2.example.com:3478".to_string()],
             username: Some("user2".to_string()),
             credential: Some("pass2".to_string()),
-        }
+        },
     ]);
     assert_eq!(multi.0.len(), 2);
 
@@ -706,26 +721,25 @@ async fn test_concurrent_settings_updates_last_write_wins() {
 #[test]
 fn test_turn_server_list_cache_key_uniqueness() {
     // Each different TURN server list should produce a unique serialized form
-    let list1 = TurnServerList(vec![
-        TurnServer {
-            urls: vec!["turn:turn1.example.com:3478".to_string()],
-            username: Some("user1".to_string()),
-            credential: Some("pass1".to_string()),
-        }
-    ]);
+    let list1 = TurnServerList(vec![TurnServer {
+        urls: vec!["turn:turn1.example.com:3478".to_string()],
+        username: Some("user1".to_string()),
+        credential: Some("pass1".to_string()),
+    }]);
 
-    let list2 = TurnServerList(vec![
-        TurnServer {
-            urls: vec!["turn:turn2.example.com:3478".to_string()],
-            username: Some("user2".to_string()),
-            credential: Some("pass2".to_string()),
-        }
-    ]);
+    let list2 = TurnServerList(vec![TurnServer {
+        urls: vec!["turn:turn2.example.com:3478".to_string()],
+        username: Some("user2".to_string()),
+        credential: Some("pass2".to_string()),
+    }]);
 
     let key1 = list1.to_string();
     let key2 = list2.to_string();
 
-    assert_ne!(key1, key2, "Different TURN lists should produce different cache keys");
+    assert_ne!(
+        key1, key2,
+        "Different TURN lists should produce different cache keys"
+    );
 }
 
 #[test]
@@ -736,7 +750,10 @@ fn test_stun_server_list_cache_key_uniqueness() {
     let key1 = list1.to_string();
     let key2 = list2.to_string();
 
-    assert_ne!(key1, key2, "Different STUN lists should produce different cache keys");
+    assert_ne!(
+        key1, key2,
+        "Different STUN lists should produce different cache keys"
+    );
 }
 
 #[test]
@@ -747,7 +764,10 @@ fn test_cors_origins_cache_key_uniqueness() {
     let key1 = origins1.to_string();
     let key2 = origins2.to_string();
 
-    assert_ne!(key1, key2, "Different CORS origin lists should produce different cache keys");
+    assert_ne!(
+        key1, key2,
+        "Different CORS origin lists should produce different cache keys"
+    );
 }
 
 #[test]
@@ -755,39 +775,39 @@ fn test_cache_invalidation_on_value_change() {
     // Simulate cache invalidation when a setting value changes
 
     // Initial value
-    let initial = TurnServerList(vec![
-        TurnServer {
-            urls: vec!["turn:turn1.example.com:3478".to_string()],
-            username: Some("user1".to_string()),
-            credential: Some("pass1".to_string()),
-        }
-    ]);
+    let initial = TurnServerList(vec![TurnServer {
+        urls: vec!["turn:turn1.example.com:3478".to_string()],
+        username: Some("user1".to_string()),
+        credential: Some("pass1".to_string()),
+    }]);
     let initial_key = initial.to_string();
 
     // Updated value
-    let updated = TurnServerList(vec![
-        TurnServer {
-            urls: vec!["turn:turn2.example.com:3478".to_string()],
-            username: Some("user2".to_string()),
-            credential: Some("pass2".to_string()),
-        }
-    ]);
+    let updated = TurnServerList(vec![TurnServer {
+        urls: vec!["turn:turn2.example.com:3478".to_string()],
+        username: Some("user2".to_string()),
+        credential: Some("pass2".to_string()),
+    }]);
     let updated_key = updated.to_string();
 
     // Cache should detect the change
-    assert_ne!(initial_key, updated_key, "Cache key should change when value changes");
+    assert_ne!(
+        initial_key, updated_key,
+        "Cache key should change when value changes"
+    );
 
     // Same value should produce same cache key
-    let same_as_initial = TurnServerList(vec![
-        TurnServer {
-            urls: vec!["turn:turn1.example.com:3478".to_string()],
-            username: Some("user1".to_string()),
-            credential: Some("pass1".to_string()),
-        }
-    ]);
+    let same_as_initial = TurnServerList(vec![TurnServer {
+        urls: vec!["turn:turn1.example.com:3478".to_string()],
+        username: Some("user1".to_string()),
+        credential: Some("pass1".to_string()),
+    }]);
     let same_key = same_as_initial.to_string();
 
-    assert_eq!(initial_key, same_key, "Same value should produce same cache key");
+    assert_eq!(
+        initial_key, same_key,
+        "Same value should produce same cache key"
+    );
 }
 
 // ============================================================================
@@ -918,13 +938,11 @@ fn test_setting_value_roundtrip() {
     assert_eq!(str_val.to_string().parse::<String>().unwrap(), str_val);
 
     // TURN server list
-    let turn_list = TurnServerList(vec![
-        TurnServer {
-            urls: vec!["turn:example.com:3478".to_string()],
-            username: Some("user".to_string()),
-            credential: Some("pass".to_string()),
-        }
-    ]);
+    let turn_list = TurnServerList(vec![TurnServer {
+        urls: vec!["turn:example.com:3478".to_string()],
+        username: Some("user".to_string()),
+        credential: Some("pass".to_string()),
+    }]);
     let turn_json = turn_list.to_string();
     let turn_parsed: TurnServerList = turn_json.parse().unwrap();
     assert_eq!(turn_list, turn_parsed);
@@ -970,37 +988,49 @@ fn test_default_values_are_valid() {
 /// single-key `update()` calls validate before persisting.
 #[tokio::test]
 async fn test_registry_wires_validation_to_settings_service() {
-    use synctv_core::service::SettingsService;
-    use synctv_core::repository::SettingsRepository;
     use std::sync::Arc;
+    use synctv_core::repository::SettingsRepository;
+    use synctv_core::service::SettingsService;
 
     let pool_opts = sqlx::postgres::PgPoolOptions::new().max_connections(1);
-    let pool = pool_opts.connect_lazy("postgres://fake:fake@localhost/fake").unwrap();
+    let pool = pool_opts
+        .connect_lazy("postgres://fake:fake@localhost/fake")
+        .unwrap();
     let repo = SettingsRepository::new(pool.clone());
     let service = Arc::new(SettingsService::new(repo, pool));
     let registry = SettingsRegistry::new(service.clone());
 
     // max_rooms_per_user has a validator: 1..=1000
     assert!(
-        service.validate_setting("server.max_rooms_per_user", "10").is_ok(),
+        service
+            .validate_setting("server.max_rooms_per_user", "10")
+            .is_ok(),
         "Valid max_rooms_per_user should pass"
     );
     assert!(
-        service.validate_setting("server.max_rooms_per_user", "0").is_err(),
+        service
+            .validate_setting("server.max_rooms_per_user", "0")
+            .is_err(),
         "Zero max_rooms_per_user should fail"
     );
     assert!(
-        service.validate_setting("server.max_rooms_per_user", "1001").is_err(),
+        service
+            .validate_setting("server.max_rooms_per_user", "1001")
+            .is_err(),
         "Exceeding max_rooms_per_user limit should fail"
     );
 
     // max_members_per_room has a validator
     assert!(
-        service.validate_setting("server.max_members_per_room", "100").is_ok(),
+        service
+            .validate_setting("server.max_members_per_room", "100")
+            .is_ok(),
         "Valid max_members_per_room should pass"
     );
     assert!(
-        service.validate_setting("server.max_members_per_room", "0").is_err(),
+        service
+            .validate_setting("server.max_members_per_room", "0")
+            .is_err(),
         "Zero max_members_per_room should fail"
     );
 
@@ -1016,21 +1046,29 @@ async fn test_registry_wires_validation_to_settings_service() {
 
     // Boolean settings should validate parse-ability
     assert!(
-        service.validate_setting("server.signup_enabled", "true").is_ok(),
+        service
+            .validate_setting("server.signup_enabled", "true")
+            .is_ok(),
         "Valid boolean should pass"
     );
     assert!(
-        service.validate_setting("server.signup_enabled", "not_bool").is_err(),
+        service
+            .validate_setting("server.signup_enabled", "not_bool")
+            .is_err(),
         "Invalid boolean should fail"
     );
 
     // max_chat_messages has a validator: <= 10000
     assert!(
-        service.validate_setting("server.max_chat_messages", "500").is_ok(),
+        service
+            .validate_setting("server.max_chat_messages", "500")
+            .is_ok(),
         "Valid max_chat_messages should pass"
     );
     assert!(
-        service.validate_setting("server.max_chat_messages", "10001").is_err(),
+        service
+            .validate_setting("server.max_chat_messages", "10001")
+            .is_err(),
         "Exceeding max_chat_messages should fail"
     );
 
@@ -1051,7 +1089,10 @@ fn test_contradictory_settings_update_batch_rejects_both_true() {
     // Both explicitly set to true in the batch -> must reject
     let result = validate_room_password_settings(true, true);
     assert!(result.is_err());
-    assert!(result.unwrap_err().to_string().contains("cannot both be true"));
+    assert!(result
+        .unwrap_err()
+        .to_string()
+        .contains("cannot both be true"));
 }
 
 #[test]

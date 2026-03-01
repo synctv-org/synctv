@@ -3,15 +3,18 @@
 //! Handles sending, receiving, and deleting chat messages with rate limiting
 //! and content filtering.
 
-use std::sync::Arc;
 use chrono::Utc;
-use tracing::{info, debug, error};
+use std::sync::Arc;
+use tracing::{debug, error, info};
 
 use crate::{
     cache::UsernameCache,
     models::{ChatMessage, PermissionBits, RoomId, SendDanmakuRequest, UserId},
     repository::ChatRepository,
-    service::{ContentFilter, PermissionService, RateLimitConfig, RateLimiter, RoomSettingsService, notification::NotificationService},
+    service::{
+        notification::NotificationService, ContentFilter, PermissionService, RateLimitConfig,
+        RateLimiter, RoomSettingsService,
+    },
     Error, Result,
 };
 
@@ -35,8 +38,7 @@ pub struct ChatService {
 
 impl std::fmt::Debug for ChatService {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("ChatService")
-            .finish()
+        f.debug_struct("ChatService").finish()
     }
 }
 
@@ -92,14 +94,20 @@ impl ChatService {
         // Check if chat is enabled for this room
         let room_settings = self.room_settings_service.get(&room_id).await?;
         if !room_settings.chat_enabled.0 {
-            return Err(Error::Authorization("Chat is disabled in this room".to_string()));
+            return Err(Error::Authorization(
+                "Chat is disabled in this room".to_string(),
+            ));
         }
 
         // Rate limiting: use configured chat_per_second from RateLimitConfig
         let rate_key = format!("chat:rate:{}:{}", room_id.as_str(), user_id.as_str());
         if let Err(e) = self
             .rate_limiter
-            .check_rate_limit(&rate_key, self.rate_limit_config.chat_per_second, self.rate_limit_config.window_seconds)
+            .check_rate_limit(
+                &rate_key,
+                self.rate_limit_config.chat_per_second,
+                self.rate_limit_config.window_seconds,
+            )
             .await
         {
             return Err(Error::RateLimited(format!("Chat rate limit exceeded: {e}")));
@@ -107,13 +115,15 @@ impl ChatService {
 
         // Validate content length
         if content.is_empty() {
-            return Err(Error::InvalidInput("Message content cannot be empty".to_string()));
+            return Err(Error::InvalidInput(
+                "Message content cannot be empty".to_string(),
+            ));
         }
 
         if content.chars().count() > MAX_CHAT_MESSAGE_CHARS {
-            return Err(Error::InvalidInput(
-                format!("Message content must be at most {MAX_CHAT_MESSAGE_CHARS} characters"),
-            ));
+            return Err(Error::InvalidInput(format!(
+                "Message content must be at most {MAX_CHAT_MESSAGE_CHARS} characters"
+            )));
         }
 
         // Get username
@@ -201,11 +211,7 @@ impl ChatService {
     ///
     /// # Returns
     /// Result indicating success or failure
-    pub async fn delete_message(
-        &self,
-        message_id: &str,
-        user_id: &UserId,
-    ) -> Result<bool> {
+    pub async fn delete_message(&self, message_id: &str, user_id: &UserId) -> Result<bool> {
         // Get the message to check ownership
         let message = self
             .chat_repository
@@ -221,7 +227,9 @@ impl ChatService {
                 .await?;
         }
 
-        self.chat_repository.delete(message_id, message.created_at).await
+        self.chat_repository
+            .delete(message_id, message.created_at)
+            .await
     }
 
     /// Send a danmaku message (not persisted, real-time only)
@@ -249,22 +257,32 @@ impl ChatService {
         // Check if danmaku is enabled for this room
         let room_settings = self.room_settings_service.get(&room_id).await?;
         if !room_settings.danmaku_enabled.0 {
-            return Err(Error::Authorization("Danmaku is disabled in this room".to_string()));
+            return Err(Error::Authorization(
+                "Danmaku is disabled in this room".to_string(),
+            ));
         }
 
         // Rate limiting: use configured danmaku_per_second from RateLimitConfig
         let rate_key = format!("danmaku:rate:{}:{}", room_id.as_str(), user_id.as_str());
         if let Err(e) = self
             .rate_limiter
-            .check_rate_limit(&rate_key, self.rate_limit_config.danmaku_per_second, self.rate_limit_config.window_seconds)
+            .check_rate_limit(
+                &rate_key,
+                self.rate_limit_config.danmaku_per_second,
+                self.rate_limit_config.window_seconds,
+            )
             .await
         {
-            return Err(Error::RateLimited(format!("Danmaku rate limit exceeded: {e}")));
+            return Err(Error::RateLimited(format!(
+                "Danmaku rate limit exceeded: {e}"
+            )));
         }
 
         // Validate content length
         if request.content.is_empty() {
-            return Err(Error::InvalidInput("Danmaku content cannot be empty".to_string()));
+            return Err(Error::InvalidInput(
+                "Danmaku content cannot be empty".to_string(),
+            ));
         }
 
         if request.content.chars().count() > 100 {
@@ -278,7 +296,9 @@ impl ChatService {
             return Err(Error::InvalidInput("Invalid color format".to_string()));
         }
         if !request.color[1..].chars().all(|c| c.is_ascii_hexdigit()) {
-            return Err(Error::InvalidInput("Invalid color format: must be hex digits".to_string()));
+            return Err(Error::InvalidInput(
+                "Invalid color format: must be hex digits".to_string(),
+            ));
         }
 
         // Filter content
@@ -314,11 +334,7 @@ impl ChatService {
     ///
     /// # Returns
     /// Number of messages deleted
-    pub async fn cleanup_room_messages(
-        &self,
-        room_id: &RoomId,
-        max_messages: u64,
-    ) -> Result<u64> {
+    pub async fn cleanup_room_messages(&self, room_id: &RoomId, max_messages: u64) -> Result<u64> {
         // If max_messages is 0, no cleanup needed (unlimited)
         if max_messages == 0 {
             return Ok(0);
@@ -357,7 +373,11 @@ impl ChatService {
     ///
     /// # Returns
     /// Total number of messages deleted across all rooms
-    pub async fn cleanup_all_rooms(&self, max_messages: u64, activity_window_minutes: i32) -> Result<u64> {
+    pub async fn cleanup_all_rooms(
+        &self,
+        max_messages: u64,
+        activity_window_minutes: i32,
+    ) -> Result<u64> {
         // If max_messages is 0, no cleanup needed (unlimited)
         if max_messages == 0 {
             return Ok(0);
@@ -366,7 +386,10 @@ impl ChatService {
         // Use optimized batch cleanup (single SQL query for all rooms)
         let deleted = self
             .chat_repository
-            .cleanup_all_rooms(max_messages.try_into().unwrap_or(i32::MAX), activity_window_minutes)
+            .cleanup_all_rooms(
+                max_messages.try_into().unwrap_or(i32::MAX),
+                activity_window_minutes,
+            )
             .await?;
 
         if deleted > 0 {
@@ -402,7 +425,8 @@ impl ChatService {
         cancel: tokio_util::sync::CancellationToken,
     ) -> tokio::task::JoinHandle<()> {
         crate::spawn::spawn_monitored("chat_cleanup", async move {
-            let mut interval = tokio::time::interval(std::time::Duration::from_secs(interval_seconds));
+            let mut interval =
+                tokio::time::interval(std::time::Duration::from_secs(interval_seconds));
 
             loop {
                 tokio::select! {
@@ -414,9 +438,15 @@ impl ChatService {
                 }
 
                 // Get current max_chat_messages_per_room setting
-                let max_messages = settings_registry.max_chat_messages_per_room.get().unwrap_or(500);
+                let max_messages = settings_registry
+                    .max_chat_messages_per_room
+                    .get()
+                    .unwrap_or(500);
 
-                match self.cleanup_all_rooms(max_messages, activity_window_minutes).await {
+                match self
+                    .cleanup_all_rooms(max_messages, activity_window_minutes)
+                    .await
+                {
                     Ok(deleted) => {
                         if deleted > 0 {
                             info!(

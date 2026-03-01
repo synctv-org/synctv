@@ -8,18 +8,18 @@
 //! Active TCP probes are also skipped while the registry is unreachable. Once the
 //! registry recovers, the monitor resumes normal-interval checks.
 
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::RwLock;
 use tokio::time::interval;
 use tokio_util::sync::CancellationToken;
 
 use super::node_registry::NodeRegistry;
+use crate::error::Result;
 #[allow(unused_imports)]
 use futures::future::join_all;
 use tonic::transport::Endpoint;
-use crate::error::Result;
 
 /// Health status of a node
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -101,7 +101,11 @@ impl HealthMonitor {
 
     /// Create a new health monitor with custom probe configuration
     #[must_use]
-    pub fn with_probe_config(node_registry: Arc<NodeRegistry>, check_interval_secs: u64, probe_config: HealthProbeConfig) -> Self {
+    pub fn with_probe_config(
+        node_registry: Arc<NodeRegistry>,
+        check_interval_secs: u64,
+        probe_config: HealthProbeConfig,
+    ) -> Self {
         Self {
             node_registry,
             check_interval_secs,
@@ -152,9 +156,8 @@ impl HealthMonitor {
                 } else {
                     1
                 };
-                let effective_check_interval = Duration::from_secs(
-                    check_interval_secs * backoff_multiplier,
-                );
+                let effective_check_interval =
+                    Duration::from_secs(check_interval_secs * backoff_multiplier);
 
                 tokio::select! {
                     () = cancel_token.cancelled() => {
@@ -215,7 +218,8 @@ impl HealthMonitor {
         timeout_secs: i64,
     ) {
         let mut status = health_status.write().await;
-        let node_ids: std::collections::HashSet<String> = nodes.iter().map(|n| n.node_id.clone()).collect();
+        let node_ids: std::collections::HashSet<String> =
+            nodes.iter().map(|n| n.node_id.clone()).collect();
 
         for node in nodes {
             // Only update to unhealthy based on heartbeat; probes may override
@@ -262,29 +266,29 @@ impl HealthMonitor {
         let heartbeat_timeout = registry.heartbeat_timeout_secs;
         let nodes_to_probe: Vec<_> = {
             let hs = health_status.read().await;
-            nodes.into_iter().filter(|node| {
-                let current_status = hs.get(&node.node_id).copied();
-                if current_status == Some(NodeHealth::Unhealthy) {
-                    // Only probe if heartbeat has recovered
-                    !node.is_stale(heartbeat_timeout)
-                } else {
-                    true
-                }
-            }).collect()
+            nodes
+                .into_iter()
+                .filter(|node| {
+                    let current_status = hs.get(&node.node_id).copied();
+                    if current_status == Some(NodeHealth::Unhealthy) {
+                        // Only probe if heartbeat has recovered
+                        !node.is_stale(heartbeat_timeout)
+                    } else {
+                        true
+                    }
+                })
+                .collect()
         };
 
         // Probe all nodes concurrently via gRPC GetNodes
         let probe_timeout = probe_config.probe_timeout_secs;
         let secret = probe_config.cluster_secret.clone();
-        let probe_results: Vec<_> = futures::future::join_all(
-            nodes_to_probe.iter().map(|node| {
-                let addr = node.grpc_address.clone();
-                let secret = secret.clone();
-                async move {
-                    Self::probe_node_grpc(&addr, probe_timeout, &secret).await
-                }
-            })
-        ).await;
+        let probe_results: Vec<_> = futures::future::join_all(nodes_to_probe.iter().map(|node| {
+            let addr = node.grpc_address.clone();
+            let secret = secret.clone();
+            async move { Self::probe_node_grpc(&addr, probe_timeout, &secret).await }
+        }))
+        .await;
 
         // Process results
         let mut states = probe_states.write().await;
@@ -376,7 +380,9 @@ impl HealthMonitor {
         let mut request = tonic::Request::new(GetNodesRequest { status_filter: 0 });
 
         if !cluster_secret.is_empty() {
-            if let Ok(val) = cluster_secret.parse::<tonic::metadata::MetadataValue<tonic::metadata::Ascii>>() {
+            if let Ok(val) =
+                cluster_secret.parse::<tonic::metadata::MetadataValue<tonic::metadata::Ascii>>()
+            {
                 request.metadata_mut().insert("x-cluster-secret", val);
             }
         }
@@ -414,13 +420,21 @@ impl HealthMonitor {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::node_registry::NodeInfo;
+    use super::*;
     use std::collections::HashMap;
 
     /// Helper: create a NodeRegistry (redis::Client::open succeeds without a running server)
     fn make_registry() -> Arc<NodeRegistry> {
-        Arc::new(NodeRegistry::new(redis::Client::open("redis://localhost:6379").unwrap(), "self".to_string(), 30, "test:").unwrap())
+        Arc::new(
+            NodeRegistry::new(
+                redis::Client::open("redis://localhost:6379").unwrap(),
+                "self".to_string(),
+                30,
+                "test:",
+            )
+            .unwrap(),
+        )
     }
 
     // --- HealthProbeConfig tests ---
@@ -484,11 +498,13 @@ mod tests {
     #[tokio::test]
     async fn test_process_heartbeats_does_not_mark_fresh_nodes() {
         let registry = make_registry();
-        registry.test_insert_local(NodeInfo::new(
-            "self".to_string(),
-            "localhost:50051".to_string(),
-            "localhost:8080".to_string(),
-        )).await;
+        registry
+            .test_insert_local(NodeInfo::new(
+                "self".to_string(),
+                "localhost:50051".to_string(),
+                "localhost:8080".to_string(),
+            ))
+            .await;
 
         let health_status = Arc::new(RwLock::new(HashMap::new()));
         let nodes = registry.get_all_nodes_local().await;
@@ -503,11 +519,13 @@ mod tests {
     #[tokio::test]
     async fn test_process_heartbeats_prunes_removed_nodes() {
         let registry = make_registry();
-        registry.test_insert_local(NodeInfo::new(
-            "self".to_string(),
-            "localhost:50051".to_string(),
-            "localhost:8080".to_string(),
-        )).await;
+        registry
+            .test_insert_local(NodeInfo::new(
+                "self".to_string(),
+                "localhost:50051".to_string(),
+                "localhost:8080".to_string(),
+            ))
+            .await;
 
         let health_status = Arc::new(RwLock::new(HashMap::new()));
         // Pre-populate with a node that no longer exists
@@ -520,7 +538,10 @@ mod tests {
         HealthMonitor::process_heartbeats(&health_status, &nodes, 30).await;
 
         let status = health_status.read().await;
-        assert!(!status.contains_key("ghost-node"), "Removed node should be pruned");
+        assert!(
+            !status.contains_key("ghost-node"),
+            "Removed node should be pruned"
+        );
     }
 
     // --- probe_node_grpc ---

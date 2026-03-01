@@ -22,9 +22,9 @@ use tower::{Layer, Service};
 use tracing::warn;
 
 use super::interceptors::GrpcRateLimitTier;
-use synctv_core::Config;
-use synctv_core::service::RateLimiter;
 use synctv_core::service::auth::JwtValidator;
+use synctv_core::service::RateLimiter;
+use synctv_core::Config;
 
 type BoxError = Box<dyn std::error::Error + Send + Sync>;
 
@@ -61,7 +61,11 @@ impl GrpcRateLimitLayer {
     /// * `config` - Application configuration
     /// * `jwt_validator` - JWT validator for extracting `user_id` from tokens
     #[must_use]
-    pub fn new(rate_limiter: RateLimiter, config: Arc<Config>, jwt_validator: JwtValidator) -> Self {
+    pub fn new(
+        rate_limiter: RateLimiter,
+        config: Arc<Config>,
+        jwt_validator: JwtValidator,
+    ) -> Self {
         Self {
             rate_limiter: Arc::new(rate_limiter),
             config,
@@ -153,23 +157,21 @@ async fn extract_grpc_status_from_response(
     if let Ok(collected) = collected {
         // Extract trailers as owned data before consuming `collected` for bytes.
         // `collected.trailers()` returns `Option<&HeaderMap>`, so we clone eagerly.
-        let trailer_map: Option<axum::http::HeaderMap> =
-            collected.trailers().cloned();
+        let trailer_map: Option<axum::http::HeaderMap> = collected.trailers().cloned();
 
         // Check trailers first (correct gRPC location per protocol spec).
-        let status_label = if let Some(status_val) =
-            trailer_map.as_ref().and_then(|t| t.get("grpc-status"))
-        {
-            grpc_status_code_to_label(status_val.to_str().unwrap_or(""))
-        } else if let Some(status_val) = parts.headers.get("grpc-status") {
-            // Fall back to headers for the rare case tonic puts status there
-            // (e.g. immediate error responses like resource_exhausted).
-            grpc_status_code_to_label(status_val.to_str().unwrap_or(""))
-        } else if parts.status.is_success() {
-            "ok"
-        } else {
-            "error"
-        };
+        let status_label =
+            if let Some(status_val) = trailer_map.as_ref().and_then(|t| t.get("grpc-status")) {
+                grpc_status_code_to_label(status_val.to_str().unwrap_or(""))
+            } else if let Some(status_val) = parts.headers.get("grpc-status") {
+                // Fall back to headers for the rare case tonic puts status there
+                // (e.g. immediate error responses like resource_exhausted).
+                grpc_status_code_to_label(status_val.to_str().unwrap_or(""))
+            } else if parts.status.is_success() {
+                "ok"
+            } else {
+                "error"
+            };
 
         // Inline trailer headers into the response parts so that tonic
         // downstream processing continues to see the gRPC status values.
@@ -202,9 +204,7 @@ async fn extract_grpc_status_from_response(
 fn tier_from_path(path: &str) -> Option<GrpcRateLimitTier> {
     // gRPC path format: /synctv.client.AuthService/Login
     let parts: Vec<&str> = path.split('/').collect();
-    let service_name = parts
-        .get(1)
-        .and_then(|full| full.rsplit('.').next());
+    let service_name = parts.get(1).and_then(|full| full.rsplit('.').next());
     let method_name = parts.get(2).copied();
 
     match service_name {
@@ -248,8 +248,8 @@ fn user_service_tier(method: Option<&str>) -> GrpcRateLimitTier {
 fn room_service_tier(method: Option<&str>) -> GrpcRateLimitTier {
     match method {
         Some(
-            "GetRoom" | "GetRoomSettings" | "GetRoomMembers" | "GetChatHistory"
-            | "GetIceServers" | "GetPlaylist" | "ListRooms",
+            "GetRoom" | "GetRoomSettings" | "GetRoomMembers" | "GetChatHistory" | "GetIceServers"
+            | "GetPlaylist" | "ListRooms",
         ) => GrpcRateLimitTier::Read,
         _ => GrpcRateLimitTier::Write,
     }
@@ -283,7 +283,11 @@ fn user_rate_limit_key(user_id: &str) -> String {
 ///
 /// This function validates the JWT before extracting `user_id` to prevent spoofing.
 /// Invalid or expired tokens fall back to IP-based rate limiting.
-fn extract_client_id(headers: &http::HeaderMap, config: &Config, jwt_validator: &JwtValidator) -> String {
+fn extract_client_id(
+    headers: &http::HeaderMap,
+    config: &Config,
+    jwt_validator: &JwtValidator,
+) -> String {
     // For authenticated requests, validate JWT and extract verified user_id.
     // This ensures that all tokens belonging to the same user share a single
     // rate limit quota, preventing quota bypass through multiple tokens.
@@ -292,7 +296,9 @@ fn extract_client_id(headers: &http::HeaderMap, config: &Config, jwt_validator: 
         .and_then(|v| v.to_str().ok())
     {
         // First extract the bearer token
-        if let Ok(token) = synctv_core::service::auth::JwtValidator::extract_bearer_token(auth_header) {
+        if let Ok(token) =
+            synctv_core::service::auth::JwtValidator::extract_bearer_token(auth_header)
+        {
             // Validate the JWT and extract user_id from claims
             // This ensures the token is authentic and the user_id is verified
             if let Ok(claims) = jwt_validator.validate_token(&token) {
@@ -322,10 +328,7 @@ fn extract_client_id(headers: &http::HeaderMap, config: &Config, jwt_validator: 
         {
             return format!("anon:{ip}");
         }
-        if let Some(ip) = headers
-            .get("X-Real-IP")
-            .and_then(|h| h.to_str().ok())
-        {
+        if let Some(ip) = headers.get("X-Real-IP").and_then(|h| h.to_str().ok()) {
             return format!("anon:{ip}");
         }
     }
@@ -431,10 +434,9 @@ where
                 synctv_core::metrics::grpc::GRPC_REQUESTS_TOTAL
                     .with_label_values(&[&service_label, &method_label, &resource_exhausted])
                     .inc();
-                let response = tonic::Status::resource_exhausted(
-                    "Rate limit exceeded. Please retry later.",
-                )
-                .into_http();
+                let response =
+                    tonic::Status::resource_exhausted("Rate limit exceeded. Please retry later.")
+                        .into_http();
                 return Ok(response);
             }
 
@@ -465,8 +467,8 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use synctv_core::service::auth::{JwtService, jwt::TokenType};
     use synctv_core::models::UserId;
+    use synctv_core::service::auth::{jwt::TokenType, JwtService};
 
     #[test]
     fn test_extract_grpc_labels() {
@@ -644,7 +646,9 @@ mod tests {
 
     /// Create a test JWT service with a known secret
     fn create_test_jwt_service() -> Arc<JwtService> {
-        Arc::new(JwtService::new("test-secret-for-rate-limit-layer-tests-1234567890abcdef").unwrap())
+        Arc::new(
+            JwtService::new("test-secret-for-rate-limit-layer-tests-1234567890abcdef").unwrap(),
+        )
     }
 
     /// Create a test JWT validator
@@ -655,7 +659,9 @@ mod tests {
     /// Create a valid test token for a specific `user_id`
     fn create_test_token(jwt_service: &JwtService, user_id: &str) -> String {
         let user_id = UserId::from_string(user_id.to_string());
-        jwt_service.sign_token(&user_id, TokenType::Access, 0).unwrap()
+        jwt_service
+            .sign_token(&user_id, TokenType::Access, 0)
+            .unwrap()
     }
 
     /// Create an invalid/fake token that won't pass validation
@@ -730,9 +736,18 @@ mod tests {
         let id2 = extract_client_id(&headers2, &config, &jwt_validator);
 
         // Both should produce the same key (user:userABC)
-        assert_eq!(id1, "user:userABC", "First token should produce user:userABC");
-        assert_eq!(id2, "user:userABC", "Second token should produce user:userABC");
-        assert_eq!(id1, id2, "Different tokens for same user must produce same rate limit key");
+        assert_eq!(
+            id1, "user:userABC",
+            "First token should produce user:userABC"
+        );
+        assert_eq!(
+            id2, "user:userABC",
+            "Second token should produce user:userABC"
+        );
+        assert_eq!(
+            id1, id2,
+            "Different tokens for same user must produce same rate limit key"
+        );
     }
 
     #[test]
@@ -760,7 +775,10 @@ mod tests {
         let id1 = extract_client_id(&headers1, &config, &jwt_validator);
         let id2 = extract_client_id(&headers2, &config, &jwt_validator);
 
-        assert_ne!(id1, id2, "Different users must have different rate limit keys");
+        assert_ne!(
+            id1, id2,
+            "Different users must have different rate limit keys"
+        );
         assert_eq!(id1, "user:user1");
         assert_eq!(id2, "user:user2");
     }
@@ -782,7 +800,10 @@ mod tests {
 
         let id = extract_client_id(&headers, &config, &jwt_validator);
         // Should fall back to anon:unknown since no valid JWT and no IP info
-        assert_eq!(id, "anon:unknown", "Invalid JWT should fall back to anonymous");
+        assert_eq!(
+            id, "anon:unknown",
+            "Invalid JWT should fall back to anonymous"
+        );
     }
 
     #[test]
@@ -822,7 +843,10 @@ mod tests {
         let jwt_validator = create_test_jwt_validator(&jwt_service);
 
         let mut headers = http::HeaderMap::new();
-        headers.insert("X-Forwarded-For", "203.0.113.50, 70.41.3.18".parse().unwrap());
+        headers.insert(
+            "X-Forwarded-For",
+            "203.0.113.50, 70.41.3.18".parse().unwrap(),
+        );
 
         let id = extract_client_id(&headers, &config, &jwt_validator);
         assert_eq!(id, "anon:unknown");
@@ -836,7 +860,10 @@ mod tests {
         let jwt_validator = create_test_jwt_validator(&jwt_service);
 
         let mut headers = http::HeaderMap::new();
-        headers.insert("X-Forwarded-For", "203.0.113.50, 70.41.3.18".parse().unwrap());
+        headers.insert(
+            "X-Forwarded-For",
+            "203.0.113.50, 70.41.3.18".parse().unwrap(),
+        );
         headers.insert("x-real-ip-internal", "127.0.0.1".parse().unwrap());
 
         let id = extract_client_id(&headers, &config, &jwt_validator);
@@ -874,7 +901,10 @@ mod tests {
 
         let id = extract_client_id(&headers, &config, &jwt_validator);
         // Must be user-based, not IP-based
-        assert_eq!(id, "user:priority_user", "JWT user should take priority over IP");
+        assert_eq!(
+            id, "user:priority_user",
+            "JWT user should take priority over IP"
+        );
     }
 
     #[test]
@@ -895,7 +925,10 @@ mod tests {
 
         let id = extract_client_id(&headers, &config, &jwt_validator);
         // Invalid JWT should fall back to IP-based rate limiting
-        assert_eq!(id, "anon:203.0.113.50", "Invalid JWT should fall back to IP");
+        assert_eq!(
+            id, "anon:203.0.113.50",
+            "Invalid JWT should fall back to IP"
+        );
     }
 
     // ============== Security-focused tests ==============
@@ -919,19 +952,25 @@ mod tests {
             .map(|_| create_test_token(&jwt_service, user_id))
             .collect();
 
-        let keys: Vec<String> = same_user_tokens.iter().map(|token| {
-            let mut headers = http::HeaderMap::new();
-            headers.insert(
-                http::header::AUTHORIZATION,
-                format!("Bearer {token}").parse().unwrap(),
-            );
-            extract_client_id(&headers, &config, &jwt_validator)
-        }).collect();
+        let keys: Vec<String> = same_user_tokens
+            .iter()
+            .map(|token| {
+                let mut headers = http::HeaderMap::new();
+                headers.insert(
+                    http::header::AUTHORIZATION,
+                    format!("Bearer {token}").parse().unwrap(),
+                );
+                extract_client_id(&headers, &config, &jwt_validator)
+            })
+            .collect();
 
         // All keys should be identical
         let first_key = &keys[0];
         for key in &keys {
-            assert_eq!(key, first_key, "All tokens for same user must produce same key");
+            assert_eq!(
+                key, first_key,
+                "All tokens for same user must produce same key"
+            );
         }
         assert_eq!(first_key, "user:target_user");
     }
@@ -976,6 +1015,9 @@ mod tests {
         // Spoofed token falls back to anonymous (since validation fails)
         assert_eq!(spoofed_id, "anon:unknown");
         // They should NOT be the same
-        assert_ne!(legit_id, spoofed_id, "Spoofed token should not get legitimate user's key");
+        assert_ne!(
+            legit_id, spoofed_id,
+            "Spoofed token should not get legitimate user's key"
+        );
     }
 }

@@ -7,13 +7,15 @@
 #![allow(clippy::unwrap_used)]
 
 use std::sync::Arc;
-use synctv_core::service::{OAuthStateStore, OAuth2State, RedisOAuthStateStore};
+use synctv_core::service::{OAuth2State, OAuthStateStore, RedisOAuthStateStore};
 use testcontainers_modules::redis::Redis;
 
-
-async fn start_redis() -> (testcontainers::ContainerAsync<Redis>, redis::aio::ConnectionManager) {
+async fn start_redis() -> (
+    testcontainers::ContainerAsync<Redis>,
+    redis::aio::ConnectionManager,
+) {
     use testcontainers::runners::AsyncRunner;
-    
+
     let container = Redis::default()
         .start()
         .await
@@ -82,9 +84,7 @@ async fn test_redis_oauth_state_consume_is_atomic() {
     let mut handles = Vec::new();
     for _ in 0..20 {
         let s = store.clone();
-        handles.push(tokio::spawn(async move {
-            s.consume("atomic_token").await
-        }));
+        handles.push(tokio::spawn(async move { s.consume("atomic_token").await }));
     }
 
     let mut success_count = 0;
@@ -128,10 +128,7 @@ async fn test_redis_oauth_state_ttl_expiry() {
 
     // Should be expired
     let result = store.consume("ttl_token").await.unwrap();
-    assert!(
-        result.is_none(),
-        "Token should have expired after 1s TTL"
-    );
+    assert!(result.is_none(), "Token should have expired after 1s TTL");
 }
 
 // ============================================================================
@@ -220,7 +217,10 @@ async fn test_redis_oauth_state_multiple_tokens_isolated() {
             bind_user_id: None,
             pkce_verifier: format!("verifier_{i}"),
         };
-        store.store(&format!("token_{i}"), &state, ttl).await.unwrap();
+        store
+            .store(&format!("token_{i}"), &state, ttl)
+            .await
+            .unwrap();
     }
 
     // Consume in random order and verify each is isolated
@@ -260,7 +260,10 @@ async fn test_redis_oauth_state_created_at_expiry_check() {
 
     // Store with long TTL (simulating Redis TTL not being enforced)
     let long_ttl = std::time::Duration::from_hours(1);
-    store.store("expired_by_created_at", &state, long_ttl).await.unwrap();
+    store
+        .store("expired_by_created_at", &state, long_ttl)
+        .await
+        .unwrap();
 
     // The state should be retrievable from Redis (TTL not expired)
     let result = store.consume("expired_by_created_at").await.unwrap();

@@ -6,9 +6,9 @@
 #![allow(clippy::unwrap_used)]
 use std::sync::Arc;
 
+use synctv_cluster::discovery::node_registry::NodeRegistry;
 use synctv_cluster::grpc::client::{ClusterClient, ClusterClientConfig, FanOutResult};
 use synctv_cluster::grpc::synctv::cluster::UserOnlineStatus;
-use synctv_cluster::discovery::node_registry::NodeRegistry;
 
 // ============================================================================
 // FanOutResult construction and queries
@@ -30,8 +30,15 @@ fn test_fan_out_result_partial_failure_tracking() {
     };
 
     assert_eq!(result.nodes_failed, 1, "Should have 1 failed node");
-    assert_eq!(result.total_nodes(), 2, "Should have contacted 2 nodes total");
-    assert!(!result.is_complete(), "Should not be complete with a failure");
+    assert_eq!(
+        result.total_nodes(),
+        2,
+        "Should have contacted 2 nodes total"
+    );
+    assert!(
+        !result.is_complete(),
+        "Should not be complete with a failure"
+    );
     assert_eq!(result.data.len(), 1, "Should have 1 successful response");
     assert_eq!(
         result.failures[0].0, "slow-node:50051",
@@ -148,7 +155,11 @@ fn test_merge_user_statuses_dedup_rooms() {
     rooms.sort();
     assert_eq!(
         rooms,
-        vec!["room-a".to_string(), "room-b".to_string(), "room-c".to_string()],
+        vec![
+            "room-a".to_string(),
+            "room-b".to_string(),
+            "room-c".to_string()
+        ],
         "Room IDs should be deduplicated"
     );
 }
@@ -225,8 +236,14 @@ fn test_merge_user_statuses_node_id_merged() {
     assert_eq!(merged.len(), 1);
 
     let user = &merged[0];
-    assert!(user.node_id.contains("node-a"), "node_id should contain node-a");
-    assert!(user.node_id.contains("node-b"), "node_id should contain node-b");
+    assert!(
+        user.node_id.contains("node-a"),
+        "node_id should contain node-a"
+    );
+    assert!(
+        user.node_id.contains("node-b"),
+        "node_id should contain node-b"
+    );
 }
 
 /// `ClusterClient` with no remote nodes should return empty fan-out results.

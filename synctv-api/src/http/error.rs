@@ -64,37 +64,37 @@ impl AppError {
     }
 
     // Common user-facing error messages for consistency
-    #[must_use] 
+    #[must_use]
     pub fn invalid_credentials() -> Self {
         Self::unauthorized("Invalid username or password")
     }
 
-    #[must_use] 
+    #[must_use]
     pub fn session_expired() -> Self {
         Self::unauthorized("Your session has expired. Please log in again.")
     }
 
-    #[must_use] 
+    #[must_use]
     pub fn token_invalid() -> Self {
         Self::unauthorized("Invalid or expired token")
     }
 
-    #[must_use] 
+    #[must_use]
     pub fn permission_denied() -> Self {
         Self::forbidden("You do not have permission to perform this action")
     }
 
-    #[must_use] 
+    #[must_use]
     pub fn resource_not_found(resource: &str) -> Self {
         Self::not_found(format!("{resource} not found"))
     }
 
-    #[must_use] 
+    #[must_use]
     pub fn validation_failed(field: &str, reason: &str) -> Self {
         Self::bad_request(format!("Invalid {field}: {reason}"))
     }
 
-    #[must_use] 
+    #[must_use]
     pub fn rate_limited(retry_after: u64) -> Self {
         Self::new(
             StatusCode::TOO_MANY_REQUESTS,
@@ -102,7 +102,7 @@ impl AppError {
         )
     }
 
-    #[must_use] 
+    #[must_use]
     pub fn service_unavailable() -> Self {
         Self::new(
             StatusCode::SERVICE_UNAVAILABLE,
@@ -252,9 +252,10 @@ impl From<synctv_core::Error> for AppError {
                 tracing::error!("Internal error: {}", msg);
                 Self::internal_server_error("Internal server error")
             }
-            Error::OptimisticLockConflict => {
-                Self::new(StatusCode::CONFLICT, "Resource was modified concurrently, please retry")
-            }
+            Error::OptimisticLockConflict => Self::new(
+                StatusCode::CONFLICT,
+                "Resource was modified concurrently, please retry",
+            ),
             Error::Timeout(msg) => {
                 tracing::warn!("Request timeout: {}", msg);
                 Self::new(StatusCode::REQUEST_TIMEOUT, msg)
@@ -306,7 +307,7 @@ impl From<crate::impls::ApiError> for AppError {
 ///
 /// Uses the `From<ApiError> for AppError` impl for guaranteed-correct
 /// status code mapping (no keyword-based heuristics).
-#[must_use] 
+#[must_use]
 pub fn map_api_error(err: crate::impls::ApiError) -> AppError {
     AppError::from(err)
 }
@@ -315,8 +316,8 @@ pub fn map_api_error(err: crate::impls::ApiError) -> AppError {
 mod tests {
     use super::*;
     use axum::body::to_bytes;
-    use axum::http::{Request, StatusCode};
     use axum::body::Body;
+    use axum::http::{Request, StatusCode};
     use tower::ServiceExt;
 
     // ========== Request ID in error responses ==========
@@ -362,10 +363,7 @@ mod tests {
                 crate::http::middleware::request_id_middleware,
             ));
 
-        let request = Request::builder()
-            .uri("/test")
-            .body(Body::empty())
-            .unwrap();
+        let request = Request::builder().uri("/test").body(Body::empty()).unwrap();
 
         let response = app.oneshot(request).await.unwrap();
 

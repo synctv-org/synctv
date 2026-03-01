@@ -8,21 +8,21 @@
 //! - `RedisVerificationCodeStore`: Redis with TTL (multi-node safe)
 //! - `InMemoryVerificationCodeStore`: moka cache (single-node only)
 
+use async_trait::async_trait;
 use chrono::{Duration, Utc};
+use lettre::{
+    message::{header::ContentType, Mailbox, MultiPart},
+    transport::smtp::authentication::Credentials,
+    AsyncSmtpTransport, AsyncTransport, Message, Tokio1Executor,
+};
 use rand::RngExt;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
-use async_trait::async_trait;
-use lettre::{
-    AsyncSmtpTransport, AsyncTransport, Message, Tokio1Executor,
-    message::{header::ContentType, Mailbox, MultiPart},
-    transport::smtp::authentication::Credentials,
-};
 use tracing::{debug, warn};
 
-use crate::{Error, Result, InternalExt};
-use super::email_token::{EmailTokenService, EmailTokenType};
 use super::email_templates::EmailTemplateManager;
+use super::email_token::{EmailTokenService, EmailTokenType};
+use crate::{Error, InternalExt, Result};
 
 /// Mask an email address for safe logging: `user***@example.com`
 fn mask_email(email: &str) -> String {
@@ -98,7 +98,13 @@ pub trait VerificationCodeStore: Send + Sync {
     /// and delete on success or max-attempts exceeded.
     ///
     /// Returns `Ok(())` on success, or an appropriate `Error` on failure.
-    async fn verify_code(&self, email: &str, code: &str, max_attempts: u32, ttl_minutes: i64) -> Result<()>;
+    async fn verify_code(
+        &self,
+        email: &str,
+        code: &str,
+        max_attempts: u32,
+        ttl_minutes: i64,
+    ) -> Result<()>;
 
     /// A label for logging/debug purposes.
     fn backend_name(&self) -> &'static str;
@@ -118,7 +124,7 @@ pub struct RedisVerificationCodeStore {
 }
 
 impl RedisVerificationCodeStore {
-    #[must_use] 
+    #[must_use]
     pub const fn new(redis: Arc<redis::Client>, ttl_minutes: i64) -> Self {
         Self { redis, ttl_minutes }
     }
@@ -131,7 +137,8 @@ impl VerificationCodeStore for RedisVerificationCodeStore {
         let value = serde_json::to_string(code)
             .internal_with_err("Failed to serialize verification code")?;
 
-        let mut conn = self.redis
+        let mut conn = self
+            .redis
             .get_multiplexed_async_connection()
             .await
             .internal_with_err("Redis connection failed")?;
@@ -143,14 +150,24 @@ impl VerificationCodeStore for RedisVerificationCodeStore {
             .await
             .internal_with_err("Failed to store verification code in Redis")?;
 
-        debug!("Stored verification code in Redis for email {}", &email[..email.len().min(4)]);
+        debug!(
+            "Stored verification code in Redis for email {}",
+            &email[..email.len().min(4)]
+        );
         Ok(())
     }
 
-    async fn verify_code(&self, email: &str, code: &str, max_attempts: u32, _ttl_minutes: i64) -> Result<()> {
+    async fn verify_code(
+        &self,
+        email: &str,
+        code: &str,
+        max_attempts: u32,
+        _ttl_minutes: i64,
+    ) -> Result<()> {
         let key = format!("{EMAIL_CODE_KEY_PREFIX}{email}");
 
-        let mut conn = self.redis
+        let mut conn = self
+            .redis
             .get_multiplexed_async_connection()
             .await
             .map_err(|e| Error::Internal(format!("Redis connection failed: {e}")))?;
@@ -203,10 +220,14 @@ impl VerificationCodeStore for RedisVerificationCodeStore {
 
         match result {
             1 => Ok(()),
-            -1 => Err(Error::InvalidInput("No verification code found or code expired".to_string())),
+            -1 => Err(Error::InvalidInput(
+                "No verification code found or code expired".to_string(),
+            )),
             -3 => Err(Error::InvalidInput("Too many failed attempts".to_string())),
             -4 => Err(Error::InvalidInput("Invalid verification code".to_string())),
-            _ => Err(Error::Internal("Unexpected verification result".to_string())),
+            _ => Err(Error::Internal(
+                "Unexpected verification result".to_string(),
+            )),
         }
     }
 
@@ -225,12 +246,14 @@ pub struct InMemoryVerificationCodeStore {
 }
 
 impl InMemoryVerificationCodeStore {
-    #[must_use] 
+    #[must_use]
     pub fn new(ttl_minutes: i64) -> Self {
         Self {
             cache: moka::sync::Cache::builder()
                 .max_capacity(10_000)
-                .time_to_live(std::time::Duration::from_secs((ttl_minutes.max(1) * 60) as u64))
+                .time_to_live(std::time::Duration::from_secs(
+                    (ttl_minutes.max(1) * 60) as u64,
+                ))
                 .build(),
         }
     }
@@ -240,12 +263,21 @@ impl InMemoryVerificationCodeStore {
 impl VerificationCodeStore for InMemoryVerificationCodeStore {
     async fn store_code(&self, email: &str, code: &VerificationCode) -> Result<()> {
         self.cache.insert(email.to_string(), code.clone());
-        debug!("Stored verification code in memory for email {}", &email[..email.len().min(4)]);
+        debug!(
+            "Stored verification code in memory for email {}",
+            &email[..email.len().min(4)]
+        );
         Ok(())
     }
 
     #[allow(clippy::unwrap_used)] // Mutex is uncontended; lock() cannot fail
-    async fn verify_code(&self, email: &str, code: &str, max_attempts: u32, ttl_minutes: i64) -> Result<()> {
+    async fn verify_code(
+        &self,
+        email: &str,
+        code: &str,
+        max_attempts: u32,
+        ttl_minutes: i64,
+    ) -> Result<()> {
         use moka::ops::compute::Op;
 
         let code = code.to_string();
@@ -255,45 +287,44 @@ impl VerificationCodeStore for InMemoryVerificationCodeStore {
         // returns, so there is no contention, but Mutex satisfies Send.
         let error_slot = std::sync::Mutex::new(Option::<Error>::None);
 
-        self.cache.entry_by_ref(email).and_compute_with(|maybe_entry| {
-            let Some(entry) = maybe_entry else {
-                *error_slot.lock().unwrap() = Some(Error::InvalidInput(
-                    "No verification code found".to_string(),
-                ));
-                return Op::Nop;
-            };
+        self.cache
+            .entry_by_ref(email)
+            .and_compute_with(|maybe_entry| {
+                let Some(entry) = maybe_entry else {
+                    *error_slot.lock().unwrap() = Some(Error::InvalidInput(
+                        "No verification code found".to_string(),
+                    ));
+                    return Op::Nop;
+                };
 
-            let mut vc = entry.into_value();
+                let mut vc = entry.into_value();
 
-            // Check if expired (moka TTL handles eviction, but also check our own)
-            let expiration = vc.created_at + Duration::minutes(ttl_minutes);
-            if Utc::now() > expiration {
-                *error_slot.lock().unwrap() = Some(Error::InvalidInput(
-                    "Verification code expired".to_string(),
-                ));
-                return Op::Remove;
-            }
+                // Check if expired (moka TTL handles eviction, but also check our own)
+                let expiration = vc.created_at + Duration::minutes(ttl_minutes);
+                if Utc::now() > expiration {
+                    *error_slot.lock().unwrap() =
+                        Some(Error::InvalidInput("Verification code expired".to_string()));
+                    return Op::Remove;
+                }
 
-            // Increment and check attempts
-            vc.attempts += 1;
-            if vc.attempts >= max_attempts {
-                *error_slot.lock().unwrap() = Some(Error::InvalidInput(
-                    "Too many failed attempts".to_string(),
-                ));
-                return Op::Remove;
-            }
+                // Increment and check attempts
+                vc.attempts += 1;
+                if vc.attempts >= max_attempts {
+                    *error_slot.lock().unwrap() =
+                        Some(Error::InvalidInput("Too many failed attempts".to_string()));
+                    return Op::Remove;
+                }
 
-            // Wrong code: persist incremented attempt counter
-            if vc.code != code {
-                *error_slot.lock().unwrap() = Some(Error::InvalidInput(
-                    "Invalid verification code".to_string(),
-                ));
-                return Op::Put(vc);
-            }
+                // Wrong code: persist incremented attempt counter
+                if vc.code != code {
+                    *error_slot.lock().unwrap() =
+                        Some(Error::InvalidInput("Invalid verification code".to_string()));
+                    return Op::Put(vc);
+                }
 
-            // Success: remove code after successful verification
-            Op::Remove
-        });
+                // Success: remove code after successful verification
+                Op::Remove
+            });
 
         match error_slot.into_inner().unwrap() {
             Some(err) => Err(err),
@@ -337,14 +368,15 @@ impl std::fmt::Debug for EmailService {
 
 impl EmailService {
     /// Build a reusable SMTP transport from config.
-    fn build_smtp_transport(config: &EmailConfig) -> std::result::Result<AsyncSmtpTransport<Tokio1Executor>, EmailError> {
-        let creds = Credentials::new(
-            config.smtp_username.clone(),
-            config.smtp_password.clone(),
-        );
+    fn build_smtp_transport(
+        config: &EmailConfig,
+    ) -> std::result::Result<AsyncSmtpTransport<Tokio1Executor>, EmailError> {
+        let creds = Credentials::new(config.smtp_username.clone(), config.smtp_password.clone());
         let transport = if config.use_tls {
             AsyncSmtpTransport::<Tokio1Executor>::relay(&config.smtp_host)
-                .map_err(|e| EmailError::SendError(format!("Failed to create SMTP transport: {e}")))?
+                .map_err(|e| {
+                    EmailError::SendError(format!("Failed to create SMTP transport: {e}"))
+                })?
                 .credentials(creds)
                 .port(config.smtp_port)
                 .build()
@@ -358,9 +390,15 @@ impl EmailService {
     }
 
     /// Create a new email service with a custom code store backend.
-    pub fn from_store(config: Option<EmailConfig>, code_store: Arc<dyn VerificationCodeStore>, code_ttl_minutes: i64) -> Result<Self> {
+    pub fn from_store(
+        config: Option<EmailConfig>,
+        code_store: Arc<dyn VerificationCodeStore>,
+        code_ttl_minutes: i64,
+    ) -> Result<Self> {
         let template_manager = EmailTemplateManager::new()?;
-        let smtp_transport = config.as_ref().and_then(|c| Self::build_smtp_transport(c).ok());
+        let smtp_transport = config
+            .as_ref()
+            .and_then(|c| Self::build_smtp_transport(c).ok());
         Ok(Self {
             config,
             code_store,
@@ -403,71 +441,114 @@ impl EmailService {
             return Err(Error::InvalidInput("Email cannot be empty".to_string()));
         }
         if email.len() > 254 {
-            return Err(Error::InvalidInput("Email too long (max 254 characters)".to_string()));
+            return Err(Error::InvalidInput(
+                "Email too long (max 254 characters)".to_string(),
+            ));
         }
         if !email.contains('@') {
-            return Err(Error::InvalidInput("Email must contain @ symbol".to_string()));
+            return Err(Error::InvalidInput(
+                "Email must contain @ symbol".to_string(),
+            ));
         }
 
         let parts: Vec<&str> = email.split('@').collect();
         if parts.len() != 2 {
-            return Err(Error::InvalidInput("Email must contain exactly one @ symbol".to_string()));
+            return Err(Error::InvalidInput(
+                "Email must contain exactly one @ symbol".to_string(),
+            ));
         }
 
         let local = parts[0];
         let domain = parts[1];
 
         if local.is_empty() {
-            return Err(Error::InvalidInput("Email local part cannot be empty".to_string()));
+            return Err(Error::InvalidInput(
+                "Email local part cannot be empty".to_string(),
+            ));
         }
         if local.len() > 64 {
-            return Err(Error::InvalidInput("Email local part too long (max 64 characters)".to_string()));
+            return Err(Error::InvalidInput(
+                "Email local part too long (max 64 characters)".to_string(),
+            ));
         }
-        if !local.chars().all(|c| c.is_alphanumeric() || c == '.' || c == '-' || c == '_' || c == '+') {
-            return Err(Error::InvalidInput("Email local part contains invalid characters".to_string()));
+        if !local
+            .chars()
+            .all(|c| c.is_alphanumeric() || c == '.' || c == '-' || c == '_' || c == '+')
+        {
+            return Err(Error::InvalidInput(
+                "Email local part contains invalid characters".to_string(),
+            ));
         }
         if local.starts_with('.') || local.ends_with('.') {
-            return Err(Error::InvalidInput("Email local part cannot start or end with dot".to_string()));
+            return Err(Error::InvalidInput(
+                "Email local part cannot start or end with dot".to_string(),
+            ));
         }
         if local.contains("..") {
-            return Err(Error::InvalidInput("Email local part cannot contain consecutive dots".to_string()));
+            return Err(Error::InvalidInput(
+                "Email local part cannot contain consecutive dots".to_string(),
+            ));
         }
 
         if domain.is_empty() {
-            return Err(Error::InvalidInput("Email domain cannot be empty".to_string()));
+            return Err(Error::InvalidInput(
+                "Email domain cannot be empty".to_string(),
+            ));
         }
         if domain.len() > 253 {
-            return Err(Error::InvalidInput("Email domain too long (max 253 characters)".to_string()));
+            return Err(Error::InvalidInput(
+                "Email domain too long (max 253 characters)".to_string(),
+            ));
         }
         if !domain.contains('.') {
-            return Err(Error::InvalidInput("Email domain must contain at least one dot".to_string()));
+            return Err(Error::InvalidInput(
+                "Email domain must contain at least one dot".to_string(),
+            ));
         }
-        if domain.starts_with('.') || domain.ends_with('.') || domain.starts_with('-') || domain.ends_with('-') {
-            return Err(Error::InvalidInput("Email domain has invalid format".to_string()));
+        if domain.starts_with('.')
+            || domain.ends_with('.')
+            || domain.starts_with('-')
+            || domain.ends_with('-')
+        {
+            return Err(Error::InvalidInput(
+                "Email domain has invalid format".to_string(),
+            ));
         }
 
         let domain_labels: Vec<&str> = domain.split('.').collect();
         for label in &domain_labels {
             if label.is_empty() {
-                return Err(Error::InvalidInput("Email domain cannot have empty labels".to_string()));
+                return Err(Error::InvalidInput(
+                    "Email domain cannot have empty labels".to_string(),
+                ));
             }
             if label.len() > 63 {
-                return Err(Error::InvalidInput("Email domain label too long (max 63 characters)".to_string()));
+                return Err(Error::InvalidInput(
+                    "Email domain label too long (max 63 characters)".to_string(),
+                ));
             }
             if !label.chars().all(|c| c.is_alphanumeric() || c == '-') {
-                return Err(Error::InvalidInput("Email domain contains invalid characters".to_string()));
+                return Err(Error::InvalidInput(
+                    "Email domain contains invalid characters".to_string(),
+                ));
             }
             if label.starts_with('-') || label.ends_with('-') {
-                return Err(Error::InvalidInput("Email domain label cannot start or end with hyphen".to_string()));
+                return Err(Error::InvalidInput(
+                    "Email domain label cannot start or end with hyphen".to_string(),
+                ));
             }
         }
 
         if let Some(tld) = domain_labels.last() {
             if tld.len() < 2 {
-                return Err(Error::InvalidInput("Email domain TLD must be at least 2 characters".to_string()));
+                return Err(Error::InvalidInput(
+                    "Email domain TLD must be at least 2 characters".to_string(),
+                ));
             }
             if !tld.chars().all(char::is_alphabetic) {
-                return Err(Error::InvalidInput("Email domain TLD must be alphabetic".to_string()));
+                return Err(Error::InvalidInput(
+                    "Email domain TLD must be alphabetic".to_string(),
+                ));
             }
         }
 
@@ -486,7 +567,9 @@ impl EmailService {
                 created_at: Utc::now(),
                 attempts: 0,
             };
-            self.code_store.store_code(email, &verification_code).await?;
+            self.code_store
+                .store_code(email, &verification_code)
+                .await?;
             return Ok(code);
         }
 
@@ -496,10 +579,15 @@ impl EmailService {
             created_at: Utc::now(),
             attempts: 0,
         };
-        self.code_store.store_code(email, &verification_code).await?;
+        self.code_store
+            .store_code(email, &verification_code)
+            .await?;
 
         if let Some(config) = &self.config {
-            if let Err(e) = self.send_email_impl(config, email, "Your SyncTV verification code", &code).await {
+            if let Err(e) = self
+                .send_email_impl(config, email, "Your SyncTV verification code", &code)
+                .await
+            {
                 tracing::error!("Failed to send email: {}", e);
                 return Err(Error::Internal(format!("Failed to send email: {e}")));
             }
@@ -510,7 +598,9 @@ impl EmailService {
 
     /// Verify code for email
     pub async fn verify_code(&self, email: &str, code: &str) -> Result<()> {
-        self.code_store.verify_code(email, code, self.max_attempts, self.code_ttl_minutes).await
+        self.code_store
+            .verify_code(email, code, self.max_attempts, self.code_ttl_minutes)
+            .await
     }
 
     /// Send verification email
@@ -580,8 +670,11 @@ impl EmailService {
             .as_ref()
             .ok_or_else(|| Error::Internal("Email service not configured".to_string()))?;
 
-        let sent_at = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S UTC").to_string();
-        let (html_body, plain_text_body) = self.template_manager
+        let sent_at = chrono::Utc::now()
+            .format("%Y-%m-%d %H:%M:%S UTC")
+            .to_string();
+        let (html_body, plain_text_body) = self
+            .template_manager
             .render_test_email(&config.smtp_host, config.smtp_port, &sent_at)
             .internal_with_err("Failed to render template")?;
 
@@ -601,11 +694,13 @@ impl EmailService {
         token: &str,
     ) -> std::result::Result<(), EmailError> {
         let subject = "Verify your SyncTV email";
-        let (html_body, plain_text_body) = self.template_manager
+        let (html_body, plain_text_body) = self
+            .template_manager
             .render_verification_email(token, "24 hours")
             .map_err(|e| EmailError::SendError(format!("Failed to render template: {e}")))?;
 
-        self.send_html_email(config, to, subject, &html_body, &plain_text_body).await
+        self.send_html_email(config, to, subject, &html_body, &plain_text_body)
+            .await
     }
 
     async fn send_password_reset_email_impl(
@@ -615,11 +710,13 @@ impl EmailService {
         token: &str,
     ) -> std::result::Result<(), EmailError> {
         let subject = "Reset your SyncTV password";
-        let (html_body, plain_text_body) = self.template_manager
+        let (html_body, plain_text_body) = self
+            .template_manager
             .render_password_reset_email(token, "1 hour")
             .map_err(|e| EmailError::SendError(format!("Failed to render template: {e}")))?;
 
-        self.send_html_email(config, to, subject, &html_body, &plain_text_body).await
+        self.send_html_email(config, to, subject, &html_body, &plain_text_body)
+            .await
     }
 
     async fn send_email_impl(
@@ -672,13 +769,13 @@ impl EmailService {
                     .singlepart(
                         lettre::message::SinglePart::builder()
                             .header(ContentType::TEXT_PLAIN)
-                            .body(plain_text_body.to_string())
+                            .body(plain_text_body.to_string()),
                     )
                     .singlepart(
                         lettre::message::SinglePart::builder()
                             .header(ContentType::TEXT_HTML)
-                            .body(html_body.to_string())
-                    )
+                            .body(html_body.to_string()),
+                    ),
             )
             .map_err(|e| EmailError::SendError(format!("Failed to build email: {e}")))?;
 
@@ -690,11 +787,16 @@ impl EmailService {
         config: &EmailConfig,
         email: Message,
     ) -> std::result::Result<(), EmailError> {
-        let recipient = email.envelope().to().first()
+        let recipient = email
+            .envelope()
+            .to()
+            .first()
             .ok_or_else(|| EmailError::SendError("No recipients in email envelope".to_string()))?
             .clone();
 
-        let transport = self.smtp_transport.as_ref()
+        let transport = self
+            .smtp_transport
+            .as_ref()
             .ok_or_else(|| EmailError::SendError("SMTP transport not initialized".to_string()))?;
 
         transport

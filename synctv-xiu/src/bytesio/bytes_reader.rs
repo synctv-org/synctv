@@ -149,12 +149,12 @@ impl BytesReader {
         Ok(self.buffer[index])
     }
 
-    #[must_use] 
+    #[must_use]
     pub fn len(&self) -> usize {
         self.buffer.len()
     }
 
-    #[must_use] 
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
@@ -162,7 +162,7 @@ impl BytesReader {
     pub fn extract_remaining_bytes(&mut self) -> BytesMut {
         self.buffer.split_to(self.buffer.len())
     }
-    #[must_use] 
+    #[must_use]
     pub fn get_remaining_bytes(&self) -> BytesMut {
         self.buffer.clone()
     }

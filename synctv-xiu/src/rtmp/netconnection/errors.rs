@@ -1,6 +1,6 @@
 use {
-    crate::rtmp::chunk::errors::PackError,
     crate::flv::amf0::errors::{Amf0ReadError, Amf0WriteError},
+    crate::rtmp::chunk::errors::PackError,
 };
 
 #[derive(Debug, thiserror::Error)]

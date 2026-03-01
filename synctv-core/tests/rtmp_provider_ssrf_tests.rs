@@ -4,8 +4,8 @@
 //! and `source_config` fields to prevent Server-Side Request Forgery attacks.
 #![allow(clippy::unwrap_used)]
 
-use synctv_core::provider::{MediaProvider, ProviderContext, ProviderError, RtmpProvider};
 use serde_json::json;
+use synctv_core::provider::{MediaProvider, ProviderContext, ProviderError, RtmpProvider};
 
 const fn create_context() -> ProviderContext<'static> {
     ProviderContext::new("synctv")
@@ -193,10 +193,7 @@ async fn test_rtmp_provider_validate_source_config_accepts_valid_fields() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_rtmp_provider_rejects_ipv6_loopback_base_url() {
     // RtmpProvider should reject IPv6 loopback
-    let ipv6_loopback_urls = vec![
-        "http://[::1]:8080",
-        "http://[0:0:0:0:0:0:0:1]:8080",
-    ];
+    let ipv6_loopback_urls = vec!["http://[::1]:8080", "http://[0:0:0:0:0:0:0:1]:8080"];
 
     for base_url in ipv6_loopback_urls {
         let result = RtmpProvider::new_validated(base_url);
@@ -210,10 +207,7 @@ async fn test_rtmp_provider_rejects_ipv6_loopback_base_url() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_rtmp_provider_rejects_ipv6_unique_local_base_url() {
     // RtmpProvider should reject IPv6 unique local addresses (fc00::/7)
-    let ipv6_ula_urls = vec![
-        "http://[fc00::1]:8080",
-        "http://[fd00::1]:8080",
-    ];
+    let ipv6_ula_urls = vec!["http://[fc00::1]:8080", "http://[fd00::1]:8080"];
 
     for base_url in ipv6_ula_urls {
         let result = RtmpProvider::new_validated(base_url);
@@ -229,7 +223,7 @@ async fn test_rtmp_provider_accepts_ipv6_public_base_url() {
     // RtmpProvider should accept public IPv6 addresses
     let ipv6_public_urls = vec![
         "http://[2001:4860:4860::8888]:8080", // Google DNS
-        "https://[2606:4700:4700::1111]",      // Cloudflare DNS
+        "https://[2606:4700:4700::1111]",     // Cloudflare DNS
     ];
 
     for base_url in ipv6_public_urls {

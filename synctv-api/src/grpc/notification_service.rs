@@ -9,8 +9,8 @@ use uuid::Uuid;
 
 use synctv_core::models::id::UserId;
 
-use crate::impls::NotificationApiImpl;
 use crate::impls::notification::{notification_to_proto, proto_notification_type_to_core};
+use crate::impls::NotificationApiImpl;
 use crate::proto::client::{
     notification_service_server::NotificationService, DeleteAllReadRequest, DeleteAllReadResponse,
     DeleteNotificationRequest, DeleteNotificationResponse, GetNotificationRequest,
@@ -53,7 +53,8 @@ impl NotificationService for NotificationServiceImpl {
             .notification_type
             .and_then(proto_notification_type_to_core);
 
-        let pagination = synctv_core::models::PageParams::new(Some(req.page as u32), Some(req.page_size as u32));
+        let pagination =
+            synctv_core::models::PageParams::new(Some(req.page as u32), Some(req.page_size as u32));
 
         let result = self
             .notification_api
@@ -68,7 +69,11 @@ impl NotificationService for NotificationServiceImpl {
             .map_err(map_api_error)?;
 
         Ok(Response::new(ListNotificationsResponse {
-            notifications: result.notifications.into_iter().map(notification_to_proto).collect(),
+            notifications: result
+                .notifications
+                .into_iter()
+                .map(notification_to_proto)
+                .collect(),
             total: result.total as i32,
             unread_count: result.unread_count as i32,
         }))

@@ -1,8 +1,8 @@
 use dashmap::DashMap;
 use redis::AsyncCommands;
 use std::collections::HashMap;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 use synctv_core::models::id::{RoomId, UserId};
 use tokio::sync::{broadcast, mpsc};
@@ -151,17 +151,17 @@ impl RoomMessageHub {
         let cancel = tokio_util::sync::CancellationToken::new();
         self.ttl_refresh_cancel = Arc::new(cancel.clone());
         // Use 40% of TTL as the refresh interval (at most 120s, at least 30s)
-        let refresh_interval_secs = (self.redis_key_ttl_secs as f64 * 0.4).clamp(30.0, 120.0) as u64;
-        let _handle = self.spawn_ttl_refresh_task(Duration::from_secs(refresh_interval_secs), cancel);
+        let refresh_interval_secs =
+            (self.redis_key_ttl_secs as f64 * 0.4).clamp(30.0, 120.0) as u64;
+        let _handle =
+            self.spawn_ttl_refresh_task(Duration::from_secs(refresh_interval_secs), cancel);
 
         // Auto-spawn the stale subscription cleanup task to remove orphaned
         // Redis entries that accumulate when fire-and-forget cleanup fails.
         let stale_cancel = tokio_util::sync::CancellationToken::new();
         self.stale_cleanup_cancel = Arc::new(stale_cancel.clone());
-        let _cleanup_handle = self.spawn_stale_subscription_cleanup_task(
-            Duration::from_secs(60),
-            stale_cancel,
-        );
+        let _cleanup_handle =
+            self.spawn_stale_subscription_cleanup_task(Duration::from_secs(60), stale_cancel);
 
         self
     }
@@ -236,7 +236,11 @@ impl RoomMessageHub {
         // replicas before this function returns. Errors are logged and propagated
         // so the caller knows if cross-replica state could not be written.
         if let Some(ref conn) = self.redis_conn {
-            let room_key = format!("{}room_hub:room:{}", self.redis_key_prefix, room_id.as_str());
+            let room_key = format!(
+                "{}room_hub:room:{}",
+                self.redis_key_prefix,
+                room_id.as_str()
+            );
             let conn_key = format!("{}room_hub:conn:{}", self.redis_key_prefix, connection_id);
 
             let mut conn_clone = conn.clone();
@@ -245,21 +249,29 @@ impl RoomMessageHub {
             let ttl_secs = self.redis_key_ttl_secs;
 
             // Store room -> {connection_id: user_id} mapping
-            if let Err(e) = conn_clone.hset::<_, _, _, ()>(&room_key, &connection_id, &user_id_str).await {
+            if let Err(e) = conn_clone
+                .hset::<_, _, _, ()>(&room_key, &connection_id, &user_id_str)
+                .await
+            {
                 warn!("Failed to persist room subscription to Redis: {e}");
             }
             // Set TTL on room key so stale data expires if the node crashes
             let _: Result<(), _> = conn_clone.expire::<_, ()>(&room_key, ttl_secs).await;
 
             // Store connection -> room_id mapping for cleanup, with TTL
-            if let Err(e) = conn_clone.set_ex::<_, _, ()>(&conn_key, &room_id_str, ttl_secs as u64).await {
+            if let Err(e) = conn_clone
+                .set_ex::<_, _, ()>(&conn_key, &room_id_str, ttl_secs as u64)
+                .await
+            {
                 warn!("Failed to persist connection mapping to Redis: {e}");
             }
         }
 
         // Emit lifecycle event if this is the first subscriber for the room
         if is_new_room {
-            let _ = self.lifecycle_tx.send(RoomLifecycleEvent::RoomActivated(room_id.clone()));
+            let _ = self
+                .lifecycle_tx
+                .send(RoomLifecycleEvent::RoomActivated(room_id.clone()));
         }
 
         info!(
@@ -290,7 +302,11 @@ impl RoomMessageHub {
             // Atomically remove the room entry only if it's still empty.
             // If a concurrent subscribe added a new subscriber between the
             // retain and this call, the entry won't be empty and won't be removed.
-            if self.rooms.remove_if(&room_id, |_, subscribers| subscribers.is_empty()).is_some() {
+            if self
+                .rooms
+                .remove_if(&room_id, |_, subscribers| subscribers.is_empty())
+                .is_some()
+            {
                 room_deactivated = true;
                 debug!(room_id = %room_id.as_str(), "Room has no more subscribers, removed");
             }
@@ -301,14 +317,21 @@ impl RoomMessageHub {
             // Redis delete completes, the stale keys will be cleaned up by their
             // TTL (set during subscribe). No manual intervention is needed.
             if let Some(ref conn) = self.redis_conn {
-                let room_key = format!("{}room_hub:room:{}", self.redis_key_prefix, room_id.as_str());
+                let room_key = format!(
+                    "{}room_hub:room:{}",
+                    self.redis_key_prefix,
+                    room_id.as_str()
+                );
                 let conn_key = format!("{}room_hub:conn:{}", self.redis_key_prefix, connection_id);
                 let mut conn_clone = conn.clone();
                 let connection_id_owned = connection_id.to_string();
 
                 tokio::spawn(async move {
                     // Remove connection from room's subscriber hash
-                    if let Err(e) = conn_clone.hdel::<_, _, ()>(&room_key, &connection_id_owned).await {
+                    if let Err(e) = conn_clone
+                        .hdel::<_, _, ()>(&room_key, &connection_id_owned)
+                        .await
+                    {
                         warn!("Failed to remove room subscription from Redis: {e}");
                     }
                     // Remove connection mapping
@@ -320,7 +343,9 @@ impl RoomMessageHub {
 
             // Emit lifecycle event if the last subscriber left
             if room_deactivated {
-                let _ = self.lifecycle_tx.send(RoomLifecycleEvent::RoomDeactivated(room_id.clone()));
+                let _ = self
+                    .lifecycle_tx
+                    .send(RoomLifecycleEvent::RoomDeactivated(room_id.clone()));
             }
 
             info!(
@@ -391,7 +416,9 @@ impl RoomMessageHub {
                                     match tokio::time::timeout(
                                         CRITICAL_EVENT_SEND_TIMEOUT,
                                         sender.send(event_clone),
-                                    ).await {
+                                    )
+                                    .await
+                                    {
                                         Ok(Ok(())) => {}
                                         Ok(Err(e)) => {
                                             warn!(
@@ -414,7 +441,9 @@ impl RoomMessageHub {
                                 });
                                 sent_count += 1;
                             } else {
-                                let drops = subscriber.consecutive_drops.fetch_add(1, Ordering::Relaxed) + 1;
+                                let drops =
+                                    subscriber.consecutive_drops.fetch_add(1, Ordering::Relaxed)
+                                        + 1;
                                 if drops >= MAX_CONSECUTIVE_DROPS {
                                     warn!(
                                         room_id = %room_id.as_str(),
@@ -515,7 +544,9 @@ impl RoomMessageHub {
                                         match tokio::time::timeout(
                                             CRITICAL_EVENT_SEND_TIMEOUT,
                                             sender.send(event_clone),
-                                        ).await {
+                                        )
+                                        .await
+                                        {
                                             Ok(Ok(())) => {}
                                             Ok(Err(e)) => {
                                                 warn!(
@@ -538,7 +569,10 @@ impl RoomMessageHub {
                                     });
                                     sent_count += 1;
                                 } else {
-                                    let drops = subscriber.consecutive_drops.fetch_add(1, Ordering::Relaxed) + 1;
+                                    let drops = subscriber
+                                        .consecutive_drops
+                                        .fetch_add(1, Ordering::Relaxed)
+                                        + 1;
                                     if drops >= MAX_CONSECUTIVE_DROPS {
                                         warn!(
                                             room_id = %room_id.as_str(),
@@ -660,7 +694,7 @@ impl RoomMessageHub {
     }
 
     /// Get total number of active connections
-    #[must_use] 
+    #[must_use]
     pub fn connection_count(&self) -> usize {
         self.connections.len()
     }
@@ -676,7 +710,9 @@ impl RoomMessageHub {
                 self.connections.remove(&sub.connection_id);
             }
             // Emit lifecycle event since the room is no longer active
-            let _ = self.lifecycle_tx.send(RoomLifecycleEvent::RoomDeactivated(room_id.clone()));
+            let _ = self
+                .lifecycle_tx
+                .send(RoomLifecycleEvent::RoomDeactivated(room_id.clone()));
             info!(
                 room_id = %room_id.as_str(),
                 removed_connections = subscribers.len(),
@@ -704,22 +740,32 @@ impl RoomMessageHub {
     /// Returns the full subscriber list from Redis, which includes subscriptions
     /// from all replicas in the cluster. Falls back to local-only if Redis is
     /// not configured or fails.
-    pub async fn get_room_subscribers_distributed(&self, room_id: &RoomId) -> Vec<(UserId, ConnectionId)> {
+    pub async fn get_room_subscribers_distributed(
+        &self,
+        room_id: &RoomId,
+    ) -> Vec<(UserId, ConnectionId)> {
         if let Some(ref conn) = self.redis_conn {
-            let room_key = format!("{}room_hub:room:{}", self.redis_key_prefix, room_id.as_str());
+            let room_key = format!(
+                "{}room_hub:room:{}",
+                self.redis_key_prefix,
+                room_id.as_str()
+            );
             let mut conn_clone = conn.clone();
 
-            match conn_clone.hgetall::<_, Vec<(String, String)>>(&room_key).await {
+            match conn_clone
+                .hgetall::<_, Vec<(String, String)>>(&room_key)
+                .await
+            {
                 Ok(entries) => {
                     return entries
                         .into_iter()
-                        .map(|(conn_id, user_id_str)| {
-                            (UserId::from_string(user_id_str), conn_id)
-                        })
+                        .map(|(conn_id, user_id_str)| (UserId::from_string(user_id_str), conn_id))
                         .collect();
                 }
                 Err(e) => {
-                    warn!("Failed to fetch room subscribers from Redis, falling back to local: {e}");
+                    warn!(
+                        "Failed to fetch room subscribers from Redis, falling back to local: {e}"
+                    );
                 }
             }
         }
@@ -786,7 +832,8 @@ impl RoomMessageHub {
 
         for key in keys {
             // Extract room_id from key
-            let room_id_str = key.trim_start_matches(&format!("{}room_hub:room:", self.redis_key_prefix));
+            let room_id_str =
+                key.trim_start_matches(&format!("{}room_hub:room:", self.redis_key_prefix));
             let room_id = RoomId::from_string(room_id_str.to_string());
 
             // Fetch all subscribers for this room
@@ -825,7 +872,11 @@ impl RoomMessageHub {
 
         // Collect room keys for all active rooms
         for entry in self.rooms.iter() {
-            let room_key = format!("{}room_hub:room:{}", self.redis_key_prefix, entry.key().as_str());
+            let room_key = format!(
+                "{}room_hub:room:{}",
+                self.redis_key_prefix,
+                entry.key().as_str()
+            );
             keys_to_refresh.push(room_key);
         }
 
@@ -1062,7 +1113,9 @@ mod tests {
         let user_id = UserId::from_string("test_user".to_string());
 
         // Subscribe
-        let mut rx = hub.subscribe(room_id.clone(), user_id.clone(), "conn1".to_string()).await;
+        let mut rx = hub
+            .subscribe(room_id.clone(), user_id.clone(), "conn1".to_string())
+            .await;
 
         assert_eq!(hub.subscriber_count(&room_id), 1);
         assert_eq!(hub.connection_count(), 1);
@@ -1094,7 +1147,9 @@ mod tests {
         let user_id = UserId::from_string("test_user".to_string());
 
         // Subscribe
-        let _rx = hub.subscribe(room_id.clone(), user_id.clone(), "conn1".to_string()).await;
+        let _rx = hub
+            .subscribe(room_id.clone(), user_id.clone(), "conn1".to_string())
+            .await;
         assert_eq!(hub.subscriber_count(&room_id), 1);
 
         // Unsubscribe
@@ -1112,8 +1167,12 @@ mod tests {
         let user2 = UserId::from_string("user2".to_string());
 
         // Subscribe two clients
-        let mut rx1 = hub.subscribe(room_id.clone(), user1.clone(), "conn1".to_string()).await;
-        let mut rx2 = hub.subscribe(room_id.clone(), user2.clone(), "conn2".to_string()).await;
+        let mut rx1 = hub
+            .subscribe(room_id.clone(), user1.clone(), "conn1".to_string())
+            .await;
+        let mut rx2 = hub
+            .subscribe(room_id.clone(), user2.clone(), "conn2".to_string())
+            .await;
 
         assert_eq!(hub.subscriber_count(&room_id), 2);
 
@@ -1148,8 +1207,12 @@ mod tests {
         let user2 = UserId::from_string("user2".to_string());
 
         // Subscribe two clients
-        let mut rx1 = hub.subscribe(room_id.clone(), user1.clone(), "conn1".to_string()).await;
-        let mut rx2 = hub.subscribe(room_id.clone(), user2.clone(), "conn2".to_string()).await;
+        let mut rx1 = hub
+            .subscribe(room_id.clone(), user1.clone(), "conn1".to_string())
+            .await;
+        let mut rx2 = hub
+            .subscribe(room_id.clone(), user2.clone(), "conn2".to_string())
+            .await;
 
         // Broadcast to user1 only
         let event = ClusterEvent::SystemNotification {
@@ -1190,12 +1253,18 @@ mod tests {
         let user2 = UserId::from_string("user2".to_string());
 
         // First subscriber triggers RoomActivated
-        let _rx1 = hub.subscribe(room_id.clone(), user1.clone(), "conn1".to_string()).await;
+        let _rx1 = hub
+            .subscribe(room_id.clone(), user1.clone(), "conn1".to_string())
+            .await;
         let event = lifecycle_rx.try_recv().unwrap();
-        assert!(matches!(event, RoomLifecycleEvent::RoomActivated(ref rid) if rid.as_str() == "test_room"));
+        assert!(
+            matches!(event, RoomLifecycleEvent::RoomActivated(ref rid) if rid.as_str() == "test_room")
+        );
 
         // Second subscriber does NOT trigger RoomActivated
-        let _rx2 = hub.subscribe(room_id.clone(), user2.clone(), "conn2".to_string()).await;
+        let _rx2 = hub
+            .subscribe(room_id.clone(), user2.clone(), "conn2".to_string())
+            .await;
         assert!(lifecycle_rx.try_recv().is_err());
 
         // Unsubscribe first user: room still has subscribers, no event
@@ -1205,7 +1274,9 @@ mod tests {
         // Unsubscribe last user: triggers RoomDeactivated
         hub.unsubscribe("conn2");
         let event = lifecycle_rx.try_recv().unwrap();
-        assert!(matches!(event, RoomLifecycleEvent::RoomDeactivated(ref rid) if rid.as_str() == "test_room"));
+        assert!(
+            matches!(event, RoomLifecycleEvent::RoomDeactivated(ref rid) if rid.as_str() == "test_room")
+        );
     }
 
     #[tokio::test]
@@ -1217,13 +1288,17 @@ mod tests {
         let user_id = UserId::from_string("user1".to_string());
 
         // Subscribe triggers RoomActivated
-        let _rx = hub.subscribe(room_id.clone(), user_id.clone(), "conn1".to_string()).await;
+        let _rx = hub
+            .subscribe(room_id.clone(), user_id.clone(), "conn1".to_string())
+            .await;
         let _ = lifecycle_rx.try_recv().unwrap(); // consume RoomActivated
 
         // remove_room triggers RoomDeactivated
         hub.remove_room(&room_id);
         let event = lifecycle_rx.try_recv().unwrap();
-        assert!(matches!(event, RoomLifecycleEvent::RoomDeactivated(ref rid) if rid.as_str() == "test_room"));
+        assert!(
+            matches!(event, RoomLifecycleEvent::RoomDeactivated(ref rid) if rid.as_str() == "test_room")
+        );
     }
 
     #[tokio::test]
@@ -1234,7 +1309,9 @@ mod tests {
         let room_id = RoomId::from_string("test_room".to_string());
         let user_id = UserId::from_string("user1".to_string());
 
-        let _rx = hub.subscribe(room_id.clone(), user_id.clone(), "conn1".to_string()).await;
+        let _rx = hub
+            .subscribe(room_id.clone(), user_id.clone(), "conn1".to_string())
+            .await;
         assert_eq!(hub.subscriber_count(&room_id), 1);
         assert_eq!(hub.connection_count(), 1);
 
@@ -1260,10 +1337,8 @@ mod tests {
         // Verify the stale cleanup task respects cancellation tokens
         let hub = RoomMessageHub::new();
         let cancel = tokio_util::sync::CancellationToken::new();
-        let handle = hub.spawn_stale_subscription_cleanup_task(
-            Duration::from_millis(50),
-            cancel.clone(),
-        );
+        let handle =
+            hub.spawn_stale_subscription_cleanup_task(Duration::from_millis(50), cancel.clone());
 
         // Let it run briefly
         tokio::time::sleep(Duration::from_millis(100)).await;
@@ -1271,7 +1346,10 @@ mod tests {
         // Cancel and verify the task completes
         cancel.cancel();
         let result = tokio::time::timeout(Duration::from_secs(2), handle).await;
-        assert!(result.is_ok(), "Cleanup task should complete after cancellation");
+        assert!(
+            result.is_ok(),
+            "Cleanup task should complete after cancellation"
+        );
     }
 
     #[tokio::test]
@@ -1283,10 +1361,7 @@ mod tests {
         let ttl_cancel = tokio_util::sync::CancellationToken::new();
         let cleanup_cancel = tokio_util::sync::CancellationToken::new();
 
-        let ttl_handle = hub.spawn_ttl_refresh_task(
-            Duration::from_millis(50),
-            ttl_cancel.clone(),
-        );
+        let ttl_handle = hub.spawn_ttl_refresh_task(Duration::from_millis(50), ttl_cancel.clone());
         let cleanup_handle = hub.spawn_stale_subscription_cleanup_task(
             Duration::from_millis(50),
             cleanup_cancel.clone(),
@@ -1303,8 +1378,14 @@ mod tests {
         let ttl_result = tokio::time::timeout(Duration::from_secs(2), ttl_handle).await;
         let cleanup_result = tokio::time::timeout(Duration::from_secs(2), cleanup_handle).await;
 
-        assert!(ttl_result.is_ok(), "TTL refresh task should complete after cancellation");
-        assert!(cleanup_result.is_ok(), "Stale cleanup task should complete after cancellation");
+        assert!(
+            ttl_result.is_ok(),
+            "TTL refresh task should complete after cancellation"
+        );
+        assert!(
+            cleanup_result.is_ok(),
+            "Stale cleanup task should complete after cancellation"
+        );
     }
 
     #[tokio::test]
@@ -1315,8 +1396,12 @@ mod tests {
         let user1 = UserId::from_string("user1".to_string());
         let user2 = UserId::from_string("user2".to_string());
 
-        let _rx1 = hub.subscribe(room_id.clone(), user1.clone(), "conn1".to_string()).await;
-        let _rx2 = hub.subscribe(room_id.clone(), user2.clone(), "conn2".to_string()).await;
+        let _rx1 = hub
+            .subscribe(room_id.clone(), user1.clone(), "conn1".to_string())
+            .await;
+        let _rx2 = hub
+            .subscribe(room_id.clone(), user2.clone(), "conn2".to_string())
+            .await;
 
         assert_eq!(hub.connection_count(), 2);
 

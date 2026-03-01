@@ -39,7 +39,10 @@ impl EmbyProvider {
 
     /// Create a new `EmbyProvider` with custom timeout configuration
     #[must_use]
-    pub const fn with_timeout(provider_instance_manager: Arc<RemoteProviderManager>, timeout_seconds: u64) -> Self {
+    pub const fn with_timeout(
+        provider_instance_manager: Arc<RemoteProviderManager>,
+        timeout_seconds: u64,
+    ) -> Self {
         Self {
             provider_instance_manager,
             timeout_seconds: Some(timeout_seconds),
@@ -55,7 +58,11 @@ impl EmbyProvider {
     /// Get Emby client for the given instance name (remote if available, local fallback)
     async fn get_client(&self, instance_name: Option<&str>) -> EmbyClientArc {
         self.provider_instance_manager
-            .resolve_client(instance_name, create_remote_emby_client, load_local_emby_client)
+            .resolve_client(
+                instance_name,
+                create_remote_emby_client,
+                load_local_emby_client,
+            )
             .await
     }
 
@@ -384,7 +391,10 @@ impl MediaProvider for EmbyProvider {
         let default_mode = {
             let mut keys: Vec<&String> = playback_infos.keys().collect();
             keys.sort();
-            keys.into_iter().next().cloned().unwrap_or_else(|| "direct".to_string())
+            keys.into_iter()
+                .next()
+                .cloned()
+                .unwrap_or_else(|| "direct".to_string())
         };
 
         Ok(PlaybackResult {
@@ -606,15 +616,17 @@ impl DynamicFolder for EmbyProvider {
             .source_config
             .as_ref()
             .ok_or_else(|| ProviderError::InvalidConfig("Missing source_config".to_string()))?;
-        let base_config: EmbySourceConfig = serde_json::from_value(config.clone()).map_err(|e| {
-            ProviderError::InvalidConfig(format!("Failed to parse Emby playlist config: {e}"))
-        })?;
+        let base_config: EmbySourceConfig =
+            serde_json::from_value(config.clone()).map_err(|e| {
+                ProviderError::InvalidConfig(format!("Failed to parse Emby playlist config: {e}"))
+            })?;
 
         // Validate relative_path to prevent path traversal and injection
         if let Some(rel) = relative_path {
             if rel.contains("..") || rel.contains('/') || rel.contains('\\') || rel.contains('\0') {
                 return Err(ProviderError::InvalidConfig(
-                    "Relative path must not contain path traversal (..), slashes, or null bytes".to_string(),
+                    "Relative path must not contain path traversal (..), slashes, or null bytes"
+                        .to_string(),
                 ));
             }
         }
@@ -703,9 +715,10 @@ impl DynamicFolder for EmbyProvider {
             .source_config
             .as_ref()
             .ok_or_else(|| ProviderError::InvalidConfig("Missing source_config".to_string()))?;
-        let base_config: EmbySourceConfig = serde_json::from_value(config.clone()).map_err(|e| {
-            ProviderError::InvalidConfig(format!("Failed to parse Emby playlist config: {e}"))
-        })?;
+        let base_config: EmbySourceConfig =
+            serde_json::from_value(config.clone()).map_err(|e| {
+                ProviderError::InvalidConfig(format!("Failed to parse Emby playlist config: {e}"))
+            })?;
 
         match play_mode {
             PlayMode::RepeatOne => {
@@ -722,7 +735,13 @@ impl DynamicFolder for EmbyProvider {
 
                 loop {
                     let page_items = self
-                        .list_playlist(_ctx, playlist, Some(&base_config.item_id), current_page, PAGE_SIZE)
+                        .list_playlist(
+                            _ctx,
+                            playlist,
+                            Some(&base_config.item_id),
+                            current_page,
+                            PAGE_SIZE,
+                        )
                         .await?;
 
                     if page_items.is_empty() {
@@ -732,7 +751,10 @@ impl DynamicFolder for EmbyProvider {
                     // If we haven't found current item yet, search for it
                     if found_current {
                         // We've already found current, look for next media in this page
-                        if let Some(next) = page_items.iter().find(|item| item.item_type == ItemType::Media) {
+                        if let Some(next) = page_items
+                            .iter()
+                            .find(|item| item.item_type == ItemType::Media)
+                        {
                             let source_config = json!({
                                 "host": base_config.host,
                                 "token": base_config.token,
@@ -740,19 +762,29 @@ impl DynamicFolder for EmbyProvider {
                                 "item_id": next.path,
                                 "provider_instance_name": base_config.provider_instance_name,
                             });
-                            return Ok(Some(NextPlayItem {
-                                name: next.name.clone(),
-                                item_type: next.item_type,
-                                source_config,
-                                metadata: json!({}),
-                                provider_data: json!({}),
-                                relative_path: next.path.clone(),
-                            }.strip_credentials()));
+                            return Ok(Some(
+                                NextPlayItem {
+                                    name: next.name.clone(),
+                                    item_type: next.item_type,
+                                    source_config,
+                                    metadata: json!({}),
+                                    provider_data: json!({}),
+                                    relative_path: next.path.clone(),
+                                }
+                                .strip_credentials(),
+                            ));
                         }
-                    } else if let Some(idx) = page_items.iter().position(|item| item.path == relative_path) {
+                    } else if let Some(idx) = page_items
+                        .iter()
+                        .position(|item| item.path == relative_path)
+                    {
                         found_current = true;
                         // Look for next media item in remaining items of this page
-                        if let Some(next) = page_items.iter().skip(idx + 1).find(|item| item.item_type == ItemType::Media) {
+                        if let Some(next) = page_items
+                            .iter()
+                            .skip(idx + 1)
+                            .find(|item| item.item_type == ItemType::Media)
+                        {
                             let source_config = json!({
                                 "host": base_config.host,
                                 "token": base_config.token,
@@ -760,14 +792,17 @@ impl DynamicFolder for EmbyProvider {
                                 "item_id": next.path,
                                 "provider_instance_name": base_config.provider_instance_name,
                             });
-                            return Ok(Some(NextPlayItem {
-                                name: next.name.clone(),
-                                item_type: next.item_type,
-                                source_config,
-                                metadata: json!({}),
-                                provider_data: json!({}),
-                                relative_path: next.path.clone(),
-                            }.strip_credentials()));
+                            return Ok(Some(
+                                NextPlayItem {
+                                    name: next.name.clone(),
+                                    item_type: next.item_type,
+                                    source_config,
+                                    metadata: json!({}),
+                                    provider_data: json!({}),
+                                    relative_path: next.path.clone(),
+                                }
+                                .strip_credentials(),
+                            ));
                         }
                         // Current is at end of page, need to check next page
                     }
@@ -786,7 +821,10 @@ impl DynamicFolder for EmbyProvider {
                         .list_playlist(_ctx, playlist, Some(&base_config.item_id), 0, PAGE_SIZE)
                         .await?;
 
-                    if let Some(first) = first_page.iter().find(|item| item.item_type == ItemType::Media) {
+                    if let Some(first) = first_page
+                        .iter()
+                        .find(|item| item.item_type == ItemType::Media)
+                    {
                         let source_config = json!({
                             "host": base_config.host,
                             "token": base_config.token,
@@ -794,14 +832,17 @@ impl DynamicFolder for EmbyProvider {
                             "item_id": first.path,
                             "provider_instance_name": base_config.provider_instance_name,
                         });
-                        return Ok(Some(NextPlayItem {
-                            name: first.name.clone(),
-                            item_type: first.item_type,
-                            source_config,
-                            metadata: json!({}),
-                            provider_data: json!({}),
-                            relative_path: first.path.clone(),
-                        }.strip_credentials()));
+                        return Ok(Some(
+                            NextPlayItem {
+                                name: first.name.clone(),
+                                item_type: first.item_type,
+                                source_config,
+                                metadata: json!({}),
+                                provider_data: json!({}),
+                                relative_path: first.path.clone(),
+                            }
+                            .strip_credentials(),
+                        ));
                     }
                 }
 
@@ -863,14 +904,17 @@ impl DynamicFolder for EmbyProvider {
                         "provider_instance_name": base_config.provider_instance_name,
                     });
 
-                    Ok(Some(NextPlayItem {
-                        name: random.name.clone(),
-                        item_type: random.item_type,
-                        source_config,
-                        metadata: json!({}),
-                        provider_data: json!({}),
-                        relative_path: random.path.clone(),
-                    }.strip_credentials()))
+                    Ok(Some(
+                        NextPlayItem {
+                            name: random.name.clone(),
+                            item_type: random.item_type,
+                            source_config,
+                            metadata: json!({}),
+                            provider_data: json!({}),
+                            relative_path: random.path.clone(),
+                        }
+                        .strip_credentials(),
+                    ))
                 } else {
                     Ok(None)
                 }
@@ -933,7 +977,9 @@ mod tests {
 
         // SSRF protection: reject private/internal network addresses
         validate_url_for_ssrf(&config.host).map_err(|e| match e {
-            ValidationError::SSRF(msg) => ProviderError::InvalidUrl(format!("SSRF protection: {msg}")),
+            ValidationError::SSRF(msg) => {
+                ProviderError::InvalidUrl(format!("SSRF protection: {msg}"))
+            }
             _ => ProviderError::InvalidUrl(e.to_string()),
         })?;
 

@@ -25,12 +25,12 @@
 //!     });
 //! ```
 
+use parking_lot::RwLock;
 use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
 use std::fmt::Display;
 use std::hash::BuildHasherDefault;
 use std::sync::Arc;
-use parking_lot::RwLock;
 use tracing::{debug, warn};
 
 use super::SettingsService;
@@ -113,7 +113,9 @@ impl SettingsStorage {
 
     /// Register a setting provider for a key
     fn register_provider(&self, key: &'static str, provider: Arc<dyn SettingProvider>) {
-        self.setting_providers.write().insert(key.to_string(), provider);
+        self.setting_providers
+            .write()
+            .insert(key.to_string(), provider);
     }
 
     /// Get a provider by key
@@ -202,7 +204,9 @@ impl SettingsStorage {
         self.settings_service
             .update(key, value.clone())
             .await
-            .map_err(|e| crate::Error::Internal(format!("Failed to persist setting '{key}': {e}")))?;
+            .map_err(|e| {
+                crate::Error::Internal(format!("Failed to persist setting '{key}': {e}"))
+            })?;
 
         // Only update in-memory cache after successful DB write
         self.inner.write().insert(key.to_string(), value);
@@ -211,7 +215,7 @@ impl SettingsStorage {
     }
 
     /// Validate a setting value by key
-    #[must_use] 
+    #[must_use]
     pub fn validate(&self, key: &str, value: &str) -> bool {
         self.get_provider(key)
             .is_none_or(|p| p.is_valid_raw(value).is_ok())
@@ -328,11 +332,10 @@ where
 
         if needs_update {
             // Raw value changed (or first load), re-parse
-            let value = new_raw
-                .as_ref()
-                .map_or_else(|| self.default_value.clone(), |raw| {
-                    raw.parse().unwrap_or_else(|_| self.default_value.clone())
-                });
+            let value = new_raw.as_ref().map_or_else(
+                || self.default_value.clone(),
+                |raw| raw.parse().unwrap_or_else(|_| self.default_value.clone()),
+            );
 
             // Update both caches
             *self.cache.write() = Some(value.clone());
@@ -342,7 +345,10 @@ where
         } else {
             // Raw value unchanged, return cached value
             let cache = self.cache.read();
-            Ok(cache.as_ref().cloned().unwrap_or_else(|| self.default_value.clone()))
+            Ok(cache
+                .as_ref()
+                .cloned()
+                .unwrap_or_else(|| self.default_value.clone()))
         }
     }
 
@@ -360,9 +366,9 @@ where
 
     /// Validate a raw string value (for API input validation)
     pub fn is_valid_raw(&self, str_value: &str) -> Result<()> {
-        let v = str_value
-            .parse::<T>()
-            .map_err(|_| crate::Error::InvalidInput(format!("Invalid value for setting '{}'", self.key)))?;
+        let v = str_value.parse::<T>().map_err(|_| {
+            crate::Error::InvalidInput(format!("Invalid value for setting '{}'", self.key))
+        })?;
 
         // Run custom validator if set
         if let Some(validator) = self.validator.read().as_ref() {
@@ -395,7 +401,8 @@ where
     }
 
     fn is_valid_raw(&self, value: &str) -> Result<()> {
-        let v = value.parse::<T>()
+        let v = value
+            .parse::<T>()
             .map_err(|e| crate::Error::InvalidInput(format!("Invalid setting value: {e}")))?;
 
         // Run custom validator if set
@@ -464,7 +471,9 @@ mod tests {
             if *v > 0 && *v <= 100 {
                 Ok(())
             } else {
-                Err(crate::Error::InvalidInput("Value must be between 1 and 100".into()))
+                Err(crate::Error::InvalidInput(
+                    "Value must be between 1 and 100".into(),
+                ))
             }
         };
 
@@ -478,7 +487,9 @@ mod tests {
     /// Helper: create a `SettingsStorage` backed by a lazy (never-connected) pool.
     fn test_storage() -> Arc<SettingsStorage> {
         let pool_opts = sqlx::postgres::PgPoolOptions::new().max_connections(1);
-        let pool = pool_opts.connect_lazy("postgres://fake:fake@localhost/fake").unwrap();
+        let pool = pool_opts
+            .connect_lazy("postgres://fake:fake@localhost/fake")
+            .unwrap();
         let repo = crate::repository::SettingsRepository::new(pool.clone());
         let service = Arc::new(SettingsService::new(repo, pool));
         Arc::new(SettingsStorage::new(service))
@@ -488,24 +499,36 @@ mod tests {
     async fn test_storage_validate_bool_setting_accepts_valid() {
         let storage = test_storage();
         let _setting = Setting::<bool>::new("test.enabled", storage.clone(), true);
-        assert!(storage.validate("test.enabled", "true"), "Should accept 'true'");
-        assert!(storage.validate("test.enabled", "false"), "Should accept 'false'");
+        assert!(
+            storage.validate("test.enabled", "true"),
+            "Should accept 'true'"
+        );
+        assert!(
+            storage.validate("test.enabled", "false"),
+            "Should accept 'false'"
+        );
     }
 
     #[tokio::test]
     async fn test_storage_validate_bool_setting_rejects_invalid() {
         let storage = test_storage();
         let _setting = Setting::<bool>::new("test.enabled", storage.clone(), true);
-        assert!(!storage.validate("test.enabled", "not_a_bool"), "Should reject non-boolean");
+        assert!(
+            !storage.validate("test.enabled", "not_a_bool"),
+            "Should reject non-boolean"
+        );
         assert!(!storage.validate("test.enabled", "1"), "Should reject '1'");
-        assert!(!storage.validate("test.enabled", ""), "Should reject empty string");
+        assert!(
+            !storage.validate("test.enabled", ""),
+            "Should reject empty string"
+        );
     }
 
     #[tokio::test]
     async fn test_storage_validate_i64_setting_with_range_validator() {
         let storage = test_storage();
-        let _setting = Setting::<i64>::new("test.max_items", storage.clone(), 10)
-            .with_validator(|v: &i64| {
+        let _setting =
+            Setting::<i64>::new("test.max_items", storage.clone(), 10).with_validator(|v: &i64| {
                 if *v > 0 && *v <= 100 {
                     Ok(())
                 } else {
@@ -514,17 +537,38 @@ mod tests {
             });
 
         // Valid values
-        assert!(storage.validate("test.max_items", "1"), "Should accept min bound");
-        assert!(storage.validate("test.max_items", "50"), "Should accept mid-range");
-        assert!(storage.validate("test.max_items", "100"), "Should accept max bound");
+        assert!(
+            storage.validate("test.max_items", "1"),
+            "Should accept min bound"
+        );
+        assert!(
+            storage.validate("test.max_items", "50"),
+            "Should accept mid-range"
+        );
+        assert!(
+            storage.validate("test.max_items", "100"),
+            "Should accept max bound"
+        );
 
         // Invalid values - out of range
-        assert!(!storage.validate("test.max_items", "0"), "Should reject zero");
-        assert!(!storage.validate("test.max_items", "101"), "Should reject above max");
-        assert!(!storage.validate("test.max_items", "-5"), "Should reject negative");
+        assert!(
+            !storage.validate("test.max_items", "0"),
+            "Should reject zero"
+        );
+        assert!(
+            !storage.validate("test.max_items", "101"),
+            "Should reject above max"
+        );
+        assert!(
+            !storage.validate("test.max_items", "-5"),
+            "Should reject negative"
+        );
 
         // Invalid values - not a number
-        assert!(!storage.validate("test.max_items", "abc"), "Should reject non-numeric");
+        assert!(
+            !storage.validate("test.max_items", "abc"),
+            "Should reject non-numeric"
+        );
     }
 
     #[tokio::test]
@@ -542,7 +586,9 @@ mod tests {
         // Verify that creating a SettingsStorage wires providers to the
         // SettingsService so that validate_setting works too.
         let pool_opts = sqlx::postgres::PgPoolOptions::new().max_connections(1);
-        let pool = pool_opts.connect_lazy("postgres://fake:fake@localhost/fake").unwrap();
+        let pool = pool_opts
+            .connect_lazy("postgres://fake:fake@localhost/fake")
+            .unwrap();
         let repo = crate::repository::SettingsRepository::new(pool.clone());
         let service = Arc::new(SettingsService::new(repo, pool));
         let storage = Arc::new(SettingsStorage::new(service.clone()));
@@ -558,15 +604,21 @@ mod tests {
 
         // The SettingsService should now validate via the wired providers
         assert!(
-            service.validate_setting("server.max_rooms_per_user", "10").is_ok(),
+            service
+                .validate_setting("server.max_rooms_per_user", "10")
+                .is_ok(),
             "Service should accept valid value"
         );
         assert!(
-            service.validate_setting("server.max_rooms_per_user", "0").is_err(),
+            service
+                .validate_setting("server.max_rooms_per_user", "0")
+                .is_err(),
             "Service should reject invalid value"
         );
         assert!(
-            service.validate_setting("server.max_rooms_per_user", "not_a_number").is_err(),
+            service
+                .validate_setting("server.max_rooms_per_user", "not_a_number")
+                .is_err(),
             "Service should reject unparseable value"
         );
     }

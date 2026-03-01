@@ -241,14 +241,9 @@ mod update_user_validation {
 
                 // Process password - reproduce logic from user.rs:70-78
                 if req.password.is_some() {
-                    let _old_password = req
-                        .old_password
-                        .as_deref()
-                        .ok_or_else(|| {
-                            AppError::bad_request(
-                                "old_password is required when changing password",
-                            )
-                        })?;
+                    let _old_password = req.old_password.as_deref().ok_or_else(|| {
+                        AppError::bad_request("old_password is required when changing password")
+                    })?;
                     updated_fields.push("password");
                 }
 
@@ -290,14 +285,9 @@ mod update_user_validation {
                     updated_fields.push("username");
                 }
                 if req.password.is_some() {
-                    let _old_password = req
-                        .old_password
-                        .as_deref()
-                        .ok_or_else(|| {
-                            AppError::bad_request(
-                                "old_password is required when changing password",
-                            )
-                        })?;
+                    let _old_password = req.old_password.as_deref().ok_or_else(|| {
+                        AppError::bad_request("old_password is required when changing password")
+                    })?;
                     updated_fields.push("password");
                 }
 
@@ -339,17 +329,16 @@ mod update_user_validation {
                     updated_fields.push("username");
                 }
                 if req.password.is_some() {
-                    let _old_password = req
-                        .old_password
-                        .as_deref()
-                        .ok_or_else(|| {
-                            AppError::bad_request("old_password is required when changing password")
-                        })?;
+                    let _old_password = req.old_password.as_deref().ok_or_else(|| {
+                        AppError::bad_request("old_password is required when changing password")
+                    })?;
                     updated_fields.push("password");
                 }
 
                 if updated_fields.is_empty() {
-                    return Err::<Json<Value>, AppError>(AppError::bad_request("No valid update fields"));
+                    return Err::<Json<Value>, AppError>(AppError::bad_request(
+                        "No valid update fields",
+                    ));
                 }
 
                 Ok(Json(serde_json::json!({"updated": updated_fields})))
@@ -384,17 +373,16 @@ mod update_user_validation {
                     updated_fields.push("username");
                 }
                 if req.password.is_some() {
-                    let _old_password = req
-                        .old_password
-                        .as_deref()
-                        .ok_or_else(|| {
-                            AppError::bad_request("old_password is required when changing password")
-                        })?;
+                    let _old_password = req.old_password.as_deref().ok_or_else(|| {
+                        AppError::bad_request("old_password is required when changing password")
+                    })?;
                     updated_fields.push("password");
                 }
 
                 if updated_fields.is_empty() {
-                    return Err::<Json<Value>, AppError>(AppError::bad_request("No valid update fields"));
+                    return Err::<Json<Value>, AppError>(AppError::bad_request(
+                        "No valid update fields",
+                    ));
                 }
 
                 Ok(Json(serde_json::json!({"updated": updated_fields})))
@@ -489,7 +477,10 @@ mod create_ticket_validation {
 
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
         let json = body_json(resp).await;
-        assert!(json["error"].as_str().unwrap().contains("room_id is required"));
+        assert!(json["error"]
+            .as_str()
+            .unwrap()
+            .contains("room_id is required"));
     }
 
     /// Whitespace-only `room_id` should also produce 400
@@ -653,12 +644,14 @@ mod admin_validate_path_id {
 
         let app = Router::new().route(
             "/api/admin/users/{user_id}",
-            get(|axum::extract::Path(user_id): axum::extract::Path<String>| async move {
-                synctv_api::http::validation::validate_id(&user_id, "user_id")
-                    .map(|_| ())
-                    .map_err(|e| AppError::bad_request(format!("Invalid user_id: {e}")))?;
-                Ok::<Json<Value>, AppError>(Json(serde_json::json!({"user_id": user_id})))
-            }),
+            get(
+                |axum::extract::Path(user_id): axum::extract::Path<String>| async move {
+                    synctv_api::http::validation::validate_id(&user_id, "user_id")
+                        .map(|_| ())
+                        .map_err(|e| AppError::bad_request(format!("Invalid user_id: {e}")))?;
+                    Ok::<Json<Value>, AppError>(Json(serde_json::json!({"user_id": user_id})))
+                },
+            ),
         );
 
         // Test with "user@bad"
@@ -682,8 +675,8 @@ mod admin_validate_path_id {
 // ============================================================================
 
 mod grpc_service_validation {
-    use synctv_proto::client::RegisterRequest;
     use synctv_api::http::validation::validate_username;
+    use synctv_proto::client::RegisterRequest;
 
     /// Empty username should fail validation
     #[test]
@@ -701,7 +694,10 @@ mod grpc_service_validation {
     #[test]
     fn test_register_whitespace_username_fails_validation() {
         let result = validate_username("   ");
-        assert!(result.is_err(), "Whitespace-only username should be rejected");
+        assert!(
+            result.is_err(),
+            "Whitespace-only username should be rejected"
+        );
     }
 
     /// Single char username should fail (too short, min=3)
@@ -821,7 +817,10 @@ mod admin_role_guard {
 
         assert_eq!(resp.status(), StatusCode::FORBIDDEN);
         let json = body_json(resp).await;
-        assert!(json["error"].as_str().unwrap().contains("Admin role required"));
+        assert!(json["error"]
+            .as_str()
+            .unwrap()
+            .contains("Admin role required"));
     }
 
     /// Root role requirement should also produce 403 for non-root
@@ -844,7 +843,10 @@ mod admin_role_guard {
 
         assert_eq!(resp.status(), StatusCode::FORBIDDEN);
         let json = body_json(resp).await;
-        assert!(json["error"].as_str().unwrap().contains("Root role required"));
+        assert!(json["error"]
+            .as_str()
+            .unwrap()
+            .contains("Root role required"));
     }
 
     /// Missing authorization header should produce 401
@@ -856,9 +858,7 @@ mod admin_role_guard {
             "/api/admin/stats",
             get(|| async {
                 // Simulate validate_auth_user rejection (admin.rs:42-43)
-                Err::<Json<Value>, AppError>(AppError::unauthorized(
-                    "Missing Authorization header",
-                ))
+                Err::<Json<Value>, AppError>(AppError::unauthorized("Missing Authorization header"))
             }),
         );
 
@@ -896,8 +896,8 @@ mod live_streaming_validation {
     fn test_missing_room_id_produces_400() {
         // Reproduce live.rs:104-106
         let room_id: Option<String> = None;
-        let result = room_id
-            .ok_or_else(|| AppError::bad_request("roomId query parameter is required"));
+        let result =
+            room_id.ok_or_else(|| AppError::bad_request("roomId query parameter is required"));
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert_eq!(err.status, axum::http::StatusCode::BAD_REQUEST);
@@ -909,9 +909,8 @@ mod live_streaming_validation {
     fn test_missing_token_produces_401() {
         // Reproduce live.rs:111-112
         let token: Option<&str> = None;
-        let result = token.ok_or_else(|| {
-            AppError::unauthorized("token query parameter is required")
-        });
+        let result =
+            token.ok_or_else(|| AppError::unauthorized("token query parameter is required"));
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert_eq!(err.status, axum::http::StatusCode::UNAUTHORIZED);
@@ -923,8 +922,7 @@ mod live_streaming_validation {
         use synctv_api::http::live::LiveQuery;
 
         // Full query - should deserialize without error
-        let result: Result<LiveQuery, _> =
-            serde_urlencoded::from_str("room_id=room123&token=abc");
+        let result: Result<LiveQuery, _> = serde_urlencoded::from_str("room_id=room123&token=abc");
         assert!(result.is_ok(), "Full LiveQuery should deserialize");
     }
 
@@ -942,8 +940,7 @@ mod live_streaming_validation {
         use synctv_api::http::live::LiveQuery;
 
         // Partial query - only room_id
-        let result: Result<LiveQuery, _> =
-            serde_urlencoded::from_str("room_id=room123");
+        let result: Result<LiveQuery, _> = serde_urlencoded::from_str("room_id=room123");
         assert!(result.is_ok(), "Partial LiveQuery should deserialize");
     }
 }
@@ -959,10 +956,7 @@ mod websocket_auth_priority {
     #[test]
     fn test_auth_priority_header_takes_precedence() {
         let mut headers = axum::http::HeaderMap::new();
-        headers.insert(
-            "Authorization",
-            "Bearer some_jwt_token".parse().unwrap(),
-        );
+        headers.insert("Authorization", "Bearer some_jwt_token".parse().unwrap());
 
         // When Authorization header is present, it should be checked first
         let auth_header = headers.get("Authorization");
@@ -1052,10 +1046,7 @@ mod websocket_auth_priority {
     #[test]
     fn test_non_bearer_header_not_extracted() {
         let mut headers = axum::http::HeaderMap::new();
-        headers.insert(
-            "Authorization",
-            "Basic dXNlcjpwYXNz".parse().unwrap(),
-        );
+        headers.insert("Authorization", "Basic dXNlcjpwYXNz".parse().unwrap());
 
         let auth_header = headers.get("Authorization").unwrap();
         let auth_str = auth_header.to_str().unwrap();
@@ -1160,34 +1151,26 @@ mod optional_services_absent {
     #[allow(clippy::type_complexity)]
     fn test_distinct_error_messages_for_each_service() {
         let services: Vec<(&str, fn() -> AppError)> = vec![
-            (
-                "email",
-                || AppError::internal_server_error("Email service not configured"),
-            ),
-            (
-                "notification",
-                || AppError::internal_server_error("Notification service not configured"),
-            ),
-            (
-                "oauth2",
-                || AppError::internal_server_error("OAuth2 service not configured"),
-            ),
-            (
-                "ws_ticket",
-                || {
-                    AppError::internal_server_error(
-                        "WebSocket ticket service not configured (Redis required)",
-                    )
-                },
-            ),
-            (
-                "admin",
-                || AppError::internal("Admin service not configured"),
-            ),
-            (
-                "live",
-                || AppError::internal_server_error("Live streaming not configured"),
-            ),
+            ("email", || {
+                AppError::internal_server_error("Email service not configured")
+            }),
+            ("notification", || {
+                AppError::internal_server_error("Notification service not configured")
+            }),
+            ("oauth2", || {
+                AppError::internal_server_error("OAuth2 service not configured")
+            }),
+            ("ws_ticket", || {
+                AppError::internal_server_error(
+                    "WebSocket ticket service not configured (Redis required)",
+                )
+            }),
+            ("admin", || {
+                AppError::internal("Admin service not configured")
+            }),
+            ("live", || {
+                AppError::internal_server_error("Live streaming not configured")
+            }),
         ];
 
         for (name, make_err) in services {
@@ -1197,7 +1180,10 @@ mod optional_services_absent {
                 axum::http::StatusCode::INTERNAL_SERVER_ERROR,
                 "Service '{name}' should produce 500"
             );
-            assert!(!err.message.is_empty(), "Service '{name}' error should have a message");
+            assert!(
+                !err.message.is_empty(),
+                "Service '{name}' error should have a message"
+            );
         }
     }
 }
@@ -1239,13 +1225,20 @@ mod error_response_format {
 
     #[tokio::test]
     async fn test_bad_request_response_format() {
-        assert_error_response(|| AppError::bad_request("test 400"), StatusCode::BAD_REQUEST).await;
+        assert_error_response(
+            || AppError::bad_request("test 400"),
+            StatusCode::BAD_REQUEST,
+        )
+        .await;
     }
 
     #[tokio::test]
     async fn test_unauthorized_response_format() {
-        assert_error_response(|| AppError::unauthorized("test 401"), StatusCode::UNAUTHORIZED)
-            .await;
+        assert_error_response(
+            || AppError::unauthorized("test 401"),
+            StatusCode::UNAUTHORIZED,
+        )
+        .await;
     }
 
     #[tokio::test]
@@ -1283,11 +1276,7 @@ mod error_response_format {
 
     #[tokio::test]
     async fn test_rate_limited_response_format() {
-        assert_error_response(
-            || AppError::rate_limited(60),
-            StatusCode::TOO_MANY_REQUESTS,
-        )
-        .await;
+        assert_error_response(|| AppError::rate_limited(60), StatusCode::TOO_MANY_REQUESTS).await;
     }
 }
 
@@ -1306,7 +1295,7 @@ mod validation_coverage {
             "'; DROP TABLE users;--",
             "<img src=x onerror=alert(1)>",
             "../../../etc/passwd",
-            "user name",  // space
+            "user name", // space
             "user=value",
             "user&other",
         ];
@@ -1403,12 +1392,30 @@ mod api_error_type_safe_mapping {
     #[test]
     fn test_api_error_to_app_error_status_mapping() {
         let cases: Vec<(ApiError, axum::http::StatusCode)> = vec![
-            (ApiError::NotFound("x".into()), axum::http::StatusCode::NOT_FOUND),
-            (ApiError::Authentication("x".into()), axum::http::StatusCode::UNAUTHORIZED),
-            (ApiError::Authorization("x".into()), axum::http::StatusCode::FORBIDDEN),
-            (ApiError::AlreadyExists("x".into()), axum::http::StatusCode::CONFLICT),
-            (ApiError::InvalidInput("x".into()), axum::http::StatusCode::BAD_REQUEST),
-            (ApiError::Internal("x".into()), axum::http::StatusCode::INTERNAL_SERVER_ERROR),
+            (
+                ApiError::NotFound("x".into()),
+                axum::http::StatusCode::NOT_FOUND,
+            ),
+            (
+                ApiError::Authentication("x".into()),
+                axum::http::StatusCode::UNAUTHORIZED,
+            ),
+            (
+                ApiError::Authorization("x".into()),
+                axum::http::StatusCode::FORBIDDEN,
+            ),
+            (
+                ApiError::AlreadyExists("x".into()),
+                axum::http::StatusCode::CONFLICT,
+            ),
+            (
+                ApiError::InvalidInput("x".into()),
+                axum::http::StatusCode::BAD_REQUEST,
+            ),
+            (
+                ApiError::Internal("x".into()),
+                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            ),
         ];
 
         for (api_err, expected_status) in cases {
@@ -1434,7 +1441,10 @@ mod api_error_type_safe_mapping {
     fn test_internal_error_does_not_leak_details() {
         let api_err = ApiError::Internal("Database connection pool exhausted".into());
         let app_err: AppError = api_err.into();
-        assert_eq!(app_err.status, axum::http::StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(
+            app_err.status,
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR
+        );
         // Internal error messages should be sanitized
         assert_eq!(app_err.message, "Internal error");
     }
@@ -1459,18 +1469,9 @@ mod grpc_status_mapping {
                 ApiError::Authentication("token expired".into()),
                 "token expired",
             ),
-            (
-                ApiError::Authorization("forbidden".into()),
-                "forbidden",
-            ),
-            (
-                ApiError::AlreadyExists("user exists".into()),
-                "user exists",
-            ),
-            (
-                ApiError::InvalidInput("bad field".into()),
-                "bad field",
-            ),
+            (ApiError::Authorization("forbidden".into()), "forbidden"),
+            (ApiError::AlreadyExists("user exists".into()), "user exists"),
+            (ApiError::InvalidInput("bad field".into()), "bad field"),
         ];
 
         for (api_err, expected_msg) in cases {
@@ -1498,10 +1499,22 @@ mod grpc_status_mapping {
 
         let cases: Vec<(ApiError, i32)> = vec![
             (ApiError::NotFound("x".into()), error_codes::NOT_FOUND),
-            (ApiError::Authentication("x".into()), error_codes::UNAUTHENTICATED),
-            (ApiError::Authorization("x".into()), error_codes::PERMISSION_DENIED),
-            (ApiError::AlreadyExists("x".into()), error_codes::ALREADY_EXISTS),
-            (ApiError::InvalidInput("x".into()), error_codes::INVALID_ARGUMENT),
+            (
+                ApiError::Authentication("x".into()),
+                error_codes::UNAUTHENTICATED,
+            ),
+            (
+                ApiError::Authorization("x".into()),
+                error_codes::PERMISSION_DENIED,
+            ),
+            (
+                ApiError::AlreadyExists("x".into()),
+                error_codes::ALREADY_EXISTS,
+            ),
+            (
+                ApiError::InvalidInput("x".into()),
+                error_codes::INVALID_ARGUMENT,
+            ),
             (ApiError::Internal("x".into()), error_codes::INTERNAL_ERROR),
         ];
 

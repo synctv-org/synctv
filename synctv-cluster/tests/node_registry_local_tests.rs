@@ -10,11 +10,7 @@ use synctv_cluster::{ClusterMode, NodeInfo, NodeRegistry};
 #[tokio::test]
 async fn test_new_local_only_creates_registry() {
     // This should succeed without requiring a Redis connection
-    let registry = NodeRegistry::new_local_only(
-        "test-node-local".to_string(),
-        30,
-        "localtest:",
-    );
+    let registry = NodeRegistry::new_local_only("test-node-local".to_string(), 30, "localtest:");
 
     assert!(
         registry.is_ok(),
@@ -25,11 +21,9 @@ async fn test_new_local_only_creates_registry() {
 /// Test that local-only registry starts in Standalone mode.
 #[tokio::test]
 async fn test_local_only_starts_in_standalone_mode() {
-    let registry = NodeRegistry::new_local_only(
-        "test-node-standalone".to_string(),
-        30,
-        "standalone:",
-    ).expect("new_local_only should succeed");
+    let registry =
+        NodeRegistry::new_local_only("test-node-standalone".to_string(), 30, "standalone:")
+            .expect("new_local_only should succeed");
 
     // Should be in Standalone mode since there's no Redis
     assert_eq!(
@@ -42,11 +36,8 @@ async fn test_local_only_starts_in_standalone_mode() {
 /// Test that local-only registry can discover nodes from local cache.
 #[tokio::test]
 async fn test_local_only_discover_nodes_from_local_cache() {
-    let registry = NodeRegistry::new_local_only(
-        "test-node-discover".to_string(),
-        30,
-        "discover:",
-    ).expect("new_local_only should succeed");
+    let registry = NodeRegistry::new_local_only("test-node-discover".to_string(), 30, "discover:")
+        .expect("new_local_only should succeed");
 
     // Insert a node into local cache
     let node_info = NodeInfo::new(
@@ -62,7 +53,10 @@ async fn test_local_only_discover_nodes_from_local_cache() {
     assert_eq!(nodes[0].node_id, "peer-node");
 
     // get_all_nodes should also work (returns local cache in Standalone mode)
-    let all_nodes = registry.get_all_nodes().await.expect("get_all_nodes should succeed");
+    let all_nodes = registry
+        .get_all_nodes()
+        .await
+        .expect("get_all_nodes should succeed");
     assert_eq!(all_nodes.len(), 1, "Should find one node via get_all_nodes");
     assert_eq!(all_nodes[0].node_id, "peer-node");
 }
@@ -70,11 +64,8 @@ async fn test_local_only_discover_nodes_from_local_cache() {
 /// Test that local-only registry can get a specific node from local cache.
 #[tokio::test]
 async fn test_local_only_get_node_from_local_cache() {
-    let registry = NodeRegistry::new_local_only(
-        "test-node-get".to_string(),
-        30,
-        "gettest:",
-    ).expect("new_local_only should succeed");
+    let registry = NodeRegistry::new_local_only("test-node-get".to_string(), 30, "gettest:")
+        .expect("new_local_only should succeed");
 
     // Insert a node into local cache
     let node_info = NodeInfo::new(
@@ -95,29 +86,26 @@ async fn test_local_only_get_node_from_local_cache() {
 /// Test that local-only registry handles empty cache gracefully.
 #[tokio::test]
 async fn test_local_only_empty_cache_returns_empty() {
-    let registry = NodeRegistry::new_local_only(
-        "test-node-empty".to_string(),
-        30,
-        "emptytest:",
-    ).expect("new_local_only should succeed");
+    let registry = NodeRegistry::new_local_only("test-node-empty".to_string(), 30, "emptytest:")
+        .expect("new_local_only should succeed");
 
     // Empty cache should return empty vector
     let nodes = registry.get_all_nodes_local().await;
     assert!(nodes.is_empty(), "Empty cache should return empty vector");
 
     // get_all_nodes should also return empty (no Redis fallback needed)
-    let all_nodes = registry.get_all_nodes().await.expect("get_all_nodes should succeed");
+    let all_nodes = registry
+        .get_all_nodes()
+        .await
+        .expect("get_all_nodes should succeed");
     assert!(all_nodes.is_empty(), "Should return empty for empty cache");
 }
 
 /// Test that `is_nodes_stale` returns true for local-only registry that never refreshed.
 #[tokio::test]
 async fn test_local_only_is_nodes_stale_when_never_refreshed() {
-    let registry = NodeRegistry::new_local_only(
-        "test-node-stale".to_string(),
-        30,
-        "staletest:",
-    ).expect("new_local_only should succeed");
+    let registry = NodeRegistry::new_local_only("test-node-stale".to_string(), 30, "staletest:")
+        .expect("new_local_only should succeed");
 
     // Since there's no Redis, is_nodes_stale should return true (never refreshed from Redis)
     assert!(
@@ -129,16 +117,21 @@ async fn test_local_only_is_nodes_stale_when_never_refreshed() {
 /// Test that `merge_dns_peers` works in local-only mode.
 #[tokio::test]
 async fn test_local_only_merge_dns_peers() {
-    let registry = NodeRegistry::new_local_only(
-        "test-node-dns".to_string(),
-        30,
-        "dnstest:",
-    ).expect("new_local_only should succeed");
+    let registry = NodeRegistry::new_local_only("test-node-dns".to_string(), 30, "dnstest:")
+        .expect("new_local_only should succeed");
 
     // Merge some DNS-discovered peers
     let peers = vec![
-        NodeInfo::new("dns-peer-1".to_string(), "10.0.0.1:50051".to_string(), "10.0.0.1:8080".to_string()),
-        NodeInfo::new("dns-peer-2".to_string(), "10.0.0.2:50051".to_string(), "10.0.0.2:8080".to_string()),
+        NodeInfo::new(
+            "dns-peer-1".to_string(),
+            "10.0.0.1:50051".to_string(),
+            "10.0.0.1:8080".to_string(),
+        ),
+        NodeInfo::new(
+            "dns-peer-2".to_string(),
+            "10.0.0.2:50051".to_string(),
+            "10.0.0.2:8080".to_string(),
+        ),
     ];
     registry.merge_dns_peers(peers).await;
 
@@ -154,11 +147,9 @@ async fn test_local_only_merge_dns_peers() {
 /// Test that local-only registry provides valid fencing token.
 #[tokio::test]
 async fn test_local_only_fencing_token() {
-    let registry = NodeRegistry::new_local_only(
-        "test-node-fencing".to_string(),
-        30,
-        "fencingtest:",
-    ).expect("new_local_only should succeed");
+    let registry =
+        NodeRegistry::new_local_only("test-node-fencing".to_string(), 30, "fencingtest:")
+            .expect("new_local_only should succeed");
 
     // Should be able to get a fencing token
     let token = registry.current_fencing_token();

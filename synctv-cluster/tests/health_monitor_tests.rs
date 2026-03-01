@@ -9,8 +9,8 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
-use synctv_cluster::NodeHealth;
 use synctv_cluster::discovery::health_monitor::HealthMonitor;
+use synctv_cluster::NodeHealth;
 use synctv_cluster::NodeInfo;
 
 // ============================================================================
@@ -123,7 +123,10 @@ fn test_backoff_multiplier_capped() {
             1 => assert_eq!(backoff_multiplier, 2),
             2 => assert_eq!(backoff_multiplier, 4),
             3 => assert_eq!(backoff_multiplier, 8),
-            _ => assert_eq!(backoff_multiplier, 8, "Should cap at 8x for {failures} failures"),
+            _ => assert_eq!(
+                backoff_multiplier, 8,
+                "Should cap at 8x for {failures} failures"
+            ),
         }
     }
 }

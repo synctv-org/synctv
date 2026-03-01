@@ -19,6 +19,7 @@
 
 use std::sync::Arc;
 
+use sqlx::PgPool;
 use synctv_core::{
     cache::{self, NoopCacheL2},
     config::PasswordComplexityConfig,
@@ -30,11 +31,10 @@ use synctv_core::{
     },
     Error, KeyBuilder,
 };
-use sqlx::PgPool;
+use testcontainers::runners::AsyncRunner;
 use testcontainers::ContainerAsync;
 use testcontainers_modules::postgres::Postgres;
 use testcontainers_modules::redis::Redis;
-use testcontainers::runners::AsyncRunner;
 
 const POSTGRES_VERSION: &str = "16-alpine";
 
@@ -42,7 +42,12 @@ const POSTGRES_VERSION: &str = "16-alpine";
 // Test Infrastructure
 // ============================================================================
 
-async fn create_test_infra() -> (ContainerAsync<Postgres>, ContainerAsync<Redis>, PgPool, String) {
+async fn create_test_infra() -> (
+    ContainerAsync<Postgres>,
+    ContainerAsync<Redis>,
+    PgPool,
+    String,
+) {
     use testcontainers::core::ImageExt;
 
     // Start PostgreSQL
@@ -56,11 +61,12 @@ async fn create_test_infra() -> (ContainerAsync<Postgres>, ContainerAsync<Redis>
         .expect("Failed to start Postgres container");
 
     let pg_host = postgres.get_host().await.expect("Failed to get host");
-    let pg_port = postgres.get_host_port_ipv4(5432).await.expect("Failed to get port");
+    let pg_port = postgres
+        .get_host_port_ipv4(5432)
+        .await
+        .expect("Failed to get port");
 
-    let database_url = format!(
-        "postgres://synctv:synctv_test@{pg_host}:{pg_port}/synctv_test"
-    );
+    let database_url = format!("postgres://synctv:synctv_test@{pg_host}:{pg_port}/synctv_test");
 
     // Retry connection until PG is fully ready
     let pool = {
@@ -94,7 +100,10 @@ async fn create_test_infra() -> (ContainerAsync<Postgres>, ContainerAsync<Redis>
         .await
         .expect("Failed to start Redis container");
 
-    let redis_port = redis.get_host_port_ipv4(6379).await.expect("Failed to get port");
+    let redis_port = redis
+        .get_host_port_ipv4(6379)
+        .await
+        .expect("Failed to get port");
     let redis_url = format!("redis://127.0.0.1:{redis_port}");
 
     (postgres, redis, pool, redis_url)
@@ -107,12 +116,8 @@ fn create_jwt_service() -> JwtService {
 
 fn create_user_service(pool: PgPool) -> UserService {
     let jwt_service = create_jwt_service();
-    let username_cache = cache::UsernameCache::new(
-        Arc::new(NoopCacheL2),
-        "test:username:".to_string(),
-        1000,
-        0,
-    );
+    let username_cache =
+        cache::UsernameCache::new(Arc::new(NoopCacheL2), "test:username:".to_string(), 1000, 0);
     let token_blacklist = Arc::new(InMemoryTokenBlacklistStore::new(10_000, 3600, 86400));
     let key_builder = KeyBuilder::new("test");
     let brute_force = BruteForceProtection::in_memory("test".to_string());
@@ -146,7 +151,12 @@ async fn test_password_change_invalidates_old_tokens() {
     let original_password = "OriginalPassword123!".to_string();
 
     let (user, _, _) = user_service
-        .register(username.clone(), Some(email), original_password.clone(), None)
+        .register(
+            username.clone(),
+            Some(email),
+            original_password.clone(),
+            None,
+        )
         .await
         .expect("Failed to register user");
 
@@ -167,7 +177,10 @@ async fn test_password_change_invalidates_old_tokens() {
         .with_token_blacklist(token_blacklist, key_builder);
 
     let auth_result = pipeline.check(&old_claims).await;
-    assert!(auth_result.is_ok(), "Old token should work before password change");
+    assert!(
+        auth_result.is_ok(),
+        "Old token should work before password change"
+    );
 
     // 4. Change password
     let new_password = "NewPassword456!";
@@ -178,7 +191,10 @@ async fn test_password_change_invalidates_old_tokens() {
 
     // 5. Verify old token is rejected (password version mismatch)
     let auth_result = pipeline.check(&old_claims).await;
-    assert!(auth_result.is_err(), "Old token should be rejected after password change");
+    assert!(
+        auth_result.is_err(),
+        "Old token should be rejected after password change"
+    );
 
     let err = auth_result.unwrap_err();
     assert!(
@@ -198,7 +214,10 @@ async fn test_password_change_invalidates_old_tokens() {
 
     // 7. Verify new token works
     let auth_result = pipeline.check(&new_claims).await;
-    assert!(auth_result.is_ok(), "New token should work after password change");
+    assert!(
+        auth_result.is_ok(),
+        "New token should work after password change"
+    );
 }
 
 // ============================================================================
@@ -242,8 +261,15 @@ async fn test_ban_user_invalidates_tokens() {
 
     // 3. Admin bans user (simulate via DB update)
     let user_repo = UserRepository::new(pool);
-    let user = user_repo.get_by_username(&username).await.expect("Failed to get user").expect("User should exist");
-    user_repo.update_status(&user.id, UserStatus::Banned).await.expect("Failed to ban user");
+    let user = user_repo
+        .get_by_username(&username)
+        .await
+        .expect("Failed to get user")
+        .expect("User should exist");
+    user_repo
+        .update_status(&user.id, UserStatus::Banned)
+        .await
+        .expect("Failed to ban user");
 
     // 4. Verify token is rejected
     let auth_result = pipeline.check(&claims).await;
@@ -297,7 +323,10 @@ async fn test_blacklisted_access_token_rejected() {
 
     // 3. Blacklist the access token (simulating logout)
     let blacklist_key = key_builder.access_token_blacklist(&claims.jti);
-    token_blacklist.blacklist(&blacklist_key, 3600).await.expect("Failed to blacklist token");
+    token_blacklist
+        .blacklist(&blacklist_key, 3600)
+        .await
+        .expect("Failed to blacklist token");
 
     // 4. Verify access token is rejected
     let auth_result = pipeline.check(&claims).await;
@@ -336,8 +365,13 @@ async fn test_refresh_token_validation() {
     assert!(refresh_result.is_ok(), "Refresh token should be valid");
 
     // Try with invalid refresh token
-    let invalid_refresh_result = user_service.refresh_token("invalid_token".to_string()).await;
-    assert!(invalid_refresh_result.is_err(), "Invalid refresh token should fail");
+    let invalid_refresh_result = user_service
+        .refresh_token("invalid_token".to_string())
+        .await;
+    assert!(
+        invalid_refresh_result.is_err(),
+        "Invalid refresh token should fail"
+    );
 }
 
 // ============================================================================
@@ -386,7 +420,10 @@ async fn test_complete_authentication_flow() {
     let pipeline = SecurityPipeline::new(user_service.clone())
         .with_token_blacklist(token_blacklist, key_builder);
 
-    let auth_result = pipeline.check(&claims).await.expect("Security check failed");
+    let auth_result = pipeline
+        .check(&claims)
+        .await
+        .expect("Security check failed");
     assert_eq!(auth_result.user_id, user.id);
 
     // Step 4: Refresh access token
@@ -402,7 +439,10 @@ async fn test_complete_authentication_flow() {
         .expect("Failed to verify refreshed token");
 
     // Step 5: Verify new token works
-    let auth_result = pipeline.check(&new_claims).await.expect("New token should work");
+    let auth_result = pipeline
+        .check(&new_claims)
+        .await
+        .expect("New token should work");
     assert_eq!(auth_result.user_id, user.id);
 }
 
@@ -423,9 +463,14 @@ async fn test_login_wrong_password_fails() {
         .expect("Failed to register user");
 
     // Try to login with wrong password
-    let login_result = user_service.login(username, "WrongPassword456!".to_string(), None).await;
+    let login_result = user_service
+        .login(username, "WrongPassword456!".to_string(), None)
+        .await;
 
-    assert!(login_result.is_err(), "Login should fail with wrong password");
+    assert!(
+        login_result.is_err(),
+        "Login should fail with wrong password"
+    );
 }
 
 /// Test that deleted user cannot authenticate.
@@ -456,15 +501,21 @@ async fn test_deleted_user_cannot_authenticate() {
 
     // Delete user
     let user_repo = UserRepository::new(pool);
-    user_repo.delete(&user.id).await.expect("Failed to delete user");
+    user_repo
+        .delete(&user.id)
+        .await
+        .expect("Failed to delete user");
 
     // Create security pipeline
     let token_blacklist = Arc::new(InMemoryTokenBlacklistStore::new(10_000, 3600, 86400));
     let key_builder = KeyBuilder::new("test");
-    let pipeline = SecurityPipeline::new(user_service)
-        .with_token_blacklist(token_blacklist, key_builder);
+    let pipeline =
+        SecurityPipeline::new(user_service).with_token_blacklist(token_blacklist, key_builder);
 
     // Token should be rejected because user is deleted
     let auth_result = pipeline.check(&claims).await;
-    assert!(auth_result.is_err(), "Deleted user token should be rejected");
+    assert!(
+        auth_result.is_err(),
+        "Deleted user token should be rejected"
+    );
 }

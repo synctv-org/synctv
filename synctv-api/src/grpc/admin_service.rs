@@ -1,36 +1,37 @@
 use std::sync::Arc;
 use tonic::{Request, Response, Status};
 
-use synctv_core::service::UserService;
 use crate::impls::admin::RequestContext;
+use synctv_core::service::UserService;
 
 // Use synctv_proto for all gRPC types to avoid duplication
-use crate::proto::admin_service_server::AdminService;
 use crate::proto::admin::{
-    GetSettingsRequest, GetSettingsResponse, GetSettingsGroupRequest, GetSettingsGroupResponse,
-    UpdateSettingsRequest, UpdateSettingsResponse, SendTestEmailRequest, SendTestEmailResponse,
-    ListProviderInstancesRequest, ListProviderInstancesResponse, AddProviderInstanceRequest,
-    AddProviderInstanceResponse, UpdateProviderInstanceRequest, UpdateProviderInstanceResponse,
-    DeleteProviderInstanceRequest, DeleteProviderInstanceResponse, ReconnectProviderInstanceRequest,
-    ReconnectProviderInstanceResponse, EnableProviderInstanceRequest, EnableProviderInstanceResponse,
-    DisableProviderInstanceRequest, DisableProviderInstanceResponse, CreateUserRequest,
-    CreateUserResponse, DeleteUserRequest, DeleteUserResponse, ListUsersRequest, ListUsersResponse,
-    GetUserRequest, GetUserResponse, UpdateUserPasswordRequest, UpdateUserPasswordResponse,
-    UpdateUserUsernameRequest, UpdateUserUsernameResponse, UpdateUserRoleRequest,
-    UpdateUserRoleResponse, BanUserRequest, BanUserResponse, UnbanUserRequest, UnbanUserResponse,
-    GetUserRoomsRequest, GetUserRoomsResponse, ApproveUserRequest, ApproveUserResponse,
-    ListRoomsRequest, ListRoomsResponse, GetRoomRequest, GetRoomResponse,
-    UpdateRoomPasswordRequest, UpdateRoomPasswordResponse, DeleteRoomRequest, DeleteRoomResponse,
-    BanRoomRequest, BanRoomResponse, UnbanRoomRequest, UnbanRoomResponse, ApproveRoomRequest,
-    ApproveRoomResponse, GetRoomMembersRequest, GetRoomMembersResponse, AddAdminRequest,
-    AddAdminResponse, RemoveAdminRequest, RemoveAdminResponse, ListAdminsRequest,
-    ListAdminsResponse, GetSystemStatsRequest, GetSystemStatsResponse, GetRoomSettingsRequest,
-    GetRoomSettingsResponse, UpdateRoomSettingsRequest, UpdateRoomSettingsResponse,
-    ResetRoomSettingsRequest, ResetRoomSettingsResponse, ListActiveStreamsRequest,
-    ListActiveStreamsResponse, KickStreamRequest, KickStreamResponse,
-    BatchBanUsersRequest, BatchBanUsersResponse, BatchDeleteUsersRequest, BatchDeleteUsersResponse,
-    BatchBanRoomsRequest, BatchBanRoomsResponse, BatchDeleteRoomsRequest, BatchDeleteRoomsResponse,
+    AddAdminRequest, AddAdminResponse, AddProviderInstanceRequest, AddProviderInstanceResponse,
+    ApproveRoomRequest, ApproveRoomResponse, ApproveUserRequest, ApproveUserResponse,
+    BanRoomRequest, BanRoomResponse, BanUserRequest, BanUserResponse, BatchBanRoomsRequest,
+    BatchBanRoomsResponse, BatchBanUsersRequest, BatchBanUsersResponse, BatchDeleteRoomsRequest,
+    BatchDeleteRoomsResponse, BatchDeleteUsersRequest, BatchDeleteUsersResponse, CreateUserRequest,
+    CreateUserResponse, DeleteProviderInstanceRequest, DeleteProviderInstanceResponse,
+    DeleteRoomRequest, DeleteRoomResponse, DeleteUserRequest, DeleteUserResponse,
+    DisableProviderInstanceRequest, DisableProviderInstanceResponse, EnableProviderInstanceRequest,
+    EnableProviderInstanceResponse, GetRoomMembersRequest, GetRoomMembersResponse, GetRoomRequest,
+    GetRoomResponse, GetRoomSettingsRequest, GetRoomSettingsResponse, GetSettingsGroupRequest,
+    GetSettingsGroupResponse, GetSettingsRequest, GetSettingsResponse, GetSystemStatsRequest,
+    GetSystemStatsResponse, GetUserRequest, GetUserResponse, GetUserRoomsRequest,
+    GetUserRoomsResponse, KickStreamRequest, KickStreamResponse, ListActiveStreamsRequest,
+    ListActiveStreamsResponse, ListAdminsRequest, ListAdminsResponse, ListProviderInstancesRequest,
+    ListProviderInstancesResponse, ListRoomsRequest, ListRoomsResponse, ListUsersRequest,
+    ListUsersResponse, ReconnectProviderInstanceRequest, ReconnectProviderInstanceResponse,
+    RemoveAdminRequest, RemoveAdminResponse, ResetRoomSettingsRequest, ResetRoomSettingsResponse,
+    SendTestEmailRequest, SendTestEmailResponse, UnbanRoomRequest, UnbanRoomResponse,
+    UnbanUserRequest, UnbanUserResponse, UpdateProviderInstanceRequest,
+    UpdateProviderInstanceResponse, UpdateRoomPasswordRequest, UpdateRoomPasswordResponse,
+    UpdateRoomSettingsRequest, UpdateRoomSettingsResponse, UpdateSettingsRequest,
+    UpdateSettingsResponse, UpdateUserPasswordRequest, UpdateUserPasswordResponse,
+    UpdateUserRoleRequest, UpdateUserRoleResponse, UpdateUserUsernameRequest,
+    UpdateUserUsernameResponse,
 };
+use crate::proto::admin_service_server::AdminService;
 
 use crate::impls::AdminApiImpl;
 
@@ -44,7 +45,10 @@ fn grpc_request_context<T: std::fmt::Debug>(request: &Request<T>) -> RequestCont
         .get("user-agent")
         .and_then(|v| v.to_str().ok())
         .map(std::string::ToString::to_string);
-    RequestContext { ip_address, user_agent }
+    RequestContext {
+        ip_address,
+        user_agent,
+    }
 }
 
 /// `AdminService` gRPC implementation.
@@ -59,10 +63,7 @@ pub struct AdminServiceImpl {
 
 impl AdminServiceImpl {
     #[must_use]
-    pub const fn new(
-        user_service: Arc<UserService>,
-        admin_api: Arc<AdminApiImpl>,
-    ) -> Self {
+    pub const fn new(user_service: Arc<UserService>, admin_api: Arc<AdminApiImpl>) -> Self {
         Self {
             user_service,
             admin_api,
@@ -165,7 +166,11 @@ impl AdminService for AdminServiceImpl {
     ) -> Result<Response<GetSettingsResponse>, Status> {
         self.check_admin(&request).await?;
         let req = request.into_inner();
-        let resp = self.admin_api.get_settings(req).await.map_err(map_api_error)?;
+        let resp = self
+            .admin_api
+            .get_settings(req)
+            .await
+            .map_err(map_api_error)?;
         Ok(Response::new(resp))
     }
 
@@ -175,7 +180,11 @@ impl AdminService for AdminServiceImpl {
     ) -> Result<Response<GetSettingsGroupResponse>, Status> {
         self.check_admin(&request).await?;
         let req = request.into_inner();
-        let resp = self.admin_api.get_settings_group(req).await.map_err(map_api_error)?;
+        let resp = self
+            .admin_api
+            .get_settings_group(req)
+            .await
+            .map_err(map_api_error)?;
         Ok(Response::new(resp))
     }
 
@@ -186,7 +195,11 @@ impl AdminService for AdminServiceImpl {
         let validated = self.check_admin_get_validated(&request).await?;
         let ctx = grpc_request_context(&request);
         let req = request.into_inner();
-        let resp = self.admin_api.update_settings(req, &validated.user_id, &ctx).await.map_err(map_api_error)?;
+        let resp = self
+            .admin_api
+            .update_settings(req, &validated.user_id, &ctx)
+            .await
+            .map_err(map_api_error)?;
         Ok(Response::new(resp))
     }
 
@@ -196,7 +209,11 @@ impl AdminService for AdminServiceImpl {
     ) -> Result<Response<SendTestEmailResponse>, Status> {
         self.check_admin(&request).await?;
         let req = request.into_inner();
-        let resp = self.admin_api.send_test_email(req).await.map_err(map_api_error)?;
+        let resp = self
+            .admin_api
+            .send_test_email(req)
+            .await
+            .map_err(map_api_error)?;
         Ok(Response::new(resp))
     }
 
@@ -210,7 +227,11 @@ impl AdminService for AdminServiceImpl {
     ) -> Result<Response<ListProviderInstancesResponse>, Status> {
         self.check_admin(&request).await?;
         let req = request.into_inner();
-        let resp = self.admin_api.list_provider_instances(req).await.map_err(map_api_error)?;
+        let resp = self
+            .admin_api
+            .list_provider_instances(req)
+            .await
+            .map_err(map_api_error)?;
         Ok(Response::new(resp))
     }
 
@@ -222,7 +243,11 @@ impl AdminService for AdminServiceImpl {
         let admin_user_id = super::interceptors::extract_user_id(&request)?;
         let ctx = grpc_request_context(&request);
         let req = request.into_inner();
-        let resp = self.admin_api.add_provider_instance(req, &admin_user_id, &ctx).await.map_err(map_api_error)?;
+        let resp = self
+            .admin_api
+            .add_provider_instance(req, &admin_user_id, &ctx)
+            .await
+            .map_err(map_api_error)?;
         Ok(Response::new(resp))
     }
 
@@ -234,7 +259,11 @@ impl AdminService for AdminServiceImpl {
         let admin_user_id = super::interceptors::extract_user_id(&request)?;
         let ctx = grpc_request_context(&request);
         let req = request.into_inner();
-        let resp = self.admin_api.update_provider_instance(req, &admin_user_id, &ctx).await.map_err(map_api_error)?;
+        let resp = self
+            .admin_api
+            .update_provider_instance(req, &admin_user_id, &ctx)
+            .await
+            .map_err(map_api_error)?;
         Ok(Response::new(resp))
     }
 
@@ -246,7 +275,11 @@ impl AdminService for AdminServiceImpl {
         let admin_user_id = super::interceptors::extract_user_id(&request)?;
         let ctx = grpc_request_context(&request);
         let req = request.into_inner();
-        let resp = self.admin_api.delete_provider_instance(req, &admin_user_id, &ctx).await.map_err(map_api_error)?;
+        let resp = self
+            .admin_api
+            .delete_provider_instance(req, &admin_user_id, &ctx)
+            .await
+            .map_err(map_api_error)?;
         Ok(Response::new(resp))
     }
 
@@ -258,7 +291,11 @@ impl AdminService for AdminServiceImpl {
         let admin_user_id = super::interceptors::extract_user_id(&request)?;
         let ctx = grpc_request_context(&request);
         let req = request.into_inner();
-        let resp = self.admin_api.reconnect_provider_instance(req, &admin_user_id, &ctx).await.map_err(map_api_error)?;
+        let resp = self
+            .admin_api
+            .reconnect_provider_instance(req, &admin_user_id, &ctx)
+            .await
+            .map_err(map_api_error)?;
         Ok(Response::new(resp))
     }
 
@@ -268,7 +305,11 @@ impl AdminService for AdminServiceImpl {
     ) -> Result<Response<EnableProviderInstanceResponse>, Status> {
         self.check_admin(&request).await?;
         let req = request.into_inner();
-        let resp = self.admin_api.enable_provider_instance(req).await.map_err(map_api_error)?;
+        let resp = self
+            .admin_api
+            .enable_provider_instance(req)
+            .await
+            .map_err(map_api_error)?;
         Ok(Response::new(resp))
     }
 
@@ -278,7 +319,11 @@ impl AdminService for AdminServiceImpl {
     ) -> Result<Response<DisableProviderInstanceResponse>, Status> {
         self.check_admin(&request).await?;
         let req = request.into_inner();
-        let resp = self.admin_api.disable_provider_instance(req).await.map_err(map_api_error)?;
+        let resp = self
+            .admin_api
+            .disable_provider_instance(req)
+            .await
+            .map_err(map_api_error)?;
         Ok(Response::new(resp))
     }
 
@@ -300,7 +345,11 @@ impl AdminService for AdminServiceImpl {
         let admin_user_id = super::interceptors::extract_user_id(&request)?;
         let ctx = grpc_request_context(&request);
         let req = request.into_inner();
-        let resp = self.admin_api.create_user(req, caller_role, &admin_user_id, &ctx).await.map_err(map_api_error)?;
+        let resp = self
+            .admin_api
+            .create_user(req, caller_role, &admin_user_id, &ctx)
+            .await
+            .map_err(map_api_error)?;
         Ok(Response::new(resp))
     }
 
@@ -312,7 +361,11 @@ impl AdminService for AdminServiceImpl {
         let admin_user_id = super::interceptors::extract_user_id(&request)?;
         let ctx = grpc_request_context(&request);
         let req = request.into_inner();
-        let resp = self.admin_api.delete_user(req, &admin_user_id, &ctx).await.map_err(map_api_error)?;
+        let resp = self
+            .admin_api
+            .delete_user(req, &admin_user_id, &ctx)
+            .await
+            .map_err(map_api_error)?;
         Ok(Response::new(resp))
     }
 
@@ -322,7 +375,11 @@ impl AdminService for AdminServiceImpl {
     ) -> Result<Response<ListUsersResponse>, Status> {
         self.check_admin(&request).await?;
         let req = request.into_inner();
-        let resp = self.admin_api.list_users(req).await.map_err(map_api_error)?;
+        let resp = self
+            .admin_api
+            .list_users(req)
+            .await
+            .map_err(map_api_error)?;
         Ok(Response::new(resp))
     }
 
@@ -343,7 +400,11 @@ impl AdminService for AdminServiceImpl {
         let validated = self.check_admin_get_validated(&request).await?;
         let ctx = grpc_request_context(&request);
         let req = request.into_inner();
-        let resp = self.admin_api.update_user_password(req, validated.user_id, validated.role, &ctx).await.map_err(map_api_error)?;
+        let resp = self
+            .admin_api
+            .update_user_password(req, validated.user_id, validated.role, &ctx)
+            .await
+            .map_err(map_api_error)?;
         Ok(Response::new(resp))
     }
 
@@ -355,7 +416,11 @@ impl AdminService for AdminServiceImpl {
         let admin_user_id = super::interceptors::extract_user_id(&request)?;
         let ctx = grpc_request_context(&request);
         let req = request.into_inner();
-        let resp = self.admin_api.update_user_username(req, &admin_user_id, &ctx).await.map_err(map_api_error)?;
+        let resp = self
+            .admin_api
+            .update_user_username(req, &admin_user_id, &ctx)
+            .await
+            .map_err(map_api_error)?;
         Ok(Response::new(resp))
     }
 
@@ -373,7 +438,11 @@ impl AdminService for AdminServiceImpl {
         let admin_user_id = super::interceptors::extract_user_id(&request)?;
         let ctx = grpc_request_context(&request);
         let req = request.into_inner();
-        let resp = self.admin_api.update_user_role(req, &admin_user_id, caller_role, &ctx).await.map_err(map_api_error)?;
+        let resp = self
+            .admin_api
+            .update_user_role(req, &admin_user_id, caller_role, &ctx)
+            .await
+            .map_err(map_api_error)?;
         Ok(Response::new(resp))
     }
 
@@ -385,7 +454,11 @@ impl AdminService for AdminServiceImpl {
         let admin_user_id = super::interceptors::extract_user_id(&request)?;
         let ctx = grpc_request_context(&request);
         let req = request.into_inner();
-        let resp = self.admin_api.ban_user(req, &admin_user_id, caller_role, &ctx).await.map_err(map_api_error)?;
+        let resp = self
+            .admin_api
+            .ban_user(req, &admin_user_id, caller_role, &ctx)
+            .await
+            .map_err(map_api_error)?;
         Ok(Response::new(resp))
     }
 
@@ -397,7 +470,11 @@ impl AdminService for AdminServiceImpl {
         let admin_user_id = super::interceptors::extract_user_id(&request)?;
         let ctx = grpc_request_context(&request);
         let req = request.into_inner();
-        let resp = self.admin_api.unban_user(req, &admin_user_id, &ctx).await.map_err(map_api_error)?;
+        let resp = self
+            .admin_api
+            .unban_user(req, &admin_user_id, &ctx)
+            .await
+            .map_err(map_api_error)?;
         Ok(Response::new(resp))
     }
 
@@ -407,7 +484,11 @@ impl AdminService for AdminServiceImpl {
     ) -> Result<Response<GetUserRoomsResponse>, Status> {
         self.check_admin(&request).await?;
         let req = request.into_inner();
-        let resp = self.admin_api.get_user_rooms(req).await.map_err(map_api_error)?;
+        let resp = self
+            .admin_api
+            .get_user_rooms(req)
+            .await
+            .map_err(map_api_error)?;
         Ok(Response::new(resp))
     }
 
@@ -419,7 +500,11 @@ impl AdminService for AdminServiceImpl {
         let admin_user_id = super::interceptors::extract_user_id(&request)?;
         let ctx = grpc_request_context(&request);
         let req = request.into_inner();
-        let resp = self.admin_api.approve_user(req, &admin_user_id, &ctx).await.map_err(map_api_error)?;
+        let resp = self
+            .admin_api
+            .approve_user(req, &admin_user_id, &ctx)
+            .await
+            .map_err(map_api_error)?;
         Ok(Response::new(resp))
     }
 
@@ -435,7 +520,11 @@ impl AdminService for AdminServiceImpl {
         let admin_user_id = super::interceptors::extract_user_id(&request)?;
         let ctx = grpc_request_context(&request);
         let req = request.into_inner();
-        let resp = self.admin_api.batch_ban_users(req, &admin_user_id, caller_role, &ctx).await.map_err(map_api_error)?;
+        let resp = self
+            .admin_api
+            .batch_ban_users(req, &admin_user_id, caller_role, &ctx)
+            .await
+            .map_err(map_api_error)?;
         Ok(Response::new(resp))
     }
 
@@ -448,7 +537,16 @@ impl AdminService for AdminServiceImpl {
         let ctx = grpc_request_context(&request);
         let req = request.into_inner();
         // check_root guarantees caller is Root
-        let resp = self.admin_api.batch_delete_users(req, &admin_user_id, synctv_core::models::UserRole::Root, &ctx).await.map_err(map_api_error)?;
+        let resp = self
+            .admin_api
+            .batch_delete_users(
+                req,
+                &admin_user_id,
+                synctv_core::models::UserRole::Root,
+                &ctx,
+            )
+            .await
+            .map_err(map_api_error)?;
         Ok(Response::new(resp))
     }
 
@@ -460,7 +558,11 @@ impl AdminService for AdminServiceImpl {
         let admin_user_id = super::interceptors::extract_user_id(&request)?;
         let ctx = grpc_request_context(&request);
         let req = request.into_inner();
-        let resp = self.admin_api.batch_ban_rooms(req, &admin_user_id, &ctx).await.map_err(map_api_error)?;
+        let resp = self
+            .admin_api
+            .batch_ban_rooms(req, &admin_user_id, &ctx)
+            .await
+            .map_err(map_api_error)?;
         Ok(Response::new(resp))
     }
 
@@ -472,7 +574,11 @@ impl AdminService for AdminServiceImpl {
         let admin_user_id = super::interceptors::extract_user_id(&request)?;
         let ctx = grpc_request_context(&request);
         let req = request.into_inner();
-        let resp = self.admin_api.batch_delete_rooms(req, &admin_user_id, &ctx).await.map_err(map_api_error)?;
+        let resp = self
+            .admin_api
+            .batch_delete_rooms(req, &admin_user_id, &ctx)
+            .await
+            .map_err(map_api_error)?;
         Ok(Response::new(resp))
     }
 
@@ -486,7 +592,11 @@ impl AdminService for AdminServiceImpl {
     ) -> Result<Response<ListRoomsResponse>, Status> {
         self.check_admin(&request).await?;
         let req = request.into_inner();
-        let resp = self.admin_api.list_rooms(req).await.map_err(map_api_error)?;
+        let resp = self
+            .admin_api
+            .list_rooms(req)
+            .await
+            .map_err(map_api_error)?;
         Ok(Response::new(resp))
     }
 
@@ -508,7 +618,11 @@ impl AdminService for AdminServiceImpl {
         let admin_user_id = super::interceptors::extract_user_id(&request)?;
         let ctx = grpc_request_context(&request);
         let req = request.into_inner();
-        let resp = self.admin_api.update_room_password(req, &admin_user_id, &ctx).await.map_err(map_api_error)?;
+        let resp = self
+            .admin_api
+            .update_room_password(req, &admin_user_id, &ctx)
+            .await
+            .map_err(map_api_error)?;
         Ok(Response::new(resp))
     }
 
@@ -520,7 +634,11 @@ impl AdminService for AdminServiceImpl {
         let admin_user_id = validated.user_id;
         let ctx = grpc_request_context(&request);
         let req = request.into_inner();
-        let resp = self.admin_api.delete_room(req, &admin_user_id, &ctx).await.map_err(map_api_error)?;
+        let resp = self
+            .admin_api
+            .delete_room(req, &admin_user_id, &ctx)
+            .await
+            .map_err(map_api_error)?;
         Ok(Response::new(resp))
     }
 
@@ -532,7 +650,11 @@ impl AdminService for AdminServiceImpl {
         let admin_user_id = validated.user_id;
         let ctx = grpc_request_context(&request);
         let req = request.into_inner();
-        let resp = self.admin_api.ban_room(req, &admin_user_id, &ctx).await.map_err(map_api_error)?;
+        let resp = self
+            .admin_api
+            .ban_room(req, &admin_user_id, &ctx)
+            .await
+            .map_err(map_api_error)?;
         Ok(Response::new(resp))
     }
 
@@ -544,7 +666,11 @@ impl AdminService for AdminServiceImpl {
         let admin_user_id = validated.user_id;
         let ctx = grpc_request_context(&request);
         let req = request.into_inner();
-        let resp = self.admin_api.unban_room(req, &admin_user_id, &ctx).await.map_err(map_api_error)?;
+        let resp = self
+            .admin_api
+            .unban_room(req, &admin_user_id, &ctx)
+            .await
+            .map_err(map_api_error)?;
         Ok(Response::new(resp))
     }
 
@@ -556,7 +682,11 @@ impl AdminService for AdminServiceImpl {
         let admin_user_id = validated.user_id;
         let ctx = grpc_request_context(&request);
         let req = request.into_inner();
-        let resp = self.admin_api.approve_room(req, &admin_user_id, &ctx).await.map_err(map_api_error)?;
+        let resp = self
+            .admin_api
+            .approve_room(req, &admin_user_id, &ctx)
+            .await
+            .map_err(map_api_error)?;
         Ok(Response::new(resp))
     }
 
@@ -566,7 +696,11 @@ impl AdminService for AdminServiceImpl {
     ) -> Result<Response<GetRoomMembersResponse>, Status> {
         self.check_admin(&request).await?;
         let req = request.into_inner();
-        let resp = self.admin_api.get_room_members(req).await.map_err(map_api_error)?;
+        let resp = self
+            .admin_api
+            .get_room_members(req)
+            .await
+            .map_err(map_api_error)?;
         Ok(Response::new(resp))
     }
 
@@ -582,7 +716,11 @@ impl AdminService for AdminServiceImpl {
         let admin_user_id = super::interceptors::extract_user_id(&request)?;
         let ctx = grpc_request_context(&request);
         let req = request.into_inner();
-        let resp = self.admin_api.add_admin(req, &admin_user_id, &ctx).await.map_err(map_api_error)?;
+        let resp = self
+            .admin_api
+            .add_admin(req, &admin_user_id, &ctx)
+            .await
+            .map_err(map_api_error)?;
         Ok(Response::new(resp))
     }
 
@@ -594,7 +732,11 @@ impl AdminService for AdminServiceImpl {
         let admin_user_id = super::interceptors::extract_user_id(&request)?;
         let ctx = grpc_request_context(&request);
         let req = request.into_inner();
-        let resp = self.admin_api.remove_admin(req, &admin_user_id, &ctx).await.map_err(map_api_error)?;
+        let resp = self
+            .admin_api
+            .remove_admin(req, &admin_user_id, &ctx)
+            .await
+            .map_err(map_api_error)?;
         Ok(Response::new(resp))
     }
 
@@ -604,7 +746,11 @@ impl AdminService for AdminServiceImpl {
     ) -> Result<Response<ListAdminsResponse>, Status> {
         self.check_root(&request).await?;
         let req = request.into_inner();
-        let resp = self.admin_api.list_admins(req).await.map_err(map_api_error)?;
+        let resp = self
+            .admin_api
+            .list_admins(req)
+            .await
+            .map_err(map_api_error)?;
         Ok(Response::new(resp))
     }
 
@@ -618,7 +764,11 @@ impl AdminService for AdminServiceImpl {
     ) -> Result<Response<GetSystemStatsResponse>, Status> {
         self.check_admin(&request).await?;
         let req = request.into_inner();
-        let resp = self.admin_api.get_system_stats(req).await.map_err(map_api_error)?;
+        let resp = self
+            .admin_api
+            .get_system_stats(req)
+            .await
+            .map_err(map_api_error)?;
         Ok(Response::new(resp))
     }
 
@@ -632,7 +782,11 @@ impl AdminService for AdminServiceImpl {
     ) -> Result<Response<GetRoomSettingsResponse>, Status> {
         self.check_admin(&request).await?;
         let req = request.into_inner();
-        let resp = self.admin_api.get_room_settings(req).await.map_err(map_api_error)?;
+        let resp = self
+            .admin_api
+            .get_room_settings(req)
+            .await
+            .map_err(map_api_error)?;
         Ok(Response::new(resp))
     }
 
@@ -643,7 +797,11 @@ impl AdminService for AdminServiceImpl {
         self.check_admin(&request).await?;
         let admin_user_id = super::interceptors::extract_user_id(&request)?;
         let req = request.into_inner();
-        let resp = self.admin_api.update_room_settings(req, &admin_user_id).await.map_err(map_api_error)?;
+        let resp = self
+            .admin_api
+            .update_room_settings(req, &admin_user_id)
+            .await
+            .map_err(map_api_error)?;
         Ok(Response::new(resp))
     }
 
@@ -654,7 +812,11 @@ impl AdminService for AdminServiceImpl {
         self.check_admin(&request).await?;
         let admin_user_id = super::interceptors::extract_user_id(&request)?;
         let req = request.into_inner();
-        let resp = self.admin_api.reset_room_settings(req, &admin_user_id).await.map_err(map_api_error)?;
+        let resp = self
+            .admin_api
+            .reset_room_settings(req, &admin_user_id)
+            .await
+            .map_err(map_api_error)?;
         Ok(Response::new(resp))
     }
 
@@ -668,8 +830,15 @@ impl AdminService for AdminServiceImpl {
     ) -> Result<Response<ListActiveStreamsResponse>, Status> {
         self.check_admin(&request).await?;
         let req = request.into_inner();
-        let room_id = if req.room_id.is_empty() { None } else { Some(req.room_id.as_str()) };
-        let streams = self.admin_api.list_active_streams(room_id).await
+        let room_id = if req.room_id.is_empty() {
+            None
+        } else {
+            Some(req.room_id.as_str())
+        };
+        let streams = self
+            .admin_api
+            .list_active_streams(room_id)
+            .await
             .map_err(|e| map_api_error(crate::impls::ApiError::Internal(e.to_string())))?;
         Ok(Response::new(ListActiveStreamsResponse { streams }))
     }
@@ -683,11 +852,19 @@ impl AdminService for AdminServiceImpl {
         let req = request.into_inner();
 
         if req.room_id.is_empty() || req.media_id.is_empty() {
-            return Err(Status::invalid_argument("room_id and media_id are required"));
+            return Err(Status::invalid_argument(
+                "room_id and media_id are required",
+            ));
         }
 
         self.admin_api
-            .kick_stream(&req.room_id, &req.media_id, &req.reason, &validated.user_id, &ctx)
+            .kick_stream(
+                &req.room_id,
+                &req.media_id,
+                &req.reason,
+                &validated.user_id,
+                &ctx,
+            )
             .await
             .map_err(|e| map_api_error(crate::impls::ApiError::Internal(e.to_string())))?;
 
@@ -739,7 +916,9 @@ mod tests {
 
     #[test]
     fn test_api_err_internal_hides_details() {
-        let err = crate::impls::ApiError::Internal("database connection failed with password=secret123".to_string());
+        let err = crate::impls::ApiError::Internal(
+            "database connection failed with password=secret123".to_string(),
+        );
         let status = map_api_error(err);
         assert_eq!(status.code(), tonic::Code::Internal);
         // Internal errors should NOT leak implementation details
@@ -754,12 +933,30 @@ mod tests {
     fn test_api_err_all_variants_mapped() {
         // Verify every ApiError variant maps to a distinct gRPC code
         let variants: Vec<(crate::impls::ApiError, tonic::Code)> = vec![
-            (crate::impls::ApiError::NotFound("x".into()), tonic::Code::NotFound),
-            (crate::impls::ApiError::Authentication("x".into()), tonic::Code::Unauthenticated),
-            (crate::impls::ApiError::Authorization("x".into()), tonic::Code::PermissionDenied),
-            (crate::impls::ApiError::AlreadyExists("x".into()), tonic::Code::AlreadyExists),
-            (crate::impls::ApiError::InvalidInput("x".into()), tonic::Code::InvalidArgument),
-            (crate::impls::ApiError::Internal("x".into()), tonic::Code::Internal),
+            (
+                crate::impls::ApiError::NotFound("x".into()),
+                tonic::Code::NotFound,
+            ),
+            (
+                crate::impls::ApiError::Authentication("x".into()),
+                tonic::Code::Unauthenticated,
+            ),
+            (
+                crate::impls::ApiError::Authorization("x".into()),
+                tonic::Code::PermissionDenied,
+            ),
+            (
+                crate::impls::ApiError::AlreadyExists("x".into()),
+                tonic::Code::AlreadyExists,
+            ),
+            (
+                crate::impls::ApiError::InvalidInput("x".into()),
+                tonic::Code::InvalidArgument,
+            ),
+            (
+                crate::impls::ApiError::Internal("x".into()),
+                tonic::Code::Internal,
+            ),
         ];
         for (err, expected_code) in variants {
             let status = map_api_error(err);

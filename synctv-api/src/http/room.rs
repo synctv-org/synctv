@@ -10,28 +10,19 @@ use axum::{
 
 use super::{middleware::AuthUser, AppResult, AppState};
 use crate::proto::client::{
-    CreateRoomResponse, CreateRoomRequest, GetRoomResponse,
-    JoinRoomResponse, JoinRoomRequest, LeaveRoomResponse,
-    DeleteRoomResponse,
-    AddMediaResponse, AddMediaRequest, DeleteMediaResponse, DeleteMediaRequest,
-    ListPlaylistResponse, SwapMediaResponse, SwapMediaRequest,
-    StartPlaybackResponse, StartPlaybackRequest,
-    StopPlaybackResponse, StopPlaybackRequest,
-    GetPlaybackResponse, GetPlaybackRequest,
-    GetRoomMembersResponse, CheckRoomResponse, ListRoomsResponse, ListRoomsRequest,
+    AddMediaBatchRequest, AddMediaRequest, AddMediaResponse, CheckRoomPasswordRequest,
+    CheckRoomPasswordResponse, CheckRoomResponse, ClearPlaylistResponse, CreatePlaylistRequest,
+    CreatePlaylistResponse, CreateRoomRequest, CreateRoomResponse, DeleteMediaBatchRequest,
+    DeleteMediaBatchResponse, DeleteMediaRequest, DeleteMediaResponse, DeletePlaylistRequest,
+    DeletePlaylistResponse, DeleteRoomResponse, EditMediaRequest, EditMediaResponse,
+    GetChatHistoryResponse, GetHotRoomsResponse, GetPlaybackRequest, GetPlaybackResponse,
+    GetRoomMembersResponse, GetRoomResponse, JoinRoomRequest, JoinRoomResponse, LeaveRoomResponse,
+    ListPlaylistResponse, ListPlaylistsResponse, ListRoomsRequest, ListRoomsResponse,
+    MediaReorderUpdate, ReorderMediaBatchRequest, ReorderMediaBatchResponse,
+    ResetRoomSettingsResponse, SetRoomPasswordRequest, SetRoomPasswordResponse,
+    StartPlaybackRequest, StartPlaybackResponse, StopPlaybackRequest, StopPlaybackResponse,
+    SwapMediaRequest, SwapMediaResponse, UpdatePlaylistRequest, UpdatePlaylistResponse,
     UpdateRoomSettingsRequest, UpdateRoomSettingsResponse,
-    ResetRoomSettingsResponse,
-    SetRoomPasswordRequest, SetRoomPasswordResponse,
-    CheckRoomPasswordRequest, CheckRoomPasswordResponse,
-    EditMediaRequest, EditMediaResponse, ClearPlaylistResponse,
-    AddMediaBatchRequest, DeleteMediaBatchRequest, DeleteMediaBatchResponse,
-    ReorderMediaBatchRequest, ReorderMediaBatchResponse, MediaReorderUpdate,
-    GetChatHistoryResponse,
-    CreatePlaylistRequest, CreatePlaylistResponse,
-    UpdatePlaylistRequest, UpdatePlaylistResponse,
-    DeletePlaylistRequest, DeletePlaylistResponse,
-    ListPlaylistsResponse,
-    GetHotRoomsResponse,
 };
 
 // ==================== Room Management Endpoints ====================
@@ -388,8 +379,8 @@ pub async fn check_password(
     Path(room_id): Path<String>,
     Json(req): Json<CheckRoomPasswordRequest>,
 ) -> AppResult<Json<CheckRoomPasswordResponse>> {
-    let client_ip = super::auth::extract_client_ip(&state.config, connect_info.0, &headers)
-        .to_string();
+    let client_ip =
+        super::auth::extract_client_ip(&state.config, connect_info.0, &headers).to_string();
 
     let response = state
         .client_api
@@ -504,16 +495,24 @@ pub async fn list_or_get_rooms(
 ) -> AppResult<Json<ListRoomsResponse>> {
     // List rooms with optional filtering
     let search = params.get("search").cloned().unwrap_or_default();
-    let limit: i32 = params.get("limit").and_then(|s| s.parse().ok()).unwrap_or(50).clamp(1, 100);
-    let offset: i32 = params.get("offset").and_then(|s| s.parse().ok()).unwrap_or(0).max(0);
+    let limit: i32 = params
+        .get("limit")
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(50)
+        .clamp(1, 100);
+    let offset: i32 = params
+        .get("offset")
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0)
+        .max(0);
 
     // R-8: Validate that offset is aligned to limit to prevent incorrect page
     // calculations. Non-aligned offsets would silently round down and return
     // the wrong page of results.
     if offset % limit != 0 {
-        return Err(super::AppError::bad_request(
-            format!("offset ({offset}) must be a multiple of limit ({limit})")
-        ));
+        return Err(super::AppError::bad_request(format!(
+            "offset ({offset}) must be a multiple of limit ({limit})"
+        )));
     }
 
     let request = ListRoomsRequest {
@@ -593,9 +592,13 @@ pub async fn update_playback(
     let user_id = auth.user_id.to_string();
 
     // Validate that at least one field is provided
-    if req.state.is_none() && req.position.is_none() && req.speed.is_none() && req.media_id.is_none() {
+    if req.state.is_none()
+        && req.position.is_none()
+        && req.speed.is_none()
+        && req.media_id.is_none()
+    {
         return Err(super::AppError::bad_request(
-            "No valid playback update field provided (state, position, speed, or media_id)"
+            "No valid playback update field provided (state, position, speed, or media_id)",
         ));
     }
 
@@ -603,13 +606,21 @@ pub async fn update_playback(
     let playing = match req.state.as_deref() {
         Some("playing") => Some(true),
         Some("paused") => Some(false),
-        Some(_) => return Err(super::AppError::bad_request("Invalid state value, use 'playing' or 'paused'")),
+        Some(_) => {
+            return Err(super::AppError::bad_request(
+                "Invalid state value, use 'playing' or 'paused'",
+            ))
+        }
         None => None,
     };
 
     let media_id = req.media_id.map(MediaId::from_string);
     let playlist_id = req.playlist_id.map(|pid| {
-        if pid.is_empty() { None } else { Some(PlaylistId::from_string(pid)) }
+        if pid.is_empty() {
+            None
+        } else {
+            Some(PlaylistId::from_string(pid))
+        }
     });
 
     let rid = RoomId::from_string(room_id.clone());
@@ -618,14 +629,27 @@ pub async fn update_playback(
     // Apply all fields atomically in a single DB update.
     // When a version is provided, the update uses optimistic locking (CAS)
     // to prevent concurrent modification conflicts.
-    state.room_service.playback_service()
-        .update_multiple_with_version(rid, uid, playing, req.position, req.speed, media_id, playlist_id, req.version)
+    state
+        .room_service
+        .playback_service()
+        .update_multiple_with_version(
+            rid,
+            uid,
+            playing,
+            req.position,
+            req.speed,
+            media_id,
+            playlist_id,
+            req.version,
+        )
         .await?;
 
     // Return final playback state and playback info
-    let pb = state.client_api
+    let pb = state
+        .client_api
         .get_playback(&user_id, &room_id, GetPlaybackRequest {})
-        .await.map_err(super::error::map_api_error)?;
+        .await
+        .map_err(super::error::map_api_error)?;
     Ok(Json(pb))
 }
 
@@ -661,26 +685,32 @@ pub async fn update_media_batch(
     // Check for reorder operation
     if let Some(updates) = req.reorder {
         let proto_req = ReorderMediaBatchRequest { updates };
-        let response = state.client_api
+        let response = state
+            .client_api
             .reorder_media_batch(&user_id, &room_id, proto_req)
             .await
             .map_err(super::error::map_api_error)?;
 
-        return Ok(Json(BatchOperationResponse { success: response.success }));
+        return Ok(Json(BatchOperationResponse {
+            success: response.success,
+        }));
     }
 
     // Check for swap operation
     if let Some(swap_req) = req.swap {
-        let response = state.client_api
+        let response = state
+            .client_api
             .swap_media(&user_id, &room_id, swap_req)
             .await
             .map_err(super::error::map_api_error)?;
 
-        return Ok(Json(BatchOperationResponse { success: response.success }));
+        return Ok(Json(BatchOperationResponse {
+            success: response.success,
+        }));
     }
 
     Err(super::AppError::bad_request(
-        "No valid batch operation provided (reorder or swap)"
+        "No valid batch operation provided (reorder or swap)",
     ))
 }
 
@@ -712,12 +742,23 @@ pub async fn get_chat_history(
     Path(room_id): Path<String>,
     Query(params): Query<std::collections::HashMap<String, String>>,
 ) -> AppResult<Json<GetChatHistoryResponse>> {
-    let limit = params.get("limit").and_then(|v| v.parse().ok()).unwrap_or(50i32).clamp(1, 100);
-    let before = params.get("before").and_then(|v| v.parse().ok()).unwrap_or(0i64);
+    let limit = params
+        .get("limit")
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(50i32)
+        .clamp(1, 100);
+    let before = params
+        .get("before")
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0i64);
 
     // Read cursor for keyset pagination (takes precedence over before timestamp)
     let cursor = params.get("cursor").cloned().unwrap_or_default();
-    let req = crate::proto::client::GetChatHistoryRequest { limit, before, cursor };
+    let req = crate::proto::client::GetChatHistoryRequest {
+        limit,
+        before,
+        cursor,
+    };
     let response = state
         .client_api
         .get_chat_history(&auth.user_id.to_string(), &room_id, req)
@@ -793,7 +834,11 @@ pub async fn list_playlists(
     let page_opt = params.get("page").and_then(|v| v.parse().ok());
     let page_size_opt = params.get("page_size").and_then(|v| v.parse().ok());
     let (page, page_size) = super::validation::validate_pagination(page_opt, page_size_opt);
-    let req = crate::proto::client::ListPlaylistsRequest { parent_id, page, page_size };
+    let req = crate::proto::client::ListPlaylistsRequest {
+        parent_id,
+        page,
+        page_size,
+    };
     let response = state
         .client_api
         .list_playlists(&auth.user_id.to_string(), &room_id, req)
@@ -811,7 +856,11 @@ pub async fn get_hot_rooms(
     State(state): State<AppState>,
     Query(params): Query<std::collections::HashMap<String, String>>,
 ) -> AppResult<Json<GetHotRoomsResponse>> {
-    let limit = params.get("limit").and_then(|v| v.parse().ok()).unwrap_or(10i32).min(50);
+    let limit = params
+        .get("limit")
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(10i32)
+        .min(50);
     let req = crate::proto::client::GetHotRoomsRequest { limit };
     let response = state
         .client_api

@@ -30,13 +30,13 @@ pub mod alist;
 pub mod bilibili;
 pub mod direct_url;
 pub mod emby;
-pub mod rtmp;
 pub mod live_proxy;
+pub mod rtmp;
 
 pub use config::*;
 pub use context::*;
 pub use error::*;
-pub use provider_client::{ProviderClientManager, global_client_manager};
+pub use provider_client::{global_client_manager, ProviderClientManager};
 pub use registry::*;
 pub use traits::*;
 
@@ -45,8 +45,8 @@ pub use alist::AlistProvider;
 pub use bilibili::BilibiliProvider;
 pub use direct_url::DirectUrlProvider;
 pub use emby::EmbyProvider;
-pub use rtmp::RtmpProvider;
 pub use live_proxy::LiveProxyProvider;
+pub use rtmp::RtmpProvider;
 
 /// Parse a `serde_json::Value` into a typed source config.
 ///
@@ -56,7 +56,9 @@ pub fn parse_source_config<T: serde::de::DeserializeOwned>(
     provider_name: &str,
 ) -> std::result::Result<T, ProviderError> {
     serde_json::from_value(value.clone()).map_err(|e| {
-        ProviderError::InvalidConfig(format!("Failed to parse {provider_name} source config: {e}"))
+        ProviderError::InvalidConfig(format!(
+            "Failed to parse {provider_name} source config: {e}"
+        ))
     })
 }
 
@@ -67,12 +69,8 @@ pub fn parse_source_config<T: serde::de::DeserializeOwned>(
 /// The only difference between the two is the `metadata` map (`live_proxy` adds
 /// `source_url` and `provider` fields), which callers can extend after this
 /// function returns.
-#[must_use] 
-pub fn build_live_playback(
-    base_url: &str,
-    media_id: &str,
-    room_id: &str,
-) -> PlaybackResult {
+#[must_use]
+pub fn build_live_playback(base_url: &str, media_id: &str, room_id: &str) -> PlaybackResult {
     use serde_json::json;
     use std::collections::HashMap;
 
@@ -160,7 +158,7 @@ pub fn bilibili_headers() -> std::collections::HashMap<String, String> {
 /// A cache key string in the format: `{key_prefix}:playback:{provider}:{sha256_hash}`
 #[must_use]
 pub fn build_playback_cache_key(key_prefix: &str, provider_name: &str, identifier: &str) -> String {
-    use sha2::{Sha256, Digest};
+    use sha2::{Digest, Sha256};
     format!(
         "{}:playback:{}:{:x}",
         key_prefix,
@@ -212,7 +210,10 @@ pub fn strip_source_config_credentials(source_config: &serde_json::Value) -> ser
             let mut sanitized = serde_json::Map::with_capacity(map.len());
             for (key, value) in map {
                 if CREDENTIAL_FIELDS.contains(&key.as_str()) {
-                    sanitized.insert(key.clone(), serde_json::Value::String("[REDACTED]".to_string()));
+                    sanitized.insert(
+                        key.clone(),
+                        serde_json::Value::String("[REDACTED]".to_string()),
+                    );
                 } else {
                     sanitized.insert(key.clone(), strip_source_config_credentials(value));
                 }
@@ -279,4 +280,3 @@ mod tests {
         assert!(key2.ends_with(":emby:unknown"));
     }
 }
-

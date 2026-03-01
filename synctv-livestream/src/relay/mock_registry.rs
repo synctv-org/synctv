@@ -1,44 +1,56 @@
 // Mock StreamRegistry for testing without Redis
 
-use async_trait::async_trait;
-use anyhow::Result;
-use chrono::Utc;
 use super::registry::PublisherInfo;
 use super::registry_trait::StreamRegistryTrait;
+use anyhow::Result;
+use async_trait::async_trait;
+use chrono::Utc;
 
 /// Mock `StreamRegistry` for testing without Redis
 #[derive(Debug, Clone)]
 pub struct MockStreamRegistry {
-    publishers: std::sync::Arc<tokio::sync::Mutex<std::collections::HashMap<(String, String), PublisherInfo>>>,
+    publishers: std::sync::Arc<
+        tokio::sync::Mutex<std::collections::HashMap<(String, String), PublisherInfo>>,
+    >,
     /// Epoch counter for each stream (`room_id`, `media_id`)
-    epoch_counters: std::sync::Arc<tokio::sync::Mutex<std::collections::HashMap<(String, String), u64>>>,
+    epoch_counters:
+        std::sync::Arc<tokio::sync::Mutex<std::collections::HashMap<(String, String), u64>>>,
     /// Counter for register calls (for testing task leaks)
     register_call_count: std::sync::Arc<std::sync::atomic::AtomicUsize>,
 }
 
 impl MockStreamRegistry {
-    #[must_use] 
+    #[must_use]
     pub fn new() -> Self {
         Self {
-            publishers: std::sync::Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
-            epoch_counters: std::sync::Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
+            publishers: std::sync::Arc::new(tokio::sync::Mutex::new(
+                std::collections::HashMap::new(),
+            )),
+            epoch_counters: std::sync::Arc::new(tokio::sync::Mutex::new(
+                std::collections::HashMap::new(),
+            )),
             register_call_count: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
         }
     }
 
-    #[must_use] 
-    pub fn with_publishers(publishers: std::collections::HashMap<(String, String), PublisherInfo>) -> Self {
+    #[must_use]
+    pub fn with_publishers(
+        publishers: std::collections::HashMap<(String, String), PublisherInfo>,
+    ) -> Self {
         Self {
             publishers: std::sync::Arc::new(tokio::sync::Mutex::new(publishers)),
-            epoch_counters: std::sync::Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
+            epoch_counters: std::sync::Arc::new(tokio::sync::Mutex::new(
+                std::collections::HashMap::new(),
+            )),
             register_call_count: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
         }
     }
 
     /// Get the count of `register_publisher` calls (for testing task leaks)
-    #[must_use] 
+    #[must_use]
     pub fn register_call_count(&self) -> usize {
-        self.register_call_count.load(std::sync::atomic::Ordering::SeqCst)
+        self.register_call_count
+            .load(std::sync::atomic::Ordering::SeqCst)
     }
 }
 
@@ -59,7 +71,8 @@ impl StreamRegistryTrait for MockStreamRegistry {
         grpc_address: &str,
     ) -> Result<bool> {
         // Increment call counter for testing
-        self.register_call_count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        self.register_call_count
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
 
         let mut publishers = self.publishers.lock().await;
         let mut epoch_counters = self.epoch_counters.lock().await;
@@ -115,7 +128,12 @@ impl StreamRegistryTrait for MockStreamRegistry {
         }
     }
 
-    async fn refresh_publisher_ttl(&self, _room_id: &str, _media_id: &str, _user_id: &str) -> Result<()> {
+    async fn refresh_publisher_ttl(
+        &self,
+        _room_id: &str,
+        _media_id: &str,
+        _user_id: &str,
+    ) -> Result<()> {
         // No-op for mock
         Ok(())
     }
@@ -128,7 +146,9 @@ impl StreamRegistryTrait for MockStreamRegistry {
 
     async fn get_publisher(&self, room_id: &str, media_id: &str) -> Result<Option<PublisherInfo>> {
         let publishers = self.publishers.lock().await;
-        Ok(publishers.get(&(room_id.to_string(), media_id.to_string())).cloned())
+        Ok(publishers
+            .get(&(room_id.to_string(), media_id.to_string()))
+            .cloned())
     }
 
     async fn is_stream_active(&self, room_id: &str, media_id: &str) -> Result<bool> {
@@ -231,11 +251,17 @@ mod tests {
         let registry = MockStreamRegistry::new();
 
         // First try_register should succeed
-        let result = registry.try_register_publisher("room123", "media456", "node1", "user1", "10.0.0.1:50051").await.unwrap();
+        let result = registry
+            .try_register_publisher("room123", "media456", "node1", "user1", "10.0.0.1:50051")
+            .await
+            .unwrap();
         assert!(result);
 
         // Second try_register should return false (already exists)
-        let result = registry.try_register_publisher("room123", "media456", "node2", "user2", "10.0.0.2:50051").await.unwrap();
+        let result = registry
+            .try_register_publisher("room123", "media456", "node2", "user2", "10.0.0.2:50051")
+            .await
+            .unwrap();
         assert!(!result);
     }
 
@@ -250,13 +276,22 @@ mod tests {
             .unwrap();
 
         // Verify exists
-        assert!(registry.is_stream_active("room123", "media456").await.unwrap());
+        assert!(registry
+            .is_stream_active("room123", "media456")
+            .await
+            .unwrap());
 
         // Unregister
-        registry.unregister_publisher("room123", "media456").await.unwrap();
+        registry
+            .unregister_publisher("room123", "media456")
+            .await
+            .unwrap();
 
         // Verify removed
-        assert!(!registry.is_stream_active("room123", "media456").await.unwrap());
+        assert!(!registry
+            .is_stream_active("room123", "media456")
+            .await
+            .unwrap());
     }
 
     #[tokio::test]
@@ -264,7 +299,10 @@ mod tests {
         let registry = MockStreamRegistry::new();
 
         // Non-existent publisher should return None
-        let result = registry.get_publisher("nonexistent", "media").await.unwrap();
+        let result = registry
+            .get_publisher("nonexistent", "media")
+            .await
+            .unwrap();
         assert!(result.is_none());
     }
 
@@ -301,7 +339,7 @@ mod tests {
                 user_id: String::new(),
                 started_at: Utc::now(),
                 epoch: 1,
-            }
+            },
         );
 
         let registry = MockStreamRegistry::with_publishers(publishers);
@@ -317,16 +355,33 @@ mod tests {
         let registry = MockStreamRegistry::new();
 
         // First registration should have epoch 1
-        registry.register_publisher("room1", "media1", "node1", "live", "localhost:50051").await.unwrap();
-        let info = registry.get_publisher("room1", "media1").await.unwrap().unwrap();
+        registry
+            .register_publisher("room1", "media1", "node1", "live", "localhost:50051")
+            .await
+            .unwrap();
+        let info = registry
+            .get_publisher("room1", "media1")
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(info.epoch, 1);
 
         // Unregister
-        registry.unregister_publisher("room1", "media1").await.unwrap();
+        registry
+            .unregister_publisher("room1", "media1")
+            .await
+            .unwrap();
 
         // Second registration should have epoch 2
-        registry.register_publisher("room1", "media1", "node2", "live", "localhost:50052").await.unwrap();
-        let info = registry.get_publisher("room1", "media1").await.unwrap().unwrap();
+        registry
+            .register_publisher("room1", "media1", "node2", "live", "localhost:50052")
+            .await
+            .unwrap();
+        let info = registry
+            .get_publisher("room1", "media1")
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(info.epoch, 2);
     }
 
@@ -335,19 +390,35 @@ mod tests {
         let registry = MockStreamRegistry::new();
 
         // Register publisher with epoch 1
-        registry.register_publisher("room1", "media1", "node1", "live", "localhost:50051").await.unwrap();
-        let info = registry.get_publisher("room1", "media1").await.unwrap().unwrap();
+        registry
+            .register_publisher("room1", "media1", "node1", "live", "localhost:50051")
+            .await
+            .unwrap();
+        let info = registry
+            .get_publisher("room1", "media1")
+            .await
+            .unwrap()
+            .unwrap();
 
         // Validate with correct epoch
-        let valid = registry.validate_epoch("room1", "media1", info.epoch).await.unwrap();
+        let valid = registry
+            .validate_epoch("room1", "media1", info.epoch)
+            .await
+            .unwrap();
         assert!(valid);
 
         // Validate with incorrect epoch
-        let valid = registry.validate_epoch("room1", "media1", 999).await.unwrap();
+        let valid = registry
+            .validate_epoch("room1", "media1", 999)
+            .await
+            .unwrap();
         assert!(!valid);
 
         // Validate for non-existent stream
-        let valid = registry.validate_epoch("nonexistent", "media", 1).await.unwrap();
+        let valid = registry
+            .validate_epoch("nonexistent", "media", 1)
+            .await
+            .unwrap();
         assert!(!valid);
     }
 
@@ -356,9 +427,18 @@ mod tests {
         let registry = MockStreamRegistry::new();
 
         // Register publishers on different nodes
-        registry.register_publisher("room1", "media1", "node1", "live", "localhost:50051").await.unwrap();
-        registry.register_publisher("room1", "media2", "node1", "live", "localhost:50051").await.unwrap();
-        registry.register_publisher("room2", "media1", "node2", "live", "localhost:50052").await.unwrap();
+        registry
+            .register_publisher("room1", "media1", "node1", "live", "localhost:50051")
+            .await
+            .unwrap();
+        registry
+            .register_publisher("room1", "media2", "node1", "live", "localhost:50051")
+            .await
+            .unwrap();
+        registry
+            .register_publisher("room2", "media1", "node2", "live", "localhost:50052")
+            .await
+            .unwrap();
 
         // Verify all exist
         assert!(registry.is_stream_active("room1", "media1").await.unwrap());
@@ -366,7 +446,10 @@ mod tests {
         assert!(registry.is_stream_active("room2", "media1").await.unwrap());
 
         // Cleanup node1
-        registry.cleanup_all_publishers_for_node("node1").await.unwrap();
+        registry
+            .cleanup_all_publishers_for_node("node1")
+            .await
+            .unwrap();
 
         // Verify node1 publishers are removed, node2 remains
         assert!(!registry.is_stream_active("room1", "media1").await.unwrap());

@@ -221,11 +221,7 @@ impl StaticDiscovery {
     /// Probe a single peer by attempting a gRPC connection.
     ///
     /// Returns `true` if the peer responds, `false` on timeout or error.
-    async fn probe_peer(
-        address: &str,
-        connect_timeout: Duration,
-        cluster_secret: &str,
-    ) -> bool {
+    async fn probe_peer(address: &str, connect_timeout: Duration, cluster_secret: &str) -> bool {
         let uri = if address.starts_with("http://") || address.starts_with("https://") {
             address.to_string()
         } else {
@@ -253,7 +249,9 @@ impl StaticDiscovery {
 
         if !cluster_secret.is_empty() {
             match cluster_secret.parse::<tonic::metadata::MetadataValue<tonic::metadata::Ascii>>() {
-                Ok(val) => { request.metadata_mut().insert("x-cluster-secret", val); }
+                Ok(val) => {
+                    request.metadata_mut().insert("x-cluster-secret", val);
+                }
                 Err(e) => {
                     warn!(error = %e, "cluster_secret contains invalid characters for gRPC metadata, skipping probe");
                     return false;

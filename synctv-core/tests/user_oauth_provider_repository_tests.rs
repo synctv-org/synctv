@@ -6,16 +6,13 @@
 //! Run with: cargo test -p synctv-core --test `user_oauth_provider_repository_tests`
 #![allow(clippy::unwrap_used)]
 
-use synctv_core_testing::{create_test_pool};
-use synctv_core::{
-    models::{
-        UserId, User, UserRole, UserStatus,
-        OAuth2Provider, OAuth2UserInfo,
-    },
-    repository::{UserOAuthProviderRepository, UserRepository},
-};
 use chrono::Utc;
 use sqlx::PgPool;
+use synctv_core::{
+    models::{OAuth2Provider, OAuth2UserInfo, User, UserId, UserRole, UserStatus},
+    repository::{UserOAuthProviderRepository, UserRepository},
+};
+use synctv_core_testing::create_test_pool;
 fn make_user(username: &str) -> User {
     let now = Utc::now();
     User {
@@ -86,7 +83,10 @@ async fn test_upsert_different_user_id_updates_mapping() {
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(mapping.user_id, user_b.id, "OAuth identity should now be linked to user_b");
+    assert_eq!(
+        mapping.user_id, user_b.id,
+        "OAuth identity should now be linked to user_b"
+    );
 
     // user_a should no longer have this mapping
     let user_a_mappings = oauth_repo.find_by_user(&user_a.id).await.unwrap();
@@ -198,7 +198,12 @@ async fn test_delete_all_for_user_with_executor() {
         avatar: None,
     };
     oauth_repo
-        .upsert(&user.id, &OAuth2Provider::Google, "google_del_001", &info_google)
+        .upsert(
+            &user.id,
+            &OAuth2Provider::Google,
+            "google_del_001",
+            &info_google,
+        )
         .await
         .unwrap();
 

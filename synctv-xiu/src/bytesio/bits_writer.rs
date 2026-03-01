@@ -13,7 +13,7 @@ pub struct BitsWriter {
 }
 
 impl BitsWriter {
-    #[must_use] 
+    #[must_use]
     pub const fn new(writer: BytesWriter) -> Self {
         Self {
             writer,
@@ -113,16 +113,16 @@ impl BitsWriter {
         Ok(())
     }
 
-    #[must_use] 
+    #[must_use]
     pub fn get_current_bytes(&self) -> BytesMut {
         self.writer.get_current_bytes()
     }
 
-    #[must_use] 
+    #[must_use]
     pub const fn len(&self) -> usize {
         self.writer.len() * 8 + self.cur_bit_num as usize
     }
-    #[must_use] 
+    #[must_use]
     pub const fn is_empty(&self) -> bool {
         self.len() == 0
     }
@@ -133,7 +133,6 @@ mod tests {
 
     use super::BitsWriter;
     use super::BytesWriter;
-    
 
     #[test]
     fn test_write_bit() {

@@ -47,7 +47,11 @@ impl HlsStorage for FileStorage {
 
         tracing::trace!(
             "Wrote: {:?} ({} bytes) for {}/{}/{}",
-            file_path, size, app, stream, name
+            file_path,
+            size,
+            app,
+            stream,
+            name
         );
 
         Ok(())
@@ -60,7 +64,11 @@ impl HlsStorage for FileStorage {
 
         tracing::trace!(
             "Read: {:?} ({} bytes) for {}/{}/{}",
-            file_path, data.len(), app, stream, name
+            file_path,
+            data.len(),
+            app,
+            stream,
+            name
         );
 
         Ok(Bytes::from(data))
@@ -100,10 +108,9 @@ impl HlsStorage for FileStorage {
                 Ok(ft) => ft,
                 Err(_) => continue,
             };
-            if ft.is_file()
-                && fs::remove_file(entry.path()).await.is_ok() {
-                    deleted += 1;
-                }
+            if ft.is_file() && fs::remove_file(entry.path()).await.is_ok() {
+                deleted += 1;
+            }
         }
 
         // Remove empty stream dir, then try removing empty app dir
@@ -112,7 +119,9 @@ impl HlsStorage for FileStorage {
 
         tracing::debug!(
             "delete_app_stream {}/{}: deleted {} files",
-            app, stream, deleted
+            app,
+            stream,
+            deleted
         );
         Ok(deleted)
     }
@@ -142,10 +151,9 @@ impl HlsStorage for FileStorage {
                     Ok(ft) => ft,
                     Err(_) => continue,
                 };
-                if ft.is_file()
-                    && fs::remove_file(entry.path()).await.is_ok() {
-                        deleted += 1;
-                    }
+                if ft.is_file() && fs::remove_file(entry.path()).await.is_ok() {
+                    deleted += 1;
+                }
             }
             let _ = fs::remove_dir(&stream_dir).await;
         }
@@ -198,11 +206,10 @@ impl HlsStorage for FileStorage {
                     }
                     if let Ok(metadata) = fs::metadata(&path).await {
                         if let Ok(modified) = metadata.modified() {
-                            if modified < cutoff_time
-                                && fs::remove_file(&path).await.is_ok() {
-                                    deleted += 1;
-                                    tracing::trace!("Deleted expired file: {:?}", path);
-                                }
+                            if modified < cutoff_time && fs::remove_file(&path).await.is_ok() {
+                                deleted += 1;
+                                tracing::trace!("Deleted expired file: {:?}", path);
+                            }
                         }
                     }
                 }
@@ -235,19 +242,27 @@ mod tests {
         let storage = FileStorage::new(temp_dir.path());
 
         let data = Bytes::from_static(b"test segment data");
-        let result = storage.write("live", "room_123", "segment_0", data.clone()).await;
+        let result = storage
+            .write("live", "room_123", "segment_0", data.clone())
+            .await;
         assert!(result.is_ok());
 
         let read_data = storage.read("live", "room_123", "segment_0").await.unwrap();
         assert_eq!(data, read_data);
 
-        let exists = storage.exists("live", "room_123", "segment_0").await.unwrap();
+        let exists = storage
+            .exists("live", "room_123", "segment_0")
+            .await
+            .unwrap();
         assert!(exists);
 
         let result = storage.delete("live", "room_123", "segment_0").await;
         assert!(result.is_ok());
 
-        let exists = storage.exists("live", "room_123", "segment_0").await.unwrap();
+        let exists = storage
+            .exists("live", "room_123", "segment_0")
+            .await
+            .unwrap();
         assert!(!exists);
     }
 
@@ -256,7 +271,10 @@ mod tests {
         let temp_dir = tempdir().unwrap();
         let storage = FileStorage::new(temp_dir.path());
 
-        let url = storage.get_public_url("live", "room_123", "segment_0").await.unwrap();
+        let url = storage
+            .get_public_url("live", "room_123", "segment_0")
+            .await
+            .unwrap();
         assert_eq!(url, None);
     }
 
@@ -265,21 +283,65 @@ mod tests {
         let temp_dir = tempdir().unwrap();
         let storage = FileStorage::new(temp_dir.path());
 
-        storage.write("live", "room_123", "segment_0", Bytes::from_static(b"data0")).await.unwrap();
-        storage.write("live", "room_123", "segment_1", Bytes::from_static(b"data1")).await.unwrap();
-        storage.write("live", "room_456", "segment_0", Bytes::from_static(b"data2")).await.unwrap();
+        storage
+            .write(
+                "live",
+                "room_123",
+                "segment_0",
+                Bytes::from_static(b"data0"),
+            )
+            .await
+            .unwrap();
+        storage
+            .write(
+                "live",
+                "room_123",
+                "segment_1",
+                Bytes::from_static(b"data1"),
+            )
+            .await
+            .unwrap();
+        storage
+            .write(
+                "live",
+                "room_456",
+                "segment_0",
+                Bytes::from_static(b"data2"),
+            )
+            .await
+            .unwrap();
 
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
-        storage.write("live", "room_123", "segment_2", Bytes::from_static(b"data3")).await.unwrap();
+        storage
+            .write(
+                "live",
+                "room_123",
+                "segment_2",
+                Bytes::from_static(b"data3"),
+            )
+            .await
+            .unwrap();
 
         let deleted = storage.cleanup(Duration::from_millis(50)).await.unwrap();
 
         assert_eq!(deleted, 3);
-        assert!(!storage.exists("live", "room_123", "segment_0").await.unwrap());
-        assert!(!storage.exists("live", "room_123", "segment_1").await.unwrap());
-        assert!(storage.exists("live", "room_123", "segment_2").await.unwrap());
-        assert!(!storage.exists("live", "room_456", "segment_0").await.unwrap());
+        assert!(!storage
+            .exists("live", "room_123", "segment_0")
+            .await
+            .unwrap());
+        assert!(!storage
+            .exists("live", "room_123", "segment_1")
+            .await
+            .unwrap());
+        assert!(storage
+            .exists("live", "room_123", "segment_2")
+            .await
+            .unwrap());
+        assert!(!storage
+            .exists("live", "room_456", "segment_0")
+            .await
+            .unwrap());
     }
 
     #[tokio::test]
@@ -287,9 +349,18 @@ mod tests {
         let temp_dir = tempdir().unwrap();
         let storage = FileStorage::new(temp_dir.path());
 
-        storage.write("app1", "stream1", "seg0", Bytes::from_static(b"d0")).await.unwrap();
-        storage.write("app1", "stream1", "seg1", Bytes::from_static(b"d1")).await.unwrap();
-        storage.write("app1", "stream2", "seg0", Bytes::from_static(b"d2")).await.unwrap();
+        storage
+            .write("app1", "stream1", "seg0", Bytes::from_static(b"d0"))
+            .await
+            .unwrap();
+        storage
+            .write("app1", "stream1", "seg1", Bytes::from_static(b"d1"))
+            .await
+            .unwrap();
+        storage
+            .write("app1", "stream2", "seg0", Bytes::from_static(b"d2"))
+            .await
+            .unwrap();
 
         let deleted = storage.delete_app_stream("app1", "stream1").await.unwrap();
         assert_eq!(deleted, 2);
@@ -304,9 +375,18 @@ mod tests {
         let temp_dir = tempdir().unwrap();
         let storage = FileStorage::new(temp_dir.path());
 
-        storage.write("app1", "stream1", "seg0", Bytes::from_static(b"d0")).await.unwrap();
-        storage.write("app1", "stream2", "seg0", Bytes::from_static(b"d1")).await.unwrap();
-        storage.write("app2", "stream1", "seg0", Bytes::from_static(b"d2")).await.unwrap();
+        storage
+            .write("app1", "stream1", "seg0", Bytes::from_static(b"d0"))
+            .await
+            .unwrap();
+        storage
+            .write("app1", "stream2", "seg0", Bytes::from_static(b"d1"))
+            .await
+            .unwrap();
+        storage
+            .write("app2", "stream1", "seg0", Bytes::from_static(b"d2"))
+            .await
+            .unwrap();
 
         let deleted = storage.delete_app("app1").await.unwrap();
         assert_eq!(deleted, 2);
@@ -321,10 +401,25 @@ mod tests {
         let temp_dir = tempdir().unwrap();
         let storage = FileStorage::new(temp_dir.path());
 
-        assert!(storage.write("..", "stream", "name", Bytes::from_static(b"x")).await.is_err());
-        assert!(storage.write("app", "..", "name", Bytes::from_static(b"x")).await.is_err());
-        assert!(storage.write("app", "stream", "..", Bytes::from_static(b"x")).await.is_err());
-        assert!(storage.write("a/b", "stream", "name", Bytes::from_static(b"x")).await.is_err());
-        assert!(storage.write("", "stream", "name", Bytes::from_static(b"x")).await.is_err());
+        assert!(storage
+            .write("..", "stream", "name", Bytes::from_static(b"x"))
+            .await
+            .is_err());
+        assert!(storage
+            .write("app", "..", "name", Bytes::from_static(b"x"))
+            .await
+            .is_err());
+        assert!(storage
+            .write("app", "stream", "..", Bytes::from_static(b"x"))
+            .await
+            .is_err());
+        assert!(storage
+            .write("a/b", "stream", "name", Bytes::from_static(b"x"))
+            .await
+            .is_err());
+        assert!(storage
+            .write("", "stream", "name", Bytes::from_static(b"x"))
+            .await
+            .is_err());
     }
 }

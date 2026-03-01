@@ -244,7 +244,7 @@ impl AuditService {
     ///
     /// The returned [`AuditFlushHandle`] must be held for the lifetime of
     /// the service. Dropping it triggers a graceful flush of remaining events.
-    #[must_use] 
+    #[must_use]
     pub fn new(pool: PgPool) -> (Self, AuditFlushHandle) {
         Self::with_capacity(pool, DEFAULT_BUFFER_CAPACITY)
     }
@@ -253,9 +253,13 @@ impl AuditService {
     ///
     /// Use this to override the default buffer capacity (10,000) via configuration.
     /// A capacity of 0 falls back to `DEFAULT_BUFFER_CAPACITY`.
-    #[must_use] 
+    #[must_use]
     pub fn with_capacity(pool: PgPool, capacity: usize) -> (Self, AuditFlushHandle) {
-        let capacity = if capacity > 0 { capacity } else { DEFAULT_BUFFER_CAPACITY };
+        let capacity = if capacity > 0 {
+            capacity
+        } else {
+            DEFAULT_BUFFER_CAPACITY
+        };
         let (tx, rx) = mpsc::channel(capacity);
         let dropped_count = Arc::new(AtomicUsize::new(0));
 
@@ -284,7 +288,7 @@ impl AuditService {
     }
 
     /// Return the number of events that were dropped because the buffer was full.
-    #[must_use] 
+    #[must_use]
     pub fn dropped_count(&self) -> usize {
         self.dropped_count.load(Ordering::Relaxed)
     }
@@ -328,9 +332,19 @@ impl AuditService {
                     "Audit buffer full, falling back to synchronous DB write"
                 );
                 if let Err(db_err) = Self::write_single(
-                    &self.pool, action_str, target_str, &actor_id, &actor_username,
-                    &target_id, &details, &ip_address, &user_agent, created_at,
-                ).await {
+                    &self.pool,
+                    action_str,
+                    target_str,
+                    &actor_id,
+                    &actor_username,
+                    &target_id,
+                    &details,
+                    &ip_address,
+                    &user_agent,
+                    created_at,
+                )
+                .await
+                {
                     self.dropped_count.fetch_add(1, Ordering::Relaxed);
                     tracing::error!(
                         actor_id = %actor_id,
@@ -352,7 +366,19 @@ impl AuditService {
         }
 
         // Unbuffered mode: write directly to DB
-        Self::write_single(&self.pool, action_str, target_str, &actor_id, &actor_username, &target_id, &details, &ip_address, &user_agent, created_at).await?;
+        Self::write_single(
+            &self.pool,
+            action_str,
+            target_str,
+            &actor_id,
+            &actor_username,
+            &target_id,
+            &details,
+            &ip_address,
+            &user_agent,
+            created_at,
+        )
+        .await?;
 
         tracing::debug!(
             actor_id = %actor_id,
@@ -752,7 +778,8 @@ impl AuditFlushHandle {
 
         let join_handle = crate::spawn::spawn_monitored("audit_flush", async move {
             let mut buffer: Vec<AuditRecord> = Vec::with_capacity(FLUSH_BATCH_SIZE);
-            let mut interval = tokio::time::interval(std::time::Duration::from_secs(FLUSH_INTERVAL_SECS));
+            let mut interval =
+                tokio::time::interval(std::time::Duration::from_secs(FLUSH_INTERVAL_SECS));
             // Don't fire immediately on first tick
             interval.tick().await;
 
@@ -851,11 +878,7 @@ const FLUSH_RETRY_BASE_MS: u64 = 100;
 ///
 /// Uses exponential backoff (100ms, 200ms, 400ms) before giving up and
 /// counting the batch as dropped.
-async fn flush_batch(
-    pool: &PgPool,
-    buffer: &mut Vec<AuditRecord>,
-    dropped_count: &AtomicUsize,
-) {
+async fn flush_batch(pool: &PgPool, buffer: &mut Vec<AuditRecord>, dropped_count: &AtomicUsize) {
     let batch_size = buffer.len();
     tracing::debug!(batch_size = batch_size, "Flushing audit event batch");
 
@@ -970,15 +993,27 @@ mod tests {
             (AuditAction::RoomPasswordUpdated, "room_password_updated"),
             (AuditAction::PermissionGranted, "permission_granted"),
             (AuditAction::PermissionRevoked, "permission_revoked"),
-            (AuditAction::ProviderInstanceCreated, "provider_instance_created"),
-            (AuditAction::ProviderInstanceUpdated, "provider_instance_updated"),
-            (AuditAction::ProviderInstanceDeleted, "provider_instance_deleted"),
+            (
+                AuditAction::ProviderInstanceCreated,
+                "provider_instance_created",
+            ),
+            (
+                AuditAction::ProviderInstanceUpdated,
+                "provider_instance_updated",
+            ),
+            (
+                AuditAction::ProviderInstanceDeleted,
+                "provider_instance_deleted",
+            ),
             (AuditAction::SettingsUpdated, "settings_updated"),
             (AuditAction::MemberKicked, "member_kicked"),
             (AuditAction::MemberBanned, "member_banned"),
             (AuditAction::MemberUnbanned, "member_unbanned"),
             (AuditAction::MemberRoleUpdated, "member_role_updated"),
-            (AuditAction::MemberPermissionUpdated, "member_permission_updated"),
+            (
+                AuditAction::MemberPermissionUpdated,
+                "member_permission_updated",
+            ),
             (AuditAction::MemberStatusUpdated, "member_status_updated"),
             (AuditAction::RoomSettingsUpdated, "room_settings_updated"),
             (AuditAction::UserApproved, "user_approved"),
@@ -1235,7 +1270,10 @@ mod tests {
 
         assert_eq!(details["reason"], "Terms of service violation");
         assert!(details["evidence"]["reported_by"].is_array());
-        assert_eq!(details["evidence"]["reported_by"].as_array().unwrap().len(), 2);
+        assert_eq!(
+            details["evidence"]["reported_by"].as_array().unwrap().len(),
+            2
+        );
     }
 
     // ========== Buffered AuditService ==========
@@ -1254,16 +1292,18 @@ mod tests {
 
         // Enqueue an event -- it should not error even with a fake pool
         // because the event is only buffered, not written to DB
-        let result = service.log(
-            "actor1".to_string(),
-            "admin".to_string(),
-            AuditAction::UserCreated,
-            AuditTargetType::User,
-            Some("user1".to_string()),
-            serde_json::json!({}),
-            None,
-            None,
-        ).await;
+        let result = service
+            .log(
+                "actor1".to_string(),
+                "admin".to_string(),
+                AuditAction::UserCreated,
+                AuditTargetType::User,
+                Some("user1".to_string()),
+                serde_json::json!({}),
+                None,
+                None,
+            )
+            .await;
 
         assert!(result.is_ok());
         assert_eq!(service.dropped_count(), 0);
@@ -1510,13 +1550,15 @@ mod tests {
         let pool = PgPool::connect_lazy("postgresql://fake").unwrap();
         let (service, _handle) = AuditService::new(pool);
 
-        let result = service.log_user_login(
-            "user_123".to_string(),
-            "alice".to_string(),
-            "password",
-            Some("192.168.1.1".to_string()),
-            Some("Mozilla/5.0".to_string()),
-        ).await;
+        let result = service
+            .log_user_login(
+                "user_123".to_string(),
+                "alice".to_string(),
+                "password",
+                Some("192.168.1.1".to_string()),
+                Some("Mozilla/5.0".to_string()),
+            )
+            .await;
 
         assert!(result.is_ok());
         assert_eq!(service.dropped_count(), 0);
@@ -1527,12 +1569,14 @@ mod tests {
         let pool = PgPool::connect_lazy("postgresql://fake").unwrap();
         let (service, _handle) = AuditService::new(pool);
 
-        let result = service.log_user_logout(
-            "user_123".to_string(),
-            "alice".to_string(),
-            Some("192.168.1.1".to_string()),
-            Some("Mozilla/5.0".to_string()),
-        ).await;
+        let result = service
+            .log_user_logout(
+                "user_123".to_string(),
+                "alice".to_string(),
+                Some("192.168.1.1".to_string()),
+                Some("Mozilla/5.0".to_string()),
+            )
+            .await;
 
         assert!(result.is_ok());
         assert_eq!(service.dropped_count(), 0);
@@ -1543,15 +1587,17 @@ mod tests {
         let pool = PgPool::connect_lazy("postgresql://fake").unwrap();
         let (service, _handle) = AuditService::new(pool);
 
-        let result = service.log_token_issued(
-            "user_123".to_string(),
-            "alice".to_string(),
-            "access",
-            "jti_abc123".to_string(),
-            1735689600,
-            Some("192.168.1.1".to_string()),
-            Some("Mozilla/5.0".to_string()),
-        ).await;
+        let result = service
+            .log_token_issued(
+                "user_123".to_string(),
+                "alice".to_string(),
+                "access",
+                "jti_abc123".to_string(),
+                1735689600,
+                Some("192.168.1.1".to_string()),
+                Some("Mozilla/5.0".to_string()),
+            )
+            .await;
 
         assert!(result.is_ok());
         assert_eq!(service.dropped_count(), 0);
@@ -1562,14 +1608,16 @@ mod tests {
         let pool = PgPool::connect_lazy("postgresql://fake").unwrap();
         let (service, _handle) = AuditService::new(pool);
 
-        let result = service.log_token_refreshed(
-            "user_123".to_string(),
-            "alice".to_string(),
-            "jti_old_123".to_string(),
-            "jti_new_456".to_string(),
-            Some("192.168.1.1".to_string()),
-            Some("Mozilla/5.0".to_string()),
-        ).await;
+        let result = service
+            .log_token_refreshed(
+                "user_123".to_string(),
+                "alice".to_string(),
+                "jti_old_123".to_string(),
+                "jti_new_456".to_string(),
+                Some("192.168.1.1".to_string()),
+                Some("Mozilla/5.0".to_string()),
+            )
+            .await;
 
         assert!(result.is_ok());
         assert_eq!(service.dropped_count(), 0);
@@ -1580,12 +1628,14 @@ mod tests {
         let pool = PgPool::connect_lazy("postgresql://fake").unwrap();
         let (service, _handle) = AuditService::new(pool);
 
-        let result = service.log_token_family_revoked(
-            "user_123".to_string(),
-            "alice".to_string(),
-            "jti_replayed_789".to_string(),
-            Some("192.168.1.1".to_string()),
-        ).await;
+        let result = service
+            .log_token_family_revoked(
+                "user_123".to_string(),
+                "alice".to_string(),
+                "jti_replayed_789".to_string(),
+                Some("192.168.1.1".to_string()),
+            )
+            .await;
 
         assert!(result.is_ok());
         assert_eq!(service.dropped_count(), 0);
@@ -1596,13 +1646,15 @@ mod tests {
         let pool = PgPool::connect_lazy("postgresql://fake").unwrap();
         let (service, _handle) = AuditService::new(pool);
 
-        let result = service.log_user_login(
-            "user_123".to_string(),
-            "alice".to_string(),
-            "oauth2",
-            None,
-            None,
-        ).await;
+        let result = service
+            .log_user_login(
+                "user_123".to_string(),
+                "alice".to_string(),
+                "oauth2",
+                None,
+                None,
+            )
+            .await;
 
         assert!(result.is_ok());
         assert_eq!(service.dropped_count(), 0);

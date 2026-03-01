@@ -4,8 +4,8 @@
 //! These tests verify the circuit breaker behavior without requiring Redis.
 
 #![allow(clippy::unwrap_used)]
-use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 
 use failsafe::{backoff, failure_policy, Config as CbConfig};
@@ -92,11 +92,7 @@ async fn test_half_open_single_probe_wins_race() {
 
 #[tokio::test]
 async fn test_half_open_probe_failure_reopens() {
-    let cb = create_test_circuit_breaker(
-        1,
-        Duration::from_secs(1),
-        Duration::from_secs(1),
-    );
+    let cb = create_test_circuit_breaker(1, Duration::from_secs(1), Duration::from_secs(1));
 
     // Trip the circuit
     cb.on_error();
@@ -106,7 +102,10 @@ async fn test_half_open_probe_failure_reopens() {
     tokio::time::sleep(Duration::from_millis(1100)).await;
 
     // One probe is permitted
-    assert!(cb.is_call_permitted(), "Circuit should be half-open, permitting one probe");
+    assert!(
+        cb.is_call_permitted(),
+        "Circuit should be half-open, permitting one probe"
+    );
 
     // Simulate probe failure
     cb.on_error();
@@ -128,18 +127,21 @@ async fn test_healthy_endpoints_filters_open() {
     let endpoints = ["endpoint_a", "endpoint_b", "endpoint_c"];
     let breakers: Vec<_> = endpoints
         .iter()
-        .map(|_| {
-            create_test_circuit_breaker(1, Duration::from_secs(10), Duration::from_mins(1))
-        })
+        .map(|_| create_test_circuit_breaker(1, Duration::from_secs(10), Duration::from_mins(1)))
         .collect();
 
     // All endpoints start healthy (closed circuit)
-    
-    assert_eq!(endpoints
-        .iter()
-        .zip(&breakers)
-        .filter(|(_, cb)| cb.is_call_permitted())
-        .map(|(ep, _)| *ep).count(), 3, "All endpoints should be healthy initially");
+
+    assert_eq!(
+        endpoints
+            .iter()
+            .zip(&breakers)
+            .filter(|(_, cb)| cb.is_call_permitted())
+            .map(|(ep, _)| *ep)
+            .count(),
+        3,
+        "All endpoints should be healthy initially"
+    );
 
     // Open one endpoint's circuit
     breakers[1].on_error();
@@ -150,8 +152,15 @@ async fn test_healthy_endpoints_filters_open() {
         .filter(|(_, cb)| cb.is_call_permitted())
         .map(|(ep, _)| *ep)
         .collect();
-    assert_eq!(healthy.len(), 2, "Should have 2 healthy endpoints after opening 1");
-    assert!(!healthy.contains(&"endpoint_b"), "endpoint_b should be filtered out");
+    assert_eq!(
+        healthy.len(),
+        2,
+        "Should have 2 healthy endpoints after opening 1"
+    );
+    assert!(
+        !healthy.contains(&"endpoint_b"),
+        "endpoint_b should be filtered out"
+    );
 }
 
 // ============================================================================
@@ -162,9 +171,7 @@ async fn test_healthy_endpoints_filters_open() {
 async fn test_cluster_degraded_threshold() {
     let endpoint_count = 4;
     let breakers: Vec<_> = (0..endpoint_count)
-        .map(|_| {
-            create_test_circuit_breaker(1, Duration::from_secs(10), Duration::from_mins(1))
-        })
+        .map(|_| create_test_circuit_breaker(1, Duration::from_secs(10), Duration::from_mins(1)))
         .collect();
 
     // Open 3 out of 4 circuits (>50%)
@@ -188,11 +195,7 @@ async fn test_cluster_degraded_threshold() {
 #[tokio::test]
 async fn test_failure_below_threshold_stays_closed() {
     // Circuit opens after 3 consecutive failures
-    let cb = create_test_circuit_breaker(
-        3,
-        Duration::from_secs(10),
-        Duration::from_mins(1),
-    );
+    let cb = create_test_circuit_breaker(3, Duration::from_secs(10), Duration::from_mins(1));
 
     // 2 failures (below threshold of 3)
     cb.on_error();

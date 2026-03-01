@@ -1,8 +1,8 @@
 use {
     super::{crc32, define::epat_pid, errors::MpegTsError, pmt},
+    crate::bytesio::bytes_writer::BytesWriter,
     byteorder::{BigEndian, LittleEndian},
     bytes::BytesMut,
-    crate::bytesio::bytes_writer::BytesWriter,
 };
 
 #[derive(Debug, Clone)]
@@ -22,7 +22,7 @@ impl Default for Pat {
 }
 
 impl Pat {
-    #[must_use] 
+    #[must_use]
     pub const fn new() -> Self {
         Self {
             transport_stream_id: 1,
@@ -44,7 +44,7 @@ impl Default for PatMuxer {
 }
 //ITU-T H.222.0
 impl PatMuxer {
-    #[must_use] 
+    #[must_use]
     pub const fn new() -> Self {
         Self {
             bytes_writer: BytesWriter::new(),

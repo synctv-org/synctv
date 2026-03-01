@@ -3,15 +3,15 @@
 //! Automatically manages chat message partition creation, retention cleanup,
 //! and health monitoring with fixed daily granularity.
 
-use std::sync::Arc;
-use sqlx::PgPool;
 use serde::{Deserialize, Serialize};
+use sqlx::PgPool;
+use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
-use tracing::{info, warn, error};
+use tracing::{error, info, warn};
 
-use crate::{Error, Result};
-use crate::service::global_settings::SettingsRegistry;
 use super::LeaderCheck;
+use crate::service::global_settings::SettingsRegistry;
+use crate::{Error, Result};
 
 /// Default retention period in days for chat messages
 const DEFAULT_RETENTION_DAYS: i32 = 90;
@@ -43,35 +43,51 @@ impl ChatPartitionManager {
     ///
     /// Automatic partition management only runs on the leader node.
     #[must_use]
-    pub fn new(pool: PgPool, settings: Arc<SettingsRegistry>, leader_check: Arc<dyn LeaderCheck>) -> Self {
-        Self { pool, _settings: settings, leader_check }
+    pub fn new(
+        pool: PgPool,
+        settings: Arc<SettingsRegistry>,
+        leader_check: Arc<dyn LeaderCheck>,
+    ) -> Self {
+        Self {
+            pool,
+            _settings: settings,
+            leader_check,
+        }
     }
 
     /// Ensure partitions exist for the next N days
     pub async fn ensure_future_partitions(&self, days_ahead: i32) -> Result<serde_json::Value> {
-        info!("Ensuring chat message partitions for next {} days", days_ahead);
+        info!(
+            "Ensuring chat message partitions for next {} days",
+            days_ahead
+        );
 
-        let result = sqlx::query_scalar::<_, serde_json::Value>(
-            "SELECT create_chat_message_partitions($1)"
-        )
-        .bind(days_ahead)
-        .fetch_one(&self.pool)
-        .await
-        .map_err(|e| Error::Internal(format!("Failed to create chat partitions: {e}")))?;
+        let result =
+            sqlx::query_scalar::<_, serde_json::Value>("SELECT create_chat_message_partitions($1)")
+                .bind(days_ahead)
+                .fetch_one(&self.pool)
+                .await
+                .map_err(|e| Error::Internal(format!("Failed to create chat partitions: {e}")))?;
 
         let success_count = result["success_count"].as_i64().unwrap_or(0);
         let total_requested = result["total_requested"].as_i64().unwrap_or(0);
-        info!("Chat partitions created: {}/{} successful", success_count, total_requested);
+        info!(
+            "Chat partitions created: {}/{} successful",
+            success_count, total_requested
+        );
 
         Ok(result)
     }
 
     /// Drop partitions older than the configured retention period
     pub async fn drop_old_partitions(&self, keep_days: i32) -> Result<i64> {
-        info!("Dropping chat message partitions older than {} days", keep_days);
+        info!(
+            "Dropping chat message partitions older than {} days",
+            keep_days
+        );
 
         let result = sqlx::query_scalar::<_, serde_json::Value>(
-            "SELECT drop_old_chat_message_partitions($1)"
+            "SELECT drop_old_chat_message_partitions($1)",
         )
         .bind(keep_days)
         .fetch_one(&self.pool)
@@ -88,26 +104,36 @@ impl ChatPartitionManager {
 
     /// Check partition health status
     pub async fn check_health(&self, days_ahead: i32) -> Result<ChatPartitionHealth> {
-        let result_json = sqlx::query_scalar::<_, serde_json::Value>(
-            "SELECT check_chat_message_partitions($1)"
-        )
-        .bind(days_ahead)
-        .fetch_one(&self.pool)
-        .await
-        .map_err(|e| Error::Internal(format!("Failed to check chat partition health: {e}")))?;
+        let result_json =
+            sqlx::query_scalar::<_, serde_json::Value>("SELECT check_chat_message_partitions($1)")
+                .bind(days_ahead)
+                .fetch_one(&self.pool)
+                .await
+                .map_err(|e| {
+                    Error::Internal(format!("Failed to check chat partition health: {e}"))
+                })?;
 
         let health: ChatPartitionHealth = serde_json::from_value(result_json)
             .map_err(|e| Error::Internal(format!("Failed to parse chat partition health: {e}")))?;
 
         match health.health_status.as_str() {
             "healthy" => {
-                info!("Chat message partitions are healthy: {} partitions", health.total_partitions);
+                info!(
+                    "Chat message partitions are healthy: {} partitions",
+                    health.total_partitions
+                );
             }
             "warning" => {
-                warn!("Chat message partitions warning: {} missing", health.missing_count);
+                warn!(
+                    "Chat message partitions warning: {} missing",
+                    health.missing_count
+                );
             }
             _ => {
-                warn!("Unknown chat partition health status: {}", health.health_status);
+                warn!(
+                    "Unknown chat partition health status: {}",
+                    health.health_status
+                );
             }
         }
 
@@ -125,13 +151,17 @@ impl ChatPartitionManager {
     /// Note: Per-room message limit cleanup is handled by `ChatService.start_cleanup_task()`
     /// which runs more frequently (every 60 seconds) for near real-time enforcement.
     #[must_use]
-    pub fn start_auto_management(&self, check_interval_hours: u64, cancel: CancellationToken) -> tokio::task::JoinHandle<()> {
+    pub fn start_auto_management(
+        &self,
+        check_interval_hours: u64,
+        cancel: CancellationToken,
+    ) -> tokio::task::JoinHandle<()> {
         let manager = self.clone();
 
         crate::spawn::spawn_monitored("chat_partition_manager", async move {
-            let mut interval = tokio::time::interval(
-                tokio::time::Duration::from_secs(check_interval_hours * 3600),
-            );
+            let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(
+                check_interval_hours * 3600,
+            ));
 
             loop {
                 tokio::select! {
@@ -152,8 +182,13 @@ impl ChatPartitionManager {
                 match manager.check_health(DEFAULT_DAYS_AHEAD).await {
                     Ok(health) => {
                         if health.missing_count > 0 {
-                            warn!("Found {} missing chat partitions, creating now", health.missing_count);
-                            if let Err(e) = manager.ensure_future_partitions(DEFAULT_DAYS_AHEAD).await {
+                            warn!(
+                                "Found {} missing chat partitions, creating now",
+                                health.missing_count
+                            );
+                            if let Err(e) =
+                                manager.ensure_future_partitions(DEFAULT_DAYS_AHEAD).await
+                            {
                                 error!("Failed to create missing chat partitions: {}", e);
                             }
                         }
@@ -181,7 +216,7 @@ impl ChatPartitionManager {
 /// periodic `start_auto_management` task is leader-gated.
 pub async fn ensure_chat_partitions_on_startup(
     pool: &PgPool,
-    settings: Arc<SettingsRegistry>
+    settings: Arc<SettingsRegistry>,
 ) -> Result<()> {
     // Startup uses AlwaysLeader since this is initialization, not periodic management
     let manager = ChatPartitionManager::new(pool.clone(), settings, Arc::new(super::AlwaysLeader));

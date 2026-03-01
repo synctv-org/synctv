@@ -136,7 +136,10 @@ fn test_constant_time_eq_longer_expected() {
 fn test_constant_time_eq_empty_secret() {
     let interceptor = ClusterAuthInterceptor::new(String::new());
     let request = make_request_with_secret("");
-    assert!(interceptor.validate(request).is_ok(), "Both empty should pass");
+    assert!(
+        interceptor.validate(request).is_ok(),
+        "Both empty should pass"
+    );
 }
 
 #[test]
@@ -171,10 +174,13 @@ fn test_invalid_metadata_value_unauthenticated() {
     // Use MetadataMap's insert_bin for binary metadata - but x-cluster-secret
     // is not a -bin suffix key, so invalid UTF-8 would fail to_str().
     // We can test this by manually inserting a valid ASCII but wrong value.
-    metadata.insert("x-cluster-secret", "valid\x01secret".parse().unwrap_or_else(|_| {
-        // If parsing fails (non-visible ASCII), just use a regular wrong value
-        "wrong".parse().unwrap()
-    }));
+    metadata.insert(
+        "x-cluster-secret",
+        "valid\x01secret".parse().unwrap_or_else(|_| {
+            // If parsing fails (non-visible ASCII), just use a regular wrong value
+            "wrong".parse().unwrap()
+        }),
+    );
 
     let result = interceptor.validate(request);
     assert!(result.is_err(), "Invalid/wrong secret should fail");

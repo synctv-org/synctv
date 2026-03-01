@@ -2,14 +2,14 @@
 //!
 //! Automatically manages audit log partition creation and maintenance
 
-use std::sync::Arc;
-use sqlx::PgPool;
 use serde::{Deserialize, Serialize};
+use sqlx::PgPool;
+use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
-use crate::{Error, Result, InternalExt};
 use super::LeaderCheck;
+use crate::{Error, InternalExt, Result};
 
 /// Maximum retry attempts for partition operations
 const MAX_PARTITION_RETRIES: u32 = 3;
@@ -95,7 +95,7 @@ impl AuditPartitionManager {
         info!("Ensuring indexes for last {} partitions", partition_count);
 
         let result_json = sqlx::query_scalar::<_, serde_json::Value>(
-            "SELECT ensure_existing_partitions_indexes($1)"
+            "SELECT ensure_existing_partitions_indexes($1)",
         )
         .bind(partition_count)
         .fetch_one(&self.pool)
@@ -116,16 +116,21 @@ impl AuditPartitionManager {
     /// Ensure partitions exist for the next N months
     ///
     /// Should be called on application startup to ensure partitions are available
-    pub async fn ensure_future_partitions(&self, months_ahead: i32) -> Result<PartitionCreationResult> {
-        info!("Ensuring audit log partitions for next {} months", months_ahead);
+    pub async fn ensure_future_partitions(
+        &self,
+        months_ahead: i32,
+    ) -> Result<PartitionCreationResult> {
+        info!(
+            "Ensuring audit log partitions for next {} months",
+            months_ahead
+        );
 
-        let result_json = sqlx::query_scalar::<_, serde_json::Value>(
-            "SELECT create_audit_logs_partitions($1)"
-        )
-        .bind(months_ahead)
-        .fetch_one(&self.pool)
-        .await
-        .internal_with_err("Failed to create partitions")?;
+        let result_json =
+            sqlx::query_scalar::<_, serde_json::Value>("SELECT create_audit_logs_partitions($1)")
+                .bind(months_ahead)
+                .fetch_one(&self.pool)
+                .await
+                .internal_with_err("Failed to create partitions")?;
 
         let result: PartitionCreationResult = serde_json::from_value(result_json)
             .internal_with_err("Failed to parse partition result")?;
@@ -142,13 +147,12 @@ impl AuditPartitionManager {
     pub async fn create_partition(&self, date: chrono::NaiveDate) -> Result<PartitionInfo> {
         info!("Creating audit log partition for date: {}", date);
 
-        let result_json = sqlx::query_scalar::<_, serde_json::Value>(
-            "SELECT create_audit_logs_partition($1)"
-        )
-        .bind(date)
-        .fetch_one(&self.pool)
-        .await
-        .internal_with_err("Failed to create partition")?;
+        let result_json =
+            sqlx::query_scalar::<_, serde_json::Value>("SELECT create_audit_logs_partition($1)")
+                .bind(date)
+                .fetch_one(&self.pool)
+                .await
+                .internal_with_err("Failed to create partition")?;
 
         let partition_name = result_json["partition_name"]
             .as_str()
@@ -165,19 +169,19 @@ impl AuditPartitionManager {
     ///
     /// Removes partitions older than the specified number of months
     pub async fn drop_old_partitions(&self, keep_months: i32) -> Result<Vec<String>> {
-        info!("Dropping audit log partitions older than {} months", keep_months);
+        info!(
+            "Dropping audit log partitions older than {} months",
+            keep_months
+        );
 
-        let result_json = sqlx::query_scalar::<_, serde_json::Value>(
-            "SELECT drop_old_audit_logs_partitions($1)"
-        )
-        .bind(keep_months)
-        .fetch_one(&self.pool)
-        .await
-        .internal_with_err("Failed to drop partitions")?;
+        let result_json =
+            sqlx::query_scalar::<_, serde_json::Value>("SELECT drop_old_audit_logs_partitions($1)")
+                .bind(keep_months)
+                .fetch_one(&self.pool)
+                .await
+                .internal_with_err("Failed to drop partitions")?;
 
-        let dropped_count = result_json["dropped_count"]
-            .as_i64()
-            .unwrap_or(0) as i32;
+        let dropped_count = result_json["dropped_count"].as_i64().unwrap_or(0) as i32;
 
         info!("Successfully dropped {} old partitions", dropped_count);
 
@@ -198,19 +202,21 @@ impl AuditPartitionManager {
     ///
     /// Returns missing partitions and overall health status
     pub async fn check_health(&self) -> Result<PartitionHealth> {
-        let result_json = sqlx::query_scalar::<_, serde_json::Value>(
-            "SELECT check_audit_logs_partitions()"
-        )
-        .fetch_one(&self.pool)
-        .await
-        .internal_with_err("Failed to check partition health")?;
+        let result_json =
+            sqlx::query_scalar::<_, serde_json::Value>("SELECT check_audit_logs_partitions()")
+                .fetch_one(&self.pool)
+                .await
+                .internal_with_err("Failed to check partition health")?;
 
         let health: PartitionHealth = serde_json::from_value(result_json)
             .internal_with_err("Failed to parse health result")?;
 
         match health.health_status.as_str() {
             "healthy" => {
-                info!("Audit log partitions are healthy: {} partitions", health.total_partitions);
+                info!(
+                    "Audit log partitions are healthy: {} partitions",
+                    health.total_partitions
+                );
             }
             "warning" => {
                 warn!(
@@ -230,12 +236,11 @@ impl AuditPartitionManager {
     ///
     /// Returns detailed statistics for all partitions
     pub async fn get_stats(&self) -> Result<PartitionStats> {
-        let result_json = sqlx::query_scalar::<_, serde_json::Value>(
-            "SELECT get_audit_logs_stats()"
-        )
-        .fetch_one(&self.pool)
-        .await
-        .internal_with_err("Failed to get partition stats")?;
+        let result_json =
+            sqlx::query_scalar::<_, serde_json::Value>("SELECT get_audit_logs_stats()")
+                .fetch_one(&self.pool)
+                .await
+                .internal_with_err("Failed to get partition stats")?;
 
         let stats: PartitionStats = serde_json::from_value(result_json)
             .internal_with_err("Failed to parse stats result")?;
@@ -252,7 +257,10 @@ impl AuditPartitionManager {
     ///
     /// Retries up to `MAX_PARTITION_RETRIES` times with exponential backoff
     /// (1s, 2s, 4s) on transient database failures.
-    pub async fn ensure_future_partitions_with_retry(&self, months_ahead: i32) -> Result<PartitionCreationResult> {
+    pub async fn ensure_future_partitions_with_retry(
+        &self,
+        months_ahead: i32,
+    ) -> Result<PartitionCreationResult> {
         let mut last_err = None;
 
         for attempt in 0..MAX_PARTITION_RETRIES {
@@ -296,11 +304,17 @@ impl AuditPartitionManager {
     ///
     /// Partition creation uses exponential backoff retry on transient failures.
     #[must_use]
-    pub fn start_auto_management(&self, check_interval_hours: u64, cancel: CancellationToken) -> tokio::task::JoinHandle<()> {
+    pub fn start_auto_management(
+        &self,
+        check_interval_hours: u64,
+        cancel: CancellationToken,
+    ) -> tokio::task::JoinHandle<()> {
         let manager = self.clone();
 
         crate::spawn::spawn_monitored("audit_partition_manager", async move {
-            let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(check_interval_hours * 3600));
+            let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(
+                check_interval_hours * 3600,
+            ));
 
             loop {
                 tokio::select! {
@@ -386,7 +400,9 @@ pub async fn ensure_audit_partitions_on_startup(pool: &PgPool) -> Result<()> {
     }
 
     // Step 4: Drop partitions older than the retention period
-    manager.drop_old_partitions(DEFAULT_RETENTION_MONTHS).await?;
+    manager
+        .drop_old_partitions(DEFAULT_RETENTION_MONTHS)
+        .await?;
 
     info!("Audit log partition initialization completed");
 

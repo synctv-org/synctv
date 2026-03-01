@@ -44,16 +44,15 @@ impl ContentFilter {
     }
 
     /// Create with custom settings
-    #[must_use] 
+    #[must_use]
     pub fn with_config(
         max_chat_length: usize,
         max_danmaku_length: usize,
         sensitive_words: Option<Vec<String>>,
         strip_html: bool,
     ) -> Self {
-        let sensitive_words = sensitive_words.map(|words| {
-            words.into_iter().map(|w| w.to_lowercase()).collect()
-        });
+        let sensitive_words =
+            sensitive_words.map(|words| words.into_iter().map(|w| w.to_lowercase()).collect());
 
         Self {
             max_chat_length,
@@ -122,7 +121,10 @@ impl ContentFilter {
         }
 
         // Validate danmaku doesn't contain control characters (check before sanitization)
-        if trimmed.chars().any(|c| c.is_control() && c != '\n' && c != '\t' && c != '\r') {
+        if trimmed
+            .chars()
+            .any(|c| c.is_control() && c != '\n' && c != '\t' && c != '\r')
+        {
             return Err(ContentFilterError::ProhibitedContent {
                 reason: "Contains control characters".to_string(),
             });
@@ -245,9 +247,7 @@ mod tests {
         assert!(result.contains("Hello"));
 
         // Image with onerror
-        let result = filter
-            .filter_chat("<img src=x onerror=alert(1)>")
-            .unwrap();
+        let result = filter.filter_chat("<img src=x onerror=alert(1)>").unwrap();
         assert!(!result.contains("onerror"));
     }
 
@@ -283,7 +283,9 @@ mod tests {
     #[test]
     fn test_filter_danmaku_html() {
         let filter = ContentFilter::new();
-        let result = filter.filter_danmaku("<script>alert(1)</script>Danmaku").unwrap();
+        let result = filter
+            .filter_danmaku("<script>alert(1)</script>Danmaku")
+            .unwrap();
         assert!(!result.contains("<script>"));
         assert!(result.contains("Danmaku"));
     }
@@ -363,7 +365,9 @@ mod tests {
         let filter = ContentFilter::new();
 
         // HTML entities in text should be preserved or decoded safely
-        let result = filter.filter_chat("&lt;script&gt;Hello&lt;/script&gt;").unwrap();
+        let result = filter
+            .filter_chat("&lt;script&gt;Hello&lt;/script&gt;")
+            .unwrap();
         // After stripping HTML, we should have safe text
         assert!(!result.contains("<script>"));
         // The text "Hello" should still be present
@@ -410,7 +414,9 @@ mod tests {
         assert!(!result.contains("<script") && !result.contains("<SCRIPT"));
 
         // Script with spaces - malformed HTML should still be safe
-        let _result = filter.filter_chat("< script>alert('xss')</script>").unwrap();
+        let _result = filter
+            .filter_chat("< script>alert('xss')</script>")
+            .unwrap();
         // Malformed tags may not be stripped, but the content should still be safe
         // (browsers won't execute this as a script due to the space)
     }
@@ -573,16 +579,22 @@ mod tests {
         let filter = ContentFilter::new();
 
         // HTML entity encoded
-        let result = filter.filter_chat("&#60;script&#62;alert(1)&#60;/script&#62;").unwrap();
+        let result = filter
+            .filter_chat("&#60;script&#62;alert(1)&#60;/script&#62;")
+            .unwrap();
         // After ammonia processing, this should be safe
         assert!(!result.contains("<script>") || !result.contains("alert"));
 
         // Hex encoded
-        let result = filter.filter_chat("&#x3c;script&#x3e;alert(1)&#x3c;/script&#x3e;").unwrap();
+        let result = filter
+            .filter_chat("&#x3c;script&#x3e;alert(1)&#x3c;/script&#x3e;")
+            .unwrap();
         assert!(!result.contains("<script>") || !result.contains("alert"));
 
         // Mixed case with encoding
-        let result = filter.filter_chat("&#60;ScRiPt&#62;alert(1)&#60;/sCrIpT&#62;").unwrap();
+        let result = filter
+            .filter_chat("&#60;ScRiPt&#62;alert(1)&#60;/sCrIpT&#62;")
+            .unwrap();
         assert!(!result.contains("<script") && !result.contains("<ScRiPt"));
     }
 
@@ -598,7 +610,9 @@ mod tests {
 
         // SVG with use xlink
         let result = filter
-            .filter_chat("<svg><use xlink:href='data:image/svg+xml,<svg onload=alert(1)>'></use></svg>")
+            .filter_chat(
+                "<svg><use xlink:href='data:image/svg+xml,<svg onload=alert(1)>'></use></svg>",
+            )
             .unwrap();
         assert!(!result.contains("onload"));
 
@@ -654,7 +668,9 @@ mod tests {
         let filter = ContentFilter::new();
 
         // Plain text should be preserved
-        let result = filter.filter_chat("Hello, this is a normal message!").unwrap();
+        let result = filter
+            .filter_chat("Hello, this is a normal message!")
+            .unwrap();
         assert_eq!(result, "Hello, this is a normal message!");
 
         // Unicode should be preserved
@@ -675,12 +691,16 @@ mod tests {
         let filter = ContentFilter::new();
 
         // Script in danmaku
-        let result = filter.filter_danmaku("<script>alert(1)</script>Danmaku").unwrap();
+        let result = filter
+            .filter_danmaku("<script>alert(1)</script>Danmaku")
+            .unwrap();
         assert!(!result.contains("<script"));
         assert!(result.contains("Danmaku"));
 
         // Event handler in danmaku
-        let result = filter.filter_danmaku("<img src=x onerror=alert(1)>").unwrap();
+        let result = filter
+            .filter_danmaku("<img src=x onerror=alert(1)>")
+            .unwrap();
         assert!(!result.contains("onerror"));
 
         // Link in danmaku
@@ -717,7 +737,9 @@ mod tests {
         assert!(!result.contains("<script"));
 
         // Extra spaces
-        let result = filter.filter_chat("<  script  >alert(1)<  /  script  >").unwrap();
+        let result = filter
+            .filter_chat("<  script  >alert(1)<  /  script  >")
+            .unwrap();
         // Should strip or escape
         assert!(result.contains("alert") || !result.contains("<script"));
 
@@ -770,15 +792,11 @@ mod tests {
         assert!(!result.contains("onmouseleave"));
 
         // onkeydown
-        let result = filter
-            .filter_chat("<input onkeydown='alert(1)'>")
-            .unwrap();
+        let result = filter.filter_chat("<input onkeydown='alert(1)'>").unwrap();
         assert!(!result.contains("onkeydown"));
 
         // onkeyup
-        let result = filter
-            .filter_chat("<input onkeyup='alert(1)'>")
-            .unwrap();
+        let result = filter.filter_chat("<input onkeyup='alert(1)'>").unwrap();
         assert!(!result.contains("onkeyup"));
 
         // ondblclick
@@ -1014,10 +1032,34 @@ mod tests {
 
         // Common HTML5 tags
         let tags = vec![
-            "<div>", "<span>", "<p>", "<h1>", "<h2>", "<strong>", "<em>", "<u>",
-            "<table>", "<tr>", "<td>", "<ul>", "<ol>", "<li>", "<blockquote>",
-            "<code>", "<pre>", "<header>", "<footer>", "<nav>", "<aside>", "<article>",
-            "<section>", "<main>", "<figure>", "<figcaption>", "<details>", "<summary>",
+            "<div>",
+            "<span>",
+            "<p>",
+            "<h1>",
+            "<h2>",
+            "<strong>",
+            "<em>",
+            "<u>",
+            "<table>",
+            "<tr>",
+            "<td>",
+            "<ul>",
+            "<ol>",
+            "<li>",
+            "<blockquote>",
+            "<code>",
+            "<pre>",
+            "<header>",
+            "<footer>",
+            "<nav>",
+            "<aside>",
+            "<article>",
+            "<section>",
+            "<main>",
+            "<figure>",
+            "<figcaption>",
+            "<details>",
+            "<summary>",
         ];
 
         for tag in tags {
@@ -1027,14 +1069,21 @@ mod tests {
 
         // Self-closing tags
         let self_closing = vec![
-            "<br>", "<br/>", "<hr>", "<hr/>", "<img src='x'>", "<input type='text'>",
+            "<br>",
+            "<br/>",
+            "<hr>",
+            "<hr/>",
+            "<img src='x'>",
+            "<input type='text'>",
         ];
 
         for tag in self_closing {
             let result = filter.filter_chat(tag).unwrap();
             // Should strip the tag
             assert!(
-                !result.contains('<') || result.chars().filter(|&c| c == '<').count() < tag.chars().filter(|&c| c == '<').count(),
+                !result.contains('<')
+                    || result.chars().filter(|&c| c == '<').count()
+                        < tag.chars().filter(|&c| c == '<').count(),
                 "Tag {tag} should be stripped or reduced"
             );
         }
@@ -1046,7 +1095,9 @@ mod tests {
 
         // SVG with foreignObject
         let result = filter
-            .filter_chat("<svg><foreignObject><iframe src='evil.com'></iframe></foreignObject></svg>")
+            .filter_chat(
+                "<svg><foreignObject><iframe src='evil.com'></iframe></foreignObject></svg>",
+            )
             .unwrap();
         assert!(!result.contains("<iframe"));
 
@@ -1145,9 +1196,7 @@ mod tests {
         let filter = ContentFilter::new();
 
         // Script tag with null before closing
-        let result = filter
-            .filter_chat("<script>alert(1)</scr\x00ipt>")
-            .unwrap();
+        let result = filter.filter_chat("<script>alert(1)</scr\x00ipt>").unwrap();
         assert!(!result.contains("alert") || !result.contains("<script"));
 
         // Tag with forward slash instead of backslash
@@ -1156,7 +1205,9 @@ mod tests {
         assert!(!result.contains("<script>") || !result.contains("alert"));
 
         // Unclosed comment
-        let result = filter.filter_chat("<!-- <script>alert(1)</script>").unwrap();
+        let result = filter
+            .filter_chat("<!-- <script>alert(1)</script>")
+            .unwrap();
         assert!(!result.contains("<script"));
     }
 
@@ -1166,10 +1217,9 @@ mod tests {
 
         // Danmaku should reject all control chars except \n, \t, \r
         let control_chars: Vec<char> = vec![
-            '\x00', '\x01', '\x02', '\x03', '\x04', '\x05', '\x06', '\x07',
-            '\x08', '\x0B', '\x0C', '\x0E', '\x0F', '\x10', '\x11', '\x12',
-            '\x13', '\x14', '\x15', '\x16', '\x17', '\x18', '\x19', '\x1A',
-            '\x1B', '\x1C', '\x1D', '\x1E', '\x1F', '\x7F'
+            '\x00', '\x01', '\x02', '\x03', '\x04', '\x05', '\x06', '\x07', '\x08', '\x0B', '\x0C',
+            '\x0E', '\x0F', '\x10', '\x11', '\x12', '\x13', '\x14', '\x15', '\x16', '\x17', '\x18',
+            '\x19', '\x1A', '\x1B', '\x1C', '\x1D', '\x1E', '\x1F', '\x7F',
         ];
 
         for cc in control_chars {
@@ -1330,7 +1380,9 @@ mod tests {
 
         // Option group
         let result = filter
-            .filter_chat("<optgroup label='test' onmouseover='alert(1)'><option>1</option></optgroup>")
+            .filter_chat(
+                "<optgroup label='test' onmouseover='alert(1)'><option>1</option></optgroup>",
+            )
             .unwrap();
         assert!(!result.contains("onmouseover"));
     }
@@ -1353,7 +1405,9 @@ mod tests {
 
         // Object with param
         let result = filter
-            .filter_chat("<object data='evil.com'><param name='movie' value='javascript:alert(1)'></object>")
+            .filter_chat(
+                "<object data='evil.com'><param name='movie' value='javascript:alert(1)'></object>",
+            )
             .unwrap();
         assert!(!result.contains("javascript:"));
         assert!(!result.contains("<object"));

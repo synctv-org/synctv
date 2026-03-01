@@ -8,8 +8,8 @@
 //! - `on_unpublish` callback behavior
 
 #![allow(clippy::unwrap_used)]
-use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 
 use async_trait::async_trait;
 use synctv_livestream::relay::{InMemoryStreamRegistry, StreamRegistryTrait};
@@ -65,10 +65,7 @@ struct MockRtmpAuthCallback {
 }
 
 impl MockRtmpAuthCallback {
-    fn new(
-        registry: Arc<InMemoryStreamRegistry>,
-        tracker: Arc<CallbackTracker>,
-    ) -> Self {
+    fn new(registry: Arc<InMemoryStreamRegistry>, tracker: Arc<CallbackTracker>) -> Self {
         Self {
             registry,
             tracker,
@@ -120,11 +117,13 @@ impl AuthCallback for MockRtmpAuthCallback {
             return Err(format!(
                 "Room ID mismatch: token has {}, request is for {}",
                 self.jwt_room_id, app_name
-            ).into());
+            )
+            .into());
         }
 
         // Register in the registry (simulates atomic Redis registration)
-        let registered = self.registry
+        let registered = self
+            .registry
             .try_register_publisher(
                 &self.jwt_room_id,
                 &self.jwt_media_id,
@@ -138,7 +137,8 @@ impl AuthCallback for MockRtmpAuthCallback {
             return Err(format!(
                 "Another publisher is already active for media {} in room {}",
                 self.jwt_media_id, self.jwt_room_id
-            ).into());
+            )
+            .into());
         }
 
         // Return rewrite so StreamHub uses canonical identifiers
@@ -159,30 +159,28 @@ impl AuthCallback for MockRtmpAuthCallback {
         Err("RTMP pull is disabled. Use HTTP-FLV or HLS endpoints for playback.".into())
     }
 
-    async fn on_unpublish(
-        &self,
-        app_name: &str,
-        stream_name: &str,
-        _query: Option<&str>,
-    ) {
+    async fn on_unpublish(&self, app_name: &str, stream_name: &str, _query: Option<&str>) {
         self.tracker.unpublish_count.fetch_add(1, Ordering::SeqCst);
 
         // Cleanup registry entry
-        if let Err(e) = self.registry.unregister_publisher(app_name, stream_name).await {
+        if let Err(e) = self
+            .registry
+            .unregister_publisher(app_name, stream_name)
+            .await
+        {
             eprintln!("Failed to cleanup publisher: {e}");
         }
     }
 
-    async fn on_publish_rollback(
-        &self,
-        app_name: &str,
-        stream_name: &str,
-        _query: Option<&str>,
-    ) {
+    async fn on_publish_rollback(&self, app_name: &str, stream_name: &str, _query: Option<&str>) {
         self.tracker.rollback_count.fetch_add(1, Ordering::SeqCst);
 
         // Cleanup registry entry on failure
-        if let Err(e) = self.registry.unregister_publisher(app_name, stream_name).await {
+        if let Err(e) = self
+            .registry
+            .unregister_publisher(app_name, stream_name)
+            .await
+        {
             eprintln!("Failed to rollback publisher: {e}");
         }
     }
@@ -197,12 +195,9 @@ impl AuthCallback for MockRtmpAuthCallback {
 async fn test_jwt_token_validation_success() {
     let registry = Arc::new(InMemoryStreamRegistry::new());
     let tracker = Arc::new(CallbackTracker::new());
-    let auth = MockRtmpAuthCallback::new(
-        registry.clone(),
-        tracker.clone(),
-    )
-    .with_room_id("room123")
-    .with_media_id("media456");
+    let auth = MockRtmpAuthCallback::new(registry.clone(), tracker.clone())
+        .with_room_id("room123")
+        .with_media_id("media456");
 
     // Simulate RTMP publish with room_id matching JWT
     let result = auth.on_publish("room123", "jwt_token_here", None).await;
@@ -215,7 +210,10 @@ async fn test_jwt_token_validation_success() {
     assert_eq!(rewrite.stream_name, "media456");
 
     // Verify registry was updated
-    assert!(registry.is_stream_active("room123", "media456").await.unwrap());
+    assert!(registry
+        .is_stream_active("room123", "media456")
+        .await
+        .unwrap());
     assert_eq!(tracker.publish_calls(), 1);
 }
 
@@ -224,11 +222,7 @@ async fn test_jwt_token_validation_success() {
 async fn test_jwt_token_validation_failure() {
     let registry = Arc::new(InMemoryStreamRegistry::new());
     let tracker = Arc::new(CallbackTracker::new());
-    let auth = MockRtmpAuthCallback::new(
-        registry.clone(),
-        tracker.clone(),
-    )
-    .with_auth_result(false);
+    let auth = MockRtmpAuthCallback::new(registry.clone(), tracker.clone()).with_auth_result(false);
 
     let result = auth.on_publish("room123", "invalid_token", None).await;
 
@@ -237,7 +231,10 @@ async fn test_jwt_token_validation_failure() {
     assert!(err.contains("Invalid JWT token"));
 
     // Verify registry was NOT updated
-    assert!(!registry.is_stream_active("room123", "media456").await.unwrap());
+    assert!(!registry
+        .is_stream_active("room123", "media456")
+        .await
+        .unwrap());
 }
 
 /// Test JWT token extraction from query string
@@ -245,15 +242,18 @@ async fn test_jwt_token_validation_failure() {
 async fn test_jwt_token_from_query_string() {
     let registry = Arc::new(InMemoryStreamRegistry::new());
     let tracker = Arc::new(CallbackTracker::new());
-    let auth = MockRtmpAuthCallback::new(
-        registry.clone(),
-        tracker.clone(),
-    )
-    .with_room_id("room123")
-    .with_media_id("media456");
+    let auth = MockRtmpAuthCallback::new(registry.clone(), tracker.clone())
+        .with_room_id("room123")
+        .with_media_id("media456");
 
     // Simulate RTMP publish with token in query string
-    let result = auth.on_publish("room123", "stream_name", Some("token=jwt_token_here&other=value")).await;
+    let result = auth
+        .on_publish(
+            "room123",
+            "stream_name",
+            Some("token=jwt_token_here&other=value"),
+        )
+        .await;
 
     assert!(result.is_ok(), "JWT in query string should be accepted");
     let rewrite = result.unwrap().unwrap();
@@ -269,12 +269,9 @@ async fn test_jwt_token_from_query_string() {
 async fn test_room_id_mismatch_rejected() {
     let registry = Arc::new(InMemoryStreamRegistry::new());
     let tracker = Arc::new(CallbackTracker::new());
-    let auth = MockRtmpAuthCallback::new(
-        registry.clone(),
-        tracker.clone(),
-    )
-    .with_room_id("room_A")
-    .with_media_id("media123");
+    let auth = MockRtmpAuthCallback::new(registry.clone(), tracker.clone())
+        .with_room_id("room_A")
+        .with_media_id("media123");
 
     // Attempt to publish to a different room
     let result = auth.on_publish("room_B", "jwt_token", None).await;
@@ -286,7 +283,10 @@ async fn test_room_id_mismatch_rejected() {
         "Error should mention room mismatch: {err}"
     );
     assert!(err.contains("room_A"), "Error should show JWT room: {err}");
-    assert!(err.contains("room_B"), "Error should show requested room: {err}");
+    assert!(
+        err.contains("room_B"),
+        "Error should show requested room: {err}"
+    );
 }
 
 /// Test that correct `room_id` is accepted
@@ -294,12 +294,9 @@ async fn test_room_id_mismatch_rejected() {
 async fn test_room_id_match_accepted() {
     let registry = Arc::new(InMemoryStreamRegistry::new());
     let tracker = Arc::new(CallbackTracker::new());
-    let auth = MockRtmpAuthCallback::new(
-        registry.clone(),
-        tracker.clone(),
-    )
-    .with_room_id("correct_room")
-    .with_media_id("media123");
+    let auth = MockRtmpAuthCallback::new(registry.clone(), tracker.clone())
+        .with_room_id("correct_room")
+        .with_media_id("media123");
 
     let result = auth.on_publish("correct_room", "jwt_token", None).await;
 
@@ -315,11 +312,7 @@ async fn test_room_id_match_accepted() {
 async fn test_auth_failure_does_not_leave_stale_entry() {
     let registry = Arc::new(InMemoryStreamRegistry::new());
     let tracker = Arc::new(CallbackTracker::new());
-    let auth = MockRtmpAuthCallback::new(
-        registry.clone(),
-        tracker.clone(),
-    )
-    .with_auth_result(false);
+    let auth = MockRtmpAuthCallback::new(registry.clone(), tracker.clone()).with_auth_result(false);
 
     // Failed auth should not register
     let _ = auth.on_publish("room1", "media1", None).await;
@@ -333,12 +326,9 @@ async fn test_auth_failure_does_not_leave_stale_entry() {
 async fn test_rollback_on_streamhub_failure() {
     let registry = Arc::new(InMemoryStreamRegistry::new());
     let tracker = Arc::new(CallbackTracker::new());
-    let auth = MockRtmpAuthCallback::new(
-        registry.clone(),
-        tracker.clone(),
-    )
-    .with_room_id("room1")
-    .with_media_id("media1");
+    let auth = MockRtmpAuthCallback::new(registry.clone(), tracker.clone())
+        .with_room_id("room1")
+        .with_media_id("media1");
 
     // Auth succeeds
     let result = auth.on_publish("room1", "jwt_token", None).await;
@@ -367,12 +357,9 @@ async fn test_rollback_on_streamhub_failure() {
 async fn test_on_unpublish_cleanup() {
     let registry = Arc::new(InMemoryStreamRegistry::new());
     let tracker = Arc::new(CallbackTracker::new());
-    let auth = MockRtmpAuthCallback::new(
-        registry.clone(),
-        tracker.clone(),
-    )
-    .with_room_id("room1")
-    .with_media_id("media1");
+    let auth = MockRtmpAuthCallback::new(registry.clone(), tracker.clone())
+        .with_room_id("room1")
+        .with_media_id("media1");
 
     // Publish
     auth.on_publish("room1", "jwt_token", None).await.unwrap();
@@ -392,10 +379,7 @@ async fn test_on_unpublish_cleanup() {
 async fn test_on_unpublish_idempotent() {
     let registry = Arc::new(InMemoryStreamRegistry::new());
     let tracker = Arc::new(CallbackTracker::new());
-    let auth = MockRtmpAuthCallback::new(
-        registry.clone(),
-        tracker.clone(),
-    );
+    let auth = MockRtmpAuthCallback::new(registry.clone(), tracker.clone());
 
     // Call on_unpublish multiple times without publish
     auth.on_unpublish("room1", "media1", None).await;
@@ -416,12 +400,9 @@ async fn test_on_unpublish_idempotent() {
 async fn test_duplicate_publisher_rejected() {
     let registry = Arc::new(InMemoryStreamRegistry::new());
     let tracker = Arc::new(CallbackTracker::new());
-    let auth = MockRtmpAuthCallback::new(
-        registry.clone(),
-        tracker.clone(),
-    )
-    .with_room_id("room1")
-    .with_media_id("media1");
+    let auth = MockRtmpAuthCallback::new(registry.clone(), tracker.clone())
+        .with_room_id("room1")
+        .with_media_id("media1");
 
     // First publish succeeds
     let result1 = auth.on_publish("room1", "jwt1", None).await;
@@ -446,10 +427,7 @@ async fn test_duplicate_publisher_rejected() {
 async fn test_on_play_always_rejected() {
     let registry = Arc::new(InMemoryStreamRegistry::new());
     let tracker = Arc::new(CallbackTracker::new());
-    let auth = MockRtmpAuthCallback::new(
-        registry.clone(),
-        tracker.clone(),
-    );
+    let auth = MockRtmpAuthCallback::new(registry.clone(), tracker.clone());
 
     let result = auth.on_play("room1", "media1", None).await;
 

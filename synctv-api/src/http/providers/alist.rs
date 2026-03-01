@@ -9,7 +9,7 @@ use axum::{
 };
 use serde_json::json;
 
-use crate::http::{AppError, AppState, middleware::AuthUser, provider_common::InstanceQuery};
+use crate::http::{middleware::AuthUser, provider_common::InstanceQuery, AppError, AppState};
 
 use crate::impls::providers::get_provider_binds;
 
@@ -74,9 +74,7 @@ async fn list(
     let api = &state.alist_api;
 
     match api.list(req, query.as_deref()).await {
-        Ok(resp) => {
-            (StatusCode::OK, Json(json!(resp))).into_response()
-        }
+        Ok(resp) => (StatusCode::OK, Json(json!(resp))).into_response(),
         Err(e) => {
             tracing::error!("Alist list failed: {}", e);
             AppError::from(e).into_response()
@@ -96,9 +94,7 @@ async fn me(
     let api = &state.alist_api;
 
     match api.get_me(req, query.as_deref()).await {
-        Ok(resp) => {
-            (StatusCode::OK, Json(json!(resp))).into_response()
-        }
+        Ok(resp) => (StatusCode::OK, Json(json!(resp))).into_response(),
         Err(e) => {
             tracing::error!("Alist me failed: {}", e);
             AppError::from(e).into_response()
@@ -144,11 +140,7 @@ async fn binds(
                 })
                 .collect();
 
-            (
-                StatusCode::OK,
-                Json(json!({"binds": alist_binds})),
-            )
-                .into_response()
+            (StatusCode::OK, Json(json!({"binds": alist_binds}))).into_response()
         }
         Err(e) => {
             tracing::error!("Failed to query credentials: {}", e);

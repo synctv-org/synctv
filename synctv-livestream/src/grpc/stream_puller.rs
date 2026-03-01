@@ -53,7 +53,7 @@ impl GrpcStreamPuller {
     /// Preferred over `new()` when a pool is available (e.g., from `PullStreamManager`),
     /// as it reuses HTTP/2 connections to publisher nodes across retry attempts
     /// and across different pull streams targeting the same node.
-    #[must_use] 
+    #[must_use]
     pub const fn with_pool(
         room_id: String,
         media_id: String,
@@ -201,12 +201,18 @@ impl GrpcStreamPuller {
     /// retry attempts and across different pull streams targeting the same node.
     /// On connection failure, the pooled entry is invalidated so the next attempt
     /// creates a fresh connection.
-    async fn connect_and_stream(&self, data_sender: &FrameDataSender, is_reconnect: bool) -> anyhow::Result<()> {
-        let channel = self.connection_pool
+    async fn connect_and_stream(
+        &self,
+        data_sender: &FrameDataSender,
+        is_reconnect: bool,
+    ) -> anyhow::Result<()> {
+        let channel = self
+            .connection_pool
             .get_channel(&self.publisher_node_addr)
             .await
             .map_err(|e| {
-                self.connection_pool.record_connection_error(&self.publisher_node_addr);
+                self.connection_pool
+                    .record_connection_error(&self.publisher_node_addr);
                 self.connection_pool.invalidate(&self.publisher_node_addr);
                 anyhow::anyhow!("Failed to connect to publisher: {e}")
             })?;
@@ -223,7 +229,9 @@ impl GrpcStreamPuller {
         if let Some(secret) = &self.cluster_secret {
             request.metadata_mut().insert(
                 "x-cluster-secret",
-                secret.parse().map_err(|_| anyhow::anyhow!("Invalid cluster secret format"))?,
+                secret
+                    .parse()
+                    .map_err(|_| anyhow::anyhow!("Invalid cluster secret format"))?,
             );
         }
 
@@ -231,7 +239,8 @@ impl GrpcStreamPuller {
         let mut stream = match stream_result {
             Ok(response) => response.into_inner(),
             Err(e) => {
-                self.connection_pool.record_connection_error(&self.publisher_node_addr);
+                self.connection_pool
+                    .record_connection_error(&self.publisher_node_addr);
                 return Err(anyhow::anyhow!("Failed to pull stream: {e}"));
             }
         };
@@ -265,10 +274,11 @@ impl GrpcStreamPuller {
 
                     // Use try_send for non-blocking behavior
                     // If channel is full, drop the packet (backpressure)
-                    if let Err(mpsc::error::TrySendError::Full(_)) = data_sender.try_send(frame_data) {
+                    if let Err(mpsc::error::TrySendError::Full(_)) =
+                        data_sender.try_send(frame_data)
+                    {
                         dropped_frames += 1;
-                        synctv_core::metrics::livestream::LIVESTREAM_RELAY_FRAME_DROPS
-                            .inc();
+                        synctv_core::metrics::livestream::LIVESTREAM_RELAY_FRAME_DROPS.inc();
                         if dropped_frames % DROP_LOG_INTERVAL == 1 {
                             warn!(
                                 room_id = %self.room_id,
@@ -281,7 +291,8 @@ impl GrpcStreamPuller {
                 }
                 Ok(None) => break, // Stream ended normally
                 Err(e) => {
-                    self.connection_pool.record_connection_error(&self.publisher_node_addr);
+                    self.connection_pool
+                        .record_connection_error(&self.publisher_node_addr);
                     return Err(anyhow::anyhow!("Stream error: {e}"));
                 }
             }

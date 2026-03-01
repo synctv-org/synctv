@@ -10,7 +10,10 @@ use synctv_core::cache::{CacheL2Backend, RedisCacheL2};
 use testcontainers::runners::AsyncRunner;
 use testcontainers_modules::redis::Redis;
 
-async fn start_redis() -> (testcontainers::ContainerAsync<Redis>, redis::aio::ConnectionManager) {
+async fn start_redis() -> (
+    testcontainers::ContainerAsync<Redis>,
+    redis::aio::ConnectionManager,
+) {
     let container = Redis::default()
         .start()
         .await

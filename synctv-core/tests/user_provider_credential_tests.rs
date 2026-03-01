@@ -8,11 +8,11 @@
 
 use chrono::{Duration, Utc};
 use serde_json::json;
-use synctv_core_testing::{create_test_pool};
 use synctv_core::{
     models::{User, UserProviderCredential},
     repository::{UserProviderCredentialRepository, UserRepository},
 };
+use synctv_core_testing::create_test_pool;
 fn make_user(username: &str) -> User {
     User::new(
         username.to_string(),
@@ -76,7 +76,10 @@ async fn test_create_multiple_providers() {
     let user_repo = UserRepository::new(pool.clone());
     let cred_repo = UserProviderCredentialRepository::new(pool);
 
-    let user = user_repo.create(&make_user("multi_cred_user")).await.unwrap();
+    let user = user_repo
+        .create(&make_user("multi_cred_user"))
+        .await
+        .unwrap();
 
     // Create credentials for different providers
     let bilibili = make_credential(user.id.as_str(), "bilibili", "bilibili");
@@ -121,7 +124,10 @@ async fn test_get_by_provider() {
     let user_repo = UserRepository::new(pool.clone());
     let cred_repo = UserProviderCredentialRepository::new(pool);
 
-    let user = user_repo.create(&make_user("getbyprov_user")).await.unwrap();
+    let user = user_repo
+        .create(&make_user("getbyprov_user"))
+        .await
+        .unwrap();
 
     // Create multiple Alist credentials (different servers)
     let alist1 = make_credential(user.id.as_str(), "alist", "server1");
@@ -133,11 +139,17 @@ async fn test_get_by_provider() {
     cred_repo.create(&bilibili).await.unwrap();
 
     // Get only Alist
-    let alist_creds = cred_repo.get_by_provider(user.id.as_str(), "alist").await.unwrap();
+    let alist_creds = cred_repo
+        .get_by_provider(user.id.as_str(), "alist")
+        .await
+        .unwrap();
     assert_eq!(alist_creds.len(), 2);
 
     // Get only Bilibili
-    let bilibili_creds = cred_repo.get_by_provider(user.id.as_str(), "bilibili").await.unwrap();
+    let bilibili_creds = cred_repo
+        .get_by_provider(user.id.as_str(), "bilibili")
+        .await
+        .unwrap();
     assert_eq!(bilibili_creds.len(), 1);
 }
 
@@ -246,10 +258,16 @@ async fn test_delete_by_user_and_provider() {
         .unwrap();
 
     // Verify Alist deleted but Bilibili remains
-    let alist = cred_repo.get_by_provider(user.id.as_str(), "alist").await.unwrap();
+    let alist = cred_repo
+        .get_by_provider(user.id.as_str(), "alist")
+        .await
+        .unwrap();
     assert!(alist.is_empty());
 
-    let bilibili = cred_repo.get_by_provider(user.id.as_str(), "bilibili").await.unwrap();
+    let bilibili = cred_repo
+        .get_by_provider(user.id.as_str(), "bilibili")
+        .await
+        .unwrap();
     assert_eq!(bilibili.len(), 1);
 }
 
@@ -310,7 +328,10 @@ async fn test_delete_expired_credentials() {
     let user_repo = UserRepository::new(pool.clone());
     let cred_repo = UserProviderCredentialRepository::new(pool);
 
-    let user = user_repo.create(&make_user("expire_del_user")).await.unwrap();
+    let user = user_repo
+        .create(&make_user("expire_del_user"))
+        .await
+        .unwrap();
 
     // Create expired credential
     let mut expired = make_credential(user.id.as_str(), "alist", "expired_server");

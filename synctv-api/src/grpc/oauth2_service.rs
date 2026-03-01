@@ -32,19 +32,17 @@
 //! endpoints perform inline JWT validation using `AuthInterceptor` directly.
 
 use synctv_proto::client::{
-    o_auth2_service_server::OAuth2Service,
-    GetAuthorizationUrlRequest, GetAuthorizationUrlResponse,
-    GetAuthorizationUrlForBindRequest, GetAuthorizationUrlForBindResponse,
-    ExchangeAuthorizationCodeRequest, ExchangeAuthorizationCodeResponse,
-    ListAvailableProvidersRequest, ListAvailableProvidersResponse,
-    UnlinkProviderRequest, UnlinkProviderResponse,
-    GetLinkedProvidersRequest, GetLinkedProvidersResponse,
+    o_auth2_service_server::OAuth2Service, ExchangeAuthorizationCodeRequest,
+    ExchangeAuthorizationCodeResponse, GetAuthorizationUrlForBindRequest,
+    GetAuthorizationUrlForBindResponse, GetAuthorizationUrlRequest, GetAuthorizationUrlResponse,
+    GetLinkedProvidersRequest, GetLinkedProvidersResponse, ListAvailableProvidersRequest,
+    ListAvailableProvidersResponse, UnlinkProviderRequest, UnlinkProviderResponse,
 };
 use tonic::{Request, Response, Status};
 use tracing::{debug, error, info};
 
-use synctv_core::models::UserId;
 use std::sync::Arc;
+use synctv_core::models::UserId;
 
 use super::map_api_error;
 
@@ -63,12 +61,15 @@ pub struct OAuth2GrpcService {
 }
 
 impl OAuth2GrpcService {
-    #[must_use] 
+    #[must_use]
     pub const fn new(
         oauth2_api: Arc<crate::impls::OAuth2ApiImpl>,
         auth_interceptor: super::interceptors::AuthInterceptor,
     ) -> Self {
-        Self { oauth2_api, auth_interceptor }
+        Self {
+            oauth2_api,
+            auth_interceptor,
+        }
     }
 
     /// Perform inline JWT auth and extract `user_id` for authenticated endpoints.
@@ -76,7 +77,10 @@ impl OAuth2GrpcService {
     /// This replaces the global `with_interceptor` pattern so that only the
     /// private endpoints require authentication. Calls `inject_user` on the
     /// request and then reads the resulting `UserContext` from extensions.
-    fn require_auth<T: std::fmt::Debug>(&self, request: Request<T>) -> Result<(UserId, Request<T>), Status> {
+    fn require_auth<T: std::fmt::Debug>(
+        &self,
+        request: Request<T>,
+    ) -> Result<(UserId, Request<T>), Status> {
         // inject_user validates JWT and inserts UserContext into extensions
         let request = self.auth_interceptor.inject_user(request)?;
         let user_context = request
@@ -96,15 +100,22 @@ impl OAuth2Service for OAuth2GrpcService {
         request: Request<GetAuthorizationUrlRequest>,
     ) -> Result<Response<GetAuthorizationUrlResponse>, Status> {
         let req = request.into_inner();
-        let (authorization_url, state) = self.oauth2_api
-            .get_authorization_url(&req.provider, Some(req.redirect_url).filter(|s| !s.is_empty()))
+        let (authorization_url, state) = self
+            .oauth2_api
+            .get_authorization_url(
+                &req.provider,
+                Some(req.redirect_url).filter(|s| !s.is_empty()),
+            )
             .await
             .map_err(|e| {
                 error!("Failed to get authorization URL: {}", e);
                 map_api_error(e)
             })?;
 
-        debug!("Generated OAuth2 authorization URL for provider: {}", req.provider);
+        debug!(
+            "Generated OAuth2 authorization URL for provider: {}",
+            req.provider
+        );
 
         Ok(Response::new(GetAuthorizationUrlResponse {
             authorization_url,
@@ -121,8 +132,13 @@ impl OAuth2Service for OAuth2GrpcService {
         let (user_id, request) = self.require_auth(request)?;
         let req = request.into_inner();
 
-        let (authorization_url, state) = self.oauth2_api
-            .get_authorization_url_for_bind(&user_id, &req.provider, Some(req.redirect_url).filter(|s| !s.is_empty()))
+        let (authorization_url, state) = self
+            .oauth2_api
+            .get_authorization_url_for_bind(
+                &user_id,
+                &req.provider,
+                Some(req.redirect_url).filter(|s| !s.is_empty()),
+            )
             .await
             .map_err(|e| {
                 error!("Failed to get authorization URL for bind: {}", e);
@@ -161,8 +177,15 @@ impl OAuth2Service for OAuth2GrpcService {
         // Extract client IP for brute-force protection (Issue #24)
         let client_ip = request.remote_addr().map(|addr| addr.ip());
         let req = request.into_inner();
-        let result = self.oauth2_api
-            .exchange_authorization_code(&req.provider, &req.code, &req.state, current_user_id.as_ref(), client_ip)
+        let result = self
+            .oauth2_api
+            .exchange_authorization_code(
+                &req.provider,
+                &req.code,
+                &req.state,
+                current_user_id.as_ref(),
+                client_ip,
+            )
             .await
             .map_err(|e| {
                 error!("Failed to exchange authorization code: {}", e);
@@ -189,7 +212,8 @@ impl OAuth2Service for OAuth2GrpcService {
         &self,
         _request: Request<ListAvailableProvidersRequest>,
     ) -> Result<Response<ListAvailableProvidersResponse>, Status> {
-        let providers = self.oauth2_api
+        let providers = self
+            .oauth2_api
             .list_available_providers()
             .await
             .map_err(|e| {
@@ -215,11 +239,14 @@ impl OAuth2Service for OAuth2GrpcService {
         let (user_id, request) = self.require_auth(request)?;
         let req = request.into_inner();
 
-        let result = self.oauth2_api
+        let result = self
+            .oauth2_api
             .unlink_provider(
                 &user_id,
                 &req.provider,
-                Some(&req.provider_user_id).filter(|s| !s.is_empty()).map(std::string::String::as_str)
+                Some(&req.provider_user_id)
+                    .filter(|s| !s.is_empty())
+                    .map(std::string::String::as_str),
             )
             .await
             .map_err(|e| {
@@ -250,7 +277,8 @@ impl OAuth2Service for OAuth2GrpcService {
     ) -> Result<Response<GetLinkedProvidersResponse>, Status> {
         let (user_id, _request) = self.require_auth(request)?;
 
-        let providers = self.oauth2_api
+        let providers = self
+            .oauth2_api
             .get_linked_providers(&user_id)
             .await
             .map_err(|e| {

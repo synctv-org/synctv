@@ -13,10 +13,7 @@ pub struct WebRTCComponents {
 }
 
 /// Initialize WebRTC components: STUN server and TURN health checker.
-pub async fn init_webrtc(
-    config: &Config,
-    cancel: CancellationToken,
-) -> WebRTCComponents {
+pub async fn init_webrtc(config: &Config, cancel: CancellationToken) -> WebRTCComponents {
     // STUN server (if enabled, powered by turn-rs)
     let stun_server = if config.webrtc.enable_builtin_stun {
         info!("Starting built-in STUN server (turn-rs)...");
@@ -35,7 +32,9 @@ pub async fn init_webrtc(
             } else {
                 // Try auto-detecting from cloud metadata
                 info!("advertise_host '{}' is not a routable external IP, attempting cloud metadata detection...", advertise);
-                if let Some(ip) = synctv_core::service::resolve_external_ip().await { format!("{ip}:{}", config.webrtc.stun_port) } else {
+                if let Some(ip) = synctv_core::service::resolve_external_ip().await {
+                    format!("{ip}:{}", config.webrtc.stun_port)
+                } else {
                     error!(
                         "Could not resolve a routable external IP for STUN server. \
                          advertise_host '{}' is not routable and cloud metadata detection failed. \
@@ -95,12 +94,14 @@ pub async fn init_webrtc(
         let checker = Arc::new(synctv_core::service::TurnHealthChecker::new());
 
         // Start periodic health checks
-        checker.clone().spawn_health_checks(
-            config.webrtc.turn_server_urls.clone(),
-            cancel,
-        );
+        checker
+            .clone()
+            .spawn_health_checks(config.webrtc.turn_server_urls.clone(), cancel);
 
-        info!("TURN health checker started for {} servers", config.webrtc.turn_server_urls.len());
+        info!(
+            "TURN health checker started for {} servers",
+            config.webrtc.turn_server_urls.len()
+        );
         Some(checker)
     } else {
         info!("TURN health checker disabled (no TURN servers configured)");

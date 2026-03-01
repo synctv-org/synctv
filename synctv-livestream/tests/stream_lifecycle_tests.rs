@@ -7,7 +7,7 @@
 
 #![allow(clippy::unwrap_used)]
 use std::sync::Arc;
-use synctv_core::models::{RoomId, MediaId};
+use synctv_core::models::{MediaId, RoomId};
 
 #[tokio::test]
 async fn test_stream_key_format_parsing() {
@@ -44,18 +44,18 @@ async fn test_stream_key_validation_structure() {
 
     // Invalid stream keys
     let invalid_keys = vec![
-        "",                                      // Empty
-        "room_abc123",                          // Missing media ID
-        "room_abc123/media_xyz789",            // Missing token
-        "room_abc123?token=abc",               // Missing media ID separator
-        "/media_xyz789?token=abc",             // Missing room ID
+        "",                         // Empty
+        "room_abc123",              // Missing media ID
+        "room_abc123/media_xyz789", // Missing token
+        "room_abc123?token=abc",    // Missing media ID separator
+        "/media_xyz789?token=abc",  // Missing room ID
     ];
 
     for invalid in invalid_keys {
         // A valid key must have a non-empty room_id before '/' and contain a token
-        let is_valid = invalid.split_once('/').is_some_and(|(room, rest)| {
-            !room.is_empty() && rest.contains("token=")
-        });
+        let is_valid = invalid
+            .split_once('/')
+            .is_some_and(|(room, rest)| !room.is_empty() && rest.contains("token="));
         assert!(!is_valid, "Key '{invalid}' should be invalid");
     }
 }
@@ -96,7 +96,10 @@ async fn test_rtmp_url_construction() {
 
     let rtmp_url = format!(
         "{}/{}/{}?token={}",
-        server_addr, app_name, room_id.as_str(), media_id.as_str()
+        server_addr,
+        app_name,
+        room_id.as_str(),
+        media_id.as_str()
     );
 
     let stream_key = format!("{}?token={}", media_id.as_str(), token);
@@ -112,7 +115,11 @@ async fn test_hls_playlist_path_generation() {
     let media_id = MediaId::new();
 
     // HLS master playlist path
-    let master_playlist = format!("/hls/{}/{}/master.m3u8", room_id.as_str(), media_id.as_str());
+    let master_playlist = format!(
+        "/hls/{}/{}/master.m3u8",
+        room_id.as_str(),
+        media_id.as_str()
+    );
     assert!(master_playlist.ends_with(".m3u8"));
     assert!(master_playlist.contains(room_id.as_str()));
 
@@ -121,7 +128,11 @@ async fn test_hls_playlist_path_generation() {
     assert!(media_playlist.ends_with(".m3u8"));
 
     // HLS segment path
-    let segment_path = format!("/hls/{}/{}/segment_00001.ts", room_id.as_str(), media_id.as_str());
+    let segment_path = format!(
+        "/hls/{}/{}/segment_00001.ts",
+        room_id.as_str(),
+        media_id.as_str()
+    );
     assert!(segment_path.ends_with(".ts"));
 }
 
@@ -181,8 +192,8 @@ async fn test_stream_authorization_token_required() {
 
 #[tokio::test]
 async fn test_concurrent_stream_publishes() {
-    use std::sync::Arc;
     use std::collections::HashSet;
+    use std::sync::Arc;
     use tokio::sync::Mutex;
 
     // Simulate stream manager
@@ -228,8 +239,8 @@ async fn test_concurrent_stream_publishes() {
 
 #[tokio::test]
 async fn test_stream_cleanup_on_disconnect() {
-    use std::sync::Arc;
     use std::collections::HashMap;
+    use std::sync::Arc;
     use tokio::sync::Mutex;
 
     #[derive(Clone)]
@@ -276,8 +287,8 @@ async fn test_stream_cleanup_on_disconnect() {
 
 #[tokio::test]
 async fn test_stream_duplicate_publish_rejected() {
-    use std::sync::Arc;
     use std::collections::HashSet;
+    use std::sync::Arc;
     use tokio::sync::Mutex;
 
     let active_streams = Arc::new(Mutex::new(HashSet::new()));
@@ -320,8 +331,7 @@ async fn test_stream_metadata_preservation() {
 
     // Serialize/deserialize
     let json = serde_json::to_string(&metadata).expect("Failed to serialize");
-    let deserialized: StreamMetadata = serde_json::from_str(&json)
-        .expect("Failed to deserialize");
+    let deserialized: StreamMetadata = serde_json::from_str(&json).expect("Failed to deserialize");
 
     assert_eq!(metadata, deserialized);
 }
@@ -329,7 +339,7 @@ async fn test_stream_metadata_preservation() {
 #[tokio::test]
 async fn test_stream_bitrate_limits() {
     fn validate_bitrate(bitrate_kbps: u32) -> Result<(), String> {
-        const MIN_BITRATE: u32 = 100;   // 100 Kbps
+        const MIN_BITRATE: u32 = 100; // 100 Kbps
         const MAX_BITRATE: u32 = 10000; // 10 Mbps
 
         if bitrate_kbps < MIN_BITRATE {
@@ -462,9 +472,9 @@ async fn test_stream_tracker_multi_user_multi_room() {
 
 #[tokio::test]
 async fn test_stream_subscriber_guard_disarm() {
-    use synctv_livestream::api::tracker::StreamSubscriberGuard;
-    use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
+    use synctv_livestream::api::tracker::StreamSubscriberGuard;
 
     let called = Arc::new(AtomicBool::new(false));
     let called_clone = called.clone();
@@ -478,14 +488,17 @@ async fn test_stream_subscriber_guard_disarm() {
 
     // Drop should NOT call the callback
     drop(guard);
-    assert!(!called.load(Ordering::SeqCst), "Disarmed guard should not call callback on drop");
+    assert!(
+        !called.load(Ordering::SeqCst),
+        "Disarmed guard should not call callback on drop"
+    );
 }
 
 #[tokio::test]
 async fn test_stream_subscriber_guard_normal_drop() {
-    use synctv_livestream::api::tracker::StreamSubscriberGuard;
-    use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
+    use synctv_livestream::api::tracker::StreamSubscriberGuard;
 
     let called = Arc::new(AtomicBool::new(false));
     let called_clone = called.clone();
@@ -496,15 +509,18 @@ async fn test_stream_subscriber_guard_normal_drop() {
 
     // Drop should call the callback
     drop(guard);
-    assert!(called.load(Ordering::SeqCst), "Guard should call callback on drop");
+    assert!(
+        called.load(Ordering::SeqCst),
+        "Guard should call callback on drop"
+    );
 }
 
 // ========== PublisherInfo validation tests ==========
 
 #[tokio::test]
 async fn test_publisher_info_validate_grpc_address() {
-    use synctv_livestream::relay::PublisherInfo;
     use chrono::Utc;
+    use synctv_livestream::relay::PublisherInfo;
 
     let valid = PublisherInfo {
         node_id: "node1".to_string(),
@@ -542,8 +558,8 @@ async fn test_publisher_info_validate_grpc_address() {
 
 #[tokio::test]
 async fn test_publisher_info_serde_round_trip() {
-    use synctv_livestream::relay::PublisherInfo;
     use chrono::Utc;
+    use synctv_livestream::relay::PublisherInfo;
 
     let info = PublisherInfo {
         node_id: "node-abc".to_string(),
@@ -624,7 +640,10 @@ async fn test_hls_cleanup_task_terminates_on_drop() {
 
     // Verify task is running
     tokio::time::sleep(Duration::from_millis(50)).await;
-    assert!(task_running.load(Ordering::SeqCst), "Task should be running");
+    assert!(
+        task_running.load(Ordering::SeqCst),
+        "Task should be running"
+    );
 
     // Cancel the token and drop the handle
     cancel_token.cancel();
@@ -634,7 +653,10 @@ async fn test_hls_cleanup_task_terminates_on_drop() {
     tokio::time::sleep(Duration::from_millis(200)).await;
 
     // Verify task has stopped
-    assert!(!task_running.load(Ordering::SeqCst), "Task should have stopped after cancellation");
+    assert!(
+        !task_running.load(Ordering::SeqCst),
+        "Task should have stopped after cancellation"
+    );
 }
 
 /// Test that `LivestreamHandle` properly tracks and aborts the HLS cleanup task.
@@ -646,9 +668,9 @@ async fn test_hls_cleanup_task_terminates_on_drop() {
 /// requiring the full `LivestreamServer` infrastructure.
 #[tokio::test]
 async fn test_livestream_handle_tracks_hls_cleanup() {
-    use synctv_xiu::hls::segment_manager::{SegmentManager, CleanupConfig};
-    use synctv_xiu::storage::MemoryStorage;
     use std::time::Duration;
+    use synctv_xiu::hls::segment_manager::{CleanupConfig, SegmentManager};
+    use synctv_xiu::storage::MemoryStorage;
     use tokio_util::sync::CancellationToken;
 
     // Create a simple segment manager with in-memory storage
@@ -674,5 +696,8 @@ async fn test_livestream_handle_tracks_hls_cleanup() {
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     // Verify the handle is finished (abort was successful)
-    assert!(handle.is_finished(), "Cleanup task should be finished after abort");
+    assert!(
+        handle.is_finished(),
+        "Cleanup task should be finished after abort"
+    );
 }

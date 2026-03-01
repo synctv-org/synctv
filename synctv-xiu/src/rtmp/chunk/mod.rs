@@ -16,7 +16,7 @@ pub struct ChunkBasicHeader {
 }
 
 impl ChunkBasicHeader {
-    #[must_use] 
+    #[must_use]
     pub const fn new(fmt: u8, csid: u32) -> Self {
         Self {
             format: fmt,
@@ -57,7 +57,7 @@ pub struct ChunkMessageHeader {
 }
 
 impl ChunkMessageHeader {
-    #[must_use] 
+    #[must_use]
     pub const fn new(timestamp: u32, msg_length: u32, msg_type_id: u8, msg_stream_id: u32) -> Self {
         Self {
             timestamp,
@@ -82,7 +82,7 @@ impl Default for ChunkHeader {
 }
 
 impl ChunkHeader {
-    #[must_use] 
+    #[must_use]
     pub const fn new() -> Self {
         Self {
             basic_header: ChunkBasicHeader::new(0, 0),
@@ -130,7 +130,7 @@ impl Default for ChunkInfo {
 }
 
 impl ChunkInfo {
-    #[must_use] 
+    #[must_use]
     pub const fn new(
         csid: u32,
         format: u8,

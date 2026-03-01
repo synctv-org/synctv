@@ -28,10 +28,7 @@ fn validate_batch_size(count: usize) -> Result<(), String> {
 fn add_media_batch_exceeds_limit_returns_error() {
     // Test that 101 items exceeds the limit
     let result = validate_batch_size(101);
-    assert!(
-        result.is_err(),
-        "Batch of 101 items should be rejected"
-    );
+    assert!(result.is_err(), "Batch of 101 items should be rejected");
     assert!(
         result.unwrap_err().contains("exceeds maximum"),
         "Error message should mention exceeds maximum"
@@ -52,20 +49,14 @@ fn add_media_batch_exactly_100_succeeds() {
 fn add_media_batch_99_succeeds() {
     // Test value just below the limit
     let result = validate_batch_size(99);
-    assert!(
-        result.is_ok(),
-        "Batch of 99 items should be accepted"
-    );
+    assert!(result.is_ok(), "Batch of 99 items should be accepted");
 }
 
 #[test]
 fn add_media_batch_empty_succeeds() {
     // Empty batch should be allowed (service returns early)
     let result = validate_batch_size(0);
-    assert!(
-        result.is_ok(),
-        "Empty batch should be accepted"
-    );
+    assert!(result.is_ok(), "Empty batch should be accepted");
 }
 
 // ============================================================================

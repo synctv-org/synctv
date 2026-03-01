@@ -33,7 +33,10 @@ pub struct HttpFlvState {
 
 impl HttpFlvState {
     #[must_use]
-    pub const fn new(registry: Arc<StreamRegistry>, stream_hub_event_sender: StreamHubEventSender) -> Self {
+    pub const fn new(
+        registry: Arc<StreamRegistry>,
+        stream_hub_event_sender: StreamHubEventSender,
+    ) -> Self {
         Self {
             registry,
             stream_hub_event_sender,
@@ -98,17 +101,18 @@ async fn handle_flv_stream(
     // the idle-cleanup task correctly tracks active viewers.
     // If ensure_pull_stream fails, do NOT proceed — the FLV session must
     // not be spawned without lifecycle tracking.
-    let subscriber_guard: Option<StreamSubscriberGuard> = if let Some(ref infra) = state.infrastructure {
-        match infra.ensure_pull_stream(&room_id, media_id, None).await {
-            Ok(guard) => Some(guard),
-            Err(e) => {
-                warn!("Failed to create subscriber guard for FLV session: {}", e);
-                return Err(StatusCode::SERVICE_UNAVAILABLE);
+    let subscriber_guard: Option<StreamSubscriberGuard> =
+        if let Some(ref infra) = state.infrastructure {
+            match infra.ensure_pull_stream(&room_id, media_id, None).await {
+                Ok(guard) => Some(guard),
+                Err(e) => {
+                    warn!("Failed to create subscriber guard for FLV session: {}", e);
+                    return Err(StatusCode::SERVICE_UNAVAILABLE);
+                }
             }
-        }
-    } else {
-        None
-    };
+        } else {
+            None
+        };
 
     // Spawn FLV session using canonical (room_id, media_id) StreamIdentifier
     let mut flv_session = HttpFlvSession::new(
@@ -160,7 +164,8 @@ mod tests {
     #[test]
     fn test_http_flv_session_creation() {
         let (event_sender, _) = tokio::sync::mpsc::channel(64);
-        let (response_tx, _response_rx) = mpsc::channel(synctv_xiu::httpflv::FLV_RESPONSE_CHANNEL_CAPACITY);
+        let (response_tx, _response_rx) =
+            mpsc::channel(synctv_xiu::httpflv::FLV_RESPONSE_CHANNEL_CAPACITY);
 
         let session = HttpFlvSession::new(
             "live".to_string(),
@@ -179,7 +184,8 @@ mod tests {
     #[test]
     fn test_flv_session_defaults() {
         let (event_sender, _) = tokio::sync::mpsc::channel(64);
-        let (response_tx, _response_rx) = mpsc::channel(synctv_xiu::httpflv::FLV_RESPONSE_CHANNEL_CAPACITY);
+        let (response_tx, _response_rx) =
+            mpsc::channel(synctv_xiu::httpflv::FLV_RESPONSE_CHANNEL_CAPACITY);
 
         let session = HttpFlvSession::new(
             "live".to_string(),

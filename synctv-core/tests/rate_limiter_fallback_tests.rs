@@ -7,7 +7,6 @@
 #![allow(clippy::unwrap_used)]
 #![allow(clippy::assertions_on_constants)]
 
-
 // ============================================================================
 // Fallback behavior documentation tests
 // ============================================================================

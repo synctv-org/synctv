@@ -17,9 +17,9 @@
 //!    This means the first keyframe creates 2 GOPs (initial + new), not 1.
 
 #![allow(clippy::unwrap_used)]
+use bytes::Bytes;
 use synctv_xiu::rtmp::cache::gop::{Gop, Gops, DEFAULT_MAX_TOTAL_BYTES};
 use synctv_xiu::streamhub::define::FrameData;
-use bytes::Bytes;
 
 // ==================================================================
 // Helper Functions
@@ -156,7 +156,11 @@ fn test_gops_eviction_on_count_limit() {
 
     // Add first keyframe - creates new GOP, now we have 2 GOPs
     gops.save_frame_data(make_keyframe(0, 1000), true);
-    assert_eq!(gops.gop_count(), 2, "First keyframe creates 2 GOPs (initial + new)");
+    assert_eq!(
+        gops.gop_count(),
+        2,
+        "First keyframe creates 2 GOPs (initial + new)"
+    );
 
     // Add second keyframe - creates another GOP, now we have 3 GOPs
     gops.save_frame_data(make_keyframe(1000, 1000), true);
@@ -164,11 +168,19 @@ fn test_gops_eviction_on_count_limit() {
 
     // Add third keyframe - would create 4th but limit is 3, so eviction happens
     gops.save_frame_data(make_keyframe(2000, 1000), true);
-    assert_eq!(gops.gop_count(), 3, "Should still have 3 GOPs after eviction");
+    assert_eq!(
+        gops.gop_count(),
+        3,
+        "Should still have 3 GOPs after eviction"
+    );
 
     // Add fourth keyframe - more eviction
     gops.save_frame_data(make_keyframe(3000, 1000), true);
-    assert_eq!(gops.gop_count(), 3, "Should still have 3 GOPs after more eviction");
+    assert_eq!(
+        gops.gop_count(),
+        3,
+        "Should still have 3 GOPs after more eviction"
+    );
 
     // Verify GOP count is maintained
     let gops_ref = gops.get_gops();
@@ -224,7 +236,11 @@ fn test_gops_many_gops_eviction() {
     // Should never exceed max GOP count (accounting for implementation detail)
     // Max GOPs = 5, but implementation creates new GOP before adding keyframe
     // so we can have at most (size + 1) GOPs temporarily
-    assert!(gops.gop_count() <= 6, "GOP count {} should be <= size+1", gops.gop_count());
+    assert!(
+        gops.gop_count() <= 6,
+        "GOP count {} should be <= size+1",
+        gops.gop_count()
+    );
 }
 
 // ==================================================================
@@ -471,7 +487,11 @@ fn test_gops_rapid_creation() {
     }
 
     // Should never exceed max significantly (implementation may allow size+1)
-    assert!(gops.gop_count() <= 11, "GOP count {} should be <= 11", gops.gop_count());
+    assert!(
+        gops.gop_count() <= 11,
+        "GOP count {} should be <= 11",
+        gops.gop_count()
+    );
 }
 
 /// Test `is_enabled` matches size > 0

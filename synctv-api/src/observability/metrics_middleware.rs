@@ -1,10 +1,6 @@
 //! Axum middleware for collecting HTTP request metrics.
 
-use axum::{
-    extract::Request,
-    middleware::Next,
-    response::Response,
-};
+use axum::{extract::Request, middleware::Next, response::Response};
 use std::time::Instant;
 
 use super::metrics;

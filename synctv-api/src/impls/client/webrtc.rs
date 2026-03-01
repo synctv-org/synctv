@@ -2,8 +2,8 @@
 
 use synctv_core::models::{RoomId, UserId};
 
-use crate::impls::ApiError;
 use super::ClientApiImpl;
+use crate::impls::ApiError;
 
 impl ClientApiImpl {
     /// Get ICE servers configuration for WebRTC.
@@ -17,10 +17,12 @@ impl ClientApiImpl {
         room_id: &RoomId,
         user_id: &UserId,
     ) -> Result<crate::proto::client::GetIceServersResponse, ApiError> {
-        use crate::proto::client::{IceServer, GetIceServersResponse};
+        use crate::proto::client::{GetIceServersResponse, IceServer};
 
         // Check membership
-        self.room_service.check_membership(room_id, user_id).await
+        self.room_service
+            .check_membership(room_id, user_id)
+            .await
             .map_err(|e| ApiError::Authorization(format!("Forbidden: {e}")))?;
 
         let webrtc_config = &self.config.webrtc;
@@ -63,7 +65,9 @@ impl ClientApiImpl {
 
             // Filter out unhealthy TURN servers
             let turn_urls = if let Some(checker) = &self.turn_health_checker {
-                checker.filter_healthy_servers(&webrtc_config.turn_server_urls).await
+                checker
+                    .filter_healthy_servers(&webrtc_config.turn_server_urls)
+                    .await
             } else {
                 // No health checker configured - use all servers
                 webrtc_config.turn_server_urls.clone()
@@ -132,7 +136,9 @@ impl ClientApiImpl {
         use crate::proto::client::GetNetworkQualityResponse;
 
         // Check membership
-        self.room_service.check_membership(room_id, user_id).await
+        self.room_service
+            .check_membership(room_id, user_id)
+            .await
             .map_err(|e| ApiError::Authorization(format!("Forbidden: {e}")))?;
 
         // SFU removed: network quality is now handled peer-to-peer

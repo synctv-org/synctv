@@ -6,8 +6,8 @@ use chrono::{DateTime, Utc};
 use failsafe::{backoff, failure_policy, Config as CbConfig};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::Arc;
 use tokio::sync::RwLock;
 use tokio::time::{timeout, Duration};
 use tokio_util::sync::CancellationToken;
@@ -44,7 +44,8 @@ const NODES_CACHE_TTL_SECS: u64 = 2;
 ///
 /// Opens after 3 consecutive failures. Uses exponential backoff starting at
 /// 10 seconds up to 60 seconds before allowing probe requests in half-open state.
-fn create_redis_circuit_breaker() -> failsafe::StateMachine<failure_policy::ConsecutiveFailures<backoff::Exponential>, ()> {
+fn create_redis_circuit_breaker(
+) -> failsafe::StateMachine<failure_policy::ConsecutiveFailures<backoff::Exponential>, ()> {
     let backoff = backoff::exponential(Duration::from_secs(10), Duration::from_secs(60));
     let policy = failure_policy::consecutive_failures(3, backoff);
     CbConfig::new().failure_policy(policy).build()
@@ -162,7 +163,8 @@ impl std::fmt::Display for ClusterMode {
 }
 
 /// Type alias for our failsafe circuit breaker
-type RedisCircuitBreaker = failsafe::StateMachine<failure_policy::ConsecutiveFailures<backoff::Exponential>, ()>;
+type RedisCircuitBreaker =
+    failsafe::StateMachine<failure_policy::ConsecutiveFailures<backoff::Exponential>, ()>;
 
 /// Initial backoff duration for re-registration after heartbeat failure
 const INITIAL_REREGISTER_BACKOFF_SECS: u64 = 1;
@@ -224,7 +226,12 @@ impl NodeRegistry {
     ///
     /// The `key_prefix` is prepended to cluster node keys in Redis (e.g. `"synctv:"` produces
     /// keys like `synctv:cluster:nodes:<node_id>`). Pass an empty string to use unprefixed keys.
-    pub fn new(redis_client: redis::Client, node_id: String, heartbeat_timeout_secs: i64, key_prefix: &str) -> Result<Self> {
+    pub fn new(
+        redis_client: redis::Client,
+        node_id: String,
+        heartbeat_timeout_secs: i64,
+        key_prefix: &str,
+    ) -> Result<Self> {
         let nodes_cache = moka::future::Cache::builder()
             .time_to_live(std::time::Duration::from_secs(NODES_CACHE_TTL_SECS))
             .max_capacity(1)
@@ -262,7 +269,11 @@ impl NodeRegistry {
     /// - Use `merge_dns_peers` or `test_insert_local` to populate the local cache
     ///
     /// This supports the architecture where "non-cluster mode can work without Redis".
-    pub fn new_local_only(node_id: String, heartbeat_timeout_secs: i64, key_prefix: &str) -> Result<Self> {
+    pub fn new_local_only(
+        node_id: String,
+        heartbeat_timeout_secs: i64,
+        key_prefix: &str,
+    ) -> Result<Self> {
         let nodes_cache = moka::future::Cache::builder()
             .time_to_live(std::time::Duration::from_secs(NODES_CACHE_TTL_SECS))
             .max_capacity(1)
@@ -330,7 +341,8 @@ impl NodeRegistry {
             let ping_result = timeout(
                 Duration::from_secs(2),
                 redis::cmd("PING").query_async::<String>(&mut conn_clone),
-            ).await;
+            )
+            .await;
 
             guard = self.cached_conn.lock().await; // Re-acquire lock
 
@@ -346,7 +358,10 @@ impl NodeRegistry {
                 }
                 Ok(Err(ref e)) => {
                     // PING failed, clear cache and create new connection
-                    tracing::debug!("Redis connection health check PING failed: {}, reconnecting", e);
+                    tracing::debug!(
+                        "Redis connection health check PING failed: {}, reconnecting",
+                        e
+                    );
                     *guard = None;
                 }
                 Err(_) => {
@@ -486,17 +501,18 @@ impl NodeRegistry {
                 }
 
                 // Attempt to connect and PING
-                let probe_result = tokio::time::timeout(
-                    tokio::time::Duration::from_secs(3),
-                    async {
+                let probe_result =
+                    tokio::time::timeout(tokio::time::Duration::from_secs(3), async {
                         let mut conn = client.get_multiplexed_async_connection().await?;
                         redis::cmd("PING").query_async::<String>(&mut conn).await
-                    }
-                ).await;
+                    })
+                    .await;
 
                 match probe_result {
                     Ok(Ok(_)) => {
-                        tracing::info!("Circuit breaker health probe succeeded, transitioning to half-open");
+                        tracing::info!(
+                            "Circuit breaker health probe succeeded, transitioning to half-open"
+                        );
                         breaker.on_success();
                         break; // Allow next operation to attempt
                     }
@@ -513,7 +529,10 @@ impl NodeRegistry {
 
     /// Record the result of a complete Redis operation (connection + command).
     /// Also detects Sentinel failover errors and clears the cached connection.
-    fn record_operation_result<T: std::fmt::Debug>(&self, result: &std::result::Result<T, impl std::fmt::Display>) {
+    fn record_operation_result<T: std::fmt::Debug>(
+        &self,
+        result: &std::result::Result<T, impl std::fmt::Display>,
+    ) {
         // Skip circuit breaker operations in local-only mode
         if self.local_only {
             return;
@@ -583,8 +602,13 @@ impl NodeRegistry {
             let mut node_info = NodeInfo::new(self.node_id.clone(), grpc_address, http_address);
             node_info.epoch = new_epoch;
             node_info.last_heartbeat = Utc::now();
-            node_info.metadata.insert("local_epoch".to_string(), local_epoch.to_string());
-            node_info.metadata.insert("registered_at".to_string(), chrono::Utc::now().timestamp().to_string());
+            node_info
+                .metadata
+                .insert("local_epoch".to_string(), local_epoch.to_string());
+            node_info.metadata.insert(
+                "registered_at".to_string(),
+                chrono::Utc::now().timestamp().to_string(),
+            );
 
             let mut nodes = self.local_nodes.write().await;
             nodes.insert(self.node_id.clone(), node_info);
@@ -609,9 +633,14 @@ impl NodeRegistry {
 
         // Create node info template
         let mut node_info = NodeInfo::new(self.node_id.clone(), grpc_address, http_address);
-        node_info.metadata.insert("local_epoch".to_string(), local_epoch.to_string());
+        node_info
+            .metadata
+            .insert("local_epoch".to_string(), local_epoch.to_string());
         // Record registration timestamp for load balancer warmup logic
-        node_info.metadata.insert("registered_at".to_string(), chrono::Utc::now().timestamp().to_string());
+        node_info.metadata.insert(
+            "registered_at".to_string(),
+            chrono::Utc::now().timestamp().to_string(),
+        );
         let node_json = serde_json::to_string(&node_info)
             .map_err(|e| Error::Serialization(format!("Failed to serialize node info: {e}")))?;
 
@@ -755,8 +784,9 @@ impl NodeRegistry {
                 let http = info.http_address.clone();
                 info.last_heartbeat = now;
                 info.epoch = current_epoch;
-                let json = serde_json::to_string(&info)
-                    .map_err(|e| Error::Serialization(format!("Failed to serialize node info: {e}")))?;
+                let json = serde_json::to_string(&info).map_err(|e| {
+                    Error::Serialization(format!("Failed to serialize node info: {e}"))
+                })?;
                 (json, grpc, http)
             };
 
@@ -812,7 +842,9 @@ impl NodeRegistry {
             )
             .await
             .map_err(|_| Error::Timeout("Redis heartbeat script timed out".to_string()))
-            .and_then(|r| r.map_err(|e| Error::Database(format!("Redis heartbeat script failed: {e}"))));
+            .and_then(|r| {
+                r.map_err(|e| Error::Database(format!("Redis heartbeat script failed: {e}")))
+            });
             self.record_operation_result(&op_result);
             let result = op_result?;
 
@@ -964,14 +996,13 @@ impl NodeRegistry {
 
             let op_result: std::result::Result<i64, Error> = timeout(
                 Duration::from_secs(REDIS_TIMEOUT_SECS),
-                script
-                    .key(&key)
-                    .arg(current_epoch)
-                    .invoke_async(&mut conn),
+                script.key(&key).arg(current_epoch).invoke_async(&mut conn),
             )
             .await
             .map_err(|_| Error::Timeout("Redis unregister script timed out".to_string()))
-            .and_then(|r| r.map_err(|e| Error::Database(format!("Redis unregister script failed: {e}"))));
+            .and_then(|r| {
+                r.map_err(|e| Error::Database(format!("Redis unregister script failed: {e}")))
+            });
             self.record_operation_result(&op_result);
             let result = op_result?;
 
@@ -1038,7 +1069,9 @@ impl NodeRegistry {
             )
             .await
             .map_err(|_| Error::Timeout("Redis register_remote script timed out".to_string()))
-            .and_then(|r| r.map_err(|e| Error::Database(format!("Redis register_remote script failed: {e}"))));
+            .and_then(|r| {
+                r.map_err(|e| Error::Database(format!("Redis register_remote script failed: {e}")))
+            });
             self.record_operation_result(&op_result);
             let result = op_result?;
 
@@ -1085,7 +1118,9 @@ impl NodeRegistry {
         )
         .await
         .map_err(|_| Error::Timeout("Redis heartbeat script timed out".to_string()))
-        .and_then(|r| r.map_err(|e| Error::Database(format!("Redis heartbeat script failed: {e}"))));
+        .and_then(|r| {
+            r.map_err(|e| Error::Database(format!("Redis heartbeat script failed: {e}")))
+        });
         self.record_operation_result(&op_result);
         let result = op_result?;
 
@@ -1105,7 +1140,11 @@ impl NodeRegistry {
     /// Uses the same atomic Lua script pattern as `unregister()` to validate
     /// that the existing epoch is not newer than what we expect, preventing
     /// stale deregister requests from removing re-registered nodes.
-    pub async fn unregister_remote(&self, node_id: &str, expected_epoch: Option<u64>) -> Result<()> {
+    pub async fn unregister_remote(
+        &self,
+        node_id: &str,
+        expected_epoch: Option<u64>,
+    ) -> Result<()> {
         {
             let mut conn = self.get_conn_with_breaker().await?;
 
@@ -1138,14 +1177,15 @@ impl NodeRegistry {
 
                 let op_result: std::result::Result<i64, Error> = timeout(
                     Duration::from_secs(REDIS_TIMEOUT_SECS),
-                    script
-                        .key(&key)
-                        .arg(epoch)
-                        .invoke_async(&mut conn),
+                    script.key(&key).arg(epoch).invoke_async(&mut conn),
                 )
                 .await
                 .map_err(|_| Error::Timeout("Redis unregister_remote script timed out".to_string()))
-                .and_then(|r| r.map_err(|e| Error::Database(format!("Redis unregister_remote script failed: {e}"))));
+                .and_then(|r| {
+                    r.map_err(|e| {
+                        Error::Database(format!("Redis unregister_remote script failed: {e}"))
+                    })
+                });
                 self.record_operation_result(&op_result);
                 let result = op_result?;
 
@@ -1185,8 +1225,18 @@ impl NodeRegistry {
                     script.key(&key).invoke_async(&mut conn),
                 )
                 .await
-                .map_err(|_| Error::Timeout("Redis unregister_remote (no epoch) script timed out".to_string()))
-                .and_then(|r| r.map_err(|e| Error::Database(format!("Redis unregister_remote (no epoch) script failed: {e}"))));
+                .map_err(|_| {
+                    Error::Timeout(
+                        "Redis unregister_remote (no epoch) script timed out".to_string(),
+                    )
+                })
+                .and_then(|r| {
+                    r.map_err(|e| {
+                        Error::Database(format!(
+                            "Redis unregister_remote (no epoch) script failed: {e}"
+                        ))
+                    })
+                });
                 self.record_operation_result(&op_result);
                 let result = op_result?;
 
@@ -1345,8 +1395,7 @@ impl NodeRegistry {
 
             // Remove local nodes that are absent from Redis AND stale
             local_nodes.retain(|node_id, info| {
-                redis_node_ids.contains(node_id)
-                    || !info.is_stale(self.heartbeat_timeout_secs)
+                redis_node_ids.contains(node_id) || !info.is_stale(self.heartbeat_timeout_secs)
             });
 
             Ok(nodes)
@@ -1360,9 +1409,7 @@ impl NodeRegistry {
         let key = self.node_key(node_id);
         let op_result: std::result::Result<Option<String>, Error> = timeout(
             Duration::from_secs(REDIS_TIMEOUT_SECS),
-            redis::cmd("GET")
-                .arg(&key)
-                .query_async(&mut conn),
+            redis::cmd("GET").arg(&key).query_async(&mut conn),
         )
         .await
         .map_err(|_| Error::Timeout("Redis GET timed out".to_string()))
@@ -1371,8 +1418,9 @@ impl NodeRegistry {
         let value = op_result?;
 
         if let Some(value) = value {
-            let node_info: NodeInfo = serde_json::from_str(&value)
-                .map_err(|e| Error::Serialization(format!("Failed to deserialize node info: {e}")))?;
+            let node_info: NodeInfo = serde_json::from_str(&value).map_err(|e| {
+                Error::Serialization(format!("Failed to deserialize node info: {e}"))
+            })?;
 
             if node_info.is_stale(self.heartbeat_timeout_secs) {
                 return Ok(None);
@@ -1420,7 +1468,8 @@ impl NodeRegistry {
     pub async fn get_all_nodes_local(&self) -> Vec<NodeInfo> {
         let timeout = self.heartbeat_timeout_secs;
         let nodes = self.local_nodes.read().await;
-        nodes.values()
+        nodes
+            .values()
             .filter(|n| !n.is_stale(timeout))
             .cloned()
             .collect()
@@ -1546,7 +1595,8 @@ impl NodeRegistry {
             .unwrap_or_default()
             .as_millis() as u64;
 
-        self.last_reregister_attempt.store(now_ms, Ordering::Relaxed);
+        self.last_reregister_attempt
+            .store(now_ms, Ordering::Relaxed);
 
         // Increase backoff exponentially, up to max
         let current_backoff = self.reregister_backoff_ms.load(Ordering::Relaxed);
@@ -1554,7 +1604,8 @@ impl NodeRegistry {
             current_backoff * REREGISTER_BACKOFF_MULTIPLIER,
             MAX_REREGISTER_BACKOFF_SECS * 1000,
         );
-        self.reregister_backoff_ms.store(new_backoff, Ordering::Relaxed);
+        self.reregister_backoff_ms
+            .store(new_backoff, Ordering::Relaxed);
 
         tracing::debug!(
             previous_backoff_ms = current_backoff,
@@ -1609,7 +1660,8 @@ impl NodeRegistry {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_millis() as u64;
-        self.last_reregister_attempt.store(now_ms, Ordering::Relaxed);
+        self.last_reregister_attempt
+            .store(now_ms, Ordering::Relaxed);
     }
 }
 
@@ -1652,7 +1704,8 @@ mod tests {
             "test".to_string(),
             "localhost:50051".to_string(),
             "localhost:8080".to_string(),
-        ).with_epoch(5);
+        )
+        .with_epoch(5);
 
         assert_eq!(node.epoch, 5);
     }
@@ -1687,7 +1740,8 @@ mod tests {
             "test_node".to_string(),
             "localhost:50051".to_string(),
             "localhost:8080".to_string(),
-        ).with_epoch(10);
+        )
+        .with_epoch(10);
 
         let token = node.fencing_token();
         assert_eq!(token.node_id, "test_node");
@@ -1697,7 +1751,13 @@ mod tests {
     #[test]
     fn test_node_registry_creation_and_fencing_token() {
         // redis::Client::open succeeds even without a running Redis server
-        let registry = NodeRegistry::new(redis::Client::open("redis://localhost:6379").unwrap(), "test_node".to_string(), 30, "synctv:").unwrap();
+        let registry = NodeRegistry::new(
+            redis::Client::open("redis://localhost:6379").unwrap(),
+            "test_node".to_string(),
+            30,
+            "synctv:",
+        )
+        .unwrap();
 
         // Get fencing token
         let token = registry.current_fencing_token();
@@ -1740,7 +1800,13 @@ mod tests {
 
     #[tokio::test]
     async fn test_merge_dns_peers_inserts_new() {
-        let registry = NodeRegistry::new(redis::Client::open("redis://localhost:6379").unwrap(), "self".to_string(), 30, "synctv:").unwrap();
+        let registry = NodeRegistry::new(
+            redis::Client::open("redis://localhost:6379").unwrap(),
+            "self".to_string(),
+            30,
+            "synctv:",
+        )
+        .unwrap();
 
         let peer = NodeInfo::new(
             "dns-peer-1".to_string(),
@@ -1757,16 +1823,25 @@ mod tests {
 
     #[tokio::test]
     async fn test_merge_dns_peers_does_not_overwrite_existing() {
-        let registry = NodeRegistry::new(redis::Client::open("redis://localhost:6379").unwrap(), "self".to_string(), 30, "synctv:").unwrap();
+        let registry = NodeRegistry::new(
+            redis::Client::open("redis://localhost:6379").unwrap(),
+            "self".to_string(),
+            30,
+            "synctv:",
+        )
+        .unwrap();
 
         // Pre-populate local cache directly (simulating a prior registration)
         {
             let mut nodes = registry.local_nodes.write().await;
-            nodes.insert("self".to_string(), NodeInfo::new(
+            nodes.insert(
                 "self".to_string(),
-                "10.0.0.1:50051".to_string(),
-                "10.0.0.1:8080".to_string(),
-            ));
+                NodeInfo::new(
+                    "self".to_string(),
+                    "10.0.0.1:50051".to_string(),
+                    "10.0.0.1:8080".to_string(),
+                ),
+            );
         }
 
         // Try to merge a DNS peer with the same node_id ("self")
@@ -1839,11 +1914,7 @@ mod tests {
         assert!(!node_with_empty_http.grpc_address.is_empty());
         assert!(node_with_empty_http.http_address.is_empty());
 
-        let node_with_both_empty = NodeInfo::new(
-            "test".to_string(),
-            String::new(),
-            String::new(),
-        );
+        let node_with_both_empty = NodeInfo::new("test".to_string(), String::new(), String::new());
         assert!(node_with_both_empty.grpc_address.is_empty());
         assert!(node_with_both_empty.http_address.is_empty());
 

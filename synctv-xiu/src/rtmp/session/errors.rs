@@ -1,4 +1,6 @@
 use {
+    crate::bytesio::{bytes_errors::BytesWriteError, bytesio_errors::BytesIOError},
+    crate::flv::amf0::errors::Amf0WriteError,
     crate::rtmp::{
         cache::errors::CacheError,
         chunk::errors::{PackError, UnpackError},
@@ -9,10 +11,8 @@ use {
         protocol_control_messages::errors::ControlMessagesError,
         user_control_messages::errors::EventMessagesError,
     },
-    crate::bytesio::{bytes_errors::BytesWriteError, bytesio_errors::BytesIOError},
     crate::streamhub::errors::StreamHubError,
     tokio::sync::oneshot::error::RecvError,
-    crate::flv::amf0::errors::Amf0WriteError,
 };
 
 #[derive(Debug, thiserror::Error)]
@@ -90,84 +90,112 @@ pub enum SessionErrorValue {
 
 impl From<Amf0WriteError> for SessionError {
     fn from(error: Amf0WriteError) -> Self {
-        Self { value: error.into() }
+        Self {
+            value: error.into(),
+        }
     }
 }
 
 impl From<BytesWriteError> for SessionError {
     fn from(error: BytesWriteError) -> Self {
-        Self { value: error.into() }
+        Self {
+            value: error.into(),
+        }
     }
 }
 
 impl From<UnpackError> for SessionError {
     fn from(error: UnpackError) -> Self {
-        Self { value: error.into() }
+        Self {
+            value: error.into(),
+        }
     }
 }
 
 impl From<MessageError> for SessionError {
     fn from(error: MessageError) -> Self {
-        Self { value: error.into() }
+        Self {
+            value: error.into(),
+        }
     }
 }
 
 impl From<ControlMessagesError> for SessionError {
     fn from(error: ControlMessagesError) -> Self {
-        Self { value: error.into() }
+        Self {
+            value: error.into(),
+        }
     }
 }
 
 impl From<NetConnectionError> for SessionError {
     fn from(error: NetConnectionError) -> Self {
-        Self { value: error.into() }
+        Self {
+            value: error.into(),
+        }
     }
 }
 
 impl From<NetStreamError> for SessionError {
     fn from(error: NetStreamError) -> Self {
-        Self { value: error.into() }
+        Self {
+            value: error.into(),
+        }
     }
 }
 
 impl From<EventMessagesError> for SessionError {
     fn from(error: EventMessagesError) -> Self {
-        Self { value: error.into() }
+        Self {
+            value: error.into(),
+        }
     }
 }
 
 impl From<BytesIOError> for SessionError {
     fn from(error: BytesIOError) -> Self {
-        Self { value: error.into() }
+        Self {
+            value: error.into(),
+        }
     }
 }
 
 impl From<PackError> for SessionError {
     fn from(error: PackError) -> Self {
-        Self { value: error.into() }
+        Self {
+            value: error.into(),
+        }
     }
 }
 
 impl From<HandshakeError> for SessionError {
     fn from(error: HandshakeError) -> Self {
-        Self { value: error.into() }
+        Self {
+            value: error.into(),
+        }
     }
 }
 
 impl From<CacheError> for SessionError {
     fn from(error: CacheError) -> Self {
-        Self { value: error.into() }
+        Self {
+            value: error.into(),
+        }
     }
 }
 
 impl From<RecvError> for SessionError {
     fn from(error: RecvError) -> Self {
-        Self { value: error.into() }
+        Self {
+            value: error.into(),
+        }
     }
 }
 
 impl From<StreamHubError> for SessionError {
     fn from(error: StreamHubError) -> Self {
-        Self { value: error.into() }
+        Self {
+            value: error.into(),
+        }
     }
 }

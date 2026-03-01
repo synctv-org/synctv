@@ -1,10 +1,10 @@
+use sha2::{Digest, Sha256};
+use std::fmt::Debug;
 use std::sync::Arc;
-use sha2::{Sha256, Digest};
 use subtle::ConstantTimeEq;
 use synctv_core::service::auth::{JwtService, JwtValidator};
 use tonic::{Request, Status};
 use tracing::warn;
-use std::fmt::Debug;
 
 /// Constant-time secret comparison to prevent timing attacks.
 ///
@@ -46,7 +46,7 @@ pub struct AuthInterceptor {
 }
 
 impl AuthInterceptor {
-    #[must_use] 
+    #[must_use]
     pub fn new(jwt_service: JwtService) -> Self {
         Self {
             jwt_validator: Arc::new(JwtValidator::new(Arc::new(jwt_service))),
@@ -133,9 +133,14 @@ impl AuthInterceptor {
     /// This is used by endpoints that support optional authentication (e.g. `OAuth2` exchange
     /// for bind flows — login flows need no auth, but bind flows require the caller to prove
     /// their identity).
-    #[must_use] 
-    pub fn try_extract_user_id(&self, metadata: &tonic::metadata::MetadataMap) -> Option<synctv_core::models::UserId> {
-        self.jwt_validator.validate_grpc_extract_user_id(metadata).ok()
+    #[must_use]
+    pub fn try_extract_user_id(
+        &self,
+        metadata: &tonic::metadata::MetadataMap,
+    ) -> Option<synctv_core::models::UserId> {
+        self.jwt_validator
+            .validate_grpc_extract_user_id(metadata)
+            .ok()
     }
 
     /// Extract the raw bearer token from gRPC metadata.
@@ -168,7 +173,7 @@ impl std::fmt::Debug for AuthInterceptor {
 pub struct LoggingInterceptor;
 
 impl LoggingInterceptor {
-    #[must_use] 
+    #[must_use]
     pub const fn new() -> Self {
         Self
     }
@@ -195,12 +200,16 @@ impl LoggingInterceptor {
 ///
 /// Shared helper to avoid duplicating this pattern across gRPC service files.
 #[allow(clippy::result_large_err)]
-pub fn extract_user_id<T: std::fmt::Debug>(request: &Request<T>) -> Result<synctv_core::models::UserId, Status> {
+pub fn extract_user_id<T: std::fmt::Debug>(
+    request: &Request<T>,
+) -> Result<synctv_core::models::UserId, Status> {
     let user_context = request
         .extensions()
         .get::<UserContext>()
         .ok_or_else(|| Status::unauthenticated("Authentication required"))?;
-    Ok(synctv_core::models::UserId::from_string(user_context.user_id.clone()))
+    Ok(synctv_core::models::UserId::from_string(
+        user_context.user_id.clone(),
+    ))
 }
 
 impl Default for LoggingInterceptor {

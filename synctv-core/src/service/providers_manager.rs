@@ -16,8 +16,11 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 
 /// Factory function type for creating `MediaProvider` instances
-pub type ProviderFactory =
-    Box<dyn Fn(&str, &Value, Arc<RemoteProviderManager>) -> Result<Arc<dyn MediaProvider>> + Send + Sync>;
+pub type ProviderFactory = Box<
+    dyn Fn(&str, &Value, Arc<RemoteProviderManager>) -> Result<Arc<dyn MediaProvider>>
+        + Send
+        + Sync,
+>;
 
 /// Providers Manager
 ///
@@ -55,7 +58,7 @@ pub struct ProvidersManager {
 
 impl ProvidersManager {
     /// Create a new `ProvidersManager`
-    #[must_use] 
+    #[must_use]
     pub fn new(instance_manager: Arc<RemoteProviderManager>) -> Self {
         let mut manager = Self {
             factories: HashMap::new(),
@@ -70,7 +73,7 @@ impl ProvidersManager {
     }
 
     /// Get a reference to the provider instance manager
-    #[must_use] 
+    #[must_use]
     pub const fn instance_manager(&self) -> &Arc<RemoteProviderManager> {
         &self.instance_manager
     }
@@ -209,10 +212,7 @@ impl ProvidersManager {
                     .unwrap_or_else(|| {
                         // Fallback: derive from instance_id (e.g., "alist_main" -> "alist")
                         // split('_').next() always returns Some for non-empty strings
-                        instance_id
-                            .split('_')
-                            .next()
-                            .unwrap_or(instance_id)
+                        instance_id.split('_').next().unwrap_or(instance_id)
                     });
 
                 // Check if this provider type is registered
@@ -283,15 +283,17 @@ impl ProvidersManager {
         instance_id: &str,
         config: &Value,
     ) -> Result<Arc<dyn MediaProvider>> {
-        let factory = self
-            .factories
-            .get(provider_type)
-            .ok_or_else(|| crate::Error::NotFound(format!("Unknown provider type: {provider_type}")))?;
+        let factory = self.factories.get(provider_type).ok_or_else(|| {
+            crate::Error::NotFound(format!("Unknown provider type: {provider_type}"))
+        })?;
 
         let provider = factory(instance_id, config, self.instance_manager.clone())?;
 
         // Store in instances map (singleton)
-        self.instances.write().await.insert(instance_id.to_string(), provider.clone());
+        self.instances
+            .write()
+            .await
+            .insert(instance_id.to_string(), provider.clone());
 
         tracing::info!(
             "Created provider instance: {} (type: {})",
@@ -324,13 +326,13 @@ impl ProvidersManager {
     }
 
     /// Check if a provider type is registered
-    #[must_use] 
+    #[must_use]
     pub fn has_factory(&self, provider_type: &str) -> bool {
         self.factories.contains_key(provider_type)
     }
 
     /// List all registered provider types
-    #[must_use] 
+    #[must_use]
     pub fn list_types(&self) -> Vec<String> {
         self.factories.keys().cloned().collect()
     }
@@ -397,7 +399,9 @@ mod tests {
 
         // Create provider with empty config (no timeout)
         let config = serde_json::json!({});
-        let provider = manager.create_provider("alist", "test_alist", &config).await;
+        let provider = manager
+            .create_provider("alist", "test_alist", &config)
+            .await;
         assert!(provider.is_ok());
 
         // Verify the provider was stored
@@ -417,7 +421,9 @@ mod tests {
         let config = serde_json::json!({
             "timeout_seconds": 30
         });
-        let provider = manager.create_provider("alist", "test_alist_timeout", &config).await;
+        let provider = manager
+            .create_provider("alist", "test_alist_timeout", &config)
+            .await;
         assert!(provider.is_ok());
 
         // Verify the provider was stored
@@ -437,7 +443,9 @@ mod tests {
         let config = serde_json::json!({
             "timeout_seconds": 45
         });
-        let provider = manager.create_provider("bilibili", "test_bilibili_timeout", &config).await;
+        let provider = manager
+            .create_provider("bilibili", "test_bilibili_timeout", &config)
+            .await;
         assert!(provider.is_ok());
 
         // Verify the provider was stored
@@ -457,7 +465,9 @@ mod tests {
         let config = serde_json::json!({
             "timeout_seconds": 60
         });
-        let provider = manager.create_provider("emby", "test_emby_timeout", &config).await;
+        let provider = manager
+            .create_provider("emby", "test_emby_timeout", &config)
+            .await;
         assert!(provider.is_ok());
 
         // Verify the provider was stored
@@ -477,7 +487,9 @@ mod tests {
         let config = serde_json::json!({
             "timeout_seconds": "invalid"
         });
-        let provider = manager.create_provider("alist", "test_alist_invalid", &config).await;
+        let provider = manager
+            .create_provider("alist", "test_alist_invalid", &config)
+            .await;
         // Should still succeed, just ignore the invalid timeout
         assert!(provider.is_ok());
     }
@@ -499,7 +511,9 @@ mod tests {
         let config = serde_json::json!({
             "base_url": "rtmp://localhost/live"
         });
-        let provider = manager.create_provider("rtmp", "test_rtmp_valid", &config).await;
+        let provider = manager
+            .create_provider("rtmp", "test_rtmp_valid", &config)
+            .await;
         assert!(provider.is_ok());
     }
 
@@ -513,14 +527,18 @@ mod tests {
 
         // Create live_proxy provider without base_url - should fail
         let config = serde_json::json!({});
-        let provider = manager.create_provider("live_proxy", "test_live_proxy", &config).await;
+        let provider = manager
+            .create_provider("live_proxy", "test_live_proxy", &config)
+            .await;
         assert!(provider.is_err());
 
         // Create live_proxy provider with base_url - should succeed
         let config = serde_json::json!({
             "base_url": "http://localhost:8080"
         });
-        let provider = manager.create_provider("live_proxy", "test_live_proxy_valid", &config).await;
+        let provider = manager
+            .create_provider("live_proxy", "test_live_proxy_valid", &config)
+            .await;
         assert!(provider.is_ok());
     }
 
@@ -536,7 +554,10 @@ mod tests {
 
         // Create a provider
         let config = serde_json::json!({});
-        manager.create_provider("alist", "my_alist_instance", &config).await.unwrap();
+        manager
+            .create_provider("alist", "my_alist_instance", &config)
+            .await
+            .unwrap();
 
         // Get by instance ID
         let provider = manager.get("my_alist_instance").await;
@@ -558,7 +579,10 @@ mod tests {
 
         // Create default instance
         let config = serde_json::json!({});
-        manager.create_provider("alist", "alist_default", &config).await.unwrap();
+        manager
+            .create_provider("alist", "alist_default", &config)
+            .await
+            .unwrap();
 
         // Get by type
         let provider = manager.get_by_type("alist").await;
@@ -580,12 +604,18 @@ mod tests {
 
         // Create first instance
         let config1 = serde_json::json!({"timeout_seconds": 10});
-        let provider1 = manager.create_provider("alist", "alist_singleton", &config1).await.unwrap();
+        let provider1 = manager
+            .create_provider("alist", "alist_singleton", &config1)
+            .await
+            .unwrap();
         assert_eq!(provider1.name(), "alist");
 
         // Create second instance with same ID (should replace)
         let config2 = serde_json::json!({"timeout_seconds": 30});
-        let provider2 = manager.create_provider("alist", "alist_singleton", &config2).await.unwrap();
+        let provider2 = manager
+            .create_provider("alist", "alist_singleton", &config2)
+            .await
+            .unwrap();
         assert_eq!(provider2.name(), "alist");
 
         // Both Arcs point to different instances (second replaced first in map)
@@ -610,9 +640,18 @@ mod tests {
         assert!(list.is_empty());
 
         // Create multiple providers
-        manager.create_provider("alist", "alist1", &serde_json::json!({})).await.unwrap();
-        manager.create_provider("bilibili", "bilibili1", &serde_json::json!({})).await.unwrap();
-        manager.create_provider("emby", "emby1", &serde_json::json!({})).await.unwrap();
+        manager
+            .create_provider("alist", "alist1", &serde_json::json!({}))
+            .await
+            .unwrap();
+        manager
+            .create_provider("bilibili", "bilibili1", &serde_json::json!({}))
+            .await
+            .unwrap();
+        manager
+            .create_provider("emby", "emby1", &serde_json::json!({}))
+            .await
+            .unwrap();
 
         // List all
         let list = manager.list().await;
@@ -634,7 +673,10 @@ mod tests {
         let manager = ProvidersManager::new(instance_manager);
 
         // Create provider
-        manager.create_provider("alist", "alist_remove", &serde_json::json!({})).await.unwrap();
+        manager
+            .create_provider("alist", "alist_remove", &serde_json::json!({}))
+            .await
+            .unwrap();
 
         // Verify it exists
         assert!(manager.get("alist_remove").await.is_some());
@@ -661,7 +703,9 @@ mod tests {
 
         // Try to create unknown provider type
         let config = serde_json::json!({});
-        let result = manager.create_provider("unknown_type", "test", &config).await;
+        let result = manager
+            .create_provider("unknown_type", "test", &config)
+            .await;
 
         assert!(result.is_err());
         match result {
@@ -851,7 +895,8 @@ mod tests {
             let mgr = manager.clone();
             handles.push(tokio::spawn(async move {
                 let instance_id = format!("alist_concurrent_{i}");
-                mgr.create_provider("alist", &instance_id, &serde_json::json!({})).await
+                mgr.create_provider("alist", &instance_id, &serde_json::json!({}))
+                    .await
             }));
         }
 

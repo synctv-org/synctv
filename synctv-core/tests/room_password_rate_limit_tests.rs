@@ -18,20 +18,20 @@
 use std::net::{IpAddr, Ipv4Addr};
 use std::sync::Arc;
 
-use synctv_core_testing::create_test_pool;
+use chrono::Utc;
+use sqlx::PgPool;
 use synctv_core::{
     cache::{KeyBuilder, NoopCacheL2, UsernameCache},
     config::PasswordComplexityConfig,
     models::{User, UserId, UserRole, UserStatus},
     repository::UserRepository,
     service::{
-        RoomService, UserService, InMemoryTokenBlacklistStore,
-        auth::{BruteForceProtection, JwtService},
         audit::AuditService,
+        auth::{BruteForceProtection, JwtService},
+        InMemoryTokenBlacklistStore, RoomService, UserService,
     },
 };
-use chrono::Utc;
-use sqlx::PgPool;
+use synctv_core_testing::create_test_pool;
 fn make_user_service(pool: PgPool) -> UserService {
     let secret = "Test_Secret_Key_For_JWT_Tokens_32Bytes!!";
     let jwt_service = JwtService::new(secret).expect("Failed to create JwtService");
@@ -141,7 +141,9 @@ async fn test_room_password_verification_failure_triggers_rate_limit() {
             let err = result.unwrap_err();
             let msg = err.to_string();
             assert!(
-                msg.contains("Too many failed") || msg.contains("rate limit") || msg.contains("try again"),
+                msg.contains("Too many failed")
+                    || msg.contains("rate limit")
+                    || msg.contains("try again"),
                 "Error should indicate rate limiting: {msg}"
             );
         }
@@ -256,7 +258,10 @@ async fn test_room_password_rate_limit_expires_after_lockout() {
     let result = room_service
         .check_room_password_with_rate_limit(&room.id, "WrongPassword", Some(client_ip))
         .await;
-    assert!(result.is_err(), "Should be rate limited immediately after failures");
+    assert!(
+        result.is_err(),
+        "Should be rate limited immediately after failures"
+    );
 
     // Use internal method to reset the rate limit counter to simulate time passing
     // In production, this would be handled by the TTL-based expiry in Redis/moka
@@ -379,11 +384,7 @@ async fn test_room_password_rate_limit_without_ip() {
                 i + 1
             );
         } else {
-            assert!(
-                result.is_err(),
-                "Attempt {}: should be rate limited",
-                i + 1
-            );
+            assert!(result.is_err(), "Attempt {}: should be rate limited", i + 1);
         }
     }
 }
@@ -432,7 +433,10 @@ async fn test_password_verification_reset_failure_logged_to_audit() {
     let result = room_service
         .check_room_password_with_rate_limit(&room.id, "WrongPassword", Some(client_ip))
         .await;
-    assert!(result.is_ok() && !result.unwrap(), "Wrong password should return false");
+    assert!(
+        result.is_ok() && !result.unwrap(),
+        "Wrong password should return false"
+    );
 
     // Now provide correct password - this should succeed and reset counter
     // In-memory brute force protection always succeeds, so we can't test the failure path here
@@ -481,7 +485,10 @@ async fn test_password_verification_succeeds_when_reset_fails_in_fallback_mode()
     room_service.set_brute_force_service(brute_force);
 
     // Create room owner and a password-protected room
-    let owner = user_repo.create(&make_user("fallback_owner")).await.unwrap();
+    let owner = user_repo
+        .create(&make_user("fallback_owner"))
+        .await
+        .unwrap();
     let (room, _) = room_service
         .create_room(
             "Fallback Test Room".to_string(),
@@ -529,5 +536,8 @@ async fn test_password_verification_succeeds_when_reset_fails_in_fallback_mode()
     let result = room_service
         .check_room_password_with_rate_limit(&room.id, "WrongPassword", Some(client_ip))
         .await;
-    assert!(result.is_err(), "6th attempt should be rate limited after reset");
+    assert!(
+        result.is_err(),
+        "6th attempt should be rate limited after reset"
+    );
 }

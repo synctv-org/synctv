@@ -45,7 +45,10 @@ impl SettingsRepository {
             })
             .collect();
 
-        debug!("Retrieved {} settings", groups.as_ref().map_or(0, std::vec::Vec::len));
+        debug!(
+            "Retrieved {} settings",
+            groups.as_ref().map_or(0, std::vec::Vec::len)
+        );
         groups
     }
 
@@ -151,7 +154,9 @@ impl SettingsRepository {
         if let Some(row) = row {
             debug!(
                 "Updated setting '{}' with optimistic lock (version {} -> {})",
-                key, expected_version, row.try_get::<i32, _>("version")?
+                key,
+                expected_version,
+                row.try_get::<i32, _>("version")?
             );
             Ok(SettingsGroup {
                 key: row.try_get("key")?,

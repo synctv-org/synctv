@@ -10,22 +10,24 @@
 //
 // All streams are scoped to room_id:media_id (media-level streaming).
 
-pub mod grpc;
+pub mod api;
 pub mod error;
+pub mod grpc;
 pub mod libraries;
+pub mod livestream;
 pub mod protocols;
 pub mod relay;
-pub mod api;
-pub mod livestream;
 pub mod util;
 
 // Re-exports for convenience
+pub use api::{FlvStreamingApi, HlsStreamingApi, LiveStreamingInfrastructure};
 pub use libraries::storage::HlsStorage;
-pub use protocols::httpflv::HttpFlvSession;
+pub use livestream::{
+    LivestreamConfig, LivestreamHandle, LivestreamServer, PullStreamManager, SegmentManager,
+};
 pub use protocols::hls::{CustomHlsRemuxer, StreamRegistry};
+pub use protocols::httpflv::HttpFlvSession;
 pub use protocols::rtmp::RtmpAuthCallbackImpl;
-pub use api::{LiveStreamingInfrastructure, FlvStreamingApi, HlsStreamingApi};
-pub use livestream::{LivestreamServer, LivestreamConfig, LivestreamHandle, PullStreamManager, SegmentManager};
 pub use synctv_xiu::rtmp::auth::{AuthCallback, AuthPublishRewrite};
 
 /// Re-export auth types for use in downstream crates (e.g., `synctv/src/rtmp_auth`)

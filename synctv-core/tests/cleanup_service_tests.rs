@@ -9,15 +9,15 @@
 
 use std::sync::Arc;
 
-use synctv_core_testing::{create_test_pool};
+use chrono::{Duration, Utc};
+use sqlx::PgPool;
+use synctv_core::models::{Room, RoomId, RoomStatus, User, UserId, UserRole, UserStatus};
+use synctv_core::repository::RoomRepository;
 use synctv_core::service::{
     cleanup::{CleanupConfig, CleanupService},
-    LeaderCheck, AlwaysLeader,
+    AlwaysLeader, LeaderCheck,
 };
-use synctv_core::repository::RoomRepository;
-use synctv_core::models::{Room, User, UserId, RoomId, UserRole, UserStatus, RoomStatus};
-use sqlx::PgPool;
-use chrono::{Duration, Utc};
+use synctv_core_testing::create_test_pool;
 
 /// A `LeaderCheck` that always returns false
 struct NeverLeader;
@@ -51,13 +51,34 @@ async fn test_zero_retention_skips_all_tasks() {
     let result = service.run_all().await;
 
     // All counters should be 0 since all tasks are skipped
-    assert_eq!(result.rooms_expired, 0, "Zero retention should skip room TTL expiration");
-    assert_eq!(result.users_purged, 0, "Zero retention should skip user purge");
-    assert_eq!(result.rooms_purged, 0, "Zero retention should skip room purge");
-    assert_eq!(result.tokens_deleted, 0, "Zero retention should skip token cleanup");
-    assert_eq!(result.credentials_deleted, 0, "Zero retention should skip credential cleanup");
-    assert_eq!(result.notifications_deleted, 0, "Zero retention should skip notification cleanup");
-    assert_eq!(result.chat_messages_deleted, 0, "Zero retention should skip chat cleanup");
+    assert_eq!(
+        result.rooms_expired, 0,
+        "Zero retention should skip room TTL expiration"
+    );
+    assert_eq!(
+        result.users_purged, 0,
+        "Zero retention should skip user purge"
+    );
+    assert_eq!(
+        result.rooms_purged, 0,
+        "Zero retention should skip room purge"
+    );
+    assert_eq!(
+        result.tokens_deleted, 0,
+        "Zero retention should skip token cleanup"
+    );
+    assert_eq!(
+        result.credentials_deleted, 0,
+        "Zero retention should skip credential cleanup"
+    );
+    assert_eq!(
+        result.notifications_deleted, 0,
+        "Zero retention should skip notification cleanup"
+    );
+    assert_eq!(
+        result.chat_messages_deleted, 0,
+        "Zero retention should skip chat cleanup"
+    );
 }
 
 // ========== Non-leader skips cleanup (via start_periodic) ==========
@@ -149,9 +170,18 @@ async fn test_partial_config_only_some_tasks_enabled() {
 
     // Token/credential/notification/chat should be 0 since disabled
     assert_eq!(result.tokens_deleted, 0, "Disabled tasks should return 0");
-    assert_eq!(result.credentials_deleted, 0, "Disabled tasks should return 0");
-    assert_eq!(result.notifications_deleted, 0, "Disabled tasks should return 0");
-    assert_eq!(result.chat_messages_deleted, 0, "Disabled tasks should return 0");
+    assert_eq!(
+        result.credentials_deleted, 0,
+        "Disabled tasks should return 0"
+    );
+    assert_eq!(
+        result.notifications_deleted, 0,
+        "Disabled tasks should return 0"
+    );
+    assert_eq!(
+        result.chat_messages_deleted, 0,
+        "Disabled tasks should return 0"
+    );
 }
 
 // ========== Room TTL enforcement tests ==========
@@ -226,7 +256,10 @@ async fn test_room_ttl_new_room_not_expired() {
     let room = create_test_room(user.id.clone(), None);
 
     let room_repo = RoomRepository::new(pool.clone());
-    let _ = room_repo.create(&room).await.expect("Failed to create room");
+    let _ = room_repo
+        .create(&room)
+        .await
+        .expect("Failed to create room");
 
     // Set room_ttl to 1 hour (room is newer, should NOT be expired)
     let config = CleanupConfig {
@@ -241,11 +274,16 @@ async fn test_room_ttl_new_room_not_expired() {
     assert_eq!(result.rooms_expired, 0, "New room should not be expired");
 
     // Verify room is still active (not soft-deleted)
-    let found = room_repo.get_by_id(&room.id).await
+    let found = room_repo
+        .get_by_id(&room.id)
+        .await
         .expect("Failed to find room");
     assert!(found.is_some(), "Room should still exist");
     let found = found.unwrap();
-    assert!(found.deleted_at.is_none(), "Room should not be soft-deleted");
+    assert!(
+        found.deleted_at.is_none(),
+        "Room should not be soft-deleted"
+    );
 }
 
 /// Test that a room older than `room_ttl` IS soft-deleted
@@ -260,7 +298,10 @@ async fn test_room_ttl_old_room_is_expired() {
     let room = create_test_room(user.id.clone(), Some(two_hours_ago));
 
     let room_repo = RoomRepository::new(pool.clone());
-    let _ = room_repo.create(&room).await.expect("Failed to create room");
+    let _ = room_repo
+        .create(&room)
+        .await
+        .expect("Failed to create room");
 
     // Set room_ttl to 1 hour (room is older, should be expired)
     let config = CleanupConfig {
@@ -300,7 +341,10 @@ async fn test_room_ttl_skips_already_soft_deleted() {
     let room = create_test_room(user.id.clone(), Some(two_hours_ago));
 
     let room_repo = RoomRepository::new(pool.clone());
-    let _ = room_repo.create(&room).await.expect("Failed to create room");
+    let _ = room_repo
+        .create(&room)
+        .await
+        .expect("Failed to create room");
 
     // Manually soft-delete the room (simulating it was deleted earlier)
     sqlx::query("UPDATE rooms SET deleted_at = $1 WHERE id = $2")
@@ -320,7 +364,10 @@ async fn test_room_ttl_skips_already_soft_deleted() {
     let result = service.run_all().await;
 
     // Should not count already-soft-deleted rooms
-    assert_eq!(result.rooms_expired, 0, "Already soft-deleted room should not be counted");
+    assert_eq!(
+        result.rooms_expired, 0,
+        "Already soft-deleted room should not be counted"
+    );
 }
 
 /// Test that `room_ttl` = 0 disables expiration
@@ -335,7 +382,10 @@ async fn test_room_ttl_zero_disables_expiration() {
     let room = create_test_room(user.id.clone(), Some(two_days_ago));
 
     let room_repo = RoomRepository::new(pool.clone());
-    let _ = room_repo.create(&room).await.expect("Failed to create room");
+    let _ = room_repo
+        .create(&room)
+        .await
+        .expect("Failed to create room");
 
     // Set room_ttl to 0 (disabled)
     let config = CleanupConfig {
@@ -347,12 +397,20 @@ async fn test_room_ttl_zero_disables_expiration() {
     let result = service.run_all().await;
 
     // Room should NOT be expired since room_ttl is disabled
-    assert_eq!(result.rooms_expired, 0, "room_ttl=0 should disable expiration");
+    assert_eq!(
+        result.rooms_expired, 0,
+        "room_ttl=0 should disable expiration"
+    );
 
     // Verify room is still active (not soft-deleted)
-    let found = room_repo.get_by_id(&room.id).await
+    let found = room_repo
+        .get_by_id(&room.id)
+        .await
         .expect("Failed to find room");
     assert!(found.is_some(), "Room should still exist");
     let found = found.unwrap();
-    assert!(found.deleted_at.is_none(), "Room should not be soft-deleted when room_ttl=0");
+    assert!(
+        found.deleted_at.is_none(),
+        "Room should not be soft-deleted when room_ttl=0"
+    );
 }

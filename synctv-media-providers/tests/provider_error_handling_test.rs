@@ -159,8 +159,8 @@ fn test_max_response_size_value() {
 // === SSRF Validation Edge Cases ===
 
 mod ssrf_tests {
-    use synctv_media_providers::ssrf::*;
     use std::net::{Ipv4Addr, Ipv6Addr};
+    use synctv_media_providers::ssrf::*;
 
     #[test]
     fn test_blocked_ipv4_172_range_boundary() {
@@ -220,9 +220,13 @@ mod ssrf_tests {
     #[test]
     fn test_allowed_ipv6_public() {
         // 2001:db8:: (documentation range, but not blocked by our rules)
-        assert!(!is_blocked_ipv6(&Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 1)));
+        assert!(!is_blocked_ipv6(&Ipv6Addr::new(
+            0x2001, 0xdb8, 0, 0, 0, 0, 0, 1
+        )));
         // Google DNS IPv6
-        assert!(!is_blocked_ipv6(&Ipv6Addr::new(0x2001, 0x4860, 0x4860, 0, 0, 0, 0, 0x8888)));
+        assert!(!is_blocked_ipv6(&Ipv6Addr::new(
+            0x2001, 0x4860, 0x4860, 0, 0, 0, 0, 0x8888
+        )));
     }
 
     #[test]
@@ -623,7 +627,8 @@ mod emby_type_tests {
         let direct_play = obj["DirectPlayProfiles"].as_array().unwrap();
         assert!(!direct_play.is_empty());
 
-        let containers: Vec<&str> = direct_play.iter()
+        let containers: Vec<&str> = direct_play
+            .iter()
             .filter_map(|p| p.get("Container").and_then(|c| c.as_str()))
             .collect();
         assert!(containers.contains(&"mp4,m4v"));
@@ -951,7 +956,10 @@ fn test_bilibili_error_is_provider_error() {
 #[test]
 fn test_emby_error_is_provider_error() {
     use synctv_media_providers::EmbyError;
-    let err = EmbyError::Api { code: 500, message: "internal error".to_string() };
+    let err = EmbyError::Api {
+        code: 500,
+        message: "internal error".to_string(),
+    };
     assert_eq!(err.to_string(), "API error (code 500): internal error");
     assert!(!err.is_retryable());
 }

@@ -5,11 +5,17 @@
 use std::sync::LazyLock;
 use std::time::Duration;
 
-use reqwest::{Client, header::{HeaderMap, HeaderValue, AUTHORIZATION, CONTENT_TYPE, ORIGIN, REFERER, USER_AGENT}};
+use reqwest::{
+    header::{HeaderMap, HeaderValue, AUTHORIZATION, CONTENT_TYPE, ORIGIN, REFERER, USER_AGENT},
+    Client,
+};
 use serde_json::json;
 
-use super::error::{AlistError, check_response, json_with_limit};
-use super::types::{AlistResp, LoginData, HttpFsGetResp, HttpFsListResp, HttpFsOtherResp, HttpMeResp, HttpFsSearchResp};
+use super::error::{check_response, json_with_limit, AlistError};
+use super::types::{
+    AlistResp, HttpFsGetResp, HttpFsListResp, HttpFsOtherResp, HttpFsSearchResp, HttpMeResp,
+    LoginData,
+};
 use crate::error::with_retry;
 use crate::ssrf::ssrf_safe_dns_resolver;
 
@@ -129,7 +135,10 @@ impl AlistClient {
     }
 
     /// Create a new Alist client with token (reuses shared connection pool and per-host rate limiter)
-    pub fn with_token(host: impl Into<String>, token: impl Into<String>) -> Result<Self, AlistError> {
+    pub fn with_token(
+        host: impl Into<String>,
+        token: impl Into<String>,
+    ) -> Result<Self, AlistError> {
         Ok(Self {
             host: host.into(),
             token: Some(token.into()),
@@ -143,13 +152,13 @@ impl AlistClient {
     }
 
     /// Get current host
-    #[must_use] 
+    #[must_use]
     pub fn host(&self) -> &str {
         &self.host
     }
 
     /// Check if client has token
-    #[must_use] 
+    #[must_use]
     pub const fn has_token(&self) -> bool {
         self.token.is_some()
     }
@@ -158,7 +167,10 @@ impl AlistClient {
     fn build_headers(&self) -> Result<HeaderMap, AlistError> {
         let mut headers = HeaderMap::new();
         headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
-        headers.insert(USER_AGENT, HeaderValue::from_static(crate::error::PROVIDER_USER_AGENT));
+        headers.insert(
+            USER_AGENT,
+            HeaderValue::from_static(crate::error::PROVIDER_USER_AGENT),
+        );
         headers.insert(ORIGIN, HeaderValue::from_str(&self.host)?);
         headers.insert(REFERER, HeaderValue::from_str(&format!("{}/", self.host))?);
 
@@ -174,8 +186,12 @@ impl AlistClient {
     /// Returns authentication token on success.
     /// When `hashed` is true, uses the `/api/auth/login/hash` endpoint
     /// which accepts a pre-hashed password.
-    pub async fn login(&mut self, username: &str, password: &str, hashed: bool) -> Result<String, AlistError> {
-
+    pub async fn login(
+        &mut self,
+        username: &str,
+        password: &str,
+        hashed: bool,
+    ) -> Result<String, AlistError> {
         let url = if hashed {
             format!("{}/api/auth/login/hash", self.host)
         } else {
@@ -215,7 +231,8 @@ impl AlistClient {
                     .ok_or_else(|| AlistError::Parse("Missing login data in response".to_string()))
                     .map(|d| d.token)
             }
-        }).await?;
+        })
+        .await?;
 
         self.set_token(token.clone());
         Ok(token)
@@ -226,8 +243,11 @@ impl AlistClient {
     /// # Arguments
     /// * `path` - File or directory path
     /// * `password` - Optional password for protected directories
-    pub async fn fs_get(&self, path: &str, password: Option<&str>) -> Result<HttpFsGetResp, AlistError> {
-
+    pub async fn fs_get(
+        &self,
+        path: &str,
+        password: Option<&str>,
+    ) -> Result<HttpFsGetResp, AlistError> {
         validate_path(path)?;
         let url = format!("{}/api/fs/get", self.host);
         let body = json!({
@@ -260,9 +280,11 @@ impl AlistClient {
                     });
                 }
 
-                resp.data.ok_or_else(|| AlistError::Parse("Missing data in fs_get response".to_string()))
+                resp.data
+                    .ok_or_else(|| AlistError::Parse("Missing data in fs_get response".to_string()))
             }
-        }).await
+        })
+        .await
     }
 
     /// List directory contents
@@ -279,7 +301,6 @@ impl AlistClient {
         per_page: u64,
         password: Option<&str>,
     ) -> Result<HttpFsListResp, AlistError> {
-
         validate_path(path)?;
         let url = format!("{}/api/fs/list", self.host);
         let body = json!({
@@ -315,9 +336,12 @@ impl AlistClient {
                     });
                 }
 
-                resp.data.ok_or_else(|| AlistError::Parse("Missing data in fs_list response".to_string()))
+                resp.data.ok_or_else(|| {
+                    AlistError::Parse("Missing data in fs_list response".to_string())
+                })
             }
-        }).await
+        })
+        .await
     }
 
     /// Get video preview information (for instances supporting transcoding)
@@ -340,7 +364,6 @@ impl AlistClient {
         method: &str,
         password: Option<&str>,
     ) -> Result<HttpFsOtherResp, AlistError> {
-
         validate_path(path)?;
         let url = format!("{}/api/fs/other", self.host);
         let body = json!({
@@ -374,16 +397,18 @@ impl AlistClient {
                     });
                 }
 
-                resp.data.ok_or_else(|| AlistError::Parse("Missing data in fs_other response".to_string()))
+                resp.data.ok_or_else(|| {
+                    AlistError::Parse("Missing data in fs_other response".to_string())
+                })
             }
-        }).await
+        })
+        .await
     }
 
     /// Get current user information
     ///
     /// Requires authentication token
     pub async fn me(&self) -> Result<HttpMeResp, AlistError> {
-
         let url = format!("{}/api/me", self.host);
         let headers = self.build_headers()?;
         let client = self.client.clone();
@@ -393,11 +418,7 @@ impl AlistClient {
             let headers = headers.clone();
             let client = client.clone();
             async move {
-                let response = client
-                    .get(&url)
-                    .headers(headers)
-                    .send()
-                    .await?;
+                let response = client.get(&url).headers(headers).send().await?;
 
                 let response = check_response(response).await?;
                 let resp: AlistResp<HttpMeResp> = json_with_limit(response).await?;
@@ -409,9 +430,11 @@ impl AlistClient {
                     });
                 }
 
-                resp.data.ok_or_else(|| AlistError::Parse("Missing data in me response".to_string()))
+                resp.data
+                    .ok_or_else(|| AlistError::Parse("Missing data in me response".to_string()))
             }
-        }).await
+        })
+        .await
     }
 
     /// Get video transcoding/preview information
@@ -451,7 +474,6 @@ impl AlistClient {
         per_page: u64,
         password: Option<&str>,
     ) -> Result<HttpFsSearchResp, AlistError> {
-
         validate_path(parent)?;
         let url = format!("{}/api/fs/search", self.host);
         let body = json!({
@@ -488,9 +510,12 @@ impl AlistClient {
                     });
                 }
 
-                resp.data.ok_or_else(|| AlistError::Parse("Missing data in fs_search response".to_string()))
+                resp.data.ok_or_else(|| {
+                    AlistError::Parse("Missing data in fs_search response".to_string())
+                })
             }
-        }).await
+        })
+        .await
     }
 }
 
@@ -570,7 +595,8 @@ mod tests {
         assert_eq!(client.host(), "https://alist.example.com");
         assert!(!client.has_token());
 
-        let client_with_token = AlistClient::with_token("https://alist.example.com", "test_token").unwrap();
+        let client_with_token =
+            AlistClient::with_token("https://alist.example.com", "test_token").unwrap();
         assert!(client_with_token.has_token());
     }
 
@@ -609,7 +635,8 @@ mod tests {
     #[test]
     fn test_alist_resp_deserialize_success() {
         let json = r#"{"code": 200, "message": "success", "data": {"token": "abc123"}}"#;
-        let resp: crate::alist::types::AlistResp<crate::alist::types::LoginData> = serde_json::from_str(json).unwrap();
+        let resp: crate::alist::types::AlistResp<crate::alist::types::LoginData> =
+            serde_json::from_str(json).unwrap();
         assert_eq!(resp.code, 200);
         assert_eq!(resp.message, "success");
         assert_eq!(resp.data.unwrap().token, "abc123");
@@ -618,7 +645,8 @@ mod tests {
     #[test]
     fn test_alist_resp_deserialize_no_data() {
         let json = r#"{"code": 401, "message": "unauthorized", "data": null}"#;
-        let resp: crate::alist::types::AlistResp<crate::alist::types::LoginData> = serde_json::from_str(json).unwrap();
+        let resp: crate::alist::types::AlistResp<crate::alist::types::LoginData> =
+            serde_json::from_str(json).unwrap();
         assert_eq!(resp.code, 401);
         assert!(resp.data.is_none());
     }

@@ -6,7 +6,7 @@ use axum::{
 };
 use serde::Deserialize;
 
-use crate::http::{AppState, AppResult, middleware::AuthUser};
+use crate::http::{middleware::AuthUser, AppResult, AppState};
 
 /// Kick a member from a room
 pub async fn kick_member(

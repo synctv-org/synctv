@@ -14,24 +14,23 @@
 #![allow(clippy::unwrap_used)]
 use std::hint::black_box;
 
+use chrono::Utc;
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
+use sqlx::PgPool;
 use std::time::{Duration, Instant};
 use synctv_core::{
     models::{
-        MediaId, RoomId, RoomStatus, UserId, User, UserRole, UserStatus,
-        Room, RoomMember, RoomRole, RoomListQuery, PageParams,
-        media::Media,
-        playlist::Playlist,
-        id::PlaylistId,
+        id::PlaylistId, media::Media, playlist::Playlist, MediaId, PageParams, Room, RoomId,
+        RoomListQuery, RoomMember, RoomRole, RoomStatus, User, UserId, UserRole, UserStatus,
     },
-    repository::{MediaRepository, PlaylistRepository, RoomMemberRepository, RoomRepository, UserRepository},
+    repository::{
+        MediaRepository, PlaylistRepository, RoomMemberRepository, RoomRepository, UserRepository,
+    },
 };
-use sqlx::PgPool;
 use testcontainers::core::ImageExt;
 use testcontainers::runners::AsyncRunner;
 use testcontainers::ContainerAsync;
 use testcontainers_modules::postgres::Postgres;
-use chrono::Utc;
 
 const POSTGRES_VERSION: &str = "16-alpine";
 
@@ -132,7 +131,9 @@ fn bench_list_rooms_with_data(c: &mut Criterion) {
     let room_repo = RoomRepository::new(pool.clone());
 
     // Create test user
-    let owner = rt.block_on(user_repo.create(&make_user("bench_owner"))).unwrap();
+    let owner = rt
+        .block_on(user_repo.create(&make_user("bench_owner")))
+        .unwrap();
 
     let mut group = c.benchmark_group("list_rooms");
     group.measurement_time(Duration::from_secs(10));
@@ -161,7 +162,8 @@ fn bench_list_rooms_with_data(c: &mut Criterion) {
         });
 
         // Cleanup for next iteration
-        rt.block_on(sqlx::query("DELETE FROM rooms").execute(&pool)).unwrap();
+        rt.block_on(sqlx::query("DELETE FROM rooms").execute(&pool))
+            .unwrap();
     }
 
     group.finish();
@@ -178,7 +180,9 @@ fn bench_list_media_with_data(c: &mut Criterion) {
     let media_repo = MediaRepository::new(pool.clone());
 
     // Create test data
-    let owner = rt.block_on(user_repo.create(&make_user("media_bench_owner"))).unwrap();
+    let owner = rt
+        .block_on(user_repo.create(&make_user("media_bench_owner")))
+        .unwrap();
     let room = make_room("media_bench_room", &owner.id);
     let room = rt.block_on(room_repo.create(&room)).unwrap();
 
@@ -214,13 +218,17 @@ fn bench_list_media_with_data(c: &mut Criterion) {
 
         group.bench_with_input(bench_id, &media_count, |b, _| {
             b.to_async(&rt).iter(|| async {
-                let media = media_repo.get_by_playlist_limit_offset(&playlist.id, 20, 0).await.unwrap();
+                let media = media_repo
+                    .get_by_playlist_limit_offset(&playlist.id, 20, 0)
+                    .await
+                    .unwrap();
                 black_box(media);
             });
         });
 
         // Cleanup
-        rt.block_on(sqlx::query("DELETE FROM media").execute(&pool)).unwrap();
+        rt.block_on(sqlx::query("DELETE FROM media").execute(&pool))
+            .unwrap();
     }
 
     group.finish();
@@ -237,7 +245,9 @@ fn bench_batch_insert_operations(c: &mut Criterion) {
     let media_repo = MediaRepository::new(pool);
 
     // Create test data
-    let owner = rt.block_on(user_repo.create(&make_user("batch_insert_owner"))).unwrap();
+    let owner = rt
+        .block_on(user_repo.create(&make_user("batch_insert_owner")))
+        .unwrap();
     let room = make_room("batch_insert_room", &owner.id);
     let room = rt.block_on(room_repo.create(&room)).unwrap();
 
@@ -300,13 +310,17 @@ fn bench_index_effectiveness(c: &mut Criterion) {
     let member_repo = RoomMemberRepository::new(pool);
 
     // Create test data
-    let owner = rt.block_on(user_repo.create(&make_user("index_owner"))).unwrap();
+    let owner = rt
+        .block_on(user_repo.create(&make_user("index_owner")))
+        .unwrap();
     let room = make_room("index_room", &owner.id);
     let room = rt.block_on(room_repo.create(&room)).unwrap();
 
     // Create members
     for i in 0..500 {
-        let user = rt.block_on(user_repo.create(&make_user(&format!("member_{i}")))).unwrap();
+        let user = rt
+            .block_on(user_repo.create(&make_user(&format!("member_{i}"))))
+            .unwrap();
         let member = RoomMember::new(room.id.clone(), user.id.clone(), RoomRole::Member);
         rt.block_on(member_repo.add(&member)).unwrap();
     }
@@ -333,7 +347,9 @@ fn bench_single_row_operations(c: &mut Criterion) {
     let user_repo = UserRepository::new(pool.clone());
     let room_repo = RoomRepository::new(pool);
 
-    let owner = rt.block_on(user_repo.create(&make_user("crud_owner"))).unwrap();
+    let owner = rt
+        .block_on(user_repo.create(&make_user("crud_owner")))
+        .unwrap();
 
     let mut group = c.benchmark_group("single_row_operations");
     group.sample_size(100);
@@ -370,7 +386,9 @@ fn bench_pagination_offset_performance(c: &mut Criterion) {
     let user_repo = UserRepository::new(pool.clone());
     let room_repo = RoomRepository::new(pool);
 
-    let owner = rt.block_on(user_repo.create(&make_user("pagination_owner"))).unwrap();
+    let owner = rt
+        .block_on(user_repo.create(&make_user("pagination_owner")))
+        .unwrap();
 
     // Create 1000 rooms
     for i in 0..1000 {

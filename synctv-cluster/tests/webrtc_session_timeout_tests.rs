@@ -46,7 +46,9 @@ async fn test_webrtc_session_timeout_after_inactivity() {
     let room = rid("room1");
 
     // Register connection and join room
-    mgr.register("conn1".to_string(), user.clone()).await.unwrap();
+    mgr.register("conn1".to_string(), user.clone())
+        .await
+        .unwrap();
     mgr.join_room("conn1", room.clone()).await.unwrap();
 
     // Join WebRTC session
@@ -54,9 +56,16 @@ async fn test_webrtc_session_timeout_after_inactivity() {
 
     // Verify the connection is marked as RTC-joined
     let rtc_connections = mgr.get_rtc_connections(&room);
-    assert_eq!(rtc_connections.len(), 1, "Should have 1 RTC-joined connection");
+    assert_eq!(
+        rtc_connections.len(),
+        1,
+        "Should have 1 RTC-joined connection"
+    );
     assert_eq!(rtc_connections[0].connection_id, "conn1");
-    assert!(rtc_connections[0].rtc_joined, "Connection should be RTC-joined");
+    assert!(
+        rtc_connections[0].rtc_joined,
+        "Connection should be RTC-joined"
+    );
 
     // Wait for timeout to expire
     tokio::time::sleep(timeout + Duration::from_millis(100)).await;
@@ -69,7 +78,11 @@ async fn test_webrtc_session_timeout_after_inactivity() {
 
     // Verify the connection is no longer marked as RTC-joined
     let rtc_connections = mgr.get_rtc_connections(&room);
-    assert_eq!(rtc_connections.len(), 0, "Should have 0 RTC-joined connections after timeout");
+    assert_eq!(
+        rtc_connections.len(),
+        0,
+        "Should have 0 RTC-joined connections after timeout"
+    );
 }
 
 #[tokio::test]
@@ -92,7 +105,9 @@ async fn test_active_webrtc_session_not_cleaned_up() {
     let room = rid("room1");
 
     // Register connection and join room
-    mgr.register("conn1".to_string(), user.clone()).await.unwrap();
+    mgr.register("conn1".to_string(), user.clone())
+        .await
+        .unwrap();
     mgr.join_room("conn1", room.clone()).await.unwrap();
 
     // Join WebRTC session
@@ -105,11 +120,18 @@ async fn test_active_webrtc_session_not_cleaned_up() {
     let stale = mgr.check_timeouts();
 
     // The connection should NOT be in the stale list
-    assert!(stale.is_empty(), "Active WebRTC session should not be cleaned up");
+    assert!(
+        stale.is_empty(),
+        "Active WebRTC session should not be cleaned up"
+    );
 
     // Verify the connection is still marked as RTC-joined
     let rtc_connections = mgr.get_rtc_connections(&room);
-    assert_eq!(rtc_connections.len(), 1, "Should still have 1 RTC-joined connection");
+    assert_eq!(
+        rtc_connections.len(),
+        1,
+        "Should still have 1 RTC-joined connection"
+    );
 }
 
 #[tokio::test]
@@ -132,7 +154,9 @@ async fn test_webrtc_leave_clears_timeout_tracking() {
     let room = rid("room1");
 
     // Register connection and join room
-    mgr.register("conn1".to_string(), user.clone()).await.unwrap();
+    mgr.register("conn1".to_string(), user.clone())
+        .await
+        .unwrap();
     mgr.join_room("conn1", room.clone()).await.unwrap();
 
     // Join WebRTC session
@@ -148,11 +172,18 @@ async fn test_webrtc_leave_clears_timeout_tracking() {
     let stale = mgr.check_timeouts();
 
     // The connection should NOT be in the stale list (already left)
-    assert!(stale.is_empty(), "Left WebRTC session should not trigger timeout cleanup");
+    assert!(
+        stale.is_empty(),
+        "Left WebRTC session should not trigger timeout cleanup"
+    );
 
     // Verify the connection is not marked as RTC-joined
     let rtc_connections = mgr.get_rtc_connections(&room);
-    assert_eq!(rtc_connections.len(), 0, "Should have 0 RTC-joined connections");
+    assert_eq!(
+        rtc_connections.len(),
+        0,
+        "Should have 0 RTC-joined connections"
+    );
 }
 
 #[tokio::test]
@@ -185,7 +216,11 @@ async fn test_multiple_webrtc_sessions_timeout() {
 
     // Verify all connections are RTC-joined
     let rtc_connections = mgr.get_rtc_connections(&room);
-    assert_eq!(rtc_connections.len(), 3, "Should have 3 RTC-joined connections");
+    assert_eq!(
+        rtc_connections.len(),
+        3,
+        "Should have 3 RTC-joined connections"
+    );
 
     // Wait for timeout to expire
     tokio::time::sleep(timeout + Duration::from_millis(100)).await;
@@ -198,7 +233,11 @@ async fn test_multiple_webrtc_sessions_timeout() {
 
     // Verify all connections are no longer marked as RTC-joined
     let rtc_connections = mgr.get_rtc_connections(&room);
-    assert_eq!(rtc_connections.len(), 0, "Should have 0 RTC-joined connections after timeout");
+    assert_eq!(
+        rtc_connections.len(),
+        0,
+        "Should have 0 RTC-joined connections after timeout"
+    );
 }
 
 #[tokio::test]
@@ -221,7 +260,9 @@ async fn test_webrtc_session_timeout_persists_across_reconnection() {
     let room = rid("room1");
 
     // Register connection and join WebRTC
-    mgr.register("conn1".to_string(), user.clone()).await.unwrap();
+    mgr.register("conn1".to_string(), user.clone())
+        .await
+        .unwrap();
     mgr.join_room("conn1", room.clone()).await.unwrap();
     mgr.mark_rtc_joined(&room, &user, "conn1", true);
 
@@ -237,13 +278,19 @@ async fn test_webrtc_session_timeout_persists_across_reconnection() {
     assert_eq!(rtc_connections.len(), 0, "Session should be cleaned up");
 
     // User reconnects with a new connection
-    mgr.register("conn2".to_string(), user.clone()).await.unwrap();
+    mgr.register("conn2".to_string(), user.clone())
+        .await
+        .unwrap();
     mgr.join_room("conn2", room.clone()).await.unwrap();
     mgr.mark_rtc_joined(&room, &user, "conn2", true);
 
     // Verify new connection is RTC-joined
     let rtc_connections = mgr.get_rtc_connections(&room);
-    assert_eq!(rtc_connections.len(), 1, "New connection should be RTC-joined");
+    assert_eq!(
+        rtc_connections.len(),
+        1,
+        "New connection should be RTC-joined"
+    );
     assert_eq!(rtc_connections[0].connection_id, "conn2");
 }
 
@@ -253,8 +300,6 @@ async fn test_webrtc_session_timeout_persists_across_reconnection() {
 
 #[tokio::test]
 async fn test_default_webrtc_session_timeout() {
-    
-
     // Create a ConnectionManager with default limits
     let mgr = ConnectionManager::default();
 
@@ -262,7 +307,9 @@ async fn test_default_webrtc_session_timeout() {
     let room = rid("room1");
 
     // Register connection and join WebRTC
-    mgr.register("conn1".to_string(), user.clone()).await.unwrap();
+    mgr.register("conn1".to_string(), user.clone())
+        .await
+        .unwrap();
     mgr.join_room("conn1", room.clone()).await.unwrap();
     mgr.mark_rtc_joined(&room, &user, "conn1", true);
 
@@ -275,7 +322,10 @@ async fn test_default_webrtc_session_timeout() {
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     let stale = mgr.check_timeouts();
-    assert!(stale.is_empty(), "Default timeout should not expire in 100ms");
+    assert!(
+        stale.is_empty(),
+        "Default timeout should not expire in 100ms"
+    );
 
     // Verify still RTC-joined
     let rtc_connections = mgr.get_rtc_connections(&room);

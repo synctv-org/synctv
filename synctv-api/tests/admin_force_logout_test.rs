@@ -38,9 +38,7 @@ fn test_update_password_request_no_force_logout() {
 #[test]
 fn test_update_password_response_no_sessions_invalidated() {
     // Create a response with only the success field
-    let response = UpdateUserPasswordResponse {
-        success: true,
-    };
+    let response = UpdateUserPasswordResponse { success: true };
 
     // Verify the response can be serialized
     let json = serde_json::to_string(&response).expect("Failed to serialize response");

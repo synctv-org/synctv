@@ -119,7 +119,10 @@ fn test_acquire_release_semantics() {
         }
         // Read data with Acquire ordering - guaranteed to see 42
         let value = data_consumer.load(Ordering::Acquire);
-        assert_eq!(value, 42, "Consumer should see the value written by producer");
+        assert_eq!(
+            value, 42,
+            "Consumer should see the value written by producer"
+        );
     });
 
     producer.join().unwrap();

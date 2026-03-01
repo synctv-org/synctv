@@ -6,15 +6,16 @@
 //! Run with: cargo test --test `alist_password_encryption_tests`
 
 #![allow(clippy::unwrap_used)]
-use synctv_media_providers::{CredentialData, InMemoryCredentialStorage, CredentialStorage, ProviderType, FieldEncryption};
+use synctv_media_providers::{
+    CredentialData, CredentialStorage, FieldEncryption, InMemoryCredentialStorage, ProviderType,
+};
 
 // Test key for encryption (32 bytes for AES-256)
 fn test_encryption_key() -> Vec<u8> {
     vec![
-        0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07,
-        0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f,
-        0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17,
-        0x18, 0x19, 0x1a, 0x1b, 0x1c, 0x1d, 0x1e, 0x1f,
+        0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e,
+        0x0f, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19, 0x1a, 0x1b, 0x1c, 0x1d,
+        0x1e, 0x1f,
     ]
 }
 
@@ -43,7 +44,10 @@ fn test_field_encryption_works() {
 
     // Decryption should work
     let decrypted = enc.decrypt(&encrypted).unwrap();
-    assert_eq!(decrypted, plain_password, "Decrypted password should match original");
+    assert_eq!(
+        decrypted, plain_password,
+        "Decrypted password should match original"
+    );
 }
 
 /// Test that encrypting the same password twice produces different ciphertext
@@ -60,7 +64,10 @@ fn test_field_encryption_different_ciphertext() {
     assert!(enc2.starts_with("enc:"));
 
     // But different (due to random nonces)
-    assert_ne!(enc1, enc2, "Same plaintext should produce different ciphertext");
+    assert_ne!(
+        enc1, enc2,
+        "Same plaintext should produce different ciphertext"
+    );
 
     // Both should decrypt correctly
     assert_eq!(enc.decrypt(&enc1).unwrap(), plain_password);
@@ -105,11 +112,18 @@ async fn test_alist_password_round_trip_with_encryption() {
         .expect("Failed to store credential");
 
     // Returned credential should have decrypted password (for caller convenience)
-    let (_, _, password) = stored.data.as_alist().expect("Expected Alist credential data");
-    assert_eq!(password, plain_password, "Returned password should be decrypted");
+    let (_, _, password) = stored
+        .data
+        .as_alist()
+        .expect("Expected Alist credential data");
+    assert_eq!(
+        password, plain_password,
+        "Returned password should be decrypted"
+    );
 
     // Retrieve the credential
-    let server_id = CredentialData::alist(host.to_string(), String::new(), String::new()).server_id();
+    let server_id =
+        CredentialData::alist(host.to_string(), String::new(), String::new()).server_id();
     let retrieved = storage
         .get("user1", ProviderType::Alist, &server_id)
         .await
@@ -117,8 +131,14 @@ async fn test_alist_password_round_trip_with_encryption() {
         .expect("Credential should exist");
 
     // Verify: the retrieved password should match the original
-    let (h, u, password) = retrieved.data.as_alist().expect("Expected Alist credential data");
-    assert_eq!(password, plain_password, "Password should be decrypted correctly");
+    let (h, u, password) = retrieved
+        .data
+        .as_alist()
+        .expect("Expected Alist credential data");
+    assert_eq!(
+        password, plain_password,
+        "Password should be decrypted correctly"
+    );
     assert_eq!(h, host);
     assert_eq!(u, username);
 }
@@ -163,25 +183,41 @@ async fn test_multiple_alist_credentials_encrypted() {
         .expect("Failed to store second credential");
 
     // Retrieve and verify first
-    let server_id1 = CredentialData::alist("https://alist1.example.com".to_string(), String::new(), String::new()).server_id();
+    let server_id1 = CredentialData::alist(
+        "https://alist1.example.com".to_string(),
+        String::new(),
+        String::new(),
+    )
+    .server_id();
     let retrieved1 = storage
         .get("user1", ProviderType::Alist, &server_id1)
         .await
         .expect("Failed to get first credential")
         .expect("First credential should exist");
 
-    let (_, _, password) = retrieved1.data.as_alist().expect("Expected Alist credential data");
+    let (_, _, password) = retrieved1
+        .data
+        .as_alist()
+        .expect("Expected Alist credential data");
     assert_eq!(password, password1);
 
     // Retrieve and verify second
-    let server_id2 = CredentialData::alist("https://alist2.example.com".to_string(), String::new(), String::new()).server_id();
+    let server_id2 = CredentialData::alist(
+        "https://alist2.example.com".to_string(),
+        String::new(),
+        String::new(),
+    )
+    .server_id();
     let retrieved2 = storage
         .get("user1", ProviderType::Alist, &server_id2)
         .await
         .expect("Failed to get second credential")
         .expect("Second credential should exist");
 
-    let (_, _, password) = retrieved2.data.as_alist().expect("Expected Alist credential data");
+    let (_, _, password) = retrieved2
+        .data
+        .as_alist()
+        .expect("Expected Alist credential data");
     assert_eq!(password, password2);
 }
 
@@ -210,8 +246,14 @@ async fn test_storage_without_encryption_backward_compat() {
         .expect("Failed to store credential");
 
     // Without encryption, password should be stored as-is (plaintext)
-    let (_, _, password) = stored.data.as_alist().expect("Expected Alist credential data");
-    assert_eq!(password, plain_password, "Without encryption, password should be plaintext");
+    let (_, _, password) = stored
+        .data
+        .as_alist()
+        .expect("Expected Alist credential data");
+    assert_eq!(
+        password, plain_password,
+        "Without encryption, password should be plaintext"
+    );
 }
 
 // ========== TEST: Emby api_key round trip with encryption ==========
@@ -241,11 +283,15 @@ async fn test_emby_api_key_round_trip_with_encryption() {
         .expect("Failed to store credential");
 
     // Returned credential should have decrypted api_key
-    let (_, key, _) = stored.data.as_emby().expect("Expected Emby credential data");
+    let (_, key, _) = stored
+        .data
+        .as_emby()
+        .expect("Expected Emby credential data");
     assert_eq!(key, api_key, "Returned api_key should be decrypted");
 
     // Retrieve the credential
-    let server_id = CredentialData::emby(host.to_string(), String::new(), String::new()).server_id();
+    let server_id =
+        CredentialData::emby(host.to_string(), String::new(), String::new()).server_id();
     let retrieved = storage
         .get("user1", ProviderType::Emby, &server_id)
         .await
@@ -253,7 +299,10 @@ async fn test_emby_api_key_round_trip_with_encryption() {
         .expect("Credential should exist");
 
     // Verify: the retrieved api_key should match the original
-    let (h, key, uid) = retrieved.data.as_emby().expect("Expected Emby credential data");
+    let (h, key, uid) = retrieved
+        .data
+        .as_emby()
+        .expect("Expected Emby credential data");
     assert_eq!(key, api_key, "API key should be decrypted correctly");
     assert_eq!(h, host);
     assert_eq!(uid, emby_user_id);
@@ -305,7 +354,10 @@ async fn test_list_credentials_are_decrypted() {
     for cred in &all_creds {
         match &cred.data {
             CredentialData::Alist { password, .. } => {
-                assert_eq!(password, password1, "Alist password should be decrypted in list");
+                assert_eq!(
+                    password, password1,
+                    "Alist password should be decrypted in list"
+                );
             }
             CredentialData::Emby { api_key: key, .. } => {
                 assert_eq!(key, api_key, "Emby api_key should be decrypted in list");
@@ -315,14 +367,20 @@ async fn test_list_credentials_are_decrypted() {
     }
 
     // List by provider (Alist)
-    let alist_creds = storage.list_by_provider("user1", ProviderType::Alist).await.unwrap();
+    let alist_creds = storage
+        .list_by_provider("user1", ProviderType::Alist)
+        .await
+        .unwrap();
     assert_eq!(alist_creds.len(), 1);
     if let CredentialData::Alist { password, .. } = &alist_creds[0].data {
         assert_eq!(password, password1);
     }
 
     // List by provider (Emby)
-    let emby_creds = storage.list_by_provider("user1", ProviderType::Emby).await.unwrap();
+    let emby_creds = storage
+        .list_by_provider("user1", ProviderType::Emby)
+        .await
+        .unwrap();
     assert_eq!(emby_creds.len(), 1);
     if let CredentialData::Emby { api_key: key, .. } = &emby_creds[0].data {
         assert_eq!(key, api_key);

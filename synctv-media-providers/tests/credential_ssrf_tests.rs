@@ -5,7 +5,9 @@
 
 #![allow(clippy::unwrap_used)]
 use std::collections::HashMap;
-use synctv_media_providers::{CredentialData, InMemoryCredentialStorage, CredentialStorage, ProviderType};
+use synctv_media_providers::{
+    CredentialData, CredentialStorage, InMemoryCredentialStorage, ProviderType,
+};
 
 /// Test that storing a credential with a private IP address is rejected
 #[tokio::test]
@@ -130,7 +132,10 @@ async fn test_credential_storage_rejects_internal_hostname() {
         .await;
 
     // Should fail with an SSRF-related error
-    assert!(result.is_err(), "Storing internal hostname should be rejected");
+    assert!(
+        result.is_err(),
+        "Storing internal hostname should be rejected"
+    );
 }
 
 /// Test that storing a credential with .local hostname is rejected
@@ -150,7 +155,10 @@ async fn test_credential_storage_rejects_local_suffix() {
         )
         .await;
 
-    assert!(result.is_err(), "Storing .local hostname should be rejected");
+    assert!(
+        result.is_err(),
+        "Storing .local hostname should be rejected"
+    );
 }
 
 /// Test that storing a credential with valid public host succeeds
@@ -171,7 +179,10 @@ async fn test_credential_storage_accepts_public_host() {
         )
         .await;
 
-    assert!(result.is_ok(), "Storing public hostname should succeed: {result:?}");
+    assert!(
+        result.is_ok(),
+        "Storing public hostname should succeed: {result:?}"
+    );
     let cred = result.unwrap();
     assert_eq!(cred.user_id, "user1");
     assert_eq!(cred.provider, ProviderType::Alist);
@@ -195,7 +206,10 @@ async fn test_credential_storage_accepts_emby_public_host() {
         )
         .await;
 
-    assert!(result.is_ok(), "Storing public Emby hostname should succeed: {result:?}");
+    assert!(
+        result.is_ok(),
+        "Storing public Emby hostname should succeed: {result:?}"
+    );
 }
 
 /// Test that storing Bilibili credentials succeeds (no host to validate)
@@ -208,10 +222,17 @@ async fn test_credential_storage_accepts_bilibili() {
     cookies.insert("SESSDATA".to_string(), "test_session".to_string());
 
     let result = storage
-        .set("user1", Some("bilibili-instance"), CredentialData::bilibili(cookies))
+        .set(
+            "user1",
+            Some("bilibili-instance"),
+            CredentialData::bilibili(cookies),
+        )
         .await;
 
-    assert!(result.is_ok(), "Storing Bilibili credentials should succeed: {result:?}");
+    assert!(
+        result.is_ok(),
+        "Storing Bilibili credentials should succeed: {result:?}"
+    );
 }
 
 /// Test that storing credential with public IP succeeds
@@ -232,7 +253,10 @@ async fn test_credential_storage_accepts_public_ip() {
         )
         .await;
 
-    assert!(result.is_ok(), "Storing public IP should succeed: {result:?}");
+    assert!(
+        result.is_ok(),
+        "Storing public IP should succeed: {result:?}"
+    );
 }
 
 /// Test that storing credential with 10.x.x.x is rejected

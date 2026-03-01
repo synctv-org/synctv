@@ -23,8 +23,7 @@ use tokio::sync::{mpsc, oneshot};
 #[tokio::test]
 async fn test_two_phase_cleanup_normal_completion() {
     // Simulate the stop channel with oneshot response
-    let (stop_streams_tx, mut stop_streams_rx) =
-        mpsc::channel::<oneshot::Sender<()>>(10);
+    let (stop_streams_tx, mut stop_streams_rx) = mpsc::channel::<oneshot::Sender<()>>(10);
 
     // Spawn the "receiver" task that simulates stream manager behavior
     let receiver_handle = tokio::spawn(async move {
@@ -46,19 +45,24 @@ async fn test_two_phase_cleanup_normal_completion() {
     // Wait for completion with timeout
     let result = tokio::time::timeout(Duration::from_millis(100), stop_done_rx).await;
     assert!(result.is_ok(), "Stop should complete within timeout");
-    assert!(result.unwrap().is_ok(), "Oneshot sender should not be dropped");
+    assert!(
+        result.unwrap().is_ok(),
+        "Oneshot sender should not be dropped"
+    );
 
     // Clean up
     drop(stop_streams_tx);
     let stop_count = receiver_handle.await.unwrap();
-    assert_eq!(stop_count, 1, "Should have processed exactly one stop request");
+    assert_eq!(
+        stop_count, 1,
+        "Should have processed exactly one stop request"
+    );
 }
 
 /// Test that the restart loop properly handles timeout when stop takes too long.
 #[tokio::test]
 async fn test_two_phase_cleanup_timeout() {
-    let (stop_streams_tx, mut stop_streams_rx) =
-        mpsc::channel::<oneshot::Sender<()>>(10);
+    let (stop_streams_tx, mut stop_streams_rx) = mpsc::channel::<oneshot::Sender<()>>(10);
 
     // Spawn a receiver that intentionally delays longer than the timeout
     let receiver_handle = tokio::spawn(async move {
@@ -86,8 +90,7 @@ async fn test_two_phase_cleanup_timeout() {
 /// Test that multiple rapid restarts are handled correctly.
 #[tokio::test]
 async fn test_two_phase_cleanup_rapid_restarts() {
-    let (stop_streams_tx, mut stop_streams_rx) =
-        mpsc::channel::<oneshot::Sender<()>>(10);
+    let (stop_streams_tx, mut stop_streams_rx) = mpsc::channel::<oneshot::Sender<()>>(10);
 
     let stop_count = Arc::new(AtomicUsize::new(0));
     let stop_count_clone = Arc::clone(&stop_count);
@@ -107,17 +110,18 @@ async fn test_two_phase_cleanup_rapid_restarts() {
         stop_streams_tx.send(stop_done_tx).await.unwrap();
 
         let result = tokio::time::timeout(Duration::from_millis(100), stop_done_rx).await;
-        assert!(
-            result.is_ok(),
-            "Restart {i} should complete within timeout"
-        );
+        assert!(result.is_ok(), "Restart {i} should complete within timeout");
     }
 
     // Clean up
     drop(stop_streams_tx);
     let _ = receiver_handle.await;
 
-    assert_eq!(stop_count.load(Ordering::SeqCst), 3, "Should have processed 3 stops");
+    assert_eq!(
+        stop_count.load(Ordering::SeqCst),
+        3,
+        "Should have processed 3 stops"
+    );
 }
 
 /// Test that the restarting flag correctly suppresses stream creation during restart.
@@ -126,26 +130,34 @@ async fn test_restarting_flag_blocks_stream_creation() {
     let is_restarting = Arc::new(AtomicBool::new(false));
 
     // Simulate normal operation - stream creation allowed
-    assert!(!is_restarting.load(Ordering::Acquire), "Should not be restarting initially");
+    assert!(
+        !is_restarting.load(Ordering::Acquire),
+        "Should not be restarting initially"
+    );
 
     // Simulate restart phase 1: set flag before cleanup
     is_restarting.store(true, Ordering::Release);
-    assert!(is_restarting.load(Ordering::Acquire), "Should be restarting after flag set");
+    assert!(
+        is_restarting.load(Ordering::Acquire),
+        "Should be restarting after flag set"
+    );
 
     // During restart, new stream creation should be blocked
     // (In real code, get_or_create checks is_restarting flag)
 
     // Simulate restart phase 2: cleanup and re-registration complete
     is_restarting.store(false, Ordering::Release);
-    assert!(!is_restarting.load(Ordering::Acquire), "Should not be restarting after cleanup");
+    assert!(
+        !is_restarting.load(Ordering::Acquire),
+        "Should not be restarting after cleanup"
+    );
 }
 
 /// Test the complete restart sequence with proper ordering.
 #[tokio::test]
 async fn test_restart_sequence_ordering() {
     let is_restarting = Arc::new(AtomicBool::new(false));
-    let (stop_streams_tx, mut stop_streams_rx) =
-        mpsc::channel::<oneshot::Sender<()>>(10);
+    let (stop_streams_tx, mut stop_streams_rx) = mpsc::channel::<oneshot::Sender<()>>(10);
     let reregister_notify = Arc::new(tokio::sync::Notify::new());
 
     let is_restarting_clone = Arc::clone(&is_restarting);
@@ -191,7 +203,10 @@ async fn test_restart_sequence_ordering() {
         .unwrap();
 
     // 4. Verify restarting flag is cleared
-    assert!(!is_restarting.load(Ordering::Acquire), "Restarting flag should be cleared");
+    assert!(
+        !is_restarting.load(Ordering::Acquire),
+        "Restarting flag should be cleared"
+    );
 
     // Clean up
     drop(stop_streams_tx);
@@ -201,8 +216,7 @@ async fn test_restart_sequence_ordering() {
 /// Test that `try_send` (non-blocking send) works correctly for the stop channel.
 #[tokio::test]
 async fn test_try_send_with_oneshot_response() {
-    let (stop_streams_tx, mut stop_streams_rx) =
-        mpsc::channel::<oneshot::Sender<()>>(2);
+    let (stop_streams_tx, mut stop_streams_rx) = mpsc::channel::<oneshot::Sender<()>>(2);
 
     let receiver_handle = tokio::spawn(async move {
         while let Some(stop_done_tx) = stop_streams_rx.recv().await {
@@ -215,8 +229,7 @@ async fn test_try_send_with_oneshot_response() {
     let (stop_done_tx, stop_done_rx) = oneshot::channel::<()>();
     match stop_streams_tx.try_send(stop_done_tx) {
         Ok(()) => {
-            let result =
-                tokio::time::timeout(Duration::from_millis(100), stop_done_rx).await;
+            let result = tokio::time::timeout(Duration::from_millis(100), stop_done_rx).await;
             assert!(result.is_ok(), "Stop should complete within timeout");
         }
         Err(mpsc::error::TrySendError::Full(_)) => {
@@ -236,8 +249,7 @@ async fn test_try_send_with_oneshot_response() {
 #[tokio::test]
 async fn test_try_send_full_handling() {
     // Create a channel with capacity 1
-    let (stop_streams_tx, mut stop_streams_rx) =
-        mpsc::channel::<oneshot::Sender<()>>(1);
+    let (stop_streams_tx, mut stop_streams_rx) = mpsc::channel::<oneshot::Sender<()>>(1);
 
     // Don't consume from receiver, so channel will be full
 
@@ -271,12 +283,12 @@ async fn test_try_send_full_handling() {
 /// BEFORE stop request is sent, not after.
 #[tokio::test]
 async fn test_restarting_flag_set_before_stop_request() {
-    let events: Arc<std::sync::Mutex<Vec<&'static str>>> = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let events: Arc<std::sync::Mutex<Vec<&'static str>>> =
+        Arc::new(std::sync::Mutex::new(Vec::new()));
     let events_clone = Arc::clone(&events);
 
     let is_restarting = Arc::new(AtomicBool::new(false));
-    let (stop_streams_tx, mut stop_streams_rx) =
-        mpsc::channel::<oneshot::Sender<()>>(10);
+    let (stop_streams_tx, mut stop_streams_rx) = mpsc::channel::<oneshot::Sender<()>>(10);
 
     // Spawn receiver that records event order
     let receiver_handle = tokio::spawn(async move {

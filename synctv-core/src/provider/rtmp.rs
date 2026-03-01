@@ -9,9 +9,7 @@
 //! IP ranges to prevent Server-Side Request Forgery attacks. Use this constructor
 //! when the `base_url` comes from an untrusted source (e.g., user configuration).
 
-use super::{
-    MediaProvider, PlaybackResult, ProviderContext, ProviderError,
-};
+use super::{MediaProvider, PlaybackResult, ProviderContext, ProviderError};
 use crate::validation::{validate_url_for_ssrf, ValidationError};
 use async_trait::async_trait;
 use serde_json::Value;
@@ -96,7 +94,11 @@ impl MediaProvider for RtmpProvider {
             .and_then(|v| v.as_str())
             .ok_or_else(|| ProviderError::InvalidConfig("Missing room_id".to_string()))?;
 
-        Ok(super::build_live_playback(&self.base_url, media_id, room_id))
+        Ok(super::build_live_playback(
+            &self.base_url,
+            media_id,
+            room_id,
+        ))
     }
 
     async fn validate_source_config(
@@ -223,7 +225,10 @@ mod tests {
         let key2 = provider.cache_key(&ctx, &config2);
 
         // Both should use fallback, but with different hashes
-        assert_ne!(key1, key2, "Different configs should produce different cache keys");
+        assert_ne!(
+            key1, key2,
+            "Different configs should produce different cache keys"
+        );
     }
 
     #[test]
@@ -288,10 +293,7 @@ mod tests {
 
     #[test]
     fn test_new_validated_rejects_localhost() {
-        let localhost_urls = vec![
-            "http://localhost:8080",
-            "https://localhost:8080",
-        ];
+        let localhost_urls = vec!["http://localhost:8080", "https://localhost:8080"];
 
         for url in localhost_urls {
             let result = RtmpProvider::new_validated(url);
@@ -304,10 +306,7 @@ mod tests {
 
     #[test]
     fn test_new_validated_accepts_public_urls() {
-        let public_urls = vec![
-            "https://example.com",
-            "http://93.184.216.34:8080",
-        ];
+        let public_urls = vec!["https://example.com", "http://93.184.216.34:8080"];
 
         for url in public_urls {
             let result = RtmpProvider::new_validated(url);

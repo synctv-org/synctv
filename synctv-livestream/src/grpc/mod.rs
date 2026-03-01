@@ -5,16 +5,16 @@ pub mod proto {
 }
 
 mod connection_pool;
-mod stream_relay_service;
-mod stream_puller;
 mod hls_proxy;
+mod stream_puller;
+mod stream_relay_service;
 
 pub use connection_pool::GrpcConnectionPool;
 
-pub use stream_relay_service::{StreamRelayServiceImpl, RelayActivityCallback};
-pub use stream_puller::GrpcStreamPuller;
 pub use hls_proxy::HlsProxyClient;
-pub use proto::stream_relay_service_server::{StreamRelayService, StreamRelayServiceServer};
 pub use proto::stream_relay_service_client::StreamRelayServiceClient;
+pub use proto::stream_relay_service_server::{StreamRelayService, StreamRelayServiceServer};
+pub use stream_puller::GrpcStreamPuller;
+pub use stream_relay_service::{RelayActivityCallback, StreamRelayServiceImpl};
 // Export proto message types
-pub use proto::{RtmpPacket, PullRtmpStreamRequest, FrameType};
+pub use proto::{FrameType, PullRtmpStreamRequest, RtmpPacket};

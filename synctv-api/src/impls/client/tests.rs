@@ -3,10 +3,9 @@
 
 use super::convert::*;
 use super::{validate_password_for_set, validate_password_for_verify};
-use super::{ROOM_PASSWORD_MIN, ROOM_PASSWORD_MAX};
+use super::{ROOM_PASSWORD_MAX, ROOM_PASSWORD_MIN};
 use synctv_core::models::{
-    RoomId, UserId, MediaId, PlaylistId, UserRole, UserStatus, RoomStatus,
-    RoomRole, MemberStatus,
+    MediaId, MemberStatus, PlaylistId, RoomId, RoomRole, RoomStatus, UserId, UserRole, UserStatus,
 };
 
 // === Timing Attack Protection Tests ===
@@ -68,12 +67,19 @@ fn test_timing_delay_calculation() {
     let sleep = calculate_sleep_duration(partial_elapsed, min_delay);
     assert!(sleep.is_some(), "Partial operation should require sleep");
     let expected_sleep = min_delay.checked_sub(partial_elapsed).unwrap();
-    assert_eq!(sleep.unwrap(), expected_sleep, "Should sleep for remaining time");
+    assert_eq!(
+        sleep.unwrap(),
+        expected_sleep,
+        "Should sleep for remaining time"
+    );
 
     // Test case 3: Operation took exactly minimum time (250ms) should not require sleep
     let exact_elapsed = Duration::from_millis(MIN_PASSWORD_CHECK_DELAY_MS);
     let sleep = calculate_sleep_duration(exact_elapsed, min_delay);
-    assert!(sleep.is_none(), "Operation at exact threshold should not require sleep");
+    assert!(
+        sleep.is_none(),
+        "Operation at exact threshold should not require sleep"
+    );
 
     // Test case 4: Operation took longer than minimum (300ms) should not require sleep
     let long_elapsed = Duration::from_millis(300);
@@ -303,7 +309,12 @@ fn test_proto_role_to_user_role_invalid() {
 
 #[test]
 fn test_room_role_to_proto_roundtrip() {
-    for role in [RoomRole::Creator, RoomRole::Admin, RoomRole::Member, RoomRole::Guest] {
+    for role in [
+        RoomRole::Creator,
+        RoomRole::Admin,
+        RoomRole::Member,
+        RoomRole::Guest,
+    ] {
         let proto_val = room_role_to_proto(role);
         let back = proto_role_to_room_role(proto_val).unwrap();
         assert_eq!(role, back);
@@ -349,7 +360,10 @@ fn test_user_to_proto_basic() {
     assert_eq!(proto.username, "testuser");
     assert_eq!(proto.email, "test@example.com");
     assert_eq!(proto.role, synctv_proto::common::UserRole::User as i32);
-    assert_eq!(proto.status, synctv_proto::common::UserStatus::Active as i32);
+    assert_eq!(
+        proto.status,
+        synctv_proto::common::UserStatus::Active as i32
+    );
     assert!(proto.email_verified);
 }
 
@@ -371,14 +385,20 @@ fn test_user_to_proto_root_role() {
 fn test_user_to_proto_banned_status() {
     let user = make_test_user(UserRole::User, UserStatus::Banned);
     let proto = user_to_proto(&user);
-    assert_eq!(proto.status, synctv_proto::common::UserStatus::Banned as i32);
+    assert_eq!(
+        proto.status,
+        synctv_proto::common::UserStatus::Banned as i32
+    );
 }
 
 #[test]
 fn test_user_to_proto_pending_status() {
     let user = make_test_user(UserRole::User, UserStatus::Pending);
     let proto = user_to_proto(&user);
-    assert_eq!(proto.status, synctv_proto::common::UserStatus::Pending as i32);
+    assert_eq!(
+        proto.status,
+        synctv_proto::common::UserStatus::Pending as i32
+    );
 }
 
 #[test]
@@ -472,9 +492,8 @@ fn test_playback_state_to_proto() {
 
 #[test]
 fn test_playback_state_to_proto_no_media() {
-    let state = synctv_core::models::RoomPlaybackState::new(
-        RoomId::from_string("room1".to_string()),
-    );
+    let state =
+        synctv_core::models::RoomPlaybackState::new(RoomId::from_string("room1".to_string()));
     let proto = playback_state_to_proto(&state);
 
     assert_eq!(proto.playing_media_id, ""); // None -> empty string
@@ -552,7 +571,10 @@ fn test_room_member_to_proto() {
     assert_eq!(proto.room_id, "room1");
     assert_eq!(proto.user_id, "user1");
     assert_eq!(proto.username, "alice");
-    assert_eq!(proto.role, synctv_proto::common::RoomMemberRole::Member as i32);
+    assert_eq!(
+        proto.role,
+        synctv_proto::common::RoomMemberRole::Member as i32
+    );
     assert!(proto.is_online);
 }
 
@@ -561,7 +583,10 @@ fn test_room_member_to_proto_creator() {
     let member = make_test_member(RoomRole::Creator);
     let role_default = RoomRole::Creator.permissions();
     let proto = room_member_to_proto(member, role_default);
-    assert_eq!(proto.role, synctv_proto::common::RoomMemberRole::Creator as i32);
+    assert_eq!(
+        proto.role,
+        synctv_proto::common::RoomMemberRole::Creator as i32
+    );
 }
 
 #[test]
@@ -739,7 +764,10 @@ fn test_reorder_playlist_permission_bit_exists() {
     let perm = PermissionBits::REORDER_PLAYLIST;
     assert_ne!(perm, 0, "REORDER_PLAYLIST permission bit must be non-zero");
     // It should be a power of two (single bit)
-    assert!(perm.is_power_of_two(), "REORDER_PLAYLIST should be a single permission bit");
+    assert!(
+        perm.is_power_of_two(),
+        "REORDER_PLAYLIST should be a single permission bit"
+    );
 }
 
 #[test]

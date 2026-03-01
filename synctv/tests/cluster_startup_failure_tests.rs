@@ -7,13 +7,11 @@
 //! In standalone mode (cluster.enabled = false), these failures should be non-fatal.
 
 #![allow(clippy::unwrap_used)]
-use synctv_core::{
-    config::{
-        Config, ServerConfig, DatabaseConfig, RedisConfig, JwtConfig, LoggingConfig,
-        LivestreamConfig, OAuth2Config, EmailConfig, MediaProvidersConfig, WebRTCConfig,
-        ConnectionLimitsConfig, BootstrapConfig, ClusterChannelConfig, PasswordComplexityConfig,
-        BufferSizesConfig, CacheConfig, HttpRateLimitConfig, GrpcRateLimitConfig,
-    },
+use synctv_core::config::{
+    BootstrapConfig, BufferSizesConfig, CacheConfig, ClusterChannelConfig, Config,
+    ConnectionLimitsConfig, DatabaseConfig, EmailConfig, GrpcRateLimitConfig, HttpRateLimitConfig,
+    JwtConfig, LivestreamConfig, LoggingConfig, MediaProvidersConfig, OAuth2Config,
+    PasswordComplexityConfig, RedisConfig, ServerConfig, WebRTCConfig,
 };
 
 /// Create a minimal standalone config for testing (no Redis, no cluster mode)
@@ -119,10 +117,16 @@ fn cluster_test_config() -> Config {
 #[test]
 fn test_cluster_enabled_config() {
     let config = cluster_test_config();
-    assert!(config.cluster.enabled, "cluster.enabled should be true in cluster_test_config");
+    assert!(
+        config.cluster.enabled,
+        "cluster.enabled should be true in cluster_test_config"
+    );
 
     let config = standalone_test_config();
-    assert!(!config.cluster.enabled, "cluster.enabled should be false in standalone_test_config");
+    assert!(
+        !config.cluster.enabled,
+        "cluster.enabled should be false in standalone_test_config"
+    );
 }
 
 /// Test that standalone mode config has no Redis URL by default
@@ -133,7 +137,10 @@ fn test_standalone_mode_config_no_redis() {
     // - cluster.enabled should be false
     // - Redis URL should be empty
     assert!(!config.cluster.enabled);
-    assert!(config.redis.url.is_empty(), "Redis URL should be empty in standalone mode");
+    assert!(
+        config.redis.url.is_empty(),
+        "Redis URL should be empty in standalone mode"
+    );
 }
 
 /// Test cluster mode requires Redis URL
@@ -145,15 +152,21 @@ fn test_cluster_mode_requires_redis_url() {
 
     // This should fail validation because cluster.enabled=true requires Redis
     let result = config.validate();
-    assert!(result.is_err(), "cluster.enabled=true with empty redis.url should fail validation");
+    assert!(
+        result.is_err(),
+        "cluster.enabled=true with empty redis.url should fail validation"
+    );
 
     let errors = result.unwrap_err();
     let error_messages: Vec<_> = errors.iter().collect();
-    let has_redis_error = error_messages.iter().any(|e|
-        e.contains("Redis is required when cluster mode is enabled") ||
-        e.contains("cluster.enabled=true")
+    let has_redis_error = error_messages.iter().any(|e| {
+        e.contains("Redis is required when cluster mode is enabled")
+            || e.contains("cluster.enabled=true")
+    });
+    assert!(
+        has_redis_error,
+        "Error message should mention Redis requirement, got: {error_messages:?}"
     );
-    assert!(has_redis_error, "Error message should mention Redis requirement, got: {error_messages:?}");
 }
 
 /// Test cluster mode requires `cluster_secret`
@@ -164,12 +177,18 @@ fn test_cluster_mode_requires_cluster_secret() {
 
     // This should fail validation because cluster.enabled=true requires cluster_secret
     let result = config.validate();
-    assert!(result.is_err(), "cluster.enabled=true with empty cluster_secret should fail validation");
+    assert!(
+        result.is_err(),
+        "cluster.enabled=true with empty cluster_secret should fail validation"
+    );
 
     let errors = result.unwrap_err();
     let error_messages: Vec<_> = errors.iter().collect();
     let has_secret_error = error_messages.iter().any(|e| e.contains("cluster_secret"));
-    assert!(has_secret_error, "Error message should mention cluster_secret requirement, got: {error_messages:?}");
+    assert!(
+        has_secret_error,
+        "Error message should mention cluster_secret requirement, got: {error_messages:?}"
+    );
 }
 
 /// Test standalone mode allows no Redis
@@ -180,7 +199,11 @@ fn test_standalone_mode_allows_no_redis() {
 
     // This should pass validation (standalone mode doesn't require Redis)
     let result = config.validate();
-    assert!(result.is_ok(), "standalone mode should allow no Redis, got error: {:?}", result.err());
+    assert!(
+        result.is_ok(),
+        "standalone mode should allow no Redis, got error: {:?}",
+        result.err()
+    );
 }
 
 /// Test valid cluster mode config
@@ -190,5 +213,9 @@ fn test_valid_cluster_mode_config() {
 
     // This should pass validation
     let result = config.validate();
-    assert!(result.is_ok(), "valid cluster config should pass validation, got error: {:?}", result.err());
+    assert!(
+        result.is_ok(),
+        "valid cluster config should pass validation, got error: {:?}",
+        result.err()
+    );
 }

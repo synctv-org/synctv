@@ -112,12 +112,18 @@ impl RemoteProviderManager {
         for config in configs {
             match Self::create_grpc_channel(&config).await {
                 Ok(channel) => {
-                    self.channel_cache.insert(config.name.clone(), channel).await;
+                    self.channel_cache
+                        .insert(config.name.clone(), channel)
+                        .await;
                     tracing::info!("Pre-warmed provider instance cache: {}", config.name);
                     success_count += 1;
                 }
                 Err(e) => {
-                    tracing::error!("Failed to pre-warm provider instance {}: {}", config.name, e);
+                    tracing::error!(
+                        "Failed to pre-warm provider instance {}: {}",
+                        config.name,
+                        e
+                    );
                     error_count += 1;
                 }
             }
@@ -174,10 +180,9 @@ impl RemoteProviderManager {
     ) -> crate::Result<()> {
         use futures::StreamExt;
 
-        let mut pubsub = client
-            .get_async_pubsub()
-            .await
-            .map_err(|e| crate::Error::Internal(format!("Failed to get Pub/Sub connection: {e}")))?;
+        let mut pubsub = client.get_async_pubsub().await.map_err(|e| {
+            crate::Error::Internal(format!("Failed to get Pub/Sub connection: {e}"))
+        })?;
 
         pubsub
             .subscribe(PROVIDER_CHANGE_CHANNEL)
@@ -235,13 +240,15 @@ impl RemoteProviderManager {
     /// Establishes gRPC connection with configured TLS settings, timeout, and middleware.
     async fn create_grpc_channel(config: &ProviderInstance) -> crate::Result<Channel> {
         // SSRF validation: reject endpoints pointing to internal/private IP ranges
-        crate::validation::validate_url_for_ssrf(&config.endpoint)
-            .map_err(|e| crate::Error::Internal(format!("SSRF validation failed for endpoint '{}': {e}", config.endpoint)))?;
+        crate::validation::validate_url_for_ssrf(&config.endpoint).map_err(|e| {
+            crate::Error::Internal(format!(
+                "SSRF validation failed for endpoint '{}': {e}",
+                config.endpoint
+            ))
+        })?;
 
         // Parse timeout
-        let timeout = config
-            .parse_timeout()
-            .map_err(crate::Error::Internal)?;
+        let timeout = config.parse_timeout().map_err(crate::Error::Internal)?;
 
         // Create endpoint
         let mut endpoint = Endpoint::from_shared(config.endpoint.clone())
@@ -264,8 +271,9 @@ impl RemoteProviderManager {
                 // tonic's ClientTlsConfig doesn't expose this, so we build a raw
                 // rustls ClientConfig with a no-op verifier and wrap it in a
                 // tower::Service<Uri> that tonic can use.
-                let channel = Self::connect_insecure_tls(endpoint).await
-                    .map_err(|e| crate::Error::Internal(format!("insecure TLS connect failed: {e}")))?;
+                let channel = Self::connect_insecure_tls(endpoint).await.map_err(|e| {
+                    crate::Error::Internal(format!("insecure TLS connect failed: {e}"))
+                })?;
 
                 tracing::info!(
                     "Established insecure-TLS gRPC connection to {} (timeout: {:?})",
@@ -287,12 +295,15 @@ impl RemoteProviderManager {
                 tls_config = tls_config.with_native_roots();
             }
 
-            endpoint = endpoint.tls_config(tls_config)
+            endpoint = endpoint
+                .tls_config(tls_config)
                 .map_err(|e| crate::Error::Internal(format!("TLS config error: {e}")))?;
         }
 
         // Connect to gRPC server
-        let channel = endpoint.connect().await
+        let channel = endpoint
+            .connect()
+            .await
             .map_err(|e| crate::Error::Internal(format!("gRPC connect failed: {e}")))?;
 
         tracing::info!(
@@ -309,8 +320,12 @@ impl RemoteProviderManager {
     ///
     /// This builds a custom `tower::Service<Uri>` connector that uses a rustls
     /// `ClientConfig` with a no-op certificate verifier. Only for dev/testing.
-    async fn connect_insecure_tls(endpoint: Endpoint) -> Result<Channel, Box<dyn std::error::Error + Send + Sync>> {
-        use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
+    async fn connect_insecure_tls(
+        endpoint: Endpoint,
+    ) -> Result<Channel, Box<dyn std::error::Error + Send + Sync>> {
+        use rustls::client::danger::{
+            HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier,
+        };
         use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
         use rustls::{ClientConfig, DigitallySignedStruct, Error as TlsError, SignatureScheme};
 
@@ -412,19 +427,19 @@ impl RemoteProviderManager {
 
         // Cache miss: try to load from database and create channel lazily
         match self.repository.get_by_name(name).await {
-            Ok(Some(config)) if config.enabled => {
-                match Self::create_grpc_channel(&config).await {
-                    Ok(channel) => {
-                        self.channel_cache.insert(name.to_string(), channel.clone()).await;
-                        tracing::debug!("Lazily created and cached channel for instance '{}'", name);
-                        Some(channel)
-                    }
-                    Err(e) => {
-                        tracing::error!("Failed to create channel for instance '{}': {}", name, e);
-                        None
-                    }
+            Ok(Some(config)) if config.enabled => match Self::create_grpc_channel(&config).await {
+                Ok(channel) => {
+                    self.channel_cache
+                        .insert(name.to_string(), channel.clone())
+                        .await;
+                    tracing::debug!("Lazily created and cached channel for instance '{}'", name);
+                    Some(channel)
                 }
-            }
+                Err(e) => {
+                    tracing::error!("Failed to create channel for instance '{}': {}", name, e);
+                    None
+                }
+            },
             Ok(_) => {
                 // Instance not found or disabled
                 None
@@ -472,7 +487,10 @@ impl RemoteProviderManager {
 
     /// Get all provider instances with full metadata
     pub async fn get_all_instances(&self) -> crate::Result<Vec<ProviderInstance>> {
-        self.repository.get_all().await.map_err(|e| crate::Error::Internal(format!("{e}")))
+        self.repository
+            .get_all()
+            .await
+            .map_err(|e| crate::Error::Internal(format!("{e}")))
     }
 
     /// Add a new provider instance
@@ -484,7 +502,10 @@ impl RemoteProviderManager {
     pub async fn add(&self, config: ProviderInstance) -> crate::Result<()> {
         // Check DB for existing instance (not just local cache)
         if let Ok(Some(_)) = self.repository.get_by_name(&config.name).await {
-            return Err(crate::Error::AlreadyExists(format!("Instance '{}' already exists", config.name)));
+            return Err(crate::Error::AlreadyExists(format!(
+                "Instance '{}' already exists",
+                config.name
+            )));
         }
 
         // Create gRPC connection
@@ -494,7 +515,9 @@ impl RemoteProviderManager {
         self.repository.create(&config).await?;
 
         // Cache locally
-        self.channel_cache.insert(config.name.clone(), channel).await;
+        self.channel_cache
+            .insert(config.name.clone(), channel)
+            .await;
 
         // Notify other replicas
         self.notify_change(&config.name).await;
@@ -517,7 +540,9 @@ impl RemoteProviderManager {
         self.repository.update(&config).await?;
 
         // Replace cached channel
-        self.channel_cache.insert(config.name.clone(), channel).await;
+        self.channel_cache
+            .insert(config.name.clone(), channel)
+            .await;
 
         // Notify other replicas
         self.notify_change(&config.name).await;
@@ -560,7 +585,9 @@ impl RemoteProviderManager {
             .ok_or_else(|| crate::Error::NotFound(format!("Instance '{name}' not found")))?;
 
         let channel = Self::create_grpc_channel(&config).await?;
-        self.channel_cache.insert(config.name.clone(), channel).await;
+        self.channel_cache
+            .insert(config.name.clone(), channel)
+            .await;
 
         // Notify other replicas
         self.notify_change(name).await;
@@ -609,7 +636,9 @@ impl RemoteProviderManager {
         }
 
         let channel = Self::create_grpc_channel(&config).await?;
-        self.channel_cache.insert(config.name.clone(), channel).await;
+        self.channel_cache
+            .insert(config.name.clone(), channel)
+            .await;
 
         // Notify other replicas
         self.notify_change(name).await;
@@ -674,7 +703,11 @@ impl RemoteProviderManager {
                 if is_serving {
                     tracing::debug!("Provider instance '{}' is healthy", name);
                 } else {
-                    tracing::warn!("Provider instance '{}' is not serving (status: {})", name, status);
+                    tracing::warn!(
+                        "Provider instance '{}' is not serving (status: {})",
+                        name,
+                        status
+                    );
                 }
 
                 is_serving

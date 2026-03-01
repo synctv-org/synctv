@@ -5,7 +5,7 @@
 
 #![allow(clippy::unwrap_used)]
 use std::time::Duration;
-use synctv_cluster::{ConnectionManager};
+use synctv_cluster::ConnectionManager;
 use synctv_core::models::id::{RoomId, UserId};
 
 fn uid(s: &str) -> UserId {
@@ -22,8 +22,6 @@ fn rid(s: &str) -> RoomId {
 
 #[tokio::test]
 async fn test_disconnect_signal_queued_when_no_receiver() {
-    
-
     let mgr = ConnectionManager::default();
     let user = uid("u1");
 
@@ -38,7 +36,10 @@ async fn test_disconnect_signal_queued_when_no_receiver() {
 
     // Check metrics - should have no pending signals (no receivers case)
     let metrics = mgr.disconnect_signal_metrics();
-    assert_eq!(metrics.pending_count, 0, "No pending signals when no receivers");
+    assert_eq!(
+        metrics.pending_count, 0,
+        "No pending signals when no receivers"
+    );
 }
 
 #[tokio::test]
@@ -79,8 +80,6 @@ async fn test_disconnect_user_from_room_signal() {
 
 #[tokio::test]
 async fn test_disconnect_signal_reliability_under_load() {
-    
-
     let mgr = ConnectionManager::default();
 
     // Register multiple connections
@@ -106,7 +105,10 @@ async fn test_disconnect_signal_reliability_under_load() {
         }
     }
 
-    assert_eq!(received_count, 10, "All disconnect signals should be received");
+    assert_eq!(
+        received_count, 10,
+        "All disconnect signals should be received"
+    );
 }
 
 // ============================================================================
@@ -182,7 +184,10 @@ async fn test_max_duration_timeout() {
 
     // Not yet expired
     let timeouts = mgr.check_timeouts();
-    assert!(timeouts.is_empty(), "Connection should not time out immediately");
+    assert!(
+        timeouts.is_empty(),
+        "Connection should not time out immediately"
+    );
 
     tokio::time::sleep(Duration::from_millis(100)).await;
 
@@ -285,7 +290,11 @@ async fn test_rtc_connections_filter() {
     // Mark c1 as not RTC-joined
     mgr.mark_rtc_joined(&room, &u1, "c1", false);
     let rtc = mgr.get_rtc_connections(&room);
-    assert_eq!(rtc.len(), 0, "No connections should be RTC-joined after unmark");
+    assert_eq!(
+        rtc.len(),
+        0,
+        "No connections should be RTC-joined after unmark"
+    );
 }
 
 // ============================================================================

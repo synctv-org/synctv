@@ -8,19 +8,22 @@
 
 use std::sync::Arc;
 
-use synctv_core_testing::create_test_pool;
+use sqlx::PgPool;
 use synctv_core::{
     cache::{self, user_cache::CachedUser, NoopCacheL2, UserCache},
     config::PasswordComplexityConfig,
-    models::{User, UserId, UserRole, UserStatus, SignupMethod},
+    models::{SignupMethod, User, UserId, UserRole, UserStatus},
     repository::UserRepository,
     service::{
-        auth::{jwt::JwtService, Claims, SecurityPipeline, BlacklistEnforcement, SecurityPipelineBuilder},
-        BruteForceProtection, InMemoryTokenBlacklistStore, UserService, TokenBlacklistStore,
+        auth::{
+            jwt::JwtService, BlacklistEnforcement, Claims, SecurityPipeline,
+            SecurityPipelineBuilder,
+        },
+        BruteForceProtection, InMemoryTokenBlacklistStore, TokenBlacklistStore, UserService,
     },
     Error, KeyBuilder,
 };
-use sqlx::PgPool;
+use synctv_core_testing::create_test_pool;
 fn create_jwt_service() -> JwtService {
     JwtService::new("test-secret-key-for-integration-tests-minimum-length-32-chars")
         .expect("Failed to create JWT service")
@@ -28,12 +31,8 @@ fn create_jwt_service() -> JwtService {
 
 fn create_user_service(pool: PgPool) -> UserService {
     let jwt_service = create_jwt_service();
-    let username_cache = cache::UsernameCache::new(
-        Arc::new(NoopCacheL2),
-        "test:username:".to_string(),
-        1000,
-        0,
-    );
+    let username_cache =
+        cache::UsernameCache::new(Arc::new(NoopCacheL2), "test:username:".to_string(), 1000, 0);
     let token_blacklist = Arc::new(InMemoryTokenBlacklistStore::new(10_000, 3600, 86400));
     let key_builder = KeyBuilder::new("test");
     let brute_force = BruteForceProtection::in_memory("test".to_string());
@@ -207,7 +206,10 @@ async fn test_legacy_token_iat_before_password_change_rejected() {
     claims.iat = (chrono::Utc::now() - chrono::Duration::hours(2)).timestamp();
 
     let result = pipeline.check(&claims).await;
-    assert!(result.is_err(), "Legacy token with old iat should be rejected");
+    assert!(
+        result.is_err(),
+        "Legacy token with old iat should be rejected"
+    );
     let err = result.unwrap_err();
     assert!(
         matches!(&err, Error::Authentication(msg) if msg.contains("password change")),
@@ -420,7 +422,11 @@ async fn test_cache_populated_with_correct_password_version_after_db_miss() {
 
     // This call should fall through to DB and then populate the cache
     let result = pipeline.check(&claims).await;
-    assert!(result.is_ok(), "Active user should pass: {:?}", result.err());
+    assert!(
+        result.is_ok(),
+        "Active user should pass: {:?}",
+        result.err()
+    );
 
     // Verify the cache was populated
     let cached = user_cache
@@ -507,7 +513,10 @@ async fn test_blacklisted_access_token_rejected() {
 
     // Blacklist the token (simulating logout)
     let blacklist_key = key_builder.access_token_blacklist(&claims.jti);
-    token_blacklist.blacklist(&blacklist_key, 3600).await.unwrap();
+    token_blacklist
+        .blacklist(&blacklist_key, 3600)
+        .await
+        .unwrap();
 
     // Second check: token should be rejected
     let result2 = pipeline.check(&claims).await;
@@ -565,11 +574,17 @@ async fn test_blacklisted_access_token_rejected_via_cache_path() {
 
     // Blacklist the token (simulating logout)
     let blacklist_key = key_builder.access_token_blacklist(&claims.jti);
-    token_blacklist.blacklist(&blacklist_key, 3600).await.unwrap();
+    token_blacklist
+        .blacklist(&blacklist_key, 3600)
+        .await
+        .unwrap();
 
     // Second check: cache hit, but token should still be rejected
     let result2 = pipeline.check(&claims).await;
-    assert!(result2.is_err(), "Blacklisted token should be rejected via cache path");
+    assert!(
+        result2.is_err(),
+        "Blacklisted token should be rejected via cache path"
+    );
 }
 
 /// Test that non-blacklisted tokens are allowed through.
@@ -652,12 +667,8 @@ fn create_user_service_with_blacklist(
     key_builder: KeyBuilder,
 ) -> UserService {
     let jwt_service = create_jwt_service();
-    let username_cache = cache::UsernameCache::new(
-        Arc::new(NoopCacheL2),
-        "test:username:".to_string(),
-        1000,
-        0,
-    );
+    let username_cache =
+        cache::UsernameCache::new(Arc::new(NoopCacheL2), "test:username:".to_string(), 1000, 0);
     let brute_force = BruteForceProtection::in_memory("test".to_string());
 
     UserService::new(
@@ -677,12 +688,8 @@ fn create_user_service_with_dyn_blacklist(
     key_builder: KeyBuilder,
 ) -> UserService {
     let jwt_service = create_jwt_service();
-    let username_cache = cache::UsernameCache::new(
-        Arc::new(NoopCacheL2),
-        "test:username:".to_string(),
-        1000,
-        0,
-    );
+    let username_cache =
+        cache::UsernameCache::new(Arc::new(NoopCacheL2), "test:username:".to_string(), 1000, 0);
     let brute_force = BruteForceProtection::in_memory("test".to_string());
 
     UserService::new(
@@ -750,8 +757,8 @@ async fn test_blacklist_store_error_rejects_request_fail_closed() {
         key_builder.clone(),
     ));
 
-    let pipeline = SecurityPipeline::new(user_service)
-        .with_token_blacklist(erroring_store, key_builder);
+    let pipeline =
+        SecurityPipeline::new(user_service).with_token_blacklist(erroring_store, key_builder);
 
     let claims = make_claims(&user.id, Some(0));
 
@@ -792,7 +799,10 @@ async fn test_in_memory_blacklist_store_is_blacklisted_checked_ok() {
 
     // Non-blacklisted token should pass
     let result = pipeline.check(&claims).await;
-    assert!(result.is_ok(), "Non-blacklisted token should pass with in-memory store");
+    assert!(
+        result.is_ok(),
+        "Non-blacklisted token should pass with in-memory store"
+    );
 
     // Blacklist the token
     let bl_key = key_builder.access_token_blacklist(&claims.jti);

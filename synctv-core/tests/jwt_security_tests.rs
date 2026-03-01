@@ -8,16 +8,16 @@
 
 use std::sync::Arc;
 
-use synctv_core_testing::create_test_jwt_service;
+use base64::{engine::general_purpose, Engine as _};
+use chrono::Utc;
+use jsonwebtoken::{Algorithm, EncodingKey, Header};
+use serde::{Deserialize, Serialize};
 use synctv_core::{
     models::UserId,
-    service::auth::{jwt::JwtService, TokenType, JwtValidator},
+    service::auth::{jwt::JwtService, JwtValidator, TokenType},
 };
-use jsonwebtoken::{Algorithm, Header, EncodingKey};
-use serde::{Serialize, Deserialize};
-use base64::{Engine as _, engine::general_purpose};
+use synctv_core_testing::create_test_jwt_service;
 use tonic::metadata::MetadataMap;
-use chrono::Utc;
 
 const JWT_SECRET: &str = "test-secret-key-for-jwt-security-tests-minimum-32-chars";
 
@@ -72,8 +72,8 @@ async fn test_jwt_tampering_detection_payload() {
 
 #[tokio::test]
 async fn test_jwt_expiry_enforcement() {
-    use jsonwebtoken::{encode, Header, EncodingKey};
     use chrono::Utc;
+    use jsonwebtoken::{encode, EncodingKey, Header};
 
     #[derive(Debug, Serialize, Deserialize)]
     struct ExpiredClaims {
@@ -107,8 +107,10 @@ async fn test_jwt_expiry_enforcement() {
     assert!(result.is_err(), "Expired token should be rejected");
 
     let err_msg = format!("{:?}", result.unwrap_err());
-    assert!(err_msg.contains("expired") || err_msg.contains("ExpiredSignature"),
-            "Error should indicate token expiry: {err_msg}");
+    assert!(
+        err_msg.contains("expired") || err_msg.contains("ExpiredSignature"),
+        "Error should indicate token expiry: {err_msg}"
+    );
 }
 
 #[tokio::test]
@@ -128,11 +130,17 @@ async fn test_jwt_type_confusion_access_vs_refresh() {
 
     // Try to use access token as refresh token
     let result = jwt_service.verify_refresh_token(&access_token);
-    assert!(result.is_err(), "Access token should not validate as refresh token");
+    assert!(
+        result.is_err(),
+        "Access token should not validate as refresh token"
+    );
 
     // Try to use refresh token as access token
     let result = jwt_service.verify_access_token(&refresh_token);
-    assert!(result.is_err(), "Refresh token should not validate as access token");
+    assert!(
+        result.is_err(),
+        "Refresh token should not validate as access token"
+    );
 
     // Verify correct usage works
     assert!(jwt_service.verify_access_token(&access_token).is_ok());
@@ -154,7 +162,10 @@ async fn test_jwt_type_confusion_guest_token() {
 
     // Try to use guest token as access token
     let result = jwt_service.verify_access_token(&guest_token);
-    assert!(result.is_err(), "Guest token should not validate as access token");
+    assert!(
+        result.is_err(),
+        "Guest token should not validate as access token"
+    );
 
     // Generate regular access token
     let access_token = jwt_service
@@ -163,7 +174,10 @@ async fn test_jwt_type_confusion_guest_token() {
 
     // Try to use access token as guest token
     let result = jwt_service.verify_guest_token(&access_token);
-    assert!(result.is_err(), "Access token should not validate as guest token");
+    assert!(
+        result.is_err(),
+        "Access token should not validate as guest token"
+    );
 }
 
 #[tokio::test]
@@ -172,23 +186,26 @@ async fn test_jwt_malformed_token_rejection() {
 
     // Various malformed tokens
     let malformed_tokens = vec![
-        "",                           // Empty
-        "invalid",                    // No dots
-        "invalid.token",              // Only 2 parts
-        "a.b.c.d",                    // Too many parts
-        "!!!.@@@.###",                // Invalid base64
-        "eyJ.eyJ.abc",                // Partial base64
+        "",              // Empty
+        "invalid",       // No dots
+        "invalid.token", // Only 2 parts
+        "a.b.c.d",       // Too many parts
+        "!!!.@@@.###",   // Invalid base64
+        "eyJ.eyJ.abc",   // Partial base64
     ];
 
     for token in malformed_tokens {
         let result = jwt_service.verify_token(token);
-        assert!(result.is_err(), "Malformed token '{token}' should be rejected");
+        assert!(
+            result.is_err(),
+            "Malformed token '{token}' should be rejected"
+        );
     }
 }
 
 #[tokio::test]
 async fn test_jwt_wrong_algorithm_rejection() {
-    use jsonwebtoken::{encode, Header, EncodingKey, Algorithm};
+    use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
 
     #[derive(Debug, Serialize, Deserialize)]
     struct TestClaims {
@@ -219,12 +236,15 @@ async fn test_jwt_wrong_algorithm_rejection() {
 
     // Should fail because service expects HS256
     let result = jwt_service.verify_access_token(&wrong_alg_token);
-    assert!(result.is_err(), "Token with wrong algorithm should be rejected");
+    assert!(
+        result.is_err(),
+        "Token with wrong algorithm should be rejected"
+    );
 }
 
 #[tokio::test]
 async fn test_jwt_future_issued_at_rejection() {
-    use jsonwebtoken::{encode, Header, EncodingKey};
+    use jsonwebtoken::{encode, EncodingKey, Header};
 
     #[derive(Debug, Serialize, Deserialize)]
     struct FutureClaims {
@@ -271,8 +291,12 @@ async fn test_jwt_jti_uniqueness() {
     let user_id = UserId::new();
 
     // Generate multiple tokens
-    let token1 = jwt_service.sign_token(&user_id, TokenType::Access, 0).unwrap();
-    let token2 = jwt_service.sign_token(&user_id, TokenType::Access, 0).unwrap();
+    let token1 = jwt_service
+        .sign_token(&user_id, TokenType::Access, 0)
+        .unwrap();
+    let token2 = jwt_service
+        .sign_token(&user_id, TokenType::Access, 0)
+        .unwrap();
 
     let claims1 = jwt_service.verify_access_token(&token1).unwrap();
     let claims2 = jwt_service.verify_access_token(&token2).unwrap();
@@ -299,7 +323,10 @@ async fn test_jwt_different_secrets_incompatible() {
 
     // Verify with service 2 should fail
     let result = jwt_service2.verify_access_token(&token);
-    assert!(result.is_err(), "Token from different secret should be rejected");
+    assert!(
+        result.is_err(),
+        "Token from different secret should be rejected"
+    );
 }
 
 #[tokio::test]
@@ -312,29 +339,38 @@ async fn test_jwt_token_expiration_boundary() {
         .sign_token(&user_id, TokenType::Access, 0)
         .expect("Failed to sign token");
 
-    let claims = jwt_service.verify_access_token(&token).expect("Failed to verify token");
+    let claims = jwt_service
+        .verify_access_token(&token)
+        .expect("Failed to verify token");
 
     // Verify expiration is correctly set (1 hour for access token)
     let expected_exp = claims.iat + 3600;
-    assert_eq!(claims.exp, expected_exp, "Access token should expire in 1 hour");
+    assert_eq!(
+        claims.exp, expected_exp,
+        "Access token should expire in 1 hour"
+    );
 
     // Generate refresh token
     let refresh_token = jwt_service
         .sign_token(&user_id, TokenType::Refresh, 0)
         .expect("Failed to sign refresh token");
 
-    let refresh_claims = jwt_service.verify_refresh_token(&refresh_token)
+    let refresh_claims = jwt_service
+        .verify_refresh_token(&refresh_token)
         .expect("Failed to verify refresh token");
 
     // Verify refresh token expiration (30 days)
     let expected_refresh_exp = refresh_claims.iat + (30 * 24 * 3600);
-    assert_eq!(refresh_claims.exp, expected_refresh_exp, "Refresh token should expire in 30 days");
+    assert_eq!(
+        refresh_claims.exp, expected_refresh_exp,
+        "Refresh token should expire in 30 days"
+    );
 }
 
 #[tokio::test]
 async fn test_jwt_concurrent_token_generation() {
-    use std::sync::Arc;
     use std::collections::HashSet;
+    use std::sync::Arc;
 
     let jwt_service = Arc::new(create_test_jwt_service());
     let mut handles = vec![];
@@ -344,9 +380,11 @@ async fn test_jwt_concurrent_token_generation() {
         let service = jwt_service.clone();
         let handle = tokio::spawn(async move {
             let user_id = UserId::new();
-            let token = service.sign_token(&user_id, TokenType::Access, 0)
+            let token = service
+                .sign_token(&user_id, TokenType::Access, 0)
                 .expect("Failed to sign token");
-            let claims = service.verify_access_token(&token)
+            let claims = service
+                .verify_access_token(&token)
                 .expect("Failed to verify token");
             claims.jti
         });
@@ -426,7 +464,10 @@ async fn test_jwt_validator_empty_bearer_token_after_prefix() {
     // but the token " " will fail JWT verification
     if let Ok(token) = result3 {
         let verify_result = validator.validate_token(&token);
-        assert!(verify_result.is_err(), "Whitespace-only token should fail verification");
+        assert!(
+            verify_result.is_err(),
+            "Whitespace-only token should fail verification"
+        );
     }
 
     // HTTP: "Bearer " + empty should fail
@@ -454,10 +495,7 @@ async fn test_jwt_validator_grpc_as_status_returns_unauthenticated() {
     metadata2.insert("authorization", "Bearer invalid.token".parse().unwrap());
     let result2 = validator.validate_grpc_as_status(&metadata2);
     assert!(result2.is_err());
-    assert_eq!(
-        result2.unwrap_err().code(),
-        tonic::Code::Unauthenticated
-    );
+    assert_eq!(result2.unwrap_err().code(), tonic::Code::Unauthenticated);
 }
 
 // ============================================================================
@@ -469,7 +507,10 @@ async fn test_verify_custom_skips_issuer_validation() {
     // Create a JWT service that expects issuer and audience
     let jwt_service = JwtService::with_durations_and_claims(
         "test-secret-key-for-integration-tests-minimum-length-32-chars",
-        1, 30, 4, 60,
+        1,
+        30,
+        4,
+        60,
         Some("synctv".to_string()),
         Some("synctv-api".to_string()),
     )
@@ -555,8 +596,7 @@ async fn test_verify_custom_still_validates_expiry() {
 async fn test_verify_custom_validates_signature() {
     let jwt_service1 = create_test_jwt_service();
     let jwt_service2 =
-        JwtService::new("DIFFERENT-secret-key-for-custom-token-tests-1234567890!@#")
-            .unwrap();
+        JwtService::new("DIFFERENT-secret-key-for-custom-token-tests-1234567890!@#").unwrap();
 
     // Sign custom token with service 1
     let claims = serde_json::json!({"sub": "test", "data": 42});
@@ -573,7 +613,6 @@ async fn test_verify_custom_validates_signature() {
 // ============================================================================
 // Additional tests from auth_jwt_tests.rs (merged to eliminate duplication)
 // ============================================================================
-
 
 #[tokio::test]
 async fn test_token_family_rotation_maintains_family_id() {
@@ -595,11 +634,18 @@ async fn test_token_family_rotation_maintains_family_id() {
         .sign_token(&user_id, TokenType::Refresh, 0)
         .expect("Failed to sign token2");
 
-    let claims1 = jwt_service.verify_refresh_token(&token1).expect("Failed to verify token1");
-    let claims2 = jwt_service.verify_refresh_token(&token2).expect("Failed to verify token2");
+    let claims1 = jwt_service
+        .verify_refresh_token(&token1)
+        .expect("Failed to verify token1");
+    let claims2 = jwt_service
+        .verify_refresh_token(&token2)
+        .expect("Failed to verify token2");
 
     // Each token should have unique JTI for tracking
-    assert_ne!(claims1.jti, claims2.jti, "Each token should have unique JTI");
+    assert_ne!(
+        claims1.jti, claims2.jti,
+        "Each token should have unique JTI"
+    );
 
     // Both should have same subject (user)
     assert_eq!(claims1.sub, claims2.sub);
@@ -619,7 +665,11 @@ async fn test_token_includes_password_version() {
         .verify_access_token(&token_v0)
         .expect("Failed to verify token v0");
 
-    assert_eq!(claims_v0.pv, Some(0), "Token should include password version");
+    assert_eq!(
+        claims_v0.pv,
+        Some(0),
+        "Token should include password version"
+    );
 
     // Token with password version 5
     let token_v5 = jwt_service
@@ -630,7 +680,11 @@ async fn test_token_includes_password_version() {
         .verify_access_token(&token_v5)
         .expect("Failed to verify token v5");
 
-    assert_eq!(claims_v5.pv, Some(5), "Token should include updated password version");
+    assert_eq!(
+        claims_v5.pv,
+        Some(5),
+        "Token should include updated password version"
+    );
 }
 
 #[tokio::test]
@@ -723,8 +777,9 @@ async fn test_tampered_subject_rejected() {
     let mut payload: serde_json::Value = serde_json::from_slice(
         &base64::engine::general_purpose::URL_SAFE_NO_PAD
             .decode(parts[1])
-            .expect("Failed to decode payload")
-    ).expect("Failed to parse payload");
+            .expect("Failed to decode payload"),
+    )
+    .expect("Failed to parse payload");
 
     // Change subject to different user
     payload["sub"] = serde_json::json!("attacker_user_id");
@@ -735,7 +790,10 @@ async fn test_tampered_subject_rejected() {
     let tampered_token = format!("{}.{}.{}", parts[0], tampered_payload, parts[2]);
 
     let result = jwt_service.verify_access_token(&tampered_token);
-    assert!(result.is_err(), "Token with modified subject should be rejected");
+    assert!(
+        result.is_err(),
+        "Token with modified subject should be rejected"
+    );
 }
 
 #[tokio::test]
@@ -788,14 +846,14 @@ async fn test_expired_refresh_token_rejected() {
         typ: "refresh".to_string(),
         jti: nanoid::nanoid!(),
         iat: now - 2_592_000 - 3600, // 30 days + 1 hour ago
-        exp: now - 3600,              // expired 1 hour ago
+        exp: now - 3600,             // expired 1 hour ago
     };
 
     let encoding_key = EncodingKey::from_secret(JWT_SECRET.as_bytes());
-    let expired_token = jsonwebtoken::encode(&Header::new(Algorithm::HS256), &claims, &encoding_key)
-        .expect("Failed to encode expired token");
+    let expired_token =
+        jsonwebtoken::encode(&Header::new(Algorithm::HS256), &claims, &encoding_key)
+            .expect("Failed to encode expired token");
 
     let result = jwt_service.verify_refresh_token(&expired_token);
     assert!(result.is_err(), "Expired refresh token should be rejected");
 }
-

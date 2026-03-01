@@ -54,7 +54,7 @@ impl RoomSettingsRepository {
             SELECT value, version
             FROM room_settings
             WHERE room_id = $1 AND key = '_settings'
-        "
+        ",
         )
         .bind(room_id_str)
         .fetch_optional(&self.pool)
@@ -63,8 +63,9 @@ impl RoomSettingsRepository {
         if let Some(row) = row {
             let value: String = row.try_get("value")?;
             let version: i64 = row.try_get("version")?;
-            let settings: RoomSettings = serde_json::from_str(&value)
-                .map_err(|e| Error::Internal(format!("Failed to deserialize room settings: {e}")))?;
+            let settings: RoomSettings = serde_json::from_str(&value).map_err(|e| {
+                Error::Internal(format!("Failed to deserialize room settings: {e}"))
+            })?;
             Ok((settings, version))
         } else {
             // No settings stored, return defaults with version 0
@@ -88,7 +89,7 @@ impl RoomSettingsRepository {
             FROM room_settings
             WHERE room_id = $1 AND key = '_settings'
             FOR UPDATE
-        "
+        ",
         )
         .bind(room_id_str)
         .fetch_optional(executor)
@@ -96,8 +97,9 @@ impl RoomSettingsRepository {
 
         if let Some(row) = row {
             let value: String = row.try_get("value")?;
-            let settings: RoomSettings = serde_json::from_str(&value)
-                .map_err(|e| Error::Internal(format!("Failed to deserialize room settings: {e}")))?;
+            let settings: RoomSettings = serde_json::from_str(&value).map_err(|e| {
+                Error::Internal(format!("Failed to deserialize room settings: {e}"))
+            })?;
             Ok(settings)
         } else {
             Ok(RoomSettings::default())
@@ -114,7 +116,7 @@ impl RoomSettingsRepository {
             VALUES ($1, $2, $3, 1)
             ON CONFLICT (room_id, key)
             DO UPDATE SET value = $3, version = room_settings.version + 1, updated_at = NOW()
-        "
+        ",
         )
         .bind(room_id_str)
         .bind(key)
@@ -126,7 +128,13 @@ impl RoomSettingsRepository {
     }
 
     /// Set a specific setting using a provided executor (pool or transaction)
-    pub async fn set_with_executor<'e, E>(&self, room_id: &RoomId, key: &str, value: &str, executor: E) -> Result<()>
+    pub async fn set_with_executor<'e, E>(
+        &self,
+        room_id: &RoomId,
+        key: &str,
+        value: &str,
+        executor: E,
+    ) -> Result<()>
     where
         E: sqlx::PgExecutor<'e>,
     {
@@ -138,7 +146,7 @@ impl RoomSettingsRepository {
             VALUES ($1, $2, $3, 1)
             ON CONFLICT (room_id, key)
             DO UPDATE SET value = $3, version = room_settings.version + 1, updated_at = NOW()
-        "
+        ",
         )
         .bind(room_id_str)
         .bind(key)
@@ -150,7 +158,12 @@ impl RoomSettingsRepository {
     }
 
     /// Set multiple settings at once using a provided executor (pool or transaction)
-    pub async fn set_settings_with_executor<'e, E>(&self, room_id: &RoomId, settings: &RoomSettings, executor: E) -> Result<()>
+    pub async fn set_settings_with_executor<'e, E>(
+        &self,
+        room_id: &RoomId,
+        settings: &RoomSettings,
+        executor: E,
+    ) -> Result<()>
     where
         E: sqlx::PgExecutor<'e>,
     {
@@ -165,7 +178,7 @@ impl RoomSettingsRepository {
             VALUES ($1, '_settings', $2, 1)
             ON CONFLICT (room_id, key)
             DO UPDATE SET value = $2, version = room_settings.version + 1, updated_at = NOW()
-        "
+        ",
         )
         .bind(room_id_str)
         .bind(&json_value)
@@ -176,7 +189,10 @@ impl RoomSettingsRepository {
     }
 
     /// Get settings for multiple rooms in a single query
-    pub async fn get_batch(&self, room_ids: &[&str]) -> Result<std::collections::HashMap<String, RoomSettings>> {
+    pub async fn get_batch(
+        &self,
+        room_ids: &[&str],
+    ) -> Result<std::collections::HashMap<String, RoomSettings>> {
         if room_ids.is_empty() {
             return Ok(std::collections::HashMap::new());
         }
@@ -186,7 +202,7 @@ impl RoomSettingsRepository {
             SELECT room_id, value
             FROM room_settings
             WHERE room_id = ANY($1) AND key = '_settings'
-            "
+            ",
         )
         .bind(room_ids)
         .fetch_all(&self.pool)
@@ -212,7 +228,7 @@ impl RoomSettingsRepository {
             SELECT value
             FROM room_settings
             WHERE room_id = $1 AND key = $2
-        "
+        ",
         )
         .bind(room_id_str)
         .bind(key)
@@ -245,7 +261,7 @@ impl RoomSettingsRepository {
             VALUES ($1, '_settings', $2, 1)
             ON CONFLICT (room_id, key)
             DO UPDATE SET value = $2, version = room_settings.version + 1, updated_at = NOW()
-        "
+        ",
         )
         .bind(room_id_str)
         .bind(&json_value)
@@ -279,7 +295,7 @@ impl RoomSettingsRepository {
                 VALUES ($1, '_settings', $2, 1)
                 ON CONFLICT (room_id, key) DO NOTHING
                 RETURNING version
-                "
+                ",
             )
             .bind(room_id_str)
             .bind(&json_value)
@@ -299,7 +315,7 @@ impl RoomSettingsRepository {
                 SET value = $2, version = version + 1, updated_at = NOW()
                 WHERE room_id = $1 AND key = '_settings' AND version = $3
                 RETURNING version
-                "
+                ",
             )
             .bind(room_id_str)
             .bind(&json_value)
@@ -328,7 +344,12 @@ impl RoomSettingsRepository {
     }
 
     /// Delete a specific setting using a provided executor (pool or transaction)
-    pub async fn delete_with_executor<'e, E>(&self, room_id: &RoomId, key: &str, executor: E) -> Result<()>
+    pub async fn delete_with_executor<'e, E>(
+        &self,
+        room_id: &RoomId,
+        key: &str,
+        executor: E,
+    ) -> Result<()>
     where
         E: sqlx::PgExecutor<'e>,
     {
@@ -356,7 +377,10 @@ impl RoomSettingsRepository {
     }
 
     /// Get all settings for a room as raw `HashMap` (for type-safe settings system)
-    pub async fn get_all_raw(&self, room_id: &RoomId) -> Result<std::collections::HashMap<String, String>> {
+    pub async fn get_all_raw(
+        &self,
+        room_id: &RoomId,
+    ) -> Result<std::collections::HashMap<String, String>> {
         let room_id_str = room_id.as_str();
 
         let rows = sqlx::query(
@@ -364,7 +388,7 @@ impl RoomSettingsRepository {
             SELECT key, value
             FROM room_settings
             WHERE room_id = $1
-        "
+        ",
         )
         .bind(room_id_str)
         .fetch_all(&self.pool)

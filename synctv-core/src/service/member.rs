@@ -7,9 +7,12 @@ use std::sync::Arc;
 
 use crate::{
     cache::CacheInvalidationService,
-    models::{Room, RoomId, RoomMember, RoomMemberWithUser, UserId, PermissionBits, RoomRole, MemberStatus, RoomSettings, PageParams},
+    models::{
+        MemberStatus, PageParams, PermissionBits, Room, RoomId, RoomMember, RoomMemberWithUser,
+        RoomRole, RoomSettings, UserId,
+    },
     repository::{RoomMemberRepository, RoomRepository, RoomSettingsRepository},
-    service::audit::{AuditService, AuditAction, AuditTargetType},
+    service::audit::{AuditAction, AuditService, AuditTargetType},
     service::notification::NotificationService,
     service::permission::PermissionService,
     Error, Result,
@@ -81,19 +84,19 @@ pub struct AddMemberOptions {
 
 impl AddMemberOptions {
     /// Create default options (all checks enabled, no max limit)
-    #[must_use] 
+    #[must_use]
     pub const fn new() -> Self {
         Self {
             check_room_active: true,
             check_duplicate: true,
-            check_max_members: false,  // disabled by default
+            check_max_members: false, // disabled by default
             max_members: 0,           // 0 means no limit
             invalidate_cache: true,
         }
     }
 
     /// Set max members limit (enables the check)
-    #[must_use] 
+    #[must_use]
     pub const fn with_max_members(mut self, max: u64) -> Self {
         self.max_members = max;
         self.check_max_members = true;
@@ -101,28 +104,28 @@ impl AddMemberOptions {
     }
 
     /// Skip max members check
-    #[must_use] 
+    #[must_use]
     pub const fn skip_max_members_check(mut self) -> Self {
         self.check_max_members = false;
         self
     }
 
     /// Skip room active check
-    #[must_use] 
+    #[must_use]
     pub const fn skip_active_check(mut self) -> Self {
         self.check_room_active = false;
         self
     }
 
     /// Skip duplicate membership check
-    #[must_use] 
+    #[must_use]
     pub const fn skip_duplicate_check(mut self) -> Self {
         self.check_duplicate = false;
         self
     }
 
     /// Skip cache invalidation
-    #[must_use] 
+    #[must_use]
     pub const fn skip_cache_invalidation(mut self) -> Self {
         self.invalidate_cache = false;
         self
@@ -211,7 +214,10 @@ impl MemberService {
         };
         let mut last_err = None;
         for attempt in 0..3u32 {
-            match invalidation.invalidate_user_permission(room_id, user_id).await {
+            match invalidation
+                .invalidate_user_permission(room_id, user_id)
+                .await
+            {
                 Ok(()) => {
                     return;
                 }
@@ -251,16 +257,19 @@ impl MemberService {
         details: serde_json::Value,
     ) {
         if let Some(ref audit) = self.audit_service {
-            if let Err(e) = audit.log(
-                actor_id.as_str().to_string(),
-                String::new(), // username not available at service layer
-                action,
-                target_type,
-                target_id,
-                details,
-                None,
-                None,
-            ).await {
+            if let Err(e) = audit
+                .log(
+                    actor_id.as_str().to_string(),
+                    String::new(), // username not available at service layer
+                    action,
+                    target_type,
+                    target_id,
+                    details,
+                    None,
+                    None,
+                )
+                .await
+            {
                 tracing::warn!(error = %e, "Failed to write audit log from MemberService");
             }
         }
@@ -304,10 +313,7 @@ impl MemberService {
         let member = RoomMember::new(room_id.clone(), user_id.clone(), role);
 
         // Add member with options (transaction happens in repository)
-        let created_member = self
-            .member_repo
-            .add_with_options(&member, &options)
-            .await?;
+        let created_member = self.member_repo.add_with_options(&member, &options).await?;
 
         // Invalidate permission cache (outside transaction)
         if options.invalidate_cache {
@@ -320,7 +326,10 @@ impl MemberService {
             // user's permissions may have changed. Without this, other replicas
             // would serve stale permission data from their L1 caches.
             if let Some(ref invalidation) = self.cache_invalidation {
-                if let Err(e) = invalidation.invalidate_user_permission(&room_id, &user_id).await {
+                if let Err(e) = invalidation
+                    .invalidate_user_permission(&room_id, &user_id)
+                    .await
+                {
                     tracing::warn!(
                         error = %e,
                         room_id = %room_id.as_str(),
@@ -355,10 +364,13 @@ impl MemberService {
         }
 
         // Invalidate permission cache
-        self.permission_service.invalidate_cache(&room_id, &user_id).await;
+        self.permission_service
+            .invalidate_cache(&room_id, &user_id)
+            .await;
 
         // Broadcast permission cache invalidation to other cluster replicas with retry
-        self.broadcast_permission_invalidation_with_retry(&room_id, &user_id).await;
+        self.broadcast_permission_invalidation_with_retry(&room_id, &user_id)
+            .await;
 
         // Broadcast kick event to cluster for cross-replica disconnect
         if let Some(ref broadcaster) = self.event_broadcaster {
@@ -391,12 +403,14 @@ impl MemberService {
 
         // Atomic role check + removal: the SQL WHERE clause ensures the kicker
         // outranks the target, preventing TOCTOU races.
-        let removed = self.member_repo
+        let removed = self
+            .member_repo
             .remove_with_role_check(&room_id, &kicker_id, &target_user_id)
             .await?;
         if !removed {
             return Err(Error::Authorization(
-                "User is not a member or cannot kick a member with equal or higher role".to_string(),
+                "User is not a member or cannot kick a member with equal or higher role"
+                    .to_string(),
             ));
         }
 
@@ -406,7 +420,8 @@ impl MemberService {
             .await;
 
         // Broadcast permission cache invalidation to other cluster replicas with retry
-        self.broadcast_permission_invalidation_with_retry(&room_id, &target_user_id).await;
+        self.broadcast_permission_invalidation_with_retry(&room_id, &target_user_id)
+            .await;
 
         // Notify local WebSocket clients that member was kicked
         if let Some(ref ns) = self.notification_service {
@@ -434,7 +449,8 @@ impl MemberService {
             serde_json::json!({
                 "room_id": room_id.as_str(),
             }),
-        ).await;
+        )
+        .await;
 
         Ok(())
     }
@@ -474,9 +490,17 @@ impl MemberService {
                     .member_repo
                     .get(&room_id, &target_user_id)
                     .await?
-                    .ok_or_else(|| Error::NotFound("User is not a member of this room".to_string()))?;
+                    .ok_or_else(|| {
+                        Error::NotFound("User is not a member of this room".to_string())
+                    })?;
                 self.member_repo
-                    .update_permissions(&room_id, &target_user_id, added_permissions, removed_permissions, member.version)
+                    .update_permissions(
+                        &room_id,
+                        &target_user_id,
+                        added_permissions,
+                        removed_permissions,
+                        member.version,
+                    )
                     .await
             },
         )
@@ -488,7 +512,8 @@ impl MemberService {
             .await;
 
         // Broadcast permission cache invalidation to other cluster replicas
-        self.broadcast_permission_invalidation_with_retry(&room_id, &target_user_id).await;
+        self.broadcast_permission_invalidation_with_retry(&room_id, &target_user_id)
+            .await;
 
         // Audit log
         self.audit_log(
@@ -501,7 +526,8 @@ impl MemberService {
                 "added_permissions": added_permissions,
                 "removed_permissions": removed_permissions,
             }),
-        ).await;
+        )
+        .await;
 
         Ok(updated_member)
     }
@@ -534,7 +560,8 @@ impl MemberService {
             .await;
 
         // Broadcast permission cache invalidation to other cluster replicas
-        self.broadcast_permission_invalidation_with_retry(&room_id, &target_user_id).await;
+        self.broadcast_permission_invalidation_with_retry(&room_id, &target_user_id)
+            .await;
 
         // Audit log
         self.audit_log(
@@ -546,7 +573,8 @@ impl MemberService {
                 "room_id": room_id.as_str(),
                 "permission": permission,
             }),
-        ).await;
+        )
+        .await;
 
         Ok(updated_member)
     }
@@ -579,7 +607,8 @@ impl MemberService {
             .await;
 
         // Broadcast permission cache invalidation to other cluster replicas
-        self.broadcast_permission_invalidation_with_retry(&room_id, &target_user_id).await;
+        self.broadcast_permission_invalidation_with_retry(&room_id, &target_user_id)
+            .await;
 
         // Audit log
         self.audit_log(
@@ -591,7 +620,8 @@ impl MemberService {
                 "room_id": room_id.as_str(),
                 "permission": permission,
             }),
-        ).await;
+        )
+        .await;
 
         Ok(updated_member)
     }
@@ -620,7 +650,9 @@ impl MemberService {
                     .member_repo
                     .get(&room_id, &target_user_id)
                     .await?
-                    .ok_or_else(|| Error::NotFound("User is not a member of this room".to_string()))?;
+                    .ok_or_else(|| {
+                        Error::NotFound("User is not a member of this room".to_string())
+                    })?;
                 self.member_repo
                     .reset_permissions(&room_id, &target_user_id, member.version)
                     .await
@@ -634,7 +666,8 @@ impl MemberService {
             .await;
 
         // Broadcast permission cache invalidation to other cluster replicas
-        self.broadcast_permission_invalidation_with_retry(&room_id, &target_user_id).await;
+        self.broadcast_permission_invalidation_with_retry(&room_id, &target_user_id)
+            .await;
 
         Ok(updated_member)
     }
@@ -650,7 +683,10 @@ impl MemberService {
     }
 
     /// Get member counts for multiple rooms in a single query.
-    pub async fn count_members_batch(&self, room_ids: &[&RoomId]) -> Result<std::collections::HashMap<String, i32>> {
+    pub async fn count_members_batch(
+        &self,
+        room_ids: &[&RoomId],
+    ) -> Result<std::collections::HashMap<String, i32>> {
         self.member_repo.count_by_rooms_batch(room_ids).await
     }
 
@@ -722,7 +758,8 @@ impl MemberService {
             .await;
 
         // Broadcast permission cache invalidation to other cluster replicas with retry
-        self.broadcast_permission_invalidation_with_retry(&room_id, &target_user_id).await;
+        self.broadcast_permission_invalidation_with_retry(&room_id, &target_user_id)
+            .await;
 
         // Notify local WebSocket clients that member was kicked (ban implies kick)
         if let Some(ref ns) = self.notification_service {
@@ -761,7 +798,8 @@ impl MemberService {
                 "room_id": room_id.as_str(),
                 "reason": reason,
             }),
-        ).await;
+        )
+        .await;
 
         Ok(())
     }
@@ -789,7 +827,8 @@ impl MemberService {
             .await;
 
         // Broadcast permission cache invalidation to other cluster replicas with retry
-        self.broadcast_permission_invalidation_with_retry(&room_id, &target_user_id).await;
+        self.broadcast_permission_invalidation_with_retry(&room_id, &target_user_id)
+            .await;
 
         // Audit log
         self.audit_log(
@@ -798,7 +837,8 @@ impl MemberService {
             AuditTargetType::Member,
             Some(target_user_id.as_str().to_string()),
             serde_json::json!({ "room_id": room_id.as_str() }),
-        ).await;
+        )
+        .await;
 
         Ok(())
     }
@@ -834,7 +874,9 @@ impl MemberService {
                     .member_repo
                     .get(&room_id, &target_user_id)
                     .await?
-                    .ok_or_else(|| Error::NotFound("User is not a member of this room".to_string()))?;
+                    .ok_or_else(|| {
+                        Error::NotFound("User is not a member of this room".to_string())
+                    })?;
 
                 let old_role = member.role;
 
@@ -853,7 +895,8 @@ impl MemberService {
             .await;
 
         // Broadcast permission cache invalidation to other cluster replicas with retry
-        self.broadcast_permission_invalidation_with_retry(&room_id, &target_user_id).await;
+        self.broadcast_permission_invalidation_with_retry(&room_id, &target_user_id)
+            .await;
 
         // Invalidate room settings cache to ensure fresh role default permissions
         // are used when recalculating the user's effective permissions.
@@ -880,7 +923,8 @@ impl MemberService {
                 "old_role": format!("{:?}", old_role),
                 "new_role": format!("{:?}", role),
             }),
-        ).await;
+        )
+        .await;
 
         Ok(updated_member)
     }
@@ -908,7 +952,9 @@ impl MemberService {
                     .member_repo
                     .get(&room_id, &target_user_id)
                     .await?
-                    .ok_or_else(|| Error::NotFound("User is not a member of this room".to_string()))?;
+                    .ok_or_else(|| {
+                        Error::NotFound("User is not a member of this room".to_string())
+                    })?;
 
                 let old_status = member.status;
 
@@ -927,7 +973,8 @@ impl MemberService {
             .await;
 
         // Broadcast permission cache invalidation to other cluster replicas with retry
-        self.broadcast_permission_invalidation_with_retry(&room_id, &target_user_id).await;
+        self.broadcast_permission_invalidation_with_retry(&room_id, &target_user_id)
+            .await;
 
         // Audit log
         self.audit_log(
@@ -940,7 +987,8 @@ impl MemberService {
                 "old_status": format!("{:?}", old_status),
                 "new_status": format!("{:?}", status),
             }),
-        ).await;
+        )
+        .await;
 
         Ok(updated_member)
     }

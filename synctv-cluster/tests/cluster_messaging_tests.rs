@@ -8,10 +8,8 @@ use std::time::Duration;
 use testcontainers::runners::AsyncRunner;
 use testcontainers_modules::redis::Redis;
 
-use synctv_cluster::{
-    ClusterConfig, ClusterManager, MessageDeduplicator, DedupKey,
-};
 use synctv_cluster::sync::events::{CacheTarget, ClusterEvent, NotificationLevel};
+use synctv_cluster::{ClusterConfig, ClusterManager, DedupKey, MessageDeduplicator};
 use synctv_core::models::id::{MediaId, RoomId, UserId};
 
 /// Default Redis version for test containers
@@ -110,10 +108,17 @@ async fn test_cross_node_broadcast() {
     let (container, redis_client1, _conn1) = setup_redis().await;
 
     // Create a second Redis connection for node2
-    let redis_host = container.get_host().await.expect("Failed to get Redis host");
-    let redis_port = container.get_host_port_ipv4(6379).await.expect("Failed to get Redis port");
+    let redis_host = container
+        .get_host()
+        .await
+        .expect("Failed to get Redis host");
+    let redis_port = container
+        .get_host_port_ipv4(6379)
+        .await
+        .expect("Failed to get Redis port");
     let redis_url = format!("redis://{redis_host}:{redis_port}");
-    let redis_client2 = redis::Client::open(redis_url.as_str()).expect("Failed to create Redis client 2");
+    let redis_client2 =
+        redis::Client::open(redis_url.as_str()).expect("Failed to create Redis client 2");
 
     // Wait for connection 2 (generous timeout for parallel testcontainer startup)
     let conn2 = {
@@ -148,7 +153,9 @@ async fn test_cross_node_broadcast() {
     // Subscribe to room messages on node1
     let room = rid("room1");
     let user = uid("user1");
-    let (mut rx, _conn_id) = manager1.subscribe_with_id(room.clone(), user.clone(), "conn1".to_string()).await;
+    let (mut rx, _conn_id) = manager1
+        .subscribe_with_id(room.clone(), user.clone(), "conn1".to_string())
+        .await;
 
     // Give subscription time to propagate
     tokio::time::sleep(Duration::from_millis(500)).await;
@@ -173,7 +180,9 @@ async fn test_cross_node_broadcast() {
     let elapsed = start.elapsed();
 
     if result.is_err() {
-        eprintln!("SKIPPED: Cross-node broadcast test timed out after {elapsed:?}. This may be due to:");
+        eprintln!(
+            "SKIPPED: Cross-node broadcast test timed out after {elapsed:?}. This may be due to:"
+        );
         eprintln!("  - Redis pub/sub not fully initialized");
         eprintln!("  - Network timing issues in test environment");
         eprintln!("  - Race condition in cluster messaging");
@@ -225,7 +234,10 @@ async fn test_message_deduplication() {
 
     // Second check with same key should NOT be processable (duplicate)
     let should_process2 = dedup.should_process(&key);
-    assert!(!should_process2, "Second occurrence should NOT be processable (duplicate)");
+    assert!(
+        !should_process2,
+        "Second occurrence should NOT be processable (duplicate)"
+    );
 
     // Different event should be processable
     let event2 = ClusterEvent::ChatMessage {
@@ -274,7 +286,10 @@ async fn test_dedup_ttl_expiry() {
 
     // After expiry, should be processable again
     let should_process2 = dedup.should_process(&key);
-    assert!(should_process2, "After TTL expiry, should be processable again");
+    assert!(
+        should_process2,
+        "After TTL expiry, should be processable again"
+    );
 }
 
 /// Test deduplication with different event types.
@@ -316,7 +331,10 @@ async fn test_dedup_with_different_events() {
     dedup.mark_processed(key1);
 
     let should_process2 = dedup.should_process(&key2);
-    assert!(should_process2, "Different event type should be processable");
+    assert!(
+        should_process2,
+        "Different event type should be processable"
+    );
 }
 
 // ============================================================================
@@ -339,7 +357,9 @@ async fn test_single_node_mode_without_redis() {
 
     let room = rid("room1");
     let user = uid("user1");
-    let (mut rx, _conn_id) = manager.subscribe_with_id(room.clone(), user.clone(), "conn1".to_string()).await;
+    let (mut rx, _conn_id) = manager
+        .subscribe_with_id(room.clone(), user.clone(), "conn1".to_string())
+        .await;
 
     // Local broadcast should still work
     let event = ClusterEvent::ChatMessage {
@@ -381,14 +401,19 @@ async fn test_pubsub_subscription_tracking() {
     let user = uid("user1");
 
     // Subscribe
-    let (_rx, conn_id) = manager.subscribe_with_id(room.clone(), user.clone(), "conn1".to_string()).await;
+    let (_rx, conn_id) = manager
+        .subscribe_with_id(room.clone(), user.clone(), "conn1".to_string())
+        .await;
 
     // Unsubscribe
     manager.unsubscribe(&conn_id);
 
     // Connection count should be 0
     let metrics = manager.metrics();
-    assert_eq!(metrics.total_connections, 0, "Connection count should be 0 after unsubscribe");
+    assert_eq!(
+        metrics.total_connections, 0,
+        "Connection count should be 0 after unsubscribe"
+    );
 
     manager.shutdown().await;
 }
@@ -407,8 +432,12 @@ async fn test_multiple_subscriptions_same_room() {
     let room = rid("room1");
 
     // Subscribe with multiple connections
-    let (mut rx1, _) = manager.subscribe_with_id(room.clone(), uid("user1"), "conn1".to_string()).await;
-    let (mut rx2, _) = manager.subscribe_with_id(room.clone(), uid("user2"), "conn2".to_string()).await;
+    let (mut rx1, _) = manager
+        .subscribe_with_id(room.clone(), uid("user1"), "conn1".to_string())
+        .await;
+    let (mut rx2, _) = manager
+        .subscribe_with_id(room.clone(), uid("user2"), "conn2".to_string())
+        .await;
 
     // Broadcast a message
     let event = ClusterEvent::ChatMessage {
@@ -459,7 +488,9 @@ async fn test_critical_event_delivery() {
     let mut admin_rx = manager.subscribe_admin_events();
 
     // Subscribe to room
-    let (mut room_rx, _) = manager.subscribe_with_id(room.clone(), user.clone(), "conn1".to_string()).await;
+    let (mut room_rx, _) = manager
+        .subscribe_with_id(room.clone(), user.clone(), "conn1".to_string())
+        .await;
 
     // Publish a kick event (critical)
     let kick_event = ClusterEvent::KickUserFromRoom {
@@ -482,7 +513,10 @@ async fn test_critical_event_delivery() {
         manager.shutdown().await;
         return;
     }
-    assert!(room_result.is_ok(), "Should receive kick event via room channel");
+    assert!(
+        room_result.is_ok(),
+        "Should receive kick event via room channel"
+    );
 
     // Should also receive via admin channel (increased timeout)
     let admin_result = tokio::time::timeout(Duration::from_secs(5), admin_rx.recv()).await;
@@ -491,7 +525,10 @@ async fn test_critical_event_delivery() {
         manager.shutdown().await;
         return;
     }
-    assert!(admin_result.is_ok(), "Should receive kick event via admin channel");
+    assert!(
+        admin_result.is_ok(),
+        "Should receive kick event via admin channel"
+    );
 
     manager.shutdown().await;
 }
@@ -514,7 +551,10 @@ async fn test_event_type_routing() {
         position: None,
         color: None,
     };
-    assert!(room_event.room_id().is_some(), "ChatMessage should have room_id");
+    assert!(
+        room_event.room_id().is_some(),
+        "ChatMessage should have room_id"
+    );
     assert_eq!(room_event.event_type(), "chat_message");
 
     // System events should not have room_id
@@ -524,8 +564,14 @@ async fn test_event_type_routing() {
         level: NotificationLevel::Warning,
         timestamp: chrono::Utc::now(),
     };
-    assert!(system_event.room_id().is_none(), "SystemNotification should not have room_id");
-    assert!(system_event.user_id().is_none(), "SystemNotification should not have user_id");
+    assert!(
+        system_event.room_id().is_none(),
+        "SystemNotification should not have room_id"
+    );
+    assert!(
+        system_event.user_id().is_none(),
+        "SystemNotification should not have user_id"
+    );
     assert_eq!(system_event.event_type(), "system_notification");
 
     // KickUser should have user_id but no room_id
@@ -535,8 +581,14 @@ async fn test_event_type_routing() {
         reason: "banned".to_string(),
         timestamp: chrono::Utc::now(),
     };
-    assert!(kick_event.room_id().is_none(), "KickUser should not have room_id");
-    assert!(kick_event.user_id().is_some(), "KickUser should have user_id");
+    assert!(
+        kick_event.room_id().is_none(),
+        "KickUser should not have room_id"
+    );
+    assert!(
+        kick_event.user_id().is_some(),
+        "KickUser should have user_id"
+    );
     assert!(kick_event.is_critical(), "KickUser should be critical");
 }
 
@@ -550,14 +602,16 @@ async fn test_critical_event_classification() {
         media_id: mid("m1"),
         reason: "test".to_string(),
         timestamp: chrono::Utc::now(),
-    }.is_critical());
+    }
+    .is_critical());
 
     assert!(ClusterEvent::KickUser {
         event_id: nanoid::nanoid!(16),
         user_id: uid("u1"),
         reason: "test".to_string(),
         timestamp: chrono::Utc::now(),
-    }.is_critical());
+    }
+    .is_critical());
 
     assert!(ClusterEvent::KickUserFromRoom {
         event_id: nanoid::nanoid!(16),
@@ -565,7 +619,8 @@ async fn test_critical_event_classification() {
         user_id: uid("u1"),
         reason: "test".to_string(),
         timestamp: chrono::Utc::now(),
-    }.is_critical());
+    }
+    .is_critical());
 
     assert!(ClusterEvent::PermissionChanged {
         event_id: nanoid::nanoid!(16),
@@ -579,14 +634,16 @@ async fn test_critical_event_classification() {
         added_permissions: synctv_core::models::permission::PermissionBits(0),
         removed_permissions: synctv_core::models::permission::PermissionBits(0),
         timestamp: chrono::Utc::now(),
-    }.is_critical());
+    }
+    .is_critical());
 
     assert!(ClusterEvent::RoomDeleted {
         event_id: nanoid::nanoid!(16),
         room_id: rid("r1"),
         deleted_by: uid("u1"),
         timestamp: chrono::Utc::now(),
-    }.is_critical());
+    }
+    .is_critical());
 
     assert!(ClusterEvent::UserLeft {
         event_id: nanoid::nanoid!(16),
@@ -594,7 +651,8 @@ async fn test_critical_event_classification() {
         user_id: uid("u1"),
         username: "test".to_string(),
         timestamp: chrono::Utc::now(),
-    }.is_critical());
+    }
+    .is_critical());
 
     // Non-critical events
     assert!(!ClusterEvent::ChatMessage {
@@ -606,7 +664,8 @@ async fn test_critical_event_classification() {
         timestamp: chrono::Utc::now(),
         position: None,
         color: None,
-    }.is_critical());
+    }
+    .is_critical());
 
     assert!(!ClusterEvent::WebRTCJoin {
         event_id: nanoid::nanoid!(16),
@@ -615,7 +674,8 @@ async fn test_critical_event_classification() {
         conn_id: "c1".to_string(),
         username: "test".to_string(),
         timestamp: chrono::Utc::now(),
-    }.is_critical());
+    }
+    .is_critical());
 }
 
 // ============================================================================
@@ -639,9 +699,15 @@ async fn test_broadcast_recipient_count() {
     let room = rid("room1");
 
     // Subscribe 3 connections
-    let (_rx1, _) = manager.subscribe_with_id(room.clone(), uid("user1"), "conn1".to_string()).await;
-    let (_rx2, _) = manager.subscribe_with_id(room.clone(), uid("user2"), "conn2".to_string()).await;
-    let (_rx3, _) = manager.subscribe_with_id(room.clone(), uid("user3"), "conn3".to_string()).await;
+    let (_rx1, _) = manager
+        .subscribe_with_id(room.clone(), uid("user1"), "conn1".to_string())
+        .await;
+    let (_rx2, _) = manager
+        .subscribe_with_id(room.clone(), uid("user2"), "conn2".to_string())
+        .await;
+    let (_rx3, _) = manager
+        .subscribe_with_id(room.clone(), uid("user3"), "conn3".to_string())
+        .await;
 
     // Broadcast a message
     let event = ClusterEvent::ChatMessage {
@@ -671,8 +737,12 @@ async fn test_cache_invalidation_event() {
     let event = ClusterEvent::CacheInvalidate {
         event_id: nanoid::nanoid!(16),
         targets: vec![
-            CacheTarget::User { user_id: "u1".to_string() },
-            CacheTarget::Room { room_id: "r1".to_string() },
+            CacheTarget::User {
+                user_id: "u1".to_string(),
+            },
+            CacheTarget::Room {
+                room_id: "r1".to_string(),
+            },
             CacheTarget::All,
         ],
         timestamp: chrono::Utc::now(),
@@ -717,7 +787,11 @@ async fn test_media_removed_batch_event() {
     let json = serde_json::to_string(&event).expect("Should serialize");
     let decoded: ClusterEvent = serde_json::from_str(&json).expect("Should deserialize");
 
-    if let ClusterEvent::MediaRemovedBatch { media_ids: decoded_ids, .. } = decoded {
+    if let ClusterEvent::MediaRemovedBatch {
+        media_ids: decoded_ids,
+        ..
+    } = decoded
+    {
         assert_eq!(decoded_ids.len(), 100, "Should have 100 media IDs");
     } else {
         panic!("Expected MediaRemovedBatch variant");
@@ -803,8 +877,12 @@ async fn test_get_room_subscribers() {
 
     let room = rid("room1");
 
-    let (_rx1, _) = manager.subscribe_with_id(room.clone(), uid("user1"), "conn1".to_string()).await;
-    let (_rx2, _) = manager.subscribe_with_id(room.clone(), uid("user2"), "conn2".to_string()).await;
+    let (_rx1, _) = manager
+        .subscribe_with_id(room.clone(), uid("user1"), "conn1".to_string())
+        .await;
+    let (_rx2, _) = manager
+        .subscribe_with_id(room.clone(), uid("user2"), "conn2".to_string())
+        .await;
 
     let subscribers = manager.get_room_subscribers(&room);
     assert_eq!(subscribers.len(), 2, "Should have 2 subscribers");
@@ -831,7 +909,9 @@ async fn test_cluster_metrics() {
         .expect("Failed to create ClusterManager");
 
     let room = rid("room1");
-    let (_rx, _) = manager.subscribe_with_id(room.clone(), uid("user1"), "conn1".to_string()).await;
+    let (_rx, _) = manager
+        .subscribe_with_id(room.clone(), uid("user1"), "conn1".to_string())
+        .await;
 
     let metrics = manager.metrics();
     assert_eq!(metrics.node_id, "test_node");

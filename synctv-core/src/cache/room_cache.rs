@@ -74,7 +74,14 @@ impl CachedRoom {
         created_at: chrono::DateTime<chrono::Utc>,
         updated_at: chrono::DateTime<chrono::Utc>,
     ) -> Self {
-        Self { id, name, owner_id, is_public, created_at, updated_at }
+        Self {
+            id,
+            name,
+            owner_id,
+            is_public,
+            created_at,
+            updated_at,
+        }
     }
 
     /// Get the `updated_at` timestamp
@@ -158,7 +165,10 @@ impl RoomCache {
     ///
     /// More efficient than calling `get()` multiple times.
     /// Returns a map of `room_id` -> `CachedRoom`.
-    pub async fn get_batch(&self, room_ids: &[RoomId]) -> Result<std::collections::HashMap<RoomId, CachedRoom>> {
+    pub async fn get_batch(
+        &self,
+        room_ids: &[RoomId],
+    ) -> Result<std::collections::HashMap<RoomId, CachedRoom>> {
         self.inner.get_batch(room_ids).await
     }
 
@@ -208,7 +218,14 @@ mod tests {
 
     #[tokio::test]
     async fn test_l1_cache_only() {
-        let cache = RoomCache::new(Arc::new(crate::cache::NoopCacheL2), 100, 5, 0, "test:".to_string()).unwrap();
+        let cache = RoomCache::new(
+            Arc::new(crate::cache::NoopCacheL2),
+            100,
+            5,
+            0,
+            "test:".to_string(),
+        )
+        .unwrap();
 
         let room_id = create_test_room_id("room1");
         let room = create_test_room("room1", "Test Room", "user1");
@@ -228,15 +245,28 @@ mod tests {
 
     #[tokio::test]
     async fn test_batch_lookup() {
-        let cache = RoomCache::new(Arc::new(crate::cache::NoopCacheL2), 100, 5, 0, "test:".to_string()).unwrap();
+        let cache = RoomCache::new(
+            Arc::new(crate::cache::NoopCacheL2),
+            100,
+            5,
+            0,
+            "test:".to_string(),
+        )
+        .unwrap();
 
         let room1 = create_test_room_id("room1");
         let room2 = create_test_room_id("room2");
         let room3 = create_test_room_id("room3");
 
         // Set some entries
-        cache.set(&room1, create_test_room("room1", "Room 1", "user1")).await.unwrap();
-        cache.set(&room3, create_test_room("room3", "Room 3", "user1")).await.unwrap();
+        cache
+            .set(&room1, create_test_room("room1", "Room 1", "user1"))
+            .await
+            .unwrap();
+        cache
+            .set(&room3, create_test_room("room3", "Room 3", "user1"))
+            .await
+            .unwrap();
 
         // Batch lookup
         let result = cache
@@ -245,8 +275,14 @@ mod tests {
             .unwrap();
 
         assert_eq!(result.len(), 2);
-        assert_eq!(result.get(&room1).map(|r| &r.name), Some(&"Room 1".to_string()));
+        assert_eq!(
+            result.get(&room1).map(|r| &r.name),
+            Some(&"Room 1".to_string())
+        );
         assert_eq!(result.get(&room2), None);
-        assert_eq!(result.get(&room3).map(|r| &r.name), Some(&"Room 3".to_string()));
+        assert_eq!(
+            result.get(&room3).map(|r| &r.name),
+            Some(&"Room 3".to_string())
+        );
     }
 }

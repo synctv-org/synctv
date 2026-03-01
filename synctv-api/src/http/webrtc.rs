@@ -8,8 +8,8 @@ use axum::{
     response::{IntoResponse, Json},
 };
 
-use crate::http::{AppResult, AppState, error::map_api_error};
 use crate::http::middleware::AuthUser;
+use crate::http::{error::map_api_error, AppResult, AppState};
 use synctv_core::models::RoomId;
 
 // M-10: Use proto types directly instead of duplicating response structs.
@@ -45,12 +45,11 @@ pub async fn get_ice_servers(
     Ok(Json(response))
 }
 
-
 #[cfg(test)]
 mod tests {
-    use crate::proto::client::IceServer;
     use crate::http::error::map_api_error;
     use crate::impls::ApiError;
+    use crate::proto::client::IceServer;
     use axum::http::StatusCode;
 
     #[test]

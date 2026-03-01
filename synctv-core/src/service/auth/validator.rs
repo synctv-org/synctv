@@ -20,7 +20,7 @@ pub struct JwtValidator {
 
 impl JwtValidator {
     /// Create a new JWT validator
-    #[must_use] 
+    #[must_use]
     pub const fn new(jwt_service: Arc<JwtService>) -> Self {
         Self { jwt_service }
     }
@@ -29,9 +29,7 @@ impl JwtValidator {
     ///
     /// Uses case-insensitive comparison per RFC 7235 (auth scheme is case-insensitive).
     pub fn extract_bearer_token(auth_value: &str) -> Result<String> {
-        if auth_value.len() <= 7
-            || !auth_value[..7].eq_ignore_ascii_case("Bearer ")
-        {
+        if auth_value.len() <= 7 || !auth_value[..7].eq_ignore_ascii_case("Bearer ") {
             return Err(Error::Authentication(
                 "Authorization header must start with 'Bearer '".to_string(),
             ));
@@ -127,7 +125,9 @@ impl JwtValidator {
             .get("authorization")
             .ok_or_else(|| Error::Authentication("Missing authorization header".to_string()))?
             .to_str()
-            .map_err(|_| Error::Authentication("Invalid authorization header format".to_string()))?;
+            .map_err(|_| {
+                Error::Authentication("Invalid authorization header format".to_string())
+            })?;
 
         Self::extract_bearer_token(auth_header)
     }
@@ -177,7 +177,10 @@ impl JwtValidator {
     /// # Errors
     /// - `tonic::Status::unauthenticated` for any validation failure
     #[allow(clippy::result_large_err)]
-    pub fn validate_grpc_as_status(&self, metadata: &MetadataMap) -> std::result::Result<Claims, Status> {
+    pub fn validate_grpc_as_status(
+        &self,
+        metadata: &MetadataMap,
+    ) -> std::result::Result<Claims, Status> {
         let token = self
             .extract_grpc_token(metadata)
             .map_err(|e| Status::unauthenticated(format!("Token extraction failed: {e}")))?;
@@ -194,7 +197,9 @@ mod tests {
 
     fn create_test_jwt_service() -> Arc<JwtService> {
         use super::super::jwt::JwtService;
-        Arc::new(JwtService::new("test-secret-for-validator-that-is-long-enough-1234567890").unwrap())
+        Arc::new(
+            JwtService::new("test-secret-for-validator-that-is-long-enough-1234567890").unwrap(),
+        )
     }
 
     fn create_test_token(jwt_service: &JwtService, user_id: &str) -> String {

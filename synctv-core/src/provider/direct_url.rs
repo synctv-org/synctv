@@ -20,13 +20,11 @@ impl DirectUrlProvider {
 
     /// Validate that a URL does not target internal/private network addresses (SSRF protection).
     fn validate_url_not_internal(raw: &str) -> Result<(), ProviderError> {
-        validate_url_for_ssrf(raw).map_err(|e| {
-            match e {
-                ValidationError::SSRF(msg) => {
-                    ProviderError::InvalidUrl(format!("SSRF protection: {msg}"))
-                }
-                _ => ProviderError::InvalidUrl(e.to_string()),
+        validate_url_for_ssrf(raw).map_err(|e| match e {
+            ValidationError::SSRF(msg) => {
+                ProviderError::InvalidUrl(format!("SSRF protection: {msg}"))
             }
+            _ => ProviderError::InvalidUrl(e.to_string()),
         })
     }
 
@@ -231,8 +229,12 @@ impl MediaProvider for DirectUrlProvider {
 
     fn cache_key(&self, ctx: &ProviderContext<'_>, source_config: &Value) -> String {
         if let Ok(config) = DirectUrlSourceConfig::try_from(source_config) {
-            use sha2::{Sha256, Digest};
-            format!("{}:playback:direct_url:{:x}", ctx.key_prefix, Sha256::digest(config.url.as_bytes()))
+            use sha2::{Digest, Sha256};
+            format!(
+                "{}:playback:direct_url:{:x}",
+                ctx.key_prefix,
+                Sha256::digest(config.url.as_bytes())
+            )
         } else {
             format!("{}:playback:direct_url:unknown", ctx.key_prefix)
         }
@@ -262,10 +264,10 @@ mod tests {
         // 0.0.0.0
         assert!(DirectUrlProvider::validate_url_not_internal("http://0.0.0.0/path").is_err());
         // link-local
-        assert!(
-            DirectUrlProvider::validate_url_not_internal("http://169.254.169.254/latest/meta-data")
-                .is_err()
-        );
+        assert!(DirectUrlProvider::validate_url_not_internal(
+            "http://169.254.169.254/latest/meta-data"
+        )
+        .is_err());
         // CGNAT (100.64.0.0/10, RFC 6598) is blocked by the SSRF validator.
     }
 
@@ -287,11 +289,13 @@ mod tests {
 
     #[test]
     fn test_ssrf_allows_public_urls() {
-        assert!(DirectUrlProvider::validate_url_not_internal("https://example.com/video.mp4").is_ok());
         assert!(
-            DirectUrlProvider::validate_url_not_internal("https://cdn.example.com/stream.m3u8")
-                .is_ok()
+            DirectUrlProvider::validate_url_not_internal("https://example.com/video.mp4").is_ok()
         );
+        assert!(DirectUrlProvider::validate_url_not_internal(
+            "https://cdn.example.com/stream.m3u8"
+        )
+        .is_ok());
         assert!(
             DirectUrlProvider::validate_url_not_internal("http://93.184.216.34/video.mp4").is_ok()
         );
@@ -319,30 +323,65 @@ mod tests {
 
     #[test]
     fn test_rtmp_ssrf_blocks_localhost() {
-        assert!(DirectUrlProvider::validate_rtmp_url_not_internal("rtmp://localhost/live/stream").is_err());
-        assert!(DirectUrlProvider::validate_rtmp_url_not_internal("rtmps://localhost/live/stream").is_err());
+        assert!(
+            DirectUrlProvider::validate_rtmp_url_not_internal("rtmp://localhost/live/stream")
+                .is_err()
+        );
+        assert!(
+            DirectUrlProvider::validate_rtmp_url_not_internal("rtmps://localhost/live/stream")
+                .is_err()
+        );
     }
 
     #[test]
     fn test_rtmp_ssrf_blocks_private_ipv4() {
-        assert!(DirectUrlProvider::validate_rtmp_url_not_internal("rtmp://10.0.0.1/live/stream").is_err());
-        assert!(DirectUrlProvider::validate_rtmp_url_not_internal("rtmp://192.168.1.1/live/stream").is_err());
-        assert!(DirectUrlProvider::validate_rtmp_url_not_internal("rtmp://172.16.0.1/live/stream").is_err());
-        assert!(DirectUrlProvider::validate_rtmp_url_not_internal("rtmp://127.0.0.1/live/stream").is_err());
-        assert!(DirectUrlProvider::validate_rtmp_url_not_internal("rtmps://10.0.0.1:1935/live/stream").is_err());
+        assert!(
+            DirectUrlProvider::validate_rtmp_url_not_internal("rtmp://10.0.0.1/live/stream")
+                .is_err()
+        );
+        assert!(DirectUrlProvider::validate_rtmp_url_not_internal(
+            "rtmp://192.168.1.1/live/stream"
+        )
+        .is_err());
+        assert!(
+            DirectUrlProvider::validate_rtmp_url_not_internal("rtmp://172.16.0.1/live/stream")
+                .is_err()
+        );
+        assert!(
+            DirectUrlProvider::validate_rtmp_url_not_internal("rtmp://127.0.0.1/live/stream")
+                .is_err()
+        );
+        assert!(DirectUrlProvider::validate_rtmp_url_not_internal(
+            "rtmps://10.0.0.1:1935/live/stream"
+        )
+        .is_err());
     }
 
     #[test]
     fn test_rtmp_ssrf_blocks_metadata_endpoints() {
-        assert!(DirectUrlProvider::validate_rtmp_url_not_internal("rtmp://metadata.google.internal/live").is_err());
-        assert!(DirectUrlProvider::validate_rtmp_url_not_internal("rtmp://instance-data/live").is_err());
+        assert!(DirectUrlProvider::validate_rtmp_url_not_internal(
+            "rtmp://metadata.google.internal/live"
+        )
+        .is_err());
+        assert!(
+            DirectUrlProvider::validate_rtmp_url_not_internal("rtmp://instance-data/live").is_err()
+        );
     }
 
     #[test]
     fn test_rtmp_ssrf_allows_public_urls() {
-        assert!(DirectUrlProvider::validate_rtmp_url_not_internal("rtmp://live.example.com/live/stream").is_ok());
-        assert!(DirectUrlProvider::validate_rtmp_url_not_internal("rtmps://live.example.com/live/stream").is_ok());
-        assert!(DirectUrlProvider::validate_rtmp_url_not_internal("rtmp://93.184.216.34:1935/live/stream").is_ok());
+        assert!(DirectUrlProvider::validate_rtmp_url_not_internal(
+            "rtmp://live.example.com/live/stream"
+        )
+        .is_ok());
+        assert!(DirectUrlProvider::validate_rtmp_url_not_internal(
+            "rtmps://live.example.com/live/stream"
+        )
+        .is_ok());
+        assert!(DirectUrlProvider::validate_rtmp_url_not_internal(
+            "rtmp://93.184.216.34:1935/live/stream"
+        )
+        .is_ok());
     }
 
     #[test]
@@ -382,7 +421,10 @@ mod tests {
     #[test]
     fn test_forbidden_headers_x_original_url() {
         let mut headers = HashMap::new();
-        headers.insert("X-Original-URL".to_string(), "http://internal.host/secret".to_string());
+        headers.insert(
+            "X-Original-URL".to_string(),
+            "http://internal.host/secret".to_string(),
+        );
         assert!(DirectUrlProvider::validate_headers(&headers).is_err());
     }
 
@@ -449,7 +491,10 @@ mod tests {
 
         // Sec-WebSocket-Key (HTTP/3 WebSockets)
         let mut headers = HashMap::new();
-        headers.insert("Sec-WebSocket-Key".to_string(), "dGhlIHNhbXBsZSBub25jZQ==".to_string());
+        headers.insert(
+            "Sec-WebSocket-Key".to_string(),
+            "dGhlIHNhbXBsZSBub25jZQ==".to_string(),
+        );
         assert!(DirectUrlProvider::validate_headers(&headers).is_err());
 
         // Sec-WebSocket-Version

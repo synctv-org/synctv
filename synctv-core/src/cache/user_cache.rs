@@ -85,7 +85,16 @@ impl CachedUser {
         password_version: i32,
         is_deleted: bool,
     ) -> Self {
-        Self { id, username, role, status, created_at, updated_at, password_version, is_deleted }
+        Self {
+            id,
+            username,
+            role,
+            status,
+            created_at,
+            updated_at,
+            password_version,
+            is_deleted,
+        }
     }
 
     /// Get the user's role
@@ -193,7 +202,10 @@ impl UserCache {
     ///
     /// More efficient than calling `get()` multiple times.
     /// Returns a map of `user_id` -> `CachedUser`.
-    pub async fn get_batch(&self, user_ids: &[UserId]) -> Result<std::collections::HashMap<UserId, CachedUser>> {
+    pub async fn get_batch(
+        &self,
+        user_ids: &[UserId],
+    ) -> Result<std::collections::HashMap<UserId, CachedUser>> {
         self.inner.get_batch(user_ids).await
     }
 
@@ -245,7 +257,14 @@ mod tests {
 
     #[tokio::test]
     async fn test_l1_cache_only() {
-        let cache = UserCache::new(Arc::new(crate::cache::NoopCacheL2), 100, 5, 0, "test:".to_string()).unwrap();
+        let cache = UserCache::new(
+            Arc::new(crate::cache::NoopCacheL2),
+            100,
+            5,
+            0,
+            "test:".to_string(),
+        )
+        .unwrap();
 
         let user_id = create_test_user_id("user1");
         let user = create_test_user("user1", "alice");
@@ -265,15 +284,28 @@ mod tests {
 
     #[tokio::test]
     async fn test_batch_lookup() {
-        let cache = UserCache::new(Arc::new(crate::cache::NoopCacheL2), 100, 5, 0, "test:".to_string()).unwrap();
+        let cache = UserCache::new(
+            Arc::new(crate::cache::NoopCacheL2),
+            100,
+            5,
+            0,
+            "test:".to_string(),
+        )
+        .unwrap();
 
         let user1 = create_test_user_id("user1");
         let user2 = create_test_user_id("user2");
         let user3 = create_test_user_id("user3");
 
         // Set some entries
-        cache.set(&user1, create_test_user("user1", "alice")).await.unwrap();
-        cache.set(&user3, create_test_user("user3", "charlie")).await.unwrap();
+        cache
+            .set(&user1, create_test_user("user1", "alice"))
+            .await
+            .unwrap();
+        cache
+            .set(&user3, create_test_user("user3", "charlie"))
+            .await
+            .unwrap();
 
         // Batch lookup
         let result = cache
@@ -282,8 +314,14 @@ mod tests {
             .unwrap();
 
         assert_eq!(result.len(), 2);
-        assert_eq!(result.get(&user1).map(|u| &u.username), Some(&"alice".to_string()));
+        assert_eq!(
+            result.get(&user1).map(|u| &u.username),
+            Some(&"alice".to_string())
+        );
         assert_eq!(result.get(&user2), None);
-        assert_eq!(result.get(&user3).map(|u| &u.username), Some(&"charlie".to_string()));
+        assert_eq!(
+            result.get(&user3).map(|u| &u.username),
+            Some(&"charlie".to_string())
+        );
     }
 }

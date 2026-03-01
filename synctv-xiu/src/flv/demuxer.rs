@@ -11,9 +11,9 @@ use {
         mpeg4_avc::Mpeg4AvcProcessor,
         mpeg4_hevc::Mpeg4HevcProcessor,
     },
+    crate::bytesio::bytes_reader::BytesReader,
     byteorder::BigEndian,
     bytes::BytesMut,
-    crate::bytesio::bytes_reader::BytesReader,
 };
 
 /*
@@ -81,7 +81,7 @@ pub struct FlvDemuxerAudioData {
 }
 
 impl FlvDemuxerAudioData {
-    #[must_use] 
+    #[must_use]
     pub fn new() -> Self {
         Self {
             has_data: false,
@@ -102,7 +102,7 @@ pub struct FlvDemuxerVideoData {
 }
 
 impl FlvDemuxerVideoData {
-    #[must_use] 
+    #[must_use]
     pub fn new() -> Self {
         Self {
             codec_id: 0,
@@ -163,7 +163,9 @@ impl FlvVideoTagDemuxer {
             match tag_header.avc_packet_type {
                 avc_packet_type::AVC_SEQHDR => {
                     // Load HEVC decoder configuration record
-                    let _ = self.hevc_processor.decoder_configuration_record_load(&mut reader);
+                    let _ = self
+                        .hevc_processor
+                        .decoder_configuration_record_load(&mut reader);
                     return Ok(None);
                 }
                 avc_packet_type::AVC_NALU => {
@@ -199,7 +201,7 @@ pub struct FlvAudioTagDemuxer {
 }
 
 impl FlvAudioTagDemuxer {
-    #[must_use] 
+    #[must_use]
     pub fn new() -> Self {
         Self {
             aac_processor: Mpeg4AacProcessor::new(),
@@ -368,10 +370,12 @@ mod tests {
     #[test]
     fn test_flv_demuxer_read_header_valid() {
         // Create a minimal valid FLV header: signature(3) + version(1) + flags(1) + header_size(4)
-        let header = [0x46, 0x4C, 0x56, // 'F' 'L' 'V' signature
-                      0x01, // version 1
-                      0x05, // audio + video flags
-                      0x00, 0x00, 0x00, 0x09]; // header size = 9
+        let header = [
+            0x46, 0x4C, 0x56, // 'F' 'L' 'V' signature
+            0x01, // version 1
+            0x05, // audio + video flags
+            0x00, 0x00, 0x00, 0x09,
+        ]; // header size = 9
         let data = BytesMut::from(&header[..]);
         let mut demuxer = FlvDemuxer::new(data);
         let result = demuxer.read_flv_header();
@@ -409,7 +413,11 @@ mod tests {
         assert!(result.is_ok());
         let tag = result.unwrap();
         assert!(tag.is_some());
-        if let Some(FlvData::Video { timestamp, data: video_data }) = tag {
+        if let Some(FlvData::Video {
+            timestamp,
+            data: video_data,
+        }) = tag
+        {
             assert_eq!(timestamp, 0);
             assert_eq!(video_data.len(), 5);
         } else {
@@ -438,7 +446,11 @@ mod tests {
         assert!(result.is_ok());
         let tag = result.unwrap();
         assert!(tag.is_some());
-        if let Some(FlvData::Audio { timestamp, data: audio_data }) = tag {
+        if let Some(FlvData::Audio {
+            timestamp,
+            data: audio_data,
+        }) = tag
+        {
             assert_eq!(timestamp, 0);
             assert_eq!(audio_data.len(), 4);
         } else {

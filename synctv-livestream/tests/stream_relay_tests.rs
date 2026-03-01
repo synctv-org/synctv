@@ -31,13 +31,15 @@ async fn test_authenticate_no_secret_allows_all() {
     // No cluster_secret configured, so authentication should pass for any request
     let request: Request<()> = Request::new(());
     let result = service.authenticate(&request);
-    assert!(result.is_ok(), "No secret configured should allow all requests");
+    assert!(
+        result.is_ok(),
+        "No secret configured should allow all requests"
+    );
 }
 
 #[tokio::test]
 async fn test_authenticate_matching_secret_passes() {
-    let service = create_test_service()
-        .with_cluster_secret("my-secret-key");
+    let service = create_test_service().with_cluster_secret("my-secret-key");
 
     let mut request: Request<()> = Request::new(());
     request.metadata_mut().insert(
@@ -51,8 +53,7 @@ async fn test_authenticate_matching_secret_passes() {
 
 #[tokio::test]
 async fn test_authenticate_wrong_secret_rejected() {
-    let service = create_test_service()
-        .with_cluster_secret("correct-secret");
+    let service = create_test_service().with_cluster_secret("correct-secret");
 
     let mut request: Request<()> = Request::new(());
     request.metadata_mut().insert(
@@ -69,14 +70,16 @@ async fn test_authenticate_wrong_secret_rejected() {
 
 #[tokio::test]
 async fn test_authenticate_missing_secret_rejected() {
-    let service = create_test_service()
-        .with_cluster_secret("my-secret");
+    let service = create_test_service().with_cluster_secret("my-secret");
 
     // Request with no metadata
     let request: Request<()> = Request::new(());
 
     let result = service.authenticate(&request);
-    assert!(result.is_err(), "Missing secret should be rejected when one is configured");
+    assert!(
+        result.is_err(),
+        "Missing secret should be rejected when one is configured"
+    );
 
     let status = result.unwrap_err();
     assert_eq!(status.code(), tonic::Code::Unauthenticated);
@@ -84,15 +87,16 @@ async fn test_authenticate_missing_secret_rejected() {
 
 #[tokio::test]
 async fn test_authenticate_empty_secret_rejected() {
-    let service = create_test_service()
-        .with_cluster_secret("non-empty-secret");
+    let service = create_test_service().with_cluster_secret("non-empty-secret");
 
     let mut request: Request<()> = Request::new(());
-    request.metadata_mut().insert(
-        "x-cluster-secret",
-        MetadataValue::from_static(""),
-    );
+    request
+        .metadata_mut()
+        .insert("x-cluster-secret", MetadataValue::from_static(""));
 
     let result = service.authenticate(&request);
-    assert!(result.is_err(), "Empty secret should not match non-empty expected secret");
+    assert!(
+        result.is_err(),
+        "Empty secret should not match non-empty expected secret"
+    );
 }

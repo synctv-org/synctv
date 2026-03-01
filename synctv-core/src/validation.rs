@@ -76,12 +76,12 @@ impl Default for UsernameValidator {
 }
 
 impl UsernameValidator {
-    #[must_use] 
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
 
-    #[must_use] 
+    #[must_use]
     pub const fn with_length(mut self, min: usize, max: usize) -> Self {
         self.min_length = min;
         self.max_length = max;
@@ -106,7 +106,10 @@ impl UsernameValidator {
         }
 
         // Check characters (alphanumeric, underscore, hyphen)
-        if !username.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '-') {
+        if !username
+            .chars()
+            .all(|c| c.is_alphanumeric() || c == '_' || c == '-')
+        {
             return Err(ValidationError::Field {
                 field: "username".to_string(),
                 message: "can only contain letters, numbers, underscores, and hyphens".to_string(),
@@ -233,9 +236,7 @@ impl PasswordValidator {
         }
 
         // Check for special character
-        if self.require_special_char && !password.chars().any(|c| {
-            !c.is_alphanumeric()
-        }) {
+        if self.require_special_char && !password.chars().any(|c| !c.is_alphanumeric()) {
             return Err(ValidationError::Field {
                 field: "password".to_string(),
                 message: "must contain at least one special character".to_string(),
@@ -280,9 +281,8 @@ static EMAIL_REGEX: LazyLock<regex::Regex> = LazyLock::new(|| {
 #[derive(Default)]
 pub struct EmailValidator {}
 
-
 impl EmailValidator {
-    #[must_use] 
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
@@ -306,20 +306,19 @@ pub struct UrlValidator {
     allowed_domains: Option<Vec<String>>,
 }
 
-
 impl UrlValidator {
-    #[must_use] 
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
 
-    #[must_use] 
+    #[must_use]
     pub const fn https_only(mut self) -> Self {
         self.allow_https_only = true;
         self
     }
 
-    #[must_use] 
+    #[must_use]
     pub fn with_allowed_domains(mut self, domains: Vec<String>) -> Self {
         self.allowed_domains = Some(domains);
         self
@@ -339,7 +338,10 @@ impl UrlValidator {
                 // Check allowed domains
                 if let Some(ref domains) = self.allowed_domains {
                     if let Some(host) = parsed.host_str() {
-                        if !domains.iter().any(|d| host == d.as_str() || host.ends_with(&format!(".{d}"))) {
+                        if !domains
+                            .iter()
+                            .any(|d| host == d.as_str() || host.ends_with(&format!(".{d}")))
+                        {
                             return Err(ValidationError::Field {
                                 field: "url".to_string(),
                                 message: format!("domain not in allowed list: {domains:?}"),
@@ -374,12 +376,12 @@ impl Default for RoomNameValidator {
 }
 
 impl RoomNameValidator {
-    #[must_use] 
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
 
-    #[must_use] 
+    #[must_use]
     pub const fn with_length(mut self, min: usize, max: usize) -> Self {
         self.min_length = min;
         self.max_length = max;
@@ -421,11 +423,9 @@ pub struct Validator {
 }
 
 impl Validator {
-    #[must_use] 
+    #[must_use]
     pub const fn new() -> Self {
-        Self {
-            errors: Vec::new(),
-        }
+        Self { errors: Vec::new() }
     }
 
     pub fn validate_field<F>(&mut self, _field: &str, result: ValidationResult<F>) -> &mut Self {
@@ -435,7 +435,7 @@ impl Validator {
         self
     }
 
-    #[must_use] 
+    #[must_use]
     pub const fn is_valid(&self) -> bool {
         self.errors.is_empty()
     }
@@ -453,7 +453,8 @@ impl Validator {
                 }
             }
             _ => {
-                let messages: Vec<String> = errors.iter()
+                let messages: Vec<String> = errors
+                    .iter()
                     .map(std::string::ToString::to_string)
                     .collect();
                 Err(ValidationError::Multiple(messages.join("; ")))
@@ -612,9 +613,7 @@ impl SSRFValidator {
 
                         // CGNAT / Shared Address Space: 100.64.0.0/10 (RFC 6598)
                         if octets[0] == 100 && (64..=127).contains(&octets[1]) {
-                            return Err(ValidationError::SSRF(format!(
-                                "CGNAT IP {ip} is blocked"
-                            )));
+                            return Err(ValidationError::SSRF(format!("CGNAT IP {ip} is blocked")));
                         }
 
                         // Current network: 0.0.0.0/8
@@ -684,9 +683,7 @@ impl SSRFValidator {
 
                         // CGNAT / Shared Address Space: 100.64.0.0/10 (RFC 6598)
                         if octets[0] == 100 && (64..=127).contains(&octets[1]) {
-                            return Err(ValidationError::SSRF(format!(
-                                "CGNAT IP {ip} is blocked"
-                            )));
+                            return Err(ValidationError::SSRF(format!("CGNAT IP {ip} is blocked")));
                         }
 
                         // Current network: 0.0.0.0/8
@@ -758,19 +755,19 @@ impl SSRFValidator {
                     let o = v4.octets();
                     if o[0] == 127 {
                         return Err(ValidationError::SSRF(
-                            "Loopback address not allowed".to_string()
+                            "Loopback address not allowed".to_string(),
                         ));
                     }
                     if o[0] == 169 && o[1] == 254 {
                         return Err(ValidationError::SSRF(
-                            "Link-local address not allowed".to_string()
+                            "Link-local address not allowed".to_string(),
                         ));
                     }
                 }
                 IpAddr::V6(v6) => {
                     if *v6 == Ipv6Addr::LOCALHOST {
                         return Err(ValidationError::SSRF(
-                            "Loopback address not allowed".to_string()
+                            "Loopback address not allowed".to_string(),
                         ));
                     }
                 }
@@ -840,7 +837,9 @@ pub fn validate_rtmp_url_for_ssrf(raw: &str) -> ValidationResult<()> {
         if let Some(end) = authority.find(']') {
             &authority[1..end]
         } else {
-            return Err(ValidationError::SSRF("Malformed IPv6 address in URL".to_string()));
+            return Err(ValidationError::SSRF(
+                "Malformed IPv6 address in URL".to_string(),
+            ));
         }
     } else if let Some((host, _port_str)) = authority.rsplit_once(':') {
         // IPv4 or hostname with port
@@ -915,7 +914,9 @@ pub async fn validate_rtmp_url_host_with_dns(raw: &str) -> ValidationResult<()> 
             };
             (host, port)
         } else {
-            return Err(ValidationError::SSRF("Malformed IPv6 address in URL".to_string()));
+            return Err(ValidationError::SSRF(
+                "Malformed IPv6 address in URL".to_string(),
+            ));
         }
     } else if let Some((host, port_str)) = authority.rsplit_once(':') {
         (host, port_str.parse::<u16>().unwrap_or(1935))
@@ -1053,7 +1054,8 @@ pub fn validate_path_for_traversal(path: &str) -> Result<(), ValidationError> {
                         if inner_val == 0x2E {
                             return Err(ValidationError::Field {
                                 field: "path".to_string(),
-                                message: "must not contain double-encoded dot character".to_string(),
+                                message: "must not contain double-encoded dot character"
+                                    .to_string(),
                             });
                         }
                     }
@@ -1065,7 +1067,8 @@ pub fn validate_path_for_traversal(path: &str) -> Result<(), ValidationError> {
                     if i >= 2 && bytes[i - 2] == b'.' && bytes[i - 1] == b'.' {
                         return Err(ValidationError::Field {
                             field: "path".to_string(),
-                            message: "must not contain '..' followed by encoded separator".to_string(),
+                            message: "must not contain '..' followed by encoded separator"
+                                .to_string(),
                         });
                     }
                 }
@@ -1301,8 +1304,12 @@ mod tests {
         // Domain whitelist
         let domain_validator = UrlValidator::new()
             .with_allowed_domains(vec!["example.com".to_string(), "trusted.org".to_string()]);
-        assert!(domain_validator.validate("https://example.com/path").is_ok());
-        assert!(domain_validator.validate("https://sub.example.com/path").is_ok());
+        assert!(domain_validator
+            .validate("https://example.com/path")
+            .is_ok());
+        assert!(domain_validator
+            .validate("https://sub.example.com/path")
+            .is_ok());
         assert!(domain_validator.validate("https://other.com").is_err());
 
         // Invalid URLs
@@ -1352,19 +1359,29 @@ mod tests {
 
         // Private networks should be blocked (RFC 1918)
         assert!(validator.validate_url("http://10.0.0.1/path").is_err());
-        assert!(validator.validate_url("http://10.255.255.255/path").is_err());
+        assert!(validator
+            .validate_url("http://10.255.255.255/path")
+            .is_err());
         assert!(validator.validate_url("http://172.16.0.1/path").is_err());
-        assert!(validator.validate_url("http://172.31.255.255/path").is_err());
+        assert!(validator
+            .validate_url("http://172.31.255.255/path")
+            .is_err());
         assert!(validator.validate_url("http://192.168.0.1/path").is_err());
-        assert!(validator.validate_url("http://192.168.255.255/path").is_err());
+        assert!(validator
+            .validate_url("http://192.168.255.255/path")
+            .is_err());
 
         // Loopback should be blocked
         assert!(validator.validate_url("http://127.0.0.1/path").is_err());
-        assert!(validator.validate_url("http://127.255.255.255/path").is_err());
+        assert!(validator
+            .validate_url("http://127.255.255.255/path")
+            .is_err());
 
         // Link-local should be blocked (includes cloud metadata)
         assert!(validator.validate_url("http://169.254.0.1/path").is_err());
-        assert!(validator.validate_url("http://169.254.169.254/path").is_err()); // AWS metadata
+        assert!(validator
+            .validate_url("http://169.254.169.254/path")
+            .is_err()); // AWS metadata
 
         // Current network (0.0.0.0/8) - url_jail blocks this
         assert!(validator.validate_url("http://0.0.0.0/path").is_err());
@@ -1385,8 +1402,12 @@ mod tests {
         assert!(validator.validate_url("http://[fd00::1]/path").is_err());
 
         // IPv4-mapped IPv6 addresses
-        assert!(validator.validate_url("http://[::ffff:192.168.0.1]/path").is_err());
-        assert!(validator.validate_url("http://[::ffff:127.0.0.1]/path").is_err());
+        assert!(validator
+            .validate_url("http://[::ffff:192.168.0.1]/path")
+            .is_err());
+        assert!(validator
+            .validate_url("http://[::ffff:127.0.0.1]/path")
+            .is_err());
     }
 
     #[test]
@@ -1412,7 +1433,9 @@ mod tests {
         assert!(validator.validate_url("http://localhost/path").is_err());
 
         // Cloud metadata hostnames - url_jail blocks GCP metadata
-        assert!(validator.validate_url("http://metadata.google.internal/path").is_err());
+        assert!(validator
+            .validate_url("http://metadata.google.internal/path")
+            .is_err());
 
         // Note: url_jail does NOT block these by default:
         // - .local suffix (e.g., myserver.local)
@@ -1438,8 +1461,7 @@ mod tests {
 
     #[test]
     fn test_ssrf_custom_blocklist() {
-        let validator = SSRFValidator::new()
-            .with_blocked_ip("1.2.3.4".parse().unwrap());
+        let validator = SSRFValidator::new().with_blocked_ip("1.2.3.4".parse().unwrap());
 
         // Custom blocked IP
         assert!(validator.validate_url("http://1.2.3.4/path").is_err());
@@ -1470,11 +1492,21 @@ mod tests {
         let validator = SSRFValidator::new();
 
         // IPv4-mapped IPv6 forms of private addresses must be blocked
-        assert!(validator.validate_url("http://[::ffff:10.0.0.1]/path").is_err());
-        assert!(validator.validate_url("http://[::ffff:172.16.0.1]/path").is_err());
-        assert!(validator.validate_url("http://[::ffff:192.168.1.1]/path").is_err());
-        assert!(validator.validate_url("http://[::ffff:127.0.0.1]/path").is_err());
-        assert!(validator.validate_url("http://[::ffff:169.254.169.254]/path").is_err());
+        assert!(validator
+            .validate_url("http://[::ffff:10.0.0.1]/path")
+            .is_err());
+        assert!(validator
+            .validate_url("http://[::ffff:172.16.0.1]/path")
+            .is_err());
+        assert!(validator
+            .validate_url("http://[::ffff:192.168.1.1]/path")
+            .is_err());
+        assert!(validator
+            .validate_url("http://[::ffff:127.0.0.1]/path")
+            .is_err());
+        assert!(validator
+            .validate_url("http://[::ffff:169.254.169.254]/path")
+            .is_err());
     }
 
     #[test]
@@ -1482,8 +1514,12 @@ mod tests {
         let validator = SSRFValidator::new();
 
         // IPv4-mapped IPv6 form of public addresses should be allowed
-        assert!(validator.validate_url("http://[::ffff:8.8.8.8]/path").is_ok());
-        assert!(validator.validate_url("http://[::ffff:1.1.1.1]/path").is_ok());
+        assert!(validator
+            .validate_url("http://[::ffff:8.8.8.8]/path")
+            .is_ok());
+        assert!(validator
+            .validate_url("http://[::ffff:1.1.1.1]/path")
+            .is_ok());
     }
 
     // ========== SSRF: CGNAT Range (100.64.0.0/10) ==========
@@ -1494,8 +1530,12 @@ mod tests {
         let validator = SSRFValidator::new();
 
         assert!(validator.validate_url("http://100.64.0.0/path").is_err());
-        assert!(validator.validate_url("http://100.100.100.100/path").is_err());
-        assert!(validator.validate_url("http://100.127.255.255/path").is_err());
+        assert!(validator
+            .validate_url("http://100.100.100.100/path")
+            .is_err());
+        assert!(validator
+            .validate_url("http://100.127.255.255/path")
+            .is_err());
 
         // Just outside CGNAT range should be allowed
         assert!(validator.validate_url("http://100.128.0.0/path").is_ok());
@@ -1522,9 +1562,15 @@ mod tests {
         // Test validate_ip directly for edge cases
         assert!(validator.validate_ip(&"0.0.0.0".parse().unwrap()).is_err());
         assert!(validator.validate_ip(&"0.0.0.1".parse().unwrap()).is_err());
-        assert!(validator.validate_ip(&"224.0.0.1".parse().unwrap()).is_err());
-        assert!(validator.validate_ip(&"255.255.255.255".parse().unwrap()).is_err());
-        assert!(validator.validate_ip(&"240.0.0.1".parse().unwrap()).is_err());
+        assert!(validator
+            .validate_ip(&"224.0.0.1".parse().unwrap())
+            .is_err());
+        assert!(validator
+            .validate_ip(&"255.255.255.255".parse().unwrap())
+            .is_err());
+        assert!(validator
+            .validate_ip(&"240.0.0.1".parse().unwrap())
+            .is_err());
         assert!(validator.validate_ip(&"8.8.8.8".parse().unwrap()).is_ok());
     }
 
@@ -1549,7 +1595,9 @@ mod tests {
     #[test]
     fn test_ssrf_instance_data_hostname() {
         let validator = SSRFValidator::new();
-        assert!(validator.validate_url("http://instance-data/latest/meta-data").is_err());
+        assert!(validator
+            .validate_url("http://instance-data/latest/meta-data")
+            .is_err());
     }
 
     #[test]
@@ -1557,7 +1605,9 @@ mod tests {
         // Azure uses the link-local IP 169.254.169.254 for metadata
         // url_jail blocks this IP (link-local range)
         let validator = SSRFValidator::new();
-        assert!(validator.validate_url("http://169.254.169.254/metadata/instance").is_err());
+        assert!(validator
+            .validate_url("http://169.254.169.254/metadata/instance")
+            .is_err());
     }
 
     // ========== SSRF: IP Encoding Attacks (url_jail handles these) ==========
@@ -1579,7 +1629,9 @@ mod tests {
         assert!(validator.validate_url("http://127.1/").is_err());
 
         // IPv4-mapped IPv6
-        assert!(validator.validate_url("http://[::ffff:127.0.0.1]/").is_err());
+        assert!(validator
+            .validate_url("http://[::ffff:127.0.0.1]/")
+            .is_err());
     }
 
     // ========== SSRF: Policy Tests ==========

@@ -1,9 +1,9 @@
-use anyhow::{Result, anyhow};
+use anyhow::{anyhow, Result};
+use chrono::{DateTime, Utc};
 use redis::aio::ConnectionManager as RedisConnectionManager;
 use serde::{Deserialize, Serialize};
-use chrono::{DateTime, Utc};
-use tracing::{debug, info};
 use std::time::Duration;
+use tracing::{debug, info};
 
 /// Heartbeat interval in seconds for publisher liveness.
 /// The publisher manager sends a heartbeat every this many seconds.
@@ -113,7 +113,7 @@ pub struct StreamRegistry {
 
 impl StreamRegistry {
     /// Create a new stream registry
-    #[must_use] 
+    #[must_use]
     pub const fn new(redis: RedisConnectionManager) -> Self {
         Self { redis }
     }
@@ -131,7 +131,8 @@ impl StreamRegistry {
         _app_name: &str,
         grpc_address: &str,
     ) -> anyhow::Result<bool> {
-        self.try_register_publisher_with_user(room_id, media_id, node_id, "", grpc_address).await
+        self.try_register_publisher_with_user(room_id, media_id, node_id, "", grpc_address)
+            .await
     }
 
     /// Try to register as publisher (simplified version for `PublisherManager`)
@@ -143,7 +144,8 @@ impl StreamRegistry {
         node_id: &str,
         grpc_address: &str,
     ) -> anyhow::Result<bool> {
-        self.try_register_publisher_with_user(room_id, media_id, node_id, "", grpc_address).await
+        self.try_register_publisher_with_user(room_id, media_id, node_id, "", grpc_address)
+            .await
     }
 
     /// Try to register as publisher with `user_id`
@@ -254,23 +256,20 @@ impl StreamRegistry {
 
         // Fixed #114: Add timeout for Redis Lua script execution (5 seconds)
         // Prevents indefinite blocking on Redis server issues or slow Lua execution
-        let result: Vec<i64> = tokio::time::timeout(
-            std::time::Duration::from_secs(5),
-            async {
-                redis::Script::new(lua_script)
-                    .key(&epoch_key)
-                    .key(&key)
-                    .arg(&info_json)
-                    .arg(PUBLISHER_TTL_SECS)
-                    .arg(&user_key)
-                    .arg(&user_member)
-                    .invoke_async(&mut conn)
-                    .await
-            }
-        )
-            .await
-            .map_err(|_| anyhow!("Lua script execution timed out after 5s"))?
-            .map_err(|e| anyhow!("Lua script execution failed: {e}"))?;
+        let result: Vec<i64> = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            redis::Script::new(lua_script)
+                .key(&epoch_key)
+                .key(&key)
+                .arg(&info_json)
+                .arg(PUBLISHER_TTL_SECS)
+                .arg(&user_key)
+                .arg(&user_member)
+                .invoke_async(&mut conn)
+                .await
+        })
+        .await
+        .map_err(|_| anyhow!("Lua script execution timed out after 5s"))?
+        .map_err(|e| anyhow!("Lua script execution failed: {e}"))?;
 
         let registered = result[0] == 1;
         let actual_epoch = result[1] as u64;
@@ -295,11 +294,17 @@ impl StreamRegistry {
 
     /// Refresh TTL for a publisher (called by heartbeat)
     pub async fn refresh_publisher_ttl(&self, room_id: &str, media_id: &str) -> Result<()> {
-        self.refresh_publisher_ttl_with_user(room_id, media_id, "").await
+        self.refresh_publisher_ttl_with_user(room_id, media_id, "")
+            .await
     }
 
     /// Refresh TTL for a publisher and its user reverse-index (called by heartbeat)
-    pub async fn refresh_publisher_ttl_with_user(&self, room_id: &str, media_id: &str, user_id: &str) -> Result<()> {
+    pub async fn refresh_publisher_ttl_with_user(
+        &self,
+        room_id: &str,
+        media_id: &str,
+        user_id: &str,
+    ) -> Result<()> {
         let key = format!("stream:publisher:{room_id}:{media_id}");
 
         // Refresh publisher key TTL with timeout protection
@@ -324,7 +329,8 @@ impl StreamRegistry {
             }
 
             Ok(())
-        }).await
+        })
+        .await
     }
 
     /// Unregister a publisher.
@@ -337,7 +343,8 @@ impl StreamRegistry {
 
     /// Unregister a publisher (non-mut version for `PublisherManager`)
     pub async fn unregister_publisher_immut(&self, room_id: &str, media_id: &str) -> Result<()> {
-        self.unregister_publisher_with_epoch(room_id, media_id, None).await
+        self.unregister_publisher_with_epoch(room_id, media_id, None)
+            .await
     }
 
     /// Epoch-validated unregister: only deletes if the stored epoch matches the expected epoch.
@@ -461,7 +468,8 @@ impl StreamRegistry {
                         .map(|(r, m)| (r.to_string(), m.to_string()))
                 })
                 .collect())
-        }).await
+        })
+        .await
     }
 
     /// Remove all publisher entries for a user (via reverse index)
@@ -474,12 +482,20 @@ impl StreamRegistry {
     }
 
     /// Get publisher info for a media in a room.
-    pub async fn get_publisher(&self, room_id: &str, media_id: &str) -> Result<Option<PublisherInfo>> {
+    pub async fn get_publisher(
+        &self,
+        room_id: &str,
+        media_id: &str,
+    ) -> Result<Option<PublisherInfo>> {
         self.get_publisher_immut(room_id, media_id).await
     }
 
     /// Get publisher info for a media in a room (immutable version)
-    pub async fn get_publisher_immut(&self, room_id: &str, media_id: &str) -> Result<Option<PublisherInfo>> {
+    pub async fn get_publisher_immut(
+        &self,
+        room_id: &str,
+        media_id: &str,
+    ) -> Result<Option<PublisherInfo>> {
         let key = format!("stream:publisher:{room_id}:{media_id}");
 
         with_redis_timeout(|| async {
@@ -498,9 +514,9 @@ impl StreamRegistry {
                 }
                 None => Ok(None),
             }
-        }).await
+        })
+        .await
     }
-
 
     /// Check if a stream is active (has a publisher).
     pub async fn is_stream_active(&self, room_id: &str, media_id: &str) -> anyhow::Result<bool> {
@@ -508,7 +524,11 @@ impl StreamRegistry {
     }
 
     /// Check if a stream is active (immutable version)
-    pub async fn is_stream_active_immut(&self, room_id: &str, media_id: &str) -> anyhow::Result<bool> {
+    pub async fn is_stream_active_immut(
+        &self,
+        room_id: &str,
+        media_id: &str,
+    ) -> anyhow::Result<bool> {
         let key = format!("stream:publisher:{room_id}:{media_id}");
 
         with_redis_timeout(|| async {
@@ -520,7 +540,8 @@ impl StreamRegistry {
                 .await
                 .map_err(|e| anyhow!(e.to_string()))?;
             Ok(exists)
-        }).await
+        })
+        .await
     }
 
     /// List all active streams (returns tuples of (`room_id`, `media_id`)).
@@ -551,7 +572,8 @@ impl StreamRegistry {
                     .await
                     .map_err(|e| anyhow!(e.to_string()))?;
                 Ok((new_cursor, keys))
-            }).await;
+            })
+            .await;
 
             let (new_cursor, keys) = scan_result?;
 
@@ -603,7 +625,8 @@ impl StreamRegistry {
                     .await
                     .map_err(|e| anyhow!(e.to_string()))?;
                 Ok((new_cursor, keys))
-            }).await;
+            })
+            .await;
 
             let (new_cursor, keys) = scan_result?;
 
@@ -650,7 +673,8 @@ impl StreamRegistry {
                     Ok(false)
                 }
             }
-        }).await
+        })
+        .await
     }
 
     /// Get the current epoch for a stream without publisher info.
@@ -728,7 +752,8 @@ impl StreamRegistry {
                     .await
                     .map_err(|e| anyhow!(e.to_string()))?;
                 Ok((new_cursor, keys))
-            }).await;
+            })
+            .await;
 
             let (new_cursor, keys) = scan_result?;
 
@@ -754,7 +779,8 @@ impl StreamRegistry {
                         .await
                         .map_err(|e| anyhow!(e.to_string()))?;
                     Ok(info_json)
-                }).await;
+                })
+                .await;
 
                 let info_json = match info_result {
                     Ok(json) => json,
@@ -768,18 +794,22 @@ impl StreamRegistry {
                     if let Ok(info) = serde_json::from_str::<PublisherInfo>(json) {
                         if info.node_id == node_id {
                             // Atomically delete with timeout
-                            let cleanup_result: Result<Vec<redis::Value>> = with_redis_timeout(|| async {
-                                let mut conn = self.redis.clone();
-                                let result: Vec<redis::Value> =
-                                    redis::Script::new(cleanup_script)
-                                        .key(&key)
-                                        .arg(node_id)
-                                        .arg(info.epoch)
-                                        .invoke_async(&mut conn)
-                                        .await
-                                        .map_err(|e| anyhow!("Cleanup Lua script failed: {e}"))?;
-                                Ok(result)
-                            }).await;
+                            let cleanup_result: Result<Vec<redis::Value>> =
+                                with_redis_timeout(|| async {
+                                    let mut conn = self.redis.clone();
+                                    let result: Vec<redis::Value> =
+                                        redis::Script::new(cleanup_script)
+                                            .key(&key)
+                                            .arg(node_id)
+                                            .arg(info.epoch)
+                                            .invoke_async(&mut conn)
+                                            .await
+                                            .map_err(|e| {
+                                                anyhow!("Cleanup Lua script failed: {e}")
+                                            })?;
+                                    Ok(result)
+                                })
+                                .await;
 
                             if let Ok(result) = cleanup_result {
                                 let status = match &result[0] {
@@ -798,20 +828,21 @@ impl StreamRegistry {
                                     };
 
                                     if !user_id.is_empty() {
-                                        let user_key =
-                                            format!("stream:user_publishers:{user_id}");
+                                        let user_key = format!("stream:user_publishers:{user_id}");
                                         let member = format!("{room_id}:{media_id}");
 
-                                        let _srem_result: Result<()> = with_redis_timeout(|| async {
-                                            let mut conn = self.redis.clone();
-                                            let _: () = redis::cmd("SREM")
-                                                .arg(&user_key)
-                                                .arg(&member)
-                                                .query_async(&mut conn)
-                                                .await
-                                                .map_err(|e| anyhow!(e.to_string()))?;
-                                            Ok(())
-                                        }).await;
+                                        let _srem_result: Result<()> =
+                                            with_redis_timeout(|| async {
+                                                let mut conn = self.redis.clone();
+                                                let _: () = redis::cmd("SREM")
+                                                    .arg(&user_key)
+                                                    .arg(&member)
+                                                    .query_async(&mut conn)
+                                                    .await
+                                                    .map_err(|e| anyhow!(e.to_string()))?;
+                                                Ok(())
+                                            })
+                                            .await;
                                     }
 
                                     info!(
@@ -860,14 +891,18 @@ mod tests {
             .await
             .expect("Failed to start Redis container");
 
-        let redis_host = redis_container.get_host().await.expect("Failed to get Redis host");
+        let redis_host = redis_container
+            .get_host()
+            .await
+            .expect("Failed to get Redis host");
         let redis_port = redis_container
             .get_host_port_ipv4(6379)
             .await
             .expect("Failed to get Redis port");
 
         let redis_url = format!("redis://{redis_host}:{redis_port}");
-        let redis_client = redis::Client::open(redis_url.as_str()).expect("Failed to create Redis client");
+        let redis_client =
+            redis::Client::open(redis_url.as_str()).expect("Failed to create Redis client");
         let conn_mgr = RedisConnectionManager::new(redis_client.clone())
             .await
             .expect("Failed to create ConnectionManager");
@@ -883,7 +918,13 @@ mod tests {
 
         // First registration should succeed (use with_user variant with grpc_address)
         let registered = registry
-            .try_register_publisher_with_user("room123", "media456", "node1", "user1", "localhost:50051")
+            .try_register_publisher_with_user(
+                "room123",
+                "media456",
+                "node1",
+                "user1",
+                "localhost:50051",
+            )
             .await
             .unwrap();
         assert!(registered);
@@ -897,7 +938,10 @@ mod tests {
         assert_eq!(pub_info.grpc_address, "localhost:50051");
 
         // Cleanup
-        registry.unregister_publisher("room123", "media456").await.unwrap();
+        registry
+            .unregister_publisher("room123", "media456")
+            .await
+            .unwrap();
     }
 
     #[tokio::test]
@@ -908,20 +952,35 @@ mod tests {
 
         // First registration should succeed
         let registered = registry
-            .try_register_publisher_with_user("room123", "media456", "node1", "user1", "localhost:50051")
+            .try_register_publisher_with_user(
+                "room123",
+                "media456",
+                "node1",
+                "user1",
+                "localhost:50051",
+            )
             .await
             .unwrap();
         assert!(registered);
 
         // Second registration should fail (already exists)
         let registered = registry
-            .try_register_publisher_with_user("room123", "media456", "node2", "user2", "localhost:50052")
+            .try_register_publisher_with_user(
+                "room123",
+                "media456",
+                "node2",
+                "user2",
+                "localhost:50052",
+            )
             .await
             .unwrap();
         assert!(!registered);
 
         // Cleanup
-        registry.unregister_publisher("room123", "media456").await.unwrap();
+        registry
+            .unregister_publisher("room123", "media456")
+            .await
+            .unwrap();
     }
 
     #[tokio::test]
@@ -932,20 +991,35 @@ mod tests {
 
         // First try_register should succeed
         let result = registry
-            .try_register_publisher_with_user("room123", "media456", "node1", "user1", "localhost:50051")
+            .try_register_publisher_with_user(
+                "room123",
+                "media456",
+                "node1",
+                "user1",
+                "localhost:50051",
+            )
             .await
             .unwrap();
         assert!(result);
 
         // Second try_register should return false (already exists)
         let result = registry
-            .try_register_publisher_with_user("room123", "media456", "node2", "user2", "localhost:50052")
+            .try_register_publisher_with_user(
+                "room123",
+                "media456",
+                "node2",
+                "user2",
+                "localhost:50052",
+            )
             .await
             .unwrap();
         assert!(!result);
 
         // Cleanup
-        registry.unregister_publisher("room123", "media456").await.unwrap();
+        registry
+            .unregister_publisher("room123", "media456")
+            .await
+            .unwrap();
     }
 
     #[tokio::test]
@@ -956,18 +1030,33 @@ mod tests {
 
         // Register publisher
         registry
-            .try_register_publisher_with_user("room123", "media456", "node1", "user1", "localhost:50051")
+            .try_register_publisher_with_user(
+                "room123",
+                "media456",
+                "node1",
+                "user1",
+                "localhost:50051",
+            )
             .await
             .unwrap();
 
         // Verify exists
-        assert!(registry.is_stream_active("room123", "media456").await.unwrap());
+        assert!(registry
+            .is_stream_active("room123", "media456")
+            .await
+            .unwrap());
 
         // Unregister
-        registry.unregister_publisher("room123", "media456").await.unwrap();
+        registry
+            .unregister_publisher("room123", "media456")
+            .await
+            .unwrap();
 
         // Verify removed
-        assert!(!registry.is_stream_active("room123", "media456").await.unwrap());
+        assert!(!registry
+            .is_stream_active("room123", "media456")
+            .await
+            .unwrap());
     }
 
     #[tokio::test]
@@ -977,7 +1066,10 @@ mod tests {
         let registry = StreamRegistry::new(redis);
 
         // Non-existent publisher should return None
-        let result = registry.get_publisher("nonexistent", "media").await.unwrap();
+        let result = registry
+            .get_publisher("nonexistent", "media")
+            .await
+            .unwrap();
         assert!(result.is_none());
     }
 
@@ -989,11 +1081,23 @@ mod tests {
 
         // Register multiple publishers
         registry
-            .try_register_publisher_with_user("room1", "media1", "node1", "user1", "localhost:50051")
+            .try_register_publisher_with_user(
+                "room1",
+                "media1",
+                "node1",
+                "user1",
+                "localhost:50051",
+            )
             .await
             .unwrap();
         registry
-            .try_register_publisher_with_user("room2", "media2", "node1", "user1", "localhost:50051")
+            .try_register_publisher_with_user(
+                "room2",
+                "media2",
+                "node1",
+                "user1",
+                "localhost:50051",
+            )
             .await
             .unwrap();
 
@@ -1004,8 +1108,14 @@ mod tests {
         assert!(streams.contains(&(String::from("room2"), String::from("media2"))));
 
         // Cleanup
-        registry.unregister_publisher("room1", "media1").await.unwrap();
-        registry.unregister_publisher("room2", "media2").await.unwrap();
+        registry
+            .unregister_publisher("room1", "media1")
+            .await
+            .unwrap();
+        registry
+            .unregister_publisher("room2", "media2")
+            .await
+            .unwrap();
     }
 
     #[tokio::test]
@@ -1016,18 +1126,31 @@ mod tests {
 
         // Register publisher
         registry
-            .try_register_publisher_with_user("room123", "media456", "node1", "user1", "localhost:50051")
+            .try_register_publisher_with_user(
+                "room123",
+                "media456",
+                "node1",
+                "user1",
+                "localhost:50051",
+            )
             .await
             .unwrap();
 
         // Get publisher and verify serialization/deserialization
-        let publisher = registry.get_publisher("room123", "media456").await.unwrap().unwrap();
+        let publisher = registry
+            .get_publisher("room123", "media456")
+            .await
+            .unwrap()
+            .unwrap();
 
         assert_eq!(publisher.node_id, "node1");
         assert_eq!(publisher.grpc_address, "localhost:50051");
         assert!(publisher.started_at <= chrono::Utc::now());
 
         // Cleanup
-        registry.unregister_publisher("room123", "media456").await.unwrap();
+        registry
+            .unregister_publisher("room123", "media456")
+            .await
+            .unwrap();
     }
 }

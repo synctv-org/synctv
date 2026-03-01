@@ -103,7 +103,7 @@ impl Media {
     /// let media = Media::from_provider(..., provider.name(), "bilibili_main", ...);
     /// ```
     #[allow(clippy::too_many_arguments)]
-    #[must_use] 
+    #[must_use]
     pub fn from_provider(
         playlist_id: PlaylistId,
         room_id: RoomId,
@@ -157,7 +157,7 @@ impl Media {
     ///
     /// Returns None if this is not a direct type or if `source_config` doesn't contain valid playback data
     /// Automatically fills in media fields (id, `playlist_id`, `room_id`, name, position) from self
-    #[must_use] 
+    #[must_use]
     pub fn get_playback_result(&self) -> Option<PlaybackResult> {
         if !self.is_direct() {
             return None;
@@ -172,7 +172,8 @@ impl Media {
             metadata: std::collections::HashMap<String, JsonValue>,
         }
 
-        if let Ok(config) = serde_json::from_value::<SourceConfigFormat>(self.source_config.clone()) {
+        if let Ok(config) = serde_json::from_value::<SourceConfigFormat>(self.source_config.clone())
+        {
             return Some(PlaybackResult {
                 id: Some(self.id.clone()),
                 playlist_id: self.playlist_id.clone(),
@@ -426,7 +427,11 @@ pub struct Danmaku {
 impl PlaybackResult {
     /// Create a `PlaybackResult` from Media and single mode `PlaybackInfo`
     #[must_use]
-    pub fn from_media_single_mode(media: &Media, mode_name: &str, playback_info: PlaybackInfo) -> Self {
+    pub fn from_media_single_mode(
+        media: &Media,
+        mode_name: &str,
+        playback_info: PlaybackInfo,
+    ) -> Self {
         let mut playback_infos = std::collections::HashMap::new();
         playback_infos.insert(mode_name.to_string(), playback_info);
 
@@ -444,7 +449,12 @@ impl PlaybackResult {
 
     /// Create a new builder
     #[must_use]
-    pub fn builder(playlist_id: PlaylistId, room_id: RoomId, name: String, position: i32) -> PlaybackResultBuilder {
+    pub fn builder(
+        playlist_id: PlaylistId,
+        room_id: RoomId,
+        name: String,
+        position: i32,
+    ) -> PlaybackResultBuilder {
         PlaybackResultBuilder {
             id: None,
             playlist_id,
@@ -458,14 +468,14 @@ impl PlaybackResult {
     }
 
     /// Add metadata field
-    #[must_use] 
+    #[must_use]
     pub fn with_metadata(mut self, key: String, value: JsonValue) -> Self {
         self.metadata.insert(key, value);
         self
     }
 
     /// Get the default playback info
-    #[must_use] 
+    #[must_use]
     pub fn get_default_playback_info(&self) -> Option<&PlaybackInfo> {
         self.playback_infos.get(&self.default_mode)
     }
@@ -485,28 +495,28 @@ pub struct PlaybackResultBuilder {
 
 impl PlaybackResultBuilder {
     /// Set media ID (optional)
-    #[must_use] 
+    #[must_use]
     pub fn id(mut self, id: MediaId) -> Self {
         self.id = Some(id);
         self
     }
 
     /// Add a playback mode
-    #[must_use] 
+    #[must_use]
     pub fn add_mode(mut self, mode_name: String, info: PlaybackInfo) -> Self {
         self.playback_infos.insert(mode_name, info);
         self
     }
 
     /// Set the default mode
-    #[must_use] 
+    #[must_use]
     pub fn default_mode(mut self, mode_name: String) -> Self {
         self.default_mode = Some(mode_name);
         self
     }
 
     /// Add metadata
-    #[must_use] 
+    #[must_use]
     pub fn add_metadata(mut self, key: String, value: JsonValue) -> Self {
         self.metadata.insert(key, value);
         self
@@ -515,7 +525,7 @@ impl PlaybackResultBuilder {
     /// Build the `PlaybackResult`
     ///
     /// Returns None if no modes were added or `default_mode` is not set
-    #[must_use] 
+    #[must_use]
     pub fn build(self) -> Option<PlaybackResult> {
         if self.playback_infos.is_empty() {
             return None;
@@ -582,35 +592,35 @@ pub struct PlaybackInfoBuilder {
 
 impl PlaybackInfoBuilder {
     /// Add a playback URL
-    #[must_use] 
+    #[must_use]
     pub fn add_url(mut self, url: PlaybackUrl) -> Self {
         self.urls.push(url);
         self
     }
 
     /// Set the default URL index
-    #[must_use] 
+    #[must_use]
     pub const fn default_url_index(mut self, index: usize) -> Self {
         self.default_url_index = index;
         self
     }
 
     /// Add a subtitle
-    #[must_use] 
+    #[must_use]
     pub fn add_subtitle(mut self, subtitle: Subtitle) -> Self {
         self.subtitles.push(subtitle);
         self
     }
 
     /// Set the default subtitle index
-    #[must_use] 
+    #[must_use]
     pub const fn default_subtitle_index(mut self, index: usize) -> Self {
         self.default_subtitle_index = Some(index);
         self
     }
 
     /// Add a danmaku source
-    #[must_use] 
+    #[must_use]
     pub fn add_danmaku(mut self, danmaku: Danmaku) -> Self {
         self.danmakus.push(danmaku);
         self

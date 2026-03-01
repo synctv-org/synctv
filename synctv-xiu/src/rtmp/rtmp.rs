@@ -66,7 +66,10 @@ impl RtmpServer {
 
     pub async fn run(&mut self) -> Result<(), Error> {
         let socket_addr: SocketAddr = self.address.parse().map_err(|e| {
-            Error::new(std::io::ErrorKind::InvalidInput, format!("invalid address '{}': {}", self.address, e))
+            Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("invalid address '{}': {}", self.address, e),
+            )
         })?;
         let listener = TcpListener::bind(&socket_addr).await?;
         let session_tracker = tokio_util::task::TaskTracker::new();
@@ -106,7 +109,10 @@ impl RtmpServer {
 
         // Stop accepting new connections; wait for existing sessions with timeout
         session_tracker.close();
-        if tokio::time::timeout(SHUTDOWN_GRACE_PERIOD, session_tracker.wait()).await.is_err() {
+        if tokio::time::timeout(SHUTDOWN_GRACE_PERIOD, session_tracker.wait())
+            .await
+            .is_err()
+        {
             tracing::warn!("RTMP shutdown grace period expired, some sessions still active");
         }
 

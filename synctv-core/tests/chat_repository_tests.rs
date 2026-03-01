@@ -6,15 +6,13 @@
 //! Run with: cargo test -p synctv-core --test `chat_repository_tests`
 #![allow(clippy::unwrap_used)]
 
-use synctv_core_testing::create_test_pool;
-use synctv_core::{
-    models::{
-        ChatMessage, UserId, User, UserRole, UserStatus, RoomId, Room, RoomStatus,
-    },
-    repository::{ChatRepository, UserRepository, RoomRepository},
-};
-use chrono::{Utc, Duration};
+use chrono::{Duration, Utc};
 use sqlx::PgPool;
+use synctv_core::{
+    models::{ChatMessage, Room, RoomId, RoomStatus, User, UserId, UserRole, UserStatus},
+    repository::{ChatRepository, RoomRepository, UserRepository},
+};
+use synctv_core_testing::create_test_pool;
 fn make_user(username: &str) -> User {
     let now = Utc::now();
     User {
@@ -55,7 +53,10 @@ async fn setup_room(pool: &PgPool, username: &str, room_name: &str) -> (User, Ro
     let user_repo = UserRepository::new(pool.clone());
     let room_repo = RoomRepository::new(pool.clone());
     let user = user_repo.create(&make_user(username)).await.unwrap();
-    let room = room_repo.create(&make_room(room_name, &user.id)).await.unwrap();
+    let room = room_repo
+        .create(&make_room(room_name, &user.id))
+        .await
+        .unwrap();
     (user, room)
 }
 
@@ -88,7 +89,10 @@ async fn test_list_by_room_cursor_pagination() {
         .await
         .unwrap();
     assert_eq!(page1.len(), 2);
-    assert!(cursor1.is_some(), "Should have next cursor since there are more messages");
+    assert!(
+        cursor1.is_some(),
+        "Should have next cursor since there are more messages"
+    );
     // Messages should be in reverse chronological order
     assert_eq!(page1[0].content, "msg_4");
     assert_eq!(page1[1].content, "msg_3");
@@ -100,7 +104,10 @@ async fn test_list_by_room_cursor_pagination() {
         .await
         .unwrap();
     assert_eq!(page2.len(), 2);
-    assert!(cursor2.is_some(), "Should still have a cursor (1 more message)");
+    assert!(
+        cursor2.is_some(),
+        "Should still have a cursor (1 more message)"
+    );
     assert_eq!(page2[0].content, "msg_2");
     assert_eq!(page2[1].content, "msg_1");
 
@@ -145,7 +152,7 @@ async fn test_get_by_id_older_than_90_days_returns_none() {
     // Insert directly with backdated created_at
     sqlx::query(
         r"INSERT INTO chat_messages (id, room_id, user_id, content, message_type, created_at)
-          VALUES ($1, $2, $3, 'old message', 1, $4)"
+          VALUES ($1, $2, $3, 'old message', 1, $4)",
     )
     .bind(&msg_id)
     .bind(room.id.as_str())
@@ -156,7 +163,10 @@ async fn test_get_by_id_older_than_90_days_returns_none() {
     .unwrap();
 
     let fetched = chat_repo.get_by_id(&msg_id).await.unwrap();
-    assert!(fetched.is_none(), "get_by_id should not return messages older than 90 days");
+    assert!(
+        fetched.is_none(),
+        "get_by_id should not return messages older than 90 days"
+    );
 }
 
 // ─── cleanup_old_messages keep_count=0 no-op ─────────────────────────
@@ -207,7 +217,10 @@ async fn test_cleanup_all_rooms_activity_window_zero() {
     let deleted = chat_repo.cleanup_all_rooms(2, 0).await.unwrap();
     // With 0-minute window, rooms with messages only at exactly NOW() match.
     // The result may vary, so just assert no error and that the total is <= 3
-    assert!(deleted <= 3, "Should delete at most 3 messages (5 - keep_count 2)");
+    assert!(
+        deleted <= 3,
+        "Should delete at most 3 messages (5 - keep_count 2)"
+    );
 }
 
 #[tokio::test]
@@ -255,7 +268,7 @@ async fn test_created_at_index_exists_for_partition_pruning() {
               AND tablename LIKE 'chat_messages_%'
               AND indexname LIKE '%created_at%'
         )
-        "
+        ",
     )
     .fetch_one(&pool)
     .await
@@ -287,7 +300,7 @@ async fn test_time_range_query_uses_index() {
         EXPLAIN (FORMAT JSON)
         DELETE FROM chat_messages
         WHERE created_at <= NOW() - INTERVAL '90 days'
-        "
+        ",
     )
     .fetch_one(&pool)
     .await
@@ -346,7 +359,7 @@ async fn test_cleanup_old_messages_has_partition_pruning_filter() {
             ) ranked
             WHERE rn > 10
         )
-        "
+        ",
     )
     .fetch_one(&pool)
     .await
@@ -396,7 +409,7 @@ async fn test_cleanup_all_rooms_has_partition_pruning_filter() {
             ) ranked_messages
             WHERE rn > 100
         )
-        "
+        ",
     )
     .fetch_one(&pool)
     .await
@@ -454,7 +467,7 @@ async fn test_cleanup_old_messages_partition_pruning_detailed() {
             ) ranked
             WHERE rn > 5
         )
-        "
+        ",
     )
     .bind(room.id.as_str())
     .fetch_one(&pool)
@@ -468,7 +481,10 @@ async fn test_cleanup_old_messages_partition_pruning_detailed() {
     );
 
     // Log the plan for debugging
-    println!("Query plan: {}", serde_json::to_string_pretty(&plan).unwrap());
+    println!(
+        "Query plan: {}",
+        serde_json::to_string_pretty(&plan).unwrap()
+    );
 
     // Check for partition pruning indicators
     let plan_str = plan.to_string();
@@ -523,7 +539,7 @@ async fn test_cleanup_all_rooms_partition_pruning_detailed() {
             ) ranked_messages
             WHERE rn > 5
         )
-        "
+        ",
     )
     .fetch_one(&pool)
     .await
@@ -534,12 +550,17 @@ async fn test_cleanup_all_rooms_partition_pruning_detailed() {
         "Query plan should be a JSON array, got: {plan:?}"
     );
 
-    println!("Batch cleanup plan: {}", serde_json::to_string_pretty(&plan).unwrap());
+    println!(
+        "Batch cleanup plan: {}",
+        serde_json::to_string_pretty(&plan).unwrap()
+    );
 
     // Verify no full table scan
     let plan_str = plan.to_string();
     assert!(
-        !plan_str.to_lowercase().contains("seq scan on chat_messages"),
+        !plan_str
+            .to_lowercase()
+            .contains("seq scan on chat_messages"),
         "Batch cleanup should not perform sequential scan"
     );
 }
@@ -561,7 +582,7 @@ async fn test_delete_old_messages_partition_pruning() {
         EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON)
         DELETE FROM chat_messages
         WHERE created_at <= NOW() - INTERVAL '90 days'
-        "
+        ",
     )
     .fetch_one(&pool)
     .await
@@ -572,7 +593,10 @@ async fn test_delete_old_messages_partition_pruning() {
         "Query plan should be a JSON array, got: {plan:?}"
     );
 
-    println!("Retention cleanup plan: {}", serde_json::to_string_pretty(&plan).unwrap());
+    println!(
+        "Retention cleanup plan: {}",
+        serde_json::to_string_pretty(&plan).unwrap()
+    );
 
     // The query should use an index or partition-aware scan
     // A sequential scan would indicate missing indexes or partition issues
@@ -580,8 +604,10 @@ async fn test_delete_old_messages_partition_pruning() {
 
     // Log if we see concerning patterns
     if plan_str.contains("seq scan") {
-        println!("WARNING: Sequential scan detected in retention cleanup. \
-                  This may indicate missing indexes or partition misconfiguration.");
+        println!(
+            "WARNING: Sequential scan detected in retention cleanup. \
+                  This may indicate missing indexes or partition misconfiguration."
+        );
     }
 }
 
@@ -622,7 +648,7 @@ async fn test_cleanup_query_performance_comparison() {
             ) ranked
             WHERE rn > 10
         )
-        "
+        ",
     )
     .bind(room.id.as_str())
     .fetch_one(&pool)
@@ -645,7 +671,7 @@ async fn test_cleanup_query_performance_comparison() {
             ) ranked
             WHERE rn > 10
         )
-        "
+        ",
     )
     .bind(room.id.as_str())
     .fetch_one(&pool)
@@ -653,16 +679,28 @@ async fn test_cleanup_query_performance_comparison() {
     .expect("Failed to get plan without filter");
 
     // Both plans should be valid
-    assert!(plan_with_filter.is_array(), "Plan with filter should be array");
-    assert!(plan_without_filter.is_array(), "Plan without filter should be array");
+    assert!(
+        plan_with_filter.is_array(),
+        "Plan with filter should be array"
+    );
+    assert!(
+        plan_without_filter.is_array(),
+        "Plan without filter should be array"
+    );
 
     // The plan with filter should be more efficient (uses partition pruning)
     // In practice, with partitioned tables, the filtered version would show
     // fewer partitions scanned
     println!("Plan WITH partition pruning filter:");
-    println!("{}", serde_json::to_string_pretty(&plan_with_filter).unwrap());
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&plan_with_filter).unwrap()
+    );
     println!("\nPlan WITHOUT partition pruning filter:");
-    println!("{}", serde_json::to_string_pretty(&plan_without_filter).unwrap());
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&plan_without_filter).unwrap()
+    );
 
     // Key assertion: the corrected query has the created_at filter
     let filter_plan_str = plan_with_filter.to_string();

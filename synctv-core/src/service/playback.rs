@@ -8,9 +8,14 @@ use std::time::Duration;
 
 use crate::{
     cache::{CacheInvalidationService, InvalidationMessage, SingleFlight},
-    models::{RoomId, UserId, MediaId, PlaylistId, PermissionBits, RoomPlaybackState, RoomSettings, PlayMode},
-    repository::{RoomPlaybackStateRepository, MediaRepository},
-    service::{permission::PermissionService, media::MediaService, notification::NotificationService},
+    models::{
+        MediaId, PermissionBits, PlayMode, PlaylistId, RoomId, RoomPlaybackState, RoomSettings,
+        UserId,
+    },
+    repository::{MediaRepository, RoomPlaybackStateRepository},
+    service::{
+        media::MediaService, notification::NotificationService, permission::PermissionService,
+    },
     Error, Result,
 };
 use rand::prelude::IteratorRandom;
@@ -246,7 +251,9 @@ impl PlaybackService {
                         }
                     },
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => {
-                        tracing::debug!("Playback cache invalidation channel closed, stopping listener");
+                        tracing::debug!(
+                            "Playback cache invalidation channel closed, stopping listener"
+                        );
                         break;
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
@@ -342,22 +349,28 @@ impl PlaybackService {
         let cache = self.playback_cache.clone();
         let room_id_clone = room_id.clone();
 
-        let state = self.single_flight.do_work_with_fallback(
-            cache_key,
-            async move {
-                let state = match repo.get(&room_id_clone).await {
-                    Ok(Some(s)) => s,
-                    Ok(None) => RoomPlaybackState::new(room_id_clone),
-                    Err(e) => return Err(e.to_string()),
-                };
+        let state = self
+            .single_flight
+            .do_work_with_fallback(
+                cache_key,
+                async move {
+                    let state = match repo.get(&room_id_clone).await {
+                        Ok(Some(s)) => s,
+                        Ok(None) => RoomPlaybackState::new(room_id_clone),
+                        Err(e) => return Err(e.to_string()),
+                    };
 
-                // Populate cache
-                cache.insert(state.room_id.as_str().to_string(), state.clone()).await;
+                    // Populate cache
+                    cache
+                        .insert(state.room_id.as_str().to_string(), state.clone())
+                        .await;
 
-                Ok(state)
-            },
-            || "SingleFlight worker failed during playback state fetch".to_string(),
-        ).await.map_err(Error::Internal)?;
+                    Ok(state)
+                },
+                || "SingleFlight worker failed during playback state fetch".to_string(),
+            )
+            .await
+            .map_err(Error::Internal)?;
 
         Ok(state)
     }
@@ -394,18 +407,19 @@ impl PlaybackService {
             .check_permission(&room_id, &user_id, PermissionBits::PLAY_PAUSE)
             .await?;
 
-        let state = self.update_state(room_id.clone(), |state| {
-            if !playing {
-                // Snapshot the computed playback position before pausing so that
-                // the stored current_time reflects where the user actually was.
-                // Without this, resuming would jump back to the last persisted time.
-                state.current_time = state.computed_current_time();
-            }
-            state.is_playing = playing;
-            state.updated_at = chrono::Utc::now();
-            // version is incremented by the SQL UPDATE, not here
-        })
-        .await?;
+        let state = self
+            .update_state(room_id.clone(), |state| {
+                if !playing {
+                    // Snapshot the computed playback position before pausing so that
+                    // the stored current_time reflects where the user actually was.
+                    // Without this, resuming would jump back to the last persisted time.
+                    state.current_time = state.computed_current_time();
+                }
+                state.is_playing = playing;
+                state.updated_at = chrono::Utc::now();
+                // version is incremented by the SQL UPDATE, not here
+            })
+            .await?;
 
         // Cache invalidation is already handled inside update_state()
         self.broadcast_state_change(&state).await;
@@ -430,19 +444,22 @@ impl PlaybackService {
         current_time: f64,
     ) -> Result<SeekResponse> {
         if current_time < 0.0 {
-            return Err(Error::InvalidInput("Seek position must be non-negative".to_string()));
+            return Err(Error::InvalidInput(
+                "Seek position must be non-negative".to_string(),
+            ));
         }
 
         self.permission_service
             .check_permission(&room_id, &user_id, PermissionBits::SEEK)
             .await?;
 
-        let result = self.update_state(room_id.clone(), |state| {
-            state.current_time = current_time;
-            state.updated_at = chrono::Utc::now();
-            // version is incremented by the SQL UPDATE, not here
-        })
-        .await;
+        let result = self
+            .update_state(room_id.clone(), |state| {
+                state.current_time = current_time;
+                state.updated_at = chrono::Utc::now();
+                // version is incremented by the SQL UPDATE, not here
+            })
+            .await;
 
         match result {
             Ok(state) => {
@@ -482,20 +499,23 @@ impl PlaybackService {
         // Validate speed range (UI bounds: 0.25 to 4.0)
         // Note: DB allows wider range (0 < speed <= 16.0) but UI restricts to practical values
         if !(0.25..=4.0).contains(&speed) {
-            return Err(Error::InvalidInput("Speed must be between 0.25 and 4.0".to_string()));
+            return Err(Error::InvalidInput(
+                "Speed must be between 0.25 and 4.0".to_string(),
+            ));
         }
 
-        let state = self.update_state(room_id.clone(), |state| {
-            // Snapshot the computed playback position before changing speed so that
-            // the stored current_time reflects where the user actually was at the
-            // old speed. Without this, the position would be wrong because
-            // computed_current_time() uses speed to extrapolate from updated_at.
-            state.current_time = state.computed_current_time();
-            state.speed = speed;
-            state.updated_at = chrono::Utc::now();
-            // version is incremented by the SQL UPDATE, not here
-        })
-        .await?;
+        let state = self
+            .update_state(room_id.clone(), |state| {
+                // Snapshot the computed playback position before changing speed so that
+                // the stored current_time reflects where the user actually was at the
+                // old speed. Without this, the position would be wrong because
+                // computed_current_time() uses speed to extrapolate from updated_at.
+                state.current_time = state.computed_current_time();
+                state.speed = speed;
+                state.updated_at = chrono::Utc::now();
+                // version is incremented by the SQL UPDATE, not here
+            })
+            .await?;
 
         // Cache invalidation is already handled inside update_state()
         self.broadcast_state_change(&state).await;
@@ -509,7 +529,8 @@ impl PlaybackService {
         user_id: UserId,
         media_id: MediaId,
     ) -> Result<RoomPlaybackState> {
-        self.switch_media_with_context(room_id, user_id, media_id, None, String::new()).await
+        self.switch_media_with_context(room_id, user_id, media_id, None, String::new())
+            .await
     }
 
     /// Switch to different media with playlist context and media path
@@ -533,19 +554,22 @@ impl PlaybackService {
             .ok_or_else(|| Error::NotFound("Media not found".to_string()))?;
 
         if media.room_id != room_id {
-            return Err(Error::Authorization("Media does not belong to this room".to_string()));
+            return Err(Error::Authorization(
+                "Media does not belong to this room".to_string(),
+            ));
         }
 
-        let state = self.update_state(room_id.clone(), |state| {
-            state.playing_media_id = Some(media_id.clone());
-            state.playing_playlist_id = playlist_id.clone();
-            state.relative_path = media_path.clone();
-            state.current_time = 0.0;
-            state.is_playing = true;
-            state.updated_at = chrono::Utc::now();
-            // version is incremented by the SQL UPDATE, not here
-        })
-        .await?;
+        let state = self
+            .update_state(room_id.clone(), |state| {
+                state.playing_media_id = Some(media_id.clone());
+                state.playing_playlist_id = playlist_id.clone();
+                state.relative_path = media_path.clone();
+                state.current_time = 0.0;
+                state.is_playing = true;
+                state.updated_at = chrono::Utc::now();
+                // version is incremented by the SQL UPDATE, not here
+            })
+            .await?;
 
         // Cache invalidation is already handled inside update_state()
         self.broadcast_state_change(&state).await;
@@ -625,9 +649,7 @@ impl PlaybackService {
                     // skipping it.
                     if let Some(ref current_id) = state.playing_media_id {
                         match playlist.iter().position(|m| &m.id == current_id) {
-                            Some(pos) if pos + 1 < playlist.len() => {
-                                Some(&playlist[pos + 1])
-                            }
+                            Some(pos) if pos + 1 < playlist.len() => Some(&playlist[pos + 1]),
                             Some(_) => None, // End of playlist
                             None => {
                                 tracing::warn!(
@@ -703,7 +725,8 @@ impl PlaybackService {
                     // 3. Re-shuffle when all items played
                     // See: /Volumes/workspace/rust/design/13-自动连播设计.md §3.4
                     if let Some(ref current_id) = state.playing_media_id {
-                        playlist.iter()
+                        playlist
+                            .iter()
                             .filter(|m| &m.id != current_id)
                             .choose(&mut rand::rng())
                     } else {
@@ -732,7 +755,8 @@ impl PlaybackService {
             updated_state.relative_path = next
                 .source_config
                 .get("path")
-                .and_then(|v| v.as_str()).map_or_else(|| next.name.clone(), String::from);
+                .and_then(|v| v.as_str())
+                .map_or_else(|| next.name.clone(), String::from);
             updated_state.current_time = 0.0;
             updated_state.is_playing = true;
             updated_state.updated_at = chrono::Utc::now();
@@ -762,7 +786,10 @@ impl PlaybackService {
                                             max_attempts = broadcast_delays.len(),
                                             "play_next: broadcast failed, retrying..."
                                         );
-                                        tokio::time::sleep(std::time::Duration::from_millis(*delay_ms)).await;
+                                        tokio::time::sleep(std::time::Duration::from_millis(
+                                            *delay_ms,
+                                        ))
+                                        .await;
                                     }
                                 }
                             }
@@ -836,9 +863,11 @@ impl PlaybackService {
         let playing_media_id = state.playing_media_id.clone();
 
         let playing_media = match playing_media_id {
-            Some(ref id) => self.media_service.get_media(id).await?.ok_or_else(|| {
-                Error::NotFound("Current media not found".to_string())
-            })?,
+            Some(ref id) => self
+                .media_service
+                .get_media(id)
+                .await?
+                .ok_or_else(|| Error::NotFound("Current media not found".to_string()))?,
             None => return Ok(None),
         };
 
@@ -847,7 +876,9 @@ impl PlaybackService {
         // For provider-based media, duration check is skipped (client should handle)
         let duration = if playing_media.is_direct() {
             if let Some(playback_result) = playing_media.get_playback_result() {
-                playback_result.metadata.get("duration")
+                playback_result
+                    .metadata
+                    .get("duration")
                     .and_then(serde_json::Value::as_f64)
             } else {
                 return Ok(None);
@@ -883,11 +914,7 @@ impl PlaybackService {
     ///
     /// Uses optimistic locking with automatic retry on version conflicts.
     /// Retries use exponential backoff with jitter to avoid thundering herd.
-    pub async fn update_state<F>(
-        &self,
-        room_id: RoomId,
-        update_fn: F,
-    ) -> Result<RoomPlaybackState>
+    pub async fn update_state<F>(&self, room_id: RoomId, update_fn: F) -> Result<RoomPlaybackState>
     where
         F: Fn(&mut RoomPlaybackState),
     {
@@ -923,7 +950,10 @@ impl PlaybackService {
                         let broadcast_delays = [50u64, 100, 200];
                         let mut broadcast_ok = false;
                         for (bc_attempt, delay_ms) in broadcast_delays.iter().enumerate() {
-                            match service.update_playback_state(&room_id, &updated_state).await {
+                            match service
+                                .update_playback_state(&room_id, &updated_state)
+                                .await
+                            {
                                 Ok(()) => {
                                     broadcast_ok = true;
                                     break;
@@ -937,7 +967,10 @@ impl PlaybackService {
                                             max_attempts = broadcast_delays.len(),
                                             "Playback broadcast to replicas failed, retrying..."
                                         );
-                                        tokio::time::sleep(std::time::Duration::from_millis(*delay_ms)).await;
+                                        tokio::time::sleep(std::time::Duration::from_millis(
+                                            *delay_ms,
+                                        ))
+                                        .await;
                                     }
                                 }
                             }
@@ -990,17 +1023,18 @@ impl PlaybackService {
             .check_permission(&room_id, &user_id, PermissionBits::PLAY_PAUSE)
             .await?;
 
-        let state = self.update_state(room_id, |state| {
-            state.is_playing = false;
-            state.current_time = 0.0;
-            state.speed = 1.0;
-            state.playing_media_id = None;
-            state.playing_playlist_id = None;
-            state.relative_path = String::new();
-            state.updated_at = chrono::Utc::now();
-            // version is incremented by the SQL UPDATE, not here
-        })
-        .await?;
+        let state = self
+            .update_state(room_id, |state| {
+                state.is_playing = false;
+                state.current_time = 0.0;
+                state.speed = 1.0;
+                state.playing_media_id = None;
+                state.playing_playlist_id = None;
+                state.relative_path = String::new();
+                state.updated_at = chrono::Utc::now();
+                // version is incremented by the SQL UPDATE, not here
+            })
+            .await?;
 
         self.broadcast_state_change(&state).await;
         Ok(state)
@@ -1042,7 +1076,17 @@ impl PlaybackService {
         media_id: Option<MediaId>,
         playlist_id: Option<Option<PlaylistId>>,
     ) -> Result<RoomPlaybackState> {
-        self.update_multiple_with_version(room_id, user_id, playing, current_time, speed, media_id, playlist_id, None).await
+        self.update_multiple_with_version(
+            room_id,
+            user_id,
+            playing,
+            current_time,
+            speed,
+            media_id,
+            playlist_id,
+            None,
+        )
+        .await
     }
 
     /// Like `update_multiple`, but accepts an optional `expected_version` hint.
@@ -1087,7 +1131,9 @@ impl PlaybackService {
         // Validate speed range if provided (must match DB CHECK constraint: speed > 0 AND speed <= 16.0)
         if let Some(s) = speed {
             if s <= 0.0 || s > 16.0 {
-                return Err(Error::InvalidInput("Speed must be between 0 (exclusive) and 16.0".to_string()));
+                return Err(Error::InvalidInput(
+                    "Speed must be between 0 (exclusive) and 16.0".to_string(),
+                ));
             }
         }
 
@@ -1100,7 +1146,9 @@ impl PlaybackService {
                 .ok_or_else(|| Error::NotFound("Media not found".to_string()))?;
 
             if media.room_id != room_id {
-                return Err(Error::Authorization("Media does not belong to this room".to_string()));
+                return Err(Error::Authorization(
+                    "Media does not belong to this room".to_string(),
+                ));
             }
         }
 
@@ -1108,37 +1156,37 @@ impl PlaybackService {
         // update_state() uses `WHERE version = $N` for optimistic locking,
         // which is sufficient to detect conflicts without an extra DB round-trip.
 
-        let state = self.update_state(room_id.clone(), |state| {
-            // Snapshot the computed playback position before changing is_playing
-            // or speed, just like set_playing() and change_speed() do individually.
-            // Without this, pausing or changing speed via update_multiple would
-            // store the wrong position.
-            let needs_snapshot =
-                matches!(playing, Some(false)) || speed.is_some();
-            if needs_snapshot && current_time.is_none() {
-                // Only snapshot if the caller didn't provide an explicit position
-                state.current_time = state.computed_current_time();
-            }
+        let state = self
+            .update_state(room_id.clone(), |state| {
+                // Snapshot the computed playback position before changing is_playing
+                // or speed, just like set_playing() and change_speed() do individually.
+                // Without this, pausing or changing speed via update_multiple would
+                // store the wrong position.
+                let needs_snapshot = matches!(playing, Some(false)) || speed.is_some();
+                if needs_snapshot && current_time.is_none() {
+                    // Only snapshot if the caller didn't provide an explicit position
+                    state.current_time = state.computed_current_time();
+                }
 
-            if let Some(p) = playing {
-                state.is_playing = p;
-            }
-            if let Some(ct) = current_time {
-                state.current_time = ct;
-            }
-            if let Some(s) = speed {
-                state.speed = s;
-            }
-            if let Some(ref mid) = media_id {
-                state.playing_media_id = Some(mid.clone());
-            }
-            if let Some(ref pid) = playlist_id {
-                state.playing_playlist_id = pid.clone();
-            }
-            state.updated_at = chrono::Utc::now();
-            // version is incremented by the SQL UPDATE, not here
-        })
-        .await?;
+                if let Some(p) = playing {
+                    state.is_playing = p;
+                }
+                if let Some(ct) = current_time {
+                    state.current_time = ct;
+                }
+                if let Some(s) = speed {
+                    state.speed = s;
+                }
+                if let Some(ref mid) = media_id {
+                    state.playing_media_id = Some(mid.clone());
+                }
+                if let Some(ref pid) = playlist_id {
+                    state.playing_playlist_id = pid.clone();
+                }
+                state.updated_at = chrono::Utc::now();
+                // version is incremented by the SQL UPDATE, not here
+            })
+            .await?;
 
         // Cache invalidation is already handled inside update_state()
         self.broadcast_state_change(&state).await;

@@ -1,4 +1,7 @@
-use {super::errors::Mpeg4AvcHevcError, byteorder::BigEndian, crate::bytesio::bytes_reader::BytesReader};
+use {
+    super::errors::Mpeg4AvcHevcError, crate::bytesio::bytes_reader::BytesReader,
+    byteorder::BigEndian,
+};
 #[allow(dead_code)]
 #[derive(Default)]
 

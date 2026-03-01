@@ -10,7 +10,7 @@
 use std::sync::Arc;
 
 use crate::{
-    models::{Playlist, PlaylistId, RoomId, UserId, PermissionBits},
+    models::{PermissionBits, Playlist, PlaylistId, RoomId, UserId},
     repository::PlaylistRepository,
     service::permission::PermissionService,
     Error, Result,
@@ -24,10 +24,22 @@ use serde_json::Value as JsonValue;
 /// layer where `ClusterManager` is available.
 pub trait PlaylistBroadcaster: Send + Sync {
     /// Broadcast that a playlist was created.
-    fn broadcast_playlist_created(&self, room_id: &RoomId, playlist: &Playlist, user_id: &UserId, username: &str);
+    fn broadcast_playlist_created(
+        &self,
+        room_id: &RoomId,
+        playlist: &Playlist,
+        user_id: &UserId,
+        username: &str,
+    );
 
     /// Broadcast that a playlist was deleted.
-    fn broadcast_playlist_deleted(&self, room_id: &RoomId, playlist_id: &PlaylistId, user_id: &UserId, username: &str);
+    fn broadcast_playlist_deleted(
+        &self,
+        room_id: &RoomId,
+        playlist_id: &PlaylistId,
+        user_id: &UserId,
+        username: &str,
+    );
 }
 
 /// Request to create a playlist/folder
@@ -75,10 +87,7 @@ impl std::fmt::Debug for PlaylistService {
 impl PlaylistService {
     /// Create a new playlist service
     #[must_use]
-    pub fn new(
-        playlist_repo: PlaylistRepository,
-        permission_service: PermissionService,
-    ) -> Self {
+    pub fn new(playlist_repo: PlaylistRepository, permission_service: PermissionService) -> Self {
         Self {
             playlist_repo,
             permission_service,
@@ -101,10 +110,14 @@ impl PlaylistService {
         // Validate name
         let name = request.name.trim();
         if name.is_empty() {
-            return Err(Error::InvalidInput("Playlist name cannot be empty".to_string()));
+            return Err(Error::InvalidInput(
+                "Playlist name cannot be empty".to_string(),
+            ));
         }
         if name.chars().count() > 200 {
-            return Err(Error::InvalidInput("Playlist name cannot exceed 200 characters".to_string()));
+            return Err(Error::InvalidInput(
+                "Playlist name cannot exceed 200 characters".to_string(),
+            ));
         }
 
         // Check permission
@@ -121,7 +134,9 @@ impl PlaylistService {
                 .ok_or_else(|| Error::NotFound("Parent playlist not found".to_string()))?;
 
             if parent.room_id != room_id {
-                return Err(Error::Authorization("Parent playlist does not belong to this room".to_string()));
+                return Err(Error::Authorization(
+                    "Parent playlist does not belong to this room".to_string(),
+                ));
             }
 
             // Check nesting depth using recursive CTE (single query)
@@ -141,7 +156,7 @@ impl PlaylistService {
         // Validate dynamic folder requirements
         if request.source_provider.is_some() && request.source_config.is_none() {
             return Err(Error::InvalidInput(
-                "source_config is required for dynamic folders".to_string()
+                "source_config is required for dynamic folders".to_string(),
             ));
         }
 
@@ -206,7 +221,9 @@ impl PlaylistService {
         limit: i64,
         offset: i64,
     ) -> Result<Vec<Playlist>> {
-        self.playlist_repo.get_children_paginated(parent_id, limit, offset).await
+        self.playlist_repo
+            .get_children_paginated(parent_id, limit, offset)
+            .await
     }
 
     /// Get all playlists in a room (tree structure)
@@ -246,7 +263,9 @@ impl PlaylistService {
 
             // Verify playlist belongs to room
             if playlist.room_id != room_id {
-                return Err(Error::Authorization("Playlist does not belong to this room".to_string()));
+                return Err(Error::Authorization(
+                    "Playlist does not belong to this room".to_string(),
+                ));
             }
 
             // Store original version for optimistic locking
@@ -256,10 +275,14 @@ impl PlaylistService {
             if let Some(ref name) = request.name {
                 let name = name.trim().to_string();
                 if name.is_empty() {
-                    return Err(Error::InvalidInput("Playlist name cannot be empty".to_string()));
+                    return Err(Error::InvalidInput(
+                        "Playlist name cannot be empty".to_string(),
+                    ));
                 }
                 if name.chars().count() > 200 {
-                    return Err(Error::InvalidInput("Playlist name cannot exceed 200 characters".to_string()));
+                    return Err(Error::InvalidInput(
+                        "Playlist name cannot exceed 200 characters".to_string(),
+                    ));
                 }
                 playlist.name = name;
             }
@@ -268,7 +291,11 @@ impl PlaylistService {
             }
 
             // Save with optimistic locking
-            match self.playlist_repo.update_with_version(&playlist, expected_version).await {
+            match self
+                .playlist_repo
+                .update_with_version(&playlist, expected_version)
+                .await
+            {
                 Ok(updated_playlist) => {
                     tracing::info!(
                         room_id = %room_id.as_str(),
@@ -314,11 +341,14 @@ impl PlaylistService {
         playlist_id: PlaylistId,
     ) -> Result<()> {
         // Check permission (admin or creator)
-        if !self.permission_service
+        if !self
+            .permission_service
             .is_admin_or_creator(&room_id, &user_id)
             .await?
         {
-            return Err(Error::Authorization("Only admins or creators can delete playlists".to_string()));
+            return Err(Error::Authorization(
+                "Only admins or creators can delete playlists".to_string(),
+            ));
         }
 
         // Get playlist to verify ownership
@@ -329,12 +359,16 @@ impl PlaylistService {
             .ok_or_else(|| Error::NotFound("Playlist not found".to_string()))?;
 
         if playlist.room_id != room_id {
-            return Err(Error::Authorization("Playlist does not belong to this room".to_string()));
+            return Err(Error::Authorization(
+                "Playlist does not belong to this room".to_string(),
+            ));
         }
 
         // Cannot delete root playlist
         if playlist.is_root() {
-            return Err(Error::InvalidInput("Cannot delete root playlist".to_string()));
+            return Err(Error::InvalidInput(
+                "Cannot delete root playlist".to_string(),
+            ));
         }
 
         // Delete (will cascade to children and media)
@@ -684,5 +718,4 @@ mod tests {
     }
 
     // ========== Integration Tests (Require DB) ==========
-
 }

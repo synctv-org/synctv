@@ -15,14 +15,17 @@
 //! Run Docker tests: cargo test --test `distributed_lock_tests` -- --ignored
 #![allow(clippy::unwrap_used)]
 
+use std::time::Duration;
 use synctv_core::service::distributed_lock::{DistributedLock, MigrationLock};
 use synctv_core::Error;
-use std::time::Duration;
 use testcontainers::runners::AsyncRunner;
 use testcontainers_modules::redis::Redis;
 
 /// Start a Redis container and return connection manager
-async fn start_redis() -> (testcontainers::ContainerAsync<Redis>, redis::aio::ConnectionManager) {
+async fn start_redis() -> (
+    testcontainers::ContainerAsync<Redis>,
+    redis::aio::ConnectionManager,
+) {
     let container = Redis::default()
         .start()
         .await
@@ -59,7 +62,10 @@ async fn test_basic_acquire_release_cycle() {
 
     // Verify lock is held by trying to acquire again
     let second_attempt = lock.acquire(key, ttl).await.unwrap();
-    assert!(second_attempt.is_none(), "Second acquire should fail (lock already held)");
+    assert!(
+        second_attempt.is_none(),
+        "Second acquire should fail (lock already held)"
+    );
 
     // Release lock
     let released = lock.release(key, &lock_value).await.unwrap();
@@ -231,8 +237,14 @@ async fn test_concurrent_acquire_only_one_succeeds() {
         .collect();
 
     // Count successes and failures
-    let successes = results.iter().filter(|r| r.is_ok() && r.as_ref().unwrap().is_some()).count();
-    let failures = results.iter().filter(|r| r.is_ok() && r.as_ref().unwrap().is_none()).count();
+    let successes = results
+        .iter()
+        .filter(|r| r.is_ok() && r.as_ref().unwrap().is_some())
+        .count();
+    let failures = results
+        .iter()
+        .filter(|r| r.is_ok() && r.as_ref().unwrap().is_none())
+        .count();
 
     assert_eq!(successes, 1, "Exactly 1 concurrent acquire should succeed");
     assert_eq!(failures, 9, "9 concurrent acquires should fail");
@@ -362,7 +374,10 @@ async fn test_with_lock_auto_release() {
 
     // Lock should be auto-released, so we can acquire it again
     let new_lock = lock.acquire(key, ttl).await.unwrap();
-    assert!(new_lock.is_some(), "Lock should be available after with_lock completes");
+    assert!(
+        new_lock.is_some(),
+        "Lock should be available after with_lock completes"
+    );
 }
 
 #[tokio::test]
@@ -385,7 +400,10 @@ async fn test_with_lock_releases_on_error() {
 
     // Lock should still be released despite error
     let new_lock = lock.acquire(key, ttl).await.unwrap();
-    assert!(new_lock.is_some(), "Lock should be released even after operation error");
+    assert!(
+        new_lock.is_some(),
+        "Lock should be released even after operation error"
+    );
 }
 
 #[tokio::test]
@@ -406,7 +424,10 @@ async fn test_try_with_lock_returns_none_when_held() {
         .await
         .unwrap();
 
-    assert!(result.is_none(), "try_with_lock should return None when lock held");
+    assert!(
+        result.is_none(),
+        "try_with_lock should return None when lock held"
+    );
 }
 
 #[tokio::test]
@@ -497,7 +518,10 @@ async fn test_sentinel_failover_documents_vulnerability() {
 
     // Client 2 can now acquire the "same" lock (split-brain!)
     let client2_lock = lock.acquire_with_token(key, ttl).await.unwrap();
-    assert!(client2_lock.is_some(), "Client 2 should acquire lock after failover");
+    assert!(
+        client2_lock.is_some(),
+        "Client 2 should acquire lock after failover"
+    );
     let (client2_value, client2_token) = client2_lock.unwrap();
 
     // CRITICAL: Fencing token is HIGHER for client 2
@@ -509,7 +533,10 @@ async fn test_sentinel_failover_documents_vulnerability() {
     // If client 1 is still running and tries to do something with its lock,
     // it can't release anymore (lock value doesn't match)
     let client1_release = lock.release(key, &client1_value).await.unwrap();
-    assert!(!client1_release, "Client 1 should not be able to release (lock lost)");
+    assert!(
+        !client1_release,
+        "Client 1 should not be able to release (lock lost)"
+    );
 
     // Client 2 can release successfully
     let client2_release = lock.release(key, &client2_value).await.unwrap();
@@ -545,7 +572,10 @@ async fn test_redis_connection_timeout() {
     let conn = redis::aio::ConnectionManager::new(client).await;
 
     // Connection should fail
-    assert!(conn.is_err(), "Connecting to non-existent Redis should fail");
+    assert!(
+        conn.is_err(),
+        "Connecting to non-existent Redis should fail"
+    );
 
     // If we somehow got a connection, operations should timeout
     // (This is hard to test reliably without actual network conditions)
@@ -570,7 +600,10 @@ async fn test_acquire_returns_internal_error_on_redis_failure() {
     // If Redis fails, it should return Error::Internal or Error::Redis
     // (We can't easily test this without breaking Redis on purpose)
     let err = lock.acquire("test_normal", 10).await.unwrap();
-    assert!(err.is_none(), "Second acquire should fail gracefully (lock held)");
+    assert!(
+        err.is_none(),
+        "Second acquire should fail gracefully (lock held)"
+    );
 }
 
 // ============================================================================
@@ -606,11 +639,7 @@ async fn test_lock_values_are_unique() {
 
     // All 10 values should be distinct
     let unique_count: std::collections::HashSet<_> = lock_values.iter().collect();
-    assert_eq!(
-        unique_count.len(),
-        10,
-        "All lock values should be unique"
-    );
+    assert_eq!(unique_count.len(), 10, "All lock values should be unique");
 }
 
 // ============================================================================
@@ -628,7 +657,10 @@ async fn test_zero_ttl_lock() {
 
     // Test with minimal TTL
     let lock_value = lock.acquire(key, ttl).await.unwrap();
-    assert!(lock_value.is_some(), "Acquire with minimal TTL should succeed");
+    assert!(
+        lock_value.is_some(),
+        "Acquire with minimal TTL should succeed"
+    );
 
     // Lock should be acquired and immediately releasable
     let lock_value = lock_value.unwrap();
@@ -669,7 +701,10 @@ async fn test_special_characters_in_key() {
 
     for key in keys {
         let lock_value = lock.acquire(key, 10).await.unwrap();
-        assert!(lock_value.is_some(), "Acquire with key '{key}' should succeed");
+        assert!(
+            lock_value.is_some(),
+            "Acquire with key '{key}' should succeed"
+        );
 
         let lock_value = lock_value.unwrap();
         let released = lock.release(key, &lock_value).await.unwrap();
@@ -740,8 +775,11 @@ async fn test_many_concurrent_clients() {
         .map(|r| r.unwrap())
         .collect();
 
-    
-    assert_eq!(results.iter().filter(|(_, won)| *won).count(), 1, "Only 1 of 100 clients should acquire lock");
+    assert_eq!(
+        results.iter().filter(|(_, won)| *won).count(),
+        1,
+        "Only 1 of 100 clients should acquire lock"
+    );
 }
 
 // ============================================================================

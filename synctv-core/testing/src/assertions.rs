@@ -23,7 +23,9 @@ macro_rules! assert_in_range {
         assert!(
             v >= min && v <= max,
             "Value {} is not in range [{}, {}]",
-            v, min, max
+            v,
+            min,
+            max
         );
     };
 }

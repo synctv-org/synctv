@@ -8,32 +8,31 @@
 // is encapsulated here.
 
 use crate::{
-    relay::{registry_trait::StreamRegistryTrait, PublisherManager},
-    livestream::{
-        pull_manager::PullStreamManager,
-        external_publish_manager::ExternalPublishManager,
-        segment_manager::{SegmentManager, CleanupConfig},
-    },
-    protocols::hls::{CustomHlsRemuxer, StreamRegistry},
     api::{LiveStreamingInfrastructure, UserStreamTracker},
     error::StreamResult,
+    livestream::{
+        external_publish_manager::ExternalPublishManager,
+        pull_manager::PullStreamManager,
+        segment_manager::{CleanupConfig, SegmentManager},
+    },
+    protocols::hls::{CustomHlsRemuxer, StreamRegistry},
+    relay::{registry_trait::StreamRegistryTrait, PublisherManager},
 };
-use synctv_xiu::rtmp::auth::AuthCallback;
-use synctv_xiu::storage::MemoryStorage;
 use dashmap::DashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use synctv_xiu::rtmp::auth::AuthCallback;
+use synctv_xiu::storage::MemoryStorage;
+use synctv_xiu::streamhub::StreamsHub;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
-use synctv_xiu::streamhub::StreamsHub;
 
 /// Maximum number of `StreamHub` automatic restart attempts before giving up.
 /// Used to size the stop-streams notification channel to prevent signal loss
 /// under rapid consecutive restarts.
 const HUB_MAX_RESTARTS: u32 = 10;
-
 
 pub struct LivestreamConfig {
     pub rtmp_address: String,
@@ -130,7 +129,10 @@ impl LivestreamHandle {
 
         // 3. Stop the inner re-registration task gracefully via cancellation token
         self.reregister_cancel_token.cancel();
-        if timeout(timeout_duration, &mut self.reregister_task_handle).await.is_ok() {
+        if timeout(timeout_duration, &mut self.reregister_task_handle)
+            .await
+            .is_ok()
+        {
             info!("Re-registration task stopped gracefully");
         } else {
             warn!("Re-registration task shutdown timed out, aborting");
@@ -145,7 +147,10 @@ impl LivestreamHandle {
 
         // 5. Stop HLS remuxer gracefully via cancellation token, with timeout fallback
         self.hls_shutdown_token.cancel();
-        if timeout(timeout_duration, &mut self.hls_remuxer_handle).await.is_ok() {
+        if timeout(timeout_duration, &mut self.hls_remuxer_handle)
+            .await
+            .is_ok()
+        {
             info!("HLS remuxer stopped gracefully");
         } else {
             warn!("HLS remuxer shutdown timed out, aborting");
@@ -231,10 +236,7 @@ impl LivestreamServer {
         // 1. Create StreamHub channels and hub (bounded to prevent OOM under load)
         let (event_sender, event_receiver) =
             mpsc::channel(synctv_xiu::streamhub::define::STREAM_HUB_EVENT_CHANNEL_CAPACITY);
-        let mut streams_hub = StreamsHub::new(
-            event_sender.clone(),
-            event_receiver,
-        );
+        let mut streams_hub = StreamsHub::new(event_sender.clone(), event_receiver);
 
         // Create a long-lived external broadcast channel that survives StreamHub restarts.
         // The StreamHub's internal broadcast channel is recreated on each restart, which
@@ -267,7 +269,8 @@ impl LivestreamServer {
         // active streams are stopped while re-registration is already happening.
         // Capacity matches HUB_MAX_RESTARTS so rapid consecutive restarts never drop signals
         // when the receiver is momentarily busy processing a previous stop_all().
-        let (stop_streams_tx, mut stop_streams_rx) = mpsc::channel::<tokio::sync::oneshot::Sender<()>>(HUB_MAX_RESTARTS as usize);
+        let (stop_streams_tx, mut stop_streams_rx) =
+            mpsc::channel::<tokio::sync::oneshot::Sender<()>>(HUB_MAX_RESTARTS as usize);
 
         // Compute per-stream GOP cache memory limit from config (0 means use default).
         let per_stream_max_bytes: Option<usize> = if self.config.gop_cache_max_memory_mb > 0 {
@@ -409,7 +412,9 @@ impl LivestreamServer {
                         match tokio::time::timeout(
                             std::time::Duration::from_millis(100),
                             stop_done_rx,
-                        ).await {
+                        )
+                        .await
+                        {
                             Ok(Ok(())) => {
                                 info!("StreamHub restart: stop_all() completed, proceeding with cleanup");
                             }
@@ -425,7 +430,9 @@ impl LivestreamServer {
                         warn!("StreamHub restart: stop_streams channel full, previous stop still pending");
                     }
                     Err(mpsc::error::TrySendError::Closed(_)) => {
-                        warn!("StreamHub restart: stop_streams channel closed, receiver task exited");
+                        warn!(
+                            "StreamHub restart: stop_streams channel closed, receiver task exited"
+                        );
                     }
                 }
 
@@ -440,7 +447,10 @@ impl LivestreamServer {
 
                 // Clean up all local publisher registrations from Redis
                 // This ensures stale state doesn't persist after restart
-                if let Err(e) = registry_for_cleanup.cleanup_all_publishers_for_node(&node_id_for_cleanup).await {
+                if let Err(e) = registry_for_cleanup
+                    .cleanup_all_publishers_for_node(&node_id_for_cleanup)
+                    .await
+                {
                     error!("Failed to cleanup publishers on StreamHub restart: {}", e);
                 }
 
@@ -466,7 +476,10 @@ impl LivestreamServer {
                 let backoff_secs = INITIAL_BACKOFF_SECS
                     .saturating_mul(1u64 << (restart_count - 1).min(16))
                     .min(MAX_BACKOFF_SECS);
-                info!("Waiting {} seconds before restarting StreamHub...", backoff_secs);
+                info!(
+                    "Waiting {} seconds before restarting StreamHub...",
+                    backoff_secs
+                );
                 tokio::time::sleep(std::time::Duration::from_secs(backoff_secs)).await;
             }
         });
@@ -478,7 +491,8 @@ impl LivestreamServer {
                 "HLS memory storage max set to {} MB",
                 self.config.hls_memory_max_mb,
             );
-            Arc::new(MemoryStorage::with_limits(max_bytes, 0)) as Arc<dyn synctv_xiu::storage::HlsStorage>
+            Arc::new(MemoryStorage::with_limits(max_bytes, 0))
+                as Arc<dyn synctv_xiu::storage::HlsStorage>
         } else {
             Arc::new(MemoryStorage::new()) as Arc<dyn synctv_xiu::storage::HlsStorage>
         };
@@ -499,7 +513,9 @@ impl LivestreamServer {
         let hls_shutdown_token = CancellationToken::new();
 
         // Start segment cleanup background task and track the handle
-        let hls_cleanup_handle = segment_manager.clone().start_cleanup_task(hls_shutdown_token.clone());
+        let hls_cleanup_handle = segment_manager
+            .clone()
+            .start_cleanup_task(hls_shutdown_token.clone());
 
         // Create PublisherManager early so the activity callback can be wired to the HLS remuxer.
         // The manager itself is started later (step 7) after all components are created.
@@ -511,7 +527,7 @@ impl LivestreamServer {
                 event_sender.clone(),
                 Arc::clone(&is_restarting_flag),
             )
-            .with_grpc_address(self.config.grpc_address.clone())
+            .with_grpc_address(self.config.grpc_address.clone()),
         );
 
         // Create activity callback for the HLS remuxer to record publisher data activity.
@@ -574,19 +590,22 @@ impl LivestreamServer {
         let shared_grpc_pool = crate::grpc::GrpcConnectionPool::with_defaults();
 
         // 5b. Create HLS proxy client with the shared pool
-        let hls_proxy = crate::grpc::HlsProxyClient::with_defaults(self.config.cluster_secret.clone())
-            .with_connection_pool(shared_grpc_pool.clone());
+        let hls_proxy =
+            crate::grpc::HlsProxyClient::with_defaults(self.config.cluster_secret.clone())
+                .with_connection_pool(shared_grpc_pool.clone());
 
         // 5c. Create PullStreamManager with the same shared pool
-        let pull_manager = Arc::new(PullStreamManager::with_timeouts(
-            self.publisher_registry.clone(),
-            event_sender.clone(),
-            self.config.cleanup_check_interval_seconds,
-            self.config.stream_timeout_seconds,
-        )
-        .with_connection_pool(shared_grpc_pool)
-        .with_cluster_secret(self.config.cluster_secret.clone())
-        .with_hls_proxy(hls_proxy.clone()));
+        let pull_manager = Arc::new(
+            PullStreamManager::with_timeouts(
+                self.publisher_registry.clone(),
+                event_sender.clone(),
+                self.config.cleanup_check_interval_seconds,
+                self.config.stream_timeout_seconds,
+            )
+            .with_connection_pool(shared_grpc_pool)
+            .with_cluster_secret(self.config.cluster_secret.clone())
+            .with_hls_proxy(hls_proxy.clone()),
+        );
         // Start periodic cleanup of stale creation locks to prevent memory leaks
         let pull_manager_cleanup = pull_manager.start_cleanup_task();
 
@@ -689,7 +708,7 @@ impl LivestreamServer {
             .with_segment_manager(segment_manager)
             .with_hls_stream_registry(stream_registry)
             .with_local_node_id(local_node_id)
-            .with_hls_proxy(hls_proxy)
+            .with_hls_proxy(hls_proxy),
         );
 
         info!(
@@ -716,8 +735,8 @@ impl LivestreamServer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::relay::MockStreamRegistry;
     use crate::api::tracker::StreamTracker;
+    use crate::relay::MockStreamRegistry;
     use tokio::time::{timeout, Duration};
 
     /// Helper to create a minimal `LivestreamConfig` for testing
@@ -752,11 +771,7 @@ mod tests {
         // Create a mock registry
         let registry = Arc::new(MockStreamRegistry::new());
 
-        let server = LivestreamServer::new(
-            test_config(),
-            registry,
-            test_tracker(),
-        );
+        let server = LivestreamServer::new(test_config(), registry, test_tracker());
 
         // Start the server
         let handle = server.start().await.expect("Failed to start server");
@@ -790,11 +805,7 @@ mod tests {
     async fn test_reregister_task_respects_cancellation() {
         let registry = Arc::new(MockStreamRegistry::new());
 
-        let server = LivestreamServer::new(
-            test_config(),
-            registry,
-            test_tracker(),
-        );
+        let server = LivestreamServer::new(test_config(), registry, test_tracker());
 
         // Start the server
         let mut handle = server.start().await.expect("Failed to start server");
@@ -803,10 +814,7 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(50)).await;
 
         // Use graceful shutdown with a short timeout
-        let result = timeout(
-            Duration::from_secs(2),
-            handle.shutdown_graceful(1),
-        ).await;
+        let result = timeout(Duration::from_secs(2), handle.shutdown_graceful(1)).await;
 
         // Shutdown should complete within timeout
         assert!(
@@ -834,11 +842,7 @@ mod tests {
     async fn test_reregister_task_no_background_leak() {
         let registry = Arc::new(MockStreamRegistry::new());
 
-        let server = LivestreamServer::new(
-            test_config(),
-            registry.clone(),
-            test_tracker(),
-        );
+        let server = LivestreamServer::new(test_config(), registry.clone(), test_tracker());
 
         // Start the server
         let handle = server.start().await.expect("Failed to start server");
@@ -885,11 +889,7 @@ mod tests {
     async fn test_drop_cleans_up_tasks() {
         let registry = Arc::new(MockStreamRegistry::new());
 
-        let server = LivestreamServer::new(
-            test_config(),
-            registry,
-            test_tracker(),
-        );
+        let server = LivestreamServer::new(test_config(), registry, test_tracker());
 
         // Start the server
         let handle = server.start().await.expect("Failed to start server");
@@ -903,8 +903,14 @@ mod tests {
         let reregister_finished = handle.reregister_task_handle.is_finished();
 
         // Tasks should NOT be finished yet (they're running)
-        assert!(!publisher_finished, "publisher_manager_handle should be running before drop");
-        assert!(!reregister_finished, "reregister_task_handle should be running before drop");
+        assert!(
+            !publisher_finished,
+            "publisher_manager_handle should be running before drop"
+        );
+        assert!(
+            !reregister_finished,
+            "reregister_task_handle should be running before drop"
+        );
 
         // Drop the handle WITHOUT calling shutdown
         drop(handle);
@@ -927,11 +933,7 @@ mod tests {
     async fn test_hls_cleanup_task_terminated_on_drop() {
         let registry = Arc::new(MockStreamRegistry::new());
 
-        let server = LivestreamServer::new(
-            test_config(),
-            registry,
-            test_tracker(),
-        );
+        let server = LivestreamServer::new(test_config(), registry, test_tracker());
 
         // Start the server - this starts the HLS segment cleanup task
         let handle = server.start().await.expect("Failed to start server");

@@ -5,7 +5,9 @@
 use synctv_core::models::{MediaId, RoomId, UserId};
 use synctv_core::provider::ProviderContext;
 
-use super::convert::{playback_state_to_proto, playback_result_to_proto, provider_playback_info_to_model};
+use super::convert::{
+    playback_result_to_proto, playback_state_to_proto, provider_playback_info_to_model,
+};
 use super::ClientApiImpl;
 use crate::impls::ApiError;
 
@@ -95,24 +97,25 @@ impl ClientApiImpl {
             // Check if media is direct URL or needs provider
             if media.is_direct() {
                 // For direct media, get playback info from source_config
-                let result = media.get_playback_result()
-                    .ok_or_else(|| ApiError::Internal("Failed to parse direct media playback info".to_string()))?;
+                let result = media.get_playback_result().ok_or_else(|| {
+                    ApiError::Internal("Failed to parse direct media playback info".to_string())
+                })?;
 
                 playback_result_to_proto(&result)
             } else {
                 // For provider-backed media, use ProvidersManager to generate playback
-                let providers_manager = self.providers_manager.as_ref()
-                    .ok_or_else(|| ApiError::Internal("Providers manager not configured".to_string()))?;
+                let providers_manager = self.providers_manager.as_ref().ok_or_else(|| {
+                    ApiError::Internal("Providers manager not configured".to_string())
+                })?;
 
                 let instance_name = media
                     .provider_instance_name
                     .as_deref()
                     .unwrap_or(&media.source_provider);
 
-                let provider = providers_manager
-                    .get(instance_name)
-                    .await
-                    .ok_or_else(|| ApiError::NotFound(format!("Provider instance '{instance_name}' not found")))?;
+                let provider = providers_manager.get(instance_name).await.ok_or_else(|| {
+                    ApiError::NotFound(format!("Provider instance '{instance_name}' not found"))
+                })?;
 
                 let mut ctx = ProviderContext::new("synctv")
                     .with_user_id(user_id)
@@ -155,8 +158,9 @@ impl ClientApiImpl {
                     builder = builder.add_metadata(key, value);
                 }
 
-                let full_result = builder.build()
-                    .ok_or_else(|| ApiError::Internal("Failed to build PlaybackResult".to_string()))?;
+                let full_result = builder.build().ok_or_else(|| {
+                    ApiError::Internal("Failed to build PlaybackResult".to_string())
+                })?;
 
                 playback_result_to_proto(&full_result)
             }
@@ -184,11 +188,7 @@ impl ClientApiImpl {
     // These methods are called from WebSocket message handler
 
     /// Handle Play command from WebSocket
-    pub async fn handle_play_command(
-        &self,
-        user_id: &str,
-        room_id: &str,
-    ) -> Result<(), ApiError> {
+    pub async fn handle_play_command(&self, user_id: &str, room_id: &str) -> Result<(), ApiError> {
         let uid = UserId::from_string(user_id.to_string());
         let rid = RoomId::from_string(room_id.to_string());
 
@@ -204,11 +204,7 @@ impl ClientApiImpl {
     }
 
     /// Handle Pause command from WebSocket
-    pub async fn handle_pause_command(
-        &self,
-        user_id: &str,
-        room_id: &str,
-    ) -> Result<(), ApiError> {
+    pub async fn handle_pause_command(&self, user_id: &str, room_id: &str) -> Result<(), ApiError> {
         let uid = UserId::from_string(user_id.to_string());
         let rid = RoomId::from_string(room_id.to_string());
 
@@ -234,7 +230,8 @@ impl ClientApiImpl {
         let rid = RoomId::from_string(room_id.to_string());
 
         // Permission check (SEEK) is handled by PlaybackService::seek()
-        let response = self.room_service
+        let response = self
+            .room_service
             .playback_service()
             .seek(rid, uid, current_time)
             .await

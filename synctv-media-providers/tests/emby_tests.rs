@@ -14,7 +14,8 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 #[tokio::test]
 async fn test_validate_item_id_normal() {
     // Valid IDs should pass validation (but will fail on missing user_id since we don't set it)
-    let client = EmbyClient::with_credentials("https://emby.example.com", "token", "user1").unwrap();
+    let client =
+        EmbyClient::with_credentials("https://emby.example.com", "token", "user1").unwrap();
     // get_item will pass validation for normal IDs, but fail on network
     let result = client.get_item("12345").await;
     // Should fail with network error, NOT validation error
@@ -27,7 +28,8 @@ async fn test_validate_item_id_normal() {
 
 #[tokio::test]
 async fn test_validate_item_id_traversal_rejected() {
-    let client = EmbyClient::with_credentials("https://emby.example.com", "token", "user1").unwrap();
+    let client =
+        EmbyClient::with_credentials("https://emby.example.com", "token", "user1").unwrap();
     let result = client.get_item("../etc/passwd").await;
     assert!(result.is_err());
     let err_msg = result.unwrap_err().to_string();
@@ -39,7 +41,8 @@ async fn test_validate_item_id_traversal_rejected() {
 
 #[tokio::test]
 async fn test_validate_item_id_empty_rejected() {
-    let client = EmbyClient::with_credentials("https://emby.example.com", "token", "user1").unwrap();
+    let client =
+        EmbyClient::with_credentials("https://emby.example.com", "token", "user1").unwrap();
     let result = client.get_item("").await;
     assert!(result.is_err());
     let err_msg = result.unwrap_err().to_string();
@@ -84,15 +87,13 @@ async fn test_emby_client_login_success() {
     // Emby login endpoint: POST /emby/Users/authenticatebyname
     Mock::given(method("POST"))
         .and(path("/emby/Users/authenticatebyname"))
-        .respond_with(
-            ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "AccessToken": "emby-test-token-xyz",
-                "User": {
-                    "Id": "user-uuid-123",
-                    "Name": "admin"
-                }
-            })),
-        )
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "AccessToken": "emby-test-token-xyz",
+            "User": {
+                "Id": "user-uuid-123",
+                "Name": "admin"
+            }
+        })))
         .mount(&server)
         .await;
 
@@ -109,32 +110,29 @@ async fn test_emby_client_get_items_success() {
 
     // Emby items endpoint: GET /emby/Users/<user_id>/Items
     Mock::given(method("GET"))
-        .respond_with(
-            ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "Items": [
-                    {
-                        "Id": "item1",
-                        "Name": "Test Movie",
-                        "Type": "Movie",
-                        "IsFolder": false,
-                        "MediaSources": []
-                    },
-                    {
-                        "Id": "item2",
-                        "Name": "Test Series",
-                        "Type": "Series",
-                        "IsFolder": true,
-                        "MediaSources": []
-                    }
-                ],
-                "TotalRecordCount": 2
-            })),
-        )
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "Items": [
+                {
+                    "Id": "item1",
+                    "Name": "Test Movie",
+                    "Type": "Movie",
+                    "IsFolder": false,
+                    "MediaSources": []
+                },
+                {
+                    "Id": "item2",
+                    "Name": "Test Series",
+                    "Type": "Series",
+                    "IsFolder": true,
+                    "MediaSources": []
+                }
+            ],
+            "TotalRecordCount": 2
+        })))
         .mount(&server)
         .await;
 
-    let client =
-        EmbyClient::with_credentials(server.uri(), "token123", "user-uuid-123").unwrap();
+    let client = EmbyClient::with_credentials(server.uri(), "token123", "user-uuid-123").unwrap();
     let resp = client.get_items(None, None).await.unwrap();
     assert_eq!(resp.total_record_count, 2);
     assert_eq!(resp.items.len(), 2);
@@ -152,15 +150,13 @@ async fn test_emby_client_jellyfin_detection() {
     // Since wiremock uses 127.0.0.1, we test with explicit prefix instead
     Mock::given(method("POST"))
         .and(path("/jellyfin/Users/authenticatebyname"))
-        .respond_with(
-            ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "AccessToken": "jellyfin-token",
-                "User": {
-                    "Id": "jf-user-1",
-                    "Name": "admin"
-                }
-            })),
-        )
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "AccessToken": "jellyfin-token",
+            "User": {
+                "Id": "jf-user-1",
+                "Name": "admin"
+            }
+        })))
         .mount(&server)
         .await;
 
@@ -187,8 +183,7 @@ async fn test_emby_report_playback_start_success() {
         .mount(&server)
         .await;
 
-    let client =
-        EmbyClient::with_credentials(server.uri(), "token123", "user-uuid-123").unwrap();
+    let client = EmbyClient::with_credentials(server.uri(), "token123", "user-uuid-123").unwrap();
     let result = client
         .report_playback_start("item-abc", "session-1", Some("source-1"), 0)
         .await;
@@ -206,8 +201,7 @@ async fn test_emby_report_playback_stop_success() {
         .mount(&server)
         .await;
 
-    let client =
-        EmbyClient::with_credentials(server.uri(), "token123", "user-uuid-123").unwrap();
+    let client = EmbyClient::with_credentials(server.uri(), "token123", "user-uuid-123").unwrap();
     let result = client
         .report_playback_stop("item-abc", "session-1", 50000)
         .await;
@@ -225,8 +219,7 @@ async fn test_emby_report_playback_progress_success() {
         .mount(&server)
         .await;
 
-    let client =
-        EmbyClient::with_credentials(server.uri(), "token123", "user-uuid-123").unwrap();
+    let client = EmbyClient::with_credentials(server.uri(), "token123", "user-uuid-123").unwrap();
     let result = client
         .report_playback_progress("item-abc", "session-1", Some("source-1"), 25000, false)
         .await;
@@ -247,8 +240,7 @@ async fn test_emby_report_playback_progress_paused() {
         .mount(&server)
         .await;
 
-    let client =
-        EmbyClient::with_credentials(server.uri(), "token123", "user-uuid-123").unwrap();
+    let client = EmbyClient::with_credentials(server.uri(), "token123", "user-uuid-123").unwrap();
     let result = client
         .report_playback_progress("item-abc", "session-1", None, 25000, true)
         .await;
@@ -268,8 +260,7 @@ async fn test_emby_delete_active_encodings_success() {
         .mount(&server)
         .await;
 
-    let client =
-        EmbyClient::with_credentials(server.uri(), "token123", "user-uuid-123").unwrap();
+    let client = EmbyClient::with_credentials(server.uri(), "token123", "user-uuid-123").unwrap();
     let result = client.delete_active_encodings("session-1").await;
     assert!(
         result.is_ok(),
@@ -283,9 +274,7 @@ async fn test_emby_report_playback_start_validates_item_id() {
         EmbyClient::with_credentials("https://emby.example.com", "token123", "user-uuid-123")
             .unwrap();
     // Empty item_id should be rejected
-    let result = client
-        .report_playback_start("", "session-1", None, 0)
-        .await;
+    let result = client.report_playback_start("", "session-1", None, 0).await;
     assert!(result.is_err());
     let err_msg = result.unwrap_err().to_string();
     assert!(
@@ -315,44 +304,41 @@ async fn test_emby_get_playback_info_success() {
     let server = MockServer::start().await;
 
     Mock::given(method("POST"))
-        .respond_with(
-            ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "MediaSources": [
-                    {
-                        "Id": "source-1",
-                        "Name": "1080P",
-                        "Path": "/media/movie.mkv",
-                        "Container": "mkv",
-                        "Size": 5_000_000_000_u64,
-                        "Bitrate": 8_000_000,
-                        "RunTimeTicks": 72_000_000_000_i64,
-                        "MediaStreams": [
-                            {
-                                "Type": "Video",
-                                "Codec": "h264",
-                                "Width": 1920,
-                                "Height": 1080
-                            },
-                            {
-                                "Type": "Audio",
-                                "Codec": "aac",
-                                "Channels": 6,
-                                "Language": "eng"
-                            }
-                        ],
-                        "SupportsTranscoding": true,
-                        "SupportsDirectPlay": true,
-                        "SupportsDirectStream": true
-                    }
-                ],
-                "PlaySessionId": "play-session-abc"
-            })),
-        )
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "MediaSources": [
+                {
+                    "Id": "source-1",
+                    "Name": "1080P",
+                    "Path": "/media/movie.mkv",
+                    "Container": "mkv",
+                    "Size": 5_000_000_000_u64,
+                    "Bitrate": 8_000_000,
+                    "RunTimeTicks": 72_000_000_000_i64,
+                    "MediaStreams": [
+                        {
+                            "Type": "Video",
+                            "Codec": "h264",
+                            "Width": 1920,
+                            "Height": 1080
+                        },
+                        {
+                            "Type": "Audio",
+                            "Codec": "aac",
+                            "Channels": 6,
+                            "Language": "eng"
+                        }
+                    ],
+                    "SupportsTranscoding": true,
+                    "SupportsDirectPlay": true,
+                    "SupportsDirectStream": true
+                }
+            ],
+            "PlaySessionId": "play-session-abc"
+        })))
         .mount(&server)
         .await;
 
-    let client =
-        EmbyClient::with_credentials(server.uri(), "token123", "user-uuid-123").unwrap();
+    let client = EmbyClient::with_credentials(server.uri(), "token123", "user-uuid-123").unwrap();
     let resp = client
         .get_playback_info("item-1", None, None, None, None)
         .await
@@ -374,8 +360,7 @@ async fn test_emby_logout_success() {
         .mount(&server)
         .await;
 
-    let client =
-        EmbyClient::with_credentials(server.uri(), "token123", "user-uuid-123").unwrap();
+    let client = EmbyClient::with_credentials(server.uri(), "token123", "user-uuid-123").unwrap();
     let result = client.logout().await;
     assert!(result.is_ok(), "Logout should succeed: {result:?}");
 }
@@ -390,28 +375,25 @@ async fn emby_thumbnail_extract_from_primary_tag() {
     let server = MockServer::start().await;
 
     Mock::given(method("GET"))
-        .respond_with(
-            ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "Items": [
-                    {
-                        "Id": "item-with-primary",
-                        "Name": "Movie with Primary Image",
-                        "Type": "Movie",
-                        "IsFolder": false,
-                        "ImageTags": {
-                            "Primary": "abc123tag"
-                        },
-                        "MediaSources": []
-                    }
-                ],
-                "TotalRecordCount": 1
-            })),
-        )
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "Items": [
+                {
+                    "Id": "item-with-primary",
+                    "Name": "Movie with Primary Image",
+                    "Type": "Movie",
+                    "IsFolder": false,
+                    "ImageTags": {
+                        "Primary": "abc123tag"
+                    },
+                    "MediaSources": []
+                }
+            ],
+            "TotalRecordCount": 1
+        })))
         .mount(&server)
         .await;
 
-    let client =
-        EmbyClient::with_credentials(server.uri(), "token123", "user-uuid-123").unwrap();
+    let client = EmbyClient::with_credentials(server.uri(), "token123", "user-uuid-123").unwrap();
     let resp = client.get_items(None, None).await.unwrap();
     assert_eq!(resp.items.len(), 1);
 
@@ -428,28 +410,25 @@ async fn emby_thumbnail_extract_from_thumb_tag() {
     let server = MockServer::start().await;
 
     Mock::given(method("GET"))
-        .respond_with(
-            ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "Items": [
-                    {
-                        "Id": "item-with-thumb",
-                        "Name": "Movie with Thumb Image",
-                        "Type": "Movie",
-                        "IsFolder": false,
-                        "ImageTags": {
-                            "Thumb": "thumb456tag"
-                        },
-                        "MediaSources": []
-                    }
-                ],
-                "TotalRecordCount": 1
-            })),
-        )
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "Items": [
+                {
+                    "Id": "item-with-thumb",
+                    "Name": "Movie with Thumb Image",
+                    "Type": "Movie",
+                    "IsFolder": false,
+                    "ImageTags": {
+                        "Thumb": "thumb456tag"
+                    },
+                    "MediaSources": []
+                }
+            ],
+            "TotalRecordCount": 1
+        })))
         .mount(&server)
         .await;
 
-    let client =
-        EmbyClient::with_credentials(server.uri(), "token123", "user-uuid-123").unwrap();
+    let client = EmbyClient::with_credentials(server.uri(), "token123", "user-uuid-123").unwrap();
     let resp = client.get_items(None, None).await.unwrap();
     assert_eq!(resp.items.len(), 1);
 
@@ -467,25 +446,22 @@ async fn emby_thumbnail_no_image_tags_returns_none() {
     let server = MockServer::start().await;
 
     Mock::given(method("GET"))
-        .respond_with(
-            ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "Items": [
-                    {
-                        "Id": "item-no-images",
-                        "Name": "Movie without Images",
-                        "Type": "Movie",
-                        "IsFolder": false,
-                        "MediaSources": []
-                    }
-                ],
-                "TotalRecordCount": 1
-            })),
-        )
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "Items": [
+                {
+                    "Id": "item-no-images",
+                    "Name": "Movie without Images",
+                    "Type": "Movie",
+                    "IsFolder": false,
+                    "MediaSources": []
+                }
+            ],
+            "TotalRecordCount": 1
+        })))
         .mount(&server)
         .await;
 
-    let client =
-        EmbyClient::with_credentials(server.uri(), "token123", "user-uuid-123").unwrap();
+    let client = EmbyClient::with_credentials(server.uri(), "token123", "user-uuid-123").unwrap();
     let resp = client.get_items(None, None).await.unwrap();
     assert_eq!(resp.items.len(), 1);
 

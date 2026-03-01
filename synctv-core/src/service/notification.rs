@@ -88,10 +88,7 @@ pub enum RoomEvent {
     /// Playlist reordered
     PlaylistReordered { media_ids: Vec<String> },
     /// Member permissions changed
-    PermissionChanged {
-        user_id: UserId,
-        permissions: i64,
-    },
+    PermissionChanged { user_id: UserId, permissions: i64 },
     /// Member kicked
     MemberKicked { user_id: UserId },
     /// Guest kicked (for anonymous guests)
@@ -104,15 +101,9 @@ pub enum RoomEvent {
     /// Room deleted
     RoomDeleted,
     /// Live stream started (publisher connected)
-    StreamStarted {
-        media_id: String,
-        user_id: UserId,
-    },
+    StreamStarted { media_id: String, user_id: UserId },
     /// Live stream stopped (publisher disconnected)
-    StreamStopped {
-        media_id: String,
-        user_id: UserId,
-    },
+    StreamStopped { media_id: String, user_id: UserId },
 }
 
 impl RoomEvent {
@@ -156,7 +147,12 @@ pub trait EventBroadcaster: Send + Sync {
     async fn broadcast_to_room(&self, room_id: &RoomId, event: &RoomEvent) -> Result<usize>;
 
     /// Send an event to a specific user in a room
-    async fn send_to_user(&self, room_id: &RoomId, user_id: &UserId, event: &RoomEvent) -> Result<bool>;
+    async fn send_to_user(
+        &self,
+        room_id: &RoomId,
+        user_id: &UserId,
+        event: &RoomEvent,
+    ) -> Result<bool>;
 
     /// Broadcast to all nodes in cluster
     async fn broadcast_to_cluster(&self, room_id: &RoomId, event: &RoomEvent) -> Result<()>;
@@ -207,10 +203,7 @@ impl NotificationService {
     }
 
     /// Create a new notification service with custom configuration
-    pub fn with_config(
-        broadcaster: Arc<dyn EventBroadcaster>,
-        config: NotificationConfig,
-    ) -> Self {
+    pub fn with_config(broadcaster: Arc<dyn EventBroadcaster>, config: NotificationConfig) -> Self {
         let (event_tx, _) = broadcast::channel(config.channel_capacity);
 
         Self {
@@ -224,13 +217,13 @@ impl NotificationService {
     ///
     /// Returns a receiver that can be used to receive events for all rooms.
     /// This is useful for components that need to react to all room events.
-    #[must_use] 
+    #[must_use]
     pub fn subscribe(&self) -> broadcast::Receiver<(RoomId, RoomEvent)> {
         self.event_tx.subscribe()
     }
 
     /// Get the event broadcaster
-    #[must_use] 
+    #[must_use]
     pub fn broadcaster(&self) -> &Arc<dyn EventBroadcaster> {
         &self.broadcaster
     }
@@ -287,7 +280,10 @@ impl NotificationService {
             room_id.as_str()
         );
 
-        let sent = self.broadcaster.send_to_user(room_id, user_id, &event).await?;
+        let sent = self
+            .broadcaster
+            .send_to_user(room_id, user_id, &event)
+            .await?;
 
         if !sent {
             tracing::warn!(
@@ -301,11 +297,7 @@ impl NotificationService {
     }
 
     /// Broadcast to all nodes in cluster (via Redis Pub/Sub)
-    pub async fn broadcast_to_cluster(
-        &self,
-        room_id: &RoomId,
-        event: RoomEvent,
-    ) -> Result<()> {
+    pub async fn broadcast_to_cluster(&self, room_id: &RoomId, event: RoomEvent) -> Result<()> {
         tracing::trace!(
             "Broadcasting event {} to cluster for room {}",
             event.event_type(),
@@ -418,11 +410,7 @@ impl NotificationService {
     }
 
     /// Notify media removed
-    pub async fn notify_media_removed(
-        &self,
-        room_id: &RoomId,
-        media_id: &str,
-    ) -> Result<()> {
+    pub async fn notify_media_removed(&self, room_id: &RoomId, media_id: &str) -> Result<()> {
         let event = RoomEvent::MediaRemoved {
             media_id: media_id.to_string(),
         };
@@ -460,11 +448,7 @@ impl NotificationService {
     }
 
     /// Notify member kicked
-    pub async fn notify_member_kicked(
-        &self,
-        room_id: &RoomId,
-        user_id: &UserId,
-    ) -> Result<()> {
+    pub async fn notify_member_kicked(&self, room_id: &RoomId, user_id: &UserId) -> Result<()> {
         let event = RoomEvent::MemberKicked {
             user_id: user_id.clone(),
         };
@@ -524,16 +508,9 @@ impl NotificationService {
     /// # Arguments
     /// * `room_id` - Room ID to kick guests from
     /// * `reason` - Reason for kicking guests
-    pub async fn kick_all_guests(
-        &self,
-        room_id: &RoomId,
-        reason: GuestKickReason,
-    ) -> Result<()> {
+    pub async fn kick_all_guests(&self, room_id: &RoomId, reason: GuestKickReason) -> Result<()> {
         let message = reason.message().to_string();
-        let event = RoomEvent::GuestKicked {
-            reason,
-            message,
-        };
+        let event = RoomEvent::GuestKicked { reason, message };
 
         tracing::info!(
             "Kicking all guests from room {} due to: {}",
@@ -567,23 +544,38 @@ impl Default for NotificationService {
 
         #[async_trait::async_trait]
         impl EventBroadcaster for NoOpBroadcaster {
-            async fn broadcast_to_room(&self, _room_id: &RoomId, _event: &RoomEvent) -> Result<usize> {
+            async fn broadcast_to_room(
+                &self,
+                _room_id: &RoomId,
+                _event: &RoomEvent,
+            ) -> Result<usize> {
                 self.warn_once();
                 Ok(0)
             }
 
-            async fn send_to_user(&self, _room_id: &RoomId, _user_id: &UserId, _event: &RoomEvent) -> Result<bool> {
+            async fn send_to_user(
+                &self,
+                _room_id: &RoomId,
+                _user_id: &UserId,
+                _event: &RoomEvent,
+            ) -> Result<bool> {
                 self.warn_once();
                 Ok(false)
             }
 
-            async fn broadcast_to_cluster(&self, _room_id: &RoomId, _event: &RoomEvent) -> Result<()> {
+            async fn broadcast_to_cluster(
+                &self,
+                _room_id: &RoomId,
+                _event: &RoomEvent,
+            ) -> Result<()> {
                 self.warn_once();
                 Ok(())
             }
         }
 
-        Self::new(Arc::new(NoOpBroadcaster { warned: std::sync::Once::new() }))
+        Self::new(Arc::new(NoOpBroadcaster {
+            warned: std::sync::Once::new(),
+        }))
     }
 }
 
@@ -609,15 +601,28 @@ mod tests {
 
         #[async_trait::async_trait]
         impl EventBroadcaster for MockBroadcaster {
-            async fn broadcast_to_room(&self, _room_id: &RoomId, _event: &RoomEvent) -> Result<usize> {
+            async fn broadcast_to_room(
+                &self,
+                _room_id: &RoomId,
+                _event: &RoomEvent,
+            ) -> Result<usize> {
                 Ok(0)
             }
 
-            async fn send_to_user(&self, _room_id: &RoomId, _user_id: &UserId, _event: &RoomEvent) -> Result<bool> {
+            async fn send_to_user(
+                &self,
+                _room_id: &RoomId,
+                _user_id: &UserId,
+                _event: &RoomEvent,
+            ) -> Result<bool> {
                 Ok(false)
             }
 
-            async fn broadcast_to_cluster(&self, _room_id: &RoomId, _event: &RoomEvent) -> Result<()> {
+            async fn broadcast_to_cluster(
+                &self,
+                _room_id: &RoomId,
+                _event: &RoomEvent,
+            ) -> Result<()> {
                 Ok(())
             }
         }
@@ -632,15 +637,28 @@ mod tests {
 
         #[async_trait::async_trait]
         impl EventBroadcaster for MockBroadcaster {
-            async fn broadcast_to_room(&self, _room_id: &RoomId, _event: &RoomEvent) -> Result<usize> {
+            async fn broadcast_to_room(
+                &self,
+                _room_id: &RoomId,
+                _event: &RoomEvent,
+            ) -> Result<usize> {
                 Ok(1)
             }
 
-            async fn send_to_user(&self, _room_id: &RoomId, _user_id: &UserId, _event: &RoomEvent) -> Result<bool> {
+            async fn send_to_user(
+                &self,
+                _room_id: &RoomId,
+                _user_id: &UserId,
+                _event: &RoomEvent,
+            ) -> Result<bool> {
                 Ok(true)
             }
 
-            async fn broadcast_to_cluster(&self, _room_id: &RoomId, _event: &RoomEvent) -> Result<()> {
+            async fn broadcast_to_cluster(
+                &self,
+                _room_id: &RoomId,
+                _event: &RoomEvent,
+            ) -> Result<()> {
                 Ok(())
             }
         }
@@ -663,13 +681,11 @@ mod tests {
         service.broadcast_to_room(&room_id, event).await.unwrap();
 
         // Receive event
-        let (received_room_id, received_event) = tokio::time::timeout(
-            tokio::time::Duration::from_millis(100),
-            rx.recv()
-        )
-        .await
-        .unwrap()
-        .unwrap();
+        let (received_room_id, received_event) =
+            tokio::time::timeout(tokio::time::Duration::from_millis(100), rx.recv())
+                .await
+                .unwrap()
+                .unwrap();
 
         assert_eq!(received_room_id, room_id);
         assert!(

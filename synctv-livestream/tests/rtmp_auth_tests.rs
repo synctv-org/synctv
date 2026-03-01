@@ -115,11 +115,11 @@ async fn test_on_play_always_rejected() {
 //
 // Issue: RTMP 推流认证后 `publish_to_stream_hub()` 失败时 Redis 残留 publisher 条目
 
+use async_trait::async_trait;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 use synctv_livestream::relay::{InMemoryStreamRegistry, StreamRegistryTrait};
 use synctv_livestream::{AuthCallback, AuthPublishRewrite};
-use async_trait::async_trait;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
 
 /// Mock auth callback that tracks rollback calls
 struct MockAuthCallback {
@@ -170,26 +170,20 @@ impl AuthCallback for MockAuthCallback {
         Err("RTMP play disabled".into())
     }
 
-    async fn on_unpublish(
-        &self,
-        _app_name: &str,
-        _stream_name: &str,
-        _query: Option<&str>,
-    ) {
+    async fn on_unpublish(&self, _app_name: &str, _stream_name: &str, _query: Option<&str>) {
         // Default: no-op for this test
     }
 
     /// This is the key method - called when publish fails after auth success
-    async fn on_publish_rollback(
-        &self,
-        app_name: &str,
-        stream_name: &str,
-        _query: Option<&str>,
-    ) {
+    async fn on_publish_rollback(&self, app_name: &str, stream_name: &str, _query: Option<&str>) {
         self.rollback_count.fetch_add(1, Ordering::SeqCst);
 
         // Clean up the registry entry
-        if let Err(e) = self.registry.unregister_publisher(app_name, stream_name).await {
+        if let Err(e) = self
+            .registry
+            .unregister_publisher(app_name, stream_name)
+            .await
+        {
             eprintln!("Failed to rollback publisher registration: {e}");
         }
     }
@@ -306,7 +300,9 @@ struct MockRtmpSettingsAuthCallback {
 
 impl MockRtmpSettingsAuthCallback {
     const fn new(rtmp_player_enabled: bool) -> Self {
-        Self { rtmp_player_enabled }
+        Self {
+            rtmp_player_enabled,
+        }
     }
 }
 
@@ -337,13 +333,7 @@ impl AuthCallback for MockRtmpSettingsAuthCallback {
         Ok(())
     }
 
-    async fn on_unpublish(
-        &self,
-        _app_name: &str,
-        _stream_name: &str,
-        _query: Option<&str>,
-    ) {
-    }
+    async fn on_unpublish(&self, _app_name: &str, _stream_name: &str, _query: Option<&str>) {}
 }
 
 /// Test that RTMP play is rejected when `rtmp_player` is disabled (default)
@@ -352,7 +342,10 @@ async fn rtmp_play_rejected_when_disabled() {
     let auth = MockRtmpSettingsAuthCallback::new(false);
 
     let result = auth.on_play("room1", "media1", None).await;
-    assert!(result.is_err(), "RTMP play should be rejected when rtmp_player is disabled");
+    assert!(
+        result.is_err(),
+        "RTMP play should be rejected when rtmp_player is disabled"
+    );
 
     let err = result.unwrap_err().to_string();
     assert!(
@@ -371,7 +364,10 @@ async fn rtmp_play_allowed_when_enabled() {
     let auth = MockRtmpSettingsAuthCallback::new(true);
 
     let result = auth.on_play("room1", "media1", None).await;
-    assert!(result.is_ok(), "RTMP play should be allowed when rtmp_player is enabled");
+    assert!(
+        result.is_ok(),
+        "RTMP play should be allowed when rtmp_player is enabled"
+    );
 }
 
 /// Test that the default behavior (no explicit setting) rejects RTMP play

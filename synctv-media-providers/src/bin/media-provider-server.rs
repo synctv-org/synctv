@@ -19,23 +19,20 @@
 
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::atomic::{AtomicI64, AtomicU32, Ordering};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU32, AtomicI64, Ordering};
 use std::task::{Context, Poll};
 
-use sha2::{Sha256, Digest};
+use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq;
 use synctv_media_providers::grpc::{
-    alist::alist_server::AlistServer,
-    alist_server::AlistService as AlistGrpcService,
-    bilibili::bilibili_server::BilibiliServer,
-    bilibili_server::BilibiliService,
-    emby::emby_server::EmbyServer,
-    emby_server::EmbyService,
+    alist::alist_server::AlistServer, alist_server::AlistService as AlistGrpcService,
+    bilibili::bilibili_server::BilibiliServer, bilibili_server::BilibiliService,
+    emby::emby_server::EmbyServer, emby_server::EmbyService,
 };
-use tonic::{Request, Status};
-use tonic::transport::Server;
 use tonic::service::LayerExt as _;
+use tonic::transport::Server;
+use tonic::{Request, Status};
 use tower::{Layer, Service};
 use tracing::{error, info, warn, Level};
 
@@ -126,7 +123,10 @@ struct CircuitBreakerLayer {
 
 impl CircuitBreakerLayer {
     const fn new(circuit_breaker: Arc<CircuitBreaker>, service_name: &'static str) -> Self {
-        Self { circuit_breaker, service_name }
+        Self {
+            circuit_breaker,
+            service_name,
+        }
     }
 }
 
@@ -194,7 +194,11 @@ struct ProviderAuthInterceptor {
 }
 
 impl ProviderAuthInterceptor {
-    fn new(secret: String, circuit_breaker: Arc<CircuitBreaker>, service_name: &'static str) -> Self {
+    fn new(
+        secret: String,
+        circuit_breaker: Arc<CircuitBreaker>,
+        service_name: &'static str,
+    ) -> Self {
         Self {
             secret: Arc::new(secret),
             circuit_breaker,
@@ -280,7 +284,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Create auth interceptors (one per service, they are Clone + cheap)
     let alist_auth = ProviderAuthInterceptor::new(auth_secret.clone(), alist_cb.clone(), "alist");
-    let bilibili_auth = ProviderAuthInterceptor::new(auth_secret.clone(), bilibili_cb.clone(), "bilibili");
+    let bilibili_auth =
+        ProviderAuthInterceptor::new(auth_secret.clone(), bilibili_cb.clone(), "bilibili");
     let emby_auth = ProviderAuthInterceptor::new(auth_secret, emby_cb.clone(), "emby");
 
     // Create circuit-breaker layers so record_success is called after every
@@ -315,17 +320,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .max_frame_size(Some(4 * 1024 * 1024))
         .concurrency_limit_per_connection(100)
         .add_service(health_service)
-        .add_service(alist_cb_layer.named_layer(
-            AlistServer::with_interceptor(alist_service, move |req| alist_auth.validate(req)),
-        ))
-        .add_service(bilibili_cb_layer.named_layer(
-            BilibiliServer::with_interceptor(bilibili_service, move |req| {
-                bilibili_auth.validate(req)
-            }),
-        ))
-        .add_service(emby_cb_layer.named_layer(
-            EmbyServer::with_interceptor(emby_service, move |req| emby_auth.validate(req)),
-        ))
+        .add_service(
+            alist_cb_layer.named_layer(AlistServer::with_interceptor(alist_service, move |req| {
+                alist_auth.validate(req)
+            })),
+        )
+        .add_service(
+            bilibili_cb_layer.named_layer(BilibiliServer::with_interceptor(
+                bilibili_service,
+                move |req| bilibili_auth.validate(req),
+            )),
+        )
+        .add_service(
+            emby_cb_layer.named_layer(EmbyServer::with_interceptor(emby_service, move |req| {
+                emby_auth.validate(req)
+            })),
+        )
         .serve_with_shutdown(addr, shutdown_signal())
         .await?;
 

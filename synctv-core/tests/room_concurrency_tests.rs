@@ -16,26 +16,26 @@
 //! - Docker for testcontainers (`PostgreSQL` + Redis)
 #![allow(clippy::unwrap_used)]
 
+use chrono::Utc;
+use sqlx::PgPool;
+use std::sync::Arc;
 use synctv_core::{
     models::{
-        Room, RoomId, RoomMember, RoomRole, RoomSettings, RoomStatus, UserId, User, UserRole, UserStatus,
-        room_settings::MaxMembers,
+        room_settings::MaxMembers, Room, RoomId, RoomMember, RoomRole, RoomSettings, RoomStatus,
+        User, UserId, UserRole, UserStatus,
     },
-    repository::{RoomRepository, UserRepository, RoomMemberRepository, RoomSettingsRepository},
+    repository::{RoomMemberRepository, RoomRepository, RoomSettingsRepository, UserRepository},
     service::{
-        member::{MemberService, AddMemberOptions},
+        member::{AddMemberOptions, MemberService},
         permission::PermissionService,
     },
     Error,
 };
-use chrono::Utc;
-use sqlx::PgPool;
-use std::sync::Arc;
-use tokio::sync::Barrier;
-use testcontainers::ContainerAsync;
-use testcontainers_modules::postgres::Postgres;
 use testcontainers::core::ImageExt;
 use testcontainers::runners::AsyncRunner;
+use testcontainers::ContainerAsync;
+use testcontainers_modules::postgres::Postgres;
+use tokio::sync::Barrier;
 // ============================================================================
 // Test Infrastructure
 // ============================================================================
@@ -57,11 +57,12 @@ async fn create_test_pool() -> TestPostgres {
         .expect("Failed to start Postgres container");
 
     let host = container.get_host().await.expect("Failed to get host");
-    let port = container.get_host_port_ipv4(5432).await.expect("Failed to get port");
+    let port = container
+        .get_host_port_ipv4(5432)
+        .await
+        .expect("Failed to get port");
 
-    let database_url = format!(
-        "postgres://synctv:synctv_test@{host}:{port}/synctv_test"
-    );
+    let database_url = format!("postgres://synctv:synctv_test@{host}:{port}/synctv_test");
 
     let pool = {
         let mut retries = 0u32;
@@ -88,7 +89,10 @@ async fn create_test_pool() -> TestPostgres {
         .await
         .expect("Failed to run migrations");
 
-    TestPostgres { pool, _container: container }
+    TestPostgres {
+        pool,
+        _container: container,
+    }
 }
 
 /// Create a test user in the database
@@ -130,29 +134,44 @@ fn make_room(name: &str, description: &str, owner: &UserId) -> Room {
 }
 
 /// Setup test infrastructure with users and a room
-async fn setup_test_room(pool: &PgPool, room_name: &str, max_members: u64) -> (User, Room, RoomSettings) {
+async fn setup_test_room(
+    pool: &PgPool,
+    room_name: &str,
+    max_members: u64,
+) -> (User, Room, RoomSettings) {
     let user_repo = UserRepository::new(pool.clone());
     let room_repo = RoomRepository::new(pool.clone());
     let room_settings_repo = RoomSettingsRepository::new(pool.clone());
 
     // Create owner
-    let owner = user_repo.create(&make_user("room_owner")).await.expect("Failed to create owner");
+    let owner = user_repo
+        .create(&make_user("room_owner"))
+        .await
+        .expect("Failed to create owner");
 
     // Create room
-    let room = room_repo.create(&make_room(room_name, "Test room", &owner.id))
+    let room = room_repo
+        .create(&make_room(room_name, "Test room", &owner.id))
         .await
         .expect("Failed to create room");
 
     // Create room settings with max_members
-    let settings = RoomSettings { max_members: MaxMembers(max_members), ..Default::default() };
-    room_settings_repo.set_settings(&room.id, &settings)
+    let settings = RoomSettings {
+        max_members: MaxMembers(max_members),
+        ..Default::default()
+    };
+    room_settings_repo
+        .set_settings(&room.id, &settings)
         .await
         .expect("Failed to create room settings");
 
     // Add owner as member (Creator)
     let member_repo = RoomMemberRepository::new(pool.clone());
     let owner_member = RoomMember::new(room.id.clone(), owner.id.clone(), RoomRole::Creator);
-    member_repo.add(&owner_member).await.expect("Failed to add owner as member");
+    member_repo
+        .add(&owner_member)
+        .await
+        .expect("Failed to add owner as member");
 
     (owner, room, settings)
 }
@@ -181,7 +200,10 @@ async fn test_concurrent_join_respects_max_members_limit() {
     let user_repo = UserRepository::new(pool.clone());
     let mut users = Vec::with_capacity(20);
     for i in 0..20 {
-        let user = user_repo.create(&make_user(&format!("joiner_{i}"))).await.expect("Failed to create user");
+        let user = user_repo
+            .create(&make_user(&format!("joiner_{i}")))
+            .await
+            .expect("Failed to create user");
         users.push(user);
     }
 
@@ -189,13 +211,8 @@ async fn test_concurrent_join_respects_max_members_limit() {
     let member_repo = RoomMemberRepository::new(pool.clone());
     let room_repo = RoomRepository::new(pool.clone());
     let room_settings_repo = RoomSettingsRepository::new(pool.clone());
-    let permission_service = PermissionService::new(
-        member_repo.clone(),
-        room_repo.clone(),
-        None,
-        1000,
-        300,
-    );
+    let permission_service =
+        PermissionService::new(member_repo.clone(), room_repo.clone(), None, 1000, 300);
     let mut member_service = MemberService::new(
         member_repo.clone(),
         room_repo.clone(),
@@ -246,20 +263,29 @@ async fn test_concurrent_join_respects_max_members_limit() {
 
     // Verify: With max_members=5 and owner already a member, only 4 more can join
     // Total = 5 (owner + 4 joiners)
-    assert_eq!(success_count, 4, "Expected exactly 4 joins to succeed (room capacity 5, owner already member)");
-    assert_eq!(limit_reached_count, 16, "Expected 16 joins to be rejected (room full)");
+    assert_eq!(
+        success_count, 4,
+        "Expected exactly 4 joins to succeed (room capacity 5, owner already member)"
+    );
+    assert_eq!(
+        limit_reached_count, 16,
+        "Expected 16 joins to be rejected (room full)"
+    );
     assert_eq!(other_errors, 0, "No unexpected errors should occur");
 
     // Verify final member count
     let member_count: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM room_members WHERE room_id = $1 AND left_at IS NULL"
+        "SELECT COUNT(*) FROM room_members WHERE room_id = $1 AND left_at IS NULL",
     )
     .bind(room.id.as_str())
     .fetch_one(pool)
     .await
     .expect("Failed to count members");
 
-    assert_eq!(member_count, 5, "Final member count should be 5 (owner + 4 joiners)");
+    assert_eq!(
+        member_count, 5,
+        "Final member count should be 5 (owner + 4 joiners)"
+    );
 }
 
 /// Test concurrent joins that exceed capacity exactly at boundary.
@@ -282,7 +308,10 @@ async fn test_concurrent_join_boundary_condition() {
     let user_repo = UserRepository::new(pool.clone());
     let mut users = Vec::with_capacity(5);
     for i in 0..5 {
-        let user = user_repo.create(&make_user(&format!("boundary_{i}"))).await.expect("Failed to create user");
+        let user = user_repo
+            .create(&make_user(&format!("boundary_{i}")))
+            .await
+            .expect("Failed to create user");
         users.push(user);
     }
 
@@ -290,13 +319,8 @@ async fn test_concurrent_join_boundary_condition() {
     let member_repo = RoomMemberRepository::new(pool.clone());
     let room_repo = RoomRepository::new(pool.clone());
     let room_settings_repo = RoomSettingsRepository::new(pool.clone());
-    let permission_service = PermissionService::new(
-        member_repo.clone(),
-        room_repo.clone(),
-        None,
-        1000,
-        300,
-    );
+    let permission_service =
+        PermissionService::new(member_repo.clone(), room_repo.clone(), None, 1000, 300);
     let mut member_service = MemberService::new(
         member_repo.clone(),
         room_repo.clone(),
@@ -358,7 +382,10 @@ async fn test_concurrent_room_creation_same_name_different_users() {
     let user_repo = UserRepository::new(pool.clone());
     let mut users = Vec::with_capacity(10);
     for i in 0..10 {
-        let user = user_repo.create(&make_user(&format!("creator_{i}"))).await.expect("Failed to create user");
+        let user = user_repo
+            .create(&make_user(&format!("creator_{i}")))
+            .await
+            .expect("Failed to create user");
         users.push(user);
     }
 
@@ -389,7 +416,10 @@ async fn test_concurrent_room_creation_same_name_different_users() {
     for handle in handles {
         match handle.await.expect("Task panicked") {
             Ok(room) => {
-                assert!(created_room_ids.insert(room.id.as_str().to_string()), "Room IDs must be unique");
+                assert!(
+                    created_room_ids.insert(room.id.as_str().to_string()),
+                    "Room IDs must be unique"
+                );
                 success_count += 1;
             }
             Err(e) => panic!("Room creation should succeed: {e:?}"),
@@ -412,7 +442,10 @@ async fn test_concurrent_room_creation_same_user_prevented() {
 
     // Create one user
     let user_repo = UserRepository::new(pool.clone());
-    let user = user_repo.create(&make_user("single_creator")).await.expect("Failed to create user");
+    let user = user_repo
+        .create(&make_user("single_creator"))
+        .await
+        .expect("Failed to create user");
 
     let room_repo = Arc::new(RoomRepository::new(pool.clone()));
     let barrier = Arc::new(Barrier::new(5));
@@ -488,14 +521,20 @@ async fn test_concurrent_settings_update_optimistic_lock_retry() {
             let max_retries = 3;
             loop {
                 // Fetch current settings with version
-                let (settings, version) = repo_clone.get_with_version(&room_id_clone).await.expect("Failed to get settings");
+                let (settings, version) = repo_clone
+                    .get_with_version(&room_id_clone)
+                    .await
+                    .expect("Failed to get settings");
 
                 // Modify a different setting based on iteration
                 let mut updated = settings.clone();
                 updated.max_members = MaxMembers(50 + i as u64); // Different value for each task
 
                 // Try to update with optimistic locking
-                match repo_clone.set_settings_with_version(&room_id_clone, &updated, version).await {
+                match repo_clone
+                    .set_settings_with_version(&room_id_clone, &updated, version)
+                    .await
+                {
                     Ok(_) => break Ok(()),
                     Err(Error::OptimisticLockConflict) => {
                         retries += 1;
@@ -503,7 +542,10 @@ async fn test_concurrent_settings_update_optimistic_lock_retry() {
                             break Err(Error::OptimisticLockConflict);
                         }
                         // Exponential backoff
-                        tokio::time::sleep(tokio::time::Duration::from_millis(5 * 2_u64.pow(retries))).await;
+                        tokio::time::sleep(tokio::time::Duration::from_millis(
+                            5 * 2_u64.pow(retries),
+                        ))
+                        .await;
                     }
                     Err(e) => break Err(e),
                 }
@@ -524,7 +566,10 @@ async fn test_concurrent_settings_update_optimistic_lock_retry() {
     }
 
     // With retry mechanism, most or all should succeed
-    assert!(success_count >= 3, "At least 3 updates should succeed with retry");
+    assert!(
+        success_count >= 3,
+        "At least 3 updates should succeed with retry"
+    );
     tracing::info!(
         "Concurrent settings updates: {} succeeded, {} failed after retries",
         success_count,
@@ -532,8 +577,14 @@ async fn test_concurrent_settings_update_optimistic_lock_retry() {
     );
 
     // Verify final state is consistent
-    let final_settings = room_settings_repo.get(&room_id).await.expect("Failed to get final settings");
-    assert!(final_settings.max_members.0 >= 50, "Final max_members should be updated");
+    let final_settings = room_settings_repo
+        .get(&room_id)
+        .await
+        .expect("Failed to get final settings");
+    assert!(
+        final_settings.max_members.0 >= 50,
+        "Final max_members should be updated"
+    );
 }
 
 /// Test that stale version update is rejected.
@@ -548,18 +599,26 @@ async fn test_settings_update_stale_version_rejected() {
     let room_settings_repo = RoomSettingsRepository::new(pool.clone());
 
     // Fetch settings twice with version (simulating two readers)
-    let (settings_v0, version_v0) = room_settings_repo.get_with_version(&room.id).await.expect("Failed to get settings");
+    let (settings_v0, version_v0) = room_settings_repo
+        .get_with_version(&room.id)
+        .await
+        .expect("Failed to get settings");
     let version_v0_copy = version_v0;
 
     // First update succeeds
     let mut updated = settings_v0.clone();
     updated.max_members = MaxMembers(200);
-    room_settings_repo.set_settings_with_version(&room.id, &updated, version_v0).await.expect("First update should succeed");
+    room_settings_repo
+        .set_settings_with_version(&room.id, &updated, version_v0)
+        .await
+        .expect("First update should succeed");
 
     // Second update with stale version should fail
     let mut stale_update = settings_v0.clone();
     stale_update.max_members = MaxMembers(300);
-    let result = room_settings_repo.set_settings_with_version(&room.id, &stale_update, version_v0_copy).await;
+    let result = room_settings_repo
+        .set_settings_with_version(&room.id, &stale_update, version_v0_copy)
+        .await;
 
     assert!(
         matches!(result, Err(Error::OptimisticLockConflict)),
@@ -586,9 +645,15 @@ async fn test_concurrent_join_and_leave_operations() {
     let member_repo = RoomMemberRepository::new(pool.clone());
     let mut users = Vec::with_capacity(10);
     for i in 0..10 {
-        let user = user_repo.create(&make_user(&format!("join_leave_{i}"))).await.expect("Failed to create user");
+        let user = user_repo
+            .create(&make_user(&format!("join_leave_{i}")))
+            .await
+            .expect("Failed to create user");
         let member = RoomMember::new(room.id.clone(), user.id.clone(), RoomRole::Member);
-        member_repo.add(&member).await.expect("Failed to add member");
+        member_repo
+            .add(&member)
+            .await
+            .expect("Failed to add member");
         users.push(user);
     }
 
@@ -598,13 +663,8 @@ async fn test_concurrent_join_and_leave_operations() {
 
     let room_repo = RoomRepository::new(pool.clone());
     let room_settings_repo = RoomSettingsRepository::new(pool.clone());
-    let permission_service = PermissionService::new(
-        member_repo.clone(),
-        room_repo.clone(),
-        None,
-        1000,
-        300,
-    );
+    let permission_service =
+        PermissionService::new(member_repo.clone(), room_repo.clone(), None, 1000, 300);
     let mut member_service = MemberService::new(
         member_repo.clone(),
         room_repo.clone(),
@@ -631,7 +691,10 @@ async fn test_concurrent_join_and_leave_operations() {
     // Create 5 new users to join
     let mut new_users = Vec::with_capacity(5);
     for i in 0..5 {
-        let user = user_repo.create(&make_user(&format!("new_joiner_{i}"))).await.expect("Failed to create user");
+        let user = user_repo
+            .create(&make_user(&format!("new_joiner_{i}")))
+            .await
+            .expect("Failed to create user");
         new_users.push(user);
     }
 
@@ -677,7 +740,7 @@ async fn test_concurrent_join_and_leave_operations() {
 
     // Final count: owner (1) + 5 remaining original + 5 new = 11
     let final_count: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM room_members WHERE room_id = $1 AND left_at IS NULL"
+        "SELECT COUNT(*) FROM room_members WHERE room_id = $1 AND left_at IS NULL",
     )
     .bind(room.id.as_str())
     .fetch_one(pool)
@@ -705,7 +768,10 @@ async fn test_stress_many_concurrent_joins() {
     let user_repo = UserRepository::new(pool.clone());
     let mut users = Vec::with_capacity(100);
     for i in 0..100 {
-        let user = user_repo.create(&make_user(&format!("stress_{i}"))).await.expect("Failed to create user");
+        let user = user_repo
+            .create(&make_user(&format!("stress_{i}")))
+            .await
+            .expect("Failed to create user");
         users.push(user);
     }
 
@@ -713,13 +779,8 @@ async fn test_stress_many_concurrent_joins() {
     let member_repo = RoomMemberRepository::new(pool.clone());
     let room_repo = RoomRepository::new(pool.clone());
     let room_settings_repo = RoomSettingsRepository::new(pool.clone());
-    let permission_service = PermissionService::new(
-        member_repo.clone(),
-        room_repo.clone(),
-        None,
-        1000,
-        300,
-    );
+    let permission_service =
+        PermissionService::new(member_repo.clone(), room_repo.clone(), None, 1000, 300);
     let mut member_service = MemberService::new(
         member_repo.clone(),
         room_repo.clone(),

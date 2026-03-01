@@ -95,14 +95,22 @@ impl From<crate::provider::ProviderError> for Error {
         use crate::provider::ProviderError;
         match err {
             // Network-related errors -> Timeout for transient issues
-            ProviderError::NetworkError(msg) => Self::Timeout(format!("Provider network error: {msg}")),
+            ProviderError::NetworkError(msg) => {
+                Self::Timeout(format!("Provider network error: {msg}"))
+            }
             // Authentication errors
-            ProviderError::AuthRequired | ProviderError::CredentialRequired | ProviderError::InvalidCredentialType => {
+            ProviderError::AuthRequired
+            | ProviderError::CredentialRequired
+            | ProviderError::InvalidCredentialType => {
                 Self::Authentication("Provider authentication required".to_string())
             }
             // Configuration errors
-            ProviderError::InvalidConfig(msg) => Self::InvalidInput(format!("Invalid provider configuration: {msg}")),
-            ProviderError::MissingField(field) => Self::InvalidInput(format!("Missing required field: {field}")),
+            ProviderError::InvalidConfig(msg) => {
+                Self::InvalidInput(format!("Invalid provider configuration: {msg}"))
+            }
+            ProviderError::MissingField(field) => {
+                Self::InvalidInput(format!("Missing required field: {field}"))
+            }
             ProviderError::MissingInstance | ProviderError::InstanceNotFound(_) => {
                 Self::NotFound("Provider instance not found".to_string())
             }
@@ -123,16 +131,20 @@ impl From<crate::provider::ProviderError> for Error {
                 }
             }
             // Encryption required
-            ProviderError::EncryptionRequired(provider) => {
-                Self::InvalidInput(format!("Credential encryption required for provider '{provider}'"))
-            }
+            ProviderError::EncryptionRequired(provider) => Self::InvalidInput(format!(
+                "Credential encryption required for provider '{provider}'"
+            )),
             // API errors - could be various things
             ProviderError::ApiError(msg) => Self::Internal(format!("Provider API error: {msg}")),
             // Format/parse errors
-            ProviderError::UnsupportedFormat(fmt) => Self::InvalidInput(format!("Unsupported format: {fmt}")),
+            ProviderError::UnsupportedFormat(fmt) => {
+                Self::InvalidInput(format!("Unsupported format: {fmt}"))
+            }
             ProviderError::ParseError(msg) => Self::InvalidInput(format!("Parse error: {msg}")),
             // Route registration
-            ProviderError::RouteRegistrationFailed(msg) => Self::Internal(format!("Route registration failed: {msg}")),
+            ProviderError::RouteRegistrationFailed(msg) => {
+                Self::Internal(format!("Route registration failed: {msg}"))
+            }
             // IO/JSON errors
             ProviderError::IoError(e) => Self::Internal(format!("IO error: {e}")),
             ProviderError::JsonError(e) => Self::Internal(format!("JSON error: {e}")),
@@ -262,7 +274,9 @@ mod tests {
     fn test_sqlx_unique_violation_generic() {
         let err = make_db_error("23505", "duplicate key violates unique constraint");
         let core_err: Error = err.into();
-        assert!(matches!(core_err, Error::AlreadyExists(ref msg) if msg.contains("already exists")));
+        assert!(
+            matches!(core_err, Error::AlreadyExists(ref msg) if msg.contains("already exists"))
+        );
     }
 
     #[test]
@@ -341,9 +355,9 @@ mod tests {
         let status: tonic::Status = Error::Internal("boom".to_string()).into();
         assert_eq!(status.code(), tonic::Code::Internal);
 
-        let status: tonic::Status = Error::Serialization(
-            serde_json::from_str::<serde_json::Value>("invalid").unwrap_err()
-        ).into();
+        let status: tonic::Status =
+            Error::Serialization(serde_json::from_str::<serde_json::Value>("invalid").unwrap_err())
+                .into();
         assert_eq!(status.code(), tonic::Code::Internal);
     }
 
@@ -383,7 +397,8 @@ mod tests {
 
     #[test]
     fn test_provider_error_network_converts_to_timeout() {
-        let provider_err = crate::provider::ProviderError::NetworkError("connection refused".to_string());
+        let provider_err =
+            crate::provider::ProviderError::NetworkError("connection refused".to_string());
         let core_err: Error = provider_err.into();
         assert!(matches!(core_err, Error::Timeout(_)));
         assert!(core_err.to_string().contains("network error"));
@@ -405,10 +420,13 @@ mod tests {
 
     #[test]
     fn test_provider_error_invalid_config_converts_to_invalid_input() {
-        let provider_err = crate::provider::ProviderError::InvalidConfig("missing host".to_string());
+        let provider_err =
+            crate::provider::ProviderError::InvalidConfig("missing host".to_string());
         let core_err: Error = provider_err.into();
         assert!(matches!(core_err, Error::InvalidInput(_)));
-        assert!(core_err.to_string().contains("Invalid provider configuration"));
+        assert!(core_err
+            .to_string()
+            .contains("Invalid provider configuration"));
     }
 
     #[test]
@@ -420,7 +438,8 @@ mod tests {
 
     #[test]
     fn test_provider_error_instance_not_found_converts_to_not_found() {
-        let provider_err = crate::provider::ProviderError::InstanceNotFound("bilibili_main".to_string());
+        let provider_err =
+            crate::provider::ProviderError::InstanceNotFound("bilibili_main".to_string());
         let core_err: Error = provider_err.into();
         assert!(matches!(core_err, Error::NotFound(_)));
     }
@@ -490,7 +509,9 @@ mod tests {
         let provider_err = crate::provider::ProviderError::EncryptionRequired("bilibili");
         let core_err: Error = provider_err.into();
         assert!(matches!(core_err, Error::InvalidInput(_)));
-        assert!(core_err.to_string().contains("Credential encryption required"));
+        assert!(core_err
+            .to_string()
+            .contains("Credential encryption required"));
     }
 
     #[test]

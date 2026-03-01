@@ -54,8 +54,8 @@ impl RoomPlaybackState {
             // loss from converting a large millisecond count directly to f64.
             let delta = Utc::now() - self.updated_at;
             let whole_secs = delta.num_seconds() as f64;
-            let frac_ms = (delta - chrono::Duration::seconds(delta.num_seconds()))
-                .num_milliseconds() as f64;
+            let frac_ms =
+                (delta - chrono::Duration::seconds(delta.num_seconds())).num_milliseconds() as f64;
             let elapsed = (whole_secs + frac_ms / 1000.0).max(0.0);
             self.current_time + elapsed * self.speed
         } else {
@@ -89,8 +89,7 @@ mod tests {
         let state = RoomPlaybackState::new(room_id);
 
         let json = serde_json::to_string(&state).expect("serialize");
-        let deserialized: RoomPlaybackState =
-            serde_json::from_str(&json).expect("deserialize");
+        let deserialized: RoomPlaybackState = serde_json::from_str(&json).expect("deserialize");
 
         assert_eq!(deserialized.room_id, state.room_id);
         assert!((deserialized.current_time - state.current_time).abs() < f64::EPSILON);

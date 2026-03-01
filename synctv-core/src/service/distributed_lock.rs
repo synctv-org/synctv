@@ -56,10 +56,10 @@
 //! - Uniqueness even during network partitions
 //! - Simplicity without requiring clock synchronization
 
+use crate::{Error, InternalExt, Result};
 use redis::aio::ConnectionManager as RedisConnectionManager;
 use redis::Script;
 use std::future::Future;
-use crate::{Error, Result, InternalExt};
 
 /// Abstraction over a distributed migration lock.
 ///
@@ -111,7 +111,7 @@ pub struct PgAdvisoryMigrationLock {
 const PG_ADVISORY_LOCK_KEY: i64 = 0x73796E63_74766D69_u64 as i64;
 
 impl PgAdvisoryMigrationLock {
-    #[must_use] 
+    #[must_use]
     pub fn new(pool: sqlx::PgPool) -> Self {
         Self {
             pool,
@@ -127,19 +127,16 @@ impl MigrationLock for PgAdvisoryMigrationLock {
         let retry_interval = std::time::Duration::from_secs(5);
         let start = tokio::time::Instant::now();
 
-        let mut conn = self
-            .pool
-            .acquire()
-            .await
-            .map_err(|e| anyhow::anyhow!("Failed to acquire DB connection for PG advisory lock: {e}"))?;
+        let mut conn = self.pool.acquire().await.map_err(|e| {
+            anyhow::anyhow!("Failed to acquire DB connection for PG advisory lock: {e}")
+        })?;
 
         loop {
-            let acquired: (bool,) =
-                sqlx::query_as("SELECT pg_try_advisory_lock($1)")
-                    .bind(PG_ADVISORY_LOCK_KEY)
-                    .fetch_one(&mut *conn)
-                    .await
-                    .map_err(|e| anyhow::anyhow!("Failed to attempt PostgreSQL advisory lock: {e}"))?;
+            let acquired: (bool,) = sqlx::query_as("SELECT pg_try_advisory_lock($1)")
+                .bind(PG_ADVISORY_LOCK_KEY)
+                .fetch_one(&mut *conn)
+                .await
+                .map_err(|e| anyhow::anyhow!("Failed to attempt PostgreSQL advisory lock: {e}"))?;
 
             if acquired.0 {
                 // Store the connection so release() can use the same session.
@@ -169,12 +166,11 @@ impl MigrationLock for PgAdvisoryMigrationLock {
         // Session-scoped advisory locks cannot be released from a different connection.
         let mut guard = self.lock_conn.lock().await;
         if let Some(ref mut conn) = *guard {
-            let result: (bool,) =
-                sqlx::query_as("SELECT pg_advisory_unlock($1)")
-                    .bind(PG_ADVISORY_LOCK_KEY)
-                    .fetch_one(&mut **conn)
-                    .await
-                    .map_err(|e| anyhow::anyhow!("Failed to release PG advisory lock: {e}"))?;
+            let result: (bool,) = sqlx::query_as("SELECT pg_advisory_unlock($1)")
+                .bind(PG_ADVISORY_LOCK_KEY)
+                .fetch_one(&mut **conn)
+                .await
+                .map_err(|e| anyhow::anyhow!("Failed to release PG advisory lock: {e}"))?;
             // Return the connection to the pool
             *guard = None;
             Ok(result.0)
@@ -206,9 +202,7 @@ impl DistributedLock {
     /// "sentinel" in the URL) and emits a startup warning about lock safety.
     #[must_use]
     pub const fn new(redis: RedisConnectionManager) -> Self {
-        Self {
-            redis,
-        }
+        Self { redis }
     }
 
     /// Create a new distributed lock service and log a warning if the Redis URL
@@ -269,9 +263,15 @@ impl DistributedLock {
             crate::resilience::timeout::REDIS_OPERATION_TIMEOUT,
             script.key(&token_key).invoke_async::<u64>(&mut conn),
         )
-            .await
-            .map_err(|_| Error::Internal(format!("Redis timeout: generate fencing token for lock '{key}'")))?
-            .internal_with_err(&format!("Failed to generate fencing token for lock '{key}'"))
+        .await
+        .map_err(|_| {
+            Error::Internal(format!(
+                "Redis timeout: generate fencing token for lock '{key}'"
+            ))
+        })?
+        .internal_with_err(&format!(
+            "Failed to generate fencing token for lock '{key}'"
+        ))
     }
 
     /// Acquire a lock (using SET NX EX atomic operation)
@@ -326,7 +326,11 @@ impl DistributedLock {
     ///     }
     /// }
     /// ```
-    pub async fn acquire_with_token(&self, key: &str, ttl_seconds: u64) -> Result<Option<(String, u64)>> {
+    pub async fn acquire_with_token(
+        &self,
+        key: &str,
+        ttl_seconds: u64,
+    ) -> Result<Option<(String, u64)>> {
         self.acquire_internal(key, ttl_seconds, true).await
     }
 
@@ -355,9 +359,9 @@ impl DistributedLock {
                 .arg(ttl_seconds)
                 .query_async(&mut conn),
         )
-            .await
-            .map_err(|_| Error::Internal("Redis timeout: acquire lock".to_string()))?
-            .internal_with_err("Failed to acquire lock")?;
+        .await
+        .map_err(|_| Error::Internal("Redis timeout: acquire lock".to_string()))?
+        .internal_with_err("Failed to acquire lock")?;
 
         if result.is_some() {
             // Generate fencing token only if requested (saves Redis round-trip)
@@ -414,11 +418,14 @@ impl DistributedLock {
 
         let result: i32 = tokio::time::timeout(
             crate::resilience::timeout::REDIS_OPERATION_TIMEOUT,
-            script.key(&lock_key).arg(lock_value).invoke_async::<i32>(&mut conn),
+            script
+                .key(&lock_key)
+                .arg(lock_value)
+                .invoke_async::<i32>(&mut conn),
         )
-            .await
-            .map_err(|_| Error::Internal("Redis timeout: release lock".to_string()))?
-            .internal_with_err("Failed to release lock")?;
+        .await
+        .map_err(|_| Error::Internal("Redis timeout: release lock".to_string()))?
+        .internal_with_err("Failed to release lock")?;
 
         let released = result == 1;
         if released {
@@ -623,10 +630,11 @@ impl DistributedLock {
 
         tokio::time::timeout(client_timeout, async {
             // Try to acquire lock with token
-            let (lock_value, fencing_token) = match self.acquire_with_token(key, ttl_seconds).await? {
-                Some(result) => result,
-                None => return Ok(None), // Lock already held
-            };
+            let (lock_value, fencing_token) =
+                match self.acquire_with_token(key, ttl_seconds).await? {
+                    Some(result) => result,
+                    None => return Ok(None), // Lock already held
+                };
 
             // Execute operation with fencing token
             let result = operation(fencing_token).await;
@@ -671,11 +679,15 @@ impl DistributedLock {
 
         let result: i32 = tokio::time::timeout(
             crate::resilience::timeout::REDIS_OPERATION_TIMEOUT,
-            script.key(&lock_key).arg(lock_value).arg(ttl_seconds).invoke_async::<i32>(&mut conn),
+            script
+                .key(&lock_key)
+                .arg(lock_value)
+                .arg(ttl_seconds)
+                .invoke_async::<i32>(&mut conn),
         )
-            .await
-            .map_err(|_| Error::Internal("Redis timeout: extend lock".to_string()))?
-            .internal_with_err("Failed to extend lock")?;
+        .await
+        .map_err(|_| Error::Internal("Redis timeout: extend lock".to_string()))?
+        .internal_with_err("Failed to extend lock")?;
 
         Ok(result == 1)
     }
@@ -866,7 +878,7 @@ impl Default for RedlockConfig {
     fn default() -> Self {
         Self {
             master_urls: Vec::new(),
-            ttl_ms: 10_000,        // 10 seconds
+            ttl_ms: 10_000,            // 10 seconds
             acquire_timeout_ms: 5_000, // 5 seconds
             retry_interval_ms: 50,     // 50ms
         }
@@ -941,7 +953,10 @@ impl Redlock {
             connections.push(conn);
         }
 
-        Ok(Self { connections, config })
+        Ok(Self {
+            connections,
+            config,
+        })
     }
 
     /// Generate a unique lock value using nanoid.
@@ -975,7 +990,10 @@ impl Redlock {
 
         let _ = tokio::time::timeout(
             crate::resilience::timeout::REDIS_OPERATION_TIMEOUT,
-            script.key(lock_key).arg(lock_value).invoke_async::<i32>(conn),
+            script
+                .key(lock_key)
+                .arg(lock_value)
+                .invoke_async::<i32>(conn),
         )
         .await;
     }
@@ -1164,7 +1182,10 @@ impl RedlockRef {
                     );
                     let _ = tokio::time::timeout(
                         crate::resilience::timeout::REDIS_OPERATION_TIMEOUT,
-                        script.key(&lock_key).arg(&lock_value).invoke_async::<i32>(&mut conn),
+                        script
+                            .key(&lock_key)
+                            .arg(&lock_value)
+                            .invoke_async::<i32>(&mut conn),
                     )
                     .await;
                 }
@@ -1187,9 +1208,7 @@ pub struct RedlockGuard {
 impl RedlockGuard {
     /// Explicitly release the lock.
     pub async fn release(mut self) {
-        self.redlock
-            .release(&self.lock_key, &self.lock_value)
-            .await;
+        self.redlock.release(&self.lock_key, &self.lock_value).await;
         // Prevent Drop from running
         self.connections_to_release.clear();
     }
@@ -1244,7 +1263,9 @@ mod tests {
         assert!(lock_value3.is_some());
 
         // Cleanup
-        lock.release("test:lock1", &lock_value3.unwrap()).await.unwrap();
+        lock.release("test:lock1", &lock_value3.unwrap())
+            .await
+            .unwrap();
     }
 
     #[tokio::test]
@@ -1270,7 +1291,9 @@ mod tests {
         assert!(lock_value.is_some());
 
         // Cleanup
-        lock.release("test:lock2", &lock_value.unwrap()).await.unwrap();
+        lock.release("test:lock2", &lock_value.unwrap())
+            .await
+            .unwrap();
     }
 
     #[tokio::test]
@@ -1330,7 +1353,9 @@ mod tests {
         assert!(lock_value.is_some());
 
         // Cleanup
-        lock.release("test:lock4", &lock_value.unwrap()).await.unwrap();
+        lock.release("test:lock4", &lock_value.unwrap())
+            .await
+            .unwrap();
     }
 
     #[tokio::test]
@@ -1377,7 +1402,10 @@ mod tests {
         let (_lock_value2, token2) = result2.unwrap();
 
         // Token should be monotonically increasing
-        assert!(token2 > token1, "Token should increase: {token2} > {token1}");
+        assert!(
+            token2 > token1,
+            "Token should increase: {token2} > {token1}"
+        );
 
         // Cleanup
         lock.release("test:token1", &_lock_value2).await.unwrap();
@@ -1391,9 +1419,11 @@ mod tests {
         let lock = DistributedLock::new(redis);
 
         let received_token = lock
-            .with_lock_token("test:token2", 10, |token| async move {
-                Ok::<_, Error>(token)
-            })
+            .with_lock_token(
+                "test:token2",
+                10,
+                |token| async move { Ok::<_, Error>(token) },
+            )
             .await
             .unwrap();
 
@@ -1412,9 +1442,11 @@ mod tests {
 
         // Try with token should return None
         let result = lock
-            .try_with_lock_token("test:token3", 10, |token| async move {
-                Ok::<_, Error>(token)
-            })
+            .try_with_lock_token(
+                "test:token3",
+                10,
+                |token| async move { Ok::<_, Error>(token) },
+            )
             .await
             .unwrap();
         assert!(result.is_none());
@@ -1424,9 +1456,11 @@ mod tests {
 
         // Now try again (should succeed with token)
         let result = lock
-            .try_with_lock_token("test:token3", 10, |token| async move {
-                Ok::<_, Error>(token)
-            })
+            .try_with_lock_token(
+                "test:token3",
+                10,
+                |token| async move { Ok::<_, Error>(token) },
+            )
             .await
             .unwrap();
         assert!(result.is_some());
@@ -1462,7 +1496,9 @@ mod tests {
         assert!(lock_value.is_some());
 
         // Cleanup
-        lock.release("test:token4", &lock_value.unwrap()).await.unwrap();
+        lock.release("test:token4", &lock_value.unwrap())
+            .await
+            .unwrap();
     }
 
     // ========== Unit Tests (No Docker Required) ==========
@@ -1487,10 +1523,10 @@ mod tests {
     fn test_backoff_calculation() {
         // Test exponential backoff calculation: base_ms * 2^attempt
         let base_ms: u64 = 5;
-        assert_eq!(base_ms, 5);   // attempt 0: 5ms
-        assert_eq!(base_ms * (1 << 1), 10);  // attempt 1: 10ms
-        assert_eq!(base_ms * (1 << 2), 20);  // attempt 2: 20ms
-        assert_eq!(base_ms * (1 << 3), 40);  // attempt 3: 40ms
+        assert_eq!(base_ms, 5); // attempt 0: 5ms
+        assert_eq!(base_ms * (1 << 1), 10); // attempt 1: 10ms
+        assert_eq!(base_ms * (1 << 2), 20); // attempt 2: 20ms
+        assert_eq!(base_ms * (1 << 3), 40); // attempt 3: 40ms
     }
 
     #[test]
@@ -1646,9 +1682,11 @@ mod tests {
         let insufficient_masters = ["redis://host1".to_string(), "redis://host2".to_string()];
         assert!(insufficient_masters.len() < 3);
 
-        let sufficient_masters = ["redis://host1".to_string(),
+        let sufficient_masters = [
+            "redis://host1".to_string(),
             "redis://host2".to_string(),
-            "redis://host3".to_string()];
+            "redis://host3".to_string(),
+        ];
         assert!(sufficient_masters.len() >= 3);
     }
 
@@ -1719,7 +1757,9 @@ mod tests {
     async fn test_redlock_acquire_and_release() {
         // This test requires 3 independent Redis instances
         // Setup: docker run -d -p 6379:6379 redis; docker run -d -p 6380:6379 redis; docker run -d -p 6381:6379 redis
-        let Some(config) = redlock_test_config().await else { return };
+        let Some(config) = redlock_test_config().await else {
+            return;
+        };
 
         let redlock = Redlock::new(config).await.unwrap();
 
@@ -1747,7 +1787,9 @@ mod tests {
     async fn test_redlock_survives_single_master_failure() {
         // Redlock should work even if one master is down
         // This test simulates partial unavailability
-        let Some(config) = redlock_test_config().await else { return };
+        let Some(config) = redlock_test_config().await else {
+            return;
+        };
 
         let redlock = Redlock::new(config).await.unwrap();
 
@@ -1762,7 +1804,9 @@ mod tests {
     async fn test_redlock_split_brain_prevention() {
         // This test verifies that Redlock prevents split-brain during failover
         // Simulate by having two clients compete for the same lock
-        let Some(config) = redlock_test_config().await else { return };
+        let Some(config) = redlock_test_config().await else {
+            return;
+        };
         let config2 = RedlockConfig {
             retry_interval_ms: 10,
             ttl_ms: 5_000,
@@ -1791,7 +1835,9 @@ mod tests {
     #[tokio::test]
     #[ignore = "Requires 3 Docker Redis instances - run manually"]
     async fn test_redlock_guard_drop_releases_lock() {
-        let Some(config) = redlock_test_config().await else { return };
+        let Some(config) = redlock_test_config().await else {
+            return;
+        };
 
         let redlock = Redlock::new(config).await.unwrap();
 
@@ -1817,10 +1863,7 @@ mod tests {
     #[tokio::test]
     async fn test_redlock_rejects_insufficient_masters() {
         let config = RedlockConfig {
-            master_urls: vec![
-                "redis://host1".to_string(),
-                "redis://host2".to_string(),
-            ],
+            master_urls: vec!["redis://host1".to_string(), "redis://host2".to_string()],
             ..Default::default()
         };
 

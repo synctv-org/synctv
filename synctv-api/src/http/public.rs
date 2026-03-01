@@ -25,7 +25,10 @@ pub async fn get_public_settings(State(state): State<AppState>) -> impl IntoResp
         Ok(response) => Json(serde_json::to_value(response).unwrap_or_default()),
         Err(e) => {
             tracing::warn!(error = %e, "Failed to load public settings, returning defaults");
-            Json(serde_json::to_value(synctv_core::service::PublicSettings::defaults()).unwrap_or_default())
+            Json(
+                serde_json::to_value(synctv_core::service::PublicSettings::defaults())
+                    .unwrap_or_default(),
+            )
         }
     }
 }

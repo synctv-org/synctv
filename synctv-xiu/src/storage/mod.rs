@@ -120,7 +120,12 @@ pub trait HlsStorage: Send + Sync {
     /// - `Ok(Some(url))` - Public URL (CDN or presigned) for direct access
     /// - `Ok(None)` - No public URL available (File/Memory storage)
     /// - `Err(e)` - Failed to generate presigned URL
-    async fn get_public_url(&self, _app: &str, _stream: &str, _name: &str) -> Result<Option<String>> {
+    async fn get_public_url(
+        &self,
+        _app: &str,
+        _stream: &str,
+        _name: &str,
+    ) -> Result<Option<String>> {
         Ok(None)
     }
 }
@@ -138,4 +143,4 @@ pub enum StorageBackend {
 
 pub use file::FileStorage;
 pub use memory::MemoryStorage;
-pub use oss::{OssStorage, OssConfig};
+pub use oss::{OssConfig, OssStorage};

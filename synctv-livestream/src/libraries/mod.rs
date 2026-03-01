@@ -5,4 +5,4 @@
 
 pub mod storage;
 
-pub use storage::{HlsStorage, StorageBackend, FileStorage, MemoryStorage, OssStorage, OssConfig};
+pub use storage::{FileStorage, HlsStorage, MemoryStorage, OssConfig, OssStorage, StorageBackend};

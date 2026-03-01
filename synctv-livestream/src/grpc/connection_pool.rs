@@ -10,8 +10,8 @@
 // opens and rejects connection attempts for a cooldown period.
 
 use dashmap::DashMap;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tonic::transport::Channel;
 use tracing::{debug, warn};
@@ -78,8 +78,7 @@ impl CircuitBreakerState {
             self.probe_in_flight.store(false, Ordering::Release);
             warn!(
                 consecutive_failures = failures,
-                "Circuit breaker opened after {} consecutive failures",
-                failures
+                "Circuit breaker opened after {} consecutive failures", failures
             );
         }
     }
@@ -158,7 +157,7 @@ impl GrpcConnectionPool {
     ///
     /// `max_idle` controls how long a cached channel is reused before being
     /// discarded and re-created on the next request.
-    #[must_use] 
+    #[must_use]
     pub fn new(max_idle: Duration) -> Self {
         Self {
             connections: Arc::new(DashMap::new()),
@@ -168,7 +167,7 @@ impl GrpcConnectionPool {
     }
 
     /// Create a pool with a default max idle time of 5 minutes.
-    #[must_use] 
+    #[must_use]
     pub fn with_defaults() -> Self {
         Self::new(Duration::from_mins(5))
     }
@@ -183,7 +182,8 @@ impl GrpcConnectionPool {
     /// when the target node is unreachable.
     pub async fn get_channel(&self, address: &str) -> anyhow::Result<Channel> {
         // Check circuit breaker before attempting connection
-        let cb = self.circuit_breakers
+        let cb = self
+            .circuit_breakers
             .entry(address.to_string())
             .or_insert_with(|| Arc::new(CircuitBreakerState::new()))
             .clone();
@@ -237,7 +237,9 @@ impl GrpcConnectionPool {
             }
             Err(e) => {
                 cb.record_failure(CIRCUIT_BREAKER_THRESHOLD);
-                return Err(anyhow::anyhow!("Failed to connect to gRPC endpoint '{address}': {e}"));
+                return Err(anyhow::anyhow!(
+                    "Failed to connect to gRPC endpoint '{address}': {e}"
+                ));
             }
         };
 
@@ -310,7 +312,10 @@ impl GrpcConnectionPool {
         });
         let evicted = before - self.connections.len();
         if evicted > 0 {
-            debug!("Evicted {} stale or unhealthy gRPC connections from pool", evicted);
+            debug!(
+                "Evicted {} stale or unhealthy gRPC connections from pool",
+                evicted
+            );
         }
     }
 
@@ -318,7 +323,7 @@ impl GrpcConnectionPool {
     ///
     /// The task runs until the returned `JoinHandle` is aborted or the process
     /// exits. Typical usage: call once at startup with a 5-minute interval.
-    #[must_use] 
+    #[must_use]
     pub fn spawn_cleanup_task(&self, interval: Duration) -> tokio::task::JoinHandle<()> {
         let pool = self.clone();
         tokio::spawn(async move {
@@ -332,7 +337,7 @@ impl GrpcConnectionPool {
     }
 
     /// Number of connections currently in the pool.
-    #[must_use] 
+    #[must_use]
     pub fn len(&self) -> usize {
         self.connections.len()
     }
@@ -349,7 +354,9 @@ impl GrpcConnectionPool {
     /// the current consecutive error count.
     #[must_use]
     pub fn get_error_count(&self, address: &str) -> Option<u32> {
-        self.connections.get(address).map(|e| e.consecutive_errors.load(Ordering::Acquire))
+        self.connections
+            .get(address)
+            .map(|e| e.consecutive_errors.load(Ordering::Acquire))
     }
 }
 
@@ -403,8 +410,10 @@ mod tests {
         let result = pool.get_channel("127.0.0.1:65535").await;
 
         // Should fail because nothing is listening on this port
-        assert!(result.is_err(),
-            "Expected connection to 127.0.0.1:65535 to fail");
+        assert!(
+            result.is_err(),
+            "Expected connection to 127.0.0.1:65535 to fail"
+        );
 
         // The important part is that connect_timeout() is called in the code,
         // which is verified at compile time by the type system

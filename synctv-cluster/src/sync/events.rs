@@ -157,7 +157,7 @@ pub enum ClusterEvent {
         /// Parsed on the server with `rsplit_once(':')` so that colons in the
         /// user_id portion are handled safely.
         to: String,
-        data: String,         // Opaque SDP/ICE data
+        data: String, // Opaque SDP/ICE data
         timestamp: DateTime<Utc>,
     },
 
@@ -345,8 +345,10 @@ impl ClusterEvent {
             | Self::KickUserFromRoom { room_id, .. }
             | Self::RoomCreated { room_id, .. }
             | Self::RoomDeleted { room_id, .. } => Some(room_id),
-            Self::SystemNotification { .. } | Self::KickUser { .. }
-            | Self::UserNotification { .. } | Self::CacheInvalidate { .. } => None,
+            Self::SystemNotification { .. }
+            | Self::KickUser { .. }
+            | Self::UserNotification { .. }
+            | Self::CacheInvalidate { .. } => None,
         }
     }
 
@@ -370,8 +372,10 @@ impl ClusterEvent {
             Self::RoomCreated { creator_id, .. } => Some(creator_id),
             Self::RoomDeleted { deleted_by, .. } => Some(deleted_by),
             Self::PermissionChanged { changed_by, .. } => Some(changed_by),
-            Self::WebRTCSignaling { .. } | Self::SystemNotification { .. }
-            | Self::KickPublisher { .. } | Self::CacheInvalidate { .. } => None,
+            Self::WebRTCSignaling { .. }
+            | Self::SystemNotification { .. }
+            | Self::KickPublisher { .. }
+            | Self::CacheInvalidate { .. } => None,
         }
     }
 
@@ -409,11 +413,11 @@ impl ClusterEvent {
         matches!(
             self,
             Self::KickPublisher { .. }
-            | Self::KickUser { .. }
-            | Self::KickUserFromRoom { .. }
-            | Self::UserLeft { .. }
-            | Self::PermissionChanged { .. }
-            | Self::RoomDeleted { .. }
+                | Self::KickUser { .. }
+                | Self::KickUserFromRoom { .. }
+                | Self::UserLeft { .. }
+                | Self::PermissionChanged { .. }
+                | Self::RoomDeleted { .. }
         )
     }
 
@@ -428,10 +432,20 @@ impl ClusterEvent {
             Self::KickUser { user_id, .. } => {
                 format!("kick_user:{}", user_id.as_str())
             }
-            Self::KickUserFromRoom { user_id, room_id, .. } => {
-                format!("kick_user_from_room:{}:{}", user_id.as_str(), room_id.as_str())
+            Self::KickUserFromRoom {
+                user_id, room_id, ..
+            } => {
+                format!(
+                    "kick_user_from_room:{}:{}",
+                    user_id.as_str(),
+                    room_id.as_str()
+                )
             }
-            Self::UserNotification { user_id, notification_id, .. } => {
+            Self::UserNotification {
+                user_id,
+                notification_id,
+                ..
+            } => {
                 format!("user_notification:{}:{}", user_id.as_str(), notification_id)
             }
             _ => String::new(),
@@ -546,7 +560,13 @@ mod tests {
         assert_eq!(deserialized.room_id().unwrap().as_str(), "room123");
         assert!(deserialized.user_id().is_none());
 
-        if let ClusterEvent::KickPublisher { room_id, media_id, reason, .. } = &deserialized {
+        if let ClusterEvent::KickPublisher {
+            room_id,
+            media_id,
+            reason,
+            ..
+        } = &deserialized
+        {
             assert_eq!(room_id.as_str(), "room123");
             assert_eq!(media_id.as_str(), "media456");
             assert_eq!(reason, "user_banned");
@@ -606,9 +626,15 @@ mod tests {
         let event = ClusterEvent::CacheInvalidate {
             event_id: generate_event_id(),
             targets: vec![
-                CacheTarget::User { user_id: "u1".to_string() },
-                CacheTarget::Room { room_id: "r1".to_string() },
-                CacheTarget::Username { user_id: "u2".to_string() },
+                CacheTarget::User {
+                    user_id: "u1".to_string(),
+                },
+                CacheTarget::Room {
+                    room_id: "r1".to_string(),
+                },
+                CacheTarget::Username {
+                    user_id: "u2".to_string(),
+                },
                 CacheTarget::All,
             ],
             timestamp: Utc::now(),

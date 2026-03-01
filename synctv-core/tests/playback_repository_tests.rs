@@ -5,15 +5,13 @@
 //! Run with: cargo test --test `playback_repository_tests`
 #![allow(clippy::unwrap_used)]
 
-use synctv_core_testing::{create_test_pool};
+use chrono::Utc;
 use synctv_core::{
-    models::{
-        Room, RoomId, RoomStatus, UserId, User, UserRole, UserStatus,
-    },
-    repository::{RoomRepository, RoomPlaybackStateRepository, UserRepository},
+    models::{Room, RoomId, RoomStatus, User, UserId, UserRole, UserStatus},
+    repository::{RoomPlaybackStateRepository, RoomRepository, UserRepository},
     Error,
 };
-use chrono::Utc;
+use synctv_core_testing::create_test_pool;
 fn make_user(username: &str) -> User {
     let now = Utc::now();
     User {
@@ -61,7 +59,10 @@ async fn test_create_or_get_idempotent() {
     let playback_repo = RoomPlaybackStateRepository::new(pool.clone());
 
     let owner = user_repo.create(&make_user("owner_pb_idem")).await.unwrap();
-    let room = room_repo.create(&make_room("Room PB Idem", &owner.id)).await.unwrap();
+    let room = room_repo
+        .create(&make_room("Room PB Idem", &owner.id))
+        .await
+        .unwrap();
 
     // First call creates the state
     let state1 = playback_repo.create_or_get(&room.id).await.unwrap();
@@ -87,7 +88,10 @@ async fn test_update_optimistic_lock_conflict() {
     let playback_repo = RoomPlaybackStateRepository::new(pool.clone());
 
     let owner = user_repo.create(&make_user("owner_pb_lock")).await.unwrap();
-    let room = room_repo.create(&make_room("Room PB Lock", &owner.id)).await.unwrap();
+    let room = room_repo
+        .create(&make_room("Room PB Lock", &owner.id))
+        .await
+        .unwrap();
 
     let state = playback_repo.create_or_get(&room.id).await.unwrap();
 
@@ -121,7 +125,10 @@ async fn test_update_concurrent_tasks_one_gets_conflict() {
     let playback_repo = Arc::new(RoomPlaybackStateRepository::new(pool.clone()));
 
     let owner = user_repo.create(&make_user("owner_pb_conc")).await.unwrap();
-    let room = room_repo.create(&make_room("Room PB Conc", &owner.id)).await.unwrap();
+    let room = room_repo
+        .create(&make_room("Room PB Conc", &owner.id))
+        .await
+        .unwrap();
 
     let state = playback_repo.create_or_get(&room.id).await.unwrap();
 
@@ -159,9 +166,16 @@ async fn test_update_concurrent_tasks_one_gets_conflict() {
     };
 
     assert_eq!(successes, 1, "Exactly one update should succeed");
-    assert_eq!(failures, 1, "Exactly one update should fail with OptimisticLockConflict");
+    assert_eq!(
+        failures, 1,
+        "Exactly one update should fail with OptimisticLockConflict"
+    );
 
     // Verify the failure is OptimisticLockConflict
-    let err = r1.as_ref().err().or_else(|| r2.as_ref().err()).expect("One should be Err");
+    let err = r1
+        .as_ref()
+        .err()
+        .or_else(|| r2.as_ref().err())
+        .expect("One should be Err");
     assert!(matches!(err, Error::OptimisticLockConflict));
 }

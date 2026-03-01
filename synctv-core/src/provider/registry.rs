@@ -154,9 +154,7 @@ mod tests {
         // Register factory
         registry.register_factory(
             "mock",
-            Box::new(|_instance_id, _config| {
-                Ok(Arc::new(MockProvider {}))
-            }),
+            Box::new(|_instance_id, _config| Ok(Arc::new(MockProvider {}))),
         );
 
         // Create instance
@@ -179,9 +177,7 @@ mod tests {
         let registry = Arc::new(ProviderRegistry::new());
         registry.register_factory(
             "mock",
-            Box::new(|_instance_id, _config| {
-                Ok(Arc::new(MockProvider {}))
-            }),
+            Box::new(|_instance_id, _config| Ok(Arc::new(MockProvider {}))),
         );
 
         let mut handles = vec![];
@@ -197,12 +193,18 @@ mod tests {
         // All should succeed (last write wins in DashMap)
         let results: Vec<_> = handles.into_iter().map(|h| h.join().unwrap()).collect();
         for result in results {
-            assert!(result.is_ok(), "Concurrent create should succeed (last write wins)");
+            assert!(
+                result.is_ok(),
+                "Concurrent create should succeed (last write wins)"
+            );
         }
 
         // Verify instance exists
         let provider = registry.get_instance("mock_concurrent");
-        assert!(provider.is_some(), "Instance should exist after concurrent creation");
+        assert!(
+            provider.is_some(),
+            "Instance should exist after concurrent creation"
+        );
     }
 
     #[test]
@@ -211,9 +213,7 @@ mod tests {
         let registry = ProviderRegistry::new();
         registry.register_factory(
             "mock",
-            Box::new(|_instance_id, _config| {
-                Ok(Arc::new(MockProvider {}))
-            }),
+            Box::new(|_instance_id, _config| Ok(Arc::new(MockProvider {}))),
         );
 
         // Create instance
@@ -245,7 +245,9 @@ mod tests {
         registry.register_factory(
             "failing",
             Box::new(|_instance_id, _config| {
-                Err(ProviderError::InvalidConfig("Intentional failure for testing".to_string()))
+                Err(ProviderError::InvalidConfig(
+                    "Intentional failure for testing".to_string(),
+                ))
             }),
         );
 
@@ -255,14 +257,20 @@ mod tests {
         assert!(result.is_err(), "Factory error should propagate");
         match result {
             Err(ProviderError::InvalidConfig(msg)) => {
-                assert!(msg.contains("Intentional failure"), "Error message should be preserved");
+                assert!(
+                    msg.contains("Intentional failure"),
+                    "Error message should be preserved"
+                );
             }
             _ => panic!("Expected InvalidConfig error"),
         }
 
         // Instance should not exist in registry
         let not_found = registry.get_instance("fail_instance");
-        assert!(not_found.is_none(), "Failed instance should not be registered");
+        assert!(
+            not_found.is_none(),
+            "Failed instance should not be registered"
+        );
     }
 
     #[test]
@@ -287,7 +295,10 @@ mod tests {
         let registry = ProviderRegistry::new();
 
         let removed = registry.remove_instance("nonexistent");
-        assert!(!removed, "Removing nonexistent instance should return false");
+        assert!(
+            !removed,
+            "Removing nonexistent instance should return false"
+        );
     }
 
     #[test]
@@ -296,18 +307,22 @@ mod tests {
         let registry = ProviderRegistry::new();
         registry.register_factory(
             "mock",
-            Box::new(|_instance_id, _config| {
-                Ok(Arc::new(MockProvider {}))
-            }),
+            Box::new(|_instance_id, _config| Ok(Arc::new(MockProvider {}))),
         );
 
         // Initially empty
         assert!(registry.list_instances().is_empty());
 
         // Create multiple instances
-        registry.create_instance("mock", "inst1", serde_json::json!({})).unwrap();
-        registry.create_instance("mock", "inst2", serde_json::json!({})).unwrap();
-        registry.create_instance("mock", "inst3", serde_json::json!({})).unwrap();
+        registry
+            .create_instance("mock", "inst1", serde_json::json!({}))
+            .unwrap();
+        registry
+            .create_instance("mock", "inst2", serde_json::json!({}))
+            .unwrap();
+        registry
+            .create_instance("mock", "inst3", serde_json::json!({}))
+            .unwrap();
 
         let instances = registry.list_instances();
         assert_eq!(instances.len(), 3);
@@ -326,9 +341,7 @@ mod tests {
         // Register first factory
         registry.register_factory(
             "mock",
-            Box::new(|_instance_id, _config| {
-                Ok(Arc::new(MockProvider {}))
-            }),
+            Box::new(|_instance_id, _config| Ok(Arc::new(MockProvider {}))),
         );
 
         // Create instance with first factory

@@ -1,22 +1,27 @@
 #![cfg_attr(test, allow(clippy::unwrap_used))]
 
-pub mod sync;
 pub mod discovery;
-pub mod grpc;
 pub mod error;
+pub mod grpc;
 pub mod leader;
+pub mod sync;
 
-pub use error::{Error, Result};
-pub use discovery::{ClusterMode, HeartbeatResult, NodeInfo, NodeRegistry, HealthMonitor, NodeHealth, LoadBalancer, LoadBalancingStrategy, StaticDiscovery, StaticDiscoveryConfig, StaticPeerConfig};
 #[cfg(feature = "k8s")]
 pub use discovery::K8sDnsDiscovery;
-pub use sync::{
-    ConnectionManager, PublishRequest, RoomMessageHub,
-    ClusterManager, ClusterConfig, ClusterMetrics, BroadcastResult,
-    MessageDeduplicator, DedupKey, ConnectionId, Subscriber,
-    MessageSender as ClusterMessageSender,
+pub use discovery::{
+    ClusterMode, HealthMonitor, HeartbeatResult, LoadBalancer, LoadBalancingStrategy, NodeHealth,
+    NodeInfo, NodeRegistry, StaticDiscovery, StaticDiscoveryConfig, StaticPeerConfig,
 };
-pub use grpc::{ClusterClient, ClusterClientConfig, ClusterServer, ClusterServiceServer, ClusterAuthInterceptor, FanOutResult};
-pub use leader::{LeaderElector, LeaderElectorConfig};
+pub use error::{Error, Result};
+pub use grpc::{
+    ClusterAuthInterceptor, ClusterClient, ClusterClientConfig, ClusterServer,
+    ClusterServiceServer, FanOutResult,
+};
 #[cfg(feature = "k8s")]
 pub use leader::{K8sLeaderElector, K8sLeaderElectorConfig};
+pub use leader::{LeaderElector, LeaderElectorConfig};
+pub use sync::{
+    BroadcastResult, ClusterConfig, ClusterManager, ClusterMetrics, ConnectionId,
+    ConnectionManager, DedupKey, MessageDeduplicator, MessageSender as ClusterMessageSender,
+    PublishRequest, RoomMessageHub, Subscriber,
+};

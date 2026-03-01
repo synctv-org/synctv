@@ -16,23 +16,23 @@ use synctv_core::models::id::{RoomId, UserId};
 mod integration_test_helpers;
 use integration_test_helpers::{create_node, TestRedis};
 
-
 #[tokio::test]
 #[ignore = "requires Docker"]
 async fn test_cross_replica_cache_invalidation() {
     let redis = TestRedis::start().await;
 
     // Create a CacheInvalidationService for node A (local-only, no Redis stream)
-    let cache_svc_a = CacheInvalidationService::new(
-        None,
-        "node_a".to_string(),
-        "test:cache:inv".to_string(),
-    );
+    let cache_svc_a =
+        CacheInvalidationService::new(None, "node_a".to_string(), "test:cache:inv".to_string());
     let mut local_rx_a = cache_svc_a.subscribe();
 
     // Create node A with cache invalidation enabled
-    let client_a = redis::Client::open(redis.redis_url.clone()).expect("Failed to open Redis client");
-    let conn_a = client_a.get_connection_manager().await.expect("Failed to get ConnectionManager");
+    let client_a =
+        redis::Client::open(redis.redis_url.clone()).expect("Failed to open Redis client");
+    let conn_a = client_a
+        .get_connection_manager()
+        .await
+        .expect("Failed to get ConnectionManager");
     let config_a = ClusterConfig {
         redis_client: Some(client_a),
         redis_conn: Some(conn_a),
@@ -131,7 +131,9 @@ async fn test_cross_replica_permission_changed() {
                 | synctv_core::models::PermissionBits::KICK_MEMBER,
         ),
         role: 3, // Admin role
-        added_permissions: synctv_core::models::PermissionBits(synctv_core::models::PermissionBits::KICK_MEMBER),
+        added_permissions: synctv_core::models::PermissionBits(
+            synctv_core::models::PermissionBits::KICK_MEMBER,
+        ),
         removed_permissions: synctv_core::models::PermissionBits::empty(),
         changed_by: UserId::from_string("admin_user".to_string()),
         changed_by_username: "admin_user".to_string(),
@@ -182,16 +184,17 @@ async fn test_cross_replica_permission_cache_invalidation_via_cache_service() {
     let redis = TestRedis::start().await;
 
     // Create a CacheInvalidationService for node A
-    let cache_svc_a = CacheInvalidationService::new(
-        None,
-        "node_a".to_string(),
-        "test:perm:inv".to_string(),
-    );
+    let cache_svc_a =
+        CacheInvalidationService::new(None, "node_a".to_string(), "test:perm:inv".to_string());
     let mut local_rx_a = cache_svc_a.subscribe();
 
     // Create node A with cache invalidation enabled
-    let client_a = redis::Client::open(redis.redis_url.clone()).expect("Failed to open Redis client");
-    let conn_a = client_a.get_connection_manager().await.expect("Failed to get ConnectionManager");
+    let client_a =
+        redis::Client::open(redis.redis_url.clone()).expect("Failed to open Redis client");
+    let conn_a = client_a
+        .get_connection_manager()
+        .await
+        .expect("Failed to get ConnectionManager");
     let config_a = ClusterConfig {
         redis_client: Some(client_a),
         redis_conn: Some(conn_a),
@@ -242,9 +245,7 @@ async fn test_cross_replica_permission_cache_invalidation_via_cache_service() {
             );
         }
         other => {
-            panic!(
-                "Expected User invalidation, got: {other:?}"
-            );
+            panic!("Expected User invalidation, got: {other:?}");
         }
     }
 
@@ -273,8 +274,12 @@ async fn test_cluster_permission_cache_consistency() {
     let mut rx_b = cache_svc_b.subscribe();
 
     // Create nodes with cache invalidation
-    let client_a = redis::Client::open(redis.redis_url.clone()).expect("Failed to open Redis client A");
-    let conn_a = client_a.get_connection_manager().await.expect("Failed to get ConnectionManager A");
+    let client_a =
+        redis::Client::open(redis.redis_url.clone()).expect("Failed to open Redis client A");
+    let conn_a = client_a
+        .get_connection_manager()
+        .await
+        .expect("Failed to get ConnectionManager A");
     let config_a = ClusterConfig {
         redis_client: Some(client_a),
         redis_conn: Some(conn_a),
@@ -291,8 +296,12 @@ async fn test_cluster_permission_cache_consistency() {
         .await
         .expect("Failed to create node A");
 
-    let client_b = redis::Client::open(redis.redis_url.clone()).expect("Failed to open Redis client B");
-    let conn_b = client_b.get_connection_manager().await.expect("Failed to get ConnectionManager B");
+    let client_b =
+        redis::Client::open(redis.redis_url.clone()).expect("Failed to open Redis client B");
+    let conn_b = client_b
+        .get_connection_manager()
+        .await
+        .expect("Failed to get ConnectionManager B");
     let config_b = ClusterConfig {
         redis_client: Some(client_b),
         redis_conn: Some(conn_b),
@@ -318,12 +327,17 @@ async fn test_cluster_permission_cache_consistency() {
     // Broadcast user permission invalidation from node A
     let invalidate_event = ClusterEvent::CacheInvalidate {
         event_id: nanoid::nanoid!(16),
-        targets: vec![CacheTarget::User { user_id: user_id.clone() }],
+        targets: vec![CacheTarget::User {
+            user_id: user_id.clone(),
+        }],
         timestamp: Utc::now(),
     };
 
     let result = node_a.broadcast(invalidate_event);
-    assert!(result.redis_sent, "CacheInvalidate should be published to Redis");
+    assert!(
+        result.redis_sent,
+        "CacheInvalidate should be published to Redis"
+    );
 
     // Node B's cache service should receive the invalidation
     let msg = tokio::time::timeout(Duration::from_secs(5), rx_b.recv())
@@ -332,7 +346,9 @@ async fn test_cluster_permission_cache_consistency() {
         .expect("Cache invalidation channel closed");
 
     match msg {
-        InvalidationMessage::User { user_id: received_user_id } => {
+        InvalidationMessage::User {
+            user_id: received_user_id,
+        } => {
             assert_eq!(received_user_id, user_id, "User ID should match");
         }
         other => panic!("Expected User invalidation, got: {other:?}"),
@@ -341,12 +357,17 @@ async fn test_cluster_permission_cache_consistency() {
     // Test 2: Room permission invalidation
     let room_invalidate_event = ClusterEvent::CacheInvalidate {
         event_id: nanoid::nanoid!(16),
-        targets: vec![CacheTarget::Room { room_id: room_id.clone() }],
+        targets: vec![CacheTarget::Room {
+            room_id: room_id.clone(),
+        }],
         timestamp: Utc::now(),
     };
 
     let result = node_b.broadcast(room_invalidate_event);
-    assert!(result.redis_sent, "Room cache invalidate should be published to Redis");
+    assert!(
+        result.redis_sent,
+        "Room cache invalidate should be published to Redis"
+    );
 
     // Node A's cache service should receive the room invalidation
     let msg = tokio::time::timeout(Duration::from_secs(5), rx_a.recv())
@@ -355,7 +376,9 @@ async fn test_cluster_permission_cache_consistency() {
         .expect("Cache invalidation channel closed");
 
     match msg {
-        InvalidationMessage::Room { room_id: received_room_id } => {
+        InvalidationMessage::Room {
+            room_id: received_room_id,
+        } => {
             assert_eq!(received_room_id, room_id, "Room ID should match");
         }
         other => panic!("Expected Room invalidation, got: {other:?}"),
@@ -366,7 +389,9 @@ async fn test_cluster_permission_cache_consistency() {
     for i in 0..10 {
         let event = ClusterEvent::CacheInvalidate {
             event_id: nanoid::nanoid!(16),
-            targets: vec![CacheTarget::User { user_id: format!("rapid_user_{i}") }],
+            targets: vec![CacheTarget::User {
+                user_id: format!("rapid_user_{i}"),
+            }],
             timestamp: Utc::now(),
         };
         node_a.broadcast(event);
@@ -388,7 +413,10 @@ async fn test_cluster_permission_cache_consistency() {
             Err(_) => break,
         }
     }
-    assert_eq!(received_count, invalidation_count, "All invalidations should be received");
+    assert_eq!(
+        received_count, invalidation_count,
+        "All invalidations should be received"
+    );
 
     node_a.shutdown().await;
     node_b.shutdown().await;
@@ -397,8 +425,8 @@ async fn test_cluster_permission_cache_consistency() {
 #[tokio::test]
 #[ignore = "requires Docker"]
 async fn test_concurrent_permission_cache_updates() {
-    use std::sync::Arc;
     use std::sync::atomic::{AtomicU32, Ordering};
+    use std::sync::Arc;
 
     let redis = TestRedis::start().await;
 
@@ -425,7 +453,10 @@ async fn test_concurrent_permission_cache_updates() {
 
     // Create nodes
     let client_a = redis::Client::open(redis.redis_url.clone()).expect("Redis client A");
-    let conn_a = client_a.get_connection_manager().await.expect("Connection A");
+    let conn_a = client_a
+        .get_connection_manager()
+        .await
+        .expect("Connection A");
     let config_a = ClusterConfig {
         redis_client: Some(client_a),
         redis_conn: Some(conn_a),
@@ -441,11 +472,14 @@ async fn test_concurrent_permission_cache_updates() {
     let node_a = Arc::new(
         ClusterManager::new(config_a, None, Some(cache_svc_a))
             .await
-            .expect("Node A")
+            .expect("Node A"),
     );
 
     let client_b = redis::Client::open(redis.redis_url.clone()).expect("Redis client B");
-    let conn_b = client_b.get_connection_manager().await.expect("Connection B");
+    let conn_b = client_b
+        .get_connection_manager()
+        .await
+        .expect("Connection B");
     let config_b = ClusterConfig {
         redis_client: Some(client_b),
         redis_conn: Some(conn_b),
@@ -461,11 +495,14 @@ async fn test_concurrent_permission_cache_updates() {
     let node_b = Arc::new(
         ClusterManager::new(config_b, None, Some(cache_svc_b))
             .await
-            .expect("Node B")
+            .expect("Node B"),
     );
 
     let client_c = redis::Client::open(redis.redis_url.clone()).expect("Redis client C");
-    let conn_c = client_c.get_connection_manager().await.expect("Connection C");
+    let conn_c = client_c
+        .get_connection_manager()
+        .await
+        .expect("Connection C");
     let config_c = ClusterConfig {
         redis_client: Some(client_c),
         redis_conn: Some(conn_c),
@@ -481,7 +518,7 @@ async fn test_concurrent_permission_cache_updates() {
     let node_c = Arc::new(
         ClusterManager::new(config_c, None, Some(cache_svc_c))
             .await
-            .expect("Node C")
+            .expect("Node C"),
     );
 
     tokio::time::sleep(Duration::from_millis(500)).await;
@@ -497,7 +534,9 @@ async fn test_concurrent_permission_cache_updates() {
     let handle_a = tokio::spawn(async move {
         let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
         while tokio::time::Instant::now() < deadline {
-            if let Ok(Ok(InvalidationMessage::User { .. })) = tokio::time::timeout(Duration::from_millis(100), rx_a.recv()).await {
+            if let Ok(Ok(InvalidationMessage::User { .. })) =
+                tokio::time::timeout(Duration::from_millis(100), rx_a.recv()).await
+            {
                 count_a.fetch_add(1, Ordering::SeqCst);
             }
         }
@@ -507,7 +546,9 @@ async fn test_concurrent_permission_cache_updates() {
     let handle_b = tokio::spawn(async move {
         let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
         while tokio::time::Instant::now() < deadline {
-            if let Ok(Ok(InvalidationMessage::User { .. })) = tokio::time::timeout(Duration::from_millis(100), rx_b.recv()).await {
+            if let Ok(Ok(InvalidationMessage::User { .. })) =
+                tokio::time::timeout(Duration::from_millis(100), rx_b.recv()).await
+            {
                 count_b.fetch_add(1, Ordering::SeqCst);
             }
         }
@@ -517,7 +558,9 @@ async fn test_concurrent_permission_cache_updates() {
     let handle_c = tokio::spawn(async move {
         let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
         while tokio::time::Instant::now() < deadline {
-            if let Ok(Ok(InvalidationMessage::User { .. })) = tokio::time::timeout(Duration::from_millis(100), rx_c.recv()).await {
+            if let Ok(Ok(InvalidationMessage::User { .. })) =
+                tokio::time::timeout(Duration::from_millis(100), rx_c.recv()).await
+            {
                 count_c.fetch_add(1, Ordering::SeqCst);
             }
         }
@@ -599,4 +642,3 @@ async fn test_concurrent_permission_cache_updates() {
     drop(node_b);
     drop(node_c);
 }
-

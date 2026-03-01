@@ -8,18 +8,18 @@
 
 use std::sync::Arc;
 
-use synctv_core_testing::{create_test_pool};
+use sqlx::PgPool;
 use synctv_core::{
-    cache::{KeyBuilder, UsernameCache, NoopCacheL2},
+    cache::{KeyBuilder, NoopCacheL2, UsernameCache},
     config::PasswordComplexityConfig,
     repository::UserRepository,
     service::{
-        UserService, InMemoryTokenBlacklistStore,
-        auth::{JwtService, BruteForceProtection},
+        auth::{BruteForceProtection, JwtService},
+        InMemoryTokenBlacklistStore, UserService,
     },
     Error,
 };
-use sqlx::PgPool;
+use synctv_core_testing::create_test_pool;
 use tokio::sync::Barrier;
 
 fn create_jwt_service() -> JwtService {
@@ -66,7 +66,10 @@ async fn test_register_duplicate_username_error() {
             None,
         )
         .await;
-    assert!(result.is_ok(), "First registration should succeed: {result:?}");
+    assert!(
+        result.is_ok(),
+        "First registration should succeed: {result:?}"
+    );
 
     // Register with same username, different email
     let result = service
@@ -128,7 +131,11 @@ async fn test_login_wrong_password() {
 
     // Try to login with wrong password
     let result = service
-        .login("login_test_user".to_string(), "WrongPass1".to_string(), None)
+        .login(
+            "login_test_user".to_string(),
+            "WrongPass1".to_string(),
+            None,
+        )
         .await;
 
     assert!(result.is_err(), "Login with wrong password should fail");
@@ -254,7 +261,10 @@ async fn test_delete_user_concurrent_deletion_atomicity() {
 
     // Verify user is deleted in the database
     let user_repo = UserRepository::new(pool);
-    let user_after = user_repo.get_by_id(&user_id).await.expect("Query should work");
+    let user_after = user_repo
+        .get_by_id(&user_id)
+        .await
+        .expect("Query should work");
     assert!(
         user_after.is_none(),
         "User should be soft-deleted (not found via get_by_id)"
@@ -301,11 +311,16 @@ async fn test_register_username_taken_no_brute_force_lockout() {
             .await;
 
         // Should fail with AlreadyExists
-        assert!(matches!(result, Err(Error::AlreadyExists(_))), "Should fail with AlreadyExists");
+        assert!(
+            matches!(result, Err(Error::AlreadyExists(_))),
+            "Should fail with AlreadyExists"
+        );
 
         // IMPORTANT: Should NOT be RateLimited even after many attempts
-        assert!(!matches!(result, Err(Error::RateLimited(_))),
-            "Username taken errors should NOT trigger brute-force lockout");
+        assert!(
+            !matches!(result, Err(Error::RateLimited(_))),
+            "Username taken errors should NOT trigger brute-force lockout"
+        );
     }
 
     // Now try with a DIFFERENT username - should succeed (IP not locked)

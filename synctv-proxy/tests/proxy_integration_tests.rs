@@ -14,8 +14,8 @@ use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 use synctv_proxy::{
-    proxy_fetch_and_forward, proxy_m3u8_and_rewrite, validate_proxy_url, NoopMetrics, ProxyConfig,
-    rewrite_m3u8,
+    proxy_fetch_and_forward, proxy_m3u8_and_rewrite, rewrite_m3u8, validate_proxy_url, NoopMetrics,
+    ProxyConfig,
 };
 
 // ------------------------------------------------------------------
@@ -199,7 +199,11 @@ async fn test_proxy_cache_control_video() {
         .unwrap();
     assert_eq!(resp.status(), 200);
     assert_eq!(
-        resp.headers().get("content-type").unwrap().to_str().unwrap(),
+        resp.headers()
+            .get("content-type")
+            .unwrap()
+            .to_str()
+            .unwrap(),
         "video/mp2t"
     );
 }
@@ -215,10 +219,7 @@ async fn test_proxy_cache_control_m3u8() {
         "/proxy",
     )
     .await;
-    assert!(
-        result.is_err(),
-        "M3U8 proxy should block loopback (SSRF)"
-    );
+    assert!(result.is_err(), "M3U8 proxy should block loopback (SSRF)");
 }
 
 // ==================================================================
@@ -259,9 +260,7 @@ async fn test_redirect_chain_over_max_returns_error() {
     // Set up a redirect loop
     Mock::given(method("GET"))
         .and(path("/redirect"))
-        .respond_with(
-            ResponseTemplate::new(302).insert_header("location", "/redirect"),
-        )
+        .respond_with(ResponseTemplate::new(302).insert_header("location", "/redirect"))
         .mount(&server)
         .await;
 
@@ -365,7 +364,11 @@ async fn test_proxy_m3u8_non_200_returns_error() {
     let err_msg = result.unwrap_err().to_string();
     // Should be blocked by SSRF, not a connection error
     assert!(
-        err_msg.contains("private") || err_msg.contains("reserved") || err_msg.contains("loopback") || err_msg.contains("blocked") || err_msg.contains("SSRF"),
+        err_msg.contains("private")
+            || err_msg.contains("reserved")
+            || err_msg.contains("loopback")
+            || err_msg.contains("blocked")
+            || err_msg.contains("SSRF"),
         "Error should indicate SSRF block, got: {err_msg}"
     );
 }
@@ -433,25 +436,16 @@ async fn test_ssrf_blocks_private_ranges() {
     ];
     for url in &private_urls {
         let result = validate_proxy_url(url).await;
-        assert!(
-            result.is_err(),
-            "Should block private IP in URL: {url}"
-        );
+        assert!(result.is_err(), "Should block private IP in URL: {url}");
     }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_ssrf_blocks_loopback() {
-    let loopback_urls = [
-        "http://127.0.0.1/metadata",
-        "http://localhost/admin",
-    ];
+    let loopback_urls = ["http://127.0.0.1/metadata", "http://localhost/admin"];
     for url in &loopback_urls {
         let result = validate_proxy_url(url).await;
-        assert!(
-            result.is_err(),
-            "Should block loopback in URL: {url}"
-        );
+        assert!(result.is_err(), "Should block loopback in URL: {url}");
     }
 }
 
@@ -464,10 +458,7 @@ async fn test_ssrf_blocks_non_http_schemes() {
     ];
     for url in &bad_schemes {
         let result = validate_proxy_url(url).await;
-        assert!(
-            result.is_err(),
-            "Should block non-HTTP scheme: {url}"
-        );
+        assert!(result.is_err(), "Should block non-HTTP scheme: {url}");
     }
 }
 
@@ -511,10 +502,7 @@ async fn test_proxy_brotli_encoding_stripped() {
     assert_eq!(resp.status(), 200);
     // Confirm the mock sends "br" encoding
     let ce = resp.headers().get("content-encoding");
-    assert!(
-        ce.is_some(),
-        "Mock should include content-encoding: br"
-    );
+    assert!(ce.is_some(), "Mock should include content-encoding: br");
     assert_eq!(ce.unwrap().to_str().unwrap(), "br");
 }
 
@@ -595,7 +583,11 @@ async fn test_cache_control_audio_gets_long_max_age() {
         .unwrap();
     assert_eq!(resp.status(), 200);
     assert_eq!(
-        resp.headers().get("content-type").unwrap().to_str().unwrap(),
+        resp.headers()
+            .get("content-type")
+            .unwrap()
+            .to_str()
+            .unwrap(),
         "audio/aac"
     );
 }
@@ -623,7 +615,11 @@ async fn test_cache_control_unknown_gets_no_cache() {
         .unwrap();
     assert_eq!(resp.status(), 200);
     assert_eq!(
-        resp.headers().get("content-type").unwrap().to_str().unwrap(),
+        resp.headers()
+            .get("content-type")
+            .unwrap()
+            .to_str()
+            .unwrap(),
         "text/html"
     );
 }
@@ -656,19 +652,13 @@ async fn test_redirect_single_hop_via_wiremock() {
     let server = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path("/initial"))
-        .respond_with(
-            ResponseTemplate::new(302)
-                .insert_header("location", "/final"),
-        )
+        .respond_with(ResponseTemplate::new(302).insert_header("location", "/final"))
         .mount(&server)
         .await;
 
     Mock::given(method("GET"))
         .and(path("/final"))
-        .respond_with(
-            ResponseTemplate::new(200)
-                .set_body_string("final-content"),
-        )
+        .respond_with(ResponseTemplate::new(200).set_body_string("final-content"))
         .mount(&server)
         .await;
 
@@ -730,18 +720,28 @@ async fn test_validate_proxy_url_link_local_blocked() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_proxy_options_preflight_headers() {
     use axum::response::IntoResponse;
-    let response = synctv_proxy::proxy_options_preflight().await.into_response();
+    let response = synctv_proxy::proxy_options_preflight()
+        .await
+        .into_response();
     assert_eq!(response.status(), axum::http::StatusCode::NO_CONTENT);
 
     let headers = response.headers();
     assert_eq!(
-        headers.get("access-control-allow-origin").unwrap().to_str().unwrap(),
+        headers
+            .get("access-control-allow-origin")
+            .unwrap()
+            .to_str()
+            .unwrap(),
         "*"
     );
     assert!(headers.get("access-control-allow-methods").is_some());
     assert!(headers.get("access-control-allow-headers").is_some());
     assert_eq!(
-        headers.get("access-control-max-age").unwrap().to_str().unwrap(),
+        headers
+            .get("access-control-max-age")
+            .unwrap()
+            .to_str()
+            .unwrap(),
         "86400"
     );
 }

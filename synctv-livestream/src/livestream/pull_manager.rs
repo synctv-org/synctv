@@ -7,16 +7,16 @@
 // External pull-to-publish streams are managed by `ExternalPublishManager`.
 
 use crate::{
-    relay::registry_trait::StreamRegistryTrait,
     error::StreamResult,
     grpc::{GrpcConnectionPool, HlsProxyClient},
-    livestream::pull_stream::PullStream,
     livestream::managed_stream::{ManagedStream, StreamPool},
+    livestream::pull_stream::PullStream,
+    relay::registry_trait::StreamRegistryTrait,
 };
-use synctv_xiu::streamhub::define::StreamHubEventSender;
-use tracing::{debug, info, error, warn};
 use std::sync::Arc;
 use std::time::Duration;
+use synctv_xiu::streamhub::define::StreamHubEventSender;
+use tracing::{debug, error, info, warn};
 
 /// Default gRPC port for inter-node streaming (fallback when `grpc_address` is empty).
 /// DEPRECATED: Only used by the legacy `extract_address_from_node_id` fallback.
@@ -106,7 +106,7 @@ impl PullStreamManager {
     ///
     /// Should be called once after creating the manager to prevent memory leaks
     /// from failed stream creation attempts.
-    #[must_use] 
+    #[must_use]
     pub fn start_cleanup_task(&self) -> tokio::task::JoinHandle<()> {
         self.pool.start_creation_lock_cleanup()
     }
@@ -184,8 +184,7 @@ impl PullStreamManager {
         if let Some(stream) = self.pool.get_existing(&stream_key).await {
             debug!(
                 "Reusing pull stream created by concurrent request for {}/{}",
-                room_id,
-                media_id,
+                room_id, media_id,
             );
             return Ok(stream);
         }
@@ -193,8 +192,7 @@ impl PullStreamManager {
         // Lazy-load: Create new pull stream on first FLV request
         info!(
             "Lazy-load: Creating pull stream for room {} / media {} from publisher",
-            room_id,
-            media_id
+            room_id, media_id
         );
 
         // Get publisher node address from registry (with timeout to prevent
@@ -206,14 +204,20 @@ impl PullStreamManager {
         )
         .await
         .map_err(|_| {
-            error!("Timed out querying registry for publisher {} / {}", room_id, media_id);
+            error!(
+                "Timed out querying registry for publisher {} / {}",
+                room_id, media_id
+            );
             crate::error::StreamError::RegistryError(format!(
                 "Registry query timed out after {}s for {room_id} / {media_id}",
                 REGISTRY_TIMEOUT.as_secs()
             ))
         })?
         .map_err(|e| {
-            error!("Failed to get publisher for {} / {}: {}", room_id, media_id, e);
+            error!(
+                "Failed to get publisher for {} / {}: {}",
+                room_id, media_id, e
+            );
             crate::error::StreamError::RegistryError(format!("Failed to get publisher: {e}"))
         })?
         .ok_or_else(|| {
@@ -227,7 +231,9 @@ impl PullStreamManager {
 
         // Use grpc_address from publisher info. All publisher nodes MUST set this
         // during registration for reliable cross-node proxying.
-        let publisher_address = if let Ok(addr) = publisher_info.validate_grpc_address() { addr.to_string() } else {
+        let publisher_address = if let Ok(addr) = publisher_info.validate_grpc_address() {
+            addr.to_string()
+        } else {
             // DEPRECATED fallback: extract IP from node_id format.
             // This path exists only for backwards compatibility with older nodes
             // that were registered without grpc_address. New deployments should
@@ -265,7 +271,7 @@ impl PullStreamManager {
                 self.connection_pool.clone(),
             )
             .with_cluster_secret(self.cluster_secret.clone())
-            .with_hls_proxy(self.hls_proxy.clone())
+            .with_hls_proxy(self.hls_proxy.clone()),
         );
 
         // Start pull stream (connects via gRPC to publisher)
@@ -302,7 +308,8 @@ impl PullStreamManager {
                     error = %e,
                     "Pull stream start failed with permanent error; removing stale publisher registry entry"
                 );
-                if let Err(unreg_err) = self.registry.unregister_publisher(room_id, media_id).await {
+                if let Err(unreg_err) = self.registry.unregister_publisher(room_id, media_id).await
+                {
                     error!(
                         room_id = %room_id,
                         media_id = %media_id,
@@ -332,18 +339,15 @@ impl PullStreamManager {
         // Call stream.stop() which sets the `stopped` flag and sends UnPublish exactly once,
         // preventing the Drop impl from sending a duplicate UnPublish.
         let cleanup_stream = pull_stream.clone();
-        self.pool.insert_and_cleanup(
-            stream_key,
-            pull_stream.clone(),
-            move |_stream_key: &str| {
+        self.pool
+            .insert_and_cleanup(stream_key, pull_stream.clone(), move |_stream_key: &str| {
                 let stream = cleanup_stream.clone();
                 Box::pin(async move {
                     if let Err(e) = stream.stop().await {
                         warn!("Failed to stop pull stream during idle cleanup: {}", e);
                     }
                 })
-            },
-        );
+            });
 
         Ok(pull_stream)
     }
@@ -352,18 +356,15 @@ impl PullStreamManager {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::relay::MockStreamRegistry;
     use crate::livestream::managed_stream::ManagedStream;
+    use crate::relay::MockStreamRegistry;
 
     #[tokio::test]
     async fn test_pull_stream_manager_creation() {
         let registry = Arc::new(MockStreamRegistry::new()) as Arc<dyn StreamRegistryTrait>;
         let (stream_hub_event_sender, _) = tokio::sync::mpsc::channel(64);
 
-        let manager = PullStreamManager::new(
-            registry,
-            stream_hub_event_sender,
-        );
+        let manager = PullStreamManager::new(registry, stream_hub_event_sender);
 
         assert_eq!(manager.pool.streams.len(), 0);
     }

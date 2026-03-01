@@ -92,11 +92,9 @@ async fn test_reregister_all_publishers_empty() {
 async fn test_with_grpc_address() {
     let registry = Arc::new(InMemoryStreamRegistry::new());
     let (tx, _rx) = tokio::sync::mpsc::channel(64);
-    let manager = synctv_livestream::relay::PublisherManager::new(
-        registry,
-        "test-node".to_string(),
-        tx,
-    ).with_grpc_address("10.0.0.1:50051".to_string());
+    let manager =
+        synctv_livestream::relay::PublisherManager::new(registry, "test-node".to_string(), tx)
+            .with_grpc_address("10.0.0.1:50051".to_string());
 
     // Manager should be created successfully with grpc_address
     assert_eq!(manager.lag_event_count(), 0);
@@ -208,9 +206,13 @@ async fn test_set_and_clear_restarting_multiple_times() {
 
     for _ in 0..5 {
         manager.set_restarting();
-        assert!(manager.restarting_flag().load(std::sync::atomic::Ordering::Acquire));
+        assert!(manager
+            .restarting_flag()
+            .load(std::sync::atomic::Ordering::Acquire));
         manager.clear_restarting();
-        assert!(!manager.restarting_flag().load(std::sync::atomic::Ordering::Acquire));
+        assert!(!manager
+            .restarting_flag()
+            .load(std::sync::atomic::Ordering::Acquire));
     }
 }
 
@@ -250,7 +252,10 @@ async fn test_multiple_publishers_registration_and_cleanup() {
     }
 
     // Cleanup all for test-node
-    registry.cleanup_all_publishers_for_node("test-node").await.unwrap();
+    registry
+        .cleanup_all_publishers_for_node("test-node")
+        .await
+        .unwrap();
 
     // All should be gone
     for i in 0..5 {

@@ -4,12 +4,7 @@ pub mod metadata;
 
 use {
     self::gop::Gops,
-    bytes::BytesMut,
     crate::bytesio::bytes_reader::BytesReader,
-    errors::CacheError,
-    gop::Gop,
-    std::collections::VecDeque,
-    crate::streamhub::define::{FrameData, StatisticData, StatisticDataSender},
     crate::flv::{
         define,
         flv_tag_header::{AudioTagHeader, VideoTagHeader},
@@ -17,6 +12,11 @@ use {
         mpeg4_avc::Mpeg4AvcProcessor,
         Unmarshal,
     },
+    crate::streamhub::define::{FrameData, StatisticData, StatisticDataSender},
+    bytes::BytesMut,
+    errors::CacheError,
+    gop::Gop,
+    std::collections::VecDeque,
 };
 
 // #[derive(Clone)]

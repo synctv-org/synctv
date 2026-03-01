@@ -15,7 +15,10 @@ use synctv_core::service::WsTicketService;
 use testcontainers::runners::AsyncRunner;
 use testcontainers_modules::redis::Redis;
 
-async fn start_redis() -> (testcontainers::ContainerAsync<Redis>, redis::aio::ConnectionManager) {
+async fn start_redis() -> (
+    testcontainers::ContainerAsync<Redis>,
+    redis::aio::ConnectionManager,
+) {
     let container = Redis::default()
         .start()
         .await
@@ -74,7 +77,10 @@ async fn test_redis_ticket_one_time_use() {
 
     // Second consume fails
     let result2 = service.validate_and_consume(&ticket, &rid).await;
-    assert!(result2.is_err(), "Second consumption should fail (one-time use)");
+    assert!(
+        result2.is_err(),
+        "Second consumption should fail (one-time use)"
+    );
 }
 
 #[tokio::test]
@@ -91,7 +97,10 @@ async fn test_redis_ticket_room_mismatch_rejected() {
 
     // Try to consume with wrong room
     let result = service.validate_and_consume(&ticket, &room_b).await;
-    assert!(result.is_err(), "Ticket for room A should not work for room B");
+    assert!(
+        result.is_err(),
+        "Ticket for room A should not work for room B"
+    );
 }
 
 #[tokio::test]
@@ -130,9 +139,9 @@ async fn test_redis_ticket_concurrent_consumption() {
         let s = service.clone();
         let t = ticket.clone();
         let r = rid.clone();
-        handles.push(tokio::spawn(async move {
-            s.validate_and_consume(&t, &r).await
-        }));
+        handles.push(tokio::spawn(
+            async move { s.validate_and_consume(&t, &r).await },
+        ));
     }
 
     let results: Vec<_> = futures::future::join_all(handles)
@@ -144,7 +153,10 @@ async fn test_redis_ticket_concurrent_consumption() {
     let successes = results.iter().filter(|r| r.is_ok()).count();
     let failures = results.iter().filter(|r| r.is_err()).count();
 
-    assert_eq!(successes, 1, "Exactly 1 of 10 concurrent consumers should succeed");
+    assert_eq!(
+        successes, 1,
+        "Exactly 1 of 10 concurrent consumers should succeed"
+    );
     assert_eq!(failures, 9, "9 consumers should fail");
 }
 
@@ -163,10 +175,7 @@ async fn test_cluster_mode_with_redis_succeeds() {
     // Use WsTicketService::new with cluster_mode=true and Redis provided
     let result = WsTicketService::new(Some(conn), Some(30), true);
 
-    assert!(
-        result.is_ok(),
-        "Cluster mode with Redis should succeed"
-    );
+    assert!(result.is_ok(), "Cluster mode with Redis should succeed");
 
     let service = result.unwrap();
     assert_eq!(

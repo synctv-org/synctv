@@ -9,22 +9,19 @@
 
 use std::sync::Arc;
 
-use synctv_core_testing::{create_test_pool};
-use synctv_core::{
-    cache::{KeyBuilder, UsernameCache, NoopCacheL2},
-    config::PasswordComplexityConfig,
-    models::{
-        UserId, User, UserRole, UserStatus,
-        Media, MediaId, Playlist,
-    },
-    repository::{UserRepository, MediaRepository},
-    service::{
-        RoomService, UserService, InMemoryTokenBlacklistStore,
-        auth::{JwtService, BruteForceProtection},
-    },
-};
 use chrono::Utc;
 use sqlx::PgPool;
+use synctv_core::{
+    cache::{KeyBuilder, NoopCacheL2, UsernameCache},
+    config::PasswordComplexityConfig,
+    models::{Media, MediaId, Playlist, User, UserId, UserRole, UserStatus},
+    repository::{MediaRepository, UserRepository},
+    service::{
+        auth::{BruteForceProtection, JwtService},
+        InMemoryTokenBlacklistStore, RoomService, UserService,
+    },
+};
+use synctv_core_testing::create_test_pool;
 fn make_user_service(pool: PgPool) -> UserService {
     let secret = "Test_Secret_Key_For_JWT_Tokens_32Bytes!!";
     let jwt_service = JwtService::new(secret).expect("Failed to create JwtService");
@@ -101,10 +98,22 @@ async fn test_initial_state_is_stopped() {
     let playback_service = room_service.playback_service();
     let state = playback_service.get_state(&room.id).await.unwrap();
 
-    assert!(!state.is_playing, "Initial state should be stopped (is_playing = false)");
-    assert!((state.current_time - 0.0).abs() < f64::EPSILON, "Initial position should be 0");
-    assert!((state.speed - 1.0).abs() < f64::EPSILON, "Initial speed should be 1.0");
-    assert!(state.playing_media_id.is_none(), "Initial media should be None");
+    assert!(
+        !state.is_playing,
+        "Initial state should be stopped (is_playing = false)"
+    );
+    assert!(
+        (state.current_time - 0.0).abs() < f64::EPSILON,
+        "Initial position should be 0"
+    );
+    assert!(
+        (state.speed - 1.0).abs() < f64::EPSILON,
+        "Initial speed should be 1.0"
+    );
+    assert!(
+        state.playing_media_id.is_none(),
+        "Initial media should be None"
+    );
 }
 
 /// Test: Stopped -> Playing transition
@@ -139,7 +148,10 @@ async fn test_stopped_to_playing_transition() {
         .await
         .unwrap();
 
-    assert!(state.is_playing, "State should be playing after set_playing(true)");
+    assert!(
+        state.is_playing,
+        "State should be playing after set_playing(true)"
+    );
 }
 
 /// Test: Playing -> Paused transition
@@ -180,7 +192,10 @@ async fn test_playing_to_paused_transition() {
         .await
         .unwrap();
 
-    assert!(!state.is_playing, "State should be paused after set_playing(false)");
+    assert!(
+        !state.is_playing,
+        "State should be paused after set_playing(false)"
+    );
 }
 
 /// Test: Paused -> Playing transition
@@ -341,8 +356,10 @@ async fn test_rapid_state_transitions() {
             .await
             .unwrap();
 
-        assert_eq!(state.is_playing, playing,
-            "After toggle {i}, is_playing should be {playing}");
+        assert_eq!(
+            state.is_playing, playing,
+            "After toggle {i}, is_playing should be {playing}"
+        );
     }
 
     // Final state should be paused (last toggle was false)
@@ -398,8 +415,11 @@ async fn test_position_preserved_on_pause() {
         .unwrap();
 
     // Position should be preserved (approximately, since computed time may advance slightly)
-    assert!(state.current_time >= 120.0 - 1.0,
-        "Position should be preserved on pause, got: {}", state.current_time);
+    assert!(
+        state.current_time >= 120.0 - 1.0,
+        "Position should be preserved on pause, got: {}",
+        state.current_time
+    );
 }
 
 /// Test: Position reset on media switch
@@ -427,13 +447,11 @@ async fn test_position_reset_on_media_switch() {
         .unwrap();
 
     // Get the root playlist
-    let playlists: Vec<Playlist> = sqlx::query_as(
-        "SELECT * FROM playlists WHERE room_id = $1"
-    )
-    .bind(room.id.as_str())
-    .fetch_all(&pool)
-    .await
-    .unwrap();
+    let playlists: Vec<Playlist> = sqlx::query_as("SELECT * FROM playlists WHERE room_id = $1")
+        .bind(room.id.as_str())
+        .fetch_all(&pool)
+        .await
+        .unwrap();
     let root_playlist = &playlists[0];
 
     // Add media
@@ -467,8 +485,11 @@ async fn test_position_reset_on_media_switch() {
         .unwrap();
 
     // Position should be reset to 0
-    assert!((state.current_time - 0.0).abs() < f64::EPSILON,
-        "Position should be reset to 0 after media switch, got: {}", state.current_time);
+    assert!(
+        (state.current_time - 0.0).abs() < f64::EPSILON,
+        "Position should be reset to 0 after media switch, got: {}",
+        state.current_time
+    );
     assert!(state.is_playing, "Should start playing after media switch");
 }
 
@@ -521,10 +542,16 @@ async fn test_speed_change_preserves_position() {
         .unwrap();
 
     // Position should be approximately preserved
-    assert!(state.current_time >= 100.0 - 1.0,
-        "Position should be preserved on speed change, got: {}", state.current_time);
-    assert!((state.speed - 2.0).abs() < f64::EPSILON,
-        "Speed should be 2.0, got: {}", state.speed);
+    assert!(
+        state.current_time >= 100.0 - 1.0,
+        "Position should be preserved on speed change, got: {}",
+        state.current_time
+    );
+    assert!(
+        (state.speed - 2.0).abs() < f64::EPSILON,
+        "Speed should be 2.0, got: {}",
+        state.speed
+    );
 }
 
 /// Test: Speed change while paused
@@ -537,7 +564,10 @@ async fn test_speed_change_while_paused() {
     let user_repo = UserRepository::new(pool.clone());
     let room_service = make_room_service(pool.clone());
 
-    let owner = user_repo.create(&make_user("sm_speed_paused")).await.unwrap();
+    let owner = user_repo
+        .create(&make_user("sm_speed_paused"))
+        .await
+        .unwrap();
 
     let (room, _) = room_service
         .create_room(
@@ -559,8 +589,11 @@ async fn test_speed_change_while_paused() {
         .unwrap();
 
     assert!(!state.is_playing, "Should still be paused");
-    assert!((state.speed - 1.5).abs() < f64::EPSILON,
-        "Speed should be 1.5, got: {}", state.speed);
+    assert!(
+        (state.speed - 1.5).abs() < f64::EPSILON,
+        "Speed should be 1.5, got: {}",
+        state.speed
+    );
 }
 
 // ============================================================================
@@ -620,12 +653,24 @@ async fn test_reset_returns_to_initial_state() {
 
     // Verify reset to initial state
     assert!(!state.is_playing, "Reset should set is_playing to false");
-    assert!((state.current_time - 0.0).abs() < f64::EPSILON,
-        "Reset should set current_time to 0, got: {}", state.current_time);
-    assert!((state.speed - 1.0).abs() < f64::EPSILON,
-        "Reset should set speed to 1.0, got: {}", state.speed);
-    assert!(state.playing_media_id.is_none(), "Reset should clear playing_media_id");
-    assert!(state.playing_playlist_id.is_none(), "Reset should clear playing_playlist_id");
+    assert!(
+        (state.current_time - 0.0).abs() < f64::EPSILON,
+        "Reset should set current_time to 0, got: {}",
+        state.current_time
+    );
+    assert!(
+        (state.speed - 1.0).abs() < f64::EPSILON,
+        "Reset should set speed to 1.0, got: {}",
+        state.speed
+    );
+    assert!(
+        state.playing_media_id.is_none(),
+        "Reset should clear playing_media_id"
+    );
+    assert!(
+        state.playing_playlist_id.is_none(),
+        "Reset should clear playing_playlist_id"
+    );
 }
 
 // ============================================================================
@@ -669,9 +714,7 @@ async fn test_concurrent_play_pause_operations() {
 
         let handle = tokio::spawn(async move {
             b.wait().await;
-            rs.playback_service()
-                .set_playing(rid, uid, playing)
-                .await
+            rs.playback_service().set_playing(rid, uid, playing).await
         });
         handles.push(handle);
     }
@@ -691,7 +734,10 @@ async fn test_concurrent_play_pause_operations() {
     }
 
     println!("Concurrent play/pause: success={success_count}/10, errors={error_count}");
-    assert!(success_count >= 5, "At least 50% should succeed, got: {success_count}");
+    assert!(
+        success_count >= 5,
+        "At least 50% should succeed, got: {success_count}"
+    );
 
     // Final state should be consistent (either playing or paused)
     let playback_service = room_service.playback_service();
@@ -738,14 +784,22 @@ async fn test_version_increments_on_state_change() {
         .set_playing(room.id.clone(), owner.id.clone(), true)
         .await
         .unwrap();
-    assert_eq!(state.version, initial_version + 1, "Version should increment on play");
+    assert_eq!(
+        state.version,
+        initial_version + 1,
+        "Version should increment on play"
+    );
 
     // Pause
     let state = playback_service
         .set_playing(room.id.clone(), owner.id.clone(), false)
         .await
         .unwrap();
-    assert_eq!(state.version, initial_version + 2, "Version should increment on pause");
+    assert_eq!(
+        state.version,
+        initial_version + 2,
+        "Version should increment on pause"
+    );
 
     // Seek
     let state = playback_service
@@ -753,12 +807,20 @@ async fn test_version_increments_on_state_change() {
         .await
         .unwrap()
         .state;
-    assert_eq!(state.version, initial_version + 3, "Version should increment on seek");
+    assert_eq!(
+        state.version,
+        initial_version + 3,
+        "Version should increment on seek"
+    );
 
     // Change speed
     let state = playback_service
         .change_speed(room.id.clone(), owner.id.clone(), 1.5)
         .await
         .unwrap();
-    assert_eq!(state.version, initial_version + 4, "Version should increment on speed change");
+    assert_eq!(
+        state.version,
+        initial_version + 4,
+        "Version should increment on speed change"
+    );
 }

@@ -27,12 +27,12 @@ pub enum Quality {
 }
 
 impl Quality {
-    #[must_use] 
+    #[must_use]
     pub const fn to_qn(&self) -> u32 {
         *self as u32
     }
 
-    #[must_use] 
+    #[must_use]
     pub const fn from_qn(qn: u32) -> Self {
         match qn {
             80 => Self::P1080,
@@ -42,7 +42,7 @@ impl Quality {
         }
     }
 
-    #[must_use] 
+    #[must_use]
     pub const fn as_str(&self) -> &'static str {
         match self {
             Self::P1080 => "1080P",

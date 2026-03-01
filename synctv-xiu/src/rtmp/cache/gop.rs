@@ -1,4 +1,4 @@
-use {std::collections::VecDeque, std::sync::Arc, crate::streamhub::define::FrameData};
+use {crate::streamhub::define::FrameData, std::collections::VecDeque, std::sync::Arc};
 
 /// Max frames per GOP to prevent unbounded memory growth.
 /// 1500 frames ≈ 1 minute at 24fps, generous for any reasonable GOP.
@@ -57,8 +57,7 @@ impl Gop {
             FrameData::Audio { data, .. } => data.len(),
             FrameData::MetaData { data, .. } => data.len(),
             FrameData::MediaInfo { media_info } => {
-                std::mem::size_of::<crate::streamhub::define::MediaInfo>()
-                    + media_info.heap_size()
+                std::mem::size_of::<crate::streamhub::define::MediaInfo>() + media_info.heap_size()
             }
         }
     }
@@ -245,9 +244,7 @@ impl Gops {
 
         // Check memory limit BEFORE adding the frame to keep accounting precise.
         let frame_bytes = Gop::frame_memory_size(&data);
-        while self.current_total_bytes + frame_bytes > self.max_total_bytes
-            && self.gops.len() > 1
-        {
+        while self.current_total_bytes + frame_bytes > self.max_total_bytes && self.gops.len() > 1 {
             if self.evict_oldest_gop("per-stream memory limit (pre-frame)") == 0 {
                 break;
             }
@@ -289,4 +286,3 @@ impl Gops {
         &self.gops
     }
 }
-

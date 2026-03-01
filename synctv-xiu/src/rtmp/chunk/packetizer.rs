@@ -3,8 +3,8 @@ use {
         define::CHUNK_SIZE, errors::PackError, ChunkBasicHeader, ChunkHeader, ChunkInfo,
         ChunkMessageHeader, ExtendTimestampType,
     },
-    byteorder::{BigEndian, LittleEndian},
     crate::bytesio::{bytes_writer::AsyncBytesWriter, bytesio::TNetIO},
+    byteorder::{BigEndian, LittleEndian},
     std::{num::NonZeroUsize, sync::Arc, time::Duration},
     tokio::sync::Mutex,
 };

@@ -7,18 +7,18 @@
 
 use std::sync::Arc;
 
-use synctv_core_testing::{create_test_pool};
+use sqlx::PgPool;
 use synctv_core::{
-    cache::{KeyBuilder, UsernameCache, NoopCacheL2},
+    cache::{KeyBuilder, NoopCacheL2, UsernameCache},
     config::PasswordComplexityConfig,
     models::{UserId, UserStatus},
     service::{
-        UserService, InMemoryTokenBlacklistStore,
-        auth::{JwtService, BruteForceProtection},
+        auth::{BruteForceProtection, JwtService},
+        InMemoryTokenBlacklistStore, UserService,
     },
     Error,
 };
-use sqlx::PgPool;
+use synctv_core_testing::create_test_pool;
 const BATCH_SIZE_LIMIT: usize = 100;
 
 fn create_jwt_service() -> JwtService {
@@ -76,7 +76,10 @@ async fn batch_ban_users_succeeds() {
 
     // Create 5 test users
     let user_ids = create_test_users(&service, 5, "batch_ban").await;
-    let user_id_strs: Vec<String> = user_ids.iter().map(std::string::ToString::to_string).collect();
+    let user_id_strs: Vec<String> = user_ids
+        .iter()
+        .map(std::string::ToString::to_string)
+        .collect();
 
     // Ban all 5 users
     let result = service.batch_ban_users(&user_id_strs).await;
@@ -85,7 +88,11 @@ async fn batch_ban_users_succeeds() {
     // Verify all users are banned
     for user_id in &user_ids {
         let user = service.get_user(user_id).await.expect("User should exist");
-        assert_eq!(user.status, UserStatus::Banned, "User {user_id} should be banned");
+        assert_eq!(
+            user.status,
+            UserStatus::Banned,
+            "User {user_id} should be banned"
+        );
     }
 }
 
@@ -103,11 +110,17 @@ async fn batch_ban_users_exceeds_limit_fails() {
 
     // Attempt to ban more than limit
     let result = service.batch_ban_users(&user_id_strs).await;
-    assert!(result.is_err(), "Batch ban should fail when exceeding limit");
+    assert!(
+        result.is_err(),
+        "Batch ban should fail when exceeding limit"
+    );
 
     match result {
         Err(Error::InvalidInput(msg)) => {
-            assert!(msg.contains("exceeds limit"), "Error message should mention limit");
+            assert!(
+                msg.contains("exceeds limit"),
+                "Error message should mention limit"
+            );
         }
         _ => panic!("Expected InvalidInput error"),
     }
@@ -123,20 +136,33 @@ async fn batch_ban_users_already_banned_skipped() {
     let user_ids = create_test_users(&service, 3, "batch_ban_skip").await;
 
     // Ban the first user beforehand
-    let mut user = service.get_user(&user_ids[0]).await.expect("User should exist");
+    let mut user = service
+        .get_user(&user_ids[0])
+        .await
+        .expect("User should exist");
     user.status = UserStatus::Banned;
     let old_version = user.version;
-    service.update_user(&user, old_version).await.expect("Update should succeed");
+    service
+        .update_user(&user, old_version)
+        .await
+        .expect("Update should succeed");
 
     // Ban all users (first is already banned)
-    let user_id_strs: Vec<String> = user_ids.iter().map(std::string::ToString::to_string).collect();
+    let user_id_strs: Vec<String> = user_ids
+        .iter()
+        .map(std::string::ToString::to_string)
+        .collect();
     let result = service.batch_ban_users(&user_id_strs).await;
     assert!(result.is_ok(), "Batch ban should succeed: {result:?}");
 
     // Verify all users are banned
     for user_id in &user_ids {
         let user = service.get_user(user_id).await.expect("User should exist");
-        assert_eq!(user.status, UserStatus::Banned, "User {user_id} should be banned");
+        assert_eq!(
+            user.status,
+            UserStatus::Banned,
+            "User {user_id} should be banned"
+        );
     }
 }
 
@@ -148,14 +174,19 @@ async fn batch_ban_users_nonexistent_user_fails() {
 
     // Create 2 test users
     let user_ids = create_test_users(&service, 2, "batch_ban_nonexist").await;
-    let mut user_id_strs: Vec<String> = user_ids.iter().map(std::string::ToString::to_string).collect();
+    let mut user_id_strs: Vec<String> = user_ids
+        .iter()
+        .map(std::string::ToString::to_string)
+        .collect();
 
     // Add a non-existent user ID
     user_id_strs.push("nonexistent_user_id".to_string());
 
     // Attempt batch ban – the overall call succeeds but individual results
     // report per-user success/failure.
-    let results = service.batch_ban_users(&user_id_strs).await
+    let results = service
+        .batch_ban_users(&user_id_strs)
+        .await
         .expect("batch_ban_users returns Ok with per-user results");
 
     // The two real users should succeed
@@ -191,7 +222,10 @@ async fn batch_delete_users_succeeds() {
 
     // Create 5 test users
     let user_ids = create_test_users(&service, 5, "batch_del").await;
-    let user_id_strs: Vec<String> = user_ids.iter().map(std::string::ToString::to_string).collect();
+    let user_id_strs: Vec<String> = user_ids
+        .iter()
+        .map(std::string::ToString::to_string)
+        .collect();
 
     // Delete all 5 users
     let result = service.batch_delete_users(&user_id_strs).await;
@@ -218,7 +252,10 @@ async fn batch_delete_users_exceeds_limit_fails() {
 
     // Attempt to delete more than limit
     let result = service.batch_delete_users(&user_id_strs).await;
-    assert!(result.is_err(), "Batch delete should fail when exceeding limit");
+    assert!(
+        result.is_err(),
+        "Batch delete should fail when exceeding limit"
+    );
 }
 
 #[tokio::test]

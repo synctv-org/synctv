@@ -18,8 +18,8 @@
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::{oneshot, Barrier};
 use synctv_livestream::relay::StreamRegistryTrait;
+use tokio::sync::{oneshot, Barrier};
 
 /// Simulates the cleanup sequence during `StreamHub` restart with concurrent
 /// stream disconnections.
@@ -74,7 +74,10 @@ async fn test_cleanup_during_concurrent_unregistration() {
         tokio::time::sleep(Duration::from_micros(100)).await;
 
         // Cleanup should be safe even with concurrent unregistrations
-        registry_for_cleanup.cleanup_all_publishers_for_node(node_id).await.unwrap();
+        registry_for_cleanup
+            .cleanup_all_publishers_for_node(node_id)
+            .await
+            .unwrap();
     });
 
     // Wait for both tasks to complete
@@ -136,7 +139,10 @@ async fn test_cleanup_during_concurrent_registration() {
     let registry_for_cleanup = registry.clone();
     let cleanup_handle = tokio::spawn(async move {
         barrier_clone.wait().await;
-        registry_for_cleanup.cleanup_all_publishers_for_node(node_id).await.unwrap();
+        registry_for_cleanup
+            .cleanup_all_publishers_for_node(node_id)
+            .await
+            .unwrap();
     });
 
     let (_, _) = tokio::join!(register_handle, cleanup_handle);
@@ -145,7 +151,10 @@ async fn test_cleanup_during_concurrent_registration() {
     // New registrations during/after cleanup may or may not succeed depending on timing
     for i in 0..3 {
         assert!(
-            !registry.is_stream_active(&format!("room{i}"), &format!("media{i}")).await.unwrap(),
+            !registry
+                .is_stream_active(&format!("room{i}"), &format!("media{i}"))
+                .await
+                .unwrap(),
             "Original stream room{i}/media{i} should be cleaned up"
         );
     }
@@ -182,7 +191,9 @@ async fn test_concurrent_cleanups_same_node() {
 
         handles.push(tokio::spawn(async move {
             barrier_clone.wait().await;
-            registry_clone.cleanup_all_publishers_for_node(&node_id_owned).await
+            registry_clone
+                .cleanup_all_publishers_for_node(&node_id_owned)
+                .await
         }));
     }
 
@@ -220,7 +231,10 @@ async fn test_cleanup_then_reregister_sequence() {
     // Simulate the restart sequence:
     // 1. Stop all (not modeled here, would call unregister)
     // 2. Cleanup all publishers for node
-    registry.cleanup_all_publishers_for_node(node_id).await.unwrap();
+    registry
+        .cleanup_all_publishers_for_node(node_id)
+        .await
+        .unwrap();
 
     // 3. Immediately re-register
     for i in 0..3 {
@@ -240,7 +254,10 @@ async fn test_cleanup_then_reregister_sequence() {
     // Verify all streams are active
     for i in 0..3 {
         assert!(
-            registry.is_stream_active(&format!("room{i}"), &format!("media{i}")).await.unwrap(),
+            registry
+                .is_stream_active(&format!("room{i}"), &format!("media{i}"))
+                .await
+                .unwrap(),
             "Stream room{i}/media{i} should be active after re-registration"
         );
     }
@@ -300,7 +317,10 @@ async fn test_stop_then_cleanup_with_delayed_unregistration() {
     // Immediately call cleanup (this is where the race occurs)
     // Cleanup should handle the case where unregister is in progress
     let cleanup_result = registry.cleanup_all_publishers_for_node(node_id).await;
-    assert!(cleanup_result.is_ok(), "Cleanup should succeed even with concurrent unregisters");
+    assert!(
+        cleanup_result.is_ok(),
+        "Cleanup should succeed even with concurrent unregisters"
+    );
 
     // Wait for unregister task to complete
     let _ = unregister_handle.await;
@@ -361,7 +381,10 @@ async fn test_stop_delay_then_cleanup_prevents_race() {
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     // Now cleanup
-    registry.cleanup_all_publishers_for_node(node_id).await.unwrap();
+    registry
+        .cleanup_all_publishers_for_node(node_id)
+        .await
+        .unwrap();
 
     // Wait for unregister task
     let _ = unregister_handle.await;
@@ -396,7 +419,10 @@ async fn test_cleanup_only_affects_target_node() {
         .unwrap();
 
     // Cleanup node1 only
-    registry.cleanup_all_publishers_for_node("node1").await.unwrap();
+    registry
+        .cleanup_all_publishers_for_node("node1")
+        .await
+        .unwrap();
 
     // node1 streams should be gone
     assert!(!registry.is_stream_active("room1", "media1").await.unwrap());
@@ -430,7 +456,10 @@ async fn test_cleanup_is_idempotent() {
 
     // Cleanup multiple times
     for _ in 0..3 {
-        registry.cleanup_all_publishers_for_node(node_id).await.unwrap();
+        registry
+            .cleanup_all_publishers_for_node(node_id)
+            .await
+            .unwrap();
     }
 
     // All streams should be gone
@@ -539,7 +568,10 @@ async fn test_complete_restart_sequence_with_delay_fix() {
     tokio::time::sleep(Duration::from_millis(500)).await;
 
     // Phase 4: Cleanup (should find most/all streams already unregistered)
-    registry.cleanup_all_publishers_for_node(node_id).await.unwrap();
+    registry
+        .cleanup_all_publishers_for_node(node_id)
+        .await
+        .unwrap();
 
     // Phase 5: Re-registration
     for i in 0..3 {

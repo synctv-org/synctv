@@ -477,10 +477,7 @@ impl StreamRegistry {
             if let Err(e) = pipe.query_async::<()>(&mut conn_clone).await {
                 warn!("Failed to refresh stream metadata TTLs via pipeline ({stream_count} keys): {e}");
             } else {
-                debug!(
-                    count = stream_count,
-                    "Refreshed stream metadata TTLs"
-                );
+                debug!(count = stream_count, "Refreshed stream metadata TTLs");
             }
         }
     }
@@ -558,15 +555,17 @@ mod tests {
     async fn test_register_stream_redis_failure_rolls_back_local() {
         // Test: When Redis operation fails, local cache should NOT contain the stream
         // This uses a with_redis_failing method that simulates a failing Redis connection
-        let registry = StreamRegistry::new("replica1".to_string())
-            .with_redis_failing();
+        let registry = StreamRegistry::new("replica1".to_string()).with_redis_failing();
 
         let result = registry
             .register_stream("test_app/test_stream", "rtmp", None)
             .await;
 
         // The operation should fail with Redis failure
-        assert!(result.is_err(), "register_stream should fail when Redis fails");
+        assert!(
+            result.is_err(),
+            "register_stream should fail when Redis fails"
+        );
 
         // Key invariant: local cache should be consistent
         // If Redis fails, local cache should NOT have the stream
@@ -633,7 +632,9 @@ mod tests {
             .await
             .unwrap();
 
-        registry.unregister_stream("test_app/simple_unregister").await;
+        registry
+            .unregister_stream("test_app/simple_unregister")
+            .await;
 
         // Without Redis, stream should be removed from local
         assert!(

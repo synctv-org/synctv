@@ -10,12 +10,12 @@
 // - Publisher: rtmp://host/room_id/JWT_TOKEN  or  rtmp://host/room_id/media_id?token=JWT
 // - Player:   rtmp://host/room_id/media_id
 
-use synctv_xiu::rtmp::auth::{AuthCallback, AuthPublishRewrite};
+use crate::relay::registry_trait::StreamRegistryTrait;
 use async_trait::async_trait;
 use std::sync::Arc;
 use synctv_core::service::PublishKeyService;
+use synctv_xiu::rtmp::auth::{AuthCallback, AuthPublishRewrite};
 use tracing::{debug, info, warn};
-use crate::relay::registry_trait::StreamRegistryTrait;
 
 /// Redact potential JWT tokens from a string for safe logging.
 ///
@@ -57,11 +57,7 @@ struct PublisherGuard {
 }
 
 impl PublisherGuard {
-    fn new(
-        registry: Arc<dyn StreamRegistryTrait>,
-        room_id: String,
-        media_id: String,
-    ) -> Self {
+    fn new(registry: Arc<dyn StreamRegistryTrait>, room_id: String, media_id: String) -> Self {
         Self {
             registry,
             room_id,
@@ -191,9 +187,7 @@ impl AuthCallback for RtmpAuthCallbackImpl {
         });
         debug!(
             "RTMP publish auth: app={}, stream={}, query={:?}",
-            app_name,
-            redacted_stream_name,
-            redacted_query
+            app_name, redacted_stream_name, redacted_query
         );
 
         // Extract token: prefer query string parameter, fall back to stream_name as token
@@ -222,9 +216,7 @@ impl AuthCallback for RtmpAuthCallbackImpl {
 
         info!(
             "RTMP publisher authenticated: room_id={}, media_id={}, user_id={}",
-            claims.room_id,
-            claims.media_id,
-            claims.user_id
+            claims.room_id, claims.media_id, claims.user_id
         );
 
         // Atomic registration in Redis BEFORE StreamHub Publish event.
@@ -301,18 +293,12 @@ impl AuthCallback for RtmpAuthCallbackImpl {
         let redacted_stream_name = redact_jwt_token(stream_name);
         warn!(
             "RTMP play rejected: room_id={}, media_id={} — use HTTP-FLV or HLS",
-            app_name,
-            redacted_stream_name
+            app_name, redacted_stream_name
         );
         Err("RTMP pull is disabled. Use HTTP-FLV or HLS endpoints for playback.".into())
     }
 
-    async fn on_unpublish(
-        &self,
-        app_name: &str,
-        stream_name: &str,
-        _query: Option<&str>,
-    ) {
+    async fn on_unpublish(&self, app_name: &str, stream_name: &str, _query: Option<&str>) {
         let tracked = if let Some(tracker) = &self.stream_tracker {
             tracker.remove_by_app_stream(app_name, stream_name)
         } else {
@@ -339,16 +325,10 @@ impl AuthCallback for RtmpAuthCallbackImpl {
         // publisher registered between this callback and the PublisherManager's handler.
     }
 
-    async fn on_unplay(
-        &self,
-        app_name: &str,
-        stream_name: &str,
-        _query: Option<&str>,
-    ) {
+    async fn on_unplay(&self, app_name: &str, stream_name: &str, _query: Option<&str>) {
         info!(
             "RTMP player disconnected: room_id={}, media_id={}",
-            app_name,
-            stream_name
+            app_name, stream_name
         );
     }
 
@@ -356,12 +336,7 @@ impl AuthCallback for RtmpAuthCallbackImpl {
     ///
     /// This is critical for maintaining consistency: `on_publish` registers the publisher
     /// in Redis BEFORE `StreamHub`, so if `StreamHub` fails, we must clean up Redis immediately.
-    async fn on_publish_rollback(
-        &self,
-        app_name: &str,
-        stream_name: &str,
-        _query: Option<&str>,
-    ) {
+    async fn on_publish_rollback(&self, app_name: &str, stream_name: &str, _query: Option<&str>) {
         // Redact potential JWT tokens from log output for security
         let redacted_stream_name = redact_jwt_token(stream_name);
 

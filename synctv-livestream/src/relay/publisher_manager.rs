@@ -13,15 +13,15 @@
 
 use super::registry::HEARTBEAT_INTERVAL_SECS;
 use super::registry_trait::StreamRegistryTrait;
+use dashmap::DashMap;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::Arc;
 use synctv_xiu::streamhub::{
     define::{BroadcastEventReceiver, StreamHubEvent, StreamHubEventSender},
     stream::StreamIdentifier,
 };
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use tokio::time::{interval, sleep, Duration};
 use tracing::{debug, error, info, trace, warn};
-use dashmap::DashMap;
 
 /// Maximum number of retry attempts for heartbeat failures within a single heartbeat cycle
 const MAX_HEARTBEAT_RETRIES: u32 = 3;
@@ -124,7 +124,8 @@ impl PublisherEntry {
     }
 
     fn touch(&self) {
-        self.last_active_secs.store(Self::now_secs(), Ordering::Release);
+        self.last_active_secs
+            .store(Self::now_secs(), Ordering::Release);
     }
 
     fn idle_secs(&self) -> u64 {
@@ -236,9 +237,10 @@ impl PublisherManager {
         self.active_publishers
             .iter()
             .filter_map(|entry| {
-                entry.key().split_once(':').map(|(room_id, media_id)| {
-                    (room_id.to_string(), media_id.to_string())
-                })
+                entry
+                    .key()
+                    .split_once(':')
+                    .map(|(room_id, media_id)| (room_id.to_string(), media_id.to_string()))
             })
             .collect()
     }
@@ -272,7 +274,11 @@ impl PublisherManager {
         // expiry, causing other nodes to route requests to a node that is no
         // longer publishing those streams.
         if !self.local_node_id.is_empty() {
-            match self.registry.cleanup_all_publishers_for_node(&self.local_node_id).await {
+            match self
+                .registry
+                .cleanup_all_publishers_for_node(&self.local_node_id)
+                .await
+            {
                 Ok(()) => {
                     info!(
                         "Cleaned up stale publisher registrations for node {}",
@@ -342,9 +348,15 @@ impl PublisherManager {
     /// to Redis happens in the authentication phase (`SyncTvRtmpAuth::on_publish`),
     /// which runs BEFORE the RTMP session is established and can reject connections
     /// on registration failures.
-    async fn handle_broadcast_event(&self, event: synctv_xiu::streamhub::define::BroadcastEvent) -> anyhow::Result<()> {
+    async fn handle_broadcast_event(
+        &self,
+        event: synctv_xiu::streamhub::define::BroadcastEvent,
+    ) -> anyhow::Result<()> {
         match event {
-            synctv_xiu::streamhub::define::BroadcastEvent::Publish { identifier, pub_type } => {
+            synctv_xiu::streamhub::define::BroadcastEvent::Publish {
+                identifier,
+                pub_type,
+            } => {
                 // Only track local RTMP push publishers for heartbeat management.
                 // Remote relay streams (RtmpRelay) are managed by their origin node;
                 // tracking them here would create duplicate heartbeats and incorrect
@@ -380,7 +392,13 @@ impl PublisherManager {
     /// been successfully authenticated and registered.
     async fn handle_publish(&self, identifier: StreamIdentifier) -> anyhow::Result<()> {
         // Extract app_name and stream_name from RTMP identifier
-        let (app_name, stream_name) = if let StreamIdentifier::Rtmp { app_name, stream_name } = identifier { (app_name, stream_name) } else {
+        let (app_name, stream_name) = if let StreamIdentifier::Rtmp {
+            app_name,
+            stream_name,
+        } = identifier
+        {
+            (app_name, stream_name)
+        } else {
             warn!("Ignoring non-RTMP publish event: {:?}", identifier);
             return Ok(());
         };
@@ -394,9 +412,7 @@ impl PublisherManager {
 
         info!(
             "Tracking publisher for heartbeat: room={}, media={}, stream={}",
-            room_id,
-            media_id,
-            stream_name
+            room_id, media_id, stream_name
         );
 
         // Track active publisher with composite key (room_id:media_id)
@@ -439,7 +455,10 @@ impl PublisherManager {
     /// Handle `UnPublish` event - Remove publisher from Redis
     async fn handle_unpublish(&self, identifier: StreamIdentifier) -> anyhow::Result<()> {
         let (app_name, stream_name) = match identifier {
-            StreamIdentifier::Rtmp { app_name, stream_name } => (app_name, stream_name),
+            StreamIdentifier::Rtmp {
+                app_name,
+                stream_name,
+            } => (app_name, stream_name),
             _ => {
                 return Ok(());
             }
@@ -447,8 +466,7 @@ impl PublisherManager {
 
         info!(
             "RTMP UnPublish event: app_name={}, stream_name={}",
-            app_name,
-            stream_name
+            app_name, stream_name
         );
 
         // StreamIdentifier format: app_name=room_id, stream_name=media_id
@@ -459,10 +477,20 @@ impl PublisherManager {
         let publisher_key = format!("{room_id}:{media_id}");
         if self.active_publishers.remove(&publisher_key).is_some() {
             // Unregister from Redis
-            if let Err(e) = self.registry.unregister_publisher(&room_id, &media_id).await {
-                error!("Failed to unregister publisher for room {} / media {}: {}", room_id, media_id, e);
+            if let Err(e) = self
+                .registry
+                .unregister_publisher(&room_id, &media_id)
+                .await
+            {
+                error!(
+                    "Failed to unregister publisher for room {} / media {}: {}",
+                    room_id, media_id, e
+                );
             } else {
-                info!("Unregistered publisher for room {} / media {}", room_id, media_id);
+                info!(
+                    "Unregistered publisher for room {} / media {}",
+                    room_id, media_id
+                );
             }
         }
 
@@ -500,7 +528,8 @@ impl PublisherManager {
                         // Publisher still registered to us -- keep it
                         trace!(
                             "Reconcile: publisher room={} media={} still active on this node",
-                            room_id, media_id
+                            room_id,
+                            media_id
                         );
                     }
                     Ok(Some(info)) => {
@@ -763,10 +792,7 @@ impl PublisherManager {
                 );
             }
             Err(e) => {
-                error!(
-                    "Failed to send UnPublish event for {:?}: {}",
-                    identifier, e
-                );
+                error!("Failed to send UnPublish event for {:?}: {}", identifier, e);
             }
         }
     }
@@ -801,7 +827,9 @@ impl PublisherManager {
                 // Skip during StreamHub restart to avoid false cleanups while
                 // publishers are reconnecting to the new hub instance.
                 let idle_secs = entry.idle_secs();
-                if idle_secs > self.silent_timeout_secs && !self.is_restarting.load(Ordering::Acquire) {
+                if idle_secs > self.silent_timeout_secs
+                    && !self.is_restarting.load(Ordering::Acquire)
+                {
                     warn!(
                         "Silent publisher detected: room={} media={} (no data for {}s, threshold={}s)",
                         room_id, media_id, idle_secs, self.silent_timeout_secs
@@ -810,7 +838,8 @@ impl PublisherManager {
                         room_id,
                         media_id,
                         &format!("silent publisher timeout ({idle_secs}s idle)"),
-                    ).await;
+                    )
+                    .await;
                     continue;
                 }
 
@@ -839,7 +868,11 @@ impl PublisherManager {
                 let mut cycle_succeeded = false;
                 let mut last_error: Option<anyhow::Error> = None;
                 for attempt in 0..MAX_HEARTBEAT_RETRIES {
-                    match self.registry.refresh_publisher_ttl(room_id, media_id, user_id).await {
+                    match self
+                        .registry
+                        .refresh_publisher_ttl(room_id, media_id, user_id)
+                        .await
+                    {
                         Ok(()) => {
                             cycle_succeeded = true;
                             break;
@@ -857,8 +890,7 @@ impl PublisherManager {
                                 error!(
                                     "All {} heartbeat attempts failed for room {} / media {}: {}. \
                                      Incrementing consecutive failure counter.",
-                                    MAX_HEARTBEAT_RETRIES, room_id, media_id,
-                                    e
+                                    MAX_HEARTBEAT_RETRIES, room_id, media_id, e
                                 );
                                 last_error = Some(e);
                             }
@@ -869,9 +901,15 @@ impl PublisherManager {
                 if cycle_succeeded {
                     // Cycle succeeded: reset BOTH failure counters.
                     // Any previous partial failures within this cycle are discarded.
-                    entry.consecutive_heartbeat_failures.store(0, Ordering::Release);
+                    entry
+                        .consecutive_heartbeat_failures
+                        .store(0, Ordering::Release);
                     entry.redis_unreachable_cycles.store(0, Ordering::Release);
-                    trace!("Heartbeat cycle succeeded for room {} / media {}", room_id, media_id);
+                    trace!(
+                        "Heartbeat cycle succeeded for room {} / media {}",
+                        room_id,
+                        media_id
+                    );
                 } else {
                     // Cycle failed: ALL retries exhausted with errors.
                     synctv_core::metrics::livestream::PUBLISHER_HEARTBEAT_FAILURES.inc();
@@ -890,8 +928,7 @@ impl PublisherManager {
                         if let Some(redis_err) = e.downcast_ref::<redis::RedisError>() {
                             matches!(
                                 redis_err.kind(),
-                                redis::ErrorKind::Io
-                                    | redis::ErrorKind::ClusterConnectionNotFound
+                                redis::ErrorKind::Io | redis::ErrorKind::ClusterConnectionNotFound
                             )
                         } else {
                             // Fallback for non-redis errors: check for I/O error source
@@ -902,7 +939,10 @@ impl PublisherManager {
                     if is_redis_unreachable {
                         // Redis itself is unreachable — do NOT count toward publisher cleanup threshold.
                         // Use a separate (higher) counter to eventually clean up if Redis stays down.
-                        let redis_failures = entry.redis_unreachable_cycles.fetch_add(1, Ordering::AcqRel) + 1;
+                        let redis_failures = entry
+                            .redis_unreachable_cycles
+                            .fetch_add(1, Ordering::AcqRel)
+                            + 1;
                         if redis_failures >= MAX_CONSECUTIVE_REDIS_UNREACHABLE {
                             error!(
                                 "Redis unreachable for {} consecutive heartbeat cycles for room={} media={}. \
@@ -912,8 +952,11 @@ impl PublisherManager {
                             self.cleanup_publisher(
                                 room_id,
                                 media_id,
-                                &format!("Redis unreachable for {redis_failures} consecutive cycles"),
-                            ).await;
+                                &format!(
+                                    "Redis unreachable for {redis_failures} consecutive cycles"
+                                ),
+                            )
+                            .await;
                         } else {
                             warn!(
                                 "Redis unreachable for heartbeat room={} media={} ({}/{} consecutive). \
@@ -923,7 +966,10 @@ impl PublisherManager {
                         }
                     } else {
                         // Redis reachable but publisher heartbeat failed (possible publisher expiry).
-                        let failures = entry.consecutive_heartbeat_failures.fetch_add(1, Ordering::AcqRel) + 1;
+                        let failures = entry
+                            .consecutive_heartbeat_failures
+                            .fetch_add(1, Ordering::AcqRel)
+                            + 1;
                         if failures >= MAX_CONSECUTIVE_HEARTBEAT_FAILURES {
                             error!(
                                 "Publisher room={} media={} failed {} consecutive heartbeat cycles, cleaning up",
@@ -933,7 +979,8 @@ impl PublisherManager {
                                 room_id,
                                 media_id,
                                 &format!("heartbeat failed {failures} consecutive cycles"),
-                            ).await;
+                            )
+                            .await;
                         } else {
                             warn!(
                                 "Heartbeat cycle failed for room={} media={} ({}/{} consecutive failures)",
@@ -956,15 +1003,19 @@ impl PublisherManager {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::MockStreamRegistry;
+    use super::*;
 
     /// Create a test `PublisherManager` with a dummy `StreamHubEventSender`.
     /// Returns the manager and the corresponding receiver so tests can inspect
     /// events sent on heartbeat failure.
-    fn test_manager(registry: Arc<dyn StreamRegistryTrait>, node_id: &str)
-        -> (PublisherManager, synctv_xiu::streamhub::define::StreamHubEventReceiver)
-    {
+    fn test_manager(
+        registry: Arc<dyn StreamRegistryTrait>,
+        node_id: &str,
+    ) -> (
+        PublisherManager,
+        synctv_xiu::streamhub::define::StreamHubEventReceiver,
+    ) {
         let (tx, rx) = tokio::sync::mpsc::channel(64);
         (PublisherManager::new(registry, node_id.to_string(), tx), rx)
     }
@@ -992,7 +1043,10 @@ mod tests {
     async fn test_handle_publish_success() {
         let registry = Arc::new(MockStreamRegistry::new());
         // Pre-register publisher so handle_publish can look up the entry
-        registry.try_register_publisher("room123", "media456", "test-node-1", "", "").await.unwrap();
+        registry
+            .try_register_publisher("room123", "media456", "test-node-1", "", "")
+            .await
+            .unwrap();
         let (manager, _rx) = test_manager(registry, "test-node-1");
 
         let identifier = StreamIdentifier::Rtmp {
@@ -1032,7 +1086,10 @@ mod tests {
     async fn test_handle_publish_tracks_any_stream() {
         let registry = Arc::new(MockStreamRegistry::new());
         // Pre-register publisher so handle_publish can look up the entry
-        registry.try_register_publisher("room123", "media456", "test-node-1", "", "").await.unwrap();
+        registry
+            .try_register_publisher("room123", "media456", "test-node-1", "", "")
+            .await
+            .unwrap();
         let (manager, _rx) = test_manager(registry, "test-node-1");
 
         let identifier = StreamIdentifier::Rtmp {
@@ -1050,17 +1107,19 @@ mod tests {
 
     /// Helper to insert a publisher entry into the `active_publishers` map.
     fn insert_entry(manager: &PublisherManager, key: &str) {
-        manager.active_publishers.insert(
-            key.to_string(),
-            Arc::new(PublisherEntry::new()),
-        );
+        manager
+            .active_publishers
+            .insert(key.to_string(), Arc::new(PublisherEntry::new()));
     }
 
     #[tokio::test]
     async fn test_reconcile_removes_stale_entries() {
         // Registry has room1:media1 on our node, but NOT room2:media2
         let registry = Arc::new(MockStreamRegistry::new());
-        registry.try_register_publisher("room1", "media1", "test-node", "", "").await.unwrap();
+        registry
+            .try_register_publisher("room1", "media1", "test-node", "", "")
+            .await
+            .unwrap();
 
         let (manager, _rx) = test_manager(registry, "test-node");
 
@@ -1081,7 +1140,10 @@ mod tests {
     async fn test_reconcile_removes_entries_moved_to_other_node() {
         // Registry has room1:media1 but on a DIFFERENT node
         let registry = Arc::new(MockStreamRegistry::new());
-        registry.try_register_publisher("room1", "media1", "other-node", "", "").await.unwrap();
+        registry
+            .try_register_publisher("room1", "media1", "other-node", "", "")
+            .await
+            .unwrap();
 
         let (manager, _rx) = test_manager(registry, "test-node");
 
@@ -1099,8 +1161,14 @@ mod tests {
     async fn test_reconcile_keeps_valid_entries() {
         // Registry has both publishers on our node
         let registry = Arc::new(MockStreamRegistry::new());
-        registry.try_register_publisher("room1", "media1", "test-node", "", "").await.unwrap();
-        registry.try_register_publisher("room2", "media2", "test-node", "", "").await.unwrap();
+        registry
+            .try_register_publisher("room1", "media1", "test-node", "", "")
+            .await
+            .unwrap();
+        registry
+            .try_register_publisher("room2", "media2", "test-node", "", "")
+            .await
+            .unwrap();
 
         let (manager, _rx) = test_manager(registry, "test-node");
 
@@ -1135,7 +1203,10 @@ mod tests {
     async fn test_record_publisher_activity() {
         let registry = Arc::new(MockStreamRegistry::new());
         // Pre-register publisher so handle_publish can look up the entry
-        registry.try_register_publisher("room1", "media1", "test-node", "", "").await.unwrap();
+        registry
+            .try_register_publisher("room1", "media1", "test-node", "", "")
+            .await
+            .unwrap();
         let (manager, _rx) = test_manager(registry, "test-node");
 
         // Insert publisher
@@ -1205,7 +1276,10 @@ mod tests {
 
         // 4. Simulate registry entry being removed (TTL expiry, external cleanup)
         //    but UnPublish event is lost
-        registry.unregister_publisher("room1", "media1").await.unwrap();
+        registry
+            .unregister_publisher("room1", "media1")
+            .await
+            .unwrap();
 
         // 5. Call reregister_all_publishers - this should remove the stale entry
         manager.reregister_all_publishers().await;
@@ -1237,7 +1311,10 @@ mod tests {
         assert_eq!(manager.active_publishers.len(), 1);
 
         // 4. Simulate takeover by another node (ownership change)
-        registry.unregister_publisher("room1", "media1").await.unwrap();
+        registry
+            .unregister_publisher("room1", "media1")
+            .await
+            .unwrap();
         registry
             .try_register_publisher("room1", "media1", "other-node", "user1", "other:50051")
             .await
@@ -1315,10 +1392,16 @@ mod tests {
         assert_eq!(manager.active_publishers.len(), 3);
 
         // 4. Remove room2 from registry (TTL expired)
-        registry.unregister_publisher("room2", "media2").await.unwrap();
+        registry
+            .unregister_publisher("room2", "media2")
+            .await
+            .unwrap();
 
         // 5. Transfer room3 to another node
-        registry.unregister_publisher("room3", "media3").await.unwrap();
+        registry
+            .unregister_publisher("room3", "media3")
+            .await
+            .unwrap();
         registry
             .try_register_publisher("room3", "media3", "other-node", "user1", "other:50051")
             .await
@@ -1331,7 +1414,11 @@ mod tests {
         manager.reregister_all_publishers().await;
 
         // 7. Only room1 should remain
-        assert_eq!(manager.active_publishers.len(), 1, "Only room1 should remain");
+        assert_eq!(
+            manager.active_publishers.len(),
+            1,
+            "Only room1 should remain"
+        );
         assert!(
             manager.active_publishers.contains_key("room1:media1"),
             "room1:media1 should still be tracked"

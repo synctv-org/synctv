@@ -1,7 +1,7 @@
-pub mod rtmp;
-pub mod httpflv;
 pub mod hls;
+pub mod httpflv;
+pub mod rtmp;
 
 pub use self::rtmp::RtmpAuthCallbackImpl;
+pub use hls::{CustomHlsRemuxer, SegmentInfo, StreamProcessorState, StreamRegistry};
 pub use httpflv::HttpFlvSession;
-pub use hls::{CustomHlsRemuxer, StreamRegistry, StreamProcessorState, SegmentInfo};

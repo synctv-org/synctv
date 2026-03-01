@@ -102,7 +102,12 @@ impl MemoryStorageInner {
     }
 
     /// Evict entries until we're under limits for the incoming data.
-    fn evict_if_needed(&mut self, incoming_bytes: usize, max_keys: usize, max_memory_bytes: usize) -> usize {
+    fn evict_if_needed(
+        &mut self,
+        incoming_bytes: usize,
+        max_keys: usize,
+        max_memory_bytes: usize,
+    ) -> usize {
         let mut evicted = 0;
 
         if max_keys > 0 {
@@ -232,7 +237,14 @@ impl HlsStorage for MemoryStorage {
         let write_time = std::time::Instant::now();
         inner.total_bytes += size;
         inner.time_index.insert(seq, key.clone());
-        inner.data.insert(key.clone(), Entry { data, seq, write_time });
+        inner.data.insert(
+            key.clone(),
+            Entry {
+                data,
+                seq,
+                write_time,
+            },
+        );
 
         tracing::trace!("Wrote to memory: {} ({} bytes)", key, size);
 
@@ -273,7 +285,8 @@ impl HlsStorage for MemoryStorage {
         let prefix = format!("{app}/{stream}/");
         let mut inner = self.inner.write();
 
-        let matching_keys: Vec<String> = inner.data
+        let matching_keys: Vec<String> = inner
+            .data
             .keys()
             .filter(|key| key.starts_with(&prefix))
             .cloned()
@@ -301,7 +314,8 @@ impl HlsStorage for MemoryStorage {
         let prefix = format!("{app}/");
         let mut inner = self.inner.write();
 
-        let matching_keys: Vec<String> = inner.data
+        let matching_keys: Vec<String> = inner
+            .data
             .keys()
             .filter(|key| key.starts_with(&prefix))
             .cloned()
@@ -329,17 +343,21 @@ impl HlsStorage for MemoryStorage {
         let mut inner = self.inner.write();
         let cutoff = std::time::Instant::now()
             .checked_sub(older_than)
-            .ok_or_else(|| Error::new(ErrorKind::InvalidInput, "older_than duration is too large"))?;
+            .ok_or_else(|| {
+                Error::new(ErrorKind::InvalidInput, "older_than duration is too large")
+            })?;
 
         // Iterate the time_index BTreeMap from the smallest sequence number.
         // Because sequence numbers and write times are both monotonically
         // increasing, we can stop as soon as we encounter a non-expired entry.
         // This is O(K log N) where K is the number of expired entries, instead
         // of the previous O(N) scan over all entries.
-        let expired_seqs: Vec<u64> = inner.time_index
+        let expired_seqs: Vec<u64> = inner
+            .time_index
             .iter()
             .take_while(|(&seq, _)| {
-                inner.data
+                inner
+                    .data
                     .get(inner.time_index.get(&seq).map_or("", |k| k.as_str()))
                     .is_some_and(|entry| entry.write_time < cutoff)
             })
@@ -376,13 +394,18 @@ mod tests {
         let storage = MemoryStorage::new();
 
         let data = Bytes::from_static(b"test segment data");
-        let result = storage.write("live", "room_123", "segment_0", data.clone()).await;
+        let result = storage
+            .write("live", "room_123", "segment_0", data.clone())
+            .await;
         assert!(result.is_ok());
 
         let read_data = storage.read("live", "room_123", "segment_0").await.unwrap();
         assert_eq!(data, read_data);
 
-        let exists = storage.exists("live", "room_123", "segment_0").await.unwrap();
+        let exists = storage
+            .exists("live", "room_123", "segment_0")
+            .await
+            .unwrap();
         assert!(exists);
 
         assert_eq!(storage.memory_usage().await, data.len());
@@ -391,7 +414,10 @@ mod tests {
         let result = storage.delete("live", "room_123", "segment_0").await;
         assert!(result.is_ok());
 
-        let exists = storage.exists("live", "room_123", "segment_0").await.unwrap();
+        let exists = storage
+            .exists("live", "room_123", "segment_0")
+            .await
+            .unwrap();
         assert!(!exists);
 
         assert_eq!(storage.memory_usage().await, 0);
@@ -402,8 +428,24 @@ mod tests {
     async fn test_memory_storage_clear() {
         let storage = MemoryStorage::new();
 
-        storage.write("live", "room_123", "segment_0", Bytes::from_static(b"data1")).await.unwrap();
-        storage.write("live", "room_456", "segment_0", Bytes::from_static(b"data2")).await.unwrap();
+        storage
+            .write(
+                "live",
+                "room_123",
+                "segment_0",
+                Bytes::from_static(b"data1"),
+            )
+            .await
+            .unwrap();
+        storage
+            .write(
+                "live",
+                "room_456",
+                "segment_0",
+                Bytes::from_static(b"data2"),
+            )
+            .await
+            .unwrap();
 
         assert_eq!(storage.key_count().await, 2);
 
@@ -426,7 +468,10 @@ mod tests {
     async fn test_memory_storage_public_url() {
         let storage = MemoryStorage::new();
 
-        let url = storage.get_public_url("live", "room_123", "segment_0").await.unwrap();
+        let url = storage
+            .get_public_url("live", "room_123", "segment_0")
+            .await
+            .unwrap();
         assert_eq!(url, None);
     }
 
@@ -434,13 +479,25 @@ mod tests {
     async fn test_memory_storage_key_limit_eviction() {
         let storage = MemoryStorage::with_limits(0, 3);
 
-        storage.write("a", "b", "key1", Bytes::from_static(b"data1")).await.unwrap();
-        storage.write("a", "b", "key2", Bytes::from_static(b"data2")).await.unwrap();
-        storage.write("a", "b", "key3", Bytes::from_static(b"data3")).await.unwrap();
+        storage
+            .write("a", "b", "key1", Bytes::from_static(b"data1"))
+            .await
+            .unwrap();
+        storage
+            .write("a", "b", "key2", Bytes::from_static(b"data2"))
+            .await
+            .unwrap();
+        storage
+            .write("a", "b", "key3", Bytes::from_static(b"data3"))
+            .await
+            .unwrap();
         assert_eq!(storage.key_count().await, 3);
 
         // Writing a 4th key should evict the oldest (key1)
-        storage.write("a", "b", "key4", Bytes::from_static(b"data4")).await.unwrap();
+        storage
+            .write("a", "b", "key4", Bytes::from_static(b"data4"))
+            .await
+            .unwrap();
         assert_eq!(storage.key_count().await, 3);
         assert!(!storage.exists("a", "b", "key1").await.unwrap());
         assert!(storage.exists("a", "b", "key4").await.unwrap());
@@ -450,13 +507,22 @@ mod tests {
     async fn test_memory_storage_memory_limit_eviction() {
         let storage = MemoryStorage::with_limits(15, 0);
 
-        storage.write("a", "b", "key1", Bytes::from_static(b"12345")).await.unwrap(); // 5 bytes
-        storage.write("a", "b", "key2", Bytes::from_static(b"12345")).await.unwrap(); // 5 bytes, total 10
+        storage
+            .write("a", "b", "key1", Bytes::from_static(b"12345"))
+            .await
+            .unwrap(); // 5 bytes
+        storage
+            .write("a", "b", "key2", Bytes::from_static(b"12345"))
+            .await
+            .unwrap(); // 5 bytes, total 10
         assert_eq!(storage.key_count().await, 2);
         assert_eq!(storage.memory_usage().await, 10);
 
         // Writing 10 more bytes would exceed 15 byte limit, oldest (key1) should be evicted
-        storage.write("a", "b", "key3", Bytes::from_static(b"1234567890")).await.unwrap(); // 10 bytes
+        storage
+            .write("a", "b", "key3", Bytes::from_static(b"1234567890"))
+            .await
+            .unwrap(); // 10 bytes
         assert!(storage.memory_usage().await <= 15);
         assert!(!storage.exists("a", "b", "key1").await.unwrap());
         assert!(storage.exists("a", "b", "key3").await.unwrap());
@@ -466,7 +532,9 @@ mod tests {
     async fn test_memory_storage_reject_oversized() {
         let storage = MemoryStorage::with_limits(10, 0);
 
-        let result = storage.write("a", "b", "big", Bytes::from(vec![0u8; 20])).await;
+        let result = storage
+            .write("a", "b", "big", Bytes::from(vec![0u8; 20]))
+            .await;
         assert!(result.is_err());
         assert_eq!(result.unwrap_err().kind(), ErrorKind::InvalidInput);
     }
@@ -488,11 +556,17 @@ mod tests {
     async fn test_memory_storage_overwrite_key() {
         let storage = MemoryStorage::with_limits(100, 0);
 
-        storage.write("a", "b", "key1", Bytes::from_static(b"hello")).await.unwrap();
+        storage
+            .write("a", "b", "key1", Bytes::from_static(b"hello"))
+            .await
+            .unwrap();
         assert_eq!(storage.memory_usage().await, 5);
 
         // Overwriting same key should update data and not double-count memory
-        storage.write("a", "b", "key1", Bytes::from_static(b"world!")).await.unwrap();
+        storage
+            .write("a", "b", "key1", Bytes::from_static(b"world!"))
+            .await
+            .unwrap();
         assert_eq!(storage.memory_usage().await, 6);
         assert_eq!(storage.key_count().await, 1);
 
@@ -504,9 +578,18 @@ mod tests {
     async fn test_memory_storage_delete_app_stream() {
         let storage = MemoryStorage::new();
 
-        storage.write("app1", "stream1", "seg0", Bytes::from_static(b"d0")).await.unwrap();
-        storage.write("app1", "stream1", "seg1", Bytes::from_static(b"d1")).await.unwrap();
-        storage.write("app1", "stream2", "seg0", Bytes::from_static(b"d2")).await.unwrap();
+        storage
+            .write("app1", "stream1", "seg0", Bytes::from_static(b"d0"))
+            .await
+            .unwrap();
+        storage
+            .write("app1", "stream1", "seg1", Bytes::from_static(b"d1"))
+            .await
+            .unwrap();
+        storage
+            .write("app1", "stream2", "seg0", Bytes::from_static(b"d2"))
+            .await
+            .unwrap();
 
         let deleted = storage.delete_app_stream("app1", "stream1").await.unwrap();
         assert_eq!(deleted, 2);
@@ -520,9 +603,18 @@ mod tests {
     async fn test_memory_storage_delete_app() {
         let storage = MemoryStorage::new();
 
-        storage.write("app1", "stream1", "seg0", Bytes::from_static(b"d0")).await.unwrap();
-        storage.write("app1", "stream2", "seg0", Bytes::from_static(b"d1")).await.unwrap();
-        storage.write("app2", "stream1", "seg0", Bytes::from_static(b"d2")).await.unwrap();
+        storage
+            .write("app1", "stream1", "seg0", Bytes::from_static(b"d0"))
+            .await
+            .unwrap();
+        storage
+            .write("app1", "stream2", "seg0", Bytes::from_static(b"d1"))
+            .await
+            .unwrap();
+        storage
+            .write("app2", "stream1", "seg0", Bytes::from_static(b"d2"))
+            .await
+            .unwrap();
 
         let deleted = storage.delete_app("app1").await.unwrap();
         assert_eq!(deleted, 2);

@@ -1,10 +1,10 @@
 //! Test fixtures (users, rooms, etc.)
 
+use chrono::Utc;
 use synctv_core::{
-    models::{User, UserId, UserRole, UserStatus, SignupMethod, Room, RoomId},
+    models::{Room, RoomId, SignupMethod, User, UserId, UserRole, UserStatus},
     service::auth::password::hash_password,
 };
-use chrono::Utc;
 
 /// Builder pattern for creating test users
 ///
@@ -65,21 +65,21 @@ impl TestUser {
     }
 
     /// Sets the user role
-    #[must_use] 
+    #[must_use]
     pub const fn with_role(mut self, role: UserRole) -> Self {
         self.role = role;
         self
     }
 
     /// Sets the user status
-    #[must_use] 
+    #[must_use]
     pub const fn with_status(mut self, status: UserStatus) -> Self {
         self.status = status;
         self
     }
 
     /// Sets email verification status
-    #[must_use] 
+    #[must_use]
     pub const fn with_email_verified(mut self, verified: bool) -> Self {
         self.email_verified = verified;
         self
@@ -89,9 +89,12 @@ impl TestUser {
     ///
     /// Note: This is a synchronous method for password hashing.
     /// In async tests, use `build_async` instead.
-    #[must_use] 
+    #[must_use]
     pub fn build(self) -> User {
-        let password_hash = self.password.as_ref().map_or_else(|| "default_hash".to_string(), |pwd| format!("hashed_{pwd}"));
+        let password_hash = self
+            .password
+            .as_ref()
+            .map_or_else(|| "default_hash".to_string(), |pwd| format!("hashed_{pwd}"));
 
         User {
             id: UserId::new(),
@@ -190,14 +193,14 @@ impl TestRoom {
     }
 
     /// Sets the creator user ID
-    #[must_use] 
+    #[must_use]
     pub fn with_creator(mut self, created_by: UserId) -> Self {
         self.created_by = created_by;
         self
     }
 
     /// Sets the room status
-    #[must_use] 
+    #[must_use]
     pub const fn with_status(mut self, status: synctv_core::models::RoomStatus) -> Self {
         self.status = status;
         self
@@ -210,7 +213,7 @@ impl TestRoom {
     }
 
     /// Builds the Room model
-    #[must_use] 
+    #[must_use]
     pub fn build(self) -> Room {
         let now = Utc::now();
         Room {

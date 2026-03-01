@@ -25,7 +25,10 @@ use axum::{
 };
 use futures::{SinkExt, StreamExt};
 use serde::Deserialize;
-use std::sync::{Arc, atomic::{AtomicU32, Ordering}};
+use std::sync::{
+    atomic::{AtomicU32, Ordering},
+    Arc,
+};
 use tracing::{error, info, warn};
 
 use crate::http::{AppError, AppState};
@@ -293,11 +296,11 @@ impl WebSocketMessageSender {
 const fn is_critical_message(message: &ServerMessage) -> bool {
     use crate::proto::client::server_message::Message;
     match &message.message {
-        Some(Message::PlaybackState(_)) => true,     // Playback state sync
-        Some(Message::PlayingChanged(_)) => true,    // Playing media changed
-        Some(Message::Error(_)) => true,             // kick/ban/room deleted arrive as Error
+        Some(Message::PlaybackState(_)) => true, // Playback state sync
+        Some(Message::PlayingChanged(_)) => true, // Playing media changed
+        Some(Message::Error(_)) => true,         // kick/ban/room deleted arrive as Error
         Some(Message::PermissionChanged(_)) => true, // Permission changes must be delivered
-        Some(Message::RoomSettings(_)) => true,      // Room settings sync
+        Some(Message::RoomSettings(_)) => true,  // Room settings sync
         _ => false,
     }
 }
@@ -453,9 +456,7 @@ pub async fn websocket_handler(
         .member_service()
         .is_member(&rid, &user_id)
         .await
-        .map_err(|e| {
-            AppError::internal_server_error(format!("Failed to check membership: {e}"))
-        })?;
+        .map_err(|e| AppError::internal_server_error(format!("Failed to check membership: {e}")))?;
 
     if !is_member {
         return Err(AppError::forbidden("Not a member of this room"));
@@ -466,9 +467,7 @@ pub async fn websocket_handler(
         .room_service
         .get_room(&rid)
         .await
-        .map_err(|e| {
-            AppError::internal_server_error(format!("Failed to fetch room: {e}"))
-        })?;
+        .map_err(|e| AppError::internal_server_error(format!("Failed to fetch room: {e}")))?;
 
     if room.is_banned {
         return Err(AppError::forbidden("This room has been banned"));
@@ -476,7 +475,9 @@ pub async fn websocket_handler(
 
     // Reject connections to closed rooms
     if room.status.is_closed() {
-        return Err(AppError::forbidden("This room is closed and not accepting new connections"));
+        return Err(AppError::forbidden(
+            "This room is closed and not accepting new connections",
+        ));
     }
 
     // R-5: Verify ClusterManager is available BEFORE upgrading. Without it the
@@ -499,14 +500,18 @@ pub async fn websocket_handler(
     // This prevents users from exceeding their connection limit by upgrading
     // and then being disconnected. The check happens here to return HTTP 429
     // (Too Many Requests) instead of HTTP 101 (Switching Protocols).
-    if let Err(e) = state.connection_manager.can_accept_user_connection(&user_id) {
+    if let Err(e) = state
+        .connection_manager
+        .can_accept_user_connection(&user_id)
+    {
         // Return HTTP 429 Too Many Requests for capacity limit
         return Err(AppError::too_many_requests(e));
     }
 
     // Authentication and membership verified, upgrade to WebSocket
     // Limit max message size to 64KB (default is 64MB which is excessive for signaling)
-    Ok(ws.max_message_size(64 * 1024)
+    Ok(ws
+        .max_message_size(64 * 1024)
         .on_upgrade(move |socket| handle_socket(socket, state, room_id, user_id)))
 }
 
@@ -576,7 +581,13 @@ async fn handle_socket(
         rate_limit_config,
         content_filter,
         ws_sender_for_handler,
-    ).with_ws_message_rate_limit(state.config.connection_limits.ws_message_rate_limit_per_second);
+    )
+    .with_ws_message_rate_limit(
+        state
+            .config
+            .connection_limits
+            .ws_message_rate_limit_per_second,
+    );
 
     // Split WebSocket into sender and receiver
     let (mut ws_sender_sink, ws_receiver) = socket.split();
@@ -585,10 +596,7 @@ async fn handle_socket(
     let is_alive_clone = is_alive.clone();
     tokio::spawn(async move {
         while let Some(msg) = rx.recv().await {
-            if let Err(e) = ws_sender_sink
-                .send(msg)
-                .await
-            {
+            if let Err(e) = ws_sender_sink.send(msg).await {
                 error!("Failed to send WebSocket message: {}", e);
                 is_alive_clone.store(false, std::sync::atomic::Ordering::Relaxed);
                 break;
@@ -740,10 +748,7 @@ mod tests {
     #[test]
     fn test_auth_priority_header_present_in_header_map() {
         let mut headers = HeaderMap::new();
-        headers.insert(
-            "Authorization",
-            "Bearer some_jwt_token".parse().unwrap(),
-        );
+        headers.insert("Authorization", "Bearer some_jwt_token".parse().unwrap());
 
         // When Authorization header is present, it should be checked first
         let auth_header = headers.get("Authorization");
@@ -757,10 +762,7 @@ mod tests {
     #[test]
     fn test_auth_priority_no_bearer_prefix_in_header() {
         let mut headers = HeaderMap::new();
-        headers.insert(
-            "Authorization",
-            "Basic dXNlcjpwYXNz".parse().unwrap(),
-        );
+        headers.insert("Authorization", "Basic dXNlcjpwYXNz".parse().unwrap());
 
         // Non-Bearer auth should not extract a token
         let auth_header = headers.get("Authorization").unwrap();

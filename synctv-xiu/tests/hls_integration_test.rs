@@ -120,7 +120,10 @@ fn test_m3u8_discontinuity() {
 
     let discontinuity_pos = m3u8.find("#EXT-X-DISCONTINUITY").unwrap();
     let seg1_pos = m3u8.find("/hls/seg1.ts").unwrap();
-    assert!(discontinuity_pos < seg1_pos, "Discontinuity tag should appear before seg1");
+    assert!(
+        discontinuity_pos < seg1_pos,
+        "Discontinuity tag should appear before seg1"
+    );
 }
 
 /// Test 4: M3U8 with custom URL generator (auth tokens)
@@ -146,9 +149,7 @@ fn test_m3u8_custom_url_generator() {
     };
 
     let token = "secret-jwt-token";
-    let m3u8 = state.generate_m3u8(|ts_name| {
-        format!("/api/hls/data/{ts_name}?token={token}")
-    });
+    let m3u8 = state.generate_m3u8(|ts_name| format!("/api/hls/data/{ts_name}?token={token}"));
 
     // Verify custom URL with auth token
     assert!(m3u8.contains("/api/hls/data/seg0.ts?token=secret-jwt-token"));
@@ -384,5 +385,8 @@ fn test_m3u8_multiple_discontinuities() {
 
     // Count discontinuity markers
     let discontinuity_count = m3u8.matches("#EXT-X-DISCONTINUITY").count();
-    assert_eq!(discontinuity_count, 2, "Should have 2 discontinuity markers");
+    assert_eq!(
+        discontinuity_count, 2,
+        "Should have 2 discontinuity markers"
+    );
 }

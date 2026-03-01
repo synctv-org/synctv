@@ -5,21 +5,26 @@
 //! Run with: cargo test -p synctv-core --test `media_cache_invalidation_tests` -- --nocapture
 #![allow(clippy::unwrap_used)]
 
+use chrono::Utc;
+use serde_json::json;
 use std::sync::Arc;
-use synctv_core_testing::{create_test_pool};
+use std::time::Duration;
 use synctv_core::{
-    models::{Room, RoomId, RoomMember, RoomRole, MemberStatus, RoomStatus, UserId, User, UserRole, UserStatus, Playlist, PlaylistId},
-    repository::{UserRepository, RoomRepository, RoomMemberRepository, PlaylistRepository, MediaRepository},
+    models::{
+        MemberStatus, Playlist, PlaylistId, Room, RoomId, RoomMember, RoomRole, RoomStatus, User,
+        UserId, UserRole, UserStatus,
+    },
+    repository::{
+        MediaRepository, PlaylistRepository, RoomMemberRepository, RoomRepository, UserRepository,
+    },
     service::{
-        media::{MediaService, AddMediaRequest, EditMediaRequest},
-        permission::PermissionService,
+        media::{AddMediaRequest, EditMediaRequest, MediaService},
         notification::NotificationService,
+        permission::PermissionService,
         ProvidersManager,
     },
 };
-use chrono::Utc;
-use serde_json::json;
-use std::time::Duration;
+use synctv_core_testing::create_test_pool;
 
 /// Default `PostgreSQL` version for test containers
 fn make_user(username: &str) -> User {
@@ -55,21 +60,24 @@ async fn test_edit_media_sends_notification() {
 
     // Create test data
     let owner = user_repo.create(&make_user("test_owner")).await.unwrap();
-    let room = room_repo.create(&{
-        let now = Utc::now();
-        Room {
-            id: RoomId::new(),
-            name: "Test Room".to_string(),
-            description: String::new(),
-            created_by: owner.id.clone(),
-            status: RoomStatus::Active,
-            is_banned: false,
-            created_at: now,
-            updated_at: now,
-            deleted_at: None,
-            version: 0,
-        }
-    }).await.unwrap();
+    let room = room_repo
+        .create(&{
+            let now = Utc::now();
+            Room {
+                id: RoomId::new(),
+                name: "Test Room".to_string(),
+                description: String::new(),
+                created_by: owner.id.clone(),
+                status: RoomStatus::Active,
+                is_banned: false,
+                created_at: now,
+                updated_at: now,
+                deleted_at: None,
+                version: 0,
+            }
+        })
+        .await
+        .unwrap();
 
     // Add room owner as a member so permission checks pass
     let member_repo_setup = RoomMemberRepository::new(pool.clone());
@@ -89,25 +97,31 @@ async fn test_edit_media_sends_notification() {
         banned_by: None,
         banned_reason: None,
     };
-    member_repo_setup.add(&owner_member).await.expect("Failed to add owner as room member");
+    member_repo_setup
+        .add(&owner_member)
+        .await
+        .expect("Failed to add owner as room member");
 
-    let playlist = playlist_repo.create(&{
-        let now = Utc::now();
-        Playlist {
-            id: PlaylistId::new(),
-            room_id: room.id.clone(),
-            creator_id: Some(owner.id.clone()),
-            name: String::new(),
-            parent_id: None,
-            position: 0,
-            source_provider: None,
-            source_config: None,
-            provider_instance_name: None,
-            created_at: now,
-            updated_at: now,
-            version: 0,
-        }
-    }).await.unwrap();
+    let playlist = playlist_repo
+        .create(&{
+            let now = Utc::now();
+            Playlist {
+                id: PlaylistId::new(),
+                room_id: room.id.clone(),
+                creator_id: Some(owner.id.clone()),
+                name: String::new(),
+                parent_id: None,
+                position: 0,
+                source_provider: None,
+                source_config: None,
+                provider_instance_name: None,
+                created_at: now,
+                updated_at: now,
+                version: 0,
+            }
+        })
+        .await
+        .unwrap();
 
     // Create a mock notification service that tracks calls
     use std::sync::atomic::{AtomicBool, Ordering};
@@ -184,7 +198,8 @@ async fn test_edit_media_sends_notification() {
     };
     provider_repo.create(&provider).await.unwrap();
 
-    let provider_instance_repo = synctv_core::repository::ProviderInstanceRepository::new(pool.clone());
+    let provider_instance_repo =
+        synctv_core::repository::ProviderInstanceRepository::new(pool.clone());
     let remote_provider_manager = synctv_core::service::RemoteProviderManager::new(
         Arc::new(provider_instance_repo),
         None, // No Redis
@@ -244,7 +259,12 @@ async fn test_edit_media_sends_notification() {
         match result {
             Ok(Ok((notif_room_id, event))) => {
                 assert_eq!(notif_room_id, room.id);
-                if let synctv_core::service::notification::RoomEvent::MediaUpdated { media_id, title, .. } = event {
+                if let synctv_core::service::notification::RoomEvent::MediaUpdated {
+                    media_id,
+                    title,
+                    ..
+                } = event
+                {
                     assert_eq!(media_id, media.id.as_str());
                     assert_eq!(title, "Updated Media");
                     found_update = true;
@@ -258,7 +278,10 @@ async fn test_edit_media_sends_notification() {
     }
     assert!(found_update, "Expected to receive MediaUpdated event");
 
-    assert!(notification_sent.load(Ordering::Acquire), "Mock broadcaster should have been called");
+    assert!(
+        notification_sent.load(Ordering::Acquire),
+        "Mock broadcaster should have been called"
+    );
 }
 
 // ========== Test: Media edit without notification service doesn't panic ==========
@@ -274,21 +297,24 @@ async fn test_edit_media_without_notification_service_succeeds() {
 
     // Create test data
     let owner = user_repo.create(&make_user("test_owner2")).await.unwrap();
-    let room = room_repo.create(&{
-        let now = Utc::now();
-        Room {
-            id: RoomId::new(),
-            name: "Test Room 2".to_string(),
-            description: String::new(),
-            created_by: owner.id.clone(),
-            status: RoomStatus::Active,
-            is_banned: false,
-            created_at: now,
-            updated_at: now,
-            deleted_at: None,
-            version: 0,
-        }
-    }).await.unwrap();
+    let room = room_repo
+        .create(&{
+            let now = Utc::now();
+            Room {
+                id: RoomId::new(),
+                name: "Test Room 2".to_string(),
+                description: String::new(),
+                created_by: owner.id.clone(),
+                status: RoomStatus::Active,
+                is_banned: false,
+                created_at: now,
+                updated_at: now,
+                deleted_at: None,
+                version: 0,
+            }
+        })
+        .await
+        .unwrap();
 
     // Add room owner as a member so permission checks pass
     let member_repo_setup = RoomMemberRepository::new(pool.clone());
@@ -308,25 +334,31 @@ async fn test_edit_media_without_notification_service_succeeds() {
         banned_by: None,
         banned_reason: None,
     };
-    member_repo_setup.add(&owner_member).await.expect("Failed to add owner as room member");
+    member_repo_setup
+        .add(&owner_member)
+        .await
+        .expect("Failed to add owner as room member");
 
-    let playlist = playlist_repo.create(&{
-        let now = Utc::now();
-        Playlist {
-            id: PlaylistId::new(),
-            room_id: room.id.clone(),
-            creator_id: Some(owner.id.clone()),
-            name: String::new(),
-            parent_id: None,
-            position: 0,
-            source_provider: None,
-            source_config: None,
-            provider_instance_name: None,
-            created_at: now,
-            updated_at: now,
-            version: 0,
-        }
-    }).await.unwrap();
+    let playlist = playlist_repo
+        .create(&{
+            let now = Utc::now();
+            Playlist {
+                id: PlaylistId::new(),
+                room_id: room.id.clone(),
+                creator_id: Some(owner.id.clone()),
+                name: String::new(),
+                parent_id: None,
+                position: 0,
+                source_provider: None,
+                source_config: None,
+                provider_instance_name: None,
+                created_at: now,
+                updated_at: now,
+                version: 0,
+            }
+        })
+        .await
+        .unwrap();
 
     // Create media service WITHOUT notification
     let member_repo = synctv_core::repository::RoomMemberRepository::new(pool.clone());
@@ -356,7 +388,8 @@ async fn test_edit_media_without_notification_service_succeeds() {
     };
     provider_repo.create(&provider).await.unwrap();
 
-    let provider_instance_repo = synctv_core::repository::ProviderInstanceRepository::new(pool.clone());
+    let provider_instance_repo =
+        synctv_core::repository::ProviderInstanceRepository::new(pool.clone());
     let remote_provider_manager = synctv_core::service::RemoteProviderManager::new(
         Arc::new(provider_instance_repo),
         None, // No Redis

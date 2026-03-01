@@ -12,20 +12,20 @@
 
 use std::sync::Arc;
 
-use synctv_core_testing::{create_test_pool};
+use chrono::Utc;
+use sqlx::PgPool;
 use synctv_core::{
     cache::{KeyBuilder, NoopCacheL2, UsernameCache},
     config::PasswordComplexityConfig,
-    models::{RoomRole, UserId, User, UserRole, UserStatus},
+    models::{RoomRole, User, UserId, UserRole, UserStatus},
     repository::UserRepository,
     service::{
-        RoomService, UserService, InMemoryTokenBlacklistStore,
         auth::{BruteForceProtection, JwtService},
+        InMemoryTokenBlacklistStore, RoomService, UserService,
     },
     Error,
 };
-use chrono::Utc;
-use sqlx::PgPool;
+use synctv_core_testing::create_test_pool;
 // ============================================================================
 // Test Infrastructure
 // ============================================================================
@@ -414,10 +414,7 @@ async fn test_room_creator_permissions_vs_user_role() {
         .unwrap();
 
     // Creator has ALL permissions in the room, regardless of global role
-    assert!(
-        perms.0 != 0,
-        "Room Creator should have permissions in room"
-    );
+    assert!(perms.0 != 0, "Room Creator should have permissions in room");
 }
 
 #[tokio::test]
@@ -645,7 +642,12 @@ async fn test_admin_can_manage_room_with_banned_creator() {
     // Promote admin to room admin role
     room_service
         .member_service()
-        .set_member_role(room.id.clone(), creator.id.clone(), admin.id.clone(), RoomRole::Admin)
+        .set_member_role(
+            room.id.clone(),
+            creator.id.clone(),
+            admin.id.clone(),
+            RoomRole::Admin,
+        )
         .await
         .unwrap();
 

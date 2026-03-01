@@ -100,16 +100,17 @@ impl reqwest::dns::Resolve for SsrfSafeDnsResolver {
             let addrs: Vec<SocketAddr> = tokio::net::lookup_host((host, 0))
                 .await
                 .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> {
-                    Box::new(std::io::Error::other(
-                        format!("DNS lookup failed for {host}: {e}"),
-                    ))
+                    Box::new(std::io::Error::other(format!(
+                        "DNS lookup failed for {host}: {e}"
+                    )))
                 })?
                 .collect();
 
             if addrs.is_empty() {
-                return Err(Box::new(std::io::Error::other(
-                    format!("DNS lookup for {host} returned no addresses"),
-                )) as Box<dyn std::error::Error + Send + Sync>);
+                return Err(Box::new(std::io::Error::other(format!(
+                    "DNS lookup for {host} returned no addresses"
+                )))
+                    as Box<dyn std::error::Error + Send + Sync>);
             }
 
             // Filter out blocked IPs; if all are blocked, return an error.
@@ -119,9 +120,10 @@ impl reqwest::dns::Resolve for SsrfSafeDnsResolver {
                 .collect();
 
             if safe_addrs.is_empty() {
-                return Err(Box::new(std::io::Error::other(
-                    format!("All resolved IPs for {host} are private/reserved (SSRF blocked)"),
-                )) as Box<dyn std::error::Error + Send + Sync>);
+                return Err(Box::new(std::io::Error::other(format!(
+                    "All resolved IPs for {host} are private/reserved (SSRF blocked)"
+                )))
+                    as Box<dyn std::error::Error + Send + Sync>);
             }
 
             Ok(Box::new(safe_addrs.into_iter()) as reqwest::dns::Addrs)
@@ -147,7 +149,7 @@ static PROXY_CLIENT: LazyLock<reqwest::Client> = LazyLock::new(|| {
         .timeout(REQUEST_TIMEOUT)
         .read_timeout(BODY_READ_TIMEOUT)
         .redirect(reqwest::redirect::Policy::none())
-        .pool_max_idle_per_host(100)  // Increased from 20 to support high concurrency
+        .pool_max_idle_per_host(100) // Increased from 20 to support high concurrency
         .pool_idle_timeout(Duration::from_secs(30))
         .build()
         .unwrap_or_else(|e| {
@@ -303,33 +305,39 @@ async fn proxy_fetch_and_forward_inner(cfg: ProxyConfig<'_>) -> Result<Response,
     // Retry only on specific retryable 5xx server errors (500, 502, 503, 504).
     // We only retry once to avoid excessive latency for the client.
     // A delay is added before retry to avoid hammering struggling upstream servers.
-    let (proxy_response, followed_redirects) = if is_retryable_status(proxy_result.response.status()) {
-        let retry_delay = calculate_retry_delay();
-        tracing::warn!(
-            status = %proxy_result.response.status(),
-            url = %cfg.url,
-            retry_delay_ms = retry_delay.as_millis(),
-            "Upstream returned retryable server error, retrying once after delay"
-        );
-        tokio::time::sleep(retry_delay).await;
+    let (proxy_response, followed_redirects) =
+        if is_retryable_status(proxy_result.response.status()) {
+            let retry_delay = calculate_retry_delay();
+            tracing::warn!(
+                status = %proxy_result.response.status(),
+                url = %cfg.url,
+                retry_delay_ms = retry_delay.as_millis(),
+                "Upstream returned retryable server error, retrying once after delay"
+            );
+            tokio::time::sleep(retry_delay).await;
 
-        let mut retry_req = PROXY_CLIENT.get(cfg.url);
-        for (name, value) in cfg.client_headers {
-            if matches!(
-                name.as_str(),
-                "range" | "if-none-match" | "if-modified-since" | "accept" | "accept-language" | "user-agent"
-            ) {
-                if let Ok(v) = value.to_str() {
-                    retry_req = retry_req.header(name.as_str(), v);
+            let mut retry_req = PROXY_CLIENT.get(cfg.url);
+            for (name, value) in cfg.client_headers {
+                if matches!(
+                    name.as_str(),
+                    "range"
+                        | "if-none-match"
+                        | "if-modified-since"
+                        | "accept"
+                        | "accept-language"
+                        | "user-agent"
+                ) {
+                    if let Ok(v) = value.to_str() {
+                        retry_req = retry_req.header(name.as_str(), v);
+                    }
                 }
             }
-        }
-        retry_req = apply_provider_headers(retry_req, cfg.url, cfg.provider_headers);
-        let retry_result = send_with_redirect_validation(retry_req).await?;
-        (retry_result.response, retry_result.followed_redirects)
-    } else {
-        (proxy_result.response, proxy_result.followed_redirects)
-    };
+            retry_req = apply_provider_headers(retry_req, cfg.url, cfg.provider_headers);
+            let retry_result = send_with_redirect_validation(retry_req).await?;
+            (retry_result.response, retry_result.followed_redirects)
+        } else {
+            (proxy_result.response, proxy_result.followed_redirects)
+        };
 
     let status = proxy_response.status();
     let response_headers = proxy_response.headers().clone();
@@ -356,13 +364,14 @@ async fn proxy_fetch_and_forward_inner(cfg: ProxyConfig<'_>) -> Result<Response,
     // content-encoding unconditionally because the body is already decoded.
     // Use contains() to handle multiple encodings like "gzip, deflate" or "br, gzip".
     // This correctly handles cases where servers return multiple encodings.
-    let reqwest_auto_decompressed = followed_redirects || response_headers
-        .get("content-encoding")
-        .and_then(|v| v.to_str().ok())
-        .is_some_and(|ce| {
-            let ce_lower = ce.to_lowercase();
-            ce_lower.contains("gzip") || ce_lower.contains("deflate") || ce_lower.contains("br")
-        });
+    let reqwest_auto_decompressed = followed_redirects
+        || response_headers
+            .get("content-encoding")
+            .and_then(|v| v.to_str().ok())
+            .is_some_and(|ce| {
+                let ce_lower = ce.to_lowercase();
+                ce_lower.contains("gzip") || ce_lower.contains("deflate") || ce_lower.contains("br")
+            });
 
     let mut builder = Response::builder().status(status);
 
@@ -406,7 +415,9 @@ async fn proxy_fetch_and_forward_inner(cfg: ProxyConfig<'_>) -> Result<Response,
         .get("content-type")
         .and_then(|v| v.to_str().ok())
     {
-        Some(ct) if ct.contains("video/") || ct.contains("audio/") || ct.contains("octet-stream") => {
+        Some(ct)
+            if ct.contains("video/") || ct.contains("audio/") || ct.contains("octet-stream") =>
+        {
             "public, max-age=86400, immutable"
         }
         _ => "no-cache",
@@ -485,7 +496,12 @@ pub async fn proxy_m3u8_and_rewrite(
 
     let m3u8_bytes = tokio::time::timeout(BODY_READ_TIMEOUT, proxy_response.bytes())
         .await
-        .map_err(|_| anyhow::anyhow!("M3U8 body read timed out after {}s", BODY_READ_TIMEOUT.as_secs()))?
+        .map_err(|_| {
+            anyhow::anyhow!(
+                "M3U8 body read timed out after {}s",
+                BODY_READ_TIMEOUT.as_secs()
+            )
+        })?
         .map_err(|e| anyhow::anyhow!("Failed to read M3U8 body: {e}"))?;
 
     if m3u8_bytes.len() > MAX_MANIFEST_SIZE {
@@ -534,11 +550,17 @@ pub async fn proxy_options_preflight() -> impl IntoResponse {
         [
             ("Access-Control-Allow-Origin", "*"),
             ("Access-Control-Allow-Methods", "GET, OPTIONS"),
-            ("Access-Control-Allow-Headers", "Authorization, Content-Type, Accept, Range"),
+            (
+                "Access-Control-Allow-Headers",
+                "Authorization, Content-Type, Accept, Range",
+            ),
             ("Access-Control-Max-Age", "86400"),
             // Deprecation warning header to alert developers
             ("Deprecation", "true"),
-            ("X-Deprecated", "Use proxy_options_preflight_with_cors with explicit CORS config"),
+            (
+                "X-Deprecated",
+                "Use proxy_options_preflight_with_cors with explicit CORS config",
+            ),
         ],
     )
 }
@@ -579,9 +601,7 @@ pub struct RateLimiter {
     window: Duration,
     /// Map of IP addresses to (count, `window_start`).
     /// Uses `DashMap` for concurrent access.
-    counters: std::sync::Arc<
-        dashmap::DashMap<String, (usize, std::time::Instant)>
-    >,
+    counters: std::sync::Arc<dashmap::DashMap<String, (usize, std::time::Instant)>>,
 }
 
 impl RateLimiter {
@@ -606,7 +626,7 @@ impl RateLimiter {
     /// `false` if the limit has been exceeded.
     ///
     /// This method is thread-safe and can be called from multiple threads.
-    #[must_use] 
+    #[must_use]
     pub fn check(&self, ip: &str) -> bool {
         let now = std::time::Instant::now();
 
@@ -638,7 +658,7 @@ impl RateLimiter {
 
     /// Get the current count for an IP (for testing/debugging).
     #[cfg(test)]
-    #[must_use] 
+    #[must_use]
     pub fn get_count(&self, ip: &str) -> Option<usize> {
         self.counters.get(ip).map(|e| e.value().0)
     }
@@ -681,11 +701,17 @@ pub async fn proxy_options_preflight_rate_limited(
         .status(StatusCode::NO_CONTENT)
         .header("Access-Control-Allow-Origin", "*")
         .header("Access-Control-Allow-Methods", "GET, OPTIONS")
-        .header("Access-Control-Allow-Headers", "Authorization, Content-Type, Accept, Range")
+        .header(
+            "Access-Control-Allow-Headers",
+            "Authorization, Content-Type, Accept, Range",
+        )
         .header("Access-Control-Max-Age", "86400")
         // Deprecation warning header
         .header("Deprecation", "true")
-        .header("X-Deprecated", "Use proxy_options_preflight_rate_limited_with_cors")
+        .header(
+            "X-Deprecated",
+            "Use proxy_options_preflight_rate_limited_with_cors",
+        )
         .body(Body::empty())
         .expect("Failed to build preflight response")
 }
@@ -736,7 +762,10 @@ pub async fn proxy_options_preflight_rate_limited_with_cors(
             .status(StatusCode::NO_CONTENT)
             .header("Access-Control-Allow-Origin", "*")
             .header("Access-Control-Allow-Methods", "GET, OPTIONS")
-            .header("Access-Control-Allow-Headers", "Authorization, Content-Type, Accept, Range")
+            .header(
+                "Access-Control-Allow-Headers",
+                "Authorization, Content-Type, Accept, Range",
+            )
             .header("Access-Control-Max-Age", "86400")
             .body(Body::empty())
             .expect("Failed to build wildcard CORS response");
@@ -748,7 +777,10 @@ pub async fn proxy_options_preflight_rate_limited_with_cors(
         return Response::builder()
             .status(StatusCode::NO_CONTENT)
             .header("Access-Control-Allow-Methods", "GET, OPTIONS")
-            .header("Access-Control-Allow-Headers", "Authorization, Content-Type, Accept, Range")
+            .header(
+                "Access-Control-Allow-Headers",
+                "Authorization, Content-Type, Accept, Range",
+            )
             .header("Access-Control-Max-Age", "86400")
             .body(Body::empty())
             .expect("Failed to build no-origin CORS response");
@@ -768,7 +800,10 @@ pub async fn proxy_options_preflight_rate_limited_with_cors(
         .status(StatusCode::NO_CONTENT)
         .header("Access-Control-Allow-Origin", origin)
         .header("Access-Control-Allow-Methods", "GET, OPTIONS")
-        .header("Access-Control-Allow-Headers", "Authorization, Content-Type, Accept, Range")
+        .header(
+            "Access-Control-Allow-Headers",
+            "Authorization, Content-Type, Accept, Range",
+        )
         .header("Access-Control-Allow-Credentials", "true")
         .header("Access-Control-Max-Age", "86400")
         .header("Vary", "Origin")
@@ -839,7 +874,7 @@ impl CorsConfig {
 
     /// Check if wildcard mode is enabled.
     #[cfg(test)]
-    #[must_use] 
+    #[must_use]
     pub const fn is_wildcard(&self) -> bool {
         self.wildcard
     }
@@ -871,7 +906,10 @@ pub async fn proxy_options_preflight_with_cors(
             .status(StatusCode::NO_CONTENT)
             .header("Access-Control-Allow-Origin", "*")
             .header("Access-Control-Allow-Methods", "GET, OPTIONS")
-            .header("Access-Control-Allow-Headers", "Authorization, Content-Type, Accept, Range")
+            .header(
+                "Access-Control-Allow-Headers",
+                "Authorization, Content-Type, Accept, Range",
+            )
             .header("Access-Control-Max-Age", "86400")
             .body(Body::empty())
             .expect("Failed to build wildcard CORS response");
@@ -883,7 +921,10 @@ pub async fn proxy_options_preflight_with_cors(
         return Response::builder()
             .status(StatusCode::NO_CONTENT)
             .header("Access-Control-Allow-Methods", "GET, OPTIONS")
-            .header("Access-Control-Allow-Headers", "Authorization, Content-Type, Accept, Range")
+            .header(
+                "Access-Control-Allow-Headers",
+                "Authorization, Content-Type, Accept, Range",
+            )
             .header("Access-Control-Max-Age", "86400")
             .body(Body::empty())
             .expect("Failed to build no-origin CORS response");
@@ -903,7 +944,10 @@ pub async fn proxy_options_preflight_with_cors(
         .status(StatusCode::NO_CONTENT)
         .header("Access-Control-Allow-Origin", origin)
         .header("Access-Control-Allow-Methods", "GET, OPTIONS")
-        .header("Access-Control-Allow-Headers", "Authorization, Content-Type, Accept, Range")
+        .header(
+            "Access-Control-Allow-Headers",
+            "Authorization, Content-Type, Accept, Range",
+        )
         .header("Access-Control-Allow-Credentials", "true")
         .header("Access-Control-Max-Age", "86400")
         .header("Vary", "Origin")
@@ -931,7 +975,8 @@ pub fn rewrite_m3u8(m3u8: &str, source_url: &str, proxy_base: &str) -> String {
 
     for line in m3u8.lines() {
         if line.starts_with('#') {
-            let (rewritten_line, count) = rewrite_uri_attribute_with_count(line, base.as_ref(), proxy_base);
+            let (rewritten_line, count) =
+                rewrite_uri_attribute_with_count(line, base.as_ref(), proxy_base);
             url_count += count;
             output.push_str(&rewritten_line);
         } else {
@@ -972,7 +1017,7 @@ pub fn rewrite_m3u8(m3u8: &str, source_url: &str, proxy_base: &str) -> String {
 }
 
 /// Resolve a possibly-relative URL to absolute using the given base URL.
-#[must_use] 
+#[must_use]
 pub fn make_absolute(raw: &str, base: Option<&url::Url>) -> String {
     if raw.starts_with("http://") || raw.starts_with("https://") {
         return raw.to_string();
@@ -987,8 +1032,12 @@ pub fn make_absolute(raw: &str, base: Option<&url::Url>) -> String {
 
 /// Rewrite any `URI="..."` values found in an M3U8 tag line.
 /// Returns the rewritten line and the count of URLs rewritten.
-#[must_use] 
-pub fn rewrite_uri_attribute_with_count(line: &str, base: Option<&url::Url>, proxy_base: &str) -> (String, usize) {
+#[must_use]
+pub fn rewrite_uri_attribute_with_count(
+    line: &str,
+    base: Option<&url::Url>,
+    proxy_base: &str,
+) -> (String, usize) {
     let pattern = "URI=\"";
     let mut result = String::with_capacity(line.len());
     let mut remaining = line;
@@ -1184,7 +1233,9 @@ mod tests {
 
         let headers = response.headers();
         assert_eq!(
-            headers.get("Access-Control-Allow-Origin").map(|v| v.to_str().unwrap_or("")),
+            headers
+                .get("Access-Control-Allow-Origin")
+                .map(|v| v.to_str().unwrap_or("")),
             Some("*"),
             "OPTIONS preflight must include Access-Control-Allow-Origin"
         );

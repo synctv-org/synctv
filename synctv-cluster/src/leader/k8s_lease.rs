@@ -375,15 +375,13 @@ impl K8sLeaderElector {
             // the request with 409 if the resourceVersion doesn't match.
             let mut updated_lease = current_lease.clone();
             if let Some(ref mut spec) = updated_lease.spec {
-                spec.renew_time = Some(k8s_openapi::apimachinery::pkg::apis::meta::v1::MicroTime(now));
+                spec.renew_time = Some(k8s_openapi::apimachinery::pkg::apis::meta::v1::MicroTime(
+                    now,
+                ));
             }
 
             match leases
-                .replace(
-                    &self.lease_name,
-                    &PostParams::default(),
-                    &updated_lease,
-                )
+                .replace(&self.lease_name, &PostParams::default(), &updated_lease)
                 .await
             {
                 Ok(_) => {
@@ -511,16 +509,16 @@ impl K8sLeaderElector {
             if let Some(ref mut spec) = updated_lease.spec {
                 spec.holder_identity = Some(self.identity.clone());
                 spec.lease_duration_seconds = Some(self.lease_duration_secs);
-                spec.acquire_time = Some(k8s_openapi::apimachinery::pkg::apis::meta::v1::MicroTime(now));
-                spec.renew_time = Some(k8s_openapi::apimachinery::pkg::apis::meta::v1::MicroTime(now));
+                spec.acquire_time = Some(
+                    k8s_openapi::apimachinery::pkg::apis::meta::v1::MicroTime(now),
+                );
+                spec.renew_time = Some(k8s_openapi::apimachinery::pkg::apis::meta::v1::MicroTime(
+                    now,
+                ));
             }
 
             match leases
-                .replace(
-                    &self.lease_name,
-                    &PostParams::default(),
-                    &updated_lease,
-                )
+                .replace(&self.lease_name, &PostParams::default(), &updated_lease)
                 .await
             {
                 Ok(_) => {
@@ -619,11 +617,7 @@ impl K8sLeaderElector {
         }
 
         if let Err(e) = leases
-            .replace(
-                &self.lease_name,
-                &PostParams::default(),
-                &updated_lease,
-            )
+            .replace(&self.lease_name, &PostParams::default(), &updated_lease)
             .await
         {
             warn!(identity = %self.identity, error = %e, "Failed to resign lease");
@@ -644,8 +638,12 @@ impl K8sLeaderElector {
             spec: Some(k8s_openapi::api::coordination::v1::LeaseSpec {
                 holder_identity: Some(self.identity.clone()),
                 lease_duration_seconds: Some(self.lease_duration_secs),
-                acquire_time: Some(k8s_openapi::apimachinery::pkg::apis::meta::v1::MicroTime(now)),
-                renew_time: Some(k8s_openapi::apimachinery::pkg::apis::meta::v1::MicroTime(now)),
+                acquire_time: Some(k8s_openapi::apimachinery::pkg::apis::meta::v1::MicroTime(
+                    now,
+                )),
+                renew_time: Some(k8s_openapi::apimachinery::pkg::apis::meta::v1::MicroTime(
+                    now,
+                )),
                 ..Default::default()
             }),
         }
@@ -727,8 +725,7 @@ impl K8sLeaderElector {
         // Exponential backoff: base * 2^(losses-1)
         // Cap at max to prevent indefinite waiting
         let multiplier = 1u64 << (consecutive_losses - 1).min(6); // Max 2^6 = 64x
-        let grace_secs = (self.grace_period_base_secs * multiplier)
-            .min(self.grace_period_max_secs);
+        let grace_secs = (self.grace_period_base_secs * multiplier).min(self.grace_period_max_secs);
 
         Duration::from_secs(grace_secs)
     }
@@ -781,7 +778,10 @@ mod tests {
         assert_eq!(config.lease_name, "synctv-leader");
         assert_eq!(config.lease_duration_secs, 30);
         assert_eq!(config.renew_interval_secs, 10);
-        assert_eq!(config.grace_period_base_secs, DEFAULT_GRACE_PERIOD_BASE_SECS);
+        assert_eq!(
+            config.grace_period_base_secs,
+            DEFAULT_GRACE_PERIOD_BASE_SECS
+        );
         assert_eq!(config.grace_period_max_secs, DEFAULT_GRACE_PERIOD_MAX_SECS);
     }
 
@@ -888,7 +888,10 @@ mod tests {
         let result = guard.is_some();
         drop(guard);
 
-        assert!(!result, "Should not be in grace period when no loss recorded");
+        assert!(
+            !result,
+            "Should not be in grace period when no loss recorded"
+        );
     }
 
     #[test]
@@ -911,8 +914,15 @@ mod tests {
 
         // Simulate leadership gain (reset)
         let previous = consecutive_losses.swap(0, Ordering::AcqRel);
-        assert_eq!(previous, 3, "Should have had 3 consecutive losses before reset");
-        assert_eq!(consecutive_losses.load(Ordering::Relaxed), 0, "Should be reset to 0");
+        assert_eq!(
+            previous, 3,
+            "Should have had 3 consecutive losses before reset"
+        );
+        assert_eq!(
+            consecutive_losses.load(Ordering::Relaxed),
+            0,
+            "Should be reset to 0"
+        );
     }
 
     #[test]
@@ -932,9 +942,9 @@ mod tests {
         assert_eq!(grace_period, Duration::from_secs(10));
 
         // Simulate elapsed time scenarios
-        let elapsed_short = Duration::from_secs(5);  // 5s < 10s grace
+        let elapsed_short = Duration::from_secs(5); // 5s < 10s grace
         let elapsed_equal = Duration::from_secs(10); // 10s = 10s grace
-        let elapsed_long = Duration::from_secs(15);  // 15s > 10s grace
+        let elapsed_long = Duration::from_secs(15); // 15s > 10s grace
 
         assert!(elapsed_short < grace_period, "Should be in grace period");
         assert!(elapsed_equal >= grace_period, "Grace period should be over");

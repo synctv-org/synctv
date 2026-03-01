@@ -42,13 +42,19 @@ mod tests {
 
         // Acquire a permit from config1
         let permit1 = config1.semaphore().try_acquire_owned();
-        assert!(permit1.is_ok(), "Should be able to acquire permit from config1");
+        assert!(
+            permit1.is_ok(),
+            "Should be able to acquire permit from config1"
+        );
         assert_eq!(config1.available_permits(), 9); // Decreased by 1
         assert_eq!(config2.available_permits(), 20); // Unchanged
 
         // Acquire a permit from config2
         let permit2 = config2.semaphore().try_acquire_owned();
-        assert!(permit2.is_ok(), "Should be able to acquire permit from config2");
+        assert!(
+            permit2.is_ok(),
+            "Should be able to acquire permit from config2"
+        );
         assert_eq!(config1.available_permits(), 9); // Unchanged
         assert_eq!(config2.available_permits(), 19); // Decreased by 1
 
@@ -79,7 +85,10 @@ mod tests {
 
         // Next acquisition should fail
         let failed_permit = config.semaphore().try_acquire_owned();
-        assert!(failed_permit.is_err(), "Should fail when no permits available");
+        assert!(
+            failed_permit.is_err(),
+            "Should fail when no permits available"
+        );
 
         // Keep permits alive until end of test
         drop(permits);
@@ -124,11 +133,18 @@ mod tests {
 
         // Next acquisition should fail
         let failed_permit = config.semaphore().try_acquire_owned();
-        assert!(failed_permit.is_err(), "Should fail when no permits available");
+        assert!(
+            failed_permit.is_err(),
+            "Should fail when no permits available"
+        );
 
         // Drop all permits
         drop(permits);
-        assert_eq!(config.available_permits(), 50, "All permits restored after drop");
+        assert_eq!(
+            config.available_permits(),
+            50,
+            "All permits restored after drop"
+        );
     }
 
     // ============================================================================
@@ -155,7 +171,11 @@ mod tests {
 
         // Drop all permits
         drop(permits);
-        assert_eq!(config.available_permits(), 10, "All permits restored after drop");
+        assert_eq!(
+            config.available_permits(),
+            10,
+            "All permits restored after drop"
+        );
     }
 }
 

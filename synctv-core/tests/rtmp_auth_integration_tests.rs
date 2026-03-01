@@ -25,8 +25,8 @@ use synctv_core::{
     cache::{KeyBuilder, NoopCacheL2, UsernameCache},
     config::PasswordComplexityConfig,
     models::{
-        MediaId, MemberStatus, Room, RoomId, RoomMember, RoomRole, RoomSettings, RoomStatus, SignupMethod,
-        UserId, User, UserStatus, UserRole,
+        MediaId, MemberStatus, Room, RoomId, RoomMember, RoomRole, RoomSettings, RoomStatus,
+        SignupMethod, User, UserId, UserRole, UserStatus,
     },
     repository::{RoomMemberRepository, RoomRepository, RoomSettingsRepository, UserRepository},
     service::{
@@ -34,11 +34,10 @@ use synctv_core::{
         InMemoryTokenBlacklistStore, PublishKeyService, RoomService, UserService,
     },
 };
+use testcontainers::core::ImageExt;
 use testcontainers::ContainerAsync;
 use testcontainers_modules::postgres::Postgres;
 use testcontainers_modules::redis::Redis;
-use testcontainers::core::ImageExt;
-
 
 // ============================================================================
 // Test Infrastructure
@@ -61,11 +60,12 @@ async fn create_test_infra() -> (
         .expect("Failed to start Postgres container");
 
     let pg_host = postgres.get_host().await.expect("Failed to get host");
-    let pg_port = postgres.get_host_port_ipv4(5432).await.expect("Failed to get port");
+    let pg_port = postgres
+        .get_host_port_ipv4(5432)
+        .await
+        .expect("Failed to get port");
 
-    let database_url = format!(
-        "postgresql://synctv:synctv_test@{pg_host}:{pg_port}/synctv_test"
-    );
+    let database_url = format!("postgresql://synctv:synctv_test@{pg_host}:{pg_port}/synctv_test");
 
     let pool = {
         let mut retries = 0u32;
@@ -107,7 +107,8 @@ async fn create_test_infra() -> (
 
     let redis_url = format!("redis://{redis_host}:{redis_port}");
 
-    let redis_client = redis::Client::open(redis_url.as_str()).expect("Failed to create Redis client");
+    let redis_client =
+        redis::Client::open(redis_url.as_str()).expect("Failed to create Redis client");
     let redis_conn = redis::aio::ConnectionManager::new(redis_client)
         .await
         .expect("Failed to create Redis ConnectionManager");
@@ -175,11 +176,7 @@ async fn create_test_user(pool: &sqlx::PgPool, username: &str, role: UserRole) -
     user
 }
 
-async fn create_test_room(
-    pool: &sqlx::PgPool,
-    creator_id: UserId,
-    name: &str,
-) -> Room {
+async fn create_test_room(pool: &sqlx::PgPool, creator_id: UserId, name: &str) -> Room {
     let room_repo = RoomRepository::new(pool.clone());
     let room = Room {
         id: RoomId::new(),
@@ -387,7 +384,10 @@ async fn rtmp_auth_test_deleted_user_validation() {
     // so the deleted user should not be found.
     let user_service = Arc::new(create_user_service(pool.clone()));
     let result = user_service.get_user(&user.id).await;
-    assert!(result.is_err(), "Soft-deleted user should not be found by get_user");
+    assert!(
+        result.is_err(),
+        "Soft-deleted user should not be found by get_user"
+    );
 }
 
 // ============================================================================
@@ -426,7 +426,10 @@ async fn rtmp_auth_test_banned_room_rejects_operations() {
         .await
         .expect("Failed to load room via service");
 
-    assert!(loaded_room.is_banned, "Room loaded via service should be banned");
+    assert!(
+        loaded_room.is_banned,
+        "Room loaded via service should be banned"
+    );
 }
 
 // ============================================================================
@@ -456,7 +459,11 @@ async fn rtmp_auth_test_pending_room_rejects_operations() {
         .expect("Failed to load room")
         .expect("Room should exist");
 
-    assert_eq!(reloaded_room.status, RoomStatus::Pending, "Room should be pending");
+    assert_eq!(
+        reloaded_room.status,
+        RoomStatus::Pending,
+        "Room should be pending"
+    );
 
     // Room service should return pending status
     let room_service = create_room_service(pool.clone());
@@ -541,7 +548,10 @@ async fn rtmp_auth_test_rtmp_player_settings() {
         .await
         .expect("Failed to load settings");
 
-    assert!(!settings.rtmp_player.0, "rtmp_player should be disabled by default");
+    assert!(
+        !settings.rtmp_player.0,
+        "rtmp_player should be disabled by default"
+    );
 
     // Enable rtmp_player (use the current version for optimistic locking)
     let mut updated_settings = settings;
@@ -557,7 +567,10 @@ async fn rtmp_auth_test_rtmp_player_settings() {
         .await
         .expect("Failed to reload settings");
 
-    assert!(reloaded_settings.rtmp_player.0, "rtmp_player should be enabled");
+    assert!(
+        reloaded_settings.rtmp_player.0,
+        "rtmp_player should be enabled"
+    );
 }
 
 // ============================================================================

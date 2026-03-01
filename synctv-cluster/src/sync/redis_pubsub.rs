@@ -1,10 +1,10 @@
 use anyhow::{Context, Result};
 use futures::stream::StreamExt;
-use redis::{AsyncCommands, Client as RedisClient};
 use redis::streams::StreamReadReply;
+use redis::{AsyncCommands, Client as RedisClient};
 use std::collections::{HashMap, HashSet};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::Arc;
 use tokio::sync::{broadcast, mpsc};
 use tokio::time::{timeout, Duration};
 use tokio_util::sync::CancellationToken;
@@ -264,7 +264,18 @@ impl RedisPubSub {
         cache_invalidation: Option<CacheInvalidationService>,
         deduplicator: Arc<MessageDeduplicator>,
     ) -> Result<Self> {
-        Self::with_key_prefix(redis_client, message_hub, node_id, "synctv:", admin_event_tx, permission_service, cache_invalidation, deduplicator, 300, DEFAULT_MAX_STREAM_LENGTH)
+        Self::with_key_prefix(
+            redis_client,
+            message_hub,
+            node_id,
+            "synctv:",
+            admin_event_tx,
+            permission_service,
+            cache_invalidation,
+            deduplicator,
+            300,
+            DEFAULT_MAX_STREAM_LENGTH,
+        )
     }
 
     /// Create a new `RedisPubSub` service with a custom key prefix.
@@ -375,9 +386,17 @@ impl RedisPubSub {
     /// - `mpsc::Sender<PublishRequest>` - Channel sender for publishing events
     /// - `PublishBackpressure` - Handle for checking buffer pressure (backpressure signaling)
     /// - `JoinHandle<()>` - Task handle for awaiting shutdown
-    pub async fn start(self: Arc<Self>, publish_channel_capacity: usize) -> Result<(mpsc::Sender<PublishRequest>, PublishBackpressure, tokio::task::JoinHandle<()>)> {
+    pub async fn start(
+        self: Arc<Self>,
+        publish_channel_capacity: usize,
+    ) -> Result<(
+        mpsc::Sender<PublishRequest>,
+        PublishBackpressure,
+        tokio::task::JoinHandle<()>,
+    )> {
         // Create bounded channel for publishing events to prevent OOM under Redis outage
-        let (publish_tx, mut publish_rx) = mpsc::channel::<PublishRequest>(publish_channel_capacity);
+        let (publish_tx, mut publish_rx) =
+            mpsc::channel::<PublishRequest>(publish_channel_capacity);
 
         // Clone for the publish task
         let publish_client = self.redis_client.clone();
@@ -480,7 +499,15 @@ impl RedisPubSub {
                     let mut success_count = 0;
                     for req in batch {
                         let event_type = req.event.event_type();
-                        match RedisPubSub::publish_event(conn, node_id, key_prefix, req.event.clone(), stream_max_length).await {
+                        match RedisPubSub::publish_event(
+                            conn,
+                            node_id,
+                            key_prefix,
+                            req.event.clone(),
+                            stream_max_length,
+                        )
+                        .await
+                        {
                             Ok(subscribers) => {
                                 success_count += 1;
                                 debug!(
@@ -510,7 +537,14 @@ impl RedisPubSub {
                         critical_count = critical_batch.len(),
                         "Retrying critical events after reconnection"
                     );
-                    let (failed, _success_count) = retry_batch(critical_batch, &mut conn, &node_id, &key_prefix, stream_max_length).await;
+                    let (failed, _success_count) = retry_batch(
+                        critical_batch,
+                        &mut conn,
+                        &node_id,
+                        &key_prefix,
+                        stream_max_length,
+                    )
+                    .await;
                     if !failed.is_empty() {
                         warn!(
                             failed_count = failed.len(),
@@ -532,7 +566,14 @@ impl RedisPubSub {
                         buffered_count = buffered.len(),
                         "Retrying buffered events after reconnection"
                     );
-                    let (failed, _success_count) = retry_batch(buffered, &mut conn, &node_id, &key_prefix, stream_max_length).await;
+                    let (failed, _success_count) = retry_batch(
+                        buffered,
+                        &mut conn,
+                        &node_id,
+                        &key_prefix,
+                        stream_max_length,
+                    )
+                    .await;
                     if !failed.is_empty() {
                         retry_buffer = failed;
                         update_pressure(retry_buffer.len(), critical_retry_buffer.len());
@@ -652,7 +693,15 @@ impl RedisPubSub {
                     };
                     if let Some(req) = req {
                         let event_type = req.event.event_type();
-                        match Self::publish_event(&mut conn, &node_id, &key_prefix, req.event.clone(), stream_max_length).await {
+                        match Self::publish_event(
+                            &mut conn,
+                            &node_id,
+                            &key_prefix,
+                            req.event.clone(),
+                            stream_max_length,
+                        )
+                        .await
+                        {
                             Ok(subscribers) => {
                                 session_healthy = true;
                                 debug!(
@@ -697,7 +746,9 @@ impl RedisPubSub {
                                         critical_retry_buffer.push(req);
 
                                         // Warn if critical buffer is growing large
-                                        if critical_retry_buffer.len() == CRITICAL_BUFFER_WARN_THRESHOLD {
+                                        if critical_retry_buffer.len()
+                                            == CRITICAL_BUFFER_WARN_THRESHOLD
+                                        {
                                             warn!(
                                                 critical_buffer_len = critical_retry_buffer.len(),
                                                 "Critical event buffer approaching high threshold during outage"
@@ -720,7 +771,9 @@ impl RedisPubSub {
                                     }
 
                                     // Warn once when normal buffer approaches capacity (80%)
-                                    if !buffer_warn_logged && retry_buffer.len() >= BUFFER_WARN_THRESHOLD {
+                                    if !buffer_warn_logged
+                                        && retry_buffer.len() >= BUFFER_WARN_THRESHOLD
+                                    {
                                         buffer_warn_logged = true;
                                         warn!(
                                             buffer_len = retry_buffer.len(),
@@ -776,7 +829,10 @@ impl RedisPubSub {
                     return;
                 }
 
-                match self_clone.run_subscriber(&mut stream_cursors, &mut is_first_connect).await {
+                match self_clone
+                    .run_subscriber(&mut stream_cursors, &mut is_first_connect)
+                    .await
+                {
                     SubscriberExit::Disconnected => {
                         // Connection was healthy before it dropped.
                         // Reset backoff since the server was reachable.
@@ -869,7 +925,8 @@ impl RedisPubSub {
             Ok(Ok(())) => {}
             Ok(Err(e)) => {
                 return SubscriberExit::ConnectFailed(
-                    anyhow::anyhow!(e).context(format!("Failed to subscribe to {admin_pattern} pattern")),
+                    anyhow::anyhow!(e)
+                        .context(format!("Failed to subscribe to {admin_pattern} pattern")),
                 );
             }
             Err(_) => {
@@ -912,7 +969,9 @@ impl RedisPubSub {
                     let room_pattern = self.room_pubsub_pattern();
                     if let Err(e) = pubsub.psubscribe(&room_pattern).await {
                         return SubscriberExit::ConnectFailed(
-                            anyhow::anyhow!(e).context(format!("Failed to fallback psubscribe to {room_pattern}")),
+                            anyhow::anyhow!(e).context(format!(
+                                "Failed to fallback psubscribe to {room_pattern}"
+                            )),
                         );
                     }
                 }
@@ -924,7 +983,9 @@ impl RedisPubSub {
                     let room_pattern = self.room_pubsub_pattern();
                     if let Err(e) = pubsub.psubscribe(&room_pattern).await {
                         return SubscriberExit::ConnectFailed(
-                            anyhow::anyhow!(e).context(format!("Failed to fallback psubscribe to {room_pattern}")),
+                            anyhow::anyhow!(e).context(format!(
+                                "Failed to fallback psubscribe to {room_pattern}"
+                            )),
                         );
                     }
                 }
@@ -981,7 +1042,10 @@ impl RedisPubSub {
             let mut total_caught_up = 0usize;
             let mut total_skipped = 0usize;
             for stream_key in &streams_to_catchup {
-                match self.read_missed_events_from(stream_key, &catchup_start_id).await {
+                match self
+                    .read_missed_events_from(stream_key, &catchup_start_id)
+                    .await
+                {
                     Ok(events) => {
                         for (stream_id, channel, event) in events {
                             let dedup_key = DedupKey::from_event(&event);
@@ -1019,7 +1083,10 @@ impl RedisPubSub {
                                 "Failed to catch up on historical events, retrying"
                             );
                             tokio::time::sleep(Duration::from_millis(500 * retry as u64)).await;
-                            match self.read_missed_events_from(stream_key, &catchup_start_id).await {
+                            match self
+                                .read_missed_events_from(stream_key, &catchup_start_id)
+                                .await
+                            {
                                 Ok(events) => {
                                     for (stream_id, channel, event) in events {
                                         let dedup_key = DedupKey::from_event(&event);
@@ -1037,7 +1104,8 @@ impl RedisPubSub {
                                                 stream_cursors.insert(stream_key.clone(), id);
                                             }
                                             _ => {
-                                                stream_cursors.insert(stream_key.clone(), "0".to_string());
+                                                stream_cursors
+                                                    .insert(stream_key.clone(), "0".to_string());
                                             }
                                         }
                                     }
@@ -1090,9 +1158,8 @@ impl RedisPubSub {
                 .iter()
                 .map(|rid| self.room_stream_key(rid.as_str()))
                 .collect();
-            stream_cursors.retain(|key, _| {
-                *key == admin_sk || active_stream_keys_set.contains(key)
-            });
+            stream_cursors
+                .retain(|key, _| *key == admin_sk || active_stream_keys_set.contains(key));
 
             // Ensure admin stream is always included.
             // When no cursor exists, use catchup_start_id instead of "0" to avoid
@@ -1106,7 +1173,9 @@ impl RedisPubSub {
             // Use catchup_start_id for new rooms to avoid reading all history.
             for rid in &active_rooms {
                 let key = self.room_stream_key(rid.as_str());
-                stream_cursors.entry(key).or_insert_with(|| catchup_start.clone());
+                stream_cursors
+                    .entry(key)
+                    .or_insert_with(|| catchup_start.clone());
             }
 
             // Build the set of streams to catch up from (active rooms + admin)
@@ -1123,7 +1192,10 @@ impl RedisPubSub {
             let mut total_skipped = 0usize;
             for stream_key in &active_stream_keys {
                 // Use catchup_start as fallback to avoid reading all history from "0"
-                let cursor = stream_cursors.get(stream_key).cloned().unwrap_or_else(|| catchup_start.clone());
+                let cursor = stream_cursors
+                    .get(stream_key)
+                    .cloned()
+                    .unwrap_or_else(|| catchup_start.clone());
                 match self.read_missed_events_from(stream_key, &cursor).await {
                     Ok(events) => {
                         for (stream_id, channel, event) in events {
@@ -1282,7 +1354,9 @@ impl RedisPubSub {
                                     match timeout(
                                         Duration::from_secs(REDIS_TIMEOUT_SECS),
                                         pubsub.subscribe(&channel),
-                                    ).await {
+                                    )
+                                    .await
+                                    {
                                         Ok(Ok(())) => {
                                             // Snapshot the stream cursor AFTER subscribing
                                             // to the PubSub channel. This ensures that on
@@ -1343,13 +1417,16 @@ impl RedisPubSub {
                                     match timeout(
                                         Duration::from_secs(REDIS_TIMEOUT_SECS),
                                         pubsub.unsubscribe(&channel),
-                                    ).await {
+                                    )
+                                    .await
+                                    {
                                         Ok(Ok(())) => {
                                             debug!(
                                                 room_id = %room_id_str,
                                                 "Dynamically unsubscribed from room channel"
                                             );
-                                            stream_cursors.remove(&self.room_stream_key(&room_id_str));
+                                            stream_cursors
+                                                .remove(&self.room_stream_key(&room_id_str));
                                         }
                                         Ok(Err(e)) => {
                                             warn!(
@@ -1428,9 +1505,18 @@ impl RedisPubSub {
             .collect();
 
         // Subscribe to newly active rooms
-        for room_id in active_rooms.difference(subscribed_rooms).cloned().collect::<Vec<_>>() {
+        for room_id in active_rooms
+            .difference(subscribed_rooms)
+            .cloned()
+            .collect::<Vec<_>>()
+        {
             let channel = self.room_pubsub_channel(&room_id);
-            match timeout(Duration::from_secs(REDIS_TIMEOUT_SECS), pubsub.subscribe(&channel)).await {
+            match timeout(
+                Duration::from_secs(REDIS_TIMEOUT_SECS),
+                pubsub.subscribe(&channel),
+            )
+            .await
+            {
                 Ok(Ok(())) => {
                     subscribed_rooms.insert(room_id.clone());
                     // Snapshot stream cursor for the newly subscribed room so that
@@ -1469,9 +1555,18 @@ impl RedisPubSub {
         }
 
         // Unsubscribe from deactivated rooms
-        for room_id in subscribed_rooms.difference(&active_rooms).cloned().collect::<Vec<_>>() {
+        for room_id in subscribed_rooms
+            .difference(&active_rooms)
+            .cloned()
+            .collect::<Vec<_>>()
+        {
             let channel = self.room_pubsub_channel(&room_id);
-            match timeout(Duration::from_secs(REDIS_TIMEOUT_SECS), pubsub.unsubscribe(&channel)).await {
+            match timeout(
+                Duration::from_secs(REDIS_TIMEOUT_SECS),
+                pubsub.unsubscribe(&channel),
+            )
+            .await
+            {
                 Ok(Ok(())) => {
                     debug!(room_id = %room_id, "Re-synced: unsubscribed from room channel");
                     stream_cursors.remove(&self.room_stream_key(&room_id));
@@ -1538,7 +1633,12 @@ impl RedisPubSub {
             // Forward kick/leave events to admin channel for cross-replica disconnect handling.
             // UserLeft is included so other replicas disconnect the user's connections
             // from the room (same behavior as KickUserFromRoom but with correct semantics).
-            if matches!(&event, ClusterEvent::KickPublisher { .. } | ClusterEvent::KickUserFromRoom { .. } | ClusterEvent::UserLeft { .. }) {
+            if matches!(
+                &event,
+                ClusterEvent::KickPublisher { .. }
+                    | ClusterEvent::KickUserFromRoom { .. }
+                    | ClusterEvent::UserLeft { .. }
+            ) {
                 let _ = self.admin_event_tx.send(event.clone());
             }
 
@@ -1561,8 +1661,7 @@ impl RedisPubSub {
                             "Invalidated permission cache on UserLeft (cross-replica)"
                         );
                     }
-                    ClusterEvent::RoomSettingsChanged { .. }
-                    | ClusterEvent::RoomDeleted { .. } => {
+                    ClusterEvent::RoomSettingsChanged { .. } | ClusterEvent::RoomDeleted { .. } => {
                         perm_svc.invalidate_room_cache(&room_id).await;
                         debug!(
                             room_id = %room_id.as_str(),
@@ -1579,8 +1678,7 @@ impl RedisPubSub {
             // separate CacheInvalidate event.
             if self.cache_invalidation.is_some() {
                 match &event {
-                    ClusterEvent::RoomSettingsChanged { .. }
-                    | ClusterEvent::RoomCreated { .. } => {
+                    ClusterEvent::RoomSettingsChanged { .. } | ClusterEvent::RoomCreated { .. } => {
                         self.invalidate_cache_targets(&[CacheTarget::Room {
                             room_id: room_id.as_str().to_string(),
                         }]);
@@ -1594,9 +1692,11 @@ impl RedisPubSub {
                         // directly via the CacheInvalidationService.
                         if let Some(ref cache_svc) = self.cache_invalidation {
                             use synctv_core::cache::InvalidationMessage;
-                            if let Err(e) = cache_svc.broadcast_local(InvalidationMessage::PlaybackState {
-                                room_id: room_id.as_str().to_string(),
-                            }) {
+                            if let Err(e) =
+                                cache_svc.broadcast_local(InvalidationMessage::PlaybackState {
+                                    room_id: room_id.as_str().to_string(),
+                                })
+                            {
                                 tracing::warn!(
                                     error = %e,
                                     room_id = %room_id.as_str(),
@@ -1636,11 +1736,9 @@ impl RedisPubSub {
                 // Parse "user_id:conn_id" format
                 if let Some((_target_user, target_conn)) = to_owned.rsplit_once(':') {
                     let target_conn = target_conn.to_string();
-                    let sent = self.message_hub.broadcast_to_connection(
-                        &room_id,
-                        &target_conn,
-                        event,
-                    );
+                    let sent =
+                        self.message_hub
+                            .broadcast_to_connection(&room_id, &target_conn, event);
                     debug!(
                         room_id = %room_id.as_str(),
                         target_connection = %target_conn,
@@ -1650,7 +1748,9 @@ impl RedisPubSub {
                 } else {
                     // Fallback: if `to` doesn't contain ':', broadcast to user
                     let target_user_id = synctv_core::models::UserId::from_string(to_owned.clone());
-                    let sent = self.message_hub.broadcast_to_user(&room_id, &target_user_id, event);
+                    let sent = self
+                        .message_hub
+                        .broadcast_to_user(&room_id, &target_user_id, event);
                     debug!(
                         room_id = %room_id.as_str(),
                         target_user = %to_owned,
@@ -1761,8 +1861,13 @@ impl RedisPubSub {
             let mut backoff_ms = CRITICAL_STREAM_INITIAL_BACKOFF_MS;
             for attempt in 1..=CRITICAL_STREAM_MAX_RETRIES {
                 let result = Self::publish_event_atomic(
-                    conn, &stream_key, &channel, &payload, stream_max_length,
-                ).await;
+                    conn,
+                    &stream_key,
+                    &channel,
+                    &payload,
+                    stream_max_length,
+                )
+                .await;
 
                 match result {
                     Ok(subscribers) => return Ok(subscribers),
@@ -1795,7 +1900,9 @@ impl RedisPubSub {
         }
 
         // Non-critical events: single atomic attempt
-        match Self::publish_event_atomic(conn, &stream_key, &channel, &payload, stream_max_length).await {
+        match Self::publish_event_atomic(conn, &stream_key, &channel, &payload, stream_max_length)
+            .await
+        {
             Ok(subscribers) => Ok(subscribers),
             Err(e) => {
                 warn!(
@@ -1873,7 +1980,8 @@ impl RedisPubSub {
             let ping_result = timeout(
                 Duration::from_secs(2),
                 redis::cmd("PING").query_async::<String>(&mut conn_clone),
-            ).await;
+            )
+            .await;
 
             guard = self.shared_conn.lock().await; // Re-acquire
 
@@ -1896,7 +2004,8 @@ impl RedisPubSub {
             }
         }
 
-        let conn = self.redis_client
+        let conn = self
+            .redis_client
             .get_multiplexed_async_connection()
             .await
             .context("Failed to get Redis shared connection")?;
@@ -1977,9 +2086,13 @@ impl RedisPubSub {
                     batch_count += 1;
                     cursor = entry.id.clone();
 
-                    let channel = entry.map.get("channel")
+                    let channel = entry
+                        .map
+                        .get("channel")
                         .and_then(|v| redis::from_redis_value::<String>(v.clone()).ok());
-                    let payload = entry.map.get("payload")
+                    let payload = entry
+                        .map
+                        .get("payload")
                         .and_then(|v| redis::from_redis_value::<String>(v.clone()).ok());
 
                     if let (Some(chan), Some(payload_str)) = (channel, payload) {
@@ -2114,7 +2227,10 @@ mod tests {
             .await
             .expect("Failed to start Redis container");
 
-        let redis_host = redis_container.get_host().await.expect("Failed to get Redis host");
+        let redis_host = redis_container
+            .get_host()
+            .await
+            .expect("Failed to get Redis host");
         let redis_port = redis_container
             .get_host_port_ipv4(6379)
             .await
@@ -2138,7 +2254,10 @@ mod tests {
                 }
             }
         };
-        let _: () = redis::cmd("PING").query_async(&mut conn).await.expect("Redis PING failed");
+        let _: () = redis::cmd("PING")
+            .query_async(&mut conn)
+            .await
+            .expect("Redis PING failed");
         drop(conn);
 
         let message_hub = Arc::new(RoomMessageHub::new());
@@ -2150,10 +2269,28 @@ mod tests {
         let dedup1 = Arc::new(MessageDeduplicator::with_defaults());
         let dedup2 = Arc::new(MessageDeduplicator::with_defaults());
         let pubsub1 = Arc::new(
-            RedisPubSub::new(redis_client.clone(), message_hub.clone(), "node1".to_string(), admin_tx.clone(), None, None, dedup1).unwrap(),
+            RedisPubSub::new(
+                redis_client.clone(),
+                message_hub.clone(),
+                "node1".to_string(),
+                admin_tx.clone(),
+                None,
+                None,
+                dedup1,
+            )
+            .unwrap(),
         );
         let pubsub2 = Arc::new(
-            RedisPubSub::new(redis_client.clone(), message_hub.clone(), "node2".to_string(), admin_tx.clone(), None, None, dedup2).unwrap(),
+            RedisPubSub::new(
+                redis_client.clone(),
+                message_hub.clone(),
+                "node2".to_string(),
+                admin_tx.clone(),
+                None,
+                None,
+                dedup2,
+            )
+            .unwrap(),
         );
 
         // Start both - this subscribes to lifecycle events from message_hub
@@ -2172,7 +2309,9 @@ mod tests {
         // the subscription and send the lifecycle event.
         let room_id = RoomId::from_string("test_room".to_string());
         let user_id = UserId::from_string("test_user".to_string());
-        let mut rx = message_hub.subscribe(room_id.clone(), user_id.clone(), "conn1".to_string()).await;
+        let mut rx = message_hub
+            .subscribe(room_id.clone(), user_id.clone(), "conn1".to_string())
+            .await;
 
         // Wait for Redis room channel subscription to complete in both pubsub instances.
         // The lifecycle event triggers async Redis SUBSCRIBE which takes time.
@@ -2190,12 +2329,7 @@ mod tests {
             color: None,
         };
 
-        publish_tx1
-            .send(PublishRequest {
-                event,
-            })
-            .await
-            .unwrap();
+        publish_tx1.send(PublishRequest { event }).await.unwrap();
 
         // Wait for event propagation
         tokio::time::sleep(tokio::time::Duration::from_millis(1000)).await;
@@ -2233,18 +2367,28 @@ mod tests {
             None,
             None,
             dedup,
-            300,  // 5 minutes
+            300, // 5 minutes
             1000,
-        ).unwrap();
+        )
+        .unwrap();
 
         let catchup_id = pubsub.catchup_start_id();
 
         // Verify format: "{timestamp_ms}-0"
-        assert!(catchup_id.ends_with("-0"), "catchup_start_id should end with '-0', got: {}", catchup_id);
+        assert!(
+            catchup_id.ends_with("-0"),
+            "catchup_start_id should end with '-0', got: {}",
+            catchup_id
+        );
 
         // Parse and verify timestamp is within expected range
         let parts: Vec<&str> = catchup_id.split('-').collect();
-        assert_eq!(parts.len(), 2, "ID should have 2 parts separated by '-', got: {}", catchup_id);
+        assert_eq!(
+            parts.len(),
+            2,
+            "ID should have 2 parts separated by '-', got: {}",
+            catchup_id
+        );
 
         let timestamp_ms: u64 = parts[0].parse().expect("timestamp should be a valid u64");
 
@@ -2258,7 +2402,11 @@ mod tests {
         let diff = timestamp_ms.abs_diff(expected_start);
 
         // Allow 1 second tolerance for test execution time
-        assert!(diff < 1000, "catchup_start_id timestamp should be ~5 minutes ago, diff: {}ms", diff);
+        assert!(
+            diff < 1000,
+            "catchup_start_id timestamp should be ~5 minutes ago, diff: {}ms",
+            diff
+        );
     }
 
     /// Test that catchup_start_id respects the configured catchup_window_secs.
@@ -2279,9 +2427,10 @@ mod tests {
             None,
             None,
             dedup,
-            60,  // 1 minute
+            60, // 1 minute
             1000,
-        ).unwrap();
+        )
+        .unwrap();
 
         let catchup_id = pubsub.catchup_start_id();
         let timestamp_ms: u64 = catchup_id.split('-').next().unwrap().parse().unwrap();
@@ -2295,7 +2444,11 @@ mod tests {
         let diff = timestamp_ms.abs_diff(expected_start);
 
         // Allow 1 second tolerance
-        assert!(diff < 1000, "catchup_start_id should use 60s window, diff: {}ms", diff);
+        assert!(
+            diff < 1000,
+            "catchup_start_id should use 60s window, diff: {}ms",
+            diff
+        );
     }
 
     // ========== Backpressure Tests ==========
@@ -2343,7 +2496,9 @@ mod tests {
     #[test]
     fn test_publish_backpressure() {
         let state = BufferPressureState::new(1000);
-        let backpressure = PublishBackpressure { state: state.clone() };
+        let backpressure = PublishBackpressure {
+            state: state.clone(),
+        };
 
         assert!(backpressure.can_send_non_critical());
         assert_eq!(backpressure.pressure(), BufferPressure::Normal);
@@ -2361,7 +2516,16 @@ mod tests {
         let redis_client = RedisClient::open("redis://127.0.0.1:6379").unwrap();
 
         let pubsub = Arc::new(
-            RedisPubSub::new(redis_client, message_hub, "test-node".to_string(), admin_tx, None, None, dedup).unwrap(),
+            RedisPubSub::new(
+                redis_client,
+                message_hub,
+                "test-node".to_string(),
+                admin_tx,
+                None,
+                None,
+                dedup,
+            )
+            .unwrap(),
         );
 
         // Start should return (sender, backpressure, handle)

@@ -227,10 +227,10 @@ mod turn_credentials {
 
         // Password should be base64 encoded HMAC
         assert!(!creds.password.is_empty());
-        assert!(creds.password.chars().all(|c| c.is_alphanumeric()
-            || c == '+'
-            || c == '/'
-            || c == '='));
+        assert!(creds
+            .password
+            .chars()
+            .all(|c| c.is_alphanumeric() || c == '+' || c == '/' || c == '='));
 
         // Expiry should be in the future
         let now = std::time::SystemTime::now()
@@ -271,7 +271,10 @@ mod turn_credentials {
         // Different secrets should produce different passwords
         // (even if timestamps happen to match)
         if creds1.username == creds2.username {
-            assert_ne!(creds1.password, creds2.password, "Different secrets should produce different passwords");
+            assert_ne!(
+                creds1.password, creds2.password,
+                "Different secrets should produce different passwords"
+            );
         }
     }
 
@@ -284,7 +287,10 @@ mod turn_credentials {
         let creds2 = turn_server::generate_turn_credentials(secret, "user2", ttl);
 
         // Different usernames should produce different username strings
-        assert_ne!(creds1.username, creds2.username, "Different users should have different usernames");
+        assert_ne!(
+            creds1.username, creds2.username,
+            "Different users should have different usernames"
+        );
     }
 }
 
@@ -299,7 +305,10 @@ mod permissions {
     fn test_use_webrtc_permission_bit_exists() {
         // Verify USE_WEBRTC permission bit is defined
         let webrtc_bit = PermissionBits::USE_WEBRTC;
-        assert_ne!(webrtc_bit, 0, "USE_WEBRTC permission bit should be non-zero");
+        assert_ne!(
+            webrtc_bit, 0,
+            "USE_WEBRTC permission bit should be non-zero"
+        );
     }
 
     #[test]
@@ -308,8 +317,10 @@ mod permissions {
         let webrtc = PermissionBits::USE_WEBRTC;
 
         // A power of 2 has exactly one bit set: (x & (x-1)) == 0 for x > 0
-        assert!(webrtc > 0 && webrtc.is_power_of_two(),
-            "USE_WEBRTC should be a power of 2");
+        assert!(
+            webrtc > 0 && webrtc.is_power_of_two(),
+            "USE_WEBRTC should be a power of 2"
+        );
     }
 
     #[test]
@@ -340,7 +351,8 @@ mod message_types {
         let offer = WebRtcOffer {
             to: "user2".to_string(),
             from: "user1:conn1".to_string(),
-            data: r#"{"type":"offer","sdp":"v=0\r\no=- 123 456 IN IP4 127.0.0.1\r\n..."}"#.to_string(),
+            data: r#"{"type":"offer","sdp":"v=0\r\no=- 123 456 IN IP4 127.0.0.1\r\n..."}"#
+                .to_string(),
         };
 
         let json = serde_json::to_string(&offer).expect("Should serialize");
@@ -354,7 +366,8 @@ mod message_types {
         let answer = WebRtcAnswer {
             to: "user1".to_string(),
             from: "user2:conn2".to_string(),
-            data: r#"{"type":"answer","sdp":"v=0\r\no=- 789 012 IN IP4 127.0.0.1\r\n..."}"#.to_string(),
+            data: r#"{"type":"answer","sdp":"v=0\r\no=- 789 012 IN IP4 127.0.0.1\r\n..."}"#
+                .to_string(),
         };
 
         let json = serde_json::to_string(&answer).expect("Should serialize");
@@ -383,7 +396,8 @@ mod message_types {
         let candidate = WebRtcIceCandidate {
             to: "user3".to_string(),
             from: "user1:conn1".to_string(),
-            data: r#"{"candidate":"candidate:foundation 1 udp 12345 203.0.113.1 12345 typ srflx"}"#.to_string(),
+            data: r#"{"candidate":"candidate:foundation 1 udp 12345 203.0.113.1 12345 typ srflx"}"#
+                .to_string(),
         };
 
         let json = serde_json::to_string(&candidate).expect("Should serialize");
@@ -402,12 +416,8 @@ mod ice_filtering {
     /// Check if an IP address is private, loopback, or link-local
     const fn is_private_or_internal(ip: &IpAddr) -> bool {
         match ip {
-            IpAddr::V4(ipv4) => {
-                ipv4.is_private() || ipv4.is_loopback() || ipv4.is_link_local()
-            }
-            IpAddr::V6(ipv6) => {
-                ipv6.is_loopback() || ipv6.is_unicast_link_local()
-            }
+            IpAddr::V4(ipv4) => ipv4.is_private() || ipv4.is_loopback() || ipv4.is_link_local(),
+            IpAddr::V6(ipv6) => ipv6.is_loopback() || ipv6.is_unicast_link_local(),
         }
     }
 

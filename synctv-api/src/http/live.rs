@@ -38,7 +38,6 @@ pub struct LiveQuery {
     token: Option<String>,
 }
 
-
 /// Create live streaming router
 ///
 /// Uses `AppState` for state (`live_streaming_infrastructure` must be configured)
@@ -112,36 +111,47 @@ async fn handle_flv_stream(
     info!(room_id = %room_id_str, media_id = %media_id, "FLV streaming request");
 
     // Auth via ClientApiImpl
-    let token = params.token.as_deref()
+    let token = params
+        .token
+        .as_deref()
         .ok_or_else(|| AppError::unauthorized("token query parameter is required"))?;
-    let user_id = state.client_api.validate_live_token(token, &room_id_str).await
+    let user_id = state
+        .client_api
+        .validate_live_token(token, &room_id_str)
+        .await
         .map_err(AppError::unauthorized)?;
 
     // Get live streaming infrastructure via ClientApiImpl
-    let infrastructure = state.client_api.live_infrastructure()
+    let infrastructure = state
+        .client_api
+        .live_infrastructure()
         .ok_or_else(|| AppError::internal_server_error("Live streaming not configured"))?;
 
     // Look up external source URL for LiveProxy media (validates media belongs to room)
-    let source_url = state.client_api.get_live_proxy_source_url(&room_id_str, &media_id).await;
+    let source_url = state
+        .client_api
+        .get_live_proxy_source_url(&room_id_str, &media_id)
+        .await;
 
     // Create FLV streaming session with lazy-load pull
     let (rx, subscriber_guard) = FlvStreamingApi::create_session_with_pull(
-        infrastructure, &room_id_str, &media_id, source_url.as_deref(),
+        infrastructure,
+        &room_id_str,
+        &media_id,
+        source_url.as_deref(),
     )
-        .await
-        .map_err(|e| AppError::internal_server_error(format!("Failed to create FLV session: {e}")))?;
+    .await
+    .map_err(|e| AppError::internal_server_error(format!("Failed to create FLV session: {e}")))?;
 
     // Subscribe to disconnect signals
     let mut disconnect_rx = state.connection_manager.subscribe_disconnect();
     let room_id = RoomId::from_string(room_id_str.clone());
 
     // Get timeout configuration
-    let max_connection_duration = std::time::Duration::from_secs(
-        state.config.livestream.flv_max_connection_duration_seconds
-    );
-    let write_timeout = std::time::Duration::from_secs(
-        state.config.livestream.flv_write_timeout_seconds
-    );
+    let max_connection_duration =
+        std::time::Duration::from_secs(state.config.livestream.flv_max_connection_duration_seconds);
+    let write_timeout =
+        std::time::Duration::from_secs(state.config.livestream.flv_write_timeout_seconds);
 
     // Create bounded channel wrapper that monitors disconnect signals
     // Match FLV_RESPONSE_CHANNEL_CAPACITY from synctv-xiu (512 entries ≈ 4MB)
@@ -169,7 +179,9 @@ async fn handle_flv_stream(
 
         loop {
             // Check max connection duration before each select iteration
-            if max_connection_duration.as_secs() > 0 && start_time.elapsed() >= max_connection_duration {
+            if max_connection_duration.as_secs() > 0
+                && start_time.elapsed() >= max_connection_duration
+            {
                 info!(
                     user_id = %user_id_clone.as_str(),
                     room_id = %room_id_clone.as_str(),
@@ -319,12 +331,19 @@ async fn handle_hls_playlist(
     info!(room_id = %room_id, media_id = %media_id, "HLS playlist request");
 
     // Auth via ClientApiImpl
-    let token = params.token.as_deref()
+    let token = params
+        .token
+        .as_deref()
         .ok_or_else(|| AppError::unauthorized("token query parameter is required"))?;
-    let _user_id = state.client_api.validate_live_token(token, &room_id).await
+    let _user_id = state
+        .client_api
+        .validate_live_token(token, &room_id)
+        .await
         .map_err(AppError::unauthorized)?;
 
-    let infrastructure = state.client_api.live_infrastructure()
+    let infrastructure = state
+        .client_api
+        .live_infrastructure()
         .ok_or_else(|| AppError::internal_server_error("Live streaming not configured"))?;
 
     // Build segment URL base following synctv-go pattern
@@ -345,7 +364,9 @@ async fn handle_hls_playlist(
         &segment_url_base,
     )
     .await
-    .map_err(|e| AppError::internal_server_error(format!("Failed to generate HLS playlist: {e}")))?;
+    .map_err(|e| {
+        AppError::internal_server_error(format!("Failed to generate HLS playlist: {e}"))
+    })?;
 
     match playlist {
         Some(content) => {
@@ -399,7 +420,9 @@ async fn handle_hls_segment(
         "HLS segment request"
     );
 
-    let infrastructure = state.client_api.live_infrastructure()
+    let infrastructure = state
+        .client_api
+        .live_infrastructure()
         .ok_or_else(|| AppError::internal_server_error("Live streaming not configured"))?;
 
     // Get segment data
@@ -461,7 +484,9 @@ async fn handle_hls_segment_disguised(
         "HLS segment request (disguised as PNG)"
     );
 
-    let infrastructure = state.client_api.live_infrastructure()
+    let infrastructure = state
+        .client_api
+        .live_infrastructure()
         .ok_or_else(|| AppError::internal_server_error("Live streaming not configured"))?;
 
     // Get segment data
@@ -531,12 +556,20 @@ async fn handle_stream_info(
         .ok_or_else(|| AppError::bad_request("room_id query parameter is required"))?;
 
     // Auth via ClientApiImpl
-    let token = params.token.as_deref()
+    let token = params
+        .token
+        .as_deref()
         .ok_or_else(|| AppError::unauthorized("token query parameter is required"))?;
-    let user_id = state.client_api.validate_live_token(token, &room_id).await
+    let user_id = state
+        .client_api
+        .validate_live_token(token, &room_id)
+        .await
         .map_err(AppError::unauthorized)?;
 
-    let resp = state.client_api.get_stream_info(user_id.as_str(), &room_id, &media_id).await
+    let resp = state
+        .client_api
+        .get_stream_info(user_id.as_str(), &room_id, &media_id)
+        .await
         .map_err(crate::http::error::map_api_error)?;
 
     Ok(Json(resp))
@@ -557,12 +590,20 @@ async fn handle_room_streams(
         .ok_or_else(|| AppError::bad_request("room_id query parameter is required"))?;
 
     // Auth via ClientApiImpl
-    let token = params.token.as_deref()
+    let token = params
+        .token
+        .as_deref()
         .ok_or_else(|| AppError::unauthorized("token query parameter is required"))?;
-    let user_id = state.client_api.validate_live_token(token, &room_id).await
+    let user_id = state
+        .client_api
+        .validate_live_token(token, &room_id)
+        .await
         .map_err(AppError::unauthorized)?;
 
-    let resp = state.client_api.list_room_streams(user_id.as_str(), &room_id).await
+    let resp = state
+        .client_api
+        .list_room_streams(user_id.as_str(), &room_id)
+        .await
         .map_err(crate::http::error::map_api_error)?;
 
     Ok(Json(resp))
@@ -618,14 +659,27 @@ mod tests {
         ];
 
         // Verify PNG signature
-        assert_eq!(&png_header[0..8], &[0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]);
+        assert_eq!(
+            &png_header[0..8],
+            &[0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]
+        );
 
         // Verify IHDR chunk
         assert_eq!(&png_header[12..16], b"IHDR");
 
         // Verify dimensions
-        let width = u32::from_be_bytes([png_header[16], png_header[17], png_header[18], png_header[19]]);
-        let height = u32::from_be_bytes([png_header[20], png_header[21], png_header[22], png_header[23]]);
+        let width = u32::from_be_bytes([
+            png_header[16],
+            png_header[17],
+            png_header[18],
+            png_header[19],
+        ]);
+        let height = u32::from_be_bytes([
+            png_header[20],
+            png_header[21],
+            png_header[22],
+            png_header[23],
+        ]);
         assert_eq!(width, 8);
         assert_eq!(height, 8);
     }
@@ -713,7 +767,10 @@ mod tests {
     /// Test M3U8 content type
     #[test]
     fn test_m3u8_content_type() {
-        assert_eq!("application/vnd.apple.mpegurl", "application/vnd.apple.mpegurl");
+        assert_eq!(
+            "application/vnd.apple.mpegurl",
+            "application/vnd.apple.mpegurl"
+        );
     }
 
     /// Test FLV content type

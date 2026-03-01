@@ -1,7 +1,7 @@
 use {
-    bytes::BytesMut,
     crate::bytesio::bytes_reader::BytesReader,
     crate::flv::amf0::{amf0_reader::Amf0Reader, Amf0ValueType},
+    bytes::BytesMut,
 };
 #[derive(Clone)]
 pub struct MetaData {
@@ -16,7 +16,7 @@ impl Default for MetaData {
 }
 
 impl MetaData {
-    #[must_use] 
+    #[must_use]
     pub fn new() -> Self {
         Self {
             chunk_body: BytesMut::new(),
@@ -81,7 +81,7 @@ impl MetaData {
         is_metadata
     }
 
-    #[must_use] 
+    #[must_use]
     pub fn get_chunk_body(&self) -> BytesMut {
         self.chunk_body.clone()
     }

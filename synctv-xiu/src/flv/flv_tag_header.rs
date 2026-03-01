@@ -6,8 +6,8 @@ use {
         errors::{FlvDemuxerError, FlvMuxerError},
     },
     super::{Marshal, Unmarshal},
-    bytes::BytesMut,
     crate::bytesio::bytes_reader::BytesReader,
+    bytes::BytesMut,
 };
 
 #[derive(Clone, Debug)]
@@ -69,7 +69,7 @@ pub struct AudioTagHeader {
 }
 
 impl AudioTagHeader {
-    #[must_use] 
+    #[must_use]
     pub const fn defalut() -> Self {
         Self {
             sound_format: 0,
@@ -149,7 +149,7 @@ pub struct VideoTagHeader {
 }
 
 impl VideoTagHeader {
-    #[must_use] 
+    #[must_use]
     pub const fn defalut() -> Self {
         Self {
             frame_type: 0,

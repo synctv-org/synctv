@@ -6,7 +6,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 
-use super::id::{RoomId, UserId, PlaylistId};
+use super::id::{PlaylistId, RoomId, UserId};
 
 /// Playlist (directory/folder)
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
@@ -34,19 +34,19 @@ pub struct Playlist {
 
 impl Playlist {
     /// Check if this is a root playlist
-    #[must_use] 
+    #[must_use]
     pub const fn is_root(&self) -> bool {
         self.parent_id.is_none() && self.name.is_empty()
     }
 
     /// Check if this is a dynamic folder
-    #[must_use] 
+    #[must_use]
     pub const fn is_dynamic(&self) -> bool {
         self.source_provider.is_some()
     }
 
     /// Check if this is a static folder
-    #[must_use] 
+    #[must_use]
     pub const fn is_static(&self) -> bool {
         self.source_provider.is_none()
     }
@@ -87,7 +87,11 @@ mod tests {
     use super::*;
     use chrono::Utc;
 
-    fn make_playlist(name: &str, parent_id: Option<PlaylistId>, source_provider: Option<String>) -> Playlist {
+    fn make_playlist(
+        name: &str,
+        parent_id: Option<PlaylistId>,
+        source_provider: Option<String>,
+    ) -> Playlist {
         Playlist {
             id: PlaylistId("pl_001".to_string()),
             room_id: RoomId("room_001".to_string()),
@@ -193,4 +197,3 @@ mod tests {
         assert_eq!(json["name"], "Counted");
     }
 }
-

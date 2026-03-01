@@ -16,7 +16,9 @@ use axum::{
 use futures::stream::Stream;
 use serde_json::json;
 
-use crate::http::{AppError, AppState, error::AppResult, middleware::AuthUser, provider_common::InstanceQuery};
+use crate::http::{
+    error::AppResult, middleware::AuthUser, provider_common::InstanceQuery, AppError, AppState,
+};
 use crate::impls::provider::{resolve_media_from_playlist, resolve_provider_playback_result};
 
 use synctv_core::models::{MediaId, RoomId};
@@ -56,20 +58,20 @@ async fn proxy_subtitle(
     let room_id_parsed = RoomId::from_string(room_id);
     let media_id_parsed = MediaId::from_string(media_id);
 
-    let result =
-        {
-            let resolved = state.resolve_redis_conn().await;
-            resolve_provider_playback_result(
-                &auth.user_id,
-                &room_id_parsed,
-                &media_id_parsed,
-                state.bilibili_provider.as_ref(),
-                &state.room_service,
-                resolved.as_ref(),
-                state.credential_encryption.as_ref(),
-            ).await
-        }
-        .map_err(crate::http::error::map_api_error)?;
+    let result = {
+        let resolved = state.resolve_redis_conn().await;
+        resolve_provider_playback_result(
+            &auth.user_id,
+            &room_id_parsed,
+            &media_id_parsed,
+            state.bilibili_provider.as_ref(),
+            &state.room_service,
+            resolved.as_ref(),
+            state.credential_encryption.as_ref(),
+        )
+        .await
+    }
+    .map_err(crate::http::error::map_api_error)?;
 
     // Find subtitle by name across all playback infos
     let subtitle_url = result
@@ -112,9 +114,10 @@ async fn proxy_m3u8(
             &state.room_service,
             resolved.as_ref(),
             state.credential_encryption.as_ref(),
-        ).await
+        )
+        .await
     }
-        .map_err(crate::http::error::map_api_error)?;
+    .map_err(crate::http::error::map_api_error)?;
 
     let default_info = result
         .playback_infos
@@ -198,13 +201,9 @@ async fn resolve_danmu_info(
     media_id: &MediaId,
     state: &AppState,
 ) -> Result<Event, anyhow::Error> {
-    let media = resolve_media_from_playlist(
-        &auth.user_id,
-        room_id,
-        media_id,
-        &state.room_service,
-    ).await
-    .map_err(|e| anyhow::anyhow!("{e}"))?;
+    let media = resolve_media_from_playlist(&auth.user_id, room_id, media_id, &state.room_service)
+        .await
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
 
     // Parse source_config to determine if this is a live stream
     #[derive(serde::Deserialize)]
@@ -232,11 +231,7 @@ async fn resolve_danmu_info(
         } => {
             let danmu_resp = state
                 .bilibili_provider
-                .get_live_danmu_info(
-                    bilibili_room_id,
-                    cookies,
-                    provider_instance_name.as_deref(),
-                )
+                .get_live_danmu_info(bilibili_room_id, cookies, provider_instance_name.as_deref())
                 .await
                 .map_err(|e| anyhow::anyhow!("Failed to get danmu info: {e}"))?;
 
@@ -282,9 +277,7 @@ async fn parse(
     let api = &state.bilibili_api;
 
     match api.parse(req, query.as_deref()).await {
-        Ok(resp) => {
-            (StatusCode::OK, Json(json!(resp))).into_response()
-        }
+        Ok(resp) => (StatusCode::OK, Json(json!(resp))).into_response(),
         Err(e) => {
             tracing::error!("Bilibili parse failed: {}", e);
             AppError::from(e).into_response()
@@ -306,9 +299,7 @@ async fn login_qr(
     let req = crate::proto::providers::bilibili::LoginQrRequest::default();
 
     match api.login_qr(req, query.as_deref()).await {
-        Ok(resp) => {
-            (StatusCode::OK, Json(json!(resp))).into_response()
-        }
+        Ok(resp) => (StatusCode::OK, Json(json!(resp))).into_response(),
         Err(e) => {
             tracing::error!("Failed to generate QR code: {}", e);
             AppError::from(e).into_response()
@@ -330,9 +321,7 @@ async fn qr_check(
     let api = &state.bilibili_api;
 
     match api.check_qr(req, query.as_deref()).await {
-        Ok(resp) => {
-            (StatusCode::OK, Json(json!(resp))).into_response()
-        }
+        Ok(resp) => (StatusCode::OK, Json(json!(resp))).into_response(),
         Err(e) => {
             tracing::error!("Failed to check QR status: {}", e);
             AppError::from(e).into_response()
@@ -354,9 +343,7 @@ async fn new_captcha(
     let req = crate::proto::providers::bilibili::GetCaptchaRequest::default();
 
     match api.get_captcha(req, query.as_deref()).await {
-        Ok(resp) => {
-            (StatusCode::OK, Json(json!(resp))).into_response()
-        }
+        Ok(resp) => (StatusCode::OK, Json(json!(resp))).into_response(),
         Err(e) => {
             tracing::error!("Failed to get captcha: {}", e);
             AppError::from(e).into_response()
@@ -378,9 +365,7 @@ async fn sms_send(
     let api = &state.bilibili_api;
 
     match api.send_sms(req, query.as_deref()).await {
-        Ok(resp) => {
-            (StatusCode::OK, Json(json!(resp))).into_response()
-        }
+        Ok(resp) => (StatusCode::OK, Json(json!(resp))).into_response(),
         Err(e) => {
             tracing::error!("Failed to send SMS: {}", e);
             AppError::from(e).into_response()
@@ -402,9 +387,7 @@ async fn sms_login(
     let api = &state.bilibili_api;
 
     match api.login_sms(req, query.as_deref()).await {
-        Ok(resp) => {
-            (StatusCode::OK, Json(json!(resp))).into_response()
-        }
+        Ok(resp) => (StatusCode::OK, Json(json!(resp))).into_response(),
         Err(e) => {
             tracing::error!("Failed to login with SMS: {}", e);
             AppError::from(e).into_response()
@@ -427,9 +410,7 @@ async fn user_info(
     };
 
     match api.get_user_info(req, query.as_deref()).await {
-        Ok(resp) => {
-            (StatusCode::OK, Json(json!(resp))).into_response()
-        }
+        Ok(resp) => (StatusCode::OK, Json(json!(resp))).into_response(),
         Err(e) => {
             tracing::error!("Failed to get user info: {}", e);
             AppError::from(e).into_response()

@@ -1,5 +1,5 @@
 use chrono::{DateTime, Utc};
-use sqlx::{PgPool, QueryBuilder, Postgres};
+use sqlx::{PgPool, Postgres, QueryBuilder};
 
 use crate::models::PageParams;
 use crate::Result;
@@ -130,7 +130,7 @@ impl AuditLogRepository {
             "SELECT id, actor_id, actor_username, action, target_type, target_id, \
              details, ip_address, user_agent, created_at \
              FROM audit_logs \
-             WHERE id = $1 AND created_at >= NOW() - INTERVAL '365 days'"
+             WHERE id = $1 AND created_at >= NOW() - INTERVAL '365 days'",
         )
         .bind(id)
         .fetch_optional(&self.pool)

@@ -6,20 +6,14 @@
 //! Uses proto-generated types for request/response to ensure type consistency
 //! with gRPC handlers.
 
-use axum::{
-    extract::State,
-    response::Json,
-    routing::post,
-    Router,
-};
+use axum::{extract::State, response::Json, routing::post, Router};
 
-use crate::http::{AppState, AppError, AppResult};
+use crate::http::{AppError, AppResult, AppState};
 use crate::impls::EmailApiImpl;
 use crate::proto::client::{
+    ConfirmEmailRequest, ConfirmEmailResponse, ConfirmPasswordResetRequest,
+    ConfirmPasswordResetResponse, RequestPasswordResetRequest, RequestPasswordResetResponse,
     SendVerificationEmailRequest, SendVerificationEmailResponse,
-    ConfirmEmailRequest, ConfirmEmailResponse,
-    RequestPasswordResetRequest, RequestPasswordResetResponse,
-    ConfirmPasswordResetRequest, ConfirmPasswordResetResponse,
 };
 
 /// Build an `EmailApiImpl` from `AppState`, or return an error if email is not configured.

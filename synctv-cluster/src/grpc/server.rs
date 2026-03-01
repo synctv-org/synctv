@@ -6,7 +6,12 @@ use std::sync::Arc;
 use tonic::{Request, Response, Status};
 
 use super::synctv::cluster::cluster_service_server::ClusterService;
-use super::synctv::cluster::{NodeInfo, NodeStatus, RegisterNodeRequest, RegisterNodeResponse, HeartbeatRequest, HeartbeatResponse, GetNodesRequest, GetNodesResponse, DeregisterNodeRequest, DeregisterNodeResponse, GetUserOnlineStatusRequest, GetUserOnlineStatusResponse, UserOnlineStatus, GetRoomConnectionsRequest, GetRoomConnectionsResponse, RoomConnection};
+use super::synctv::cluster::{
+    DeregisterNodeRequest, DeregisterNodeResponse, GetNodesRequest, GetNodesResponse,
+    GetRoomConnectionsRequest, GetRoomConnectionsResponse, GetUserOnlineStatusRequest,
+    GetUserOnlineStatusResponse, HeartbeatRequest, HeartbeatResponse, NodeInfo, NodeStatus,
+    RegisterNodeRequest, RegisterNodeResponse, RoomConnection, UserOnlineStatus,
+};
 use crate::discovery::{NodeInfo as DiscoveryNodeInfo, NodeRegistry};
 use crate::sync::connection_manager::ConnectionManager;
 

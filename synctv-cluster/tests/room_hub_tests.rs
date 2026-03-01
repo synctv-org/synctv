@@ -4,8 +4,8 @@
 //! safe unsubscribe of unknown connections.
 
 #![allow(clippy::unwrap_used)]
-use synctv_cluster::RoomMessageHub;
 use synctv_cluster::sync::events::ClusterEvent;
+use synctv_cluster::RoomMessageHub;
 use synctv_core::models::id::{RoomId, UserId};
 
 fn uid(s: &str) -> UserId {
@@ -40,8 +40,12 @@ async fn test_broadcast_to_connection_targeted() {
     let u1 = uid("u1");
     let u2 = uid("u2");
 
-    let mut rx1 = hub.subscribe(room.clone(), u1.clone(), "c1".to_string()).await;
-    let mut rx2 = hub.subscribe(room.clone(), u2.clone(), "c2".to_string()).await;
+    let mut rx1 = hub
+        .subscribe(room.clone(), u1.clone(), "c1".to_string())
+        .await;
+    let mut rx2 = hub
+        .subscribe(room.clone(), u2.clone(), "c2".to_string())
+        .await;
 
     let event = chat_event(&room, &u1);
     let sent = hub.broadcast_to_connection(&room, "c2", event);
@@ -56,7 +60,10 @@ async fn test_broadcast_to_connection_targeted() {
 
     // c1 should NOT receive
     let r = tokio::time::timeout(std::time::Duration::from_millis(100), rx1.recv()).await;
-    assert!(r.is_err(), "c1 should not have received the targeted message");
+    assert!(
+        r.is_err(),
+        "c1 should not have received the targeted message"
+    );
 }
 
 // ============================================================================
@@ -71,9 +78,15 @@ async fn test_broadcast_to_user_multi_connection() {
     let other = uid("u2");
 
     // Same user with two connections
-    let mut rx1 = hub.subscribe(room.clone(), user.clone(), "c1".to_string()).await;
-    let mut rx2 = hub.subscribe(room.clone(), user.clone(), "c2".to_string()).await;
-    let mut rx3 = hub.subscribe(room.clone(), other.clone(), "c3".to_string()).await;
+    let mut rx1 = hub
+        .subscribe(room.clone(), user.clone(), "c1".to_string())
+        .await;
+    let mut rx2 = hub
+        .subscribe(room.clone(), user.clone(), "c2".to_string())
+        .await;
+    let mut rx3 = hub
+        .subscribe(room.clone(), other.clone(), "c3".to_string())
+        .await;
 
     let event = chat_event(&room, &user);
     let sent = hub.broadcast_to_user(&room, &user, event);
@@ -91,7 +104,10 @@ async fn test_broadcast_to_user_multi_connection() {
 
     // Other user does NOT receive
     let r = tokio::time::timeout(std::time::Duration::from_millis(100), rx3.recv()).await;
-    assert!(r.is_err(), "other user should not receive the targeted message");
+    assert!(
+        r.is_err(),
+        "other user should not receive the targeted message"
+    );
 }
 
 // ============================================================================
@@ -105,16 +121,28 @@ async fn test_remove_room_cleans_connections() {
     let u1 = uid("u1");
     let u2 = uid("u2");
 
-    let _rx1 = hub.subscribe(room.clone(), u1.clone(), "c1".to_string()).await;
-    let _rx2 = hub.subscribe(room.clone(), u2.clone(), "c2".to_string()).await;
+    let _rx1 = hub
+        .subscribe(room.clone(), u1.clone(), "c1".to_string())
+        .await;
+    let _rx2 = hub
+        .subscribe(room.clone(), u2.clone(), "c2".to_string())
+        .await;
 
     assert_eq!(hub.subscriber_count(&room), 2);
     assert_eq!(hub.connection_count(), 2);
 
     hub.remove_room(&room);
 
-    assert_eq!(hub.subscriber_count(&room), 0, "Room should have 0 subscribers after removal");
-    assert_eq!(hub.connection_count(), 0, "All connections should be cleaned up");
+    assert_eq!(
+        hub.subscriber_count(&room),
+        0,
+        "Room should have 0 subscribers after removal"
+    );
+    assert_eq!(
+        hub.connection_count(),
+        0,
+        "All connections should be cleaned up"
+    );
     assert_eq!(hub.room_count(), 0, "Room should be removed");
 }
 

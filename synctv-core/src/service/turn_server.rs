@@ -194,10 +194,9 @@ impl StunServer {
             .bind_addr
             .parse()
             .map_err(|e| anyhow::anyhow!("Invalid bind_addr '{}': {e}", config.bind_addr))?;
-        let external: SocketAddr = config
-            .external_addr
-            .parse()
-            .map_err(|e| anyhow::anyhow!("Invalid external_addr '{}': {e}", config.external_addr))?;
+        let external: SocketAddr = config.external_addr.parse().map_err(|e| {
+            anyhow::anyhow!("Invalid external_addr '{}': {e}", config.external_addr)
+        })?;
 
         let turn_config = turn_server::config::Config {
             server: turn_server::config::Server {
@@ -227,7 +226,11 @@ impl StunServer {
             "STUN server started (powered by turn-rs)"
         );
 
-        Ok(Arc::new(Self { task, local_addr, external_addr: external }))
+        Ok(Arc::new(Self {
+            task,
+            local_addr,
+            external_addr: external,
+        }))
     }
 
     /// Get the local bind address.
@@ -279,7 +282,7 @@ pub struct TurnCredential {
 ///
 /// # Returns
 /// A `TurnCredential` with the generated username, password, and expiry time.
-#[must_use] 
+#[must_use]
 pub fn generate_turn_credentials(
     shared_secret: &str,
     user_id: &str,
@@ -301,8 +304,8 @@ pub fn generate_turn_credentials(
 
     // Password: Base64(HMAC-SHA1(secret, username))
     type HmacSha1 = Hmac<Sha1>;
-    let mut mac = HmacSha1::new_from_slice(shared_secret.as_bytes())
-        .expect("HMAC accepts any key length");
+    let mut mac =
+        HmacSha1::new_from_slice(shared_secret.as_bytes()).expect("HMAC accepts any key length");
     mac.update(username.as_bytes());
     let result = mac.finalize();
     let password = base64::engine::general_purpose::STANDARD.encode(result.into_bytes());
@@ -344,9 +347,15 @@ mod tests {
 
     #[test]
     fn test_validate_external_addr_private_rfc1918() {
-        assert!(validate_external_addr("10.0.0.1:3478").unwrap_err().contains("not routable"));
-        assert!(validate_external_addr("172.16.0.1:3478").unwrap_err().contains("not routable"));
-        assert!(validate_external_addr("192.168.1.1:3478").unwrap_err().contains("not routable"));
+        assert!(validate_external_addr("10.0.0.1:3478")
+            .unwrap_err()
+            .contains("not routable"));
+        assert!(validate_external_addr("172.16.0.1:3478")
+            .unwrap_err()
+            .contains("not routable"));
+        assert!(validate_external_addr("192.168.1.1:3478")
+            .unwrap_err()
+            .contains("not routable"));
     }
 
     #[test]
@@ -364,13 +373,23 @@ mod tests {
     #[test]
     fn test_is_unusable_external_ip() {
         assert!(is_unusable_external_ip(&"0.0.0.0".parse().expect("valid")));
-        assert!(is_unusable_external_ip(&"127.0.0.1".parse().expect("valid")));
+        assert!(is_unusable_external_ip(
+            &"127.0.0.1".parse().expect("valid")
+        ));
         assert!(is_unusable_external_ip(&"10.0.0.1".parse().expect("valid")));
-        assert!(is_unusable_external_ip(&"172.16.0.1".parse().expect("valid")));
-        assert!(is_unusable_external_ip(&"192.168.0.1".parse().expect("valid")));
-        assert!(is_unusable_external_ip(&"169.254.0.1".parse().expect("valid")));
+        assert!(is_unusable_external_ip(
+            &"172.16.0.1".parse().expect("valid")
+        ));
+        assert!(is_unusable_external_ip(
+            &"192.168.0.1".parse().expect("valid")
+        ));
+        assert!(is_unusable_external_ip(
+            &"169.254.0.1".parse().expect("valid")
+        ));
         assert!(!is_unusable_external_ip(&"8.8.8.8".parse().expect("valid")));
-        assert!(!is_unusable_external_ip(&"203.0.113.1".parse().expect("valid")));
+        assert!(!is_unusable_external_ip(
+            &"203.0.113.1".parse().expect("valid")
+        ));
     }
 
     #[test]

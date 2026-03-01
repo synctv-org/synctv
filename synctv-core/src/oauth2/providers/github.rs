@@ -1,12 +1,11 @@
 //! GitHub `OAuth2` provider
 
-use crate::oauth2::{Provider, OAuth2UserInfo};
+use crate::oauth2::{OAuth2UserInfo, Provider};
 use crate::{Error, InternalExt};
 use async_trait::async_trait;
 use oauth2::{
-    basic::BasicClient,
-    AuthUrl, ClientId, ClientSecret, EndpointSet, EndpointNotSet, PkceCodeChallenge,
-    PkceCodeVerifier, RedirectUrl, TokenUrl, TokenResponse,
+    basic::BasicClient, AuthUrl, ClientId, ClientSecret, EndpointNotSet, EndpointSet,
+    PkceCodeChallenge, PkceCodeVerifier, RedirectUrl, TokenResponse, TokenUrl,
 };
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
@@ -22,7 +21,8 @@ pub struct GitHubConfig {
 
 /// GitHub `OAuth2` provider
 pub struct GitHubProvider {
-    client: Arc<BasicClient<EndpointSet, EndpointNotSet, EndpointNotSet, EndpointNotSet, EndpointSet>>,
+    client:
+        Arc<BasicClient<EndpointSet, EndpointNotSet, EndpointNotSet, EndpointNotSet, EndpointSet>>,
     http_client: Arc<Client>,
 }
 
@@ -31,15 +31,25 @@ impl GitHubProvider {
     ///
     /// # Errors
     /// Returns error if `redirect_url` is not a valid URL.
-    pub fn create(client_id: String, client_secret: String, redirect_url: String) -> Result<Self, Error> {
+    pub fn create(
+        client_id: String,
+        client_secret: String,
+        redirect_url: String,
+    ) -> Result<Self, Error> {
         let redirect = RedirectUrl::new(redirect_url)
             .map_err(|e| Error::InvalidInput(format!("Invalid GitHub OAuth2 redirect URL: {e}")))?;
         let client = Arc::new(
             BasicClient::new(ClientId::new(client_id))
                 .set_client_secret(ClientSecret::new(client_secret))
                 // Well-known constant URLs — expect is safe here
-                .set_auth_uri(AuthUrl::new("https://github.com/login/oauth/authorize".to_string()).expect("valid GitHub auth URL"))
-                .set_token_uri(TokenUrl::new("https://github.com/login/oauth/access_token".to_string()).expect("valid GitHub token URL"))
+                .set_auth_uri(
+                    AuthUrl::new("https://github.com/login/oauth/authorize".to_string())
+                        .expect("valid GitHub auth URL"),
+                )
+                .set_token_uri(
+                    TokenUrl::new("https://github.com/login/oauth/access_token".to_string())
+                        .expect("valid GitHub token URL"),
+                )
                 .set_redirect_uri(redirect),
         );
 
@@ -49,7 +59,7 @@ impl GitHubProvider {
                 Client::builder()
                     .redirect(reqwest::redirect::Policy::none())
                     .build()
-                    .internal_with_err("Failed to build HTTP client")?
+                    .internal_with_err("Failed to build HTTP client")?,
             ),
         })
     }
@@ -61,7 +71,10 @@ impl GitHubProvider {
     /// Returns `(Some(email), true)` if a primary+verified email is found,
     /// `(Some(email), false)` if only a primary (unverified) email is found,
     /// or an error if the API call fails.
-    async fn fetch_verified_email(&self, access_token: &str) -> Result<(Option<String>, bool), Error> {
+    async fn fetch_verified_email(
+        &self,
+        access_token: &str,
+    ) -> Result<(Option<String>, bool), Error> {
         #[derive(Deserialize)]
         struct GitHubEmail {
             email: String,
@@ -116,7 +129,11 @@ impl Provider for GitHubProvider {
         Ok((auth_url.to_string(), pkce_verifier.secret().clone()))
     }
 
-    async fn get_user_info(&self, code: &str, pkce_verifier: &str) -> Result<OAuth2UserInfo, Error> {
+    async fn get_user_info(
+        &self,
+        code: &str,
+        pkce_verifier: &str,
+    ) -> Result<OAuth2UserInfo, Error> {
         // Exchange code for token with PKCE verifier
         let verifier = PkceCodeVerifier::new(pkce_verifier.to_string());
         let token = self
@@ -131,7 +148,10 @@ impl Provider for GitHubProvider {
         let resp = self
             .http_client
             .get("https://api.github.com/user")
-            .header("Authorization", format!("Bearer {}", token.access_token().secret()))
+            .header(
+                "Authorization",
+                format!("Bearer {}", token.access_token().secret()),
+            )
             .header("User-Agent", "synctv-rs")
             .send()
             .await
@@ -251,11 +271,7 @@ mod tests {
 
     #[test]
     fn test_create_provider_empty_redirect_url() {
-        let result = GitHubProvider::create(
-            "id".to_string(),
-            "secret".to_string(),
-            String::new(),
-        );
+        let result = GitHubProvider::create("id".to_string(), "secret".to_string(), String::new());
         assert!(result.is_err());
         assert!(matches!(result.err(), Some(Error::InvalidInput(_))));
     }

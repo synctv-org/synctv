@@ -8,10 +8,10 @@
 //! 3. Generate Playback - Dynamically generate playback info when playing
 
 use crate::{
-    models::{Media, MediaId, PlaylistId, RoomId, UserId, PermissionBits},
+    models::{Media, MediaId, PermissionBits, PlaylistId, RoomId, UserId},
+    provider::{DirectoryItem, ProviderContext},
     repository::{MediaRepository, PlaylistRepository},
-    service::{permission::PermissionService, notification::NotificationService, ProvidersManager},
-    provider::{ProviderContext, DirectoryItem},
+    service::{notification::NotificationService, permission::PermissionService, ProvidersManager},
     Error, Result,
 };
 use serde_json::Value as JsonValue;
@@ -135,7 +135,9 @@ impl MediaService {
             .ok_or_else(|| Error::NotFound("Playlist not found".to_string()))?;
 
         if playlist.room_id != room_id {
-            return Err(Error::Authorization("Playlist does not belong to this room".to_string()));
+            return Err(Error::Authorization(
+                "Playlist does not belong to this room".to_string(),
+            ));
         }
 
         // Get provider from registry by instance name
@@ -167,8 +169,7 @@ impl MediaService {
         // Validate source_config size to prevent storage bloat
         // Limit: 1MB max (JSONB can grow large with embedded metadata)
         const MAX_SOURCE_CONFIG_SIZE: usize = 1024 * 1024; // 1MB
-        let config_size = serde_json::to_string(&request.source_config)
-            .map_or(0, |s| s.len());
+        let config_size = serde_json::to_string(&request.source_config).map_or(0, |s| s.len());
         if config_size > MAX_SOURCE_CONFIG_SIZE {
             return Err(Error::InvalidInput(format!(
                 "source_config too large: {config_size} bytes (max {MAX_SOURCE_CONFIG_SIZE} bytes / 1MB)"
@@ -186,7 +187,10 @@ impl MediaService {
         let mut tx = self.media_repo.pool().begin().await?;
 
         // Get next position in playlist (locked with FOR UPDATE)
-        let position = self.media_repo.get_next_position_with_tx(&request.playlist_id, &mut tx).await?;
+        let position = self
+            .media_repo
+            .get_next_position_with_tx(&request.playlist_id, &mut tx)
+            .await?;
 
         // Create media with provider info (no enum conversion needed)
         // Business logic will use provider_instance_name to get provider from registry
@@ -196,12 +200,15 @@ impl MediaService {
             Some(user_id.clone()),
             request.name.clone(),
             prepared_source_config,
-            provider.name(),  // Provider type name (e.g., "bilibili")
-            request.provider_instance_name.clone(),  // Instance name (e.g., "bilibili_main")
+            provider.name(), // Provider type name (e.g., "bilibili")
+            request.provider_instance_name.clone(), // Instance name (e.g., "bilibili_main")
             position,
         );
 
-        let created_media = self.media_repo.create_with_executor(&media, &mut *tx).await?;
+        let created_media = self
+            .media_repo
+            .create_with_executor(&media, &mut *tx)
+            .await?;
 
         tx.commit().await?;
 
@@ -216,13 +223,16 @@ impl MediaService {
 
         // Broadcast media added event to local WebSocket clients
         if let Some(ref ns) = self.notification_service {
-            if let Err(e) = ns.notify_media_added(
-                &room_id,
-                created_media.id.as_str(),
-                &created_media.name,
-                "", // URL is generated dynamically at playback time
-                created_media.position,
-            ).await {
+            if let Err(e) = ns
+                .notify_media_added(
+                    &room_id,
+                    created_media.id.as_str(),
+                    &created_media.name,
+                    "", // URL is generated dynamically at playback time
+                    created_media.position,
+                )
+                .await
+            {
                 tracing::warn!(
                     error = %e,
                     room_id = %room_id.as_str(),
@@ -255,7 +265,9 @@ impl MediaService {
             .ok_or_else(|| Error::NotFound("Playlist not found".to_string()))?;
 
         if playlist.room_id != room_id {
-            return Err(Error::Authorization("Playlist does not belong to this room".to_string()));
+            return Err(Error::Authorization(
+                "Playlist does not belong to this room".to_string(),
+            ));
         }
 
         if items.is_empty() {
@@ -263,9 +275,9 @@ impl MediaService {
         }
 
         if items.len() > MAX_BATCH_SIZE {
-            return Err(Error::InvalidInput(
-                format!("Batch size exceeds maximum of {MAX_BATCH_SIZE}"),
-            ));
+            return Err(Error::InvalidInput(format!(
+                "Batch size exceeds maximum of {MAX_BATCH_SIZE}"
+            )));
         }
 
         // Create provider context for validation
@@ -295,13 +307,23 @@ impl MediaService {
             provider
                 .validate_source_config(&ctx, &item.source_config)
                 .await
-                .map_err(|e| Error::InvalidInput(format!("Invalid source_config for item '{}': {}", item.name, e)))?;
+                .map_err(|e| {
+                    Error::InvalidInput(format!(
+                        "Invalid source_config for item '{}': {}",
+                        item.name, e
+                    ))
+                })?;
 
             // Prepare source_config for storage (encrypt sensitive fields if applicable)
             let prepared_source_config = provider
                 .prepare_source_config(&ctx, item.source_config.clone())
                 .await
-                .map_err(|e| Error::Internal(format!("Failed to prepare source_config for item '{}': {}", item.name, e)))?;
+                .map_err(|e| {
+                    Error::Internal(format!(
+                        "Failed to prepare source_config for item '{}': {}",
+                        item.name, e
+                    ))
+                })?;
 
             validated_items.push((item, provider, prepared_source_config));
         }
@@ -311,26 +333,34 @@ impl MediaService {
         let mut tx = self.media_repo.pool().begin().await?;
 
         // Get starting position (locked with FOR UPDATE)
-        let start_position = self.media_repo.get_next_position_with_tx(&playlist_id, &mut tx).await?;
+        let start_position = self
+            .media_repo
+            .get_next_position_with_tx(&playlist_id, &mut tx)
+            .await?;
 
         // Create media items with provider info
         let mut media_items = Vec::with_capacity(validated_items.len());
-        for (index, (item, provider, prepared_source_config)) in validated_items.into_iter().enumerate() {
+        for (index, (item, provider, prepared_source_config)) in
+            validated_items.into_iter().enumerate()
+        {
             let media = Media::from_provider(
                 item.playlist_id,
                 room_id.clone(),
                 Some(user_id.clone()),
                 item.name,
                 prepared_source_config,
-                provider.name(),  // Provider type name
-                item.provider_instance_name,  // Instance name
+                provider.name(),             // Provider type name
+                item.provider_instance_name, // Instance name
                 start_position + i32::try_from(index).unwrap_or(i32::MAX),
             );
             media_items.push(media);
         }
 
         // Batch insert within the transaction
-        let created_items = self.media_repo.create_batch_with_executor(&media_items, &mut *tx).await?;
+        let created_items = self
+            .media_repo
+            .create_batch_with_executor(&media_items, &mut *tx)
+            .await?;
 
         tx.commit().await?;
 
@@ -344,13 +374,10 @@ impl MediaService {
         // Broadcast media added events to local WebSocket clients
         if let Some(ref ns) = self.notification_service {
             for item in &created_items {
-                if let Err(e) = ns.notify_media_added(
-                    &room_id,
-                    item.id.as_str(),
-                    &item.name,
-                    "",
-                    item.position,
-                ).await {
+                if let Err(e) = ns
+                    .notify_media_added(&room_id, item.id.as_str(), &item.name, "", item.position)
+                    .await
+                {
                     tracing::warn!(
                         error = %e,
                         room_id = %room_id.as_str(),
@@ -389,7 +416,9 @@ impl MediaService {
 
             // Verify media belongs to the room
             if media.room_id != room_id {
-                return Err(Error::Authorization("Media does not belong to this room".to_string()));
+                return Err(Error::Authorization(
+                    "Media does not belong to this room".to_string(),
+                ));
             }
 
             // Check permission: EDIT_MOVIE_SELF if user owns the media, EDIT_MOVIE_ANY otherwise
@@ -422,10 +451,11 @@ impl MediaService {
             }
 
             // Conditional update: only succeed if no other edit changed the row
-            match self.media_repo.update_with_version(
-                &media,
-                expected_version,
-            ).await {
+            match self
+                .media_repo
+                .update_with_version(&media, expected_version)
+                .await
+            {
                 Ok(Some(updated_media)) => {
                     tracing::info!(
                         room_id = %room_id.as_str(),
@@ -435,12 +465,15 @@ impl MediaService {
 
                     // Broadcast media updated event to local WebSocket clients and cluster
                     if let Some(ref ns) = self.notification_service {
-                        if let Err(e) = ns.notify_media_updated(
-                            &room_id,
-                            updated_media.id.as_str(),
-                            &updated_media.name,
-                            updated_media.position,
-                        ).await {
+                        if let Err(e) = ns
+                            .notify_media_updated(
+                                &room_id,
+                                updated_media.id.as_str(),
+                                &updated_media.name,
+                                updated_media.position,
+                            )
+                            .await
+                        {
                             tracing::warn!(
                                 error = %e,
                                 room_id = %room_id.as_str(),
@@ -473,13 +506,11 @@ impl MediaService {
             }
         }
 
-        Err(Error::Internal(
-            format!(
-                "Media edit failed after {} attempts for media_id={}",
-                Self::EDIT_MAX_RETRIES,
-                request.media_id.as_str()
-            ),
-        ))
+        Err(Error::Internal(format!(
+            "Media edit failed after {} attempts for media_id={}",
+            Self::EDIT_MAX_RETRIES,
+            request.media_id.as_str()
+        )))
     }
 
     /// Remove media from playlist
@@ -498,7 +529,9 @@ impl MediaService {
 
         // Verify media belongs to the room
         if media.room_id != room_id {
-            return Err(Error::Authorization("Media does not belong to this room".to_string()));
+            return Err(Error::Authorization(
+                "Media does not belong to this room".to_string(),
+            ));
         }
 
         // Check permission: DELETE_MOVIE_SELF if user owns the media, DELETE_MOVIE_ANY otherwise
@@ -554,7 +587,9 @@ impl MediaService {
         playlist_id: &PlaylistId,
         pagination: crate::models::PageParams,
     ) -> Result<(Vec<Media>, i64)> {
-        self.media_repo.get_playlist_paginated(playlist_id, pagination).await
+        self.media_repo
+            .get_playlist_paginated(playlist_id, pagination)
+            .await
     }
 
     /// Get media items from a playlist with limit and offset (no count query).
@@ -567,7 +602,9 @@ impl MediaService {
         limit: i64,
         offset: i64,
     ) -> Result<Vec<Media>> {
-        self.media_repo.get_by_playlist_limit_offset(playlist_id, limit, offset).await
+        self.media_repo
+            .get_by_playlist_limit_offset(playlist_id, limit, offset)
+            .await
     }
 
     /// Swap positions of two media items
@@ -590,20 +627,29 @@ impl MediaService {
 
         // Verify both media exist and belong to the room (inside transaction)
         let media_ids = vec![media_id1.clone(), media_id2.clone()];
-        let media_items = self.media_repo.get_by_ids_with_executor(&media_ids, &mut *tx).await?;
+        let media_items = self
+            .media_repo
+            .get_by_ids_with_executor(&media_ids, &mut *tx)
+            .await?;
 
         if media_items.len() != 2 {
-            return Err(Error::NotFound("One or more media items not found".to_string()));
+            return Err(Error::NotFound(
+                "One or more media items not found".to_string(),
+            ));
         }
 
         for media in &media_items {
             if media.room_id != room_id {
-                return Err(Error::Authorization("Media does not belong to this room".to_string()));
+                return Err(Error::Authorization(
+                    "Media does not belong to this room".to_string(),
+                ));
             }
         }
 
         // Swap positions within the same transaction
-        self.media_repo.swap_positions_with_tx(&media_id1, &media_id2, &mut tx).await?;
+        self.media_repo
+            .swap_positions_with_tx(&media_id1, &media_id2, &mut tx)
+            .await?;
 
         tx.commit().await?;
 
@@ -632,19 +678,24 @@ impl MediaService {
         }
 
         if media_ids.len() > MAX_BATCH_SIZE {
-            return Err(Error::InvalidInput(
-                format!("Batch size exceeds maximum of {MAX_BATCH_SIZE}"),
-            ));
+            return Err(Error::InvalidInput(format!(
+                "Batch size exceeds maximum of {MAX_BATCH_SIZE}"
+            )));
         }
 
         // Use explicit transaction to prevent TOCTOU between read and delete
         let mut tx = self.media_repo.pool().begin().await?;
 
         // Batch-load all media in a single query within the transaction
-        let media_items = self.media_repo.get_by_ids_with_executor(&media_ids, &mut *tx).await?;
+        let media_items = self
+            .media_repo
+            .get_by_ids_with_executor(&media_ids, &mut *tx)
+            .await?;
 
         if media_items.len() != media_ids.len() {
-            return Err(Error::NotFound("One or more media items not found".to_string()));
+            return Err(Error::NotFound(
+                "One or more media items not found".to_string(),
+            ));
         }
 
         // Verify all media belong to the room and split into owned/non-owned groups
@@ -652,7 +703,9 @@ impl MediaService {
         let mut has_non_owned = false;
         for media in &media_items {
             if media.room_id != room_id {
-                return Err(Error::Authorization("Media does not belong to this room".to_string()));
+                return Err(Error::Authorization(
+                    "Media does not belong to this room".to_string(),
+                ));
             }
             if media.creator_id.as_ref() == Some(&user_id) {
                 has_owned = true;
@@ -676,7 +729,10 @@ impl MediaService {
         }
 
         // Bulk delete within the same transaction
-        let deleted_count = self.media_repo.delete_batch_with_executor(&media_ids, &mut *tx).await?;
+        let deleted_count = self
+            .media_repo
+            .delete_batch_with_executor(&media_ids, &mut *tx)
+            .await?;
 
         tx.commit().await?;
 
@@ -730,9 +786,9 @@ impl MediaService {
         }
 
         if updates.len() > MAX_BATCH_SIZE {
-            return Err(Error::InvalidInput(
-                format!("Batch size exceeds maximum of {MAX_BATCH_SIZE}"),
-            ));
+            return Err(Error::InvalidInput(format!(
+                "Batch size exceeds maximum of {MAX_BATCH_SIZE}"
+            )));
         }
 
         // Validate all positions are non-negative
@@ -752,20 +808,29 @@ impl MediaService {
 
         // Batch-load all media in a single query to verify room ownership (inside transaction)
         let media_ids: Vec<MediaId> = updates.iter().map(|(id, _)| id.clone()).collect();
-        let media_items = self.media_repo.get_by_ids_with_executor(&media_ids, &mut *tx).await?;
+        let media_items = self
+            .media_repo
+            .get_by_ids_with_executor(&media_ids, &mut *tx)
+            .await?;
 
         if media_items.len() != updates.len() {
-            return Err(Error::NotFound("One or more media items not found".to_string()));
+            return Err(Error::NotFound(
+                "One or more media items not found".to_string(),
+            ));
         }
 
         for media in &media_items {
             if media.room_id != room_id {
-                return Err(Error::Authorization("Media does not belong to this room".to_string()));
+                return Err(Error::Authorization(
+                    "Media does not belong to this room".to_string(),
+                ));
             }
         }
 
         // Bulk reorder within the same transaction
-        self.media_repo.reorder_batch_with_tx(&updates, &mut tx).await?;
+        self.media_repo
+            .reorder_batch_with_tx(&updates, &mut tx)
+            .await?;
 
         tx.commit().await?;
 
@@ -789,7 +854,10 @@ impl MediaService {
     }
 
     /// Batch count media items across multiple playlists
-    pub async fn count_playlist_media_batch(&self, playlist_ids: &[&str]) -> Result<std::collections::HashMap<String, i64>> {
+    pub async fn count_playlist_media_batch(
+        &self,
+        playlist_ids: &[&str],
+    ) -> Result<std::collections::HashMap<String, i64>> {
         self.media_repo.count_by_playlists_batch(playlist_ids).await
     }
 
@@ -836,7 +904,9 @@ impl MediaService {
 
         // Verify playlist belongs to the room
         if playlist.room_id != room_id {
-            return Err(Error::Authorization("Playlist does not belong to this room".to_string()));
+            return Err(Error::Authorization(
+                "Playlist does not belong to this room".to_string(),
+            ));
         }
 
         // Check if playlist is dynamic
@@ -845,17 +915,23 @@ impl MediaService {
         }
 
         // Get provider
-        let provider_name = playlist.source_provider.as_ref()
+        let provider_name = playlist
+            .source_provider
+            .as_ref()
             .ok_or_else(|| Error::InvalidInput("Dynamic playlist missing provider".to_string()))?;
 
-        let provider = self.providers_manager
+        let provider = self
+            .providers_manager
             .get_by_type(provider_name)
             .await
             .ok_or_else(|| Error::NotFound(format!("Provider not found: {provider_name}")))?;
 
         // Check if provider implements DynamicFolder trait
-        let dynamic_folder = provider.as_dynamic_folder()
-            .ok_or_else(|| Error::InvalidInput(format!("Provider {provider_name} does not support dynamic folders")))?;
+        let dynamic_folder = provider.as_dynamic_folder().ok_or_else(|| {
+            Error::InvalidInput(format!(
+                "Provider {provider_name} does not support dynamic folders"
+            ))
+        })?;
 
         // Create context
         let ctx = ProviderContext {
@@ -1015,10 +1091,7 @@ mod tests {
             source_config: config,
         };
 
-        assert_eq!(
-            request.source_config["options"]["subtitle"]["lang"],
-            "en"
-        );
+        assert_eq!(request.source_config["options"]["subtitle"]["lang"], "en");
     }
 
     // ========== Source Config Size Validation ==========
@@ -1037,8 +1110,7 @@ mod tests {
             "url": "https://example.com/video.mp4",
             "headers": {"Referer": "https://example.com"}
         });
-        let size = serde_json::to_string(&small_config)
-            .map_or(0, |s| s.len());
+        let size = serde_json::to_string(&small_config).map_or(0, |s| s.len());
         assert!(size < 200, "Small config should be under 200 bytes");
     }
 
@@ -1050,9 +1122,11 @@ mod tests {
         let large_config = serde_json::json!({
             "data": large_string
         });
-        let size = serde_json::to_string(&large_config)
-            .map_or(0, |s| s.len());
-        assert!(size > MAX_SOURCE_CONFIG_SIZE, "Large config should exceed 1MB");
+        let size = serde_json::to_string(&large_config).map_or(0, |s| s.len());
+        assert!(
+            size > MAX_SOURCE_CONFIG_SIZE,
+            "Large config should exceed 1MB"
+        );
     }
 
     // ========== source_config Boundary Tests (Task #72) ==========
@@ -1070,12 +1144,13 @@ mod tests {
             "data": exact_string
         });
 
-        let size = serde_json::to_string(&exact_config)
-            .map_or(0, |s| s.len());
+        let size = serde_json::to_string(&exact_config).map_or(0, |s| s.len());
 
         // Should be exactly at or just under the limit
-        assert!(size <= MAX_SOURCE_CONFIG_SIZE,
-            "Config should be at or under 1MB, got {size} bytes");
+        assert!(
+            size <= MAX_SOURCE_CONFIG_SIZE,
+            "Config should be at or under 1MB, got {size} bytes"
+        );
     }
 
     #[test]
@@ -1092,11 +1167,12 @@ mod tests {
             "data": over_string
         });
 
-        let size = serde_json::to_string(&over_config)
-            .map_or(0, |s| s.len());
+        let size = serde_json::to_string(&over_config).map_or(0, |s| s.len());
 
-        assert!(size > MAX_SOURCE_CONFIG_SIZE,
-            "Config should exceed 1MB, got {size} bytes");
+        assert!(
+            size > MAX_SOURCE_CONFIG_SIZE,
+            "Config should exceed 1MB, got {size} bytes"
+        );
     }
 
     #[test]
@@ -1125,12 +1201,13 @@ mod tests {
             }
         });
 
-        let size = serde_json::to_string(&nested_config)
-            .map_or(0, |s| s.len());
+        let size = serde_json::to_string(&nested_config).map_or(0, |s| s.len());
 
         // Complex nested structures should still be under limit
-        assert!(size < MAX_SOURCE_CONFIG_SIZE,
-            "Nested config should be under 1MB, got {size} bytes");
+        assert!(
+            size < MAX_SOURCE_CONFIG_SIZE,
+            "Nested config should be under 1MB, got {size} bytes"
+        );
     }
 
     #[test]
@@ -1144,12 +1221,13 @@ mod tests {
             "title": unicode_string
         });
 
-        let size = serde_json::to_string(&unicode_config)
-            .map_or(0, |s| s.len());
+        let size = serde_json::to_string(&unicode_config).map_or(0, |s| s.len());
 
         // 100 emoji * 4 bytes each = 400 bytes + JSON overhead
-        assert!(size > 400 && size < 500,
-            "Unicode size should be counted in bytes, got {size} bytes");
+        assert!(
+            size > 400 && size < 500,
+            "Unicode size should be counted in bytes, got {size} bytes"
+        );
     }
 
     // ========== Optimistic Lock Error Messages (Task #51) ==========
@@ -1168,8 +1246,14 @@ mod tests {
         );
 
         // Verify the format includes the key debugging information
-        assert!(expected_msg.contains(media_id.as_str()), "Error message should contain media_id");
-        assert!(expected_msg.contains(&max_retries.to_string()), "Error message should contain retry count");
+        assert!(
+            expected_msg.contains(media_id.as_str()),
+            "Error message should contain media_id"
+        );
+        assert!(
+            expected_msg.contains(&max_retries.to_string()),
+            "Error message should contain retry count"
+        );
     }
 
     #[test]
@@ -1184,8 +1268,13 @@ mod tests {
             media_id.as_str()
         );
 
-        assert!(expected_msg.contains(media_id.as_str()), "Error message should contain media_id");
-        assert!(expected_msg.contains(&attempts.to_string()), "Error message should contain attempt count");
+        assert!(
+            expected_msg.contains(media_id.as_str()),
+            "Error message should contain media_id"
+        );
+        assert!(
+            expected_msg.contains(&attempts.to_string()),
+            "Error message should contain attempt count"
+        );
     }
-
 }

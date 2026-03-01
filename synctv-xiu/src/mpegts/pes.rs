@@ -1,7 +1,7 @@
 use {
     super::{define, errors::MpegTsError},
-    bytes::BytesMut,
     crate::bytesio::bytes_writer::BytesWriter,
+    bytes::BytesMut,
 };
 
 #[derive(Debug, Clone)]
@@ -31,7 +31,7 @@ impl Default for Pes {
 }
 
 impl Pes {
-    #[must_use] 
+    #[must_use]
     pub fn new() -> Self {
         Self {
             program_number: 0,
@@ -64,19 +64,19 @@ impl Default for PesMuxer {
 }
 
 impl PesMuxer {
-    #[must_use] 
+    #[must_use]
     pub const fn new() -> Self {
         Self {
             bytes_writer: BytesWriter::new(),
         }
     }
 
-    #[must_use] 
+    #[must_use]
     pub const fn len(&self) -> usize {
         self.bytes_writer.len()
     }
 
-    #[must_use] 
+    #[must_use]
     pub const fn is_empty(&self) -> bool {
         self.len() == 0
     }
@@ -168,8 +168,11 @@ impl PesMuxer {
             self.bytes_writer.write(&header)?;
         }
 
-        let pes_payload_length =
-            self.bytes_writer.len().saturating_sub(define::PES_HEADER_LEN as usize) + payload_data_length;
+        let pes_payload_length = self
+            .bytes_writer
+            .len()
+            .saturating_sub(define::PES_HEADER_LEN as usize)
+            + payload_data_length;
 
         /*pes header -- update pes packet length*/
         if pes_payload_length > 0xFFFF {

@@ -26,9 +26,8 @@ pub struct RequestId(pub String);
 // ------------------------------------------------------------------
 
 /// HTTP header name for request/trace ID propagation.
-static X_REQUEST_ID: LazyLock<axum::http::HeaderName> = LazyLock::new(|| {
-    axum::http::HeaderName::from_static("x-request-id")
-});
+static X_REQUEST_ID: LazyLock<axum::http::HeaderName> =
+    LazyLock::new(|| axum::http::HeaderName::from_static("x-request-id"));
 
 /// Middleware that generates a unique request ID per request.
 ///
@@ -42,10 +41,7 @@ static X_REQUEST_ID: LazyLock<axum::http::HeaderName> = LazyLock::new(|| {
 /// 2. Echoed back in the `X-Request-ID` response header so callers can correlate
 ///    logs with their own request tracking.
 /// 3. Injected into error response JSON bodies when present.
-pub async fn request_id_middleware(
-    mut request: Request,
-    next: Next,
-) -> Response {
+pub async fn request_id_middleware(mut request: Request, next: Next) -> Response {
     // Honour an incoming X-Request-ID header when safe to do so.
     let request_id = request
         .headers()
@@ -54,15 +50,21 @@ pub async fn request_id_middleware(
         .filter(|s| {
             // Validate: non-empty, max 64 chars, alphanumeric + hyphens/underscores only.
             let len = s.len();
-            len > 0 && len <= 64 && s.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
-        }).map_or_else(|| nanoid::nanoid!(12), str::to_owned);
+            len > 0
+                && len <= 64
+                && s.bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+        })
+        .map_or_else(|| nanoid::nanoid!(12), str::to_owned);
 
     // Record in current tracing span for log correlation.
     tracing::Span::current().record("request_id", request_id.as_str());
     tracing::debug!(request_id = %request_id, "Request received");
 
     // Store in request extensions so error responses can include it
-    request.extensions_mut().insert(RequestId(request_id.clone()));
+    request
+        .extensions_mut()
+        .insert(RequestId(request_id.clone()));
 
     let mut response = next.run(request).await;
 
@@ -81,10 +83,7 @@ pub async fn request_id_middleware(
 ///
 /// This function inspects the response and, if it's an error response with JSON body
 /// from `AppError`, rewrites it to include the `request_id` field.
-async fn inject_request_id_into_error_response(
-    response: Response,
-    request_id: &str,
-) -> Response {
+async fn inject_request_id_into_error_response(response: Response, request_id: &str) -> Response {
     // Only process error responses (4xx and 5xx)
     if !response.status().is_client_error() && !response.status().is_server_error() {
         return response;
@@ -157,27 +156,20 @@ async fn try_inject_request_id_async(
 }
 
 /// Pre-validated security header names (validated once at startup via Lazy)
-static X_FRAME_OPTIONS: LazyLock<axum::http::HeaderName> = LazyLock::new(|| {
-    axum::http::HeaderName::from_static("x-frame-options")
-});
-static X_CONTENT_TYPE_OPTIONS: LazyLock<axum::http::HeaderName> = LazyLock::new(|| {
-    axum::http::HeaderName::from_static("x-content-type-options")
-});
-static X_XSS_PROTECTION: LazyLock<axum::http::HeaderName> = LazyLock::new(|| {
-    axum::http::HeaderName::from_static("x-xss-protection")
-});
-static CONTENT_SECURITY_POLICY: LazyLock<axum::http::HeaderName> = LazyLock::new(|| {
-    axum::http::HeaderName::from_static("content-security-policy")
-});
-static REFERRER_POLICY: LazyLock<axum::http::HeaderName> = LazyLock::new(|| {
-    axum::http::HeaderName::from_static("referrer-policy")
-});
-static PERMISSIONS_POLICY: LazyLock<axum::http::HeaderName> = LazyLock::new(|| {
-    axum::http::HeaderName::from_static("permissions-policy")
-});
-static PRAGMA: LazyLock<axum::http::HeaderName> = LazyLock::new(|| {
-    axum::http::HeaderName::from_static("pragma")
-});
+static X_FRAME_OPTIONS: LazyLock<axum::http::HeaderName> =
+    LazyLock::new(|| axum::http::HeaderName::from_static("x-frame-options"));
+static X_CONTENT_TYPE_OPTIONS: LazyLock<axum::http::HeaderName> =
+    LazyLock::new(|| axum::http::HeaderName::from_static("x-content-type-options"));
+static X_XSS_PROTECTION: LazyLock<axum::http::HeaderName> =
+    LazyLock::new(|| axum::http::HeaderName::from_static("x-xss-protection"));
+static CONTENT_SECURITY_POLICY: LazyLock<axum::http::HeaderName> =
+    LazyLock::new(|| axum::http::HeaderName::from_static("content-security-policy"));
+static REFERRER_POLICY: LazyLock<axum::http::HeaderName> =
+    LazyLock::new(|| axum::http::HeaderName::from_static("referrer-policy"));
+static PERMISSIONS_POLICY: LazyLock<axum::http::HeaderName> =
+    LazyLock::new(|| axum::http::HeaderName::from_static("permissions-policy"));
+static PRAGMA: LazyLock<axum::http::HeaderName> =
+    LazyLock::new(|| axum::http::HeaderName::from_static("pragma"));
 
 /// Authenticated user extracted from JWT token
 #[derive(Debug, Clone)]
@@ -229,7 +221,10 @@ where
         // Extract password version from claims, defaulting to 0 for legacy tokens
         let password_version = authenticated.claims.pv.unwrap_or(0);
 
-        Ok(Self { user_id: authenticated.user_id, password_version })
+        Ok(Self {
+            user_id: authenticated.user_id,
+            password_version,
+        })
     }
 }
 
@@ -245,7 +240,11 @@ where
         state: &S,
     ) -> Result<Option<Self>, Self::Rejection> {
         // If there's no Authorization header, return None (anonymous access)
-        if parts.headers.get(axum::http::header::AUTHORIZATION).is_none() {
+        if parts
+            .headers
+            .get(axum::http::header::AUTHORIZATION)
+            .is_none()
+        {
             return Ok(None);
         }
         // Header IS present: authenticate and propagate errors for invalid tokens
@@ -353,8 +352,7 @@ pub async fn rate_limit_middleware(
     // Prefix with "user:" so the key format matches the gRPC rate limit layer
     // (which uses "user:{token_hash}"), ensuring the same user shares one bucket
     // regardless of whether they connect via HTTP or gRPC.
-    let user_id = extract_user_id_from_header(&request, &state)
-        .map(|id| format!("user:{id}"));
+    let user_id = extract_user_id_from_header(&request, &state).map(|id| format!("user:{id}"));
 
     // Use IP address as fallback if no user ID (for public endpoints).
     // We only trust X-Forwarded-For/X-Real-IP headers when:
@@ -370,7 +368,8 @@ pub async fn rate_limit_middleware(
             .map(|ci| ci.0.ip());
 
         // Check if we should trust proxy headers
-        let should_trust_headers = remote_addr.is_some_and(|ip| state.config.server.is_trusted_proxy(&ip));
+        let should_trust_headers =
+            remote_addr.is_some_and(|ip| state.config.server.is_trusted_proxy(&ip));
 
         if should_trust_headers {
             // Trust X-Forwarded-For from trusted proxies (or in dev mode).
@@ -413,12 +412,32 @@ pub async fn rate_limit_middleware(
     // Determine rate limit parameters based on category
     let (max_requests, window_seconds, category_name) = match category {
         RateLimitCategory::Auth => (config.auth_max_requests, config.auth_window_seconds, "auth"),
-        RateLimitCategory::Write => (config.write_max_requests, config.write_window_seconds, "write"),
+        RateLimitCategory::Write => (
+            config.write_max_requests,
+            config.write_window_seconds,
+            "write",
+        ),
         RateLimitCategory::Read => (config.read_max_requests, config.read_window_seconds, "read"),
-        RateLimitCategory::Media => (config.media_max_requests, config.media_window_seconds, "media"),
-        RateLimitCategory::Admin => (config.admin_max_requests, config.admin_window_seconds, "admin"),
-        RateLimitCategory::Streaming => (config.streaming_max_requests, config.streaming_window_seconds, "streaming"),
-        RateLimitCategory::WebSocket => (config.websocket_max_requests, config.websocket_window_seconds, "websocket"),
+        RateLimitCategory::Media => (
+            config.media_max_requests,
+            config.media_window_seconds,
+            "media",
+        ),
+        RateLimitCategory::Admin => (
+            config.admin_max_requests,
+            config.admin_window_seconds,
+            "admin",
+        ),
+        RateLimitCategory::Streaming => (
+            config.streaming_max_requests,
+            config.streaming_window_seconds,
+            "streaming",
+        ),
+        RateLimitCategory::WebSocket => (
+            config.websocket_max_requests,
+            config.websocket_window_seconds,
+            "websocket",
+        ),
     };
 
     // Check rate limit
@@ -427,12 +446,17 @@ pub async fn rate_limit_middleware(
     // This caused each endpoint to have its own counter, effectively multiplying the limit
     // Now: All endpoints in same category share the limit (e.g., 30 req/min for ALL write operations)
     let key = format!("ratelimit:{category_name}:{rate_limit_key}");
-    match rate_limiter.check_rate_limit(&key, max_requests, window_seconds).await {
+    match rate_limiter
+        .check_rate_limit(&key, max_requests, window_seconds)
+        .await
+    {
         Ok(()) => {
             // Rate limit check passed, proceed with request
             Ok(next.run(request).await)
         }
-        Err(RateLimitError::RateLimitExceeded { retry_after_seconds }) => {
+        Err(RateLimitError::RateLimitExceeded {
+            retry_after_seconds,
+        }) => {
             // Rate limit exceeded, return 429 Too Many Requests with standard JSON error format
             let error = AppError::rate_limited(retry_after_seconds);
             let mut response = error.into_response();
@@ -453,7 +477,10 @@ pub async fn rate_limit_middleware(
         Err(e) => {
             // This branch should not be reached for check_rate_limit (which
             // degrades to in-memory on Redis errors), but handle defensively.
-            tracing::error!("Rate limit check unexpected error: {}. Denying request (fail closed).", e);
+            tracing::error!(
+                "Rate limit check unexpected error: {}. Denying request (fail closed).",
+                e
+            );
             let error = AppError::rate_limited(1);
             Ok(error.into_response())
         }
@@ -466,7 +493,10 @@ fn extract_user_id_from_header(request: &Request, state: &AppState) -> Option<St
     let auth_str = auth_header.to_str().ok()?;
 
     // Use shared JwtValidator from AppState (not per-request creation)
-    let user_id = state.jwt_validator.validate_http_extract_user_id(auth_str).ok()?;
+    let user_id = state
+        .jwt_validator
+        .validate_http_extract_user_id(auth_str)
+        .ok()?;
 
     Some(user_id.to_string())
 }
@@ -545,10 +575,7 @@ pub async fn websocket_rate_limit(
 /// - Strict-Transport-Security: Enforces HTTPS (only if configured)
 /// - Referrer-Policy: Controls referrer information
 /// - Permissions-Policy: Restricts browser features
-pub async fn security_headers_middleware(
-    request: Request,
-    next: Next,
-) -> Response {
+pub async fn security_headers_middleware(request: Request, next: Next) -> Response {
     let request_path = request.uri().path().to_string();
     let mut response = next.run(request).await;
 
@@ -600,7 +627,7 @@ pub async fn security_headers_middleware(
                  style-src 'self' 'unsafe-inline'; \
                  script-src 'self'; \
                  frame-ancestors 'none'; \
-                 base-uri 'none'"
+                 base-uri 'none'",
             ),
         );
     }
@@ -622,7 +649,7 @@ pub async fn security_headers_middleware(
             PERMISSIONS_POLICY.clone(),
             axum::http::HeaderValue::from_static(
                 "accelerometer=(), camera=(), geolocation=(), gyroscope=(), \
-                 magnetometer=(), microphone=(), payment=(), usb=()"
+                 magnetometer=(), microphone=(), payment=(), usb=()",
             ),
         );
     }
@@ -647,7 +674,7 @@ pub async fn security_headers_middleware(
             headers.insert(
                 axum::http::header::CACHE_CONTROL,
                 axum::http::HeaderValue::from_static(
-                    "no-store, no-cache, must-revalidate, proxy-revalidate"
+                    "no-store, no-cache, must-revalidate, proxy-revalidate",
                 ),
             );
         }
@@ -674,7 +701,7 @@ pub async fn security_headers_middleware(
 ///   that a site is only to be accessed using HTTPS.
 /// * `include_subdomains` - If true, this rule applies to all subdomains as well.
 /// * `preload` - If true, the site can be included in browser HSTS preload lists.
-#[must_use] 
+#[must_use]
 pub fn hsts_header(max_age: u64, include_subdomains: bool, preload: bool) -> String {
     let mut value = format!("max-age={max_age}");
 
@@ -766,16 +793,10 @@ mod tests {
     #[tokio::test]
     async fn test_security_headers_adds_all_headers() {
         let app = axum::Router::new()
-            .route(
-                "/test",
-                axum::routing::get(|| async { "ok" }),
-            )
+            .route("/test", axum::routing::get(|| async { "ok" }))
             .layer(axum::middleware::from_fn(security_headers_middleware));
 
-        let request = Request::builder()
-            .uri("/test")
-            .body(Body::empty())
-            .unwrap();
+        let request = Request::builder().uri("/test").body(Body::empty()).unwrap();
 
         let response = app.oneshot(request).await.unwrap();
 
@@ -799,17 +820,17 @@ mod tests {
                 "/test",
                 axum::routing::get(|| async {
                     (
-                        [(axum::http::header::HeaderName::from_static("x-frame-options"), "SAMEORIGIN")],
+                        [(
+                            axum::http::header::HeaderName::from_static("x-frame-options"),
+                            "SAMEORIGIN",
+                        )],
                         "ok",
                     )
                 }),
             )
             .layer(axum::middleware::from_fn(security_headers_middleware));
 
-        let request = Request::builder()
-            .uri("/test")
-            .body(Body::empty())
-            .unwrap();
+        let request = Request::builder().uri("/test").body(Body::empty()).unwrap();
 
         let response = app.oneshot(request).await.unwrap();
 
@@ -823,16 +844,10 @@ mod tests {
     #[tokio::test]
     async fn test_security_headers_csp_policy() {
         let app = axum::Router::new()
-            .route(
-                "/test",
-                axum::routing::get(|| async { "ok" }),
-            )
+            .route("/test", axum::routing::get(|| async { "ok" }))
             .layer(axum::middleware::from_fn(security_headers_middleware));
 
-        let request = Request::builder()
-            .uri("/test")
-            .body(Body::empty())
-            .unwrap();
+        let request = Request::builder().uri("/test").body(Body::empty()).unwrap();
 
         let response = app.oneshot(request).await.unwrap();
 
@@ -851,16 +866,10 @@ mod tests {
     #[tokio::test]
     async fn test_security_headers_cache_control() {
         let app = axum::Router::new()
-            .route(
-                "/test",
-                axum::routing::get(|| async { "ok" }),
-            )
+            .route("/test", axum::routing::get(|| async { "ok" }))
             .layer(axum::middleware::from_fn(security_headers_middleware));
 
-        let request = Request::builder()
-            .uri("/test")
-            .body(Body::empty())
-            .unwrap();
+        let request = Request::builder().uri("/test").body(Body::empty()).unwrap();
 
         let response = app.oneshot(request).await.unwrap();
 
@@ -944,10 +953,7 @@ mod tests {
         // Without it, from_request_parts returns an error.
         // This is tested indirectly -- the extractor reads from Parts.headers.
         // We verify that the header name constant matches expectations.
-        assert_eq!(
-            axum::http::header::AUTHORIZATION.as_str(),
-            "authorization"
-        );
+        assert_eq!(axum::http::header::AUTHORIZATION.as_str(), "authorization");
     }
 
     #[test]
@@ -969,16 +975,10 @@ mod tests {
         // Verify CSP includes frame-ancestors 'none' to prevent clickjacking
         // (parity with X-Frame-Options: DENY)
         let app = axum::Router::new()
-            .route(
-                "/test",
-                axum::routing::get(|| async { "ok" }),
-            )
+            .route("/test", axum::routing::get(|| async { "ok" }))
             .layer(axum::middleware::from_fn(security_headers_middleware));
 
-        let request = Request::builder()
-            .uri("/test")
-            .body(Body::empty())
-            .unwrap();
+        let request = Request::builder().uri("/test").body(Body::empty()).unwrap();
 
         let response = app.oneshot(request).await.unwrap();
         let csp = response
@@ -1041,9 +1041,6 @@ mod tests {
     fn test_hsts_header_min_max_age_for_preload() {
         // HSTS preload list requires max-age >= 31536000 (1 year)
         let header = hsts_header(31536000, true, true);
-        assert_eq!(
-            header,
-            "max-age=31536000; includeSubDomains; preload"
-        );
+        assert_eq!(header, "max-age=31536000; includeSubDomains; preload");
     }
 }

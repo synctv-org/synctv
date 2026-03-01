@@ -97,7 +97,7 @@ impl MessageConcurrencyConfig {
     /// let config = MessageConcurrencyConfig::new(500);
     /// assert_eq!(config.max_concurrent(), 500);
     /// ```
-    #[must_use] 
+    #[must_use]
     pub fn new(max_concurrent: usize) -> Self {
         Self {
             semaphore: Arc::new(Semaphore::new(max_concurrent)),
@@ -109,13 +109,13 @@ impl MessageConcurrencyConfig {
     ///
     /// Returns a cloned `Arc<Semaphore>` that can be used to acquire permits
     /// for message processing.
-    #[must_use] 
+    #[must_use]
     pub fn semaphore(&self) -> Arc<Semaphore> {
         Arc::clone(&self.semaphore)
     }
 
     /// Get the maximum concurrent limit.
-    #[must_use] 
+    #[must_use]
     pub const fn max_concurrent(&self) -> usize {
         self.max_concurrent
     }
@@ -123,7 +123,7 @@ impl MessageConcurrencyConfig {
     /// Get the number of available permits.
     ///
     /// This is useful for monitoring and health checks.
-    #[must_use] 
+    #[must_use]
     pub fn available_permits(&self) -> usize {
         self.semaphore.available_permits()
     }
@@ -1066,7 +1066,10 @@ impl StreamMessageHandler {
         // R-10/R-11: If the disconnect was triggered by a cluster event that
         // already published UserLeft (e.g. leave_room or delete_room API), skip
         // the redundant broadcast to avoid double UserLeft events.
-        if self.skip_cleanup_user_left.load(std::sync::atomic::Ordering::Relaxed) {
+        if self
+            .skip_cleanup_user_left
+            .load(std::sync::atomic::Ordering::Relaxed)
+        {
             tracing::debug!(
                 user = %self.username,
                 room = %room_id,
@@ -2183,7 +2186,8 @@ impl StreamMessageHandler {
         }
 
         // Permission check (SEEK) is handled by PlaybackService::seek()
-        let response = self.room_service
+        let response = self
+            .room_service
             .playback_service()
             .seek(self.room_id.clone(), self.user_id.clone(), current_time)
             .await
@@ -2365,9 +2369,7 @@ fn cluster_event_to_server_message(
             })),
         }),
         ClusterEvent::MediaRemovedBatch {
-            media_ids,
-            user_id,
-            ..
+            media_ids, user_id, ..
         } => {
             // Broadcast batch removal as individual messages for backward compatibility
             // Clients receive one MediaRemoved message per item, but we only sent one
@@ -3107,7 +3109,8 @@ mod tests {
         assert!(super::validate_danmaku_color(&Some("#abcdef".to_string())).is_ok()); // Lowercase
         assert!(super::validate_danmaku_color(&Some("#ABCDEF".to_string())).is_ok()); // Uppercase
         assert!(super::validate_danmaku_color(&Some("#123456".to_string())).is_ok()); // Mixed digits
-        assert!(super::validate_danmaku_color(&Some("#1a2B3c".to_string())).is_ok()); // Mixed case
+        assert!(super::validate_danmaku_color(&Some("#1a2B3c".to_string())).is_ok());
+        // Mixed case
     }
 
     #[test]
@@ -3141,7 +3144,9 @@ mod tests {
         // Non-hex characters should be rejected
         let result = super::validate_danmaku_color(&Some("#GGGGGG".to_string()));
         assert!(result.is_err());
-        assert!(result.unwrap_err().contains("must contain only hex characters"));
+        assert!(result
+            .unwrap_err()
+            .contains("must contain only hex characters"));
 
         let result = super::validate_danmaku_color(&Some("#ZZZZZZ".to_string()));
         assert!(result.is_err());
@@ -3229,7 +3234,10 @@ mod tests {
         };
 
         cache.insert(key.clone(), membership);
-        assert!(cache.get(&key).is_some(), "Entry should exist before invalidation");
+        assert!(
+            cache.get(&key).is_some(),
+            "Entry should exist before invalidation"
+        );
 
         // Invalidate the entry (simulates receiving KickUser/KickUserFromRoom event)
         cache.invalidate(&key);

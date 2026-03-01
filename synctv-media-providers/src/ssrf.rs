@@ -282,7 +282,7 @@ impl SsrfCheckResult {
 ///     SsrfCheckResult::Blocked(reason) => println!("Blocked: {}", reason),
 /// }
 /// ```
-#[must_use] 
+#[must_use]
 pub fn check_url_with_policy(url: &str, policy: Policy) -> SsrfCheckResult {
     // Parse URL to check host for additional IP ranges not covered by url_jail
     if let Ok(parsed) = url::Url::parse(url) {
@@ -429,9 +429,7 @@ pub fn check_hostname(host: &str) -> SsrfCheckResult {
 
     for blocked in BLOCKED_HOSTNAMES {
         if lower == *blocked || lower.starts_with(&format!("{blocked}.")) {
-            return SsrfCheckResult::Blocked(format!(
-                "internal hostname '{host}' is not allowed"
-            ));
+            return SsrfCheckResult::Blocked(format!("internal hostname '{host}' is not allowed"));
         }
     }
 
@@ -440,9 +438,7 @@ pub fn check_hostname(host: &str) -> SsrfCheckResult {
 
     for suffix in BLOCKED_SUFFIXES {
         if lower.ends_with(suffix) {
-            return SsrfCheckResult::Blocked(format!(
-                "internal hostname '{host}' is not allowed"
-            ));
+            return SsrfCheckResult::Blocked(format!("internal hostname '{host}' is not allowed"));
         }
     }
 
@@ -485,33 +481,45 @@ mod tests {
         assert!(is_blocked_ipv4(&Ipv4Addr::LOCALHOST), "loopback");
         assert!(is_blocked_ipv4(&Ipv4Addr::new(10, 0, 0, 1)), "10.x");
         assert!(is_blocked_ipv4(&Ipv4Addr::new(172, 16, 0, 1)), "172.16.x");
-        assert!(is_blocked_ipv4(&Ipv4Addr::new(172, 31, 255, 255)), "172.31.x");
+        assert!(
+            is_blocked_ipv4(&Ipv4Addr::new(172, 31, 255, 255)),
+            "172.31.x"
+        );
         assert!(is_blocked_ipv4(&Ipv4Addr::new(192, 168, 1, 1)), "192.168.x");
         assert!(
             is_blocked_ipv4(&Ipv4Addr::new(169, 254, 1, 1)),
             "link-local / metadata"
         );
         // CGNAT / Shared Address Space: 100.64.0.0/10
-        assert!(is_blocked_ipv4(&Ipv4Addr::new(100, 64, 0, 1)), "CGNAT start");
-        assert!(is_blocked_ipv4(&Ipv4Addr::new(100, 127, 255, 254)), "CGNAT end");
+        assert!(
+            is_blocked_ipv4(&Ipv4Addr::new(100, 64, 0, 1)),
+            "CGNAT start"
+        );
+        assert!(
+            is_blocked_ipv4(&Ipv4Addr::new(100, 127, 255, 254)),
+            "CGNAT end"
+        );
         assert!(is_blocked_ipv4(&Ipv4Addr::UNSPECIFIED), "current network");
         assert!(is_blocked_ipv4(&Ipv4Addr::new(224, 0, 0, 1)), "multicast");
         assert!(is_blocked_ipv4(&Ipv4Addr::new(240, 0, 0, 1)), "reserved");
-        assert!(
-            is_blocked_ipv4(&Ipv4Addr::BROADCAST),
-            "broadcast"
-        );
+        assert!(is_blocked_ipv4(&Ipv4Addr::BROADCAST), "broadcast");
     }
 
     #[test]
     fn test_allowed_public_ipv4() {
         assert!(!is_blocked_ipv4(&Ipv4Addr::new(8, 8, 8, 8)), "Google DNS");
-        assert!(!is_blocked_ipv4(&Ipv4Addr::new(1, 1, 1, 1)), "Cloudflare DNS");
+        assert!(
+            !is_blocked_ipv4(&Ipv4Addr::new(1, 1, 1, 1)),
+            "Cloudflare DNS"
+        );
         assert!(
             !is_blocked_ipv4(&Ipv4Addr::new(203, 0, 113, 1)),
             "Documentation range"
         );
-        assert!(!is_blocked_ipv4(&Ipv4Addr::new(93, 184, 216, 34)), "example.com");
+        assert!(
+            !is_blocked_ipv4(&Ipv4Addr::new(93, 184, 216, 34)),
+            "example.com"
+        );
     }
 
     #[test]
@@ -520,12 +528,10 @@ mod tests {
         assert!(is_blocked_ipv6(&Ipv6Addr::UNSPECIFIED), "::");
 
         // IPv4-mapped IPv6 addresses
-        let mapped_loopback =
-            Ipv6Addr::new(0, 0, 0, 0, 0, 0xffff, 0x7f00, 0x0001);
+        let mapped_loopback = Ipv6Addr::new(0, 0, 0, 0, 0, 0xffff, 0x7f00, 0x0001);
         assert!(is_blocked_ipv6(&mapped_loopback), "::ffff:127.0.0.1");
 
-        let mapped_private =
-            Ipv6Addr::new(0, 0, 0, 0, 0, 0xffff, 0xc0a8, 0x0101);
+        let mapped_private = Ipv6Addr::new(0, 0, 0, 0, 0, 0xffff, 0xc0a8, 0x0101);
         assert!(is_blocked_ipv6(&mapped_private), "::ffff:192.168.1.1");
     }
 
@@ -682,16 +688,13 @@ mod tests {
     #[test]
     fn test_is_blocked_ip_with_socket_addr_filtering() {
         let public_ipv4 = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8)), 443);
-        let private_ipv4 =
-            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)), 443);
-        let loopback_ipv4 =
-            SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 443);
+        let private_ipv4 = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)), 443);
+        let loopback_ipv4 = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 443);
         let public_ipv6 = SocketAddr::new(
             IpAddr::V6(Ipv6Addr::new(0x2606, 0x4700, 0x4700, 0, 0, 0, 0, 0x1111)),
             443,
         );
-        let loopback_ipv6 =
-            SocketAddr::new(IpAddr::V6(Ipv6Addr::LOCALHOST), 443);
+        let loopback_ipv6 = SocketAddr::new(IpAddr::V6(Ipv6Addr::LOCALHOST), 443);
 
         let addrs: Vec<SocketAddr> = vec![
             public_ipv4,
@@ -734,7 +737,7 @@ mod tests {
         let addrs: Vec<SocketAddr> = vec![
             SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 443), // private
             SocketAddr::new(IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8)), 443),  // public
-            SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 443), // loopback
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 443),        // loopback
             SocketAddr::new(IpAddr::V4(Ipv4Addr::new(1, 1, 1, 1)), 443),  // public
             SocketAddr::new(IpAddr::V4(Ipv4Addr::new(169, 254, 1, 1)), 443), // link-local
         ];
@@ -759,26 +762,16 @@ mod tests {
     #[test]
     fn test_policy_public_only() {
         // PublicOnly should block all private IPs
-        assert!(!check_url_with_policy(
-            "http://192.168.1.1/",
-            Policy::PublicOnly
-        )
-        .is_ok());
+        assert!(!check_url_with_policy("http://192.168.1.1/", Policy::PublicOnly).is_ok());
 
         // Public IPs should be allowed
-        assert!(
-            check_url_with_policy("https://example.com/", Policy::PublicOnly).is_ok()
-        );
+        assert!(check_url_with_policy("https://example.com/", Policy::PublicOnly).is_ok());
     }
 
     #[test]
     fn test_policy_allow_private() {
         // AllowPrivate should allow private IPs but still block loopback
-        assert!(check_url_with_policy(
-            "http://192.168.1.1/",
-            Policy::AllowPrivate
-        )
-        .is_ok());
+        assert!(check_url_with_policy("http://192.168.1.1/", Policy::AllowPrivate).is_ok());
 
         // Loopback should still be blocked
         assert!(!check_url_with_policy("http://127.0.0.1/", Policy::AllowPrivate).is_ok());
@@ -798,11 +791,9 @@ mod tests {
         );
 
         // Public IP outside custom range should still work
-        assert!(
-            check_url_with_custom_policy("https://example.com/", policy)
-                .await
-                .is_ok()
-        );
+        assert!(check_url_with_custom_policy("https://example.com/", policy)
+            .await
+            .is_ok());
     }
 
     // ========================================================================
@@ -812,9 +803,7 @@ mod tests {
     #[test]
     fn test_cloud_metadata_endpoints_blocked() {
         // AWS metadata (link-local IP is blocked)
-        assert!(
-            !check_url("http://169.254.169.254/latest/meta-data/").is_ok()
-        );
+        assert!(!check_url("http://169.254.169.254/latest/meta-data/").is_ok());
 
         // Google Cloud metadata (via hostname - url_jail blocks this)
         assert!(!check_url("http://metadata.google.internal/").is_ok());

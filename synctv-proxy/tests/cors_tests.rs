@@ -25,13 +25,16 @@ async fn test_cors_origin_in_allowed_list_returns_headers() {
     let response = synctv_proxy::proxy_options_preflight_with_cors(
         Some("https://example.com"),
         cors_config.clone(),
-    ).await;
+    )
+    .await;
 
     assert_eq!(response.status(), StatusCode::NO_CONTENT);
 
     let headers = response.headers();
     assert_eq!(
-        headers.get("Access-Control-Allow-Origin").map(|v| v.to_str().unwrap()),
+        headers
+            .get("Access-Control-Allow-Origin")
+            .map(|v| v.to_str().unwrap()),
         Some("https://example.com"),
         "Origin in allowed list should be echoed back"
     );
@@ -57,7 +60,8 @@ async fn test_cors_origin_not_in_allowed_list_rejected() {
     let response = synctv_proxy::proxy_options_preflight_with_cors(
         Some("https://evil.com"),
         cors_config.clone(),
-    ).await;
+    )
+    .await;
 
     // Should return 403 Forbidden for disallowed origins
     assert_eq!(
@@ -70,7 +74,12 @@ async fn test_cors_origin_not_in_allowed_list_rejected() {
     let headers = response.headers();
     assert!(
         headers.get("Access-Control-Allow-Origin").is_none()
-            || headers.get("Access-Control-Allow-Origin").unwrap().to_str().unwrap() != "https://evil.com",
+            || headers
+                .get("Access-Control-Allow-Origin")
+                .unwrap()
+                .to_str()
+                .unwrap()
+                != "https://evil.com",
         "Should not return the evil origin in Allow-Origin"
     );
 }
@@ -85,7 +94,8 @@ async fn test_cors_empty_allowed_origins_default_behavior() {
     let response = synctv_proxy::proxy_options_preflight_with_cors(
         Some("https://any-site.com"),
         cors_config.clone(),
-    ).await;
+    )
+    .await;
 
     // Should reject when no origins are allowed
     assert_eq!(
@@ -103,10 +113,7 @@ async fn test_cors_missing_origin_header() {
 
     // When Origin is missing (non-browser request), behavior depends on policy
     // A secure default is to reject or return minimal headers
-    let response = synctv_proxy::proxy_options_preflight_with_cors(
-        None,
-        cors_config.clone(),
-    ).await;
+    let response = synctv_proxy::proxy_options_preflight_with_cors(None, cors_config.clone()).await;
 
     // Missing origin should still return a valid response
     // but without Access-Control-Allow-Origin header
@@ -123,10 +130,8 @@ async fn test_cors_wildcard_not_echoed() {
     let cors_config = Arc::new(synctv_proxy::CorsConfig::new(allowed_origins));
 
     // Request with "*" as Origin should NOT be treated specially
-    let response = synctv_proxy::proxy_options_preflight_with_cors(
-        Some("*"),
-        cors_config.clone(),
-    ).await;
+    let response =
+        synctv_proxy::proxy_options_preflight_with_cors(Some("*"), cors_config.clone()).await;
 
     // "*" is not in the allowed list, so should be rejected
     assert_eq!(
@@ -145,7 +150,8 @@ async fn test_cors_vary_header_set() {
     let response = synctv_proxy::proxy_options_preflight_with_cors(
         Some("https://example.com"),
         cors_config.clone(),
-    ).await;
+    )
+    .await;
 
     let headers = response.headers();
 
@@ -169,11 +175,14 @@ async fn test_cors_multiple_allowed_origins() {
     let cors_config = Arc::new(synctv_proxy::CorsConfig::new(allowed_origins));
 
     // Test each allowed origin
-    for origin in &["https://example.com", "https://app.example.com", "https://cdn.example.com"] {
-        let response = synctv_proxy::proxy_options_preflight_with_cors(
-            Some(*origin),
-            cors_config.clone(),
-        ).await;
+    for origin in &[
+        "https://example.com",
+        "https://app.example.com",
+        "https://cdn.example.com",
+    ] {
+        let response =
+            synctv_proxy::proxy_options_preflight_with_cors(Some(*origin), cors_config.clone())
+                .await;
 
         assert_eq!(
             response.status(),
@@ -183,7 +192,9 @@ async fn test_cors_multiple_allowed_origins() {
 
         let headers = response.headers();
         assert_eq!(
-            headers.get("Access-Control-Allow-Origin").map(|v| v.to_str().unwrap()),
+            headers
+                .get("Access-Control-Allow-Origin")
+                .map(|v| v.to_str().unwrap()),
             Some(*origin),
             "Origin {origin} should be echoed back"
         );
@@ -199,7 +210,8 @@ async fn test_cors_wildcard_mode_allows_all() {
     let response = synctv_proxy::proxy_options_preflight_with_cors(
         Some("https://any-random-site.com"),
         cors_config.clone(),
-    ).await;
+    )
+    .await;
 
     assert_eq!(
         response.status(),
@@ -227,7 +239,9 @@ async fn test_deprecated_preflight_includes_warning_header() {
     // The deprecated function should include a Deprecation or Warning header
     // to indicate it should not be used in production
     #[allow(deprecated)]
-    let response = synctv_proxy::proxy_options_preflight().await.into_response();
+    let response = synctv_proxy::proxy_options_preflight()
+        .await
+        .into_response();
 
     // Should still return 204 for backward compatibility
     assert_eq!(
@@ -253,13 +267,17 @@ async fn test_deprecated_preflight_includes_warning_header() {
 #[tokio::test]
 async fn test_deprecated_preflight_returns_wildcard_for_backward_compat() {
     #[allow(deprecated)]
-    let response = synctv_proxy::proxy_options_preflight().await.into_response();
+    let response = synctv_proxy::proxy_options_preflight()
+        .await
+        .into_response();
 
     let headers = response.headers();
     // This test documents the insecure behavior - it returns "*"
     // This is why the function is deprecated
     assert_eq!(
-        headers.get("Access-Control-Allow-Origin").map(|v| v.to_str().unwrap()),
+        headers
+            .get("Access-Control-Allow-Origin")
+            .map(|v| v.to_str().unwrap()),
         Some("*"),
         "Deprecated function returns wildcard for backward compatibility (this is insecure)"
     );
@@ -290,7 +308,8 @@ async fn test_rate_limited_preflight_with_cors_validates_origin() {
         cors_config.clone(),
         Some("192.168.1.1"),
         limiter.clone(),
-    ).await;
+    )
+    .await;
 
     assert_eq!(
         response.status(),
@@ -300,7 +319,9 @@ async fn test_rate_limited_preflight_with_cors_validates_origin() {
 
     let headers = response.headers();
     assert_eq!(
-        headers.get("Access-Control-Allow-Origin").map(|v| v.to_str().unwrap()),
+        headers
+            .get("Access-Control-Allow-Origin")
+            .map(|v| v.to_str().unwrap()),
         Some("https://example.com"),
         "Should echo back allowed origin"
     );
@@ -321,7 +342,8 @@ async fn test_rate_limited_preflight_rejects_disallowed_origin() {
         cors_config.clone(),
         Some("192.168.1.1"),
         limiter.clone(),
-    ).await;
+    )
+    .await;
 
     assert_eq!(
         response.status(),
@@ -350,7 +372,8 @@ async fn test_rate_limited_preflight_returns_429_when_exceeded() {
         cors_config.clone(),
         Some("192.168.1.1"),
         limiter.clone(),
-    ).await;
+    )
+    .await;
 
     assert_eq!(
         response.status(),
@@ -372,7 +395,8 @@ async fn test_wildcard_mode_no_credentials() {
     let response = synctv_proxy::proxy_options_preflight_with_cors(
         Some("https://any-site.com"),
         cors_config.clone(),
-    ).await;
+    )
+    .await;
 
     let headers = response.headers();
 
@@ -396,10 +420,9 @@ async fn test_old_rate_limited_preflight_is_deprecated() {
 
     // The old function without CORS config should be deprecated
     #[allow(deprecated)]
-    let response = synctv_proxy::proxy_options_preflight_rate_limited(
-        Some("192.168.1.1"),
-        limiter.clone(),
-    ).await;
+    let response =
+        synctv_proxy::proxy_options_preflight_rate_limited(Some("192.168.1.1"), limiter.clone())
+            .await;
 
     // Should still work for backward compatibility
     assert_eq!(

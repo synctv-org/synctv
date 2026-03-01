@@ -166,9 +166,18 @@ async fn test_retry_has_delay() {
 
     // Placeholder assertion - the fix has added a delay mechanism
     let (min_delay, max_delay) = (100u64, 500u64); // min, max delay in ms
-    assert!(min_delay >= 100, "Minimum retry delay should be at least 100ms");
-    assert!(max_delay <= 1000, "Maximum retry delay should not exceed 1000ms");
-    assert!(min_delay < max_delay, "Min delay should be less than max delay");
+    assert!(
+        min_delay >= 100,
+        "Minimum retry delay should be at least 100ms"
+    );
+    assert!(
+        max_delay <= 1000,
+        "Maximum retry delay should not exceed 1000ms"
+    );
+    assert!(
+        min_delay < max_delay,
+        "Min delay should be less than max delay"
+    );
 }
 
 /// Test that retry delay is logged for debugging.
@@ -238,10 +247,10 @@ async fn test_retry_integration_blocked_by_ssrf() {
 fn test_is_retryable_status_function() {
     // Define which status codes should be retryable
     let retryable_codes: Vec<StatusCode> = vec![
-        StatusCode::INTERNAL_SERVER_ERROR,      // 500
-        StatusCode::BAD_GATEWAY,                // 502
-        StatusCode::SERVICE_UNAVAILABLE,        // 503
-        StatusCode::GATEWAY_TIMEOUT,            // 504
+        StatusCode::INTERNAL_SERVER_ERROR, // 500
+        StatusCode::BAD_GATEWAY,           // 502
+        StatusCode::SERVICE_UNAVAILABLE,   // 503
+        StatusCode::GATEWAY_TIMEOUT,       // 504
     ];
 
     let non_retryable_codes: Vec<StatusCode> = vec![
@@ -256,6 +265,9 @@ fn test_is_retryable_status_function() {
 
     // Non-retryable codes should return false
     for code in &non_retryable_codes {
-        assert!(!is_retryable_status(*code), "{code:?} should NOT be retryable");
+        assert!(
+            !is_retryable_status(*code),
+            "{code:?} should NOT be retryable"
+        );
     }
 }

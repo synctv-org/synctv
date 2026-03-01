@@ -31,13 +31,19 @@ impl ProviderInstanceRepository {
     /// Create a new repository without encryption (backward compatible)
     #[must_use]
     pub const fn new(pool: PgPool) -> Self {
-        Self { pool, encryption: None }
+        Self {
+            pool,
+            encryption: None,
+        }
     }
 
     /// Create a new repository with credential encryption enabled
     #[must_use]
     pub const fn new_with_encryption(pool: PgPool, encryption: CredentialEncryption) -> Self {
-        Self { pool, encryption: Some(encryption) }
+        Self {
+            pool,
+            encryption: Some(encryption),
+        }
     }
 
     /// Encrypt a string field before storage (if encryption is configured).
@@ -76,13 +82,16 @@ impl ProviderInstanceRepository {
 
     /// Decrypt sensitive fields on a list of `ProviderInstance`.
     fn decrypt_instances(&self, instances: Vec<ProviderInstance>) -> Result<Vec<ProviderInstance>> {
-        instances.into_iter().map(|i| self.decrypt_instance(i)).collect()
+        instances
+            .into_iter()
+            .map(|i| self.decrypt_instance(i))
+            .collect()
     }
 
     /// Get all provider instances (sensitive fields decrypted)
     pub async fn get_all(&self) -> Result<Vec<ProviderInstance>> {
         let instances = sqlx::query_as::<_, ProviderInstance>(
-            "SELECT * FROM media_provider_instances ORDER BY created_at DESC"
+            "SELECT * FROM media_provider_instances ORDER BY created_at DESC",
         )
         .fetch_all(&self.pool)
         .await?;
@@ -92,7 +101,7 @@ impl ProviderInstanceRepository {
     /// Get all enabled provider instances (sensitive fields decrypted)
     pub async fn get_all_enabled(&self) -> Result<Vec<ProviderInstance>> {
         let instances = sqlx::query_as::<_, ProviderInstance>(
-            "SELECT * FROM media_provider_instances WHERE enabled = true ORDER BY created_at DESC"
+            "SELECT * FROM media_provider_instances WHERE enabled = true ORDER BY created_at DESC",
         )
         .fetch_all(&self.pool)
         .await?;
@@ -102,7 +111,7 @@ impl ProviderInstanceRepository {
     /// Get provider instance by name (sensitive fields decrypted)
     pub async fn get_by_name(&self, name: &str) -> Result<Option<ProviderInstance>> {
         let instance = sqlx::query_as::<_, ProviderInstance>(
-            "SELECT * FROM media_provider_instances WHERE name = $1"
+            "SELECT * FROM media_provider_instances WHERE name = $1",
         )
         .bind(name)
         .fetch_optional(&self.pool)
@@ -116,7 +125,7 @@ impl ProviderInstanceRepository {
     /// Get instances that support a specific provider type (sensitive fields decrypted)
     pub async fn find_by_provider(&self, provider: &str) -> Result<Vec<ProviderInstance>> {
         let instances = sqlx::query_as::<_, ProviderInstance>(
-            "SELECT * FROM media_provider_instances WHERE $1 = ANY(providers) AND enabled = true"
+            "SELECT * FROM media_provider_instances WHERE $1 = ANY(providers) AND enabled = true",
         )
         .bind(provider)
         .fetch_all(&self.pool)
@@ -164,7 +173,7 @@ impl ProviderInstanceRepository {
                 timeout = $6, tls = $7, insecure_tls = $8, providers = $9, enabled = $10,
                 updated_at = NOW()
             WHERE name = $1
-            "
+            ",
         )
         .bind(&instance.name)
         .bind(&instance.endpoint)
@@ -180,7 +189,10 @@ impl ProviderInstanceRepository {
         .await?;
 
         if result.rows_affected() == 0 {
-            return Err(crate::Error::NotFound(format!("Provider instance '{}' not found", instance.name)));
+            return Err(crate::Error::NotFound(format!(
+                "Provider instance '{}' not found",
+                instance.name
+            )));
         }
 
         Ok(())
@@ -194,7 +206,9 @@ impl ProviderInstanceRepository {
             .await?;
 
         if result.rows_affected() == 0 {
-            return Err(crate::Error::NotFound(format!("Provider instance '{name}' not found")));
+            return Err(crate::Error::NotFound(format!(
+                "Provider instance '{name}' not found"
+            )));
         }
 
         Ok(())
@@ -208,7 +222,9 @@ impl ProviderInstanceRepository {
             .await?;
 
         if result.rows_affected() == 0 {
-            return Err(crate::Error::NotFound(format!("Provider instance '{name}' not found")));
+            return Err(crate::Error::NotFound(format!(
+                "Provider instance '{name}' not found"
+            )));
         }
 
         Ok(())
@@ -222,7 +238,9 @@ impl ProviderInstanceRepository {
             .await?;
 
         if result.rows_affected() == 0 {
-            return Err(crate::Error::NotFound(format!("Provider instance '{name}' not found")));
+            return Err(crate::Error::NotFound(format!(
+                "Provider instance '{name}' not found"
+            )));
         }
 
         Ok(())
@@ -238,16 +256,18 @@ impl ProviderInstanceRepository {
     pub async fn migrate_plaintext_to_encrypted(&self) -> Result<u64> {
         let encryption = match &self.encryption {
             Some(enc) => enc,
-            None => return Err(crate::Error::Internal(
-                "Cannot migrate provider instances: encryption not configured".to_string()
-            )),
+            None => {
+                return Err(crate::Error::Internal(
+                    "Cannot migrate provider instances: encryption not configured".to_string(),
+                ))
+            }
         };
 
         let mut tx = self.pool.begin().await?;
 
         // Fetch all instances within the transaction (raw, without decryption)
         let instances = sqlx::query_as::<_, ProviderInstance>(
-            "SELECT * FROM media_provider_instances ORDER BY name"
+            "SELECT * FROM media_provider_instances ORDER BY name",
         )
         .fetch_all(&mut *tx)
         .await?;
@@ -325,13 +345,19 @@ impl UserProviderCredentialRepository {
     /// Create a new repository without encryption (backward compatible)
     #[must_use]
     pub const fn new(pool: PgPool) -> Self {
-        Self { pool, encryption: None }
+        Self {
+            pool,
+            encryption: None,
+        }
     }
 
     /// Create a new repository with credential encryption enabled
     #[must_use]
     pub const fn new_with_encryption(pool: PgPool, encryption: CredentialEncryption) -> Self {
-        Self { pool, encryption: Some(encryption) }
+        Self {
+            pool,
+            encryption: Some(encryption),
+        }
     }
 
     /// Encrypt credential data before storage (if encryption is configured)
@@ -351,14 +377,23 @@ impl UserProviderCredentialRepository {
     }
 
     /// Decrypt credentials on a `UserProviderCredential` in place
-    fn decrypt_in_credential(&self, mut cred: UserProviderCredential) -> Result<UserProviderCredential> {
+    fn decrypt_in_credential(
+        &self,
+        mut cred: UserProviderCredential,
+    ) -> Result<UserProviderCredential> {
         cred.credential_data = self.decrypt_credential(&cred.credential_data)?;
         Ok(cred)
     }
 
     /// Decrypt credentials on a list of `UserProviderCredential`
-    fn decrypt_credentials(&self, creds: Vec<UserProviderCredential>) -> Result<Vec<UserProviderCredential>> {
-        creds.into_iter().map(|c| self.decrypt_in_credential(c)).collect()
+    fn decrypt_credentials(
+        &self,
+        creds: Vec<UserProviderCredential>,
+    ) -> Result<Vec<UserProviderCredential>> {
+        creds
+            .into_iter()
+            .map(|c| self.decrypt_in_credential(c))
+            .collect()
     }
 
     /// Get all credentials for a user (decrypted)
@@ -376,7 +411,7 @@ impl UserProviderCredentialRepository {
     /// Get credential by ID (decrypted)
     pub async fn get_by_id(&self, id: &str) -> Result<Option<UserProviderCredential>> {
         let cred = sqlx::query_as::<_, UserProviderCredential>(
-            "SELECT * FROM user_media_provider_credentials WHERE id = $1"
+            "SELECT * FROM user_media_provider_credentials WHERE id = $1",
         )
         .bind(id)
         .fetch_optional(&self.pool)
@@ -417,7 +452,7 @@ impl UserProviderCredentialRepository {
         provider: &str,
     ) -> Result<Vec<UserProviderCredential>> {
         let creds = sqlx::query_as::<_, UserProviderCredential>(
-            "SELECT * FROM user_media_provider_credentials WHERE user_id = $1 AND provider = $2"
+            "SELECT * FROM user_media_provider_credentials WHERE user_id = $1 AND provider = $2",
         )
         .bind(user_id)
         .bind(provider)
@@ -436,7 +471,7 @@ impl UserProviderCredentialRepository {
             INSERT INTO user_media_provider_credentials
             (id, user_id, provider, server_id, provider_instance_name, credential_data, expires_at)
             VALUES ($1, $2, $3, $4, $5, $6, $7)
-            "
+            ",
         )
         .bind(&credential.id)
         .bind(&credential.user_id)
@@ -470,7 +505,10 @@ impl UserProviderCredentialRepository {
         .await?;
 
         if result.rows_affected() == 0 {
-            return Err(crate::Error::NotFound(format!("User provider credential '{}' not found", credential.id)));
+            return Err(crate::Error::NotFound(format!(
+                "User provider credential '{}' not found",
+                credential.id
+            )));
         }
 
         Ok(())
@@ -484,7 +522,9 @@ impl UserProviderCredentialRepository {
             .await?;
 
         if result.rows_affected() == 0 {
-            return Err(crate::Error::NotFound(format!("User provider credential '{id}' not found")));
+            return Err(crate::Error::NotFound(format!(
+                "User provider credential '{id}' not found"
+            )));
         }
 
         Ok(())
@@ -492,16 +532,18 @@ impl UserProviderCredentialRepository {
 
     /// Delete all credentials for a user and provider
     pub async fn delete_by_user_and_provider(&self, user_id: &str, provider: &str) -> Result<()> {
-        let result = sqlx::query("DELETE FROM user_media_provider_credentials WHERE user_id = $1 AND provider = $2")
-            .bind(user_id)
-            .bind(provider)
-            .execute(&self.pool)
-            .await?;
+        let result = sqlx::query(
+            "DELETE FROM user_media_provider_credentials WHERE user_id = $1 AND provider = $2",
+        )
+        .bind(user_id)
+        .bind(provider)
+        .execute(&self.pool)
+        .await?;
 
         if result.rows_affected() == 0 {
-            return Err(crate::Error::NotFound(
-                format!("No credentials found for user '{user_id}' and provider '{provider}'")
-            ));
+            return Err(crate::Error::NotFound(format!(
+                "No credentials found for user '{user_id}' and provider '{provider}'"
+            )));
         }
 
         Ok(())
@@ -539,16 +581,18 @@ impl UserProviderCredentialRepository {
     pub async fn migrate_plaintext_to_encrypted(&self) -> Result<u64> {
         let encryption = match &self.encryption {
             Some(enc) => enc,
-            None => return Err(crate::Error::Internal(
-                "Cannot migrate credentials: encryption not configured".to_string()
-            )),
+            None => {
+                return Err(crate::Error::Internal(
+                    "Cannot migrate credentials: encryption not configured".to_string(),
+                ))
+            }
         };
 
         let mut tx = self.pool.begin().await?;
 
         // Fetch all credentials within the transaction (raw, without decryption)
         let creds = sqlx::query_as::<_, UserProviderCredential>(
-            "SELECT * FROM user_media_provider_credentials ORDER BY id"
+            "SELECT * FROM user_media_provider_credentials ORDER BY id",
         )
         .fetch_all(&mut *tx)
         .await?;
@@ -578,7 +622,10 @@ impl UserProviderCredentialRepository {
 
         tx.commit().await?;
 
-        tracing::info!("Migrated {} plaintext credentials to encrypted format", migrated_count);
+        tracing::info!(
+            "Migrated {} plaintext credentials to encrypted format",
+            migrated_count
+        );
 
         Ok(migrated_count)
     }

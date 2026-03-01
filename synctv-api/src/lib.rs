@@ -6,8 +6,8 @@
 pub mod grpc;
 pub mod http;
 pub mod impls;
-pub mod proto;
 pub mod observability;
+pub mod proto;
 
 // Shared validation utilities
 pub mod room_id_validation;

@@ -139,7 +139,6 @@ impl AnyLeaderElector {
             }
         }
     }
-
 }
 
 impl LeaderElect for AnyLeaderElector {
@@ -418,9 +417,7 @@ impl LeaderElector {
     async fn get_redis_time(&self) -> Result<u64, redis::RedisError> {
         let mut conn = self.redis_conn.clone();
         // TIME returns: [seconds, microseconds]
-        let time_result: (u64, u64) = redis::cmd("TIME")
-            .query_async(&mut conn)
-            .await?;
+        let time_result: (u64, u64) = redis::cmd("TIME").query_async(&mut conn).await?;
         Ok(time_result.0)
     }
 
@@ -509,7 +506,11 @@ impl LeaderElector {
 
         if let Some(ref value) = current_value {
             // We think we're the leader; try to extend the lock.
-            match self.lock.extend(&self.lock_key, value, self.lease_duration_secs).await {
+            match self
+                .lock
+                .extend(&self.lock_key, value, self.lease_duration_secs)
+                .await
+            {
                 Ok(true) => {
                     debug!(identity = %self.identity, "Leader lease renewed");
                     self.consecutive_failures.store(0, Ordering::Relaxed);
@@ -523,7 +524,8 @@ impl LeaderElector {
                 }
                 Err(e) => {
                     let error_str = e.to_string();
-                    let is_failover = error_str.contains("READONLY") || error_str.contains("LOADING");
+                    let is_failover =
+                        error_str.contains("READONLY") || error_str.contains("LOADING");
 
                     if is_failover {
                         warn!(
@@ -552,9 +554,8 @@ impl LeaderElector {
                             // Set the timestamp such that (current - lost_at) = renew_interval - 2
                             // This means: lost_at = current - (renew_interval - 2)
                             let grace_elapsed = self.renew_interval_secs.saturating_sub(2);
-                            *self.leadership_lost_at_redis_ts.lock().await = Some(
-                                redis_ts.saturating_sub(grace_elapsed)
-                            );
+                            *self.leadership_lost_at_redis_ts.lock().await =
+                                Some(redis_ts.saturating_sub(grace_elapsed));
                         }
                     }
 
@@ -610,7 +611,11 @@ impl LeaderElector {
 
     /// Try to acquire the leadership lock.
     async fn try_acquire(&self) {
-        match self.lock.acquire(&self.lock_key, self.lease_duration_secs).await {
+        match self
+            .lock
+            .acquire(&self.lock_key, self.lease_duration_secs)
+            .await
+        {
             Ok(Some(value)) => {
                 let epoch = self.leader_epoch.fetch_add(1, Ordering::AcqRel) + 1;
                 info!(
@@ -646,9 +651,8 @@ impl LeaderElector {
                     // Use Redis timestamp to avoid clock skew.
                     if let Ok(redis_ts) = self.get_redis_time().await {
                         let grace_elapsed = self.renew_interval_secs.saturating_sub(2);
-                        *self.leadership_lost_at_redis_ts.lock().await = Some(
-                            redis_ts.saturating_sub(grace_elapsed)
-                        );
+                        *self.leadership_lost_at_redis_ts.lock().await =
+                            Some(redis_ts.saturating_sub(grace_elapsed));
                     }
                 } else {
                     warn!(
@@ -681,7 +685,9 @@ impl LeaderElector {
                 failures
             );
             let _ = self.event_tx.send(LeadershipEvent::Vacancy);
-        } else if failures > LEADER_VACANCY_THRESHOLD && failures.is_multiple_of(LEADER_VACANCY_THRESHOLD) {
+        } else if failures > LEADER_VACANCY_THRESHOLD
+            && failures.is_multiple_of(LEADER_VACANCY_THRESHOLD)
+        {
             // Periodic reminder at every N failures
             warn!(
                 identity = %self.identity,
@@ -831,12 +837,18 @@ mod tests {
 
         // Task should be running (waiting for cancel)
         tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
-        assert!(!handle.is_finished(), "Task should be running while not cancelled");
+        assert!(
+            !handle.is_finished(),
+            "Task should be running while not cancelled"
+        );
 
         // Cancel and wait for completion
         cancel_token.cancel();
         tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
-        assert!(handle.is_finished(), "Task should complete after cancellation");
+        assert!(
+            handle.is_finished(),
+            "Task should complete after cancellation"
+        );
 
         // Clean up
         handle.abort();

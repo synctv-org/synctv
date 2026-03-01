@@ -3,14 +3,14 @@
 //! Centralized permission checking and management with Allow/Deny pattern and caching.
 //! Supports multi-replica cache invalidation via Redis Pub/Sub.
 
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::broadcast;
 
 use crate::{
     cache::{CacheInvalidationService, InvalidationMessage},
-    models::{RoomId, UserId, PermissionBits, RoomSettings},
+    models::{PermissionBits, RoomId, RoomSettings, UserId},
     repository::{RoomMemberRepository, RoomRepository, RoomSettingsRepository},
     service::SettingsRegistry,
     Error, Result,
@@ -103,7 +103,7 @@ impl PermissionService {
     /// On Pub/Sub lag, `invalidate_all()` is rate-limited to at most once per
     /// `FLUSH_RATE_LIMIT_SECS` seconds. Between flushes, the service falls back
     /// to `check_permission_no_cache` for all requests to avoid cache storms.
-    #[must_use] 
+    #[must_use]
     pub fn with_invalidation(
         member_repo: RoomMemberRepository,
         room_repo: RoomRepository,
@@ -112,7 +112,13 @@ impl PermissionService {
         cache_ttl_secs: u64,
         invalidation_service: Arc<CacheInvalidationService>,
     ) -> Self {
-        let service = Self::new(member_repo, room_repo, settings_registry, cache_size, cache_ttl_secs);
+        let service = Self::new(
+            member_repo,
+            room_repo,
+            settings_registry,
+            cache_size,
+            cache_ttl_secs,
+        );
 
         // Subscribe to invalidation messages
         let cache = service.cache.clone();
@@ -144,7 +150,8 @@ impl PermissionService {
                             }
                             InvalidationMessage::RoomPermission { room_id } => {
                                 let prefix = format!("perm:room:{room_id}:user:");
-                                let _ = cache.invalidate_entries_if(move |key, _| key.starts_with(&prefix));
+                                let _ = cache
+                                    .invalidate_entries_if(move |key, _| key.starts_with(&prefix));
                                 tracing::debug!(
                                     room_id = %room_id,
                                     "Room permission cache invalidated (cross-replica)"
@@ -232,7 +239,8 @@ impl PermissionService {
                     let should_recover = {
                         let started = degradation_started_for_recovery.lock();
                         started.is_some_and(|start_time| {
-                            start_time.elapsed() >= Duration::from_secs(Self::MAX_DEGRADATION_DURATION_SECS)
+                            start_time.elapsed()
+                                >= Duration::from_secs(Self::MAX_DEGRADATION_DURATION_SECS)
                         })
                     };
 
@@ -243,7 +251,9 @@ impl PermissionService {
                         );
                         cache_degraded_for_recovery.store(false, Ordering::Release);
                         *degradation_started_for_recovery.lock() = None;
-                        tracing::info!("Permission cache auto-recovered after max degradation duration");
+                        tracing::info!(
+                            "Permission cache auto-recovered after max degradation duration"
+                        );
                     }
                 }
             }
@@ -329,16 +339,27 @@ impl PermissionService {
     fn get_global_default_permissions(&self, role: &crate::models::RoomRole) -> PermissionBits {
         if let Some(registry) = &self.settings_registry {
             match role {
-                crate::models::RoomRole::Admin => {
-                    PermissionBits(registry.admin_default_permissions.get().unwrap_or(PermissionBits::DEFAULT_ADMIN))
+                crate::models::RoomRole::Admin => PermissionBits(
+                    registry
+                        .admin_default_permissions
+                        .get()
+                        .unwrap_or(PermissionBits::DEFAULT_ADMIN),
+                ),
+                crate::models::RoomRole::Member => PermissionBits(
+                    registry
+                        .member_default_permissions
+                        .get()
+                        .unwrap_or(PermissionBits::DEFAULT_MEMBER),
+                ),
+                crate::models::RoomRole::Guest => PermissionBits(
+                    registry
+                        .guest_default_permissions
+                        .get()
+                        .unwrap_or(PermissionBits::DEFAULT_GUEST),
+                ),
+                crate::models::RoomRole::Creator => {
+                    PermissionBits(crate::models::PermissionBits::ALL)
                 }
-                crate::models::RoomRole::Member => {
-                    PermissionBits(registry.member_default_permissions.get().unwrap_or(PermissionBits::DEFAULT_MEMBER))
-                }
-                crate::models::RoomRole::Guest => {
-                    PermissionBits(registry.guest_default_permissions.get().unwrap_or(PermissionBits::DEFAULT_GUEST))
-                }
-                crate::models::RoomRole::Creator => PermissionBits(crate::models::PermissionBits::ALL),
             }
         } else {
             // Fallback to PermissionBits::DEFAULT_* constants if SettingsRegistry not available
@@ -356,7 +377,7 @@ impl PermissionService {
     /// This combines:
     /// 1. Global default permissions (from `SettingsRegistry`)
     /// 2. Room-level overrides: (global | `room_added`) & ~`room_removed`
-    #[must_use] 
+    #[must_use]
     pub fn calculate_role_default_permissions(
         &self,
         role: &crate::models::RoomRole,
@@ -366,15 +387,9 @@ impl PermissionService {
 
         match role {
             crate::models::RoomRole::Creator => PermissionBits(crate::models::PermissionBits::ALL),
-            crate::models::RoomRole::Admin => {
-                room_settings.admin_permissions(global_default)
-            }
-            crate::models::RoomRole::Member => {
-                room_settings.member_permissions(global_default)
-            }
-            crate::models::RoomRole::Guest => {
-                room_settings.guest_permissions(global_default)
-            }
+            crate::models::RoomRole::Admin => room_settings.admin_permissions(global_default),
+            crate::models::RoomRole::Member => room_settings.member_permissions(global_default),
+            crate::models::RoomRole::Guest => room_settings.guest_permissions(global_default),
         }
     }
 
@@ -618,7 +633,9 @@ impl PermissionService {
             move |key, _| key.starts_with(&prefix)
         });
         // Also invalidate degraded cache
-        let _ = self.degraded_cache.invalidate_entries_if(move |key, _| key.starts_with(&prefix));
+        let _ = self
+            .degraded_cache
+            .invalidate_entries_if(move |key, _| key.starts_with(&prefix));
 
         // Broadcast to other replicas (best effort)
         if let Some(ref service) = self.invalidation_service {
@@ -652,12 +669,7 @@ impl PermissionService {
     }
 
     /// Check if user can perform an action (alias for `check_permission`)
-    pub async fn can(
-        &self,
-        room_id: &RoomId,
-        user_id: &UserId,
-        permission: u64,
-    ) -> Result<bool> {
+    pub async fn can(&self, room_id: &RoomId, user_id: &UserId, permission: u64) -> Result<bool> {
         match self.check_permission(room_id, user_id, permission).await {
             Ok(()) => Ok(true),
             Err(Error::Authorization(_)) => Ok(false),
@@ -704,31 +716,22 @@ impl PermissionService {
     }
 
     /// Check if user is room creator
-    pub async fn is_creator(
-        &self,
-        room_id: &RoomId,
-        user_id: &UserId,
-    ) -> Result<bool> {
-        let member = self
-            .member_repo
-            .get(room_id, user_id)
-            .await?;
+    pub async fn is_creator(&self, room_id: &RoomId, user_id: &UserId) -> Result<bool> {
+        let member = self.member_repo.get(room_id, user_id).await?;
 
         Ok(member.is_some_and(|m| m.role == crate::models::RoomRole::Creator))
     }
 
     /// Check if user is room admin or creator
-    pub async fn is_admin_or_creator(
-        &self,
-        room_id: &RoomId,
-        user_id: &UserId,
-    ) -> Result<bool> {
-        let member = self
-            .member_repo
-            .get(room_id, user_id)
-            .await?;
+    pub async fn is_admin_or_creator(&self, room_id: &RoomId, user_id: &UserId) -> Result<bool> {
+        let member = self.member_repo.get(room_id, user_id).await?;
 
-        Ok(member.is_some_and(|m| matches!(m.role, crate::models::RoomRole::Admin | crate::models::RoomRole::Creator)))
+        Ok(member.is_some_and(|m| {
+            matches!(
+                m.role,
+                crate::models::RoomRole::Admin | crate::models::RoomRole::Creator
+            )
+        }))
     }
 }
 
@@ -736,11 +739,8 @@ impl PermissionService {
 #[allow(clippy::field_reassign_with_default)]
 mod tests {
     use super::*;
-    use crate::models::{
-        RoomMember, MemberStatus,
-        room_settings::*,
-    };
     use crate::models::permission::Role as RoomRole;
+    use crate::models::{room_settings::*, MemberStatus, RoomMember};
 
     // Helper to create a PermissionService using tokio runtime for PgPool
     fn make_service() -> PermissionService {
@@ -759,7 +759,9 @@ mod tests {
             ),
             degraded_cache: Arc::new(
                 moka::future::CacheBuilder::new(10)
-                    .time_to_live(Duration::from_secs(PermissionService::DEGRADED_CACHE_TTL_SECS))
+                    .time_to_live(Duration::from_secs(
+                        PermissionService::DEGRADED_CACHE_TTL_SECS,
+                    ))
                     .build(),
             ),
             settings_registry: None,
@@ -1017,7 +1019,8 @@ mod tests {
 
     #[test]
     fn test_flush_rate_limit_allows_after_interval() {
-        let last_flush = parking_lot::Mutex::new(Instant::now().checked_sub(Duration::from_secs(20)).unwrap());
+        let last_flush =
+            parking_lot::Mutex::new(Instant::now().checked_sub(Duration::from_secs(20)).unwrap());
         let elapsed = last_flush.lock().elapsed();
         assert!(elapsed >= Duration::from_secs(PermissionService::FLUSH_RATE_LIMIT_SECS));
     }

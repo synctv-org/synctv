@@ -9,14 +9,14 @@
 use std::sync::Arc;
 use tonic::Request;
 
-use synctv_cluster::grpc::server::ClusterServer;
 use synctv_cluster::discovery::node_registry::NodeRegistry;
+use synctv_cluster::grpc::server::ClusterServer;
 
 // Import the ClusterService trait to call the gRPC methods
 use synctv_cluster::grpc::synctv::cluster::cluster_service_server::ClusterService;
 use synctv_cluster::grpc::synctv::cluster::{
-    DeregisterNodeRequest, GetRoomConnectionsRequest,
-    GetUserOnlineStatusRequest, HeartbeatRequest, RegisterNodeRequest,
+    DeregisterNodeRequest, GetRoomConnectionsRequest, GetUserOnlineStatusRequest, HeartbeatRequest,
+    RegisterNodeRequest,
 };
 
 /// Helper: create a `ClusterServer` with no `ConnectionManager`.
@@ -125,10 +125,7 @@ async fn test_deregister_node_valid_id_accepted() {
     // pass the validation step (no InvalidArgument error).
     // deregister_node is best-effort and returns success even if Redis fails.
     let result = server.deregister_node(request).await;
-    assert!(
-        result.is_ok(),
-        "Valid node_id should pass validation"
-    );
+    assert!(result.is_ok(), "Valid node_id should pass validation");
 }
 
 // ============================================================================
@@ -169,10 +166,7 @@ async fn test_get_user_online_status_at_limit() {
 
     // Without connection_manager, returns empty statuses
     let result = server.get_user_online_status(request).await;
-    assert!(
-        result.is_ok(),
-        "Exactly 1000 user_ids should be accepted"
-    );
+    assert!(result.is_ok(), "Exactly 1000 user_ids should be accepted");
 
     let response = result.unwrap().into_inner();
     assert!(
@@ -265,10 +259,7 @@ async fn test_deregister_node_valid_epoch_accepted() {
 
     // Redis fails but the response is still success (best-effort cleanup)
     let result = server.deregister_node(request).await;
-    assert!(
-        result.is_ok(),
-        "Valid epoch should pass validation"
-    );
+    assert!(result.is_ok(), "Valid epoch should pass validation");
 }
 
 // ============================================================================
@@ -329,8 +320,7 @@ async fn test_get_user_online_status_with_connection_manager() {
         .await
         .unwrap();
 
-    let server = ClusterServer::new(registry, "test-node".to_string())
-        .with_connection_manager(cm);
+    let server = ClusterServer::new(registry, "test-node".to_string()).with_connection_manager(cm);
 
     let request = Request::new(GetUserOnlineStatusRequest {
         user_ids: vec!["test-user".to_string(), "offline-user".to_string()],
@@ -342,10 +332,18 @@ async fn test_get_user_online_status_with_connection_manager() {
     let response = result.unwrap().into_inner();
     assert_eq!(response.statuses.len(), 2);
 
-    let online_user = response.statuses.iter().find(|s| s.user_id == "test-user").unwrap();
+    let online_user = response
+        .statuses
+        .iter()
+        .find(|s| s.user_id == "test-user")
+        .unwrap();
     assert!(online_user.is_online, "test-user should be online");
     assert_eq!(online_user.node_id, "test-node");
 
-    let offline_user = response.statuses.iter().find(|s| s.user_id == "offline-user").unwrap();
+    let offline_user = response
+        .statuses
+        .iter()
+        .find(|s| s.user_id == "offline-user")
+        .unwrap();
     assert!(!offline_user.is_online, "offline-user should be offline");
 }

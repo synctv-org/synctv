@@ -22,12 +22,12 @@
 //! would require full protocol implementation. The TCP connection check
 //! is sufficient to detect most failure modes.
 
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tokio::sync::RwLock;
 use tokio::net::TcpStream;
-use serde::{Deserialize, Serialize};
+use tokio::sync::RwLock;
 
 /// Health status of a TURN server endpoint.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -205,11 +205,8 @@ impl TurnHealthChecker {
         };
 
         // Attempt TCP connection with timeout
-        let result = tokio::time::timeout(
-            self.config.check_timeout,
-            TcpStream::connect(&addr),
-        )
-        .await;
+        let result =
+            tokio::time::timeout(self.config.check_timeout, TcpStream::connect(&addr)).await;
 
         match result {
             Ok(Ok(_stream)) => {
@@ -218,17 +215,11 @@ impl TurnHealthChecker {
             }
             Ok(Err(e)) => {
                 // Connection failed
-                HealthCheckResult::unhealthy(
-                    url.to_string(),
-                    format!("Connection failed: {e}"),
-                )
+                HealthCheckResult::unhealthy(url.to_string(), format!("Connection failed: {e}"))
             }
             Err(_) => {
                 // Timeout
-                HealthCheckResult::unhealthy(
-                    url.to_string(),
-                    "Connection timeout".to_string(),
-                )
+                HealthCheckResult::unhealthy(url.to_string(), "Connection timeout".to_string())
             }
         }
     }
@@ -389,7 +380,9 @@ impl TurnHealthChecker {
         // Add new servers to the health state map
         let mut states = self.health_states.write().await;
         for url in &servers {
-            states.entry(url.clone()).or_insert_with(ServerHealthState::new);
+            states
+                .entry(url.clone())
+                .or_insert_with(ServerHealthState::new);
         }
 
         // Note: We don't remove old servers from the map to preserve their
@@ -423,8 +416,10 @@ mod tests {
 
     #[test]
     fn test_health_check_result_unhealthy() {
-        let result =
-            HealthCheckResult::unhealthy("turn:example.com:3478".to_string(), "Connection failed".to_string());
+        let result = HealthCheckResult::unhealthy(
+            "turn:example.com:3478".to_string(),
+            "Connection failed".to_string(),
+        );
         assert!(!result.health.is_healthy());
         assert_eq!(result.error, "Connection failed");
         assert_eq!(result.url, "turn:example.com:3478");
@@ -457,13 +452,19 @@ mod tests {
         };
 
         // First failure - still healthy
-        let result1 = HealthCheckResult::unhealthy("turn:example.com:3478".to_string(), "Error 1".to_string());
+        let result1 = HealthCheckResult::unhealthy(
+            "turn:example.com:3478".to_string(),
+            "Error 1".to_string(),
+        );
         state.record_check(&result1, &config);
         assert_eq!(state.health, TurnServerHealth::Healthy);
         assert_eq!(state.consecutive_failures, 1);
 
         // Second failure - now unhealthy
-        let result2 = HealthCheckResult::unhealthy("turn:example.com:3478".to_string(), "Error 2".to_string());
+        let result2 = HealthCheckResult::unhealthy(
+            "turn:example.com:3478".to_string(),
+            "Error 2".to_string(),
+        );
         state.record_check(&result2, &config);
         assert_eq!(state.health, TurnServerHealth::Unhealthy);
         assert_eq!(state.consecutive_failures, 2);
@@ -480,7 +481,8 @@ mod tests {
         };
 
         // Mark as unhealthy first
-        let result1 = HealthCheckResult::unhealthy("turn:example.com:3478".to_string(), "Error".to_string());
+        let result1 =
+            HealthCheckResult::unhealthy("turn:example.com:3478".to_string(), "Error".to_string());
         state.record_check(&result1, &config);
         assert_eq!(state.health, TurnServerHealth::Unhealthy);
 
@@ -602,11 +604,15 @@ mod tests {
         ];
 
         // Mark one as unhealthy (requires 2 failures with default config)
-        let result1 =
-            HealthCheckResult::unhealthy("turn:unhealthy.com:3478".to_string(), "Error 1".to_string());
+        let result1 = HealthCheckResult::unhealthy(
+            "turn:unhealthy.com:3478".to_string(),
+            "Error 1".to_string(),
+        );
         checker.record_check(&result1).await;
-        let result2 =
-            HealthCheckResult::unhealthy("turn:unhealthy.com:3478".to_string(), "Error 2".to_string());
+        let result2 = HealthCheckResult::unhealthy(
+            "turn:unhealthy.com:3478".to_string(),
+            "Error 2".to_string(),
+        );
         checker.record_check(&result2).await;
 
         // Mark one as healthy
@@ -630,16 +636,25 @@ mod tests {
             .record_check(&HealthCheckResult::healthy("turn:a.com:3478".to_string()))
             .await;
         checker
-            .record_check(&HealthCheckResult::unhealthy("turn:b.com:3478".to_string(), "Error".to_string()))
+            .record_check(&HealthCheckResult::unhealthy(
+                "turn:b.com:3478".to_string(),
+                "Error".to_string(),
+            ))
             .await;
         checker
-            .record_check(&HealthCheckResult::unhealthy("turn:b.com:3478".to_string(), "Error".to_string()))
+            .record_check(&HealthCheckResult::unhealthy(
+                "turn:b.com:3478".to_string(),
+                "Error".to_string(),
+            ))
             .await;
 
         let all = checker.get_all_health().await;
         assert_eq!(all.len(), 2);
         assert_eq!(all.get("turn:a.com:3478"), Some(&TurnServerHealth::Healthy));
-        assert_eq!(all.get("turn:b.com:3478"), Some(&TurnServerHealth::Unhealthy));
+        assert_eq!(
+            all.get("turn:b.com:3478"),
+            Some(&TurnServerHealth::Unhealthy)
+        );
     }
 
     #[tokio::test]

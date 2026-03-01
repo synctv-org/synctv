@@ -66,7 +66,9 @@ pub async fn json_with_limit<T: serde::de::DeserializeOwned>(
     }
     let bytes = response.bytes().await?;
     if bytes.len() > MAX_RESPONSE_SIZE {
-        return Err(ProviderClientError::ResponseTooLarge { size: bytes.len() as u64 });
+        return Err(ProviderClientError::ResponseTooLarge {
+            size: bytes.len() as u64,
+        });
     }
     serde_json::from_slice(&bytes).map_err(Into::into)
 }
@@ -75,7 +77,9 @@ pub async fn json_with_limit<T: serde::de::DeserializeOwned>(
 ///
 /// For HTTP 429 responses, the `Retry-After` header is parsed and stored
 /// in the error so that callers can respect the server's backoff hint.
-pub async fn check_response(resp: reqwest::Response) -> Result<reqwest::Response, ProviderClientError> {
+pub async fn check_response(
+    resp: reqwest::Response,
+) -> Result<reqwest::Response, ProviderClientError> {
     let status = resp.status();
     if status.is_client_error() || status.is_server_error() {
         let retry_after_secs = if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
@@ -89,12 +93,17 @@ pub async fn check_response(resp: reqwest::Response) -> Result<reqwest::Response
         let url = resp.url().to_string();
         // Read response body for debugging; truncate to 1 KB to avoid OOM.
         // Use char-safe truncation to avoid panicking on multi-byte UTF-8.
-        let body = resp.text().await.map_or_else(|_| String::new(), |text| if text.len() > 1024 {
+        let body = resp.text().await.map_or_else(
+            |_| String::new(),
+            |text| {
+                if text.len() > 1024 {
                     let truncated: String = text.chars().take(1024).collect();
                     format!("{truncated}...(truncated)")
                 } else {
                     text
-                });
+                }
+            },
+        );
         return Err(ProviderClientError::Http {
             status,
             url,
@@ -230,7 +239,10 @@ mod tests {
             retry_after_secs: None,
             body: "not found".to_string(),
         };
-        assert_eq!(err.to_string(), "HTTP error 404 Not Found for https://example.com/api: not found");
+        assert_eq!(
+            err.to_string(),
+            "HTTP error 404 Not Found for https://example.com/api: not found"
+        );
     }
 
     #[test]
@@ -309,7 +321,10 @@ mod tests {
         };
         assert!(err.is_retryable(), "HTTP 429 should be retryable");
         // Verify retry_after_secs is captured
-        if let ProviderClientError::Http { retry_after_secs, .. } = &err {
+        if let ProviderClientError::Http {
+            retry_after_secs, ..
+        } = &err
+        {
             assert_eq!(*retry_after_secs, Some(5));
         }
     }

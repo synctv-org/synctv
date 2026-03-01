@@ -6,7 +6,7 @@ use handlebars::Handlebars;
 use serde_json::json;
 use std::sync::Arc;
 
-use crate::{Error, Result, InternalExt};
+use crate::{Error, InternalExt, Result};
 
 /// Email template type
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -32,16 +32,20 @@ impl EmailTemplateManager {
         let mut handlebars = Handlebars::new();
 
         // Register templates
-        handlebars.register_template_string("email_verification", EMAIL_VERIFICATION_TEMPLATE)
+        handlebars
+            .register_template_string("email_verification", EMAIL_VERIFICATION_TEMPLATE)
             .internal_with_err("Failed to register email verification template")?;
 
-        handlebars.register_template_string("password_reset", PASSWORD_RESET_TEMPLATE)
+        handlebars
+            .register_template_string("password_reset", PASSWORD_RESET_TEMPLATE)
             .internal_with_err("Failed to register password reset template")?;
 
-        handlebars.register_template_string("test_email", TEST_EMAIL_TEMPLATE)
+        handlebars
+            .register_template_string("test_email", TEST_EMAIL_TEMPLATE)
             .internal_with_err("Failed to register test email template")?;
 
-        handlebars.register_template_string("notification", NOTIFICATION_TEMPLATE)
+        handlebars
+            .register_template_string("notification", NOTIFICATION_TEMPLATE)
             .internal_with_err("Failed to register notification template")?;
 
         Ok(Self {
@@ -54,13 +58,19 @@ impl EmailTemplateManager {
     /// # Arguments
     /// * `token` - Verification token
     /// * `expires_in` - Token expiration time (human readable, e.g., "24 hours")
-    pub fn render_verification_email(&self, token: &str, expires_in: &str) -> Result<(String, String)> {
+    pub fn render_verification_email(
+        &self,
+        token: &str,
+        expires_in: &str,
+    ) -> Result<(String, String)> {
         let data = json!({
             "token": token,
             "expires_in": expires_in,
         });
 
-        let html = self.handlebars.render("email_verification", &data)
+        let html = self
+            .handlebars
+            .render("email_verification", &data)
             .internal_with_err("Failed to render template")?;
 
         let plain_text = format!(
@@ -81,13 +91,19 @@ impl EmailTemplateManager {
     /// # Arguments
     /// * `token` - Reset token
     /// * `expires_in` - Token expiration time (human readable, e.g., "1 hour")
-    pub fn render_password_reset_email(&self, token: &str, expires_in: &str) -> Result<(String, String)> {
+    pub fn render_password_reset_email(
+        &self,
+        token: &str,
+        expires_in: &str,
+    ) -> Result<(String, String)> {
         let data = json!({
             "token": token,
             "expires_in": expires_in,
         });
 
-        let html = self.handlebars.render("password_reset", &data)
+        let html = self
+            .handlebars
+            .render("password_reset", &data)
             .internal_with_err("Failed to render template")?;
 
         let plain_text = format!(
@@ -108,14 +124,21 @@ impl EmailTemplateManager {
     /// * `smtp_host` - SMTP server host
     /// * `smtp_port` - SMTP server port
     /// * `sent_at` - Timestamp of email sending
-    pub fn render_test_email(&self, smtp_host: &str, smtp_port: u16, sent_at: &str) -> Result<(String, String)> {
+    pub fn render_test_email(
+        &self,
+        smtp_host: &str,
+        smtp_port: u16,
+        sent_at: &str,
+    ) -> Result<(String, String)> {
         let data = json!({
             "smtp_host": smtp_host,
             "smtp_port": smtp_port,
             "sent_at": sent_at,
         });
 
-        let html = self.handlebars.render("test_email", &data)
+        let html = self
+            .handlebars
+            .render("test_email", &data)
             .internal_with_err("Failed to render template")?;
 
         let plain_text = format!(
@@ -162,7 +185,9 @@ impl EmailTemplateManager {
             "has_action": action_text.is_some() && action_url.is_some(),
         });
 
-        let html = self.handlebars.render("notification", &data)
+        let html = self
+            .handlebars
+            .render("notification", &data)
             .internal_with_err("Failed to render template")?;
 
         let plain_text = if let (Some(action_text), Some(action_url)) = (action_text, action_url) {
@@ -760,12 +785,7 @@ mod tests {
         assert!(result.is_ok());
 
         // None action_url should be allowed
-        let result = manager.render_notification_email(
-            "Test",
-            "Test message",
-            None,
-            None,
-        );
+        let result = manager.render_notification_email("Test", "Test message", None, None);
         assert!(result.is_ok());
     }
 }

@@ -11,36 +11,54 @@ pub(super) const fn user_role_to_proto(role: synctv_core::models::UserRole) -> i
 pub(super) const fn user_status_to_proto(status: synctv_core::models::UserStatus) -> i32 {
     match status {
         synctv_core::models::UserStatus::Active => synctv_proto::common::UserStatus::Active as i32,
-        synctv_core::models::UserStatus::Pending => synctv_proto::common::UserStatus::Pending as i32,
+        synctv_core::models::UserStatus::Pending => {
+            synctv_proto::common::UserStatus::Pending as i32
+        }
         synctv_core::models::UserStatus::Banned => synctv_proto::common::UserStatus::Banned as i32,
     }
 }
 
-pub fn proto_role_to_room_role(role_i32: i32) -> Result<synctv_core::models::RoomRole, crate::impls::ApiError> {
+pub fn proto_role_to_room_role(
+    role_i32: i32,
+) -> Result<synctv_core::models::RoomRole, crate::impls::ApiError> {
     match synctv_proto::common::RoomMemberRole::try_from(role_i32) {
-        Ok(synctv_proto::common::RoomMemberRole::Creator) => Ok(synctv_core::models::RoomRole::Creator),
+        Ok(synctv_proto::common::RoomMemberRole::Creator) => {
+            Ok(synctv_core::models::RoomRole::Creator)
+        }
         Ok(synctv_proto::common::RoomMemberRole::Admin) => Ok(synctv_core::models::RoomRole::Admin),
-        Ok(synctv_proto::common::RoomMemberRole::Member) => Ok(synctv_core::models::RoomRole::Member),
+        Ok(synctv_proto::common::RoomMemberRole::Member) => {
+            Ok(synctv_core::models::RoomRole::Member)
+        }
         Ok(synctv_proto::common::RoomMemberRole::Guest) => Ok(synctv_core::models::RoomRole::Guest),
-        _ => Err(crate::impls::ApiError::InvalidInput(format!("Unknown room member role: {role_i32}"))),
+        _ => Err(crate::impls::ApiError::InvalidInput(format!(
+            "Unknown room member role: {role_i32}"
+        ))),
     }
 }
 
-pub fn proto_role_to_user_role(role_i32: i32) -> Result<synctv_core::models::UserRole, crate::impls::ApiError> {
+pub fn proto_role_to_user_role(
+    role_i32: i32,
+) -> Result<synctv_core::models::UserRole, crate::impls::ApiError> {
     match synctv_proto::common::UserRole::try_from(role_i32) {
         Ok(synctv_proto::common::UserRole::Root) => Ok(synctv_core::models::UserRole::Root),
         Ok(synctv_proto::common::UserRole::Admin) => Ok(synctv_core::models::UserRole::Admin),
         Ok(synctv_proto::common::UserRole::User) => Ok(synctv_core::models::UserRole::User),
-        _ => Err(crate::impls::ApiError::InvalidInput(format!("Unknown user role: {role_i32}"))),
+        _ => Err(crate::impls::ApiError::InvalidInput(format!(
+            "Unknown user role: {role_i32}"
+        ))),
     }
 }
 
 #[must_use]
 pub const fn room_role_to_proto(role: synctv_core::models::RoomRole) -> i32 {
     match role {
-        synctv_core::models::RoomRole::Creator => synctv_proto::common::RoomMemberRole::Creator as i32,
+        synctv_core::models::RoomRole::Creator => {
+            synctv_proto::common::RoomMemberRole::Creator as i32
+        }
         synctv_core::models::RoomRole::Admin => synctv_proto::common::RoomMemberRole::Admin as i32,
-        synctv_core::models::RoomRole::Member => synctv_proto::common::RoomMemberRole::Member as i32,
+        synctv_core::models::RoomRole::Member => {
+            synctv_proto::common::RoomMemberRole::Member as i32
+        }
         synctv_core::models::RoomRole::Guest => synctv_proto::common::RoomMemberRole::Guest as i32,
     }
 }
@@ -90,7 +108,8 @@ pub fn media_to_proto(media: &synctv_core::models::Media) -> crate::proto::clien
     };
 
     // Strip credentials from source_config before sending to clients
-    let sanitized_config = synctv_core::provider::strip_source_config_credentials(&media.source_config);
+    let sanitized_config =
+        synctv_core::provider::strip_source_config_credentials(&media.source_config);
 
     crate::proto::client::Media {
         id: media.id.as_str().to_string(),
@@ -100,18 +119,28 @@ pub fn media_to_proto(media: &synctv_core::models::Media) -> crate::proto::clien
         metadata: metadata_bytes,
         position: media.position,
         added_at: media.added_at.timestamp(),
-        added_by: media.creator_id.as_ref().map_or(String::new(), |id| id.as_str().to_string()),
+        added_by: media
+            .creator_id
+            .as_ref()
+            .map_or(String::new(), |id| id.as_str().to_string()),
         provider_instance_name: media.provider_instance_name.clone().unwrap_or_default(),
         source_config: serde_json::to_vec(&sanitized_config).unwrap_or_default(),
     }
 }
 
-pub(super) fn playlist_to_proto(playlist: &synctv_core::models::Playlist, item_count: i32) -> crate::proto::client::Playlist {
+pub(super) fn playlist_to_proto(
+    playlist: &synctv_core::models::Playlist,
+    item_count: i32,
+) -> crate::proto::client::Playlist {
     crate::proto::client::Playlist {
         id: playlist.id.as_str().to_string(),
         room_id: playlist.room_id.as_str().to_string(),
         name: playlist.name.clone(),
-        parent_id: playlist.parent_id.as_ref().map(|id| id.as_str().to_string()).unwrap_or_default(),
+        parent_id: playlist
+            .parent_id
+            .as_ref()
+            .map(|id| id.as_str().to_string())
+            .unwrap_or_default(),
         position: playlist.position,
         is_folder: playlist.parent_id.is_none() || playlist.source_provider.is_some(),
         is_dynamic: playlist.is_dynamic(),
@@ -121,16 +150,26 @@ pub(super) fn playlist_to_proto(playlist: &synctv_core::models::Playlist, item_c
     }
 }
 
-pub(super) fn playback_state_to_proto(state: &synctv_core::models::RoomPlaybackState) -> crate::proto::client::PlaybackState {
+pub(super) fn playback_state_to_proto(
+    state: &synctv_core::models::RoomPlaybackState,
+) -> crate::proto::client::PlaybackState {
     crate::proto::client::PlaybackState {
         room_id: state.room_id.as_str().to_string(),
-        playing_media_id: state.playing_media_id.as_ref().map(|id| id.as_str().to_string()).unwrap_or_default(),
+        playing_media_id: state
+            .playing_media_id
+            .as_ref()
+            .map(|id| id.as_str().to_string())
+            .unwrap_or_default(),
         current_time: state.computed_current_time(),
         speed: state.speed,
         is_playing: state.is_playing,
         updated_at: state.updated_at.timestamp(),
         version: state.version as i32,
-        playing_playlist_id: state.playing_playlist_id.as_ref().map(|id| id.as_str().to_string()).unwrap_or_default(),
+        playing_playlist_id: state
+            .playing_playlist_id
+            .as_ref()
+            .map(|id| id.as_str().to_string())
+            .unwrap_or_default(),
         relative_path: state.relative_path.clone(),
     }
 }
@@ -153,7 +192,6 @@ pub(super) fn room_member_to_proto(
         is_online: member.is_online,
     }
 }
-
 
 /// Convert provider `PlaybackInfo` to models `PlaybackInfo`
 #[must_use]
@@ -200,7 +238,6 @@ pub fn provider_playback_info_to_model(
 pub(super) fn playback_result_to_proto(
     result: &synctv_core::models::media::PlaybackResult,
 ) -> crate::proto::client::PlaybackResult {
-
     let playback_infos = result
         .playback_infos
         .iter()
@@ -214,7 +251,11 @@ pub(super) fn playback_result_to_proto(
         .collect();
 
     crate::proto::client::PlaybackResult {
-        media_id: result.id.as_ref().map(|id| id.as_str().to_string()).unwrap_or_default(),
+        media_id: result
+            .id
+            .as_ref()
+            .map(|id| id.as_str().to_string())
+            .unwrap_or_default(),
         playlist_id: result.playlist_id.as_str().to_string(),
         room_id: result.room_id.as_str().to_string(),
         name: result.name.clone(),

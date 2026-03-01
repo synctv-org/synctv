@@ -1,4 +1,4 @@
-use {bytes::BytesMut, crate::flv::amf0::define::Amf0ValueType};
+use {crate::flv::amf0::define::Amf0ValueType, bytes::BytesMut};
 
 #[allow(dead_code)]
 pub struct SetPeerBandwidthProperties {
@@ -7,7 +7,7 @@ pub struct SetPeerBandwidthProperties {
 }
 
 impl SetPeerBandwidthProperties {
-    #[must_use] 
+    #[must_use]
     pub const fn new(window_size: u32, limit_type: u8) -> Self {
         Self {
             window_size,

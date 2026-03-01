@@ -100,6 +100,12 @@ fn test_node_info_is_stale() {
 
     // Set heartbeat to 60 seconds ago
     node.last_heartbeat = chrono::Utc::now() - chrono::Duration::seconds(60);
-    assert!(node.is_stale(30), "Node should be stale with 60s-old heartbeat and 30s timeout");
-    assert!(!node.is_stale(120), "Node should NOT be stale with 60s-old heartbeat and 120s timeout");
+    assert!(
+        node.is_stale(30),
+        "Node should be stale with 60s-old heartbeat and 30s timeout"
+    );
+    assert!(
+        !node.is_stale(120),
+        "Node should NOT be stale with 60s-old heartbeat and 120s timeout"
+    );
 }

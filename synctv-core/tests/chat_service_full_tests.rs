@@ -10,29 +10,31 @@
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
-use synctv_core_testing::{create_test_pool};
-use synctv_core::{
-    cache::{KeyBuilder, UsernameCache, NoopCacheL2},
-    config::PasswordComplexityConfig,
-    models::{
-        UserId, User, UserRole, UserStatus,
-        PermissionBits, RoomSettings, RoomId,
-        room_settings::{ChatEnabled, DanmakuEnabled},
-        SendDanmakuRequest, DanmakuPosition,
-    },
-    repository::{UserRepository, ChatRepository, RoomMemberRepository, RoomRepository, RoomSettingsRepository},
-    service::{
-        ChatService, RoomService, UserService, InMemoryTokenBlacklistStore,
-        ContentFilter, RateLimiter, RateLimitConfig, PermissionService,
-        RoomSettingsService, NotificationService,
-        notification::{EventBroadcaster, RoomEvent},
-        auth::{JwtService, BruteForceProtection},
-    },
-    Result, Error,
-};
 use async_trait::async_trait;
 use chrono::Utc;
 use sqlx::PgPool;
+use synctv_core::{
+    cache::{KeyBuilder, NoopCacheL2, UsernameCache},
+    config::PasswordComplexityConfig,
+    models::{
+        room_settings::{ChatEnabled, DanmakuEnabled},
+        DanmakuPosition, PermissionBits, RoomId, RoomSettings, SendDanmakuRequest, User, UserId,
+        UserRole, UserStatus,
+    },
+    repository::{
+        ChatRepository, RoomMemberRepository, RoomRepository, RoomSettingsRepository,
+        UserRepository,
+    },
+    service::{
+        auth::{BruteForceProtection, JwtService},
+        notification::{EventBroadcaster, RoomEvent},
+        ChatService, ContentFilter, InMemoryTokenBlacklistStore, NotificationService,
+        PermissionService, RateLimitConfig, RateLimiter, RoomService, RoomSettingsService,
+        UserService,
+    },
+    Error, Result,
+};
+use synctv_core_testing::create_test_pool;
 fn make_user_service(pool: PgPool) -> UserService {
     let secret = "Test_Secret_Key_For_JWT_Tokens_32Bytes!!";
     let jwt_service = JwtService::new(secret).expect("Failed to create JwtService");
@@ -59,7 +61,10 @@ fn make_room_service(pool: PgPool) -> RoomService {
     RoomService::new(pool, user_service)
 }
 
-fn make_chat_service_with_config(pool: PgPool, rate_limit_config: RateLimitConfig) -> (ChatService, UsernameCache) {
+fn make_chat_service_with_config(
+    pool: PgPool,
+    rate_limit_config: RateLimitConfig,
+) -> (ChatService, UsernameCache) {
     let chat_repo = Arc::new(ChatRepository::new(pool.clone()));
     let rate_limiter = RateLimiter::new(None, "test:chat:".to_string());
     let content_filter = ContentFilter::new();
@@ -135,32 +140,60 @@ async fn test_send_message_without_send_chat_permission_denied() {
     let room_service = make_room_service(pool.clone());
     let (chat_service, username_cache) = make_chat_service(pool.clone());
 
-    let creator = user_repo.create(&make_user("chat_perm_creator")).await.unwrap();
-    let member = user_repo.create(&make_user("chat_perm_member")).await.unwrap();
-    username_cache.set(&creator.id, &creator.username).await.unwrap();
-    username_cache.set(&member.id, &member.username).await.unwrap();
-
-    let (room, _) = room_service
-        .create_room("Chat Perm Room".to_string(), String::new(), creator.id.clone(), None, None)
+    let creator = user_repo
+        .create(&make_user("chat_perm_creator"))
+        .await
+        .unwrap();
+    let member = user_repo
+        .create(&make_user("chat_perm_member"))
+        .await
+        .unwrap();
+    username_cache
+        .set(&creator.id, &creator.username)
+        .await
+        .unwrap();
+    username_cache
+        .set(&member.id, &member.username)
         .await
         .unwrap();
 
-    room_service.join_room(room.id.clone(), member.id.clone(), None).await.unwrap();
+    let (room, _) = room_service
+        .create_room(
+            "Chat Perm Room".to_string(),
+            String::new(),
+            creator.id.clone(),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+    room_service
+        .join_room(room.id.clone(), member.id.clone(), None)
+        .await
+        .unwrap();
 
     // Revoke SEND_CHAT permission from the member
-    room_service.member_service().revoke_permission(
-        room.id.clone(),
-        creator.id.clone(),
-        member.id.clone(),
-        PermissionBits::SEND_CHAT,
-    ).await.unwrap();
+    room_service
+        .member_service()
+        .revoke_permission(
+            room.id.clone(),
+            creator.id.clone(),
+            member.id.clone(),
+            PermissionBits::SEND_CHAT,
+        )
+        .await
+        .unwrap();
 
     // Attempt to send a message -- should fail
     let result = chat_service
         .send_message(room.id.clone(), member.id.clone(), "Hello".to_string())
         .await;
 
-    assert!(result.is_err(), "send_message should fail without SEND_CHAT permission");
+    assert!(
+        result.is_err(),
+        "send_message should fail without SEND_CHAT permission"
+    );
     match result.unwrap_err() {
         Error::Authorization(_) => {}
         other => panic!("Expected Authorization error, got: {other:?}"),
@@ -177,13 +210,28 @@ async fn test_send_message_chat_disabled_rejected() {
     let room_service = make_room_service(pool.clone());
     let (chat_service, username_cache) = make_chat_service(pool.clone());
 
-    let creator = user_repo.create(&make_user("chatdis_creator")).await.unwrap();
-    username_cache.set(&creator.id, &creator.username).await.unwrap();
+    let creator = user_repo
+        .create(&make_user("chatdis_creator"))
+        .await
+        .unwrap();
+    username_cache
+        .set(&creator.id, &creator.username)
+        .await
+        .unwrap();
 
     // Create room with chat disabled
-    let settings = RoomSettings { chat_enabled: ChatEnabled(false), ..Default::default() };
+    let settings = RoomSettings {
+        chat_enabled: ChatEnabled(false),
+        ..Default::default()
+    };
     let (room, _) = room_service
-        .create_room("Chat Disabled".to_string(), String::new(), creator.id.clone(), None, Some(settings))
+        .create_room(
+            "Chat Disabled".to_string(),
+            String::new(),
+            creator.id.clone(),
+            None,
+            Some(settings),
+        )
         .await
         .unwrap();
 
@@ -192,10 +240,16 @@ async fn test_send_message_chat_disabled_rejected() {
         .send_message(room.id.clone(), creator.id.clone(), "Hello".to_string())
         .await;
 
-    assert!(result.is_err(), "send_message should fail when chat is disabled");
+    assert!(
+        result.is_err(),
+        "send_message should fail when chat is disabled"
+    );
     match result.unwrap_err() {
         Error::Authorization(msg) => {
-            assert!(msg.contains("disabled") || msg.contains("Chat"), "Error should mention chat disabled: {msg}");
+            assert!(
+                msg.contains("disabled") || msg.contains("Chat"),
+                "Error should mention chat disabled: {msg}"
+            );
         }
         other => panic!("Expected Authorization error, got: {other:?}"),
     }
@@ -210,10 +264,19 @@ async fn test_send_message_rate_limit_triggers() {
     let user_repo = UserRepository::new(pool.clone());
     let room_service = make_room_service(pool.clone());
 
-    let creator = user_repo.create(&make_user("chatrl_creator")).await.unwrap();
+    let creator = user_repo
+        .create(&make_user("chatrl_creator"))
+        .await
+        .unwrap();
 
     let (room, _) = room_service
-        .create_room("Chat RL Room".to_string(), String::new(), creator.id.clone(), None, None)
+        .create_room(
+            "Chat RL Room".to_string(),
+            String::new(),
+            creator.id.clone(),
+            None,
+            None,
+        )
         .await
         .unwrap();
 
@@ -228,7 +291,10 @@ async fn test_send_message_rate_limit_triggers() {
     let content_filter = ContentFilter::new();
     let l2 = Arc::new(NoopCacheL2);
     let username_cache = UsernameCache::new(l2, "test:username:".to_string(), 100, 60);
-    username_cache.set(&creator.id, &creator.username).await.unwrap();
+    username_cache
+        .set(&creator.id, &creator.username)
+        .await
+        .unwrap();
 
     let member_repo = RoomMemberRepository::new(pool.clone());
     let room_repo = RoomRepository::new(pool.clone());
@@ -288,13 +354,28 @@ async fn test_send_danmaku_disabled_rejected() {
     let room_service = make_room_service(pool.clone());
     let (chat_service, username_cache) = make_chat_service(pool.clone());
 
-    let creator = user_repo.create(&make_user("danmakudis_creator")).await.unwrap();
-    username_cache.set(&creator.id, &creator.username).await.unwrap();
+    let creator = user_repo
+        .create(&make_user("danmakudis_creator"))
+        .await
+        .unwrap();
+    username_cache
+        .set(&creator.id, &creator.username)
+        .await
+        .unwrap();
 
     // Create room with danmaku disabled
-    let settings = RoomSettings { danmaku_enabled: DanmakuEnabled(false), ..Default::default() };
+    let settings = RoomSettings {
+        danmaku_enabled: DanmakuEnabled(false),
+        ..Default::default()
+    };
     let (room, _) = room_service
-        .create_room("Danmaku Disabled".to_string(), String::new(), creator.id.clone(), None, Some(settings))
+        .create_room(
+            "Danmaku Disabled".to_string(),
+            String::new(),
+            creator.id.clone(),
+            None,
+            Some(settings),
+        )
         .await
         .unwrap();
 
@@ -309,10 +390,16 @@ async fn test_send_danmaku_disabled_rejected() {
         .send_danmaku(room.id.clone(), creator.id.clone(), request)
         .await;
 
-    assert!(result.is_err(), "send_danmaku should fail when danmaku is disabled");
+    assert!(
+        result.is_err(),
+        "send_danmaku should fail when danmaku is disabled"
+    );
     match result.unwrap_err() {
         Error::Authorization(msg) => {
-            assert!(msg.contains("disabled") || msg.contains("Danmaku"), "Error should mention danmaku disabled: {msg}");
+            assert!(
+                msg.contains("disabled") || msg.contains("Danmaku"),
+                "Error should mention danmaku disabled: {msg}"
+            );
         }
         other => panic!("Expected Authorization error, got: {other:?}"),
     }
@@ -329,10 +416,19 @@ async fn test_delete_message_owner_can_delete_own() {
     let (chat_service, username_cache) = make_chat_service(pool.clone());
 
     let creator = user_repo.create(&make_user("delmsg_owner")).await.unwrap();
-    username_cache.set(&creator.id, &creator.username).await.unwrap();
+    username_cache
+        .set(&creator.id, &creator.username)
+        .await
+        .unwrap();
 
     let (room, _) = room_service
-        .create_room("Del Msg Room".to_string(), String::new(), creator.id.clone(), None, None)
+        .create_room(
+            "Del Msg Room".to_string(),
+            String::new(),
+            creator.id.clone(),
+            None,
+            None,
+        )
         .await
         .unwrap();
 
@@ -343,11 +439,12 @@ async fn test_delete_message_owner_can_delete_own() {
         .unwrap();
 
     // Owner should be able to delete their own message
-    let result = chat_service
-        .delete_message(&msg.id, &creator.id)
-        .await;
+    let result = chat_service.delete_message(&msg.id, &creator.id).await;
 
-    assert!(result.is_ok(), "Owner should be able to delete their own message");
+    assert!(
+        result.is_ok(),
+        "Owner should be able to delete their own message"
+    );
 }
 
 // ========== delete_message: non-owner requires DELETE_CHAT permission ==========
@@ -360,30 +457,53 @@ async fn test_delete_message_non_owner_requires_delete_chat_permission() {
     let room_service = make_room_service(pool.clone());
     let (chat_service, username_cache) = make_chat_service(pool.clone());
 
-    let creator = user_repo.create(&make_user("delmsg_creator")).await.unwrap();
+    let creator = user_repo
+        .create(&make_user("delmsg_creator"))
+        .await
+        .unwrap();
     let member = user_repo.create(&make_user("delmsg_member")).await.unwrap();
-    username_cache.set(&creator.id, &creator.username).await.unwrap();
-    username_cache.set(&member.id, &member.username).await.unwrap();
-
-    let (room, _) = room_service
-        .create_room("Del Msg Perm Room".to_string(), String::new(), creator.id.clone(), None, None)
+    username_cache
+        .set(&creator.id, &creator.username)
+        .await
+        .unwrap();
+    username_cache
+        .set(&member.id, &member.username)
         .await
         .unwrap();
 
-    room_service.join_room(room.id.clone(), member.id.clone(), None).await.unwrap();
+    let (room, _) = room_service
+        .create_room(
+            "Del Msg Perm Room".to_string(),
+            String::new(),
+            creator.id.clone(),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+    room_service
+        .join_room(room.id.clone(), member.id.clone(), None)
+        .await
+        .unwrap();
 
     // Creator sends a message
     let msg = chat_service
-        .send_message(room.id.clone(), creator.id.clone(), "Protected msg".to_string())
+        .send_message(
+            room.id.clone(),
+            creator.id.clone(),
+            "Protected msg".to_string(),
+        )
         .await
         .unwrap();
 
     // Member (non-owner without DELETE_CHAT) tries to delete -- should fail
-    let result = chat_service
-        .delete_message(&msg.id, &member.id)
-        .await;
+    let result = chat_service.delete_message(&msg.id, &member.id).await;
 
-    assert!(result.is_err(), "Non-owner without DELETE_CHAT should be denied");
+    assert!(
+        result.is_err(),
+        "Non-owner without DELETE_CHAT should be denied"
+    );
     match result.unwrap_err() {
         Error::Authorization(_) => {}
         other => panic!("Expected Authorization error, got: {other:?}"),
@@ -400,38 +520,65 @@ async fn test_delete_message_non_owner_with_delete_chat_succeeds() {
     let room_service = make_room_service(pool.clone());
     let (chat_service, username_cache) = make_chat_service(pool.clone());
 
-    let creator = user_repo.create(&make_user("delmsg2_creator")).await.unwrap();
+    let creator = user_repo
+        .create(&make_user("delmsg2_creator"))
+        .await
+        .unwrap();
     let admin = user_repo.create(&make_user("delmsg2_admin")).await.unwrap();
-    username_cache.set(&creator.id, &creator.username).await.unwrap();
-    username_cache.set(&admin.id, &admin.username).await.unwrap();
-
-    let (room, _) = room_service
-        .create_room("Del Msg Admin Room".to_string(), String::new(), creator.id.clone(), None, None)
+    username_cache
+        .set(&creator.id, &creator.username)
+        .await
+        .unwrap();
+    username_cache
+        .set(&admin.id, &admin.username)
         .await
         .unwrap();
 
-    room_service.join_room(room.id.clone(), admin.id.clone(), None).await.unwrap();
+    let (room, _) = room_service
+        .create_room(
+            "Del Msg Admin Room".to_string(),
+            String::new(),
+            creator.id.clone(),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+    room_service
+        .join_room(room.id.clone(), admin.id.clone(), None)
+        .await
+        .unwrap();
 
     // Grant DELETE_CHAT permission to admin
-    room_service.member_service().grant_permission(
-        room.id.clone(),
-        creator.id.clone(),
-        admin.id.clone(),
-        PermissionBits::DELETE_CHAT,
-    ).await.unwrap();
+    room_service
+        .member_service()
+        .grant_permission(
+            room.id.clone(),
+            creator.id.clone(),
+            admin.id.clone(),
+            PermissionBits::DELETE_CHAT,
+        )
+        .await
+        .unwrap();
 
     // Creator sends a message
     let msg = chat_service
-        .send_message(room.id.clone(), creator.id.clone(), "Deletable msg".to_string())
+        .send_message(
+            room.id.clone(),
+            creator.id.clone(),
+            "Deletable msg".to_string(),
+        )
         .await
         .unwrap();
 
     // Admin (with DELETE_CHAT) can delete another user's message
-    let result = chat_service
-        .delete_message(&msg.id, &admin.id)
-        .await;
+    let result = chat_service.delete_message(&msg.id, &admin.id).await;
 
-    assert!(result.is_ok(), "Non-owner with DELETE_CHAT should be able to delete");
+    assert!(
+        result.is_ok(),
+        "Non-owner with DELETE_CHAT should be able to delete"
+    );
 }
 
 // ========== send_message: notification broadcast ==========
@@ -474,7 +621,12 @@ impl EventBroadcaster for CountingMockBroadcaster {
         Ok(1)
     }
 
-    async fn send_to_user(&self, _room_id: &RoomId, _user_id: &UserId, _event: &RoomEvent) -> Result<bool> {
+    async fn send_to_user(
+        &self,
+        _room_id: &RoomId,
+        _user_id: &UserId,
+        _event: &RoomEvent,
+    ) -> Result<bool> {
         Ok(true)
     }
 
@@ -485,7 +637,10 @@ impl EventBroadcaster for CountingMockBroadcaster {
 
 /// Helper function to create `ChatService` with a counting mock broadcaster
 #[allow(dead_code)]
-fn make_chat_service_with_broadcaster(pool: PgPool, broadcaster: Arc<CountingMockBroadcaster>) -> (ChatService, UsernameCache) {
+fn make_chat_service_with_broadcaster(
+    pool: PgPool,
+    broadcaster: Arc<CountingMockBroadcaster>,
+) -> (ChatService, UsernameCache) {
     let chat_repo = Arc::new(ChatRepository::new(pool.clone()));
     let rate_limiter = RateLimiter::new(None, "test:chat:".to_string());
     let rate_limit_config = RateLimitConfig::default();
@@ -540,7 +695,10 @@ async fn test_send_message_broadcasts_to_room_members() {
     let user_repo = UserRepository::new(pool.clone());
     let room_service = make_room_service(pool.clone());
 
-    let creator = user_repo.create(&make_user("chat_broadcast_creator")).await.unwrap();
+    let creator = user_repo
+        .create(&make_user("chat_broadcast_creator"))
+        .await
+        .unwrap();
 
     // Create a counting mock broadcaster
     let broadcaster = Arc::new(CountingMockBroadcaster::new());
@@ -552,7 +710,10 @@ async fn test_send_message_broadcasts_to_room_members() {
     let content_filter = ContentFilter::new();
     let l2 = Arc::new(NoopCacheL2);
     let username_cache = UsernameCache::new(l2, "test:username:".to_string(), 100, 60);
-    username_cache.set(&creator.id, &creator.username).await.unwrap();
+    username_cache
+        .set(&creator.id, &creator.username)
+        .await
+        .unwrap();
 
     let member_repo = RoomMemberRepository::new(pool.clone());
     let room_repo = RoomRepository::new(pool.clone());
@@ -568,7 +729,8 @@ async fn test_send_message_broadcasts_to_room_members() {
     permission_service.set_room_settings_repo(room_settings_repo.clone());
 
     // Create NotificationService with the counting broadcaster
-    let notification_service = NotificationService::new(broadcaster.clone() as Arc<dyn EventBroadcaster>);
+    let notification_service =
+        NotificationService::new(broadcaster.clone() as Arc<dyn EventBroadcaster>);
     let room_settings_service = RoomSettingsService::new(
         room_settings_repo,
         None,
@@ -593,29 +755,58 @@ async fn test_send_message_broadcasts_to_room_members() {
 
     // Create a room
     let (room, _) = room_service
-        .create_room("Broadcast Test Room".to_string(), String::new(), creator.id.clone(), None, None)
+        .create_room(
+            "Broadcast Test Room".to_string(),
+            String::new(),
+            creator.id.clone(),
+            None,
+            None,
+        )
         .await
         .unwrap();
 
     // Verify no broadcasts before sending
-    assert_eq!(broadcaster.get_broadcast_count(), 0, "No broadcasts should have occurred yet");
+    assert_eq!(
+        broadcaster.get_broadcast_count(),
+        0,
+        "No broadcasts should have occurred yet"
+    );
 
     // Send a message
     let msg = chat_service
-        .send_message(room.id.clone(), creator.id.clone(), "Hello, world!".to_string())
+        .send_message(
+            room.id.clone(),
+            creator.id.clone(),
+            "Hello, world!".to_string(),
+        )
         .await
         .expect("send_message should succeed");
 
     // Verify broadcast was triggered
-    assert_eq!(broadcaster.get_broadcast_count(), 1, "One broadcast should have been triggered");
+    assert_eq!(
+        broadcaster.get_broadcast_count(),
+        1,
+        "One broadcast should have been triggered"
+    );
 
     // Verify broadcast was sent to the correct room
-    let last_room_id = broadcaster.get_last_room_id().expect("Should have a room ID");
-    assert_eq!(last_room_id, room.id.as_str(), "Broadcast should be sent to the correct room");
+    let last_room_id = broadcaster
+        .get_last_room_id()
+        .expect("Should have a room ID");
+    assert_eq!(
+        last_room_id,
+        room.id.as_str(),
+        "Broadcast should be sent to the correct room"
+    );
 
     // Verify broadcast was a chat message event
-    let last_event_type = broadcaster.get_last_event_type().expect("Should have an event type");
-    assert_eq!(last_event_type, "chat_message", "Event type should be chat_message");
+    let last_event_type = broadcaster
+        .get_last_event_type()
+        .expect("Should have an event type");
+    assert_eq!(
+        last_event_type, "chat_message",
+        "Event type should be chat_message"
+    );
 
     // Verify the message was persisted
     assert!(!msg.id.is_empty(), "Message should have an ID");
@@ -633,12 +824,24 @@ async fn test_send_message_without_notification_service_still_persists() {
     let room_service = make_room_service(pool.clone());
     let (chat_service, username_cache) = make_chat_service(pool.clone());
 
-    let creator = user_repo.create(&make_user("chat_no_notify")).await.unwrap();
-    username_cache.set(&creator.id, &creator.username).await.unwrap();
+    let creator = user_repo
+        .create(&make_user("chat_no_notify"))
+        .await
+        .unwrap();
+    username_cache
+        .set(&creator.id, &creator.username)
+        .await
+        .unwrap();
 
     // Create a room
     let (room, _) = room_service
-        .create_room("No Notify Room".to_string(), String::new(), creator.id.clone(), None, None)
+        .create_room(
+            "No Notify Room".to_string(),
+            String::new(),
+            creator.id.clone(),
+            None,
+            None,
+        )
         .await
         .unwrap();
 
@@ -647,13 +850,20 @@ async fn test_send_message_without_notification_service_still_persists() {
 
     // Send a message - should still succeed even without notification service
     let msg = chat_service
-        .send_message(room.id.clone(), creator.id.clone(), "Message without broadcast".to_string())
+        .send_message(
+            room.id.clone(),
+            creator.id.clone(),
+            "Message without broadcast".to_string(),
+        )
         .await
         .expect("send_message should succeed even without notification service");
 
     // Verify the message was persisted
     assert!(!msg.id.is_empty(), "Message should have an ID");
-    assert_eq!(msg.content, "Message without broadcast", "Message content should match");
+    assert_eq!(
+        msg.content, "Message without broadcast",
+        "Message content should match"
+    );
 
     // Verify we can retrieve the message from history
     let (history, next_cursor) = chat_service
@@ -662,8 +872,14 @@ async fn test_send_message_without_notification_service_still_persists() {
         .expect("get_history should succeed");
 
     assert_eq!(history.len(), 1, "Should have one message in history");
-    assert_eq!(history[0].content, "Message without broadcast", "History message content should match");
-    assert!(next_cursor.is_none(), "No next cursor when all messages fit in one page");
+    assert_eq!(
+        history[0].content, "Message without broadcast",
+        "History message content should match"
+    );
+    assert!(
+        next_cursor.is_none(),
+        "No next cursor when all messages fit in one page"
+    );
 }
 
 // ========== get_history: cursor pagination behavior ==========
@@ -677,10 +893,19 @@ async fn test_get_history_cursor_pagination_basic() {
     let (chat_service, username_cache) = make_chat_service(pool.clone());
 
     let creator = user_repo.create(&make_user("cursor_user")).await.unwrap();
-    username_cache.set(&creator.id, &creator.username).await.unwrap();
+    username_cache
+        .set(&creator.id, &creator.username)
+        .await
+        .unwrap();
 
     let (room, _) = room_service
-        .create_room("Cursor Pagination Room".to_string(), String::new(), creator.id.clone(), None, None)
+        .create_room(
+            "Cursor Pagination Room".to_string(),
+            String::new(),
+            creator.id.clone(),
+            None,
+            None,
+        )
         .await
         .unwrap();
 
@@ -703,10 +928,19 @@ async fn test_get_history_cursor_pagination_basic() {
         .expect("get_history page 1 should succeed");
 
     assert_eq!(page1.len(), 2, "Page 1 should have 2 messages");
-    assert!(cursor1.is_some(), "Should have next cursor when more messages exist");
+    assert!(
+        cursor1.is_some(),
+        "Should have next cursor when more messages exist"
+    );
     // Newest messages first: message_4, message_3
-    assert_eq!(page1[0].content, "message_4", "First message should be newest");
-    assert_eq!(page1[1].content, "message_3", "Second message should be second newest");
+    assert_eq!(
+        page1[0].content, "message_4",
+        "First message should be newest"
+    );
+    assert_eq!(
+        page1[1].content, "message_3",
+        "Second message should be second newest"
+    );
 
     // Page 2: Get next 2 messages using cursor
     let cursor1_val = cursor1.unwrap();
@@ -716,7 +950,10 @@ async fn test_get_history_cursor_pagination_basic() {
         .expect("get_history page 2 should succeed");
 
     assert_eq!(page2.len(), 2, "Page 2 should have 2 messages");
-    assert!(cursor2.is_some(), "Should have next cursor (1 more message)");
+    assert!(
+        cursor2.is_some(),
+        "Should have next cursor (1 more message)"
+    );
     assert_eq!(page2[0].content, "message_2", "Page 2 first message");
     assert_eq!(page2[1].content, "message_1", "Page 2 second message");
 
@@ -729,7 +966,10 @@ async fn test_get_history_cursor_pagination_basic() {
 
     assert_eq!(page3.len(), 1, "Page 3 should have 1 message (last page)");
     assert!(cursor3.is_none(), "No next cursor on last page");
-    assert_eq!(page3[0].content, "message_0", "Page 3 should have oldest message");
+    assert_eq!(
+        page3[0].content, "message_0",
+        "Page 3 should have oldest message"
+    );
 }
 
 #[tokio::test]
@@ -740,10 +980,19 @@ async fn test_get_history_empty_room() {
     let room_service = make_room_service(pool.clone());
     let (chat_service, _username_cache) = make_chat_service(pool.clone());
 
-    let creator = user_repo.create(&make_user("empty_room_user")).await.unwrap();
+    let creator = user_repo
+        .create(&make_user("empty_room_user"))
+        .await
+        .unwrap();
 
     let (room, _) = room_service
-        .create_room("Empty Chat Room".to_string(), String::new(), creator.id.clone(), None, None)
+        .create_room(
+            "Empty Chat Room".to_string(),
+            String::new(),
+            creator.id.clone(),
+            None,
+            None,
+        )
         .await
         .unwrap();
 
@@ -753,7 +1002,10 @@ async fn test_get_history_empty_room() {
         .await
         .expect("get_history should succeed for empty room");
 
-    assert!(history.is_empty(), "History should be empty for room with no messages");
+    assert!(
+        history.is_empty(),
+        "History should be empty for room with no messages"
+    );
     assert!(cursor.is_none(), "No cursor when room is empty");
 }
 
@@ -765,11 +1017,23 @@ async fn test_get_history_single_page() {
     let room_service = make_room_service(pool.clone());
     let (chat_service, username_cache) = make_chat_service(pool.clone());
 
-    let creator = user_repo.create(&make_user("single_page_user")).await.unwrap();
-    username_cache.set(&creator.id, &creator.username).await.unwrap();
+    let creator = user_repo
+        .create(&make_user("single_page_user"))
+        .await
+        .unwrap();
+    username_cache
+        .set(&creator.id, &creator.username)
+        .await
+        .unwrap();
 
     let (room, _) = room_service
-        .create_room("Single Page Room".to_string(), String::new(), creator.id.clone(), None, None)
+        .create_room(
+            "Single Page Room".to_string(),
+            String::new(),
+            creator.id.clone(),
+            None,
+            None,
+        )
         .await
         .unwrap();
 
@@ -789,7 +1053,10 @@ async fn test_get_history_single_page() {
         .expect("get_history should succeed");
 
     assert_eq!(history.len(), 3, "Should get all 3 messages");
-    assert!(cursor.is_none(), "No cursor when all messages fit in one page");
+    assert!(
+        cursor.is_none(),
+        "No cursor when all messages fit in one page"
+    );
 }
 
 #[tokio::test]
@@ -804,13 +1071,26 @@ async fn test_get_history_limit_capped_at_100() {
         danmaku_per_second: 50,
         window_seconds: 1,
     };
-    let (chat_service, username_cache) = make_chat_service_with_config(pool.clone(), rate_limit_config);
+    let (chat_service, username_cache) =
+        make_chat_service_with_config(pool.clone(), rate_limit_config);
 
-    let creator = user_repo.create(&make_user("limit_cap_user")).await.unwrap();
-    username_cache.set(&creator.id, &creator.username).await.unwrap();
+    let creator = user_repo
+        .create(&make_user("limit_cap_user"))
+        .await
+        .unwrap();
+    username_cache
+        .set(&creator.id, &creator.username)
+        .await
+        .unwrap();
 
     let (room, _) = room_service
-        .create_room("Limit Cap Room".to_string(), String::new(), creator.id.clone(), None, None)
+        .create_room(
+            "Limit Cap Room".to_string(),
+            String::new(),
+            creator.id.clone(),
+            None,
+            None,
+        )
         .await
         .unwrap();
 
@@ -829,7 +1109,10 @@ async fn test_get_history_limit_capped_at_100() {
         .expect("get_history should succeed");
 
     assert_eq!(history.len(), 100, "Should be capped at 100 messages");
-    assert!(cursor.is_some(), "Should have cursor since there are more messages");
+    assert!(
+        cursor.is_some(),
+        "Should have cursor since there are more messages"
+    );
 }
 
 #[tokio::test]
@@ -840,26 +1123,52 @@ async fn test_get_history_messages_from_correct_room() {
     let room_service = make_room_service(pool.clone());
     let (chat_service, username_cache) = make_chat_service(pool.clone());
 
-    let creator = user_repo.create(&make_user("room_isolation_user")).await.unwrap();
-    username_cache.set(&creator.id, &creator.username).await.unwrap();
+    let creator = user_repo
+        .create(&make_user("room_isolation_user"))
+        .await
+        .unwrap();
+    username_cache
+        .set(&creator.id, &creator.username)
+        .await
+        .unwrap();
 
     // Create two rooms
     let (room1, _) = room_service
-        .create_room("Room 1".to_string(), String::new(), creator.id.clone(), None, None)
+        .create_room(
+            "Room 1".to_string(),
+            String::new(),
+            creator.id.clone(),
+            None,
+            None,
+        )
         .await
         .unwrap();
     let (room2, _) = room_service
-        .create_room("Room 2".to_string(), String::new(), creator.id.clone(), None, None)
+        .create_room(
+            "Room 2".to_string(),
+            String::new(),
+            creator.id.clone(),
+            None,
+            None,
+        )
         .await
         .unwrap();
 
     // Send messages to each room
     chat_service
-        .send_message(room1.id.clone(), creator.id.clone(), "room1_message".to_string())
+        .send_message(
+            room1.id.clone(),
+            creator.id.clone(),
+            "room1_message".to_string(),
+        )
         .await
         .unwrap();
     chat_service
-        .send_message(room2.id.clone(), creator.id.clone(), "room2_message".to_string())
+        .send_message(
+            room2.id.clone(),
+            creator.id.clone(),
+            "room2_message".to_string(),
+        )
         .await
         .unwrap();
 
@@ -870,7 +1179,10 @@ async fn test_get_history_messages_from_correct_room() {
         .expect("get_history for room1 should succeed");
 
     assert_eq!(history1.len(), 1, "Room1 should have 1 message");
-    assert_eq!(history1[0].content, "room1_message", "Room1 history should only contain room1 messages");
+    assert_eq!(
+        history1[0].content, "room1_message",
+        "Room1 history should only contain room1 messages"
+    );
 
     // Get history from room2 should only return room2 messages
     let (history2, _) = chat_service
@@ -879,5 +1191,8 @@ async fn test_get_history_messages_from_correct_room() {
         .expect("get_history for room2 should succeed");
 
     assert_eq!(history2.len(), 1, "Room2 should have 1 message");
-    assert_eq!(history2[0].content, "room2_message", "Room2 history should only contain room2 messages");
+    assert_eq!(
+        history2[0].content, "room2_message",
+        "Room2 history should only contain room2 messages"
+    );
 }

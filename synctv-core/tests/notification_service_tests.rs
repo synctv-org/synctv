@@ -7,9 +7,7 @@
 
 use std::sync::Arc;
 use synctv_core::models::{RoomId, UserId};
-use synctv_core::service::notification::{
-    EventBroadcaster, NotificationService, RoomEvent,
-};
+use synctv_core::service::notification::{EventBroadcaster, NotificationService, RoomEvent};
 
 /// Mock broadcaster that counts broadcast calls
 struct MockBroadcaster;
@@ -63,17 +61,18 @@ async fn test_notify_user_joined_event_construction() {
         .await
         .unwrap();
 
-    let (received_room_id, received_event) = tokio::time::timeout(
-        tokio::time::Duration::from_millis(100),
-        rx.recv(),
-    )
-    .await
-    .unwrap()
-    .unwrap();
+    let (received_room_id, received_event) =
+        tokio::time::timeout(tokio::time::Duration::from_millis(100), rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
 
     assert_eq!(received_room_id, room_id);
     match received_event {
-        RoomEvent::UserJoined { user_id: uid, username } => {
+        RoomEvent::UserJoined {
+            user_id: uid,
+            username,
+        } => {
             assert_eq!(uid, user_id);
             assert_eq!(username, "alice");
         }
@@ -104,21 +103,15 @@ async fn test_subscribe_receives_events_in_order() {
         .unwrap();
 
     // Receive in order
-    let (_, event1) = tokio::time::timeout(
-        tokio::time::Duration::from_millis(100),
-        rx.recv(),
-    )
-    .await
-    .unwrap()
-    .unwrap();
+    let (_, event1) = tokio::time::timeout(tokio::time::Duration::from_millis(100), rx.recv())
+        .await
+        .unwrap()
+        .unwrap();
 
-    let (_, event2) = tokio::time::timeout(
-        tokio::time::Duration::from_millis(100),
-        rx.recv(),
-    )
-    .await
-    .unwrap()
-    .unwrap();
+    let (_, event2) = tokio::time::timeout(tokio::time::Duration::from_millis(100), rx.recv())
+        .await
+        .unwrap()
+        .unwrap();
 
     assert!(matches!(event1, RoomEvent::UserJoined { .. }));
     assert!(matches!(event2, RoomEvent::UserLeft { .. }));
@@ -286,7 +279,10 @@ fn test_serialization_all_variants_produce_valid_json() {
         let json = event.to_json().unwrap();
         // Verify it's valid JSON by parsing it back
         let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
-        assert!(parsed.get("type").is_some(), "Serialized event should have 'type' field");
+        assert!(
+            parsed.get("type").is_some(),
+            "Serialized event should have 'type' field"
+        );
     }
 }
 

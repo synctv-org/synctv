@@ -4,8 +4,8 @@ use {
         define::SchemaVersion,
         errors::{DigestError, DigestErrorValue},
     },
-    bytes::BytesMut,
     crate::bytesio::bytes_reader::BytesReader,
+    bytes::BytesMut,
     hmac::{Hmac, Mac},
     sha2::Sha256,
 };
@@ -16,7 +16,7 @@ pub struct DigestProcessor {
 }
 
 impl DigestProcessor {
-    #[must_use] 
+    #[must_use]
     pub const fn new(data: BytesMut, key: BytesMut) -> Self {
         Self {
             reader: BytesReader::new(data),
@@ -109,10 +109,9 @@ impl DigestProcessor {
         Ok((left_part, digest_data, right_part))
     }
     pub fn make_digest(&mut self, raw_message: Vec<u8>) -> Result<BytesMut, DigestError> {
-        let mut mac = Hmac::<Sha256>::new_from_slice(&self.key[..])
-            .map_err(|_| DigestError {
-                value: DigestErrorValue::HmacInitError,
-            })?;
+        let mut mac = Hmac::<Sha256>::new_from_slice(&self.key[..]).map_err(|_| DigestError {
+            value: DigestErrorValue::HmacInitError,
+        })?;
         mac.update(&raw_message);
         let result = mac.finalize().into_bytes();
 

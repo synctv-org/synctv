@@ -63,7 +63,11 @@ impl StreamLifecycle {
         let result = self
             .subscriber_count
             .fetch_update(Ordering::AcqRel, Ordering::Acquire, |v| {
-                if v > 0 { Some(v - 1) } else { None }
+                if v > 0 {
+                    Some(v - 1)
+                } else {
+                    None
+                }
             });
         if result.is_err() {
             warn!("Attempted to decrement subscriber count below zero");
@@ -121,7 +125,8 @@ impl StreamLifecycle {
 
     /// Update last-active timestamp to now (lock-free).
     pub fn update_last_active_time(&self) {
-        self.last_active_secs.store(unix_now_secs(), Ordering::Release);
+        self.last_active_secs
+            .store(unix_now_secs(), Ordering::Release);
     }
 
     pub async fn set_task_handle(&self, handle: tokio::task::JoinHandle<Result<()>>) {
@@ -311,9 +316,8 @@ impl<S: ManagedStream> StreamPool<S> {
     /// Periodically clean up old unused creation locks to prevent memory leak
     pub fn cleanup_old_creation_locks(&self) {
         let max_age = self.creation_lock_max_age;
-        self.creation_locks.retain(|_key, entry| {
-            entry.age_seconds() < max_age.as_secs()
-        });
+        self.creation_locks
+            .retain(|_key, entry| entry.age_seconds() < max_age.as_secs());
     }
 
     /// Start a background task that periodically cleans up stale creation locks.
@@ -359,12 +363,8 @@ impl<S: ManagedStream> StreamPool<S> {
     /// `on_idle_cleanup` is called during cleanup, before stopping the stream.
     /// Use it for extra teardown (e.g., Redis unregistration).
     /// The cleanup task respects the pool's `CancellationToken` and will exit on shutdown.
-    pub fn insert_and_cleanup<F>(
-        &self,
-        stream_key: String,
-        stream: Arc<S>,
-        on_idle_cleanup: F,
-    ) where
+    pub fn insert_and_cleanup<F>(&self, stream_key: String, stream: Arc<S>, on_idle_cleanup: F)
+    where
         F: Fn(&str) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>
             + Send
             + Sync
@@ -469,8 +469,7 @@ impl<S: ManagedStream> StreamPool<S> {
 
                     info!(
                         "Auto cleanup: Stopping stream {} (idle for {}s)",
-                        stream_key,
-                        idle_secs
+                        stream_key, idle_secs
                     );
 
                     // Run extra cleanup (e.g., Redis unregistration)
@@ -499,7 +498,11 @@ impl<S: ManagedStream> Drop for StreamPool<S> {
         // Abort tasks for all remaining streams via their AbortHandles.
         // This is reliable even under async Mutex contention.
         for entry in self.streams.iter() {
-            entry.value().lifecycle().is_running.store(false, Ordering::Release);
+            entry
+                .value()
+                .lifecycle()
+                .is_running
+                .store(false, Ordering::Release);
             if let Some(ah) = entry.value().lifecycle().abort_handle.lock().take() {
                 ah.abort();
             }

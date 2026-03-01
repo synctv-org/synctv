@@ -48,9 +48,13 @@ impl DedupKey {
         };
         Self {
             event_type: event.event_type().to_string(),
-            room_id: event.room_id().map_or_else(|| "global".to_string(), |id| id.as_str().to_string()),
+            room_id: event
+                .room_id()
+                .map_or_else(|| "global".to_string(), |id| id.as_str().to_string()),
             user_id: if eid.is_empty() {
-                event.user_id().map_or_else(|| "system".to_string(), |id| id.as_str().to_string())
+                event
+                    .user_id()
+                    .map_or_else(|| "system".to_string(), |id| id.as_str().to_string())
             } else {
                 // When event_id is present, embed it in the user_id field
                 // so each event gets a distinct key
@@ -116,10 +120,7 @@ impl MessageDeduplicator {
     /// See [`DEFAULT_DEDUP_TTL`] for the full rationale.
     #[must_use]
     pub fn with_defaults() -> Self {
-        Self::new(
-            DEFAULT_DEDUP_TTL,
-            Duration::from_secs(60),
-        )
+        Self::new(DEFAULT_DEDUP_TTL, Duration::from_secs(60))
     }
 
     /// Check if an event should be processed (not a duplicate)
@@ -212,8 +213,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_dedup_concurrent_should_process() {
-        use std::sync::Arc;
         use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
 
         let dedup = Arc::new(MessageDeduplicator::with_defaults());
         let key = DedupKey {
@@ -247,9 +248,12 @@ mod tests {
         }
 
         // Exactly one thread should have processed the event
-        assert_eq!(success_count.load(Ordering::Relaxed), 1,
+        assert_eq!(
+            success_count.load(Ordering::Relaxed),
+            1,
             "Expected exactly 1 successful should_process, got {}",
-            success_count.load(Ordering::Relaxed));
+            success_count.load(Ordering::Relaxed)
+        );
     }
 
     #[tokio::test]

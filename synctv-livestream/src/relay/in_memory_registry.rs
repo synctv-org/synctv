@@ -3,8 +3,8 @@
 //! Provides the same semantics as the Redis-backed `StreamRegistry` using
 //! `tokio::sync::Mutex<HashMap>` for thread-safe, single-node publisher tracking.
 
-use async_trait::async_trait;
 use anyhow::Result;
+use async_trait::async_trait;
 use chrono::Utc;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -108,7 +108,12 @@ impl StreamRegistryTrait for InMemoryStreamRegistry {
         }
     }
 
-    async fn refresh_publisher_ttl(&self, _room_id: &str, _media_id: &str, _user_id: &str) -> Result<()> {
+    async fn refresh_publisher_ttl(
+        &self,
+        _room_id: &str,
+        _media_id: &str,
+        _user_id: &str,
+    ) -> Result<()> {
         // No-op: in-memory entries don't expire via TTL in standalone mode.
         // The publisher lifecycle is managed by unregister calls.
         Ok(())
@@ -128,7 +133,9 @@ impl StreamRegistryTrait for InMemoryStreamRegistry {
 
     async fn get_publisher(&self, room_id: &str, media_id: &str) -> Result<Option<PublisherInfo>> {
         let publishers = self.publishers.lock().await;
-        Ok(publishers.get(&(room_id.to_string(), media_id.to_string())).cloned())
+        Ok(publishers
+            .get(&(room_id.to_string(), media_id.to_string()))
+            .cloned())
     }
 
     async fn is_stream_active(&self, room_id: &str, media_id: &str) -> Result<bool> {

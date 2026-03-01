@@ -7,8 +7,7 @@
 
 use std::sync::Arc;
 use synctv_core::service::{
-    FallbackTokenBlacklistStore, InMemoryTokenBlacklistStore,
-    TokenBlacklistStore,
+    FallbackTokenBlacklistStore, InMemoryTokenBlacklistStore, TokenBlacklistStore,
 };
 
 // ============================================================================
@@ -64,7 +63,10 @@ async fn test_in_memory_blacklist_if_not_exists_first_use() {
 
     // First call should return false (not existed, newly inserted)
     let already_existed = store.blacklist_if_not_exists(key, 3600).await.unwrap();
-    assert!(!already_existed, "First use should return false (newly inserted)");
+    assert!(
+        !already_existed,
+        "First use should return false (newly inserted)"
+    );
 
     // Key should now be blacklisted
     assert!(store.is_blacklisted(key).await);
@@ -83,7 +85,10 @@ async fn test_in_memory_blacklist_if_not_exists_replay_detected() {
 
     // Second call should return true (already existed = replay detected)
     let second_result = store.blacklist_if_not_exists(key, 3600).await.unwrap();
-    assert!(second_result, "Second use should return true (replay detected)");
+    assert!(
+        second_result,
+        "Second use should return true (replay detected)"
+    );
 
     // Key should still be blacklisted
     assert!(store.is_blacklisted(key).await);
@@ -185,9 +190,8 @@ async fn test_in_memory_family_ttl_expiry() {
 #[tokio::test]
 async fn test_fallback_blacklist_roundtrip() {
     // Use InMemory as both primary and fallback (simulating working primary)
-    let primary =
-        std::sync::Arc::new(InMemoryTokenBlacklistStore::new(10_000, 3600, 86400))
-            as std::sync::Arc<dyn TokenBlacklistStore>;
+    let primary = std::sync::Arc::new(InMemoryTokenBlacklistStore::new(10_000, 3600, 86400))
+        as std::sync::Arc<dyn TokenBlacklistStore>;
     let fallback = FallbackTokenBlacklistStore::with_defaults(primary);
 
     let key = "jti:fallback_test";
@@ -199,9 +203,8 @@ async fn test_fallback_blacklist_roundtrip() {
 
 #[tokio::test]
 async fn test_fallback_family_roundtrip() {
-    let primary =
-        std::sync::Arc::new(InMemoryTokenBlacklistStore::new(10_000, 3600, 86400))
-            as std::sync::Arc<dyn TokenBlacklistStore>;
+    let primary = std::sync::Arc::new(InMemoryTokenBlacklistStore::new(10_000, 3600, 86400))
+        as std::sync::Arc<dyn TokenBlacklistStore>;
     let fallback = FallbackTokenBlacklistStore::with_defaults(primary);
 
     let key = "family:fallback_test";
@@ -215,9 +218,8 @@ async fn test_fallback_family_roundtrip() {
 
 #[tokio::test]
 async fn test_fallback_ttl_expiry() {
-    let primary =
-        std::sync::Arc::new(InMemoryTokenBlacklistStore::new(10_000, 3600, 86400))
-            as std::sync::Arc<dyn TokenBlacklistStore>;
+    let primary = std::sync::Arc::new(InMemoryTokenBlacklistStore::new(10_000, 3600, 86400))
+        as std::sync::Arc<dyn TokenBlacklistStore>;
     let fallback = FallbackTokenBlacklistStore::with_defaults(primary);
 
     let key = "jti:fallback_ttl_test";
@@ -236,9 +238,8 @@ async fn test_fallback_ttl_expiry() {
 
 #[tokio::test]
 async fn test_fallback_family_ttl_expiry() {
-    let primary =
-        std::sync::Arc::new(InMemoryTokenBlacklistStore::new(10_000, 3600, 86400))
-            as std::sync::Arc<dyn TokenBlacklistStore>;
+    let primary = std::sync::Arc::new(InMemoryTokenBlacklistStore::new(10_000, 3600, 86400))
+        as std::sync::Arc<dyn TokenBlacklistStore>;
     let fallback = FallbackTokenBlacklistStore::with_defaults(primary);
 
     let key = "family:fallback_ttl_test";
@@ -266,7 +267,9 @@ impl TokenBlacklistStore for FailingStore {
     }
 
     async fn blacklist(&self, _key: &str, _ttl_secs: u64) -> synctv_core::Result<()> {
-        Err(synctv_core::Error::Internal("Primary store failed".to_string()))
+        Err(synctv_core::Error::Internal(
+            "Primary store failed".to_string(),
+        ))
     }
 
     async fn get_family_revoked_at(&self, _key: &str) -> Option<i64> {
@@ -341,14 +344,13 @@ impl ToggleableStore {
     }
 
     fn set_failing(&self, failing: bool) {
-        self.failing.store(
-            failing,
-            std::sync::atomic::Ordering::SeqCst,
-        );
+        self.failing
+            .store(failing, std::sync::atomic::Ordering::SeqCst);
     }
 
     fn blacklist_call_count(&self) -> u64 {
-        self.blacklist_calls.load(std::sync::atomic::Ordering::SeqCst)
+        self.blacklist_calls
+            .load(std::sync::atomic::Ordering::SeqCst)
     }
 
     fn family_call_count(&self) -> u64 {
@@ -363,9 +365,12 @@ impl TokenBlacklistStore for ToggleableStore {
     }
 
     async fn blacklist(&self, _key: &str, _ttl_secs: u64) -> synctv_core::Result<()> {
-        self.blacklist_calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        self.blacklist_calls
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         if self.failing.load(std::sync::atomic::Ordering::SeqCst) {
-            Err(synctv_core::Error::Internal("Store is unavailable".to_string()))
+            Err(synctv_core::Error::Internal(
+                "Store is unavailable".to_string(),
+            ))
         } else {
             Ok(())
         }
@@ -376,7 +381,8 @@ impl TokenBlacklistStore for ToggleableStore {
     }
 
     async fn set_family_revoked(&self, _key: &str, _timestamp: i64, _ttl_secs: u64) {
-        self.family_calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        self.family_calls
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         // Like the real implementation, this is fire-and-forget
     }
 }
@@ -392,7 +398,10 @@ async fn test_memory_fallback_when_primary_unavailable() {
 
     // Blacklist should succeed even though primary fails
     let result = fallback.blacklist(key, 3600).await;
-    assert!(result.is_ok(), "Blacklist should succeed via memory fallback");
+    assert!(
+        result.is_ok(),
+        "Blacklist should succeed via memory fallback"
+    );
 
     // Token should be blacklisted (via fallback memory)
     assert!(
@@ -620,7 +629,9 @@ async fn test_sync_family_revocations() {
     let timestamp = chrono::Utc::now().timestamp();
 
     // Set family revocation while primary is down
-    fallback.set_family_revoked("family:sync_test", timestamp, 86400).await;
+    fallback
+        .set_family_revoked("family:sync_test", timestamp, 86400)
+        .await;
 
     // Recover primary
     toggleable.set_failing(false);

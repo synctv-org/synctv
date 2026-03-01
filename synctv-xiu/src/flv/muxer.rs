@@ -1,6 +1,6 @@
 use {
-    super::errors::FlvMuxerError, byteorder::BigEndian, bytes::BytesMut,
-    crate::bytesio::bytes_writer::BytesWriter,
+    super::errors::FlvMuxerError, crate::bytesio::bytes_writer::BytesWriter, byteorder::BigEndian,
+    bytes::BytesMut,
 };
 
 const FLV_HEADER_AV: [u8; 9] = [
@@ -47,7 +47,7 @@ impl Default for FlvMuxer {
 }
 
 impl FlvMuxer {
-    #[must_use] 
+    #[must_use]
     pub const fn new() -> Self {
         Self {
             writer: BytesWriter::new(),

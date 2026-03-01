@@ -1,6 +1,6 @@
 use {
-    super::errors::ControlMessagesError, crate::rtmp::messages::define::msg_type_id,
-    byteorder::BigEndian, crate::bytesio::bytes_writer::AsyncBytesWriter,
+    super::errors::ControlMessagesError, crate::bytesio::bytes_writer::AsyncBytesWriter,
+    crate::rtmp::messages::define::msg_type_id, byteorder::BigEndian,
 };
 
 pub struct ProtocolControlMessagesWriter {
@@ -9,7 +9,7 @@ pub struct ProtocolControlMessagesWriter {
 }
 
 impl ProtocolControlMessagesWriter {
-    #[must_use] 
+    #[must_use]
     pub const fn new(writer: AsyncBytesWriter) -> Self {
         Self { writer }
     }

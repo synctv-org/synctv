@@ -329,25 +329,16 @@ mod tests {
             "synctv:stream:info:room_123"
         );
 
-        assert_eq!(
-            builder.room_state("abc123"),
-            "synctv:room:abc123:state"
-        );
+        assert_eq!(builder.room_state("abc123"), "synctv:room:abc123:state");
     }
 
     #[test]
     fn test_key_builder_custom_prefix() {
         let builder = KeyBuilder::new("prod");
 
-        assert_eq!(
-            builder.cluster_node("node-1"),
-            "prod:cluster:nodes:node-1"
-        );
+        assert_eq!(builder.cluster_node("node-1"), "prod:cluster:nodes:node-1");
 
-        assert_eq!(
-            builder.stream_info("room_123"),
-            "prod:stream:info:room_123"
-        );
+        assert_eq!(builder.stream_info("room_123"), "prod:stream:info:room_123");
     }
 
     #[test]

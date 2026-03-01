@@ -96,7 +96,11 @@ fn test_path_parsing() {
 
     // Test parsing HLS playlist path with .m3u8
     let hls_path_m3u8 = "/api/room/movie/live/hls/list/media789.m3u8";
-    let hls_media_id_m3u8 = hls_path_m3u8.split('/').next_back().unwrap().replace(".m3u8", "");
+    let hls_media_id_m3u8 = hls_path_m3u8
+        .split('/')
+        .next_back()
+        .unwrap()
+        .replace(".m3u8", "");
     assert_eq!(hls_media_id_m3u8, "media789");
 
     // Test parsing HLS segment path
@@ -180,15 +184,31 @@ fn test_path_matches_go_version() {
     // Verify path patterns match synctv-go
 
     // FLV
-    assert!(matches_flv_pattern("/api/room/movie/live/flv/media123.flv", "media123"));
-    assert!(!matches_flv_pattern("/api/room/movie/live/flv/media123.flv", "wrong"));
+    assert!(matches_flv_pattern(
+        "/api/room/movie/live/flv/media123.flv",
+        "media123"
+    ));
+    assert!(!matches_flv_pattern(
+        "/api/room/movie/live/flv/media123.flv",
+        "wrong"
+    ));
 
     // HLS playlist
-    assert!(matches_hls_playlist_pattern("/api/room/movie/live/hls/list/media456", "media456"));
-    assert!(matches_hls_playlist_pattern("/api/room/movie/live/hls/list/media789.m3u8", "media789"));
+    assert!(matches_hls_playlist_pattern(
+        "/api/room/movie/live/hls/list/media456",
+        "media456"
+    ));
+    assert!(matches_hls_playlist_pattern(
+        "/api/room/movie/live/hls/list/media789.m3u8",
+        "media789"
+    ));
 
     // HLS segment
-    assert!(matches_hls_segment_pattern("/api/room/movie/live/hls/data/room111/media222/segment.ts", "room111", "media222"));
+    assert!(matches_hls_segment_pattern(
+        "/api/room/movie/live/hls/data/room111/media222/segment.ts",
+        "room111",
+        "media222"
+    ));
 }
 
 fn matches_flv_pattern(path: &str, expected_media: &str) -> bool {
@@ -220,7 +240,10 @@ fn test_url_building() {
     // Build segment URL
     let segment_url = format!("{base_url}/{room_id}/{media_id}/{ts_name}.ts");
 
-    assert_eq!(segment_url, "/api/room/movie/live/hls/data/room123/media456/segment0.ts");
+    assert_eq!(
+        segment_url,
+        "/api/room/movie/live/hls/data/room123/media456/segment0.ts"
+    );
 
     // Build with auth token
     let token = "test_token";

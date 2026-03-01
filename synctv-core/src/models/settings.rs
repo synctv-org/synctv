@@ -128,7 +128,7 @@ pub enum SettingsError {
 }
 
 /// Default settings for server group
-#[must_use] 
+#[must_use]
 pub fn default_server_settings() -> JsonValue {
     serde_json::json!({
         "allow_registration": true,
@@ -143,7 +143,7 @@ pub fn default_server_settings() -> JsonValue {
 }
 
 /// Default settings for email group
-#[must_use] 
+#[must_use]
 pub fn default_email_settings() -> JsonValue {
     serde_json::json!({
         "enabled": false,
@@ -157,7 +157,7 @@ pub fn default_email_settings() -> JsonValue {
 }
 
 /// Default settings for OAuth group
-#[must_use] 
+#[must_use]
 pub fn default_oauth_settings() -> JsonValue {
     serde_json::json!({
         "github_enabled": false,
@@ -168,7 +168,7 @@ pub fn default_oauth_settings() -> JsonValue {
 }
 
 /// Get default settings for a group
-#[must_use] 
+#[must_use]
 pub fn get_default_settings(group_name: &str) -> Option<JsonValue> {
     match group_name {
         "server" => Some(default_server_settings()),
@@ -199,7 +199,14 @@ mod tests {
     fn test_get_default_settings() {
         let server_settings = get_default_settings("server");
         assert!(server_settings.is_some());
-        assert_eq!(server_settings.unwrap().get("allow_registration").cloned().unwrap_or(JsonValue::Null), JsonValue::Bool(true));
+        assert_eq!(
+            server_settings
+                .unwrap()
+                .get("allow_registration")
+                .cloned()
+                .unwrap_or(JsonValue::Null),
+            JsonValue::Bool(true)
+        );
     }
 
     #[test]
@@ -221,8 +228,14 @@ mod tests {
         );
 
         let obj = settings.as_object().unwrap();
-        assert_eq!(obj.get("key1").cloned().unwrap(), JsonValue::String("value1".to_string()));
-        assert_eq!(obj.get("key2").cloned().unwrap(), JsonValue::Number(123.into()));
+        assert_eq!(
+            obj.get("key1").cloned().unwrap(),
+            JsonValue::String("value1".to_string())
+        );
+        assert_eq!(
+            obj.get("key2").cloned().unwrap(),
+            JsonValue::Number(123.into())
+        );
     }
 
     // ==================== SettingsGroup Construction ====================
@@ -253,9 +266,15 @@ mod tests {
         let json = serde_json::to_value(&sg).unwrap();
 
         // JSON should contain "group" not "group_name"
-        assert!(json.get("group").is_some(), "JSON should contain 'group' field");
+        assert!(
+            json.get("group").is_some(),
+            "JSON should contain 'group' field"
+        );
         assert_eq!(json.get("group").unwrap(), "email");
-        assert!(json.get("group_name").is_none(), "JSON should not contain 'group_name' field");
+        assert!(
+            json.get("group_name").is_none(),
+            "JSON should not contain 'group_name' field"
+        );
     }
 
     #[test]

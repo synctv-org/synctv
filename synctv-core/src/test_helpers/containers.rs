@@ -3,8 +3,8 @@
 //! Provides `TestInfra` which automatically starts Postgres and Redis containers,
 //! runs migrations, and provides ready-to-use connections.
 
-use sqlx::PgPool;
 use sqlx::postgres::PgPoolOptions;
+use sqlx::PgPool;
 use testcontainers::core::ImageExt;
 use testcontainers::runners::AsyncRunner;
 use testcontainers::ContainerAsync;
@@ -50,31 +50,34 @@ impl TestInfra {
                 .with_password("synctv_test")
                 .with_tag(POSTGRES_VERSION)
                 .start(),
-            Redis::default()
-                .with_tag(REDIS_VERSION)
-                .start(),
+            Redis::default().with_tag(REDIS_VERSION).start(),
         );
 
         let pg_container = pg_container.expect("Failed to start Postgres container");
         let redis_container = redis_container.expect("Failed to start Redis container");
 
         // Get mapped ports
-        let pg_host = pg_container.get_host().await.expect("Failed to get Postgres host");
+        let pg_host = pg_container
+            .get_host()
+            .await
+            .expect("Failed to get Postgres host");
         let pg_port = pg_container
             .get_host_port_ipv4(5432)
             .await
             .expect("Failed to get Postgres port");
 
-        let redis_host = redis_container.get_host().await.expect("Failed to get Redis host");
+        let redis_host = redis_container
+            .get_host()
+            .await
+            .expect("Failed to get Redis host");
         let redis_port = redis_container
             .get_host_port_ipv4(6379)
             .await
             .expect("Failed to get Redis port");
 
         // Build connection URLs
-        let database_url = format!(
-            "postgresql://synctv:synctv_test@{pg_host}:{pg_port}/synctv_test"
-        );
+        let database_url =
+            format!("postgresql://synctv:synctv_test@{pg_host}:{pg_port}/synctv_test");
         let redis_url = format!("redis://{redis_host}:{redis_port}");
 
         // Connect to Postgres with retry (container port may be mapped before
@@ -148,15 +151,17 @@ impl TestInfra {
             .await
             .expect("Failed to start Postgres container");
 
-        let pg_host = pg_container.get_host().await.expect("Failed to get Postgres host");
+        let pg_host = pg_container
+            .get_host()
+            .await
+            .expect("Failed to get Postgres host");
         let pg_port = pg_container
             .get_host_port_ipv4(5432)
             .await
             .expect("Failed to get Postgres port");
 
-        let database_url = format!(
-            "postgresql://synctv:synctv_test@{pg_host}:{pg_port}/synctv_test"
-        );
+        let database_url =
+            format!("postgresql://synctv:synctv_test@{pg_host}:{pg_port}/synctv_test");
 
         let pool = {
             let mut retries = 0u32;
@@ -197,7 +202,10 @@ impl TestInfra {
             .await
             .expect("Failed to start Redis container");
 
-        let redis_host = redis_container.get_host().await.expect("Failed to get Redis host");
+        let redis_host = redis_container
+            .get_host()
+            .await
+            .expect("Failed to get Redis host");
         let redis_port = redis_container
             .get_host_port_ipv4(6379)
             .await

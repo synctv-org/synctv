@@ -1,5 +1,6 @@
 use {
     super::stream::StreamIdentifier,
+    crate::flv::define::{AacProfile, AvcCodecId, AvcLevel, AvcProfile, SoundFormat},
     crate::streamhub::{define::SubscribeType, utils::Uuid},
     chrono::{DateTime, Local},
     serde::Serialize,
@@ -8,7 +9,6 @@ use {
         sync::{broadcast::Receiver, Mutex},
         time,
     },
-    crate::flv::define::{AacProfile, AvcCodecId, AvcLevel, AvcProfile, SoundFormat},
 };
 
 #[derive(Debug, Clone, Serialize, Default)]
@@ -74,7 +74,7 @@ pub struct StatisticPublisher {
 }
 
 impl StatisticPublisher {
-    #[must_use] 
+    #[must_use]
     pub fn new(identifier: StreamIdentifier) -> Self {
         Self {
             identifier,
@@ -99,7 +99,7 @@ pub struct StatisticSubscriber {
 }
 
 impl StatisticsStream {
-    #[must_use] 
+    #[must_use]
     pub fn new(identifier: StreamIdentifier) -> Self {
         Self {
             publisher: StatisticPublisher::new(identifier),
@@ -119,7 +119,7 @@ impl StatisticsStream {
         statistic_stream
     }
 
-    #[must_use] 
+    #[must_use]
     pub fn query_by_uuid(&self, uuid: Uuid) -> Self {
         if uuid == self.publisher.id {
             self.get_publisher()

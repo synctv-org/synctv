@@ -8,8 +8,8 @@
 //! observable without waiting for the backoff window to expire.
 
 #![allow(clippy::unwrap_used)]
-use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 
 use synctv_cluster::grpc::circuit_breaker::GrpcCircuitBreakerRegistry;
 
@@ -25,7 +25,10 @@ async fn test_circuit_opens_after_3_consecutive_errors() {
     }
 
     // Circuit should be open
-    assert!(registry.is_open(addr).await, "Circuit should be open after 3 failures");
+    assert!(
+        registry.is_open(addr).await,
+        "Circuit should be open after 3 failures"
+    );
     assert!(
         !registry.is_call_permitted(addr).await,
         "Calls should be rejected when circuit is open"

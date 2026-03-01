@@ -6,7 +6,10 @@
 #![allow(clippy::unwrap_used)]
 use std::collections::HashMap;
 
-use synctv_proxy::{proxy_fetch_and_forward, validate_proxy_url, validate_proxy_url_static, NoopMetrics, ProxyConfig};
+use synctv_proxy::{
+    proxy_fetch_and_forward, validate_proxy_url, validate_proxy_url_static, NoopMetrics,
+    ProxyConfig,
+};
 
 // ==================================================================
 // Redirect SSRF: Static URL validation for redirect targets
@@ -52,7 +55,10 @@ fn test_redirect_to_172_16_blocked() {
 fn test_redirect_to_169_254_metadata_blocked() {
     // AWS/GCP/Azure metadata endpoint
     let result = validate_proxy_url_static("http://169.254.169.254/latest/meta-data/");
-    assert!(result.is_err(), "169.254.169.254 metadata IP should be blocked");
+    assert!(
+        result.is_err(),
+        "169.254.169.254 metadata IP should be blocked"
+    );
 }
 
 #[test]
@@ -100,7 +106,10 @@ fn test_multi_hop_redirect_target_validation() {
 
     // Third hop (private) - should be blocked
     let result = validate_proxy_url_static("http://192.168.1.1/secret");
-    assert!(result.is_err(), "Private IP redirect target should be blocked");
+    assert!(
+        result.is_err(),
+        "Private IP redirect target should be blocked"
+    );
 }
 
 /// Test relative redirect handling - a relative redirect should be
@@ -168,7 +177,10 @@ fn test_redirect_to_internal_suffix_blocked() {
 fn test_redirect_to_metadata_hostname_blocked() {
     // Cloud metadata hostnames should be blocked
     let result = validate_proxy_url_static("http://metadata.google.internal/");
-    assert!(result.is_err(), "metadata.google.internal should be blocked");
+    assert!(
+        result.is_err(),
+        "metadata.google.internal should be blocked"
+    );
 
     let result = validate_proxy_url_static("http://metadata.azure/");
     assert!(result.is_err(), "metadata.azure should be blocked");
@@ -212,7 +224,10 @@ fn test_redirect_to_ipv4_mapped_ipv6_private_blocked() {
     // ::ffff:192.168.1.1 is an IPv4-mapped IPv6 address
     // This should be detected and blocked
     let result = validate_proxy_url_static("http://[::ffff:192.168.1.1]/admin");
-    assert!(result.is_err(), "IPv4-mapped private IPv6 should be blocked");
+    assert!(
+        result.is_err(),
+        "IPv4-mapped private IPv6 should be blocked"
+    );
 }
 
 #[test]
@@ -222,7 +237,10 @@ fn test_redirect_to_ipv6_unique_local_blocked() {
     assert!(result.is_err(), "IPv6 unique local should be blocked");
 
     let result = validate_proxy_url_static("http://[fd00::1]/admin");
-    assert!(result.is_err(), "IPv6 unique local (fd00) should be blocked");
+    assert!(
+        result.is_err(),
+        "IPv6 unique local (fd00) should be blocked"
+    );
 }
 
 // ==================================================================
@@ -284,31 +302,46 @@ async fn test_proxy_blocks_cloud_metadata_url() {
 fn test_redirect_with_port_still_blocked() {
     // Port number should not bypass IP validation
     let result = validate_proxy_url_static("http://192.168.1.1:8888/secret");
-    assert!(result.is_err(), "Private IP with custom port should be blocked");
+    assert!(
+        result.is_err(),
+        "Private IP with custom port should be blocked"
+    );
 
     let result = validate_proxy_url_static("http://127.0.0.1:9999/admin");
-    assert!(result.is_err(), "Loopback with custom port should be blocked");
+    assert!(
+        result.is_err(),
+        "Loopback with custom port should be blocked"
+    );
 }
 
 #[test]
 fn test_redirect_with_path_traversal_still_blocked() {
     // Path traversal in URL should not bypass IP validation
     let result = validate_proxy_url_static("http://192.168.1.1/../etc/passwd");
-    assert!(result.is_err(), "Private IP with path traversal should be blocked");
+    assert!(
+        result.is_err(),
+        "Private IP with path traversal should be blocked"
+    );
 }
 
 #[test]
 fn test_redirect_with_query_params_still_blocked() {
     // Query parameters should not bypass IP validation
     let result = validate_proxy_url_static("http://10.0.0.1/api?callback=evil");
-    assert!(result.is_err(), "Private IP with query params should be blocked");
+    assert!(
+        result.is_err(),
+        "Private IP with query params should be blocked"
+    );
 }
 
 #[test]
 fn test_redirect_with_fragment_still_blocked() {
     // Fragment should not bypass IP validation
     let result = validate_proxy_url_static("http://172.16.0.1/page#section");
-    assert!(result.is_err(), "Private IP with fragment should be blocked");
+    assert!(
+        result.is_err(),
+        "Private IP with fragment should be blocked"
+    );
 }
 
 #[test]
@@ -326,7 +359,10 @@ fn test_redirect_url_with_only_path_component() {
     let result = validate_proxy_url_static("http:///path");
     // This actually resolves to http://path/ which has host "path"
     // It's a valid (though unusual) URL format
-    assert!(result.is_ok(), "http:///path is parsed as http://path/ and should pass");
+    assert!(
+        result.is_ok(),
+        "http:///path is parsed as http://path/ and should pass"
+    );
 }
 
 // ==================================================================
@@ -386,7 +422,10 @@ fn test_redirect_to_multicast_blocked() {
 fn test_redirect_with_credentials_still_validates_ip() {
     // URL with credentials should still validate the IP
     let result = validate_proxy_url_static("http://user:pass@192.168.1.1/admin");
-    assert!(result.is_err(), "Private IP with credentials should be blocked");
+    assert!(
+        result.is_err(),
+        "Private IP with credentials should be blocked"
+    );
 }
 
 // ==================================================================

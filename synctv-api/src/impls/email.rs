@@ -65,7 +65,9 @@ impl EmailApiImpl {
             .await
             .map_err(|e| ApiError::Internal(format!("Database error: {e}")))?;
 
-        let user = if let Some(u) = user { u } else {
+        let user = if let Some(u) = user {
+            u
+        } else {
             // Add random delay to prevent timing side-channel that leaks
             // whether an account exists based on response time differences.
             let delay_ms = rand::random_range(100u64..500u64);
@@ -98,22 +100,30 @@ impl EmailApiImpl {
             .email_token_service
             .validate_token(token, EmailTokenType::EmailVerification)
             .await
-            .map_err(|_| ApiError::InvalidInput("Invalid or expired verification token".to_string()))?;
+            .map_err(|_| {
+                ApiError::InvalidInput("Invalid or expired verification token".to_string())
+            })?;
 
         let user = self
             .user_service
             .get_by_email(email)
             .await
             .map_err(|e| ApiError::Internal(format!("Database error: {e}")))?
-            .ok_or_else(|| ApiError::InvalidInput("Invalid or expired verification token".to_string()))?;
+            .ok_or_else(|| {
+                ApiError::InvalidInput("Invalid or expired verification token".to_string())
+            })?;
 
         if validated_user_id != user.id {
-            return Err(ApiError::InvalidInput("Invalid or expired verification token".to_string()));
+            return Err(ApiError::InvalidInput(
+                "Invalid or expired verification token".to_string(),
+            ));
         }
 
         // Reject banned or soft-deleted users
         if user.is_deleted() || user.status == synctv_core::models::UserStatus::Banned {
-            return Err(ApiError::InvalidInput("Invalid or expired verification token".to_string()));
+            return Err(ApiError::InvalidInput(
+                "Invalid or expired verification token".to_string(),
+            ));
         }
 
         self.user_service
@@ -153,8 +163,9 @@ impl EmailApiImpl {
             let delay_ms = rand::random_range(100u64..500u64);
             tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
             return Ok(RequestPasswordResetResult {
-                message: "If an account exists with this email, a password reset code will be sent."
-                    .to_string(),
+                message:
+                    "If an account exists with this email, a password reset code will be sent."
+                        .to_string(),
             });
         };
 
@@ -196,12 +207,16 @@ impl EmailApiImpl {
             .ok_or_else(|| ApiError::InvalidInput("Invalid or expired reset token".to_string()))?;
 
         if validated_user_id != user.id {
-            return Err(ApiError::InvalidInput("Invalid or expired reset token".to_string()));
+            return Err(ApiError::InvalidInput(
+                "Invalid or expired reset token".to_string(),
+            ));
         }
 
         // Check if user is banned or soft-deleted
         if user.is_deleted() || user.status == synctv_core::models::UserStatus::Banned {
-            return Err(ApiError::InvalidInput("Invalid or expired reset token".to_string()));
+            return Err(ApiError::InvalidInput(
+                "Invalid or expired reset token".to_string(),
+            ));
         }
 
         self.user_service

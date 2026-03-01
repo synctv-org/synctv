@@ -8,22 +8,20 @@
 
 use std::sync::Arc;
 
-use synctv_core_testing::{create_test_pool};
+use chrono::Utc;
+use sqlx::PgPool;
 use synctv_core::{
-    cache::{KeyBuilder, UsernameCache, NoopCacheL2},
+    cache::{KeyBuilder, NoopCacheL2, UsernameCache},
     config::PasswordComplexityConfig,
-    models::{
-        UserId, User, UserRole, UserStatus,
-    },
-    repository::{UserRepository, playback::RoomPlaybackStateRepository},
+    models::{User, UserId, UserRole, UserStatus},
+    repository::{playback::RoomPlaybackStateRepository, UserRepository},
     service::{
-        RoomService, UserService, InMemoryTokenBlacklistStore,
-        auth::{JwtService, BruteForceProtection},
+        auth::{BruteForceProtection, JwtService},
+        InMemoryTokenBlacklistStore, RoomService, UserService,
     },
     Error,
 };
-use chrono::Utc;
-use sqlx::PgPool;
+use synctv_core_testing::create_test_pool;
 fn make_user_service(pool: PgPool) -> UserService {
     let secret = "Test_Secret_Key_For_JWT_Tokens_32Bytes!!";
     let jwt_service = JwtService::new(secret).expect("Failed to create JwtService");
@@ -110,7 +108,10 @@ async fn test_repo_update_with_matching_version_succeeds() {
     let result = playback_repo.update(&updated).await.unwrap();
 
     assert_eq!(result.version, 1, "Version should be incremented to 1");
-    assert!((result.current_time - 50.0).abs() < f64::EPSILON, "Current time should be updated");
+    assert!(
+        (result.current_time - 50.0).abs() < f64::EPSILON,
+        "Current time should be updated"
+    );
 }
 
 /// Test: Update with stale version fails
@@ -161,8 +162,10 @@ async fn test_repo_update_with_stale_version_fails() {
     // Verify data wasn't corrupted
     let current = playback_repo.get(&room.id).await.unwrap().unwrap();
     assert_eq!(current.version, 1, "Version should still be 1");
-    assert!((current.current_time - 100.0).abs() < f64::EPSILON,
-        "Current time should be from first update");
+    assert!(
+        (current.current_time - 100.0).abs() < f64::EPSILON,
+        "Current time should be from first update"
+    );
 }
 
 /// Test: Version increments on each update
@@ -258,8 +261,10 @@ async fn test_concurrent_seek_with_retry() {
             Ok(Err(e)) => {
                 // May fail with retry exhaustion under high contention
                 // but should not be OptimisticLockConflict directly
-                assert!(!matches!(e, Error::OptimisticLockConflict),
-                    "OptimisticLockConflict should not leak to caller");
+                assert!(
+                    !matches!(e, Error::OptimisticLockConflict),
+                    "OptimisticLockConflict should not leak to caller"
+                );
             }
             Err(e) => panic!("Task panicked: {e:?}"),
         }
@@ -270,7 +275,10 @@ async fn test_concurrent_seek_with_retry() {
     // Final state should be valid
     let playback_service = room_service.playback_service();
     let state = playback_service.get_state(&room.id).await.unwrap();
-    assert!(state.current_time >= 0.0, "Final position should be non-negative");
+    assert!(
+        state.current_time >= 0.0,
+        "Final position should be non-negative"
+    );
 }
 
 /// Test: Retry mechanism handles version conflicts
@@ -317,8 +325,10 @@ async fn test_retry_handles_version_conflicts() {
         .await
         .unwrap();
 
-    assert!(state2.seek_applied || state2.state.current_time >= 999.0 - 1.0,
-        "Either seek applied or position reflects external update");
+    assert!(
+        state2.seek_applied || state2.state.current_time >= 999.0 - 1.0,
+        "Either seek applied or position reflects external update"
+    );
 }
 
 /// Test: Retry exhaustion returns degraded response
@@ -483,8 +493,10 @@ async fn test_concurrent_mixed_operations() {
         match result {
             Ok(Ok(_)) => success_count += 1,
             Ok(Err(e)) => {
-                assert!(!matches!(e, Error::OptimisticLockConflict),
-                    "OptimisticLockConflict should not leak");
+                assert!(
+                    !matches!(e, Error::OptimisticLockConflict),
+                    "OptimisticLockConflict should not leak"
+                );
             }
             Err(e) => panic!("Task panicked: {e:?}"),
         }
@@ -493,8 +505,10 @@ async fn test_concurrent_mixed_operations() {
         match result {
             Ok(Ok(_)) => success_count += 1,
             Ok(Err(e)) => {
-                assert!(!matches!(e, Error::OptimisticLockConflict),
-                    "OptimisticLockConflict should not leak");
+                assert!(
+                    !matches!(e, Error::OptimisticLockConflict),
+                    "OptimisticLockConflict should not leak"
+                );
             }
             Err(e) => panic!("Task panicked: {e:?}"),
         }
@@ -503,14 +517,19 @@ async fn test_concurrent_mixed_operations() {
         match result {
             Ok(Ok(_)) => success_count += 1,
             Ok(Err(e)) => {
-                assert!(!matches!(e, Error::OptimisticLockConflict),
-                    "OptimisticLockConflict should not leak");
+                assert!(
+                    !matches!(e, Error::OptimisticLockConflict),
+                    "OptimisticLockConflict should not leak"
+                );
             }
             Err(e) => panic!("Task panicked: {e:?}"),
         }
     }
 
-    assert!(success_count >= 5, "Most operations should succeed, got: {success_count}");
+    assert!(
+        success_count >= 5,
+        "Most operations should succeed, got: {success_count}"
+    );
 
     // Final state should be consistent
     let playback_service = room_service.playback_service();
@@ -562,15 +581,18 @@ async fn test_high_contention_stress() {
 
             // Random operation type
             match i % 3 {
-                0 => rs.playback_service()
+                0 => rs
+                    .playback_service()
                     .seek(rid, uid, f64::from(i) * 5.0)
                     .await
                     .map(|r| format!("seek:{}", r.state.current_time)),
-                1 => rs.playback_service()
+                1 => rs
+                    .playback_service()
                     .set_playing(rid, uid, i % 2 == 0)
                     .await
                     .map(|s| format!("playing:{}", s.is_playing)),
-                _ => rs.playback_service()
+                _ => rs
+                    .playback_service()
                     .change_speed(rid, uid, 1.0 + f64::from(i % 4) * 0.5)
                     .await
                     .map(|s| format!("speed:{}", s.speed)),
@@ -594,12 +616,18 @@ async fn test_high_contention_stress() {
 
     // Most operations should succeed
     println!("Success: {success_count}/50, Errors: {error_count}");
-    assert!(success_count >= 15, "At least 30% should succeed, got: {success_count}");
+    assert!(
+        success_count >= 15,
+        "At least 30% should succeed, got: {success_count}"
+    );
 
     // Verify final state is valid
     let playback_service = room_service.playback_service();
     let state = playback_service.get_state(&room.id).await.unwrap();
-    assert!(state.speed > 0.0 && state.speed <= 16.0, "Speed should be valid");
+    assert!(
+        state.speed > 0.0 && state.speed <= 16.0,
+        "Speed should be valid"
+    );
     assert!(state.version > 0, "Version should have advanced");
 }
 
@@ -633,13 +661,11 @@ async fn test_version_handles_large_values() {
     let playback_repo = RoomPlaybackStateRepository::new(pool.clone());
 
     // Manually set version to a large value
-    sqlx::query(
-        "UPDATE room_playback_state SET version = 999998 WHERE room_id = $1"
-    )
-    .bind(room.id.as_str())
-    .execute(&pool)
-    .await
-    .unwrap();
+    sqlx::query("UPDATE room_playback_state SET version = 999998 WHERE room_id = $1")
+        .bind(room.id.as_str())
+        .execute(&pool)
+        .await
+        .unwrap();
 
     // Get state (should have version 999998)
     let mut state = playback_repo.get(&room.id).await.unwrap().unwrap();

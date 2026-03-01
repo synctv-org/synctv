@@ -7,8 +7,8 @@ use {
         pes::PesMuxer,
         pmt, utils,
     },
-    bytes::{BufMut, BytesMut},
     crate::bytesio::{bytes_reader::BytesReader, bytes_writer::BytesWriter},
+    bytes::{BufMut, BytesMut},
 };
 
 pub struct TsMuxer {
@@ -33,7 +33,7 @@ impl Default for TsMuxer {
     }
 }
 impl TsMuxer {
-    #[must_use] 
+    #[must_use]
     pub const fn new() -> Self {
         Self {
             bytes_writer: BytesWriter::new(),
@@ -79,12 +79,19 @@ impl TsMuxer {
 
         self.find_stream(pid)?;
 
-        let cur_pmt = self.pat.pmt.get_mut(self.cur_pmt_index).ok_or(MpegTsError {
-            value: MpegTsErrorValue::StreamNotFound,
-        })?;
-        let cur_stream = cur_pmt.streams.get_mut(self.cur_stream_index).ok_or(MpegTsError {
-            value: MpegTsErrorValue::StreamNotFound,
-        })?;
+        let cur_pmt = self
+            .pat
+            .pmt
+            .get_mut(self.cur_pmt_index)
+            .ok_or(MpegTsError {
+                value: MpegTsErrorValue::StreamNotFound,
+            })?;
+        let cur_stream = cur_pmt
+            .streams
+            .get_mut(self.cur_stream_index)
+            .ok_or(MpegTsError {
+                value: MpegTsErrorValue::StreamNotFound,
+            })?;
 
         if 0x1FFF == cur_pmt.pcr_pid
             || (define::epes_stream_id::PES_SID_VIDEO
@@ -159,7 +166,9 @@ impl TsMuxer {
         /*payload data*/
         self.bytes_writer.write(&payload)?;
 
-        let left_size = ts::TS_PACKET_SIZE.saturating_sub(payload.len() as u8).saturating_sub(5);
+        let left_size = ts::TS_PACKET_SIZE
+            .saturating_sub(payload.len() as u8)
+            .saturating_sub(5);
         for _ in 0..left_size {
             self.bytes_writer.write_u8(0xFF)?;
         }
@@ -174,12 +183,20 @@ impl TsMuxer {
             //write pes header
             let mut pes_muxer = PesMuxer::new();
             if is_start {
-                let cur_pmt = self.pat.pmt.get_mut(self.cur_pmt_index).ok_or(MpegTsError {
-                    value: MpegTsErrorValue::StreamNotFound,
-                })?;
-                let stream_data = cur_pmt.streams.get_mut(self.cur_stream_index).ok_or(MpegTsError {
-                    value: MpegTsErrorValue::StreamNotFound,
-                })?;
+                let cur_pmt = self
+                    .pat
+                    .pmt
+                    .get_mut(self.cur_pmt_index)
+                    .ok_or(MpegTsError {
+                        value: MpegTsErrorValue::StreamNotFound,
+                    })?;
+                let stream_data =
+                    cur_pmt
+                        .streams
+                        .get_mut(self.cur_stream_index)
+                        .ok_or(MpegTsError {
+                            value: MpegTsErrorValue::StreamNotFound,
+                        })?;
                 pes_muxer.write_pes_header(
                     payload_reader.len(),
                     stream_data,
@@ -218,12 +235,19 @@ impl TsMuxer {
         payload_data_length: usize,
         is_start: bool,
     ) -> Result<usize, MpegTsError> {
-        let cur_pmt = self.pat.pmt.get_mut(self.cur_pmt_index).ok_or(MpegTsError {
-            value: MpegTsErrorValue::StreamNotFound,
-        })?;
-        let stream_data = cur_pmt.streams.get_mut(self.cur_stream_index).ok_or(MpegTsError {
-            value: MpegTsErrorValue::StreamNotFound,
-        })?;
+        let cur_pmt = self
+            .pat
+            .pmt
+            .get_mut(self.cur_pmt_index)
+            .ok_or(MpegTsError {
+                value: MpegTsErrorValue::StreamNotFound,
+            })?;
+        let stream_data = cur_pmt
+            .streams
+            .get_mut(self.cur_stream_index)
+            .ok_or(MpegTsError {
+                value: MpegTsErrorValue::StreamNotFound,
+            })?;
 
         let pcr_pid = cur_pmt.pcr_pid;
 
@@ -307,8 +331,7 @@ impl TsMuxer {
         if stuffing_length > 0 {
             // Check adaptation field control bit (bit 5 of byte 3)
             // ts_header has at least 4 bytes at this point (sync byte + PID + flags)
-            let has_adaptation_field = ts_header.get(3)
-                .is_some_and(|b| (b & 0x20) > 0);
+            let has_adaptation_field = ts_header.get(3).is_some_and(|b| (b & 0x20) > 0);
             if has_adaptation_field {
                 /*adaption filed length -- add 6 for pcr length*/
                 ts_header.add_u8_at(4, stuffing_length as u8)?;
@@ -330,7 +353,9 @@ impl TsMuxer {
                 ts_header.write_u8(0xFF)?;
             }
         } else {
-            return Ok(define::TS_PACKET_SIZE.saturating_sub(ts_header_length).saturating_sub(pes_header_length));
+            return Ok(define::TS_PACKET_SIZE
+                .saturating_sub(ts_header_length)
+                .saturating_sub(pes_header_length));
         }
 
         Ok(payload_data_length)

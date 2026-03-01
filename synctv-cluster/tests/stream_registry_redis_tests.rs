@@ -72,10 +72,10 @@ async fn test_register_stream_cross_instance_visibility() {
     let (_container, conn) = setup_redis().await;
 
     // Create two StreamRegistry instances (simulating two replicas)
-    let registry1 = StreamRegistry::new("replica1".to_string())
-        .with_redis(conn.clone(), "cl4test:");
-    let registry2 = StreamRegistry::new("replica2".to_string())
-        .with_redis(conn.clone(), "cl4test:");
+    let registry1 =
+        StreamRegistry::new("replica1".to_string()).with_redis(conn.clone(), "cl4test:");
+    let registry2 =
+        StreamRegistry::new("replica2".to_string()).with_redis(conn.clone(), "cl4test:");
 
     // Register a stream on replica1
     registry1
@@ -95,7 +95,10 @@ async fn test_register_stream_cross_instance_visibility() {
         all_streams.len(),
         2,
         "Should see both streams from get_all_streams, got {:?}",
-        all_streams.iter().map(|s| &s.identifier).collect::<Vec<_>>()
+        all_streams
+            .iter()
+            .map(|s| &s.identifier)
+            .collect::<Vec<_>>()
     );
 
     // Verify stream metadata
@@ -104,10 +107,7 @@ async fn test_register_stream_cross_instance_visibility() {
     let stream1 = stream1.unwrap();
     assert_eq!(stream1.replica_id, "replica1");
     assert_eq!(stream1.pub_type, "rtmp");
-    assert_eq!(
-        stream1.publisher_addr.as_deref(),
-        Some("192.168.1.1:1234")
-    );
+    assert_eq!(stream1.publisher_addr.as_deref(), Some("192.168.1.1:1234"));
 
     let stream2 = all_streams.iter().find(|s| s.identifier == "app/stream2");
     assert!(stream2.is_some(), "Should find stream2");
@@ -126,8 +126,8 @@ async fn test_register_stream_cross_instance_visibility() {
 async fn test_cleanup_stale_active_entries_after_expiry() {
     let (_container, conn) = setup_redis().await;
 
-    let registry = StreamRegistry::new("replica1".to_string())
-        .with_redis(conn.clone(), "cl4stale:");
+    let registry =
+        StreamRegistry::new("replica1".to_string()).with_redis(conn.clone(), "cl4stale:");
 
     // Register a stream
     registry
@@ -137,10 +137,7 @@ async fn test_cleanup_stale_active_entries_after_expiry() {
 
     // Verify it's in the active set
     let mut test_conn = conn.clone();
-    let active_members: Vec<String> = test_conn
-        .smembers("cl4stale:streams:active")
-        .await
-        .unwrap();
+    let active_members: Vec<String> = test_conn.smembers("cl4stale:streams:active").await.unwrap();
     assert!(
         active_members.contains(&"app/stale_stream".to_string()),
         "Stream should be in active set"
@@ -162,10 +159,7 @@ async fn test_cleanup_stale_active_entries_after_expiry() {
     assert!(!exists, "Metadata key should be gone");
 
     // The active set still has the entry (stale)
-    let active_members: Vec<String> = test_conn
-        .smembers("cl4stale:streams:active")
-        .await
-        .unwrap();
+    let active_members: Vec<String> = test_conn.smembers("cl4stale:streams:active").await.unwrap();
     assert!(
         active_members.contains(&"app/stale_stream".to_string()),
         "Active set should still have the stale entry"
@@ -173,8 +167,8 @@ async fn test_cleanup_stale_active_entries_after_expiry() {
 
     // Use a second registry (simulating a different replica) that has no local cache.
     // get_all_streams on this instance should skip the entry whose metadata key is gone.
-    let registry2 = StreamRegistry::new("replica2".to_string())
-        .with_redis(conn.clone(), "cl4stale:");
+    let registry2 =
+        StreamRegistry::new("replica2".to_string()).with_redis(conn.clone(), "cl4stale:");
     let streams = registry2.get_all_streams().await;
     assert!(
         streams.is_empty() || !streams.iter().any(|s| s.identifier == "app/stale_stream"),
@@ -192,10 +186,7 @@ async fn test_cleanup_stale_active_entries_after_expiry() {
     // The cleanup_stale_active_entries is private, but spawn_active_set_cleanup_task
     // calls it. We can test by running the task briefly.
     let cancel = tokio_util::sync::CancellationToken::new();
-    let handle = registry.spawn_active_set_cleanup_task(
-        Duration::from_millis(50),
-        cancel.clone(),
-    );
+    let handle = registry.spawn_active_set_cleanup_task(Duration::from_millis(50), cancel.clone());
 
     // Wait for at least one cleanup cycle
     tokio::time::sleep(Duration::from_millis(200)).await;
@@ -203,10 +194,7 @@ async fn test_cleanup_stale_active_entries_after_expiry() {
     let _ = handle.await;
 
     // Verify the stale entry was cleaned up
-    let active_members: Vec<String> = test_conn
-        .smembers("cl4stale:streams:active")
-        .await
-        .unwrap();
+    let active_members: Vec<String> = test_conn.smembers("cl4stale:streams:active").await.unwrap();
     assert!(
         !active_members.contains(&"app/will_expire".to_string()),
         "Stale entry 'app/will_expire' should be cleaned up from active set"
@@ -219,8 +207,7 @@ async fn test_cleanup_stale_active_entries_after_expiry() {
 async fn test_refresh_ttls_pipeline() {
     let (_container, conn) = setup_redis().await;
 
-    let registry = StreamRegistry::new("replica1".to_string())
-        .with_redis(conn.clone(), "cl4ttl:");
+    let registry = StreamRegistry::new("replica1".to_string()).with_redis(conn.clone(), "cl4ttl:");
 
     // Register two streams
     registry
@@ -286,8 +273,8 @@ async fn test_refresh_ttls_pipeline() {
 async fn test_unregister_stream_removes_from_redis() {
     let (_container, conn) = setup_redis().await;
 
-    let registry = StreamRegistry::new("replica1".to_string())
-        .with_redis(conn.clone(), "cl4unreg:");
+    let registry =
+        StreamRegistry::new("replica1".to_string()).with_redis(conn.clone(), "cl4unreg:");
 
     // Register a stream
     registry
@@ -315,10 +302,7 @@ async fn test_unregister_stream_removes_from_redis() {
         .unwrap();
     assert!(!exists, "Metadata key should be removed");
 
-    let active_members: Vec<String> = test_conn
-        .smembers("cl4unreg:streams:active")
-        .await
-        .unwrap();
+    let active_members: Vec<String> = test_conn.smembers("cl4unreg:streams:active").await.unwrap();
     assert!(
         !active_members.contains(&"app/to_remove".to_string()),
         "Should be removed from active set"

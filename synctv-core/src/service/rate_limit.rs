@@ -30,16 +30,16 @@
 //!   use in-memory limiting regardless of Redis availability, since gRPC
 //!   interceptors are synchronous.
 
-use async_trait::async_trait;
 use crate::Result;
-use governor::{DefaultKeyedRateLimiter, Quota, RateLimiter as GovernorRateLimiter};
+use async_trait::async_trait;
 use governor::clock::Clock;
+use governor::{DefaultKeyedRateLimiter, Quota, RateLimiter as GovernorRateLimiter};
+use moka::sync::Cache as MokaCache;
 use nonzero_ext::nonzero;
 use std::num::NonZeroU32;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use thiserror::Error;
-use moka::sync::Cache as MokaCache;
 
 /// Type alias for the keyed rate limiter cache used by `InMemoryGovernorLimiter`.
 type GovernorLimiterCache = MokaCache<(u32, u64), Arc<DefaultKeyedRateLimiter<String>>>;
@@ -57,9 +57,11 @@ pub enum RateLimitError {
 impl From<RateLimitError> for crate::Error {
     fn from(err: RateLimitError) -> Self {
         match err {
-            RateLimitError::RateLimitExceeded { retry_after_seconds } => {
-                Self::RateLimited(format!("Rate limit exceeded. Try again in {retry_after_seconds}s"))
-            }
+            RateLimitError::RateLimitExceeded {
+                retry_after_seconds,
+            } => Self::RateLimited(format!(
+                "Rate limit exceeded. Try again in {retry_after_seconds}s"
+            )),
             RateLimitError::RedisError(e) => {
                 Self::Internal(format!("Rate limiter Redis error: {e}"))
             }
@@ -91,7 +93,11 @@ impl InMemoryGovernorLimiter {
         }
     }
 
-    fn get_limiter(&self, max_requests: u32, window_seconds: u64) -> Arc<DefaultKeyedRateLimiter<String>> {
+    fn get_limiter(
+        &self,
+        max_requests: u32,
+        window_seconds: u64,
+    ) -> Arc<DefaultKeyedRateLimiter<String>> {
         let key = (max_requests, window_seconds);
         if let Some(limiter) = self.limiters.get(&key) {
             return limiter;
@@ -109,7 +115,12 @@ impl InMemoryGovernorLimiter {
         limiter
     }
 
-    fn check(&self, key: &str, max_requests: u32, window_seconds: u64) -> std::result::Result<(), u64> {
+    fn check(
+        &self,
+        key: &str,
+        max_requests: u32,
+        window_seconds: u64,
+    ) -> std::result::Result<(), u64> {
         let limiter = self.get_limiter(max_requests, window_seconds);
         match limiter.check_key(&key.to_string()) {
             Ok(()) => Ok(()),
@@ -128,8 +139,16 @@ impl InMemoryGovernorLimiter {
 /// values such as user IDs, IP addresses, or room IDs.
 fn extract_rate_limit_tier(key: &str) -> &'static str {
     const KNOWN_TIERS: &[&str] = &[
-        "auth", "read", "write", "media", "chat", "danmaku",
-        "room_password_check", "grpc", "api", "refresh",
+        "auth",
+        "read",
+        "write",
+        "media",
+        "chat",
+        "danmaku",
+        "room_password_check",
+        "grpc",
+        "api",
+        "refresh",
     ];
     for segment in key.rsplit(':') {
         for &tier in KNOWN_TIERS {
@@ -165,13 +184,28 @@ fn current_timestamp_millis() -> u64 {
 pub trait RateLimitBackend: Send + Sync {
     /// Check if a request is allowed. Returns `Ok(())` if allowed.
     /// On Redis errors, implementations may fall back to in-memory.
-    async fn check(&self, key: &str, max_requests: u32, window_seconds: u64) -> std::result::Result<(), RateLimitError>;
+    async fn check(
+        &self,
+        key: &str,
+        max_requests: u32,
+        window_seconds: u64,
+    ) -> std::result::Result<(), RateLimitError>;
 
     /// Strict distributed check. Fails closed when Redis is unavailable.
-    async fn check_strict(&self, key: &str, max_requests: u32, window_seconds: u64) -> std::result::Result<(), RateLimitError>;
+    async fn check_strict(
+        &self,
+        key: &str,
+        max_requests: u32,
+        window_seconds: u64,
+    ) -> std::result::Result<(), RateLimitError>;
 
     /// Get remaining quota: (`remaining_requests`, `reset_time_seconds`).
-    async fn get_quota(&self, key: &str, max_requests: u32, window_seconds: u64) -> Result<(u32, u64)>;
+    async fn get_quota(
+        &self,
+        key: &str,
+        max_requests: u32,
+        window_seconds: u64,
+    ) -> Result<(u32, u64)>;
 
     /// Reset rate limit for a key.
     async fn reset(&self, key: &str) -> Result<()>;
@@ -198,7 +232,7 @@ pub struct RedisRateLimitBackend {
 }
 
 impl RedisRateLimitBackend {
-    #[must_use] 
+    #[must_use]
     pub fn new(conn: redis::aio::ConnectionManager, key_prefix: String) -> Self {
         Self {
             conn,
@@ -210,7 +244,12 @@ impl RedisRateLimitBackend {
 
 #[async_trait]
 impl RateLimitBackend for RedisRateLimitBackend {
-    async fn check(&self, key: &str, max_requests: u32, window_seconds: u64) -> std::result::Result<(), RateLimitError> {
+    async fn check(
+        &self,
+        key: &str,
+        max_requests: u32,
+        window_seconds: u64,
+    ) -> std::result::Result<(), RateLimitError> {
         let mut conn = self.conn.clone();
         let redis_key = format!("{}{}", self.key_prefix, key);
         let now = current_timestamp_millis();
@@ -236,7 +275,7 @@ impl RateLimitBackend for RedisRateLimitBackend {
                 end
             end
             return {count, oldest}
-            "
+            ",
         );
 
         let result: Vec<i64> = match script
@@ -288,7 +327,12 @@ impl RateLimitBackend for RedisRateLimitBackend {
         Ok(())
     }
 
-    async fn check_strict(&self, key: &str, max_requests: u32, window_seconds: u64) -> std::result::Result<(), RateLimitError> {
+    async fn check_strict(
+        &self,
+        key: &str,
+        max_requests: u32,
+        window_seconds: u64,
+    ) -> std::result::Result<(), RateLimitError> {
         let mut conn = self.conn.clone();
         let redis_key = format!("{}{}", self.key_prefix, key);
         let now = current_timestamp_millis();
@@ -305,7 +349,7 @@ impl RateLimitBackend for RedisRateLimitBackend {
             redis.call('EXPIRE', KEYS[1], ARGV[3])
             redis.call('EXPIRE', KEYS[1] .. ':seq', ARGV[3])
             return count
-            "
+            ",
         );
 
         let current_count: u32 = match script
@@ -336,7 +380,12 @@ impl RateLimitBackend for RedisRateLimitBackend {
         Ok(())
     }
 
-    async fn get_quota(&self, key: &str, max_requests: u32, window_seconds: u64) -> Result<(u32, u64)> {
+    async fn get_quota(
+        &self,
+        key: &str,
+        max_requests: u32,
+        window_seconds: u64,
+    ) -> Result<(u32, u64)> {
         use redis::AsyncCommands;
 
         let mut conn = self.conn.clone();
@@ -410,7 +459,7 @@ pub struct InMemoryRateLimitBackend {
 }
 
 impl InMemoryRateLimitBackend {
-    #[must_use] 
+    #[must_use]
     pub fn new(key_prefix: String) -> Self {
         Self {
             key_prefix,
@@ -421,13 +470,26 @@ impl InMemoryRateLimitBackend {
 
 #[async_trait]
 impl RateLimitBackend for InMemoryRateLimitBackend {
-    async fn check(&self, key: &str, max_requests: u32, window_seconds: u64) -> std::result::Result<(), RateLimitError> {
+    async fn check(
+        &self,
+        key: &str,
+        max_requests: u32,
+        window_seconds: u64,
+    ) -> std::result::Result<(), RateLimitError> {
         let mem_key = format!("{}{}", self.key_prefix, key);
-        self.governor.check(&mem_key, max_requests, window_seconds)
-            .map_err(|retry_after_seconds| RateLimitError::RateLimitExceeded { retry_after_seconds })
+        self.governor
+            .check(&mem_key, max_requests, window_seconds)
+            .map_err(|retry_after_seconds| RateLimitError::RateLimitExceeded {
+                retry_after_seconds,
+            })
     }
 
-    async fn check_strict(&self, _key: &str, _max_requests: u32, _window_seconds: u64) -> std::result::Result<(), RateLimitError> {
+    async fn check_strict(
+        &self,
+        _key: &str,
+        _max_requests: u32,
+        _window_seconds: u64,
+    ) -> std::result::Result<(), RateLimitError> {
         tracing::error!(
             "Distributed rate limit check failed: Redis not configured. Denying request (fail closed)."
         );
@@ -436,7 +498,12 @@ impl RateLimitBackend for InMemoryRateLimitBackend {
         })
     }
 
-    async fn get_quota(&self, _key: &str, max_requests: u32, _window_seconds: u64) -> Result<(u32, u64)> {
+    async fn get_quota(
+        &self,
+        _key: &str,
+        max_requests: u32,
+        _window_seconds: u64,
+    ) -> Result<(u32, u64)> {
         // In-memory mode returns max_requests as a best-effort estimate
         // without consuming a token.
         Ok((max_requests, 0))
@@ -546,7 +613,9 @@ impl RateLimiter {
         max_requests: u32,
         window_seconds: u64,
     ) -> std::result::Result<(), RateLimitError> {
-        self.backend.check_strict(key, max_requests, window_seconds).await
+        self.backend
+            .check_strict(key, max_requests, window_seconds)
+            .await
     }
 
     /// Get remaining quota for a rate limit.
@@ -556,7 +625,9 @@ impl RateLimiter {
         max_requests: u32,
         window_seconds: u64,
     ) -> Result<(u32, u64)> {
-        self.backend.get_quota(key, max_requests, window_seconds).await
+        self.backend
+            .get_quota(key, max_requests, window_seconds)
+            .await
     }
 
     /// Reset rate limit for a key.
@@ -565,7 +636,7 @@ impl RateLimiter {
     }
 
     /// Return the backend name.
-    #[must_use] 
+    #[must_use]
     pub fn backend_name(&self) -> &'static str {
         self.backend.backend_name()
     }
@@ -771,7 +842,10 @@ mod tests {
             .collect();
 
         let successes = results.iter().filter(|r| r.is_ok()).count();
-        assert_eq!(successes, 10, "All 10 concurrent requests within limit should succeed");
+        assert_eq!(
+            successes, 10,
+            "All 10 concurrent requests within limit should succeed"
+        );
     }
 
     #[tokio::test]
@@ -814,7 +888,10 @@ mod tests {
         }
 
         let result = limiter.check_rate_limit_sync("sync_key", 5, 1);
-        assert!(matches!(result, Err(RateLimitError::RateLimitExceeded { .. })));
+        assert!(matches!(
+            result,
+            Err(RateLimitError::RateLimitExceeded { .. })
+        ));
     }
 
     #[test]
@@ -832,7 +909,12 @@ mod tests {
         let limiter = RateLimiter::in_memory_only("dist_test:".to_string());
 
         let result = limiter.check_rate_limit_distributed("key", 10, 1).await;
-        assert!(matches!(result, Err(RateLimitError::RateLimitExceeded { retry_after_seconds: 1 })));
+        assert!(matches!(
+            result,
+            Err(RateLimitError::RateLimitExceeded {
+                retry_after_seconds: 1
+            })
+        ));
     }
 
     #[test]
@@ -853,7 +935,9 @@ mod tests {
 
     #[test]
     fn test_rate_limit_error_to_core_error_exceeded() {
-        let err = RateLimitError::RateLimitExceeded { retry_after_seconds: 30 };
+        let err = RateLimitError::RateLimitExceeded {
+            retry_after_seconds: 30,
+        };
         let core_err: crate::Error = err.into();
         match core_err {
             crate::Error::RateLimited(msg) => {
@@ -878,7 +962,9 @@ mod tests {
 
     #[test]
     fn test_rate_limit_error_display() {
-        let err = RateLimitError::RateLimitExceeded { retry_after_seconds: 5 };
+        let err = RateLimitError::RateLimitExceeded {
+            retry_after_seconds: 5,
+        };
         let display = format!("{err}");
         assert!(display.contains("5s"));
     }

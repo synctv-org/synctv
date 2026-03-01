@@ -232,7 +232,12 @@ mod tests {
 
     #[tokio::test]
     async fn test_memory_cache_only() {
-        let cache = UsernameCache::new(Arc::new(crate::cache::NoopCacheL2), "test:".to_string(), 10, 0);
+        let cache = UsernameCache::new(
+            Arc::new(crate::cache::NoopCacheL2),
+            "test:".to_string(),
+            10,
+            0,
+        );
 
         let user_id = create_test_user_id("user1");
 
@@ -251,7 +256,12 @@ mod tests {
 
     #[tokio::test]
     async fn test_batch_lookup() {
-        let cache = UsernameCache::new(Arc::new(crate::cache::NoopCacheL2), "test:".to_string(), 10, 0);
+        let cache = UsernameCache::new(
+            Arc::new(crate::cache::NoopCacheL2),
+            "test:".to_string(),
+            10,
+            0,
+        );
 
         let user1 = create_test_user_id("user1");
         let user2 = create_test_user_id("user2");
@@ -275,7 +285,12 @@ mod tests {
 
     #[tokio::test]
     async fn test_clear_memory() {
-        let cache = UsernameCache::new(Arc::new(crate::cache::NoopCacheL2), "test:".to_string(), 10, 0);
+        let cache = UsernameCache::new(
+            Arc::new(crate::cache::NoopCacheL2),
+            "test:".to_string(),
+            10,
+            0,
+        );
 
         let user_id = create_test_user_id("user1");
         cache.set(&user_id, "alice").await.unwrap();
@@ -287,7 +302,12 @@ mod tests {
 
     #[tokio::test]
     async fn test_invalidate_by_id() {
-        let cache = UsernameCache::new(Arc::new(crate::cache::NoopCacheL2), "test:".to_string(), 10, 0);
+        let cache = UsernameCache::new(
+            Arc::new(crate::cache::NoopCacheL2),
+            "test:".to_string(),
+            10,
+            0,
+        );
 
         let user_id = create_test_user_id("user1");
         cache.set(&user_id, "alice").await.unwrap();

@@ -31,7 +31,9 @@ async fn test_simple_rtc_state_check() {
     let room = rid("room1");
 
     // Register and join
-    mgr.register("conn1".to_string(), user.clone()).await.unwrap();
+    mgr.register("conn1".to_string(), user.clone())
+        .await
+        .unwrap();
     mgr.join_room("conn1", room.clone()).await.unwrap();
 
     // Join WebRTC

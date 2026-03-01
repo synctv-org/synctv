@@ -9,19 +9,17 @@
 #![allow(clippy::unwrap_used)]
 
 use chrono::Utc;
-use synctv_core::{
-    models::ProviderInstance,
-    repository::ProviderInstanceRepository,
-    service::remote_provider_manager::RemoteProviderManager,
-};
 use sqlx::PgPool;
 use std::sync::Arc;
 use std::time::Duration;
+use synctv_core::{
+    models::ProviderInstance, repository::ProviderInstanceRepository,
+    service::remote_provider_manager::RemoteProviderManager,
+};
 use testcontainers::core::ImageExt;
 use testcontainers::runners::AsyncRunner;
 
 // Test utilities
-
 
 /// Test infrastructure with `PostgreSQL` and Redis
 struct TestInfra {
@@ -50,24 +48,28 @@ impl TestInfra {
             .await
             .expect("Failed to start Redis");
 
-
         // Get mapped ports
-        let pg_host = pg_container.get_host().await.expect("Failed to get Postgres host");
+        let pg_host = pg_container
+            .get_host()
+            .await
+            .expect("Failed to get Postgres host");
         let pg_port = pg_container
             .get_host_port_ipv4(5432)
             .await
             .expect("Failed to get Postgres port");
 
-        let redis_host = redis_container.get_host().await.expect("Failed to get Redis host");
+        let redis_host = redis_container
+            .get_host()
+            .await
+            .expect("Failed to get Redis host");
         let redis_port = redis_container
             .get_host_port_ipv4(6379)
             .await
             .expect("Failed to get Redis port");
 
         // Build connection URLs
-        let database_url = format!(
-            "postgresql://synctv:synctv_test@{pg_host}:{pg_port}/synctv_test"
-        );
+        let database_url =
+            format!("postgresql://synctv:synctv_test@{pg_host}:{pg_port}/synctv_test");
         let redis_url = format!("redis://{redis_host}:{redis_port}");
 
         // Connect to Postgres
@@ -164,11 +166,7 @@ async fn test_channel_creation_from_db_config() {
     let redis_client = Some(infra.redis_client.clone());
 
     let repo = ProviderInstanceRepository::new(infra.pool.clone());
-    let manager = RemoteProviderManager::new(
-        Arc::new(repo),
-        redis_conn,
-        redis_client,
-    );
+    let manager = RemoteProviderManager::new(Arc::new(repo), redis_conn, redis_client);
 
     // Create instance in DB
     let instance = make_test_instance("test-instance-1");
@@ -188,9 +186,7 @@ async fn test_channel_creation_from_db_config() {
 
     // Verify instance exists in DB
     let repo = ProviderInstanceRepository::new(infra.pool);
-    let fetched = repo.get_by_name("test-instance-1")
-        .await
-        .unwrap();
+    let fetched = repo.get_by_name("test-instance-1").await.unwrap();
     assert!(fetched.is_some());
     assert_eq!(fetched.unwrap().name, "test-instance-1");
 }
@@ -205,11 +201,7 @@ async fn test_channel_cache_hit() {
     let redis_client = Some(infra.redis_client.clone());
 
     let repo = ProviderInstanceRepository::new(infra.pool.clone());
-    let manager = RemoteProviderManager::new(
-        Arc::new(repo),
-        redis_conn,
-        redis_client,
-    );
+    let manager = RemoteProviderManager::new(Arc::new(repo), redis_conn, redis_client);
 
     // Create instance in DB
     let instance = make_test_instance("test-instance-2");
@@ -237,11 +229,7 @@ async fn test_channel_cache_ttl_expiration() {
 
     // Create a manager with a very short TTL for testing
     let repo = ProviderInstanceRepository::new(infra.pool.clone());
-    let manager = RemoteProviderManager::new(
-        Arc::new(repo),
-        redis_conn,
-        redis_client,
-    );
+    let manager = RemoteProviderManager::new(Arc::new(repo), redis_conn, redis_client);
 
     // Create instance in DB
     let instance = make_test_instance("test-instance-3");
@@ -283,11 +271,7 @@ async fn test_redis_pubsub_invalidation() {
         Some(infra.redis_client.clone()),
     );
 
-    let manager2 = RemoteProviderManager::new(
-        Arc::new(repo),
-        redis_conn,
-        redis_client,
-    );
+    let manager2 = RemoteProviderManager::new(Arc::new(repo), redis_conn, redis_client);
 
     // Start invalidation listener on manager2
     manager2.start_invalidation_listener().await.unwrap();
@@ -323,11 +307,12 @@ async fn test_redis_pubsub_invalidation() {
 
     // Verify manager2 sees the update
     let repo = ProviderInstanceRepository::new(infra.pool);
-    let fetched = repo.get_by_name("test-instance-4")
-        .await
-        .unwrap();
+    let fetched = repo.get_by_name("test-instance-4").await.unwrap();
     assert!(fetched.is_some());
-    assert_eq!(fetched.unwrap().comment, Some("updated comment".to_string()));
+    assert_eq!(
+        fetched.unwrap().comment,
+        Some("updated comment".to_string())
+    );
 }
 
 // ─── Test 5: Redis invalidation on delete ───────────────────────────────────
@@ -347,11 +332,7 @@ async fn test_redis_invalidation_on_delete() {
         Some(infra.redis_client.clone()),
     );
 
-    let manager2 = RemoteProviderManager::new(
-        Arc::new(repo),
-        redis_conn,
-        redis_client,
-    );
+    let manager2 = RemoteProviderManager::new(Arc::new(repo), redis_conn, redis_client);
 
     // Start invalidation listener
     manager2.start_invalidation_listener().await.unwrap();
@@ -392,11 +373,7 @@ async fn test_health_check_integration() {
     let redis_client = Some(infra.redis_client.clone());
 
     let repo = ProviderInstanceRepository::new(infra.pool.clone());
-    let manager = RemoteProviderManager::new(
-        Arc::new(repo),
-        redis_conn,
-        redis_client,
-    );
+    let manager = RemoteProviderManager::new(Arc::new(repo), redis_conn, redis_client);
 
     // Create instance in DB
     let instance = make_test_instance("test-instance-6");
@@ -427,11 +404,7 @@ async fn test_health_check_respects_enabled_flag() {
     let redis_client = Some(infra.redis_client.clone());
 
     let repo = ProviderInstanceRepository::new(infra.pool.clone());
-    let manager = RemoteProviderManager::new(
-        Arc::new(repo),
-        redis_conn,
-        redis_client,
-    );
+    let manager = RemoteProviderManager::new(Arc::new(repo), redis_conn, redis_client);
 
     // Create enabled instance
     let instance_enabled = make_test_instance("test-instance-7a");
@@ -479,13 +452,14 @@ async fn test_tls_configuration_secure() {
     repo_instance.create(&instance).await.unwrap();
 
     // Verify instance was saved with correct TLS settings
-    let fetched = repo_instance.get_by_name("test-instance-8")
-        .await
-        .unwrap();
+    let fetched = repo_instance.get_by_name("test-instance-8").await.unwrap();
     assert!(fetched.is_some());
     let fetched = fetched.unwrap();
     assert!(fetched.tls, "Instance should have TLS enabled");
-    assert!(!fetched.insecure_tls, "Instance should not have insecure TLS");
+    assert!(
+        !fetched.insecure_tls,
+        "Instance should not have insecure TLS"
+    );
 
     // Now create the manager and verify it can list the instance
     let manager = RemoteProviderManager::new(
@@ -512,11 +486,7 @@ async fn test_tls_configuration_insecure() {
     let redis_client = Some(infra.redis_client.clone());
 
     let repo = ProviderInstanceRepository::new(infra.pool.clone());
-    let manager = RemoteProviderManager::new(
-        Arc::new(repo),
-        redis_conn,
-        redis_client,
-    );
+    let manager = RemoteProviderManager::new(Arc::new(repo), redis_conn, redis_client);
 
     // Create instance with insecure TLS
     // Note: The add() will try to create a channel with insecure TLS,
@@ -531,13 +501,14 @@ async fn test_tls_configuration_insecure() {
     // If it succeeds, verify the config
     if result.is_ok() {
         let repo = ProviderInstanceRepository::new(infra.pool);
-        let fetched = repo.get_by_name("test-instance-9")
-            .await
-            .unwrap();
+        let fetched = repo.get_by_name("test-instance-9").await.unwrap();
         assert!(fetched.is_some());
         let fetched = fetched.unwrap();
         assert!(fetched.tls, "Instance should have TLS enabled");
-        assert!(fetched.insecure_tls, "Instance should have insecure TLS enabled");
+        assert!(
+            fetched.insecure_tls,
+            "Instance should have insecure TLS enabled"
+        );
     }
     // If it fails, that's also acceptable in test environment
 }
@@ -552,11 +523,7 @@ async fn test_fallback_to_local_provider() {
     let redis_client = Some(infra.redis_client.clone());
 
     let repo = ProviderInstanceRepository::new(infra.pool.clone());
-    let manager = RemoteProviderManager::new(
-        Arc::new(repo),
-        redis_conn,
-        redis_client,
-    );
+    let manager = RemoteProviderManager::new(Arc::new(repo), redis_conn, redis_client);
 
     // Try to get a non-existent instance
     let channel = manager.get("non-existent-instance").await;
@@ -568,15 +535,16 @@ async fn test_fallback_to_local_provider() {
     );
 
     // Test resolve_client with fallback
-    let result = manager.resolve_client(
-        Some("non-existent-instance"),
-        |_channel| "remote",
-        || "local",
-    ).await;
+    let result = manager
+        .resolve_client(
+            Some("non-existent-instance"),
+            |_channel| "remote",
+            || "local",
+        )
+        .await;
 
     assert_eq!(
-        result,
-        "local",
+        result, "local",
         "resolve_client should fallback to local when remote not found"
     );
 }
@@ -591,22 +559,15 @@ async fn test_fallback_when_instance_name_none() {
     let redis_client = Some(infra.redis_client.clone());
 
     let repo = ProviderInstanceRepository::new(infra.pool.clone());
-    let manager = RemoteProviderManager::new(
-        Arc::new(repo),
-        redis_conn,
-        redis_client,
-    );
+    let manager = RemoteProviderManager::new(Arc::new(repo), redis_conn, redis_client);
 
     // Test resolve_client with None instance_name (should use local)
-    let result = manager.resolve_client(
-        None as Option<&str>,
-        |_channel| "remote",
-        || "local",
-    ).await;
+    let result = manager
+        .resolve_client(None as Option<&str>, |_channel| "remote", || "local")
+        .await;
 
     assert_eq!(
-        result,
-        "local",
+        result, "local",
         "resolve_client should use local when instance_name is None"
     );
 }
@@ -621,11 +582,7 @@ async fn test_fallback_when_channel_creation_fails() {
     let redis_client = Some(infra.redis_client.clone());
 
     let repo = ProviderInstanceRepository::new(infra.pool.clone());
-    let manager = RemoteProviderManager::new(
-        Arc::new(repo),
-        redis_conn,
-        redis_client,
-    );
+    let manager = RemoteProviderManager::new(Arc::new(repo), redis_conn, redis_client);
 
     // Create instance with invalid endpoint (will fail SSRF validation)
     let mut instance = make_test_instance("test-instance-12");
@@ -649,11 +606,7 @@ async fn test_enable_disable_instance() {
     let redis_client = Some(infra.redis_client.clone());
 
     let repo = ProviderInstanceRepository::new(infra.pool.clone());
-    let manager = RemoteProviderManager::new(
-        Arc::new(repo),
-        redis_conn,
-        redis_client,
-    );
+    let manager = RemoteProviderManager::new(Arc::new(repo), redis_conn, redis_client);
 
     // Create enabled instance
     let instance = make_test_instance("test-instance-13");
@@ -661,9 +614,7 @@ async fn test_enable_disable_instance() {
 
     // Verify it's enabled and gettable
     let repo = ProviderInstanceRepository::new(infra.pool.clone());
-    let fetched = repo.get_by_name("test-instance-13")
-        .await
-        .unwrap();
+    let fetched = repo.get_by_name("test-instance-13").await.unwrap();
     assert!(fetched.is_some());
     assert!(fetched.unwrap().enabled);
 
@@ -671,9 +622,7 @@ async fn test_enable_disable_instance() {
     manager.disable("test-instance-13").await.unwrap();
 
     // Verify it's disabled
-    let fetched = repo.get_by_name("test-instance-13")
-        .await
-        .unwrap();
+    let fetched = repo.get_by_name("test-instance-13").await.unwrap();
     assert!(fetched.is_some());
     assert!(!fetched.unwrap().enabled);
 
@@ -685,9 +634,7 @@ async fn test_enable_disable_instance() {
     manager.enable("test-instance-13").await.unwrap();
 
     // Verify it's enabled again
-    let fetched = repo.get_by_name("test-instance-13")
-        .await
-        .unwrap();
+    let fetched = repo.get_by_name("test-instance-13").await.unwrap();
     assert!(fetched.is_some());
     assert!(fetched.unwrap().enabled);
 }
@@ -702,11 +649,7 @@ async fn test_reconnect_instance() {
     let redis_client = Some(infra.redis_client.clone());
 
     let repo = ProviderInstanceRepository::new(infra.pool.clone());
-    let manager = RemoteProviderManager::new(
-        Arc::new(repo),
-        redis_conn,
-        redis_client,
-    );
+    let manager = RemoteProviderManager::new(Arc::new(repo), redis_conn, redis_client);
 
     // Create instance
     let instance = make_test_instance("test-instance-14");
@@ -744,11 +687,7 @@ async fn test_add_duplicate_instance_fails() {
     let redis_client = Some(infra.redis_client.clone());
 
     let repo = ProviderInstanceRepository::new(infra.pool.clone());
-    let manager = RemoteProviderManager::new(
-        Arc::new(repo),
-        redis_conn,
-        redis_client,
-    );
+    let manager = RemoteProviderManager::new(Arc::new(repo), redis_conn, redis_client);
 
     // Create instance
     let instance = make_test_instance("test-instance-15");
@@ -756,10 +695,7 @@ async fn test_add_duplicate_instance_fails() {
 
     // Try to add duplicate - should fail
     let result = manager.add(instance).await;
-    assert!(
-        result.is_err(),
-        "Adding duplicate instance should fail"
-    );
+    assert!(result.is_err(), "Adding duplicate instance should fail");
 
     if let Err(e) = result {
         assert!(
@@ -779,11 +715,7 @@ async fn test_update_nonexistent_instance_fails() {
     let redis_client = Some(infra.redis_client.clone());
 
     let repo = ProviderInstanceRepository::new(infra.pool.clone());
-    let manager = RemoteProviderManager::new(
-        Arc::new(repo),
-        redis_conn,
-        redis_client,
-    );
+    let manager = RemoteProviderManager::new(Arc::new(repo), redis_conn, redis_client);
 
     // Try to update non-existent instance
     let instance = make_test_instance("test-instance-16");
@@ -806,11 +738,7 @@ async fn test_delete_nonexistent_instance_fails() {
     let redis_client = Some(infra.redis_client.clone());
 
     let repo = ProviderInstanceRepository::new(infra.pool.clone());
-    let manager = RemoteProviderManager::new(
-        Arc::new(repo),
-        redis_conn,
-        redis_client,
-    );
+    let manager = RemoteProviderManager::new(Arc::new(repo), redis_conn, redis_client);
 
     // Try to delete non-existent instance
     let result = manager.delete("test-instance-17").await;
@@ -832,11 +760,7 @@ async fn test_get_all_instances() {
     let redis_client = Some(infra.redis_client.clone());
 
     let repo = ProviderInstanceRepository::new(infra.pool.clone());
-    let manager = RemoteProviderManager::new(
-        Arc::new(repo),
-        redis_conn,
-        redis_client,
-    );
+    let manager = RemoteProviderManager::new(Arc::new(repo), redis_conn, redis_client);
 
     // Create multiple instances
     for i in 1..=3 {
@@ -917,11 +841,7 @@ async fn test_init_pre_warms_cache() {
     let redis_client = Some(infra.redis_client.clone());
 
     let repo = ProviderInstanceRepository::new(infra.pool.clone());
-    let manager = RemoteProviderManager::new(
-        Arc::new(repo),
-        redis_conn,
-        redis_client,
-    );
+    let manager = RemoteProviderManager::new(Arc::new(repo), redis_conn, redis_client);
 
     // Create instances before init
     for i in 1..=3 {
@@ -931,10 +851,7 @@ async fn test_init_pre_warms_cache() {
 
     // Call init - should pre-warm cache
     let result = manager.init().await;
-    assert!(
-        result.is_ok(),
-        "Init should succeed"
-    );
+    assert!(result.is_ok(), "Init should succeed");
 
     // Verify instances are listed
     let instances = manager.list().await;
@@ -954,11 +871,7 @@ async fn test_ssrf_validation_blocks_internal_ips() {
     let redis_client = Some(infra.redis_client.clone());
 
     let repo = ProviderInstanceRepository::new(infra.pool.clone());
-    let manager = RemoteProviderManager::new(
-        Arc::new(repo),
-        redis_conn,
-        redis_client,
-    );
+    let manager = RemoteProviderManager::new(Arc::new(repo), redis_conn, redis_client);
 
     // Try to create instance with internal IP (should fail SSRF validation)
     let mut instance = make_test_instance("test-instance-21");
@@ -975,7 +888,9 @@ async fn test_ssrf_validation_blocks_internal_ips() {
     if let Err(e) = result {
         let error_msg = format!("{e:?}");
         assert!(
-            error_msg.contains("SSRF") || error_msg.contains("ssrf") || error_msg.contains("internal"),
+            error_msg.contains("SSRF")
+                || error_msg.contains("ssrf")
+                || error_msg.contains("internal"),
             "Error should mention SSRF validation: {error_msg}"
         );
     }
@@ -991,11 +906,7 @@ async fn test_ssrf_validation_allows_public_endpoints() {
     let redis_client = Some(infra.redis_client.clone());
 
     let repo = ProviderInstanceRepository::new(infra.pool.clone());
-    let manager = RemoteProviderManager::new(
-        Arc::new(repo),
-        redis_conn,
-        redis_client,
-    );
+    let manager = RemoteProviderManager::new(Arc::new(repo), redis_conn, redis_client);
 
     // Create instance with public endpoint (will fail connection, but pass SSRF)
     let mut instance = make_test_instance("test-instance-22");
@@ -1012,9 +923,7 @@ async fn test_ssrf_validation_allows_public_endpoints() {
 
     // Verify it's in the DB
     let repo = ProviderInstanceRepository::new(infra.pool);
-    let fetched = repo.get_by_name("test-instance-22")
-        .await
-        .unwrap();
+    let fetched = repo.get_by_name("test-instance-22").await.unwrap();
     assert!(fetched.is_some());
 }
 
@@ -1040,11 +949,9 @@ async fn test_resolve_client_uses_remote_when_available() {
 
     // Since tonic creates lazy channels, the remote path will be taken
     // even though there's no actual server
-    let result = manager.resolve_client(
-        Some("test-instance-23"),
-        |_channel| "remote",
-        || "local",
-    ).await;
+    let result = manager
+        .resolve_client(Some("test-instance-23"), |_channel| "remote", || "local")
+        .await;
 
     // Should be "remote" because the lazy channel was created successfully
     assert_eq!(result, "remote");
@@ -1060,11 +967,7 @@ async fn test_cache_respects_max_capacity() {
     let redis_client = Some(infra.redis_client.clone());
 
     let repo = ProviderInstanceRepository::new(infra.pool.clone());
-    let manager = RemoteProviderManager::new(
-        Arc::new(repo),
-        redis_conn,
-        redis_client,
-    );
+    let manager = RemoteProviderManager::new(Arc::new(repo), redis_conn, redis_client);
 
     // Create instances (default max is 1000, so this won't test eviction)
     // This is more of a sanity check that the cache doesn't panic
@@ -1075,10 +978,7 @@ async fn test_cache_respects_max_capacity() {
 
     // All should be listable
     let instances = manager.list().await;
-    assert!(
-        instances.len() >= 10,
-        "Should list at least 10 instances"
-    );
+    assert!(instances.len() >= 10, "Should list at least 10 instances");
 }
 
 // ─── Test 25: Provider instance supports_provider ───────────────────────────
@@ -1098,7 +998,11 @@ async fn test_provider_instance_supports_provider() {
         timeout: "10s".to_string(),
         tls: false,
         insecure_tls: false,
-        providers: vec!["bilibili".to_string(), "alist".to_string(), "emby".to_string()],
+        providers: vec![
+            "bilibili".to_string(),
+            "alist".to_string(),
+            "emby".to_string(),
+        ],
         enabled: true,
         created_at: Utc::now(),
         updated_at: Utc::now(),
@@ -1121,24 +1025,15 @@ async fn test_provider_instance_parse_timeout() {
 
     // Test valid timeout formats
     let instance1 = make_test_instance("test-26a");
-    assert_eq!(
-        instance1.parse_timeout().unwrap(),
-        Duration::from_secs(10)
-    );
+    assert_eq!(instance1.parse_timeout().unwrap(), Duration::from_secs(10));
 
     let mut instance2 = make_test_instance("test-26b");
     instance2.timeout = "30s".to_string();
-    assert_eq!(
-        instance2.parse_timeout().unwrap(),
-        Duration::from_secs(30)
-    );
+    assert_eq!(instance2.parse_timeout().unwrap(), Duration::from_secs(30));
 
     let mut instance3 = make_test_instance("test-26c");
     instance3.timeout = "5m".to_string();
-    assert_eq!(
-        instance3.parse_timeout().unwrap(),
-        Duration::from_mins(5)
-    );
+    assert_eq!(instance3.parse_timeout().unwrap(), Duration::from_mins(5));
 
     // Test invalid timeout format
     let mut instance4 = make_test_instance("test-26d");

@@ -14,7 +14,7 @@ pub mod settings;
 pub mod user;
 pub mod user_oauth_provider;
 
-pub use audit::{AuditLogRepository, AuditLogRow, AuditLogQuery};
+pub use audit::{AuditLogQuery, AuditLogRepository, AuditLogRow};
 pub use chat::ChatRepository;
 pub use email_token::EmailTokenRepository;
 pub use media::MediaRepository;
@@ -23,7 +23,7 @@ pub use playback::RoomPlaybackStateRepository;
 pub use playlist::PlaylistRepository;
 pub use provider_instance::{ProviderInstanceRepository, UserProviderCredentialRepository};
 pub use query_builder::WhereClauseBuilder;
-pub use room::{RoomRepository, JoinRoomContext};
+pub use room::{JoinRoomContext, RoomRepository};
 pub use room_member::RoomMemberRepository;
 pub use room_settings::RoomSettingsRepository;
 pub use settings::SettingsRepository;

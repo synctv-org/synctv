@@ -14,8 +14,8 @@ use crate::{
     livestream::managed_stream::{ManagedStream, StreamLifecycle, StreamPool},
     relay::registry_trait::StreamRegistryTrait,
 };
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 use synctv_xiu::streamhub::define::{StreamHubEvent, StreamHubEventSender};
 use synctv_xiu::streamhub::stream::StreamIdentifier;
@@ -55,7 +55,14 @@ impl ExternalPublishManager {
         local_node_id: String,
         stream_hub_event_sender: StreamHubEventSender,
     ) -> StreamResult<Self> {
-        Self::with_timeouts(registry, local_node_id, String::new(), stream_hub_event_sender, 60, 300)
+        Self::with_timeouts(
+            registry,
+            local_node_id,
+            String::new(),
+            stream_hub_event_sender,
+            60,
+            300,
+        )
     }
 
     /// Set the advertised gRPC address used when registering external publishers in Redis.
@@ -84,7 +91,7 @@ impl ExternalPublishManager {
     ///
     /// Should be called once after creating the manager to prevent memory leaks
     /// from failed stream creation attempts.
-    #[must_use] 
+    #[must_use]
     pub fn start_cleanup_task(&self) -> tokio::task::JoinHandle<()> {
         self.pool.start_creation_lock_cleanup()
     }
@@ -102,9 +109,11 @@ impl ExternalPublishManager {
         let http_client = reqwest::Client::builder()
             .connect_timeout(Duration::from_secs(10))
             .build()
-            .map_err(|e| crate::error::StreamError::Internal(
-                format!("failed to build shared HTTP client: {e}")
-            ))?;
+            .map_err(|e| {
+                crate::error::StreamError::Internal(format!(
+                    "failed to build shared HTTP client: {e}"
+                ))
+            })?;
 
         let pool = StreamPool::new(
             Duration::from_secs(cleanup_check_interval_secs),
@@ -212,8 +221,7 @@ impl ExternalPublishManager {
         if let Some(stream) = self.pool.get_existing(&stream_key).await {
             debug!(
                 "Reusing external publish stream created by concurrent request for {}/{}",
-                room_id,
-                media_id,
+                room_id, media_id,
             );
             return Ok(stream);
         }
@@ -294,17 +302,27 @@ impl ExternalPublishManager {
         let register_result = tokio::time::timeout(
             REGISTRY_TIMEOUT,
             self.registry.try_register_publisher(
-                room_id, media_id, &self.local_node_id, "external_puller", &self.local_grpc_address,
+                room_id,
+                media_id,
+                &self.local_node_id,
+                "external_puller",
+                &self.local_grpc_address,
             ),
         )
         .await
-        .map_err(|_| crate::error::StreamError::RegistryError(format!(
-            "Registry registration timed out after {}s for {room_id}/{media_id}",
-            REGISTRY_TIMEOUT.as_secs()
-        )))
-        .and_then(|r| r.map_err(|e| crate::error::StreamError::RegistryError(format!(
-            "Failed to register publisher in Redis: {e}"
-        ))));
+        .map_err(|_| {
+            crate::error::StreamError::RegistryError(format!(
+                "Registry registration timed out after {}s for {room_id}/{media_id}",
+                REGISTRY_TIMEOUT.as_secs()
+            ))
+        })
+        .and_then(|r| {
+            r.map_err(|e| {
+                crate::error::StreamError::RegistryError(format!(
+                    "Failed to register publisher in Redis: {e}"
+                ))
+            })
+        });
 
         if let Err(e) = register_result {
             error!("Failed to register external publisher in Redis after stream start, stopping stream: {e}");
@@ -438,7 +456,9 @@ impl ExternalPublishStream {
                 media_id.clone(),
                 source_url,
                 stream_hub_sender,
-            ).await {
+            )
+            .await
+            {
                 Ok(p) => p.with_confirm(confirm_tx).with_http_client(http_client),
                 Err(e) => {
                     let msg = format!("Failed to create puller for {room_id}/{media_id}: {e}");
@@ -452,9 +472,7 @@ impl ExternalPublishStream {
             if let Err(ref e) = result {
                 error!(
                     "External publish task failed for {}/{}: {}",
-                    room_id,
-                    media_id,
-                    e
+                    room_id, media_id, e
                 );
             }
             // Mark as not running so is_healthy() returns false and the pool
@@ -481,8 +499,7 @@ impl ExternalPublishStream {
         self.lifecycle.set_task_handle(handle).await;
         info!(
             "External publish stream started for {}/{}",
-            self.room_id,
-            self.media_id
+            self.room_id, self.media_id
         );
         Ok(())
     }
@@ -502,7 +519,10 @@ impl ExternalPublishStream {
             };
             let room_id = self.room_id.clone();
             let media_id = self.media_id.clone();
-            match self.stream_hub_event_sender.try_send(StreamHubEvent::UnPublish { identifier }) {
+            match self
+                .stream_hub_event_sender
+                .try_send(StreamHubEvent::UnPublish { identifier })
+            {
                 Ok(()) => {}
                 Err(tokio::sync::mpsc::error::TrySendError::Full(event)) => {
                     // Channel full -- spawn async task to retry so UnPublish is not silently lost.
@@ -521,7 +541,10 @@ impl ExternalPublishStream {
                     });
                 }
                 Err(e) => {
-                    warn!("Failed to send UnPublish for {}/{}: {}", room_id, media_id, e);
+                    warn!(
+                        "Failed to send UnPublish for {}/{}: {}",
+                        room_id, media_id, e
+                    );
                 }
             }
         }
@@ -529,8 +552,7 @@ impl ExternalPublishStream {
         self.lifecycle.abort_task().await;
         info!(
             "External publish stream stopped for {}/{}",
-            self.room_id,
-            self.media_id
+            self.room_id, self.media_id
         );
         Ok(())
     }

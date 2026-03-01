@@ -46,9 +46,7 @@ mod error_responses {
         let message = error.message;
         Router::new().route(
             "/test",
-            get(move || async move {
-                Err::<String, AppError>(AppError::new(status, message))
-            }),
+            get(move || async move { Err::<String, AppError>(AppError::new(status, message)) }),
         )
     }
 
@@ -121,7 +119,10 @@ mod error_responses {
         let json = body_json(resp).await;
         assert_eq!(json["status"], 429);
         let msg = json["error"].as_str().unwrap();
-        assert!(msg.contains("30"), "Error message should contain retry seconds");
+        assert!(
+            msg.contains("30"),
+            "Error message should contain retry seconds"
+        );
     }
 
     #[tokio::test]
@@ -155,8 +156,14 @@ mod error_responses {
 
         let json = body_json(resp).await;
         let obj = json.as_object().unwrap();
-        assert!(obj.contains_key("error"), "Response must contain 'error' field");
-        assert!(obj.contains_key("status"), "Response must contain 'status' field");
+        assert!(
+            obj.contains_key("error"),
+            "Response must contain 'error' field"
+        );
+        assert!(
+            obj.contains_key("status"),
+            "Response must contain 'status' field"
+        );
         assert_eq!(obj.len(), 2, "Error response should have exactly 2 fields");
     }
 
@@ -170,7 +177,10 @@ mod error_responses {
 
         assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
         let json = body_json(resp).await;
-        assert!(json["error"].as_str().unwrap().contains("Invalid username or password"));
+        assert!(json["error"]
+            .as_str()
+            .unwrap()
+            .contains("Invalid username or password"));
     }
 
     #[tokio::test]
@@ -242,7 +252,8 @@ mod error_responses {
     #[tokio::test]
     async fn test_internal_error_returns_generic_message() {
         // Simulate an internal error with sensitive info in the message
-        let sensitive_msg = "Database connection failed: postgres://admin:secret@db.internal:5432/production";
+        let sensitive_msg =
+            "Database connection failed: postgres://admin:secret@db.internal:5432/production";
         let app = error_router(AppError::internal_server_error(sensitive_msg));
         let req = Request::get("/test").body(Body::empty()).unwrap();
         let resp = app.oneshot(req).await.unwrap();
@@ -267,8 +278,7 @@ mod error_responses {
 
         // The response should be a generic message
         assert_eq!(
-            error_msg,
-            "Internal server error",
+            error_msg, "Internal server error",
             "Internal error should return generic message"
         );
     }
@@ -281,28 +291,40 @@ mod error_responses {
         let req = Request::get("/test").body(Body::empty()).unwrap();
         let resp = app.oneshot(req).await.unwrap();
         let json = body_json(resp).await;
-        assert_eq!(json["error"], "Invalid email format", "400 should preserve message");
+        assert_eq!(
+            json["error"], "Invalid email format",
+            "400 should preserve message"
+        );
 
         // 401 Unauthorized
         let app = error_router(AppError::unauthorized("Token has expired"));
         let req = Request::get("/test").body(Body::empty()).unwrap();
         let resp = app.oneshot(req).await.unwrap();
         let json = body_json(resp).await;
-        assert_eq!(json["error"], "Token has expired", "401 should preserve message");
+        assert_eq!(
+            json["error"], "Token has expired",
+            "401 should preserve message"
+        );
 
         // 403 Forbidden
         let app = error_router(AppError::forbidden("Admin access required"));
         let req = Request::get("/test").body(Body::empty()).unwrap();
         let resp = app.oneshot(req).await.unwrap();
         let json = body_json(resp).await;
-        assert_eq!(json["error"], "Admin access required", "403 should preserve message");
+        assert_eq!(
+            json["error"], "Admin access required",
+            "403 should preserve message"
+        );
 
         // 404 Not Found
         let app = error_router(AppError::not_found("Room 'abc123' does not exist"));
         let req = Request::get("/test").body(Body::empty()).unwrap();
         let resp = app.oneshot(req).await.unwrap();
         let json = body_json(resp).await;
-        assert_eq!(json["error"], "Room 'abc123' does not exist", "404 should preserve message");
+        assert_eq!(
+            json["error"], "Room 'abc123' does not exist",
+            "404 should preserve message"
+        );
     }
 
     /// Sensitive patterns must NEVER appear in any error response.
@@ -354,8 +376,7 @@ mod error_responses {
 
         // 503 is a server error (5xx), so it returns generic message for security
         assert_eq!(
-            error_msg,
-            "Internal server error",
+            error_msg, "Internal server error",
             "503 should return generic message (all 5xx errors are sanitized)"
         );
     }
@@ -363,7 +384,10 @@ mod error_responses {
     /// Bad gateway (502) should also return generic message.
     #[tokio::test]
     async fn test_bad_gateway_returns_generic_message() {
-        let app = error_router(AppError::new(StatusCode::BAD_GATEWAY, "Upstream nginx error: connection reset by peer"));
+        let app = error_router(AppError::new(
+            StatusCode::BAD_GATEWAY,
+            "Upstream nginx error: connection reset by peer",
+        ));
         let req = Request::get("/test").body(Body::empty()).unwrap();
         let resp = app.oneshot(req).await.unwrap();
 
@@ -373,8 +397,7 @@ mod error_responses {
 
         // 502 is a server error, should return generic message
         assert_eq!(
-            error_msg,
-            "Internal server error",
+            error_msg, "Internal server error",
             "502 should return generic message"
         );
     }
@@ -382,7 +405,10 @@ mod error_responses {
     /// Gateway timeout (504) should also return generic message.
     #[tokio::test]
     async fn test_gateway_timeout_returns_generic_message() {
-        let app = error_router(AppError::new(StatusCode::GATEWAY_TIMEOUT, "Upstream timeout after 30s"));
+        let app = error_router(AppError::new(
+            StatusCode::GATEWAY_TIMEOUT,
+            "Upstream timeout after 30s",
+        ));
         let req = Request::get("/test").body(Body::empty()).unwrap();
         let resp = app.oneshot(req).await.unwrap();
 
@@ -392,8 +418,7 @@ mod error_responses {
 
         // 504 is a server error, should return generic message
         assert_eq!(
-            error_msg,
-            "Internal server error",
+            error_msg, "Internal server error",
             "504 should return generic message"
         );
     }
@@ -404,9 +429,9 @@ mod error_responses {
 // ============================================================================
 
 mod error_classification {
+    use axum::http::StatusCode;
     use synctv_api::http::error::map_api_error;
     use synctv_api::impls::ApiError;
-    use axum::http::StatusCode;
 
     #[test]
     fn test_not_found_error_maps_to_404() {
@@ -482,7 +507,9 @@ mod error_classification {
     #[test]
     fn test_internal_error_message_is_generic() {
         // Internal errors should NOT leak the original message to clients
-        let err = map_api_error(ApiError::Internal("Database connection pool exhausted".into()));
+        let err = map_api_error(ApiError::Internal(
+            "Database connection pool exhausted".into(),
+        ));
         assert_eq!(err.status, StatusCode::INTERNAL_SERVER_ERROR);
         assert_eq!(err.message, "Internal error");
     }
@@ -653,10 +680,7 @@ mod security_headers {
         let resp = app.oneshot(req).await.unwrap();
 
         // Should preserve the handler's value
-        assert_eq!(
-            resp.headers().get("X-Frame-Options").unwrap(),
-            "SAMEORIGIN"
-        );
+        assert_eq!(resp.headers().get("X-Frame-Options").unwrap(), "SAMEORIGIN");
     }
 
     #[tokio::test]
@@ -751,10 +775,7 @@ mod health_endpoints {
 
     #[tokio::test]
     async fn test_liveness_alias() {
-        let app = Router::new().route(
-            "/health",
-            get(synctv_api::http::health::liveness_check),
-        );
+        let app = Router::new().route("/health", get(synctv_api::http::health::liveness_check));
 
         let req = Request::get("/health").body(Body::empty()).unwrap();
         let resp = app.oneshot(req).await.unwrap();
@@ -766,10 +787,7 @@ mod health_endpoints {
 
     #[tokio::test]
     async fn test_liveness_json_structure() {
-        let app = Router::new().route(
-            "/health",
-            get(synctv_api::http::health::liveness_check),
-        );
+        let app = Router::new().route("/health", get(synctv_api::http::health::liveness_check));
 
         let req = Request::get("/health").body(Body::empty()).unwrap();
         let resp = app.oneshot(req).await.unwrap();
@@ -810,9 +828,7 @@ mod routing_structure {
     async fn test_wrong_method_returns_405() {
         let app = minimal_router();
         // GET on a POST-only route
-        let req = Request::get("/api/auth/login")
-            .body(Body::empty())
-            .unwrap();
+        let req = Request::get("/api/auth/login").body(Body::empty()).unwrap();
         let resp = app.oneshot(req).await.unwrap();
 
         assert_eq!(resp.status(), StatusCode::METHOD_NOT_ALLOWED);
@@ -843,8 +859,7 @@ mod routing_structure {
 
 mod request_format {
     use synctv_proto::client::{
-        RegisterRequest, LoginRequest, CreateRoomRequest,
-        JoinRoomRequest, RefreshTokenRequest,
+        CreateRoomRequest, JoinRoomRequest, LoginRequest, RefreshTokenRequest, RegisterRequest,
     };
 
     #[test]
@@ -919,9 +934,7 @@ mod request_format {
 // ============================================================================
 
 mod response_format {
-    use synctv_proto::client::{
-        RegisterResponse, LoginResponse, User,
-    };
+    use synctv_proto::client::{LoginResponse, RegisterResponse, User};
 
     #[test]
     fn test_register_response_serializes() {
@@ -1065,10 +1078,7 @@ mod unauthenticated_access {
 
         assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
         let json = body_json(resp).await;
-        assert!(json["error"]
-            .as_str()
-            .unwrap()
-            .contains("Authorization"));
+        assert!(json["error"].as_str().unwrap().contains("Authorization"));
     }
 
     #[tokio::test]
@@ -1095,7 +1105,7 @@ mod unauthenticated_access {
 // ============================================================================
 
 mod api_error_classification {
-    use synctv_api::impls::{ApiError, ErrorKind, classify_error};
+    use synctv_api::impls::{classify_error, ApiError, ErrorKind};
 
     #[test]
     fn test_api_error_not_found_classify() {
@@ -1139,12 +1149,24 @@ mod api_error_classification {
     fn test_api_error_display_roundtrips() {
         // Ensure Display output classifies correctly when parsed back
         let cases: &[(ApiError, fn(&ErrorKind) -> bool)] = &[
-            (ApiError::NotFound("x".into()), |k| matches!(k, ErrorKind::NotFound)),
-            (ApiError::Authentication("x".into()), |k| matches!(k, ErrorKind::Unauthenticated)),
-            (ApiError::Authorization("x".into()), |k| matches!(k, ErrorKind::PermissionDenied)),
-            (ApiError::AlreadyExists("x".into()), |k| matches!(k, ErrorKind::AlreadyExists)),
-            (ApiError::InvalidInput("x".into()), |k| matches!(k, ErrorKind::InvalidArgument)),
-            (ApiError::Internal("x".into()), |k| matches!(k, ErrorKind::Internal)),
+            (ApiError::NotFound("x".into()), |k| {
+                matches!(k, ErrorKind::NotFound)
+            }),
+            (ApiError::Authentication("x".into()), |k| {
+                matches!(k, ErrorKind::Unauthenticated)
+            }),
+            (ApiError::Authorization("x".into()), |k| {
+                matches!(k, ErrorKind::PermissionDenied)
+            }),
+            (ApiError::AlreadyExists("x".into()), |k| {
+                matches!(k, ErrorKind::AlreadyExists)
+            }),
+            (ApiError::InvalidInput("x".into()), |k| {
+                matches!(k, ErrorKind::InvalidArgument)
+            }),
+            (ApiError::Internal("x".into()), |k| {
+                matches!(k, ErrorKind::Internal)
+            }),
         ];
         for (err, check) in cases {
             let s = err.to_string();
@@ -1173,9 +1195,7 @@ mod body_edge_cases {
         // POST with empty body should return 400 from axum JSON extractor
         let app = Router::new().route(
             "/api/auth/login",
-            post(
-                |axum::Json(_body): axum::Json<serde_json::Value>| async { "ok" },
-            ),
+            post(|axum::Json(_body): axum::Json<serde_json::Value>| async { "ok" }),
         );
 
         let req = Request::post("/api/auth/login")
@@ -1192,9 +1212,7 @@ mod body_edge_cases {
     async fn test_malformed_json_body() {
         let app = Router::new().route(
             "/api/auth/login",
-            post(
-                |axum::Json(_body): axum::Json<serde_json::Value>| async { "ok" },
-            ),
+            post(|axum::Json(_body): axum::Json<serde_json::Value>| async { "ok" }),
         );
 
         let req = Request::post("/api/auth/login")
@@ -1210,11 +1228,7 @@ mod body_edge_cases {
     async fn test_valid_json_body() {
         let app = Router::new().route(
             "/api/auth/login",
-            post(
-                |axum::Json(body): axum::Json<serde_json::Value>| async move {
-                    axum::Json(body)
-                },
-            ),
+            post(|axum::Json(body): axum::Json<serde_json::Value>| async move { axum::Json(body) }),
         );
 
         let req = Request::post("/api/auth/login")
@@ -1232,9 +1246,7 @@ mod body_edge_cases {
     async fn test_wrong_content_type() {
         let app = Router::new().route(
             "/api/test",
-            post(
-                |axum::Json(_body): axum::Json<serde_json::Value>| async { "ok" },
-            ),
+            post(|axum::Json(_body): axum::Json<serde_json::Value>| async { "ok" }),
         );
 
         let req = Request::post("/api/test")
@@ -1320,8 +1332,8 @@ mod playback_request {
 // ============================================================================
 
 mod auth_flow {
-    use synctv_core::service::auth::{JwtService, TokenType, hash_password, verify_password};
     use synctv_core::models::UserId;
+    use synctv_core::service::auth::{hash_password, verify_password, JwtService, TokenType};
 
     fn jwt_service() -> JwtService {
         JwtService::new("test-secret-key-for-jwt-that-is-long-enough-1234567890").unwrap()
@@ -1333,16 +1345,22 @@ mod auth_flow {
         let password = "StrongP@ssw0rd!";
 
         // 1. Registration: hash the password (simulates register endpoint)
-        let hash = hash_password(password).await.expect("hashing should succeed");
+        let hash = hash_password(password)
+            .await
+            .expect("hashing should succeed");
         assert_ne!(hash, password, "hash must differ from plaintext");
 
         // 2. Login: verify the password
         assert!(
-            verify_password(password, &hash).await.expect("verify call should succeed"),
+            verify_password(password, &hash)
+                .await
+                .expect("verify call should succeed"),
             "correct password should verify"
         );
         assert!(
-            !verify_password("wrong_password", &hash).await.unwrap_or(false),
+            !verify_password("wrong_password", &hash)
+                .await
+                .unwrap_or(false),
             "wrong password should fail verification"
         );
 
@@ -1350,11 +1368,17 @@ mod auth_flow {
         let jwt = jwt_service();
         let user_id = UserId::new();
 
-        let access_token = jwt.sign_token(&user_id, TokenType::Access, 0).expect("access token");
-        let refresh_token = jwt.sign_token(&user_id, TokenType::Refresh, 0).expect("refresh token");
+        let access_token = jwt
+            .sign_token(&user_id, TokenType::Access, 0)
+            .expect("access token");
+        let refresh_token = jwt
+            .sign_token(&user_id, TokenType::Refresh, 0)
+            .expect("refresh token");
 
         // 4. Validate access token (simulates auth middleware)
-        let claims = jwt.verify_access_token(&access_token).expect("access token valid");
+        let claims = jwt
+            .verify_access_token(&access_token)
+            .expect("access token valid");
         assert_eq!(claims.sub, user_id.as_str());
         assert!(claims.is_access_token());
 
@@ -1362,25 +1386,36 @@ mod auth_flow {
         assert!(jwt.verify_refresh_token(&access_token).is_err());
 
         // 6. Validate refresh token (simulates token refresh endpoint)
-        let refresh_claims = jwt.verify_refresh_token(&refresh_token).expect("refresh token valid");
+        let refresh_claims = jwt
+            .verify_refresh_token(&refresh_token)
+            .expect("refresh token valid");
         assert_eq!(refresh_claims.sub, user_id.as_str());
         assert!(refresh_claims.is_refresh_token());
 
         // 7. Issue new access token from refresh (simulates refresh flow)
-        let new_access = jwt.sign_token(&user_id, TokenType::Access, 0).expect("new access token");
-        let new_claims = jwt.verify_access_token(&new_access).expect("new access token valid");
+        let new_access = jwt
+            .sign_token(&user_id, TokenType::Access, 0)
+            .expect("new access token");
+        let new_claims = jwt
+            .verify_access_token(&new_access)
+            .expect("new access token valid");
         assert_eq!(new_claims.sub, user_id.as_str());
     }
 
     /// Verify that tokens signed by one secret are rejected by another
     #[test]
     fn test_cross_secret_rejection() {
-        let jwt_a = JwtService::new("secret-aaaa-long-enough-for-entropy-check-1234567890").unwrap();
-        let jwt_b = JwtService::new("secret-bbbb-long-enough-for-entropy-check-1234567890").unwrap();
+        let jwt_a =
+            JwtService::new("secret-aaaa-long-enough-for-entropy-check-1234567890").unwrap();
+        let jwt_b =
+            JwtService::new("secret-bbbb-long-enough-for-entropy-check-1234567890").unwrap();
         let user_id = UserId::new();
 
         let token = jwt_a.sign_token(&user_id, TokenType::Access, 0).unwrap();
-        assert!(jwt_b.verify_access_token(&token).is_err(), "cross-secret token must be rejected");
+        assert!(
+            jwt_b.verify_access_token(&token).is_err(),
+            "cross-secret token must be rejected"
+        );
     }
 
     /// Verify password validation rejects common weak passwords at the API layer

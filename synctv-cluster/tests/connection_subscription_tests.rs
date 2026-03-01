@@ -15,11 +15,10 @@ use synctv_core::models::id::{RoomId, UserId};
 mod integration_test_helpers;
 use integration_test_helpers::{create_node, TestRedis};
 
-
 #[tokio::test]
 #[ignore = "Requires Docker"]
 async fn test_room_hub_connection_manager_state_consistency() {
-    use synctv_cluster::sync::{ConnectionManager, ConnectionLimits};
+    use synctv_cluster::sync::{ConnectionLimits, ConnectionManager};
 
     let config = ClusterConfig {
         redis_client: None,
@@ -76,8 +75,15 @@ async fn test_room_hub_connection_manager_state_consistency() {
 
     // Verify partial state
     let hub_metrics = manager.metrics();
-    assert_eq!(hub_metrics.total_connections, 1, "Hub should have 1 connection");
-    assert_eq!(conn_manager.connection_count(), 1, "ConnManager should have 1 connection");
+    assert_eq!(
+        hub_metrics.total_connections, 1,
+        "Hub should have 1 connection"
+    );
+    assert_eq!(
+        conn_manager.connection_count(),
+        1,
+        "ConnManager should have 1 connection"
+    );
     assert_eq!(
         conn_manager.room_connection_count(&room_id),
         1,
@@ -90,9 +96,16 @@ async fn test_room_hub_connection_manager_state_consistency() {
 
     // Verify clean state
     let hub_metrics = manager.metrics();
-    assert_eq!(hub_metrics.total_connections, 0, "Hub should have 0 connections");
+    assert_eq!(
+        hub_metrics.total_connections, 0,
+        "Hub should have 0 connections"
+    );
     assert_eq!(hub_metrics.total_rooms, 0, "Hub should have 0 rooms");
-    assert_eq!(conn_manager.connection_count(), 0, "ConnManager should have 0 connections");
+    assert_eq!(
+        conn_manager.connection_count(),
+        0,
+        "ConnManager should have 0 connections"
+    );
     assert_eq!(
         conn_manager.room_connection_count(&room_id),
         0,
@@ -275,4 +288,3 @@ async fn test_multi_replica_websocket_connections() {
     node_b.shutdown().await;
     node_c.shutdown().await;
 }
-

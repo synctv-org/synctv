@@ -75,23 +75,26 @@ impl CredentialStorage for PostgresCredentialStorage {
         provider: ProviderType,
         server_id: &str,
     ) -> Result<Option<StoredCredential>> {
-        let row = sqlx::query_as::<_, (
-            String,
-            String,
-            String,
-            String,
-            Option<String>,
-            serde_json::Value,
-            Option<DateTime<Utc>>,
-            DateTime<Utc>,
-            DateTime<Utc>,
-        )>(
+        let row = sqlx::query_as::<
+            _,
+            (
+                String,
+                String,
+                String,
+                String,
+                Option<String>,
+                serde_json::Value,
+                Option<DateTime<Utc>>,
+                DateTime<Utc>,
+                DateTime<Utc>,
+            ),
+        >(
             r"
             SELECT id, user_id, provider, server_id, provider_instance_name,
                    credential_data, expires_at, created_at, updated_at
             FROM user_media_provider_credentials
             WHERE user_id = $1 AND provider = $2 AND server_id = $3
-            "
+            ",
         )
         .bind(user_id)
         .bind(provider.as_str())
@@ -102,9 +105,8 @@ impl CredentialStorage for PostgresCredentialStorage {
 
         match row {
             Some((id, uid, prov, sid, pin, data, exp, created, updated)) => {
-                let cred = Self::row_to_credential(
-                    id, uid, &prov, sid, pin, data, exp, created, updated,
-                )?;
+                let cred =
+                    Self::row_to_credential(id, uid, &prov, sid, pin, data, exp, created, updated)?;
                 Ok(Some(cred))
             }
             None => Ok(None),
@@ -182,17 +184,12 @@ impl CredentialStorage for PostgresCredentialStorage {
         )
     }
 
-    async fn delete(
-        &self,
-        user_id: &str,
-        provider: ProviderType,
-        server_id: &str,
-    ) -> Result<bool> {
+    async fn delete(&self, user_id: &str, provider: ProviderType, server_id: &str) -> Result<bool> {
         let result = sqlx::query(
             r"
             DELETE FROM user_media_provider_credentials
             WHERE user_id = $1 AND provider = $2 AND server_id = $3
-            "
+            ",
         )
         .bind(user_id)
         .bind(provider.as_str())
@@ -205,24 +202,27 @@ impl CredentialStorage for PostgresCredentialStorage {
     }
 
     async fn list_by_user(&self, user_id: &str) -> Result<Vec<StoredCredential>> {
-        let rows = sqlx::query_as::<_, (
-            String,
-            String,
-            String,
-            String,
-            Option<String>,
-            serde_json::Value,
-            Option<DateTime<Utc>>,
-            DateTime<Utc>,
-            DateTime<Utc>,
-        )>(
+        let rows = sqlx::query_as::<
+            _,
+            (
+                String,
+                String,
+                String,
+                String,
+                Option<String>,
+                serde_json::Value,
+                Option<DateTime<Utc>>,
+                DateTime<Utc>,
+                DateTime<Utc>,
+            ),
+        >(
             r"
             SELECT id, user_id, provider, server_id, provider_instance_name,
                    credential_data, expires_at, created_at, updated_at
             FROM user_media_provider_credentials
             WHERE user_id = $1
             ORDER BY created_at DESC
-            "
+            ",
         )
         .bind(user_id)
         .fetch_all(&self.pool)
@@ -241,24 +241,27 @@ impl CredentialStorage for PostgresCredentialStorage {
         user_id: &str,
         provider: ProviderType,
     ) -> Result<Vec<StoredCredential>> {
-        let rows = sqlx::query_as::<_, (
-            String,
-            String,
-            String,
-            String,
-            Option<String>,
-            serde_json::Value,
-            Option<DateTime<Utc>>,
-            DateTime<Utc>,
-            DateTime<Utc>,
-        )>(
+        let rows = sqlx::query_as::<
+            _,
+            (
+                String,
+                String,
+                String,
+                String,
+                Option<String>,
+                serde_json::Value,
+                Option<DateTime<Utc>>,
+                DateTime<Utc>,
+                DateTime<Utc>,
+            ),
+        >(
             r"
             SELECT id, user_id, provider, server_id, provider_instance_name,
                    credential_data, expires_at, created_at, updated_at
             FROM user_media_provider_credentials
             WHERE user_id = $1 AND provider = $2
             ORDER BY created_at DESC
-            "
+            ",
         )
         .bind(user_id)
         .bind(provider.as_str())

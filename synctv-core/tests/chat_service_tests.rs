@@ -71,7 +71,10 @@ fn test_chat_message_over_500_chars_rejected() {
 fn test_chat_message_exactly_500_accepted() {
     let content: String = "a".repeat(500);
     let result = validate_chat_content(&content);
-    assert!(result.is_ok(), "Message of exactly 500 chars should be accepted");
+    assert!(
+        result.is_ok(),
+        "Message of exactly 500 chars should be accepted"
+    );
 }
 
 #[test]

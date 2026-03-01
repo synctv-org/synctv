@@ -5,15 +5,12 @@
 //! Run with: cargo test --test `playlist_integration_tests`
 #![allow(clippy::unwrap_used)]
 
-use synctv_core_testing::create_test_pool;
-use synctv_core::{
-    models::{
-        Room, RoomId, RoomStatus, UserId, User, UserRole, UserStatus,
-        Playlist, PlaylistId,
-    },
-    repository::{RoomRepository, UserRepository, PlaylistRepository},
-};
 use chrono::Utc;
+use synctv_core::{
+    models::{Playlist, PlaylistId, Room, RoomId, RoomStatus, User, UserId, UserRole, UserStatus},
+    repository::{PlaylistRepository, RoomRepository, UserRepository},
+};
+use synctv_core_testing::create_test_pool;
 /// Default `PostgreSQL` version for test containers
 fn make_user(username: &str) -> User {
     let now = Utc::now();
@@ -51,7 +48,12 @@ fn make_room(name: &str, owner: &UserId) -> Room {
     }
 }
 
-fn make_playlist(room_id: &RoomId, name: &str, parent_id: Option<&PlaylistId>, position: i32) -> Playlist {
+fn make_playlist(
+    room_id: &RoomId,
+    name: &str,
+    parent_id: Option<&PlaylistId>,
+    position: i32,
+) -> Playlist {
     Playlist {
         id: PlaylistId::new(),
         room_id: room_id.clone(),
@@ -77,7 +79,10 @@ async fn test_create_root_playlist() {
     let playlist_repo = PlaylistRepository::new(pool.clone());
 
     let owner = user_repo.create(&make_user("pl_owner_1")).await.unwrap();
-    let room = room_repo.create(&make_room("PL Room 1", &owner.id)).await.unwrap();
+    let room = room_repo
+        .create(&make_room("PL Room 1", &owner.id))
+        .await
+        .unwrap();
 
     // Create root playlist (empty name, no parent)
     let root = make_playlist(&room.id, "", None, 0);
@@ -98,18 +103,30 @@ async fn test_create_nested_playlists() {
     let playlist_repo = PlaylistRepository::new(pool.clone());
 
     let owner = user_repo.create(&make_user("pl_owner_2")).await.unwrap();
-    let room = room_repo.create(&make_room("PL Room 2", &owner.id)).await.unwrap();
+    let room = room_repo
+        .create(&make_room("PL Room 2", &owner.id))
+        .await
+        .unwrap();
 
     // Create root
-    let root = playlist_repo.create(&make_playlist(&room.id, "", None, 0)).await.unwrap();
+    let root = playlist_repo
+        .create(&make_playlist(&room.id, "", None, 0))
+        .await
+        .unwrap();
 
     // Create child under root
-    let child = playlist_repo.create(&make_playlist(&room.id, "Child 1", Some(&root.id), 0)).await.unwrap();
+    let child = playlist_repo
+        .create(&make_playlist(&room.id, "Child 1", Some(&root.id), 0))
+        .await
+        .unwrap();
     assert_eq!(child.parent_id.as_ref().unwrap(), &root.id);
     assert_eq!(child.name, "Child 1");
 
     // Create grandchild under child
-    let grandchild = playlist_repo.create(&make_playlist(&room.id, "Grandchild", Some(&child.id), 0)).await.unwrap();
+    let grandchild = playlist_repo
+        .create(&make_playlist(&room.id, "Grandchild", Some(&child.id), 0))
+        .await
+        .unwrap();
     assert_eq!(grandchild.parent_id.as_ref().unwrap(), &child.id);
 
     // Verify tree traversal via get_path
@@ -129,14 +146,29 @@ async fn test_position_sorting() {
     let playlist_repo = PlaylistRepository::new(pool.clone());
 
     let owner = user_repo.create(&make_user("pl_owner_3")).await.unwrap();
-    let room = room_repo.create(&make_room("PL Room 3", &owner.id)).await.unwrap();
+    let room = room_repo
+        .create(&make_room("PL Room 3", &owner.id))
+        .await
+        .unwrap();
 
-    let root = playlist_repo.create(&make_playlist(&room.id, "", None, 0)).await.unwrap();
+    let root = playlist_repo
+        .create(&make_playlist(&room.id, "", None, 0))
+        .await
+        .unwrap();
 
     // Create children with explicit positions
-    let _child_b = playlist_repo.create(&make_playlist(&room.id, "B", Some(&root.id), 1)).await.unwrap();
-    let _child_a = playlist_repo.create(&make_playlist(&room.id, "A", Some(&root.id), 0)).await.unwrap();
-    let _child_c = playlist_repo.create(&make_playlist(&room.id, "C", Some(&root.id), 2)).await.unwrap();
+    let _child_b = playlist_repo
+        .create(&make_playlist(&room.id, "B", Some(&root.id), 1))
+        .await
+        .unwrap();
+    let _child_a = playlist_repo
+        .create(&make_playlist(&room.id, "A", Some(&root.id), 0))
+        .await
+        .unwrap();
+    let _child_c = playlist_repo
+        .create(&make_playlist(&room.id, "C", Some(&root.id), 2))
+        .await
+        .unwrap();
 
     // Get children - should be sorted by position ASC
     let children = playlist_repo.get_children(&root.id).await.unwrap();
@@ -155,15 +187,27 @@ async fn test_position_uniqueness_constraint() {
     let playlist_repo = PlaylistRepository::new(pool.clone());
 
     let owner = user_repo.create(&make_user("pl_owner_4")).await.unwrap();
-    let room = room_repo.create(&make_room("PL Room 4", &owner.id)).await.unwrap();
+    let room = room_repo
+        .create(&make_room("PL Room 4", &owner.id))
+        .await
+        .unwrap();
 
-    let root = playlist_repo.create(&make_playlist(&room.id, "", None, 0)).await.unwrap();
-    playlist_repo.create(&make_playlist(&room.id, "First", Some(&root.id), 0)).await.unwrap();
+    let root = playlist_repo
+        .create(&make_playlist(&room.id, "", None, 0))
+        .await
+        .unwrap();
+    playlist_repo
+        .create(&make_playlist(&room.id, "First", Some(&root.id), 0))
+        .await
+        .unwrap();
 
     // Try to create another child at the same position - should fail due to unique constraint
     let duplicate = make_playlist(&room.id, "Duplicate", Some(&root.id), 0);
     let result = playlist_repo.create(&duplicate).await;
-    assert!(result.is_err(), "Duplicate position in same parent should fail");
+    assert!(
+        result.is_err(),
+        "Duplicate position in same parent should fail"
+    );
 }
 
 #[tokio::test]
@@ -175,11 +219,23 @@ async fn test_cycle_prevention_trigger() {
     let playlist_repo = PlaylistRepository::new(pool.clone());
 
     let owner = user_repo.create(&make_user("pl_owner_5")).await.unwrap();
-    let room = room_repo.create(&make_room("PL Room 5", &owner.id)).await.unwrap();
+    let room = room_repo
+        .create(&make_room("PL Room 5", &owner.id))
+        .await
+        .unwrap();
 
-    let root = playlist_repo.create(&make_playlist(&room.id, "", None, 0)).await.unwrap();
-    let child = playlist_repo.create(&make_playlist(&room.id, "Child", Some(&root.id), 0)).await.unwrap();
-    let grandchild = playlist_repo.create(&make_playlist(&room.id, "Grandchild", Some(&child.id), 0)).await.unwrap();
+    let root = playlist_repo
+        .create(&make_playlist(&room.id, "", None, 0))
+        .await
+        .unwrap();
+    let child = playlist_repo
+        .create(&make_playlist(&room.id, "Child", Some(&root.id), 0))
+        .await
+        .unwrap();
+    let grandchild = playlist_repo
+        .create(&make_playlist(&room.id, "Grandchild", Some(&child.id), 0))
+        .await
+        .unwrap();
 
     // Try to set root's parent to grandchild, creating a cycle: root -> child -> grandchild -> root
     let result = sqlx::query("UPDATE playlists SET parent_id = $1 WHERE id = $2")
@@ -188,7 +244,10 @@ async fn test_cycle_prevention_trigger() {
         .execute(&pool)
         .await;
 
-    assert!(result.is_err(), "Circular reference should be prevented by trigger");
+    assert!(
+        result.is_err(),
+        "Circular reference should be prevented by trigger"
+    );
     let err_msg = format!("{}", result.unwrap_err());
     assert!(
         err_msg.contains("Circular reference detected") || err_msg.contains("cycle"),
@@ -205,11 +264,23 @@ async fn test_cascade_delete_parent_playlist() {
     let playlist_repo = PlaylistRepository::new(pool.clone());
 
     let owner = user_repo.create(&make_user("pl_owner_6")).await.unwrap();
-    let room = room_repo.create(&make_room("PL Room 6", &owner.id)).await.unwrap();
+    let room = room_repo
+        .create(&make_room("PL Room 6", &owner.id))
+        .await
+        .unwrap();
 
-    let root = playlist_repo.create(&make_playlist(&room.id, "", None, 0)).await.unwrap();
-    let child = playlist_repo.create(&make_playlist(&room.id, "Child", Some(&root.id), 0)).await.unwrap();
-    let _grandchild = playlist_repo.create(&make_playlist(&room.id, "GC", Some(&child.id), 0)).await.unwrap();
+    let root = playlist_repo
+        .create(&make_playlist(&room.id, "", None, 0))
+        .await
+        .unwrap();
+    let child = playlist_repo
+        .create(&make_playlist(&room.id, "Child", Some(&root.id), 0))
+        .await
+        .unwrap();
+    let _grandchild = playlist_repo
+        .create(&make_playlist(&room.id, "GC", Some(&child.id), 0))
+        .await
+        .unwrap();
 
     // Delete the child - grandchild should be cascade-deleted too
     let deleted = playlist_repo.delete(&child.id).await.unwrap();
@@ -230,18 +301,30 @@ async fn test_auto_position_computation() {
     let playlist_repo = PlaylistRepository::new(pool.clone());
 
     let owner = user_repo.create(&make_user("pl_owner_7")).await.unwrap();
-    let room = room_repo.create(&make_room("PL Room 7", &owner.id)).await.unwrap();
+    let room = room_repo
+        .create(&make_room("PL Room 7", &owner.id))
+        .await
+        .unwrap();
 
-    let root = playlist_repo.create(&make_playlist(&room.id, "", None, 0)).await.unwrap();
+    let root = playlist_repo
+        .create(&make_playlist(&room.id, "", None, 0))
+        .await
+        .unwrap();
 
     // Use negative position to trigger auto-position
     let auto_1 = make_playlist(&room.id, "Auto1", Some(&root.id), -1);
     let created_1 = playlist_repo.create(&auto_1).await.unwrap();
-    assert_eq!(created_1.position, 0, "First auto-positioned item should be at position 0");
+    assert_eq!(
+        created_1.position, 0,
+        "First auto-positioned item should be at position 0"
+    );
 
     let auto_2 = make_playlist(&room.id, "Auto2", Some(&root.id), -1);
     let created_2 = playlist_repo.create(&auto_2).await.unwrap();
-    assert_eq!(created_2.position, 1, "Second auto-positioned item should be at position 1");
+    assert_eq!(
+        created_2.position, 1,
+        "Second auto-positioned item should be at position 1"
+    );
 }
 
 // ========== Task #9: Advisory Lock Key Consistency ==========
@@ -295,13 +378,13 @@ fn test_advisory_lock_key_consistency_between_methods() {
     for (room_id, parent_id) in &test_cases {
         let key = compute_lock_key(room_id, *parent_id);
 
-        println!(
-            "room={room_id}, parent={parent_id:?} => lock_key={key}"
-        );
+        println!("room={room_id}, parent={parent_id:?} => lock_key={key}");
 
         // Key should be a valid i64
-        assert!(key != 0 || (*room_id == "room_xyz" && parent_id.is_none()),
-            "Lock key should be non-zero for non-trivial inputs");
+        assert!(
+            key != 0 || (*room_id == "room_xyz" && parent_id.is_none()),
+            "Lock key should be non-zero for non-trivial inputs"
+        );
     }
 
     // Verify that different (room_id, parent_id) pairs produce different keys
@@ -310,9 +393,18 @@ fn test_advisory_lock_key_consistency_between_methods() {
     let key2 = compute_lock_key("room_abc", Some("parent_2"));
     let key3 = compute_lock_key("room_xyz", Some("parent_1"));
 
-    assert_ne!(key1, key2, "Different parent_id should produce different keys");
-    assert_ne!(key1, key3, "Different room_id should produce different keys");
-    assert_ne!(key2, key3, "Completely different pairs should produce different keys");
+    assert_ne!(
+        key1, key2,
+        "Different parent_id should produce different keys"
+    );
+    assert_ne!(
+        key1, key3,
+        "Different room_id should produce different keys"
+    );
+    assert_ne!(
+        key2, key3,
+        "Completely different pairs should produce different keys"
+    );
 }
 
 // ========== Task #56: Advisory lock key collision prevention ==========
@@ -345,9 +437,7 @@ fn test_advisory_lock_key_no_collision_between_different_parents() {
     // These should all be different, but with DefaultHasher there's a small
     // probability of collision. We can't guarantee no collisions in this test,
     // but we document the risk.
-    println!(
-        "Old keys: {key1} {key2} {key3} {key4}"
-    );
+    println!("Old keys: {key1} {key2} {key3} {key4}");
 
     // The NEW implementation should be deterministic and collision-free
     // for reasonable ID lengths
@@ -379,9 +469,7 @@ fn test_advisory_lock_key_no_collision_between_different_parents() {
 
     // With the new approach, different inputs should produce different keys
     // (for reasonable inputs)
-    println!(
-        "New keys: {new_key1} {new_key2} {new_key3} {new_key4}"
-    );
+    println!("New keys: {new_key1} {new_key2} {new_key3} {new_key4}");
 }
 
 #[tokio::test]
@@ -393,10 +481,19 @@ async fn test_unique_name_constraint() {
     let playlist_repo = PlaylistRepository::new(pool.clone());
 
     let owner = user_repo.create(&make_user("pl_owner_8")).await.unwrap();
-    let room = room_repo.create(&make_room("PL Room 8", &owner.id)).await.unwrap();
+    let room = room_repo
+        .create(&make_room("PL Room 8", &owner.id))
+        .await
+        .unwrap();
 
-    let root = playlist_repo.create(&make_playlist(&room.id, "", None, 0)).await.unwrap();
-    playlist_repo.create(&make_playlist(&room.id, "SameName", Some(&root.id), 0)).await.unwrap();
+    let root = playlist_repo
+        .create(&make_playlist(&room.id, "", None, 0))
+        .await
+        .unwrap();
+    playlist_repo
+        .create(&make_playlist(&room.id, "SameName", Some(&root.id), 0))
+        .await
+        .unwrap();
 
     // Try to create another child with the same name under the same parent
     let duplicate = make_playlist(&room.id, "SameName", Some(&root.id), 1);
@@ -420,26 +517,41 @@ async fn test_cross_room_parent_id_rejected() {
     let room_repo = RoomRepository::new(pool.clone());
     let playlist_repo = PlaylistRepository::new(pool.clone());
 
-    let owner = user_repo.create(&make_user("pl_cross_owner")).await.unwrap();
+    let owner = user_repo
+        .create(&make_user("pl_cross_owner"))
+        .await
+        .unwrap();
 
     // Create two separate rooms
-    let room_a = room_repo.create(&make_room("Room A", &owner.id)).await.unwrap();
-    let room_b = room_repo.create(&make_room("Room B", &owner.id)).await.unwrap();
+    let room_a = room_repo
+        .create(&make_room("Room A", &owner.id))
+        .await
+        .unwrap();
+    let room_b = room_repo
+        .create(&make_room("Room B", &owner.id))
+        .await
+        .unwrap();
 
     // Create root playlist in Room A
-    let root_a = playlist_repo.create(&make_playlist(&room_a.id, "", None, 0)).await.unwrap();
+    let root_a = playlist_repo
+        .create(&make_playlist(&room_a.id, "", None, 0))
+        .await
+        .unwrap();
 
     // Create root playlist in Room B
-    let _root_b = playlist_repo.create(&make_playlist(&room_b.id, "", None, 0)).await.unwrap();
+    let _root_b = playlist_repo
+        .create(&make_playlist(&room_b.id, "", None, 0))
+        .await
+        .unwrap();
 
     // BUG ATTEMPT: Try to create a playlist in Room B with parent_id from Room A
     // This should be rejected by the database constraint, but currently it's allowed
     let cross_room_child = Playlist {
         id: PlaylistId::new(),
-        room_id: room_b.id.clone(),  // Child belongs to Room B
+        room_id: room_b.id.clone(), // Child belongs to Room B
         creator_id: None,
         name: "Cross Room Child".to_string(),
-        parent_id: Some(root_a.id.clone()),  // But parent is in Room A - INVALID!
+        parent_id: Some(root_a.id.clone()), // But parent is in Room A - INVALID!
         position: 0,
         source_provider: None,
         source_config: None,
@@ -455,13 +567,16 @@ async fn test_cross_room_parent_id_rejected() {
     assert!(
         result.is_err(),
         "Cross-room parent_id should be rejected. Child in room {} cannot have parent from room {}",
-        room_b.id, room_a.id
+        room_b.id,
+        room_a.id
     );
 
     // The error should be from the database trigger
     let err_msg = format!("{:?}", result.unwrap_err());
     assert!(
-        err_msg.contains("constraint") || err_msg.contains("Constraint") || err_msg.contains("violation"),
+        err_msg.contains("constraint")
+            || err_msg.contains("Constraint")
+            || err_msg.contains("violation"),
         "Error should be a constraint violation, got: {err_msg}"
     );
 }
@@ -477,19 +592,22 @@ async fn test_same_room_parent_id_allowed() {
     let playlist_repo = PlaylistRepository::new(pool.clone());
 
     let owner = user_repo.create(&make_user("pl_same_owner")).await.unwrap();
-    let room = room_repo.create(&make_room("Room Same", &owner.id)).await.unwrap();
+    let room = room_repo
+        .create(&make_room("Room Same", &owner.id))
+        .await
+        .unwrap();
 
     // Create root
-    let root = playlist_repo.create(&make_playlist(&room.id, "", None, 0)).await.unwrap();
+    let root = playlist_repo
+        .create(&make_playlist(&room.id, "", None, 0))
+        .await
+        .unwrap();
 
     // Create child in the same room - this should succeed
     let child = make_playlist(&room.id, "Valid Child", Some(&root.id), 0);
     let result = playlist_repo.create(&child).await;
 
-    assert!(
-        result.is_ok(),
-        "Same-room parent_id should be allowed"
-    );
+    assert!(result.is_ok(), "Same-room parent_id should be allowed");
 
     let created = result.unwrap();
     assert_eq!(created.parent_id.as_ref().unwrap(), &root.id);

@@ -50,28 +50,28 @@ impl<'a> ProviderContext<'a> {
     }
 
     /// Set user ID
-    #[must_use] 
+    #[must_use]
     pub const fn with_user_id(mut self, user_id: &'a str) -> Self {
         self.user_id = Some(user_id);
         self
     }
 
     /// Set room ID
-    #[must_use] 
+    #[must_use]
     pub const fn with_room_id(mut self, room_id: &'a str) -> Self {
         self.room_id = Some(room_id);
         self
     }
 
     /// Set base URL
-    #[must_use] 
+    #[must_use]
     pub const fn with_base_url(mut self, base_url: &'a str) -> Self {
         self.base_url = Some(base_url);
         self
     }
 
     /// Set database pool
-    #[must_use] 
+    #[must_use]
     pub const fn with_db(mut self, db: &'a PgPool) -> Self {
         self.db = Some(db);
         self

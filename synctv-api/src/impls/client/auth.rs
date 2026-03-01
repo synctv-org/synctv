@@ -1,8 +1,8 @@
 //! Auth operations: register, login, `refresh_token`
 
-use crate::impls::ApiError;
-use super::ClientApiImpl;
 use super::convert::user_to_proto;
+use super::ClientApiImpl;
+use crate::impls::ApiError;
 
 impl ClientApiImpl {
     pub async fn register(

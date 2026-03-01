@@ -10,8 +10,8 @@
 use serde::{de::DeserializeOwned, Serialize};
 use std::fmt::{Debug, Display};
 use std::hash::Hash;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 
 use dashmap::DashMap;
 
@@ -197,26 +197,31 @@ where
             let global_epoch_arc = self.global_epoch.clone();
             let epoch_key = key.clone();
 
-            let result = self.singleflight.do_work_with_fallback(
-                sf_key,
-                {
-                    async move {
-                        let json = l2.get(&redis_key).await
-                            .map_err(|e| format!("Failed to get {cache_type} from cache: {e}"))?;
+            let result = self
+                .singleflight
+                .do_work_with_fallback(
+                    sf_key,
+                    {
+                        async move {
+                            let json = l2.get(&redis_key).await.map_err(|e| {
+                                format!("Failed to get {cache_type} from cache: {e}")
+                            })?;
 
-                        match json {
-                            Some(json) => {
-                                let value: V = serde_json::from_str(&json).map_err(|e| {
-                                    format!("Failed to deserialize cached {cache_type}: {e}")
-                                })?;
-                                Ok(Some(value))
+                            match json {
+                                Some(json) => {
+                                    let value: V = serde_json::from_str(&json).map_err(|e| {
+                                        format!("Failed to deserialize cached {cache_type}: {e}")
+                                    })?;
+                                    Ok(Some(value))
+                                }
+                                None => Ok(None),
                             }
-                            None => Ok(None),
                         }
-                    }
-                },
-                || "SingleFlight worker failed during L2 cache fetch".to_string(),
-            ).await.map_err(Error::Internal)?;
+                    },
+                    || "SingleFlight worker failed during L2 cache fetch".to_string(),
+                )
+                .await
+                .map_err(Error::Internal)?;
 
             if let Some(ref value) = result {
                 let l2 = String::from("l2");
@@ -234,7 +239,8 @@ where
                 // global epoch; if either changed, the data may be stale.
                 let key_epoch_after = key_epochs_arc.get(&epoch_key).map_or(0, |v| *v);
                 let global_epoch_after = global_epoch_arc.load(Ordering::Acquire);
-                if key_epoch_after == key_epoch_before && global_epoch_after == global_epoch_before {
+                if key_epoch_after == key_epoch_before && global_epoch_after == global_epoch_before
+                {
                     self.l1_cache.insert(key.clone(), value.clone()).await;
                 } else {
                     tracing::debug!(
@@ -279,7 +285,10 @@ where
         if self.l2.is_active() {
             let redis_key = format!("{}{}", self.key_prefix, key.as_str());
             let json = serde_json::to_string(&value).map_err(|e| {
-                Error::Internal(format!("Failed to serialize {} for caching: {e}", self.cache_type))
+                Error::Internal(format!(
+                    "Failed to serialize {} for caching: {e}",
+                    self.cache_type
+                ))
             })?;
 
             // Add TTL jitter to prevent cache avalanche (+-10% random jitter).
@@ -331,7 +340,9 @@ where
         // Then remove from L2 with retry logic
         if self.l2.is_active() {
             let redis_key = format!("{}{}", self.key_prefix, key.as_str());
-            self.l2.delete_with_retry(&redis_key, 3, &self.cache_type).await?;
+            self.l2
+                .delete_with_retry(&redis_key, 3, &self.cache_type)
+                .await?;
         }
 
         crate::metrics::cache::CACHE_EVICTIONS
@@ -371,7 +382,11 @@ where
             let redis_key = format!("{}{}", self.key_prefix, id);
             // Use best-effort retry for cross-replica invalidation
             // Don't panic if L2 is temporarily unavailable
-            if let Err(e) = self.l2.delete_with_retry(&redis_key, 2, &self.cache_type).await {
+            if let Err(e) = self
+                .l2
+                .delete_with_retry(&redis_key, 2, &self.cache_type)
+                .await
+            {
                 let cross_replica = String::from("cross_replica_invalidate");
                 crate::metrics::cache::CACHE_ERRORS
                     .with_label_values(&[&self.cache_type, &cross_replica])
@@ -442,14 +457,19 @@ where
             let l2 = self.l2.clone();
             let cache_type = self.cache_type.clone();
 
-            let jsons: Vec<Option<String>> = self.batch_singleflight.do_work_with_fallback(
-                sf_key,
-                async move {
-                    l2.get_batch(&full_keys).await
-                        .map_err(|e| format!("Failed to batch get {cache_type} from L2: {e}"))
-                },
-                || "SingleFlight worker failed during L2 batch cache fetch".to_string(),
-            ).await.map_err(Error::Internal)?;
+            let jsons: Vec<Option<String>> = self
+                .batch_singleflight
+                .do_work_with_fallback(
+                    sf_key,
+                    async move {
+                        l2.get_batch(&full_keys)
+                            .await
+                            .map_err(|e| format!("Failed to batch get {cache_type} from L2: {e}"))
+                    },
+                    || "SingleFlight worker failed during L2 batch cache fetch".to_string(),
+                )
+                .await
+                .map_err(Error::Internal)?;
 
             // Issue #30: Check global epoch first. If it changed, all results
             // are stale — skip all L1 writes.
@@ -581,7 +601,10 @@ where
             let redis_key = format!("{}{}", self.key_prefix, key.as_str());
 
             let new_json = serde_json::to_string(&value).map_err(|e| {
-                Error::Internal(format!("Failed to serialize {} for caching: {e}", self.cache_type))
+                Error::Internal(format!(
+                    "Failed to serialize {} for caching: {e}",
+                    self.cache_type
+                ))
             })?;
 
             // l2_ttl_seconds is guaranteed >= MIN_L2_TTL_SECONDS by the constructor.
@@ -590,7 +613,10 @@ where
             // Pass the new updated_at as ISO-8601 string for L2-side comparison.
             let new_ts_iso = value.updated_at().to_rfc3339();
 
-            let was_set = self.l2.set_if_newer(&redis_key, &new_json, ttl_seconds, &new_ts_iso).await?;
+            let was_set = self
+                .l2
+                .set_if_newer(&redis_key, &new_json, ttl_seconds, &new_ts_iso)
+                .await?;
 
             if !was_set {
                 tracing::debug!(
@@ -659,7 +685,9 @@ fn add_ttl_jitter(ttl_seconds: u64) -> u64 {
 
     let jitter = rand::rng().random_range(0..=(jitter_range * 2));
 
-    ttl_seconds.saturating_sub(jitter_range).saturating_add(jitter)
+    ttl_seconds
+        .saturating_sub(jitter_range)
+        .saturating_add(jitter)
 }
 
 #[cfg(test)]
@@ -702,8 +730,13 @@ mod tests {
     fn make_cache() -> TieredCache<TestId, TestValue> {
         TieredCache::new(
             Arc::new(crate::cache::l2_backend::NoopCacheL2),
-            100, 5, 0, "test:".to_string(), "test".to_string(),
-        ).unwrap()
+            100,
+            5,
+            0,
+            "test:".to_string(),
+            "test".to_string(),
+        )
+        .unwrap()
     }
 
     fn make_value(name: &str) -> TestValue {
@@ -744,12 +777,18 @@ mod tests {
         cache.set(&k1, make_value("alice")).await.unwrap();
         cache.set(&k3, make_value("charlie")).await.unwrap();
 
-        let result = cache.get_batch(&[k1.clone(), k2.clone(), k3.clone()]).await.unwrap();
+        let result = cache
+            .get_batch(&[k1.clone(), k2.clone(), k3.clone()])
+            .await
+            .unwrap();
 
         assert_eq!(result.len(), 2);
         assert_eq!(result.get(&k1).map(|v| &v.name), Some(&"alice".to_string()));
         assert_eq!(result.get(&k2), None);
-        assert_eq!(result.get(&k3).map(|v| &v.name), Some(&"charlie".to_string()));
+        assert_eq!(
+            result.get(&k3).map(|v| &v.name),
+            Some(&"charlie".to_string())
+        );
     }
 
     #[tokio::test]
@@ -819,6 +858,9 @@ mod tests {
         // Normal TTL should be within +-10%
         let ttl = 100;
         let result = add_ttl_jitter(ttl);
-        assert!((90..=110).contains(&result), "TTL jitter out of range: {result}");
+        assert!(
+            (90..=110).contains(&result),
+            "TTL jitter out of range: {result}"
+        );
     }
 }

@@ -1,12 +1,11 @@
 //! Generic OIDC provider
 
-use crate::oauth2::{Provider, OAuth2UserInfo};
+use crate::oauth2::{OAuth2UserInfo, Provider};
 use crate::{Error, InternalExt};
 use async_trait::async_trait;
 use oauth2::{
-    basic::BasicClient,
-    AuthUrl, ClientId, ClientSecret, EndpointSet, EndpointNotSet, PkceCodeChallenge,
-    PkceCodeVerifier, RedirectUrl, TokenUrl, TokenResponse,
+    basic::BasicClient, AuthUrl, ClientId, ClientSecret, EndpointNotSet, EndpointSet,
+    PkceCodeChallenge, PkceCodeVerifier, RedirectUrl, TokenResponse, TokenUrl,
 };
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
@@ -135,10 +134,8 @@ impl OidcProvider {
                 redirect_url,
                 issuer: issuer_trimmed.to_string(),
                 static_endpoints: Some(StaticEndpoints {
-                    auth_url: auth_url
-                        .unwrap_or_else(|| format!("{issuer_trimmed}/authorize")),
-                    token_url: token_url
-                        .unwrap_or_else(|| format!("{issuer_trimmed}/token")),
+                    auth_url: auth_url.unwrap_or_else(|| format!("{issuer_trimmed}/authorize")),
+                    token_url: token_url.unwrap_or_else(|| format!("{issuer_trimmed}/token")),
                     userinfo_url,
                 }),
             },
@@ -152,61 +149,52 @@ impl OidcProvider {
             .get_or_try_init(|| async {
                 let config = &self.init_config;
 
-                let (auth_url_str, token_url_str, userinfo_url) =
-                    if let Some(static_ep) = &config.static_endpoints {
-                        (
-                            static_ep.auth_url.clone(),
-                            static_ep.token_url.clone(),
-                            static_ep.userinfo_url.clone(),
-                        )
-                    } else {
-                        // Perform .well-known/openid-configuration discovery
-                        let discovery_url = format!(
-                            "{}/.well-known/openid-configuration",
-                            config.issuer
-                        );
-                        tracing::info!(
-                            "OIDC: fetching discovery document from {}",
-                            discovery_url
-                        );
+                let (auth_url_str, token_url_str, userinfo_url) = if let Some(static_ep) =
+                    &config.static_endpoints
+                {
+                    (
+                        static_ep.auth_url.clone(),
+                        static_ep.token_url.clone(),
+                        static_ep.userinfo_url.clone(),
+                    )
+                } else {
+                    // Perform .well-known/openid-configuration discovery
+                    let discovery_url =
+                        format!("{}/.well-known/openid-configuration", config.issuer);
+                    tracing::info!("OIDC: fetching discovery document from {}", discovery_url);
 
-                        let resp = self
-                            .http_client
-                            .get(&discovery_url)
-                            .send()
-                            .await
-                            .map_err(|e| {
-                                Error::Internal(format!(
-                                    "Failed to fetch OIDC discovery document from {discovery_url}: {e}"
-                                ))
-                            })?
-                            .error_for_status()
-                            .map_err(|e| {
-                                Error::Internal(format!(
-                                    "OIDC discovery endpoint returned error: {e}"
-                                ))
-                            })?;
+                    let resp = self
+                        .http_client
+                        .get(&discovery_url)
+                        .send()
+                        .await
+                        .map_err(|e| {
+                            Error::Internal(format!(
+                                "Failed to fetch OIDC discovery document from {discovery_url}: {e}"
+                            ))
+                        })?
+                        .error_for_status()
+                        .map_err(|e| {
+                            Error::Internal(format!("OIDC discovery endpoint returned error: {e}"))
+                        })?;
 
-                        let doc: OidcDiscoveryDocument =
-                            resp.json().await.map_err(|e| {
-                                Error::Internal(format!(
-                                    "Failed to parse OIDC discovery document: {e}"
-                                ))
-                            })?;
+                    let doc: OidcDiscoveryDocument = resp.json().await.map_err(|e| {
+                        Error::Internal(format!("Failed to parse OIDC discovery document: {e}"))
+                    })?;
 
-                        tracing::info!(
-                            "OIDC: discovered endpoints: auth={}, token={}, userinfo={:?}",
-                            doc.authorization_endpoint,
-                            doc.token_endpoint,
-                            doc.userinfo_endpoint
-                        );
+                    tracing::info!(
+                        "OIDC: discovered endpoints: auth={}, token={}, userinfo={:?}",
+                        doc.authorization_endpoint,
+                        doc.token_endpoint,
+                        doc.userinfo_endpoint
+                    );
 
-                        (
-                            doc.authorization_endpoint,
-                            doc.token_endpoint,
-                            doc.userinfo_endpoint,
-                        )
-                    };
+                    (
+                        doc.authorization_endpoint,
+                        doc.token_endpoint,
+                        doc.userinfo_endpoint,
+                    )
+                };
 
                 let auth = AuthUrl::new(auth_url_str)
                     .map_err(|e| Error::InvalidInput(format!("Invalid OIDC auth URL: {e}")))?;
@@ -247,7 +235,11 @@ impl Provider for OidcProvider {
         Ok((auth_url.to_string(), pkce_verifier.secret().clone()))
     }
 
-    async fn get_user_info(&self, code: &str, pkce_verifier: &str) -> Result<OAuth2UserInfo, Error> {
+    async fn get_user_info(
+        &self,
+        code: &str,
+        pkce_verifier: &str,
+    ) -> Result<OAuth2UserInfo, Error> {
         let resolved = self.get_resolved().await?;
 
         // Exchange code for token with PKCE verifier
@@ -261,15 +253,19 @@ impl Provider for OidcProvider {
             .internal_with_err("Failed to exchange code")?;
 
         // Fetch user info from userinfo endpoint
-        let userinfo_url = resolved
-            .userinfo_url
-            .as_ref()
-            .ok_or_else(|| Error::Internal("userinfo_url not configured and not found in OIDC discovery".to_string()))?;
+        let userinfo_url = resolved.userinfo_url.as_ref().ok_or_else(|| {
+            Error::Internal(
+                "userinfo_url not configured and not found in OIDC discovery".to_string(),
+            )
+        })?;
 
         let resp = self
             .http_client
             .get(userinfo_url)
-            .header("Authorization", format!("Bearer {}", token.access_token().secret()))
+            .header(
+                "Authorization",
+                format!("Bearer {}", token.access_token().secret()),
+            )
             .send()
             .await
             .internal_with_err("Failed to fetch user info")?
@@ -309,9 +305,8 @@ pub fn oidc_factory(config: &serde_json::Value) -> Result<Box<dyn Provider>, Err
     // Validate issuer is not empty when no custom endpoints are provided.
     // An empty issuer means .well-known discovery will fail at runtime with
     // an unhelpful "/.well-known/openid-configuration" URL.
-    let has_custom_endpoints = config.auth_url.is_some()
-        || config.token_url.is_some()
-        || config.userinfo_url.is_some();
+    let has_custom_endpoints =
+        config.auth_url.is_some() || config.token_url.is_some() || config.userinfo_url.is_some();
     if config.issuer.is_empty() && !has_custom_endpoints {
         return Err(Error::InvalidInput(
             "OIDC provider requires a non-empty 'issuer' URL for .well-known discovery, \
@@ -321,8 +316,7 @@ pub fn oidc_factory(config: &serde_json::Value) -> Result<Box<dyn Provider>, Err
     }
 
     // Use create_with_endpoints if any custom endpoint is specified
-    let provider = if has_custom_endpoints
-    {
+    let provider = if has_custom_endpoints {
         OidcProvider::create_with_endpoints(
             config.client_id,
             config.client_secret,

@@ -135,7 +135,11 @@ async fn test_cross_replica_unsubscribe_removes_redis_state() {
 
     // Verify subscription is visible from hub B
     let subs_before = hub_b.get_room_subscribers_distributed(&room_id).await;
-    assert_eq!(subs_before.len(), 1, "Should see 1 subscriber before unsubscribe");
+    assert_eq!(
+        subs_before.len(),
+        1,
+        "Should see 1 subscriber before unsubscribe"
+    );
 
     // Unsubscribe on hub A
     hub_a.unsubscribe(&conn_id);
@@ -269,7 +273,9 @@ async fn test_room_lifecycle_events_across_replicas() {
         RoomLifecycleEvent::RoomActivated(rid) => {
             assert_eq!(rid.as_str(), "lifecycle_room");
         }
-        other @ RoomLifecycleEvent::RoomDeactivated(_) => panic!("Expected RoomActivated, got {other:?}"),
+        other @ RoomLifecycleEvent::RoomDeactivated(_) => {
+            panic!("Expected RoomActivated, got {other:?}")
+        }
     }
 
     // Second subscriber in same room should NOT trigger another RoomActivated
@@ -308,7 +314,9 @@ async fn test_room_lifecycle_events_across_replicas() {
         RoomLifecycleEvent::RoomDeactivated(rid) => {
             assert_eq!(rid.as_str(), "lifecycle_room");
         }
-        other @ RoomLifecycleEvent::RoomActivated(_) => panic!("Expected RoomDeactivated, got {other:?}"),
+        other @ RoomLifecycleEvent::RoomActivated(_) => {
+            panic!("Expected RoomDeactivated, got {other:?}")
+        }
     }
 }
 

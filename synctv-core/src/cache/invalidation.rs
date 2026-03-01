@@ -34,30 +34,17 @@ const STATE_SYNC_INTERVAL_SECS: u64 = 60;
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum InvalidationMessage {
     /// Invalidate permission cache for a specific user in a room
-    UserPermission {
-        room_id: String,
-        user_id: String,
-    },
+    UserPermission { room_id: String, user_id: String },
     /// Invalidate permission cache for all users in a room
-    RoomPermission {
-        room_id: String,
-    },
+    RoomPermission { room_id: String },
     /// Invalidate user cache
-    User {
-        user_id: String,
-    },
+    User { user_id: String },
     /// Invalidate username cache
-    Username {
-        user_id: String,
-    },
+    Username { user_id: String },
     /// Invalidate room cache
-    Room {
-        room_id: String,
-    },
+    Room { room_id: String },
     /// Invalidate playback state cache for a room
-    PlaybackState {
-        room_id: String,
-    },
+    PlaybackState { room_id: String },
     /// Update playback state cache for a room with the new state.
     ///
     /// Unlike `PlaybackState` (which only invalidates), this variant carries
@@ -69,9 +56,7 @@ pub enum InvalidationMessage {
         state: crate::models::RoomPlaybackState,
     },
     /// Invalidate room settings cache for a specific room
-    RoomSettings {
-        room_id: String,
-    },
+    RoomSettings { room_id: String },
     /// Invalidate all caches
     All,
 }
@@ -144,14 +129,18 @@ impl CacheInvalidationService {
 
     /// Get or lazily initialize the shared Redis connection for publishing.
     async fn get_conn(&self) -> Result<ConnectionManager> {
-        let client = self.redis_client.as_ref().ok_or_else(|| {
-            Error::Internal("Redis not configured".to_string())
-        })?;
-        let conn = self.redis_conn.get_or_try_init(|| async {
-            client.get_connection_manager().await.map_err(|e| {
-                Error::Internal(format!("Failed to create Redis ConnectionManager: {e}"))
+        let client = self
+            .redis_client
+            .as_ref()
+            .ok_or_else(|| Error::Internal("Redis not configured".to_string()))?;
+        let conn = self
+            .redis_conn
+            .get_or_try_init(|| async {
+                client.get_connection_manager().await.map_err(|e| {
+                    Error::Internal(format!("Failed to create Redis ConnectionManager: {e}"))
+                })
             })
-        }).await?;
+            .await?;
         Ok(conn.clone())
     }
 
@@ -212,7 +201,16 @@ impl CacheInvalidationService {
                     break;
                 }
 
-                match Self::run_subscriber(&client_for_subscriber, &local_sender, &node_id, &stream_key, &consumer_group, shutdown.clone()).await {
+                match Self::run_subscriber(
+                    &client_for_subscriber,
+                    &local_sender,
+                    &node_id,
+                    &stream_key,
+                    &consumer_group,
+                    shutdown.clone(),
+                )
+                .await
+                {
                     Ok(()) => {
                         // Normal shutdown
                         break;
@@ -249,7 +247,8 @@ impl CacheInvalidationService {
         let needs_state_sync = self.needs_state_sync.clone();
 
         crate::spawn::spawn_monitored("cache_invalidation_state_sync", async move {
-            let mut interval = tokio::time::interval(std::time::Duration::from_secs(STATE_SYNC_INTERVAL_SECS));
+            let mut interval =
+                tokio::time::interval(std::time::Duration::from_secs(STATE_SYNC_INTERVAL_SECS));
 
             loop {
                 tokio::select! {
@@ -309,11 +308,13 @@ impl CacheInvalidationService {
             Error::Internal(format!("Failed to serialize invalidation message: {e}"))
         })?;
 
-        let conn = redis_conn.get_or_try_init(|| async {
-            client.get_connection_manager().await.map_err(|e| {
-                Error::Internal(format!("Failed to create Redis ConnectionManager: {e}"))
+        let conn = redis_conn
+            .get_or_try_init(|| async {
+                client.get_connection_manager().await.map_err(|e| {
+                    Error::Internal(format!("Failed to create Redis ConnectionManager: {e}"))
+                })
             })
-        }).await?;
+            .await?;
 
         let mut conn = conn.clone();
 
@@ -384,7 +385,9 @@ impl CacheInvalidationService {
                     );
                     Ok(())
                 } else {
-                    Err(Error::Internal(format!("Failed to create consumer group: {e}")))
+                    Err(Error::Internal(format!(
+                        "Failed to create consumer group: {e}"
+                    )))
                 }
             }
         }
@@ -525,9 +528,14 @@ impl CacheInvalidationService {
         // Phase 1: Catch-up -- process pending messages that were delivered but
         // not acknowledged before the last disconnect.
         let catchup_count = Self::process_pending_messages(
-            &mut conn, local_sender, node_id, stream_key, consumer_group,
+            &mut conn,
+            local_sender,
+            node_id,
+            stream_key,
+            consumer_group,
             &mut failed_delivery_counts,
-        ).await?;
+        )
+        .await?;
 
         if catchup_count > 0 {
             info!(
@@ -552,29 +560,38 @@ impl CacheInvalidationService {
                 Self::trim_stream(&mut conn, stream_key).await;
             }
 
-            let result: redis::RedisResult<redis::streams::StreamReadReply> = redis::cmd("XREADGROUP")
-                .arg("GROUP")
-                .arg(consumer_group)
-                .arg(node_id)
-                .arg("COUNT")
-                .arg(100)
-                .arg("BLOCK")
-                .arg(1000) // Block for 1 second
-                .arg("STREAMS")
-                .arg(stream_key)
-                .arg(">") // Only new messages
-                .query_async(&mut conn)
-                .await;
+            let result: redis::RedisResult<redis::streams::StreamReadReply> =
+                redis::cmd("XREADGROUP")
+                    .arg("GROUP")
+                    .arg(consumer_group)
+                    .arg(node_id)
+                    .arg("COUNT")
+                    .arg(100)
+                    .arg("BLOCK")
+                    .arg(1000) // Block for 1 second
+                    .arg("STREAMS")
+                    .arg(stream_key)
+                    .arg(">") // Only new messages
+                    .query_async(&mut conn)
+                    .await;
 
             match result {
                 Ok(reply) => {
                     Self::process_stream_reply(
-                        &mut conn, local_sender, node_id, stream_key, consumer_group, &reply,
+                        &mut conn,
+                        local_sender,
+                        node_id,
+                        stream_key,
+                        consumer_group,
+                        &reply,
                         &mut failed_delivery_counts,
-                    ).await;
+                    )
+                    .await;
                 }
                 Err(e) => {
-                    return Err(Error::Internal(format!("Failed to read from Redis stream: {e}")));
+                    return Err(Error::Internal(format!(
+                        "Failed to read from Redis stream: {e}"
+                    )));
                 }
             }
         }
@@ -596,17 +613,18 @@ impl CacheInvalidationService {
     ) -> Result<usize> {
         let mut total = 0;
         loop {
-            let result: redis::RedisResult<redis::streams::StreamReadReply> = redis::cmd("XREADGROUP")
-                .arg("GROUP")
-                .arg(consumer_group)
-                .arg(node_id)
-                .arg("COUNT")
-                .arg(100)
-                .arg("STREAMS")
-                .arg(stream_key)
-                .arg("0") // Read pending messages
-                .query_async(conn)
-                .await;
+            let result: redis::RedisResult<redis::streams::StreamReadReply> =
+                redis::cmd("XREADGROUP")
+                    .arg("GROUP")
+                    .arg(consumer_group)
+                    .arg(node_id)
+                    .arg("COUNT")
+                    .arg(100)
+                    .arg("STREAMS")
+                    .arg(stream_key)
+                    .arg("0") // Read pending messages
+                    .query_async(conn)
+                    .await;
 
             match result {
                 Ok(reply) => {
@@ -620,9 +638,15 @@ impl CacheInvalidationService {
                             }
                             batch_count += 1;
                             Self::process_single_entry(
-                                conn, local_sender, node_id, stream_key, consumer_group, entry,
+                                conn,
+                                local_sender,
+                                node_id,
+                                stream_key,
+                                consumer_group,
+                                entry,
                                 failed_delivery_counts,
-                            ).await;
+                            )
+                            .await;
                         }
                     }
                     total += batch_count;
@@ -653,9 +677,15 @@ impl CacheInvalidationService {
         for sk in &reply.keys {
             for entry in &sk.ids {
                 Self::process_single_entry(
-                    conn, local_sender, node_id, stream_key, consumer_group, entry,
+                    conn,
+                    local_sender,
+                    node_id,
+                    stream_key,
+                    consumer_group,
+                    entry,
                     failed_delivery_counts,
-                ).await;
+                )
+                .await;
             }
         }
     }
@@ -796,10 +826,7 @@ impl CacheInvalidationService {
     ///
     /// Uses XTRIM with MINID to time-based trim, converting current timestamp
     /// to a Redis stream ID (which is millisecond-based).
-    async fn trim_stream(
-        conn: &mut redis::aio::MultiplexedConnection,
-        stream_key: &str,
-    ) {
+    async fn trim_stream(conn: &mut redis::aio::MultiplexedConnection, stream_key: &str) {
         let now_ms = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
@@ -817,7 +844,10 @@ impl CacheInvalidationService {
 
         match result {
             Ok(trimmed) if trimmed > 0 => {
-                debug!(trimmed, stream_key, "Trimmed old cache invalidation entries");
+                debug!(
+                    trimmed,
+                    stream_key, "Trimmed old cache invalidation entries"
+                );
             }
             Err(e) => {
                 warn!(error = %e, "Failed to trim cache invalidation stream");
@@ -834,7 +864,8 @@ impl CacheInvalidationService {
     /// losing messages that were delivered but not yet acknowledged. XTRIM
     /// limits stream growth without discarding unacknowledged messages.
     pub async fn stop(&self) {
-        self.shutdown.store(true, std::sync::atomic::Ordering::Relaxed);
+        self.shutdown
+            .store(true, std::sync::atomic::Ordering::Relaxed);
 
         // Trim the stream on shutdown to prevent unbounded growth.
         // We do NOT call XGROUP DESTROY because that would silently drop the
@@ -879,7 +910,7 @@ impl CacheInvalidationService {
     /// Subscribe to local cache invalidation events
     ///
     /// Returns a receiver that will receive invalidation messages from all nodes.
-    #[must_use] 
+    #[must_use]
     pub fn subscribe(&self) -> broadcast::Receiver<InvalidationMessage> {
         self.local_sender.subscribe()
     }
@@ -904,11 +935,13 @@ impl CacheInvalidationService {
             match self.do_broadcast_to_stream_internal(&message).await {
                 Ok(()) => {
                     // Clear the sync flag on successful broadcast
-                    self.needs_state_sync.store(false, std::sync::atomic::Ordering::Relaxed);
+                    self.needs_state_sync
+                        .store(false, std::sync::atomic::Ordering::Relaxed);
                 }
                 Err(e) => {
                     // Mark that we need a state sync when Redis recovers
-                    self.needs_state_sync.store(true, std::sync::atomic::Ordering::Relaxed);
+                    self.needs_state_sync
+                        .store(true, std::sync::atomic::Ordering::Relaxed);
                     warn!(
                         error = %e,
                         node_id = %self.node_id,
@@ -991,59 +1024,71 @@ impl CacheInvalidationService {
         self.broadcast_remote(InvalidationMessage::UserPermission {
             room_id: room_id.as_str().to_string(),
             user_id: user_id.as_str().to_string(),
-        }).await
+        })
+        .await
     }
 
     /// Invalidate permission cache for all users in a room
     pub async fn invalidate_room_permission(&self, room_id: &RoomId) -> Result<()> {
         self.broadcast_remote(InvalidationMessage::RoomPermission {
             room_id: room_id.as_str().to_string(),
-        }).await
+        })
+        .await
     }
 
     /// Invalidate user cache
     pub async fn invalidate_user(&self, user_id: &crate::models::UserId) -> Result<()> {
         self.broadcast_remote(InvalidationMessage::User {
             user_id: user_id.as_str().to_string(),
-        }).await
+        })
+        .await
     }
 
     /// Invalidate username cache
     pub async fn invalidate_username(&self, user_id: &crate::models::UserId) -> Result<()> {
         self.broadcast_remote(InvalidationMessage::Username {
             user_id: user_id.as_str().to_string(),
-        }).await
+        })
+        .await
     }
 
     /// Invalidate room cache
     pub async fn invalidate_room(&self, room_id: &RoomId) -> Result<()> {
         self.broadcast_remote(InvalidationMessage::Room {
             room_id: room_id.as_str().to_string(),
-        }).await
+        })
+        .await
     }
 
     /// Invalidate playback state cache for a room
     pub async fn invalidate_playback_state(&self, room_id: &RoomId) -> Result<()> {
         self.broadcast_remote(InvalidationMessage::PlaybackState {
             room_id: room_id.as_str().to_string(),
-        }).await
+        })
+        .await
     }
 
     /// Broadcast an updated playback state to other replicas so they can
     /// write it directly into their L1 cache, avoiding the stale-read window
     /// that occurs when only an invalidation message is sent.
-    pub async fn update_playback_state(&self, room_id: &RoomId, state: &crate::models::RoomPlaybackState) -> Result<()> {
+    pub async fn update_playback_state(
+        &self,
+        room_id: &RoomId,
+        state: &crate::models::RoomPlaybackState,
+    ) -> Result<()> {
         self.broadcast_remote(InvalidationMessage::PlaybackStateUpdate {
             room_id: room_id.as_str().to_string(),
             state: state.clone(),
-        }).await
+        })
+        .await
     }
 
     /// Invalidate room settings cache for a specific room
     pub async fn invalidate_room_settings(&self, room_id: &RoomId) -> Result<()> {
         self.broadcast_remote(InvalidationMessage::RoomSettings {
             room_id: room_id.as_str().to_string(),
-        }).await
+        })
+        .await
     }
 
     /// Invalidate all caches
@@ -1078,10 +1123,7 @@ impl CacheInvalidationService {
     }
 
     /// Invalidate room cache locally and broadcast to other replicas.
-    pub async fn invalidate_and_broadcast_room(
-        &self,
-        room_id: &RoomId,
-    ) -> Result<()> {
+    pub async fn invalidate_and_broadcast_room(&self, room_id: &RoomId) -> Result<()> {
         let msg = InvalidationMessage::Room {
             room_id: room_id.as_str().to_string(),
         };
@@ -1122,10 +1164,7 @@ impl CacheInvalidationService {
     }
 
     /// Invalidate room permission cache locally and broadcast to other replicas.
-    pub async fn invalidate_and_broadcast_room_permission(
-        &self,
-        room_id: &RoomId,
-    ) -> Result<()> {
+    pub async fn invalidate_and_broadcast_room_permission(&self, room_id: &RoomId) -> Result<()> {
         let msg = InvalidationMessage::RoomPermission {
             room_id: room_id.as_str().to_string(),
         };
@@ -1160,12 +1199,7 @@ impl CacheInvalidationService {
     /// * `name` - Task name for monitoring (e.g., "`room_settings_invalidation_listener`")
     /// * `handler` - Async closure called for each received message
     /// * `on_lagged` - Async closure called when the receiver falls behind (should flush caches)
-    pub fn spawn_listener<H, Hf, L, Lf>(
-        &self,
-        name: &'static str,
-        handler: H,
-        on_lagged: L,
-    )
+    pub fn spawn_listener<H, Hf, L, Lf>(&self, name: &'static str, handler: H, on_lagged: L)
     where
         H: Fn(InvalidationMessage) -> Hf + Send + 'static,
         Hf: std::future::Future<Output = ()> + Send,
@@ -1221,7 +1255,12 @@ impl std::fmt::Debug for CacheInvalidationService {
         f.debug_struct("CacheInvalidationService")
             .field("redis_enabled", &self.redis_client.is_some())
             .field("node_id", &self.node_id)
-            .field("needs_state_sync", &self.needs_state_sync.load(std::sync::atomic::Ordering::Relaxed))
+            .field(
+                "needs_state_sync",
+                &self
+                    .needs_state_sync
+                    .load(std::sync::atomic::Ordering::Relaxed),
+            )
             .finish()
     }
 }
@@ -1257,7 +1296,11 @@ mod tests {
 
     #[tokio::test]
     async fn test_local_broadcast() {
-        let service = CacheInvalidationService::new(None, "test-node".to_string(), "synctv:cache:invalidate:stream".to_string());
+        let service = CacheInvalidationService::new(
+            None,
+            "test-node".to_string(),
+            "synctv:cache:invalidate:stream".to_string(),
+        );
         let mut receiver = service.subscribe();
 
         let msg = InvalidationMessage::User {
@@ -1273,7 +1316,11 @@ mod tests {
 
     #[tokio::test]
     async fn test_broadcast_without_redis_is_noop() {
-        let service = CacheInvalidationService::new(None, "test-node".to_string(), "synctv:cache:invalidate:stream".to_string());
+        let service = CacheInvalidationService::new(
+            None,
+            "test-node".to_string(),
+            "synctv:cache:invalidate:stream".to_string(),
+        );
 
         // broadcast_remote() without Redis should be a no-op (no local broadcast)
         let msg = InvalidationMessage::All;
@@ -1290,7 +1337,9 @@ mod tests {
         );
 
         // The needs_state_sync flag should start as false
-        assert!(!service.needs_state_sync.load(std::sync::atomic::Ordering::Relaxed));
+        assert!(!service
+            .needs_state_sync
+            .load(std::sync::atomic::Ordering::Relaxed));
 
         // When Redis is not configured, broadcast_remote is a no-op and succeeds
         let result = service.broadcast_remote(InvalidationMessage::All).await;
@@ -1298,7 +1347,9 @@ mod tests {
 
         // Since there's no Redis configured, the flag should still be false
         // (we only set it when Redis is configured but fails)
-        assert!(!service.needs_state_sync.load(std::sync::atomic::Ordering::Relaxed));
+        assert!(!service
+            .needs_state_sync
+            .load(std::sync::atomic::Ordering::Relaxed));
     }
 
     #[tokio::test]
@@ -1321,14 +1372,20 @@ mod tests {
         );
 
         // Manually set the needs_state_sync flag
-        service.needs_state_sync.store(true, std::sync::atomic::Ordering::Relaxed);
+        service
+            .needs_state_sync
+            .store(true, std::sync::atomic::Ordering::Relaxed);
 
         // Verify we can check and clear the flag atomically
-        let was_sync_needed = service.needs_state_sync.swap(false, std::sync::atomic::Ordering::Relaxed);
+        let was_sync_needed = service
+            .needs_state_sync
+            .swap(false, std::sync::atomic::Ordering::Relaxed);
         assert!(was_sync_needed);
 
         // The flag should now be false
-        assert!(!service.needs_state_sync.load(std::sync::atomic::Ordering::Relaxed));
+        assert!(!service
+            .needs_state_sync
+            .load(std::sync::atomic::Ordering::Relaxed));
 
         // Increment our mock counter
         sync_count_clone.fetch_add(1, std::sync::atomic::Ordering::Relaxed);

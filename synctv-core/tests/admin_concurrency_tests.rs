@@ -12,22 +12,24 @@
 
 use std::sync::Arc;
 
-use synctv_core_testing::{create_test_pool};
+use chrono::Utc;
+use sqlx::PgPool;
 use synctv_core::{
     cache::{KeyBuilder, NoopCacheL2, UsernameCache},
     config::PasswordComplexityConfig,
-    models::{Room, RoomId, RoomRole, RoomSettings, RoomStatus, UserId, User, UserRole, UserStatus},
+    models::{
+        Room, RoomId, RoomRole, RoomSettings, RoomStatus, User, UserId, UserRole, UserStatus,
+    },
     repository::{RoomMemberRepository, RoomRepository, RoomSettingsRepository, UserRepository},
     service::{
+        auth::{BruteForceProtection, JwtService},
         member::{AddMemberOptions, MemberService},
         permission::PermissionService,
-        RoomService, UserService, InMemoryTokenBlacklistStore,
-        auth::{BruteForceProtection, JwtService},
+        InMemoryTokenBlacklistStore, RoomService, UserService,
     },
     Error,
 };
-use chrono::Utc;
-use sqlx::PgPool;
+use synctv_core_testing::create_test_pool;
 use tokio::sync::Barrier;
 // ============================================================================
 // Test Infrastructure
@@ -115,8 +117,12 @@ async fn setup_test_room(pool: &PgPool, room_name: &str) -> (User, Room) {
 
     // Add owner as member
     let member_repo = RoomMemberRepository::new(pool.clone());
-    let owner_member = synctv_core::models::RoomMember::new(room.id.clone(), owner.id.clone(), RoomRole::Creator);
-    member_repo.add(&owner_member).await.expect("Failed to add owner as member");
+    let owner_member =
+        synctv_core::models::RoomMember::new(room.id.clone(), owner.id.clone(), RoomRole::Creator);
+    member_repo
+        .add(&owner_member)
+        .await
+        .expect("Failed to add owner as member");
 
     (owner, room)
 }
@@ -135,7 +141,10 @@ async fn test_concurrent_user_ban_operations() {
     let mut users = Vec::with_capacity(10);
     for i in 0..10 {
         let user = user_repo
-            .create(&make_user_with_role(&format!("concurrent_ban_{i}"), UserRole::User))
+            .create(&make_user_with_role(
+                &format!("concurrent_ban_{i}"),
+                UserRole::User,
+            ))
             .await
             .expect("Failed to create user");
         users.push(user);
@@ -226,7 +235,11 @@ async fn test_concurrent_ban_unban_same_user() {
     assert_eq!(success_count, 10, "All operations should succeed");
 
     // Final state depends on which write was last
-    let final_user = user_repo.get_by_id(&user_id).await.expect("Query failed").expect("User exists");
+    let final_user = user_repo
+        .get_by_id(&user_id)
+        .await
+        .expect("Query failed")
+        .expect("User exists");
     assert!(
         final_user.status == UserStatus::Active || final_user.status == UserStatus::Banned,
         "Final status should be either Active or Banned"
@@ -361,7 +374,11 @@ async fn test_concurrent_global_settings_update_optimistic_lock() {
             let mut retries = 0;
             let max_retries = 3;
             loop {
-                let current = repo_clone.get_by_id(&uid).await.expect("Query failed").expect("User exists");
+                let current = repo_clone
+                    .get_by_id(&uid)
+                    .await
+                    .expect("Query failed")
+                    .expect("User exists");
                 let mut updated = current.clone();
                 updated.email = Some(format!("updated_{i}@test.com"));
 
@@ -505,7 +522,10 @@ async fn test_optimistic_lock_retry_succeeds() {
     assert!(result1.is_ok(), "First update should succeed");
 
     // Second should succeed with retry
-    assert!(result2.is_ok(), "Second update should succeed with retry: {result2:?}");
+    assert!(
+        result2.is_ok(),
+        "Second update should succeed with retry: {result2:?}"
+    );
 }
 
 // ============================================================================
@@ -574,7 +594,10 @@ async fn test_concurrent_room_ban_with_members_joining() {
     let mut users = Vec::with_capacity(10);
     for i in 0..10 {
         let user = user_repo
-            .create(&make_user_with_role(&format!("join_ban_{i}"), UserRole::User))
+            .create(&make_user_with_role(
+                &format!("join_ban_{i}"),
+                UserRole::User,
+            ))
             .await
             .expect("Failed to create user");
         users.push(user);
@@ -612,7 +635,8 @@ async fn test_concurrent_room_ban_with_members_joining() {
         let handle = tokio::spawn(async move {
             bc.wait().await;
             let options = AddMemberOptions::new().with_max_members(0);
-            ms.add_member_with_options(rid, user.id, RoomRole::Member, options).await
+            ms.add_member_with_options(rid, user.id, RoomRole::Member, options)
+                .await
         });
         join_handles.push(handle);
     }
@@ -688,11 +712,17 @@ async fn test_concurrent_room_settings_update() {
             let mut retries = 0u32;
             let max_retries = 10;
             loop {
-                let (settings, version) = repo.get_with_version(&rid).await.expect("Failed to get settings");
+                let (settings, version) = repo
+                    .get_with_version(&rid)
+                    .await
+                    .expect("Failed to get settings");
                 let mut updated = settings.clone();
                 updated.max_members = synctv_core::models::room_settings::MaxMembers(50 + i as u64);
 
-                match repo.set_settings_with_version(&rid, &updated, version).await {
+                match repo
+                    .set_settings_with_version(&rid, &updated, version)
+                    .await
+                {
                     Ok(_) => break Ok(()),
                     Err(Error::OptimisticLockConflict) => {
                         retries += 1;
@@ -701,7 +731,8 @@ async fn test_concurrent_room_settings_update() {
                         }
                         let base_ms = 10u64 * (1u64 << retries.min(5));
                         let jitter = (i as u64 * 7 + u64::from(retries) * 3) % base_ms;
-                        tokio::time::sleep(tokio::time::Duration::from_millis(base_ms + jitter)).await;
+                        tokio::time::sleep(tokio::time::Duration::from_millis(base_ms + jitter))
+                            .await;
                     }
                     Err(e) => break Err(e),
                 }

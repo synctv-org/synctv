@@ -6,8 +6,8 @@ use sqlx::{Executor, PgPool};
 use std::time::Duration;
 use tracing::{error, info};
 
-use crate::Config;
 use crate::resilience::timeout::DB_QUERY_TIMEOUT;
+use crate::Config;
 
 /// Initialize database connection pool
 ///
@@ -40,10 +40,8 @@ pub async fn init_database_with_cancel(
         .max_lifetime(Duration::from_secs(config.database.max_lifetime_seconds))
         .after_connect(move |conn, _meta| {
             Box::pin(async move {
-                conn.execute(
-                    format!("SET statement_timeout = {statement_timeout_ms}").as_str(),
-                )
-                .await?;
+                conn.execute(format!("SET statement_timeout = {statement_timeout_ms}").as_str())
+                    .await?;
                 Ok(())
             })
         })

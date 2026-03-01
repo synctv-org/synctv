@@ -5,13 +5,12 @@
 
 use super::{client::BilibiliClient, BilibiliError};
 use crate::grpc::bilibili::{
-    Empty, GetDashPgcurlReq, GetDashPgcurlResp, GetDashVideoUrlReq,
-    GetDashVideoUrlResp, GetLiveDanmuInfoReq, GetLiveDanmuInfoResp, GetLiveStreamsReq,
-    GetLiveStreamsResp, GetPgcurlReq, GetSubtitlesReq, GetSubtitlesResp, GetVideoUrlReq,
-    LoginWithQrCodeReq, LoginWithQrCodeResp, LoginWithSmsReq, LoginWithSmsResp, MatchReq,
-    MatchResp, NewCaptchaResp, NewQrCodeResp, NewSmsReq, NewSmsResp, ParseLivePageReq,
-    ParsePgcPageReq, ParseVideoPageReq, UserInfoReq, UserInfoResp, VideoInfo,
-    VideoPageInfo, VideoSegment as ProtoVideoSegment, VideoUrl,
+    Empty, GetDashPgcurlReq, GetDashPgcurlResp, GetDashVideoUrlReq, GetDashVideoUrlResp,
+    GetLiveDanmuInfoReq, GetLiveDanmuInfoResp, GetLiveStreamsReq, GetLiveStreamsResp, GetPgcurlReq,
+    GetSubtitlesReq, GetSubtitlesResp, GetVideoUrlReq, LoginWithQrCodeReq, LoginWithQrCodeResp,
+    LoginWithSmsReq, LoginWithSmsResp, MatchReq, MatchResp, NewCaptchaResp, NewQrCodeResp,
+    NewSmsReq, NewSmsResp, ParseLivePageReq, ParsePgcPageReq, ParseVideoPageReq, UserInfoReq,
+    UserInfoResp, VideoInfo, VideoPageInfo, VideoSegment as ProtoVideoSegment, VideoUrl,
 };
 use async_trait::async_trait;
 use std::collections::HashMap;
@@ -23,37 +22,67 @@ use std::collections::HashMap;
 pub trait BilibiliInterface: Send + Sync {
     async fn new_qr_code(&self, request: Empty) -> Result<NewQrCodeResp, BilibiliError>;
 
-    async fn login_with_qr_code(&self, request: LoginWithQrCodeReq) -> Result<LoginWithQrCodeResp, BilibiliError>;
+    async fn login_with_qr_code(
+        &self,
+        request: LoginWithQrCodeReq,
+    ) -> Result<LoginWithQrCodeResp, BilibiliError>;
 
     async fn new_captcha(&self, request: Empty) -> Result<NewCaptchaResp, BilibiliError>;
 
     async fn new_sms(&self, request: NewSmsReq) -> Result<NewSmsResp, BilibiliError>;
 
-    async fn login_with_sms(&self, request: LoginWithSmsReq) -> Result<LoginWithSmsResp, BilibiliError>;
+    async fn login_with_sms(
+        &self,
+        request: LoginWithSmsReq,
+    ) -> Result<LoginWithSmsResp, BilibiliError>;
 
-    async fn parse_video_page(&self, request: ParseVideoPageReq) -> Result<VideoPageInfo, BilibiliError>;
+    async fn parse_video_page(
+        &self,
+        request: ParseVideoPageReq,
+    ) -> Result<VideoPageInfo, BilibiliError>;
 
     async fn get_video_url(&self, request: GetVideoUrlReq) -> Result<VideoUrl, BilibiliError>;
 
-    async fn get_dash_video_url(&self, request: GetDashVideoUrlReq) -> Result<GetDashVideoUrlResp, BilibiliError>;
+    async fn get_dash_video_url(
+        &self,
+        request: GetDashVideoUrlReq,
+    ) -> Result<GetDashVideoUrlResp, BilibiliError>;
 
-    async fn get_subtitles(&self, request: GetSubtitlesReq) -> Result<GetSubtitlesResp, BilibiliError>;
+    async fn get_subtitles(
+        &self,
+        request: GetSubtitlesReq,
+    ) -> Result<GetSubtitlesResp, BilibiliError>;
 
-    async fn parse_pgc_page(&self, request: ParsePgcPageReq) -> Result<VideoPageInfo, BilibiliError>;
+    async fn parse_pgc_page(
+        &self,
+        request: ParsePgcPageReq,
+    ) -> Result<VideoPageInfo, BilibiliError>;
 
     async fn get_pgcurl(&self, request: GetPgcurlReq) -> Result<VideoUrl, BilibiliError>;
 
-    async fn get_dash_pgcurl(&self, request: GetDashPgcurlReq) -> Result<GetDashPgcurlResp, BilibiliError>;
+    async fn get_dash_pgcurl(
+        &self,
+        request: GetDashPgcurlReq,
+    ) -> Result<GetDashPgcurlResp, BilibiliError>;
 
     async fn user_info(&self, request: UserInfoReq) -> Result<UserInfoResp, BilibiliError>;
 
     async fn r#match(&self, request: MatchReq) -> Result<MatchResp, BilibiliError>;
 
-    async fn get_live_streams(&self, request: GetLiveStreamsReq) -> Result<GetLiveStreamsResp, BilibiliError>;
+    async fn get_live_streams(
+        &self,
+        request: GetLiveStreamsReq,
+    ) -> Result<GetLiveStreamsResp, BilibiliError>;
 
-    async fn parse_live_page(&self, request: ParseLivePageReq) -> Result<VideoPageInfo, BilibiliError>;
+    async fn parse_live_page(
+        &self,
+        request: ParseLivePageReq,
+    ) -> Result<VideoPageInfo, BilibiliError>;
 
-    async fn get_live_danmu_info(&self, request: GetLiveDanmuInfoReq) -> Result<GetLiveDanmuInfoResp, BilibiliError>;
+    async fn get_live_danmu_info(
+        &self,
+        request: GetLiveDanmuInfoReq,
+    ) -> Result<GetLiveDanmuInfoResp, BilibiliError>;
 }
 
 /// Bilibili service implementation
@@ -63,7 +92,7 @@ pub trait BilibiliInterface: Send + Sync {
 pub struct BilibiliService;
 
 impl BilibiliService {
-    #[must_use] 
+    #[must_use]
     pub const fn new() -> Self {
         Self
     }
@@ -112,7 +141,10 @@ impl BilibiliInterface for BilibiliService {
         Ok(NewQrCodeResp { url, key })
     }
 
-    async fn login_with_qr_code(&self, request: LoginWithQrCodeReq) -> Result<LoginWithQrCodeResp, BilibiliError> {
+    async fn login_with_qr_code(
+        &self,
+        request: LoginWithQrCodeReq,
+    ) -> Result<LoginWithQrCodeResp, BilibiliError> {
         let client = BilibiliClient::new()?;
         let (raw_status, cookies) = client.login_with_qr_code(&request.key).await?;
 
@@ -137,28 +169,34 @@ impl BilibiliInterface for BilibiliService {
 
     async fn new_sms(&self, request: NewSmsReq) -> Result<NewSmsResp, BilibiliError> {
         let client = BilibiliClient::new()?;
-        let captcha_key = client.new_sms(
-            &request.phone,
-            &request.token,
-            &request.challenge,
-            &request.validate,
-        ).await?;
+        let captcha_key = client
+            .new_sms(
+                &request.phone,
+                &request.token,
+                &request.challenge,
+                &request.validate,
+            )
+            .await?;
 
         Ok(NewSmsResp { captcha_key })
     }
 
-    async fn login_with_sms(&self, request: LoginWithSmsReq) -> Result<LoginWithSmsResp, BilibiliError> {
+    async fn login_with_sms(
+        &self,
+        request: LoginWithSmsReq,
+    ) -> Result<LoginWithSmsResp, BilibiliError> {
         let client = BilibiliClient::new()?;
-        let cookies = client.login_with_sms(
-            &request.phone,
-            &request.code,
-            &request.captcha_key,
-        ).await?;
+        let cookies = client
+            .login_with_sms(&request.phone, &request.code, &request.captcha_key)
+            .await?;
 
         Ok(LoginWithSmsResp { cookies })
     }
 
-    async fn parse_video_page(&self, request: ParseVideoPageReq) -> Result<VideoPageInfo, BilibiliError> {
+    async fn parse_video_page(
+        &self,
+        request: ParseVideoPageReq,
+    ) -> Result<VideoPageInfo, BilibiliError> {
         let client = client_from_cookies(&request.cookies)?;
         let page_info = client.parse_video_page(request.aid, &request.bvid).await?;
         Ok(to_proto_page_info(page_info))
@@ -166,38 +204,65 @@ impl BilibiliInterface for BilibiliService {
 
     async fn get_video_url(&self, request: GetVideoUrlReq) -> Result<VideoUrl, BilibiliError> {
         let client = client_from_cookies(&request.cookies)?;
-        let quality = if request.quality == 0 { None } else { Some(request.quality as u32) };
-        let url_info = client.get_video_url(request.aid, &request.bvid, request.cid, quality).await?;
+        let quality = if request.quality == 0 {
+            None
+        } else {
+            Some(request.quality as u32)
+        };
+        let url_info = client
+            .get_video_url(request.aid, &request.bvid, request.cid, quality)
+            .await?;
 
         Ok(VideoUrl {
             accept_description: url_info.accept_description,
             accept_quality: url_info.accept_quality.into_iter().map(u64::from).collect(),
             current_quality: u64::from(url_info.current_quality),
             url: url_info.url,
-            segments: url_info.segments.into_iter().map(|s| ProtoVideoSegment {
-                url: s.url,
-                size: s.size,
-            }).collect(),
+            segments: url_info
+                .segments
+                .into_iter()
+                .map(|s| ProtoVideoSegment {
+                    url: s.url,
+                    size: s.size,
+                })
+                .collect(),
         })
     }
 
-    async fn get_dash_video_url(&self, request: GetDashVideoUrlReq) -> Result<GetDashVideoUrlResp, BilibiliError> {
+    async fn get_dash_video_url(
+        &self,
+        request: GetDashVideoUrlReq,
+    ) -> Result<GetDashVideoUrlResp, BilibiliError> {
         let client = client_from_cookies(&request.cookies)?;
-        let (dash, hevc_dash) = client.get_dash_video_url(request.aid, &request.bvid, request.cid).await?;
+        let (dash, hevc_dash) = client
+            .get_dash_video_url(request.aid, &request.bvid, request.cid)
+            .await?;
 
         Ok(GetDashVideoUrlResp {
             dash: Some((&dash).into()),
-            hevc_dash: if hevc_dash.video_streams.is_empty() { None } else { Some((&hevc_dash).into()) },
+            hevc_dash: if hevc_dash.video_streams.is_empty() {
+                None
+            } else {
+                Some((&hevc_dash).into())
+            },
         })
     }
 
-    async fn get_subtitles(&self, request: GetSubtitlesReq) -> Result<GetSubtitlesResp, BilibiliError> {
+    async fn get_subtitles(
+        &self,
+        request: GetSubtitlesReq,
+    ) -> Result<GetSubtitlesResp, BilibiliError> {
         let client = client_from_cookies(&request.cookies)?;
-        let subtitles = client.get_subtitles(request.aid, &request.bvid, request.cid).await?;
+        let subtitles = client
+            .get_subtitles(request.aid, &request.bvid, request.cid)
+            .await?;
         Ok(GetSubtitlesResp { subtitles })
     }
 
-    async fn parse_pgc_page(&self, request: ParsePgcPageReq) -> Result<VideoPageInfo, BilibiliError> {
+    async fn parse_pgc_page(
+        &self,
+        request: ParsePgcPageReq,
+    ) -> Result<VideoPageInfo, BilibiliError> {
         let client = client_from_cookies(&request.cookies)?;
         let page_info = client.parse_pgc_page(request.epid, request.ssid).await?;
         Ok(to_proto_page_info(page_info))
@@ -205,28 +270,45 @@ impl BilibiliInterface for BilibiliService {
 
     async fn get_pgcurl(&self, request: GetPgcurlReq) -> Result<VideoUrl, BilibiliError> {
         let client = client_from_cookies(&request.cookies)?;
-        let quality = if request.quality == 0 { None } else { Some(request.quality as u32) };
-        let url_info = client.get_pgc_url(request.epid, request.cid, quality).await?;
+        let quality = if request.quality == 0 {
+            None
+        } else {
+            Some(request.quality as u32)
+        };
+        let url_info = client
+            .get_pgc_url(request.epid, request.cid, quality)
+            .await?;
 
         Ok(VideoUrl {
             accept_description: url_info.accept_description,
             accept_quality: url_info.accept_quality.into_iter().map(u64::from).collect(),
             current_quality: u64::from(url_info.current_quality),
             url: url_info.url,
-            segments: url_info.segments.into_iter().map(|s| ProtoVideoSegment {
-                url: s.url,
-                size: s.size,
-            }).collect(),
+            segments: url_info
+                .segments
+                .into_iter()
+                .map(|s| ProtoVideoSegment {
+                    url: s.url,
+                    size: s.size,
+                })
+                .collect(),
         })
     }
 
-    async fn get_dash_pgcurl(&self, request: GetDashPgcurlReq) -> Result<GetDashPgcurlResp, BilibiliError> {
+    async fn get_dash_pgcurl(
+        &self,
+        request: GetDashPgcurlReq,
+    ) -> Result<GetDashPgcurlResp, BilibiliError> {
         let client = client_from_cookies(&request.cookies)?;
         let (dash, hevc_dash) = client.get_dash_pgc_url(request.epid, request.cid).await?;
 
         Ok(GetDashPgcurlResp {
             dash: Some((&dash).into()),
-            hevc_dash: if hevc_dash.video_streams.is_empty() { None } else { Some((&hevc_dash).into()) },
+            hevc_dash: if hevc_dash.video_streams.is_empty() {
+                None
+            } else {
+                Some((&hevc_dash).into())
+            },
         })
     }
 
@@ -250,7 +332,10 @@ impl BilibiliInterface for BilibiliService {
         })
     }
 
-    async fn get_live_streams(&self, request: GetLiveStreamsReq) -> Result<GetLiveStreamsResp, BilibiliError> {
+    async fn get_live_streams(
+        &self,
+        request: GetLiveStreamsReq,
+    ) -> Result<GetLiveStreamsResp, BilibiliError> {
         let client = client_from_cookies(&request.cookies)?;
         let streams = client.get_live_streams(request.cid, request.hls).await?;
 
@@ -267,20 +352,27 @@ impl BilibiliInterface for BilibiliService {
         })
     }
 
-    async fn parse_live_page(&self, request: ParseLivePageReq) -> Result<VideoPageInfo, BilibiliError> {
+    async fn parse_live_page(
+        &self,
+        request: ParseLivePageReq,
+    ) -> Result<VideoPageInfo, BilibiliError> {
         let client = client_from_cookies(&request.cookies)?;
         let page_info = client.parse_live_page(request.room_id).await?;
         Ok(to_proto_page_info(page_info))
     }
 
-    async fn get_live_danmu_info(&self, request: GetLiveDanmuInfoReq) -> Result<GetLiveDanmuInfoResp, BilibiliError> {
+    async fn get_live_danmu_info(
+        &self,
+        request: GetLiveDanmuInfoReq,
+    ) -> Result<GetLiveDanmuInfoResp, BilibiliError> {
         let client = client_from_cookies(&request.cookies)?;
         let danmu_info = client.get_live_danmu_info(request.room_id).await?;
 
         use crate::grpc::bilibili::get_live_danmu_info_resp::Host;
         Ok(GetLiveDanmuInfoResp {
             token: danmu_info.token,
-            host_list: danmu_info.host_list
+            host_list: danmu_info
+                .host_list
                 .into_iter()
                 .map(|h| Host {
                     host: h.host,

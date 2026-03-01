@@ -13,13 +13,12 @@ use tonic::{Request, Response, Status};
 use tracing::{info, warn};
 
 use super::proto::{
-    RtmpPacket, stream_relay_service_server, PullRtmpStreamRequest, FrameType,
-    GetHlsPlaylistRequest, GetHlsPlaylistResponse,
-    GetHlsSegmentRequest, GetHlsSegmentResponse,
+    stream_relay_service_server, FrameType, GetHlsPlaylistRequest, GetHlsPlaylistResponse,
+    GetHlsSegmentRequest, GetHlsSegmentResponse, PullRtmpStreamRequest, RtmpPacket,
 };
-use crate::relay::StreamRegistryTrait;
-use crate::protocols::hls::StreamRegistry as HlsStreamRegistry;
 use crate::livestream::segment_manager::SegmentManager;
+use crate::protocols::hls::StreamRegistry as HlsStreamRegistry;
+use crate::relay::StreamRegistryTrait;
 
 type ResponseStream = Pin<Box<dyn Stream<Item = Result<RtmpPacket, Status>> + Send>>;
 
@@ -124,7 +123,9 @@ impl StreamRelayServiceImpl {
         if expected.ct_eq(provided).into() {
             Ok(())
         } else {
-            Err(Status::unauthenticated("invalid cluster authentication secret"))
+            Err(Status::unauthenticated(
+                "invalid cluster authentication secret",
+            ))
         }
     }
 }
@@ -152,7 +153,8 @@ impl stream_relay_service_server::StreamRelayService for StreamRelayServiceImpl 
         );
 
         // Check if this node is the publisher
-        let publisher_info = self.registry
+        let publisher_info = self
+            .registry
             .get_publisher(&req.room_id, &req.media_id)
             .await
             .map_err(|e| {
@@ -256,7 +258,7 @@ impl stream_relay_service_server::StreamRelayService for StreamRelayServiceImpl 
                 };
 
                 let packet = RtmpPacket {
-                    data,  // Zero-copy: FrameData's Bytes passed directly to proto Bytes field
+                    data, // Zero-copy: FrameData's Bytes passed directly to proto Bytes field
                     timestamp,
                     frame_type,
                 };
@@ -279,7 +281,13 @@ impl stream_relay_service_server::StreamRelayService for StreamRelayServiceImpl 
             }
 
             info!("Stream ended, unsubscribing");
-            Self::unsubscribe_from_hub(event_sender_clone, subscriber_id, room_id_clone, media_id_clone).await;
+            Self::unsubscribe_from_hub(
+                event_sender_clone,
+                subscriber_id,
+                room_id_clone,
+                media_id_clone,
+            )
+            .await;
         });
 
         let output_stream = ReceiverStream::new(rx);
@@ -303,7 +311,9 @@ impl stream_relay_service_server::StreamRelayService for StreamRelayServiceImpl 
             "GetHlsPlaylist request"
         );
 
-        let hls_registry = self.hls_stream_registry.as_ref()
+        let hls_registry = self
+            .hls_stream_registry
+            .as_ref()
             .ok_or_else(|| Status::unavailable("HLS not enabled on this node"))?;
 
         // Registry key format: "room_id/media_id" (matches remuxer's app_name/stream_name)
@@ -313,9 +323,8 @@ impl stream_relay_service_server::StreamRelayService for StreamRelayServiceImpl 
             Some(stream_state) => {
                 let state = stream_state.read();
                 let segment_url_base = req.segment_url_base;
-                let playlist = state.generate_m3u8(|ts_name| {
-                    format!("{segment_url_base}{ts_name}.ts")
-                });
+                let playlist =
+                    state.generate_m3u8(|ts_name| format!("{segment_url_base}{ts_name}.ts"));
                 GetHlsPlaylistResponse {
                     playlist,
                     found: true,
@@ -346,12 +355,18 @@ impl stream_relay_service_server::StreamRelayService for StreamRelayServiceImpl 
             "GetHlsSegment request"
         );
 
-        let segment_manager = self.segment_manager.as_ref()
+        let segment_manager = self
+            .segment_manager
+            .as_ref()
             .ok_or_else(|| Status::unavailable("HLS not enabled on this node"))?;
 
-        match segment_manager.storage().read(&req.room_id, &req.media_id, &req.segment_name).await {
+        match segment_manager
+            .storage()
+            .read(&req.room_id, &req.media_id, &req.segment_name)
+            .await
+        {
             Ok(data) => Ok(Response::new(GetHlsSegmentResponse {
-                data,  // Zero-copy: storage returns Bytes, proto field is now Bytes
+                data, // Zero-copy: storage returns Bytes, proto field is now Bytes
                 found: true,
             })),
             Err(_) => Ok(Response::new(GetHlsSegmentResponse {
@@ -407,7 +422,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_service_creation() {
-        let (_event_sender, _) = tokio::sync::mpsc::channel::<synctv_xiu::streamhub::define::StreamHubEvent>(64);
+        let (_event_sender, _) =
+            tokio::sync::mpsc::channel::<synctv_xiu::streamhub::define::StreamHubEvent>(64);
         let node_id = "test_node".to_string();
 
         // Verify the node_id is correct

@@ -51,10 +51,7 @@ async fn test_auth_user_missing_header_401() {
 
     assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
     let json = body_json(resp).await;
-    assert!(json["error"]
-        .as_str()
-        .unwrap()
-        .contains("Authorization"));
+    assert!(json["error"].as_str().unwrap().contains("Authorization"));
 }
 
 /// Malformed bearer token should return 401.
@@ -83,9 +80,7 @@ async fn test_auth_user_malformed_token_401() {
 async fn test_guest_user_non_guest_token_401() {
     let app = Router::new().route(
         "/test",
-        get(|| async {
-            Err::<String, AppError>(AppError::unauthorized("Not a guest token"))
-        }),
+        get(|| async { Err::<String, AppError>(AppError::unauthorized("Not a guest token")) }),
     );
 
     let req = Request::get("/test")
@@ -220,9 +215,10 @@ async fn test_request_id_in_error_response_json() {
     use synctv_api::http::middleware::request_id_middleware;
 
     let app = Router::new()
-        .route("/error", get(|| async {
-            Err::<(), AppError>(AppError::bad_request("Test error"))
-        }))
+        .route(
+            "/error",
+            get(|| async { Err::<(), AppError>(AppError::bad_request("Test error")) }),
+        )
         .layer(axum::middleware::from_fn(request_id_middleware));
 
     let req = Request::get("/error")
@@ -234,7 +230,8 @@ async fn test_request_id_in_error_response_json() {
     assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
 
     // Check that the response header has the request ID
-    let req_id_header = resp.headers()
+    let req_id_header = resp
+        .headers()
         .get("x-request-id")
         .unwrap()
         .to_str()
@@ -253,9 +250,10 @@ async fn test_request_id_in_generated_error_response() {
     use synctv_api::http::middleware::request_id_middleware;
 
     let app = Router::new()
-        .route("/error", get(|| async {
-            Err::<(), AppError>(AppError::not_found("Resource not found"))
-        }))
+        .route(
+            "/error",
+            get(|| async { Err::<(), AppError>(AppError::not_found("Resource not found")) }),
+        )
         .layer(axum::middleware::from_fn(request_id_middleware));
 
     let req = Request::get("/error").body(Body::empty()).unwrap();
@@ -264,12 +262,13 @@ async fn test_request_id_in_generated_error_response() {
     assert_eq!(resp.status(), StatusCode::NOT_FOUND);
 
     // Get the generated request ID from the header
-    let req_id_header = resp.headers()
+    let req_id_header = resp
+        .headers()
         .get("x-request-id")
         .unwrap()
         .to_str()
         .unwrap()
-        .to_string();  // Clone to avoid borrow issue
+        .to_string(); // Clone to avoid borrow issue
 
     // Verify the request_id is in the JSON body
     let body = body_json(resp).await;

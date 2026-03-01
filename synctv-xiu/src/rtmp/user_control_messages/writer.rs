@@ -1,8 +1,8 @@
 use {
     super::{define, errors::EventMessagesError},
+    crate::bytesio::bytes_writer::AsyncBytesWriter,
     crate::rtmp::messages::define::msg_type_id,
     byteorder::BigEndian,
-    crate::bytesio::bytes_writer::AsyncBytesWriter,
 };
 
 pub struct EventMessagesWriter {
@@ -11,7 +11,7 @@ pub struct EventMessagesWriter {
 }
 
 impl EventMessagesWriter {
-    #[must_use] 
+    #[must_use]
     pub const fn new(writer: AsyncBytesWriter) -> Self {
         Self { writer }
     }

@@ -19,31 +19,33 @@ pub use chat::{
     SendDanmakuRequest,
 };
 pub use id::{generate_id, MediaId, PlaylistId, RoomId, UserId};
-pub use media::{Media, ProviderType, PlaybackResult, PlaybackInfo, PlaybackUrl, PlaybackUrlMetadata, Subtitle, SubtitleUrl, Danmaku};
+pub use media::{
+    Danmaku, Media, PlaybackInfo, PlaybackResult, PlaybackUrl, PlaybackUrlMetadata, ProviderType,
+    Subtitle, SubtitleUrl,
+};
 pub use notification::{
     CreateNotificationRequest, MarkAllAsReadRequest, MarkAsReadRequest, Notification,
     NotificationListQuery, NotificationType,
 };
 pub use oauth2_client::{
-    OAuth2AuthUrlResponse, OAuth2CallbackRequest, OAuth2CallbackResponse, UserOAuthProviderMapping,
-    OAuth2Provider, OAuth2UserInfo,
+    OAuth2AuthUrlResponse, OAuth2CallbackRequest, OAuth2CallbackResponse, OAuth2Provider,
+    OAuth2UserInfo, UserOAuthProviderMapping,
 };
+pub use pagination::{Page, PageParams, DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE};
 pub use permission::{PermissionBits, Role as RoomRole};
 pub use playback::RoomPlaybackState;
-pub use playlist::{Playlist, PlaylistWithCount, CreatePlaylistRequest, UpdatePlaylistRequest};
+pub use playlist::{CreatePlaylistRequest, Playlist, PlaylistWithCount, UpdatePlaylistRequest};
 pub use provider_instance::{ProviderCredential, ProviderInstance, UserProviderCredential};
 pub use room::{
-    CreateRoomRequest, Room, RoomListQuery, RoomSettingsJson, RoomStatus, RoomWithCount,
-    UpdateRoomRequest, PlayMode, AutoPlaySettings,
+    AutoPlaySettings, CreateRoomRequest, PlayMode, Room, RoomListQuery, RoomSettingsJson,
+    RoomStatus, RoomWithCount, UpdateRoomRequest,
 };
+pub use room_member::{MemberStatus, RoomMember, RoomMemberWithUser};
 pub use room_settings::RoomSettings;
-pub use room_member::{RoomMember, RoomMemberWithUser, MemberStatus};
 pub use settings::{
     default_email_settings, default_oauth_settings, default_server_settings, get_default_settings,
-    SettingsGroup, SettingsError,
+    SettingsError, SettingsGroup,
 };
-pub use pagination::{PageParams, Page, DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE};
 pub use user::{
-    CreateUserRequest, SignupMethod, UpdateUserRequest, User, UserListQuery,
-    UserRole, UserStatus,
+    CreateUserRequest, SignupMethod, UpdateUserRequest, User, UserListQuery, UserRole, UserStatus,
 };

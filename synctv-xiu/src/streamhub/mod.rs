@@ -1,8 +1,8 @@
-use define::{
-    FrameDataReceiver, PacketDataReceiver, PacketDataSender, StatisticData,
-    StatisticDataReceiver, StatisticDataSender,
-};
 use crate::flv::define::aac_packet_type;
+use define::{
+    FrameDataReceiver, PacketDataReceiver, PacketDataSender, StatisticData, StatisticDataReceiver,
+    StatisticDataSender,
+};
 
 use define::PacketData;
 
@@ -14,15 +14,14 @@ pub mod utils;
 
 use {
     define::{
-        BroadcastEvent, BroadcastEventSender, DataReceiver, DataSender,
-        FrameData, FrameDataSender, StreamHubEvent, StreamHubEventReceiver,
-        StreamHubEventSender, SubscriberInfo, TStreamHandler, TransceiverEvent,
-        TransceiverEventReceiver, TransceiverEventSender,
+        BroadcastEvent, BroadcastEventSender, DataReceiver, DataSender, FrameData, FrameDataSender,
+        StreamHubEvent, StreamHubEventReceiver, StreamHubEventSender, SubscriberInfo,
+        TStreamHandler, TransceiverEvent, TransceiverEventReceiver, TransceiverEventSender,
     },
     errors::{StreamHubError, StreamHubErrorValue},
     std::collections::HashMap,
-    std::sync::Arc,
     std::sync::atomic::{AtomicU64, Ordering},
+    std::sync::Arc,
     stream::StreamIdentifier,
     tokio::sync::{broadcast, mpsc, Mutex},
     tokio::task::JoinSet,
@@ -79,7 +78,8 @@ impl StreamDataTransceiver {
         identifier: StreamIdentifier,
         h: Arc<dyn TStreamHandler>,
     ) -> Self {
-        let (statistic_data_sender, statistic_data_receiver) = mpsc::channel(define::STATISTIC_DATA_CHANNEL_CAPACITY);
+        let (statistic_data_sender, statistic_data_receiver) =
+            mpsc::channel(define::STATISTIC_DATA_CHANNEL_CAPACITY);
         Self {
             data_receiver,
             event_receiver,
@@ -111,7 +111,8 @@ impl StreamDataTransceiver {
                     if (prev + 1) % DROP_LOG_INTERVAL == 0 {
                         tracing::warn!(
                             "Subscriber {} dropped {} frames due to backpressure",
-                            id, prev + 1
+                            id,
+                            prev + 1
                         );
                     }
                 }
@@ -138,7 +139,8 @@ impl StreamDataTransceiver {
                     if (prev + 1) % DROP_LOG_INTERVAL == 0 {
                         tracing::warn!(
                             "Packet subscriber {} dropped {} packets due to backpressure",
-                            id, prev + 1
+                            id,
+                            prev + 1
                         );
                     }
                 }
@@ -544,20 +546,26 @@ impl StreamDataTransceiver {
                                 DataSender::Frame {
                                     sender: frame_sender,
                                 } => {
-                                    frame_senders.lock().await.insert(info.id, SubscriberDropCounter {
-                                        sender: frame_sender,
-                                        drop_count: Arc::new(AtomicU64::new(0)),
-                                    });
+                                    frame_senders.lock().await.insert(
+                                        info.id,
+                                        SubscriberDropCounter {
+                                            sender: frame_sender,
+                                            drop_count: Arc::new(AtomicU64::new(0)),
+                                        },
+                                    );
                                     // Bump generation so fan-out loop rebuilds snapshot
                                     frame_generation.fetch_add(1, Ordering::Release);
                                 }
                                 DataSender::Packet {
                                     sender: packet_sender,
                                 } => {
-                                    packet_senders.lock().await.insert(info.id, PacketSubscriberDropCounter {
-                                        sender: packet_sender,
-                                        drop_count: Arc::new(AtomicU64::new(0)),
-                                    });
+                                    packet_senders.lock().await.insert(
+                                        info.id,
+                                        PacketSubscriberDropCounter {
+                                            sender: packet_sender,
+                                            drop_count: Arc::new(AtomicU64::new(0)),
+                                        },
+                                    );
                                     packet_generation.fetch_add(1, Ordering::Release);
                                 }
                             }
@@ -585,7 +593,8 @@ impl StreamDataTransceiver {
 
                             let mut statistics_data = statistics_data.lock().await;
                             statistics_data.subscribers.remove(&info.id);
-                            statistics_data.subscriber_count = statistics_data.subscriber_count.saturating_sub(1);
+                            statistics_data.subscriber_count =
+                                statistics_data.subscriber_count.saturating_sub(1);
                         }
                         TransceiverEvent::UnPublish {} => {
                             if let Err(err) = exit.send(()) {
@@ -599,7 +608,10 @@ impl StreamDataTransceiver {
         })
     }
 
-    pub async fn run(self, event_sender: mpsc::Sender<TransceiverEvent>) -> Result<(), StreamHubError> {
+    pub async fn run(
+        self,
+        event_sender: mpsc::Sender<TransceiverEvent>,
+    ) -> Result<(), StreamHubError> {
         let (tx, _) = broadcast::channel::<()>(1);
         let mut tasks = JoinSet::new();
 
@@ -612,7 +624,9 @@ impl StreamDataTransceiver {
                 Some(event_sender.clone()),
                 self.statistic_data.clone(),
             );
-            tasks.spawn(async move { handle.await.ok(); });
+            tasks.spawn(async move {
+                handle.await.ok();
+            });
         }
 
         if let Some(receiver) = self.data_receiver.packet_receiver {
@@ -624,7 +638,9 @@ impl StreamDataTransceiver {
                 Some(event_sender.clone()),
                 self.statistic_data.clone(),
             );
-            tasks.spawn(async move { handle.await.ok(); });
+            tasks.spawn(async move {
+                handle.await.ok();
+            });
         }
 
         let stats_handle = Self::receive_statistics_data_loop(
@@ -633,7 +649,9 @@ impl StreamDataTransceiver {
             self.statistic_data_receiver,
             self.statistic_data.clone(),
         );
-        tasks.spawn(async move { stats_handle.await.ok(); });
+        tasks.spawn(async move {
+            stats_handle.await.ok();
+        });
 
         let event_handle = Self::receive_event_loop(
             self.stream_handler,
@@ -655,7 +673,7 @@ impl StreamDataTransceiver {
         Ok(())
     }
 
-    #[must_use] 
+    #[must_use]
     pub fn get_statistics_data_sender(&self) -> StatisticDataSender {
         self.statistic_data_sender.clone()
     }
@@ -673,11 +691,11 @@ pub struct StreamsHub {
 }
 
 impl StreamsHub {
-    #[must_use] 
+    #[must_use]
     pub fn new(
         event_producer: StreamHubEventSender,
         event_consumer: StreamHubEventReceiver,
-        ) -> Self {
+    ) -> Self {
         let (client_producer, _) = broadcast::channel(1000);
 
         Self {
@@ -695,14 +713,12 @@ impl StreamsHub {
     /// The caller (supervision loop in `server.rs`) uses this to decide
     /// whether to restart with backoff or shut down.
     pub async fn run(&mut self) -> Result<(), String> {
-        use std::panic::AssertUnwindSafe;
         use futures::FutureExt;
+        use std::panic::AssertUnwindSafe;
 
         match AssertUnwindSafe(self.event_loop()).catch_unwind().await {
             Ok(()) => {
-                tracing::error!(
-                    "StreamHub event_loop exited: all event senders dropped."
-                );
+                tracing::error!("StreamHub event_loop exited: all event senders dropped.");
                 Ok(())
             }
             Err(panic_payload) => {
@@ -742,7 +758,8 @@ impl StreamsHub {
                 } => {
                     let (frame_sender, packet_sender, receiver) = match info.pub_data_type {
                         define::PubDataType::Frame => {
-                            let (sender_chan, receiver_chan) = mpsc::channel(define::FRAME_DATA_CHANNEL_CAPACITY);
+                            let (sender_chan, receiver_chan) =
+                                mpsc::channel(define::FRAME_DATA_CHANNEL_CAPACITY);
                             (
                                 Some(sender_chan),
                                 None,
@@ -753,7 +770,8 @@ impl StreamsHub {
                             )
                         }
                         define::PubDataType::Packet => {
-                            let (sender_chan, receiver_chan) = mpsc::channel(define::PACKET_DATA_CHANNEL_CAPACITY);
+                            let (sender_chan, receiver_chan) =
+                                mpsc::channel(define::PACKET_DATA_CHANNEL_CAPACITY);
                             (
                                 None,
                                 Some(sender_chan),
@@ -798,9 +816,7 @@ impl StreamsHub {
                     }
                 }
 
-                StreamHubEvent::UnPublish {
-                    identifier,
-                } => {
+                StreamHubEvent::UnPublish { identifier } => {
                     if let Err(err) = self.unpublish(&identifier) {
                         tracing::error!(
                             "event_loop Unpublish err: {err} with identifier: {identifier}"
@@ -817,7 +833,8 @@ impl StreamsHub {
                     //new chan for Frame/Packet sender and receiver
                     let (sender, receiver) = match info.sub_data_type {
                         define::SubDataType::Frame => {
-                            let (sender_chan, receiver_chan) = mpsc::channel(define::FRAME_DATA_CHANNEL_CAPACITY);
+                            let (sender_chan, receiver_chan) =
+                                mpsc::channel(define::FRAME_DATA_CHANNEL_CAPACITY);
                             (
                                 DataSender::Frame {
                                     sender: sender_chan,
@@ -829,7 +846,8 @@ impl StreamsHub {
                             )
                         }
                         define::SubDataType::Packet => {
-                            let (sender_chan, receiver_chan) = mpsc::channel(define::PACKET_DATA_CHANNEL_CAPACITY);
+                            let (sender_chan, receiver_chan) =
+                                mpsc::channel(define::PACKET_DATA_CHANNEL_CAPACITY);
                             (
                                 DataSender::Packet {
                                     sender: sender_chan,
@@ -843,9 +861,7 @@ impl StreamsHub {
                     };
 
                     let rv = match self.subscribe(&identifier, info_clone, sender).await {
-                        Ok(statistic_data_sender) => {
-                            Ok((receiver, Some(statistic_data_sender)))
-                        }
+                        Ok(statistic_data_sender) => Ok((receiver, Some(statistic_data_sender))),
                         Err(err) => {
                             tracing::error!("event_loop Subscribe error: {err}");
                             Err(err)
@@ -929,7 +945,8 @@ impl StreamsHub {
             std::collections::hash_map::Entry::Vacant(e) => e,
         };
 
-        let (event_sender, event_receiver) = mpsc::channel(define::TRANSCEIVER_EVENT_CHANNEL_CAPACITY);
+        let (event_sender, event_receiver) =
+            mpsc::channel(define::TRANSCEIVER_EVENT_CHANNEL_CAPACITY);
         let transceiver =
             StreamDataTransceiver::new(receiver, event_receiver, identifier.clone(), handler);
 
@@ -945,8 +962,8 @@ impl StreamsHub {
             let hub_sender = hub_sender_for_cleanup;
             let identifier_for_cleanup = identifier_clone.clone();
             async move {
-                use std::panic::AssertUnwindSafe;
                 use futures::FutureExt;
+                use std::panic::AssertUnwindSafe;
 
                 let result = AssertUnwindSafe(transceiver.run(event_sender_clone))
                     .catch_unwind()
@@ -973,9 +990,12 @@ impl StreamsHub {
                 };
 
                 if needs_cleanup {
-                    if let Err(e) = hub_sender.send(StreamHubEvent::UnPublish {
-                        identifier: identifier_for_cleanup.clone(),
-                    }).await {
+                    if let Err(e) = hub_sender
+                        .send(StreamHubEvent::UnPublish {
+                            identifier: identifier_for_cleanup.clone(),
+                        })
+                        .await
+                    {
                         tracing::error!(
                             "Failed to send cleanup UnPublish for {identifier_for_cleanup}: {e}"
                         );
@@ -987,7 +1007,10 @@ impl StreamsHub {
         entry.insert(event_sender);
 
         // Always broadcast publish event to listeners (HLS remuxer, publisher manager, etc.)
-        let client_event = BroadcastEvent::Publish { identifier, pub_type };
+        let client_event = BroadcastEvent::Publish {
+            identifier,
+            pub_type,
+        };
         if let Err(err) = self.client_event_sender.send(client_event) {
             tracing::debug!("broadcast Publish event: no receivers ({err})");
         }
@@ -1010,7 +1033,9 @@ impl StreamsHub {
                             match tokio::time::timeout(
                                 std::time::Duration::from_secs(5),
                                 producer.send(event),
-                            ).await {
+                            )
+                            .await
+                            {
                                 Ok(Ok(())) => {
                                     tracing::info!(
                                         "unpublish: delivered UnPublish after backpressure for {id_str}"

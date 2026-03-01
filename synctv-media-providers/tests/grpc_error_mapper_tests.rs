@@ -218,18 +218,12 @@ fn test_context_string_included_in_all_error_types() {
     use synctv_media_providers::error::ProviderClientError;
 
     let test_cases: Vec<(&str, ProviderClientError)> = vec![
-        (
-            "my_rpc",
-            ProviderClientError::Auth("bad".to_string()),
-        ),
+        ("my_rpc", ProviderClientError::Auth("bad".to_string())),
         (
             "my_rpc",
             ProviderClientError::Network("timeout".to_string()),
         ),
-        (
-            "my_rpc",
-            ProviderClientError::Parse("eof".to_string()),
-        ),
+        ("my_rpc", ProviderClientError::Parse("eof".to_string())),
         (
             "my_rpc",
             ProviderClientError::InvalidConfig("missing".to_string()),

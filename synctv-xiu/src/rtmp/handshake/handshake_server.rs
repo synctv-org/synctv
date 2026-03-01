@@ -3,12 +3,12 @@ use {
         define, define::ServerHandshakeState, digest::DigestProcessor, errors::HandshakeError,
         handshake_trait::THandshakeServer, utils,
     },
-    byteorder::BigEndian,
-    bytes::BytesMut,
     crate::bytesio::{
         bytes_reader::BytesReader, bytes_writer::AsyncBytesWriter, bytes_writer::BytesWriter,
         bytesio::TNetIO,
     },
+    byteorder::BigEndian,
+    bytes::BytesMut,
     std::sync::Arc,
     tokio::sync::Mutex,
 };
@@ -317,7 +317,11 @@ impl HandshakeServer {
     }
 
     pub fn get_remaining_bytes(&mut self) -> BytesMut {
-        if self.is_complex { self.complex_handshaker.reader.get_remaining_bytes() } else { self.simple_handshaker.reader.get_remaining_bytes() }
+        if self.is_complex {
+            self.complex_handshaker.reader.get_remaining_bytes()
+        } else {
+            self.simple_handshaker.reader.get_remaining_bytes()
+        }
     }
     pub async fn handshake(&mut self) -> Result<(), HandshakeError> {
         if self.is_complex {
@@ -396,7 +400,7 @@ mod tests {
         let timestamp: u32 = 12345;
         data.extend_from_slice(&timestamp.to_be_bytes());
         data.extend_from_slice(&[0u8; 4]); // version zeros
-        // Fill remaining 1528 bytes with pattern
+                                           // Fill remaining 1528 bytes with pattern
         for i in 0..(define::RTMP_HANDSHAKE_SIZE - 8) {
             data.push((i % 256) as u8);
         }
@@ -473,7 +477,10 @@ mod tests {
         assert!(result.is_ok());
         // Should have written 1 byte (RTMP version)
         assert_eq!(server.writer.bytes_writer.bytes.len(), 1);
-        assert_eq!(server.writer.bytes_writer.bytes[0], define::RTMP_VERSION as u8);
+        assert_eq!(
+            server.writer.bytes_writer.bytes[0],
+            define::RTMP_VERSION as u8
+        );
     }
 
     #[test]

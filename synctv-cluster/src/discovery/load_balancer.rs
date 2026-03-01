@@ -83,7 +83,9 @@ impl LoadBalancer {
             // Fallback: when all nodes are unhealthy, pick a random one from the full set
             let all_nodes = self.node_registry.get_all_nodes_local().await;
             if all_nodes.is_empty() {
-                return Err(Error::NotFound("No nodes registered in the cluster".to_string()));
+                return Err(Error::NotFound(
+                    "No nodes registered in the cluster".to_string(),
+                ));
             }
             tracing::warn!(
                 node_count = all_nodes.len(),
@@ -93,13 +95,11 @@ impl LoadBalancer {
         }
 
         let selected_node = match self.strategy {
-            LoadBalancingStrategy::Random => {
-                nodes
-                    .choose(&mut rand::rng())
-                    .ok_or_else(|| Error::NotFound("No nodes available".to_string()))?
-                    .node_id
-                    .clone()
-            }
+            LoadBalancingStrategy::Random => nodes
+                .choose(&mut rand::rng())
+                .ok_or_else(|| Error::NotFound("No nodes available".to_string()))?
+                .node_id
+                .clone(),
             LoadBalancingStrategy::RoundRobin => {
                 // Sort by node_id for stable ordering across calls
                 let mut sorted = nodes;
@@ -203,26 +203,40 @@ mod tests {
 
     /// Helper: create a NodeRegistry (redis::Client::open succeeds without a running server)
     fn make_registry() -> Arc<NodeRegistry> {
-        Arc::new(NodeRegistry::new(redis::Client::open("redis://localhost:6379").unwrap(), "self".to_string(), 30, "test:").unwrap())
+        Arc::new(
+            NodeRegistry::new(
+                redis::Client::open("redis://localhost:6379").unwrap(),
+                "self".to_string(),
+                30,
+                "test:",
+            )
+            .unwrap(),
+        )
     }
 
     /// Helper: populate N nodes directly into the local cache (no Redis required)
     async fn register_nodes(registry: &NodeRegistry, count: usize) {
         let mut nodes = registry.local_nodes.write().await;
         // Register "self" first
-        nodes.insert("self".to_string(), NodeInfo::new(
+        nodes.insert(
             "self".to_string(),
-            "localhost:50051".to_string(),
-            "localhost:8080".to_string(),
-        ));
+            NodeInfo::new(
+                "self".to_string(),
+                "localhost:50051".to_string(),
+                "localhost:8080".to_string(),
+            ),
+        );
 
         // Add remote nodes
         for i in 1..count {
-            nodes.insert(format!("node-{i}"), NodeInfo::new(
+            nodes.insert(
                 format!("node-{i}"),
-                format!("localhost:{}", 50051 + i),
-                format!("localhost:{}", 8080 + i),
-            ));
+                NodeInfo::new(
+                    format!("node-{i}"),
+                    format!("localhost:{}", 50051 + i),
+                    format!("localhost:{}", 8080 + i),
+                ),
+            );
         }
     }
 
@@ -238,8 +252,8 @@ mod tests {
     async fn test_load_balancer_with_health_monitor() {
         let registry = make_registry();
         let monitor = Arc::new(HealthMonitor::new(Arc::clone(&registry), 60));
-        let _lb = LoadBalancer::new(registry, LoadBalancingStrategy::Random)
-            .with_health_monitor(monitor);
+        let _lb =
+            LoadBalancer::new(registry, LoadBalancingStrategy::Random).with_health_monitor(monitor);
     }
 
     // --- select_node: empty cluster ---
@@ -300,7 +314,11 @@ mod tests {
 
         // Should get all 3 unique nodes in one cycle
         let unique: HashSet<_> = cycle.iter().collect();
-        assert_eq!(unique.len(), 3, "Round-robin should cycle through all nodes");
+        assert_eq!(
+            unique.len(),
+            3,
+            "Round-robin should cycle through all nodes"
+        );
 
         // Next cycle should repeat the same order (sorted by node_id)
         let mut second_cycle = Vec::new();
@@ -321,18 +339,45 @@ mod tests {
         {
             let mut nodes = registry.local_nodes.write().await;
             // "self" = 10 connections
-            nodes.get_mut("self").unwrap().metadata.insert("connections".to_string(), "10".to_string());
+            nodes
+                .get_mut("self")
+                .unwrap()
+                .metadata
+                .insert("connections".to_string(), "10".to_string());
             // Ensure past warmup by setting registered_at far in the past
-            nodes.get_mut("self").unwrap().metadata.insert("registered_at".to_string(), "0".to_string());
+            nodes
+                .get_mut("self")
+                .unwrap()
+                .metadata
+                .insert("registered_at".to_string(), "0".to_string());
             // "node-1" = 5 connections (fewest)
-            nodes.get_mut("node-1").unwrap().metadata.insert("connections".to_string(), "5".to_string());
-            nodes.get_mut("node-1").unwrap().metadata.insert("registered_at".to_string(), "0".to_string());
+            nodes
+                .get_mut("node-1")
+                .unwrap()
+                .metadata
+                .insert("connections".to_string(), "5".to_string());
+            nodes
+                .get_mut("node-1")
+                .unwrap()
+                .metadata
+                .insert("registered_at".to_string(), "0".to_string());
             // "node-2" = 20 connections
-            nodes.get_mut("node-2").unwrap().metadata.insert("connections".to_string(), "20".to_string());
-            nodes.get_mut("node-2").unwrap().metadata.insert("registered_at".to_string(), "0".to_string());
+            nodes
+                .get_mut("node-2")
+                .unwrap()
+                .metadata
+                .insert("connections".to_string(), "20".to_string());
+            nodes
+                .get_mut("node-2")
+                .unwrap()
+                .metadata
+                .insert("registered_at".to_string(), "0".to_string());
         }
 
-        let lb = LoadBalancer::new(Arc::clone(&registry), LoadBalancingStrategy::LeastConnections);
+        let lb = LoadBalancer::new(
+            Arc::clone(&registry),
+            LoadBalancingStrategy::LeastConnections,
+        );
         let node = lb.select_node().await.unwrap();
         assert_eq!(node, "node-1", "Should select node with fewest connections");
     }
@@ -346,14 +391,29 @@ mod tests {
         // "node-1" has no connection metadata and was just registered
         {
             let mut nodes = registry.local_nodes.write().await;
-            nodes.get_mut("self").unwrap().metadata.insert("connections".to_string(), "5".to_string());
-            nodes.get_mut("self").unwrap().metadata.insert("registered_at".to_string(), "0".to_string());
+            nodes
+                .get_mut("self")
+                .unwrap()
+                .metadata
+                .insert("connections".to_string(), "5".to_string());
+            nodes
+                .get_mut("self")
+                .unwrap()
+                .metadata
+                .insert("registered_at".to_string(), "0".to_string());
             // node-1: recently registered (current time), no connections reported
             let now = chrono::Utc::now().timestamp().to_string();
-            nodes.get_mut("node-1").unwrap().metadata.insert("registered_at".to_string(), now);
+            nodes
+                .get_mut("node-1")
+                .unwrap()
+                .metadata
+                .insert("registered_at".to_string(), now);
         }
 
-        let lb = LoadBalancer::new(Arc::clone(&registry), LoadBalancingStrategy::LeastConnections);
+        let lb = LoadBalancer::new(
+            Arc::clone(&registry),
+            LoadBalancingStrategy::LeastConnections,
+        );
         let node = lb.select_node().await.unwrap();
         // node-1 is in warmup period with penalty > 5, so "self" should be selected
         assert_eq!(node, "self", "Warmup node should be penalized");
@@ -427,7 +487,10 @@ mod tests {
             selected.insert(lb.select_node().await.unwrap());
         }
 
-        assert!(!selected.contains("node-1"), "Unhealthy node should be excluded");
+        assert!(
+            !selected.contains("node-1"),
+            "Unhealthy node should be excluded"
+        );
         assert!(selected.contains("self") || selected.contains("node-2"));
     }
 
@@ -450,7 +513,10 @@ mod tests {
 
         // Should still return a node (fallback behavior)
         let node = lb.select_node().await;
-        assert!(node.is_ok(), "Should fall back to random selection when all unhealthy");
+        assert!(
+            node.is_ok(),
+            "Should fall back to random selection when all unhealthy"
+        );
     }
 
     #[tokio::test]

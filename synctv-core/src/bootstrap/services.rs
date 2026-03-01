@@ -8,15 +8,18 @@ use tracing::{error, info, warn};
 use crate::{
     bootstrap::RedisHandles,
     cache::{
-        CacheInvalidationService, CacheL2Backend, CacheManager,
-        NoopCacheL2, RedisCacheL2, RoomCache, UserCache, UsernameCache,
+        CacheInvalidationService, CacheL2Backend, CacheManager, NoopCacheL2, RedisCacheL2,
+        RoomCache, UserCache, UsernameCache,
     },
-    repository::{UserOAuthProviderRepository, ProviderInstanceRepository, UserProviderCredentialRepository, SettingsRepository, NotificationRepository},
+    repository::{
+        NotificationRepository, ProviderInstanceRepository, SettingsRepository,
+        UserOAuthProviderRepository, UserProviderCredentialRepository,
+    },
     service::{
-        ContentFilter, JwtService, OAuth2Service, RemoteProviderManager, RateLimitConfig,
-        RateLimiter, UserService, RoomService, ProvidersManager,
-        SettingsService, SettingsRegistry, EmailService, EmailTokenService, EmailConfig, PublishKeyService, UserNotificationService,
-        AuditService, AuditFlushHandle,
+        AuditFlushHandle, AuditService, ContentFilter, EmailConfig, EmailService,
+        EmailTokenService, JwtService, OAuth2Service, ProvidersManager, PublishKeyService,
+        RateLimitConfig, RateLimiter, RemoteProviderManager, RoomService, SettingsRegistry,
+        SettingsService, UserNotificationService, UserService,
     },
     Config,
 };
@@ -159,30 +162,30 @@ pub async fn init_services(
         config.cache.username_cache_ttl_seconds,
     )
     .with_invalidation_service(cache_invalidation.clone());
-    info!("Username cache initialized (capacity={}, ttl={}s)",
-        config.cache.username_cache_capacity, config.cache.username_cache_ttl_seconds);
+    info!(
+        "Username cache initialized (capacity={}, ttl={}s)",
+        config.cache.username_cache_capacity, config.cache.username_cache_ttl_seconds
+    );
 
     // Initialize user and room L1/L2 caches (using config values)
-    let user_cache = Arc::new(
-        UserCache::new(
-            cache_l2.clone(),
-            config.cache.l1_capacity,
-            config.cache.l1_ttl_seconds,
-            config.cache.l2_ttl_seconds,
-            format!("{}user:", config.redis.key_prefix),
-        )?
+    let user_cache = Arc::new(UserCache::new(
+        cache_l2.clone(),
+        config.cache.l1_capacity,
+        config.cache.l1_ttl_seconds,
+        config.cache.l2_ttl_seconds,
+        format!("{}user:", config.redis.key_prefix),
+    )?);
+    let room_cache = Arc::new(RoomCache::new(
+        cache_l2.clone(),
+        config.cache.l1_capacity,
+        config.cache.l1_ttl_seconds,
+        config.cache.l2_ttl_seconds,
+        format!("{}room:", config.redis.key_prefix),
+    )?);
+    info!(
+        "User and room caches initialized (l1_capacity={}, l1_ttl={}s, l2_ttl={}s)",
+        config.cache.l1_capacity, config.cache.l1_ttl_seconds, config.cache.l2_ttl_seconds
     );
-    let room_cache = Arc::new(
-        RoomCache::new(
-            cache_l2.clone(),
-            config.cache.l1_capacity,
-            config.cache.l1_ttl_seconds,
-            config.cache.l2_ttl_seconds,
-            format!("{}room:", config.redis.key_prefix),
-        )?
-    );
-    info!("User and room caches initialized (l1_capacity={}, l1_ttl={}s, l2_ttl={}s)",
-        config.cache.l1_capacity, config.cache.l1_ttl_seconds, config.cache.l2_ttl_seconds);
 
     // Determine if cluster mode is active (used for startup warnings below)
     let cluster_mode = config.cluster.enabled || !config.server.cluster_secret.is_empty();
@@ -201,7 +204,9 @@ pub async fn init_services(
                 conn.clone(),
                 config.redis.key_prefix.clone(),
             );
-            info!("Brute-force protection initialized (Redis-backed, fail-closed for cluster mode)");
+            info!(
+                "Brute-force protection initialized (Redis-backed, fail-closed for cluster mode)"
+            );
             bf
         } else {
             let bf = crate::service::BruteForceProtection::with_redis(
@@ -222,9 +227,7 @@ pub async fn init_services(
                  immediately."
             );
         }
-        let bf = crate::service::BruteForceProtection::in_memory(
-            config.redis.key_prefix.clone(),
-        );
+        let bf = crate::service::BruteForceProtection::in_memory(config.redis.key_prefix.clone());
         if cluster_mode {
             warn!(
                 "Brute-force protection is using in-memory counters but cluster mode is active. \
@@ -237,14 +240,20 @@ pub async fn init_services(
     };
 
     // Initialize token blacklist store (tiered: L1 moka + optional L2 Redis + PG primary)
-    let token_blacklist: Arc<dyn crate::service::TokenBlacklistStore> = Arc::new(
-        crate::service::TieredTokenBlacklistStore::new(
+    let token_blacklist: Arc<dyn crate::service::TokenBlacklistStore> =
+        Arc::new(crate::service::TieredTokenBlacklistStore::new(
             crate::service::PgTokenBlacklistStore::new(pool.clone()),
             redis_conn_plain.clone(),
             config.redis.key_prefix.clone(),
-        )
+        ));
+    info!(
+        "Token blacklist store initialized (tiered: PG primary{})",
+        if redis_conn_plain.is_some() {
+            " + Redis L2"
+        } else {
+            ""
+        }
     );
-    info!("Token blacklist store initialized (tiered: PG primary{})", if redis_conn_plain.is_some() { " + Redis L2" } else { "" });
 
     // Initialize UserService
     let key_builder = crate::cache::KeyBuilder::from_config(config);
@@ -298,18 +307,22 @@ pub async fn init_services(
     let provider_instance_repo = match &credential_encryption {
         Some(enc) => {
             info!("ProviderInstanceRepository initialized with encryption enabled");
-            Arc::new(ProviderInstanceRepository::new_with_encryption(pool.clone(), enc.clone()))
+            Arc::new(ProviderInstanceRepository::new_with_encryption(
+                pool.clone(),
+                enc.clone(),
+            ))
         }
-        None => {
-            Arc::new(ProviderInstanceRepository::new(pool.clone()))
-        }
+        None => Arc::new(ProviderInstanceRepository::new(pool.clone())),
     };
     info!("ProviderInstanceRepository initialized");
 
     // Initialize UserProviderCredentialRepository (with optional encryption)
     let user_provider_credential_repo = if let Some(enc) = credential_encryption {
         info!("UserProviderCredentialRepository initialized with encryption enabled");
-        Arc::new(UserProviderCredentialRepository::new_with_encryption(pool.clone(), enc))
+        Arc::new(UserProviderCredentialRepository::new_with_encryption(
+            pool.clone(),
+            enc,
+        ))
     } else {
         warn!(
             "Credential encryption key not configured (set SYNCTV_CREDENTIAL_ENCRYPTION_KEY). \
@@ -350,21 +363,25 @@ pub async fn init_services(
     }
 
     // Start cross-replica cache invalidation listener
-    if let Err(e) = provider_instance_manager.start_invalidation_listener().await {
+    if let Err(e) = provider_instance_manager
+        .start_invalidation_listener()
+        .await
+    {
         tracing::warn!("Failed to start provider invalidation listener: {e}");
     }
 
     // Initialize ProvidersManager
     info!("Initializing ProvidersManager...");
-    let providers_manager = Arc::new(ProvidersManager::new(
-        provider_instance_manager.clone(),
-    ));
+    let providers_manager = Arc::new(ProvidersManager::new(provider_instance_manager.clone()));
     info!("ProvidersManager initialized");
 
     // Initialize OAuth2 service (optional - requires OAuth2 provider config).
     // In cluster mode, Redis is required (validated at service creation).
     // In standalone mode, uses in-memory state store when Redis is not available.
-    let oauth2_configured = config.oauth2.providers.as_object()
+    let oauth2_configured = config
+        .oauth2
+        .providers
+        .as_object()
         .is_some_and(|m| !m.is_empty());
     let oauth2_service = if oauth2_configured {
         init_oauth2_service(pool.clone(), config, redis_conn_plain.clone(), cluster_mode).await?
@@ -423,7 +440,12 @@ pub async fn init_services(
     // Initialize Publish Key service (for RTMP streaming)
     let publish_key_service = if let Some(ref conn) = redis_conn_plain {
         info!("Publish key service initialized with Redis-backed JTI deduplication");
-        PublishKeyService::with_redis(jwt_service.clone(), 24, conn.clone(), config.redis.key_prefix.clone())
+        PublishKeyService::with_redis(
+            jwt_service.clone(),
+            24,
+            conn.clone(),
+            config.redis.key_prefix.clone(),
+        )
     } else {
         info!("Publish key service initialized with in-memory JTI deduplication");
         PublishKeyService::with_default_ttl(jwt_service.clone())
@@ -522,8 +544,9 @@ async fn init_oauth2_service(
     // 3. Initialize each provider instance using factory pattern
     for instance_name in provider_instances {
         // Get the full config for this instance
-        let full_config = providers_value.get(&instance_name)
-            .ok_or_else(|| anyhow::anyhow!("Provider instance {instance_name} not found in config"))?;
+        let full_config = providers_value.get(&instance_name).ok_or_else(|| {
+            anyhow::anyhow!("Provider instance {instance_name} not found in config")
+        })?;
 
         // Get provider type from config (check for explicit "type" field)
         let provider_type = full_config
@@ -538,18 +561,27 @@ async fn init_oauth2_service(
         // Add redirect_url to config (merge it in)
         // Use configured scheme (http/https) to support reverse proxy TLS termination
         let scheme = &config.oauth2.redirect_scheme;
-        let redirect_url = format!("{}://{}/api/oauth2/{}/callback", scheme, config.advertise_host(), instance_name);
+        let redirect_url = format!(
+            "{}://{}/api/oauth2/{}/callback",
+            scheme,
+            config.advertise_host(),
+            instance_name
+        );
         if let Some(mapping) = full_config.as_object_mut() {
             mapping.insert(
                 "redirect_url".to_string(),
-                serde_json::Value::String(redirect_url.clone())
+                serde_json::Value::String(redirect_url.clone()),
             );
         }
 
         // Use factory to create provider with full config
         match crate::oauth2::create_provider(&provider_type, &full_config).await {
             Ok(provider) => {
-                let provider_enum = if let Some(p) = crate::models::oauth2_client::OAuth2Provider::from_str_name(&provider_type) { p } else {
+                let provider_enum = if let Some(p) =
+                    crate::models::oauth2_client::OAuth2Provider::from_str_name(&provider_type)
+                {
+                    p
+                } else {
                     warn!(
                         "Skipping unknown OAuth2 provider type '{}' for instance '{}'",
                         provider_type, instance_name
@@ -558,8 +590,13 @@ async fn init_oauth2_service(
                 };
 
                 // Store provider for later use
-                oauth2_service.register_provider(instance_name.clone(), provider_enum, provider).await;
-                info!("Registered OAuth2 provider: {} (type: {})", instance_name, provider_type);
+                oauth2_service
+                    .register_provider(instance_name.clone(), provider_enum, provider)
+                    .await;
+                info!(
+                    "Registered OAuth2 provider: {} (type: {})",
+                    instance_name, provider_type
+                );
             }
             Err(e) => {
                 warn!("Failed to create OAuth2 provider {}: {}", instance_name, e);
@@ -574,7 +611,6 @@ async fn init_oauth2_service(
     Ok(Some(oauth2_service))
 }
 
-
 /// Load JWT service from secret in configuration
 fn load_jwt_service(config: &Config) -> Result<JwtService, anyhow::Error> {
     if config.jwt.secret.is_empty() {
@@ -584,8 +620,13 @@ fn load_jwt_service(config: &Config) -> Result<JwtService, anyhow::Error> {
     }
 
     const WEAK_SECRETS: &[&str] = &[
-        "change-me-in-production", "secret", "password", "jwt-secret",
-        "changeme", "test", "default",
+        "change-me-in-production",
+        "secret",
+        "password",
+        "jwt-secret",
+        "changeme",
+        "test",
+        "default",
     ];
     if WEAK_SECRETS.contains(&config.jwt.secret.as_str()) {
         warn!("Using a well-known JWT secret! This is insecure for production use.");
@@ -624,7 +665,8 @@ fn init_credential_encryption() -> Option<crate::service::CredentialEncryption> 
         "credential_encryption_key",
         SecretSource::File("/run/secrets/credential_encryption_key"),
         SecretSource::Env("SYNCTV_CREDENTIAL_ENCRYPTION_KEY"),
-    ).ok()?;
+    )
+    .ok()?;
 
     match crate::service::CredentialEncryption::from_hex_key(&hex_key) {
         Ok(enc) => {
@@ -643,7 +685,10 @@ fn init_credential_encryption() -> Option<crate::service::CredentialEncryption> 
 ///
 /// When `redis_client` is provided, uses Redis-backed verification code storage
 /// for multi-node safety. Otherwise falls back to in-memory storage.
-fn init_email_service(config: &Config, redis_client: Option<&redis::Client>) -> Option<Arc<EmailService>> {
+fn init_email_service(
+    config: &Config,
+    redis_client: Option<&redis::Client>,
+) -> Option<Arc<EmailService>> {
     // Check if SMTP host is configured
     if config.email.smtp_host.is_empty() {
         return None;

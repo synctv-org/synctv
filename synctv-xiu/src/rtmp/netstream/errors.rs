@@ -1,7 +1,4 @@
-use {
-    crate::rtmp::chunk::errors::PackError,
-    crate::flv::amf0::errors::Amf0WriteError,
-};
+use {crate::flv::amf0::errors::Amf0WriteError, crate::rtmp::chunk::errors::PackError};
 
 #[derive(Debug, thiserror::Error)]
 #[error("{value}")]

@@ -6,13 +6,9 @@
 //! Run with: cargo test --test `model_logic_tests`
 #![allow(clippy::unwrap_used)]
 
-use synctv_core::models::{
-    PermissionBits,
-    RoomRole,
-    RoomStatus,
-};
-use synctv_core::models::user::{UserRole, UserStatus, SignupMethod, User};
 use synctv_core::models::room::RoomSettingsJson;
+use synctv_core::models::user::{SignupMethod, User, UserRole, UserStatus};
+use synctv_core::models::{PermissionBits, RoomRole, RoomStatus};
 
 // ============================================================================
 // UserRole tests
@@ -107,8 +103,14 @@ fn test_user_status_from_str_roundtrip() {
 
 #[test]
 fn test_signup_method_from_str_name() {
-    assert_eq!(SignupMethod::from_str_name("email"), Some(SignupMethod::Email));
-    assert_eq!(SignupMethod::from_str_name("oauth2"), Some(SignupMethod::OAuth2));
+    assert_eq!(
+        SignupMethod::from_str_name("email"),
+        Some(SignupMethod::Email)
+    );
+    assert_eq!(
+        SignupMethod::from_str_name("oauth2"),
+        Some(SignupMethod::OAuth2)
+    );
     assert_eq!(SignupMethod::from_str_name("unknown"), None);
     assert_eq!(SignupMethod::from_str_name(""), None);
 }
@@ -178,7 +180,11 @@ fn test_user_can_create_room_role_and_status_interaction() {
 
 #[test]
 fn test_user_can_unbind_provider_email_signup() {
-    let user = make_user(UserRole::User, UserStatus::Active, Some(SignupMethod::Email));
+    let user = make_user(
+        UserRole::User,
+        UserStatus::Active,
+        Some(SignupMethod::Email),
+    );
     // Email users can always unbind OAuth2 providers (they still have email)
     assert!(user.can_unbind_provider(0, true));
     assert!(user.can_unbind_provider(1, true));
@@ -187,11 +193,15 @@ fn test_user_can_unbind_provider_email_signup() {
 
 #[test]
 fn test_user_can_unbind_provider_oauth2_signup() {
-    let user = make_user(UserRole::User, UserStatus::Active, Some(SignupMethod::OAuth2));
+    let user = make_user(
+        UserRole::User,
+        UserStatus::Active,
+        Some(SignupMethod::OAuth2),
+    );
     // OAuth2 user needs at least one OAuth2 or has email
     assert!(!user.can_unbind_provider(1, false)); // Only 1 OAuth2, no email -> cannot unbind
-    assert!(user.can_unbind_provider(2, false));  // 2 OAuth2 -> can unbind one
-    assert!(user.can_unbind_provider(1, true));   // 1 OAuth2 + email -> can unbind
+    assert!(user.can_unbind_provider(2, false)); // 2 OAuth2 -> can unbind one
+    assert!(user.can_unbind_provider(1, true)); // 1 OAuth2 + email -> can unbind
 }
 
 #[test]
@@ -352,7 +362,12 @@ fn test_room_role_permissions_hierarchy() {
 
 #[test]
 fn test_room_role_from_str_roundtrip() {
-    for role in [RoomRole::Creator, RoomRole::Admin, RoomRole::Member, RoomRole::Guest] {
+    for role in [
+        RoomRole::Creator,
+        RoomRole::Admin,
+        RoomRole::Member,
+        RoomRole::Guest,
+    ] {
         let s = role.to_string();
         let parsed: RoomRole = s.parse().unwrap();
         assert_eq!(parsed, role);
@@ -394,7 +409,8 @@ fn test_effective_permissions_add_and_remove() {
     let global = PermissionBits::new(PermissionBits::DEFAULT_MEMBER);
     let added = PermissionBits::PLAY_CONTROL;
     let removed = PermissionBits::SEND_CHAT;
-    let effective = RoomSettingsJson::effective_permissions_for_role(global, Some(added), Some(removed));
+    let effective =
+        RoomSettingsJson::effective_permissions_for_role(global, Some(added), Some(removed));
     assert!(effective.has(PermissionBits::PLAY_CONTROL)); // Added
     assert!(!effective.has(PermissionBits::SEND_CHAT)); // Removed
     assert!(effective.has(PermissionBits::ADD_MOVIE)); // Unchanged

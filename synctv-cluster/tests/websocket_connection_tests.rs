@@ -6,8 +6,8 @@
 #![allow(clippy::unwrap_used)]
 use std::time::Duration;
 
-use synctv_cluster::ConnectionManager;
 use synctv_cluster::sync::{ConnectionLimits, DisconnectSignal};
+use synctv_cluster::ConnectionManager;
 use synctv_core::models::id::{RoomId, UserId};
 
 fn uid(s: &str) -> UserId {
@@ -56,14 +56,18 @@ async fn test_connection_reconnect_after_disconnect() {
     let room = rid("room1");
 
     // First connection
-    mgr.register("conn1".to_string(), user.clone()).await.unwrap();
+    mgr.register("conn1".to_string(), user.clone())
+        .await
+        .unwrap();
     mgr.join_room("conn1", room.clone()).await.unwrap();
 
     // Disconnect
     mgr.unregister("conn1").await;
 
     // Reconnect with new connection ID for same user
-    mgr.register("conn2".to_string(), user.clone()).await.unwrap();
+    mgr.register("conn2".to_string(), user.clone())
+        .await
+        .unwrap();
     mgr.join_room("conn2", room.clone()).await.unwrap();
 
     // Should be in the room
@@ -85,7 +89,9 @@ async fn test_heartbeat_timeout() {
     };
     let mgr = ConnectionManager::new(limits);
 
-    mgr.register("conn1".to_string(), uid("user1")).await.unwrap();
+    mgr.register("conn1".to_string(), uid("user1"))
+        .await
+        .unwrap();
 
     // Immediately should not timeout
     let timeouts = mgr.check_timeouts();
@@ -113,9 +119,15 @@ async fn test_user_with_multiple_connections() {
     let user = uid("user1");
 
     // Should allow up to max_per_user connections
-    mgr.register("conn1".to_string(), user.clone()).await.unwrap();
-    mgr.register("conn2".to_string(), user.clone()).await.unwrap();
-    mgr.register("conn3".to_string(), user.clone()).await.unwrap();
+    mgr.register("conn1".to_string(), user.clone())
+        .await
+        .unwrap();
+    mgr.register("conn2".to_string(), user.clone())
+        .await
+        .unwrap();
+    mgr.register("conn3".to_string(), user.clone())
+        .await
+        .unwrap();
 
     // Fourth connection should fail
     let result = mgr.register("conn4".to_string(), user.clone()).await;
@@ -140,9 +152,15 @@ async fn test_room_leave_cleanup() {
     let room = rid("room1");
 
     // Multiple users in same room
-    mgr.register("conn1".to_string(), uid("user1")).await.unwrap();
-    mgr.register("conn2".to_string(), uid("user2")).await.unwrap();
-    mgr.register("conn3".to_string(), uid("user3")).await.unwrap();
+    mgr.register("conn1".to_string(), uid("user1"))
+        .await
+        .unwrap();
+    mgr.register("conn2".to_string(), uid("user2"))
+        .await
+        .unwrap();
+    mgr.register("conn3".to_string(), uid("user3"))
+        .await
+        .unwrap();
 
     mgr.join_room("conn1", room.clone()).await.unwrap();
     mgr.join_room("conn2", room.clone()).await.unwrap();
@@ -168,8 +186,12 @@ async fn test_disconnect_signal_to_room() {
     let user1 = uid("user1");
     let user2 = uid("user2");
 
-    mgr.register("conn1".to_string(), user1.clone()).await.unwrap();
-    mgr.register("conn2".to_string(), user2.clone()).await.unwrap();
+    mgr.register("conn1".to_string(), user1.clone())
+        .await
+        .unwrap();
+    mgr.register("conn2".to_string(), user2.clone())
+        .await
+        .unwrap();
     mgr.join_room("conn1", room.clone()).await.unwrap();
     mgr.join_room("conn2", room.clone()).await.unwrap();
 
@@ -189,7 +211,9 @@ async fn test_disconnect_signal_to_user() {
     let mgr = ConnectionManager::default();
     let user = uid("user1");
 
-    mgr.register("conn1".to_string(), user.clone()).await.unwrap();
+    mgr.register("conn1".to_string(), user.clone())
+        .await
+        .unwrap();
 
     let mut rx = mgr.subscribe_disconnect();
 
@@ -203,7 +227,9 @@ async fn test_disconnect_signal_to_user() {
 async fn test_disconnect_signal_to_connection() {
     let mgr = ConnectionManager::default();
 
-    mgr.register("conn1".to_string(), uid("user1")).await.unwrap();
+    mgr.register("conn1".to_string(), uid("user1"))
+        .await
+        .unwrap();
 
     let mut rx = mgr.subscribe_disconnect();
 
@@ -221,7 +247,9 @@ async fn test_disconnect_signal_to_connection() {
 async fn test_connection_duration_tracking() {
     let mgr = ConnectionManager::default();
 
-    mgr.register("conn1".to_string(), uid("user1")).await.unwrap();
+    mgr.register("conn1".to_string(), uid("user1"))
+        .await
+        .unwrap();
 
     // Small delay
     tokio::time::sleep(Duration::from_millis(50)).await;
@@ -244,7 +272,9 @@ async fn test_max_connection_duration() {
     };
     let mgr = ConnectionManager::new(limits);
 
-    mgr.register("conn1".to_string(), uid("user1")).await.unwrap();
+    mgr.register("conn1".to_string(), uid("user1"))
+        .await
+        .unwrap();
 
     // Before timeout
     let timeouts = mgr.check_timeouts();
@@ -271,9 +301,15 @@ async fn test_total_connection_limit() {
     let mgr = ConnectionManager::new(limits);
 
     // Fill up to limit
-    mgr.register("conn1".to_string(), uid("user1")).await.unwrap();
-    mgr.register("conn2".to_string(), uid("user2")).await.unwrap();
-    mgr.register("conn3".to_string(), uid("user3")).await.unwrap();
+    mgr.register("conn1".to_string(), uid("user1"))
+        .await
+        .unwrap();
+    mgr.register("conn2".to_string(), uid("user2"))
+        .await
+        .unwrap();
+    mgr.register("conn3".to_string(), uid("user3"))
+        .await
+        .unwrap();
 
     // Fourth should fail
     let result = mgr.register("conn4".to_string(), uid("user4")).await;
@@ -301,16 +337,24 @@ async fn test_room_connection_limit() {
     let room = rid("room1");
 
     // Fill up room
-    mgr.register("conn1".to_string(), uid("user1")).await.unwrap();
-    mgr.register("conn2".to_string(), uid("user2")).await.unwrap();
-    mgr.register("conn3".to_string(), uid("user3")).await.unwrap();
+    mgr.register("conn1".to_string(), uid("user1"))
+        .await
+        .unwrap();
+    mgr.register("conn2".to_string(), uid("user2"))
+        .await
+        .unwrap();
+    mgr.register("conn3".to_string(), uid("user3"))
+        .await
+        .unwrap();
 
     mgr.join_room("conn1", room.clone()).await.unwrap();
     mgr.join_room("conn2", room.clone()).await.unwrap();
     mgr.join_room("conn3", room.clone()).await.unwrap();
 
     // Fourth connection
-    mgr.register("conn4".to_string(), uid("user4")).await.unwrap();
+    mgr.register("conn4".to_string(), uid("user4"))
+        .await
+        .unwrap();
 
     // Should fail to join room (but connection exists)
     let result = mgr.join_room("conn4", room.clone()).await;
@@ -327,7 +371,9 @@ async fn test_rtc_state_management() {
     let room = rid("room1");
     let user = uid("user1");
 
-    mgr.register("conn1".to_string(), user.clone()).await.unwrap();
+    mgr.register("conn1".to_string(), user.clone())
+        .await
+        .unwrap();
     mgr.join_room("conn1", room.clone()).await.unwrap();
 
     // Initially not RTC joined
@@ -360,7 +406,9 @@ async fn test_rtc_state_management() {
 async fn test_activity_tracking() {
     let mgr = ConnectionManager::default();
 
-    mgr.register("conn1".to_string(), uid("user1")).await.unwrap();
+    mgr.register("conn1".to_string(), uid("user1"))
+        .await
+        .unwrap();
 
     let info1 = mgr.get_connection("conn1").unwrap();
     let initial_msg_count = info1.message_count;
@@ -383,7 +431,9 @@ async fn test_activity_tracking() {
 async fn test_duplicate_register_overwrites() {
     let mgr = ConnectionManager::default();
 
-    mgr.register("conn1".to_string(), uid("user1")).await.unwrap();
+    mgr.register("conn1".to_string(), uid("user1"))
+        .await
+        .unwrap();
     assert_eq!(mgr.connection_count(), 1);
 
     // Same connection ID with different user should overwrite
@@ -428,8 +478,12 @@ async fn test_disconnect_user_from_room_signal() {
     let room2 = rid("room2");
 
     // User in two rooms with two connections
-    mgr.register("conn1".to_string(), user.clone()).await.unwrap();
-    mgr.register("conn2".to_string(), user.clone()).await.unwrap();
+    mgr.register("conn1".to_string(), user.clone())
+        .await
+        .unwrap();
+    mgr.register("conn2".to_string(), user.clone())
+        .await
+        .unwrap();
     mgr.join_room("conn1", room1.clone()).await.unwrap();
     mgr.join_room("conn2", room2.clone()).await.unwrap();
 

@@ -100,7 +100,10 @@ async fn test_ttl_refresh_moderate_connections() {
         let user_id = uid(&format!("user_{user_idx}"));
         let room_id = rid(&format!("room_{room_idx}"));
 
-        manager.register(conn_id.clone(), user_id.clone()).await.unwrap();
+        manager
+            .register(conn_id.clone(), user_id.clone())
+            .await
+            .unwrap();
         manager.join_room(&conn_id, room_id.clone()).await.unwrap();
     }
 
@@ -175,7 +178,10 @@ async fn test_ttl_refresh_large_scale_performance() {
         let user_id = uid(&format!("user_{user_idx}"));
         let room_id = rid(&format!("room_{room_idx}"));
 
-        manager.register(conn_id.clone(), user_id.clone()).await.unwrap();
+        manager
+            .register(conn_id.clone(), user_id.clone())
+            .await
+            .unwrap();
         manager.join_room(&conn_id, room_id.clone()).await.unwrap();
     }
 
@@ -243,7 +249,10 @@ async fn test_ttl_refresh_large_scale_performance() {
         .query_async(&mut test_conn)
         .await
         .unwrap();
-    assert!(ttl > 10, "Total counter key should have TTL > 10, got {ttl}");
+    assert!(
+        ttl > 10,
+        "Total counter key should have TTL > 10, got {ttl}"
+    );
 }
 
 /// Test that TTL refresh handles empty connection manager gracefully.
@@ -326,7 +335,10 @@ async fn test_shutdown_cancels_ttl_refresh_task() {
 
     // Register a connection to ensure TTL task has work to do
     let user_id = uid("user_1");
-    manager.register("conn_1".to_string(), user_id).await.unwrap();
+    manager
+        .register("conn_1".to_string(), user_id)
+        .await
+        .unwrap();
 
     // Give the TTL task time to start (it spawns automatically)
     tokio::time::sleep(Duration::from_millis(100)).await;
@@ -357,7 +369,10 @@ async fn test_ttl_refresh_task_responds_quickly_to_shutdown() {
     // Register some connections
     for i in 0..5 {
         let user_id = uid(&format!("user_{i}"));
-        manager.register(format!("conn_{i}"), user_id).await.unwrap();
+        manager
+            .register(format!("conn_{i}"), user_id)
+            .await
+            .unwrap();
     }
 
     // Measure how long shutdown takes
@@ -381,8 +396,8 @@ async fn test_ttl_refresh_task_responds_quickly_to_shutdown() {
 async fn test_ttl_shutdown_is_idempotent() {
     let (_container, conn) = setup_redis().await;
 
-    let manager = ConnectionManager::new(ConnectionLimits::default())
-        .with_redis(conn, "idempotent:");
+    let manager =
+        ConnectionManager::new(ConnectionLimits::default()).with_redis(conn, "idempotent:");
 
     // Call shutdown multiple times
     manager.shutdown();
@@ -407,7 +422,10 @@ async fn test_manager_without_redis_works_without_shutdown() {
 
     // Manager should work for local operations
     let user_id = uid("local_user");
-    manager.register("local_conn".to_string(), user_id).await.unwrap();
+    manager
+        .register("local_conn".to_string(), user_id)
+        .await
+        .unwrap();
     assert_eq!(manager.connection_count(), 1);
 }
 
@@ -420,15 +438,17 @@ async fn test_manager_without_redis_works_without_shutdown() {
 async fn test_shutdown_during_active_operations() {
     let (_container, conn) = setup_redis().await;
 
-    let manager = ConnectionManager::new(ConnectionLimits::default())
-        .with_redis(conn.clone(), "active_ops:");
+    let manager =
+        ConnectionManager::new(ConnectionLimits::default()).with_redis(conn.clone(), "active_ops:");
 
     // Register many connections concurrently with shutdown
     let manager_clone = manager.clone();
     let register_handle = tokio::spawn(async move {
         for i in 0..50 {
             let user_id = uid(&format!("concurrent_user_{i}"));
-            let _ = manager_clone.register(format!("concurrent_conn_{i}"), user_id).await;
+            let _ = manager_clone
+                .register(format!("concurrent_conn_{i}"), user_id)
+                .await;
             tokio::time::sleep(Duration::from_millis(1)).await;
         }
     });
@@ -445,7 +465,10 @@ async fn test_shutdown_during_active_operations() {
     // Manager should be in a consistent state
     // (exact count depends on timing, but should be valid)
     let count = manager.connection_count();
-    assert!(count <= 50, "Connection count should be at most 50, got {count}");
+    assert!(
+        count <= 50,
+        "Connection count should be at most 50, got {count}"
+    );
 }
 
 /// Test that the disconnect retry task is also cancelled on shutdown.
@@ -465,7 +488,10 @@ async fn test_shutdown_cancels_disconnect_retry_task() {
 
     // Register and then force disconnect signal
     let user_id = uid("disconnect_user");
-    manager.register("disconnect_conn".to_string(), user_id.clone()).await.unwrap();
+    manager
+        .register("disconnect_conn".to_string(), user_id.clone())
+        .await
+        .unwrap();
 
     // Send a disconnect signal (this uses the disconnect retry mechanism)
     manager.disconnect_user(&user_id);
@@ -493,12 +519,15 @@ async fn test_shutdown_cancels_disconnect_retry_task() {
 async fn test_distributed_counter_ttl_is_2x_refresh_interval() {
     let (_container, conn) = setup_redis().await;
 
-    let manager = ConnectionManager::new(ConnectionLimits::default())
-        .with_redis(conn.clone(), "ttl_value:");
+    let manager =
+        ConnectionManager::new(ConnectionLimits::default()).with_redis(conn.clone(), "ttl_value:");
 
     // Register a connection
     let user_id = uid("user_ttl_test");
-    manager.register("conn_ttl_test".to_string(), user_id).await.unwrap();
+    manager
+        .register("conn_ttl_test".to_string(), user_id)
+        .await
+        .unwrap();
 
     // Verify the TTL on the user counter key
     let mut test_conn = conn.clone();
@@ -526,12 +555,15 @@ async fn test_distributed_counter_ttl_is_2x_refresh_interval() {
 async fn test_distributed_counter_expires_after_ttl() {
     let (_container, conn) = setup_redis().await;
 
-    let manager = ConnectionManager::new(ConnectionLimits::default())
-        .with_redis(conn.clone(), "ttl_expire:");
+    let manager =
+        ConnectionManager::new(ConnectionLimits::default()).with_redis(conn.clone(), "ttl_expire:");
 
     // Register a connection
     let user_id = uid("user_expire_test");
-    manager.register("conn_expire_test".to_string(), user_id).await.unwrap();
+    manager
+        .register("conn_expire_test".to_string(), user_id)
+        .await
+        .unwrap();
 
     // Verify counter exists and has value
     let mut test_conn = conn.clone();
@@ -578,12 +610,15 @@ async fn test_distributed_counter_expires_after_ttl() {
 async fn test_ttl_multiplier_provides_safety_margin() {
     let (_container, conn) = setup_redis().await;
 
-    let manager = ConnectionManager::new(ConnectionLimits::default())
-        .with_redis(conn.clone(), "ttl_margin:");
+    let manager =
+        ConnectionManager::new(ConnectionLimits::default()).with_redis(conn.clone(), "ttl_margin:");
 
     // Register a connection
     let user_id = uid("user_margin_test");
-    manager.register("conn_margin_test".to_string(), user_id).await.unwrap();
+    manager
+        .register("conn_margin_test".to_string(), user_id)
+        .await
+        .unwrap();
 
     // Get initial TTL
     let mut test_conn = conn.clone();

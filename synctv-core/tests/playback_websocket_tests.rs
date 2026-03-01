@@ -11,24 +11,21 @@
 
 use std::sync::Arc;
 
-use synctv_core_testing::{create_test_pool};
-use synctv_core::{
-    cache::{KeyBuilder, UsernameCache, NoopCacheL2},
-    config::PasswordComplexityConfig,
-    models::{
-        UserId, User, UserRole, UserStatus,
-        RoomPlaybackState,
-    },
-    repository::UserRepository,
-    service::{
-        RoomService, UserService, InMemoryTokenBlacklistStore,
-        auth::{JwtService, BruteForceProtection},
-        playback::{PlaybackBroadcaster, BroadcastResult},
-    },
-};
 use chrono::Utc;
 use parking_lot::RwLock;
 use sqlx::PgPool;
+use synctv_core::{
+    cache::{KeyBuilder, NoopCacheL2, UsernameCache},
+    config::PasswordComplexityConfig,
+    models::{RoomPlaybackState, User, UserId, UserRole, UserStatus},
+    repository::UserRepository,
+    service::{
+        auth::{BruteForceProtection, JwtService},
+        playback::{BroadcastResult, PlaybackBroadcaster},
+        InMemoryTokenBlacklistStore, RoomService, UserService,
+    },
+};
+use synctv_core_testing::create_test_pool;
 fn make_user_service(pool: PgPool) -> UserService {
     let secret = "Test_Secret_Key_For_JWT_Tokens_32Bytes!!";
     let jwt_service = JwtService::new(secret).expect("Failed to create JwtService");
@@ -152,7 +149,9 @@ async fn test_play_pause_triggers_broadcast() {
 
     // Set up mock broadcaster
     let mock_broadcaster = Arc::new(MockBroadcaster::new());
-    room_service.playback_service().set_cluster_broadcaster(mock_broadcaster.clone());
+    room_service
+        .playback_service()
+        .set_cluster_broadcaster(mock_broadcaster.clone());
 
     // Trigger play
     room_service
@@ -162,9 +161,16 @@ async fn test_play_pause_triggers_broadcast() {
         .unwrap();
 
     // Should have broadcast
-    assert_eq!(mock_broadcaster.broadcast_count(), 1, "Should have one broadcast");
+    assert_eq!(
+        mock_broadcaster.broadcast_count(),
+        1,
+        "Should have one broadcast"
+    );
     let broadcast = &mock_broadcaster.get_broadcasts()[0];
-    assert!(broadcast.is_playing, "Broadcast should show is_playing = true");
+    assert!(
+        broadcast.is_playing,
+        "Broadcast should show is_playing = true"
+    );
 
     mock_broadcaster.clear_broadcasts();
 
@@ -175,9 +181,16 @@ async fn test_play_pause_triggers_broadcast() {
         .await
         .unwrap();
 
-    assert_eq!(mock_broadcaster.broadcast_count(), 1, "Should have one broadcast");
+    assert_eq!(
+        mock_broadcaster.broadcast_count(),
+        1,
+        "Should have one broadcast"
+    );
     let broadcast = &mock_broadcaster.get_broadcasts()[0];
-    assert!(!broadcast.is_playing, "Broadcast should show is_playing = false");
+    assert!(
+        !broadcast.is_playing,
+        "Broadcast should show is_playing = false"
+    );
 }
 
 /// Test: Seek triggers broadcast
@@ -205,7 +218,9 @@ async fn test_seek_triggers_broadcast() {
 
     // Set up mock broadcaster
     let mock_broadcaster = Arc::new(MockBroadcaster::new());
-    room_service.playback_service().set_cluster_broadcaster(mock_broadcaster.clone());
+    room_service
+        .playback_service()
+        .set_cluster_broadcaster(mock_broadcaster.clone());
 
     // Trigger seek
     room_service
@@ -215,10 +230,16 @@ async fn test_seek_triggers_broadcast() {
         .unwrap();
 
     // Should have broadcast
-    assert_eq!(mock_broadcaster.broadcast_count(), 1, "Should have one broadcast");
+    assert_eq!(
+        mock_broadcaster.broadcast_count(),
+        1,
+        "Should have one broadcast"
+    );
     let broadcast = &mock_broadcaster.get_broadcasts()[0];
-    assert!((broadcast.current_time - 120.5).abs() < f64::EPSILON,
-        "Broadcast should show correct position");
+    assert!(
+        (broadcast.current_time - 120.5).abs() < f64::EPSILON,
+        "Broadcast should show correct position"
+    );
 }
 
 /// Test: Speed change triggers broadcast
@@ -246,7 +267,9 @@ async fn test_speed_change_triggers_broadcast() {
 
     // Set up mock broadcaster
     let mock_broadcaster = Arc::new(MockBroadcaster::new());
-    room_service.playback_service().set_cluster_broadcaster(mock_broadcaster.clone());
+    room_service
+        .playback_service()
+        .set_cluster_broadcaster(mock_broadcaster.clone());
 
     // Trigger speed change
     room_service
@@ -256,10 +279,16 @@ async fn test_speed_change_triggers_broadcast() {
         .unwrap();
 
     // Should have broadcast
-    assert_eq!(mock_broadcaster.broadcast_count(), 1, "Should have one broadcast");
+    assert_eq!(
+        mock_broadcaster.broadcast_count(),
+        1,
+        "Should have one broadcast"
+    );
     let broadcast = &mock_broadcaster.get_broadcasts()[0];
-    assert!((broadcast.speed - 2.0).abs() < f64::EPSILON,
-        "Broadcast should show correct speed");
+    assert!(
+        (broadcast.speed - 2.0).abs() < f64::EPSILON,
+        "Broadcast should show correct speed"
+    );
 }
 
 /// Test: Media switch triggers broadcast
@@ -287,13 +316,12 @@ async fn test_media_switch_triggers_broadcast() {
         .unwrap();
 
     // Get the root playlist
-    let playlists: Vec<synctv_core::models::Playlist> = sqlx::query_as(
-        "SELECT * FROM playlists WHERE room_id = $1"
-    )
-    .bind(room.id.as_str())
-    .fetch_all(&pool)
-    .await
-    .unwrap();
+    let playlists: Vec<synctv_core::models::Playlist> =
+        sqlx::query_as("SELECT * FROM playlists WHERE room_id = $1")
+            .bind(room.id.as_str())
+            .fetch_all(&pool)
+            .await
+            .unwrap();
     let root_playlist = &playlists[0];
 
     // Add media
@@ -314,7 +342,9 @@ async fn test_media_switch_triggers_broadcast() {
 
     // Set up mock broadcaster
     let mock_broadcaster = Arc::new(MockBroadcaster::new());
-    room_service.playback_service().set_cluster_broadcaster(mock_broadcaster.clone());
+    room_service
+        .playback_service()
+        .set_cluster_broadcaster(mock_broadcaster.clone());
 
     // Trigger media switch
     room_service
@@ -324,10 +354,17 @@ async fn test_media_switch_triggers_broadcast() {
         .unwrap();
 
     // Should have broadcast
-    assert_eq!(mock_broadcaster.broadcast_count(), 1, "Should have one broadcast");
+    assert_eq!(
+        mock_broadcaster.broadcast_count(),
+        1,
+        "Should have one broadcast"
+    );
     let broadcast = &mock_broadcaster.get_broadcasts()[0];
-    assert_eq!(broadcast.playing_media_id, Some(media.id.clone()),
-        "Broadcast should show correct media");
+    assert_eq!(
+        broadcast.playing_media_id,
+        Some(media.id.clone()),
+        "Broadcast should show correct media"
+    );
     assert!(broadcast.is_playing, "Should be playing after media switch");
 }
 
@@ -356,7 +393,9 @@ async fn test_reset_triggers_broadcast() {
 
     // Set up mock broadcaster
     let mock_broadcaster = Arc::new(MockBroadcaster::new());
-    room_service.playback_service().set_cluster_broadcaster(mock_broadcaster.clone());
+    room_service
+        .playback_service()
+        .set_cluster_broadcaster(mock_broadcaster.clone());
 
     // Trigger reset
     room_service
@@ -366,10 +405,20 @@ async fn test_reset_triggers_broadcast() {
         .unwrap();
 
     // Should have broadcast
-    assert_eq!(mock_broadcaster.broadcast_count(), 1, "Should have one broadcast");
+    assert_eq!(
+        mock_broadcaster.broadcast_count(),
+        1,
+        "Should have one broadcast"
+    );
     let broadcast = &mock_broadcaster.get_broadcasts()[0];
-    assert!(!broadcast.is_playing, "Broadcast should show is_playing = false");
-    assert!((broadcast.current_time - 0.0).abs() < f64::EPSILON, "Position should be 0");
+    assert!(
+        !broadcast.is_playing,
+        "Broadcast should show is_playing = false"
+    );
+    assert!(
+        (broadcast.current_time - 0.0).abs() < f64::EPSILON,
+        "Position should be 0"
+    );
     assert!(broadcast.playing_media_id.is_none(), "Media should be None");
 }
 
@@ -402,7 +451,9 @@ async fn test_multiple_state_changes_trigger_broadcasts() {
 
     // Set up mock broadcaster
     let mock_broadcaster = Arc::new(MockBroadcaster::new());
-    room_service.playback_service().set_cluster_broadcaster(mock_broadcaster.clone());
+    room_service
+        .playback_service()
+        .set_cluster_broadcaster(mock_broadcaster.clone());
 
     // Multiple operations
     room_service
@@ -430,13 +481,23 @@ async fn test_multiple_state_changes_trigger_broadcasts() {
         .unwrap();
 
     // Should have 4 broadcasts
-    assert_eq!(mock_broadcaster.broadcast_count(), 4, "Should have 4 broadcasts");
+    assert_eq!(
+        mock_broadcaster.broadcast_count(),
+        4,
+        "Should have 4 broadcasts"
+    );
 
     // Check broadcasts are in order
     let broadcasts = mock_broadcaster.get_broadcasts();
     assert!(broadcasts[0].is_playing, "1st: playing");
-    assert!((broadcasts[1].current_time - 50.0).abs() < f64::EPSILON, "2nd: seek to 50");
-    assert!((broadcasts[2].speed - 1.5).abs() < f64::EPSILON, "3rd: speed 1.5");
+    assert!(
+        (broadcasts[1].current_time - 50.0).abs() < f64::EPSILON,
+        "2nd: seek to 50"
+    );
+    assert!(
+        (broadcasts[2].speed - 1.5).abs() < f64::EPSILON,
+        "3rd: speed 1.5"
+    );
     assert!(!broadcasts[3].is_playing, "4th: paused");
 }
 
@@ -465,7 +526,9 @@ async fn test_broadcast_contains_correct_room_id() {
 
     // Set up mock broadcaster
     let mock_broadcaster = Arc::new(MockBroadcaster::new());
-    room_service.playback_service().set_cluster_broadcaster(mock_broadcaster.clone());
+    room_service
+        .playback_service()
+        .set_cluster_broadcaster(mock_broadcaster.clone());
 
     // Trigger operation
     room_service
@@ -476,7 +539,10 @@ async fn test_broadcast_contains_correct_room_id() {
 
     // Check room_id
     let broadcasts = mock_broadcaster.get_broadcasts();
-    assert_eq!(broadcasts[0].room_id, room.id, "Broadcast should have correct room_id");
+    assert_eq!(
+        broadcasts[0].room_id, room.id,
+        "Broadcast should have correct room_id"
+    );
 }
 
 // ============================================================================
@@ -509,7 +575,9 @@ async fn test_operations_succeed_when_broadcast_fails() {
     // Set up mock broadcaster that always fails
     let mock_broadcaster = Arc::new(MockBroadcaster::new());
     mock_broadcaster.set_fail(true);
-    room_service.playback_service().set_cluster_broadcaster(mock_broadcaster.clone());
+    room_service
+        .playback_service()
+        .set_cluster_broadcaster(mock_broadcaster.clone());
 
     // Operations should still succeed
     let result = room_service
@@ -517,7 +585,10 @@ async fn test_operations_succeed_when_broadcast_fails() {
         .set_playing(room.id.clone(), owner.id.clone(), true)
         .await;
 
-    assert!(result.is_ok(), "Operation should succeed even if broadcast fails");
+    assert!(
+        result.is_ok(),
+        "Operation should succeed even if broadcast fails"
+    );
 
     // Verify state was actually changed
     let state = room_service
@@ -557,7 +628,10 @@ async fn test_no_broadcaster_configured() {
         .set_playing(room.id.clone(), owner.id.clone(), true)
         .await;
 
-    assert!(result.is_ok(), "Operation should succeed without broadcaster");
+    assert!(
+        result.is_ok(),
+        "Operation should succeed without broadcaster"
+    );
 
     let state = room_service
         .playback_service()
@@ -634,10 +708,16 @@ async fn test_broadcast_contains_correct_version() {
 
     // Set up mock broadcaster
     let mock_broadcaster = Arc::new(MockBroadcaster::new());
-    room_service.playback_service().set_cluster_broadcaster(mock_broadcaster.clone());
+    room_service
+        .playback_service()
+        .set_cluster_broadcaster(mock_broadcaster.clone());
 
     // Initial version
-    let state = room_service.playback_service().get_state(&room.id).await.unwrap();
+    let state = room_service
+        .playback_service()
+        .get_state(&room.id)
+        .await
+        .unwrap();
     let initial_version = state.version;
 
     // Trigger operation
@@ -649,8 +729,11 @@ async fn test_broadcast_contains_correct_version() {
 
     // Check version in broadcast
     let broadcasts = mock_broadcaster.get_broadcasts();
-    assert_eq!(broadcasts[0].version, initial_version + 1,
-        "Broadcast should contain incremented version");
+    assert_eq!(
+        broadcasts[0].version,
+        initial_version + 1,
+        "Broadcast should contain incremented version"
+    );
 }
 
 // ============================================================================
@@ -683,7 +766,9 @@ async fn test_concurrent_operations_produce_consistent_broadcasts() {
 
     // Set up mock broadcaster
     let mock_broadcaster = Arc::new(MockBroadcaster::new());
-    room_service.playback_service().set_cluster_broadcaster(mock_broadcaster.clone());
+    room_service
+        .playback_service()
+        .set_cluster_broadcaster(mock_broadcaster.clone());
 
     // Spawn concurrent operations
     let mut handles = vec![];
@@ -705,7 +790,10 @@ async fn test_concurrent_operations_produce_consistent_broadcasts() {
     let results: Vec<_> = futures::future::join_all(handles).await;
 
     // All should succeed
-    let success_count = results.iter().filter(|r| r.as_ref().unwrap().is_ok()).count();
+    let success_count = results
+        .iter()
+        .filter(|r| r.as_ref().unwrap().is_ok())
+        .count();
     assert!(success_count >= 3, "Most operations should succeed");
 
     // All broadcasts should have valid state
@@ -713,10 +801,14 @@ async fn test_concurrent_operations_produce_consistent_broadcasts() {
     assert!(broadcasts.len() >= 3, "Should have at least 3 broadcasts");
 
     for (i, broadcast) in broadcasts.iter().enumerate() {
-        assert!(broadcast.current_time >= 0.0,
-            "Broadcast {i} should have valid position");
-        assert!(broadcast.version > 0 || i == 0,
-            "Broadcast {i} should have valid version");
+        assert!(
+            broadcast.current_time >= 0.0,
+            "Broadcast {i} should have valid position"
+        );
+        assert!(
+            broadcast.version > 0 || i == 0,
+            "Broadcast {i} should have valid version"
+        );
     }
 }
 
@@ -761,7 +853,9 @@ async fn test_cluster_mode_multiple_rooms() {
 
     // Set up mock broadcaster
     let mock_broadcaster = Arc::new(MockBroadcaster::new());
-    room_service.playback_service().set_cluster_broadcaster(mock_broadcaster.clone());
+    room_service
+        .playback_service()
+        .set_cluster_broadcaster(mock_broadcaster.clone());
 
     // Update room1
     room_service

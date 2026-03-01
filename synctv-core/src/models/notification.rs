@@ -57,20 +57,24 @@ impl sqlx::Type<sqlx::Postgres> for NotificationType {
     }
 
     fn compatible(ty: &sqlx::postgres::PgTypeInfo) -> bool {
-        *ty == Self::type_info()
-            || *ty == <String as sqlx::Type<sqlx::Postgres>>::type_info()
+        *ty == Self::type_info() || *ty == <String as sqlx::Type<sqlx::Postgres>>::type_info()
     }
 }
 
 impl sqlx::Encode<'_, sqlx::Postgres> for NotificationType {
-    fn encode_by_ref(&self, buf: &mut sqlx::postgres::PgArgumentBuffer) -> Result<sqlx::encode::IsNull, Box<dyn std::error::Error + Send + Sync>> {
+    fn encode_by_ref(
+        &self,
+        buf: &mut sqlx::postgres::PgArgumentBuffer,
+    ) -> Result<sqlx::encode::IsNull, Box<dyn std::error::Error + Send + Sync>> {
         let s = self.to_string();
         <String as sqlx::Encode<sqlx::Postgres>>::encode_by_ref(&s, buf)
     }
 }
 
 impl<'r> sqlx::Decode<'r, sqlx::Postgres> for NotificationType {
-    fn decode(value: sqlx::postgres::PgValueRef<'r>) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
+    fn decode(
+        value: sqlx::postgres::PgValueRef<'r>,
+    ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
         let s = <String as sqlx::Decode<sqlx::Postgres>>::decode(value)?;
         s.parse().map_err(|e: anyhow::Error| e.into())
     }
@@ -132,11 +136,23 @@ mod tests {
 
     #[test]
     fn test_notification_type_display() {
-        assert_eq!(NotificationType::RoomInvitation.to_string(), "room_invitation");
-        assert_eq!(NotificationType::SystemAnnouncement.to_string(), "system_announcement");
+        assert_eq!(
+            NotificationType::RoomInvitation.to_string(),
+            "room_invitation"
+        );
+        assert_eq!(
+            NotificationType::SystemAnnouncement.to_string(),
+            "system_announcement"
+        );
         assert_eq!(NotificationType::RoomEvent.to_string(), "room_event");
-        assert_eq!(NotificationType::PasswordReset.to_string(), "password_reset");
-        assert_eq!(NotificationType::EmailVerification.to_string(), "email_verification");
+        assert_eq!(
+            NotificationType::PasswordReset.to_string(),
+            "password_reset"
+        );
+        assert_eq!(
+            NotificationType::EmailVerification.to_string(),
+            "email_verification"
+        );
     }
 
     #[test]
@@ -167,7 +183,10 @@ mod tests {
     fn test_notification_type_from_str_invalid() {
         let result = "invalid_type".parse::<NotificationType>();
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("Invalid notification type"));
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("Invalid notification type"));
     }
 
     #[test]

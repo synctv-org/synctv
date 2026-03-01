@@ -144,7 +144,8 @@ impl StreamTracker {
     ///
     /// Splits on the first `:` — `room_id` and `media_id` must not contain colons.
     fn parse_stream_key(key: &str) -> Option<(String, String)> {
-        key.split_once(':').map(|(r, m)| (r.to_string(), m.to_string()))
+        key.split_once(':')
+            .map(|(r, m)| (r.to_string(), m.to_string()))
     }
 
     /// Build an RTMP composite key from `(app_name, stream_name)`.
@@ -193,15 +194,13 @@ impl StreamTracker {
             inner.by_rtmp.remove(&old_rk);
         }
 
-        inner.by_user
+        inner
+            .by_user
             .entry(user_id.clone())
             .or_default()
             .insert(sk.clone());
 
-        inner.by_room
-            .entry(room_id)
-            .or_default()
-            .insert(media_id);
+        inner.by_room.entry(room_id).or_default().insert(media_id);
 
         inner.by_stream.insert(sk.clone(), user_id);
         inner.by_rtmp.insert(rk.clone(), sk.clone());
@@ -291,7 +290,11 @@ impl StreamTracker {
     /// RTMP identifiers, then removes all tracking entries.
     ///
     /// Returns `Some((user_id, room_id, media_id))` if found, `None` otherwise.
-    pub fn remove_by_app_stream(&self, app_name: &str, stream_name: &str) -> Option<(String, String, String)> {
+    pub fn remove_by_app_stream(
+        &self,
+        app_name: &str,
+        stream_name: &str,
+    ) -> Option<(String, String, String)> {
         let rk = Self::rtmp_key(app_name, stream_name);
 
         let mut inner = self.inner.write();
@@ -301,7 +304,9 @@ impl StreamTracker {
             inner.rtmp_reverse.remove(&sk);
             if let Some((room_id, media_id)) = Self::parse_stream_key(&sk) {
                 // Use clean_rtmp=false since we already removed the RTMP mappings above
-                if let Some(user_id) = Self::remove_stream_locked(&mut inner, &room_id, &media_id, false) {
+                if let Some(user_id) =
+                    Self::remove_stream_locked(&mut inner, &room_id, &media_id, false)
+                {
                     debug!(
                         user_id = %user_id,
                         room_id = %room_id,
@@ -332,7 +337,8 @@ impl StreamTracker {
     #[must_use]
     pub fn get_user_streams(&self, user_id: &str) -> Vec<(String, String)> {
         let inner = self.inner.read();
-        inner.by_user
+        inner
+            .by_user
             .get(user_id)
             .map(|set| {
                 set.iter()
@@ -346,7 +352,8 @@ impl StreamTracker {
     #[must_use]
     pub fn get_room_streams(&self, room_id: &str) -> Vec<String> {
         let inner = self.inner.read();
-        inner.by_room
+        inner
+            .by_room
             .get(room_id)
             .map(|set| set.iter().cloned().collect())
             .unwrap_or_default()
@@ -356,7 +363,10 @@ impl StreamTracker {
     #[must_use]
     pub fn get_stream_user(&self, room_id: &str, media_id: &str) -> Option<String> {
         let inner = self.inner.read();
-        inner.by_stream.get(&Self::stream_key(room_id, media_id)).cloned()
+        inner
+            .by_stream
+            .get(&Self::stream_key(room_id, media_id))
+            .cloned()
     }
 
     /// Get RTMP identifiers (`app_name`, `stream_name`) for a logical (`room_id`, `media_id`).
@@ -369,7 +379,8 @@ impl StreamTracker {
         let sk = Self::stream_key(room_id, media_id);
         inner.rtmp_reverse.get(&sk).and_then(|rk| {
             // rtmp_key format is "{app_name}\0{stream_name}"
-            rk.split_once('\0').map(|(app, stream)| (app.to_string(), stream.to_string()))
+            rk.split_once('\0')
+                .map(|(app, stream)| (app.to_string(), stream.to_string()))
         })
     }
 
@@ -377,7 +388,11 @@ impl StreamTracker {
     #[must_use]
     pub fn iter_streams(&self) -> Vec<(String, String)> {
         let inner = self.inner.read();
-        inner.by_stream.iter().map(|(k, v)| (k.clone(), v.clone())).collect()
+        inner
+            .by_stream
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect()
     }
 
     /// Number of tracked streams.
@@ -474,7 +489,9 @@ impl StreamTracker {
 
         // Clean rtmp_reverse: remove entries whose stream key is not in by_stream
         let before = inner.rtmp_reverse.len();
-        inner.rtmp_reverse.retain(|sk, _rk| valid_streams.contains(sk));
+        inner
+            .rtmp_reverse
+            .retain(|sk, _rk| valid_streams.contains(sk));
         removed += before - inner.rtmp_reverse.len();
 
         if removed > 0 {
@@ -627,6 +644,8 @@ mod tests {
         assert!(tracker.get_stream_user("room1", "media1").is_none());
         assert!(tracker.get_stream_user("room1", "media2").is_none());
         assert!(tracker.get_stream_user("room2", "media3").is_none());
-        assert!(tracker.get_rtmp_identifiers("room1", "jwt_token_1").is_none());
+        assert!(tracker
+            .get_rtmp_identifiers("room1", "jwt_token_1")
+            .is_none());
     }
 }

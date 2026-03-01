@@ -7,7 +7,7 @@
 //! designed for the credential storage layer.
 
 use aes_gcm::{
-    aead::{Aead, KeyInit, OsRng, rand_core::RngCore},
+    aead::{rand_core::RngCore, Aead, KeyInit, OsRng},
     Aes256Gcm, Key, Nonce,
 };
 use std::sync::Arc;
@@ -77,7 +77,9 @@ impl FieldEncryption {
         }
         let key = Key::<Aes256Gcm>::from_slice(key_bytes);
         let cipher = Aes256Gcm::new(key);
-        Ok(Self { cipher: Arc::new(cipher) })
+        Ok(Self {
+            cipher: Arc::new(cipher),
+        })
     }
 
     /// Create from a hex-encoded key string
@@ -100,7 +102,8 @@ impl FieldEncryption {
         let nonce = Nonce::from_slice(&nonce_bytes);
 
         // Encrypt
-        let ciphertext = self.cipher
+        let ciphertext = self
+            .cipher
             .encrypt(nonce, plaintext.as_bytes())
             .map_err(|e| EncryptionError::EncryptionFailed(e.to_string()))?;
 
@@ -130,7 +133,9 @@ impl FieldEncryption {
             .map_err(|e| EncryptionError::InvalidFormat(format!("Invalid base64: {e}")))?;
 
         if combined.len() < 1 + NONCE_SIZE {
-            return Err(EncryptionError::InvalidFormat("Encrypted data too short".to_string()));
+            return Err(EncryptionError::InvalidFormat(
+                "Encrypted data too short".to_string(),
+            ));
         }
 
         let version = combined[0];
@@ -143,7 +148,8 @@ impl FieldEncryption {
         let (nonce_bytes, ciphertext) = combined[1..].split_at(NONCE_SIZE);
         let nonce = Nonce::from_slice(nonce_bytes);
 
-        let plaintext = self.cipher
+        let plaintext = self
+            .cipher
             .decrypt(nonce, ciphertext)
             .map_err(|e| EncryptionError::DecryptionFailed(e.to_string()))?;
 
@@ -164,10 +170,9 @@ mod tests {
 
     fn test_key() -> Vec<u8> {
         vec![
-            0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07,
-            0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f,
-            0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17,
-            0x18, 0x19, 0x1a, 0x1b, 0x1c, 0x1d, 0x1e, 0x1f,
+            0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d,
+            0x0e, 0x0f, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19, 0x1a, 0x1b,
+            0x1c, 0x1d, 0x1e, 0x1f,
         ]
     }
 

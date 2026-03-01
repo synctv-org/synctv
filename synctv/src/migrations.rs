@@ -30,7 +30,11 @@ const PG_ADVISORY_LOCK_KEY: i64 = 0x73796E63_74766D69_u64 as i64;
 /// `key_prefix` is the configured Redis key prefix (e.g., "synctv:") used to
 /// namespace the migration lock key, avoiding conflicts when multiple `SyncTV`
 /// instances share the same Redis.
-pub async fn run_migrations(pool: &PgPool, lock: &dyn MigrationLock, key_prefix: &str) -> Result<()> {
+pub async fn run_migrations(
+    pool: &PgPool,
+    lock: &dyn MigrationLock,
+    key_prefix: &str,
+) -> Result<()> {
     info!("Running database migrations...");
 
     run_migrations_with_lock(pool, lock, key_prefix).await?;
@@ -55,15 +59,14 @@ async fn run_migrate(pool: &PgPool) -> Result<()> {
 /// the migrator's list against the `_sqlx_migrations` table.
 async fn migrations_already_applied(pool: &PgPool) -> bool {
     let migrator = sqlx::migrate!("../migrations");
-    let applied: Vec<(i64,)> = match sqlx::query_as(
-        "SELECT version FROM _sqlx_migrations ORDER BY version",
-    )
-    .fetch_all(pool)
-    .await
-    {
-        Ok(rows) => rows,
-        Err(_) => return false, // table may not exist yet
-    };
+    let applied: Vec<(i64,)> =
+        match sqlx::query_as("SELECT version FROM _sqlx_migrations ORDER BY version")
+            .fetch_all(pool)
+            .await
+        {
+            Ok(rows) => rows,
+            Err(_) => return false, // table may not exist yet
+        };
 
     let applied_versions: std::collections::HashSet<i64> =
         applied.into_iter().map(|(v,)| v).collect();
@@ -76,7 +79,11 @@ async fn migrations_already_applied(pool: &PgPool) -> bool {
 
 /// Run migrations under a distributed lock so that only one replica in a
 /// cluster performs the migration. Other replicas wait and verify completion.
-async fn run_migrations_with_lock(pool: &PgPool, lock: &dyn MigrationLock, key_prefix: &str) -> Result<()> {
+async fn run_migrations_with_lock(
+    pool: &PgPool,
+    lock: &dyn MigrationLock,
+    key_prefix: &str,
+) -> Result<()> {
     let migration_lock_key = format!("{key_prefix}migration");
 
     match lock.acquire(&migration_lock_key, MIGRATION_LOCK_TTL).await {
@@ -117,10 +124,9 @@ async fn run_migrations_with_pg_advisory_lock(pool: &PgPool) -> Result<()> {
 
     // Acquire a dedicated connection for the session-scoped advisory lock.
     // The same connection must be used for both acquire and release.
-    let mut conn = pool
-        .acquire()
-        .await
-        .map_err(|e| anyhow::anyhow!("Failed to acquire DB connection for PG advisory lock: {e}"))?;
+    let mut conn = pool.acquire().await.map_err(|e| {
+        anyhow::anyhow!("Failed to acquire DB connection for PG advisory lock: {e}")
+    })?;
 
     loop {
         // pg_try_advisory_lock returns true if acquired, false if already held.

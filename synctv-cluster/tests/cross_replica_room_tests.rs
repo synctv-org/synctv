@@ -14,7 +14,6 @@ use synctv_core::models::id::{MediaId, RoomId, UserId};
 mod integration_test_helpers;
 use integration_test_helpers::{create_node, TestRedis};
 
-
 #[tokio::test]
 #[ignore = "requires Docker"]
 async fn test_cross_replica_kick_user() {
@@ -52,7 +51,10 @@ async fn test_cross_replica_kick_user() {
         .expect("Admin channel closed on node A");
 
     assert_eq!(received.event_type(), "kick_user");
-    if let ClusterEvent::KickUser { user_id, reason, .. } = &received {
+    if let ClusterEvent::KickUser {
+        user_id, reason, ..
+    } = &received
+    {
         assert_eq!(user_id.as_str(), "victim_user");
         assert_eq!(reason, "banned_by_admin");
     } else {
@@ -113,7 +115,10 @@ async fn test_cross_replica_room_event_propagation() {
         .expect("Room channel closed on node A");
 
     assert_eq!(received.event_type(), "chat_message");
-    if let ClusterEvent::ChatMessage { message, username, .. } = &received {
+    if let ClusterEvent::ChatMessage {
+        message, username, ..
+    } = &received
+    {
         assert_eq!(message, "Hello from node B!");
         assert_eq!(username, "sender");
     } else {
@@ -162,7 +167,13 @@ async fn test_cross_replica_kick_publisher() {
         .expect("Admin channel closed on node A");
 
     assert_eq!(received.event_type(), "kick_publisher");
-    if let ClusterEvent::KickPublisher { room_id: rid, media_id, reason, .. } = &received {
+    if let ClusterEvent::KickPublisher {
+        room_id: rid,
+        media_id,
+        reason,
+        ..
+    } = &received
+    {
         assert_eq!(rid.as_str(), "stream_room");
         assert_eq!(media_id.as_str(), "live_stream_1");
         assert_eq!(reason, "room_deleted");
@@ -278,12 +289,8 @@ async fn test_cross_replica_room_settings_changed() {
         .expect("Room channel closed");
 
     assert_eq!(received.event_type(), "room_settings_changed");
-    if let ClusterEvent::RoomSettingsChanged {
-        settings_json, ..
-    } = &received
-    {
-        let parsed: serde_json::Value =
-            serde_json::from_slice(settings_json).expect("valid JSON");
+    if let ClusterEvent::RoomSettingsChanged { settings_json, .. } = &received {
+        let parsed: serde_json::Value = serde_json::from_slice(settings_json).expect("valid JSON");
         assert_eq!(parsed["max_members"], 50);
         assert_eq!(parsed["chat_enabled"], false);
     } else {
@@ -383,4 +390,3 @@ async fn test_multiple_rooms_cross_replica() {
     node_a.shutdown().await;
     node_b.shutdown().await;
 }
-

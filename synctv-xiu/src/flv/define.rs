@@ -39,7 +39,7 @@ pub enum AvcCodecId {
     HEVC = 12,
 }
 
-#[must_use] 
+#[must_use]
 pub const fn u8_2_avc_codec_id(codec_id: u8) -> AvcCodecId {
     match codec_id {
         7_u8 => AvcCodecId::H264,
@@ -73,7 +73,7 @@ pub enum AacProfile {
     HEV2 = 29,
 }
 
-#[must_use] 
+#[must_use]
 pub const fn u8_2_aac_profile(profile: u8) -> AacProfile {
     match profile {
         2_u8 => AacProfile::LC,
@@ -95,7 +95,7 @@ pub enum AvcProfile {
     High = 100,
 }
 
-#[must_use] 
+#[must_use]
 pub const fn u8_2_avc_profile(profile: u8) -> AvcProfile {
     match profile {
         66_u8 => AvcProfile::Baseline,
@@ -140,7 +140,7 @@ pub enum AvcLevel {
     Level51 = 51,
 }
 
-#[must_use] 
+#[must_use]
 pub const fn u8_2_avc_level(profile: u8) -> AvcLevel {
     match profile {
         10_u8 => AvcLevel::Level1,

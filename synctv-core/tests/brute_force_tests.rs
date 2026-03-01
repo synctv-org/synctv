@@ -115,23 +115,26 @@ async fn test_brute_force_tier1_expired_window_unlocks() {
     let username_tracker = Arc::new(InMemoryAttemptTracker::new(50_000, 900));
     let ip_tracker = Arc::new(InMemoryAttemptTracker::new(100_000, 600));
 
-    let protection = BruteForceProtection::new(
-        "test".to_string(),
-        username_tracker.clone(),
-        ip_tracker,
-    );
+    let protection =
+        BruteForceProtection::new("test".to_string(), username_tracker.clone(), ip_tracker);
 
     // Record 5 failures with a timestamp far enough in the past that
     // the 60-second tier1 lockout has expired.
     let past = chrono::Utc::now().timestamp() - 120; // 2 minutes ago
     let key = "test:auth:login_attempts:charlie";
     for i in 0..5 {
-        username_tracker.record_failure(key, past + i, 900).await.unwrap();
+        username_tracker
+            .record_failure(key, past + i, 900)
+            .await
+            .unwrap();
     }
 
     // Lockout should have expired (60s window, 120s ago)
     let result = protection.check_allowed("charlie", None).await;
-    assert!(result.is_ok(), "Tier1 lockout should have expired after 60s");
+    assert!(
+        result.is_ok(),
+        "Tier1 lockout should have expired after 60s"
+    );
 }
 
 #[tokio::test]
@@ -178,10 +181,13 @@ async fn test_brute_force_reset_unlocks() {
 // RedisAttemptTracker tests (require testcontainers)
 // ============================================================================
 
-use testcontainers_modules::redis::Redis;
 use testcontainers::runners::AsyncRunner;
+use testcontainers_modules::redis::Redis;
 
-async fn start_redis() -> (testcontainers::ContainerAsync<Redis>, redis::aio::ConnectionManager) {
+async fn start_redis() -> (
+    testcontainers::ContainerAsync<Redis>,
+    redis::aio::ConnectionManager,
+) {
     let container = Redis::default()
         .start()
         .await
@@ -261,7 +267,10 @@ async fn test_brute_force_with_redis_e2e_lockout_and_reset() {
 
     // Should be locked out
     let result = protection.check_allowed("redis_user", ip).await;
-    assert!(result.is_err(), "5 failures via Redis should trigger lockout");
+    assert!(
+        result.is_err(),
+        "5 failures via Redis should trigger lockout"
+    );
     let err_msg = result.unwrap_err().to_string();
     assert!(
         err_msg.contains("Too many failed login attempts"),
@@ -272,10 +281,7 @@ async fn test_brute_force_with_redis_e2e_lockout_and_reset() {
     protection.reset("redis_user").await.unwrap();
 
     let result = protection.check_allowed("redis_user", ip).await;
-    assert!(
-        result.is_ok(),
-        "Reset should unlock the account via Redis"
-    );
+    assert!(result.is_ok(), "Reset should unlock the account via Redis");
 }
 
 #[tokio::test]
@@ -295,7 +301,9 @@ async fn test_brute_force_with_redis_ip_lockout_and_reset() {
     }
 
     // IP should be locked out even for a brand-new username
-    let result = protection.check_allowed("brand_new_ip_user", Some(ip)).await;
+    let result = protection
+        .check_allowed("brand_new_ip_user", Some(ip))
+        .await;
     assert!(
         result.is_err(),
         "IP with 20 failures should be locked out via Redis"
@@ -305,11 +313,10 @@ async fn test_brute_force_with_redis_ip_lockout_and_reset() {
     protection.reset_ip(&ip).await.unwrap();
 
     // IP should be unlocked now
-    let result = protection.check_allowed("brand_new_ip_user", Some(ip)).await;
-    assert!(
-        result.is_ok(),
-        "reset_ip should unlock the IP via Redis"
-    );
+    let result = protection
+        .check_allowed("brand_new_ip_user", Some(ip))
+        .await;
+    assert!(result.is_ok(), "reset_ip should unlock the IP via Redis");
 }
 
 // ============================================================================
@@ -324,20 +331,37 @@ async fn test_redis_tracker_degradation_tracking() {
     let tracker = RedisAttemptTracker::new(conn, 50_000, 900);
 
     // Initially should not be degraded
-    assert!(!tracker.is_degraded(), "Tracker should start in non-degraded state");
-    assert_eq!(tracker.degraded_operation_count(), 0, "No degraded operations yet");
+    assert!(
+        !tracker.is_degraded(),
+        "Tracker should start in non-degraded state"
+    );
+    assert_eq!(
+        tracker.degraded_operation_count(),
+        0,
+        "No degraded operations yet"
+    );
 
     let key = "test:degradation:user1";
     let now = chrono::Utc::now().timestamp();
 
     // Successful operation should keep tracker in non-degraded state
     tracker.record_failure(key, now, 900).await.unwrap();
-    assert!(!tracker.is_degraded(), "After successful operation, should not be degraded");
-    assert_eq!(tracker.degraded_operation_count(), 0, "No degraded operations after success");
+    assert!(
+        !tracker.is_degraded(),
+        "After successful operation, should not be degraded"
+    );
+    assert_eq!(
+        tracker.degraded_operation_count(),
+        0,
+        "No degraded operations after success"
+    );
 
     let (count, _) = tracker.get_attempts(key).await.unwrap();
     assert_eq!(count, 1);
-    assert!(!tracker.is_degraded(), "After successful get, should not be degraded");
+    assert!(
+        !tracker.is_degraded(),
+        "After successful get, should not be degraded"
+    );
 }
 
 /// Test that `RedisAttemptTracker` increments degraded counter on failures
@@ -400,11 +424,17 @@ async fn test_redis_tracker_success_clears_degraded_flag() {
     let (count, ts) = tracker.get_attempts(key).await.unwrap();
     assert_eq!(count, 3);
     assert_eq!(ts, now + 3);
-    assert!(!tracker.is_degraded(), "After successful get_attempts, should not be degraded");
+    assert!(
+        !tracker.is_degraded(),
+        "After successful get_attempts, should not be degraded"
+    );
 
     // Reset should also clear degraded flag
     let _ = tracker.reset(key).await;
-    assert!(!tracker.is_degraded(), "After successful reset, should not be degraded");
+    assert!(
+        !tracker.is_degraded(),
+        "After successful reset, should not be degraded"
+    );
 
     let (count, _) = tracker.get_attempts(key).await.unwrap();
     assert_eq!(count, 0);
@@ -452,23 +482,38 @@ fn test_brute_force_config_defaults_match_hardcoded() {
 
     // Tier 1: 5 failures -> 60 second lockout
     assert_eq!(config.tier1_threshold, 5, "TIER1_THRESHOLD should be 5");
-    assert_eq!(config.tier1_lockout_secs, 60, "TIER1_LOCKOUT_SECS should be 60");
+    assert_eq!(
+        config.tier1_lockout_secs, 60,
+        "TIER1_LOCKOUT_SECS should be 60"
+    );
 
     // Tier 2: 10 failures -> 5 minute lockout
     assert_eq!(config.tier2_threshold, 10, "TIER2_THRESHOLD should be 10");
-    assert_eq!(config.tier2_lockout_secs, 300, "TIER2_LOCKOUT_SECS should be 300");
+    assert_eq!(
+        config.tier2_lockout_secs, 300,
+        "TIER2_LOCKOUT_SECS should be 300"
+    );
 
     // Tier 3: 15 failures -> 15 minute lockout
     assert_eq!(config.tier3_threshold, 15, "TIER3_THRESHOLD should be 15");
-    assert_eq!(config.tier3_lockout_secs, 900, "TIER3_LOCKOUT_SECS should be 900");
+    assert_eq!(
+        config.tier3_lockout_secs, 900,
+        "TIER3_LOCKOUT_SECS should be 900"
+    );
 
     // IP lockout: 20 failures -> 10 minute lockout
     assert_eq!(config.ip_threshold, 20, "IP_THRESHOLD should be 20");
     assert_eq!(config.ip_lockout_secs, 600, "IP_LOCKOUT_SECS should be 600");
 
     // TTLs
-    assert_eq!(config.attempts_ttl_secs, 900, "ATTEMPTS_TTL_SECS should be 900");
-    assert_eq!(config.ip_attempts_ttl_secs, 600, "IP_ATTEMPTS_TTL_SECS should be 600");
+    assert_eq!(
+        config.attempts_ttl_secs, 900,
+        "ATTEMPTS_TTL_SECS should be 900"
+    );
+    assert_eq!(
+        config.ip_attempts_ttl_secs, 600,
+        "IP_ATTEMPTS_TTL_SECS should be 600"
+    );
 }
 
 /// Test `BruteForceConfig::custom_thresholds()` with custom values
@@ -525,7 +570,10 @@ fn test_brute_force_config_serde_roundtrip() {
     assert_eq!(deserialized.ip_threshold, original.ip_threshold);
     assert_eq!(deserialized.ip_lockout_secs, original.ip_lockout_secs);
     assert_eq!(deserialized.attempts_ttl_secs, original.attempts_ttl_secs);
-    assert_eq!(deserialized.ip_attempts_ttl_secs, original.ip_attempts_ttl_secs);
+    assert_eq!(
+        deserialized.ip_attempts_ttl_secs,
+        original.ip_attempts_ttl_secs
+    );
 }
 
 /// Test `BruteForceProtection` uses custom thresholds via config
@@ -544,7 +592,10 @@ async fn test_brute_force_with_custom_tier1_threshold() {
 
     // Record 3 failures (custom tier1 threshold)
     for _ in 0..3 {
-        protection.record_failure("custom_user", None).await.unwrap();
+        protection
+            .record_failure("custom_user", None)
+            .await
+            .unwrap();
     }
 
     // Should be locked out at 3 failures (not 5)
@@ -584,7 +635,10 @@ async fn test_brute_force_with_custom_lockout_duration() {
     let past = chrono::Utc::now().timestamp() - 10; // 10 seconds ago (beyond 5s lockout)
     let key = "test_custom_duration:auth:login_attempts:expired_user";
     for i in 0..2 {
-        username_tracker.record_failure(key, past + i, 900).await.unwrap();
+        username_tracker
+            .record_failure(key, past + i, 900)
+            .await
+            .unwrap();
     }
 
     // Lockout should have expired (5s lockout, failures 10s ago)
@@ -605,10 +659,8 @@ async fn test_brute_force_with_custom_ip_threshold() {
         ..BruteForceConfig::default()
     };
 
-    let protection = BruteForceProtection::in_memory_with_config(
-        "test_custom_ip:".to_string(),
-        custom_config,
-    );
+    let protection =
+        BruteForceProtection::in_memory_with_config("test_custom_ip:".to_string(), custom_config);
 
     let ip = Some(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 50)));
 
@@ -720,10 +772,8 @@ fn test_protection_config_accessible() {
         ip_attempts_ttl_secs: 300,
     };
 
-    let protection = BruteForceProtection::in_memory_with_config(
-        "test_config_access:".to_string(),
-        config,
-    );
+    let protection =
+        BruteForceProtection::in_memory_with_config("test_config_access:".to_string(), config);
 
     // Verify config is accessible
     let stored_config = protection.config();
@@ -753,7 +803,10 @@ async fn test_record_ip_failure_only_affects_ip_counter() {
     }
 
     // IP should be tracked
-    assert!(protection.check_ip_allowed(ip).await.is_ok(), "IP should not be locked yet");
+    assert!(
+        protection.check_ip_allowed(ip).await.is_ok(),
+        "IP should not be locked yet"
+    );
 
     // Record more failures to trigger IP lockout
     for _ in 0..15 {
@@ -802,10 +855,16 @@ async fn test_ip_only_failure_does_not_lock_username() {
     // But a legitimate user with a different IP should be able to log in
     // (this is the key behavior - random username guessing doesn't lock out real users)
     let different_ip = Some(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 99)));
-    assert!(protection.check_allowed("legitimate_user", different_ip).await.is_ok());
+    assert!(protection
+        .check_allowed("legitimate_user", different_ip)
+        .await
+        .is_ok());
 
     // And the username that was attacked should also be accessible from different IP
-    assert!(protection.check_allowed("nonexistent_user_tried_earlier", different_ip).await.is_ok());
+    assert!(protection
+        .check_allowed("nonexistent_user_tried_earlier", different_ip)
+        .await
+        .is_ok());
 }
 
 /// Test differentiated failure: wrong password for existing user locks both
@@ -822,7 +881,10 @@ async fn test_wrong_password_for_existing_user_locks_both() {
 
     // Username should be locked at tier 1 threshold (5)
     let result = protection.check_allowed(username, None).await;
-    assert!(result.is_err(), "Username should be locked after 5 failures");
+    assert!(
+        result.is_err(),
+        "Username should be locked after 5 failures"
+    );
 }
 
 /// Test that legitimate user from same IP gets locked when using wrong password
@@ -856,7 +918,10 @@ async fn test_attacker_cannot_lock_legitimate_user() {
     // Legitimate user "bob" should NOT be locked out
     // (even though attacker used the same IP, they didn't use "bob" as username)
     let result = protection.check_allowed("bob", attacker_ip).await;
-    assert!(result.is_ok(), "Bob should not be locked out by attacker's random username attempts");
+    assert!(
+        result.is_ok(),
+        "Bob should not be locked out by attacker's random username attempts"
+    );
 }
 
 /// Test IP lockout still works with IP-only failures
@@ -876,5 +941,8 @@ async fn test_ip_lockout_works_with_ip_only_failures() {
 
     // Any username from this IP should also be blocked
     let result = protection.check_allowed("any_username", ip).await;
-    assert!(result.is_err(), "Any username from locked IP should be blocked");
+    assert!(
+        result.is_err(),
+        "Any username from locked IP should be blocked"
+    );
 }

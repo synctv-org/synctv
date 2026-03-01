@@ -29,7 +29,7 @@ pub struct RtmpUrlParser {
 }
 
 impl RtmpUrlParser {
-    #[must_use] 
+    #[must_use]
     pub fn new(url: String) -> Self {
         Self {
             url,
@@ -82,7 +82,7 @@ impl RtmpUrlParser {
         Ok(())
     }
     /*parse the stream name and query to get real stream name and query*/
-    #[must_use] 
+    #[must_use]
     pub fn parse_stream_name_with_query(stream_name_with_query: &str) -> (String, Option<String>) {
         let data: Vec<&str> = stream_name_with_query.split('?').collect();
         let stream_name = data[0].to_string();
@@ -125,9 +125,16 @@ mod tests {
         parser.parse_url().unwrap();
 
         assert_eq!(parser.host, "domain.name.cn", "Parsed host should match");
-        assert_eq!(parser.port, Some("1935".to_string()), "Parsed port should be 1935");
+        assert_eq!(
+            parser.port,
+            Some("1935".to_string()),
+            "Parsed port should be 1935"
+        );
         assert_eq!(parser.app_name, "app_name", "Parsed app_name should match");
-        assert_eq!(parser.stream_name, "stream_name", "Parsed stream_name should match");
+        assert_eq!(
+            parser.stream_name, "stream_name",
+            "Parsed stream_name should match"
+        );
         assert_eq!(
             parser.query,
             Some("auth_key=test_Key".to_string()),
@@ -144,7 +151,10 @@ mod tests {
         assert_eq!(parser.host, "domain.name.cn", "Parsed host should match");
         assert_eq!(parser.port, None, "Port should be None when not specified");
         assert_eq!(parser.app_name, "app_name", "Parsed app_name should match");
-        assert_eq!(parser.stream_name, "stream_name", "Parsed stream_name should match");
+        assert_eq!(
+            parser.stream_name, "stream_name",
+            "Parsed stream_name should match"
+        );
         assert_eq!(parser.query, None, "Query should be None when not present");
     }
 }

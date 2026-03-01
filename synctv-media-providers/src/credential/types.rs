@@ -50,9 +50,7 @@ impl std::str::FromStr for ProviderType {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum CredentialData {
     /// Bilibili credentials (cookies map)
-    Bilibili {
-        cookies: HashMap<String, String>,
-    },
+    Bilibili { cookies: HashMap<String, String> },
 
     /// Alist credentials
     Alist {
@@ -185,9 +183,18 @@ mod tests {
 
     #[test]
     fn test_provider_type_from_str() {
-        assert_eq!(ProviderType::from_str("bilibili").unwrap(), ProviderType::Bilibili);
-        assert_eq!(ProviderType::from_str("Bilibili").unwrap(), ProviderType::Bilibili);
-        assert_eq!(ProviderType::from_str("alist").unwrap(), ProviderType::Alist);
+        assert_eq!(
+            ProviderType::from_str("bilibili").unwrap(),
+            ProviderType::Bilibili
+        );
+        assert_eq!(
+            ProviderType::from_str("Bilibili").unwrap(),
+            ProviderType::Bilibili
+        );
+        assert_eq!(
+            ProviderType::from_str("alist").unwrap(),
+            ProviderType::Alist
+        );
         assert_eq!(ProviderType::from_str("emby").unwrap(), ProviderType::Emby);
         assert!(ProviderType::from_str("unknown").is_err());
     }
@@ -197,7 +204,8 @@ mod tests {
         let bilibili = CredentialData::bilibili(HashMap::new());
         assert_eq!(bilibili.provider_type(), ProviderType::Bilibili);
 
-        let alist = CredentialData::alist("https://example.com".into(), "user".into(), "pass".into());
+        let alist =
+            CredentialData::alist("https://example.com".into(), "user".into(), "pass".into());
         assert_eq!(alist.provider_type(), ProviderType::Alist);
 
         let emby = CredentialData::emby("https://example.com".into(), "key".into(), "uid".into());
@@ -211,15 +219,27 @@ mod tests {
         assert_eq!(bilibili.server_id(), "bilibili");
 
         // Alist/Emby use SHA-256 hash of host
-        let alist = CredentialData::alist("https://alist.example.com".into(), "user".into(), "pass".into());
+        let alist = CredentialData::alist(
+            "https://alist.example.com".into(),
+            "user".into(),
+            "pass".into(),
+        );
         assert_eq!(alist.server_id().len(), 64); // SHA-256 hex is 64 chars
 
         // Same host should produce same server_id
-        let alist2 = CredentialData::alist("https://alist.example.com".into(), "other".into(), "cred".into());
+        let alist2 = CredentialData::alist(
+            "https://alist.example.com".into(),
+            "other".into(),
+            "cred".into(),
+        );
         assert_eq!(alist.server_id(), alist2.server_id());
 
         // Different hosts should produce different server_ids
-        let alist3 = CredentialData::alist("https://other.example.com".into(), "user".into(), "pass".into());
+        let alist3 = CredentialData::alist(
+            "https://other.example.com".into(),
+            "user".into(),
+            "pass".into(),
+        );
         assert_ne!(alist.server_id(), alist3.server_id());
     }
 

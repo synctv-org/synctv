@@ -13,7 +13,7 @@ use axum::{
     Router,
 };
 
-use crate::http::{AppState, AppResult, middleware::AuthUser};
+use crate::http::{middleware::AuthUser, AppResult, AppState};
 use crate::proto::client::CreatePublishKeyResponse;
 
 /// Create publish key routes
@@ -45,9 +45,7 @@ pub async fn generate_publish_key(
     let user_id_str = auth_user.user_id.to_string();
 
     // Delegate to shared ClientApiImpl (handles permission check, key generation, RTMP URL)
-    let req = crate::proto::client::CreatePublishKeyRequest {
-        id: media_id,
-    };
+    let req = crate::proto::client::CreatePublishKeyRequest { id: media_id };
     let resp = state
         .client_api
         .create_publish_key(&user_id_str, &room_id, req)

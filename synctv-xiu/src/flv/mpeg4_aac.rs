@@ -1,10 +1,10 @@
 use {
     super::errors::{MpegAacError, MpegErrorValue},
-    bytes::BytesMut,
     crate::bytesio::{
         bits_reader::BitsReader, bits_writer::BitsWriter, bytes_reader::BytesReader,
         bytes_writer::BytesWriter,
     },
+    bytes::BytesMut,
 };
 
 const AAC_FREQUENCE_SIZE: usize = 13;
@@ -89,7 +89,7 @@ impl Default for Mpeg4AacProcessor {
 }
 //https://blog.csdn.net/coloriy/article/details/90511746
 impl Mpeg4AacProcessor {
-    #[must_use] 
+    #[must_use]
     pub fn new() -> Self {
         Self {
             bytes_reader: BytesReader::new(BytesMut::new()),

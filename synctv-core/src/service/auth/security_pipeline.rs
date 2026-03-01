@@ -125,7 +125,11 @@ impl SecurityPipeline {
     /// When set, [`check`] will verify that the access token's JTI has not
     /// been blacklisted (e.g. via logout) before allowing the request.
     #[must_use]
-    pub fn with_token_blacklist(mut self, store: Arc<dyn TokenBlacklistStore>, key_builder: KeyBuilder) -> Self {
+    pub fn with_token_blacklist(
+        mut self,
+        store: Arc<dyn TokenBlacklistStore>,
+        key_builder: KeyBuilder,
+    ) -> Self {
         self.token_blacklist = Some(store);
         self.key_builder = Some(key_builder);
         self
@@ -179,7 +183,8 @@ impl SecurityPipeline {
                 // Step 2: Password version check against cached value.
                 if token_pv < cached.password_version() {
                     return Err(Error::Authentication(
-                        "Token invalidated due to password change. Please log in again.".to_string(),
+                        "Token invalidated due to password change. Please log in again."
+                            .to_string(),
                     ));
                 }
 
@@ -190,7 +195,10 @@ impl SecurityPipeline {
                 // Active status can be trusted to not be deleted. If this
                 // invariant is ever broken (e.g. a code path deletes without
                 // invalidation), the DB slow path below will still catch it.
-                if cached.status() == UserStatus::Banned || cached.status() == UserStatus::Pending || cached.is_deleted() {
+                if cached.status() == UserStatus::Banned
+                    || cached.status() == UserStatus::Pending
+                    || cached.is_deleted()
+                {
                     return Err(Error::Authentication("Authentication failed".to_string()));
                 }
 
@@ -231,10 +239,11 @@ impl SecurityPipeline {
             }
         }
 
-        if user.is_deleted() || user.status == UserStatus::Banned || user.status == UserStatus::Pending {
-            return Err(Error::Authentication(
-                "Authentication failed".to_string(),
-            ));
+        if user.is_deleted()
+            || user.status == UserStatus::Banned
+            || user.status == UserStatus::Pending
+        {
+            return Err(Error::Authentication("Authentication failed".to_string()));
         }
 
         // Check access token JTI blacklist (e.g. logout)
@@ -296,9 +305,7 @@ impl SecurityPipeline {
                 // On error, fail-closed: treat as blacklisted to prevent bypass
                 // during storage outages.
                 match store.is_blacklisted_checked(&key).await {
-                    Ok(true) => {
-                        Err(Error::Authentication("Authentication failed".to_string()))
-                    }
+                    Ok(true) => Err(Error::Authentication("Authentication failed".to_string())),
                     Ok(false) => Ok(()),
                     Err(e) => {
                         tracing::error!(
@@ -342,8 +349,7 @@ impl SecurityPipeline {
 
 impl std::fmt::Debug for SecurityPipeline {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("SecurityPipeline")
-            .finish()
+        f.debug_struct("SecurityPipeline").finish()
     }
 }
 

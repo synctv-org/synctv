@@ -28,7 +28,7 @@ fn test_token_rate_limit_key_stable() {
     // produces same hash every time.
     //
     // We use sha2 directly to verify the expected output format.
-    use sha2::{Sha256, Digest};
+    use sha2::{Digest, Sha256};
     let mut hasher = Sha256::new();
     hasher.update(token.as_bytes());
     let result = hasher.finalize();
@@ -53,7 +53,7 @@ fn test_token_rate_limit_key_stable() {
 /// Different tokens must produce different rate limit keys.
 #[test]
 fn test_token_rate_limit_key_different_inputs_different_keys() {
-    use sha2::{Sha256, Digest};
+    use sha2::{Digest, Sha256};
 
     let token_a = "eyJhbGciOiJIUzI1NiJ9.payload.sig-A";
     let token_b = "eyJhbGciOiJIUzI1NiJ9.payload.sig-B";
@@ -62,17 +62,26 @@ fn test_token_rate_limit_key_different_inputs_different_keys() {
         let mut h = Sha256::new();
         h.update(token_a.as_bytes());
         let r = h.finalize();
-        r[..8].iter().map(|b| format!("{b:02x}")).collect::<String>()
+        r[..8]
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect::<String>()
     };
 
     let hash_b = {
         let mut h = Sha256::new();
         h.update(token_b.as_bytes());
         let r = h.finalize();
-        r[..8].iter().map(|b| format!("{b:02x}")).collect::<String>()
+        r[..8]
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect::<String>()
     };
 
-    assert_ne!(hash_a, hash_b, "Different tokens must produce different keys");
+    assert_ne!(
+        hash_a, hash_b,
+        "Different tokens must produce different keys"
+    );
 }
 
 // ============================================================================
@@ -193,10 +202,8 @@ fn test_auth_interceptor_inject_user_valid_token() {
     use synctv_core::models::UserId;
     use synctv_core::service::auth::{JwtService, TokenType};
 
-    let jwt_service = JwtService::new(
-        "test-secret-key-long-enough-for-entropy-check-1234567890",
-    )
-    .unwrap();
+    let jwt_service =
+        JwtService::new("test-secret-key-long-enough-for-entropy-check-1234567890").unwrap();
     let user_id = UserId::new();
     let token = jwt_service
         .sign_token(&user_id, TokenType::Access, 0)
@@ -218,10 +225,8 @@ fn test_auth_interceptor_inject_room_missing_room_id() {
     use synctv_core::models::UserId;
     use synctv_core::service::auth::{JwtService, TokenType};
 
-    let jwt_service = JwtService::new(
-        "test-secret-key-long-enough-for-entropy-check-1234567890",
-    )
-    .unwrap();
+    let jwt_service =
+        JwtService::new("test-secret-key-long-enough-for-entropy-check-1234567890").unwrap();
     let user_id = UserId::new();
     let token = jwt_service
         .sign_token(&user_id, TokenType::Access, 0)
@@ -245,10 +250,8 @@ fn test_auth_interceptor_inject_room_with_room_id() {
     use synctv_core::models::UserId;
     use synctv_core::service::auth::{JwtService, TokenType};
 
-    let jwt_service = JwtService::new(
-        "test-secret-key-long-enough-for-entropy-check-1234567890",
-    )
-    .unwrap();
+    let jwt_service =
+        JwtService::new("test-secret-key-long-enough-for-entropy-check-1234567890").unwrap();
     let user_id = UserId::new();
     let token = jwt_service
         .sign_token(&user_id, TokenType::Access, 0)

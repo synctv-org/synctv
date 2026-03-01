@@ -4,11 +4,17 @@ use std::fmt::Write;
 use std::sync::LazyLock;
 use std::time::Duration;
 
-use reqwest::{Client, header::{HeaderMap, HeaderValue, CONTENT_TYPE}};
+use reqwest::{
+    header::{HeaderMap, HeaderValue, CONTENT_TYPE},
+    Client,
+};
 use serde_json::{json, Value};
 
-use super::error::{EmbyError, check_response, json_with_limit};
-use super::types::{AuthResponse, Item, UserInfo, ItemsResponse, SystemInfo, FsListResponse, PathInfo, PlaybackInfoResponse, default_device_profile};
+use super::error::{check_response, json_with_limit, EmbyError};
+use super::types::{
+    default_device_profile, AuthResponse, FsListResponse, Item, ItemsResponse, PathInfo,
+    PlaybackInfoResponse, SystemInfo, UserInfo,
+};
 use crate::error::with_retry;
 use crate::ssrf::ssrf_safe_dns_resolver;
 
@@ -22,11 +28,17 @@ fn url_encode(s: &str) -> String {
 /// Uses a whitelist approach: only alphanumeric characters, hyphens, and underscores are allowed.
 fn validate_item_id(id: &str) -> Result<(), EmbyError> {
     if id.is_empty() {
-        return Err(EmbyError::InvalidConfig("Item ID must not be empty".to_string()));
-    }
-    if !id.chars().all(|c| c.is_alphanumeric() || c == '-' || c == '_') {
         return Err(EmbyError::InvalidConfig(
-            "Item ID contains invalid characters (only alphanumeric, hyphens, underscores allowed)".to_string(),
+            "Item ID must not be empty".to_string(),
+        ));
+    }
+    if !id
+        .chars()
+        .all(|c| c.is_alphanumeric() || c == '-' || c == '_')
+    {
+        return Err(EmbyError::InvalidConfig(
+            "Item ID contains invalid characters (only alphanumeric, hyphens, underscores allowed)"
+                .to_string(),
         ));
     }
     Ok(())
@@ -130,8 +142,11 @@ impl EmbyClient {
     }
 
     /// Login to Emby/Jellyfin server
-    pub async fn login(&mut self, username: &str, password: &str) -> Result<(String, String), EmbyError> {
-
+    pub async fn login(
+        &mut self,
+        username: &str,
+        password: &str,
+    ) -> Result<(String, String), EmbyError> {
         let prefix = self.get_api_prefix();
         let url = format!("{}{}/Users/authenticatebyname", self.host, prefix);
 
@@ -162,7 +177,8 @@ impl EmbyClient {
                 let user_id = auth_resp.user.id;
                 Ok((token, user_id))
             }
-        }).await?;
+        })
+        .await?;
 
         self.set_credentials(token.clone(), user_id.clone());
         Ok((token, user_id))
@@ -173,10 +189,15 @@ impl EmbyClient {
         validate_item_id(item_id)?;
 
         let prefix = self.get_api_prefix();
-        let url = format!("{}{}/Users/{}/Items?Ids={}",
+        let url = format!(
+            "{}{}/Users/{}/Items?Ids={}",
             self.host,
             prefix,
-            url_encode(self.user_id.as_ref().ok_or_else(|| EmbyError::InvalidConfig("Missing user_id".to_string()))?),
+            url_encode(
+                self.user_id
+                    .as_ref()
+                    .ok_or_else(|| EmbyError::InvalidConfig("Missing user_id".to_string()))?
+            ),
             url_encode(item_id)
         );
         let headers = self.build_headers()?;
@@ -187,30 +208,30 @@ impl EmbyClient {
             let headers = headers.clone();
             let client = client.clone();
             async move {
-                let response = client
-                    .get(&url)
-                    .headers(headers)
-                    .send()
-                    .await?;
+                let response = client.get(&url).headers(headers).send().await?;
 
                 let response = check_response(response).await?;
                 let json: Value = json_with_limit(response).await?;
-                let items = json["Items"].as_array()
+                let items = json["Items"]
+                    .as_array()
                     .ok_or_else(|| EmbyError::Parse("Missing Items array".to_string()))?;
 
                 if items.is_empty() {
-                    return Err(EmbyError::Api { code: 0, message: "Item not found".to_string() });
+                    return Err(EmbyError::Api {
+                        code: 0,
+                        message: "Item not found".to_string(),
+                    });
                 }
 
                 let item: Item = serde_json::from_value(items[0].clone())?;
                 Ok(item)
             }
-        }).await
+        })
+        .await
     }
 
     /// Get current user information
     pub async fn me(&self) -> Result<UserInfo, EmbyError> {
-
         let user_id = self
             .user_id
             .as_ref()
@@ -226,17 +247,14 @@ impl EmbyClient {
             let headers = headers.clone();
             let client = client.clone();
             async move {
-                let response = client
-                    .get(&url)
-                    .headers(headers)
-                    .send()
-                    .await?;
+                let response = client.get(&url).headers(headers).send().await?;
 
                 let response = check_response(response).await?;
                 let user: UserInfo = json_with_limit(response).await?;
                 Ok(user)
             }
-        }).await
+        })
+        .await
     }
 
     /// Get items list
@@ -255,8 +273,12 @@ impl EmbyClient {
             .ok_or_else(|| EmbyError::InvalidConfig("Missing user_id".to_string()))?;
 
         let prefix = self.get_api_prefix();
-        let mut url = format!("{}{}/Users/{}/Items?SortBy=SortName&SortOrder=Ascending",
-            self.host, prefix, url_encode(user_id));
+        let mut url = format!(
+            "{}{}/Users/{}/Items?SortBy=SortName&SortOrder=Ascending",
+            self.host,
+            prefix,
+            url_encode(user_id)
+        );
 
         if let Some(pid) = parent_id {
             let _ = write!(url, "&ParentId={}", url_encode(pid));
@@ -276,22 +298,18 @@ impl EmbyClient {
             let headers = headers.clone();
             let client = client.clone();
             async move {
-                let response = client
-                    .get(&url)
-                    .headers(headers)
-                    .send()
-                    .await?;
+                let response = client.get(&url).headers(headers).send().await?;
 
                 let response = check_response(response).await?;
                 let items: ItemsResponse = json_with_limit(response).await?;
                 Ok(items)
             }
-        }).await
+        })
+        .await
     }
 
     /// Get system information
     pub async fn get_system_info(&self) -> Result<SystemInfo, EmbyError> {
-
         let prefix = self.get_api_prefix();
         let url = format!("{}{}/System/Info", self.host, prefix);
         let headers = self.build_headers()?;
@@ -302,17 +320,14 @@ impl EmbyClient {
             let headers = headers.clone();
             let client = client.clone();
             async move {
-                let response = client
-                    .get(&url)
-                    .headers(headers)
-                    .send()
-                    .await?;
+                let response = client.get(&url).headers(headers).send().await?;
 
                 let response = check_response(response).await?;
                 let info: SystemInfo = json_with_limit(response).await?;
                 Ok(info)
             }
-        }).await
+        })
+        .await
     }
 
     /// Filesystem list
@@ -336,7 +351,12 @@ impl EmbyClient {
 
         // Get user views (libraries) if no path specified
         if path.is_none() && search_term.is_none() {
-            let url = format!("{}{}/Users/{}/Views", self.host, prefix, url_encode(user_id));
+            let url = format!(
+                "{}{}/Users/{}/Views",
+                self.host,
+                prefix,
+                url_encode(user_id)
+            );
             let headers = self.build_headers()?;
             let client = self.client.clone();
 
@@ -345,17 +365,14 @@ impl EmbyClient {
                 let headers = headers.clone();
                 let client = client.clone();
                 async move {
-                    let response = client
-                        .get(&url)
-                        .headers(headers)
-                        .send()
-                        .await?;
+                    let response = client.get(&url).headers(headers).send().await?;
 
                     let response = check_response(response).await?;
                     let views: ItemsResponse = json_with_limit(response).await?;
                     Ok(views)
                 }
-            }).await?;
+            })
+            .await?;
 
             return Ok(FsListResponse {
                 items: views.items,
@@ -370,7 +387,11 @@ impl EmbyClient {
         // Query items with filters
         let mut url = format!(
             "{}{}/Users/{}/Items?StartIndex={}&Limit={}",
-            self.host, prefix, url_encode(user_id), start_index, limit
+            self.host,
+            prefix,
+            url_encode(user_id),
+            start_index,
+            limit
         );
 
         if let Some(p) = path {
@@ -389,17 +410,14 @@ impl EmbyClient {
             let headers = headers.clone();
             let client = client.clone();
             async move {
-                let response = client
-                    .get(&url)
-                    .headers(headers)
-                    .send()
-                    .await?;
+                let response = client.get(&url).headers(headers).send().await?;
 
                 let response = check_response(response).await?;
                 let items: ItemsResponse = json_with_limit(response).await?;
                 Ok(items)
             }
-        }).await?;
+        })
+        .await?;
 
         let mut paths = vec![PathInfo {
             name: "Home".to_string(),
@@ -425,11 +443,11 @@ impl EmbyClient {
 
     /// Logout
     pub async fn logout(&self) -> Result<(), EmbyError> {
-
         let prefix = self.get_api_prefix();
         let url = format!("{}{}/Sessions/Logout", self.host, prefix);
 
-        let resp = self.client
+        let resp = self
+            .client
             .post(&url)
             .headers(self.build_headers()?)
             .send()
@@ -456,7 +474,12 @@ impl EmbyClient {
             .ok_or_else(|| EmbyError::InvalidConfig("Missing user_id".to_string()))?;
 
         let prefix = self.get_api_prefix();
-        let url = format!("{}{}/Items/{}/PlaybackInfo", self.host, prefix, url_encode(item_id));
+        let url = format!(
+            "{}{}/Items/{}/PlaybackInfo",
+            self.host,
+            prefix,
+            url_encode(item_id)
+        );
 
         let mut body = json!({
             "UserId": user_id,
@@ -496,7 +519,8 @@ impl EmbyClient {
                 let playback_info: PlaybackInfoResponse = json_with_limit(response).await?;
                 Ok(playback_info)
             }
-        }).await
+        })
+        .await
     }
 
     /// Delete active encodings
@@ -506,10 +530,13 @@ impl EmbyClient {
         let prefix = self.get_api_prefix();
         let url = format!(
             "{}{}/Videos/ActiveEncodings?PlaySessionId={}",
-            self.host, prefix, url_encode(play_session_id)
+            self.host,
+            prefix,
+            url_encode(play_session_id)
         );
 
-        let resp = self.client
+        let resp = self
+            .client
             .delete(&url)
             .headers(self.build_headers()?)
             .send()
@@ -542,7 +569,8 @@ impl EmbyClient {
             body["MediaSourceId"] = json!(source_id);
         }
 
-        let resp = self.client
+        let resp = self
+            .client
             .post(&url)
             .headers(self.build_headers()?)
             .json(&body)
@@ -571,7 +599,8 @@ impl EmbyClient {
             "PositionTicks": position_ticks,
         });
 
-        let resp = self.client
+        let resp = self
+            .client
             .post(&url)
             .headers(self.build_headers()?)
             .json(&body)
@@ -607,7 +636,8 @@ impl EmbyClient {
             body["MediaSourceId"] = json!(source_id);
         }
 
-        let resp = self.client
+        let resp = self
+            .client
             .post(&url)
             .headers(self.build_headers()?)
             .json(&body)
@@ -625,7 +655,7 @@ impl EmbyClient {
     }
 
     /// Check if client has credentials
-    #[must_use] 
+    #[must_use]
     pub const fn has_credentials(&self) -> bool {
         self.token.is_some() && self.user_id.is_some()
     }
@@ -641,11 +671,9 @@ mod tests {
         assert_eq!(client.host(), "https://emby.example.com");
         assert!(!client.has_credentials());
 
-        let client_with_creds = EmbyClient::with_credentials(
-            "https://emby.example.com",
-            "test_token",
-            "user123"
-        ).unwrap();
+        let client_with_creds =
+            EmbyClient::with_credentials("https://emby.example.com", "test_token", "user123")
+                .unwrap();
         assert!(client_with_creds.has_credentials());
     }
 
@@ -681,11 +709,9 @@ mod tests {
 
     #[test]
     fn test_client_credentials() {
-        let client = EmbyClient::with_credentials(
-            "https://emby.example.com",
-            "token123",
-            "user456",
-        ).unwrap();
+        let client =
+            EmbyClient::with_credentials("https://emby.example.com", "token123", "user456")
+                .unwrap();
         assert!(client.has_credentials());
     }
 

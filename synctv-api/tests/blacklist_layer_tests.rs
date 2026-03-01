@@ -65,23 +65,18 @@ fn test_wrong_secret_jwt_fails_verification() {
     use synctv_core::models::UserId;
     use synctv_core::service::auth::{JwtService, TokenType};
 
-    let jwt_a = JwtService::new(
-        "secret-aaaa-long-enough-for-entropy-check-1234567890",
-    )
-    .unwrap();
-    let jwt_b = JwtService::new(
-        "secret-bbbb-long-enough-for-entropy-check-1234567890",
-    )
-    .unwrap();
+    let jwt_a = JwtService::new("secret-aaaa-long-enough-for-entropy-check-1234567890").unwrap();
+    let jwt_b = JwtService::new("secret-bbbb-long-enough-for-entropy-check-1234567890").unwrap();
 
     let user_id = UserId::new();
-    let token = jwt_a
-        .sign_token(&user_id, TokenType::Access, 0)
-        .unwrap();
+    let token = jwt_a.sign_token(&user_id, TokenType::Access, 0).unwrap();
 
     // Token signed by jwt_a should fail verification with jwt_b
     let result = jwt_b.verify_access_token(&token);
-    assert!(result.is_err(), "Token signed with different secret must fail");
+    assert!(
+        result.is_err(),
+        "Token signed with different secret must fail"
+    );
 }
 
 /// A refresh token should not pass as an access token in the blacklist layer.
@@ -90,10 +85,8 @@ fn test_refresh_token_rejected_as_access_token() {
     use synctv_core::models::UserId;
     use synctv_core::service::auth::{JwtService, TokenType};
 
-    let jwt_service = JwtService::new(
-        "test-secret-key-long-enough-for-entropy-check-1234567890",
-    )
-    .unwrap();
+    let jwt_service =
+        JwtService::new("test-secret-key-long-enough-for-entropy-check-1234567890").unwrap();
     let user_id = UserId::new();
     let refresh_token = jwt_service
         .sign_token(&user_id, TokenType::Refresh, 0)
@@ -131,5 +124,8 @@ fn test_non_bearer_scheme_returns_error() {
     use synctv_core::service::auth::JwtValidator;
 
     let result = JwtValidator::extract_bearer_token("Basic dXNlcjpwYXNz");
-    assert!(result.is_err(), "Basic auth should not extract a bearer token");
+    assert!(
+        result.is_err(),
+        "Basic auth should not extract a bearer token"
+    );
 }

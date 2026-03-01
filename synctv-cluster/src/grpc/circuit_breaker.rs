@@ -5,14 +5,15 @@
 
 use failsafe::{backoff, failure_policy, Config as CbConfig, StateMachine};
 use std::collections::HashMap;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::RwLock;
 use tracing::{debug, warn};
 
 /// Circuit breaker state for a single gRPC endpoint.
-type EndpointCircuitBreaker = StateMachine<failure_policy::ConsecutiveFailures<backoff::Exponential>, ()>;
+type EndpointCircuitBreaker =
+    StateMachine<failure_policy::ConsecutiveFailures<backoff::Exponential>, ()>;
 
 /// Wrapper around `EndpointCircuitBreaker` that adds a `probe_in_flight` flag
 /// to prevent the half-open race condition where multiple concurrent callers
@@ -76,12 +77,9 @@ impl EndpointBreaker {
         // Circuit is (or was) open and has now entered the half-open window.
         // Use compare_exchange so only the first concurrent caller is allowed
         // through as the probe; all others are rejected.
-        self.probe_in_flight.compare_exchange(
-            false,
-            true,
-            Ordering::AcqRel,
-            Ordering::Acquire,
-        ).is_ok()
+        self.probe_in_flight
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
     }
 
     fn on_success(&self) {
@@ -214,7 +212,10 @@ impl GrpcCircuitBreakerRegistry {
     pub async fn stats(&self) -> (usize, usize, usize) {
         let breakers = self.breakers.read().await;
         let total = breakers.len();
-        let open = breakers.values().filter(|b| !b.breaker.is_call_permitted()).count();
+        let open = breakers
+            .values()
+            .filter(|b| !b.breaker.is_call_permitted())
+            .count();
         let closed = total - open;
         (total, open, closed)
     }
@@ -231,7 +232,10 @@ impl GrpcCircuitBreakerRegistry {
         if total == 0 {
             return false;
         }
-        let open = breakers.values().filter(|b| !b.breaker.is_call_permitted()).count();
+        let open = breakers
+            .values()
+            .filter(|b| !b.breaker.is_call_permitted())
+            .count();
         open * 2 > total // more than 50% open
     }
 

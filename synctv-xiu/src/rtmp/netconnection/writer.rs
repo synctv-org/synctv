@@ -1,14 +1,14 @@
 use {
     super::errors::NetConnectionError,
+    crate::bytesio::bytesio::TNetIO,
+    crate::flv::amf0::{amf0_writer::Amf0Writer, define::Amf0ValueType},
     crate::rtmp::{
         chunk::{define as chunk_define, packetizer::ChunkPacketizer, ChunkInfo},
         messages::define as messages_define,
     },
-    crate::bytesio::bytesio::TNetIO,
     indexmap::IndexMap,
     std::sync::Arc,
     tokio::sync::Mutex,
-    crate::flv::amf0::{amf0_writer::Amf0Writer, define::Amf0ValueType},
 };
 #[derive(Clone, Default, Debug)]
 pub struct ConnectProperties {
@@ -27,7 +27,7 @@ pub struct ConnectProperties {
 }
 
 impl ConnectProperties {
-    #[must_use] 
+    #[must_use]
     pub fn new(app_name: String) -> Self {
         Self {
             app: Some(app_name),
@@ -44,7 +44,7 @@ impl ConnectProperties {
             pub_type: Some("nonprivate".to_string()),
         }
     }
-    #[must_use] 
+    #[must_use]
     pub const fn new_none() -> Self {
         Self {
             app: None,

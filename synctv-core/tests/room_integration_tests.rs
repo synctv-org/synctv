@@ -5,15 +5,15 @@
 //! Run with: cargo test --test `room_integration_tests`
 #![allow(clippy::unwrap_used)]
 
-use synctv_core_testing::{create_test_pool};
+use chrono::Utc;
 use synctv_core::{
     models::{
-        Room, RoomId, RoomStatus, UserId, User, UserRole, UserStatus,
-        RoomMember, MemberStatus, Playlist, PlaylistId,
+        MemberStatus, Playlist, PlaylistId, Room, RoomId, RoomMember, RoomStatus, User, UserId,
+        UserRole, UserStatus,
     },
-    repository::{RoomRepository, UserRepository, RoomMemberRepository, PlaylistRepository},
+    repository::{PlaylistRepository, RoomMemberRepository, RoomRepository, UserRepository},
 };
-use chrono::Utc;
+use synctv_core_testing::create_test_pool;
 /// Default `PostgreSQL` version for test containers
 fn make_user(username: &str) -> User {
     let now = Utc::now();
@@ -102,7 +102,10 @@ async fn test_update_room_settings() {
     let mut updated_room = created.clone();
     updated_room.name = "Updated Name".to_string();
     updated_room.description = "updated desc".to_string();
-    let updated = room_repo.update(&updated_room, created.version).await.unwrap();
+    let updated = room_repo
+        .update(&updated_room, created.version)
+        .await
+        .unwrap();
 
     assert_eq!(updated.name, "Updated Name");
     assert_eq!(updated.description, "updated desc");
@@ -122,7 +125,10 @@ async fn test_update_room_status() {
     let created = room_repo.create(&room).await.unwrap();
     assert_eq!(created.status, RoomStatus::Active);
 
-    let updated = room_repo.update_status(&created.id, RoomStatus::Closed).await.unwrap();
+    let updated = room_repo
+        .update_status(&created.id, RoomStatus::Closed)
+        .await
+        .unwrap();
     assert_eq!(updated.status, RoomStatus::Closed);
 }
 
@@ -169,8 +175,14 @@ async fn test_cascade_delete_user_deletes_rooms() {
     let owner = user_repo.create(&make_user("cascade_owner")).await.unwrap();
 
     // Create two rooms for this owner
-    let room1 = room_repo.create(&make_room("Room 1", "", &owner.id)).await.unwrap();
-    let room2 = room_repo.create(&make_room("Room 2", "", &owner.id)).await.unwrap();
+    let room1 = room_repo
+        .create(&make_room("Room 1", "", &owner.id))
+        .await
+        .unwrap();
+    let room2 = room_repo
+        .create(&make_room("Room 2", "", &owner.id))
+        .await
+        .unwrap();
 
     assert!(room_repo.exists(&room1.id).await.unwrap());
     assert!(room_repo.exists(&room2.id).await.unwrap());
@@ -205,14 +217,15 @@ async fn test_cascade_delete_user_deletes_rooms() {
         .unwrap();
 
     // User should be gone
-    let user_count: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM users WHERE id = $1"
-    )
-    .bind(owner.id.as_str())
-    .fetch_one(&pool)
-    .await
-    .unwrap();
-    assert_eq!(user_count, 0, "User should be deleted after rooms are removed");
+    let user_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM users WHERE id = $1")
+        .bind(owner.id.as_str())
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        user_count, 0,
+        "User should be deleted after rooms are removed"
+    );
 }
 
 #[tokio::test]
@@ -224,9 +237,18 @@ async fn test_cascade_delete_room_deletes_members_and_playlists() {
     let member_repo = RoomMemberRepository::new(pool.clone());
     let playlist_repo = PlaylistRepository::new(pool.clone());
 
-    let owner = user_repo.create(&make_user("cascade_room_owner")).await.unwrap();
-    let member_user = user_repo.create(&make_user("cascade_member")).await.unwrap();
-    let room = room_repo.create(&make_room("Cascade Room", "", &owner.id)).await.unwrap();
+    let owner = user_repo
+        .create(&make_user("cascade_room_owner"))
+        .await
+        .unwrap();
+    let member_user = user_repo
+        .create(&make_user("cascade_member"))
+        .await
+        .unwrap();
+    let room = room_repo
+        .create(&make_room("Cascade Room", "", &owner.id))
+        .await
+        .unwrap();
 
     // Add a member
     let rm = RoomMember {
@@ -269,23 +291,21 @@ async fn test_cascade_delete_room_deletes_members_and_playlists() {
     assert!(deleted);
 
     // Check members are gone
-    let member_count: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM room_members WHERE room_id = $1"
-    )
-    .bind(room.id.as_str())
-    .fetch_one(&pool)
-    .await
-    .unwrap();
+    let member_count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM room_members WHERE room_id = $1")
+            .bind(room.id.as_str())
+            .fetch_one(&pool)
+            .await
+            .unwrap();
     assert_eq!(member_count, 0, "Room members should be cascade-deleted");
 
     // Check playlists are gone
-    let playlist_count: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM playlists WHERE room_id = $1"
-    )
-    .bind(room.id.as_str())
-    .fetch_one(&pool)
-    .await
-    .unwrap();
+    let playlist_count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM playlists WHERE room_id = $1")
+            .bind(room.id.as_str())
+            .fetch_one(&pool)
+            .await
+            .unwrap();
     assert_eq!(playlist_count, 0, "Playlists should be cascade-deleted");
 }
 
@@ -298,7 +318,10 @@ async fn test_concurrent_room_creation_unique_ids() {
     let user_repo = UserRepository::new(pool.clone());
     let room_repo = Arc::new(RoomRepository::new(pool.clone()));
 
-    let owner = user_repo.create(&make_user("concurrent_owner")).await.unwrap();
+    let owner = user_repo
+        .create(&make_user("concurrent_owner"))
+        .await
+        .unwrap();
     let owner_id = owner.id.clone();
 
     // Spawn 10 concurrent room creations
@@ -319,7 +342,10 @@ async fn test_concurrent_room_creation_unique_ids() {
     let mut created_ids = std::collections::HashSet::new();
     for result in results {
         let room = result.unwrap().unwrap();
-        assert!(created_ids.insert(room.id.as_str().to_string()), "Room IDs should be unique");
+        assert!(
+            created_ids.insert(room.id.as_str().to_string()),
+            "Room IDs should be unique"
+        );
     }
     assert_eq!(created_ids.len(), 10);
 }
@@ -332,7 +358,10 @@ async fn test_room_ban_status() {
     let room_repo = RoomRepository::new(pool.clone());
 
     let owner = user_repo.create(&make_user("ban_owner")).await.unwrap();
-    let room = room_repo.create(&make_room("Ban Room", "", &owner.id)).await.unwrap();
+    let room = room_repo
+        .create(&make_room("Ban Room", "", &owner.id))
+        .await
+        .unwrap();
 
     assert!(!room.is_banned);
     assert!(room_repo.is_accessible(&room.id).await.unwrap());
@@ -359,7 +388,10 @@ async fn test_update_stale_version_returns_optimistic_lock_conflict() {
     let user_repo = UserRepository::new(pool.clone());
     let room_repo = RoomRepository::new(pool.clone());
 
-    let owner = user_repo.create(&make_user("optimistic_owner")).await.unwrap();
+    let owner = user_repo
+        .create(&make_user("optimistic_owner"))
+        .await
+        .unwrap();
     let room = make_room("Optimistic Room", "original", &owner.id);
     let created = room_repo.create(&room).await.unwrap();
     let original_version = created.version;
@@ -368,7 +400,10 @@ async fn test_update_stale_version_returns_optimistic_lock_conflict() {
     let mut updated_room = created.clone();
     updated_room.name = "Updated Name V1".to_string();
     updated_room.description = "updated v1".to_string();
-    let v1 = room_repo.update(&updated_room, original_version).await.unwrap();
+    let v1 = room_repo
+        .update(&updated_room, original_version)
+        .await
+        .unwrap();
     assert_eq!(v1.version, original_version + 1);
     assert_eq!(v1.name, "Updated Name V1");
 
@@ -376,7 +411,10 @@ async fn test_update_stale_version_returns_optimistic_lock_conflict() {
     let mut stale_room = created.clone();
     stale_room.name = "Updated Name V2".to_string();
     stale_room.description = "updated v2".to_string();
-    let err = room_repo.update(&stale_room, original_version).await.unwrap_err();
+    let err = room_repo
+        .update(&stale_room, original_version)
+        .await
+        .unwrap_err();
     assert!(
         matches!(err, synctv_core::Error::OptimisticLockConflict),
         "Expected OptimisticLockConflict, got: {err:?}"
@@ -416,7 +454,10 @@ async fn test_update_nonexistent_room_returns_not_found() {
     let user_repo = UserRepository::new(pool.clone());
     let room_repo = RoomRepository::new(pool.clone());
 
-    let owner = user_repo.create(&make_user("nonexistent_owner")).await.unwrap();
+    let owner = user_repo
+        .create(&make_user("nonexistent_owner"))
+        .await
+        .unwrap();
 
     // Create a room model but never persist it
     let room = make_room("Nonexistent Room", "", &owner.id);

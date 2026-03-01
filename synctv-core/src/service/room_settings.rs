@@ -19,10 +19,10 @@
 //! - Background refresh: Refreshes before expiration
 //! - Write-through: Updates database and cache atomically
 
+use rand::RngExt;
+use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::time::Duration;
-use serde::{Deserialize, Serialize};
-use rand::RngExt;
 
 use crate::{
     cache::{CacheInvalidationService, InvalidationMessage, SingleFlight},
@@ -109,7 +109,8 @@ impl RoomSettingsService {
             let cancel = cancel.unwrap_or_default();
             crate::spawn::spawn_monitored("room_settings_invalidation_listener", async move {
                 // Rate-limit lag-triggered flushes (consistent with CacheManager)
-                const LAG_FLUSH_MIN_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5);
+                const LAG_FLUSH_MIN_INTERVAL: std::time::Duration =
+                    std::time::Duration::from_secs(5);
                 let mut last_lag_flush = std::time::Instant::now()
                     .checked_sub(LAG_FLUSH_MIN_INTERVAL)
                     .unwrap_or_else(std::time::Instant::now);
@@ -190,24 +191,28 @@ impl RoomSettingsService {
         let cache = self.cache.clone();
         let room_id_clone = room_id.clone();
 
-        let settings = self.single_flight.do_work_with_fallback(
-            sf_key,
-            async move {
-                // Double-check cache (another task may have populated it)
-                if let Some(settings) = cache.get(&room_id_clone).await {
-                    return Ok(settings);
-                }
+        let settings = self
+            .single_flight
+            .do_work_with_fallback(
+                sf_key,
+                async move {
+                    // Double-check cache (another task may have populated it)
+                    if let Some(settings) = cache.get(&room_id_clone).await {
+                        return Ok(settings);
+                    }
 
-                // Load from database
-                let settings = repo.get(&room_id_clone).await.map_err(|e| e.to_string())?;
+                    // Load from database
+                    let settings = repo.get(&room_id_clone).await.map_err(|e| e.to_string())?;
 
-                // Store in cache
-                cache.insert(room_id_clone, settings.clone()).await;
+                    // Store in cache
+                    cache.insert(room_id_clone, settings.clone()).await;
 
-                Ok(settings)
-            },
-            || "SingleFlight worker failed during room settings fetch".to_string(),
-        ).await.map_err(Error::Internal)?;
+                    Ok(settings)
+                },
+                || "SingleFlight worker failed during room settings fetch".to_string(),
+            )
+            .await
+            .map_err(Error::Internal)?;
 
         Ok(settings)
     }
@@ -242,11 +247,16 @@ impl RoomSettingsService {
             let (_current, version) = self.repo.get_with_version(room_id).await?;
 
             // CAS write
-            match self.repo.set_settings_with_version(room_id, settings, version).await {
+            match self
+                .repo
+                .set_settings_with_version(room_id, settings, version)
+                .await
+            {
                 Ok(new_version) => {
                     // Update local cache
                     self.cache.insert(room_id.clone(), settings.clone()).await;
-                    self.publish_and_notify(room_id, settings, new_version).await;
+                    self.publish_and_notify(room_id, settings, new_version)
+                        .await;
                     return Ok(());
                 }
                 Err(Error::OptimisticLockConflict) if attempt + 1 < Self::MAX_RETRIES => {
@@ -259,18 +269,16 @@ impl RoomSettingsService {
             }
         }
 
-        Err(Error::Internal("Settings update failed after maximum retry attempts".to_string()))
+        Err(Error::Internal(
+            "Settings update failed after maximum retry attempts".to_string(),
+        ))
     }
 
     /// Update a single setting field with optimistic locking (CAS).
     ///
     /// Reads current settings and version, applies the updater, then writes back
     /// with a version check. Retries automatically on concurrent modification.
-    pub async fn update_field<F>(
-        &self,
-        room_id: &RoomId,
-        updater: F,
-    ) -> Result<RoomSettings>
+    pub async fn update_field<F>(&self, room_id: &RoomId, updater: F) -> Result<RoomSettings>
     where
         F: Fn(&mut RoomSettings) + Send,
     {
@@ -282,11 +290,16 @@ impl RoomSettingsService {
             updater(&mut settings);
 
             // CAS write with version check
-            match self.repo.set_settings_with_version(room_id, &settings, version).await {
+            match self
+                .repo
+                .set_settings_with_version(room_id, &settings, version)
+                .await
+            {
                 Ok(new_version) => {
                     // Update local cache after successful write
                     self.cache.insert(room_id.clone(), settings.clone()).await;
-                    self.publish_and_notify(room_id, &settings, new_version).await;
+                    self.publish_and_notify(room_id, &settings, new_version)
+                        .await;
                     return Ok(settings);
                 }
                 Err(Error::OptimisticLockConflict) if attempt + 1 < Self::MAX_RETRIES => {
@@ -299,7 +312,9 @@ impl RoomSettingsService {
             }
         }
 
-        Err(Error::Internal("Settings update failed after maximum retry attempts".to_string()))
+        Err(Error::Internal(
+            "Settings update failed after maximum retry attempts".to_string(),
+        ))
     }
 
     /// Reset room settings to default
@@ -352,7 +367,8 @@ impl RoomSettingsService {
             }
         };
 
-        let _ = self.notification_service
+        let _ = self
+            .notification_service
             .notify_settings_updated(room_id, settings_value)
             .await;
     }

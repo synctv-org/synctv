@@ -34,7 +34,7 @@ pub enum OAuth2Provider {
 }
 
 impl OAuth2Provider {
-    #[must_use] 
+    #[must_use]
     pub const fn as_str(&self) -> &str {
         match self {
             Self::QQ => "qq",
@@ -51,7 +51,7 @@ impl OAuth2Provider {
     }
 
     /// Parse `OAuth2` provider type from string name (case-insensitive)
-    #[must_use] 
+    #[must_use]
     pub fn from_str_name(s: &str) -> Option<Self> {
         match s.to_lowercase().as_str() {
             "qq" => Some(Self::QQ),
@@ -69,16 +69,28 @@ impl OAuth2Provider {
     }
 
     /// Check if this provider type uses OIDC standard
-    #[must_use] 
+    #[must_use]
     pub const fn is_oidc(&self) -> bool {
-        matches!(self, Self::Casdoor | Self::Logto | Self::Oidc | Self::Feishu | Self::Google | Self::Microsoft)
+        matches!(
+            self,
+            Self::Casdoor
+                | Self::Logto
+                | Self::Oidc
+                | Self::Feishu
+                | Self::Google
+                | Self::Microsoft
+        )
     }
 
     /// Get default scopes for this provider type
-    #[must_use] 
+    #[must_use]
     pub fn default_scopes(&self) -> Vec<String> {
         if self.is_oidc() {
-            vec!["openid".to_string(), "profile".to_string(), "email".to_string()]
+            vec![
+                "openid".to_string(),
+                "profile".to_string(),
+                "email".to_string(),
+            ]
         } else {
             vec!["identify".to_string()]
         }
@@ -92,7 +104,7 @@ impl OAuth2Provider {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UserOAuthProviderMapping {
     pub id: String,
-    pub provider: String,  // Stored as string in DB
+    pub provider: String, // Stored as string in DB
     pub provider_user_id: String,
     pub user_id: UserId,
     pub username: String,
@@ -104,7 +116,7 @@ pub struct UserOAuthProviderMapping {
 
 impl UserOAuthProviderMapping {
     /// Get the provider as `OAuth2Provider` enum
-    #[must_use] 
+    #[must_use]
     pub fn provider_enum(&self) -> Option<OAuth2Provider> {
         OAuth2Provider::from_str_name(&self.provider)
     }
@@ -137,7 +149,7 @@ pub struct OAuth2CallbackRequest {
 /// `OAuth2` callback response
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OAuth2CallbackResponse {
-    pub token: Option<String>,  // JWT token if login
+    pub token: Option<String>,    // JWT token if login
     pub redirect: Option<String>, // Redirect URL
 }
 
@@ -163,23 +175,62 @@ mod tests {
 
     #[test]
     fn test_provider_from_str_name_all_variants() {
-        assert_eq!(OAuth2Provider::from_str_name("qq"), Some(OAuth2Provider::QQ));
-        assert_eq!(OAuth2Provider::from_str_name("github"), Some(OAuth2Provider::GitHub));
-        assert_eq!(OAuth2Provider::from_str_name("google"), Some(OAuth2Provider::Google));
-        assert_eq!(OAuth2Provider::from_str_name("microsoft"), Some(OAuth2Provider::Microsoft));
-        assert_eq!(OAuth2Provider::from_str_name("discord"), Some(OAuth2Provider::Discord));
-        assert_eq!(OAuth2Provider::from_str_name("casdoor"), Some(OAuth2Provider::Casdoor));
-        assert_eq!(OAuth2Provider::from_str_name("logto"), Some(OAuth2Provider::Logto));
-        assert_eq!(OAuth2Provider::from_str_name("oidc"), Some(OAuth2Provider::Oidc));
-        assert_eq!(OAuth2Provider::from_str_name("feishu"), Some(OAuth2Provider::Feishu));
-        assert_eq!(OAuth2Provider::from_str_name("gitee"), Some(OAuth2Provider::Gitee));
+        assert_eq!(
+            OAuth2Provider::from_str_name("qq"),
+            Some(OAuth2Provider::QQ)
+        );
+        assert_eq!(
+            OAuth2Provider::from_str_name("github"),
+            Some(OAuth2Provider::GitHub)
+        );
+        assert_eq!(
+            OAuth2Provider::from_str_name("google"),
+            Some(OAuth2Provider::Google)
+        );
+        assert_eq!(
+            OAuth2Provider::from_str_name("microsoft"),
+            Some(OAuth2Provider::Microsoft)
+        );
+        assert_eq!(
+            OAuth2Provider::from_str_name("discord"),
+            Some(OAuth2Provider::Discord)
+        );
+        assert_eq!(
+            OAuth2Provider::from_str_name("casdoor"),
+            Some(OAuth2Provider::Casdoor)
+        );
+        assert_eq!(
+            OAuth2Provider::from_str_name("logto"),
+            Some(OAuth2Provider::Logto)
+        );
+        assert_eq!(
+            OAuth2Provider::from_str_name("oidc"),
+            Some(OAuth2Provider::Oidc)
+        );
+        assert_eq!(
+            OAuth2Provider::from_str_name("feishu"),
+            Some(OAuth2Provider::Feishu)
+        );
+        assert_eq!(
+            OAuth2Provider::from_str_name("gitee"),
+            Some(OAuth2Provider::Gitee)
+        );
     }
 
     #[test]
     fn test_provider_from_str_name_case_insensitive() {
-        assert_eq!(OAuth2Provider::from_str_name("GitHub"), Some(OAuth2Provider::GitHub));
-        assert_eq!(OAuth2Provider::from_str_name("GOOGLE"), Some(OAuth2Provider::Google));
-        assert_eq!(OAuth2Provider::from_str_name("Discord"), Some(OAuth2Provider::Discord));
+        assert_eq!(
+            OAuth2Provider::from_str_name("GitHub"),
+            Some(OAuth2Provider::GitHub)
+        );
+        assert_eq!(
+            OAuth2Provider::from_str_name("GOOGLE"),
+            Some(OAuth2Provider::Google)
+        );
+        assert_eq!(
+            OAuth2Provider::from_str_name("Discord"),
+            Some(OAuth2Provider::Discord)
+        );
     }
 
     #[test]

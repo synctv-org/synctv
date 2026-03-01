@@ -22,9 +22,7 @@
 use std::sync::Arc;
 use synctv_core::models::{SignupMethod, User, UserId, UserRole, UserStatus};
 use synctv_core::service::{OAuth2Service, UserService};
-use synctv_proto::client::{
-    OAuth2UserInfo, OAuth2ProviderInstance, LinkedProvider,
-};
+use synctv_proto::client::{LinkedProvider, OAuth2ProviderInstance, OAuth2UserInfo};
 
 use super::ApiError;
 
@@ -37,10 +35,7 @@ pub struct OAuth2ApiImpl {
 
 impl OAuth2ApiImpl {
     #[must_use]
-    pub const fn new(
-        oauth2_service: Arc<OAuth2Service>,
-        user_service: Arc<UserService>,
-    ) -> Self {
+    pub const fn new(oauth2_service: Arc<OAuth2Service>, user_service: Arc<UserService>) -> Self {
         Self {
             oauth2_service,
             user_service,
@@ -88,7 +83,9 @@ impl OAuth2ApiImpl {
         if user.is_deleted() || user.status == UserStatus::Banned {
             // Use the same generic error to prevent distinguishing between
             // "user not found" and "user is disabled"
-            return Err(ApiError::Authentication("Authentication failed".to_string()));
+            return Err(ApiError::Authentication(
+                "Authentication failed".to_string(),
+            ));
         }
 
         let (auth_url, state) = self
@@ -158,7 +155,12 @@ impl OAuth2ApiImpl {
 
             // Bind flow: associate provider with existing user
             self.oauth2_service
-                .upsert_user_provider(&bind_user_id, &provider_type, &user_info.provider_user_id, &user_info)
+                .upsert_user_provider(
+                    &bind_user_id,
+                    &provider_type,
+                    &user_info.provider_user_id,
+                    &user_info,
+                )
                 .await
                 .map_err(ApiError::from)?;
 
@@ -242,18 +244,20 @@ impl OAuth2ApiImpl {
 
             // Set email_verified inside the transaction if the OAuth2 provider confirmed the email
             if user_info.email_verified && user_info.email.is_some() {
-                sqlx::query("UPDATE users SET email_verified = true, updated_at = NOW() WHERE id = $1")
-                    .bind(new_user.id.as_str())
-                    .execute(&mut *tx)
-                    .await
-                    .map_err(|e| {
-                        ApiError::Internal(format!("Failed to set email_verified in transaction: {e}"))
-                    })?;
+                sqlx::query(
+                    "UPDATE users SET email_verified = true, updated_at = NOW() WHERE id = $1",
+                )
+                .bind(new_user.id.as_str())
+                .execute(&mut *tx)
+                .await
+                .map_err(|e| {
+                    ApiError::Internal(format!("Failed to set email_verified in transaction: {e}"))
+                })?;
             }
 
-            tx.commit().await.map_err(|e| {
-                ApiError::Internal(format!("Failed to commit transaction: {e}"))
-            })?;
+            tx.commit()
+                .await
+                .map_err(|e| ApiError::Internal(format!("Failed to commit transaction: {e}")))?;
 
             let (access_token, refresh_token) = self
                 .user_service
@@ -310,11 +314,20 @@ impl OAuth2ApiImpl {
             .ok_or_else(|| ApiError::InvalidInput(format!("Unknown provider type: {provider}")))?;
 
         // Check if user has other auth methods before unlinking
-        let user = self.user_service.get_user(user_id).await.map_err(ApiError::from)?;
-        let linked_providers = self.oauth2_service.get_user_providers(user_id).await.map_err(ApiError::from)?;
+        let user = self
+            .user_service
+            .get_user(user_id)
+            .await
+            .map_err(ApiError::from)?;
+        let linked_providers = self
+            .oauth2_service
+            .get_user_providers(user_id)
+            .await
+            .map_err(ApiError::from)?;
 
         // Count how many providers would remain after unlinking
-        let remaining_providers = linked_providers.iter()
+        let remaining_providers = linked_providers
+            .iter()
             .filter(|p| **p != provider_type)
             .count();
 
@@ -325,7 +338,8 @@ impl OAuth2ApiImpl {
 
         if remaining_providers == 0 && !has_password_auth {
             return Err(ApiError::InvalidInput(
-                "Cannot unlink last authentication method. Please set a password first.".to_string(),
+                "Cannot unlink last authentication method. Please set a password first."
+                    .to_string(),
             ));
         }
 
@@ -529,8 +543,7 @@ mod tests {
 
         // Verify the expected message matches what's used in the implementation
         assert_eq!(
-            USER_ENUM_PROTECTION_ERROR_MESSAGE,
-            "Authentication failed",
+            USER_ENUM_PROTECTION_ERROR_MESSAGE, "Authentication failed",
             "Error message must match the implementation in get_authorization_url_for_bind"
         );
     }
@@ -562,7 +575,7 @@ mod tests {
     /// This test verifies the model-level behavior used by `unlink_provider`.
     #[test]
     fn test_oauth2_unlink_checks_actual_password_capability() {
-        use synctv_core::models::{User, UserId, UserRole, UserStatus, SignupMethod};
+        use synctv_core::models::{SignupMethod, User, UserId, UserRole, UserStatus};
 
         let now = chrono::Utc::now();
 

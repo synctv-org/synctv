@@ -25,12 +25,12 @@ impl BitsReader {
         Ok(())
     }
 
-    #[must_use] 
+    #[must_use]
     pub fn len(&self) -> usize {
         self.reader.len() * 8 + self.cur_bit_left as usize
     }
 
-    #[must_use] 
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }

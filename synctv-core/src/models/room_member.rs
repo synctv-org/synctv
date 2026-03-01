@@ -21,7 +21,6 @@ pub enum MemberStatus {
     Left,
 }
 
-
 impl MemberStatus {
     #[must_use]
     pub const fn as_str(&self) -> &'static str {
@@ -82,7 +81,10 @@ impl sqlx::Type<sqlx::Postgres> for MemberStatus {
 }
 
 impl sqlx::Encode<'_, sqlx::Postgres> for MemberStatus {
-    fn encode_by_ref(&self, buf: &mut sqlx::postgres::PgArgumentBuffer) -> Result<sqlx::encode::IsNull, Box<dyn std::error::Error + Send + Sync>> {
+    fn encode_by_ref(
+        &self,
+        buf: &mut sqlx::postgres::PgArgumentBuffer,
+    ) -> Result<sqlx::encode::IsNull, Box<dyn std::error::Error + Send + Sync>> {
         let val: i16 = match self {
             Self::Active => 1,
             Self::Pending => 2,
@@ -94,7 +96,9 @@ impl sqlx::Encode<'_, sqlx::Postgres> for MemberStatus {
 }
 
 impl<'r> sqlx::Decode<'r, sqlx::Postgres> for MemberStatus {
-    fn decode(value: sqlx::postgres::PgValueRef<'r>) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
+    fn decode(
+        value: sqlx::postgres::PgValueRef<'r>,
+    ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
         let val = <i16 as sqlx::Decode<sqlx::Postgres>>::decode(value)?;
         match val {
             1 => Ok(Self::Active),
@@ -164,7 +168,7 @@ impl<'r> sqlx::FromRow<'r, sqlx::postgres::PgRow> for RoomMember {
 }
 
 impl RoomMember {
-    #[must_use] 
+    #[must_use]
     pub fn new(room_id: RoomId, user_id: UserId, role: RoomRole) -> Self {
         let now = Utc::now();
         Self {
@@ -185,7 +189,7 @@ impl RoomMember {
         }
     }
 
-    #[must_use] 
+    #[must_use]
     pub const fn is_active(&self) -> bool {
         self.status.is_active() && self.left_at.is_none()
     }
@@ -202,7 +206,7 @@ impl RoomMember {
     ///   (global default with room-level overrides applied)
     ///
     /// This method then applies member-level overrides to get final permissions
-    #[must_use] 
+    #[must_use]
     pub const fn effective_permissions(&self, role_default: PermissionBits) -> PermissionBits {
         match self.role {
             RoomRole::Creator => {
@@ -233,7 +237,7 @@ impl RoomMember {
     }
 
     /// Check if member has a specific permission (considers both status and effective permissions)
-    #[must_use] 
+    #[must_use]
     pub const fn has_permission(&self, permission: u64, role_default: PermissionBits) -> bool {
         if !self.status.is_active() {
             return false;
@@ -308,7 +312,7 @@ impl RoomMemberWithUser {
     /// Arguments:
     /// - `role_default`: Already-calculated permissions for this role
     ///   (global default with room-level overrides applied)
-    #[must_use] 
+    #[must_use]
     pub fn effective_permissions(&self, role_default: PermissionBits) -> PermissionBits {
         let member = RoomMember {
             room_id: self.room_id.clone(),

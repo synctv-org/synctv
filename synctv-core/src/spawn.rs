@@ -26,9 +26,7 @@ where
     F::Output: Send + 'static,
 {
     tokio::spawn(async move {
-        let result = std::panic::AssertUnwindSafe(future)
-            .catch_unwind()
-            .await;
+        let result = std::panic::AssertUnwindSafe(future).catch_unwind().await;
 
         match result {
             Ok(value) => value,

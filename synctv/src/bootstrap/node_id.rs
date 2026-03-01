@@ -22,7 +22,8 @@ pub fn generate_node_id() -> String {
     // Get local IP address if available
     let local_ip = UdpSocket::bind("0.0.0.0:0")
         .and_then(|s| s.connect("8.8.8.8:80").map(|()| s))
-        .and_then(|s| s.local_addr()).map_or_else(|_| "0.0.0.0".to_string(), |addr| addr.ip().to_string());
+        .and_then(|s| s.local_addr())
+        .map_or_else(|_| "0.0.0.0".to_string(), |addr| addr.ip().to_string());
 
     // Add random suffix for uniqueness
     let suffix = nanoid::nanoid!(6);

@@ -5,16 +5,13 @@
 //! Run with: cargo test --test `playlist_optimistic_lock_tests`
 #![allow(clippy::unwrap_used)]
 
-use synctv_core_testing::create_test_pool;
+use chrono::Utc;
 use synctv_core::{
-    models::{
-        Room, RoomId, RoomStatus, UserId, User, UserRole, UserStatus,
-        Playlist, PlaylistId,
-    },
-    repository::{RoomRepository, UserRepository, PlaylistRepository},
+    models::{Playlist, PlaylistId, Room, RoomId, RoomStatus, User, UserId, UserRole, UserStatus},
+    repository::{PlaylistRepository, RoomRepository, UserRepository},
     Error,
 };
-use chrono::Utc;
+use synctv_core_testing::create_test_pool;
 /// Default `PostgreSQL` version for test containers
 fn make_user(username: &str) -> User {
     let now = Utc::now();
@@ -52,7 +49,12 @@ fn make_room(name: &str, owner: &UserId) -> Room {
     }
 }
 
-fn make_playlist(room_id: &RoomId, name: &str, parent_id: Option<&PlaylistId>, position: i32) -> Playlist {
+fn make_playlist(
+    room_id: &RoomId,
+    name: &str,
+    parent_id: Option<&PlaylistId>,
+    position: i32,
+) -> Playlist {
     Playlist {
         id: PlaylistId::new(),
         room_id: room_id.clone(),
@@ -85,11 +87,20 @@ async fn test_optimistic_lock_version_mismatch() {
     let playlist_repo = PlaylistRepository::new(pool.clone());
 
     let owner = user_repo.create(&make_user("lock_owner_1")).await.unwrap();
-    let room = room_repo.create(&make_room("Lock Room 1", &owner.id)).await.unwrap();
+    let room = room_repo
+        .create(&make_room("Lock Room 1", &owner.id))
+        .await
+        .unwrap();
 
     // Create root and child playlist
-    let root = playlist_repo.create(&make_playlist(&room.id, "", None, 0)).await.unwrap();
-    let playlist = playlist_repo.create(&make_playlist(&room.id, "Test Playlist", Some(&root.id), 0)).await.unwrap();
+    let root = playlist_repo
+        .create(&make_playlist(&room.id, "", None, 0))
+        .await
+        .unwrap();
+    let playlist = playlist_repo
+        .create(&make_playlist(&room.id, "Test Playlist", Some(&root.id), 0))
+        .await
+        .unwrap();
 
     // Verify initial version
     assert_eq!(playlist.version, 0, "Initial version should be 0");
@@ -107,7 +118,9 @@ async fn test_optimistic_lock_version_mismatch() {
     outdated_playlist.name = "Updated Name".to_string();
 
     // Use update_with_version with the stale version (0)
-    let result = playlist_repo.update_with_version(&outdated_playlist, playlist.version).await;
+    let result = playlist_repo
+        .update_with_version(&outdated_playlist, playlist.version)
+        .await;
 
     // Should return OptimisticLockConflict error
     assert!(
@@ -131,11 +144,20 @@ async fn test_optimistic_lock_version_match_succeeds() {
     let playlist_repo = PlaylistRepository::new(pool.clone());
 
     let owner = user_repo.create(&make_user("lock_owner_2")).await.unwrap();
-    let room = room_repo.create(&make_room("Lock Room 2", &owner.id)).await.unwrap();
+    let room = room_repo
+        .create(&make_room("Lock Room 2", &owner.id))
+        .await
+        .unwrap();
 
     // Create root and child playlist
-    let root = playlist_repo.create(&make_playlist(&room.id, "", None, 0)).await.unwrap();
-    let playlist = playlist_repo.create(&make_playlist(&room.id, "Test Playlist", Some(&root.id), 0)).await.unwrap();
+    let root = playlist_repo
+        .create(&make_playlist(&room.id, "", None, 0))
+        .await
+        .unwrap();
+    let playlist = playlist_repo
+        .create(&make_playlist(&room.id, "Test Playlist", Some(&root.id), 0))
+        .await
+        .unwrap();
 
     // Verify initial version
     assert_eq!(playlist.version, 0, "Initial version should be 0");
@@ -144,17 +166,27 @@ async fn test_optimistic_lock_version_match_succeeds() {
     let mut updated_playlist = playlist.clone();
     updated_playlist.name = "Updated Name".to_string();
 
-    let result = playlist_repo.update_with_version(&updated_playlist, playlist.version).await;
+    let result = playlist_repo
+        .update_with_version(&updated_playlist, playlist.version)
+        .await;
 
     // Should succeed
-    assert!(result.is_ok(), "Update with correct version should succeed: {:?}", result.err());
+    assert!(
+        result.is_ok(),
+        "Update with correct version should succeed: {:?}",
+        result.err()
+    );
 
     let updated = result.unwrap();
     assert_eq!(updated.name, "Updated Name");
     assert_eq!(updated.version, 1, "Version should be incremented to 1");
 
     // Fetch again to verify version in DB
-    let fetched = playlist_repo.get_by_id(&playlist.id).await.unwrap().unwrap();
+    let fetched = playlist_repo
+        .get_by_id(&playlist.id)
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(fetched.version, 1, "Persisted version should be 1");
 }
 
@@ -174,29 +206,47 @@ async fn test_optimistic_lock_sequential_updates() {
     let playlist_repo = PlaylistRepository::new(pool.clone());
 
     let owner = user_repo.create(&make_user("lock_owner_3")).await.unwrap();
-    let room = room_repo.create(&make_room("Lock Room 3", &owner.id)).await.unwrap();
+    let room = room_repo
+        .create(&make_room("Lock Room 3", &owner.id))
+        .await
+        .unwrap();
 
     // Create root and child playlist
-    let root = playlist_repo.create(&make_playlist(&room.id, "", None, 0)).await.unwrap();
-    let mut playlist = playlist_repo.create(&make_playlist(&room.id, "Test", Some(&root.id), 0)).await.unwrap();
+    let root = playlist_repo
+        .create(&make_playlist(&room.id, "", None, 0))
+        .await
+        .unwrap();
+    let mut playlist = playlist_repo
+        .create(&make_playlist(&room.id, "Test", Some(&root.id), 0))
+        .await
+        .unwrap();
 
     assert_eq!(playlist.version, 0);
 
     // First update
     playlist.name = "Update 1".to_string();
-    playlist = playlist_repo.update_with_version(&playlist, 0).await.unwrap();
+    playlist = playlist_repo
+        .update_with_version(&playlist, 0)
+        .await
+        .unwrap();
     assert_eq!(playlist.version, 1);
     assert_eq!(playlist.name, "Update 1");
 
     // Second update
     playlist.name = "Update 2".to_string();
-    playlist = playlist_repo.update_with_version(&playlist, 1).await.unwrap();
+    playlist = playlist_repo
+        .update_with_version(&playlist, 1)
+        .await
+        .unwrap();
     assert_eq!(playlist.version, 2);
     assert_eq!(playlist.name, "Update 2");
 
     // Third update
     playlist.name = "Update 3".to_string();
-    playlist = playlist_repo.update_with_version(&playlist, 2).await.unwrap();
+    playlist = playlist_repo
+        .update_with_version(&playlist, 2)
+        .await
+        .unwrap();
     assert_eq!(playlist.version, 3);
     assert_eq!(playlist.name, "Update 3");
 }
@@ -214,11 +264,25 @@ async fn test_optimistic_lock_concurrent_conflict() {
     let playlist_repo = PlaylistRepository::new(pool.clone());
 
     let owner = user_repo.create(&make_user("lock_owner_4")).await.unwrap();
-    let room = room_repo.create(&make_room("Lock Room 4", &owner.id)).await.unwrap();
+    let room = room_repo
+        .create(&make_room("Lock Room 4", &owner.id))
+        .await
+        .unwrap();
 
     // Create root and child playlist
-    let root = playlist_repo.create(&make_playlist(&room.id, "", None, 0)).await.unwrap();
-    let playlist = playlist_repo.create(&make_playlist(&room.id, "Concurrent Test", Some(&root.id), 0)).await.unwrap();
+    let root = playlist_repo
+        .create(&make_playlist(&room.id, "", None, 0))
+        .await
+        .unwrap();
+    let playlist = playlist_repo
+        .create(&make_playlist(
+            &room.id,
+            "Concurrent Test",
+            Some(&root.id),
+            0,
+        ))
+        .await
+        .unwrap();
 
     // Both "threads" get the same version of the playlist
     let mut updater1_copy = playlist.clone();
@@ -226,7 +290,9 @@ async fn test_optimistic_lock_concurrent_conflict() {
 
     // Updater 1 wins - updates first with version 0
     updater1_copy.name = "Updater 1 Wins".to_string();
-    let result1 = playlist_repo.update_with_version(&updater1_copy, playlist.version).await;
+    let result1 = playlist_repo
+        .update_with_version(&updater1_copy, playlist.version)
+        .await;
     assert!(result1.is_ok(), "First update should succeed");
     let updated1 = result1.unwrap();
     assert_eq!(updated1.version, 1);
@@ -234,14 +300,20 @@ async fn test_optimistic_lock_concurrent_conflict() {
     // Updater 2 tries to update with stale version (0) - should fail
     // because version is now 1
     updater2_copy.name = "Updater 2 Loses".to_string();
-    let result2 = playlist_repo.update_with_version(&updater2_copy, playlist.version).await;
+    let result2 = playlist_repo
+        .update_with_version(&updater2_copy, playlist.version)
+        .await;
     assert!(
         matches!(result2, Err(Error::OptimisticLockConflict)),
         "Second update with stale version should fail with OptimisticLockConflict, got: {result2:?}"
     );
 
     // Verify the playlist still has updater1's changes
-    let current = playlist_repo.get_by_id(&playlist.id).await.unwrap().unwrap();
+    let current = playlist_repo
+        .get_by_id(&playlist.id)
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(current.name, "Updater 1 Wins");
     assert_eq!(current.version, 1);
 }
@@ -256,12 +328,21 @@ async fn test_optimistic_lock_new_playlist_version_zero() {
     let playlist_repo = PlaylistRepository::new(pool.clone());
 
     let owner = user_repo.create(&make_user("lock_owner_5")).await.unwrap();
-    let room = room_repo.create(&make_room("Lock Room 5", &owner.id)).await.unwrap();
+    let room = room_repo
+        .create(&make_room("Lock Room 5", &owner.id))
+        .await
+        .unwrap();
 
     // Create root and child playlist
-    let root = playlist_repo.create(&make_playlist(&room.id, "", None, 0)).await.unwrap();
+    let root = playlist_repo
+        .create(&make_playlist(&room.id, "", None, 0))
+        .await
+        .unwrap();
     assert_eq!(root.version, 0, "New root playlist should have version 0");
 
-    let child = playlist_repo.create(&make_playlist(&room.id, "Child", Some(&root.id), 0)).await.unwrap();
+    let child = playlist_repo
+        .create(&make_playlist(&room.id, "Child", Some(&root.id), 0))
+        .await
+        .unwrap();
     assert_eq!(child.version, 0, "New child playlist should have version 0");
 }

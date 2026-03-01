@@ -16,7 +16,9 @@ use synctv_media_providers::ssrf::{
 #[test]
 fn test_teredo_ipv6_blocked() {
     // Teredo prefix: 2001:0000::/32
-    let teredo = Ipv6Addr::new(0x2001, 0x0000, 0x1234, 0x5678, 0x9abc, 0xdef0, 0x1111, 0x2222);
+    let teredo = Ipv6Addr::new(
+        0x2001, 0x0000, 0x1234, 0x5678, 0x9abc, 0xdef0, 0x1111, 0x2222,
+    );
     assert!(
         is_blocked_ipv6(&teredo),
         "Teredo addresses (2001:0000::/32) must be blocked"
@@ -27,9 +29,15 @@ fn test_teredo_ipv6_blocked() {
 fn test_teredo_ipv6_various_payloads() {
     // Teredo with different server/client addresses
     let addrs = [
-        Ipv6Addr::new(0x2001, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0001),
-        Ipv6Addr::new(0x2001, 0x0000, 0xffff, 0xffff, 0xffff, 0xffff, 0xffff, 0xffff),
-        Ipv6Addr::new(0x2001, 0x0000, 0x4136, 0xe378, 0x8000, 0x63bf, 0x3fff, 0xfdd2),
+        Ipv6Addr::new(
+            0x2001, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0001,
+        ),
+        Ipv6Addr::new(
+            0x2001, 0x0000, 0xffff, 0xffff, 0xffff, 0xffff, 0xffff, 0xffff,
+        ),
+        Ipv6Addr::new(
+            0x2001, 0x0000, 0x4136, 0xe378, 0x8000, 0x63bf, 0x3fff, 0xfdd2,
+        ),
     ];
     for addr in &addrs {
         assert!(
@@ -46,8 +54,9 @@ fn test_teredo_ipv6_various_payloads() {
 #[test]
 fn test_6to4_ipv6_blocked() {
     // 6to4 prefix: 2002::/16
-    let six_to_four =
-        Ipv6Addr::new(0x2002, 0xc0a8, 0x0101, 0x0000, 0x0000, 0x0000, 0x0000, 0x0001);
+    let six_to_four = Ipv6Addr::new(
+        0x2002, 0xc0a8, 0x0101, 0x0000, 0x0000, 0x0000, 0x0000, 0x0001,
+    );
     assert!(
         is_blocked_ipv6(&six_to_four),
         "6to4 addresses (2002::/16) must be blocked"
@@ -57,7 +66,9 @@ fn test_6to4_ipv6_blocked() {
 #[test]
 fn test_6to4_ipv6_encapsulating_private() {
     // 6to4 encapsulating 192.168.1.1 -> 2002:c0a8:0101::1
-    let addr = Ipv6Addr::new(0x2002, 0xc0a8, 0x0101, 0x0000, 0x0000, 0x0000, 0x0000, 0x0001);
+    let addr = Ipv6Addr::new(
+        0x2002, 0xc0a8, 0x0101, 0x0000, 0x0000, 0x0000, 0x0000, 0x0001,
+    );
     assert!(
         is_blocked_ipv6(&addr),
         "6to4 with private IPv4 payload must be blocked"
@@ -68,7 +79,9 @@ fn test_6to4_ipv6_encapsulating_private() {
 fn test_6to4_ipv6_encapsulating_public() {
     // 6to4 encapsulating 8.8.8.8 -> 2002:0808:0808::1
     // Still blocked because 6to4 tunnel is inherently dangerous
-    let addr = Ipv6Addr::new(0x2002, 0x0808, 0x0808, 0x0000, 0x0000, 0x0000, 0x0000, 0x0001);
+    let addr = Ipv6Addr::new(
+        0x2002, 0x0808, 0x0808, 0x0000, 0x0000, 0x0000, 0x0000, 0x0001,
+    );
     assert!(
         is_blocked_ipv6(&addr),
         "6to4 even with public IPv4 payload must be blocked"
@@ -126,7 +139,9 @@ fn test_ipv6_unique_local_blocked() {
     let fd00 = Ipv6Addr::new(0xfd00, 0, 0, 0, 0, 0, 0, 1);
     assert!(is_blocked_ipv6(&fd00));
 
-    let fdff = Ipv6Addr::new(0xfdff, 0xffff, 0xffff, 0xffff, 0xffff, 0xffff, 0xffff, 0xffff);
+    let fdff = Ipv6Addr::new(
+        0xfdff, 0xffff, 0xffff, 0xffff, 0xffff, 0xffff, 0xffff, 0xffff,
+    );
     assert!(is_blocked_ipv6(&fdff));
 }
 

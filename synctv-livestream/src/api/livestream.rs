@@ -16,15 +16,14 @@
 // - Cross-node gRPC relay
 
 use crate::{
-    relay::StreamRegistryTrait,
+    grpc::HlsProxyClient,
     livestream::{
-        pull_manager::PullStreamManager,
-        external_publish_manager::ExternalPublishManager,
+        external_publish_manager::ExternalPublishManager, pull_manager::PullStreamManager,
         segment_manager::SegmentManager,
     },
     protocols::hls::remuxer::StreamRegistry as HlsStreamRegistry,
     protocols::httpflv::HttpFlvSession,
-    grpc::HlsProxyClient,
+    relay::StreamRegistryTrait,
 };
 use anyhow::Result;
 use bytes::Bytes;
@@ -132,7 +131,9 @@ impl LiveStreamingInfrastructure {
 
         self.stream_hub_event_sender
             .try_send(synctv_xiu::streamhub::define::StreamHubEvent::UnPublish { identifier })
-            .map_err(|_| anyhow::anyhow!("Failed to send unpublish event (StreamHub not running)"))?;
+            .map_err(|_| {
+                anyhow::anyhow!("Failed to send unpublish event (StreamHub not running)")
+            })?;
 
         Ok(())
     }
@@ -151,8 +152,15 @@ impl LiveStreamingInfrastructure {
                 "Kicking RTMP publisher for banned user"
             );
             // Remove from Redis registry
-            if let Err(e) = self.registry.unregister_publisher(&room_id, &media_id).await {
-                error!("Failed to unregister publisher from Redis for user {}: {}", user_id, e);
+            if let Err(e) = self
+                .registry
+                .unregister_publisher(&room_id, &media_id)
+                .await
+            {
+                error!(
+                    "Failed to unregister publisher from Redis for user {}: {}",
+                    user_id, e
+                );
             }
             if let Err(e) = self.kick_publisher(&room_id, &media_id) {
                 error!("Failed to kick publisher for user {}: {}", user_id, e);
@@ -178,7 +186,10 @@ impl LiveStreamingInfrastructure {
             }
             // Remove from Redis registry
             if let Err(e) = self.registry.unregister_publisher(room_id, &media_id).await {
-                error!("Failed to unregister publisher from Redis in room {}: {}", room_id, e);
+                error!(
+                    "Failed to unregister publisher from Redis in room {}: {}",
+                    room_id, e
+                );
             }
             if let Err(e) = self.kick_publisher(room_id, &media_id) {
                 error!("Failed to kick publisher in room {}: {}", room_id, e);
@@ -222,12 +233,16 @@ impl LiveStreamingInfrastructure {
         external_source_url: Option<&str>,
     ) -> Result<StreamSubscriberGuard> {
         // Check Redis for an existing publisher
-        let publisher = self.registry.get_publisher(room_id, media_id).await
+        let publisher = self
+            .registry
+            .get_publisher(room_id, media_id)
+            .await
             .map_err(|e| anyhow::anyhow!("Failed to check publisher: {e}"))?;
 
         if publisher.is_some() {
             // Publisher found in Redis -- create gRPC relay pull stream
-            let stream = self.pull_manager
+            let stream = self
+                .pull_manager
                 .get_or_create_pull_stream(room_id, media_id)
                 .await
                 .map_err(|e| anyhow::anyhow!("Failed to create pull stream: {e}"))?;
@@ -237,7 +252,8 @@ impl LiveStreamingInfrastructure {
 
         // No publisher in Redis -- try external publish if URL provided
         if let Some(source_url) = external_source_url {
-            let stream = self.external_publish_manager
+            let stream = self
+                .external_publish_manager
                 .get_or_create(room_id, media_id, source_url)
                 .await
                 .map_err(|e| anyhow::anyhow!("Failed to create external publish stream: {e}"))?;
@@ -245,7 +261,9 @@ impl LiveStreamingInfrastructure {
             return Ok(guard);
         }
 
-        Err(anyhow::anyhow!("No publisher found for {room_id}/{media_id}"))
+        Err(anyhow::anyhow!(
+            "No publisher found for {room_id}/{media_id}"
+        ))
     }
 
     /// Get the registry (for admin queries)
@@ -264,7 +282,11 @@ impl LiveStreamingInfrastructure {
     }
 
     /// Get publisher info
-    pub async fn get_publisher(&self, room_id: &str, media_id: &str) -> Result<crate::relay::PublisherInfo> {
+    pub async fn get_publisher(
+        &self,
+        room_id: &str,
+        media_id: &str,
+    ) -> Result<crate::relay::PublisherInfo> {
         self.registry
             .get_publisher(room_id, media_id)
             .await?
@@ -296,7 +318,9 @@ impl FlvStreamingApi {
         media_id: &str,
     ) -> Result<mpsc::Receiver<Result<Bytes, std::io::Error>>> {
         // Ensure publisher exists
-        infrastructure.has_publisher(room_id, media_id).await?
+        infrastructure
+            .has_publisher(room_id, media_id)
+            .await?
             .then_some(())
             .ok_or_else(|| anyhow::anyhow!("No publisher for {room_id}/{media_id}"))?;
 
@@ -338,9 +362,14 @@ impl FlvStreamingApi {
         room_id: &str,
         media_id: &str,
         external_source_url: Option<&str>,
-    ) -> Result<(mpsc::Receiver<Result<Bytes, std::io::Error>>, StreamSubscriberGuard)> {
+    ) -> Result<(
+        mpsc::Receiver<Result<Bytes, std::io::Error>>,
+        StreamSubscriberGuard,
+    )> {
         // Ensure pull stream exists (gRPC relay or external)
-        let guard = infrastructure.ensure_pull_stream(room_id, media_id, external_source_url).await?;
+        let guard = infrastructure
+            .ensure_pull_stream(room_id, media_id, external_source_url)
+            .await?;
 
         // Create FLV session (subscribes to local StreamHub)
         let rx = Self::create_session(infrastructure, room_id, media_id).await?;
@@ -377,7 +406,8 @@ impl HlsStreamingApi {
         F: Fn(&str) -> String,
     {
         // Get publisher info to determine if local or remote
-        let publisher_info = infrastructure.registry
+        let publisher_info = infrastructure
+            .registry
             .get_publisher(room_id, media_id)
             .await
             .map_err(|e| anyhow::anyhow!("Failed to check publisher: {e}"))?;
@@ -398,7 +428,8 @@ impl HlsStreamingApi {
             Self::generate_playlist_local(infrastructure, room_id, media_id, url_generator)
         } else if let Some(hls_proxy) = &infrastructure.hls_proxy {
             // Validate gRPC address before attempting remote proxy
-            let grpc_addr = publisher_info.validate_grpc_address()
+            let grpc_addr = publisher_info
+                .validate_grpc_address()
                 .map_err(|e| anyhow::anyhow!("Cannot proxy HLS for {room_id}/{media_id}: {e}"))?;
 
             // Remote publisher: proxy via gRPC
@@ -473,7 +504,8 @@ impl HlsStreamingApi {
     ) -> Result<Option<String>> {
         Self::generate_playlist(infrastructure, room_id, media_id, |ts_name| {
             format!("{segment_url_base}{ts_name}.ts")
-        }).await
+        })
+        .await
     }
 
     /// Get HLS segment data.
@@ -490,7 +522,8 @@ impl HlsStreamingApi {
         segment_name: &str,
     ) -> Result<Bytes> {
         // Get publisher info to determine if local or remote
-        let publisher_info = infrastructure.registry
+        let publisher_info = infrastructure
+            .registry
             .get_publisher(room_id, media_id)
             .await
             .map_err(|e| anyhow::anyhow!("Failed to check publisher: {e}"))?;
@@ -511,8 +544,9 @@ impl HlsStreamingApi {
             Self::get_segment_local(infrastructure, room_id, media_id, segment_name).await
         } else if let Some(hls_proxy) = &infrastructure.hls_proxy {
             // Validate gRPC address before attempting remote proxy
-            let grpc_addr = publisher_info.validate_grpc_address()
-                .map_err(|e| anyhow::anyhow!("Cannot proxy HLS segment for {room_id}/{media_id}: {e}"))?;
+            let grpc_addr = publisher_info.validate_grpc_address().map_err(|e| {
+                anyhow::anyhow!("Cannot proxy HLS segment for {room_id}/{media_id}: {e}")
+            })?;
 
             // Remote publisher: proxy via gRPC (with local cache)
             let segment = hls_proxy
@@ -555,7 +589,10 @@ impl HlsStreamingApi {
     /// **DEPRECATED for HLS**: Use `generate_playlist` instead. HLS should NOT
     /// trigger RTMP pull streams. This method is kept for backwards compatibility
     /// but now behaves identically to `generate_playlist` (no pull stream).
-    #[deprecated(since = "0.1.0", note = "Use generate_playlist instead; HLS should not trigger RTMP pull streams")]
+    #[deprecated(
+        since = "0.1.0",
+        note = "Use generate_playlist instead; HLS should not trigger RTMP pull streams"
+    )]
     pub async fn generate_playlist_with_pull<F>(
         infrastructure: &LiveStreamingInfrastructure,
         room_id: &str,

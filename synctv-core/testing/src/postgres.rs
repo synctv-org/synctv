@@ -1,7 +1,7 @@
 //! `PostgreSQL` test container helpers
 
-use sqlx::PgPool;
 use sqlx::postgres::PgPoolOptions;
+use sqlx::PgPool;
 use testcontainers::core::ImageExt;
 use testcontainers::runners::AsyncRunner;
 use testcontainers::ContainerAsync;
@@ -48,7 +48,10 @@ pub async fn create_test_pool() -> (TestContainer, PgPool) {
 
     let connection_string = format!(
         "postgresql://synctv:synctv_test@127.0.0.1:{}/synctv_test",
-        postgres.get_host_port_ipv4(5432).await.expect("Failed to get port")
+        postgres
+            .get_host_port_ipv4(5432)
+            .await
+            .expect("Failed to get port")
     );
 
     // Retry connection until PG is fully ready (container port may be mapped
@@ -106,7 +109,10 @@ pub async fn create_test_pool_with_db(db_name: &str) -> (TestContainer, PgPool) 
 
     let connection_string = format!(
         "postgresql://synctv:synctv_test@127.0.0.1:{}/{}",
-        postgres.get_host_port_ipv4(5432).await.expect("Failed to get port"),
+        postgres
+            .get_host_port_ipv4(5432)
+            .await
+            .expect("Failed to get port"),
         db_name
     );
 

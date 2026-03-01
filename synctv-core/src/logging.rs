@@ -1,11 +1,11 @@
 use tracing::Level;
+use tracing_appender::rolling::{RollingFileAppender, Rotation};
 use tracing_subscriber::{
     fmt::{self, format::FmtSpan},
     layer::SubscriberExt,
     util::SubscriberInitExt,
     EnvFilter,
 };
-use tracing_appender::rolling::{RollingFileAppender, Rotation};
 
 use crate::config::LoggingConfig;
 
@@ -22,7 +22,9 @@ use crate::config::LoggingConfig;
 /// Returns an optional `WorkerGuard` when file logging is enabled.
 /// The caller **must** hold this guard alive (e.g. in `main()`) so that
 /// buffered log entries are flushed on shutdown.
-pub fn init_logging(config: &LoggingConfig) -> anyhow::Result<Option<tracing_appender::non_blocking::WorkerGuard>> {
+pub fn init_logging(
+    config: &LoggingConfig,
+) -> anyhow::Result<Option<tracing_appender::non_blocking::WorkerGuard>> {
     let log_level = parse_log_level(&config.level)?;
 
     // Create env filter from config level
@@ -110,7 +112,7 @@ fn parse_log_level(level: &str) -> anyhow::Result<Level> {
 }
 
 /// Generate a trace ID for request tracing
-#[must_use] 
+#[must_use]
 pub fn generate_trace_id() -> String {
     use rand::RngExt;
     let mut rng = rand::rng();

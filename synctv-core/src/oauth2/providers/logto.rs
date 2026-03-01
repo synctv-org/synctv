@@ -1,12 +1,11 @@
 //! Logto `OAuth2` provider
 
-use crate::oauth2::{Provider, OAuth2UserInfo};
+use crate::oauth2::{OAuth2UserInfo, Provider};
 use crate::{Error, InternalExt};
 use async_trait::async_trait;
 use oauth2::{
-    basic::BasicClient,
-    AuthUrl, ClientId, ClientSecret, EndpointSet, EndpointNotSet, PkceCodeChallenge,
-    PkceCodeVerifier, RedirectUrl, TokenUrl, TokenResponse,
+    basic::BasicClient, AuthUrl, ClientId, ClientSecret, EndpointNotSet, EndpointSet,
+    PkceCodeChallenge, PkceCodeVerifier, RedirectUrl, TokenResponse, TokenUrl,
 };
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
@@ -26,7 +25,8 @@ pub struct LogtoConfig {
 /// Supports multiple instances (e.g., logto1, logto2) with different endpoints.
 /// Similar to Go's logtoProvider in synctv/internal/provider/providers/logto.go
 pub struct LogtoProvider {
-    client: Arc<BasicClient<EndpointSet, EndpointNotSet, EndpointNotSet, EndpointNotSet, EndpointSet>>,
+    client:
+        Arc<BasicClient<EndpointSet, EndpointNotSet, EndpointNotSet, EndpointNotSet, EndpointSet>>,
     endpoint: String,
     http_client: Arc<Client>,
 }
@@ -36,7 +36,12 @@ impl LogtoProvider {
     ///
     /// # Errors
     /// Returns error if `redirect_url` or constructed endpoint URLs are not valid URLs.
-    pub fn create(client_id: String, client_secret: String, redirect_url: String, endpoint: &str) -> Result<Self, Error> {
+    pub fn create(
+        client_id: String,
+        client_secret: String,
+        redirect_url: String,
+        endpoint: &str,
+    ) -> Result<Self, Error> {
         let endpoint = endpoint.trim_end_matches('/');
         let auth_url = AuthUrl::new(format!("{endpoint}/oidc/auth"))
             .map_err(|e| Error::InvalidInput(format!("Invalid Logto auth URL: {e}")))?;
@@ -59,7 +64,7 @@ impl LogtoProvider {
                 Client::builder()
                     .redirect(reqwest::redirect::Policy::none())
                     .build()
-                    .internal_with_err("Failed to build HTTP client")?
+                    .internal_with_err("Failed to build HTTP client")?,
             ),
         })
     }
@@ -81,7 +86,11 @@ impl Provider for LogtoProvider {
         Ok((auth_url.to_string(), pkce_verifier.secret().clone()))
     }
 
-    async fn get_user_info(&self, code: &str, pkce_verifier: &str) -> Result<OAuth2UserInfo, Error> {
+    async fn get_user_info(
+        &self,
+        code: &str,
+        pkce_verifier: &str,
+    ) -> Result<OAuth2UserInfo, Error> {
         // Exchange code for token with PKCE verifier
         let verifier = PkceCodeVerifier::new(pkce_verifier.to_string());
         let token = self
@@ -96,7 +105,10 @@ impl Provider for LogtoProvider {
         let resp = self
             .http_client
             .get(format!("{}/oidc/me", self.endpoint))
-            .header("Authorization", format!("Bearer {}", token.access_token().secret()))
+            .header(
+                "Authorization",
+                format!("Bearer {}", token.access_token().secret()),
+            )
             .send()
             .await
             .internal_with_err("Failed to fetch user info")?

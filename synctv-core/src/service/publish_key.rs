@@ -89,8 +89,12 @@ pub struct RedisJtiStore {
 }
 
 impl RedisJtiStore {
-    #[must_use] 
-    pub fn new(conn: redis::aio::ConnectionManager, key_prefix: String, cache_ttl_secs: u64) -> Self {
+    #[must_use]
+    pub fn new(
+        conn: redis::aio::ConnectionManager,
+        key_prefix: String,
+        cache_ttl_secs: u64,
+    ) -> Self {
         Self {
             conn,
             key_prefix,
@@ -172,7 +176,7 @@ pub struct InMemoryJtiStore {
 }
 
 impl InMemoryJtiStore {
-    #[must_use] 
+    #[must_use]
     pub fn new(cache_ttl_secs: u64) -> Self {
         Self {
             cache: moka::future::Cache::builder()
@@ -230,7 +234,11 @@ impl std::fmt::Debug for PublishKeyService {
 
 impl PublishKeyService {
     /// Create a new publish key service with a custom JTI store.
-    pub fn from_store(jwt_service: JwtService, token_ttl_hours: i64, jti_store: Arc<dyn JtiStore>) -> Self {
+    pub fn from_store(
+        jwt_service: JwtService,
+        token_ttl_hours: i64,
+        jti_store: Arc<dyn JtiStore>,
+    ) -> Self {
         Self {
             jwt_service,
             token_ttl_hours,
@@ -241,7 +249,9 @@ impl PublishKeyService {
     /// Create a new publish key service (local-only JTI deduplication)
     #[must_use]
     pub fn new(jwt_service: JwtService, token_ttl_hours: i64) -> Self {
-        let cache_ttl_secs = (token_ttl_hours as u64).saturating_mul(3600).saturating_add(300);
+        let cache_ttl_secs = (token_ttl_hours as u64)
+            .saturating_mul(3600)
+            .saturating_add(300);
         let store = Arc::new(InMemoryJtiStore::new(cache_ttl_secs));
         Self::from_store(jwt_service, token_ttl_hours, store)
     }
@@ -254,8 +264,15 @@ impl PublishKeyService {
 
     /// Enable Redis-backed JTI deduplication for multi-replica deployments.
     #[must_use]
-    pub fn with_redis(jwt_service: JwtService, token_ttl_hours: i64, conn: redis::aio::ConnectionManager, key_prefix: String) -> Self {
-        let cache_ttl_secs = (token_ttl_hours as u64).saturating_mul(3600).saturating_add(300);
+    pub fn with_redis(
+        jwt_service: JwtService,
+        token_ttl_hours: i64,
+        conn: redis::aio::ConnectionManager,
+        key_prefix: String,
+    ) -> Self {
+        let cache_ttl_secs = (token_ttl_hours as u64)
+            .saturating_mul(3600)
+            .saturating_add(300);
         let store = Arc::new(RedisJtiStore::new(conn, key_prefix, cache_ttl_secs));
         Self::from_store(jwt_service, token_ttl_hours, store)
     }
@@ -287,9 +304,7 @@ impl PublishKeyService {
         let claims_json = serde_json::to_value(&claims)
             .map_err(|e| Error::Internal(format!("Failed to serialize claims: {e}")))?;
 
-        let token = self
-            .jwt_service
-            .sign_custom(&claims_json)?;
+        let token = self.jwt_service.sign_custom(&claims_json)?;
 
         Ok(PublishKey {
             token,
@@ -305,9 +320,7 @@ impl PublishKeyService {
     /// Each publish key can only be validated once. Subsequent calls with the
     /// same token (same `jti`) will fail with an authentication error.
     pub async fn validate_publish_key(&self, token: &str) -> Result<PublishClaims> {
-        let claims_value = self
-            .jwt_service
-            .verify_custom(token)?;
+        let claims_value = self.jwt_service.verify_custom(token)?;
 
         let claims: PublishClaims = serde_json::from_value(claims_value)
             .map_err(|e| Error::Authentication(format!("Invalid token format: {e}")))?;
@@ -440,7 +453,10 @@ mod tests {
 
         let expected_exp = now + (2 * 3600);
         let diff = (key.expires_at - expected_exp).abs();
-        assert!(diff < 5, "Expiration time is off by more than 5 seconds: diff={diff}");
+        assert!(
+            diff < 5,
+            "Expiration time is off by more than 5 seconds: diff={diff}"
+        );
     }
 
     #[tokio::test]
@@ -474,7 +490,8 @@ mod tests {
     async fn test_validate_publish_key_wrong_secret() {
         let service1 = create_publish_key_service();
         let service2 = PublishKeyService::new(
-            JwtService::new("different-secret-key-for-tests-abcdef-long-enough-1234567890").unwrap(),
+            JwtService::new("different-secret-key-for-tests-abcdef-long-enough-1234567890")
+                .unwrap(),
             24,
         );
 
@@ -619,7 +636,10 @@ mod tests {
         let result = service.validate_publish_key(&key.token).await;
         assert!(result.is_err());
         if let Err(Error::Authentication(msg)) = result {
-            assert!(msg.contains("single-use"), "Expected single-use error, got: {msg}");
+            assert!(
+                msg.contains("single-use"),
+                "Expected single-use error, got: {msg}"
+            );
         } else {
             panic!("Expected Authentication error for replay");
         }

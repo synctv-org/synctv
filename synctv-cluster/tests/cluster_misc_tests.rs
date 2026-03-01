@@ -14,7 +14,6 @@ use synctv_core::models::id::{RoomId, UserId};
 mod integration_test_helpers;
 use integration_test_helpers::{create_node, TestRedis};
 
-
 #[tokio::test]
 #[ignore = "requires Docker"]
 async fn test_event_propagation_latency() {
@@ -118,4 +117,3 @@ async fn test_critical_events_high_priority() {
     node_a.shutdown().await;
     node_b.shutdown().await;
 }
-

@@ -14,7 +14,6 @@ use synctv_core::models::id::{RoomId, UserId};
 mod integration_test_helpers;
 use integration_test_helpers::{create_node, TestRedis};
 
-
 #[tokio::test]
 #[ignore = "requires Docker"]
 async fn test_three_node_cluster() {
@@ -27,14 +26,12 @@ async fn test_three_node_cluster() {
     let room_id = RoomId::from_string("three_node_room".to_string());
 
     // Subscribe on node A and node C
-    let (mut rx_a, conn_a) = node_a.subscribe(
-        room_id.clone(),
-        UserId::from_string("user_a".to_string()),
-    ).await;
-    let (mut rx_c, conn_c) = node_c.subscribe(
-        room_id.clone(),
-        UserId::from_string("user_c".to_string()),
-    ).await;
+    let (mut rx_a, conn_a) = node_a
+        .subscribe(room_id.clone(), UserId::from_string("user_a".to_string()))
+        .await;
+    let (mut rx_c, conn_c) = node_c
+        .subscribe(room_id.clone(), UserId::from_string("user_c".to_string()))
+        .await;
 
     tokio::time::sleep(Duration::from_millis(500)).await;
 
@@ -87,33 +84,21 @@ async fn test_node_discovery_three_nodes() {
 
     let redis = TestRedis::start().await;
 
-    let redis_client_a = redis::Client::open(redis.redis_url.clone()).expect("Failed to create Redis client A");
-    let redis_client_b = redis::Client::open(redis.redis_url.clone()).expect("Failed to create Redis client B");
-    let redis_client_c = redis::Client::open(redis.redis_url.clone()).expect("Failed to create Redis client C");
+    let redis_client_a =
+        redis::Client::open(redis.redis_url.clone()).expect("Failed to create Redis client A");
+    let redis_client_b =
+        redis::Client::open(redis.redis_url.clone()).expect("Failed to create Redis client B");
+    let redis_client_c =
+        redis::Client::open(redis.redis_url.clone()).expect("Failed to create Redis client C");
 
-    let registry_a = NodeRegistry::new(
-        redis_client_a,
-        "node_a".to_string(),
-        30,
-        "synctv:",
-    )
-    .expect("Failed to create registry A");
+    let registry_a = NodeRegistry::new(redis_client_a, "node_a".to_string(), 30, "synctv:")
+        .expect("Failed to create registry A");
 
-    let registry_b = NodeRegistry::new(
-        redis_client_b,
-        "node_b".to_string(),
-        30,
-        "synctv:",
-    )
-    .expect("Failed to create registry B");
+    let registry_b = NodeRegistry::new(redis_client_b, "node_b".to_string(), 30, "synctv:")
+        .expect("Failed to create registry B");
 
-    let registry_c = NodeRegistry::new(
-        redis_client_c,
-        "node_c".to_string(),
-        30,
-        "synctv:",
-    )
-    .expect("Failed to create registry C");
+    let registry_c = NodeRegistry::new(redis_client_c, "node_c".to_string(), 30, "synctv:")
+        .expect("Failed to create registry C");
 
     // Register all three nodes
     registry_a
@@ -176,7 +161,10 @@ async fn test_node_discovery_three_nodes() {
     );
 
     // Unregister node C
-    registry_c.unregister().await.expect("Failed to unregister C");
+    registry_c
+        .unregister()
+        .await
+        .expect("Failed to unregister C");
 
     // After unregister + cache expiry, only 2 nodes should remain
     // Wait for moka cache invalidation (5s TTL)
@@ -206,15 +194,11 @@ async fn test_node_epoch_fencing() {
 
     let redis = TestRedis::start().await;
 
-    let redis_client = redis::Client::open(redis.redis_url.clone()).expect("Failed to create Redis client");
+    let redis_client =
+        redis::Client::open(redis.redis_url.clone()).expect("Failed to create Redis client");
 
-    let registry = NodeRegistry::new(
-        redis_client,
-        "fencing_node".to_string(),
-        30,
-        "synctv:",
-    )
-    .expect("Failed to create registry");
+    let registry = NodeRegistry::new(redis_client, "fencing_node".to_string(), 30, "synctv:")
+        .expect("Failed to create registry");
 
     // First registration
     registry
@@ -258,8 +242,8 @@ async fn test_leader_election_single_leader() {
 
     let redis = TestRedis::start().await;
 
-    let client = redis::Client::open(redis.redis_url.as_str())
-        .expect("Failed to create Redis client");
+    let client =
+        redis::Client::open(redis.redis_url.as_str()).expect("Failed to create Redis client");
 
     let conn_a = redis::aio::ConnectionManager::new(client.clone())
         .await
@@ -284,9 +268,12 @@ async fn test_leader_election_single_leader() {
         renew_interval_secs: 1,
     };
 
-    let elector_a = LeaderElector::with_config(conn_a, "node_a".to_string(), config_a, "synctv:", false);
-    let elector_b = LeaderElector::with_config(conn_b, "node_b".to_string(), config_b, "synctv:", false);
-    let elector_c = LeaderElector::with_config(conn_c, "node_c".to_string(), config_c, "synctv:", false);
+    let elector_a =
+        LeaderElector::with_config(conn_a, "node_a".to_string(), config_a, "synctv:", false);
+    let elector_b =
+        LeaderElector::with_config(conn_b, "node_b".to_string(), config_b, "synctv:", false);
+    let elector_c =
+        LeaderElector::with_config(conn_c, "node_c".to_string(), config_c, "synctv:", false);
 
     let cancel_a = CancellationToken::new();
     let cancel_b = CancellationToken::new();
@@ -310,7 +297,8 @@ async fn test_leader_election_single_leader() {
     .count();
 
     assert_eq!(
-        leader_count, 1,
+        leader_count,
+        1,
         "Exactly one node should be leader, got {}: A={}, B={}, C={}",
         leader_count,
         elector_a.is_leader(),
@@ -363,4 +351,3 @@ async fn test_leader_election_single_leader() {
     // Give tasks time to shut down
     tokio::time::sleep(Duration::from_millis(200)).await;
 }
-

@@ -2,7 +2,7 @@
 //!
 //! Design reference: /Volumes/workspace/rust/design/04-数据库设计.md §2.4.2
 
-use sqlx::{PgPool, FromRow};
+use sqlx::{FromRow, PgPool};
 
 use crate::{
     models::{Media, MediaId, PageParams, PlaylistId, RoomId},
@@ -81,7 +81,11 @@ impl MediaRepository {
     ///
     /// Inserts all items in a single statement. For large batches (>1000 items),
     /// prefer `create_batch_chunked` which automatically splits into chunks.
-    pub async fn create_batch_with_executor<'e, E>(&self, items: &[Media], executor: E) -> Result<Vec<Media>>
+    pub async fn create_batch_with_executor<'e, E>(
+        &self,
+        items: &[Media],
+        executor: E,
+    ) -> Result<Vec<Media>>
     where
         E: sqlx::Executor<'e, Database = sqlx::Postgres>,
     {
@@ -135,15 +139,23 @@ impl MediaRepository {
             let base = i * 10;
             query_builder.push_str(&format!(
                 "(${}, ${}, ${}, ${}, ${}, ${}, ${}, ${}, ${}, ${}, 0)",
-                base + 1, base + 2, base + 3, base + 4, base + 5,
-                base + 6, base + 7, base + 8, base + 9, base + 10
+                base + 1,
+                base + 2,
+                base + 3,
+                base + 4,
+                base + 5,
+                base + 6,
+                base + 7,
+                base + 8,
+                base + 9,
+                base + 10
             ));
             binds.push(serde_json::to_value(&item.source_config)?);
         }
         query_builder.push_str(
             " RETURNING id, playlist_id, room_id, creator_id, name, position,
                        source_provider, source_config, provider_instance_name,
-                       added_at, version"
+                       added_at, version",
         );
 
         let mut query = sqlx::query(&query_builder);
@@ -152,7 +164,11 @@ impl MediaRepository {
                 .bind(item.id.as_str())
                 .bind(item.playlist_id.as_str())
                 .bind(item.room_id.as_str())
-                .bind(item.creator_id.as_ref().map(super::super::models::id::UserId::as_str))
+                .bind(
+                    item.creator_id
+                        .as_ref()
+                        .map(super::super::models::id::UserId::as_str),
+                )
                 .bind(&item.name)
                 .bind(item.position)
                 .bind(item.source_provider.as_str())
@@ -237,7 +253,7 @@ impl MediaRepository {
              RETURNING id, playlist_id, room_id, creator_id, name, position,
                        source_provider, source_config, provider_instance_name,
                        added_at, version
-            "
+            ",
         )
         .bind(media.id.as_str())
         .bind(&media.name)
@@ -286,7 +302,7 @@ impl MediaRepository {
              RETURNING id, playlist_id, room_id, creator_id, name, position,
                        source_provider, source_config, provider_instance_name,
                        added_at, version
-            "
+            ",
         )
         .bind(media.id.as_str())
         .bind(&media.name)
@@ -311,7 +327,7 @@ impl MediaRepository {
                    source_provider, source_config, provider_instance_name,
                    added_at, version
              FROM media
-             WHERE id = $1            "
+             WHERE id = $1            ",
         )
         .bind(media_id.as_str())
         .fetch_optional(&self.pool)
@@ -329,7 +345,11 @@ impl MediaRepository {
     }
 
     /// Get multiple media items by IDs using a specific executor (for transaction support)
-    pub async fn get_by_ids_with_executor<'e, E>(&self, media_ids: &[MediaId], executor: E) -> Result<Vec<Media>>
+    pub async fn get_by_ids_with_executor<'e, E>(
+        &self,
+        media_ids: &[MediaId],
+        executor: E,
+    ) -> Result<Vec<Media>>
     where
         E: sqlx::Executor<'e, Database = sqlx::Postgres>,
     {
@@ -344,13 +364,15 @@ impl MediaRepository {
                    source_provider, source_config, provider_instance_name,
                    added_at, version
              FROM media
-             WHERE id = ANY($1)            "
+             WHERE id = ANY($1)            ",
         )
         .bind(&id_strs)
         .fetch_all(executor)
         .await?;
 
-        rows.into_iter().map(|row| Ok(Media::from_row(&row)?)).collect()
+        rows.into_iter()
+            .map(|row| Ok(Media::from_row(&row)?))
+            .collect()
     }
 
     /// Get playlist for a room (all media in room's root playlist and sub-playlists)
@@ -362,13 +384,15 @@ impl MediaRepository {
                    added_at, version
              FROM media
              WHERE room_id = $1             ORDER BY playlist_id, position ASC
-            "
+            ",
         )
         .bind(room_id.as_str())
         .fetch_all(&self.pool)
         .await?;
 
-        rows.into_iter().map(|row| Ok(Media::from_row(&row)?)).collect()
+        rows.into_iter()
+            .map(|row| Ok(Media::from_row(&row)?))
+            .collect()
     }
 
     /// Get media in a specific playlist
@@ -380,13 +404,15 @@ impl MediaRepository {
                    added_at, version
              FROM media
              WHERE playlist_id = $1             ORDER BY position ASC
-            "
+            ",
         )
         .bind(playlist_id.as_str())
         .fetch_all(&self.pool)
         .await?;
 
-        rows.into_iter().map(|row| Ok(Media::from_row(&row)?)).collect()
+        rows.into_iter()
+            .map(|row| Ok(Media::from_row(&row)?))
+            .collect()
     }
 
     /// Get paginated playlist
@@ -401,7 +427,7 @@ impl MediaRepository {
         // Get total count
         let total: i64 = sqlx::query_scalar(
             r"
-            SELECT COUNT(*) FROM media WHERE playlist_id = $1            "
+            SELECT COUNT(*) FROM media WHERE playlist_id = $1            ",
         )
         .bind(playlist_id.as_str())
         .fetch_one(&self.pool)
@@ -416,7 +442,7 @@ impl MediaRepository {
              FROM media
              WHERE playlist_id = $1             ORDER BY position ASC
              LIMIT $2 OFFSET $3
-            "
+            ",
         )
         .bind(playlist_id.as_str())
         .bind(limit)
@@ -424,7 +450,10 @@ impl MediaRepository {
         .fetch_all(&self.pool)
         .await?;
 
-        let items: Vec<Media> = rows.into_iter().map(|row| Ok(Media::from_row(&row)?)).collect::<Result<Vec<Media>>>()?;
+        let items: Vec<Media> = rows
+            .into_iter()
+            .map(|row| Ok(Media::from_row(&row)?))
+            .collect::<Result<Vec<Media>>>()?;
 
         Ok((items, total))
     }
@@ -448,7 +477,7 @@ impl MediaRepository {
              WHERE playlist_id = $1
              ORDER BY position ASC
              LIMIT $2 OFFSET $3
-            "
+            ",
         )
         .bind(playlist_id.as_str())
         .bind(limit)
@@ -456,7 +485,9 @@ impl MediaRepository {
         .fetch_all(&self.pool)
         .await?;
 
-        rows.into_iter().map(|row| Ok(Media::from_row(&row)?)).collect()
+        rows.into_iter()
+            .map(|row| Ok(Media::from_row(&row)?))
+            .collect()
     }
 
     /// Delete media from playlist
@@ -465,7 +496,7 @@ impl MediaRepository {
             r"
             DELETE FROM media
              WHERE id = $1
-            "
+            ",
         )
         .bind(media_id.as_str())
         .execute(&self.pool)
@@ -480,7 +511,7 @@ impl MediaRepository {
             r"
             DELETE FROM media
              WHERE playlist_id = $1
-            "
+            ",
         )
         .bind(playlist_id.as_str())
         .execute(&self.pool)
@@ -495,7 +526,11 @@ impl MediaRepository {
     }
 
     /// Bulk delete media items by IDs using a specific executor (for transaction support)
-    pub async fn delete_batch_with_executor<'e, E>(&self, media_ids: &[MediaId], executor: E) -> Result<usize>
+    pub async fn delete_batch_with_executor<'e, E>(
+        &self,
+        media_ids: &[MediaId],
+        executor: E,
+    ) -> Result<usize>
     where
         E: sqlx::Executor<'e, Database = sqlx::Postgres>,
     {
@@ -509,7 +544,7 @@ impl MediaRepository {
             r"
             DELETE FROM media
              WHERE id = ANY($1)
-            "
+            ",
         )
         .bind(&id_strs)
         .execute(executor)
@@ -521,7 +556,8 @@ impl MediaRepository {
     /// Swap positions of two media
     pub async fn swap_positions(&self, media_id1: &MediaId, media_id2: &MediaId) -> Result<()> {
         let mut tx = self.pool.begin().await?;
-        self.swap_positions_with_tx(media_id1, media_id2, &mut tx).await?;
+        self.swap_positions_with_tx(media_id1, media_id2, &mut tx)
+            .await?;
         tx.commit().await?;
         Ok(())
     }
@@ -549,7 +585,7 @@ impl MediaRepository {
             WHERE id IN ($1, $2)
             ORDER BY id
             FOR UPDATE
-            "
+            ",
         )
         .bind(media_id1.as_str())
         .bind(media_id2.as_str())
@@ -671,7 +707,7 @@ impl MediaRepository {
             r"
             SELECT COALESCE(MAX(position), -1) + 1
             FROM media
-            WHERE playlist_id = $1            "
+            WHERE playlist_id = $1            ",
         )
         .bind(playlist_id.as_str())
         .fetch_one(&self.pool)
@@ -725,7 +761,7 @@ impl MediaRepository {
             SELECT COALESCE(MAX(position), -1) + 1
             FROM media
             WHERE playlist_id = $1
-            "
+            ",
         )
         .bind(playlist_id.as_str())
         .fetch_one(&mut **tx)
@@ -738,7 +774,7 @@ impl MediaRepository {
     pub async fn count_by_playlist(&self, playlist_id: &PlaylistId) -> Result<i64> {
         let count: i64 = sqlx::query_scalar(
             r"
-            SELECT COUNT(*) FROM media WHERE playlist_id = $1            "
+            SELECT COUNT(*) FROM media WHERE playlist_id = $1            ",
         )
         .bind(playlist_id.as_str())
         .fetch_one(&self.pool)
@@ -748,14 +784,17 @@ impl MediaRepository {
     }
 
     /// Batch count media items across multiple playlists
-    pub async fn count_by_playlists_batch(&self, playlist_ids: &[&str]) -> Result<std::collections::HashMap<String, i64>> {
+    pub async fn count_by_playlists_batch(
+        &self,
+        playlist_ids: &[&str],
+    ) -> Result<std::collections::HashMap<String, i64>> {
         use sqlx::Row;
         let rows = sqlx::query(
             r"
             SELECT playlist_id, COUNT(*) as cnt
             FROM media
             WHERE playlist_id = ANY($1)            GROUP BY playlist_id
-            "
+            ",
         )
         .bind(playlist_ids)
         .fetch_all(&self.pool)
@@ -769,7 +808,6 @@ impl MediaRepository {
         }
         Ok(result)
     }
-
 }
 
 #[cfg(test)]
@@ -966,10 +1004,10 @@ mod tests {
     #[tokio::test]
     #[ignore = "Requires Docker"]
     async fn test_create_and_get_media() {
-        use crate::test_helpers::{RoomFixture, UserFixture};
-        use crate::repository::user::UserRepository;
-        use crate::repository::room::RoomRepository;
         use crate::repository::playlist::PlaylistRepository;
+        use crate::repository::room::RoomRepository;
+        use crate::repository::user::UserRepository;
+        use crate::test_helpers::{RoomFixture, UserFixture};
 
         let infra = crate::test_helpers::containers::TestInfra::postgres_only().await;
         let user_repo = UserRepository::new(infra.pool.clone());
@@ -992,7 +1030,8 @@ mod tests {
             &playlist_repo,
             room.id.clone(),
             "Test Playlist",
-        ).await;
+        )
+        .await;
 
         // Create media
         let media = Media::from_provider(
@@ -1021,10 +1060,10 @@ mod tests {
     #[tokio::test]
     #[ignore = "Requires Docker"]
     async fn test_update_media() {
-        use crate::test_helpers::{RoomFixture, UserFixture};
-        use crate::repository::user::UserRepository;
-        use crate::repository::room::RoomRepository;
         use crate::repository::playlist::PlaylistRepository;
+        use crate::repository::room::RoomRepository;
+        use crate::repository::user::UserRepository;
+        use crate::test_helpers::{RoomFixture, UserFixture};
 
         let infra = crate::test_helpers::containers::TestInfra::postgres_only().await;
         let user_repo = UserRepository::new(infra.pool.clone());
@@ -1033,7 +1072,9 @@ mod tests {
         let media_repo = MediaRepository::new(infra.pool.clone());
 
         // Setup
-        let owner = UserFixture::new().with_username("media_update_owner").build();
+        let owner = UserFixture::new()
+            .with_username("media_update_owner")
+            .build();
         let owner = user_repo.create(&owner).await.unwrap();
 
         let room = RoomFixture::new()
@@ -1047,7 +1088,8 @@ mod tests {
             &playlist_repo,
             room.id.clone(),
             "Test Playlist",
-        ).await;
+        )
+        .await;
 
         let media = Media::from_provider(
             playlist.id.clone(),
@@ -1075,10 +1117,10 @@ mod tests {
     #[tokio::test]
     #[ignore = "Requires Docker"]
     async fn test_delete_media() {
-        use crate::test_helpers::{RoomFixture, UserFixture};
-        use crate::repository::user::UserRepository;
-        use crate::repository::room::RoomRepository;
         use crate::repository::playlist::PlaylistRepository;
+        use crate::repository::room::RoomRepository;
+        use crate::repository::user::UserRepository;
+        use crate::test_helpers::{RoomFixture, UserFixture};
 
         let infra = crate::test_helpers::containers::TestInfra::postgres_only().await;
         let user_repo = UserRepository::new(infra.pool.clone());
@@ -1087,7 +1129,9 @@ mod tests {
         let media_repo = MediaRepository::new(infra.pool.clone());
 
         // Setup
-        let owner = UserFixture::new().with_username("media_delete_owner").build();
+        let owner = UserFixture::new()
+            .with_username("media_delete_owner")
+            .build();
         let owner = user_repo.create(&owner).await.unwrap();
 
         let room = RoomFixture::new()
@@ -1101,7 +1145,8 @@ mod tests {
             &playlist_repo,
             room.id.clone(),
             "Test Playlist",
-        ).await;
+        )
+        .await;
 
         let media = Media::from_provider(
             playlist.id.clone(),
@@ -1132,10 +1177,10 @@ mod tests {
     #[tokio::test]
     #[ignore = "Requires Docker"]
     async fn test_create_batch() {
-        use crate::test_helpers::{RoomFixture, UserFixture};
-        use crate::repository::user::UserRepository;
-        use crate::repository::room::RoomRepository;
         use crate::repository::playlist::PlaylistRepository;
+        use crate::repository::room::RoomRepository;
+        use crate::repository::user::UserRepository;
+        use crate::test_helpers::{RoomFixture, UserFixture};
 
         let infra = crate::test_helpers::containers::TestInfra::postgres_only().await;
         let user_repo = UserRepository::new(infra.pool.clone());
@@ -1158,7 +1203,8 @@ mod tests {
             &playlist_repo,
             room.id.clone(),
             "Batch Playlist",
-        ).await;
+        )
+        .await;
 
         // Create batch
         let items: Vec<Media> = (0..5)
@@ -1188,10 +1234,10 @@ mod tests {
     #[tokio::test]
     #[ignore = "Requires Docker"]
     async fn test_create_batch_chunk_too_large() {
-        use crate::test_helpers::{RoomFixture, UserFixture};
-        use crate::repository::user::UserRepository;
-        use crate::repository::room::RoomRepository;
         use crate::repository::playlist::PlaylistRepository;
+        use crate::repository::room::RoomRepository;
+        use crate::repository::user::UserRepository;
+        use crate::test_helpers::{RoomFixture, UserFixture};
 
         let infra = crate::test_helpers::containers::TestInfra::postgres_only().await;
         let user_repo = UserRepository::new(infra.pool.clone());
@@ -1214,7 +1260,8 @@ mod tests {
             &playlist_repo,
             room.id.clone(),
             "Chunk Playlist",
-        ).await;
+        )
+        .await;
 
         // Create batch that exceeds chunk limit (1001 items)
         let items: Vec<Media> = (0..1001)
@@ -1244,10 +1291,10 @@ mod tests {
     #[ignore = "Requires Docker"]
     #[allow(deprecated)]
     async fn test_update_if_unchanged() {
-        use crate::test_helpers::{RoomFixture, UserFixture};
-        use crate::repository::user::UserRepository;
-        use crate::repository::room::RoomRepository;
         use crate::repository::playlist::PlaylistRepository;
+        use crate::repository::room::RoomRepository;
+        use crate::repository::user::UserRepository;
+        use crate::test_helpers::{RoomFixture, UserFixture};
 
         let infra = crate::test_helpers::containers::TestInfra::postgres_only().await;
         let user_repo = UserRepository::new(infra.pool.clone());
@@ -1270,7 +1317,8 @@ mod tests {
             &playlist_repo,
             room.id.clone(),
             "Optimistic Playlist",
-        ).await;
+        )
+        .await;
 
         let media = Media::from_provider(
             playlist.id.clone(),
@@ -1313,10 +1361,10 @@ mod tests {
     #[tokio::test]
     #[ignore = "Requires Docker"]
     async fn test_swap_positions() {
-        use crate::test_helpers::{RoomFixture, UserFixture};
-        use crate::repository::user::UserRepository;
-        use crate::repository::room::RoomRepository;
         use crate::repository::playlist::PlaylistRepository;
+        use crate::repository::room::RoomRepository;
+        use crate::repository::user::UserRepository;
+        use crate::test_helpers::{RoomFixture, UserFixture};
 
         let infra = crate::test_helpers::containers::TestInfra::postgres_only().await;
         let user_repo = UserRepository::new(infra.pool.clone());
@@ -1339,7 +1387,8 @@ mod tests {
             &playlist_repo,
             room.id.clone(),
             "Swap Playlist",
-        ).await;
+        )
+        .await;
 
         // Create two media items
         let media1 = Media::from_provider(
@@ -1387,10 +1436,10 @@ mod tests {
     #[tokio::test]
     #[ignore = "Requires Docker"]
     async fn test_count_by_playlist() {
-        use crate::test_helpers::{RoomFixture, UserFixture};
-        use crate::repository::user::UserRepository;
-        use crate::repository::room::RoomRepository;
         use crate::repository::playlist::PlaylistRepository;
+        use crate::repository::room::RoomRepository;
+        use crate::repository::user::UserRepository;
+        use crate::test_helpers::{RoomFixture, UserFixture};
 
         let infra = crate::test_helpers::containers::TestInfra::postgres_only().await;
         let user_repo = UserRepository::new(infra.pool.clone());
@@ -1413,7 +1462,8 @@ mod tests {
             &playlist_repo,
             room.id.clone(),
             "Count Playlist",
-        ).await;
+        )
+        .await;
 
         // Initially empty
         let count = media_repo.count_by_playlist(&playlist.id).await.unwrap();
@@ -1442,10 +1492,10 @@ mod tests {
     #[tokio::test]
     #[ignore = "Requires Docker"]
     async fn test_get_playlist_paginated() {
-        use crate::test_helpers::{RoomFixture, UserFixture};
-        use crate::repository::user::UserRepository;
-        use crate::repository::room::RoomRepository;
         use crate::repository::playlist::PlaylistRepository;
+        use crate::repository::room::RoomRepository;
+        use crate::repository::user::UserRepository;
+        use crate::test_helpers::{RoomFixture, UserFixture};
 
         let infra = crate::test_helpers::containers::TestInfra::postgres_only().await;
         let user_repo = UserRepository::new(infra.pool.clone());
@@ -1468,7 +1518,8 @@ mod tests {
             &playlist_repo,
             room.id.clone(),
             "Paginate Playlist",
-        ).await;
+        )
+        .await;
 
         // Create 15 items
         for i in 0..15 {
@@ -1508,10 +1559,10 @@ mod tests {
     #[tokio::test]
     #[ignore = "Requires Docker"]
     async fn test_delete_batch() {
-        use crate::test_helpers::{RoomFixture, UserFixture};
-        use crate::repository::user::UserRepository;
-        use crate::repository::room::RoomRepository;
         use crate::repository::playlist::PlaylistRepository;
+        use crate::repository::room::RoomRepository;
+        use crate::repository::user::UserRepository;
+        use crate::test_helpers::{RoomFixture, UserFixture};
 
         let infra = crate::test_helpers::containers::TestInfra::postgres_only().await;
         let user_repo = UserRepository::new(infra.pool.clone());
@@ -1520,7 +1571,9 @@ mod tests {
         let media_repo = MediaRepository::new(infra.pool.clone());
 
         // Setup
-        let owner = UserFixture::new().with_username("batch_delete_owner").build();
+        let owner = UserFixture::new()
+            .with_username("batch_delete_owner")
+            .build();
         let owner = user_repo.create(&owner).await.unwrap();
 
         let room = RoomFixture::new()
@@ -1534,7 +1587,8 @@ mod tests {
             &playlist_repo,
             room.id.clone(),
             "Batch Delete Playlist",
-        ).await;
+        )
+        .await;
 
         // Create 5 items
         let mut ids: Vec<MediaId> = Vec::new();
@@ -1566,10 +1620,10 @@ mod tests {
     #[tokio::test]
     #[ignore = "Requires Docker"]
     async fn test_get_by_ids() {
-        use crate::test_helpers::{RoomFixture, UserFixture};
-        use crate::repository::user::UserRepository;
-        use crate::repository::room::RoomRepository;
         use crate::repository::playlist::PlaylistRepository;
+        use crate::repository::room::RoomRepository;
+        use crate::repository::user::UserRepository;
+        use crate::test_helpers::{RoomFixture, UserFixture};
 
         let infra = crate::test_helpers::containers::TestInfra::postgres_only().await;
         let user_repo = UserRepository::new(infra.pool.clone());
@@ -1592,7 +1646,8 @@ mod tests {
             &playlist_repo,
             room.id.clone(),
             "Get IDs Playlist",
-        ).await;
+        )
+        .await;
 
         // Create 3 items
         let mut ids: Vec<MediaId> = Vec::new();
@@ -1626,4 +1681,3 @@ mod tests {
         assert!(fetched.is_empty());
     }
 }
-

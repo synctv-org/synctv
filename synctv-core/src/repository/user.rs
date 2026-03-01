@@ -1,12 +1,12 @@
-use std::str::FromStr;
 use chrono::Utc;
 use sqlx::PgPool;
+use std::str::FromStr;
 
+use super::query_builder::{escape_ilike, WhereClauseBuilder};
 use crate::{
     models::{User, UserId, UserListQuery},
     Error, Result,
 };
-use super::query_builder::{WhereClauseBuilder, escape_ilike};
 
 /// User repository for database operations
 #[derive(Clone)]
@@ -100,7 +100,10 @@ impl UserRepository {
             return Ok(Vec::new());
         }
 
-        let ids: Vec<&str> = user_ids.iter().map(super::super::models::id::UserId::as_str).collect();
+        let ids: Vec<&str> = user_ids
+            .iter()
+            .map(super::super::models::id::UserId::as_str)
+            .collect();
         let users = sqlx::query_as::<_, User>(
             r"
             SELECT id, username, email, password_hash, signup_method, role, status, created_at, updated_at, password_changed_at, password_version, version, deleted_at, email_verified
@@ -182,14 +185,19 @@ impl UserRepository {
         .fetch_optional(&self.pool)
         .await?;
 
-        if let Some(updated) = u { Ok(updated) } else {
+        if let Some(updated) = u {
+            Ok(updated)
+        } else {
             // Check if the user exists at all to distinguish
             // "not found" from "concurrent modification"
             let exists = self.get_by_id(&user.id).await?.is_some();
             if exists {
                 Err(Error::OptimisticLockConflict)
             } else {
-                Err(Error::NotFound(format!("User {} not found", user.id.as_str())))
+                Err(Error::NotFound(format!(
+                    "User {} not found",
+                    user.id.as_str()
+                )))
             }
         }
     }
@@ -241,7 +249,11 @@ impl UserRepository {
     }
 
     /// Update user email verification status
-    pub async fn update_email_verified(&self, user_id: &UserId, email_verified: bool) -> Result<User> {
+    pub async fn update_email_verified(
+        &self,
+        user_id: &UserId,
+        email_verified: bool,
+    ) -> Result<User> {
         let u = sqlx::query_as::<_, User>(
             r"
             UPDATE users
@@ -261,7 +273,11 @@ impl UserRepository {
     }
 
     /// Update user status (Active/Pending/Banned)
-    pub async fn update_status(&self, user_id: &UserId, status: crate::models::UserStatus) -> Result<User> {
+    pub async fn update_status(
+        &self,
+        user_id: &UserId,
+        status: crate::models::UserStatus,
+    ) -> Result<User> {
         let u = sqlx::query_as::<_, User>(
             r"
             UPDATE users
@@ -327,10 +343,14 @@ impl UserRepository {
         let offset = query.pagination.offset() as i64;
 
         let search_pattern = query.search.as_ref().map(|s| escape_ilike(s));
-        let status_enum = query.status.as_ref()
+        let status_enum = query
+            .status
+            .as_ref()
             .map(|s| crate::models::UserStatus::from_str(s).map_err(crate::Error::InvalidInput))
             .transpose()?;
-        let role_enum = query.role.as_ref()
+        let role_enum = query
+            .role
+            .as_ref()
             .map(|s| crate::models::UserRole::from_str(s).map_err(crate::Error::InvalidInput))
             .transpose()?;
 
@@ -338,9 +358,7 @@ impl UserRepository {
 
         // Count query: params start at $1
         let (count_where, _) = wb.build(1);
-        let count_sql = format!(
-            "SELECT COUNT(*) as count FROM users WHERE {count_where}"
-        );
+        let count_sql = format!("SELECT COUNT(*) as count FROM users WHERE {count_where}");
 
         // We need to use query_scalar which returns a different type, so bind manually
         let mut count_qb = sqlx::query_scalar::<_, i64>(&count_sql);
@@ -408,7 +426,6 @@ impl UserRepository {
 
         Ok(count > 0)
     }
-
 }
 
 #[cfg(test)]
@@ -513,7 +530,12 @@ mod tests {
     async fn test_create_user() {
         let infra = crate::test_helpers::containers::TestInfra::postgres_only().await;
         let repo = UserRepository::new(infra.pool.clone());
-        let user = User::new("testuser".into(), Some("test@example.com".into()), "hash".into(), None);
+        let user = User::new(
+            "testuser".into(),
+            Some("test@example.com".into()),
+            "hash".into(),
+            None,
+        );
         let created = repo.create(&user).await.unwrap();
         assert_eq!(created.username, "testuser");
         assert_eq!(created.email, Some("test@example.com".into()));
@@ -524,9 +546,19 @@ mod tests {
     async fn test_create_user_duplicate_username_returns_already_exists() {
         let infra = crate::test_helpers::containers::TestInfra::postgres_only().await;
         let repo = UserRepository::new(infra.pool.clone());
-        let user1 = User::new("same_name".into(), Some("a@b.com".into()), "hash".into(), None);
+        let user1 = User::new(
+            "same_name".into(),
+            Some("a@b.com".into()),
+            "hash".into(),
+            None,
+        );
         repo.create(&user1).await.unwrap();
-        let user2 = User::new("same_name".into(), Some("c@d.com".into()), "hash".into(), None);
+        let user2 = User::new(
+            "same_name".into(),
+            Some("c@d.com".into()),
+            "hash".into(),
+            None,
+        );
         let err = repo.create(&user2).await.unwrap_err();
         assert!(matches!(err, Error::AlreadyExists(_)));
     }

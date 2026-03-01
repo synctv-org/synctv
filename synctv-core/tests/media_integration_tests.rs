@@ -4,17 +4,17 @@
 //! Run with: cargo test --test `media_integration_tests`
 #![allow(clippy::unwrap_used)]
 
-use synctv_core_testing::create_test_pool;
-use synctv_core::{
-    models::{
-        Room, RoomId, RoomStatus, UserId, User, UserRole, UserStatus,
-        Playlist, PlaylistId, Media, MediaId,
-    },
-    repository::{RoomRepository, UserRepository, PlaylistRepository, MediaRepository},
-};
 use chrono::Utc;
 use serde_json::json;
 use sqlx::PgPool;
+use synctv_core::{
+    models::{
+        Media, MediaId, Playlist, PlaylistId, Room, RoomId, RoomStatus, User, UserId, UserRole,
+        UserStatus,
+    },
+    repository::{MediaRepository, PlaylistRepository, RoomRepository, UserRepository},
+};
+use synctv_core_testing::create_test_pool;
 use testcontainers::ContainerAsync;
 use testcontainers_modules::postgres::Postgres;
 fn make_user(username: &str) -> User {
@@ -52,37 +52,46 @@ async fn setup_test_context(suffix: &str) -> TestContext {
     let room_repo = RoomRepository::new(pool.clone());
     let playlist_repo = PlaylistRepository::new(pool.clone());
 
-    let owner = user_repo.create(&make_user(&format!("media_owner_{suffix}"))).await.unwrap();
-    let room = room_repo.create(&{
-        let now = Utc::now();
-        Room {
-            id: RoomId::new(),
-            name: format!("Media Room {suffix}"),
-            description: String::new(),
-            created_by: owner.id.clone(),
-            status: RoomStatus::Active,
-            is_banned: false,
-            created_at: now,
-            updated_at: now,
-            deleted_at: None,
-            version: 0,
-        }
-    }).await.unwrap();
+    let owner = user_repo
+        .create(&make_user(&format!("media_owner_{suffix}")))
+        .await
+        .unwrap();
+    let room = room_repo
+        .create(&{
+            let now = Utc::now();
+            Room {
+                id: RoomId::new(),
+                name: format!("Media Room {suffix}"),
+                description: String::new(),
+                created_by: owner.id.clone(),
+                status: RoomStatus::Active,
+                is_banned: false,
+                created_at: now,
+                updated_at: now,
+                deleted_at: None,
+                version: 0,
+            }
+        })
+        .await
+        .unwrap();
 
-    let root_playlist = playlist_repo.create(&Playlist {
-        id: PlaylistId::new(),
-        room_id: room.id.clone(),
-        creator_id: Some(owner.id.clone()),
-        name: String::new(),
-        parent_id: None,
-        position: 0,
-        source_provider: None,
-        source_config: None,
-        provider_instance_name: None,
-        created_at: Utc::now(),
-        updated_at: Utc::now(),
-        version: 0,
-    }).await.unwrap();
+    let root_playlist = playlist_repo
+        .create(&Playlist {
+            id: PlaylistId::new(),
+            room_id: room.id.clone(),
+            creator_id: Some(owner.id.clone()),
+            name: String::new(),
+            parent_id: None,
+            position: 0,
+            source_provider: None,
+            source_config: None,
+            provider_instance_name: None,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            version: 0,
+        })
+        .await
+        .unwrap();
 
     TestContext {
         _container: container,
@@ -182,12 +191,23 @@ async fn test_unique_media_name_constraint() {
     let ctx = setup_test_context("5").await;
     let media_repo = MediaRepository::new(ctx.pool.clone());
 
-    media_repo.create(&make_media(&ctx.root_playlist.id, &ctx.room.id, "same_name.mp4", 0)).await.unwrap();
+    media_repo
+        .create(&make_media(
+            &ctx.root_playlist.id,
+            &ctx.room.id,
+            "same_name.mp4",
+            0,
+        ))
+        .await
+        .unwrap();
 
     // Try to create another media with the same name in the same playlist
     let duplicate = make_media(&ctx.root_playlist.id, &ctx.room.id, "same_name.mp4", 1);
     let result = media_repo.create(&duplicate).await;
-    assert!(result.is_err(), "Duplicate media name in same playlist should fail");
+    assert!(
+        result.is_err(),
+        "Duplicate media name in same playlist should fail"
+    );
 }
 
 #[tokio::test]
@@ -196,12 +216,23 @@ async fn test_unique_media_position_constraint() {
     let ctx = setup_test_context("6").await;
     let media_repo = MediaRepository::new(ctx.pool.clone());
 
-    media_repo.create(&make_media(&ctx.root_playlist.id, &ctx.room.id, "first.mp4", 0)).await.unwrap();
+    media_repo
+        .create(&make_media(
+            &ctx.root_playlist.id,
+            &ctx.room.id,
+            "first.mp4",
+            0,
+        ))
+        .await
+        .unwrap();
 
     // Try to create another media at the same position in the same playlist
     let duplicate = make_media(&ctx.root_playlist.id, &ctx.room.id, "second.mp4", 0);
     let result = media_repo.create(&duplicate).await;
-    assert!(result.is_err(), "Duplicate position in same playlist should fail");
+    assert!(
+        result.is_err(),
+        "Duplicate position in same playlist should fail"
+    );
 }
 
 #[tokio::test]
@@ -210,11 +241,23 @@ async fn test_media_get_by_playlist() {
     let ctx = setup_test_context("7").await;
     let media_repo = MediaRepository::new(ctx.pool.clone());
 
-    media_repo.create(&make_media(&ctx.root_playlist.id, &ctx.room.id, "a.mp4", 0)).await.unwrap();
-    media_repo.create(&make_media(&ctx.root_playlist.id, &ctx.room.id, "b.mp4", 1)).await.unwrap();
-    media_repo.create(&make_media(&ctx.root_playlist.id, &ctx.room.id, "c.mp4", 2)).await.unwrap();
+    media_repo
+        .create(&make_media(&ctx.root_playlist.id, &ctx.room.id, "a.mp4", 0))
+        .await
+        .unwrap();
+    media_repo
+        .create(&make_media(&ctx.root_playlist.id, &ctx.room.id, "b.mp4", 1))
+        .await
+        .unwrap();
+    media_repo
+        .create(&make_media(&ctx.root_playlist.id, &ctx.room.id, "c.mp4", 2))
+        .await
+        .unwrap();
 
-    let items = media_repo.get_by_playlist(&ctx.root_playlist.id).await.unwrap();
+    let items = media_repo
+        .get_by_playlist(&ctx.root_playlist.id)
+        .await
+        .unwrap();
     assert_eq!(items.len(), 3);
     // Should be ordered by position ASC
     assert_eq!(items[0].name, "a.mp4");
@@ -230,29 +273,43 @@ async fn test_media_cascade_delete_with_playlist() {
     let media_repo = MediaRepository::new(ctx.pool.clone());
 
     // Create a child playlist under root
-    let child_playlist = playlist_repo.create(&Playlist {
-        id: PlaylistId::new(),
-        room_id: ctx.room.id.clone(),
-        creator_id: None,
-        name: "Child PL".to_string(),
-        parent_id: Some(ctx.root_playlist.id.clone()),
-        position: 0,
-        source_provider: None,
-        source_config: None,
-        provider_instance_name: None,
-        created_at: Utc::now(),
-        updated_at: Utc::now(),
-        version: 0,
-    }).await.unwrap();
+    let child_playlist = playlist_repo
+        .create(&Playlist {
+            id: PlaylistId::new(),
+            room_id: ctx.room.id.clone(),
+            creator_id: None,
+            name: "Child PL".to_string(),
+            parent_id: Some(ctx.root_playlist.id.clone()),
+            position: 0,
+            source_provider: None,
+            source_config: None,
+            provider_instance_name: None,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            version: 0,
+        })
+        .await
+        .unwrap();
 
     // Add media to child playlist
-    let media = media_repo.create(&make_media(&child_playlist.id, &ctx.room.id, "cascade_test.mp4", 0)).await.unwrap();
+    let media = media_repo
+        .create(&make_media(
+            &child_playlist.id,
+            &ctx.room.id,
+            "cascade_test.mp4",
+            0,
+        ))
+        .await
+        .unwrap();
 
     // Delete the child playlist - media should be cascade-deleted
     playlist_repo.delete(&child_playlist.id).await.unwrap();
 
     let fetched = media_repo.get_by_id(&media.id).await.unwrap();
-    assert!(fetched.is_none(), "Media should be cascade-deleted when playlist is deleted");
+    assert!(
+        fetched.is_none(),
+        "Media should be cascade-deleted when playlist is deleted"
+    );
 }
 
 #[tokio::test]
@@ -261,8 +318,24 @@ async fn test_media_swap_positions() {
     let ctx = setup_test_context("9").await;
     let media_repo = MediaRepository::new(ctx.pool.clone());
 
-    let m1 = media_repo.create(&make_media(&ctx.root_playlist.id, &ctx.room.id, "first.mp4", 0)).await.unwrap();
-    let m2 = media_repo.create(&make_media(&ctx.root_playlist.id, &ctx.room.id, "second.mp4", 1)).await.unwrap();
+    let m1 = media_repo
+        .create(&make_media(
+            &ctx.root_playlist.id,
+            &ctx.room.id,
+            "first.mp4",
+            0,
+        ))
+        .await
+        .unwrap();
+    let m2 = media_repo
+        .create(&make_media(
+            &ctx.root_playlist.id,
+            &ctx.room.id,
+            "second.mp4",
+            1,
+        ))
+        .await
+        .unwrap();
 
     media_repo.swap_positions(&m1.id, &m2.id).await.unwrap();
 
@@ -279,12 +352,30 @@ async fn test_media_count_by_playlist() {
     let ctx = setup_test_context("10").await;
     let media_repo = MediaRepository::new(ctx.pool.clone());
 
-    assert_eq!(media_repo.count_by_playlist(&ctx.root_playlist.id).await.unwrap(), 0);
+    assert_eq!(
+        media_repo
+            .count_by_playlist(&ctx.root_playlist.id)
+            .await
+            .unwrap(),
+        0
+    );
 
-    media_repo.create(&make_media(&ctx.root_playlist.id, &ctx.room.id, "a.mp4", 0)).await.unwrap();
-    media_repo.create(&make_media(&ctx.root_playlist.id, &ctx.room.id, "b.mp4", 1)).await.unwrap();
+    media_repo
+        .create(&make_media(&ctx.root_playlist.id, &ctx.room.id, "a.mp4", 0))
+        .await
+        .unwrap();
+    media_repo
+        .create(&make_media(&ctx.root_playlist.id, &ctx.room.id, "b.mp4", 1))
+        .await
+        .unwrap();
 
-    assert_eq!(media_repo.count_by_playlist(&ctx.root_playlist.id).await.unwrap(), 2);
+    assert_eq!(
+        media_repo
+            .count_by_playlist(&ctx.root_playlist.id)
+            .await
+            .unwrap(),
+        2
+    );
 }
 
 #[tokio::test]
@@ -293,12 +384,24 @@ async fn test_media_batch_delete() {
     let ctx = setup_test_context("11").await;
     let media_repo = MediaRepository::new(ctx.pool.clone());
 
-    let m1 = media_repo.create(&make_media(&ctx.root_playlist.id, &ctx.room.id, "a.mp4", 0)).await.unwrap();
-    let m2 = media_repo.create(&make_media(&ctx.root_playlist.id, &ctx.room.id, "b.mp4", 1)).await.unwrap();
-    let m3 = media_repo.create(&make_media(&ctx.root_playlist.id, &ctx.room.id, "c.mp4", 2)).await.unwrap();
+    let m1 = media_repo
+        .create(&make_media(&ctx.root_playlist.id, &ctx.room.id, "a.mp4", 0))
+        .await
+        .unwrap();
+    let m2 = media_repo
+        .create(&make_media(&ctx.root_playlist.id, &ctx.room.id, "b.mp4", 1))
+        .await
+        .unwrap();
+    let m3 = media_repo
+        .create(&make_media(&ctx.root_playlist.id, &ctx.room.id, "c.mp4", 2))
+        .await
+        .unwrap();
 
     // Batch delete first two
-    let deleted_count = media_repo.delete_batch(&[m1.id.clone(), m2.id.clone()]).await.unwrap();
+    let deleted_count = media_repo
+        .delete_batch(&[m1.id.clone(), m2.id.clone()])
+        .await
+        .unwrap();
     assert_eq!(deleted_count, 2);
 
     // Only m3 should remain
@@ -324,7 +427,10 @@ async fn test_get_next_position_with_tx_empty_playlist_returns_zero() {
         .unwrap();
     tx.commit().await.unwrap();
 
-    assert_eq!(next_pos, 0, "Next position for an empty playlist should be 0");
+    assert_eq!(
+        next_pos, 0,
+        "Next position for an empty playlist should be 0"
+    );
 }
 
 #[tokio::test]
@@ -367,11 +473,21 @@ async fn test_swap_positions_no_constraint_violation() {
     let media_repo = MediaRepository::new(ctx.pool.clone());
 
     let m1 = media_repo
-        .create(&make_media(&ctx.root_playlist.id, &ctx.room.id, "swap_a.mp4", 0))
+        .create(&make_media(
+            &ctx.root_playlist.id,
+            &ctx.room.id,
+            "swap_a.mp4",
+            0,
+        ))
         .await
         .unwrap();
     let m2 = media_repo
-        .create(&make_media(&ctx.root_playlist.id, &ctx.room.id, "swap_b.mp4", 1))
+        .create(&make_media(
+            &ctx.root_playlist.id,
+            &ctx.room.id,
+            "swap_b.mp4",
+            1,
+        ))
         .await
         .unwrap();
 
@@ -397,7 +513,12 @@ async fn test_update_if_unchanged_succeeds_when_row_unchanged() {
     let media_repo = MediaRepository::new(ctx.pool.clone());
 
     let m = media_repo
-        .create(&make_media(&ctx.root_playlist.id, &ctx.room.id, "opt.mp4", 0))
+        .create(&make_media(
+            &ctx.root_playlist.id,
+            &ctx.room.id,
+            "opt.mp4",
+            0,
+        ))
         .await
         .unwrap();
 
@@ -412,7 +533,10 @@ async fn test_update_if_unchanged_succeeds_when_row_unchanged() {
         .await
         .unwrap();
 
-    assert!(result.is_some(), "Update should succeed when row is unchanged");
+    assert!(
+        result.is_some(),
+        "Update should succeed when row is unchanged"
+    );
     let result = result.unwrap();
     assert_eq!(result.name, "opt_renamed.mp4");
 }
@@ -425,7 +549,12 @@ async fn test_update_if_unchanged_returns_none_when_changed_concurrently() {
     let media_repo = MediaRepository::new(ctx.pool.clone());
 
     let m = media_repo
-        .create(&make_media(&ctx.root_playlist.id, &ctx.room.id, "conflict.mp4", 0))
+        .create(&make_media(
+            &ctx.root_playlist.id,
+            &ctx.room.id,
+            "conflict.mp4",
+            0,
+        ))
         .await
         .unwrap();
 
@@ -467,11 +596,21 @@ async fn test_reorder_batch_with_tx_swaps_positions() {
     let media_repo = MediaRepository::new(ctx.pool.clone());
 
     let m1 = media_repo
-        .create(&make_media(&ctx.root_playlist.id, &ctx.room.id, "reorder_a.mp4", 0))
+        .create(&make_media(
+            &ctx.root_playlist.id,
+            &ctx.room.id,
+            "reorder_a.mp4",
+            0,
+        ))
         .await
         .unwrap();
     let m2 = media_repo
-        .create(&make_media(&ctx.root_playlist.id, &ctx.room.id, "reorder_b.mp4", 1))
+        .create(&make_media(
+            &ctx.root_playlist.id,
+            &ctx.room.id,
+            "reorder_b.mp4",
+            1,
+        ))
         .await
         .unwrap();
 
@@ -509,13 +648,23 @@ async fn test_create_batch_chunked_inserts_all() {
     let media_repo = MediaRepository::new(ctx.pool.clone());
 
     let items: Vec<Media> = (0..5)
-        .map(|i| make_media(&ctx.root_playlist.id, &ctx.room.id, &format!("batch_{i}.mp4"), i))
+        .map(|i| {
+            make_media(
+                &ctx.root_playlist.id,
+                &ctx.room.id,
+                &format!("batch_{i}.mp4"),
+                i,
+            )
+        })
         .collect();
 
     let results = media_repo.create_batch(&items).await.unwrap();
     assert_eq!(results.len(), 5);
 
-    let playlist_items = media_repo.get_by_playlist(&ctx.root_playlist.id).await.unwrap();
+    let playlist_items = media_repo
+        .get_by_playlist(&ctx.root_playlist.id)
+        .await
+        .unwrap();
     assert_eq!(playlist_items.len(), 5);
     for (i, item) in playlist_items.iter().enumerate() {
         assert_eq!(item.position, i as i32);
@@ -614,15 +763,30 @@ async fn test_get_by_ids_partial_returns_subset() {
     let media_repo = MediaRepository::new(ctx.pool.clone());
 
     let m1 = media_repo
-        .create(&make_media(&ctx.root_playlist.id, &ctx.room.id, "ids_a.mp4", 0))
+        .create(&make_media(
+            &ctx.root_playlist.id,
+            &ctx.room.id,
+            "ids_a.mp4",
+            0,
+        ))
         .await
         .unwrap();
     let m2 = media_repo
-        .create(&make_media(&ctx.root_playlist.id, &ctx.room.id, "ids_b.mp4", 1))
+        .create(&make_media(
+            &ctx.root_playlist.id,
+            &ctx.room.id,
+            "ids_b.mp4",
+            1,
+        ))
         .await
         .unwrap();
     let _m3 = media_repo
-        .create(&make_media(&ctx.root_playlist.id, &ctx.room.id, "ids_c.mp4", 2))
+        .create(&make_media(
+            &ctx.root_playlist.id,
+            &ctx.room.id,
+            "ids_c.mp4",
+            2,
+        ))
         .await
         .unwrap();
 
@@ -634,10 +798,8 @@ async fn test_get_by_ids_partial_returns_subset() {
         .unwrap();
 
     assert_eq!(results.len(), 2, "Should return only the 2 existing items");
-    let result_ids: std::collections::HashSet<String> = results
-        .iter()
-        .map(|m| m.id.as_str().to_string())
-        .collect();
+    let result_ids: std::collections::HashSet<String> =
+        results.iter().map(|m| m.id.as_str().to_string()).collect();
     assert!(result_ids.contains(m1.id.as_str()));
     assert!(result_ids.contains(m2.id.as_str()));
 }
@@ -653,19 +815,40 @@ async fn test_delete_by_playlist_removes_all() {
     let media_repo = MediaRepository::new(ctx.pool.clone());
 
     media_repo
-        .create(&make_media(&ctx.root_playlist.id, &ctx.room.id, "del_a.mp4", 0))
+        .create(&make_media(
+            &ctx.root_playlist.id,
+            &ctx.room.id,
+            "del_a.mp4",
+            0,
+        ))
         .await
         .unwrap();
     media_repo
-        .create(&make_media(&ctx.root_playlist.id, &ctx.room.id, "del_b.mp4", 1))
+        .create(&make_media(
+            &ctx.root_playlist.id,
+            &ctx.room.id,
+            "del_b.mp4",
+            1,
+        ))
         .await
         .unwrap();
     media_repo
-        .create(&make_media(&ctx.root_playlist.id, &ctx.room.id, "del_c.mp4", 2))
+        .create(&make_media(
+            &ctx.root_playlist.id,
+            &ctx.room.id,
+            "del_c.mp4",
+            2,
+        ))
         .await
         .unwrap();
 
-    assert_eq!(media_repo.count_by_playlist(&ctx.root_playlist.id).await.unwrap(), 3);
+    assert_eq!(
+        media_repo
+            .count_by_playlist(&ctx.root_playlist.id)
+            .await
+            .unwrap(),
+        3
+    );
 
     let deleted = media_repo
         .delete_by_playlist(&ctx.root_playlist.id)
@@ -673,7 +856,13 @@ async fn test_delete_by_playlist_removes_all() {
         .unwrap();
     assert_eq!(deleted, 3);
 
-    assert_eq!(media_repo.count_by_playlist(&ctx.root_playlist.id).await.unwrap(), 0);
+    assert_eq!(
+        media_repo
+            .count_by_playlist(&ctx.root_playlist.id)
+            .await
+            .unwrap(),
+        0
+    );
 }
 
 // ============================================================================

@@ -65,7 +65,10 @@ fn test_internal_error_does_not_leak_details() {
     let status: tonic::Status = Error::Internal("secret db connection string".to_string()).into();
     assert_eq!(status.code(), tonic::Code::Internal);
     // Internal errors should NOT leak details to clients
-    assert!(!status.message().contains("secret"), "Internal error details should not be exposed to clients");
+    assert!(
+        !status.message().contains("secret"),
+        "Internal error details should not be exposed to clients"
+    );
     assert_eq!(status.message(), "Internal error");
 }
 
@@ -175,8 +178,14 @@ fn test_anyhow_error_preserves_chain() {
     let core_err: Error = anyhow_err.into();
     match core_err {
         Error::Internal(msg) => {
-            assert!(msg.contains("loading config"), "Should contain context: {msg}");
-            assert!(msg.contains("file missing"), "Should contain root cause: {msg}");
+            assert!(
+                msg.contains("loading config"),
+                "Should contain context: {msg}"
+            );
+            assert!(
+                msg.contains("file missing"),
+                "Should contain root cause: {msg}"
+            );
         }
         other => panic!("Expected Internal, got: {other:?}"),
     }

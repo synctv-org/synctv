@@ -16,22 +16,21 @@ use {
         },
         messages::define::msg_type_id,
     },
-    async_trait::async_trait,
-    bytes::BytesMut,
-    std::fmt,
-    std::{net::SocketAddr, sync::Arc},
-    std::collections::VecDeque,
-    std::time::{Duration, Instant},
     crate::streamhub::{
         define::{
-            FrameData, FrameDataReceiver, FrameDataSender, NotifyInfo,
-            PublishType, PublisherInfo, StreamHubEvent, StreamHubEventSender, SubscribeType,
-            SubscriberInfo, TStreamHandler,
+            FrameData, FrameDataReceiver, FrameDataSender, NotifyInfo, PublishType, PublisherInfo,
+            StreamHubEvent, StreamHubEventSender, SubscribeType, SubscriberInfo, TStreamHandler,
         },
         errors::{StreamHubError, StreamHubErrorValue},
         stream::StreamIdentifier,
         utils::Uuid,
     },
+    async_trait::async_trait,
+    bytes::BytesMut,
+    std::collections::VecDeque,
+    std::fmt,
+    std::time::{Duration, Instant},
+    std::{net::SocketAddr, sync::Arc},
     tokio::sync::{mpsc, Mutex},
 };
 
@@ -142,7 +141,8 @@ impl Common {
                 match data {
                     FrameData::Audio { timestamp, data } => {
                         let data_size = data.len();
-                        self.send_audio(BytesMut::from(&data[..]), timestamp).await?;
+                        self.send_audio(BytesMut::from(&data[..]), timestamp)
+                            .await?;
 
                         if let Some(sender) = &self.statistic_data_sender {
                             let statistic_audio_data = StatisticData::Audio {
@@ -158,7 +158,8 @@ impl Common {
                     }
                     FrameData::Video { timestamp, data } => {
                         let data_size = data.len();
-                        self.send_video(BytesMut::from(&data[..]), timestamp).await?;
+                        self.send_video(BytesMut::from(&data[..]), timestamp)
+                            .await?;
 
                         if let Some(sender) = &self.statistic_data_sender {
                             let statistic_video_data = StatisticData::Video {
@@ -174,7 +175,8 @@ impl Common {
                         }
                     }
                     FrameData::MetaData { timestamp, data } => {
-                        self.send_metadata(BytesMut::from(&data[..]), timestamp).await?;
+                        self.send_metadata(BytesMut::from(&data[..]), timestamp)
+                            .await?;
                     }
                     _ => {}
                 }
@@ -462,7 +464,9 @@ impl Common {
         if let Some(sender) = &statistic_data_sender {
             let statistic_subscriber = StatisticData::Subscriber {
                 id: self.session_id,
-                remote_addr: self.remote_addr.map_or_else(|| "unknown".to_string(), |a| a.to_string()),
+                remote_addr: self
+                    .remote_addr
+                    .map_or_else(|| "unknown".to_string(), |a| a.to_string()),
                 start_time: chrono::Local::now(),
                 sub_type: SubscribeType::RtmpPull,
             };
@@ -544,9 +548,7 @@ impl Common {
         }
 
         let cache = Cache::new(gop_num, per_stream_max_bytes, statistic_data_sender);
-        self.stream_handler
-            .set_cache(cache)
-            .await;
+        self.stream_handler.set_cache(cache).await;
         Ok(())
     }
 
@@ -555,9 +557,7 @@ impl Common {
         app_name: String,
         stream_name: String,
     ) -> Result<(), SessionError> {
-        tracing::info!(
-            "unpublish_to_stream_hub, app_name:{app_name}, stream_name:{stream_name}"
-        );
+        tracing::info!("unpublish_to_stream_hub, app_name:{app_name}, stream_name:{stream_name}");
         let unpublish_event = StreamHubEvent::UnPublish {
             identifier: StreamIdentifier::Rtmp {
                 app_name: app_name.clone(),
@@ -595,7 +595,7 @@ pub struct RtmpStreamHandler {
 }
 
 impl RtmpStreamHandler {
-    #[must_use] 
+    #[must_use]
     pub fn new() -> Self {
         Self {
             cache: Mutex::new(None),
@@ -652,18 +652,20 @@ impl TStreamHandler for RtmpStreamHandler {
         };
 
         /// Helper to send prior data, returning error on closed channel
-        fn try_send_prior<T>(sender: &mpsc::Sender<T>, data: T, name: &str) -> Result<(), StreamHubError> {
+        fn try_send_prior<T>(
+            sender: &mpsc::Sender<T>,
+            data: T,
+            name: &str,
+        ) -> Result<(), StreamHubError> {
             match sender.try_send(data) {
                 Ok(()) => Ok(()),
                 Err(mpsc::error::TrySendError::Full(_)) => {
                     tracing::warn!("send_prior_data: {} dropped due to channel full", name);
                     Ok(())
                 }
-                Err(mpsc::error::TrySendError::Closed(_)) => {
-                    Err(StreamHubError {
-                        value: StreamHubErrorValue::SubscriberClosed,
-                    })
-                }
+                Err(mpsc::error::TrySendError::Closed(_)) => Err(StreamHubError {
+                    value: StreamHubErrorValue::SubscriberClosed,
+                }),
             }
         }
 

@@ -2,14 +2,19 @@
 //!
 //! HTTP layer for provider routes - thin wrappers around impls layer
 
-use axum::{extract::{Path, State}, routing::get, Json, Router, response::IntoResponse};
 use axum::http::StatusCode;
+use axum::{
+    extract::{Path, State},
+    response::IntoResponse,
+    routing::get,
+    Json, Router,
+};
 use serde::Deserialize;
 use serde_json::json;
 use synctv_core::provider::ProviderError;
 
-use super::AppState;
 use super::middleware::AuthUser;
+use super::AppState;
 
 /// Register common provider routes
 ///
@@ -56,12 +61,16 @@ pub fn error_response(e: ProviderError) -> (StatusCode, Json<serde_json::Value>)
     let (status, message, details) = match &e {
         ProviderError::NetworkError(msg) => (StatusCode::BAD_GATEWAY, msg.clone(), msg.clone()),
         ProviderError::ApiError(msg) => (StatusCode::BAD_GATEWAY, msg.clone(), msg.clone()),
-        ProviderError::UpstreamHttp { status: upstream_status, url } => {
+        ProviderError::UpstreamHttp {
+            status: upstream_status,
+            url,
+        } => {
             // Map upstream HTTP status codes to appropriate response status codes.
             // Client errors (4xx) from the upstream are forwarded as-is so callers
             // can distinguish "not found on provider" from "synctv bug".
             // Server errors (5xx) become BAD_GATEWAY since the upstream is at fault.
-            let http_status = StatusCode::from_u16(*upstream_status).unwrap_or(StatusCode::BAD_GATEWAY);
+            let http_status =
+                StatusCode::from_u16(*upstream_status).unwrap_or(StatusCode::BAD_GATEWAY);
             let mapped = if http_status.is_client_error() {
                 http_status
             } else {
@@ -72,11 +81,19 @@ pub fn error_response(e: ProviderError) -> (StatusCode, Json<serde_json::Value>)
         }
         ProviderError::ParseError(msg) => (StatusCode::BAD_REQUEST, msg.clone(), msg.clone()),
         ProviderError::InvalidConfig(msg) => (StatusCode::BAD_REQUEST, msg.clone(), msg.clone()),
-        ProviderError::NotFound => (StatusCode::NOT_FOUND, "Resource not found".to_string(), "Resource not found".to_string()),
+        ProviderError::NotFound => (
+            StatusCode::NOT_FOUND,
+            "Resource not found".to_string(),
+            "Resource not found".to_string(),
+        ),
         ProviderError::InstanceNotFound(msg) => (StatusCode::NOT_FOUND, msg.clone(), msg.clone()),
         _ => {
             tracing::error!(error = %e, "Internal provider error");
-            (StatusCode::INTERNAL_SERVER_ERROR, "Provider error".to_string(), "An internal error occurred".to_string())
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Provider error".to_string(),
+                "An internal error occurred".to_string(),
+            )
         }
     };
 
@@ -89,7 +106,7 @@ pub fn error_response(e: ProviderError) -> (StatusCode, Json<serde_json::Value>)
 }
 
 /// Convert String error to HTTP response (for implementation layer errors)
-#[must_use] 
+#[must_use]
 pub fn parse_provider_error(error_msg: &str) -> ProviderError {
     // Parse common error patterns and convert to ProviderError
     let lower = error_msg.to_lowercase();

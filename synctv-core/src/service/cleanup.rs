@@ -10,13 +10,13 @@
 //!
 //! Runs as a background task with configurable intervals and retention periods.
 
-use std::sync::Arc;
 use sqlx::PgPool;
+use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
-use crate::{Result, InternalExt};
 use super::LeaderCheck;
+use crate::{InternalExt, Result};
 
 /// Configuration for data cleanup retention periods
 #[derive(Debug, Clone)]
@@ -87,7 +87,11 @@ impl CleanupService {
     /// single-node mode where `AlwaysLeader` is used).
     #[must_use]
     pub fn new(pool: PgPool, config: CleanupConfig, leader_check: Arc<dyn LeaderCheck>) -> Self {
-        Self { pool, config, leader_check }
+        Self {
+            pool,
+            config,
+            leader_check,
+        }
     }
 
     /// Run all cleanup tasks once
@@ -288,17 +292,14 @@ impl CleanupService {
     /// that expired more than `buffer_hours` ago.
     async fn delete_expired_credentials(&self) -> Result<u64> {
         let buffer_hours = self.config.expired_credential_buffer_hours as i32;
-        let result_json = sqlx::query_scalar::<_, serde_json::Value>(
-            "SELECT cleanup_expired_credentials($1)"
-        )
-        .bind(buffer_hours)
-        .fetch_one(&self.pool)
-        .await
-        .internal_with_err("Failed to delete expired credentials")?;
+        let result_json =
+            sqlx::query_scalar::<_, serde_json::Value>("SELECT cleanup_expired_credentials($1)")
+                .bind(buffer_hours)
+                .fetch_one(&self.pool)
+                .await
+                .internal_with_err("Failed to delete expired credentials")?;
 
-        let deleted_count = result_json["deleted_count"]
-            .as_i64()
-            .unwrap_or(0) as u64;
+        let deleted_count = result_json["deleted_count"].as_i64().unwrap_or(0) as u64;
 
         Ok(deleted_count)
     }
@@ -569,7 +570,10 @@ mod tests {
     #[test]
     #[allow(clippy::type_complexity)]
     fn test_delete_expired_tokens_method_exists() {
-        let _: fn(&CleanupService) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<u64>> + Send + '_>> =
+        let _: fn(
+            &CleanupService,
+        )
+            -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<u64>> + Send + '_>> =
             |svc| Box::pin(svc.delete_expired_tokens());
     }
 }

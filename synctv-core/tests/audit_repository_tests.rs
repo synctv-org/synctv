@@ -5,11 +5,11 @@
 //! Run with: cargo test -p synctv-core --test `audit_repository_tests`
 #![allow(clippy::unwrap_used)]
 
-use synctv_core_testing::{create_test_pool};
-use synctv_core::repository::{AuditLogRepository, AuditLogQuery};
-use synctv_core::models::{PageParams, generate_id};
-use chrono::{Utc, Duration};
+use chrono::{Duration, Utc};
 use sqlx::PgPool;
+use synctv_core::models::{generate_id, PageParams};
+use synctv_core::repository::{AuditLogQuery, AuditLogRepository};
+use synctv_core_testing::create_test_pool;
 /// Insert an audit log directly via SQL and return the generated id.
 async fn insert_audit_log(
     pool: &PgPool,
@@ -62,7 +62,10 @@ async fn test_list_filter_by_actor_id() {
     let (rows, total) = repo.list(&query).await.unwrap();
     assert_eq!(total, 1);
     assert_eq!(rows.len(), 1);
-    assert_eq!(rows[0].actor_id.as_deref().map(str::trim), Some(actor_a.as_str()));
+    assert_eq!(
+        rows[0].actor_id.as_deref().map(str::trim),
+        Some(actor_a.as_str())
+    );
 }
 
 #[tokio::test]
@@ -93,9 +96,36 @@ async fn test_list_filter_by_target_type_and_target_id() {
     let repo = AuditLogRepository::new(pool.clone());
     let now = Utc::now();
 
-    insert_audit_log(&pool, None, None, "delete", Some("room"), Some("room_001"), now).await;
-    insert_audit_log(&pool, None, None, "update", Some("room"), Some("room_002"), now).await;
-    insert_audit_log(&pool, None, None, "update", Some("user"), Some("user_001"), now).await;
+    insert_audit_log(
+        &pool,
+        None,
+        None,
+        "delete",
+        Some("room"),
+        Some("room_001"),
+        now,
+    )
+    .await;
+    insert_audit_log(
+        &pool,
+        None,
+        None,
+        "update",
+        Some("room"),
+        Some("room_002"),
+        now,
+    )
+    .await;
+    insert_audit_log(
+        &pool,
+        None,
+        None,
+        "update",
+        Some("user"),
+        Some("user_001"),
+        now,
+    )
+    .await;
 
     let query = AuditLogQuery {
         target_type: Some("room".to_string()),
@@ -156,9 +186,36 @@ async fn test_list_all_filters_combined() {
     .await;
 
     // Decoy rows
-    insert_audit_log(&pool, Some(&actor_admin_1), None, "ban_user", Some("room"), Some("room_1"), now).await;
-    insert_audit_log(&pool, Some(&actor_admin_2), None, "ban_user", Some("user"), Some("user_999"), now).await;
-    insert_audit_log(&pool, Some(&actor_admin_1), None, "delete_user", Some("user"), Some("user_999"), now).await;
+    insert_audit_log(
+        &pool,
+        Some(&actor_admin_1),
+        None,
+        "ban_user",
+        Some("room"),
+        Some("room_1"),
+        now,
+    )
+    .await;
+    insert_audit_log(
+        &pool,
+        Some(&actor_admin_2),
+        None,
+        "ban_user",
+        Some("user"),
+        Some("user_999"),
+        now,
+    )
+    .await;
+    insert_audit_log(
+        &pool,
+        Some(&actor_admin_1),
+        None,
+        "delete_user",
+        Some("user"),
+        Some("user_999"),
+        now,
+    )
+    .await;
 
     let query = AuditLogQuery {
         actor_id: Some(actor_admin_1.clone()),
@@ -202,7 +259,10 @@ async fn test_get_by_id_older_than_365_days_returns_none() {
 
     // The entry exists in the DB but get_by_id should not return it
     let row = repo.get_by_id(id).await.unwrap();
-    assert!(row.is_none(), "get_by_id should not return entries older than 365 days");
+    assert!(
+        row.is_none(),
+        "get_by_id should not return entries older than 365 days"
+    );
 }
 
 #[tokio::test]

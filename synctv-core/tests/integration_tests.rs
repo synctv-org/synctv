@@ -5,13 +5,8 @@
 //! Run with: cargo test --test `integration_tests`
 #![allow(clippy::unwrap_used)]
 
+use synctv_core::{models::UserId, service::auth::TokenType};
 use synctv_core_testing::create_test_jwt_service;
-use synctv_core::{
-    models::UserId,
-    service::{
-        auth::TokenType,
-    },
-};
 
 /// Helper to create a test JWT service with a test secret
 #[tokio::test]
@@ -680,8 +675,8 @@ async fn test_e2e_token_type_validation() {
 
 #[tokio::test]
 async fn test_e2e_id_generation_collision_resistance() {
-    use synctv_core::models::{MediaId, RoomId, PlaylistId};
     use std::collections::HashSet;
+    use synctv_core::models::{MediaId, PlaylistId, RoomId};
 
     let mut room_ids = HashSet::new();
     let mut media_ids = HashSet::new();
@@ -721,8 +716,12 @@ async fn test_e2e_error_propagation() {
 
         match error {
             Error::Authentication(_) => assert!(msg.contains("Invalid credentials")),
-            Error::Authorization(ref m) if m.contains("Cannot kick admin") => assert!(msg.contains("Cannot kick admin")),
-            Error::Authorization(_) => assert!(msg.contains("Permission denied") || msg.contains("Cannot kick admin")),
+            Error::Authorization(ref m) if m.contains("Cannot kick admin") => {
+                assert!(msg.contains("Cannot kick admin"))
+            }
+            Error::Authorization(_) => {
+                assert!(msg.contains("Permission denied") || msg.contains("Cannot kick admin"))
+            }
             Error::NotFound(_) => assert!(msg.contains("Room not found")),
             Error::InvalidInput(_) => assert!(msg.contains("Invalid room name")),
             Error::Internal(_) => assert!(msg.contains("Database error")),
@@ -747,7 +746,8 @@ async fn test_permission_cache_invalidation_message_serialization() {
         user_id: "user_456".to_string(),
     };
     let json = serde_json::to_string(&user_perm).expect("Should serialize UserPermission");
-    let decoded: InvalidationMessage = serde_json::from_str(&json).expect("Should deserialize UserPermission");
+    let decoded: InvalidationMessage =
+        serde_json::from_str(&json).expect("Should deserialize UserPermission");
     assert_eq!(decoded, user_perm);
 
     // Test RoomPermission invalidation
@@ -755,7 +755,8 @@ async fn test_permission_cache_invalidation_message_serialization() {
         room_id: "room_789".to_string(),
     };
     let json = serde_json::to_string(&room_perm).expect("Should serialize RoomPermission");
-    let decoded: InvalidationMessage = serde_json::from_str(&json).expect("Should deserialize RoomPermission");
+    let decoded: InvalidationMessage =
+        serde_json::from_str(&json).expect("Should deserialize RoomPermission");
     assert_eq!(decoded, room_perm);
 
     // Test User invalidation
@@ -763,7 +764,8 @@ async fn test_permission_cache_invalidation_message_serialization() {
         user_id: "user_abc".to_string(),
     };
     let json = serde_json::to_string(&user).expect("Should serialize User");
-    let decoded: InvalidationMessage = serde_json::from_str(&json).expect("Should deserialize User");
+    let decoded: InvalidationMessage =
+        serde_json::from_str(&json).expect("Should deserialize User");
     assert_eq!(decoded, user);
 
     // Test Room invalidation
@@ -771,7 +773,8 @@ async fn test_permission_cache_invalidation_message_serialization() {
         room_id: "room_xyz".to_string(),
     };
     let json = serde_json::to_string(&room).expect("Should serialize Room");
-    let decoded: InvalidationMessage = serde_json::from_str(&json).expect("Should deserialize Room");
+    let decoded: InvalidationMessage =
+        serde_json::from_str(&json).expect("Should deserialize Room");
     assert_eq!(decoded, room);
 
     // Test All invalidation
@@ -798,9 +801,11 @@ async fn test_cache_invalidation_service_local_only() {
     let mut rx = service.subscribe();
 
     // Broadcast a local invalidation
-    service.broadcast_local(synctv_core::cache::InvalidationMessage::User {
-        user_id: "local_user".to_string(),
-    }).expect("Should broadcast locally");
+    service
+        .broadcast_local(synctv_core::cache::InvalidationMessage::User {
+            user_id: "local_user".to_string(),
+        })
+        .expect("Should broadcast locally");
 
     // Should receive the invalidation locally
     let msg = tokio::time::timeout(std::time::Duration::from_secs(2), rx.recv())
@@ -834,9 +839,11 @@ async fn test_cache_invalidation_multiple_subscribers() {
     let mut rx3 = service.subscribe();
 
     // Broadcast an invalidation
-    service.broadcast_local(synctv_core::cache::InvalidationMessage::Room {
-        room_id: "shared_room".to_string(),
-    }).expect("Should broadcast locally");
+    service
+        .broadcast_local(synctv_core::cache::InvalidationMessage::Room {
+            room_id: "shared_room".to_string(),
+        })
+        .expect("Should broadcast locally");
 
     // All subscribers should receive the message
     let msg1 = tokio::time::timeout(std::time::Duration::from_secs(2), rx1.recv())
@@ -855,9 +862,18 @@ async fn test_cache_invalidation_multiple_subscribers() {
         .expect("Channel not closed");
 
     // All should be Room invalidations
-    assert!(matches!(msg1, synctv_core::cache::InvalidationMessage::Room { .. }));
-    assert!(matches!(msg2, synctv_core::cache::InvalidationMessage::Room { .. }));
-    assert!(matches!(msg3, synctv_core::cache::InvalidationMessage::Room { .. }));
+    assert!(matches!(
+        msg1,
+        synctv_core::cache::InvalidationMessage::Room { .. }
+    ));
+    assert!(matches!(
+        msg2,
+        synctv_core::cache::InvalidationMessage::Room { .. }
+    ));
+    assert!(matches!(
+        msg3,
+        synctv_core::cache::InvalidationMessage::Room { .. }
+    ));
 }
 
 // ============================================================================
@@ -872,7 +888,7 @@ async fn test_concurrent_permission_checks() {
     use synctv_core::models::PermissionBits;
 
     let perms = Arc::new(std::sync::atomic::AtomicU64::new(
-        PermissionBits::DEFAULT_MEMBER
+        PermissionBits::DEFAULT_MEMBER,
     ));
 
     // Spawn multiple concurrent readers
@@ -892,7 +908,10 @@ async fn test_concurrent_permission_checks() {
     for _ in 0..5 {
         let perms = perms.clone();
         let handle = tokio::spawn(async move {
-            perms.fetch_or(PermissionBits::KICK_MEMBER, std::sync::atomic::Ordering::SeqCst);
+            perms.fetch_or(
+                PermissionBits::KICK_MEMBER,
+                std::sync::atomic::Ordering::SeqCst,
+            );
         });
         write_handles.push(handle);
     }
@@ -918,9 +937,9 @@ async fn test_concurrent_permission_checks() {
 /// Tests token blacklist behavior with concurrent modifications.
 #[tokio::test]
 async fn test_token_blacklist_concurrent_operations() {
+    use parking_lot::RwLock;
     use std::collections::HashSet;
     use std::sync::Arc;
-    use parking_lot::RwLock;
 
     // Simulate a simple in-memory blacklist
     let blacklist: Arc<RwLock<HashSet<String>>> = Arc::new(RwLock::new(HashSet::new()));
@@ -966,9 +985,9 @@ async fn test_token_blacklist_concurrent_operations() {
 /// Tests that playback state updates are thread-safe.
 #[tokio::test]
 async fn test_playback_state_concurrent_updates() {
-    use std::sync::Arc;
     use parking_lot::Mutex;
-    use synctv_core::models::{playback::RoomPlaybackState, id::RoomId};
+    use std::sync::Arc;
+    use synctv_core::models::{id::RoomId, playback::RoomPlaybackState};
 
     let state = Arc::new(Mutex::new(RoomPlaybackState::new(RoomId::new())));
 
@@ -1011,11 +1030,13 @@ async fn test_playback_state_concurrent_updates() {
 /// Stress test for permission bit operations.
 #[test]
 fn test_permission_bits_stress() {
-    use synctv_core::models::PermissionBits;
     use std::sync::Arc;
     use std::thread;
+    use synctv_core::models::PermissionBits;
 
-    let perms = Arc::new(std::sync::atomic::AtomicU64::new(PermissionBits::DEFAULT_MEMBER));
+    let perms = Arc::new(std::sync::atomic::AtomicU64::new(
+        PermissionBits::DEFAULT_MEMBER,
+    ));
     let mut handles = vec![];
 
     for _ in 0..4 {
@@ -1030,8 +1051,14 @@ fn test_permission_bits_stress() {
                 let _ = bits.has(PermissionBits::SEND_CHAT);
 
                 // Grant and revoke
-                perms.fetch_or(PermissionBits::ADD_MEDIA, std::sync::atomic::Ordering::SeqCst);
-                perms.fetch_and(!PermissionBits::ADD_MEDIA, std::sync::atomic::Ordering::SeqCst);
+                perms.fetch_or(
+                    PermissionBits::ADD_MEDIA,
+                    std::sync::atomic::Ordering::SeqCst,
+                );
+                perms.fetch_and(
+                    !PermissionBits::ADD_MEDIA,
+                    std::sync::atomic::Ordering::SeqCst,
+                );
             }
         }));
     }

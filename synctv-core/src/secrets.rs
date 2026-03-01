@@ -38,9 +38,9 @@
 //! )?;
 //! ```
 
+use anyhow::Context;
 use std::fs;
 use std::path::Path;
-use anyhow::Context;
 use tracing::{debug, warn};
 
 use crate::Result;
@@ -77,39 +77,59 @@ impl SecretLoader {
     pub fn load(name: &str, source: SecretSource) -> Result<String> {
         match source {
             SecretSource::File(path) => {
-                debug!(secret_name = name, source = "file", path = path, "Loading secret from file");
-                let content = fs::read_to_string(path)
-                    .with_context(|| format!("Failed to read secret '{name}' from file '{path}'"))?;
+                debug!(
+                    secret_name = name,
+                    source = "file",
+                    path = path,
+                    "Loading secret from file"
+                );
+                let content = fs::read_to_string(path).with_context(|| {
+                    format!("Failed to read secret '{name}' from file '{path}'")
+                })?;
 
                 let trimmed = content.trim().to_string();
 
                 if trimmed.is_empty() {
-                    return Err(crate::Error::Internal(
-                        format!("Secret '{name}' from file '{path}' is empty"),
-                    ));
+                    return Err(crate::Error::Internal(format!(
+                        "Secret '{name}' from file '{path}' is empty"
+                    )));
                 }
 
-                debug!(secret_name = name, secret_len = trimmed.len(), "Secret loaded successfully from file");
+                debug!(
+                    secret_name = name,
+                    secret_len = trimmed.len(),
+                    "Secret loaded successfully from file"
+                );
                 Ok(trimmed)
             }
             SecretSource::Env(env_var) => {
-                debug!(secret_name = name, source = "env", env_var = env_var, "Loading secret from environment");
+                debug!(
+                    secret_name = name,
+                    source = "env",
+                    env_var = env_var,
+                    "Loading secret from environment"
+                );
                 warn!(
                     secret_name = name,
                     env_var = env_var,
                     "Loading secret from environment variable (less secure than file-based secrets)"
                 );
 
-                let value = std::env::var(env_var)
-                    .with_context(|| format!("Failed to read secret '{name}' from environment variable '{env_var}'"))?;
+                let value = std::env::var(env_var).with_context(|| {
+                    format!("Failed to read secret '{name}' from environment variable '{env_var}'")
+                })?;
 
                 if value.is_empty() {
-                    return Err(crate::Error::Internal(
-                        format!("Secret '{name}' from environment variable '{env_var}' is empty"),
-                    ));
+                    return Err(crate::Error::Internal(format!(
+                        "Secret '{name}' from environment variable '{env_var}' is empty"
+                    )));
                 }
 
-                debug!(secret_name = name, secret_len = value.len(), "Secret loaded successfully from environment");
+                debug!(
+                    secret_name = name,
+                    secret_len = value.len(),
+                    "Secret loaded successfully from environment"
+                );
                 Ok(value)
             }
             #[cfg(test)]
@@ -129,7 +149,11 @@ impl SecretLoader {
     ///
     /// # Returns
     /// The secret value, or an error if not found in either source
-    pub fn load_with_fallback(name: &str, primary: SecretSource, fallback: SecretSource) -> Result<String> {
+    pub fn load_with_fallback(
+        name: &str,
+        primary: SecretSource,
+        fallback: SecretSource,
+    ) -> Result<String> {
         match Self::load(name, primary) {
             Ok(secret) => Ok(secret),
             Err(primary_err) => {
@@ -179,7 +203,7 @@ impl SecretLoader {
     ///
     /// # Returns
     /// true if the file exists and is readable, false otherwise
-    #[must_use] 
+    #[must_use]
     pub fn secret_file_exists(path: &str) -> bool {
         Path::new(path).exists()
     }
@@ -238,7 +262,8 @@ mod tests {
 
     #[test]
     fn test_load_secret_direct() {
-        let secret = SecretLoader::load("test", SecretSource::Direct("my_secret".to_string())).unwrap();
+        let secret =
+            SecretLoader::load("test", SecretSource::Direct("my_secret".to_string())).unwrap();
         assert_eq!(secret, "my_secret");
     }
 
@@ -250,7 +275,8 @@ mod tests {
 
     #[test]
     fn test_load_optional() {
-        let secret = SecretLoader::load_optional("test", SecretSource::Direct("optional".to_string()));
+        let secret =
+            SecretLoader::load_optional("test", SecretSource::Direct("optional".to_string()));
         assert_eq!(secret, Some("optional".to_string()));
 
         let missing = SecretLoader::load_optional("test", SecretSource::File("/nonexistent"));
@@ -263,7 +289,10 @@ mod tests {
         assert_eq!(mask_secret("password123"), "[SECRET:redacted]");
         assert_eq!(mask_secret(""), "[SECRET:redacted]");
         // Verify that secrets of different lengths produce identical output.
-        assert_eq!(mask_secret("short"), mask_secret("a_much_longer_secret_value"));
+        assert_eq!(
+            mask_secret("short"),
+            mask_secret("a_much_longer_secret_value")
+        );
     }
 
     #[test]

@@ -1,10 +1,12 @@
-use sqlx::{PgPool, Row, FromRow};
+use sqlx::{FromRow, PgPool, Row};
 
+use super::query_builder::{escape_ilike, WhereClauseBuilder};
 use crate::{
-    models::{Room, RoomId, RoomStatus, RoomSettings, UserId, RoomListQuery, PageParams, MemberStatus},
+    models::{
+        MemberStatus, PageParams, Room, RoomId, RoomListQuery, RoomSettings, RoomStatus, UserId,
+    },
     Result,
 };
-use super::query_builder::{WhereClauseBuilder, escape_ilike};
 
 /// Pre-fetched context for the join-room flow, retrieved in a single DB round-trip.
 #[derive(Debug)]
@@ -22,7 +24,7 @@ pub struct RoomRepository {
 }
 
 impl RoomRepository {
-    #[must_use] 
+    #[must_use]
     pub const fn new(pool: PgPool) -> Self {
         Self { pool }
     }
@@ -129,7 +131,10 @@ impl RoomRepository {
             if exists {
                 Err(crate::Error::OptimisticLockConflict)
             } else {
-                Err(crate::Error::NotFound(format!("Room {} not found", room.id.as_str())))
+                Err(crate::Error::NotFound(format!(
+                    "Room {} not found",
+                    room.id.as_str()
+                )))
             }
         }
     }
@@ -139,7 +144,7 @@ impl RoomRepository {
         let result = sqlx::query(
             "UPDATE rooms
              SET deleted_at = $2, updated_at = $2
-             WHERE id = $1 AND deleted_at IS NULL"
+             WHERE id = $1 AND deleted_at IS NULL",
         )
         .bind(room_id.as_str())
         .bind(chrono::Utc::now())
@@ -236,7 +241,9 @@ impl RoomRepository {
              ORDER BY r.created_at DESC
              LIMIT $1 OFFSET $2"
         );
-        let list_qb = sqlx::query_as::<_, Room>(&list_sql).bind(limit).bind(offset);
+        let list_qb = sqlx::query_as::<_, Room>(&list_sql)
+            .bind(limit)
+            .bind(offset);
         let rooms: Vec<Room> = Self::bind_search(list_qb, &search_pattern)
             .fetch_all(&self.pool)
             .await?;
@@ -245,7 +252,10 @@ impl RoomRepository {
     }
 
     /// List rooms with member count (optimized with JOIN)
-    pub async fn list_with_count(&self, query: &RoomListQuery) -> Result<(Vec<crate::models::RoomWithCount>, i64)> {
+    pub async fn list_with_count(
+        &self,
+        query: &RoomListQuery,
+    ) -> Result<(Vec<crate::models::RoomWithCount>, i64)> {
         let limit = query.pagination.limit() as i64;
         let offset = query.pagination.offset() as i64;
         let search_pattern = query.search.as_ref().map(|s| escape_ilike(s));
@@ -286,10 +296,7 @@ impl RoomRepository {
             .map(|row| {
                 let member_count: i32 = row.try_get("member_count")?;
                 let room = Room::from_row(&row)?;
-                Ok(crate::models::RoomWithCount {
-                    room,
-                    member_count,
-                })
+                Ok(crate::models::RoomWithCount { room, member_count })
             })
             .collect();
 
@@ -301,7 +308,7 @@ impl RoomRepository {
         let count: i64 = sqlx::query_scalar(
             "SELECT COUNT(*) as count
              FROM rooms
-             WHERE id = $1 AND deleted_at IS NULL"
+             WHERE id = $1 AND deleted_at IS NULL",
         )
         .bind(room_id.as_str())
         .fetch_one(&self.pool)
@@ -319,7 +326,7 @@ impl RoomRepository {
         let count: i64 = sqlx::query_scalar(
             "SELECT COUNT(*) as count
              FROM rooms
-             WHERE id = $1 AND deleted_at IS NULL AND status = 1 AND is_banned = FALSE"
+             WHERE id = $1 AND deleted_at IS NULL AND status = 1 AND is_banned = FALSE",
         )
         .bind(room_id.as_str())
         .fetch_one(&self.pool)
@@ -333,7 +340,7 @@ impl RoomRepository {
         let count: i64 = sqlx::query_scalar(
             "SELECT COUNT(*) as count
              FROM room_members
-             WHERE room_id = $1 AND left_at IS NULL"
+             WHERE room_id = $1 AND left_at IS NULL",
         )
         .bind(room_id.as_str())
         .fetch_one(&self.pool)
@@ -343,7 +350,11 @@ impl RoomRepository {
     }
 
     /// Get rooms created by a specific user
-    pub async fn list_by_creator(&self, creator_id: &UserId, pagination: PageParams) -> Result<(Vec<Room>, i64)> {
+    pub async fn list_by_creator(
+        &self,
+        creator_id: &UserId,
+        pagination: PageParams,
+    ) -> Result<(Vec<Room>, i64)> {
         let limit = pagination.limit() as i64;
         let offset = pagination.offset() as i64;
 
@@ -351,7 +362,7 @@ impl RoomRepository {
         let count: i64 = sqlx::query_scalar(
             "SELECT COUNT(*) as count
              FROM rooms
-             WHERE created_by = $1 AND deleted_at IS NULL"
+             WHERE created_by = $1 AND deleted_at IS NULL",
         )
         .bind(creator_id.as_str())
         .fetch_one(&self.pool)
@@ -387,7 +398,7 @@ impl RoomRepository {
         let count: i64 = sqlx::query_scalar(
             "SELECT COUNT(*) as count
              FROM rooms
-             WHERE created_by = $1 AND deleted_at IS NULL"
+             WHERE created_by = $1 AND deleted_at IS NULL",
         )
         .bind(creator_id.as_str())
         .fetch_one(&self.pool)
@@ -419,10 +430,7 @@ impl RoomRepository {
             .map(|row| {
                 let member_count: i32 = row.try_get("member_count")?;
                 let room = Room::from_row(&row)?;
-                Ok(crate::models::RoomWithCount {
-                    room,
-                    member_count,
-                })
+                Ok(crate::models::RoomWithCount { room, member_count })
             })
             .collect();
 
@@ -516,7 +524,7 @@ impl RoomRepository {
             LEFT JOIN room_settings rs_password
                 ON rs_password.room_id = r.id AND rs_password.key = 'password'
             WHERE r.id = $1 AND r.deleted_at IS NULL
-            "
+            ",
         )
         .bind(room_id.as_str())
         .bind(user_id.as_str())
@@ -531,8 +539,9 @@ impl RoomRepository {
 
         // Deserialize settings from JSON, falling back to defaults
         let settings: RoomSettings = match row.try_get::<Option<String>, _>("settings_json")? {
-            Some(json) => serde_json::from_str(&json)
-                .map_err(|e| crate::Error::Internal(format!("Failed to deserialize room settings: {e}")))?,
+            Some(json) => serde_json::from_str(&json).map_err(|e| {
+                crate::Error::Internal(format!("Failed to deserialize room settings: {e}"))
+            })?,
             None => RoomSettings::default(),
         };
 
@@ -545,7 +554,6 @@ impl RoomRepository {
             password_hash,
         }))
     }
-
 }
 
 #[cfg(test)]
@@ -709,8 +717,8 @@ mod tests {
     #[tokio::test]
     #[ignore = "Requires Docker"]
     async fn test_create_room() {
-        use crate::test_helpers::{UserFixture, RoomFixture};
         use crate::repository::user::UserRepository;
+        use crate::test_helpers::{RoomFixture, UserFixture};
 
         let infra = crate::test_helpers::containers::TestInfra::postgres_only().await;
         let user_repo = UserRepository::new(infra.pool.clone());
@@ -831,8 +839,8 @@ mod tests {
     #[tokio::test]
     #[ignore = "Requires Docker"]
     async fn test_update_room() {
-        use crate::test_helpers::{UserFixture, RoomFixture};
         use crate::repository::user::UserRepository;
+        use crate::test_helpers::{RoomFixture, UserFixture};
 
         let infra = crate::test_helpers::containers::TestInfra::postgres_only().await;
         let user_repo = UserRepository::new(infra.pool.clone());
@@ -863,8 +871,8 @@ mod tests {
     #[tokio::test]
     #[ignore = "Requires Docker"]
     async fn test_soft_delete_room() {
-        use crate::test_helpers::{UserFixture, RoomFixture};
         use crate::repository::user::UserRepository;
+        use crate::test_helpers::{RoomFixture, UserFixture};
 
         let infra = crate::test_helpers::containers::TestInfra::postgres_only().await;
         let user_repo = UserRepository::new(infra.pool.clone());
@@ -901,15 +909,17 @@ mod tests {
     #[tokio::test]
     #[ignore = "Requires Docker"]
     async fn test_hard_delete_room() {
-        use crate::test_helpers::{UserFixture, RoomFixture};
         use crate::repository::user::UserRepository;
+        use crate::test_helpers::{RoomFixture, UserFixture};
 
         let infra = crate::test_helpers::containers::TestInfra::postgres_only().await;
         let user_repo = UserRepository::new(infra.pool.clone());
         let room_repo = RoomRepository::new(infra.pool.clone());
 
         // Create owner and room
-        let owner = UserFixture::new().with_username("hard_delete_owner").build();
+        let owner = UserFixture::new()
+            .with_username("hard_delete_owner")
+            .build();
         let owner = user_repo.create(&owner).await.unwrap();
 
         let room = RoomFixture::new()
@@ -927,8 +937,8 @@ mod tests {
     #[tokio::test]
     #[ignore = "Requires Docker"]
     async fn test_update_room_status() {
-        use crate::test_helpers::{UserFixture, RoomFixture};
         use crate::repository::user::UserRepository;
+        use crate::test_helpers::{RoomFixture, UserFixture};
 
         let infra = crate::test_helpers::containers::TestInfra::postgres_only().await;
         let user_repo = UserRepository::new(infra.pool.clone());
@@ -946,11 +956,17 @@ mod tests {
         assert_eq!(created.status, RoomStatus::Active);
 
         // Update to Pending
-        let updated = room_repo.update_status(&created.id, RoomStatus::Pending).await.unwrap();
+        let updated = room_repo
+            .update_status(&created.id, RoomStatus::Pending)
+            .await
+            .unwrap();
         assert_eq!(updated.status, RoomStatus::Pending);
 
         // Update to Closed
-        let updated = room_repo.update_status(&created.id, RoomStatus::Closed).await.unwrap();
+        let updated = room_repo
+            .update_status(&created.id, RoomStatus::Closed)
+            .await
+            .unwrap();
         assert_eq!(updated.status, RoomStatus::Closed);
     }
 
@@ -958,8 +974,8 @@ mod tests {
     #[tokio::test]
     #[ignore = "Requires Docker"]
     async fn test_update_ban_status() {
-        use crate::test_helpers::{UserFixture, RoomFixture};
         use crate::repository::user::UserRepository;
+        use crate::test_helpers::{RoomFixture, UserFixture};
 
         let infra = crate::test_helpers::containers::TestInfra::postgres_only().await;
         let user_repo = UserRepository::new(infra.pool.clone());
@@ -977,11 +993,17 @@ mod tests {
         assert!(!created.is_banned);
 
         // Ban room
-        let updated = room_repo.update_ban_status(&created.id, true).await.unwrap();
+        let updated = room_repo
+            .update_ban_status(&created.id, true)
+            .await
+            .unwrap();
         assert!(updated.is_banned);
 
         // Unban room
-        let updated = room_repo.update_ban_status(&created.id, false).await.unwrap();
+        let updated = room_repo
+            .update_ban_status(&created.id, false)
+            .await
+            .unwrap();
         assert!(!updated.is_banned);
     }
 
@@ -989,8 +1011,8 @@ mod tests {
     #[tokio::test]
     #[ignore = "Requires Docker"]
     async fn test_update_description() {
-        use crate::test_helpers::{UserFixture, RoomFixture};
         use crate::repository::user::UserRepository;
+        use crate::test_helpers::{RoomFixture, UserFixture};
 
         let infra = crate::test_helpers::containers::TestInfra::postgres_only().await;
         let user_repo = UserRepository::new(infra.pool.clone());
@@ -1008,7 +1030,10 @@ mod tests {
         let created = room_repo.create(&room).await.unwrap();
 
         // Update description
-        let updated = room_repo.update_description(&created.id, "New description").await.unwrap();
+        let updated = room_repo
+            .update_description(&created.id, "New description")
+            .await
+            .unwrap();
         assert_eq!(updated.description, "New description");
     }
 
@@ -1016,8 +1041,8 @@ mod tests {
     #[tokio::test]
     #[ignore = "Requires Docker"]
     async fn test_list_rooms_pagination() {
-        use crate::test_helpers::{UserFixture, RoomFixture};
         use crate::repository::user::UserRepository;
+        use crate::test_helpers::{RoomFixture, UserFixture};
 
         let infra = crate::test_helpers::containers::TestInfra::postgres_only().await;
         let user_repo = UserRepository::new(infra.pool.clone());
@@ -1065,8 +1090,8 @@ mod tests {
     #[tokio::test]
     #[ignore = "Requires Docker"]
     async fn test_list_rooms_with_filters() {
-        use crate::test_helpers::{UserFixture, RoomFixture};
         use crate::repository::user::UserRepository;
+        use crate::test_helpers::{RoomFixture, UserFixture};
 
         let infra = crate::test_helpers::containers::TestInfra::postgres_only().await;
         let user_repo = UserRepository::new(infra.pool.clone());
@@ -1137,8 +1162,8 @@ mod tests {
     #[tokio::test]
     #[ignore = "Requires Docker"]
     async fn test_list_by_creator() {
-        use crate::test_helpers::{UserFixture, RoomFixture};
         use crate::repository::user::UserRepository;
+        use crate::test_helpers::{RoomFixture, UserFixture};
 
         let infra = crate::test_helpers::containers::TestInfra::postgres_only().await;
         let user_repo = UserRepository::new(infra.pool.clone());
@@ -1170,11 +1195,17 @@ mod tests {
         }
 
         // List by creator
-        let (rooms, total) = room_repo.list_by_creator(&owner1.id, PageParams::default()).await.unwrap();
+        let (rooms, total) = room_repo
+            .list_by_creator(&owner1.id, PageParams::default())
+            .await
+            .unwrap();
         assert_eq!(rooms.len(), 3);
         assert_eq!(total, 3);
 
-        let (rooms, total) = room_repo.list_by_creator(&owner2.id, PageParams::default()).await.unwrap();
+        let (rooms, total) = room_repo
+            .list_by_creator(&owner2.id, PageParams::default())
+            .await
+            .unwrap();
         assert_eq!(rooms.len(), 2);
         assert_eq!(total, 2);
     }
@@ -1183,8 +1214,8 @@ mod tests {
     #[tokio::test]
     #[ignore = "Requires Docker"]
     async fn test_is_accessible() {
-        use crate::test_helpers::{UserFixture, RoomFixture};
         use crate::repository::user::UserRepository;
+        use crate::test_helpers::{RoomFixture, UserFixture};
 
         let infra = crate::test_helpers::containers::TestInfra::postgres_only().await;
         let user_repo = UserRepository::new(infra.pool.clone());
@@ -1205,12 +1236,21 @@ mod tests {
         assert!(room_repo.is_accessible(&created.id).await.unwrap());
 
         // Ban room
-        room_repo.update_ban_status(&created.id, true).await.unwrap();
+        room_repo
+            .update_ban_status(&created.id, true)
+            .await
+            .unwrap();
         assert!(!room_repo.is_accessible(&created.id).await.unwrap());
 
         // Unban and close
-        room_repo.update_ban_status(&created.id, false).await.unwrap();
-        room_repo.update_status(&created.id, RoomStatus::Closed).await.unwrap();
+        room_repo
+            .update_ban_status(&created.id, false)
+            .await
+            .unwrap();
+        room_repo
+            .update_status(&created.id, RoomStatus::Closed)
+            .await
+            .unwrap();
         assert!(!room_repo.is_accessible(&created.id).await.unwrap());
     }
 
@@ -1218,15 +1258,17 @@ mod tests {
     #[tokio::test]
     #[ignore = "Requires Docker"]
     async fn test_get_join_context() {
-        use crate::test_helpers::{UserFixture, RoomFixture};
         use crate::repository::user::UserRepository;
+        use crate::test_helpers::{RoomFixture, UserFixture};
 
         let infra = crate::test_helpers::containers::TestInfra::postgres_only().await;
         let user_repo = UserRepository::new(infra.pool.clone());
         let room_repo = RoomRepository::new(infra.pool.clone());
 
         // Create owner and room
-        let owner = UserFixture::new().with_username("join_context_owner").build();
+        let owner = UserFixture::new()
+            .with_username("join_context_owner")
+            .build();
         let owner = user_repo.create(&owner).await.unwrap();
 
         let room = RoomFixture::new()
@@ -1236,7 +1278,10 @@ mod tests {
         let created = room_repo.create(&room).await.unwrap();
 
         // Get join context
-        let context = room_repo.get_join_context(&created.id, &owner.id).await.unwrap();
+        let context = room_repo
+            .get_join_context(&created.id, &owner.id)
+            .await
+            .unwrap();
         assert!(context.is_some());
 
         let context = context.unwrap();
@@ -1245,7 +1290,10 @@ mod tests {
 
         // Non-existent room returns None
         let non_existent = RoomId::from_string("nonexistent".to_string());
-        let context = room_repo.get_join_context(&non_existent, &owner.id).await.unwrap();
+        let context = room_repo
+            .get_join_context(&non_existent, &owner.id)
+            .await
+            .unwrap();
         assert!(context.is_none());
     }
 
@@ -1253,8 +1301,8 @@ mod tests {
     #[tokio::test]
     #[ignore = "Requires Docker"]
     async fn test_create_with_executor() {
-        use crate::test_helpers::{UserFixture, RoomFixture};
         use crate::repository::user::UserRepository;
+        use crate::test_helpers::{RoomFixture, UserFixture};
 
         let infra = crate::test_helpers::containers::TestInfra::postgres_only().await;
         let user_repo = UserRepository::new(infra.pool.clone());
@@ -1269,7 +1317,10 @@ mod tests {
             .with_name("Executor Room")
             .with_owner(owner.id.clone())
             .build();
-        let created = room_repo.create_with_executor(&room, &infra.pool).await.unwrap();
+        let created = room_repo
+            .create_with_executor(&room, &infra.pool)
+            .await
+            .unwrap();
         assert_eq!(created.name, "Executor Room");
     }
 
@@ -1290,8 +1341,8 @@ mod tests {
     #[tokio::test]
     #[ignore = "Requires Docker"]
     async fn test_update_stale_version_returns_optimistic_lock_conflict() {
-        use crate::test_helpers::{UserFixture, RoomFixture};
         use crate::repository::user::UserRepository;
+        use crate::test_helpers::{RoomFixture, UserFixture};
 
         let infra = crate::test_helpers::containers::TestInfra::postgres_only().await;
         let user_repo = UserRepository::new(infra.pool.clone());
@@ -1313,7 +1364,10 @@ mod tests {
         let mut updated_room = created.clone();
         updated_room.name = "Updated Name V1".to_string();
         updated_room.description = "updated v1".to_string();
-        let v1 = room_repo.update(&updated_room, original_version).await.unwrap();
+        let v1 = room_repo
+            .update(&updated_room, original_version)
+            .await
+            .unwrap();
         assert_eq!(v1.version, original_version + 1);
         assert_eq!(v1.name, "Updated Name V1");
 
@@ -1321,7 +1375,10 @@ mod tests {
         let mut stale_room = created.clone();
         stale_room.name = "Updated Name V2".to_string();
         stale_room.description = "updated v2".to_string();
-        let err = room_repo.update(&stale_room, original_version).await.unwrap_err();
+        let err = room_repo
+            .update(&stale_room, original_version)
+            .await
+            .unwrap_err();
         assert!(
             matches!(err, crate::Error::OptimisticLockConflict),
             "Expected OptimisticLockConflict, got: {err:?}"
@@ -1332,8 +1389,8 @@ mod tests {
     #[tokio::test]
     #[ignore = "Requires Docker"]
     async fn test_update_soft_deleted_room_returns_not_found() {
-        use crate::test_helpers::{UserFixture, RoomFixture};
         use crate::repository::user::UserRepository;
+        use crate::test_helpers::{RoomFixture, UserFixture};
 
         let infra = crate::test_helpers::containers::TestInfra::postgres_only().await;
         let user_repo = UserRepository::new(infra.pool.clone());

@@ -5,7 +5,10 @@ use jsonwebtoken::{
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
-use crate::{models::{UserId, RoomId}, Error, Result, InternalExt};
+use crate::{
+    models::{RoomId, UserId},
+    Error, InternalExt, Result,
+};
 
 /// JWT token type
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -494,8 +497,7 @@ impl JwtService {
         };
 
         let header = Header::new(self.algorithm);
-        encode(&header, &claims, &self.encoding_key)
-            .internal_with_err("Failed to sign token")
+        encode(&header, &claims, &self.encoding_key).internal_with_err("Failed to sign token")
     }
 
     /// Verify a token and extract claims
@@ -548,7 +550,9 @@ impl JwtService {
         // Reject tokens with empty jti: refresh token rotation relies on jti for
         // blacklisting. A missing/empty jti would bypass the blacklist check entirely.
         if claims.jti.is_empty() {
-            return Err(Error::Authentication("Refresh token missing jti".to_string()));
+            return Err(Error::Authentication(
+                "Refresh token missing jti".to_string(),
+            ));
         }
         Ok(claims)
     }
@@ -578,7 +582,11 @@ impl JwtService {
     ///
     /// # Returns
     /// * Guest JWT token string
-    pub fn sign_guest_token_with_version(&self, room_id: &RoomId, room_guest_version: i64) -> Result<String> {
+    pub fn sign_guest_token_with_version(
+        &self,
+        room_id: &RoomId,
+        room_guest_version: i64,
+    ) -> Result<String> {
         let now = Utc::now();
         let duration = Duration::hours(self.guest_token_duration_hours as i64);
         let session_id = nanoid::nanoid!(16); // Generate random session ID
@@ -696,7 +704,8 @@ impl JwtService {
 
             if !obj.contains_key("exp") {
                 obj.entry("exp".to_string())
-                    .or_insert_with(|| serde_json::Value::Number((now.timestamp() + 86400).into())); // Default 24h
+                    .or_insert_with(|| serde_json::Value::Number((now.timestamp() + 86400).into()));
+                // Default 24h
             }
         }
 
@@ -906,17 +915,44 @@ mod tests {
 
     #[test]
     fn test_claims_type_predicates() {
-        let access = Claims { sub: "u1".into(), typ: "access".into(), jti: String::new(), iat: 0, exp: 0, pv: None, iss: None, aud: None };
+        let access = Claims {
+            sub: "u1".into(),
+            typ: "access".into(),
+            jti: String::new(),
+            iat: 0,
+            exp: 0,
+            pv: None,
+            iss: None,
+            aud: None,
+        };
         assert!(access.is_access_token());
         assert!(!access.is_refresh_token());
         assert!(!access.is_guest_token());
 
-        let refresh = Claims { sub: "u1".into(), typ: "refresh".into(), jti: String::new(), iat: 0, exp: 0, pv: None, iss: None, aud: None };
+        let refresh = Claims {
+            sub: "u1".into(),
+            typ: "refresh".into(),
+            jti: String::new(),
+            iat: 0,
+            exp: 0,
+            pv: None,
+            iss: None,
+            aud: None,
+        };
         assert!(!refresh.is_access_token());
         assert!(refresh.is_refresh_token());
         assert!(!refresh.is_guest_token());
 
-        let guest = Claims { sub: "u1".into(), typ: "guest".into(), jti: String::new(), iat: 0, exp: 0, pv: None, iss: None, aud: None };
+        let guest = Claims {
+            sub: "u1".into(),
+            typ: "guest".into(),
+            jti: String::new(),
+            iat: 0,
+            exp: 0,
+            pv: None,
+            iss: None,
+            aud: None,
+        };
         assert!(!guest.is_access_token());
         assert!(!guest.is_refresh_token());
         assert!(guest.is_guest_token());
@@ -983,7 +1019,8 @@ mod tests {
             7,  // 7 day refresh
             1,  // 1 hour guest
             30, // 30 second leeway
-        ).unwrap();
+        )
+        .unwrap();
 
         let user_id = UserId::new();
         let token = jwt.sign_token(&user_id, TokenType::Access, 0).unwrap();
@@ -1025,7 +1062,8 @@ mod tests {
             &Header::new(Algorithm::HS256),
             &claims,
             &EncodingKey::from_secret(secret.as_bytes()),
-        ).unwrap();
+        )
+        .unwrap();
 
         let result = jwt.verify_token(&token);
         assert!(result.is_err(), "Expired token should be rejected");
@@ -1042,7 +1080,10 @@ mod tests {
         let claims1 = jwt.verify_token(&token1).unwrap();
         let claims2 = jwt.verify_token(&token2).unwrap();
 
-        assert_ne!(claims1.jti, claims2.jti, "Each token should have a unique jti");
+        assert_ne!(
+            claims1.jti, claims2.jti,
+            "Each token should have a unique jti"
+        );
         assert!(!claims1.jti.is_empty());
         assert!(!claims2.jti.is_empty());
     }
@@ -1106,10 +1147,14 @@ mod tests {
     fn test_token_with_issuer_and_audience() {
         let jwt = JwtService::with_durations_and_claims(
             "secret-with-issuer-aud-LONG-ENOUGH-1234567890!@#$%",
-            1, 30, 4, 60,
+            1,
+            30,
+            4,
+            60,
             Some("synctv".to_string()),
             Some("synctv-api".to_string()),
-        ).unwrap();
+        )
+        .unwrap();
 
         let user_id = UserId::new();
         let token = jwt.sign_token(&user_id, TokenType::Access, 0).unwrap();
@@ -1134,24 +1179,37 @@ mod tests {
         // Service that expects "synctv" as issuer
         let jwt_expected = JwtService::with_durations_and_claims(
             "secret-issuer-check-LONG-ENOUGH-1234567890!@#$%",
-            1, 30, 4, 60,
+            1,
+            30,
+            4,
+            60,
             Some("synctv".to_string()),
             None,
-        ).unwrap();
+        )
+        .unwrap();
 
         // Service that signs tokens with different issuer
         let jwt_other = JwtService::with_durations_and_claims(
             "secret-issuer-check-LONG-ENOUGH-1234567890!@#$%",
-            1, 30, 4, 60,
+            1,
+            30,
+            4,
+            60,
             Some("other-service".to_string()),
             None,
-        ).unwrap();
+        )
+        .unwrap();
 
         let user_id = UserId::new();
-        let token = jwt_other.sign_token(&user_id, TokenType::Access, 0).unwrap();
+        let token = jwt_other
+            .sign_token(&user_id, TokenType::Access, 0)
+            .unwrap();
         let result = jwt_expected.verify_token(&token);
 
-        assert!(result.is_err(), "Token with wrong issuer should be rejected");
+        assert!(
+            result.is_err(),
+            "Token with wrong issuer should be rejected"
+        );
     }
 
     #[test]
@@ -1159,34 +1217,51 @@ mod tests {
         // Service that expects "synctv-api" as audience
         let jwt_expected = JwtService::with_durations_and_claims(
             "secret-aud-check-LONG-ENOUGH-1234567890!@#$%",
-            1, 30, 4, 60,
+            1,
+            30,
+            4,
+            60,
             None,
             Some("synctv-api".to_string()),
-        ).unwrap();
+        )
+        .unwrap();
 
         // Service that signs tokens with different audience
         let jwt_other = JwtService::with_durations_and_claims(
             "secret-aud-check-LONG-ENOUGH-1234567890!@#$%",
-            1, 30, 4, 60,
+            1,
+            30,
+            4,
+            60,
             None,
             Some("other-audience".to_string()),
-        ).unwrap();
+        )
+        .unwrap();
 
         let user_id = UserId::new();
-        let token = jwt_other.sign_token(&user_id, TokenType::Access, 0).unwrap();
+        let token = jwt_other
+            .sign_token(&user_id, TokenType::Access, 0)
+            .unwrap();
         let result = jwt_expected.verify_token(&token);
 
-        assert!(result.is_err(), "Token with wrong audience should be rejected");
+        assert!(
+            result.is_err(),
+            "Token with wrong audience should be rejected"
+        );
     }
 
     #[test]
     fn test_guest_token_with_issuer_and_audience() {
         let jwt = JwtService::with_durations_and_claims(
             "guest-issuer-aud-secret-LONG-ENOUGH-1234567890!@#$%",
-            1, 30, 4, 60,
+            1,
+            30,
+            4,
+            60,
             Some("synctv".to_string()),
             Some("synctv-guest".to_string()),
-        ).unwrap();
+        )
+        .unwrap();
 
         let room_id = RoomId::new();
         let token = jwt.sign_guest_token(&room_id).unwrap();
@@ -1218,14 +1293,20 @@ mod tests {
     fn test_weak_secret_all_same_character_rejected() {
         // All same character - no entropy
         let result = JwtService::new("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
-        assert!(result.is_err(), "All-same-character secret should be rejected");
+        assert!(
+            result.is_err(),
+            "All-same-character secret should be rejected"
+        );
     }
 
     #[test]
     fn test_weak_secret_repeated_pattern_rejected() {
         // Repeated pattern "abcabcabcabcabcabcabcabcabcabcab"
         let result = JwtService::new("abcabcabcabcabcabcabcabcabcabcab");
-        assert!(result.is_err(), "Repeated pattern secret should be rejected");
+        assert!(
+            result.is_err(),
+            "Repeated pattern secret should be rejected"
+        );
     }
 
     #[test]
@@ -1240,7 +1321,10 @@ mod tests {
     fn test_weak_secret_sequential_rejected() {
         // Sequential characters - fully sequential alphabet
         let result = JwtService::new("abcdefghijklmnopqrstuvwxyz123456");
-        assert!(result.is_err(), "Sequential character secret should be rejected");
+        assert!(
+            result.is_err(),
+            "Sequential character secret should be rejected"
+        );
     }
 
     #[test]
@@ -1254,7 +1338,10 @@ mod tests {
     fn test_weak_secret_common_password_rejected() {
         // Common password pattern with padding - using simple repeated pattern
         let result = JwtService::new("passpasspasspasspasspasspass12");
-        assert!(result.is_err(), "Repeated common password should be rejected");
+        assert!(
+            result.is_err(),
+            "Repeated common password should be rejected"
+        );
     }
 
     #[test]
@@ -1268,13 +1355,17 @@ mod tests {
     fn test_strong_secret_mixed_accepted() {
         // Strong mixed character secret
         let result = JwtService::new("My-Super-Secret-Key-2024!@#$%^&*()XYZ");
-        assert!(result.is_ok(), "Strong mixed character secret should be accepted");
+        assert!(
+            result.is_ok(),
+            "Strong mixed character secret should be accepted"
+        );
     }
 
     #[test]
     fn test_strong_secret_random_hex_accepted() {
         // Strong random hex-like string (64 hex chars = 256 bits)
-        let result = JwtService::new("a1b2c3d4e5f6789012345678901234567890abcdef1234567890abcdef123456");
+        let result =
+            JwtService::new("a1b2c3d4e5f6789012345678901234567890abcdef1234567890abcdef123456");
         assert!(result.is_ok(), "Strong hex secret should be accepted");
     }
 
@@ -1289,13 +1380,19 @@ mod tests {
     fn test_weak_secret_low_unique_chars_rejected() {
         // Low unique character count (mostly repeated chars)
         let result = JwtService::new("aabbccddaabbccddaabbccddaabbccdd");
-        assert!(result.is_err(), "Low unique character secret should be rejected");
+        assert!(
+            result.is_err(),
+            "Low unique character secret should be rejected"
+        );
     }
 
     #[test]
     fn test_strong_secret_minimum_length_accepted() {
         // Exactly 32 characters with good variety
         let result = JwtService::new("Ab3Cd4Ef5Gh6Ij7Kl8Mn9Op0Qr1St2Uv");
-        assert!(result.is_ok(), "Minimum length with variety should be accepted");
+        assert!(
+            result.is_ok(),
+            "Minimum length with variety should be accepted"
+        );
     }
 }

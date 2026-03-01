@@ -29,12 +29,14 @@ struct JwtValidatorExt(Arc<JwtValidator>);
 /// Extracts JWT claims from the Authorization header, then delegates to
 /// the shared `validate_admin_auth` in the impls layer for user lookup,
 /// banned/deleted check, and password-change invalidation.
-async fn validate_auth_user(parts: &mut Parts, app_state: &AppState) -> Result<crate::impls::admin::ValidatedAdmin, AppError> {
+async fn validate_auth_user(
+    parts: &mut Parts,
+    app_state: &AppState,
+) -> Result<crate::impls::admin::ValidatedAdmin, AppError> {
     let validator = parts
         .extensions
-        .get::<JwtValidatorExt>().map_or_else(|| {
-            app_state.jwt_validator.clone()
-        }, |v| v.0.clone());
+        .get::<JwtValidatorExt>()
+        .map_or_else(|| app_state.jwt_validator.clone(), |v| v.0.clone());
 
     let auth_header = parts
         .headers
@@ -51,9 +53,14 @@ async fn validate_auth_user(parts: &mut Parts, app_state: &AppState) -> Result<c
 
     let user_id = UserId::from_string(claims.sub);
 
-    crate::impls::admin::validate_admin_auth(&app_state.user_service, user_id, claims.pv, claims.iat)
-        .await
-        .map_err(AppError::unauthorized)
+    crate::impls::admin::validate_admin_auth(
+        &app_state.user_service,
+        user_id,
+        claims.pv,
+        claims.iat,
+    )
+    .await
+    .map_err(AppError::unauthorized)
 }
 
 /// Authenticated admin user (admin or root role required)
@@ -78,7 +85,10 @@ where
             return Err(AppError::forbidden("Admin role required"));
         }
 
-        Ok(Self { user_id: validated.user_id, role: validated.role })
+        Ok(Self {
+            user_id: validated.user_id,
+            role: validated.role,
+        })
     }
 }
 
@@ -103,7 +113,9 @@ where
             return Err(AppError::forbidden("Root role required"));
         }
 
-        Ok(Self { user_id: validated.user_id })
+        Ok(Self {
+            user_id: validated.user_id,
+        })
     }
 }
 
@@ -130,7 +142,10 @@ where
             .get(axum::http::header::USER_AGENT)
             .and_then(|v| v.to_str().ok())
             .map(std::string::ToString::to_string);
-        Ok(Self(crate::impls::admin::RequestContext { ip_address, user_agent }))
+        Ok(Self(crate::impls::admin::RequestContext {
+            ip_address,
+            user_agent,
+        }))
     }
 }
 
@@ -232,14 +247,20 @@ pub fn create_admin_router() -> Router<AppState> {
         .route("/rooms/{room_id}/ban", post(ban_room))
         .route("/rooms/{room_id}/unban", post(unban_room))
         .route("/rooms/{room_id}/approve", post(approve_room))
-        .route("/rooms/{room_id}/settings", get(get_room_settings).post(set_room_settings))
+        .route(
+            "/rooms/{room_id}/settings",
+            get(get_room_settings).post(set_room_settings),
+        )
         .route("/rooms/{room_id}/settings/reset", post(reset_room_settings))
         // Batch room operations
         .route("/rooms/batch/ban", post(batch_ban_rooms))
         .route("/rooms/batch/delete", post(batch_delete_rooms))
         // Provider instances
         .route("/providers", get(list_providers).post(add_provider))
-        .route("/providers/{name}", put(update_provider).delete(delete_provider))
+        .route(
+            "/providers/{name}",
+            put(update_provider).delete(delete_provider),
+        )
         .route("/providers/{name}/reconnect", post(reconnect_provider))
         .route("/providers/{name}/enable", post(enable_provider))
         .route("/providers/{name}/disable", post(disable_provider))
@@ -303,7 +324,10 @@ async fn set_settings(
     Json(req): Json<admin::UpdateSettingsRequest>,
 ) -> AppResult<Json<admin::UpdateSettingsResponse>> {
     let api = require_admin_api(&state)?;
-    let resp = api.update_settings(req, &auth.user_id, &rctx.0).await.map_err(admin_err_to_app_error)?;
+    let resp = api
+        .update_settings(req, &auth.user_id, &rctx.0)
+        .await
+        .map_err(admin_err_to_app_error)?;
     Ok(Json(resp))
 }
 
@@ -317,7 +341,10 @@ async fn send_test_email(
     Json(req): Json<admin::SendTestEmailRequest>,
 ) -> AppResult<Json<admin::SendTestEmailResponse>> {
     let api = require_admin_api(&state)?;
-    let resp = api.send_test_email(req).await.map_err(admin_err_to_app_error)?;
+    let resp = api
+        .send_test_email(req)
+        .await
+        .map_err(admin_err_to_app_error)?;
     Ok(Json(resp))
 }
 
@@ -389,7 +416,10 @@ async fn create_user(
     Json(req): Json<admin::CreateUserRequest>,
 ) -> AppResult<Json<admin::CreateUserResponse>> {
     let api = require_admin_api(&state)?;
-    let resp = api.create_user(req, auth.role, &auth.user_id, &rctx.0).await.map_err(admin_err_to_app_error)?;
+    let resp = api
+        .create_user(req, auth.role, &auth.user_id, &rctx.0)
+        .await
+        .map_err(admin_err_to_app_error)?;
     Ok(Json(resp))
 }
 
@@ -425,7 +455,15 @@ async fn set_user_role(
         _ => return Err(AppError::bad_request(format!("Unknown role: {}", req.role))),
     };
     let resp = api
-        .update_user_role(admin::UpdateUserRoleRequest { user_id, role: role_i32 }, &auth.user_id, auth.role, &rctx.0)
+        .update_user_role(
+            admin::UpdateUserRoleRequest {
+                user_id,
+                role: role_i32,
+            },
+            &auth.user_id,
+            auth.role,
+            &rctx.0,
+        )
         .await
         .map_err(admin_err_to_app_error)?;
     Ok(Json(resp))
@@ -440,13 +478,20 @@ async fn set_user_password(
 ) -> AppResult<Json<admin::UpdateUserPasswordResponse>> {
     validate_path_id(&user_id, "user_id")?;
     let api = require_admin_api(&state)?;
-    let reason = req.reason.unwrap_or_else(|| "Admin forced password reset".to_string());
+    let reason = req
+        .reason
+        .unwrap_or_else(|| "Admin forced password reset".to_string());
     let resp = api
-        .update_user_password(admin::UpdateUserPasswordRequest {
-            user_id,
-            new_password: req.password,
-            reason,
-        }, auth.user_id, auth.role, &rctx.0)
+        .update_user_password(
+            admin::UpdateUserPasswordRequest {
+                user_id,
+                new_password: req.password,
+                reason,
+            },
+            auth.user_id,
+            auth.role,
+            &rctx.0,
+        )
         .await
         .map_err(admin_err_to_app_error)?;
     Ok(Json(resp))
@@ -462,10 +507,14 @@ async fn set_user_username(
     validate_path_id(&user_id, "user_id")?;
     let api = require_admin_api(&state)?;
     let resp = api
-        .update_user_username(admin::UpdateUserUsernameRequest {
-            user_id,
-            new_username: req.username,
-        }, &auth.user_id, &rctx.0)
+        .update_user_username(
+            admin::UpdateUserUsernameRequest {
+                user_id,
+                new_username: req.username,
+            },
+            &auth.user_id,
+            &rctx.0,
+        )
         .await
         .map_err(admin_err_to_app_error)?;
     Ok(Json(resp))
@@ -480,12 +529,22 @@ async fn ban_user(
 ) -> AppResult<Json<admin::BanUserResponse>> {
     validate_path_id(&user_id, "user_id")?;
     if req.reason.len() > 500 {
-        return Err(AppError::bad_request("Reason too long (max 500 characters)"));
+        return Err(AppError::bad_request(
+            "Reason too long (max 500 characters)",
+        ));
     }
 
     let api = require_admin_api(&state)?;
     let resp = api
-        .ban_user(admin::BanUserRequest { user_id, reason: req.reason }, &auth.user_id, auth.role, &rctx.0)
+        .ban_user(
+            admin::BanUserRequest {
+                user_id,
+                reason: req.reason,
+            },
+            &auth.user_id,
+            auth.role,
+            &rctx.0,
+        )
         .await
         .map_err(admin_err_to_app_error)?;
     Ok(Json(resp))
@@ -515,7 +574,11 @@ async fn approve_user(
     validate_path_id(&user_id, "user_id")?;
     let api = require_admin_api(&state)?;
     let resp = api
-        .approve_user(admin::ApproveUserRequest { user_id }, &auth.user_id, &rctx.0)
+        .approve_user(
+            admin::ApproveUserRequest { user_id },
+            &auth.user_id,
+            &rctx.0,
+        )
         .await
         .map_err(admin_err_to_app_error)?;
     Ok(Json(resp))
@@ -571,7 +634,9 @@ async fn batch_ban_users(
         return Err(AppError::bad_request("Batch size exceeds limit of 100"));
     }
     if req.reason.len() > 500 {
-        return Err(AppError::bad_request("Reason too long (max 500 characters)"));
+        return Err(AppError::bad_request(
+            "Reason too long (max 500 characters)",
+        ));
     }
 
     let api = require_admin_api(&state)?;
@@ -699,10 +764,14 @@ async fn set_room_password(
     validate_path_id(&room_id, "room_id")?;
     let api = require_admin_api(&state)?;
     let resp = api
-        .update_room_password(admin::UpdateRoomPasswordRequest {
-            room_id,
-            new_password: req.password,
-        }, &auth.user_id, &rctx.0)
+        .update_room_password(
+            admin::UpdateRoomPasswordRequest {
+                room_id,
+                new_password: req.password,
+            },
+            &auth.user_id,
+            &rctx.0,
+        )
         .await
         .map_err(admin_err_to_app_error)?;
     Ok(Json(resp))
@@ -738,12 +807,21 @@ async fn ban_room(
 ) -> AppResult<Json<admin::BanRoomResponse>> {
     validate_path_id(&room_id, "room_id")?;
     if req.reason.len() > 500 {
-        return Err(AppError::bad_request("Reason too long (max 500 characters)"));
+        return Err(AppError::bad_request(
+            "Reason too long (max 500 characters)",
+        ));
     }
 
     let api = require_admin_api(&state)?;
     let resp = api
-        .ban_room(admin::BanRoomRequest { room_id, reason: req.reason }, &auth.user_id, &rctx.0)
+        .ban_room(
+            admin::BanRoomRequest {
+                room_id,
+                reason: req.reason,
+            },
+            &auth.user_id,
+            &rctx.0,
+        )
         .await
         .map_err(admin_err_to_app_error)?;
     Ok(Json(resp))
@@ -773,7 +851,11 @@ async fn approve_room(
     validate_path_id(&room_id, "room_id")?;
     let api = require_admin_api(&state)?;
     let resp = api
-        .approve_room(admin::ApproveRoomRequest { room_id }, &auth.user_id, &rctx.0)
+        .approve_room(
+            admin::ApproveRoomRequest { room_id },
+            &auth.user_id,
+            &rctx.0,
+        )
         .await
         .map_err(admin_err_to_app_error)?;
     Ok(Json(resp))
@@ -805,7 +887,10 @@ async fn set_room_settings(
 
     let api = require_admin_api(&state)?;
     let resp = api
-        .update_room_settings(admin::UpdateRoomSettingsRequest { room_id, settings }, &auth.user_id)
+        .update_room_settings(
+            admin::UpdateRoomSettingsRequest { room_id, settings },
+            &auth.user_id,
+        )
         .await
         .map_err(admin_err_to_app_error)?;
     Ok(Json(resp))
@@ -854,7 +939,9 @@ async fn batch_ban_rooms(
         return Err(AppError::bad_request("Batch size exceeds limit of 100"));
     }
     if req.reason.len() > 500 {
-        return Err(AppError::bad_request("Reason too long (max 500 characters)"));
+        return Err(AppError::bad_request(
+            "Reason too long (max 500 characters)",
+        ));
     }
 
     let api = require_admin_api(&state)?;
@@ -958,7 +1045,11 @@ async fn delete_provider(
     validate_path_id(&name, "name")?;
     let api = require_admin_api(&state)?;
     let resp = api
-        .delete_provider_instance(admin::DeleteProviderInstanceRequest { name }, &auth.user_id, &rctx.0)
+        .delete_provider_instance(
+            admin::DeleteProviderInstanceRequest { name },
+            &auth.user_id,
+            &rctx.0,
+        )
         .await
         .map_err(admin_err_to_app_error)?;
     Ok(Json(resp))
@@ -973,7 +1064,11 @@ async fn reconnect_provider(
     validate_path_id(&name, "name")?;
     let api = require_admin_api(&state)?;
     let resp = api
-        .reconnect_provider_instance(admin::ReconnectProviderInstanceRequest { name }, &auth.user_id, &rctx.0)
+        .reconnect_provider_instance(
+            admin::ReconnectProviderInstanceRequest { name },
+            &auth.user_id,
+            &rctx.0,
+        )
         .await
         .map_err(admin_err_to_app_error)?;
     Ok(Json(resp))
@@ -1041,9 +1136,15 @@ async fn kick_stream(
     }
 
     let api = require_admin_api(&state)?;
-    api.kick_stream(&req.room_id, &req.media_id, &req.reason, &auth.user_id, &rctx.0)
-        .await
-        .map_err(|e| admin_err_to_app_error(crate::impls::ApiError::Internal(e.to_string())))?;
+    api.kick_stream(
+        &req.room_id,
+        &req.media_id,
+        &req.reason,
+        &auth.user_id,
+        &rctx.0,
+    )
+    .await
+    .map_err(|e| admin_err_to_app_error(crate::impls::ApiError::Internal(e.to_string())))?;
     Ok(Json(admin::KickStreamResponse {}))
 }
 
@@ -1087,7 +1188,11 @@ async fn remove_admin(
     validate_path_id(&user_id, "user_id")?;
     let api = require_admin_api(&state)?;
     let resp = api
-        .remove_admin(admin::RemoveAdminRequest { user_id }, &auth.user_id, &rctx.0)
+        .remove_admin(
+            admin::RemoveAdminRequest { user_id },
+            &auth.user_id,
+            &rctx.0,
+        )
         .await
         .map_err(admin_err_to_app_error)?;
     Ok(Json(resp))
@@ -1376,15 +1481,15 @@ mod tests {
     fn test_provider_name_validation_special_characters() {
         // Name with special characters should fail
         let invalid_names = vec![
-            "test<script>",     // HTML tags
-            "test>alert",       // > character
-            "test\"quote",      // Quote character
-            "test'apostrophe",  // Apostrophe
-            "test space",       // Space
-            "test/slash",       // Slash
-            "test\\backslash",  // Backslash
-            "test;drop",        // Semicolon
-            "test& amp",        // Ampersand
+            "test<script>",    // HTML tags
+            "test>alert",      // > character
+            "test\"quote",     // Quote character
+            "test'apostrophe", // Apostrophe
+            "test space",      // Space
+            "test/slash",      // Slash
+            "test\\backslash", // Backslash
+            "test;drop",       // Semicolon
+            "test& amp",       // Ampersand
         ];
         for invalid_name in invalid_names {
             let result = validate_path_id(invalid_name, "name");
@@ -1479,7 +1584,10 @@ mod tests {
         ];
         for malicious_name in malicious_names {
             let result = validate_path_id(malicious_name, "name");
-            assert!(result.is_err(), "Expected '{malicious_name}' to be rejected");
+            assert!(
+                result.is_err(),
+                "Expected '{malicious_name}' to be rejected"
+            );
         }
     }
 

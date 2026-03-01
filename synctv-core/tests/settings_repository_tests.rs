@@ -5,8 +5,8 @@
 //! Run with: cargo test -p synctv-core --test `settings_repository_tests`
 #![allow(clippy::unwrap_used)]
 
-use synctv_core_testing::{create_test_pool};
 use synctv_core::repository::SettingsRepository;
+use synctv_core_testing::create_test_pool;
 // ─── get non-existent key ────────────────────────────────────────────
 
 #[tokio::test]
@@ -67,7 +67,9 @@ async fn test_get_all_ordering_by_group_name() {
     // Filter to just our test keys
     let our_groups: Vec<String> = all
         .iter()
-        .filter(|s| s.group_name == "a_group" || s.group_name == "m_group" || s.group_name == "z_group")
+        .filter(|s| {
+            s.group_name == "a_group" || s.group_name == "m_group" || s.group_name == "z_group"
+        })
         .map(|s| s.group_name.clone())
         .collect();
 
@@ -253,13 +255,15 @@ async fn test_update_with_version_increments_version() {
     assert_eq!(v2.version, 2, "Version should increment to 2");
 
     // Try update with stale version - should fail
-    let result = repo.update_with_version("version_test_key", "value_stale", 0).await;
+    let result = repo
+        .update_with_version("version_test_key", "value_stale", 0)
+        .await;
+    assert!(result.is_err(), "Update with stale version should fail");
     assert!(
-        result.is_err(),
-        "Update with stale version should fail"
-    );
-    assert!(
-        matches!(result.unwrap_err(), synctv_core::Error::OptimisticLockConflict),
+        matches!(
+            result.unwrap_err(),
+            synctv_core::Error::OptimisticLockConflict
+        ),
         "Error should be OptimisticLockConflict"
     );
 }
@@ -284,13 +288,15 @@ async fn test_update_with_wrong_version_fails() {
     .unwrap();
 
     // Try to update with wrong version
-    let result = repo.update_with_version("wrong_version_key", "new_value", 999).await;
+    let result = repo
+        .update_with_version("wrong_version_key", "new_value", 999)
+        .await;
+    assert!(result.is_err(), "Update with wrong version should fail");
     assert!(
-        result.is_err(),
-        "Update with wrong version should fail"
-    );
-    assert!(
-        matches!(result.unwrap_err(), synctv_core::Error::OptimisticLockConflict),
+        matches!(
+            result.unwrap_err(),
+            synctv_core::Error::OptimisticLockConflict
+        ),
         "Error should be OptimisticLockConflict"
     );
 }

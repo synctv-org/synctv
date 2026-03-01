@@ -26,11 +26,7 @@ async fn setup_registry(node_ids: &[&str]) -> Arc<NodeRegistry> {
     );
 
     for id in node_ids {
-        let node = NodeInfo::new(
-            id.to_string(),
-            format!("{id}:50051"),
-            format!("{id}:8080"),
-        );
+        let node = NodeInfo::new(id.to_string(), format!("{id}:50051"), format!("{id}:8080"));
         registry.test_insert_local(node).await;
     }
 

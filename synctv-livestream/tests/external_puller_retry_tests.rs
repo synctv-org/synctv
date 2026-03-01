@@ -24,7 +24,10 @@ fn test_attempt_reset_after_long_connection_documents_bug() {
     // Current behavior: attempt is reset but global_attempt_count is not
     assert_eq!(attempt, 0);
     // This assertion documents the BUG
-    assert_eq!(global_attempt_count, 100, "BUG: global_attempt_count should be 0");
+    assert_eq!(
+        global_attempt_count, 100,
+        "BUG: global_attempt_count should be 0"
+    );
 }
 
 /// Test expected behavior: both counters reset after long connection.
@@ -196,5 +199,8 @@ fn test_long_connection_reset_prevents_limit() {
         }
     }
 
-    assert!(!hit_limit, "Should NOT hit GLOBAL_MAX_ATTEMPTS limit with proper reset");
+    assert!(
+        !hit_limit,
+        "Should NOT hit GLOBAL_MAX_ATTEMPTS limit with proper reset"
+    );
 }

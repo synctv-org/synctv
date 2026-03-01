@@ -33,7 +33,9 @@ pub enum CredentialStorageError {
     },
 
     /// Credential already exists
-    #[error("Credential already exists for user {user_id}, provider {provider}, server {server_id}")]
+    #[error(
+        "Credential already exists for user {user_id}, provider {provider}, server {server_id}"
+    )]
     AlreadyExists {
         user_id: String,
         provider: String,
@@ -112,12 +114,7 @@ pub trait CredentialStorage: Send + Sync {
     ) -> Result<StoredCredential>;
 
     /// Delete a credential
-    async fn delete(
-        &self,
-        user_id: &str,
-        provider: ProviderType,
-        server_id: &str,
-    ) -> Result<bool>;
+    async fn delete(&self, user_id: &str, provider: ProviderType, server_id: &str) -> Result<bool>;
 
     /// List all credentials for a user
     async fn list_by_user(&self, user_id: &str) -> Result<Vec<StoredCredential>>;
@@ -130,12 +127,7 @@ pub trait CredentialStorage: Send + Sync {
     ) -> Result<Vec<StoredCredential>>;
 
     /// Check if a credential exists
-    async fn exists(
-        &self,
-        user_id: &str,
-        provider: ProviderType,
-        server_id: &str,
-    ) -> Result<bool> {
+    async fn exists(&self, user_id: &str, provider: ProviderType, server_id: &str) -> Result<bool> {
         Ok(self.get(user_id, provider, server_id).await?.is_some())
     }
 }
@@ -180,8 +172,8 @@ impl InMemoryCredentialStorage {
     /// Panics if the key is not exactly 32 bytes.
     #[must_use]
     pub fn with_encryption(key_bytes: &[u8]) -> Self {
-        let encryption = FieldEncryption::new(&key_bytes)
-            .expect("Encryption key must be exactly 32 bytes");
+        let encryption =
+            FieldEncryption::new(&key_bytes).expect("Encryption key must be exactly 32 bytes");
         Self {
             credentials: Arc::new(RwLock::new(HashMap::new())),
             encryption: Some(encryption),
@@ -207,7 +199,11 @@ impl InMemoryCredentialStorage {
         };
 
         match data {
-            CredentialData::Alist { host, username, password } => {
+            CredentialData::Alist {
+                host,
+                username,
+                password,
+            } => {
                 let encrypted_password = enc.encrypt(&password)?;
                 Ok(CredentialData::Alist {
                     host,
@@ -215,7 +211,11 @@ impl InMemoryCredentialStorage {
                     password: encrypted_password,
                 })
             }
-            CredentialData::Emby { host, api_key, emby_user_id } => {
+            CredentialData::Emby {
+                host,
+                api_key,
+                emby_user_id,
+            } => {
                 let encrypted_api_key = enc.encrypt(&api_key)?;
                 Ok(CredentialData::Emby {
                     host,
@@ -235,7 +235,11 @@ impl InMemoryCredentialStorage {
         };
 
         match data {
-            CredentialData::Alist { host, username, password } => {
+            CredentialData::Alist {
+                host,
+                username,
+                password,
+            } => {
                 // Only decrypt if it looks encrypted
                 let decrypted_password = if FieldEncryption::is_encrypted(&password) {
                     enc.decrypt(&password)?
@@ -248,7 +252,11 @@ impl InMemoryCredentialStorage {
                     password: decrypted_password,
                 })
             }
-            CredentialData::Emby { host, api_key, emby_user_id } => {
+            CredentialData::Emby {
+                host,
+                api_key,
+                emby_user_id,
+            } => {
                 // Only decrypt if it looks encrypted
                 let decrypted_api_key = if FieldEncryption::is_encrypted(&api_key) {
                     enc.decrypt(&api_key)?
@@ -297,7 +305,9 @@ impl CredentialStorage for InMemoryCredentialStorage {
     ) -> Result<StoredCredential> {
         // SSRF validation: Check host URL for Alist and Emby credentials
         let host_url = match &data {
-            CredentialData::Alist { host, .. } | CredentialData::Emby { host, .. } => Some(host.as_str()),
+            CredentialData::Alist { host, .. } | CredentialData::Emby { host, .. } => {
+                Some(host.as_str())
+            }
             CredentialData::Bilibili { .. } => None, // Bilibili has no host URL
         };
 
@@ -332,9 +342,10 @@ impl CredentialStorage for InMemoryCredentialStorage {
             expires_at: None,
         };
 
-        
-        self.credentials.write().await.insert(key, credential.clone());
-        
+        self.credentials
+            .write()
+            .await
+            .insert(key, credential.clone());
 
         // Return credential with decrypted data for caller convenience
         let decrypted_data = self.decrypt_data(credential.data.clone())?;
@@ -344,12 +355,7 @@ impl CredentialStorage for InMemoryCredentialStorage {
         })
     }
 
-    async fn delete(
-        &self,
-        user_id: &str,
-        provider: ProviderType,
-        server_id: &str,
-    ) -> Result<bool> {
+    async fn delete(&self, user_id: &str, provider: ProviderType, server_id: &str) -> Result<bool> {
         let key = Self::make_key(user_id, provider, server_id);
         let mut credentials = self.credentials.write().await;
         Ok(credentials.remove(&key).is_some())
@@ -569,11 +575,7 @@ mod tests {
 
         // Create initial credential
         let cred1 = storage
-            .set(
-                "user1",
-                None,
-                CredentialData::bilibili(HashMap::new()),
-            )
+            .set("user1", None, CredentialData::bilibili(HashMap::new()))
             .await
             .unwrap();
 
@@ -641,11 +643,15 @@ mod tests {
             .unwrap();
 
         // Both should exist independently
-        let all = storage.list_by_provider("user1", ProviderType::Alist).await.unwrap();
+        let all = storage
+            .list_by_provider("user1", ProviderType::Alist)
+            .await
+            .unwrap();
         assert_eq!(all.len(), 2);
 
         // Verify they have different server_ids
-        let server_ids: std::collections::HashSet<_> = all.iter().map(|c| c.server_id.clone()).collect();
+        let server_ids: std::collections::HashSet<_> =
+            all.iter().map(|c| c.server_id.clone()).collect();
         assert_eq!(server_ids.len(), 2);
     }
 
@@ -653,10 +659,9 @@ mod tests {
 
     fn test_encryption_key() -> Vec<u8> {
         vec![
-            0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07,
-            0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f,
-            0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17,
-            0x18, 0x19, 0x1a, 0x1b, 0x1c, 0x1d, 0x1e, 0x1f,
+            0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d,
+            0x0e, 0x0f, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19, 0x1a, 0x1b,
+            0x1c, 0x1d, 0x1e, 0x1f,
         ]
     }
 
@@ -681,8 +686,14 @@ mod tests {
             .expect("Failed to store credential");
 
         // The returned credential should have decrypted password (for caller convenience)
-        let (_, _, password) = stored.data.as_alist().expect("Expected Alist credential data");
-        assert_eq!(password, plain_password, "Returned password should be decrypted");
+        let (_, _, password) = stored
+            .data
+            .as_alist()
+            .expect("Expected Alist credential data");
+        assert_eq!(
+            password, plain_password,
+            "Returned password should be decrypted"
+        );
 
         // Retrieve the credential
         let retrieved = storage
@@ -692,8 +703,14 @@ mod tests {
             .expect("Credential should exist");
 
         // The retrieved password should be decrypted
-        let (_, _, password) = retrieved.data.as_alist().expect("Expected Alist credential data");
-        assert_eq!(password, plain_password, "Retrieved password should be decrypted");
+        let (_, _, password) = retrieved
+            .data
+            .as_alist()
+            .expect("Expected Alist credential data");
+        assert_eq!(
+            password, plain_password,
+            "Retrieved password should be decrypted"
+        );
     }
 
     #[tokio::test]
@@ -717,7 +734,10 @@ mod tests {
             .expect("Failed to store credential");
 
         // The returned credential should have decrypted api_key
-        let (_, key, _) = stored.data.as_emby().expect("Expected Emby credential data");
+        let (_, key, _) = stored
+            .data
+            .as_emby()
+            .expect("Expected Emby credential data");
         assert_eq!(key, api_key, "Returned api_key should be decrypted");
 
         // Retrieve the credential
@@ -728,7 +748,10 @@ mod tests {
             .expect("Credential should exist");
 
         // The retrieved api_key should be decrypted
-        let (_, key, _) = retrieved.data.as_emby().expect("Expected Emby credential data");
+        let (_, key, _) = retrieved
+            .data
+            .as_emby()
+            .expect("Expected Emby credential data");
         assert_eq!(key, api_key, "Retrieved api_key should be decrypted");
     }
 
@@ -746,7 +769,10 @@ mod tests {
             .expect("Failed to store credential");
 
         // Bilibili cookies should not be encrypted
-        let c = stored.data.as_bilibili().expect("Expected Bilibili credential data");
+        let c = stored
+            .data
+            .as_bilibili()
+            .expect("Expected Bilibili credential data");
         assert_eq!(c.get("SESSDATA"), Some(&"test_session".to_string()));
     }
 

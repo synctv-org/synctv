@@ -17,11 +17,7 @@ use synctv_cluster::HeartbeatResult;
 const REDIS_VERSION: &str = "7-alpine";
 
 /// Helper to create a Redis container and client.
-async fn setup_redis() -> (
-    testcontainers::ContainerAsync<Redis>,
-    redis::Client,
-    String,
-) {
+async fn setup_redis() -> (testcontainers::ContainerAsync<Redis>, redis::Client, String) {
     let redis_container = Redis::default()
         .start()
         .await
@@ -78,8 +74,13 @@ async fn test_heartbeat_reregistration_has_backoff() {
     let (_container, redis_client, _url) = setup_redis().await;
 
     let registry = Arc::new(
-        NodeRegistry::new(redis_client.clone(), "backoff-node".to_string(), 30, "backoff:")
-            .expect("new should succeed"),
+        NodeRegistry::new(
+            redis_client.clone(),
+            "backoff-node".to_string(),
+            30,
+            "backoff:",
+        )
+        .expect("new should succeed"),
     );
 
     // Register the node
@@ -89,7 +90,10 @@ async fn test_heartbeat_reregistration_has_backoff() {
         .expect("register should succeed");
 
     // First heartbeat should succeed
-    let result = registry.heartbeat().await.expect("heartbeat should succeed");
+    let result = registry
+        .heartbeat()
+        .await
+        .expect("heartbeat should succeed");
     assert_eq!(result, HeartbeatResult::Ok);
 
     // Verify initial backoff state
@@ -99,7 +103,9 @@ async fn test_heartbeat_reregistration_has_backoff() {
     );
 
     // Set a backoff period for testing
-    registry.set_reregister_backoff_for_test(Duration::from_millis(200)).await;
+    registry
+        .set_reregister_backoff_for_test(Duration::from_millis(200))
+        .await;
 
     // Delete the key to simulate expiry
     let mut conn = redis_client
@@ -131,8 +137,15 @@ async fn test_heartbeat_reregistration_has_backoff() {
     tokio::time::sleep(Duration::from_millis(250)).await;
 
     // Now re-registration should be allowed
-    let result = registry.heartbeat().await.expect("heartbeat should succeed");
-    assert_eq!(result, HeartbeatResult::Ok, "Re-registration should succeed after backoff expires");
+    let result = registry
+        .heartbeat()
+        .await
+        .expect("heartbeat should succeed");
+    assert_eq!(
+        result,
+        HeartbeatResult::Ok,
+        "Re-registration should succeed after backoff expires"
+    );
 
     // Verify not in backoff anymore
     assert!(
@@ -151,8 +164,13 @@ async fn test_backoff_cleared_after_successful_heartbeat() {
     let (_container, redis_client, _url) = setup_redis().await;
 
     let registry = Arc::new(
-        NodeRegistry::new(redis_client.clone(), "clear-backoff-node".to_string(), 30, "clearbackoff:")
-            .expect("new should succeed"),
+        NodeRegistry::new(
+            redis_client.clone(),
+            "clear-backoff-node".to_string(),
+            30,
+            "clearbackoff:",
+        )
+        .expect("new should succeed"),
     );
 
     // Register the node
@@ -168,7 +186,10 @@ async fn test_backoff_cleared_after_successful_heartbeat() {
     );
 
     // First heartbeat should succeed
-    let result = registry.heartbeat().await.expect("heartbeat should succeed");
+    let result = registry
+        .heartbeat()
+        .await
+        .expect("heartbeat should succeed");
     assert_eq!(result, HeartbeatResult::Ok);
 
     // Still not in backoff (heartbeat succeeded)
@@ -190,7 +211,10 @@ async fn test_backoff_cleared_after_successful_heartbeat() {
         .expect("DEL should succeed");
 
     // Trigger re-registration (will succeed and reset backoff)
-    let result = registry.heartbeat().await.expect("heartbeat should succeed");
+    let result = registry
+        .heartbeat()
+        .await
+        .expect("heartbeat should succeed");
     assert_eq!(result, HeartbeatResult::Ok);
 
     // After successful re-registration, backoff should still be at initial value (1s)
@@ -204,7 +228,10 @@ async fn test_backoff_cleared_after_successful_heartbeat() {
 
     // Continue with successful heartbeats
     for _ in 0..3 {
-        let result = registry.heartbeat().await.expect("heartbeat should succeed");
+        let result = registry
+            .heartbeat()
+            .await
+            .expect("heartbeat should succeed");
         assert_eq!(result, HeartbeatResult::Ok);
     }
 
@@ -224,8 +251,13 @@ async fn test_backoff_increases_exponentially() {
     let (_container, redis_client, _url) = setup_redis().await;
 
     let registry = Arc::new(
-        NodeRegistry::new(redis_client.clone(), "exp-backoff-node".to_string(), 30, "expbackoff:")
-            .expect("new should succeed"),
+        NodeRegistry::new(
+            redis_client.clone(),
+            "exp-backoff-node".to_string(),
+            30,
+            "expbackoff:",
+        )
+        .expect("new should succeed"),
     );
 
     // Register the node
@@ -280,8 +312,13 @@ async fn test_backoff_resets_after_recovery() {
     let (_container, redis_client, _url) = setup_redis().await;
 
     let registry = Arc::new(
-        NodeRegistry::new(redis_client.clone(), "recovery-node".to_string(), 30, "recovery:")
-            .expect("new should succeed"),
+        NodeRegistry::new(
+            redis_client.clone(),
+            "recovery-node".to_string(),
+            30,
+            "recovery:",
+        )
+        .expect("new should succeed"),
     );
 
     // Register the node
@@ -312,7 +349,9 @@ async fn test_backoff_resets_after_recovery() {
         .expect("DEL should succeed");
 
     // Set a test backoff so the first heartbeat doesn't immediately re-register
-    registry.set_reregister_backoff_for_test(Duration::from_millis(100)).await;
+    registry
+        .set_reregister_backoff_for_test(Duration::from_millis(100))
+        .await;
 
     // First heartbeat should skip re-registration due to backoff
     let result = registry.heartbeat().await.expect("heartbeat should return");
@@ -328,7 +367,10 @@ async fn test_backoff_resets_after_recovery() {
     tokio::time::sleep(Duration::from_millis(150)).await;
 
     // Now re-registration should succeed
-    let result = registry.heartbeat().await.expect("heartbeat should succeed");
+    let result = registry
+        .heartbeat()
+        .await
+        .expect("heartbeat should succeed");
     assert_eq!(result, HeartbeatResult::Ok);
 
     // After successful re-registration, backoff should be reset to initial value
@@ -341,7 +383,10 @@ async fn test_backoff_resets_after_recovery() {
 
     // Continue with successful heartbeats
     for _ in 0..5 {
-        let result = registry.heartbeat().await.expect("heartbeat should succeed");
+        let result = registry
+            .heartbeat()
+            .await
+            .expect("heartbeat should succeed");
         assert_eq!(result, HeartbeatResult::Ok);
     }
 

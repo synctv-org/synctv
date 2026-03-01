@@ -18,9 +18,7 @@ fn build_and_get_headers(
     let client = reqwest::Client::new();
     let request = client.get(url);
     let request = apply_provider_headers(request, url, provider_headers);
-    let built = request
-        .build()
-        .expect("Failed to build request");
+    let built = request.build().expect("Failed to build request");
     built.headers().clone()
 }
 
@@ -53,7 +51,9 @@ fn test_custom_user_agent_not_overridden() {
 fn test_default_referer_constructed_from_url() {
     let headers =
         build_and_get_headers("https://cdn.example.com/path/to/video.mp4", &HashMap::new());
-    let referer = headers.get("referer").expect("Referer should be set by default");
+    let referer = headers
+        .get("referer")
+        .expect("Referer should be set by default");
     assert_eq!(
         referer.to_str().unwrap(),
         "https://cdn.example.com/path/to/video.mp4"
@@ -63,7 +63,10 @@ fn test_default_referer_constructed_from_url() {
 #[test]
 fn test_custom_referer_not_overridden() {
     let mut provider = HashMap::new();
-    provider.insert("Referer".to_string(), "https://custom.example.com/".to_string());
+    provider.insert(
+        "Referer".to_string(),
+        "https://custom.example.com/".to_string(),
+    );
     let headers = build_and_get_headers("https://cdn.example.com/video.mp4", &provider);
     let referer = headers.get("referer").expect("Referer should exist");
     assert_eq!(referer.to_str().unwrap(), "https://custom.example.com/");
@@ -165,11 +168,7 @@ fn test_rewrite_m3u8_proxy_base_with_query_uses_ampersand() {
 #[test]
 fn test_rewrite_m3u8_empty_playlist() {
     let m3u8 = "#EXTM3U\n#EXT-X-VERSION:3\n";
-    let rewritten = rewrite_m3u8(
-        m3u8,
-        "https://cdn.example.com/master.m3u8",
-        "/proxy/stream",
-    );
+    let rewritten = rewrite_m3u8(m3u8, "https://cdn.example.com/master.m3u8", "/proxy/stream");
     // Should not crash; output should still contain the header tags
     assert!(rewritten.contains("#EXTM3U"));
     assert!(rewritten.contains("#EXT-X-VERSION:3"));
@@ -351,7 +350,8 @@ fn test_rewrite_uri_single_uri() {
 fn test_rewrite_uri_multiple_uris() {
     // A line with two URI= attributes (unusual but possible)
     let base = url::Url::parse("https://cdn.example.com/hls/master.m3u8").unwrap();
-    let line = "#EXT-X-SESSION-KEY:METHOD=AES-128,URI=\"key1.bin\",KEYFORMAT=\"urn\",URI=\"key2.bin\"";
+    let line =
+        "#EXT-X-SESSION-KEY:METHOD=AES-128,URI=\"key1.bin\",KEYFORMAT=\"urn\",URI=\"key2.bin\"";
     let (result, count) = rewrite_uri_attribute_with_count(line, Some(&base), "/proxy");
     assert_eq!(count, 2, "Should rewrite both URI attributes");
     // Both URIs should be proxied
@@ -362,12 +362,12 @@ fn test_rewrite_uri_multiple_uris() {
 #[test]
 fn test_rewrite_uri_malformed_no_closing_quote() {
     // URI=" without a closing " -- should not panic
-    let (result, count) = rewrite_uri_attribute_with_count(
-        "#EXT-X-KEY:METHOD=AES-128,URI=\"key.bin",
-        None,
-        "/proxy",
+    let (result, count) =
+        rewrite_uri_attribute_with_count("#EXT-X-KEY:METHOD=AES-128,URI=\"key.bin", None, "/proxy");
+    assert_eq!(
+        count, 0,
+        "Malformed URI (no closing quote) should not be rewritten"
     );
-    assert_eq!(count, 0, "Malformed URI (no closing quote) should not be rewritten");
     // The malformed content should still be in the output
     assert!(result.contains("URI=\""));
     assert!(result.contains("key.bin"));
@@ -376,11 +376,7 @@ fn test_rewrite_uri_malformed_no_closing_quote() {
 #[test]
 fn test_rewrite_uri_no_uri_attribute() {
     // A tag line with no URI= at all
-    let (result, count) = rewrite_uri_attribute_with_count(
-        "#EXT-X-VERSION:3",
-        None,
-        "/proxy",
-    );
+    let (result, count) = rewrite_uri_attribute_with_count("#EXT-X-VERSION:3", None, "/proxy");
     assert_eq!(count, 0);
     assert_eq!(result, "#EXT-X-VERSION:3");
 }
@@ -400,7 +396,7 @@ fn test_percent_encode_unicode() {
 #[test]
 fn test_percent_encode_cjk() {
     let encoded = percent_encode("\u{4e16}\u{754c}"); // Chinese: "world"
-    // Should be percent-encoded (multi-byte UTF-8)
+                                                      // Should be percent-encoded (multi-byte UTF-8)
     assert!(!encoded.contains('\u{4e16}'));
     assert!(encoded.contains('%'));
 }
@@ -487,7 +483,8 @@ fn test_rewrite_m3u8_ext_x_map_absolute_uri() {
     );
     // Absolute URI in EXT-X-MAP should be proxied as-is
     assert!(
-        rewritten.contains("URI=\"/proxy/stream?url=https%3A%2F%2Fcdn%2Eother%2Ecom%2Finit%2Emp4\""),
+        rewritten
+            .contains("URI=\"/proxy/stream?url=https%3A%2F%2Fcdn%2Eother%2Ecom%2Finit%2Emp4\""),
         "Absolute EXT-X-MAP URI should be proxied, got:\n{rewritten}"
     );
 }
@@ -593,13 +590,8 @@ fn test_referer_with_custom_referer_header() {
         "Referer".to_string(),
         "https://www.bilibili.com".to_string(),
     );
-    let headers = build_and_get_headers(
-        "https://cdn.bilibili.com/seg1.ts?token=abc",
-        &provider,
-    );
-    let referer = headers
-        .get("referer")
-        .expect("Custom Referer should exist");
+    let headers = build_and_get_headers("https://cdn.bilibili.com/seg1.ts?token=abc", &provider);
+    let referer = headers.get("referer").expect("Custom Referer should exist");
     assert_eq!(
         referer.to_str().unwrap(),
         "https://www.bilibili.com",
@@ -613,9 +605,7 @@ fn test_referer_port_preserved() {
         "https://cdn.example.com:8443/path/video.mp4",
         &HashMap::new(),
     );
-    let referer = headers
-        .get("referer")
-        .expect("Referer should be set");
+    let referer = headers.get("referer").expect("Referer should be set");
     let referer_str = referer.to_str().unwrap();
     // Note: url::Url::host_str() does NOT include port, so the Referer
     // constructed by apply_provider_headers strips the port.
@@ -634,15 +624,11 @@ fn test_provider_headers_forwarded_with_referer() {
         "Referer".to_string(),
         "https://custom.referer.com/page".to_string(),
     );
-    let headers = build_and_get_headers(
-        "https://cdn.example.com/video.mp4?query=string",
-        &provider,
-    );
+    let headers =
+        build_and_get_headers("https://cdn.example.com/video.mp4?query=string", &provider);
     // Both custom headers should be present
     assert_eq!(
-        headers
-            .get("x-custom-header")
-            .map(|v| v.to_str().unwrap()),
+        headers.get("x-custom-header").map(|v| v.to_str().unwrap()),
         Some("custom-value")
     );
     assert_eq!(

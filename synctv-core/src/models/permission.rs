@@ -192,30 +192,30 @@ impl PermissionBits {
 
     pub const NONE: u64 = 0;
 
-    #[must_use] 
+    #[must_use]
     pub const fn new(bits: u64) -> Self {
         Self(bits)
     }
 
-    #[must_use] 
+    #[must_use]
     pub const fn empty() -> Self {
         Self(Self::NONE)
     }
 
     /// Check if has specific permission
-    #[must_use] 
+    #[must_use]
     pub const fn has(&self, permission: u64) -> bool {
         (self.0 & permission) != 0
     }
 
     /// Check if has all specified permissions
-    #[must_use] 
+    #[must_use]
     pub const fn has_all(&self, permissions: u64) -> bool {
         (self.0 & permissions) == permissions
     }
 
     /// Check if has any of the specified permissions
-    #[must_use] 
+    #[must_use]
     pub const fn has_any(&self, permissions: u64) -> bool {
         (self.0 & permissions) != 0
     }
@@ -280,7 +280,7 @@ pub enum Role {
 
 impl Role {
     /// Get base permissions for this role (before custom Allow/Deny modifications)
-    #[must_use] 
+    #[must_use]
     pub const fn permissions(&self) -> PermissionBits {
         match self {
             Self::Creator => PermissionBits(PermissionBits::ALL),
@@ -324,7 +324,10 @@ impl sqlx::Type<sqlx::Postgres> for Role {
 }
 
 impl sqlx::Encode<'_, sqlx::Postgres> for Role {
-    fn encode_by_ref(&self, buf: &mut sqlx::postgres::PgArgumentBuffer) -> Result<sqlx::encode::IsNull, Box<dyn std::error::Error + Send + Sync>> {
+    fn encode_by_ref(
+        &self,
+        buf: &mut sqlx::postgres::PgArgumentBuffer,
+    ) -> Result<sqlx::encode::IsNull, Box<dyn std::error::Error + Send + Sync>> {
         let val: i16 = match self {
             Self::Creator => 1,
             Self::Admin => 2,
@@ -336,7 +339,9 @@ impl sqlx::Encode<'_, sqlx::Postgres> for Role {
 }
 
 impl<'r> sqlx::Decode<'r, sqlx::Postgres> for Role {
-    fn decode(value: sqlx::postgres::PgValueRef<'r>) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
+    fn decode(
+        value: sqlx::postgres::PgValueRef<'r>,
+    ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
         let val = <i16 as sqlx::Decode<sqlx::Postgres>>::decode(value)?;
         match val {
             1 => Ok(Self::Creator),

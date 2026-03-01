@@ -21,10 +21,7 @@ fn test_kick_user_is_critical() {
         reason: "test kick".to_string(),
         timestamp: chrono::Utc::now(),
     };
-    assert!(
-        event.is_critical(),
-        "KickUser should be a critical event"
-    );
+    assert!(event.is_critical(), "KickUser should be a critical event");
 }
 
 // ============================================================================
@@ -132,10 +129,7 @@ fn test_user_left_is_critical() {
         username: "test_user".to_string(),
         timestamp: chrono::Utc::now(),
     };
-    assert!(
-        event.is_critical(),
-        "UserLeft should be a critical event"
-    );
+    assert!(event.is_critical(), "UserLeft should be a critical event");
 }
 
 // ============================================================================

@@ -32,7 +32,10 @@ fn test_chunk_message_header_creation() {
     assert_eq!(header.msg_type_id, 9);
     assert_eq!(header.msg_streamd_id, 1);
     assert_eq!(header.timestamp_delta, 0);
-    assert_eq!(header.extended_timestamp_type, synctv_xiu::rtmp::chunk::ExtendTimestampType::NONE);
+    assert_eq!(
+        header.extended_timestamp_type,
+        synctv_xiu::rtmp::chunk::ExtendTimestampType::NONE
+    );
 }
 
 #[test]
@@ -123,8 +126,14 @@ fn test_rtmp_handshake_constants() {
     assert_eq!(define::RTMP_HANDSHAKE_SIZE, 1536);
     assert_eq!(define::RTMP_DIGEST_LENGTH, 32);
     assert_eq!(define::RTMP_SERVER_KEY.len(), 68);
-    assert_eq!(define::RTMP_SERVER_KEY_FIRST_HALF, "Genuine Adobe Flash Media Server 001");
-    assert_eq!(define::RTMP_CLIENT_KEY_FIRST_HALF, "Genuine Adobe Flash Player 001");
+    assert_eq!(
+        define::RTMP_SERVER_KEY_FIRST_HALF,
+        "Genuine Adobe Flash Media Server 001"
+    );
+    assert_eq!(
+        define::RTMP_CLIENT_KEY_FIRST_HALF,
+        "Genuine Adobe Flash Player 001"
+    );
 }
 
 // === GOP Cache Tests ===
@@ -201,20 +210,29 @@ fn test_gops_evicts_when_limit_reached() {
 
     // Fill up GOP 1
     gops.save_frame_data(
-        FrameData::Video { timestamp: 0, data: Bytes::from(vec![0u8; 10]) },
+        FrameData::Video {
+            timestamp: 0,
+            data: Bytes::from(vec![0u8; 10]),
+        },
         false,
     );
 
     // Keyframe -> new GOP 2
     gops.save_frame_data(
-        FrameData::Video { timestamp: 33, data: Bytes::from(vec![1u8; 10]) },
+        FrameData::Video {
+            timestamp: 33,
+            data: Bytes::from(vec![1u8; 10]),
+        },
         true,
     );
     assert_eq!(gops.gop_count(), 2);
 
     // Keyframe -> new GOP 3 (should evict GOP 1)
     gops.save_frame_data(
-        FrameData::Video { timestamp: 66, data: Bytes::from(vec![2u8; 10]) },
+        FrameData::Video {
+            timestamp: 66,
+            data: Bytes::from(vec![2u8; 10]),
+        },
         true,
     );
     // Size limit is 2, so after adding 3rd GOP, oldest is evicted
@@ -238,7 +256,10 @@ fn test_gops_size_zero_discards_frames() {
 
     let mut gops = Gops::new(0, None);
     gops.save_frame_data(
-        FrameData::Video { timestamp: 0, data: Bytes::from(vec![0u8; 100]) },
+        FrameData::Video {
+            timestamp: 0,
+            data: Bytes::from(vec![0u8; 100]),
+        },
         true,
     );
     // Should not accumulate data
@@ -254,11 +275,17 @@ fn test_gops_get_gops_returns_frozen() {
 
     let mut gops = Gops::new(2, None);
     gops.save_frame_data(
-        FrameData::Video { timestamp: 0, data: Bytes::from(vec![0u8; 10]) },
+        FrameData::Video {
+            timestamp: 0,
+            data: Bytes::from(vec![0u8; 10]),
+        },
         false,
     );
     gops.save_frame_data(
-        FrameData::Audio { timestamp: 0, data: Bytes::from(vec![1u8; 10]) },
+        FrameData::Audio {
+            timestamp: 0,
+            data: Bytes::from(vec![1u8; 10]),
+        },
         false,
     );
 
@@ -275,7 +302,10 @@ fn test_gop_get_frame_data_consumes() {
 
     let mut gops = Gops::new(2, None);
     gops.save_frame_data(
-        FrameData::Video { timestamp: 0, data: Bytes::from(vec![0u8; 10]) },
+        FrameData::Video {
+            timestamp: 0,
+            data: Bytes::from(vec![0u8; 10]),
+        },
         false,
     );
 
@@ -296,19 +326,28 @@ fn test_gops_memory_limit() {
 
     // Fill GOP 1 with data close to limit
     gops.save_frame_data(
-        FrameData::Video { timestamp: 0, data: Bytes::from(vec![0u8; 500]) },
+        FrameData::Video {
+            timestamp: 0,
+            data: Bytes::from(vec![0u8; 500]),
+        },
         false,
     );
 
     // Keyframe to create GOP 2
     gops.save_frame_data(
-        FrameData::Video { timestamp: 33, data: Bytes::from(vec![1u8; 400]) },
+        FrameData::Video {
+            timestamp: 33,
+            data: Bytes::from(vec![1u8; 400]),
+        },
         true,
     );
 
     // Another keyframe should evict old GOP to stay under memory limit
     gops.save_frame_data(
-        FrameData::Video { timestamp: 66, data: Bytes::from(vec![2u8; 500]) },
+        FrameData::Video {
+            timestamp: 66,
+            data: Bytes::from(vec![2u8; 500]),
+        },
         true,
     );
 
@@ -376,8 +415,8 @@ fn test_stream_identifier_inequality() {
 
 #[test]
 fn test_stream_identifier_hash() {
-    use synctv_xiu::streamhub::stream::StreamIdentifier;
     use std::collections::HashMap;
+    use synctv_xiu::streamhub::stream::StreamIdentifier;
 
     let mut map = HashMap::new();
     let id = StreamIdentifier::Rtmp {
@@ -515,7 +554,17 @@ fn test_frame_data_video_clone() {
         data: Bytes::from(vec![1, 2, 3, 4]),
     };
     let cloned = frame.clone();
-    if let (FrameData::Video { timestamp: t1, data: d1 }, FrameData::Video { timestamp: t2, data: d2 }) = (&frame, &cloned) {
+    if let (
+        FrameData::Video {
+            timestamp: t1,
+            data: d1,
+        },
+        FrameData::Video {
+            timestamp: t2,
+            data: d2,
+        },
+    ) = (&frame, &cloned)
+    {
         assert_eq!(t1, t2);
         assert_eq!(d1, d2);
     } else {
@@ -580,19 +629,29 @@ fn test_channel_capacities() {
 fn test_streamhub_error_display() {
     use synctv_xiu::streamhub::errors::{StreamHubError, StreamHubErrorValue};
 
-    let err = StreamHubError { value: StreamHubErrorValue::NoAppName };
+    let err = StreamHubError {
+        value: StreamHubErrorValue::NoAppName,
+    };
     assert_eq!(err.to_string(), "no app name");
 
-    let err = StreamHubError { value: StreamHubErrorValue::Exists };
+    let err = StreamHubError {
+        value: StreamHubErrorValue::Exists,
+    };
     assert_eq!(err.to_string(), "exists");
 
-    let err = StreamHubError { value: StreamHubErrorValue::SendError };
+    let err = StreamHubError {
+        value: StreamHubErrorValue::SendError,
+    };
     assert_eq!(err.to_string(), "send error");
 
-    let err = StreamHubError { value: StreamHubErrorValue::NoAppOrStreamName };
+    let err = StreamHubError {
+        value: StreamHubErrorValue::NoAppOrStreamName,
+    };
     assert_eq!(err.to_string(), "no app or stream name");
 
-    let err = StreamHubError { value: StreamHubErrorValue::SubscriberClosed };
+    let err = StreamHubError {
+        value: StreamHubErrorValue::SubscriberClosed,
+    };
     assert_eq!(err.to_string(), "subscriber channel closed");
 }
 
@@ -600,7 +659,10 @@ fn test_streamhub_error_display() {
 fn test_streamhub_error_from_string() {
     use synctv_xiu::streamhub::errors::{StreamHubError, StreamHubErrorValue};
     let err: StreamHubError = "custom error message".to_string().into();
-    assert!(matches!(err.value, StreamHubErrorValue::ClientSessionError(_)));
+    assert!(matches!(
+        err.value,
+        StreamHubErrorValue::ClientSessionError(_)
+    ));
     assert!(err.to_string().contains("custom error message"));
 }
 
@@ -624,10 +686,7 @@ fn test_subscribe_type_serialization() {
 #[test]
 fn test_publish_type_serialization() {
     use synctv_xiu::streamhub::define::PublishType;
-    let types = vec![
-        PublishType::RtmpPush,
-        PublishType::RtmpRelay,
-    ];
+    let types = vec![PublishType::RtmpPush, PublishType::RtmpRelay];
     for t in types {
         let json = serde_json::to_string(&t).unwrap();
         assert!(!json.is_empty());
@@ -639,9 +698,9 @@ fn test_publish_type_serialization() {
 #[tokio::test]
 async fn test_streams_hub_publish_and_subscribe() {
     use synctv_xiu::streamhub::define::*;
+    use synctv_xiu::streamhub::errors::StreamHubError;
     use synctv_xiu::streamhub::stream::StreamIdentifier;
     use synctv_xiu::streamhub::StreamsHub;
-    use synctv_xiu::streamhub::errors::StreamHubError;
 
     let (event_sender, event_receiver) = tokio::sync::mpsc::channel(100);
     let mut hub = StreamsHub::new(event_sender, event_receiver);
@@ -674,12 +733,9 @@ async fn test_streams_hub_publish_and_subscribe() {
     };
 
     // Publish
-    let result = hub.publish(
-        identifier.clone(),
-        PublishType::RtmpPush,
-        receiver,
-        handler,
-    ).await;
+    let result = hub
+        .publish(identifier.clone(), PublishType::RtmpPush, receiver, handler)
+        .await;
     assert!(result.is_ok());
 
     // Duplicate publish should fail
@@ -701,12 +757,14 @@ async fn test_streams_hub_publish_and_subscribe() {
         }
     }
 
-    let result2 = hub.publish(
-        identifier.clone(),
-        PublishType::RtmpPush,
-        receiver2,
-        Arc::new(MockHandler2),
-    ).await;
+    let result2 = hub
+        .publish(
+            identifier.clone(),
+            PublishType::RtmpPush,
+            receiver2,
+            Arc::new(MockHandler2),
+        )
+        .await;
     assert!(result2.is_err());
 }
 
@@ -714,8 +772,8 @@ async fn test_streams_hub_publish_and_subscribe() {
 async fn test_streams_hub_subscribe_no_stream() {
     use synctv_xiu::streamhub::define::*;
     use synctv_xiu::streamhub::stream::StreamIdentifier;
-    use synctv_xiu::streamhub::StreamsHub;
     use synctv_xiu::streamhub::utils::Uuid;
+    use synctv_xiu::streamhub::StreamsHub;
 
     let (event_sender, event_receiver) = tokio::sync::mpsc::channel(100);
     let mut hub = StreamsHub::new(event_sender, event_receiver);
@@ -736,11 +794,9 @@ async fn test_streams_hub_subscribe_no_stream() {
         sub_data_type: SubDataType::Frame,
     };
 
-    let result = hub.subscribe(
-        &identifier,
-        sub_info,
-        DataSender::Frame { sender },
-    ).await;
+    let result = hub
+        .subscribe(&identifier, sub_info, DataSender::Frame { sender })
+        .await;
     assert!(result.is_err());
 }
 
@@ -748,8 +804,8 @@ async fn test_streams_hub_subscribe_no_stream() {
 async fn test_streams_hub_unsubscribe_no_stream() {
     use synctv_xiu::streamhub::define::*;
     use synctv_xiu::streamhub::stream::StreamIdentifier;
-    use synctv_xiu::streamhub::StreamsHub;
     use synctv_xiu::streamhub::utils::Uuid;
+    use synctv_xiu::streamhub::StreamsHub;
 
     let (event_sender, event_receiver) = tokio::sync::mpsc::channel(100);
     let mut hub = StreamsHub::new(event_sender, event_receiver);
@@ -776,9 +832,9 @@ async fn test_streams_hub_unsubscribe_no_stream() {
 #[tokio::test]
 async fn test_streams_hub_broadcast_event() {
     use synctv_xiu::streamhub::define::*;
+    use synctv_xiu::streamhub::errors::StreamHubError;
     use synctv_xiu::streamhub::stream::StreamIdentifier;
     use synctv_xiu::streamhub::StreamsHub;
-    use synctv_xiu::streamhub::errors::StreamHubError;
 
     let (event_sender, event_receiver) = tokio::sync::mpsc::channel(100);
     let mut hub = StreamsHub::new(event_sender, event_receiver);
@@ -815,12 +871,18 @@ async fn test_streams_hub_broadcast_event() {
         PublishType::RtmpPush,
         receiver,
         Arc::new(MockHandler),
-    ).await.unwrap();
+    )
+    .await
+    .unwrap();
 
     // Should receive the publish broadcast event
     let event = broadcast_rx.try_recv();
     assert!(event.is_ok());
-    if let Ok(BroadcastEvent::Publish { identifier: id, pub_type }) = event {
+    if let Ok(BroadcastEvent::Publish {
+        identifier: id,
+        pub_type,
+    }) = event
+    {
         assert_eq!(id, identifier);
         assert!(matches!(pub_type, PublishType::RtmpPush));
     } else {

@@ -6,8 +6,8 @@
 #![allow(clippy::unwrap_used)]
 
 use synctv_core::models::settings::{
-    SettingsGroup, get_default_settings, default_server_settings,
-    default_email_settings, default_oauth_settings,
+    default_email_settings, default_oauth_settings, default_server_settings, get_default_settings,
+    SettingsGroup,
 };
 use synctv_core::service::settings::get_default_settings_json;
 
@@ -41,8 +41,8 @@ fn test_settings_get_cached_value() {
 #[test]
 fn test_settings_set_updates_cache() {
     // When a setting is updated, the new value should be reflected
-    use std::sync::Arc;
     use dashmap::DashMap;
+    use std::sync::Arc;
 
     let cache: Arc<DashMap<String, SettingsGroup>> = Arc::new(DashMap::new());
 
@@ -68,7 +68,10 @@ fn test_settings_set_updates_cache() {
     // Read the updated value
     let value = cache.get("server.default").unwrap().value().clone();
     let parsed = value.parse_json().unwrap();
-    assert_eq!(parsed["max_rooms_per_user"], 20, "Cache should reflect updated value");
+    assert_eq!(
+        parsed["max_rooms_per_user"], 20,
+        "Cache should reflect updated value"
+    );
 }
 
 // ============================================================================
@@ -153,10 +156,7 @@ fn test_settings_group_as_object() {
 
 #[test]
 fn test_settings_group_as_object_not_object() {
-    let group = SettingsGroup::new(
-        "test".to_string(),
-        serde_json::json!([1, 2, 3]).to_string(),
-    );
+    let group = SettingsGroup::new("test".to_string(), serde_json::json!([1, 2, 3]).to_string());
     assert!(group.as_object().is_err());
 }
 

@@ -4,10 +4,10 @@ use {
         errors::{UnpackError, UnpackErrorValue},
         ChunkBasicHeader, ChunkInfo, ChunkMessageHeader, ExtendTimestampType,
     },
+    crate::bytesio::bytes_reader::BytesReader,
     crate::rtmp::messages::define::msg_type_id,
     byteorder::{BigEndian, LittleEndian},
     bytes::{BufMut, BytesMut},
-    crate::bytesio::bytes_reader::BytesReader,
     std::{cmp::min, fmt, num::NonZeroUsize, vec::Vec},
 };
 
@@ -695,5 +695,4 @@ mod tests {
             println!("{data}");
         }
     }
-
 }

@@ -172,10 +172,7 @@ impl ClusterClient {
     }
 
     /// Create an authenticated client for a given channel
-    fn make_client(
-        &self,
-        channel: Channel,
-    ) -> ClusterServiceClient<Channel> {
+    fn make_client(&self, channel: Channel) -> ClusterServiceClient<Channel> {
         ClusterServiceClient::new(channel)
     }
 
@@ -185,11 +182,22 @@ impl ClusterClient {
     /// which would cause the request to be sent without authentication.
     fn attach_secret<T>(&self, request: &mut tonic::Request<T>) -> Result<()> {
         if !self.config.cluster_secret.is_empty() {
-            match self.config.cluster_secret.parse::<MetadataValue<tonic::metadata::Ascii>>() {
-                Ok(val) => { request.metadata_mut().insert("x-cluster-secret", val); }
+            match self
+                .config
+                .cluster_secret
+                .parse::<MetadataValue<tonic::metadata::Ascii>>()
+            {
+                Ok(val) => {
+                    request.metadata_mut().insert("x-cluster-secret", val);
+                }
                 Err(e) => {
-                    tracing::error!("cluster_secret contains invalid characters (non-ASCII?): {}", e);
-                    return Err(Error::Rpc("invalid cluster secret configuration".to_string()));
+                    tracing::error!(
+                        "cluster_secret contains invalid characters (non-ASCII?): {}",
+                        e
+                    );
+                    return Err(Error::Rpc(
+                        "invalid cluster secret configuration".to_string(),
+                    ));
                 }
             }
         }
@@ -279,7 +287,9 @@ impl ClusterClient {
                 let address = node.grpc_address.clone();
                 let node_id = node.node_id.clone();
                 async move {
-                    let result = self.query_user_status_single(&node_id, &address, user_ids).await;
+                    let result = self
+                        .query_user_status_single(&node_id, &address, user_ids)
+                        .await;
                     (node_id, address, result)
                 }
             })
@@ -381,7 +391,9 @@ impl ClusterClient {
             }
             Err(e) => {
                 self.circuit_breakers.on_error(address).await;
-                Err(Error::Rpc(format!("GetUserOnlineStatus RPC failed for {address}: {e}")))
+                Err(Error::Rpc(format!(
+                    "GetUserOnlineStatus RPC failed for {address}: {e}"
+                )))
             }
         }
     }
@@ -444,7 +456,9 @@ impl ClusterClient {
                 let address = node.grpc_address.clone();
                 let node_id = node.node_id.clone();
                 async move {
-                    let result = self.query_room_connections_single(&node_id, &address, room_id).await;
+                    let result = self
+                        .query_room_connections_single(&node_id, &address, room_id)
+                        .await;
                     (node_id, address, result)
                 }
             })
@@ -546,7 +560,9 @@ impl ClusterClient {
             }
             Err(e) => {
                 self.circuit_breakers.on_error(address).await;
-                Err(Error::Rpc(format!("GetRoomConnections RPC failed for {address}: {e}")))
+                Err(Error::Rpc(format!(
+                    "GetRoomConnections RPC failed for {address}: {e}"
+                )))
             }
         }
     }
@@ -735,14 +751,18 @@ mod tests {
             .await
             .expect("Failed to start Redis container");
 
-        let redis_host = redis_container.get_host().await.expect("Failed to get Redis host");
+        let redis_host = redis_container
+            .get_host()
+            .await
+            .expect("Failed to get Redis host");
         let redis_port = redis_container
             .get_host_port_ipv4(6379)
             .await
             .expect("Failed to get Redis port");
 
         let redis_url = format!("redis://{}:{}", redis_host, redis_port);
-        let redis_client = redis::Client::open(redis_url.as_str()).expect("Failed to create Redis client");
+        let redis_client =
+            redis::Client::open(redis_url.as_str()).expect("Failed to create Redis client");
 
         // Verify Redis is reachable with retry logic
         // The container may report ready but TCP might not be fully established yet
@@ -759,7 +779,10 @@ mod tests {
                 }
             }
         };
-        let _: () = redis::cmd("PING").query_async(&mut conn).await.expect("Redis PING failed");
+        let _: () = redis::cmd("PING")
+            .query_async(&mut conn)
+            .await
+            .expect("Redis PING failed");
         drop(conn);
 
         let registry = Arc::new(
@@ -768,11 +791,14 @@ mod tests {
         // Populate local cache directly (no Redis connection needed)
         {
             let mut nodes = registry.local_nodes.write().await;
-            nodes.insert("self_node".to_string(), crate::discovery::NodeInfo::new(
+            nodes.insert(
                 "self_node".to_string(),
-                "localhost:50051".to_string(),
-                "localhost:8080".to_string(),
-            ));
+                crate::discovery::NodeInfo::new(
+                    "self_node".to_string(),
+                    "localhost:50051".to_string(),
+                    "localhost:8080".to_string(),
+                ),
+            );
         }
 
         let config = ClusterClientConfig {

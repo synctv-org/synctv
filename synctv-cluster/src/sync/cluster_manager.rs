@@ -7,8 +7,8 @@
 //! - Connection management
 //! - Metrics and monitoring
 
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{broadcast, mpsc};
 use tokio_util::sync::CancellationToken;
@@ -60,8 +60,14 @@ pub struct ClusterConfig {
 impl std::fmt::Debug for ClusterConfig {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ClusterConfig")
-            .field("redis_client", &self.redis_client.as_ref().map(|_| "redis::Client { .. }"))
-            .field("redis_conn", &self.redis_conn.as_ref().map(|_| "ConnectionManager { .. }"))
+            .field(
+                "redis_client",
+                &self.redis_client.as_ref().map(|_| "redis::Client { .. }"),
+            )
+            .field(
+                "redis_conn",
+                &self.redis_conn.as_ref().map(|_| "ConnectionManager { .. }"),
+            )
             .field("node_id", &self.node_id)
             .field("dedup_window", &self.dedup_window)
             .field("cleanup_interval", &self.cleanup_interval)
@@ -175,16 +181,16 @@ impl ClusterManager {
 
         // Start Redis pub/sub using the pre-built client/connection.
         // When Redis is not provided, run in single-node mode (tests).
-        let (message_hub, redis_publish_tx, redis_critical_tx, redis_pubsub, publisher_handle) = if let (Some(redis_client), Some(redis_conn)) = (config.redis_client.clone(), config.redis_conn.clone()) {
-            // Reuse the shared connection for the message hub's distributed
-            // subscription state and TTL refresh background task.
-            let hub = Arc::new(
-                RoomMessageHub::new()
-                    .with_redis(redis_conn, &config.key_prefix),
-            );
+        let (message_hub, redis_publish_tx, redis_critical_tx, redis_pubsub, publisher_handle) =
+            if let (Some(redis_client), Some(redis_conn)) =
+                (config.redis_client.clone(), config.redis_conn.clone())
+            {
+                // Reuse the shared connection for the message hub's distributed
+                // subscription state and TTL refresh background task.
+                let hub =
+                    Arc::new(RoomMessageHub::new().with_redis(redis_conn, &config.key_prefix));
 
-            let redis_pubsub = Arc::new(
-                RedisPubSub::with_key_prefix(
+                let redis_pubsub = Arc::new(RedisPubSub::with_key_prefix(
                     redis_client,
                     hub.clone(),
                     config.node_id.clone(),
@@ -195,55 +201,64 @@ impl ClusterManager {
                     deduplicator.clone(),
                     config.catchup_window_secs,
                     config.stream_max_length,
-                )?
-            );
+                )?);
 
-            let (tx, _backpressure, publisher_handle) = redis_pubsub.clone().start(config.publish_channel_capacity).await?;
-            // Critical events share the same Redis publisher but use a separate
-            // bounded channel so they are never dropped when the normal channel is full.
-            let critical_capacity = config.critical_channel_capacity;
-            let (critical_tx, mut critical_rx) = mpsc::channel::<PublishRequest>(critical_capacity);
-            // Forward critical events into the normal publish channel using `.send().await`
-            // (blocks until space available, never drops).
-            let normal_tx = tx.clone();
-            let cancel_critical = redis_pubsub.cancel_token();
-            tokio::spawn(async move {
-                loop {
-                    tokio::select! {
-                        () = cancel_critical.cancelled() => {
-                            // Drain remaining critical events before exiting
-                            while let Ok(req) = critical_rx.try_recv() {
-                                let _ = normal_tx.send(req).await;
+                let (tx, _backpressure, publisher_handle) = redis_pubsub
+                    .clone()
+                    .start(config.publish_channel_capacity)
+                    .await?;
+                // Critical events share the same Redis publisher but use a separate
+                // bounded channel so they are never dropped when the normal channel is full.
+                let critical_capacity = config.critical_channel_capacity;
+                let (critical_tx, mut critical_rx) =
+                    mpsc::channel::<PublishRequest>(critical_capacity);
+                // Forward critical events into the normal publish channel using `.send().await`
+                // (blocks until space available, never drops).
+                let normal_tx = tx.clone();
+                let cancel_critical = redis_pubsub.cancel_token();
+                tokio::spawn(async move {
+                    loop {
+                        tokio::select! {
+                            () = cancel_critical.cancelled() => {
+                                // Drain remaining critical events before exiting
+                                while let Ok(req) = critical_rx.try_recv() {
+                                    let _ = normal_tx.send(req).await;
+                                }
+                                return;
                             }
-                            return;
-                        }
-                        req = critical_rx.recv() => {
-                            if let Some(req) = req {
-                                if let Err(e) = normal_tx.send(req).await {
-                                    error!("Critical event publish channel closed: {e}");
+                            req = critical_rx.recv() => {
+                                if let Some(req) = req {
+                                    if let Err(e) = normal_tx.send(req).await {
+                                        error!("Critical event publish channel closed: {e}");
+                                        return;
+                                    }
+                                } else {
                                     return;
                                 }
-                            } else {
-                                return;
                             }
                         }
                     }
-                }
-            });
+                });
 
-            (hub, Some(tx), Some(critical_tx), Some(redis_pubsub), Some(publisher_handle))
-        } else {
-            warn!("Redis not provided, running in single-node mode");
-            if cache_invalidation.is_some() {
-                warn!(
-                    "cache_invalidation service provided but Redis is not available; \
+                (
+                    hub,
+                    Some(tx),
+                    Some(critical_tx),
+                    Some(redis_pubsub),
+                    Some(publisher_handle),
+                )
+            } else {
+                warn!("Redis not provided, running in single-node mode");
+                if cache_invalidation.is_some() {
+                    warn!(
+                        "cache_invalidation service provided but Redis is not available; \
                      cache invalidation will be local-only (no cross-replica invalidation). \
                      In a multi-replica deployment, this may lead to stale caches on other nodes."
-                );
-            }
-            let hub = Arc::new(RoomMessageHub::new());
-            (hub, None, None, None, None)
-        };
+                    );
+                }
+                let hub = Arc::new(RoomMessageHub::new());
+                (hub, None, None, None, None)
+            };
 
         Ok(Self {
             message_hub,
@@ -272,13 +287,13 @@ impl ClusterManager {
     }
 
     /// Get the message hub (for subscriptions)
-    #[must_use] 
+    #[must_use]
     pub const fn message_hub(&self) -> &Arc<RoomMessageHub> {
         &self.message_hub
     }
 
     /// Get the deduplicator
-    #[must_use] 
+    #[must_use]
     pub const fn deduplicator(&self) -> &Arc<MessageDeduplicator> {
         &self.deduplicator
     }
@@ -328,13 +343,13 @@ impl ClusterManager {
     }
 
     /// Subscribe to admin events (kick, etc.) received from cluster
-    #[must_use] 
+    #[must_use]
     pub fn subscribe_admin_events(&self) -> broadcast::Receiver<ClusterEvent> {
         self.admin_event_tx.subscribe()
     }
 
     /// Get the admin event sender (for local kick events)
-    #[must_use] 
+    #[must_use]
     pub const fn admin_event_tx(&self) -> &broadcast::Sender<ClusterEvent> {
         &self.admin_event_tx
     }
@@ -356,8 +371,7 @@ impl ClusterManager {
         grpc_address: String,
         http_address: String,
         connection_count_fn: Option<F>,
-    )
-    where
+    ) where
         F: Fn() -> usize + Send + Sync + 'static,
     {
         let cancel_token = self.cancel_token.clone();
@@ -478,12 +492,8 @@ impl ClusterManager {
         state.handle = Some(handle);
         state.grpc_address = grpc_address;
         state.http_address = http_address;
-        info!(
-            interval_secs = interval_secs,
-            "Heartbeat loop started"
-        );
+        info!(interval_secs = interval_secs, "Heartbeat loop started");
     }
-
 
     /// Gracefully shut down the cluster manager and all background tasks.
     ///
@@ -597,9 +607,7 @@ impl ClusterManager {
         let is_critical = event.is_critical();
         if is_critical {
             if let Some(tx) = &self.redis_critical_tx {
-                match tx.try_send(PublishRequest {
-                    event,
-                }) {
+                match tx.try_send(PublishRequest { event }) {
                     Ok(()) => {
                         redis_sent = 1;
                     }
@@ -624,14 +632,10 @@ impl ClusterManager {
                 }
             } else if let Some(tx) = &self.redis_publish_tx {
                 // Fallback to normal channel if critical channel not available
-                let _ = tx.try_send(PublishRequest {
-                    event,
-                });
+                let _ = tx.try_send(PublishRequest { event });
             }
         } else if let Some(tx) = &self.redis_publish_tx {
-            match tx.try_send(PublishRequest {
-                event,
-            }) {
+            match tx.try_send(PublishRequest { event }) {
                 Ok(()) => {
                     redis_sent = 1;
                 }
@@ -679,7 +683,8 @@ impl ClusterManager {
         user_id: UserId,
     ) -> (tokio::sync::mpsc::Receiver<ClusterEvent>, ConnectionId) {
         let connection_id = format!("{}_{}", user_id.as_str(), nanoid::nanoid!(8));
-        self.subscribe_with_id(room_id, user_id, connection_id).await
+        self.subscribe_with_id(room_id, user_id, connection_id)
+            .await
     }
 
     /// Subscribe a client to room events using an existing connection ID.
@@ -695,7 +700,10 @@ impl ClusterManager {
     ) -> (tokio::sync::mpsc::Receiver<ClusterEvent>, ConnectionId) {
         let room_id_str = room_id.as_str().to_string();
         let user_id_str = user_id.as_str().to_string();
-        let rx = self.message_hub.subscribe(room_id, user_id, connection_id.clone()).await;
+        let rx = self
+            .message_hub
+            .subscribe(room_id, user_id, connection_id.clone())
+            .await;
 
         info!(
             room_id = %room_id_str,
@@ -726,7 +734,7 @@ impl ClusterManager {
     }
 
     /// Get subscribers in a room
-    #[must_use] 
+    #[must_use]
     pub fn get_room_subscribers(&self, room_id: &RoomId) -> Vec<(UserId, ConnectionId)> {
         self.message_hub.get_room_subscribers(room_id)
     }
@@ -815,7 +823,13 @@ mod tests {
         // Verify duplicate detection
         let result2 = manager.broadcast(event);
         assert_eq!(result2.local_sent, 0);
-        assert!(matches!(result2, BroadcastResult { local_sent: 0, redis_sent: false }));
+        assert!(matches!(
+            result2,
+            BroadcastResult {
+                local_sent: 0,
+                redis_sent: false
+            }
+        ));
 
         // Verify message received
         let received = rx.recv().await.unwrap();
@@ -863,7 +877,13 @@ mod tests {
         let received = admin_rx.recv().await.unwrap();
         assert_eq!(received.event_type(), "kick_publisher");
 
-        if let ClusterEvent::KickPublisher { room_id, media_id, reason, .. } = &received {
+        if let ClusterEvent::KickPublisher {
+            room_id,
+            media_id,
+            reason,
+            ..
+        } = &received
+        {
             assert_eq!(room_id.as_str(), "room1");
             assert_eq!(media_id.as_str(), "media1");
             assert_eq!(reason, "user_banned");
@@ -941,13 +961,9 @@ mod tests {
 
         // Create ClusterManager with cache_invalidation but no Redis
         // This should succeed with a warning logged
-        let manager = ClusterManager::new(
-            config,
-            None,
-            Some(cache_invalidation),
-        )
-        .await
-        .expect("ClusterManager::new should succeed with cache_invalidation but no Redis");
+        let manager = ClusterManager::new(config, None, Some(cache_invalidation))
+            .await
+            .expect("ClusterManager::new should succeed with cache_invalidation but no Redis");
 
         // Verify the manager operates normally in single-node mode
         let room_id = RoomId::from_string("room1".to_string());
@@ -967,8 +983,14 @@ mod tests {
         };
 
         let result = manager.broadcast(event.clone());
-        assert_eq!(result.local_sent, 1, "Local broadcast should work in non-cluster mode");
-        assert!(!result.redis_sent, "Redis should not be used in non-cluster mode");
+        assert_eq!(
+            result.local_sent, 1,
+            "Local broadcast should work in non-cluster mode"
+        );
+        assert!(
+            !result.redis_sent,
+            "Redis should not be used in non-cluster mode"
+        );
 
         // Verify message received locally
         let received = rx.recv().await.expect("Should receive local message");
@@ -979,7 +1001,10 @@ mod tests {
 
         // Verify metrics show single-node mode
         let metrics = manager.metrics();
-        assert!(!metrics.redis_enabled, "Metrics should show Redis is not enabled");
+        assert!(
+            !metrics.redis_enabled,
+            "Metrics should show Redis is not enabled"
+        );
     }
 
     /// Test that ClusterManager works correctly when both Redis and
@@ -1057,10 +1082,16 @@ mod tests {
             .expect("ClusterManager::new should succeed");
 
         // Verify initial state: not quarantined
-        assert!(!manager.is_quarantined(), "Should start in non-quarantined state");
+        assert!(
+            !manager.is_quarantined(),
+            "Should start in non-quarantined state"
+        );
 
         let metrics = manager.metrics();
-        assert!(!metrics.is_quarantined, "Metrics should show non-quarantined state");
+        assert!(
+            !metrics.is_quarantined,
+            "Metrics should show non-quarantined state"
+        );
 
         // Set a leader elector (Disabled variant for testing)
         let elector = crate::leader::AnyLeaderElector::Disabled;
@@ -1085,7 +1116,10 @@ mod tests {
         };
 
         let result = manager.broadcast(event);
-        assert_eq!(result.local_sent, 1, "Broadcast should succeed in non-quarantined state");
+        assert_eq!(
+            result.local_sent, 1,
+            "Broadcast should succeed in non-quarantined state"
+        );
 
         manager.unsubscribe(&conn_id);
     }
@@ -1117,6 +1151,9 @@ mod tests {
         assert_eq!(metrics.total_rooms, 0);
         assert_eq!(metrics.total_connections, 0);
         assert!(!metrics.redis_enabled);
-        assert!(!metrics.is_quarantined, "Should not be quarantined initially");
+        assert!(
+            !metrics.is_quarantined,
+            "Should not be quarantined initially"
+        );
     }
 }

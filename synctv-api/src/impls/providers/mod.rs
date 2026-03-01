@@ -80,7 +80,7 @@ pub async fn get_provider_binds(
 /// Extract `instance_name` from a request field: empty string maps to `None`.
 ///
 /// Eliminates the repetitive 5-line block duplicated across all gRPC provider methods.
-#[must_use] 
+#[must_use]
 pub fn extract_instance_name(name: &str) -> Option<String> {
     if name.is_empty() {
         None

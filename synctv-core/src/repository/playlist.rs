@@ -2,11 +2,11 @@
 //!
 //! Design reference: /Volumes/workspace/rust/design/04-数据库设计.md §2.4.1
 
-use sqlx::{PgPool, FromRow};
 use crate::{
     models::{Playlist, PlaylistId, RoomId},
     Result,
 };
+use sqlx::{FromRow, PgPool};
 
 /// Playlist repository
 #[derive(Clone)]
@@ -15,7 +15,7 @@ pub struct PlaylistRepository {
 }
 
 impl PlaylistRepository {
-    #[must_use] 
+    #[must_use]
     pub const fn new(pool: PgPool) -> Self {
         Self { pool }
     }
@@ -29,7 +29,7 @@ impl PlaylistRepository {
                    created_at, updated_at, version
             FROM playlists
             WHERE id = $1
-            "
+            ",
         )
         .bind(id.as_str())
         .fetch_optional(&self.pool)
@@ -50,7 +50,7 @@ impl PlaylistRepository {
                    created_at, updated_at, version
             FROM playlists
             WHERE room_id = $1 AND parent_id IS NULL AND name = ''
-            "
+            ",
         )
         .bind(room_id.as_str())
         .fetch_one(&self.pool)
@@ -69,7 +69,7 @@ impl PlaylistRepository {
             FROM playlists
             WHERE parent_id = $1
             ORDER BY position ASC
-            "
+            ",
         )
         .bind(parent_id.as_str())
         .fetch_all(&self.pool)
@@ -85,7 +85,7 @@ impl PlaylistRepository {
         let count: i64 = sqlx::query_scalar(
             r"
             SELECT COUNT(*) FROM playlists WHERE parent_id = $1
-            "
+            ",
         )
         .bind(parent_id.as_str())
         .fetch_one(&self.pool)
@@ -110,7 +110,7 @@ impl PlaylistRepository {
             WHERE parent_id = $1
             ORDER BY position ASC
             LIMIT $2 OFFSET $3
-            "
+            ",
         )
         .bind(parent_id.as_str())
         .bind(limit)
@@ -133,7 +133,7 @@ impl PlaylistRepository {
             FROM playlists
             WHERE room_id = $1
             ORDER BY parent_id NULLS FIRST, position ASC
-            "
+            ",
         )
         .bind(room_id.as_str())
         .fetch_all(&self.pool)
@@ -163,7 +163,10 @@ impl PlaylistRepository {
             // when the table is empty (where FOR UPDATE cannot lock any rows).
             let mut tx = self.pool.begin().await?;
 
-            let parent_id_str = playlist.parent_id.as_ref().map(super::super::models::id::PlaylistId::as_str);
+            let parent_id_str = playlist
+                .parent_id
+                .as_ref()
+                .map(super::super::models::id::PlaylistId::as_str);
 
             // Derive a stable 64-bit advisory lock key from (room_id, parent_id).
             // We use a deterministic combination that minimizes collision probability
@@ -218,7 +221,7 @@ impl PlaylistRepository {
                 FROM playlists
                 WHERE room_id = $1
                   AND parent_id IS NOT DISTINCT FROM $2
-                "
+                ",
             )
             .bind(playlist.room_id.as_str())
             .bind(parent_id_str)
@@ -236,11 +239,16 @@ impl PlaylistRepository {
                 RETURNING id, room_id, creator_id, name, parent_id, position,
                           source_provider, source_config, provider_instance_name,
                           created_at, updated_at, version
-                "
+                ",
             )
             .bind(playlist.id.as_str())
             .bind(playlist.room_id.as_str())
-            .bind(playlist.creator_id.as_ref().map(super::super::models::id::UserId::as_str))
+            .bind(
+                playlist
+                    .creator_id
+                    .as_ref()
+                    .map(super::super::models::id::UserId::as_str),
+            )
             .bind(&playlist.name)
             .bind(parent_id_str)
             .bind(next_position)
@@ -256,7 +264,10 @@ impl PlaylistRepository {
         } else {
             // Explicit position provided by caller
             let source_provider_str = playlist.source_provider.as_deref();
-            let parent_id_str = playlist.parent_id.as_ref().map(super::super::models::id::PlaylistId::as_str);
+            let parent_id_str = playlist
+                .parent_id
+                .as_ref()
+                .map(super::super::models::id::PlaylistId::as_str);
             let row = sqlx::query(
                 r"
                 INSERT INTO playlists (id, room_id, creator_id, name, parent_id, position,
@@ -265,11 +276,16 @@ impl PlaylistRepository {
                 RETURNING id, room_id, creator_id, name, parent_id, position,
                           source_provider, source_config, provider_instance_name,
                           created_at, updated_at, version
-                "
+                ",
             )
             .bind(playlist.id.as_str())
             .bind(playlist.room_id.as_str())
-            .bind(playlist.creator_id.as_ref().map(super::super::models::id::UserId::as_str))
+            .bind(
+                playlist
+                    .creator_id
+                    .as_ref()
+                    .map(super::super::models::id::UserId::as_str),
+            )
             .bind(&playlist.name)
             .bind(parent_id_str)
             .bind(playlist.position)
@@ -293,7 +309,11 @@ impl PlaylistRepository {
     /// positions under concurrent inserts.
     ///
     /// Pass a non-negative position to use an explicit value.
-    pub async fn create_with_executor<'e, E>(&self, playlist: &Playlist, executor: E) -> Result<Playlist>
+    pub async fn create_with_executor<'e, E>(
+        &self,
+        playlist: &Playlist,
+        executor: E,
+    ) -> Result<Playlist>
     where
         E: sqlx::PgExecutor<'e>,
     {
@@ -310,7 +330,10 @@ impl PlaylistRepository {
         }
 
         let source_provider_str = playlist.source_provider.as_deref();
-        let parent_id_str = playlist.parent_id.as_ref().map(super::super::models::id::PlaylistId::as_str);
+        let parent_id_str = playlist
+            .parent_id
+            .as_ref()
+            .map(super::super::models::id::PlaylistId::as_str);
 
         let row = sqlx::query(
             r"
@@ -320,11 +343,16 @@ impl PlaylistRepository {
             RETURNING id, room_id, creator_id, name, parent_id, position,
                       source_provider, source_config, provider_instance_name,
                       created_at, updated_at, version
-            "
+            ",
         )
         .bind(playlist.id.as_str())
         .bind(playlist.room_id.as_str())
-        .bind(playlist.creator_id.as_ref().map(super::super::models::id::UserId::as_str))
+        .bind(
+            playlist
+                .creator_id
+                .as_ref()
+                .map(super::super::models::id::UserId::as_str),
+        )
         .bind(&playlist.name)
         .bind(parent_id_str)
         .bind(playlist.position)
@@ -396,7 +424,7 @@ impl PlaylistRepository {
             FROM playlists
             WHERE room_id = $1
               AND parent_id IS NOT DISTINCT FROM $2
-            "
+            ",
         )
         .bind(room_id.as_str())
         .bind(parent_id_str)
@@ -410,14 +438,18 @@ impl PlaylistRepository {
     ///
     /// **Warning:** This does NOT acquire a lock. For concurrent-safe position
     /// computation, use [`get_next_position_for_update`] within a transaction.
-    pub async fn get_next_position(&self, room_id: &RoomId, parent_id: Option<&PlaylistId>) -> Result<i32> {
+    pub async fn get_next_position(
+        &self,
+        room_id: &RoomId,
+        parent_id: Option<&PlaylistId>,
+    ) -> Result<i32> {
         let max_pos: Option<i32> = sqlx::query_scalar(
             r"
             SELECT MAX(position)
             FROM playlists
             WHERE room_id = $1
               AND parent_id IS NOT DISTINCT FROM $2
-            "
+            ",
         )
         .bind(room_id.as_str())
         .bind(parent_id.map(super::super::models::id::PlaylistId::as_str))
@@ -433,7 +465,11 @@ impl PlaylistRepository {
     /// does not match `expected_version`.
     ///
     /// On success, returns the updated playlist with incremented version.
-    pub async fn update_with_version(&self, playlist: &Playlist, expected_version: i32) -> Result<Playlist> {
+    pub async fn update_with_version(
+        &self,
+        playlist: &Playlist,
+        expected_version: i32,
+    ) -> Result<Playlist> {
         let source_provider_str = playlist.source_provider.as_deref();
         let row = sqlx::query(
             r"
@@ -444,7 +480,7 @@ impl PlaylistRepository {
             RETURNING id, room_id, creator_id, name, parent_id, position,
                       source_provider, source_config, provider_instance_name,
                       created_at, updated_at, version
-            "
+            ",
         )
         .bind(playlist.id.as_str())
         .bind(&playlist.name)
@@ -477,7 +513,7 @@ impl PlaylistRepository {
             RETURNING id, room_id, creator_id, name, parent_id, position,
                       source_provider, source_config, provider_instance_name,
                       created_at, updated_at, version
-            "
+            ",
         )
         .bind(playlist.id.as_str())
         .bind(&playlist.name)
@@ -525,13 +561,14 @@ impl PlaylistRepository {
                    created_at, updated_at, version
             FROM ancestors
             ORDER BY depth DESC
-            "
+            ",
         )
         .bind(playlist_id.as_str())
         .fetch_all(&self.pool)
         .await?;
 
-        rows.into_iter().map(|row| Ok(Playlist::from_row(&row)?)).collect()
+        rows.into_iter()
+            .map(|row| Ok(Playlist::from_row(&row)?))
+            .collect()
     }
-
 }

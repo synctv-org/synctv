@@ -13,10 +13,8 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use synctv_core::service::{AuditAction, AuditService, AuditTargetType};
 use synctv_core_testing::create_test_pool;
-use synctv_core::service::{
-    AuditService, AuditAction, AuditTargetType,
-};
 // ============================================================================
 // Test Infrastructure
 // ============================================================================
@@ -129,12 +127,11 @@ async fn test_audit_log_details_json_integrity() {
         .expect("Log should succeed");
 
     // Verify JSON is stored and retrieved correctly
-    let row: (serde_json::Value,) = sqlx::query_as(
-        "SELECT details FROM audit_logs WHERE actor_id = 'actor_json'",
-    )
-    .fetch_one(&pool)
-    .await
-    .expect("Query should succeed");
+    let row: (serde_json::Value,) =
+        sqlx::query_as("SELECT details FROM audit_logs WHERE actor_id = 'actor_json'")
+            .fetch_one(&pool)
+            .await
+            .expect("Query should succeed");
 
     assert_eq!(row.0["nested"]["deeply"]["value"], 42);
     assert_eq!(row.0["array"], serde_json::json!([1, 2, 3]));
@@ -169,12 +166,11 @@ async fn test_audit_log_created_at_timestamp() {
     let after = chrono::Utc::now();
 
     // Verify timestamp is within expected range
-    let row: (chrono::DateTime<chrono::Utc>,) = sqlx::query_as(
-        "SELECT created_at FROM audit_logs WHERE actor_id = 'actor_time'",
-    )
-    .fetch_one(&pool)
-    .await
-    .expect("Query should succeed");
+    let row: (chrono::DateTime<chrono::Utc>,) =
+        sqlx::query_as("SELECT created_at FROM audit_logs WHERE actor_id = 'actor_time'")
+            .fetch_one(&pool)
+            .await
+            .expect("Query should succeed");
 
     assert!(row.0 >= before, "created_at should be >= before");
     assert!(row.0 <= after, "created_at should be <= after");
@@ -221,12 +217,11 @@ async fn test_audit_log_multiple_actions_same_actor() {
     }
 
     // Verify all actions are logged
-    let count: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM audit_logs WHERE actor_id = 'multi_actor'",
-    )
-    .fetch_one(&pool)
-    .await
-    .expect("Query should succeed");
+    let count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM audit_logs WHERE actor_id = 'multi_actor'")
+            .fetch_one(&pool)
+            .await
+            .expect("Query should succeed");
 
     assert_eq!(count, actions.len() as i64, "All actions should be logged");
 
@@ -302,7 +297,11 @@ async fn test_dropped_count_starts_at_zero() {
     let pool = sqlx::PgPool::connect_lazy("postgresql://fake").unwrap();
     let (service, _handle) = AuditService::with_capacity(pool, 100);
 
-    assert_eq!(service.dropped_count(), 0, "Dropped count should start at 0");
+    assert_eq!(
+        service.dropped_count(),
+        0,
+        "Dropped count should start at 0"
+    );
 }
 
 // ============================================================================
@@ -368,12 +367,11 @@ async fn test_buffered_write_eventually_visible() {
     tokio::time::sleep(Duration::from_secs(6)).await;
 
     // Event should be visible in database
-    let count: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM audit_logs WHERE actor_id = 'buf_wr_actr'",
-    )
-    .fetch_one(&pool)
-    .await
-    .expect("Query should succeed");
+    let count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM audit_logs WHERE actor_id = 'buf_wr_actr'")
+            .fetch_one(&pool)
+            .await
+            .expect("Query should succeed");
 
     assert_eq!(count, 1, "Buffered event should eventually be written");
 }
@@ -401,17 +399,13 @@ async fn test_unbuffered_write_immediately_visible() {
         .expect("Unbuffered log should succeed");
 
     // No sleep needed - should be immediately visible
-    let count: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM audit_logs WHERE actor_id = 'unbuf_immed'",
-    )
-    .fetch_one(&pool)
-    .await
-    .expect("Query should succeed");
+    let count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM audit_logs WHERE actor_id = 'unbuf_immed'")
+            .fetch_one(&pool)
+            .await
+            .expect("Query should succeed");
 
-    assert_eq!(
-        count, 1,
-        "Unbuffered event should be immediately visible"
-    );
+    assert_eq!(count, 1, "Unbuffered event should be immediately visible");
 }
 
 // ============================================================================
@@ -459,12 +453,11 @@ async fn test_concurrent_audit_logging() {
     assert_eq!(success_count, 20, "All concurrent logs should succeed");
 
     // Verify all are in database
-    let count: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM audit_logs WHERE actor_id LIKE 'conc_act_%'",
-    )
-    .fetch_one(&pool)
-    .await
-    .expect("Query should succeed");
+    let count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM audit_logs WHERE actor_id LIKE 'conc_act_%'")
+            .fetch_one(&pool)
+            .await
+            .expect("Query should succeed");
 
     assert_eq!(count, 20, "All concurrent events should be stored");
 }
@@ -594,7 +587,11 @@ async fn test_all_target_types_are_logged() {
     assert_eq!(logged_types.len(), target_types.len());
 
     for ((logged,), (_, expected)) in logged_types.iter().zip(target_types.iter()) {
-        assert_eq!(logged, &Some(expected.to_string()), "Target type should match");
+        assert_eq!(
+            logged,
+            &Some(expected.to_string()),
+            "Target type should match"
+        );
     }
 }
 
@@ -733,12 +730,11 @@ async fn test_log_stream_kicked_without_reason() {
         .await
         .expect("Stream kick log should succeed");
 
-    let row: (serde_json::Value,) = sqlx::query_as(
-        "SELECT details FROM audit_logs WHERE actor_id = 'strm_norson'",
-    )
-    .fetch_one(&pool)
-    .await
-    .expect("Query should succeed");
+    let row: (serde_json::Value,) =
+        sqlx::query_as("SELECT details FROM audit_logs WHERE actor_id = 'strm_norson'")
+            .fetch_one(&pool)
+            .await
+            .expect("Query should succeed");
 
     assert_eq!(row.0["room_id"], "room_abc");
     assert_eq!(row.0["media_id"], "media_xyz");

@@ -31,9 +31,7 @@ pub fn validate_host(host: &str) -> Result<(), Status> {
 fn validate_host_static(host: &str) -> Result<(), Status> {
     match ssrf::check_url(host) {
         ssrf::SsrfCheckResult::Ok => Ok(()),
-        ssrf::SsrfCheckResult::Blocked(reason) => {
-            Err(Status::invalid_argument(reason))
-        }
+        ssrf::SsrfCheckResult::Blocked(reason) => Err(Status::invalid_argument(reason)),
     }
 }
 
@@ -59,7 +57,8 @@ pub async fn validate_host_with_dns(host: &str) -> Result<(), Status> {
         return Ok(());
     }
     // Also skip if it's a bracketed IPv6 literal
-    if url_host.starts_with('[') && url_host.ends_with(']')
+    if url_host.starts_with('[')
+        && url_host.ends_with(']')
         && url_host[1..url_host.len() - 1].parse::<IpAddr>().is_ok()
     {
         return Ok(());
@@ -71,9 +70,7 @@ pub async fn validate_host_with_dns(host: &str) -> Result<(), Status> {
 
     let addrs = tokio::net::lookup_host((url_host, port))
         .await
-        .map_err(|e| {
-            Status::invalid_argument(format!("DNS lookup failed for {url_host}: {e}"))
-        })?;
+        .map_err(|e| Status::invalid_argument(format!("DNS lookup failed for {url_host}: {e}")))?;
 
     let mut found = false;
     for addr in addrs {
@@ -337,30 +334,30 @@ mod tests {
     fn test_validate_provider_name_special_characters() {
         // Names with special characters should fail
         let invalid_names = vec![
-            "test<script>",     // HTML tags
-            "test>alert",       // > character
-            "test\"quote",      // Quote character
-            "test'apostrophe",  // Apostrophe
-            "test space",       // Space
-            "test/slash",       // Slash
-            "test\\backslash",  // Backslash
-            "test;drop",        // Semicolon
-            "test& amp",        // Ampersand
-            "test@email",       // @ symbol
-            "test!bang",        // Exclamation
-            "test#hash",        // Hash
-            "test$dollar",      // Dollar
-            "test%percent",     // Percent
-            "test*star",        // Asterisk
-            "test(paren)",      // Parentheses
-            "test+plus",        // Plus
-            "test=equals",      // Equals
-            "test[bracket]",    // Brackets
-            "test{brace}",      // Braces
-            "test|pipe",        // Pipe
-            "test,comma",       // Comma
-            "test.period",      // Period
-            "test:colon",       // Colon
+            "test<script>",    // HTML tags
+            "test>alert",      // > character
+            "test\"quote",     // Quote character
+            "test'apostrophe", // Apostrophe
+            "test space",      // Space
+            "test/slash",      // Slash
+            "test\\backslash", // Backslash
+            "test;drop",       // Semicolon
+            "test& amp",       // Ampersand
+            "test@email",      // @ symbol
+            "test!bang",       // Exclamation
+            "test#hash",       // Hash
+            "test$dollar",     // Dollar
+            "test%percent",    // Percent
+            "test*star",       // Asterisk
+            "test(paren)",     // Parentheses
+            "test+plus",       // Plus
+            "test=equals",     // Equals
+            "test[bracket]",   // Brackets
+            "test{brace}",     // Braces
+            "test|pipe",       // Pipe
+            "test,comma",      // Comma
+            "test.period",     // Period
+            "test:colon",      // Colon
         ];
         for invalid_name in invalid_names {
             let result = validate_provider_name(invalid_name);
@@ -374,10 +371,10 @@ mod tests {
     fn test_validate_provider_name_unicode() {
         // Unicode characters should be rejected
         let unicode_names = vec![
-            "测试provider",     // Chinese
-            "провайдер",        // Russian
-            "プロバイダー",     // Japanese
-            "provider🎉",       // Emoji
+            "测试provider", // Chinese
+            "провайдер",    // Russian
+            "プロバイダー", // Japanese
+            "provider🎉",   // Emoji
         ];
         for invalid_name in unicode_names {
             let result = validate_provider_name(invalid_name);

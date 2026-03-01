@@ -16,18 +16,18 @@ fn test_logout_requires_credentials() {
     let client = EmbyClient::new("https://emby.example.com").unwrap();
 
     // The client should indicate it has no credentials
-    assert!(!client.has_credentials(), "Client should not have credentials");
+    assert!(
+        !client.has_credentials(),
+        "Client should not have credentials"
+    );
 }
 
 /// Test that client with credentials reports `has_credentials` correctly
 #[test]
 fn test_client_with_credentials() {
-    let client = EmbyClient::with_credentials(
-        "https://emby.example.com",
-        "test_token",
-        "test_user_id",
-    )
-    .unwrap();
+    let client =
+        EmbyClient::with_credentials("https://emby.example.com", "test_token", "test_user_id")
+            .unwrap();
 
     assert!(client.has_credentials(), "Client should have credentials");
 }
@@ -41,12 +41,9 @@ fn test_delete_active_encodings_rejects_empty_session_id() {
     // (which is internal, so we verify via the error type)
 
     // Create a client with valid credentials
-    let client = EmbyClient::with_credentials(
-        "https://emby.example.com",
-        "test_token",
-        "test_user_id",
-    )
-    .unwrap();
+    let client =
+        EmbyClient::with_credentials("https://emby.example.com", "test_token", "test_user_id")
+            .unwrap();
 
     // The client should have credentials set
     assert!(client.has_credentials());
@@ -56,12 +53,9 @@ fn test_delete_active_encodings_rejects_empty_session_id() {
 #[test]
 fn test_report_playback_start_validates_item_id() {
     // Client with credentials
-    let client = EmbyClient::with_credentials(
-        "https://emby.example.com",
-        "test_token",
-        "test_user_id",
-    )
-    .unwrap();
+    let client =
+        EmbyClient::with_credentials("https://emby.example.com", "test_token", "test_user_id")
+            .unwrap();
 
     assert!(client.has_credentials());
 }
@@ -69,12 +63,9 @@ fn test_report_playback_start_validates_item_id() {
 /// Test that `report_playback_progress` validates `item_id`
 #[test]
 fn test_report_playback_progress_validates_item_id() {
-    let client = EmbyClient::with_credentials(
-        "https://emby.example.com",
-        "test_token",
-        "test_user_id",
-    )
-    .unwrap();
+    let client =
+        EmbyClient::with_credentials("https://emby.example.com", "test_token", "test_user_id")
+            .unwrap();
 
     assert!(client.has_credentials());
 }
@@ -82,12 +73,9 @@ fn test_report_playback_progress_validates_item_id() {
 /// Test that `report_playback_stop` validates `item_id`
 #[test]
 fn test_report_playback_stop_validates_item_id() {
-    let client = EmbyClient::with_credentials(
-        "https://emby.example.com",
-        "test_token",
-        "test_user_id",
-    )
-    .unwrap();
+    let client =
+        EmbyClient::with_credentials("https://emby.example.com", "test_token", "test_user_id")
+            .unwrap();
 
     assert!(client.has_credentials());
 }
@@ -155,8 +143,8 @@ fn test_emby_error_has_network_variant() {
 /// Test that `EmbyError` is Send + Sync (required for async)
 #[test]
 fn test_emby_error_is_send_sync() {
-    use synctv_media_providers::EmbyError;
     use std::sync::Arc;
+    use synctv_media_providers::EmbyError;
 
     fn assert_send_sync<T: Send + Sync>() {}
     assert_send_sync::<EmbyError>();
@@ -178,7 +166,8 @@ fn test_item_id_validation_rejects_path_traversal() {
     for id in &valid_ids {
         // These should be valid formats
         assert!(
-            id.chars().all(|c| c.is_alphanumeric() || c == '-' || c == '_'),
+            id.chars()
+                .all(|c| c.is_alphanumeric() || c == '-' || c == '_'),
             "ID '{id}' should be valid"
         );
     }
@@ -188,7 +177,9 @@ fn test_item_id_validation_rejects_path_traversal() {
     for id in &invalid_ids {
         // These should be invalid
         let is_invalid = id.is_empty()
-            || !id.chars().all(|c| c.is_alphanumeric() || c == '-' || c == '_');
+            || !id
+                .chars()
+                .all(|c| c.is_alphanumeric() || c == '-' || c == '_');
         assert!(is_invalid, "ID '{id}' should be invalid");
     }
 }
@@ -251,7 +242,10 @@ async fn test_logout_returns_error_on_401() {
     let client = EmbyClient::with_credentials(server.uri(), "token123", "user-uuid-123").unwrap();
     let result = client.logout().await;
 
-    assert!(result.is_err(), "logout should return error on 401, got: {result:?}");
+    assert!(
+        result.is_err(),
+        "logout should return error on 401, got: {result:?}"
+    );
     let err = result.unwrap_err();
     let err_msg = err.to_string();
     assert!(
@@ -275,7 +269,10 @@ async fn test_logout_returns_error_on_500() {
     let client = EmbyClient::with_credentials(server.uri(), "token123", "user-uuid-123").unwrap();
     let result = client.logout().await;
 
-    assert!(result.is_err(), "logout should return error on 500, got: {result:?}");
+    assert!(
+        result.is_err(),
+        "logout should return error on 500, got: {result:?}"
+    );
 }
 
 /// Test that `delete_active_encodings` returns an error on non-success response.

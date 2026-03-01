@@ -1,6 +1,6 @@
 use std::time::SystemTime;
 
-#[must_use] 
+#[must_use]
 pub fn current_time() -> u32 {
     let duration = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH);
 

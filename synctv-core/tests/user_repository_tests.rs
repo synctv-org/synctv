@@ -5,15 +5,13 @@
 //! Run with: cargo test --test `user_repository_tests`
 #![allow(clippy::unwrap_used)]
 
-use synctv_core_testing::create_test_pool;
+use chrono::Utc;
 use synctv_core::{
-    models::{
-        User, UserId, UserRole, UserStatus,
-    },
+    models::{User, UserId, UserRole, UserStatus},
     repository::UserRepository,
     Error,
 };
-use chrono::Utc;
+use synctv_core_testing::create_test_pool;
 fn make_user(username: &str) -> User {
     let now = Utc::now();
     User {
@@ -56,7 +54,10 @@ async fn test_update_stale_version_returns_optimistic_lock_conflict() {
     let mut stale_user = user.clone();
     stale_user.username = "user_stale_v2".to_string();
     stale_user.email = Some("user_stale_v2@test.com".to_string());
-    let err = repo.update(&stale_user, original_version).await.unwrap_err();
+    let err = repo
+        .update(&stale_user, original_version)
+        .await
+        .unwrap_err();
     assert!(
         matches!(err, Error::OptimisticLockConflict),
         "Expected OptimisticLockConflict, got: {err:?}"
@@ -103,7 +104,10 @@ async fn test_update_password_deleted_user_returns_not_found() {
     repo.delete(&user.id).await.unwrap();
 
     // Trying to update password on deleted user should return NotFound
-    let err = repo.update_password(&user.id, "new_hash").await.unwrap_err();
+    let err = repo
+        .update_password(&user.id, "new_hash")
+        .await
+        .unwrap_err();
     assert!(
         matches!(err, Error::NotFound(_)),
         "Expected NotFound for deleted user password update, got: {err:?}"

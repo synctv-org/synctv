@@ -58,9 +58,7 @@ impl TestRedis {
                     }
                 }
                 Err(_) if retries < 60 => {}
-                Err(e) => panic!(
-                    "Redis not ready after {retries} retries: {e}"
-                ),
+                Err(e) => panic!("Redis not ready after {retries} retries: {e}"),
             }
             retries += 1;
             tokio::time::sleep(Duration::from_millis(500)).await;
@@ -71,13 +69,15 @@ impl TestRedis {
             _redis: redis_container,
         }
     }
-
 }
 
 /// Helper: create a `ClusterManager` connected to the given Redis URL.
 pub async fn create_node(redis_url: &str, node_id: &str) -> ClusterManager {
     let client = redis::Client::open(redis_url).expect("Failed to open Redis client");
-    let conn = client.get_connection_manager().await.expect("Failed to get ConnectionManager");
+    let conn = client
+        .get_connection_manager()
+        .await
+        .expect("Failed to get ConnectionManager");
     let config = ClusterConfig {
         redis_client: Some(client),
         redis_conn: Some(conn),
@@ -97,9 +97,16 @@ pub async fn create_node(redis_url: &str, node_id: &str) -> ClusterManager {
 
 /// Helper: create a `ClusterManager` with custom configuration
 #[allow(dead_code)]
-pub async fn create_node_with_config(redis_url: &str, node_id: &str, mut config_modifier: impl FnMut(&mut ClusterConfig)) -> ClusterManager {
+pub async fn create_node_with_config(
+    redis_url: &str,
+    node_id: &str,
+    mut config_modifier: impl FnMut(&mut ClusterConfig),
+) -> ClusterManager {
     let client = redis::Client::open(redis_url).expect("Failed to open Redis client");
-    let conn = client.get_connection_manager().await.expect("Failed to get ConnectionManager");
+    let conn = client
+        .get_connection_manager()
+        .await
+        .expect("Failed to get ConnectionManager");
     let mut config = ClusterConfig {
         redis_client: Some(client),
         redis_conn: Some(conn),

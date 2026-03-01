@@ -53,7 +53,7 @@ pub struct ProviderInstance {
 
 impl ProviderInstance {
     /// Check if this instance supports a specific media provider type
-    #[must_use] 
+    #[must_use]
     pub fn supports_provider(&self, provider: &str) -> bool {
         self.providers.contains(&provider.to_string())
     }
@@ -109,12 +109,12 @@ impl UserProviderCredential {
     /// Generate `server_id` for Alist/Emby from host URL
     #[must_use]
     pub fn generate_server_id(host: &str) -> String {
-        use sha2::{Sha256, Digest};
+        use sha2::{Digest, Sha256};
         format!("{:x}", Sha256::digest(host.as_bytes()))
     }
 
     /// Check if this credential has expired
-    #[must_use] 
+    #[must_use]
     pub fn is_expired(&self) -> bool {
         if let Some(expires_at) = self.expires_at {
             expires_at <= Utc::now()
@@ -124,7 +124,7 @@ impl UserProviderCredential {
     }
 
     /// Check if this credential is still valid (not expired)
-    #[must_use] 
+    #[must_use]
     pub fn is_valid(&self) -> bool {
         !self.is_expired()
     }
@@ -161,13 +161,13 @@ pub enum ProviderCredential {
 
 impl ProviderCredential {
     /// Create Bilibili credential from cookies map
-    #[must_use] 
+    #[must_use]
     pub const fn bilibili(cookies: HashMap<String, String>) -> Self {
         Self::Bilibili { cookies }
     }
 
     /// Create Alist credential
-    #[must_use] 
+    #[must_use]
     pub const fn alist(host: String, username: String, password: String) -> Self {
         Self::Alist {
             host,
@@ -177,7 +177,7 @@ impl ProviderCredential {
     }
 
     /// Create Emby credential
-    #[must_use] 
+    #[must_use]
     pub const fn emby(host: String, api_key: String, emby_user_id: String) -> Self {
         Self::Emby {
             host,
@@ -187,7 +187,7 @@ impl ProviderCredential {
     }
 
     /// Get the media provider type name
-    #[must_use] 
+    #[must_use]
     pub const fn provider_type(&self) -> &'static str {
         match self {
             Self::Bilibili { .. } => "bilibili",

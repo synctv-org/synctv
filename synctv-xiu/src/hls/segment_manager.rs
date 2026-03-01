@@ -66,8 +66,11 @@ impl SegmentManager {
     /// to delete expired segments. The task stops when the `CancellationToken` is cancelled.
     ///
     /// Returns the `JoinHandle` so callers can wait for graceful shutdown or abort if needed.
-    #[must_use] 
-    pub fn start_cleanup_task(self: Arc<Self>, shutdown_token: CancellationToken) -> tokio::task::JoinHandle<()> {
+    #[must_use]
+    pub fn start_cleanup_task(
+        self: Arc<Self>,
+        shutdown_token: CancellationToken,
+    ) -> tokio::task::JoinHandle<()> {
         let manager = Arc::clone(&self);
         tokio::spawn(async move {
             manager.run_cleanup_loop(shutdown_token, None).await;
@@ -89,7 +92,9 @@ impl SegmentManager {
     ) -> tokio::task::JoinHandle<()> {
         let manager = Arc::clone(&self);
         tokio::spawn(async move {
-            manager.run_cleanup_loop(shutdown_token, Some(registry)).await;
+            manager
+                .run_cleanup_loop(shutdown_token, Some(registry))
+                .await;
         })
     }
 
@@ -127,14 +132,18 @@ impl SegmentManager {
                             if deleted > 0 {
                                 tracing::info!(
                                     "Priority cleanup: deleted {} segments for marked stream {}/{}",
-                                    deleted, app_name, stream_name
+                                    deleted,
+                                    app_name,
+                                    stream_name
                                 );
                             }
                         }
                         Err(e) => {
                             tracing::warn!(
                                 "Priority cleanup failed for {}/{}: {}",
-                                app_name, stream_name, e
+                                app_name,
+                                stream_name,
+                                e
                             );
                         }
                     }
@@ -188,8 +197,15 @@ impl SegmentManager {
     ///
     /// # Returns
     /// Number of segments deleted
-    pub async fn cleanup_stream(&self, app_name: &str, stream_name: &str) -> std::io::Result<usize> {
-        let deleted = self.storage.delete_app_stream(app_name, stream_name).await?;
+    pub async fn cleanup_stream(
+        &self,
+        app_name: &str,
+        stream_name: &str,
+    ) -> std::io::Result<usize> {
+        let deleted = self
+            .storage
+            .delete_app_stream(app_name, stream_name)
+            .await?;
         if deleted > 0 {
             tracing::info!(
                 "Cleaned up {} segments for stream {}/{}",
@@ -214,10 +230,22 @@ mod tests {
         let storage = Arc::new(MemoryStorage::new());
 
         // Write some segments
-        storage.write("live", "room_123", "segment_0", Bytes::from_static(b"data0"))
+        storage
+            .write(
+                "live",
+                "room_123",
+                "segment_0",
+                Bytes::from_static(b"data0"),
+            )
             .await
             .unwrap();
-        storage.write("live", "room_123", "segment_1", Bytes::from_static(b"data1"))
+        storage
+            .write(
+                "live",
+                "room_123",
+                "segment_1",
+                Bytes::from_static(b"data1"),
+            )
             .await
             .unwrap();
 
@@ -235,9 +263,7 @@ mod tests {
         let _manager = SegmentManager::new(storage.clone(), config);
 
         // Manual cleanup
-        let deleted = storage.cleanup(Duration::from_millis(50))
-            .await
-            .unwrap();
+        let deleted = storage.cleanup(Duration::from_millis(50)).await.unwrap();
 
         assert_eq!(deleted, 2);
         assert_eq!(storage.key_count().await, 0);
@@ -248,10 +274,22 @@ mod tests {
         let storage = Arc::new(MemoryStorage::new());
 
         // Write segments for two rooms
-        storage.write("live", "room_123", "segment_0", Bytes::from_static(b"data0"))
+        storage
+            .write(
+                "live",
+                "room_123",
+                "segment_0",
+                Bytes::from_static(b"data0"),
+            )
             .await
             .unwrap();
-        storage.write("live", "room_456", "segment_0", Bytes::from_static(b"data1"))
+        storage
+            .write(
+                "live",
+                "room_456",
+                "segment_0",
+                Bytes::from_static(b"data1"),
+            )
             .await
             .unwrap();
 
@@ -265,7 +303,13 @@ mod tests {
 
         // Both segments are deleted since they're expired
         assert_eq!(deleted, 2);
-        assert!(!storage.exists("live", "room_123", "segment_0").await.unwrap());
-        assert!(!storage.exists("live", "room_456", "segment_0").await.unwrap());
+        assert!(!storage
+            .exists("live", "room_123", "segment_0")
+            .await
+            .unwrap());
+        assert!(!storage
+            .exists("live", "room_456", "segment_0")
+            .await
+            .unwrap());
     }
 }

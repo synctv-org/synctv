@@ -114,6 +114,9 @@ mod tests {
     fn test_crc32_empty() {
         let payload = BytesMut::new();
         let crc = gen_crc32(0xFFFFFFFF, payload);
-        assert_eq!(crc, 0xFFFFFFFF, "CRC32 of empty data should equal initial value");
+        assert_eq!(
+            crc, 0xFFFFFFFF,
+            "CRC32 of empty data should equal initial value"
+        );
     }
 }

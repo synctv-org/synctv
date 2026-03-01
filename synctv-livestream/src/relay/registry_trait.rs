@@ -2,9 +2,9 @@
 //
 // This trait allows mocking StreamRegistry in tests without requiring Redis
 
-use async_trait::async_trait;
-use anyhow::Result;
 use super::registry::{PublisherInfo, StreamRegistry};
+use anyhow::Result;
+use async_trait::async_trait;
 
 /// `StreamRegistry` trait for publisher registration
 #[async_trait]
@@ -35,7 +35,12 @@ pub trait StreamRegistryTrait: Send + Sync {
 
     /// Refresh TTL for a publisher (called by heartbeat).
     /// `user_id` is used to also refresh the user reverse-index TTL (pass "" to skip).
-    async fn refresh_publisher_ttl(&self, room_id: &str, media_id: &str, user_id: &str) -> Result<()>;
+    async fn refresh_publisher_ttl(
+        &self,
+        room_id: &str,
+        media_id: &str,
+        user_id: &str,
+    ) -> Result<()>;
 
     /// Unregister a publisher
     async fn unregister_publisher(&self, room_id: &str, media_id: &str) -> Result<()>;
@@ -54,7 +59,8 @@ pub trait StreamRegistryTrait: Send + Sync {
     /// override for a more efficient query.
     async fn list_streams_for_room(&self, room_id: &str) -> Result<Vec<String>> {
         let all = self.list_active_streams().await?;
-        Ok(all.into_iter()
+        Ok(all
+            .into_iter()
             .filter(|(rid, _)| rid == room_id)
             .map(|(_, media_id)| media_id)
             .collect())
@@ -99,10 +105,23 @@ impl StreamRegistryTrait for StreamRegistry {
         user_id: &str,
         grpc_address: &str,
     ) -> Result<bool> {
-        Self::try_register_publisher_with_user(self, room_id, media_id, node_id, user_id, grpc_address).await
+        Self::try_register_publisher_with_user(
+            self,
+            room_id,
+            media_id,
+            node_id,
+            user_id,
+            grpc_address,
+        )
+        .await
     }
 
-    async fn refresh_publisher_ttl(&self, room_id: &str, media_id: &str, user_id: &str) -> Result<()> {
+    async fn refresh_publisher_ttl(
+        &self,
+        room_id: &str,
+        media_id: &str,
+        user_id: &str,
+    ) -> Result<()> {
         Self::refresh_publisher_ttl_with_user(self, room_id, media_id, user_id).await
     }
 

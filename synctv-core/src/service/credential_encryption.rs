@@ -3,14 +3,14 @@
 //! Provides encryption and decryption for user provider credentials stored in the database.
 //! Uses AES-256-GCM authenticated encryption to protect sensitive credential data at rest.
 
-use std::sync::Arc;
+use aes_gcm::aead::rand_core::RngCore;
 use aes_gcm::{
     aead::{Aead, KeyInit, OsRng},
     Aes256Gcm, Key, Nonce,
 };
-use aes_gcm::aead::rand_core::RngCore;
+use std::sync::Arc;
 
-use crate::{Error, Result, InternalExt};
+use crate::{Error, InternalExt, Result};
 
 /// AES-256-GCM nonce size (96 bits / 12 bytes)
 const NONCE_SIZE: usize = 12;
@@ -60,7 +60,9 @@ impl CredentialEncryption {
         }
         let key = Key::<Aes256Gcm>::from_slice(key_bytes);
         let cipher = Aes256Gcm::new(key);
-        Ok(Self { cipher: Arc::new(cipher) })
+        Ok(Self {
+            cipher: Arc::new(cipher),
+        })
     }
 
     /// Create from a hex-encoded key string
@@ -68,8 +70,7 @@ impl CredentialEncryption {
     /// # Arguments
     /// * `hex_key` - 64-character hex string representing a 32-byte key
     pub fn from_hex_key(hex_key: &str) -> Result<Self> {
-        let key_bytes = hex::decode(hex_key)
-            .internal_with_err("Invalid hex key")?;
+        let key_bytes = hex::decode(hex_key).internal_with_err("Invalid hex key")?;
         Self::new(&key_bytes)
     }
 
@@ -87,7 +88,9 @@ impl CredentialEncryption {
         let nonce = Nonce::from_slice(&nonce_bytes);
 
         // Encrypt
-        let ciphertext = self.cipher.encrypt(nonce, plaintext_bytes.as_ref())
+        let ciphertext = self
+            .cipher
+            .encrypt(nonce, plaintext_bytes.as_ref())
             .internal_with_err("Credential encryption failed")?;
 
         // Prepend version byte + nonce to ciphertext and encode as base64
@@ -108,11 +111,14 @@ impl CredentialEncryption {
     pub fn decrypt(&self, stored: &str) -> Result<serde_json::Value> {
         if let Some(encoded) = stored.strip_prefix(ENCRYPTED_PREFIX) {
             // Encrypted format
-            let combined = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, encoded)
-                .internal_with_err("Invalid base64 in encrypted credential")?;
+            let combined =
+                base64::Engine::decode(&base64::engine::general_purpose::STANDARD, encoded)
+                    .internal_with_err("Invalid base64 in encrypted credential")?;
 
             if combined.len() < 1 + NONCE_SIZE {
-                return Err(Error::Internal("Encrypted credential data too short".to_string()));
+                return Err(Error::Internal(
+                    "Encrypted credential data too short".to_string(),
+                ));
             }
 
             let version = combined[0];
@@ -126,15 +132,17 @@ impl CredentialEncryption {
             let (nonce_bytes, ciphertext) = combined[1..].split_at(NONCE_SIZE);
             let nonce = Nonce::from_slice(nonce_bytes);
 
-            let plaintext = self.cipher.decrypt(nonce, ciphertext)
-                .map_err(|_| Error::Internal("Credential decryption failed (wrong key or corrupted data)".to_string()))?;
+            let plaintext = self.cipher.decrypt(nonce, ciphertext).map_err(|_| {
+                Error::Internal(
+                    "Credential decryption failed (wrong key or corrupted data)".to_string(),
+                )
+            })?;
 
             serde_json::from_slice(&plaintext)
                 .internal_with_err("Decrypted credential is not valid JSON")
         } else {
             // Plaintext JSON (backward compatibility)
-            serde_json::from_str(stored)
-                .internal_with_err("Credential data is not valid JSON")
+            serde_json::from_str(stored).internal_with_err("Credential data is not valid JSON")
         }
     }
 
@@ -171,10 +179,9 @@ mod tests {
     fn test_key() -> Vec<u8> {
         // 32 bytes for AES-256
         vec![
-            0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07,
-            0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f,
-            0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17,
-            0x18, 0x19, 0x1a, 0x1b, 0x1c, 0x1d, 0x1e, 0x1f,
+            0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d,
+            0x0e, 0x0f, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19, 0x1a, 0x1b,
+            0x1c, 0x1d, 0x1e, 0x1f,
         ]
     }
 
@@ -231,7 +238,9 @@ mod tests {
     fn test_is_encrypted() {
         assert!(CredentialEncryption::is_encrypted(&json!("enc:AAAA")));
         assert!(!CredentialEncryption::is_encrypted(&json!("not encrypted")));
-        assert!(!CredentialEncryption::is_encrypted(&json!({"key": "value"})));
+        assert!(!CredentialEncryption::is_encrypted(
+            &json!({"key": "value"})
+        ));
     }
 
     #[test]

@@ -71,35 +71,37 @@
 //!
 //! The `invalidate_room_caches()` method handles all three types appropriately.
 
-use sqlx::PgPool;
 use chrono::{DateTime, Utc};
 use rand::RngExt;
+use sqlx::PgPool;
 use std::net::IpAddr;
 
 use crate::{
     cache::CacheInvalidationService,
     models::{
-        Room, RoomId, RoomMember, RoomSettings, RoomStatus, RoomWithCount, UserId,
-        PermissionBits, RoomRole, MemberStatus, RoomPlaybackState, Media, MediaId,
-        Playlist, PlaylistId, RoomListQuery, ChatMessage, PageParams,
+        ChatMessage, Media, MediaId, MemberStatus, PageParams, PermissionBits, Playlist,
+        PlaylistId, Room, RoomId, RoomListQuery, RoomMember, RoomPlaybackState, RoomRole,
+        RoomSettings, RoomStatus, RoomWithCount, UserId,
     },
-    repository::{RoomRepository, RoomMemberRepository, MediaRepository, PlaylistRepository, RoomPlaybackStateRepository, ChatRepository, RoomSettingsRepository},
+    repository::{
+        ChatRepository, MediaRepository, PlaylistRepository, RoomMemberRepository,
+        RoomPlaybackStateRepository, RoomRepository, RoomSettingsRepository,
+    },
     service::{
+        audit::{AuditAction, AuditService, AuditTargetType},
         auth::password::{hash_password, verify_password},
-        audit::{AuditService, AuditAction, AuditTargetType},
-        permission::PermissionService,
-        member::MemberService,
         media::MediaService,
-        playlist::PlaylistService,
-        playback::PlaybackService,
+        member::MemberService,
         notification::NotificationService,
+        permission::PermissionService,
+        playback::PlaybackService,
+        playlist::PlaylistService,
         user::UserService,
         ProvidersManager,
     },
-    Error, Result, InternalExt,
+    Error, InternalExt, Result,
 };
 use std::sync::Arc;
-
 
 /// Room service for business logic
 ///
@@ -188,13 +190,17 @@ impl RoomService {
     /// Also propagates to the inner `MemberService` so that permission/role
     /// changes are broadcast to other replicas.
     pub fn set_cache_invalidation(&mut self, service: Arc<CacheInvalidationService>) {
-        self.member_service.set_cache_invalidation(Arc::clone(&service));
+        self.member_service
+            .set_cache_invalidation(Arc::clone(&service));
         self.cache_invalidation = Some(service);
     }
 
     /// Set the cluster broadcaster on the inner playback service for cross-replica sync.
     /// Uses interior mutability so this can be called through `Arc<RoomService>`.
-    pub fn set_playback_cluster_broadcaster(&self, broadcaster: Arc<dyn crate::service::PlaybackBroadcaster>) {
+    pub fn set_playback_cluster_broadcaster(
+        &self,
+        broadcaster: Arc<dyn crate::service::PlaybackBroadcaster>,
+    ) {
         self.playback_service.set_cluster_broadcaster(broadcaster);
     }
 
@@ -213,7 +219,9 @@ impl RoomService {
         let media_repo = MediaRepository::new(pool.clone());
         let playlist_repo = PlaylistRepository::new(pool.clone());
         let playback_repo = RoomPlaybackStateRepository::new(pool.clone());
-        let provider_instance_repo = Arc::new(crate::repository::ProviderInstanceRepository::new(pool.clone()));
+        let provider_instance_repo = Arc::new(crate::repository::ProviderInstanceRepository::new(
+            pool.clone(),
+        ));
         let chat_repo = ChatRepository::new(pool.clone());
 
         // Initialize permission service with caching
@@ -227,13 +235,22 @@ impl RoomService {
         permission_service.set_room_settings_repo(room_settings_repo.clone());
 
         // Initialize provider instance manager and providers manager
-        let provider_instance_manager = Arc::new(crate::service::RemoteProviderManager::new(provider_instance_repo, None, None));
+        let provider_instance_manager = Arc::new(crate::service::RemoteProviderManager::new(
+            provider_instance_repo,
+            None,
+            None,
+        ));
         let providers_manager = Arc::new(ProvidersManager::new(provider_instance_manager));
 
         // Initialize domain services
-        let mut member_service = MemberService::new(member_repo.clone(), room_repo.clone(), permission_service.clone());
+        let mut member_service = MemberService::new(
+            member_repo.clone(),
+            room_repo.clone(),
+            permission_service.clone(),
+        );
         member_service.set_room_settings_repo(room_settings_repo.clone());
-        let playlist_service = PlaylistService::new(playlist_repo.clone(), permission_service.clone());
+        let playlist_service =
+            PlaylistService::new(playlist_repo.clone(), permission_service.clone());
         let media_service = MediaService::new(
             media_repo.clone(),
             playlist_repo.clone(),
@@ -241,7 +258,12 @@ impl RoomService {
             providers_manager,
         );
         let notification_service = NotificationService::default();
-        let mut playback_service = PlaybackService::new(playback_repo.clone(), permission_service.clone(), media_service.clone(), media_repo);
+        let mut playback_service = PlaybackService::new(
+            playback_repo.clone(),
+            permission_service.clone(),
+            media_service.clone(),
+            media_repo,
+        );
         playback_service.set_notification_service(notification_service.clone());
 
         Self {
@@ -296,16 +318,19 @@ impl RoomService {
         details: serde_json::Value,
     ) {
         if let Some(ref audit) = self.audit_service {
-            if let Err(e) = audit.log(
-                actor_id.as_str().to_string(),
-                String::new(),
-                action,
-                target_type,
-                target_id,
-                details,
-                None,
-                None,
-            ).await {
+            if let Err(e) = audit
+                .log(
+                    actor_id.as_str().to_string(),
+                    String::new(),
+                    action,
+                    target_type,
+                    target_id,
+                    details,
+                    None,
+                    None,
+                )
+                .await
+            {
                 tracing::warn!(error = %e, "Failed to write audit log from RoomService");
             }
         }
@@ -332,19 +357,23 @@ impl RoomService {
         // Acquire distributed lock to prevent duplicate creation by the same user
         if let Some(ref lock) = self.distributed_lock {
             let lock_key = format!("create_room:{}", created_by.as_str());
-            return lock.with_lock(&lock_key, Self::CREATE_ROOM_LOCK_TTL_SECS, || {
-                let name = name.clone();
-                let description = description.clone();
-                let created_by = created_by.clone();
-                let password = password.clone();
-                let settings = settings.clone();
-                async move {
-                    self.do_create_room(name, description, created_by, password, settings).await
-                }
-            }).await;
+            return lock
+                .with_lock(&lock_key, Self::CREATE_ROOM_LOCK_TTL_SECS, || {
+                    let name = name.clone();
+                    let description = description.clone();
+                    let created_by = created_by.clone();
+                    let password = password.clone();
+                    let settings = settings.clone();
+                    async move {
+                        self.do_create_room(name, description, created_by, password, settings)
+                            .await
+                    }
+                })
+                .await;
         }
 
-        self.do_create_room(name, description, created_by, password, settings).await
+        self.do_create_room(name, description, created_by, password, settings)
+            .await
     }
 
     /// Internal room creation implementation
@@ -371,12 +400,15 @@ impl RoomService {
         // Validate description length (character count for Unicode safety)
         if description.chars().count() > 500 {
             tracing::warn!(user_id = %created_by, desc_len = description.chars().count(), "Attempted to create room with description too long");
-            return Err(Error::InvalidInput("Room description too long (max 500 characters)".to_string()));
+            return Err(Error::InvalidInput(
+                "Room description too long (max 500 characters)".to_string(),
+            ));
         }
 
         // Build settings
         let mut room_settings = settings.unwrap_or_default();
-        room_settings.require_password = crate::models::room_settings::RequirePassword(password.is_some());
+        room_settings.require_password =
+            crate::models::room_settings::RequirePassword(password.is_some());
 
         // Hash password outside the transaction (CPU-intensive bcrypt work)
         let pwd_hash = if let Some(ref pwd) = password {
@@ -386,7 +418,8 @@ impl RoomService {
         };
 
         // Determine initial room status based on create_room_need_review setting
-        let need_review = self.settings_registry
+        let need_review = self
+            .settings_registry
             .as_ref()
             .is_some_and(|r| r.create_room_need_review.get().unwrap_or(false));
         let initial_status = if need_review {
@@ -425,7 +458,11 @@ impl RoomService {
             .await?;
 
         // 4. Add creator as member with full permissions
-        let member = RoomMember::new(created_room.id.clone(), created_by.clone(), RoomRole::Creator);
+        let member = RoomMember::new(
+            created_room.id.clone(),
+            created_by.clone(),
+            RoomRole::Creator,
+        );
         let created_member = self.member_repo.add_with_executor(&member, &mut tx).await?;
 
         // 5. Create root playlist
@@ -443,10 +480,14 @@ impl RoomService {
             updated_at: chrono::Utc::now(),
             version: 0,
         };
-        self.playlist_repo.create_with_executor(&root_playlist, &mut *tx).await?;
+        self.playlist_repo
+            .create_with_executor(&root_playlist, &mut *tx)
+            .await?;
 
         // 6. Initialize playback state
-        self.playback_repo.create_or_get_with_executor(&created_room.id, &mut tx).await?;
+        self.playback_repo
+            .create_or_get_with_executor(&created_room.id, &mut tx)
+            .await?;
 
         // Commit — all or nothing
         tx.commit().await?;
@@ -461,7 +502,9 @@ impl RoomService {
         crate::metrics::http::ROOMS_ACTIVE.inc();
 
         // Invalidate permission cache outside transaction
-        self.permission_service.invalidate_cache(&created_room.id, &created_by).await;
+        self.permission_service
+            .invalidate_cache(&created_room.id, &created_by)
+            .await;
 
         Ok((created_room, created_member))
     }
@@ -509,7 +552,9 @@ impl RoomService {
         // Check if user is banned from this room
         if ctx.is_banned {
             tracing::warn!(room_id = %room_id, user_id = %user_id, "Banned user attempted to join room");
-            return Err(Error::Authorization("You are banned from this room".to_string()));
+            return Err(Error::Authorization(
+                "You are banned from this room".to_string(),
+            ));
         }
 
         // Check password if required (CPU-intensive bcrypt, done before lock).
@@ -621,7 +666,8 @@ impl RoomService {
         // rejects the join if the room is at capacity.
         use crate::service::member::AddMemberOptions;
         let options = AddMemberOptions::new().with_max_members(0); // 0 = read from RoomSettings
-        let created_member = match self.member_service
+        let created_member = match self
+            .member_service
             .add_member_with_options(room_id.clone(), user_id.clone(), RoomRole::Member, options)
             .await
         {
@@ -638,7 +684,9 @@ impl RoomService {
                 self.member_repo
                     .get(&room_id, &user_id)
                     .await?
-                    .ok_or_else(|| Error::Internal("Member disappeared after AlreadyExists".to_string()))?
+                    .ok_or_else(|| {
+                        Error::Internal("Member disappeared after AlreadyExists".to_string())
+                    })?
             }
             Err(e) => return Err(e),
         };
@@ -647,8 +695,15 @@ impl RoomService {
         let members = self.member_service.list_members(&room_id).await?;
 
         // Notify room members with username
-        let username = self.user_service.get_username(&user_id).await?.unwrap_or_else(|| "Unknown".to_string());
-        let _ = self.notification_service.notify_user_joined(&room_id, &user_id, &username).await;
+        let username = self
+            .user_service
+            .get_username(&user_id)
+            .await?
+            .unwrap_or_else(|| "Unknown".to_string());
+        let _ = self
+            .notification_service
+            .notify_user_joined(&room_id, &user_id, &username)
+            .await;
 
         tracing::info!(
             room_id = %room_id,
@@ -689,11 +744,20 @@ impl RoomService {
             ));
         }
 
-        self.member_service.remove_member(room_id.clone(), user_id.clone()).await?;
+        self.member_service
+            .remove_member(room_id.clone(), user_id.clone())
+            .await?;
 
         // Notify room members with username
-        let username = self.user_service.get_username(&user_id).await?.unwrap_or_else(|| "Unknown".to_string());
-        let _ = self.notification_service.notify_user_left(&room_id, &user_id, &username).await;
+        let username = self
+            .user_service
+            .get_username(&user_id)
+            .await?
+            .unwrap_or_else(|| "Unknown".to_string());
+        let _ = self
+            .notification_service
+            .notify_user_left(&room_id, &user_id, &username)
+            .await;
 
         tracing::info!(room_id = %room_id, user_id = %user_id, username = %username, "User left room");
 
@@ -783,14 +847,16 @@ impl RoomService {
 
         // First check if room exists and is not already deleted (before permission check)
         let room_exists = sqlx::query_scalar::<_, bool>(
-            "SELECT EXISTS(SELECT 1 FROM rooms WHERE id = $1 AND deleted_at IS NULL)"
+            "SELECT EXISTS(SELECT 1 FROM rooms WHERE id = $1 AND deleted_at IS NULL)",
         )
         .bind(room_id.as_str())
         .fetch_one(&self.pool)
         .await?;
 
         if !room_exists {
-            return Err(Error::NotFound("Room not found or already deleted".to_string()));
+            return Err(Error::NotFound(
+                "Room not found or already deleted".to_string(),
+            ));
         }
 
         // Check permission without cache - critical operation requires fresh permissions
@@ -804,7 +870,7 @@ impl RoomService {
         let deleted = sqlx::query(
             "UPDATE rooms
              SET deleted_at = $2, updated_at = $2
-             WHERE id = $1 AND deleted_at IS NULL"
+             WHERE id = $1 AND deleted_at IS NULL",
         )
         .bind(room_id.as_str())
         .bind(chrono::Utc::now())
@@ -813,7 +879,9 @@ impl RoomService {
 
         if deleted.rows_affected() == 0 {
             // Transaction will be automatically rolled back on drop
-            return Err(Error::NotFound("Room not found or already deleted".to_string()));
+            return Err(Error::NotFound(
+                "Room not found or already deleted".to_string(),
+            ));
         }
 
         // IMMEDIATE CLEANUP: Delete non-critical related data to free storage.
@@ -831,44 +899,34 @@ impl RoomService {
         // 6. chat_messages (depends on room)
 
         // Delete playlists (cascades to media via FK)
-        let playlists_deleted = sqlx::query(
-            "DELETE FROM playlists WHERE room_id = $1"
-        )
-        .bind(room_id.as_str())
-        .execute(&mut *tx)
-        .await?;
+        let playlists_deleted = sqlx::query("DELETE FROM playlists WHERE room_id = $1")
+            .bind(room_id.as_str())
+            .execute(&mut *tx)
+            .await?;
 
         // Delete room members
-        let members_deleted = sqlx::query(
-            "DELETE FROM room_members WHERE room_id = $1"
-        )
-        .bind(room_id.as_str())
-        .execute(&mut *tx)
-        .await?;
+        let members_deleted = sqlx::query("DELETE FROM room_members WHERE room_id = $1")
+            .bind(room_id.as_str())
+            .execute(&mut *tx)
+            .await?;
 
         // Delete room settings
-        let settings_deleted = sqlx::query(
-            "DELETE FROM room_settings WHERE room_id = $1"
-        )
-        .bind(room_id.as_str())
-        .execute(&mut *tx)
-        .await?;
+        let settings_deleted = sqlx::query("DELETE FROM room_settings WHERE room_id = $1")
+            .bind(room_id.as_str())
+            .execute(&mut *tx)
+            .await?;
 
         // Delete room playback state
-        let _playback_deleted = sqlx::query(
-            "DELETE FROM room_playback_state WHERE room_id = $1"
-        )
-        .bind(room_id.as_str())
-        .execute(&mut *tx)
-        .await?;
+        let _playback_deleted = sqlx::query("DELETE FROM room_playback_state WHERE room_id = $1")
+            .bind(room_id.as_str())
+            .execute(&mut *tx)
+            .await?;
 
         // Delete chat messages
-        let chat_deleted = sqlx::query(
-            "DELETE FROM chat_messages WHERE room_id = $1"
-        )
-        .bind(room_id.as_str())
-        .execute(&mut *tx)
-        .await?;
+        let chat_deleted = sqlx::query("DELETE FROM chat_messages WHERE room_id = $1")
+            .bind(room_id.as_str())
+            .execute(&mut *tx)
+            .await?;
 
         // Invalidate caches BEFORE committing the transaction.
         // See `invalidate_room_caches` for detailed rationale.
@@ -878,7 +936,10 @@ impl RoomService {
         tx.commit().await?;
 
         // Notify after commit so notifications are only sent for successful deletions
-        let _ = self.notification_service.notify_room_deleted(&room_id).await;
+        let _ = self
+            .notification_service
+            .notify_room_deleted(&room_id)
+            .await;
 
         tracing::info!(
             room_id = %room_id,
@@ -906,7 +967,8 @@ impl RoomService {
                 "settings_deleted": settings_deleted.rows_affected(),
                 "chat_deleted": chat_deleted.rows_affected(),
             }),
-        ).await;
+        )
+        .await;
 
         Ok(())
     }
@@ -929,25 +991,36 @@ impl RoomService {
         let admin = self.user_service.get_user(&admin_id).await?;
 
         if !admin.role.is_admin_or_above() {
-            return Err(Error::Authorization("Only admins can approve rooms".to_string()));
-        }
-
-        // Get current room to check status
-        let room = self.room_repo.get_by_id(&room_id).await?
-            .ok_or_else(|| Error::NotFound(format!("Room {} not found", room_id.as_str())))?;
-
-        if room.status != RoomStatus::Pending {
-            return Err(Error::InvalidInput(
-                format!("Room is not pending (current status: {:?})", room.status)
+            return Err(Error::Authorization(
+                "Only admins can approve rooms".to_string(),
             ));
         }
 
+        // Get current room to check status
+        let room = self
+            .room_repo
+            .get_by_id(&room_id)
+            .await?
+            .ok_or_else(|| Error::NotFound(format!("Room {} not found", room_id.as_str())))?;
+
+        if room.status != RoomStatus::Pending {
+            return Err(Error::InvalidInput(format!(
+                "Room is not pending (current status: {:?})",
+                room.status
+            )));
+        }
+
         // Update status to Active
-        let updated = self.room_repo.update_status(&room_id, RoomStatus::Active).await?;
+        let updated = self
+            .room_repo
+            .update_status(&room_id, RoomStatus::Active)
+            .await?;
 
         // Invalidate cache
         self.notify_room_invalidation(&room_id).await;
-        self.permission_service.invalidate_room_cache(&room_id).await;
+        self.permission_service
+            .invalidate_room_cache(&room_id)
+            .await;
 
         // Audit log
         self.audit_log(
@@ -959,7 +1032,8 @@ impl RoomService {
                 "previous_status": "pending",
                 "new_status": "active",
             }),
-        ).await;
+        )
+        .await;
 
         tracing::info!(room_id = %room_id, admin_id = %admin_id, "Room approved and activated");
 
@@ -975,32 +1049,48 @@ impl RoomService {
     /// - `Error::NotFound` if room doesn't exist
     /// - `Error::InvalidInput` if room is not in Pending status
     /// - Permission error if caller is not a global admin
-    pub async fn reject_room(&self, room_id: RoomId, admin_id: UserId, reason: Option<String>) -> Result<Room> {
+    pub async fn reject_room(
+        &self,
+        room_id: RoomId,
+        admin_id: UserId,
+        reason: Option<String>,
+    ) -> Result<Room> {
         tracing::info!(room_id = %room_id, admin_id = %admin_id, "Rejecting pending room");
 
         // Verify admin permission (global admin required)
         let admin = self.user_service.get_user(&admin_id).await?;
 
         if !admin.role.is_admin_or_above() {
-            return Err(Error::Authorization("Only admins can reject rooms".to_string()));
-        }
-
-        // Get current room to check status
-        let room = self.room_repo.get_by_id(&room_id).await?
-            .ok_or_else(|| Error::NotFound(format!("Room {} not found", room_id.as_str())))?;
-
-        if room.status != RoomStatus::Pending {
-            return Err(Error::InvalidInput(
-                format!("Room is not pending (current status: {:?})", room.status)
+            return Err(Error::Authorization(
+                "Only admins can reject rooms".to_string(),
             ));
         }
 
+        // Get current room to check status
+        let room = self
+            .room_repo
+            .get_by_id(&room_id)
+            .await?
+            .ok_or_else(|| Error::NotFound(format!("Room {} not found", room_id.as_str())))?;
+
+        if room.status != RoomStatus::Pending {
+            return Err(Error::InvalidInput(format!(
+                "Room is not pending (current status: {:?})",
+                room.status
+            )));
+        }
+
         // Update status to Closed
-        let updated = self.room_repo.update_status(&room_id, RoomStatus::Closed).await?;
+        let updated = self
+            .room_repo
+            .update_status(&room_id, RoomStatus::Closed)
+            .await?;
 
         // Invalidate cache
         self.notify_room_invalidation(&room_id).await;
-        self.permission_service.invalidate_room_cache(&room_id).await;
+        self.permission_service
+            .invalidate_room_cache(&room_id)
+            .await;
 
         // Audit log
         self.audit_log(
@@ -1013,7 +1103,8 @@ impl RoomService {
                 "new_status": "closed",
                 "reason": reason,
             }),
-        ).await;
+        )
+        .await;
 
         tracing::info!(room_id = %room_id, admin_id = %admin_id, "Room rejected and closed");
 
@@ -1023,12 +1114,18 @@ impl RoomService {
     /// List pending rooms (admin only).
     ///
     /// Returns all rooms with `RoomStatus::Pending` for admin review.
-    pub async fn list_pending_rooms(&self, admin_id: UserId, pagination: PageParams) -> Result<(Vec<Room>, i64)> {
+    pub async fn list_pending_rooms(
+        &self,
+        admin_id: UserId,
+        pagination: PageParams,
+    ) -> Result<(Vec<Room>, i64)> {
         // Verify admin permission
         let admin = self.user_service.get_user(&admin_id).await?;
 
         if !admin.role.is_admin_or_above() {
-            return Err(Error::Authorization("Only admins can list pending rooms".to_string()));
+            return Err(Error::Authorization(
+                "Only admins can list pending rooms".to_string(),
+            ));
         }
 
         let query = RoomListQuery {
@@ -1093,7 +1190,9 @@ impl RoomService {
                 let audit_service = audit_service.clone();
                 async move {
                     let (_current, version) = room_settings_repo.get_with_version(&room_id).await?;
-                    room_settings_repo.set_settings_with_version(&room_id, &settings, version).await?;
+                    room_settings_repo
+                        .set_settings_with_version(&room_id, &settings, version)
+                        .await?;
 
                     // Invalidate permission cache for all room members
                     permission_service.invalidate_room_cache(&room_id).await;
@@ -1110,28 +1209,34 @@ impl RoomService {
                     }
 
                     // Notify clients
-                    let settings_json = serde_json::to_value(&settings)
-                        .map_err(|e| crate::Error::Internal(format!("Failed to serialize settings: {e}")))?;
-                    let _ = notification_service.notify_settings_updated(&room_id, settings_json.clone()).await;
+                    let settings_json = serde_json::to_value(&settings).map_err(|e| {
+                        crate::Error::Internal(format!("Failed to serialize settings: {e}"))
+                    })?;
+                    let _ = notification_service
+                        .notify_settings_updated(&room_id, settings_json.clone())
+                        .await;
 
                     // Audit log
                     if let Some(ref audit) = audit_service {
-                        let _ = audit.log(
-                            user_id.as_str().to_string(),
-                            user_id.as_str().to_string(),
-                            AuditAction::RoomSettingsUpdated,
-                            AuditTargetType::Room,
-                            Some(room_id.as_str().to_string()),
-                            settings_json,
-                            None,
-                            None,
-                        ).await;
+                        let _ = audit
+                            .log(
+                                user_id.as_str().to_string(),
+                                user_id.as_str().to_string(),
+                                AuditAction::RoomSettingsUpdated,
+                                AuditTargetType::Room,
+                                Some(room_id.as_str().to_string()),
+                                settings_json,
+                                None,
+                                None,
+                            )
+                            .await;
                     }
 
                     Ok(())
                 }
             },
-        ).await?;
+        )
+        .await?;
 
         Ok(room)
     }
@@ -1168,19 +1273,28 @@ impl RoomService {
     }
 
     /// Get settings for multiple rooms in a single query (avoids N+1)
-    pub async fn get_room_settings_batch(&self, room_ids: &[&str]) -> Result<std::collections::HashMap<String, RoomSettings>> {
+    pub async fn get_room_settings_batch(
+        &self,
+        room_ids: &[&str],
+    ) -> Result<std::collections::HashMap<String, RoomSettings>> {
         self.room_settings_repo.get_batch(room_ids).await
     }
 
     /// Set room settings (replace entire settings object) with optimistic locking.
-    pub async fn set_room_settings(&self, room_id: &RoomId, settings: &RoomSettings) -> Result<RoomSettings> {
+    pub async fn set_room_settings(
+        &self,
+        room_id: &RoomId,
+        settings: &RoomSettings,
+    ) -> Result<RoomSettings> {
         super::optimistic_retry::retry_with_optimistic_lock(
             Self::MAX_RETRIES,
             Self::BACKOFF_BASE_MS,
             "Settings update failed after maximum retry attempts",
             || async {
                 let (_current, version) = self.room_settings_repo.get_with_version(room_id).await?;
-                self.room_settings_repo.set_settings_with_version(room_id, settings, version).await?;
+                self.room_settings_repo
+                    .set_settings_with_version(room_id, settings, version)
+                    .await?;
                 Ok(settings.clone())
             },
         )
@@ -1194,7 +1308,13 @@ impl RoomService {
     /// 2. Registry validates type + value constraints (incl. macro validators)
     /// 3. CAS (Compare-And-Swap) update with automatic retry on version conflict
     /// 4. Post-apply hooks handle side effects (e.g., kick guests)
-    pub async fn update_room_setting(&self, room_id: &RoomId, user_id: &UserId, key: &str, value: &str) -> Result<String> {
+    pub async fn update_room_setting(
+        &self,
+        room_id: &RoomId,
+        user_id: &UserId,
+        key: &str,
+        value: &str,
+    ) -> Result<String> {
         use crate::models::room_settings::RoomSettingsRegistry;
 
         // 1. Permission check
@@ -1212,7 +1332,11 @@ impl RoomService {
             settings.set_by_key(key, value)?;
             settings.validate_permissions()?;
 
-            match self.room_settings_repo.set_settings_with_version(room_id, &settings, version).await {
+            match self
+                .room_settings_repo
+                .set_settings_with_version(room_id, &settings, version)
+                .await
+            {
                 Ok(_new_version) => {
                     final_settings = Some(settings);
                     break;
@@ -1221,25 +1345,28 @@ impl RoomService {
                     if attempt + 1 < Self::MAX_RETRIES {
                         let backoff = Self::BACKOFF_BASE_MS * (1 << attempt);
                         let jitter = rand::rng().random_range(0..Self::BACKOFF_BASE_MS);
-                        tokio::time::sleep(std::time::Duration::from_millis(backoff + jitter)).await;
+                        tokio::time::sleep(std::time::Duration::from_millis(backoff + jitter))
+                            .await;
                         continue;
                     }
-                    return Err(Error::Internal("Settings update failed after maximum retry attempts".to_string()));
+                    return Err(Error::Internal(
+                        "Settings update failed after maximum retry attempts".to_string(),
+                    ));
                 }
                 Err(e) => return Err(e),
             }
         }
 
-        let settings = final_settings
-            .ok_or_else(|| Error::Internal("Settings update failed after maximum retry attempts".to_string()))?;
+        let settings = final_settings.ok_or_else(|| {
+            Error::Internal("Settings update failed after maximum retry attempts".to_string())
+        })?;
 
         // 4. Post-apply hooks (side effects after commit)
         self.permission_service.invalidate_room_cache(room_id).await;
         self.notify_room_invalidation(room_id).await;
         self.run_post_apply_hooks(room_id, key, value).await;
 
-        serde_json::to_string(&settings)
-            .internal_with_err("Failed to serialize settings")
+        serde_json::to_string(&settings).internal_with_err("Failed to serialize settings")
     }
 
     /// Post-apply hooks: side effects triggered after a setting change commits.
@@ -1251,13 +1378,19 @@ impl RoomService {
         use crate::service::notification::GuestKickReason;
 
         let kick_reason = match (key, value) {
-            (k, "false") if k == AllowGuestJoin::KEY => Some(GuestKickReason::RoomGuestModeDisabled),
+            (k, "false") if k == AllowGuestJoin::KEY => {
+                Some(GuestKickReason::RoomGuestModeDisabled)
+            }
             (k, "true") if k == RequirePassword::KEY => Some(GuestKickReason::RoomPasswordAdded),
             _ => None,
         };
 
         if let Some(reason) = kick_reason {
-            if let Err(e) = self.notification_service.kick_all_guests(room_id, reason).await {
+            if let Err(e) = self
+                .notification_service
+                .kick_all_guests(room_id, reason)
+                .await
+            {
                 tracing::warn!("Failed to kick guests after settings change: {}", e);
             }
         }
@@ -1277,7 +1410,9 @@ impl RoomService {
             "Settings reset failed after maximum retry attempts",
             || async {
                 let (_current, version) = self.room_settings_repo.get_with_version(room_id).await?;
-                self.room_settings_repo.set_settings_with_version(room_id, &default_settings, version).await?;
+                self.room_settings_repo
+                    .set_settings_with_version(room_id, &default_settings, version)
+                    .await?;
                 serde_json::to_string(&default_settings)
                     .internal_with_err("Failed to serialize settings")
             },
@@ -1290,10 +1425,9 @@ impl RoomService {
         let password_hash = self.room_settings_repo.get_password_hash(room_id).await?;
 
         match password_hash {
-            Some(stored) => {
-                verify_password(password, &stored).await
-                    .internal_with_err("Password verification failed")
-            }
+            Some(stored) => verify_password(password, &stored)
+                .await
+                .internal_with_err("Password verification failed"),
             None => Ok(false),
         }
     }
@@ -1343,10 +1477,9 @@ impl RoomService {
         // Verify the password
         let password_hash = self.room_settings_repo.get_password_hash(room_id).await?;
         let is_valid = match password_hash {
-            Some(stored) => {
-                verify_password(password, &stored).await
-                    .internal_with_err("Password verification failed")
-            }
+            Some(stored) => verify_password(password, &stored)
+                .await
+                .internal_with_err("Password verification failed"),
             None => Ok(false),
         }?;
 
@@ -1368,12 +1501,15 @@ impl RoomService {
                     // legitimate users being locked out if Redis recovers with stale data
                     if let Some(ref audit) = self.audit_service {
                         let ip_str = client_ip.map(|ip| ip.to_string());
-                        if let Err(audit_err) = audit.log_rate_limit_reset_failed(
-                            crate::service::audit::AuditTargetType::Room,
-                            room_id.as_str().to_string(),
-                            e.to_string(),
-                            ip_str,
-                        ).await {
+                        if let Err(audit_err) = audit
+                            .log_rate_limit_reset_failed(
+                                crate::service::audit::AuditTargetType::Room,
+                                room_id.as_str().to_string(),
+                                e.to_string(),
+                                ip_str,
+                            )
+                            .await
+                        {
                             tracing::error!(
                                 room_id = %room_id,
                                 error = %audit_err,
@@ -1384,7 +1520,9 @@ impl RoomService {
                 }
             } else {
                 // Record failure on incorrect password
-                brute_force.record_failure(&rate_limit_key, client_ip).await?;
+                brute_force
+                    .record_failure(&rate_limit_key, client_ip)
+                    .await?;
             }
         }
 
@@ -1408,7 +1546,11 @@ impl RoomService {
     }
 
     /// Update room password
-    pub async fn update_room_password(&self, room_id: &RoomId, password_hash: Option<String>) -> Result<()> {
+    pub async fn update_room_password(
+        &self,
+        room_id: &RoomId,
+        password_hash: Option<String>,
+    ) -> Result<()> {
         use crate::service::notification::GuestKickReason;
 
         let password_was_set = password_hash.is_some();
@@ -1419,10 +1561,11 @@ impl RoomService {
 
         // Side effects outside transaction
         if password_was_set {
-            if let Err(e) = self.notification_service.kick_all_guests(
-                room_id,
-                GuestKickReason::RoomPasswordAdded
-            ).await {
+            if let Err(e) = self
+                .notification_service
+                .kick_all_guests(room_id, GuestKickReason::RoomPasswordAdded)
+                .await
+            {
                 tracing::warn!("Failed to kick guests after password was added: {}", e);
             }
         }
@@ -1434,7 +1577,11 @@ impl RoomService {
     /// Uses a transaction for the password hash row (separate key) plus CAS for the
     /// settings row. Does NOT trigger side effects (guest kicking, notifications) --
     /// callers handle that.
-    async fn do_set_password_hash(&self, room_id: &RoomId, password_hash: Option<String>) -> Result<()> {
+    async fn do_set_password_hash(
+        &self,
+        room_id: &RoomId,
+        password_hash: Option<String>,
+    ) -> Result<()> {
         for attempt in 0..Self::MAX_RETRIES {
             // Read current settings and version
             let (mut settings, version) = self.room_settings_repo.get_with_version(room_id).await?;
@@ -1442,10 +1589,14 @@ impl RoomService {
             // Update password hash in a transaction (separate key row, not version-checked)
             let mut tx = self.pool.begin().await?;
             if let Some(ref pwd_hash) = password_hash {
-                self.room_settings_repo.set_with_executor(room_id, "password", pwd_hash, &mut *tx).await?;
+                self.room_settings_repo
+                    .set_with_executor(room_id, "password", pwd_hash, &mut *tx)
+                    .await?;
                 settings.require_password = crate::models::room_settings::RequirePassword(true);
             } else {
-                self.room_settings_repo.delete_with_executor(room_id, "password", &mut *tx).await?;
+                self.room_settings_repo
+                    .delete_with_executor(room_id, "password", &mut *tx)
+                    .await?;
                 settings.require_password = crate::models::room_settings::RequirePassword(false);
             }
 
@@ -1460,7 +1611,7 @@ impl RoomService {
                     VALUES ($1, '_settings', $2, 1)
                     ON CONFLICT (room_id, key) DO NOTHING
                     RETURNING version
-                    "
+                    ",
                 )
                 .bind(room_id.as_str())
                 .bind(&json_value)
@@ -1473,7 +1624,7 @@ impl RoomService {
                     SET value = $2, version = version + 1, updated_at = NOW()
                     WHERE room_id = $1 AND key = '_settings' AND version = $3
                     RETURNING version
-                    "
+                    ",
                 )
                 .bind(room_id.as_str())
                 .bind(&json_value)
@@ -1498,7 +1649,9 @@ impl RoomService {
             }
         }
 
-        Err(Error::Internal("Password update failed after maximum retry attempts".to_string()))
+        Err(Error::Internal(
+            "Password update failed after maximum retry attempts".to_string(),
+        ))
     }
 
     /// Update room description.
@@ -1509,9 +1662,16 @@ impl RoomService {
     ///
     /// - `Error::InvalidInput` - Description exceeds 500 characters
     /// - `Error::Authentication` - User lacks `UPDATE_ROOM_SETTINGS` permission
-    pub async fn update_room_description(&self, room_id: &RoomId, user_id: &UserId, description: String) -> Result<Room> {
+    pub async fn update_room_description(
+        &self,
+        room_id: &RoomId,
+        user_id: &UserId,
+        description: String,
+    ) -> Result<Room> {
         if description.chars().count() > 500 {
-            return Err(Error::InvalidInput("Room description too long (max 500 characters)".to_string()));
+            return Err(Error::InvalidInput(
+                "Room description too long (max 500 characters)".to_string(),
+            ));
         }
 
         // Check permission
@@ -1519,7 +1679,10 @@ impl RoomService {
             .check_permission(room_id, user_id, PermissionBits::UPDATE_ROOM_SETTINGS)
             .await?;
 
-        let room = self.room_repo.update_description(room_id, &description).await?;
+        let room = self
+            .room_repo
+            .update_description(room_id, &description)
+            .await?;
         self.notify_room_invalidation(room_id).await;
         Ok(room)
     }
@@ -1530,12 +1693,19 @@ impl RoomService {
     }
 
     /// List all rooms with member count (optimized, single query)
-    pub async fn list_rooms_with_count(&self, query: &RoomListQuery) -> Result<(Vec<RoomWithCount>, i64)> {
+    pub async fn list_rooms_with_count(
+        &self,
+        query: &RoomListQuery,
+    ) -> Result<(Vec<RoomWithCount>, i64)> {
         self.room_repo.list_with_count(query).await
     }
 
     /// List rooms created by a specific user
-    pub async fn list_rooms_by_creator(&self, creator_id: &UserId, pagination: PageParams) -> Result<(Vec<Room>, i64)> {
+    pub async fn list_rooms_by_creator(
+        &self,
+        creator_id: &UserId,
+        pagination: PageParams,
+    ) -> Result<(Vec<Room>, i64)> {
         self.room_repo.list_by_creator(creator_id, pagination).await
     }
 
@@ -1545,12 +1715,20 @@ impl RoomService {
         creator_id: &UserId,
         pagination: PageParams,
     ) -> Result<(Vec<RoomWithCount>, i64)> {
-        self.room_repo.list_by_creator_with_count(creator_id, pagination).await
+        self.room_repo
+            .list_by_creator_with_count(creator_id, pagination)
+            .await
     }
 
     /// List rooms where a user is a member
-    pub async fn list_joined_rooms(&self, user_id: &UserId, pagination: PageParams) -> Result<(Vec<RoomId>, i64)> {
-        self.member_service.list_user_rooms(user_id, pagination).await
+    pub async fn list_joined_rooms(
+        &self,
+        user_id: &UserId,
+        pagination: PageParams,
+    ) -> Result<(Vec<RoomId>, i64)> {
+        self.member_service
+            .list_user_rooms(user_id, pagination)
+            .await
     }
 
     /// List rooms where a user is a member with full details (optimized)
@@ -1559,7 +1737,9 @@ impl RoomService {
         user_id: &UserId,
         pagination: PageParams,
     ) -> Result<(Vec<(Room, RoomRole, MemberStatus, i32)>, i64)> {
-        self.member_service.list_user_rooms_with_details(user_id, pagination).await
+        self.member_service
+            .list_user_rooms_with_details(user_id, pagination)
+            .await
     }
 
     // ========== Member Operations (delegated) ==========
@@ -1572,7 +1752,9 @@ impl RoomService {
         target_user_id: UserId,
         permission: u64,
     ) -> Result<crate::models::RoomMember> {
-        self.member_service.grant_permission(room_id, granter_id, target_user_id, permission).await
+        self.member_service
+            .grant_permission(room_id, granter_id, target_user_id, permission)
+            .await
     }
 
     /// Update member permissions (Allow/Deny pattern)
@@ -1587,7 +1769,15 @@ impl RoomService {
         added_permissions: u64,
         removed_permissions: u64,
     ) -> Result<crate::models::RoomMember> {
-        self.member_service.set_member_permissions(room_id, granter_id, target_user_id, added_permissions, removed_permissions).await
+        self.member_service
+            .set_member_permissions(
+                room_id,
+                granter_id,
+                target_user_id,
+                added_permissions,
+                removed_permissions,
+            )
+            .await
     }
 
     /// Kick member from room
@@ -1597,11 +1787,16 @@ impl RoomService {
         kicker_id: UserId,
         target_user_id: UserId,
     ) -> Result<()> {
-        self.member_service.kick_member(room_id, kicker_id, target_user_id).await
+        self.member_service
+            .kick_member(room_id, kicker_id, target_user_id)
+            .await
     }
 
     /// Get room members with user info
-    pub async fn get_room_members(&self, room_id: &RoomId) -> Result<Vec<crate::models::RoomMemberWithUser>> {
+    pub async fn get_room_members(
+        &self,
+        room_id: &RoomId,
+    ) -> Result<Vec<crate::models::RoomMemberWithUser>> {
         self.member_service.list_members(room_id).await
     }
 
@@ -1611,7 +1806,10 @@ impl RoomService {
     }
 
     /// Get member counts for multiple rooms in a single query.
-    pub async fn get_member_count_batch(&self, room_ids: &[&RoomId]) -> Result<std::collections::HashMap<String, i32>> {
+    pub async fn get_member_count_batch(
+        &self,
+        room_ids: &[&RoomId],
+    ) -> Result<std::collections::HashMap<String, i32>> {
         self.member_service.count_members_batch(room_ids).await
     }
 
@@ -1627,15 +1825,13 @@ impl RoomService {
     }
 
     /// Check if user is a member of the room
-    pub async fn check_membership(
-        &self,
-        room_id: &RoomId,
-        user_id: &UserId,
-    ) -> Result<()> {
+    pub async fn check_membership(&self, room_id: &RoomId, user_id: &UserId) -> Result<()> {
         if self.member_service.is_member(room_id, user_id).await? {
             Ok(())
         } else {
-            Err(Error::Authorization("Not a member of this room".to_string()))
+            Err(Error::Authorization(
+                "Not a member of this room".to_string(),
+            ))
         }
     }
 
@@ -1672,7 +1868,9 @@ impl RoomService {
             source_config,
         };
 
-        self.media_service.add_media(room_id, user_id, request).await
+        self.media_service
+            .add_media(room_id, user_id, request)
+            .await
     }
 
     /// Add multiple media items atomically (all-or-nothing via transaction)
@@ -1689,15 +1887,19 @@ impl RoomService {
 
         let requests: Vec<AddMediaRequest> = items
             .into_iter()
-            .map(|(provider_instance_name, source_config, title)| AddMediaRequest {
-                playlist_id: root_playlist.id.clone(),
-                name: title,
-                provider_instance_name,
-                source_config,
-            })
+            .map(
+                |(provider_instance_name, source_config, title)| AddMediaRequest {
+                    playlist_id: root_playlist.id.clone(),
+                    name: title,
+                    provider_instance_name,
+                    source_config,
+                },
+            )
             .collect();
 
-        self.media_service.add_media_batch(room_id, user_id, root_playlist.id, requests).await
+        self.media_service
+            .add_media_batch(room_id, user_id, root_playlist.id, requests)
+            .await
     }
 
     /// Remove media from playlist
@@ -1728,18 +1930,19 @@ impl RoomService {
         let mut tx = self.pool.begin().await?;
 
         // Step 1: Fetch media within transaction to verify it exists and get creator_id
-        let media_row: Option<(String, Option<String>, String)> = sqlx::query_as(
-            "SELECT id, creator_id, room_id FROM media WHERE id = $1"
-        )
-        .bind(media_id.as_str())
-        .fetch_optional(&mut *tx)
-        .await?;
+        let media_row: Option<(String, Option<String>, String)> =
+            sqlx::query_as("SELECT id, creator_id, room_id FROM media WHERE id = $1")
+                .bind(media_id.as_str())
+                .fetch_optional(&mut *tx)
+                .await?;
 
-        let (media_id, media_creator_id, media_room_id) = media_row
-            .ok_or_else(|| Error::NotFound("Media not found".to_string()))?;
+        let (media_id, media_creator_id, media_room_id) =
+            media_row.ok_or_else(|| Error::NotFound("Media not found".to_string()))?;
 
         if media_room_id != room_id.as_str() {
-            return Err(Error::Authorization("Media does not belong to this room".to_string()));
+            return Err(Error::Authorization(
+                "Media does not belong to this room".to_string(),
+            ));
         }
 
         // Step 2: Check permission within transaction (TOCTOU fix)
@@ -1795,7 +1998,7 @@ impl RoomService {
         let playing_media_id: Option<String> = sqlx::query_scalar(
             "SELECT playing_media_id FROM room_playback_state
              WHERE room_id = $1
-             FOR UPDATE"
+             FOR UPDATE",
         )
         .bind(room_id.as_str())
         .fetch_optional(&mut *tx)
@@ -1829,7 +2032,9 @@ impl RoomService {
     /// Get playlist (all media in room's root playlist)
     pub async fn get_playlist(&self, room_id: &RoomId) -> Result<Vec<Media>> {
         let root_playlist = self.playlist_service.get_root_playlist(room_id).await?;
-        self.media_service.get_playlist_media(&root_playlist.id).await
+        self.media_service
+            .get_playlist_media(&root_playlist.id)
+            .await
     }
 
     /// Get playlist paginated
@@ -1839,7 +2044,9 @@ impl RoomService {
         pagination: PageParams,
     ) -> Result<(Vec<Media>, i64)> {
         let root_playlist = self.playlist_service.get_root_playlist(room_id).await?;
-        self.media_service.get_playlist_media_paginated(&root_playlist.id, pagination).await
+        self.media_service
+            .get_playlist_media_paginated(&root_playlist.id, pagination)
+            .await
     }
 
     /// Get current playing media for a room
@@ -1866,7 +2073,9 @@ impl RoomService {
             name,
             position: None,
         };
-        self.media_service.edit_media(room_id, user_id, request).await
+        self.media_service
+            .edit_media(room_id, user_id, request)
+            .await
     }
 
     /// Clear all media from room's root playlist
@@ -1888,7 +2097,7 @@ impl RoomService {
         let row = sqlx::query(
             "SELECT playing_media_id, playing_playlist_id FROM room_playback_state
              WHERE room_id = $1
-             FOR UPDATE"
+             FOR UPDATE",
         )
         .bind(room_id.as_str())
         .fetch_optional(&mut *tx)
@@ -1901,7 +2110,7 @@ impl RoomService {
             if let Some(ref mid) = playing_media_id {
                 // Check if the playing media belongs to this playlist
                 let in_playlist: bool = sqlx::query_scalar(
-                    "SELECT EXISTS(SELECT 1 FROM media WHERE id = $1 AND playlist_id = $2)"
+                    "SELECT EXISTS(SELECT 1 FROM media WHERE id = $1 AND playlist_id = $2)",
                 )
                 .bind(mid.as_str())
                 .bind(root_playlist.id.as_str())
@@ -1910,7 +2119,8 @@ impl RoomService {
 
                 if in_playlist {
                     return Err(Error::InvalidInput(
-                        "Cannot clear playlist while media from it is currently playing".to_string(),
+                        "Cannot clear playlist while media from it is currently playing"
+                            .to_string(),
                     ));
                 }
             }
@@ -1935,7 +2145,9 @@ impl RoomService {
         user_id: UserId,
         media_id: MediaId,
     ) -> Result<RoomPlaybackState> {
-        self.playback_service.switch_media(room_id, user_id, media_id).await
+        self.playback_service
+            .switch_media(room_id, user_id, media_id)
+            .await
     }
 
     /// Swap positions of two media items in playlist
@@ -1946,7 +2158,9 @@ impl RoomService {
         media_id1: MediaId,
         media_id2: MediaId,
     ) -> Result<()> {
-        self.media_service.swap_media_positions(room_id, user_id, media_id1, media_id2).await
+        self.media_service
+            .swap_media_positions(room_id, user_id, media_id1, media_id2)
+            .await
     }
 
     // ========== Playback Operations (delegated) ==========
@@ -1997,7 +2211,9 @@ impl RoomService {
         cursor: Option<(DateTime<Utc>, &str)>,
         limit: i32,
     ) -> Result<(Vec<ChatMessage>, Option<(DateTime<Utc>, String)>)> {
-        self.chat_repo.list_by_room_cursor(room_id, cursor, limit).await
+        self.chat_repo
+            .list_by_room_cursor(room_id, cursor, limit)
+            .await
     }
 
     /// Save a chat message to the database
@@ -2008,10 +2224,14 @@ impl RoomService {
         content: String,
     ) -> Result<ChatMessage> {
         if content.is_empty() {
-            return Err(Error::InvalidInput("Chat message cannot be empty".to_string()));
+            return Err(Error::InvalidInput(
+                "Chat message cannot be empty".to_string(),
+            ));
         }
         if content.chars().count() > 2000 {
-            return Err(Error::InvalidInput("Chat message cannot exceed 2000 characters".to_string()));
+            return Err(Error::InvalidInput(
+                "Chat message cannot exceed 2000 characters".to_string(),
+            ));
         }
 
         let message = ChatMessage {
@@ -2034,7 +2254,9 @@ impl RoomService {
         user_id: &UserId,
         permission: u64,
     ) -> Result<()> {
-        self.permission_service.check_permission(room_id, user_id, permission).await
+        self.permission_service
+            .check_permission(room_id, user_id, permission)
+            .await
     }
 
     // ========== Admin Operations ==========
@@ -2051,7 +2273,11 @@ impl RoomService {
     /// # Errors
     /// - `Error::NotFound` if room doesn't exist
     /// - `Error::InvalidInput` if the status transition is not allowed
-    pub async fn update_room_status(&self, room_id: &RoomId, new_status: crate::models::RoomStatus) -> Result<Room> {
+    pub async fn update_room_status(
+        &self,
+        room_id: &RoomId,
+        new_status: crate::models::RoomStatus,
+    ) -> Result<Room> {
         // Get current room to check existing status
         let room = self
             .room_repo
@@ -2114,7 +2340,7 @@ impl RoomService {
         let deleted = sqlx::query(
             "UPDATE rooms
              SET deleted_at = $2, updated_at = $2
-             WHERE id = $1 AND deleted_at IS NULL"
+             WHERE id = $1 AND deleted_at IS NULL",
         )
         .bind(room_id.as_str())
         .bind(chrono::Utc::now())
@@ -2123,44 +2349,36 @@ impl RoomService {
 
         if deleted.rows_affected() == 0 {
             // Transaction will be automatically rolled back on drop
-            return Err(Error::NotFound("Room not found or already deleted".to_string()));
+            return Err(Error::NotFound(
+                "Room not found or already deleted".to_string(),
+            ));
         }
 
         // IMMEDIATE CLEANUP: Delete non-critical related data (same as delete_room)
-        let playlists_deleted = sqlx::query(
-            "DELETE FROM playlists WHERE room_id = $1"
-        )
-        .bind(room_id.as_str())
-        .execute(&mut *tx)
-        .await?;
+        let playlists_deleted = sqlx::query("DELETE FROM playlists WHERE room_id = $1")
+            .bind(room_id.as_str())
+            .execute(&mut *tx)
+            .await?;
 
-        let members_deleted = sqlx::query(
-            "DELETE FROM room_members WHERE room_id = $1"
-        )
-        .bind(room_id.as_str())
-        .execute(&mut *tx)
-        .await?;
+        let members_deleted = sqlx::query("DELETE FROM room_members WHERE room_id = $1")
+            .bind(room_id.as_str())
+            .execute(&mut *tx)
+            .await?;
 
-        let settings_deleted = sqlx::query(
-            "DELETE FROM room_settings WHERE room_id = $1"
-        )
-        .bind(room_id.as_str())
-        .execute(&mut *tx)
-        .await?;
+        let settings_deleted = sqlx::query("DELETE FROM room_settings WHERE room_id = $1")
+            .bind(room_id.as_str())
+            .execute(&mut *tx)
+            .await?;
 
-        let _playback_deleted = sqlx::query(
-            "DELETE FROM room_playback_state WHERE room_id = $1"
-        )
-        .bind(room_id.as_str())
-        .execute(&mut *tx)
-        .await?;
+        let _playback_deleted = sqlx::query("DELETE FROM room_playback_state WHERE room_id = $1")
+            .bind(room_id.as_str())
+            .execute(&mut *tx)
+            .await?;
 
-        let chat_deleted = sqlx::query(
-            "DELETE FROM chat_messages WHERE room_id = $1"
-        )
-        .bind(room_id.as_str())
-        .execute(&mut *tx)
-        .await?;
+        let chat_deleted = sqlx::query("DELETE FROM chat_messages WHERE room_id = $1")
+            .bind(room_id.as_str())
+            .execute(&mut *tx)
+            .await?;
 
         // Invalidate caches BEFORE committing the transaction.
         // See `invalidate_room_caches` for detailed rationale.
@@ -2175,22 +2393,24 @@ impl RoomService {
 
         // Audit log
         if let Some(ref audit) = self.audit_service {
-            let _ = audit.log(
-                admin_user_id.as_str().to_string(),
-                admin_user_id.as_str().to_string(),
-                AuditAction::RoomDeleted,
-                AuditTargetType::Room,
-                Some(room_id.as_str().to_string()),
-                serde_json::json!({
-                    "reason": "Room deleted by admin",
-                    "playlists_deleted": playlists_deleted.rows_affected(),
-                    "members_deleted": members_deleted.rows_affected(),
-                    "settings_deleted": settings_deleted.rows_affected(),
-                    "chat_deleted": chat_deleted.rows_affected(),
-                }),
-                None,
-                None,
-            ).await;
+            let _ = audit
+                .log(
+                    admin_user_id.as_str().to_string(),
+                    admin_user_id.as_str().to_string(),
+                    AuditAction::RoomDeleted,
+                    AuditTargetType::Room,
+                    Some(room_id.as_str().to_string()),
+                    serde_json::json!({
+                        "reason": "Room deleted by admin",
+                        "playlists_deleted": playlists_deleted.rows_affected(),
+                        "members_deleted": members_deleted.rows_affected(),
+                        "settings_deleted": settings_deleted.rows_affected(),
+                        "chat_deleted": chat_deleted.rows_affected(),
+                    }),
+                    None,
+                    None,
+                )
+                .await;
         }
 
         Ok(())
@@ -2247,7 +2467,7 @@ impl RoomService {
                 WHERE id = $1
                 AND deleted_at IS NULL
                 AND status != 3
-            )"
+            )",
         )
         .bind(room.created_by.as_str())
         .fetch_one(&self.pool)
@@ -2271,7 +2491,7 @@ impl RoomService {
         let deleted = sqlx::query(
             "UPDATE rooms
              SET deleted_at = $2, updated_at = $2
-             WHERE id = $1 AND deleted_at IS NULL"
+             WHERE id = $1 AND deleted_at IS NULL",
         )
         .bind(room_id.as_str())
         .bind(chrono::Utc::now())
@@ -2279,44 +2499,36 @@ impl RoomService {
         .await?;
 
         if deleted.rows_affected() == 0 {
-            return Err(Error::NotFound("Room not found or already deleted".to_string()));
+            return Err(Error::NotFound(
+                "Room not found or already deleted".to_string(),
+            ));
         }
 
         // IMMEDIATE CLEANUP: Delete non-critical related data
-        let playlists_deleted = sqlx::query(
-            "DELETE FROM playlists WHERE room_id = $1"
-        )
-        .bind(room_id.as_str())
-        .execute(&mut *tx)
-        .await?;
+        let playlists_deleted = sqlx::query("DELETE FROM playlists WHERE room_id = $1")
+            .bind(room_id.as_str())
+            .execute(&mut *tx)
+            .await?;
 
-        let members_deleted = sqlx::query(
-            "DELETE FROM room_members WHERE room_id = $1"
-        )
-        .bind(room_id.as_str())
-        .execute(&mut *tx)
-        .await?;
+        let members_deleted = sqlx::query("DELETE FROM room_members WHERE room_id = $1")
+            .bind(room_id.as_str())
+            .execute(&mut *tx)
+            .await?;
 
-        let settings_deleted = sqlx::query(
-            "DELETE FROM room_settings WHERE room_id = $1"
-        )
-        .bind(room_id.as_str())
-        .execute(&mut *tx)
-        .await?;
+        let settings_deleted = sqlx::query("DELETE FROM room_settings WHERE room_id = $1")
+            .bind(room_id.as_str())
+            .execute(&mut *tx)
+            .await?;
 
-        let _playback_deleted = sqlx::query(
-            "DELETE FROM room_playback_state WHERE room_id = $1"
-        )
-        .bind(room_id.as_str())
-        .execute(&mut *tx)
-        .await?;
+        let _playback_deleted = sqlx::query("DELETE FROM room_playback_state WHERE room_id = $1")
+            .bind(room_id.as_str())
+            .execute(&mut *tx)
+            .await?;
 
-        let chat_deleted = sqlx::query(
-            "DELETE FROM chat_messages WHERE room_id = $1"
-        )
-        .bind(room_id.as_str())
-        .execute(&mut *tx)
-        .await?;
+        let chat_deleted = sqlx::query("DELETE FROM chat_messages WHERE room_id = $1")
+            .bind(room_id.as_str())
+            .execute(&mut *tx)
+            .await?;
 
         // Invalidate caches BEFORE committing the transaction.
         // See `invalidate_room_caches` for detailed rationale.
@@ -2331,23 +2543,25 @@ impl RoomService {
 
         // Audit log
         if let Some(ref audit) = self.audit_service {
-            let _ = audit.log(
-                admin_user_id.as_str().to_string(),
-                admin_user_id.as_str().to_string(),
-                AuditAction::RoomDeleted,
-                AuditTargetType::Room,
-                Some(room_id.as_str().to_string()),
-                serde_json::json!({
-                    "reason": "Orphaned room deleted by admin (creator deleted/banned)",
-                    "creator_id": room.created_by.as_str(),
-                    "playlists_deleted": playlists_deleted.rows_affected(),
-                    "members_deleted": members_deleted.rows_affected(),
-                    "settings_deleted": settings_deleted.rows_affected(),
-                    "chat_deleted": chat_deleted.rows_affected(),
-                }),
-                None,
-                None,
-            ).await;
+            let _ = audit
+                .log(
+                    admin_user_id.as_str().to_string(),
+                    admin_user_id.as_str().to_string(),
+                    AuditAction::RoomDeleted,
+                    AuditTargetType::Room,
+                    Some(room_id.as_str().to_string()),
+                    serde_json::json!({
+                        "reason": "Orphaned room deleted by admin (creator deleted/banned)",
+                        "creator_id": room.created_by.as_str(),
+                        "playlists_deleted": playlists_deleted.rows_affected(),
+                        "members_deleted": members_deleted.rows_affected(),
+                        "settings_deleted": settings_deleted.rows_affected(),
+                        "chat_deleted": chat_deleted.rows_affected(),
+                    }),
+                    None,
+                    None,
+                )
+                .await;
         }
 
         tracing::info!(room_id = %room_id, "Orphaned room deleted successfully");
@@ -2384,10 +2598,11 @@ impl RoomService {
 
         // Kick guests when a password is being set (guests cannot join password-protected rooms)
         if password_is_being_set {
-            if let Err(e) = self.notification_service.kick_all_guests(
-                room_id,
-                GuestKickReason::RoomPasswordAdded,
-            ).await {
+            if let Err(e) = self
+                .notification_service
+                .kick_all_guests(room_id, GuestKickReason::RoomPasswordAdded)
+                .await
+            {
                 tracing::warn!("Failed to kick guests after admin password set: {}", e);
             }
         }
@@ -2398,7 +2613,7 @@ impl RoomService {
     // ========== Service Accessors ==========
 
     /// Get reference to media service
-    #[must_use] 
+    #[must_use]
     pub const fn media_service(&self) -> &MediaService {
         &self.media_service
     }
@@ -2410,14 +2625,22 @@ impl RoomService {
     /// Changes room status from pending to active.
     /// Only admins can approve rooms.
     pub async fn approve_room(&self, room_id: &RoomId) -> Result<Room> {
-        let room = self.room_repo.get_by_id(room_id).await?
+        let room = self
+            .room_repo
+            .get_by_id(room_id)
+            .await?
             .ok_or_else(|| Error::NotFound("Room not found".to_string()))?;
 
         if !room.status.is_pending() {
-            return Err(Error::InvalidInput("Room is not pending approval".to_string()));
+            return Err(Error::InvalidInput(
+                "Room is not pending approval".to_string(),
+            ));
         }
 
-        let updated_room = self.room_repo.update_status(room_id, RoomStatus::Active).await?;
+        let updated_room = self
+            .room_repo
+            .update_status(room_id, RoomStatus::Active)
+            .await?;
 
         Ok(updated_room)
     }
@@ -2427,7 +2650,10 @@ impl RoomService {
     /// Sets the `is_banned` flag. The room retains its previous status (Active/Closed/etc).
     /// Only global admins can ban rooms.
     pub async fn ban_room(&self, room_id: &RoomId, admin_user_id: &UserId) -> Result<Room> {
-        let room = self.room_repo.get_by_id(room_id).await?
+        let room = self
+            .room_repo
+            .get_by_id(room_id)
+            .await?
             .ok_or_else(|| Error::NotFound("Room not found".to_string()))?;
 
         if room.is_banned {
@@ -2439,16 +2665,18 @@ impl RoomService {
 
         // Audit log
         if let Some(ref audit) = self.audit_service {
-            let _ = audit.log(
-                admin_user_id.as_str().to_string(),
-                admin_user_id.as_str().to_string(),
-                AuditAction::RoomBanned,
-                AuditTargetType::Room,
-                Some(room_id.as_str().to_string()),
-                serde_json::json!({"reason": "Room banned by admin"}),
-                None,
-                None,
-            ).await;
+            let _ = audit
+                .log(
+                    admin_user_id.as_str().to_string(),
+                    admin_user_id.as_str().to_string(),
+                    AuditAction::RoomBanned,
+                    AuditTargetType::Room,
+                    Some(room_id.as_str().to_string()),
+                    serde_json::json!({"reason": "Room banned by admin"}),
+                    None,
+                    None,
+                )
+                .await;
         }
 
         Ok(updated_room)
@@ -2459,7 +2687,10 @@ impl RoomService {
     /// Clears the `is_banned` flag. The room returns to its previous status.
     /// Only global admins can unban rooms.
     pub async fn unban_room(&self, room_id: &RoomId, admin_user_id: &UserId) -> Result<Room> {
-        let room = self.room_repo.get_by_id(room_id).await?
+        let room = self
+            .room_repo
+            .get_by_id(room_id)
+            .await?
             .ok_or_else(|| Error::NotFound("Room not found".to_string()))?;
 
         if !room.is_banned {
@@ -2471,29 +2702,31 @@ impl RoomService {
 
         // Audit log
         if let Some(ref audit) = self.audit_service {
-            let _ = audit.log(
-                admin_user_id.as_str().to_string(),
-                admin_user_id.as_str().to_string(),
-                AuditAction::RoomUnbanned,
-                AuditTargetType::Room,
-                Some(room_id.as_str().to_string()),
-                serde_json::json!({"reason": "Room unbanned by admin"}),
-                None,
-                None,
-            ).await;
+            let _ = audit
+                .log(
+                    admin_user_id.as_str().to_string(),
+                    admin_user_id.as_str().to_string(),
+                    AuditAction::RoomUnbanned,
+                    AuditTargetType::Room,
+                    Some(room_id.as_str().to_string()),
+                    serde_json::json!({"reason": "Room unbanned by admin"}),
+                    None,
+                    None,
+                )
+                .await;
         }
 
         Ok(updated_room)
     }
 
     /// Get reference to playback service
-    #[must_use] 
+    #[must_use]
     pub const fn playback_service(&self) -> &PlaybackService {
         &self.playback_service
     }
 
     /// Get reference to member service
-    #[must_use] 
+    #[must_use]
     pub const fn member_service(&self) -> &MemberService {
         &self.member_service
     }
@@ -2576,7 +2809,9 @@ impl RoomService {
         self.permission_service.invalidate_room_cache(room_id).await;
 
         // Invalidate playback state cache (broadcast to other replicas)
-        self.playback_service.invalidate_playback_cache(room_id).await;
+        self.playback_service
+            .invalidate_playback_cache(room_id)
+            .await;
     }
 
     // ========================
@@ -2660,15 +2895,15 @@ impl RoomService {
 #[cfg(test)]
 #[allow(clippy::field_reassign_with_default)]
 mod tests {
-    use crate::Error;
     use crate::models::{
-        RoomSettings, RoomStatus, PermissionBits,
         room_settings::{
-            ChatEnabled, DanmakuEnabled, AllowGuestJoin, RequirePassword,
-            MaxMembers, GuestAddedPermissions, MemberAddedPermissions,
+            AllowGuestJoin, ChatEnabled, DanmakuEnabled, GuestAddedPermissions, MaxMembers,
+            MemberAddedPermissions, RequirePassword,
         },
+        PermissionBits, RoomSettings, RoomStatus,
     };
     use crate::test_helpers::RoomFixture;
+    use crate::Error;
 
     // ========== Room Name Validation ==========
 
@@ -2684,7 +2919,10 @@ mod tests {
         let result = validate_room_name("");
         assert!(result.is_err());
         match result.unwrap_err() {
-            Error::InvalidInput(msg) => assert!(msg.contains("at least 1") || msg.contains("cannot be empty"), "got: {msg}"),
+            Error::InvalidInput(msg) => assert!(
+                msg.contains("at least 1") || msg.contains("cannot be empty"),
+                "got: {msg}"
+            ),
             other => panic!("Expected InvalidInput, got: {other:?}"),
         }
     }
@@ -2703,7 +2941,10 @@ mod tests {
         let result = validate_room_name(&name);
         assert!(result.is_err());
         match result.unwrap_err() {
-            Error::InvalidInput(msg) => assert!(msg.contains("characters") || msg.contains("long"), "got: {msg}"),
+            Error::InvalidInput(msg) => assert!(
+                msg.contains("characters") || msg.contains("long"),
+                "got: {msg}"
+            ),
             other => panic!("Expected InvalidInput, got: {other:?}"),
         }
     }
@@ -2722,11 +2963,18 @@ mod tests {
         let max_len = crate::validation::ROOM_NAME_MAX;
         let name: String = std::iter::repeat_n('\u{4e00}', max_len).collect();
         assert_eq!(name.chars().count(), max_len);
-        assert!(validate_room_name(&name).is_ok(), "Room name with {max_len} CJK characters should be valid");
+        assert!(
+            validate_room_name(&name).is_ok(),
+            "Room name with {max_len} CJK characters should be valid"
+        );
 
         // (ROOM_NAME_MAX + 1) CJK characters should be rejected
         let name_too_long: String = std::iter::repeat_n('\u{4e00}', max_len + 1).collect();
-        assert!(validate_room_name(&name_too_long).is_err(), "Room name with {} CJK characters should be rejected", max_len + 1);
+        assert!(
+            validate_room_name(&name_too_long).is_err(),
+            "Room name with {} CJK characters should be rejected",
+            max_len + 1
+        );
     }
 
     // ========== Room Description Validation ==========
@@ -2834,7 +3082,10 @@ mod tests {
         let known_keys = [
             ("chat_enabled", "true"),
             ("danmaku_enabled", "false"),
-            ("auto_play", r#"{"enabled":true,"mode":"sequential","delay":3}"#),
+            (
+                "auto_play",
+                r#"{"enabled":true,"mode":"sequential","delay":3}"#,
+            ),
             ("allow_guest_join", "true"),
             ("require_password", "false"),
             ("max_members", "100"),
@@ -2977,10 +3228,7 @@ mod tests {
         let deserialized: RoomSettings = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(deserialized.chat_enabled.0, settings.chat_enabled.0);
         assert_eq!(deserialized.max_members.0, settings.max_members.0);
-        assert_eq!(
-            deserialized.require_password.0,
-            settings.require_password.0
-        );
+        assert_eq!(deserialized.require_password.0, settings.require_password.0);
     }
 
     #[test]
@@ -3167,7 +3415,9 @@ mod tests {
         // Replicates validation in `update_room_description`
         fn validate_desc(desc: &str) -> crate::Result<()> {
             if desc.chars().count() > 500 {
-                return Err(Error::InvalidInput("Room description too long (max 500 characters)".to_string()));
+                return Err(Error::InvalidInput(
+                    "Room description too long (max 500 characters)".to_string(),
+                ));
             }
             Ok(())
         }
@@ -3223,7 +3473,7 @@ mod tests {
 
     #[test]
     fn test_room_member_ban_sets_status_and_metadata() {
-        use crate::models::{RoomMember, RoomId, UserId, RoomRole, MemberStatus};
+        use crate::models::{MemberStatus, RoomId, RoomMember, RoomRole, UserId};
 
         let mut member = RoomMember::new(
             RoomId("room1".to_string()),
@@ -3244,7 +3494,7 @@ mod tests {
 
     #[test]
     fn test_room_member_unban_clears_metadata() {
-        use crate::models::{RoomMember, RoomId, UserId, RoomRole, MemberStatus};
+        use crate::models::{MemberStatus, RoomId, RoomMember, RoomRole, UserId};
 
         let mut member = RoomMember::new(
             RoomId("room1".to_string()),
@@ -3263,7 +3513,7 @@ mod tests {
 
     #[test]
     fn test_room_member_banned_has_no_permissions() {
-        use crate::models::{RoomMember, RoomId, UserId, RoomRole};
+        use crate::models::{RoomId, RoomMember, RoomRole, UserId};
 
         let mut member = RoomMember::new(
             RoomId("room1".to_string()),
@@ -3286,7 +3536,7 @@ mod tests {
 
     #[test]
     fn test_room_member_add_and_remove_permissions() {
-        use crate::models::{RoomMember, RoomId, UserId, RoomRole};
+        use crate::models::{RoomId, RoomMember, RoomRole, UserId};
 
         let mut member = RoomMember::new(
             RoomId("room1".to_string()),
@@ -3302,14 +3552,15 @@ mod tests {
         member.remove_permissions(PermissionBits::SEND_CHAT);
         assert_eq!(member.removed_permissions, PermissionBits::SEND_CHAT);
 
-        let effective = member.effective_permissions(PermissionBits(PermissionBits::DEFAULT_MEMBER));
+        let effective =
+            member.effective_permissions(PermissionBits(PermissionBits::DEFAULT_MEMBER));
         assert!(effective.has(PermissionBits::PLAY_CONTROL));
         assert!(!effective.has(PermissionBits::SEND_CHAT));
     }
 
     #[test]
     fn test_room_member_reset_to_role_default() {
-        use crate::models::{RoomMember, RoomId, UserId, RoomRole};
+        use crate::models::{RoomId, RoomMember, RoomRole, UserId};
 
         let mut member = RoomMember::new(
             RoomId("room1".to_string()),
@@ -3327,7 +3578,8 @@ mod tests {
         assert_eq!(member.admin_added_permissions, 0);
         assert_eq!(member.admin_removed_permissions, 0);
 
-        let effective = member.effective_permissions(PermissionBits(PermissionBits::DEFAULT_MEMBER));
+        let effective =
+            member.effective_permissions(PermissionBits(PermissionBits::DEFAULT_MEMBER));
         assert_eq!(effective.0, PermissionBits::DEFAULT_MEMBER);
     }
 
@@ -3362,7 +3614,7 @@ mod tests {
 
     #[test]
     fn test_room_new_has_active_status() {
-        use crate::models::{Room, UserId, RoomStatus};
+        use crate::models::{Room, RoomStatus, UserId};
         let owner = UserId::new();
         let room = Room::new("Test Room".to_string(), owner);
         assert_eq!(room.status, RoomStatus::Active);
@@ -3370,13 +3622,10 @@ mod tests {
 
     #[test]
     fn test_room_new_with_description_has_active_status() {
-        use crate::models::{Room, UserId, RoomStatus};
+        use crate::models::{Room, RoomStatus, UserId};
         let owner = UserId::new();
-        let room = Room::new_with_description(
-            "Test Room".to_string(),
-            "A test room".to_string(),
-            owner,
-        );
+        let room =
+            Room::new_with_description("Test Room".to_string(), "A test room".to_string(), owner);
         assert_eq!(room.status, RoomStatus::Active);
     }
 
@@ -3438,7 +3687,11 @@ mod tests {
 
         // Intermediate change: hash1 -> hash2
         let current_hash: Option<&str> = Some(hash2);
-        assert_ne!(verified_hash.as_deref(), current_hash, "Hash changed, should re-verify");
+        assert_ne!(
+            verified_hash.as_deref(),
+            current_hash,
+            "Hash changed, should re-verify"
+        );
 
         // A->B->A change: hash2 -> hash1 (same as original)
         let current_hash: Option<&str> = Some(hash3);
@@ -3454,5 +3707,4 @@ mod tests {
     }
 
     // ========== Integration Test Placeholders ==========
-
 }

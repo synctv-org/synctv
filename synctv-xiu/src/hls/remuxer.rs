@@ -6,32 +6,32 @@
 // - Uses xiu-storage's HlsStorage trait for segment/playlist storage
 // - Generates M3U8 dynamically in memory, no file writes
 
+use crate::flv::define::AvcCodecId;
+use crate::flv::{
+    define::{frame_type, FlvData},
+    demuxer::{FlvAudioTagDemuxer, FlvVideoTagDemuxer},
+};
 use crate::hls::segment_manager::SegmentManager;
+use crate::mpegts::{
+    define::{epsi_stream_type, MPEG_FLAG_IDR_FRAME},
+    ts::TsMuxer,
+};
 use crate::storage::HlsStorage;
+use crate::streamhub::{
+    define::{
+        BroadcastEvent, BroadcastEventReceiver, FrameData, FrameDataReceiver, NotifyInfo,
+        StreamHubEvent, StreamHubEventSender, SubscribeType, SubscriberInfo,
+    },
+    stream::StreamIdentifier,
+    utils::Uuid,
+};
 use bytes::{Bytes, BytesMut};
 use dashmap::DashMap;
 use std::collections::VecDeque;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use crate::streamhub::{
-    define::{
-        BroadcastEvent, BroadcastEventReceiver, FrameData, FrameDataReceiver,
-        NotifyInfo, StreamHubEvent, StreamHubEventSender, SubscribeType, SubscriberInfo,
-    },
-    stream::StreamIdentifier,
-    utils::Uuid,
-};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
-use crate::flv::{
-    define::{frame_type, FlvData},
-    demuxer::{FlvAudioTagDemuxer, FlvVideoTagDemuxer},
-};
-use crate::mpegts::{
-    define::{epsi_stream_type, MPEG_FLAG_IDR_FRAME},
-    ts::TsMuxer,
-};
-use crate::flv::define::AvcCodecId;
 
 /// Segment metadata for M3U8 generation
 #[derive(Debug, Clone)]
@@ -88,7 +88,8 @@ impl StreamProcessorState {
         m3u8_content.push_str("#EXT-X-VERSION:3\n");
 
         // Target duration (max segment duration in seconds, rounded up)
-        let max_duration_sec = self.segments
+        let max_duration_sec = self
+            .segments
             .iter()
             .map(|s| (s.duration + 999) / 1000)
             .max()
@@ -288,7 +289,10 @@ impl CustomHlsRemuxer {
                 }
             };
             match val {
-                BroadcastEvent::Publish { identifier, pub_type } => {
+                BroadcastEvent::Publish {
+                    identifier,
+                    pub_type,
+                } => {
                     // Only process locally published RTMP streams (RtmpPush).
                     // Skip relayed streams (RtmpRelay) — in cluster mode,
                     // only the publisher node generates HLS segments.
@@ -427,7 +431,8 @@ impl StreamHandler {
         stream_registry: StreamRegistry,
         activity_callback: Option<PublisherActivityCallback>,
     ) -> Self {
-        let (_, data_consumer) = mpsc::channel(crate::streamhub::define::FRAME_DATA_CHANNEL_CAPACITY);
+        let (_, data_consumer) =
+            mpsc::channel(crate::streamhub::define::FRAME_DATA_CHANNEL_CAPACITY);
         let subscriber_id = Uuid::new();
 
         Self {
@@ -468,7 +473,8 @@ impl StreamHandler {
             created_at: handler_created_at,
             marked_for_cleanup: false,
         }));
-        self.stream_registry.insert(registry_key.clone(), state.clone());
+        self.stream_registry
+            .insert(registry_key.clone(), state.clone());
 
         // Process FLV data and generate HLS segments
         let mut processor = StreamProcessor::new(
@@ -488,7 +494,9 @@ impl StreamHandler {
             active: true,
         };
 
-        processor.process_stream(&mut self.data_consumer, &self.activity_callback).await?;
+        processor
+            .process_stream(&mut self.data_consumer, &self.activity_callback)
+            .await?;
 
         // Deactivate drop guard - we'll unsubscribe explicitly
         unsub_guard.active = false;
@@ -530,7 +538,11 @@ impl StreamHandler {
             // Explicitly clean up segments for this stream to free memory immediately
             // rather than waiting for the periodic cleanup cycle (LS-3).
             // Safe: we confirmed no new publisher owns this stream key.
-            if let Err(e) = self.segment_manager.cleanup_stream(&self.app_name, &self.stream_name).await {
+            if let Err(e) = self
+                .segment_manager
+                .cleanup_stream(&self.app_name, &self.stream_name)
+                .await
+            {
                 tracing::warn!(
                     "Failed to cleanup segments for {}/{}: {}",
                     self.app_name,
@@ -747,7 +759,7 @@ impl StreamProcessor {
             audio_pid,
             video_codec_id: None,
             sequence_no: 0,
-            max_segments: 6, // Keep last 6 segments
+            max_segments: 6,            // Keep last 6 segments
             segment_duration_ms: 10000, // 10 seconds
             last_segment_dts: 0,
             last_dts: 0,
@@ -777,12 +789,20 @@ impl StreamProcessor {
         loop {
             match tokio::time::timeout(
                 std::time::Duration::from_millis(RECV_TIMEOUT_MS),
-                data_consumer.recv()
-            ).await {
+                data_consumer.recv(),
+            )
+            .await
+            {
                 Ok(Some(frame_data)) => {
                     let flv_data = match frame_data {
-                        FrameData::Audio { timestamp, data } => FlvData::Audio { timestamp, data: BytesMut::from(&data[..]) },
-                        FrameData::Video { timestamp, data } => FlvData::Video { timestamp, data: BytesMut::from(&data[..]) },
+                        FrameData::Audio { timestamp, data } => FlvData::Audio {
+                            timestamp,
+                            data: BytesMut::from(&data[..]),
+                        },
+                        FrameData::Video { timestamp, data } => FlvData::Video {
+                            timestamp,
+                            data: BytesMut::from(&data[..]),
+                        },
                         _ => continue,
                     };
 
@@ -798,14 +818,22 @@ impl StreamProcessor {
                 }
                 Ok(None) => {
                     // Channel closed - stream truly ended
-                    tracing::info!("Stream channel closed: {}/{}", self.app_name, self.stream_name);
+                    tracing::info!(
+                        "Stream channel closed: {}/{}",
+                        self.app_name,
+                        self.stream_name
+                    );
                     self.flush_remaining_segment().await?;
                     break;
                 }
                 Err(_timeout) => {
                     // Timeout - no data for 5 seconds, consider stream ended
-                    tracing::info!("Stream timeout (no data for {}s): {}/{}",
-                        RECV_TIMEOUT_MS / 1000, self.app_name, self.stream_name);
+                    tracing::info!(
+                        "Stream timeout (no data for {}s): {}/{}",
+                        RECV_TIMEOUT_MS / 1000,
+                        self.app_name,
+                        self.stream_name
+                    );
                     self.flush_remaining_segment().await?;
                     break;
                 }
@@ -818,10 +846,9 @@ impl StreamProcessor {
     async fn process_flv_data(&mut self, flv_data: FlvData) -> Result<(), HlsRemuxerError> {
         let (pid, pts, dts, flags, payload) = match flv_data {
             FlvData::Video { timestamp, data } => {
-                let video_data = self
-                    .video_demuxer
-                    .demux(timestamp, data)
-                    .map_err(|e| HlsRemuxerError::DemuxError(format!("Video demux error: {e:?}")))?;
+                let video_data = self.video_demuxer.demux(timestamp, data).map_err(|e| {
+                    HlsRemuxerError::DemuxError(format!("Video demux error: {e:?}"))
+                })?;
 
                 let video_data = match video_data {
                     Some(data) => data,
@@ -841,10 +868,18 @@ impl StreamProcessor {
                         let mut new_muxer = TsMuxer::new();
                         let audio_pid = new_muxer
                             .add_stream(epsi_stream_type::PSI_STREAM_AAC, BytesMut::new())
-                            .map_err(|e| HlsRemuxerError::MuxError(format!("Failed to add audio stream: {e:?}")))?;
+                            .map_err(|e| {
+                                HlsRemuxerError::MuxError(format!(
+                                    "Failed to add audio stream: {e:?}"
+                                ))
+                            })?;
                         let video_pid = new_muxer
                             .add_stream(epsi_stream_type::PSI_STREAM_HEVC, BytesMut::new())
-                            .map_err(|e| HlsRemuxerError::MuxError(format!("Failed to add HEVC video stream: {e:?}")))?;
+                            .map_err(|e| {
+                                HlsRemuxerError::MuxError(format!(
+                                    "Failed to add HEVC video stream: {e:?}"
+                                ))
+                            })?;
                         self.ts_muxer = new_muxer;
                         self.audio_pid = audio_pid;
                         self.video_pid = video_pid;
@@ -867,13 +902,18 @@ impl StreamProcessor {
                 self.last_dts = video_data.dts;
                 self.last_pts = video_data.pts;
 
-                (self.video_pid, video_data.pts, video_data.dts, flags, payload)
+                (
+                    self.video_pid,
+                    video_data.pts,
+                    video_data.dts,
+                    flags,
+                    payload,
+                )
             }
             FlvData::Audio { timestamp, data } => {
-                let audio_data = self
-                    .audio_demuxer
-                    .demux(timestamp, data)
-                    .map_err(|e| HlsRemuxerError::DemuxError(format!("Audio demux error: {e:?}")))?;
+                let audio_data = self.audio_demuxer.demux(timestamp, data).map_err(|e| {
+                    HlsRemuxerError::DemuxError(format!("Audio demux error: {e:?}"))
+                })?;
 
                 if !audio_data.has_data {
                     return Ok(());
@@ -909,7 +949,11 @@ impl StreamProcessor {
         Ok(())
     }
 
-    async fn finalize_segment(&mut self, current_dts: i64, is_eof: bool) -> Result<(), HlsRemuxerError> {
+    async fn finalize_segment(
+        &mut self,
+        current_dts: i64,
+        is_eof: bool,
+    ) -> Result<(), HlsRemuxerError> {
         let ts_data = self.ts_muxer.get_data();
         // Issue #47: Guard against zero or negative segment durations caused by
         // DTS non-monotonicity, first-segment edge cases, or encoder anomalies.
@@ -944,14 +988,19 @@ impl StreamProcessor {
             .map_err(|e| {
                 tracing::warn!(
                     "HLS segment write failed after retries: {}/{}/{} - {}",
-                    self.app_name, self.stream_name, ts_name, e
+                    self.app_name,
+                    self.stream_name,
+                    ts_name,
+                    e
                 );
                 HlsRemuxerError::StorageError(e.to_string())
             })?;
 
         tracing::debug!(
             "Wrote segment: {}/{}/{} ({}ms, {} bytes)",
-            self.app_name, self.stream_name, ts_name,
+            self.app_name,
+            self.stream_name,
+            ts_name,
             duration_ms,
             ts_data_len
         );
@@ -1190,18 +1239,48 @@ mod tests {
     #[test]
     fn test_is_transient_error() {
         // Transient errors - should retry
-        assert!(is_transient_error(&std::io::Error::new(std::io::ErrorKind::TimedOut, "timeout")));
-        assert!(is_transient_error(&std::io::Error::new(std::io::ErrorKind::ConnectionReset, "reset")));
-        assert!(is_transient_error(&std::io::Error::new(std::io::ErrorKind::ConnectionRefused, "refused")));
-        assert!(is_transient_error(&std::io::Error::new(std::io::ErrorKind::ConnectionAborted, "aborted")));
-        assert!(is_transient_error(&std::io::Error::new(std::io::ErrorKind::BrokenPipe, "broken pipe")));
-        assert!(is_transient_error(&std::io::Error::new(std::io::ErrorKind::Interrupted, "interrupted")));
-        assert!(is_transient_error(&std::io::Error::new(std::io::ErrorKind::WouldBlock, "would block")));
+        assert!(is_transient_error(&std::io::Error::new(
+            std::io::ErrorKind::TimedOut,
+            "timeout"
+        )));
+        assert!(is_transient_error(&std::io::Error::new(
+            std::io::ErrorKind::ConnectionReset,
+            "reset"
+        )));
+        assert!(is_transient_error(&std::io::Error::new(
+            std::io::ErrorKind::ConnectionRefused,
+            "refused"
+        )));
+        assert!(is_transient_error(&std::io::Error::new(
+            std::io::ErrorKind::ConnectionAborted,
+            "aborted"
+        )));
+        assert!(is_transient_error(&std::io::Error::new(
+            std::io::ErrorKind::BrokenPipe,
+            "broken pipe"
+        )));
+        assert!(is_transient_error(&std::io::Error::new(
+            std::io::ErrorKind::Interrupted,
+            "interrupted"
+        )));
+        assert!(is_transient_error(&std::io::Error::new(
+            std::io::ErrorKind::WouldBlock,
+            "would block"
+        )));
 
         // Non-transient errors - should not retry
-        assert!(!is_transient_error(&std::io::Error::new(std::io::ErrorKind::NotFound, "not found")));
-        assert!(!is_transient_error(&std::io::Error::new(std::io::ErrorKind::PermissionDenied, "permission denied")));
-        assert!(!is_transient_error(&std::io::Error::new(std::io::ErrorKind::InvalidInput, "invalid input")));
+        assert!(!is_transient_error(&std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "not found"
+        )));
+        assert!(!is_transient_error(&std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "permission denied"
+        )));
+        assert!(!is_transient_error(&std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "invalid input"
+        )));
     }
 
     #[tokio::test]

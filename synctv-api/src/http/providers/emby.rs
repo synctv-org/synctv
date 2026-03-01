@@ -10,7 +10,7 @@ use axum::{
 use serde::Deserialize;
 use serde_json::json;
 
-use crate::http::{AppError, AppState, middleware::AuthUser, provider_common::InstanceQuery};
+use crate::http::{middleware::AuthUser, provider_common::InstanceQuery, AppError, AppState};
 use synctv_core::validation::validate_url_for_ssrf;
 
 use crate::impls::providers::get_provider_binds;
@@ -55,9 +55,7 @@ async fn login(
     let api = &state.emby_api;
 
     match api.login(req, query.as_deref()).await {
-        Ok(resp) => {
-            (StatusCode::OK, Json(json!(resp))).into_response()
-        }
+        Ok(resp) => (StatusCode::OK, Json(json!(resp))).into_response(),
         Err(e) => {
             tracing::error!("Emby login failed: {}", e);
             AppError::from(e).into_response()
@@ -77,9 +75,7 @@ async fn list(
     let api = &state.emby_api;
 
     match api.list(req, query.as_deref()).await {
-        Ok(resp) => {
-            (StatusCode::OK, Json(json!(resp))).into_response()
-        }
+        Ok(resp) => (StatusCode::OK, Json(json!(resp))).into_response(),
         Err(e) => {
             tracing::error!("Emby list failed: {}", e);
             AppError::from(e).into_response()
@@ -99,9 +95,7 @@ async fn me(
     let api = &state.emby_api;
 
     match api.get_me(req, query.as_deref()).await {
-        Ok(resp) => {
-            (StatusCode::OK, Json(json!(resp))).into_response()
-        }
+        Ok(resp) => (StatusCode::OK, Json(json!(resp))).into_response(),
         Err(e) => {
             tracing::error!("Emby me failed: {}", e);
             AppError::from(e).into_response()
@@ -147,11 +141,7 @@ async fn binds(
                 })
                 .collect();
 
-            (
-                StatusCode::OK,
-                Json(json!({"binds": emby_binds})),
-            )
-                .into_response()
+            (StatusCode::OK, Json(json!({"binds": emby_binds}))).into_response()
         }
         Err(e) => {
             tracing::error!("Failed to query credentials: {}", e);
@@ -251,16 +241,10 @@ async fn thumbnail(
         )
     } else {
         // Only height specified (default)
-        format!(
-            "/Items/{item_id}/Images/Primary?maxHeight={max_height}&quality=90"
-        )
+        format!("/Items/{item_id}/Images/Primary?maxHeight={max_height}&quality=90")
     };
 
-    let thumbnail_url = format!(
-        "{}{}",
-        query.host.trim_end_matches('/'),
-        thumbnail_path
-    );
+    let thumbnail_url = format!("{}{}", query.host.trim_end_matches('/'), thumbnail_path);
 
     tracing::debug!(
         item_id = %item_id,

@@ -1,7 +1,6 @@
 use {
-    super::errors::ProtocolControlMessageReaderError,
+    super::errors::ProtocolControlMessageReaderError, crate::bytesio::bytes_reader::BytesReader,
     crate::rtmp::messages::define::SetPeerBandwidthProperties, byteorder::BigEndian,
-    crate::bytesio::bytes_reader::BytesReader,
 };
 
 pub struct ProtocolControlMessageReader {
@@ -9,7 +8,7 @@ pub struct ProtocolControlMessageReader {
 }
 
 impl ProtocolControlMessageReader {
-    #[must_use] 
+    #[must_use]
     pub const fn new(reader: BytesReader) -> Self {
         Self { reader }
     }

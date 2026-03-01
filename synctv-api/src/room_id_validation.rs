@@ -3,8 +3,8 @@
 //! This module provides utilities for validating and parsing room IDs
 //! that can be used by both HTTP and gRPC endpoints.
 
+use crate::http::validation::{validate_room_id as http_validate_room_id, ValidationError};
 use synctv_core::models::RoomId;
-use crate::http::validation::{ValidationError, validate_room_id as http_validate_room_id};
 
 /// Validate and parse a room ID string
 ///
@@ -48,10 +48,10 @@ mod tests {
         assert!(parse_room_id("room123").is_ok());
         assert!(parse_room_id("room_123").is_ok());
         assert!(parse_room_id("room-123").is_ok());
-        assert!(parse_room_id("Room123").is_ok());  // Case sensitive
-        assert!(parse_room_id("ROOM123").is_ok());  // All caps
-        assert!(parse_room_id("a").is_ok());  // Single char
-        assert!(parse_room_id("123").is_ok());  // Numbers only
+        assert!(parse_room_id("Room123").is_ok()); // Case sensitive
+        assert!(parse_room_id("ROOM123").is_ok()); // All caps
+        assert!(parse_room_id("a").is_ok()); // Single char
+        assert!(parse_room_id("123").is_ok()); // Numbers only
     }
 
     #[test]
@@ -63,9 +63,9 @@ mod tests {
         assert!(parse_room_id("room%123").is_err());
         assert!(parse_room_id("room&123").is_err());
         assert!(parse_room_id("room*123").is_err());
-        assert!(parse_room_id("room 123").is_err());  // Space
-        assert!(parse_room_id("room.123").is_err());  // Dot
-        assert!(parse_room_id("room/123").is_err());  // Slash
+        assert!(parse_room_id("room 123").is_err()); // Space
+        assert!(parse_room_id("room.123").is_err()); // Dot
+        assert!(parse_room_id("room/123").is_err()); // Slash
         assert!(parse_room_id("room\\123").is_err()); // Backslash
 
         // Empty

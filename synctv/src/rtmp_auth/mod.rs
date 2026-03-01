@@ -19,14 +19,14 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use percent_encoding::percent_decode_str;
-use synctv_livestream::AuthCallback;
 use synctv_livestream::api::UserStreamTracker;
 use synctv_livestream::relay::StreamRegistryTrait;
+use synctv_livestream::AuthCallback;
 // TTL for the rtmp:user_streams Redis hash field, matching the publisher TTL.
 use synctv_livestream::relay::registry::PUBLISHER_TTL_SECS;
 
 use synctv_core::{
-    models::{RoomStatus, UserStatus, MediaId, UserId},
+    models::{MediaId, RoomStatus, UserId, UserStatus},
     service::{PublishKeyService, RoomService, UserService},
 };
 
@@ -136,12 +136,18 @@ impl AuthCallback for SyncTvRtmpAuth {
         app_name: &str,
         stream_name: &str,
         query: Option<&str>,
-    ) -> Result<Option<synctv_livestream::rtmp_auth::AuthPublishRewrite>, Box<dyn std::error::Error + Send + Sync>> {
+    ) -> Result<
+        Option<synctv_livestream::rtmp_auth::AuthPublishRewrite>,
+        Box<dyn std::error::Error + Send + Sync>,
+    > {
         // Phase 1: Validate room, token, user status, and authorization
-        let validated = self.validate_publish_request(app_name, stream_name, query).await?;
+        let validated = self
+            .validate_publish_request(app_name, stream_name, query)
+            .await?;
 
         // Phase 2: Register in Redis, track mapping, emit event, spawn TTL renewal
-        self.register_and_start_ttl(&validated, app_name, stream_name).await?;
+        self.register_and_start_ttl(&validated, app_name, stream_name)
+            .await?;
 
         // Phase 3: Return rewrite so StreamHub uses canonical (room_id, media_id)
         // instead of the raw RTMP identifiers (room_id, JWT_TOKEN).
@@ -198,26 +204,18 @@ impl AuthCallback for SyncTvRtmpAuth {
         }
     }
 
-    async fn on_unplay(
-        &self,
-        app_name: &str,
-        _stream_name: &str,
-        _query: Option<&str>,
-    ) {
+    async fn on_unplay(&self, app_name: &str, _stream_name: &str, _query: Option<&str>) {
         tracing::info!(
             room_id = %app_name,
             "RTMP player disconnected"
         );
     }
 
-    async fn on_unpublish(
-        &self,
-        app_name: &str,
-        stream_name: &str,
-        _query: Option<&str>,
-    ) {
+    async fn on_unpublish(&self, app_name: &str, stream_name: &str, _query: Option<&str>) {
         // Remove user→stream mapping from tracker (resolves RTMP identifiers to logical stream)
-        let tracked = self.user_stream_tracker.remove_by_app_stream(app_name, stream_name);
+        let tracked = self
+            .user_stream_tracker
+            .remove_by_app_stream(app_name, stream_name);
 
         if let Some((ref user_id, ref room_id, ref media_id)) = tracked {
             tracing::info!(
@@ -267,7 +265,11 @@ impl AuthCallback for SyncTvRtmpAuth {
                 app_name, stream_name
             );
 
-            if let Err(e) = self.registry.unregister_publisher(app_name, stream_name).await {
+            if let Err(e) = self
+                .registry
+                .unregister_publisher(app_name, stream_name)
+                .await
+            {
                 tracing::error!(
                     room_id = %app_name,
                     media_id = %stream_name,
@@ -332,7 +334,9 @@ impl SyncTvRtmpAuth {
         // Validate room
         let room = self
             .room_service
-            .get_room(&synctv_core::models::RoomId::from_string(app_name.to_string()))
+            .get_room(&synctv_core::models::RoomId::from_string(
+                app_name.to_string(),
+            ))
             .await
             .map_err(|e| format!("Failed to load room: {e}"))?;
 
@@ -406,7 +410,12 @@ impl SyncTvRtmpAuth {
             false
         } else {
             let room_id = synctv_core::models::RoomId::from_string(app_name.to_string());
-            match self.room_service.member_service().get_member(&room_id, user_id).await {
+            match self
+                .room_service
+                .member_service()
+                .get_member(&room_id, user_id)
+                .await
+            {
                 Ok(Some(member)) => matches!(
                     member.role,
                     synctv_core::models::RoomRole::Creator | synctv_core::models::RoomRole::Admin
@@ -418,14 +427,19 @@ impl SyncTvRtmpAuth {
         // Verify media belongs to this room
         let media_id = MediaId::from_string(claims.media_id.clone());
         let room_id_obj = synctv_core::models::RoomId::from_string(app_name.to_string());
-        let media = self.room_service.media_service().get_media(&media_id).await
+        let media = self
+            .room_service
+            .media_service()
+            .get_media(&media_id)
+            .await
             .map_err(|e| format!("Failed to load media: {e}"))?
             .ok_or_else(|| format!("Media {} not found", claims.media_id))?;
         if media.room_id != room_id_obj {
             return Err(format!(
                 "Media {} does not belong to room {}",
                 claims.media_id, app_name
-            ).into());
+            )
+            .into());
         }
 
         let is_media_creator = if !is_global_admin && !is_room_admin_or_creator {
@@ -464,7 +478,8 @@ impl SyncTvRtmpAuth {
         // This also writes user→stream to `stream:user_publishers:{user_id}` via
         // the Lua script in try_register_publisher_with_user, providing a cross-replica
         // reverse index for user→stream lookups via get_user_publishers().
-        let registered = self.registry
+        let registered = self
+            .registry
             .try_register_publisher(
                 &validated.room_id,
                 &validated.media_id,
@@ -479,7 +494,8 @@ impl SyncTvRtmpAuth {
             return Err(format!(
                 "Another publisher is already active for media {} in room {}",
                 validated.media_id, validated.room_id
-            ).into());
+            )
+            .into());
         }
 
         tracing::info!(
@@ -525,10 +541,11 @@ impl SyncTvRtmpAuth {
                      Rolling back publisher registration to maintain consistency.",
                     e
                 );
-                if let Err(unreg_err) = self.registry.unregister_publisher(
-                    &validated.room_id,
-                    &validated.media_id,
-                ).await {
+                if let Err(unreg_err) = self
+                    .registry
+                    .unregister_publisher(&validated.room_id, &validated.media_id)
+                    .await
+                {
                     tracing::error!(
                         room_id = %validated.room_id,
                         media_id = %validated.media_id,
@@ -537,9 +554,7 @@ impl SyncTvRtmpAuth {
                         unreg_err
                     );
                 }
-                return Err(format!(
-                    "Failed to write user stream mapping to Redis: {e}"
-                ).into());
+                return Err(format!("Failed to write user stream mapping to Redis: {e}").into());
             }
         }
 
@@ -580,12 +595,11 @@ impl SyncTvRtmpAuth {
         if let Some(ref conn) = self.redis_conn {
             let mut conn = conn.clone();
             let key = self.user_streams_key();
-            let result: Result<Option<String>, redis::RedisError> =
-                redis::cmd("HGET")
-                    .arg(&key)
-                    .arg(user_id)
-                    .query_async(&mut conn)
-                    .await;
+            let result: Result<Option<String>, redis::RedisError> = redis::cmd("HGET")
+                .arg(&key)
+                .arg(user_id)
+                .query_async(&mut conn)
+                .await;
             match result {
                 Ok(Some(stream_key)) => {
                     if let Some((room_id, media_id)) = stream_key.split_once(':') {
@@ -700,7 +714,11 @@ mod tests {
             user_id: "user1".to_string(),
         };
         match event {
-            StreamLifecycleEvent::Started { room_id, media_id, user_id } => {
+            StreamLifecycleEvent::Started {
+                room_id,
+                media_id,
+                user_id,
+            } => {
                 assert_eq!(room_id, "room1");
                 assert_eq!(media_id, "media1");
                 assert_eq!(user_id, "user1");
@@ -717,7 +735,11 @@ mod tests {
             user_id: "user1".to_string(),
         };
         match event {
-            StreamLifecycleEvent::Stopped { room_id, media_id, user_id } => {
+            StreamLifecycleEvent::Stopped {
+                room_id,
+                media_id,
+                user_id,
+            } => {
                 assert_eq!(room_id, "room1");
                 assert_eq!(media_id, "media1");
                 assert_eq!(user_id, "user1");

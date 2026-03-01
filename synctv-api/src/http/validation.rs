@@ -477,7 +477,7 @@ pub fn validate_email(email: &str) -> ValidationResult<String> {
         if tld.len() < 2 {
             return Err(ValidationError::InvalidFormat { field: "email" });
         }
-        if !tld.chars().all(|c| c.is_alphabetic()) {
+        if !tld.chars().all(char::is_alphabetic) {
             return Err(ValidationError::InvalidFormat { field: "email" });
         }
     }
@@ -979,7 +979,7 @@ mod tests {
     fn test_validate_email_rejects_long_local_part() {
         // RFC 5321: local part max 64 chars
         let long_local = "a".repeat(65);
-        let email = format!("{}@example.com", long_local);
+        let email = format!("{long_local}@example.com");
         assert!(validate_email(&email).is_err());
     }
 

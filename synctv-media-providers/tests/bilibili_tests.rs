@@ -1,7 +1,7 @@
 //! Bilibili provider tests
 //!
-//! Tests for URL matching and public API surface of BilibiliClient.
-//! Private methods (is_wbi_stale_error, build_cookie_header) are tested
+//! Tests for URL matching and public API surface of `BilibiliClient`.
+//! Private methods (`is_wbi_stale_error`, `build_cookie_header`) are tested
 //! inline in src/bilibili/client.rs via #[cfg(test)].
 
 #![allow(clippy::unwrap_used)]

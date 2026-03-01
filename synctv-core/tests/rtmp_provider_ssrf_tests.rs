@@ -1,13 +1,13 @@
-//! SSRF protection tests for RtmpProvider
+//! SSRF protection tests for `RtmpProvider`
 //!
-//! These tests verify that the RtmpProvider validates its base_url configuration
-//! and source_config fields to prevent Server-Side Request Forgery attacks.
+//! These tests verify that the `RtmpProvider` validates its `base_url` configuration
+//! and `source_config` fields to prevent Server-Side Request Forgery attacks.
 #![allow(clippy::unwrap_used)]
 
 use synctv_core::provider::{MediaProvider, ProviderContext, ProviderError, RtmpProvider};
 use serde_json::json;
 
-fn create_context() -> ProviderContext<'static> {
+const fn create_context() -> ProviderContext<'static> {
     ProviderContext::new("synctv")
         .with_user_id("test_user")
         .with_room_id("test_room")

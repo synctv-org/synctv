@@ -1,9 +1,9 @@
 //! Unit tests for pure model logic (no Docker/database needed)
 //!
-//! Covers: UserRole, UserStatus, User permission checks, RoomStatus,
-//! PermissionBits, RoomRole, room permission calculations.
+//! Covers: `UserRole`, `UserStatus`, User permission checks, `RoomStatus`,
+//! `PermissionBits`, `RoomRole`, room permission calculations.
 //!
-//! Run with: cargo test --test model_logic_tests
+//! Run with: cargo test --test `model_logic_tests`
 #![allow(clippy::unwrap_used)]
 
 use synctv_core::models::{

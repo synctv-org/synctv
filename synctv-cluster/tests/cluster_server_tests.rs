@@ -1,9 +1,9 @@
-//! CL5: ClusterServer gRPC handlers
+//! CL5: `ClusterServer` gRPC handlers
 //!
-//! - validate_node_id: empty/long/invalid -> error
-//! - get_user_online_status: MAX_USER_IDS+1 -> invalid_argument
-//! - connection_manager=None -> empty results
-//! - deregister_node: epoch-required check
+//! - `validate_node_id`: empty/long/invalid -> error
+//! - `get_user_online_status`: `MAX_USER_IDS+1` -> `invalid_argument`
+//! - `connection_manager=None` -> empty results
+//! - `deregister_node`: epoch-required check
 
 #![allow(clippy::unwrap_used)]
 use std::sync::Arc;
@@ -19,7 +19,7 @@ use synctv_cluster::grpc::synctv::cluster::{
     GetUserOnlineStatusRequest, HeartbeatRequest, RegisterNodeRequest,
 };
 
-/// Helper: create a ClusterServer with no ConnectionManager.
+/// Helper: create a `ClusterServer` with no `ConnectionManager`.
 fn make_server() -> ClusterServer {
     let registry = Arc::new(
         NodeRegistry::new(
@@ -37,7 +37,7 @@ fn make_server() -> ClusterServer {
 // validate_node_id tests
 // ============================================================================
 
-/// Empty node_id -> invalid_argument.
+/// Empty `node_id` -> `invalid_argument`.
 #[tokio::test]
 async fn test_deregister_node_empty_id_rejected() {
     let server = make_server();
@@ -63,7 +63,7 @@ async fn test_deregister_node_empty_id_rejected() {
     );
 }
 
-/// node_id longer than 64 chars -> invalid_argument.
+/// `node_id` longer than 64 chars -> `invalid_argument`.
 #[tokio::test]
 async fn test_deregister_node_too_long_id_rejected() {
     let server = make_server();
@@ -86,7 +86,7 @@ async fn test_deregister_node_too_long_id_rejected() {
     );
 }
 
-/// node_id with invalid characters -> invalid_argument.
+/// `node_id` with invalid characters -> `invalid_argument`.
 #[tokio::test]
 async fn test_deregister_node_invalid_chars_rejected() {
     let server = make_server();
@@ -111,7 +111,7 @@ async fn test_deregister_node_invalid_chars_rejected() {
     );
 }
 
-/// Valid node_id characters: alphanumeric, underscore, hyphen.
+/// Valid `node_id` characters: alphanumeric, underscore, hyphen.
 #[tokio::test]
 async fn test_deregister_node_valid_id_accepted() {
     let server = make_server();
@@ -135,12 +135,12 @@ async fn test_deregister_node_valid_id_accepted() {
 // get_user_online_status: MAX_USER_IDS+1 -> invalid_argument
 // ============================================================================
 
-/// Sending more than 1000 user IDs -> invalid_argument.
+/// Sending more than 1000 user IDs -> `invalid_argument`.
 #[tokio::test]
 async fn test_get_user_online_status_too_many_ids() {
     let server = make_server();
 
-    let user_ids: Vec<String> = (0..1001).map(|i| format!("user_{}", i)).collect();
+    let user_ids: Vec<String> = (0..1001).map(|i| format!("user_{i}")).collect();
     let request = Request::new(GetUserOnlineStatusRequest { user_ids });
 
     let result = server.get_user_online_status(request).await;
@@ -164,7 +164,7 @@ async fn test_get_user_online_status_too_many_ids() {
 async fn test_get_user_online_status_at_limit() {
     let server = make_server();
 
-    let user_ids: Vec<String> = (0..1000).map(|i| format!("user_{}", i)).collect();
+    let user_ids: Vec<String> = (0..1000).map(|i| format!("user_{i}")).collect();
     let request = Request::new(GetUserOnlineStatusRequest { user_ids });
 
     // Without connection_manager, returns empty statuses
@@ -185,7 +185,7 @@ async fn test_get_user_online_status_at_limit() {
 // connection_manager=None -> empty results
 // ============================================================================
 
-/// get_user_online_status with no ConnectionManager returns empty.
+/// `get_user_online_status` with no `ConnectionManager` returns empty.
 #[tokio::test]
 async fn test_get_user_online_status_no_connection_manager() {
     let server = make_server(); // No with_connection_manager() call
@@ -204,7 +204,7 @@ async fn test_get_user_online_status_no_connection_manager() {
     );
 }
 
-/// get_room_connections with no ConnectionManager returns empty.
+/// `get_room_connections` with no `ConnectionManager` returns empty.
 #[tokio::test]
 async fn test_get_room_connections_no_connection_manager() {
     let server = make_server(); // No with_connection_manager() call
@@ -227,7 +227,7 @@ async fn test_get_room_connections_no_connection_manager() {
 // deregister_node: epoch-required check
 // ============================================================================
 
-/// deregister_node with epoch=0 -> invalid_argument (epoch is required).
+/// `deregister_node` with epoch=0 -> `invalid_argument` (epoch is required).
 #[tokio::test]
 async fn test_deregister_node_epoch_zero_rejected() {
     let server = make_server();
@@ -253,7 +253,7 @@ async fn test_deregister_node_epoch_zero_rejected() {
     );
 }
 
-/// deregister_node with valid epoch should pass validation.
+/// `deregister_node` with valid epoch should pass validation.
 #[tokio::test]
 async fn test_deregister_node_valid_epoch_accepted() {
     let server = make_server();

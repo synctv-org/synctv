@@ -9,16 +9,19 @@ use crate::models::{RoomId, UserId, UserRole, UserStatus, PlaylistId};
 use chrono::Utc;
 
 /// Create a test user ID
+#[must_use] 
 pub fn test_user_id(id: &str) -> UserId {
     UserId::from_string(id.to_string())
 }
 
 /// Create a test room ID
+#[must_use] 
 pub fn test_room_id(id: &str) -> RoomId {
     RoomId(id.to_string())
 }
 
 /// Generate a random user ID for testing
+#[must_use] 
 pub fn random_user_id() -> UserId {
     UserId::new()
 }
@@ -39,6 +42,7 @@ pub struct UserFixture {
 }
 
 impl UserFixture {
+    #[must_use] 
     pub fn new() -> Self {
         Self {
             id: random_user_id(),
@@ -50,31 +54,37 @@ impl UserFixture {
         }
     }
 
+    #[must_use] 
     pub fn with_id(mut self, id: UserId) -> Self {
         self.id = id;
         self
     }
 
+    #[must_use] 
     pub fn with_username(mut self, username: &str) -> Self {
         self.username = username.to_string();
         self
     }
 
+    #[must_use] 
     pub fn with_role(mut self, role: UserRole) -> Self {
         self.role = role;
         self
     }
 
+    #[must_use] 
     pub fn with_status(mut self, status: UserStatus) -> Self {
         self.status = status;
         self
     }
 
+    #[must_use] 
     pub fn with_email(mut self, email: &str) -> Self {
         self.email = Some(email.to_string());
         self
     }
 
+    #[must_use] 
     pub fn build(self) -> crate::models::User {
         let now = Utc::now();
         // Generate unique email if not provided to avoid unique constraint violations in parallel tests
@@ -117,6 +127,7 @@ pub struct RoomFixture {
 }
 
 impl RoomFixture {
+    #[must_use] 
     pub fn new() -> Self {
         Self {
             id: random_room_id(),
@@ -128,38 +139,45 @@ impl RoomFixture {
         }
     }
 
+    #[must_use] 
     pub fn with_id(mut self, id: RoomId) -> Self {
         self.id = id;
         self
     }
 
+    #[must_use] 
     pub fn with_name(mut self, name: &str) -> Self {
         self.name = name.to_string();
         self
     }
 
+    #[must_use] 
     pub fn with_description(mut self, description: &str) -> Self {
         self.description = description.to_string();
         self
     }
 
+    #[must_use] 
     pub fn with_owner(mut self, created_by: UserId) -> Self {
         self.created_by = created_by;
         self
     }
 
-    /// Set the created_at timestamp for testing room_ttl enforcement
+    /// Set the `created_at` timestamp for testing `room_ttl` enforcement
+    #[must_use] 
     pub fn with_created_at(mut self, created_at: chrono::DateTime<chrono::Utc>) -> Self {
         self.created_at = Some(created_at);
         self
     }
 
-    /// Set the updated_at timestamp for testing room_ttl enforcement
+    /// Set the `updated_at` timestamp for testing `room_ttl` enforcement
+    #[must_use] 
     pub fn with_updated_at(mut self, updated_at: chrono::DateTime<chrono::Utc>) -> Self {
         self.updated_at = Some(updated_at);
         self
     }
 
+    #[must_use] 
     pub fn build(self) -> crate::models::Room {
         let now = Utc::now();
         crate::models::Room {
@@ -201,26 +219,31 @@ impl ChatMessageFixture {
         }
     }
 
+    #[must_use] 
     pub fn with_id(mut self, id: &str) -> Self {
         self.id = id.to_string();
         self
     }
 
+    #[must_use] 
     pub fn with_room_id(mut self, room_id: RoomId) -> Self {
         self.room_id = room_id;
         self
     }
 
+    #[must_use] 
     pub fn with_user_id(mut self, user_id: UserId) -> Self {
         self.user_id = user_id;
         self
     }
 
+    #[must_use] 
     pub fn with_content(mut self, content: &str) -> Self {
         self.content = content.to_string();
         self
     }
 
+    #[must_use] 
     pub fn build(self) -> crate::models::ChatMessage {
         crate::models::ChatMessage {
             id: self.id,
@@ -254,6 +277,7 @@ impl PlaylistFixture {
     ///
     /// Per the database constraint, root playlists must have an empty name.
     /// Use `new_child()` to create a playlist with a non-empty name.
+    #[must_use] 
     pub fn new() -> Self {
         Self {
             id: PlaylistId::new(),
@@ -268,7 +292,7 @@ impl PlaylistFixture {
     /// Create a child playlist fixture with a non-empty name and parent
     ///
     /// Per the database constraint, non-root playlists must have a non-empty name
-    /// without '/' characters, and must have a parent_id.
+    /// without '/' characters, and must have a `parent_id`.
     pub fn new_child(parent_id: PlaylistId) -> Self {
         Self {
             id: PlaylistId::new(),
@@ -280,16 +304,19 @@ impl PlaylistFixture {
         }
     }
 
+    #[must_use] 
     pub fn with_id(mut self, id: PlaylistId) -> Self {
         self.id = id;
         self
     }
 
+    #[must_use] 
     pub fn with_room_id(mut self, room_id: RoomId) -> Self {
         self.room_id = room_id;
         self
     }
 
+    #[must_use] 
     pub fn with_creator(mut self, creator_id: UserId) -> Self {
         self.creator_id = Some(creator_id);
         self
@@ -297,24 +324,28 @@ impl PlaylistFixture {
 
     /// Set the playlist name
     ///
-    /// WARNING: If you set a non-empty name, you MUST also set a parent_id
+    /// WARNING: If you set a non-empty name, you MUST also set a `parent_id`
     /// using `with_parent()`, otherwise the playlist will violate the database
     /// constraint. Root playlists must have empty names.
+    #[must_use] 
     pub fn with_name(mut self, name: &str) -> Self {
         self.name = name.to_string();
         self
     }
 
+    #[must_use] 
     pub fn with_parent(mut self, parent_id: PlaylistId) -> Self {
         self.parent_id = Some(parent_id);
         self
     }
 
+    #[must_use] 
     pub fn with_position(mut self, position: i32) -> Self {
         self.position = position;
         self
     }
 
+    #[must_use] 
     pub fn build(self) -> crate::models::Playlist {
         let now = Utc::now();
         crate::models::Playlist {
@@ -346,8 +377,8 @@ impl Default for PlaylistFixture {
 /// with the given name. Returns the child playlist for use in tests.
 ///
 /// This is needed because the database constraint requires:
-/// - Root playlists (parent_id IS NULL) must have empty names
-/// - Child playlists (parent_id IS NOT NULL) must have non-empty names
+/// - Root playlists (`parent_id` IS NULL) must have empty names
+/// - Child playlists (`parent_id` IS NOT NULL) must have non-empty names
 ///
 /// # Example
 /// ```ignore
@@ -385,8 +416,8 @@ where
 {
     tokio::select! {
         result = future => result,
-        _ = tokio::time::sleep(duration) => {
-            panic!("Test timed out after {:?}", duration);
+        () = tokio::time::sleep(duration) => {
+            panic!("Test timed out after {duration:?}");
         }
     }
 }

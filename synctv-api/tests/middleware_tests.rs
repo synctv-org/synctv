@@ -1,7 +1,7 @@
 //! Middleware tests for synctv-api
 //!
 //! Tests AuthUser/GuestUser extractors and rate limit middleware behavior
-//! using axum test utilities (tower::ServiceExt::oneshot).
+//! using axum test utilities (`tower::ServiceExt::oneshot`).
 
 #![allow(clippy::unwrap_used)]
 use axum::{
@@ -30,9 +30,9 @@ async fn body_json(response: axum::response::Response) -> Value {
 // AuthUser extractor tests (simulated)
 // ============================================================================
 
-/// Without Authorization header, AuthUser extraction should fail with 401.
+/// Without Authorization header, `AuthUser` extraction should fail with 401.
 ///
-/// Since AuthUser requires AppState (with JWT validator, security pipeline, etc.),
+/// Since `AuthUser` requires `AppState` (with JWT validator, security pipeline, etc.),
 /// we simulate the behavior by testing the error path directly -- the extractor
 /// checks for the Authorization header first before any async work.
 #[tokio::test]

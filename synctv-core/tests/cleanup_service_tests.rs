@@ -1,10 +1,10 @@
-//! CleanupService tests (S12b)
+//! `CleanupService` tests (S12b)
 //!
 //! Tests zero retention skipping all tasks, and non-leader skipping cleanup.
 //! These are unit-style tests that don't need a real database for the leader/config
-//! checks (but use testcontainers for run_all verification).
+//! checks (but use testcontainers for `run_all` verification).
 //!
-//! Run with: cargo test -p synctv-core --test cleanup_service_tests -- --nocapture
+//! Run with: cargo test -p synctv-core --test `cleanup_service_tests` -- --nocapture
 #![allow(clippy::unwrap_used)]
 
 use std::sync::Arc;
@@ -19,7 +19,7 @@ use synctv_core::models::{Room, User, UserId, RoomId, UserRole, UserStatus, Room
 use sqlx::PgPool;
 use chrono::{Duration, Utc};
 
-/// A LeaderCheck that always returns false
+/// A `LeaderCheck` that always returns false
 struct NeverLeader;
 
 impl LeaderCheck for NeverLeader {
@@ -215,7 +215,7 @@ fn create_test_room(created_by: UserId, updated_at: Option<chrono::DateTime<Utc>
     }
 }
 
-/// Test that a room newer than room_ttl is NOT soft-deleted
+/// Test that a room newer than `room_ttl` is NOT soft-deleted
 #[tokio::test]
 #[ignore = "Requires Docker"]
 async fn test_room_ttl_new_room_not_expired() {
@@ -248,7 +248,7 @@ async fn test_room_ttl_new_room_not_expired() {
     assert!(found.deleted_at.is_none(), "Room should not be soft-deleted");
 }
 
-/// Test that a room older than room_ttl IS soft-deleted
+/// Test that a room older than `room_ttl` IS soft-deleted
 #[tokio::test]
 #[ignore = "Requires Docker"]
 async fn test_room_ttl_old_room_is_expired() {
@@ -288,7 +288,7 @@ async fn test_room_ttl_old_room_is_expired() {
     assert!(found.deleted_at.is_some(), "Room should be soft-deleted");
 }
 
-/// Test that already soft-deleted rooms are not affected by room_ttl check
+/// Test that already soft-deleted rooms are not affected by `room_ttl` check
 #[tokio::test]
 #[ignore = "Requires Docker"]
 async fn test_room_ttl_skips_already_soft_deleted() {
@@ -323,7 +323,7 @@ async fn test_room_ttl_skips_already_soft_deleted() {
     assert_eq!(result.rooms_expired, 0, "Already soft-deleted room should not be counted");
 }
 
-/// Test that room_ttl = 0 disables expiration
+/// Test that `room_ttl` = 0 disables expiration
 #[tokio::test]
 #[ignore = "Requires Docker"]
 async fn test_room_ttl_zero_disables_expiration() {

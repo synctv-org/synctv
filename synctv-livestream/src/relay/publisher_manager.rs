@@ -1048,7 +1048,7 @@ mod tests {
         assert!(manager.active_publishers.contains_key("room123:media456"));
     }
 
-    /// Helper to insert a publisher entry into the active_publishers map.
+    /// Helper to insert a publisher entry into the `active_publishers` map.
     fn insert_entry(manager: &PublisherManager, key: &str) {
         manager.active_publishers.insert(
             key.to_string(),
@@ -1176,16 +1176,16 @@ mod tests {
     // Memory leak tests: reregister_all_publishers should clean up zombie entries
     // ========================================================================
 
-    /// Test that reregister_all_publishers cleans up stale entries from local DashMap
+    /// Test that `reregister_all_publishers` cleans up stale entries from local `DashMap`
     /// when the registry entry no longer exists.
     ///
     /// Scenario:
-    /// 1. Publisher is tracked locally (entry in DashMap)
+    /// 1. Publisher is tracked locally (entry in `DashMap`)
     /// 2. Registry entry expires or is removed (e.g., TTL, external cleanup)
-    /// 3. UnPublish event is lost - handle_unpublish never called
-    /// 4. reregister_all_publishers is called
+    /// 3. `UnPublish` event is lost - `handle_unpublish` never called
+    /// 4. `reregister_all_publishers` is called
     ///
-    /// Expected: The stale entry should be removed from DashMap.
+    /// Expected: The stale entry should be removed from `DashMap`.
     #[tokio::test]
     async fn test_reregister_removes_stale_entry_when_registry_entry_gone() {
         let registry = Arc::new(MockStreamRegistry::new());
@@ -1217,7 +1217,7 @@ mod tests {
         );
     }
 
-    /// Test that reregister_all_publishers removes local entry when
+    /// Test that `reregister_all_publishers` removes local entry when
     /// the publisher is now owned by another node.
     #[tokio::test]
     async fn test_reregister_removes_entry_taken_over_by_other_node() {
@@ -1253,7 +1253,7 @@ mod tests {
         );
     }
 
-    /// Test that reregister_all_publishers keeps entries that are still
+    /// Test that `reregister_all_publishers` keeps entries that are still
     /// owned by this node in the registry.
     #[tokio::test]
     async fn test_reregister_keeps_entries_owned_by_this_node() {
@@ -1338,14 +1338,14 @@ mod tests {
         );
     }
 
-    /// Regression test for the DashMap memory leak.
+    /// Regression test for the `DashMap` memory leak.
     ///
     /// This test simulates the exact scenario that causes the memory leak:
     /// 1. Multiple publishers are tracked locally
     /// 2. All registry entries expire or are removed
-    /// 3. UnPublish events are lost (e.g., broadcast channel lag)
-    /// 4. Without the fix, entries would remain in DashMap forever
-    /// 5. With the fix, reregister_all_publishers cleans them up
+    /// 3. `UnPublish` events are lost (e.g., broadcast channel lag)
+    /// 4. Without the fix, entries would remain in `DashMap` forever
+    /// 5. With the fix, `reregister_all_publishers` cleans them up
     #[tokio::test]
     async fn test_memory_leak_regression_zombie_cleanup() {
         let registry = Arc::new(MockStreamRegistry::new());

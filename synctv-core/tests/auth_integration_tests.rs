@@ -1,9 +1,9 @@
 //! Authentication integration tests
 //!
 //! Tests the complete authentication flow: register -> login -> operations -> logout
-//! with all security checks enforced by SecurityPipeline.
+//! with all security checks enforced by `SecurityPipeline`.
 //!
-//! Run with: cargo test --test auth_integration_tests
+//! Run with: cargo test --test `auth_integration_tests`
 //!
 //! # Test Coverage
 //!
@@ -14,7 +14,7 @@
 //!
 //! # Requirements
 //!
-//! - Docker for testcontainers (PostgreSQL + Redis)
+//! - Docker for testcontainers (`PostgreSQL` + Redis)
 #![allow(clippy::unwrap_used)]
 
 use std::sync::Arc;
@@ -59,8 +59,7 @@ async fn create_test_infra() -> (ContainerAsync<Postgres>, ContainerAsync<Redis>
     let pg_port = postgres.get_host_port_ipv4(5432).await.expect("Failed to get port");
 
     let database_url = format!(
-        "postgres://synctv:synctv_test@{}:{}/synctv_test",
-        pg_host, pg_port
+        "postgres://synctv:synctv_test@{pg_host}:{pg_port}/synctv_test"
     );
 
     // Retry connection until PG is fully ready
@@ -96,7 +95,7 @@ async fn create_test_infra() -> (ContainerAsync<Postgres>, ContainerAsync<Redis>
         .expect("Failed to start Redis container");
 
     let redis_port = redis.get_host_port_ipv4(6379).await.expect("Failed to get port");
-    let redis_url = format!("redis://127.0.0.1:{}", redis_port);
+    let redis_url = format!("redis://127.0.0.1:{redis_port}");
 
     (postgres, redis, pool, redis_url)
 }

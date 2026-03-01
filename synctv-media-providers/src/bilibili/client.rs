@@ -1575,13 +1575,12 @@ fn parse_danmaku_packet(data: &[u8]) -> Result<Vec<DanmakuMessage>, BilibiliErro
     let mut messages = Vec::new();
 
     match operation {
-        3 => {
+        3
             // Heartbeat response (online count)
-            if data.len() >= 20 {
+            if data.len() >= 20 => {
                 let online_count = u32::from_be_bytes([data[16], data[17], data[18], data[19]]);
                 messages.push(DanmakuMessage::Heartbeat { online_count });
             }
-        }
         5 => {
             // Notification message
             let body = &data[16..];
@@ -2473,7 +2472,7 @@ mod tests {
             .collect();
         // a_param, m_param, wts, z_param (alphabetically sorted)
         let mut sorted = keys_before_wrid.clone();
-        sorted.sort();
+        sorted.sort_unstable();
         assert_eq!(keys_before_wrid, sorted, "params should be sorted alphabetically");
     }
 

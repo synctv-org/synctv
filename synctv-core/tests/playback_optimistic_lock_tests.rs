@@ -1,9 +1,9 @@
 //! Playback optimistic locking integration tests
 //!
-//! Tests for version-based optimistic locking in PlaybackService.
+//! Tests for version-based optimistic locking in `PlaybackService`.
 //! Validates retry behavior, conflict detection, and version management.
 //!
-//! Run with: cargo test -p synctv-core --test playback_optimistic_lock_tests -- --nocapture
+//! Run with: cargo test -p synctv-core --test `playback_optimistic_lock_tests` -- --nocapture
 #![allow(clippy::unwrap_used)]
 
 use std::sync::Arc;
@@ -55,7 +55,7 @@ fn make_user(username: &str) -> User {
     User {
         id: UserId::new(),
         username: username.to_string(),
-        email: Some(format!("{}@test.com", username)),
+        email: Some(format!("{username}@test.com")),
         password_hash: "hash".to_string(),
         role: UserRole::User,
         status: UserStatus::Active,
@@ -116,7 +116,7 @@ async fn test_repo_update_with_matching_version_succeeds() {
 /// Test: Update with stale version fails
 ///
 /// When updating playback state with an old version,
-/// the update should fail with OptimisticLockConflict.
+/// the update should fail with `OptimisticLockConflict`.
 #[tokio::test]
 #[ignore = "Requires Docker"]
 async fn test_repo_update_with_stale_version_fails() {
@@ -155,8 +155,7 @@ async fn test_repo_update_with_stale_version_fails() {
 
     assert!(
         matches!(result, Err(Error::OptimisticLockConflict)),
-        "Expected OptimisticLockConflict, got: {:?}",
-        result
+        "Expected OptimisticLockConflict, got: {result:?}"
     );
 
     // Verify data wasn't corrupted
@@ -199,7 +198,7 @@ async fn test_repo_version_increments_sequentially() {
     for i in 1..=5 {
         state.current_time = i as f64 * 10.0;
         state = playback_repo.update(&state).await.unwrap();
-        assert_eq!(state.version, i, "Version should be {}", i);
+        assert_eq!(state.version, i, "Version should be {i}");
     }
 }
 
@@ -240,7 +239,7 @@ async fn test_concurrent_seek_with_retry() {
         let rid = room.id.clone();
         let uid = owner.id.clone();
         let b = barrier.clone();
-        let position = (i as f64) * 100.0 + 50.0;
+        let position = f64::from(i).mul_add(100.0, 50.0);
 
         let handle = tokio::spawn(async move {
             b.wait().await;
@@ -262,7 +261,7 @@ async fn test_concurrent_seek_with_retry() {
                 assert!(!matches!(e, Error::OptimisticLockConflict),
                     "OptimisticLockConflict should not leak to caller");
             }
-            Err(e) => panic!("Task panicked: {:?}", e),
+            Err(e) => panic!("Task panicked: {e:?}"),
         }
     }
 
@@ -325,7 +324,7 @@ async fn test_retry_handles_version_conflicts() {
 /// Test: Retry exhaustion returns degraded response
 ///
 /// When retries are exhausted, seek should return a degraded response
-/// with seek_applied = false rather than an error.
+/// with `seek_applied` = false rather than an error.
 #[tokio::test]
 #[ignore = "Requires Docker"]
 async fn test_retry_exhaustion_returns_degraded_response() {
@@ -355,7 +354,7 @@ async fn test_retry_exhaustion_returns_degraded_response() {
         let rid = room.id.clone();
         let uid = owner.id.clone();
         let b = barrier.clone();
-        let position = (i as f64) * 10.0;
+        let position = f64::from(i) * 10.0;
 
         let handle = tokio::spawn(async move {
             b.wait().await;
@@ -386,7 +385,7 @@ async fn test_retry_exhaustion_returns_degraded_response() {
                 // Other errors are OK
                 let _ = e;
             }
-            Err(e) => panic!("Task panicked: {:?}", e),
+            Err(e) => panic!("Task panicked: {e:?}"),
         }
     }
 
@@ -394,7 +393,7 @@ async fn test_retry_exhaustion_returns_degraded_response() {
     assert!(success_count > 0, "At least one seek should succeed");
 
     // We may or may not get degraded responses depending on contention level
-    println!("Success: {}, Degraded: {}", success_count, degraded_count);
+    println!("Success: {success_count}, Degraded: {degraded_count}");
 }
 
 // ============================================================================
@@ -437,7 +436,7 @@ async fn test_concurrent_mixed_operations() {
         let rid = room.id.clone();
         let uid = owner.id.clone();
         let b = barrier.clone();
-        let pos = (i as f64) * 50.0;
+        let pos = f64::from(i) * 50.0;
 
         seek_handles.push(tokio::spawn(async move {
             b.wait().await;
@@ -487,7 +486,7 @@ async fn test_concurrent_mixed_operations() {
                 assert!(!matches!(e, Error::OptimisticLockConflict),
                     "OptimisticLockConflict should not leak");
             }
-            Err(e) => panic!("Task panicked: {:?}", e),
+            Err(e) => panic!("Task panicked: {e:?}"),
         }
     }
     for result in &play_results {
@@ -497,7 +496,7 @@ async fn test_concurrent_mixed_operations() {
                 assert!(!matches!(e, Error::OptimisticLockConflict),
                     "OptimisticLockConflict should not leak");
             }
-            Err(e) => panic!("Task panicked: {:?}", e),
+            Err(e) => panic!("Task panicked: {e:?}"),
         }
     }
     for result in &speed_results {
@@ -507,11 +506,11 @@ async fn test_concurrent_mixed_operations() {
                 assert!(!matches!(e, Error::OptimisticLockConflict),
                     "OptimisticLockConflict should not leak");
             }
-            Err(e) => panic!("Task panicked: {:?}", e),
+            Err(e) => panic!("Task panicked: {e:?}"),
         }
     }
 
-    assert!(success_count >= 5, "Most operations should succeed, got: {}", success_count);
+    assert!(success_count >= 5, "Most operations should succeed, got: {success_count}");
 
     // Final state should be consistent
     let playback_service = room_service.playback_service();
@@ -564,7 +563,7 @@ async fn test_high_contention_stress() {
             // Random operation type
             match i % 3 {
                 0 => rs.playback_service()
-                    .seek(rid, uid, (i as f64) * 5.0)
+                    .seek(rid, uid, f64::from(i) * 5.0)
                     .await
                     .map(|r| format!("seek:{}", r.state.current_time)),
                 1 => rs.playback_service()
@@ -572,7 +571,7 @@ async fn test_high_contention_stress() {
                     .await
                     .map(|s| format!("playing:{}", s.is_playing)),
                 _ => rs.playback_service()
-                    .change_speed(rid, uid, 1.0 + (i % 4) as f64 * 0.5)
+                    .change_speed(rid, uid, 1.0 + f64::from(i % 4) * 0.5)
                     .await
                     .map(|s| format!("speed:{}", s.speed)),
             }
@@ -589,13 +588,13 @@ async fn test_high_contention_stress() {
         match result {
             Ok(Ok(_)) => success_count += 1,
             Ok(Err(_)) => error_count += 1,
-            Err(e) => panic!("Task panicked: {:?}", e),
+            Err(e) => panic!("Task panicked: {e:?}"),
         }
     }
 
     // Most operations should succeed
-    println!("Success: {}/50, Errors: {}", success_count, error_count);
-    assert!(success_count >= 15, "At least 30% should succeed, got: {}", success_count);
+    println!("Success: {success_count}/50, Errors: {error_count}");
+    assert!(success_count >= 15, "At least 30% should succeed, got: {success_count}");
 
     // Verify final state is valid
     let playback_service = room_service.playback_service();

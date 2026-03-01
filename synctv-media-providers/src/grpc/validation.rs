@@ -364,7 +364,7 @@ mod tests {
         ];
         for invalid_name in invalid_names {
             let result = validate_provider_name(invalid_name);
-            assert!(result.is_err(), "Expected '{}' to be invalid", invalid_name);
+            assert!(result.is_err(), "Expected '{invalid_name}' to be invalid");
             let status = result.unwrap_err();
             assert_eq!(status.code(), tonic::Code::InvalidArgument);
         }
@@ -381,7 +381,7 @@ mod tests {
         ];
         for invalid_name in unicode_names {
             let result = validate_provider_name(invalid_name);
-            assert!(result.is_err(), "Expected '{}' to be invalid", invalid_name);
+            assert!(result.is_err(), "Expected '{invalid_name}' to be invalid");
         }
     }
 

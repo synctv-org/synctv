@@ -1,7 +1,7 @@
 //! Deduplication tests
 //!
-//! Tests for MessageDeduplicator behavior: mark_processed prevents
-//! reprocessing, len/is_empty tracking, and different events at the same
+//! Tests for `MessageDeduplicator` behavior: `mark_processed` prevents
+//! reprocessing, `len/is_empty` tracking, and different events at the same
 //! timestamp produce different dedup keys.
 
 #![allow(clippy::unwrap_used)]

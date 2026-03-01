@@ -138,7 +138,7 @@ impl RoomPlaybackStateRepository {
 mod tests {
     use super::*;
 
-    /// Unit test for RoomPlaybackState default values and initial state
+    /// Unit test for `RoomPlaybackState` default values and initial state
     #[test]
     fn test_playback_state_new_default_values() {
         let room_id = RoomId::from_string("test_room_001".to_string());
@@ -354,7 +354,7 @@ mod tests {
         }
     }
 
-    /// Integration test: Boundary conditions for current_time and speed
+    /// Integration test: Boundary conditions for `current_time` and speed
     #[tokio::test]
     #[ignore = "Requires Docker"]
     async fn test_boundary_conditions() {

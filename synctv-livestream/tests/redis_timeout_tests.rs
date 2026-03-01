@@ -51,7 +51,7 @@ async fn test_timeout_helper_times_out() {
     assert!(result.is_err());
 }
 
-/// Test that StreamRegistry::refresh_publisher_ttl should have timeout.
+/// Test that `StreamRegistry::refresh_publisher_ttl` should have timeout.
 /// This test documents the expected behavior.
 #[tokio::test]
 #[ignore = "Requires Docker and actual implementation"]
@@ -64,7 +64,7 @@ async fn test_refresh_publisher_ttl_has_timeout() {
     // reasonable duration (e.g., 5 seconds) if Redis is unresponsive.
 }
 
-/// Test that StreamRegistry::get_publisher should have timeout.
+/// Test that `StreamRegistry::get_publisher` should have timeout.
 #[tokio::test]
 #[ignore = "Requires actual implementation"]
 async fn test_get_publisher_has_timeout() {
@@ -72,7 +72,7 @@ async fn test_get_publisher_has_timeout() {
     // Currently, it does NOT have a timeout.
 }
 
-/// Test that StreamRegistry::unregister_publisher should have timeout.
+/// Test that `StreamRegistry::unregister_publisher` should have timeout.
 #[tokio::test]
 #[ignore = "Requires actual implementation"]
 async fn test_unregister_publisher_has_timeout() {
@@ -80,7 +80,7 @@ async fn test_unregister_publisher_has_timeout() {
     // The unregister_publisher_with_epoch uses a Lua script without timeout.
 }
 
-/// Test that StreamRegistry::list_active_streams should have timeout.
+/// Test that `StreamRegistry::list_active_streams` should have timeout.
 #[tokio::test]
 #[ignore = "Requires actual implementation"]
 async fn test_list_active_streams_has_timeout() {
@@ -108,8 +108,7 @@ async fn test_timeout_returns_proper_error() {
     let err = result.unwrap_err();
     assert!(
         err.to_string().contains("timed out") || err.to_string().contains("timeout"),
-        "Error message should mention timeout: {}",
-        err
+        "Error message should mention timeout: {err}"
     );
 }
 

@@ -573,14 +573,14 @@ mod tests {
     #[tokio::test]
     async fn test_stream_pool_get_existing_empty() {
         let pool: StreamPool<TestStream> =
-            StreamPool::new(Duration::from_secs(60), Duration::from_secs(300));
+            StreamPool::new(Duration::from_mins(1), Duration::from_mins(5));
         assert!(pool.get_existing("key").await.is_none());
     }
 
     #[tokio::test]
     async fn test_stream_pool_get_existing_healthy() {
         let pool: StreamPool<TestStream> =
-            StreamPool::new(Duration::from_secs(60), Duration::from_secs(300));
+            StreamPool::new(Duration::from_mins(1), Duration::from_mins(5));
 
         let stream = Arc::new(TestStream {
             lifecycle: StreamLifecycle::new(),
@@ -598,7 +598,7 @@ mod tests {
     #[tokio::test]
     async fn test_stream_pool_get_existing_unhealthy_removed() {
         let pool: StreamPool<TestStream> =
-            StreamPool::new(Duration::from_secs(60), Duration::from_secs(300));
+            StreamPool::new(Duration::from_mins(1), Duration::from_mins(5));
 
         let stream = Arc::new(TestStream {
             lifecycle: StreamLifecycle::new(),

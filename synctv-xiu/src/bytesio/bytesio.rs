@@ -241,13 +241,13 @@ mod tests {
         let mut socket: Vec<UdpIO> = Vec::new();
 
         for i in 1..=65535 {
-            println!("cur port:== {}", i);
+            println!("cur port:== {i}");
             //if i % 2 == 1 {
-            println!("cur port: {}", i);
+            println!("cur port: {i}");
             if let Some(udpio) = UdpIO::new_with_local_port(i).await {
-                socket.push(udpio)
+                socket.push(udpio);
             } else {
-                println!("new local port fail: {}", i);
+                println!("new local port fail: {i}");
             }
             //}
         }
@@ -276,12 +276,12 @@ mod tests {
             // std::mem::drop(udpio_0);
         }
         //The object udpio_0 is automatically cleared and released when it goes out of scope here.
-        println!("first_local_port: {}", first_local_port);
+        println!("first_local_port: {first_local_port}");
 
         if (UdpIO::new_with_local_port(first_local_port).await).is_some() {
-            println!("success")
+            println!("success");
         } else {
-            println!("fail")
+            println!("fail");
         }
     }
 }

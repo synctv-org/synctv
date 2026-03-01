@@ -1,4 +1,4 @@
-//! SSRF validation tests for PostgreSQL credential storage
+//! SSRF validation tests for `PostgreSQL` credential storage
 //!
 //! Tests that credential storage validates host URLs against SSRF attacks
 //! before persisting them to the database.
@@ -33,8 +33,7 @@ async fn test_credential_storage_rejects_private_ip() {
             || err.to_string().contains("reserved")
             || err.to_string().contains("SSRF")
             || err.to_string().contains("blocked"),
-        "Error should mention SSRF/private/blocked: {}",
-        err
+        "Error should mention SSRF/private/blocked: {err}"
     );
 }
 
@@ -64,8 +63,7 @@ async fn test_credential_storage_rejects_localhost() {
             || err.to_string().contains("internal")
             || err.to_string().contains("SSRF")
             || err.to_string().contains("blocked"),
-        "Error should mention localhost/internal/blocked: {}",
-        err
+        "Error should mention localhost/internal/blocked: {err}"
     );
 }
 
@@ -173,7 +171,7 @@ async fn test_credential_storage_accepts_public_host() {
         )
         .await;
 
-    assert!(result.is_ok(), "Storing public hostname should succeed: {:?}", result);
+    assert!(result.is_ok(), "Storing public hostname should succeed: {result:?}");
     let cred = result.unwrap();
     assert_eq!(cred.user_id, "user1");
     assert_eq!(cred.provider, ProviderType::Alist);
@@ -197,7 +195,7 @@ async fn test_credential_storage_accepts_emby_public_host() {
         )
         .await;
 
-    assert!(result.is_ok(), "Storing public Emby hostname should succeed: {:?}", result);
+    assert!(result.is_ok(), "Storing public Emby hostname should succeed: {result:?}");
 }
 
 /// Test that storing Bilibili credentials succeeds (no host to validate)
@@ -213,7 +211,7 @@ async fn test_credential_storage_accepts_bilibili() {
         .set("user1", Some("bilibili-instance"), CredentialData::bilibili(cookies))
         .await;
 
-    assert!(result.is_ok(), "Storing Bilibili credentials should succeed: {:?}", result);
+    assert!(result.is_ok(), "Storing Bilibili credentials should succeed: {result:?}");
 }
 
 /// Test that storing credential with public IP succeeds
@@ -234,7 +232,7 @@ async fn test_credential_storage_accepts_public_ip() {
         )
         .await;
 
-    assert!(result.is_ok(), "Storing public IP should succeed: {:?}", result);
+    assert!(result.is_ok(), "Storing public IP should succeed: {result:?}");
 }
 
 /// Test that storing credential with 10.x.x.x is rejected

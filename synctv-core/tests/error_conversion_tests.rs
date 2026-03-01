@@ -1,9 +1,9 @@
 //! Error conversion tests (no Docker needed)
 //!
-//! Tests Error -> tonic::Status conversions, InternalExt trait, and
+//! Tests Error -> `tonic::Status` conversions, `InternalExt` trait, and
 //! the error Display formatting that is exposed to gRPC clients.
 //!
-//! Run with: cargo test --test error_conversion_tests
+//! Run with: cargo test --test `error_conversion_tests`
 #![allow(clippy::unwrap_used)]
 
 use synctv_core::Error;

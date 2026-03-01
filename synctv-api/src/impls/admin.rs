@@ -2884,7 +2884,7 @@ mod tests {
     // - Admin can only reset regular user passwords
     // - Admin CANNOT reset root or other admin passwords
 
-    /// Helper: check if a caller_role can reset a target_role's password
+    /// Helper: check if a `caller_role` can reset a `target_role`'s password
     /// Returns true if the operation should be allowed.
     fn password_reset_allowed(caller_role: UserRole, target_role: UserRole) -> bool {
         if target_role == UserRole::Root && caller_role != UserRole::Root {

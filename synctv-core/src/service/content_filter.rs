@@ -1021,8 +1021,8 @@ mod tests {
         ];
 
         for tag in tags {
-            let result = filter.filter_chat(&format!("{}Text", tag)).unwrap();
-            assert!(!result.contains(tag), "Tag {} should be stripped", tag);
+            let result = filter.filter_chat(&format!("{tag}Text")).unwrap();
+            assert!(!result.contains(tag), "Tag {tag} should be stripped");
         }
 
         // Self-closing tags
@@ -1035,8 +1035,7 @@ mod tests {
             // Should strip the tag
             assert!(
                 !result.contains('<') || result.chars().filter(|&c| c == '<').count() < tag.chars().filter(|&c| c == '<').count(),
-                "Tag {} should be stripped or reduced",
-                tag
+                "Tag {tag} should be stripped or reduced"
             );
         }
     }
@@ -1174,7 +1173,7 @@ mod tests {
         ];
 
         for cc in control_chars {
-            let test = format!("Test{}String", cc);
+            let test = format!("Test{cc}String");
             let result = filter.filter_danmaku(&test);
             assert!(
                 matches!(result, Err(ContentFilterError::ProhibitedContent { .. })),

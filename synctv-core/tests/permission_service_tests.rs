@@ -1,9 +1,9 @@
-//! PermissionService integration tests
+//! `PermissionService` integration tests
 //!
-//! Tests permission checking with real PostgreSQL via testcontainers,
+//! Tests permission checking with real `PostgreSQL` via testcontainers,
 //! verifying that the three-layer permission system works end-to-end.
 //!
-//! Run with: cargo test -p synctv-core --test permission_service_tests -- --nocapture
+//! Run with: cargo test -p synctv-core --test `permission_service_tests` -- --nocapture
 #![allow(clippy::unwrap_used)]
 
 use std::sync::Arc;
@@ -55,7 +55,7 @@ fn make_user(username: &str) -> User {
     User {
         id: UserId::new(),
         username: username.to_string(),
-        email: Some(format!("{}@test.com", username)),
+        email: Some(format!("{username}@test.com")),
         password_hash: "hash".to_string(),
         role: UserRole::User,
         status: UserStatus::Active,
@@ -212,7 +212,7 @@ async fn test_guest_default_no_permissions() {
     // (guests use a different flow), we test this through the
     // PermissionService's calculate_role_default_permissions method.
     let (_container, pool) = create_test_pool().await;
-    let room_service = make_room_service(pool.clone());
+    let room_service = make_room_service(pool);
 
     let perm_service = room_service.permission_service();
     let settings = synctv_core::models::RoomSettings::default();

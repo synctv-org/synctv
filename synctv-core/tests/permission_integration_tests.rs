@@ -2,7 +2,7 @@
 //!
 //! Tests verify Allow/Deny permission pattern and integration with database.
 //!
-//! Run with: cargo test --test permission_integration_tests
+//! Run with: cargo test --test `permission_integration_tests`
 //! Requires Docker for testcontainers.
 #![allow(clippy::unwrap_used)]
 
@@ -13,7 +13,7 @@ use synctv_core::{
     service::permission::PermissionService,
 };
 use sqlx::PgPool;
-/// Default PostgreSQL version for test containers
+/// Default `PostgreSQL` version for test containers
 /// Create a test user in the database (required for FK constraints)
 async fn create_test_user(pool: &PgPool, user_id: &UserId) {
     let username = format!("test_user_{}", user_id.as_str());
@@ -252,7 +252,7 @@ async fn test_concurrent_permission_checks() {
         let handle = tokio::spawn(async move {
             service.check_permission(&room_id, &uid, PermissionBits::SEND_CHAT)
                 .await
-                .expect("Permission check should succeed")
+                .expect("Permission check should succeed");
         });
         handles.push(handle);
     }

@@ -1,18 +1,18 @@
-//! StreamHub Redis cleanup race condition tests (Task H-5).
+//! `StreamHub` Redis cleanup race condition tests (Task H-5).
 //!
-//! These tests verify that the StreamHub restart cleanup does not race with
+//! These tests verify that the `StreamHub` restart cleanup does not race with
 //! concurrent stream disconnections.
 //!
-//! Problem: When StreamHub restarts:
-//! 1. stop_all() is called (with 100ms timeout)
-//! 2. cleanup_all_publishers_for_node() is called immediately after
+//! Problem: When `StreamHub` restarts:
+//! 1. `stop_all()` is called (with 100ms timeout)
+//! 2. `cleanup_all_publishers_for_node()` is called immediately after
 //!
 //! Race condition: If a stream is disconnecting concurrently:
-//! - The stream's unregister_publisher() may be in progress
-//! - cleanup_all_publishers_for_node() may also try to delete the same entry
+//! - The stream's `unregister_publisher()` may be in progress
+//! - `cleanup_all_publishers_for_node()` may also try to delete the same entry
 //! - This can cause Redis operation conflicts or inconsistent state
 //!
-//! Run with: cargo test --test streamhub_cleanup_race_tests
+//! Run with: cargo test --test `streamhub_cleanup_race_tests`
 
 #![allow(clippy::unwrap_used)]
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -21,7 +21,7 @@ use std::time::Duration;
 use tokio::sync::{oneshot, Barrier};
 use synctv_livestream::relay::StreamRegistryTrait;
 
-/// Simulates the cleanup sequence during StreamHub restart with concurrent
+/// Simulates the cleanup sequence during `StreamHub` restart with concurrent
 /// stream disconnections.
 ///
 /// This test verifies that cleanup is safe even when streams are unregistering
@@ -35,10 +35,10 @@ async fn test_cleanup_during_concurrent_unregistration() {
     for i in 0..5 {
         registry
             .try_register_publisher(
-                &format!("room{}", i),
-                &format!("media{}", i),
+                &format!("room{i}"),
+                &format!("media{i}"),
                 node_id,
-                &format!("user{}", i),
+                &format!("user{i}"),
                 "grpc:50051",
             )
             .await
@@ -57,7 +57,7 @@ async fn test_cleanup_during_concurrent_unregistration() {
         // Unregister some streams concurrently with cleanup
         for i in 0..3 {
             registry_clone
-                .unregister_publisher(&format!("room{}", i), &format!("media{}", i))
+                .unregister_publisher(&format!("room{i}"), &format!("media{i}"))
                 .await
                 .unwrap();
         }
@@ -84,8 +84,7 @@ async fn test_cleanup_during_concurrent_unregistration() {
     let remaining = registry.list_active_streams().await.unwrap();
     assert!(
         remaining.is_empty(),
-        "All streams should be cleaned up, but found: {:?}",
-        remaining
+        "All streams should be cleaned up, but found: {remaining:?}"
     );
 }
 
@@ -100,10 +99,10 @@ async fn test_cleanup_during_concurrent_registration() {
     for i in 0..3 {
         registry
             .try_register_publisher(
-                &format!("room{}", i),
-                &format!("media{}", i),
+                &format!("room{i}"),
+                &format!("media{i}"),
                 node_id,
-                &format!("user{}", i),
+                &format!("user{i}"),
                 "grpc:50051",
             )
             .await
@@ -122,10 +121,10 @@ async fn test_cleanup_during_concurrent_registration() {
         for i in 5..8 {
             let _ = registry_clone
                 .try_register_publisher(
-                    &format!("room{}", i),
-                    &format!("media{}", i),
+                    &format!("room{i}"),
+                    &format!("media{i}"),
                     node_id,
-                    &format!("user{}", i),
+                    &format!("user{i}"),
                     "grpc:50051",
                 )
                 .await;
@@ -146,9 +145,8 @@ async fn test_cleanup_during_concurrent_registration() {
     // New registrations during/after cleanup may or may not succeed depending on timing
     for i in 0..3 {
         assert!(
-            !registry.is_stream_active(&format!("room{}", i), &format!("media{}", i)).await.unwrap(),
-            "Original stream room{}/media{} should be cleaned up",
-            i, i
+            !registry.is_stream_active(&format!("room{i}"), &format!("media{i}")).await.unwrap(),
+            "Original stream room{i}/media{i} should be cleaned up"
         );
     }
 }
@@ -163,10 +161,10 @@ async fn test_concurrent_cleanups_same_node() {
     for i in 0..5 {
         registry
             .try_register_publisher(
-                &format!("room{}", i),
-                &format!("media{}", i),
+                &format!("room{i}"),
+                &format!("media{i}"),
                 node_id,
-                &format!("user{}", i),
+                &format!("user{i}"),
                 "grpc:50051",
             )
             .await
@@ -209,10 +207,10 @@ async fn test_cleanup_then_reregister_sequence() {
     for i in 0..3 {
         registry
             .try_register_publisher(
-                &format!("room{}", i),
-                &format!("media{}", i),
+                &format!("room{i}"),
+                &format!("media{i}"),
                 node_id,
-                &format!("user{}", i),
+                &format!("user{i}"),
                 "grpc:50051",
             )
             .await
@@ -228,10 +226,10 @@ async fn test_cleanup_then_reregister_sequence() {
     for i in 0..3 {
         let registered = registry
             .try_register_publisher(
-                &format!("room{}", i),
-                &format!("media{}", i),
+                &format!("room{i}"),
+                &format!("media{i}"),
                 node_id,
-                &format!("user{}", i),
+                &format!("user{i}"),
                 "grpc:50051",
             )
             .await
@@ -242,21 +240,20 @@ async fn test_cleanup_then_reregister_sequence() {
     // Verify all streams are active
     for i in 0..3 {
         assert!(
-            registry.is_stream_active(&format!("room{}", i), &format!("media{}", i)).await.unwrap(),
-            "Stream room{}/media{} should be active after re-registration",
-            i, i
+            registry.is_stream_active(&format!("room{i}"), &format!("media{i}")).await.unwrap(),
+            "Stream room{i}/media{i} should be active after re-registration"
         );
     }
 }
 
 /// Test the timing window: stop request sent but streams still disconnecting.
 ///
-/// This simulates the actual race condition in StreamHub restart:
-/// 1. stop_all() is called with oneshot channel
-/// 2. stop_done is received (or timeout)
-/// 3. cleanup_all_publishers_for_node() is called
+/// This simulates the actual race condition in `StreamHub` restart:
+/// 1. `stop_all()` is called with oneshot channel
+/// 2. `stop_done` is received (or timeout)
+/// 3. `cleanup_all_publishers_for_node()` is called
 ///
-/// The race: streams may still be in the process of calling unregister_publisher()
+/// The race: streams may still be in the process of calling `unregister_publisher()`
 /// when cleanup starts.
 #[tokio::test]
 async fn test_stop_then_cleanup_with_delayed_unregistration() {
@@ -267,10 +264,10 @@ async fn test_stop_then_cleanup_with_delayed_unregistration() {
     for i in 0..3 {
         registry
             .try_register_publisher(
-                &format!("room{}", i),
-                &format!("media{}", i),
+                &format!("room{i}"),
+                &format!("media{i}"),
                 node_id,
-                &format!("user{}", i),
+                &format!("user{i}"),
                 "grpc:50051",
             )
             .await
@@ -289,7 +286,7 @@ async fn test_stop_then_cleanup_with_delayed_unregistration() {
         // Streams are still unregistering during the cleanup window
         for i in 0..3 {
             let _ = registry_clone
-                .unregister_publisher(&format!("room{}", i), &format!("media{}", i))
+                .unregister_publisher(&format!("room{i}"), &format!("media{i}"))
                 .await;
         }
     });
@@ -326,10 +323,10 @@ async fn test_stop_delay_then_cleanup_prevents_race() {
     for i in 0..3 {
         registry
             .try_register_publisher(
-                &format!("room{}", i),
-                &format!("media{}", i),
+                &format!("room{i}"),
+                &format!("media{i}"),
                 node_id,
-                &format!("user{}", i),
+                &format!("user{i}"),
                 "grpc:50051",
             )
             .await
@@ -348,7 +345,7 @@ async fn test_stop_delay_then_cleanup_prevents_race() {
         for i in 0..3 {
             unregister_started_clone.fetch_add(1, Ordering::SeqCst);
             registry_clone
-                .unregister_publisher(&format!("room{}", i), &format!("media{}", i))
+                .unregister_publisher(&format!("room{i}"), &format!("media{i}"))
                 .await
                 .unwrap();
             unregister_completed_clone.fetch_add(1, Ordering::SeqCst);
@@ -421,10 +418,10 @@ async fn test_cleanup_is_idempotent() {
     for i in 0..3 {
         registry
             .try_register_publisher(
-                &format!("room{}", i),
-                &format!("media{}", i),
+                &format!("room{i}"),
+                &format!("media{i}"),
                 node_id,
-                &format!("user{}", i),
+                &format!("user{i}"),
                 "grpc:50051",
             )
             .await
@@ -469,8 +466,8 @@ async fn test_stress_cleanup_reregister_cycles() {
 
             // Try to register
             for j in 0..3 {
-                let room = format!("room_{}_{}", i, j);
-                let media = format!("media_{}_{}", i, j);
+                let room = format!("room_{i}_{j}");
+                let media = format!("media_{i}_{j}");
                 if registry_clone
                     .try_register_publisher(&room, &media, node_id, "user", "grpc:50051")
                     .await
@@ -490,7 +487,7 @@ async fn test_stress_cleanup_reregister_cycles() {
     assert!(success_count.load(Ordering::SeqCst) > 0);
 }
 
-/// Test the complete StreamHub restart sequence with the 500ms delay fix.
+/// Test the complete `StreamHub` restart sequence with the 500ms delay fix.
 ///
 /// This test simulates the actual restart sequence:
 /// 1. Streams are active
@@ -511,10 +508,10 @@ async fn test_complete_restart_sequence_with_delay_fix() {
     for i in 0..5 {
         registry
             .try_register_publisher(
-                &format!("room{}", i),
-                &format!("media{}", i),
+                &format!("room{i}"),
+                &format!("media{i}"),
                 node_id,
-                &format!("user{}", i),
+                &format!("user{i}"),
                 "grpc:50051",
             )
             .await
@@ -532,7 +529,7 @@ async fn test_complete_restart_sequence_with_delay_fix() {
 
         for i in 0..5 {
             let _ = registry_clone
-                .unregister_publisher(&format!("room{}", i), &format!("media{}", i))
+                .unregister_publisher(&format!("room{i}"), &format!("media{i}"))
                 .await;
             unregister_completed_clone.fetch_add(1, Ordering::SeqCst);
         }
@@ -548,10 +545,10 @@ async fn test_complete_restart_sequence_with_delay_fix() {
     for i in 0..3 {
         let registered = registry
             .try_register_publisher(
-                &format!("room{}", i),
-                &format!("media{}", i),
+                &format!("room{i}"),
+                &format!("media{i}"),
                 node_id,
-                &format!("user{}", i),
+                &format!("user{i}"),
                 "grpc:50051",
             )
             .await

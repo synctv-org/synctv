@@ -11,7 +11,7 @@ use testcontainers::ContainerAsync;
 use testcontainers_modules::postgres::Postgres;
 use testcontainers_modules::redis::Redis;
 
-/// Default PostgreSQL version for test containers
+/// Default `PostgreSQL` version for test containers
 const POSTGRES_VERSION: &str = "16-alpine";
 /// Default Redis version for test containers
 const REDIS_VERSION: &str = "7-alpine";
@@ -73,10 +73,9 @@ impl TestInfra {
 
         // Build connection URLs
         let database_url = format!(
-            "postgresql://synctv:synctv_test@{}:{}/synctv_test",
-            pg_host, pg_port
+            "postgresql://synctv:synctv_test@{pg_host}:{pg_port}/synctv_test"
         );
-        let redis_url = format!("redis://{}:{}", redis_host, redis_port);
+        let redis_url = format!("redis://{redis_host}:{redis_port}");
 
         // Connect to Postgres with retry (container port may be mapped before
         // the server accepts connections)
@@ -156,8 +155,7 @@ impl TestInfra {
             .expect("Failed to get Postgres port");
 
         let database_url = format!(
-            "postgresql://synctv:synctv_test@{}:{}/synctv_test",
-            pg_host, pg_port
+            "postgresql://synctv:synctv_test@{pg_host}:{pg_port}/synctv_test"
         );
 
         let pool = {
@@ -205,7 +203,7 @@ impl TestInfra {
             .await
             .expect("Failed to get Redis port");
 
-        let redis_url = format!("redis://{}:{}", redis_host, redis_port);
+        let redis_url = format!("redis://{redis_host}:{redis_port}");
 
         let redis_client =
             redis::Client::open(redis_url.as_str()).expect("Failed to create Redis client");

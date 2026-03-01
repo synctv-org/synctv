@@ -5,7 +5,7 @@
 //! - Room permission verification
 //! - Publisher registry integration
 //! - Authentication failure cleanup
-//! - on_unpublish callback behavior
+//! - `on_unpublish` callback behavior
 
 #![allow(clippy::unwrap_used)]
 use std::sync::Arc;
@@ -56,11 +56,11 @@ struct MockRtmpAuthCallback {
     tracker: Arc<CallbackTracker>,
     /// Simulates whether the JWT token is valid
     should_authenticate: bool,
-    /// Simulates the room_id extracted from JWT
+    /// Simulates the `room_id` extracted from JWT
     jwt_room_id: String,
-    /// Simulates the media_id extracted from JWT
+    /// Simulates the `media_id` extracted from JWT
     jwt_media_id: String,
-    /// Simulates the user_id extracted from JWT
+    /// Simulates the `user_id` extracted from JWT
     jwt_user_id: String,
 }
 
@@ -79,7 +79,7 @@ impl MockRtmpAuthCallback {
         }
     }
 
-    fn with_auth_result(mut self, should_authenticate: bool) -> Self {
+    const fn with_auth_result(mut self, should_authenticate: bool) -> Self {
         self.should_authenticate = should_authenticate;
         self
     }
@@ -169,7 +169,7 @@ impl AuthCallback for MockRtmpAuthCallback {
 
         // Cleanup registry entry
         if let Err(e) = self.registry.unregister_publisher(app_name, stream_name).await {
-            eprintln!("Failed to cleanup publisher: {}", e);
+            eprintln!("Failed to cleanup publisher: {e}");
         }
     }
 
@@ -183,7 +183,7 @@ impl AuthCallback for MockRtmpAuthCallback {
 
         // Cleanup registry entry on failure
         if let Err(e) = self.registry.unregister_publisher(app_name, stream_name).await {
-            eprintln!("Failed to rollback publisher: {}", e);
+            eprintln!("Failed to rollback publisher: {e}");
         }
     }
 }
@@ -264,7 +264,7 @@ async fn test_jwt_token_from_query_string() {
 // Room Permission Verification Tests
 // ==================================================================
 
-/// Test that room_id mismatch is detected
+/// Test that `room_id` mismatch is detected
 #[tokio::test]
 async fn test_room_id_mismatch_rejected() {
     let registry = Arc::new(InMemoryStreamRegistry::new());
@@ -289,7 +289,7 @@ async fn test_room_id_mismatch_rejected() {
     assert!(err.contains("room_B"), "Error should show requested room: {err}");
 }
 
-/// Test that correct room_id is accepted
+/// Test that correct `room_id` is accepted
 #[tokio::test]
 async fn test_room_id_match_accepted() {
     let registry = Arc::new(InMemoryStreamRegistry::new());
@@ -328,7 +328,7 @@ async fn test_auth_failure_does_not_leave_stale_entry() {
     assert!(!registry.is_stream_active("room1", "media1").await.unwrap());
 }
 
-/// Test that rollback is called when StreamHub publish fails after auth
+/// Test that rollback is called when `StreamHub` publish fails after auth
 #[tokio::test]
 async fn test_rollback_on_streamhub_failure() {
     let registry = Arc::new(InMemoryStreamRegistry::new());
@@ -362,7 +362,7 @@ async fn test_rollback_on_streamhub_failure() {
 // on_unpublish Callback Tests
 // ==================================================================
 
-/// Test that on_unpublish cleans up registry
+/// Test that `on_unpublish` cleans up registry
 #[tokio::test]
 async fn test_on_unpublish_cleanup() {
     let registry = Arc::new(InMemoryStreamRegistry::new());
@@ -387,7 +387,7 @@ async fn test_on_unpublish_cleanup() {
     assert_eq!(tracker.unpublish_calls(), 1);
 }
 
-/// Test on_unpublish is idempotent
+/// Test `on_unpublish` is idempotent
 #[tokio::test]
 async fn test_on_unpublish_idempotent() {
     let registry = Arc::new(InMemoryStreamRegistry::new());
@@ -485,7 +485,7 @@ async fn test_e2e_rtmp_auth_with_redis() {
     // 5. Verify Redis entries are created/cleaned correctly
 }
 
-/// End-to-end test with real StreamHub
+/// End-to-end test with real `StreamHub`
 #[tokio::test]
 #[ignore = "Requires Docker"]
 async fn test_e2e_rtmp_with_streamhub() {

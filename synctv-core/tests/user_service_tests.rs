@@ -2,8 +2,8 @@
 //!
 //! Tests user registration and login validation using testcontainers.
 //!
-//! Run with: cargo test --test user_service_tests
-//! Run Docker tests: cargo test --test user_service_tests -- --ignored
+//! Run with: cargo test --test `user_service_tests`
+//! Run Docker tests: cargo test --test `user_service_tests` -- --ignored
 #![allow(clippy::unwrap_used)]
 
 use std::sync::Arc;
@@ -196,11 +196,11 @@ async fn test_delete_user_already_deleted_returns_error() {
             );
         }
         Err(e) => panic!("Expected InvalidInput error, got: {e:?}"),
-        Ok(_) => panic!("Expected error, got Ok"),
+        Ok(()) => panic!("Expected error, got Ok"),
     }
 }
 
-/// Test that concurrent delete_user calls maintain atomicity - only one should succeed
+/// Test that concurrent `delete_user` calls maintain atomicity - only one should succeed
 #[tokio::test]
 #[ignore = "Requires Docker"]
 async fn test_delete_user_concurrent_deletion_atomicity() {
@@ -249,8 +249,7 @@ async fn test_delete_user_concurrent_deletion_atomicity() {
         .count();
     assert_eq!(
         success_count, 1,
-        "Exactly one delete should succeed, but got {} successes. Results: {:?}, {:?}",
-        success_count, result1, result2
+        "Exactly one delete should succeed, but got {success_count} successes. Results: {result1:?}, {result2:?}"
     );
 
     // Verify user is deleted in the database
@@ -269,7 +268,7 @@ async fn test_delete_user_concurrent_deletion_atomicity() {
 /// Test that "username taken" errors do NOT count against IP brute-force lockout.
 ///
 /// Scenario: User tries to register with a username that already exists.
-/// This should fail with AlreadyExists, but should NOT lock out the IP
+/// This should fail with `AlreadyExists`, but should NOT lock out the IP
 /// because it's not a security threat - just an unfortunate choice of username.
 #[tokio::test]
 #[ignore = "Requires Docker"]
@@ -370,7 +369,6 @@ async fn test_register_validation_errors_trigger_brute_force_lockout() {
 
     assert!(
         validation_error_count >= 5,
-        "Should have had at least 5 validation errors before lockout, got {}",
-        validation_error_count
+        "Should have had at least 5 validation errors before lockout, got {validation_error_count}"
     );
 }

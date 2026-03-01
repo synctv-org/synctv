@@ -233,7 +233,7 @@ async fn test_retry_integration_blocked_by_ssrf() {
 // Tests for the is_retryable_status function
 // ==================================================================
 
-/// Test the is_retryable_status function comprehensively.
+/// Test the `is_retryable_status` function comprehensively.
 #[test]
 fn test_is_retryable_status_function() {
     // Define which status codes should be retryable
@@ -251,11 +251,11 @@ fn test_is_retryable_status_function() {
 
     // All retryable codes should return true
     for code in &retryable_codes {
-        assert!(is_retryable_status(*code), "{:?} should be retryable", code);
+        assert!(is_retryable_status(*code), "{code:?} should be retryable");
     }
 
     // Non-retryable codes should return false
     for code in &non_retryable_codes {
-        assert!(!is_retryable_status(*code), "{:?} should NOT be retryable", code);
+        assert!(!is_retryable_status(*code), "{code:?} should NOT be retryable");
     }
 }

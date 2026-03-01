@@ -1,9 +1,9 @@
-//! ChatRepository integration tests
+//! `ChatRepository` integration tests
 //!
-//! Tests: list_by_room_cursor pagination, get_by_id 90-day limit,
-//!        cleanup_old_messages keep_count=0 no-op, cleanup_all_rooms activity_window_minutes=0.
+//! Tests: `list_by_room_cursor` pagination, `get_by_id` 90-day limit,
+//!        `cleanup_old_messages` `keep_count=0` no-op, `cleanup_all_rooms` `activity_window_minutes=0`.
 //!
-//! Run with: cargo test -p synctv-core --test chat_repository_tests
+//! Run with: cargo test -p synctv-core --test `chat_repository_tests`
 #![allow(clippy::unwrap_used)]
 
 use synctv_core_testing::create_test_pool;
@@ -20,7 +20,7 @@ fn make_user(username: &str) -> User {
     User {
         id: UserId::new(),
         username: username.to_string(),
-        email: Some(format!("{}@test.com", username)),
+        email: Some(format!("{username}@test.com")),
         password_hash: "hash".to_string(),
         role: UserRole::User,
         status: UserStatus::Active,
@@ -75,7 +75,7 @@ async fn test_list_by_room_cursor_pagination() {
     // Insert 5 messages with slightly different timestamps
     let mut created_ids = Vec::new();
     for i in 0..5 {
-        let msg = make_chat_message(&room.id, &user.id, &format!("msg_{}", i));
+        let msg = make_chat_message(&room.id, &user.id, &format!("msg_{i}"));
         let created = chat_repo.create(&msg).await.unwrap();
         created_ids.push(created.id.clone());
         // Small delay to ensure ordering
@@ -170,7 +170,7 @@ async fn test_cleanup_old_messages_keep_count_zero_is_noop() {
 
     // Insert some messages
     for i in 0..3 {
-        let msg = make_chat_message(&room.id, &user.id, &format!("keep_{}", i));
+        let msg = make_chat_message(&room.id, &user.id, &format!("keep_{i}"));
         chat_repo.create(&msg).await.unwrap();
     }
 
@@ -194,7 +194,7 @@ async fn test_cleanup_all_rooms_activity_window_zero() {
 
     // Insert messages
     for i in 0..5 {
-        let msg = make_chat_message(&room.id, &user.id, &format!("msg_{}", i));
+        let msg = make_chat_message(&room.id, &user.id, &format!("msg_{i}"));
         chat_repo.create(&msg).await.unwrap();
     }
 
@@ -218,7 +218,7 @@ async fn test_cleanup_all_rooms_keep_count_zero_is_noop() {
     let (user, room) = setup_room(&pool, "chat_all_noop_user", "chat_all_noop_room").await;
 
     for i in 0..3 {
-        let msg = make_chat_message(&room.id, &user.id, &format!("msg_{}", i));
+        let msg = make_chat_message(&room.id, &user.id, &format!("msg_{i}"));
         chat_repo.create(&msg).await.unwrap();
     }
 
@@ -296,8 +296,7 @@ async fn test_time_range_query_uses_index() {
     // The plan should be an array (EXPLAIN FORMAT JSON returns an array)
     assert!(
         plan.is_array(),
-        "Query plan should be a JSON array, got: {:?}",
-        plan
+        "Query plan should be a JSON array, got: {plan:?}"
     );
 
     // Note: In practice, we'd check for "Index Scan" in the plan, but
@@ -326,7 +325,7 @@ async fn test_cleanup_old_messages_has_partition_pruning_filter() {
     // Insert a message
     let chat_repo = ChatRepository::new(pool.clone());
     for i in 0..5 {
-        let msg = make_chat_message(&room.id, &user.id, &format!("prune_{}", i));
+        let msg = make_chat_message(&room.id, &user.id, &format!("prune_{i}"));
         chat_repo.create(&msg).await.unwrap();
     }
 
@@ -356,8 +355,7 @@ async fn test_cleanup_old_messages_has_partition_pruning_filter() {
     // Verify the plan is valid JSON
     assert!(
         plan.is_array(),
-        "Query plan should be a JSON array, got: {:?}",
-        plan
+        "Query plan should be a JSON array, got: {plan:?}"
     );
 
     // The key validation is that the outer DELETE has created_at filter
@@ -407,8 +405,7 @@ async fn test_cleanup_all_rooms_has_partition_pruning_filter() {
     // Verify the plan is valid JSON
     assert!(
         plan.is_array(),
-        "Query plan should be a JSON array, got: {:?}",
-        plan
+        "Query plan should be a JSON array, got: {plan:?}"
     );
 
     // The key validation is that the outer DELETE has created_at filter
@@ -418,7 +415,7 @@ async fn test_cleanup_all_rooms_has_partition_pruning_filter() {
 
 // ─── Task #46: Detailed partition pruning verification ───────────────
 
-/// Verify cleanup_old_messages produces a valid query plan with partition pruning support
+/// Verify `cleanup_old_messages` produces a valid query plan with partition pruning support
 #[tokio::test]
 #[ignore = "Requires Docker"]
 async fn test_cleanup_old_messages_partition_pruning_detailed() {
@@ -436,7 +433,7 @@ async fn test_cleanup_old_messages_partition_pruning_detailed() {
 
     // Create test messages
     for i in 0..10 {
-        let msg = make_chat_message(&room.id, &user.id, &format!("prune_detail_{}", i));
+        let msg = make_chat_message(&room.id, &user.id, &format!("prune_detail_{i}"));
         chat_repo.create(&msg).await.unwrap();
     }
 
@@ -467,8 +464,7 @@ async fn test_cleanup_old_messages_partition_pruning_detailed() {
     // Verify plan structure
     assert!(
         plan.is_array(),
-        "Query plan should be a JSON array, got: {:?}",
-        plan
+        "Query plan should be a JSON array, got: {plan:?}"
     );
 
     // Log the plan for debugging
@@ -488,7 +484,7 @@ async fn test_cleanup_old_messages_partition_pruning_detailed() {
     // If we got here without error, the query is valid
 }
 
-/// Verify cleanup_all_rooms produces a valid query plan with partition pruning support
+/// Verify `cleanup_all_rooms` produces a valid query plan with partition pruning support
 #[tokio::test]
 #[ignore = "Requires Docker"]
 async fn test_cleanup_all_rooms_partition_pruning_detailed() {
@@ -503,7 +499,7 @@ async fn test_cleanup_all_rooms_partition_pruning_detailed() {
 
     // Create messages in multiple rooms to test batch operation
     for i in 0..15 {
-        let msg = make_chat_message(&room.id, &user.id, &format!("batch_{}", i));
+        let msg = make_chat_message(&room.id, &user.id, &format!("batch_{i}"));
         chat_repo.create(&msg).await.unwrap();
     }
 
@@ -535,8 +531,7 @@ async fn test_cleanup_all_rooms_partition_pruning_detailed() {
 
     assert!(
         plan.is_array(),
-        "Query plan should be a JSON array, got: {:?}",
-        plan
+        "Query plan should be a JSON array, got: {plan:?}"
     );
 
     println!("Batch cleanup plan: {}", serde_json::to_string_pretty(&plan).unwrap());
@@ -549,7 +544,7 @@ async fn test_cleanup_all_rooms_partition_pruning_detailed() {
     );
 }
 
-/// Verify delete_messages_older_than_retention uses partition pruning
+/// Verify `delete_messages_older_than_retention` uses partition pruning
 #[tokio::test]
 #[ignore = "Requires Docker"]
 async fn test_delete_old_messages_partition_pruning() {
@@ -574,8 +569,7 @@ async fn test_delete_old_messages_partition_pruning() {
 
     assert!(
         plan.is_array(),
-        "Query plan should be a JSON array, got: {:?}",
-        plan
+        "Query plan should be a JSON array, got: {plan:?}"
     );
 
     println!("Retention cleanup plan: {}", serde_json::to_string_pretty(&plan).unwrap());
@@ -607,7 +601,7 @@ async fn test_cleanup_query_performance_comparison() {
 
     // Create test messages
     for i in 0..20 {
-        let msg = make_chat_message(&room.id, &user.id, &format!("perf_{}", i));
+        let msg = make_chat_message(&room.id, &user.id, &format!("perf_{i}"));
         chat_repo.create(&msg).await.unwrap();
     }
 

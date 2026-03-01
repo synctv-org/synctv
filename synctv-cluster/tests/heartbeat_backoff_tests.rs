@@ -36,7 +36,7 @@ async fn setup_redis() -> (
         .await
         .expect("Failed to get Redis port");
 
-    let redis_url = format!("redis://{}:{}", redis_host, redis_port);
+    let redis_url = format!("redis://{redis_host}:{redis_port}");
     let redis_client =
         redis::Client::open(redis_url.as_str()).expect("Failed to create Redis client");
 
@@ -50,7 +50,7 @@ async fn setup_redis() -> (
                     retries += 1;
                     tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
                 }
-                Err(e) => panic!("Redis connection failed after {} retries: {}", retries, e),
+                Err(e) => panic!("Redis connection failed after {retries} retries: {e}"),
             }
         }
     };
@@ -259,15 +259,14 @@ async fn test_backoff_increases_exponentially() {
         backoff_durations.push(backoff);
 
         // Simulate waiting (for test, we just record the backoff)
-        println!("Iteration {}: backoff = {:?}", i, backoff);
+        println!("Iteration {i}: backoff = {backoff:?}");
     }
 
     // Backoff should increase (exponential)
     // Initial backoff might be 0 or small, then it should grow
     assert!(
         backoff_durations[2] >= backoff_durations[1],
-        "Backoff should increase with consecutive failures: {:?}",
-        backoff_durations
+        "Backoff should increase with consecutive failures: {backoff_durations:?}"
     );
 }
 

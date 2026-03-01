@@ -746,7 +746,7 @@ mod tests {
         assert!(room.is_active());
     }
 
-    /// Unit test: Room::new_with_description
+    /// Unit test: `Room::new_with_description`
     #[test]
     fn test_room_model_new_with_description() {
         let creator_id = UserId::new();
@@ -779,7 +779,7 @@ mod tests {
         assert!(room.is_active()); // Active again after unban
     }
 
-    /// Unit test: RoomStatus enum
+    /// Unit test: `RoomStatus` enum
     #[test]
     fn test_room_status() {
         assert_eq!(RoomStatus::Active.as_str(), "active");
@@ -791,13 +791,13 @@ mod tests {
         assert!(RoomStatus::Closed.is_closed());
     }
 
-    /// Unit test: Room::is_active() with various states
+    /// Unit test: `Room::is_active()` with various states
     #[test]
     fn test_room_is_active_combinations() {
         let creator_id = UserId::new();
 
         // Active status, not banned, not deleted
-        let mut room = Room::new("Test".to_string(), creator_id.clone());
+        let mut room = Room::new("Test".to_string(), creator_id);
         assert!(room.is_active());
 
         // Banned
@@ -1030,7 +1030,7 @@ mod tests {
         // Create 15 rooms
         for i in 0..15 {
             let room = RoomFixture::new()
-                .with_name(&format!("List Room {}", i))
+                .with_name(&format!("List Room {i}"))
                 .with_owner(owner.id.clone())
                 .build();
             room_repo.create(&room).await.unwrap();
@@ -1154,7 +1154,7 @@ mod tests {
         // Create rooms for owner1
         for i in 0..3 {
             let room = RoomFixture::new()
-                .with_name(&format!("Owner1 Room {}", i))
+                .with_name(&format!("Owner1 Room {i}"))
                 .with_owner(owner1.id.clone())
                 .build();
             room_repo.create(&room).await.unwrap();
@@ -1163,7 +1163,7 @@ mod tests {
         // Create rooms for owner2
         for i in 0..2 {
             let room = RoomFixture::new()
-                .with_name(&format!("Owner2 Room {}", i))
+                .with_name(&format!("Owner2 Room {i}"))
                 .with_owner(owner2.id.clone())
                 .build();
             room_repo.create(&room).await.unwrap();
@@ -1179,7 +1179,7 @@ mod tests {
         assert_eq!(total, 2);
     }
 
-    /// Integration test: is_accessible
+    /// Integration test: `is_accessible`
     #[tokio::test]
     #[ignore = "Requires Docker"]
     async fn test_is_accessible() {
@@ -1214,7 +1214,7 @@ mod tests {
         assert!(!room_repo.is_accessible(&created.id).await.unwrap());
     }
 
-    /// Integration test: get_join_context
+    /// Integration test: `get_join_context`
     #[tokio::test]
     #[ignore = "Requires Docker"]
     async fn test_get_join_context() {
@@ -1249,7 +1249,7 @@ mod tests {
         assert!(context.is_none());
     }
 
-    /// Integration test: create_with_executor
+    /// Integration test: `create_with_executor`
     #[tokio::test]
     #[ignore = "Requires Docker"]
     async fn test_create_with_executor() {
@@ -1324,11 +1324,11 @@ mod tests {
         let err = room_repo.update(&stale_room, original_version).await.unwrap_err();
         assert!(
             matches!(err, crate::Error::OptimisticLockConflict),
-            "Expected OptimisticLockConflict, got: {:?}", err
+            "Expected OptimisticLockConflict, got: {err:?}"
         );
     }
 
-    /// Integration test: Update soft-deleted room returns NotFound
+    /// Integration test: Update soft-deleted room returns `NotFound`
     #[tokio::test]
     #[ignore = "Requires Docker"]
     async fn test_update_soft_deleted_room_returns_not_found() {
@@ -1360,7 +1360,7 @@ mod tests {
         let err = room_repo.update(&updated, version).await.unwrap_err();
         assert!(
             matches!(err, crate::Error::NotFound(_)),
-            "Expected NotFound for soft-deleted room, got: {:?}", err
+            "Expected NotFound for soft-deleted room, got: {err:?}"
         );
     }
 }

@@ -13,16 +13,16 @@ fn test_flv_path_format() {
     let token = "test_token";
 
     // FLV path format
-    let path = format!("/api/room/movie/live/flv/{}.flv", media_id);
-    let query = format!("roomId={}&token={}", room_id, token);
+    let path = format!("/api/room/movie/live/flv/{media_id}.flv");
+    let query = format!("roomId={room_id}&token={token}");
 
     // Verify format
-    assert!(path.contains(&format!("{}.flv", media_id)));
+    assert!(path.contains(&format!("{media_id}.flv")));
     assert!(path.contains("media456"));
     assert!(!path.contains(room_id)); // room_id should NOT be in path
 
-    assert!(query.contains(&format!("roomId={}", room_id)));
-    assert!(query.contains(&format!("token={}", token)));
+    assert!(query.contains(&format!("roomId={room_id}")));
+    assert!(query.contains(&format!("token={token}")));
 }
 
 #[test]
@@ -31,16 +31,16 @@ fn test_hls_playlist_path_format() {
     let media_id = "media456";
 
     // HLS playlist path format (without .m3u8)
-    let path = format!("/api/room/movie/live/hls/list/{}", media_id);
-    let query = format!("roomId={}", room_id);
+    let path = format!("/api/room/movie/live/hls/list/{media_id}");
+    let query = format!("roomId={room_id}");
 
     assert!(path.contains(media_id));
     assert!(!path.contains(room_id)); // room_id should NOT be in path
-    assert!(query.contains(&format!("roomId={}", room_id)));
+    assert!(query.contains(&format!("roomId={room_id}")));
 
     // With .m3u8 extension
-    let path_with_ext = format!("/api/room/movie/live/hls/list/{}.m3u8", media_id);
-    assert!(path_with_ext.contains(&format!("{}.m3u8", media_id)));
+    let path_with_ext = format!("/api/room/movie/live/hls/list/{media_id}.m3u8");
+    assert!(path_with_ext.contains(&format!("{media_id}.m3u8")));
 }
 
 #[test]
@@ -50,7 +50,7 @@ fn test_hls_segment_path_format() {
     let segment = "a1b2c3d4e5f6";
 
     // HLS segment path format
-    let path = format!("/api/room/movie/live/hls/data/{}/{}/{}.ts", room_id, media_id, segment);
+    let path = format!("/api/room/movie/live/hls/data/{room_id}/{media_id}/{segment}.ts");
 
     // Both room_id and media_id should be in path
     assert!(path.contains(room_id));
@@ -63,7 +63,7 @@ fn test_hls_segment_path_format() {
     assert_eq!(parts[6], "data");
     assert_eq!(parts[7], room_id);
     assert_eq!(parts[8], media_id);
-    assert_eq!(parts[9], format!("{}.ts", segment));
+    assert_eq!(parts[9], format!("{segment}.ts"));
 }
 
 #[test]
@@ -73,7 +73,7 @@ fn test_hls_segment_disguised_path_format() {
     let segment = "a1b2c3d4e5f6";
 
     // HLS segment with PNG disguise
-    let path = format!("/api/room/movie/live/hls/data/{}/{}/{}.png", room_id, media_id, segment);
+    let path = format!("/api/room/movie/live/hls/data/{room_id}/{media_id}/{segment}.png");
 
     assert!(path.contains(room_id));
     assert!(path.contains(media_id));
@@ -159,12 +159,12 @@ fn test_room_media_combination_unique_keys() {
 
     for (room, media) in &combinations {
         // Storage key format (structured: app/stream/name)
-        let storage_key = format!("{}/{}/segment", room, media);
-        println!("Storage key: {}", storage_key);
+        let storage_key = format!("{room}/{media}/segment");
+        println!("Storage key: {storage_key}");
 
         // Registry key format
-        let registry_key = format!("{}/{}", room, media);
-        println!("Registry key: {}", registry_key);
+        let registry_key = format!("{room}/{media}");
+        println!("Registry key: {registry_key}");
 
         // Verify uniqueness
         let mut key_set = std::collections::HashSet::new();
@@ -193,12 +193,12 @@ fn test_path_matches_go_version() {
 
 fn matches_flv_pattern(path: &str, expected_media: &str) -> bool {
     path.starts_with("/api/room/movie/live/flv/")
-        && path.ends_with(&format!("{}.flv", expected_media))
+        && path.ends_with(&format!("{expected_media}.flv"))
 }
 
 fn matches_hls_playlist_pattern(path: &str, expected_media: &str) -> bool {
     path.starts_with("/api/room/movie/live/hls/list/")
-        && (path.ends_with(expected_media) || path.ends_with(&format!("{}.m3u8", expected_media)))
+        && (path.ends_with(expected_media) || path.ends_with(&format!("{expected_media}.m3u8")))
 }
 
 fn matches_hls_segment_pattern(path: &str, expected_room: &str, expected_media: &str) -> bool {
@@ -216,13 +216,13 @@ fn test_url_building() {
     let ts_name = "segment0";
 
     // Build segment URL
-    let segment_url = format!("{}/{}/{}/{}.ts", base_url, room_id, media_id, ts_name);
+    let segment_url = format!("{base_url}/{room_id}/{media_id}/{ts_name}.ts");
 
     assert_eq!(segment_url, "/api/room/movie/live/hls/data/room123/media456/segment0.ts");
 
     // Build with auth token
     let token = "test_token";
-    let url_with_token = format!("{}/{}/{}/{}.ts?token={}", base_url, room_id, media_id, ts_name, token);
+    let url_with_token = format!("{base_url}/{room_id}/{media_id}/{ts_name}.ts?token={token}");
 
     assert!(url_with_token.contains("?token=test_token"));
 }
@@ -238,11 +238,11 @@ fn test_special_characters_in_ids() {
 
     for (room, media) in test_cases {
         // Storage key uses structured path: app/stream/name
-        let storage_key = format!("{}/{}/segment", room, media);
+        let storage_key = format!("{room}/{media}/segment");
         assert!(storage_key.contains('/'));
 
         // Registry key uses room/media format
-        let registry_key = format!("{}/{}", room, media);
+        let registry_key = format!("{room}/{media}");
         assert!(registry_key.contains('/'));
 
         // Both should be valid

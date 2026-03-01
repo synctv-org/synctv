@@ -827,13 +827,13 @@ mod tests {
             codec: "h264".to_string(),
             language: "eng".to_string(),
             stream_type: "Video".to_string(),
-            title: "".to_string(),
+            title: String::new(),
             display_title: "1080p H.264".to_string(),
             display_language: "English".to_string(),
             is_default: true,
             index: 0,
-            protocol: "".to_string(),
-            delivery_url: "".to_string(),
+            protocol: String::new(),
+            delivery_url: String::new(),
         };
         let proto: crate::grpc::emby::MediaStreamInfo = stream.into();
         assert_eq!(proto.codec, "h264");

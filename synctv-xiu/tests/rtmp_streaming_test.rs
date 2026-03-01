@@ -3,9 +3,9 @@
 //! This test suite covers:
 //! 1. RTMP chunk header construction and validation
 //! 2. GOP cache frame management and memory limits
-//! 3. StreamIdentifier operations
+//! 3. `StreamIdentifier` operations
 //! 4. FLV codec conversion functions
-//! 5. StreamsHub publish/subscribe flow
+//! 5. `StreamsHub` publish/subscribe flow
 //! 6. Fan-out frame/packet delivery
 //! 7. Statistics data processing
 
@@ -72,7 +72,7 @@ fn test_chunk_info_debug_format() {
     use synctv_xiu::rtmp::chunk::ChunkInfo;
     let payload = BytesMut::from(&[0xAB, 0xCD][..]);
     let info = ChunkInfo::new(3, 0, 0, 2, 9, 1, payload);
-    let debug = format!("{:?}", info);
+    let debug = format!("{info:?}");
     assert!(debug.contains("ChunkInfo"));
     assert!(debug.contains("0xab"));
     assert!(debug.contains("0xcd"));
@@ -325,7 +325,7 @@ fn test_stream_identifier_rtmp() {
         app_name: "live".to_string(),
         stream_name: "test".to_string(),
     };
-    let display = format!("{}", id);
+    let display = format!("{id}");
     assert!(display.contains("RTMP"));
     assert!(display.contains("live"));
     assert!(display.contains("test"));
@@ -335,7 +335,7 @@ fn test_stream_identifier_rtmp() {
 fn test_stream_identifier_unknown() {
     use synctv_xiu::streamhub::stream::StreamIdentifier;
     let id = StreamIdentifier::Unknown;
-    let display = format!("{}", id);
+    let display = format!("{id}");
     assert_eq!(display, "Unknown");
 }
 

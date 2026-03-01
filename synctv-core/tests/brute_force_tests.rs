@@ -1,7 +1,7 @@
 //! Brute-force protection tests
 //!
-//! Tests the InMemoryAttemptTracker, BruteForceProtection logic, and
-//! (with testcontainers) the RedisAttemptTracker.
+//! Tests the `InMemoryAttemptTracker`, `BruteForceProtection` logic, and
+//! (with testcontainers) the `RedisAttemptTracker`.
 //!
 //! ## Degradation Testing
 //!
@@ -13,7 +13,7 @@
 //! maintains independent brute-force counters. Monitor the `is_degraded()` flag
 //! or `degraded_operation_count()` to detect Redis connectivity issues.
 //!
-//! Run with: cargo test --test brute_force_tests -- --nocapture
+//! Run with: cargo test --test `brute_force_tests` -- --nocapture
 #![allow(clippy::unwrap_used)]
 
 use std::net::{IpAddr, Ipv4Addr};
@@ -190,7 +190,7 @@ async fn start_redis() -> (testcontainers::ContainerAsync<Redis>, redis::aio::Co
         .get_host_port_ipv4(6379)
         .await
         .expect("Failed to get port");
-    let redis_url = format!("redis://127.0.0.1:{}", port);
+    let redis_url = format!("redis://127.0.0.1:{port}");
     let client = redis::Client::open(redis_url).expect("Failed to create Redis client");
     let conn = redis::aio::ConnectionManager::new(client)
         .await
@@ -316,7 +316,7 @@ async fn test_brute_force_with_redis_ip_lockout_and_reset() {
 // RedisAttemptTracker degradation tracking tests
 // ============================================================================
 
-/// Test that RedisAttemptTracker tracks degradation state correctly
+/// Test that `RedisAttemptTracker` tracks degradation state correctly
 #[tokio::test]
 #[ignore = "Requires Docker"]
 async fn test_redis_tracker_degradation_tracking() {
@@ -340,7 +340,7 @@ async fn test_redis_tracker_degradation_tracking() {
     assert!(!tracker.is_degraded(), "After successful get, should not be degraded");
 }
 
-/// Test that RedisAttemptTracker increments degraded counter on failures
+/// Test that `RedisAttemptTracker` increments degraded counter on failures
 ///
 /// NOTE: This test cannot easily simulate Redis failures without stopping
 /// the container. The degradation behavior is tested indirectly through
@@ -412,7 +412,7 @@ async fn test_redis_tracker_success_clears_degraded_flag() {
 
 /// Test fallback cache maintains state during Redis operations
 ///
-/// The fallback cache in RedisAttemptTracker should maintain consistent state
+/// The fallback cache in `RedisAttemptTracker` should maintain consistent state
 /// even when Redis is available - it's only used as a fallback, not as primary.
 #[tokio::test]
 #[ignore = "Requires Docker"]
@@ -444,7 +444,7 @@ async fn test_redis_tracker_fallback_not_used_when_redis_healthy() {
 
 use synctv_core::service::auth::brute_force::BruteForceConfig;
 
-/// Test that BruteForceConfig::default() matches the original hardcoded values
+/// Test that `BruteForceConfig::default()` matches the original hardcoded values
 /// This ensures backward compatibility when no config is provided
 #[test]
 fn test_brute_force_config_defaults_match_hardcoded() {
@@ -471,7 +471,7 @@ fn test_brute_force_config_defaults_match_hardcoded() {
     assert_eq!(config.ip_attempts_ttl_secs, 600, "IP_ATTEMPTS_TTL_SECS should be 600");
 }
 
-/// Test BruteForceConfig::custom_thresholds() with custom values
+/// Test `BruteForceConfig::custom_thresholds()` with custom values
 #[test]
 fn test_brute_force_config_custom_thresholds() {
     let config = BruteForceConfig {
@@ -497,7 +497,7 @@ fn test_brute_force_config_custom_thresholds() {
     assert_eq!(config.ip_lockout_secs, 180);
 }
 
-/// Test BruteForceConfig serialization/deserialization for settings storage
+/// Test `BruteForceConfig` serialization/deserialization for settings storage
 #[test]
 fn test_brute_force_config_serde_roundtrip() {
     let original = BruteForceConfig {
@@ -528,7 +528,7 @@ fn test_brute_force_config_serde_roundtrip() {
     assert_eq!(deserialized.ip_attempts_ttl_secs, original.ip_attempts_ttl_secs);
 }
 
-/// Test BruteForceProtection uses custom thresholds via config
+/// Test `BruteForceProtection` uses custom thresholds via config
 #[tokio::test]
 async fn test_brute_force_with_custom_tier1_threshold() {
     let custom_config = BruteForceConfig {
@@ -561,7 +561,7 @@ async fn test_brute_force_with_custom_tier1_threshold() {
     );
 }
 
-/// Test BruteForceProtection uses custom lockout duration
+/// Test `BruteForceProtection` uses custom lockout duration
 #[tokio::test]
 async fn test_brute_force_with_custom_lockout_duration() {
     let custom_config = BruteForceConfig {
@@ -595,7 +595,7 @@ async fn test_brute_force_with_custom_lockout_duration() {
     );
 }
 
-/// Test BruteForceProtection uses custom IP thresholds
+/// Test `BruteForceProtection` uses custom IP thresholds
 #[tokio::test]
 async fn test_brute_force_with_custom_ip_threshold() {
     let custom_config = BruteForceConfig {
@@ -626,7 +626,7 @@ async fn test_brute_force_with_custom_ip_threshold() {
     );
 }
 
-/// Test BruteForceConfig validation: thresholds should be increasing
+/// Test `BruteForceConfig` validation: thresholds should be increasing
 #[test]
 fn test_brute_force_config_threshold_ordering() {
     // Valid: thresholds are in increasing order
@@ -649,7 +649,7 @@ fn test_brute_force_config_threshold_ordering() {
     // Note: Config validation should reject this, but the type allows it
 }
 
-/// Test that BruteForceConfig can be parsed from JSON (for settings integration)
+/// Test that `BruteForceConfig` can be parsed from JSON (for settings integration)
 #[test]
 fn test_brute_force_config_from_json() {
     let json = serde_json::json!({
@@ -722,7 +722,7 @@ fn test_protection_config_accessible() {
 
     let protection = BruteForceProtection::in_memory_with_config(
         "test_config_access:".to_string(),
-        config.clone(),
+        config,
     );
 
     // Verify config is accessible
@@ -741,7 +741,7 @@ fn test_protection_config_accessible() {
 // IP-only Failure Tracking Tests (Task #74)
 // ============================================================================
 
-/// Test record_ip_failure only increments IP counter, not username counter
+/// Test `record_ip_failure` only increments IP counter, not username counter
 #[tokio::test]
 async fn test_record_ip_failure_only_affects_ip_counter() {
     let protection = BruteForceProtection::in_memory("test_ip_only:".to_string());
@@ -765,7 +765,7 @@ async fn test_record_ip_failure_only_affects_ip_counter() {
     assert!(result.is_err(), "IP should be locked out after 20 failures");
 }
 
-/// Test record_ip_failure with None IP does nothing
+/// Test `record_ip_failure` with None IP does nothing
 #[tokio::test]
 async fn test_record_ip_failure_with_none_ip_is_noop() {
     let protection = BruteForceProtection::in_memory("test_noop:".to_string());
@@ -775,7 +775,7 @@ async fn test_record_ip_failure_with_none_ip_is_noop() {
     assert!(result.is_ok());
 }
 
-/// Test check_ip_allowed with None IP always returns Ok
+/// Test `check_ip_allowed` with None IP always returns Ok
 #[tokio::test]
 async fn test_check_ip_allowed_with_none_is_always_ok() {
     let protection = BruteForceProtection::in_memory("test_none_ip:".to_string());

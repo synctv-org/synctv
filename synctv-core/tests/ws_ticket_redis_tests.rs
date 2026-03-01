@@ -1,13 +1,13 @@
 //! WebSocket ticket Redis tests
 //!
-//! Tests the RedisTicketStore backend via testcontainers:
+//! Tests the `RedisTicketStore` backend via testcontainers:
 //! roundtrip, one-time use, room mismatch, TTL expiry, concurrent consumption.
 //!
 //! Also tests cluster mode Redis dependency:
 //! - cluster mode with Redis should work correctly
 //! - cluster mode without Redis should return an error (tested in unit tests)
 //!
-//! Run with: cargo test --test ws_ticket_redis_tests
+//! Run with: cargo test --test `ws_ticket_redis_tests`
 #![allow(clippy::unwrap_used)]
 
 use synctv_core::models::{RoomId, UserId};
@@ -24,7 +24,7 @@ async fn start_redis() -> (testcontainers::ContainerAsync<Redis>, redis::aio::Co
         .get_host_port_ipv4(6379)
         .await
         .expect("Failed to get port");
-    let redis_url = format!("redis://127.0.0.1:{}", port);
+    let redis_url = format!("redis://127.0.0.1:{port}");
     let client = redis::Client::open(redis_url).expect("Failed to create Redis client");
     let conn = redis::aio::ConnectionManager::new(client)
         .await
@@ -206,8 +206,8 @@ async fn test_cluster_mode_with_redis_custom_ttl() {
     assert_eq!(service.ticket_ttl_secs(), 60);
 }
 
-/// Test: WsTicketService::with_redis always creates a Redis-backed service
-/// regardless of cluster mode flag (which is only checked in ::new).
+/// Test: `WsTicketService::with_redis` always creates a Redis-backed service
+/// regardless of cluster mode flag (which is only checked in `::new`).
 #[tokio::test]
 #[ignore = "Requires Docker"]
 async fn test_with_redis_creates_redis_backend() {

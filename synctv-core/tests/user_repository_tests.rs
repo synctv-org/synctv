@@ -1,8 +1,8 @@
-//! UserRepository integration tests
+//! `UserRepository` integration tests
 //!
 //! Tests optimistic locking, soft-delete interactions, and batch queries.
 //!
-//! Run with: cargo test --test user_repository_tests
+//! Run with: cargo test --test `user_repository_tests`
 #![allow(clippy::unwrap_used)]
 
 use synctv_core_testing::create_test_pool;
@@ -19,7 +19,7 @@ fn make_user(username: &str) -> User {
     User {
         id: UserId::new(),
         username: username.to_string(),
-        email: Some(format!("{}@test.com", username)),
+        email: Some(format!("{username}@test.com")),
         password_hash: "hash".to_string(),
         role: UserRole::User,
         status: UserStatus::Active,
@@ -59,7 +59,7 @@ async fn test_update_stale_version_returns_optimistic_lock_conflict() {
     let err = repo.update(&stale_user, original_version).await.unwrap_err();
     assert!(
         matches!(err, Error::OptimisticLockConflict),
-        "Expected OptimisticLockConflict, got: {:?}", err
+        "Expected OptimisticLockConflict, got: {err:?}"
     );
 }
 
@@ -85,7 +85,7 @@ async fn test_update_soft_deleted_user_returns_not_found() {
     let err = repo.update(&updated, version).await.unwrap_err();
     assert!(
         matches!(err, Error::NotFound(_)),
-        "Expected NotFound for soft-deleted user, got: {:?}", err
+        "Expected NotFound for soft-deleted user, got: {err:?}"
     );
 }
 
@@ -106,7 +106,7 @@ async fn test_update_password_deleted_user_returns_not_found() {
     let err = repo.update_password(&user.id, "new_hash").await.unwrap_err();
     assert!(
         matches!(err, Error::NotFound(_)),
-        "Expected NotFound for deleted user password update, got: {:?}", err
+        "Expected NotFound for deleted user password update, got: {err:?}"
     );
 }
 

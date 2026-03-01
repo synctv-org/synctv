@@ -11,7 +11,7 @@ use synctv_core::models::{
 
 // === Timing Attack Protection Tests ===
 
-/// Minimum delay constant used in check_room_password for timing attack protection.
+/// Minimum delay constant used in `check_room_password` for timing attack protection.
 /// This should match the constant in room.rs.
 const MIN_PASSWORD_CHECK_DELAY_MS: u64 = 250;
 
@@ -49,7 +49,7 @@ fn test_timing_delay_calculation() {
     // Simulate the timing protection logic
     fn calculate_sleep_duration(elapsed: Duration, min_delay: Duration) -> Option<Duration> {
         if elapsed < min_delay {
-            Some(min_delay - elapsed)
+            Some(min_delay.checked_sub(elapsed).unwrap())
         } else {
             None
         }
@@ -67,7 +67,7 @@ fn test_timing_delay_calculation() {
     let partial_elapsed = Duration::from_millis(50);
     let sleep = calculate_sleep_duration(partial_elapsed, min_delay);
     assert!(sleep.is_some(), "Partial operation should require sleep");
-    let expected_sleep = min_delay - partial_elapsed;
+    let expected_sleep = min_delay.checked_sub(partial_elapsed).unwrap();
     assert_eq!(sleep.unwrap(), expected_sleep, "Should sleep for remaining time");
 
     // Test case 3: Operation took exactly minimum time (250ms) should not require sleep
@@ -110,7 +110,7 @@ fn test_timing_protection_applies_equally() {
     assert!(min_delay_ms >= 200);
 }
 
-/// Test that simulates the exact timing protection logic used in check_room_password.
+/// Test that simulates the exact timing protection logic used in `check_room_password`.
 /// This verifies that both password success and failure scenarios result in
 /// approximately the same total execution time.
 #[test]
@@ -129,7 +129,7 @@ fn test_timing_protection_simulation() {
         // Apply the timing protection (same for both valid and invalid passwords)
         let elapsed = start.elapsed();
         if elapsed < min_delay {
-            std::thread::sleep(min_delay - elapsed);
+            std::thread::sleep(min_delay.checked_sub(elapsed).unwrap());
         }
 
         start.elapsed()
@@ -156,8 +156,7 @@ fn test_timing_protection_simulation() {
     let diff = fast_result.abs_diff(slow_result);
     assert!(
         diff < Duration::from_millis(100),
-        "Timing difference between fast and slow operations should be bounded: {:?}",
-        diff
+        "Timing difference between fast and slow operations should be bounded: {diff:?}"
     );
 }
 

@@ -1,6 +1,6 @@
-//! Tests for ExternalStreamPuller retry counter reset behavior.
+//! Tests for `ExternalStreamPuller` retry counter reset behavior.
 //!
-//! These tests verify that the global_attempt_count is properly reset
+//! These tests verify that the `global_attempt_count` is properly reset
 //! after a successful long-lived connection.
 
 #![allow(clippy::unwrap_used)]
@@ -12,8 +12,8 @@ fn test_attempt_reset_after_long_connection_documents_bug() {
     let global_attempt_count: u32 = 100;
 
     // Simulate a successful long connection (> 1 minute)
-    let stream_duration = std::time::Duration::from_secs(120);
-    let min_successful_duration = std::time::Duration::from_secs(60);
+    let stream_duration = std::time::Duration::from_mins(2);
+    let min_successful_duration = std::time::Duration::from_mins(1);
 
     if stream_duration > min_successful_duration {
         attempt = 0;
@@ -34,8 +34,8 @@ fn test_both_counters_reset_after_long_connection() {
     let mut global_attempt_count: u32 = 100;
 
     // Simulate a successful long connection (> 1 minute)
-    let stream_duration = std::time::Duration::from_secs(120);
-    let min_successful_duration = std::time::Duration::from_secs(60);
+    let stream_duration = std::time::Duration::from_mins(2);
+    let min_successful_duration = std::time::Duration::from_mins(1);
 
     if stream_duration > min_successful_duration {
         attempt = 0;
@@ -55,7 +55,7 @@ fn test_short_connection_no_reset() {
 
     // Simulate a short failed connection (< 1 minute)
     let stream_duration = std::time::Duration::from_secs(30);
-    let min_successful_duration = std::time::Duration::from_secs(60);
+    let min_successful_duration = std::time::Duration::from_mins(1);
 
     if stream_duration > min_successful_duration {
         attempt = 0;
@@ -74,8 +74,8 @@ fn test_boundary_at_threshold() {
     let mut global_attempt_count: u32 = 100;
 
     // Exactly at the threshold (1 minute)
-    let stream_duration = std::time::Duration::from_secs(60);
-    let min_successful_duration = std::time::Duration::from_secs(60);
+    let stream_duration = std::time::Duration::from_mins(1);
+    let min_successful_duration = std::time::Duration::from_mins(1);
 
     // > comparison means exactly 60 seconds does NOT trigger reset
     if stream_duration > min_successful_duration {
@@ -95,8 +95,8 @@ fn test_boundary_above_threshold() {
     let mut global_attempt_count: u32 = 100;
 
     // Just above the threshold (60 seconds + 1 nanosecond)
-    let stream_duration = std::time::Duration::from_secs(60) + std::time::Duration::from_nanos(1);
-    let min_successful_duration = std::time::Duration::from_secs(60);
+    let stream_duration = std::time::Duration::from_mins(1) + std::time::Duration::from_nanos(1);
+    let min_successful_duration = std::time::Duration::from_mins(1);
 
     if stream_duration > min_successful_duration {
         attempt = 0;
@@ -108,7 +108,7 @@ fn test_boundary_above_threshold() {
     assert_eq!(global_attempt_count, 0);
 }
 
-/// Test that global_attempt_count can grow without reset.
+/// Test that `global_attempt_count` can grow without reset.
 #[test]
 fn test_global_attempt_count_growth() {
     // Simulate multiple short failures without a long connection
@@ -121,7 +121,7 @@ fn test_global_attempt_count_growth() {
 
         // Simulate short failure, no reset
         let stream_duration = std::time::Duration::from_secs(10);
-        let min_successful_duration = std::time::Duration::from_secs(60);
+        let min_successful_duration = std::time::Duration::from_mins(1);
 
         if stream_duration > min_successful_duration {
             _attempt = 0;
@@ -133,7 +133,7 @@ fn test_global_attempt_count_growth() {
     assert_eq!(global_attempt_count, 200);
 }
 
-/// Test that GLOBAL_MAX_ATTEMPTS (1000) would be hit without proper reset.
+/// Test that `GLOBAL_MAX_ATTEMPTS` (1000) would be hit without proper reset.
 #[test]
 fn test_global_max_attempts_reached() {
     const GLOBAL_MAX_ATTEMPTS: u32 = 1000;
@@ -153,7 +153,7 @@ fn test_global_max_attempts_reached() {
 
         // Simulate short failure, no reset (BUG)
         let stream_duration = std::time::Duration::from_secs(10);
-        let min_successful_duration = std::time::Duration::from_secs(60);
+        let min_successful_duration = std::time::Duration::from_mins(1);
 
         if stream_duration > min_successful_duration {
             _attempt = 0;
@@ -164,7 +164,7 @@ fn test_global_max_attempts_reached() {
     assert!(hit_limit, "Should hit GLOBAL_MAX_ATTEMPTS limit");
 }
 
-/// Test that long connection reset prevents hitting GLOBAL_MAX_ATTEMPTS.
+/// Test that long connection reset prevents hitting `GLOBAL_MAX_ATTEMPTS`.
 #[test]
 fn test_long_connection_reset_prevents_limit() {
     const GLOBAL_MAX_ATTEMPTS: u32 = 1000;
@@ -184,11 +184,11 @@ fn test_long_connection_reset_prevents_limit() {
 
         // Every 100 iterations, simulate a long successful connection
         let stream_duration = if i % 100 == 99 {
-            std::time::Duration::from_secs(120)
+            std::time::Duration::from_mins(2)
         } else {
             std::time::Duration::from_secs(10)
         };
-        let min_successful_duration = std::time::Duration::from_secs(60);
+        let min_successful_duration = std::time::Duration::from_mins(1);
 
         if stream_duration > min_successful_duration {
             _attempt = 0;

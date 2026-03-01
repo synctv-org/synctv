@@ -461,7 +461,7 @@ async fn emby_thumbnail_extract_from_thumb_tag() {
     assert_eq!(image_tags.thumb.as_ref().unwrap(), "thumb456tag");
 }
 
-/// Test that no thumbnail is returned when ImageTags is missing
+/// Test that no thumbnail is returned when `ImageTags` is missing
 #[tokio::test]
 async fn emby_thumbnail_no_image_tags_returns_none() {
     let server = MockServer::start().await;

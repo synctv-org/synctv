@@ -15,7 +15,7 @@ use synctv_proxy::{proxy_options_preflight_rate_limited, RateLimiter};
 #[test]
 fn test_rate_limiter_allows_requests_within_limit() {
     // A rate limiter with limit 5 should allow 5 requests per window
-    let limiter = RateLimiter::new(5, Duration::from_secs(60));
+    let limiter = RateLimiter::new(5, Duration::from_mins(1));
 
     // First 5 requests from the same IP should be allowed
     for _ in 0..5 {
@@ -29,7 +29,7 @@ fn test_rate_limiter_allows_requests_within_limit() {
 #[test]
 fn test_rate_limiter_blocks_requests_over_limit() {
     // A rate limiter with limit 3 should block the 4th request
-    let limiter = RateLimiter::new(3, Duration::from_secs(60));
+    let limiter = RateLimiter::new(3, Duration::from_mins(1));
 
     // First 3 requests should be allowed
     for i in 0..3 {
@@ -50,7 +50,7 @@ fn test_rate_limiter_blocks_requests_over_limit() {
 #[test]
 fn test_rate_limiter_tracks_ips_separately() {
     // Each IP should have its own rate limit counter
-    let limiter = RateLimiter::new(2, Duration::from_secs(60));
+    let limiter = RateLimiter::new(2, Duration::from_mins(1));
 
     // Two requests from IP1
     assert!(limiter.check("192.168.1.1"));
@@ -100,7 +100,7 @@ fn test_rate_limiter_resets_after_window() {
 #[tokio::test]
 async fn test_rate_limited_preflight_returns_429_when_over_limit() {
     // Create a rate limiter with limit 1
-    let limiter = std::sync::Arc::new(RateLimiter::new(1, Duration::from_secs(60)));
+    let limiter = std::sync::Arc::new(RateLimiter::new(1, Duration::from_mins(1)));
 
     // First request should succeed
     let response = proxy_options_preflight_rate_limited(
@@ -128,7 +128,7 @@ async fn test_rate_limited_preflight_returns_429_when_over_limit() {
 #[tokio::test]
 async fn test_rate_limited_preflight_allows_different_ips() {
     // Create a rate limiter with limit 1
-    let limiter = std::sync::Arc::new(RateLimiter::new(1, Duration::from_secs(60)));
+    let limiter = std::sync::Arc::new(RateLimiter::new(1, Duration::from_mins(1)));
 
     // Request from IP1
     let response = proxy_options_preflight_rate_limited(
@@ -152,7 +152,7 @@ async fn test_rate_limited_preflight_allows_different_ips() {
 #[tokio::test]
 async fn test_rate_limited_preflight_missing_ip_uses_unknown() {
     // When no IP is provided, it should use "unknown" as key
-    let limiter = std::sync::Arc::new(RateLimiter::new(1, Duration::from_secs(60)));
+    let limiter = std::sync::Arc::new(RateLimiter::new(1, Duration::from_mins(1)));
 
     // Request without IP
     let response = proxy_options_preflight_rate_limited(
@@ -180,7 +180,7 @@ async fn test_rate_limited_preflight_missing_ip_uses_unknown() {
 #[tokio::test]
 async fn test_rate_limit_normal_request_succeeds() {
     // This test verifies that rate limiting doesn't block legitimate traffic
-    let limiter = std::sync::Arc::new(RateLimiter::new(100, Duration::from_secs(60)));
+    let limiter = std::sync::Arc::new(RateLimiter::new(100, Duration::from_mins(1)));
 
     // Multiple requests from same IP within limit should all succeed
     for _ in 0..10 {

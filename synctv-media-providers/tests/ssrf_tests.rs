@@ -1,6 +1,6 @@
 //! SSRF protection unit tests
 //!
-//! Tests for Teredo (2001::/32), 6to4 (2002::/16), IPv4-mapped IPv6,
+//! Tests for Teredo (`2001::/32`), 6to4 (`2002::/16`), IPv4-mapped IPv6,
 //! and additional edge cases in the SSRF module.
 
 #![allow(clippy::unwrap_used)]
@@ -168,9 +168,7 @@ fn test_ipv6_global_unicast_allowed() {
 
 #[test]
 fn test_is_blocked_ip_v4() {
-    assert!(is_blocked_ip(std::net::IpAddr::V4(Ipv4Addr::new(
-        127, 0, 0, 1
-    ))));
+    assert!(is_blocked_ip(std::net::IpAddr::V4(Ipv4Addr::LOCALHOST)));
     assert!(!is_blocked_ip(std::net::IpAddr::V4(Ipv4Addr::new(
         8, 8, 8, 8
     ))));

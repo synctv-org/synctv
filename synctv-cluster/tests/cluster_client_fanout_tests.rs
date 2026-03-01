@@ -1,7 +1,7 @@
-//! CL6: ClusterClient fan-out
+//! CL6: `ClusterClient` fan-out
 //!
-//! Tests for FanOutResult construction, merge_user_statuses logic,
-//! and ClusterClient with no remote nodes.
+//! Tests for `FanOutResult` construction, `merge_user_statuses` logic,
+//! and `ClusterClient` with no remote nodes.
 
 #![allow(clippy::unwrap_used)]
 use std::sync::Arc;
@@ -14,7 +14,7 @@ use synctv_cluster::discovery::node_registry::NodeRegistry;
 // FanOutResult construction and queries
 // ============================================================================
 
-/// Verify FanOutResult with partial failure tracks nodes_failed correctly.
+/// Verify `FanOutResult` with partial failure tracks `nodes_failed` correctly.
 #[test]
 fn test_fan_out_result_partial_failure_tracking() {
     let result: FanOutResult<Vec<UserOnlineStatus>> = FanOutResult {
@@ -39,7 +39,7 @@ fn test_fan_out_result_partial_failure_tracking() {
     );
 }
 
-/// Verify FanOutResult is complete when all nodes succeed.
+/// Verify `FanOutResult` is complete when all nodes succeed.
 #[test]
 fn test_fan_out_result_all_success() {
     let result: FanOutResult<Vec<UserOnlineStatus>> = FanOutResult {
@@ -67,7 +67,7 @@ fn test_fan_out_result_all_success() {
     assert_eq!(result.total_nodes(), 2);
 }
 
-/// Verify FanOutResult with all failures.
+/// Verify `FanOutResult` with all failures.
 #[test]
 fn test_fan_out_result_all_failed() {
     let result: FanOutResult<Vec<UserOnlineStatus>> = FanOutResult {
@@ -92,7 +92,7 @@ fn test_fan_out_result_all_failed() {
 // merge_user_statuses tests
 // ============================================================================
 
-/// Verify merge_user_statuses: any_online_wins policy.
+/// Verify `merge_user_statuses`: `any_online_wins` policy.
 #[test]
 fn test_merge_user_statuses_any_online_wins() {
     // Node A says user1 offline, Node B says user1 online
@@ -122,7 +122,7 @@ fn test_merge_user_statuses_any_online_wins() {
     );
 }
 
-/// Verify merge_user_statuses: dedup room_ids from multiple nodes.
+/// Verify `merge_user_statuses`: dedup `room_ids` from multiple nodes.
 #[test]
 fn test_merge_user_statuses_dedup_rooms() {
     let statuses = vec![
@@ -153,7 +153,7 @@ fn test_merge_user_statuses_dedup_rooms() {
     );
 }
 
-/// Verify merge_user_statuses: multiple users from multiple nodes.
+/// Verify `merge_user_statuses`: multiple users from multiple nodes.
 #[test]
 fn test_merge_user_statuses_multi_user_multi_node() {
     let statuses = vec![
@@ -203,7 +203,7 @@ fn test_merge_user_statuses_empty() {
     assert!(merged.is_empty());
 }
 
-/// Verify node_id is merged (comma-separated) for multi-node presence.
+/// Verify `node_id` is merged (comma-separated) for multi-node presence.
 #[test]
 fn test_merge_user_statuses_node_id_merged() {
     let statuses = vec![
@@ -229,8 +229,8 @@ fn test_merge_user_statuses_node_id_merged() {
     assert!(user.node_id.contains("node-b"), "node_id should contain node-b");
 }
 
-/// ClusterClient with no remote nodes should return empty fan-out results.
-/// This test requires no actual Redis connection because get_all_nodes falls back
+/// `ClusterClient` with no remote nodes should return empty fan-out results.
+/// This test requires no actual Redis connection because `get_all_nodes` falls back
 /// to local cache in degraded mode, which is empty.
 #[tokio::test]
 async fn test_cluster_client_no_remote_nodes_fan_out() {

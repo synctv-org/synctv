@@ -1,9 +1,9 @@
-//! RedisCacheL2 integration tests
+//! `RedisCacheL2` integration tests
 //!
-//! Tests set_if_newer (absent key, newer wins, older rejected, concurrent)
-//! and delete_by_prefix (100+ keys with SCAN pagination, prefix isolation).
+//! Tests `set_if_newer` (absent key, newer wins, older rejected, concurrent)
+//! and `delete_by_prefix` (100+ keys with SCAN pagination, prefix isolation).
 //!
-//! Run with: cargo test --test redis_cache_l2_tests
+//! Run with: cargo test --test `redis_cache_l2_tests`
 #![allow(clippy::unwrap_used)]
 
 use synctv_core::cache::{CacheL2Backend, RedisCacheL2};
@@ -19,7 +19,7 @@ async fn start_redis() -> (testcontainers::ContainerAsync<Redis>, redis::aio::Co
         .get_host_port_ipv4(6379)
         .await
         .expect("Failed to get port");
-    let redis_url = format!("redis://127.0.0.1:{}", port);
+    let redis_url = format!("redis://127.0.0.1:{port}");
     let client = redis::Client::open(redis_url).expect("Failed to create Redis client");
     let conn = redis::aio::ConnectionManager::new(client)
         .await

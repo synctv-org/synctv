@@ -1,9 +1,9 @@
 //! Email token lifecycle integration tests
 //!
 //! Tests token creation, usage (mark as used), expiry checking, and cleanup.
-//! Requires real PostgreSQL via testcontainers.
+//! Requires real `PostgreSQL` via testcontainers.
 //!
-//! Run with: cargo test --test email_token_tests
+//! Run with: cargo test --test `email_token_tests`
 #![allow(clippy::unwrap_used)]
 
 use synctv_core_testing::create_test_pool;
@@ -13,13 +13,13 @@ use synctv_core::{
     service::email_token::{EmailTokenService, EmailTokenType},
 };
 use chrono::{Utc, Duration};
-/// Default PostgreSQL version for test containers
+/// Default `PostgreSQL` version for test containers
 fn make_user(username: &str) -> User {
     let now = Utc::now();
     User {
         id: UserId::new(),
         username: username.to_string(),
-        email: Some(format!("{}@test.com", username)),
+        email: Some(format!("{username}@test.com")),
         password_hash: "hash".to_string(),
         role: UserRole::User,
         status: UserStatus::Active,
@@ -398,7 +398,7 @@ async fn test_multiple_token_generations_only_last_valid() {
             let result = token_service
                 .validate_token(token, EmailTokenType::PasswordReset)
                 .await;
-            assert!(result.is_err(), "Token {} should be invalid", i);
+            assert!(result.is_err(), "Token {i} should be invalid");
         }
     }
 }

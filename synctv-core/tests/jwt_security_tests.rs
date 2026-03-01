@@ -3,7 +3,7 @@
 //! These tests verify JWT security properties including tampering detection,
 //! expiry enforcement, and type confusion prevention.
 //!
-//! Run with: cargo test --test jwt_security_tests
+//! Run with: cargo test --test `jwt_security_tests`
 #![allow(clippy::unwrap_used)]
 
 use std::sync::Arc;
@@ -108,7 +108,7 @@ async fn test_jwt_expiry_enforcement() {
 
     let err_msg = format!("{:?}", result.unwrap_err());
     assert!(err_msg.contains("expired") || err_msg.contains("ExpiredSignature"),
-            "Error should indicate token expiry: {}", err_msg);
+            "Error should indicate token expiry: {err_msg}");
 }
 
 #[tokio::test]
@@ -182,7 +182,7 @@ async fn test_jwt_malformed_token_rejection() {
 
     for token in malformed_tokens {
         let result = jwt_service.verify_token(token);
-        assert!(result.is_err(), "Malformed token '{}' should be rejected", token);
+        assert!(result.is_err(), "Malformed token '{token}' should be rejected");
     }
 }
 

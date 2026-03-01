@@ -310,7 +310,7 @@ mod inner {
                 secret_access_key: "test".to_string(),
                 bucket: "hls".to_string(),
                 region: Some("us-east-1".to_string()),
-                base_path: "".to_string(),
+                base_path: String::new(),
                 public_url_prefix: "https://minio.example.com:9000/hls/".to_string(),
                 presign_expires_in: 3600,
             };

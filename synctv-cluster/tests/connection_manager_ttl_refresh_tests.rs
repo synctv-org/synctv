@@ -1,4 +1,4 @@
-//! ConnectionManager TTL refresh performance tests (requires Redis via testcontainers)
+//! `ConnectionManager` TTL refresh performance tests (requires Redis via testcontainers)
 //!
 //! Tests for batch TTL refresh with large number of connections.
 
@@ -35,7 +35,7 @@ async fn setup_redis() -> (
         .await
         .expect("Failed to get Redis port");
 
-    let redis_url = format!("redis://{}:{}", redis_host, redis_port);
+    let redis_url = format!("redis://{redis_host}:{redis_port}");
     let redis_client =
         redis::Client::open(redis_url.as_str()).expect("Failed to create Redis client");
 
@@ -49,7 +49,7 @@ async fn setup_redis() -> (
                     retries += 1;
                     tokio::time::sleep(Duration::from_millis(500)).await;
                 }
-                Err(e) => panic!("Redis ConnectionManager failed after {} retries: {}", retries, e),
+                Err(e) => panic!("Redis ConnectionManager failed after {retries} retries: {e}"),
             }
         }
     };
@@ -96,9 +96,9 @@ async fn test_ttl_refresh_moderate_connections() {
     for i in 0..num_connections {
         let user_idx = i % num_users;
         let room_idx = i % num_rooms;
-        let conn_id = format!("conn_{}", i);
-        let user_id = uid(&format!("user_{}", user_idx));
-        let room_id = rid(&format!("room_{}", room_idx));
+        let conn_id = format!("conn_{i}");
+        let user_id = uid(&format!("user_{user_idx}"));
+        let room_id = rid(&format!("room_{room_idx}"));
 
         manager.register(conn_id.clone(), user_id.clone()).await.unwrap();
         manager.join_room(&conn_id, room_id.clone()).await.unwrap();
@@ -114,24 +114,24 @@ async fn test_ttl_refresh_moderate_connections() {
 
     // Check a few user counter keys
     for i in 0..num_users {
-        let key = format!("ttl_mod:connections:user:user_{}", i);
+        let key = format!("ttl_mod:connections:user:user_{i}");
         let ttl: i64 = redis::cmd("TTL")
             .arg(&key)
             .query_async(&mut test_conn)
             .await
             .unwrap();
-        assert!(ttl > 0, "User counter key {} should have TTL, got {}", key, ttl);
+        assert!(ttl > 0, "User counter key {key} should have TTL, got {ttl}");
     }
 
     // Check a few room counter keys
     for i in 0..num_rooms {
-        let key = format!("ttl_mod:connections:room:room_{}", i);
+        let key = format!("ttl_mod:connections:room:room_{i}");
         let ttl: i64 = redis::cmd("TTL")
             .arg(&key)
             .query_async(&mut test_conn)
             .await
             .unwrap();
-        assert!(ttl > 0, "Room counter key {} should have TTL, got {}", key, ttl);
+        assert!(ttl > 0, "Room counter key {key} should have TTL, got {ttl}");
     }
 
     // Check total counter
@@ -141,7 +141,7 @@ async fn test_ttl_refresh_moderate_connections() {
         .query_async(&mut test_conn)
         .await
         .unwrap();
-    assert!(ttl > 0, "Total counter key should have TTL, got {}", ttl);
+    assert!(ttl > 0, "Total counter key should have TTL, got {ttl}");
 }
 
 /// Test TTL refresh performance with a large number of connections.
@@ -165,28 +165,28 @@ async fn test_ttl_refresh_large_scale_performance() {
     let num_users = 100;
     let num_rooms = 10;
 
-    println!("Registering {} connections...", num_connections);
+    println!("Registering {num_connections} connections...");
     let start = Instant::now();
 
     for i in 0..num_connections {
         let user_idx = i % num_users;
         let room_idx = i % num_rooms;
-        let conn_id = format!("conn_{}", i);
-        let user_id = uid(&format!("user_{}", user_idx));
-        let room_id = rid(&format!("room_{}", room_idx));
+        let conn_id = format!("conn_{i}");
+        let user_id = uid(&format!("user_{user_idx}"));
+        let room_id = rid(&format!("room_{room_idx}"));
 
         manager.register(conn_id.clone(), user_id.clone()).await.unwrap();
         manager.join_room(&conn_id, room_id.clone()).await.unwrap();
     }
 
     let registration_time = start.elapsed();
-    println!("Registration took {:?}", registration_time);
+    println!("Registration took {registration_time:?}");
     assert_eq!(manager.connection_count(), num_connections);
 
     // Manually reduce TTLs to near-expiry to simulate the need for refresh
     let mut test_conn = conn.clone();
     for i in 0..num_users {
-        let key = format!("ttl_large:connections:user:user_{}", i);
+        let key = format!("ttl_large:connections:user:user_{i}");
         let _: () = redis::cmd("EXPIRE")
             .arg(&key)
             .arg(10) // Set to 10 seconds
@@ -195,7 +195,7 @@ async fn test_ttl_refresh_large_scale_performance() {
             .unwrap();
     }
     for i in 0..num_rooms {
-        let key = format!("ttl_large:connections:room:room_{}", i);
+        let key = format!("ttl_large:connections:room:room_{i}");
         let _: () = redis::cmd("EXPIRE")
             .arg(&key)
             .arg(10)
@@ -211,7 +211,7 @@ async fn test_ttl_refresh_large_scale_performance() {
     manager.test_refresh_distributed_counter_ttls().await;
 
     let refresh_time = refresh_start.elapsed();
-    println!("TTL refresh took {:?}", refresh_time);
+    println!("TTL refresh took {refresh_time:?}");
 
     // The refresh should complete in a reasonable time (< 5 seconds for 1000 connections)
     // This is a soft assertion - the test will pass but we log the performance
@@ -222,14 +222,14 @@ async fn test_ttl_refresh_large_scale_performance() {
     // Verify all TTLs were refreshed (should be > 10 seconds now)
     let mut all_refreshed = true;
     for i in 0..num_users {
-        let key = format!("ttl_large:connections:user:user_{}", i);
+        let key = format!("ttl_large:connections:user:user_{i}");
         let ttl: i64 = redis::cmd("TTL")
             .arg(&key)
             .query_async(&mut test_conn)
             .await
             .unwrap();
         if ttl <= 10 {
-            println!("User key {} was not refreshed, TTL = {}", key, ttl);
+            println!("User key {key} was not refreshed, TTL = {ttl}");
             all_refreshed = false;
         }
     }
@@ -243,7 +243,7 @@ async fn test_ttl_refresh_large_scale_performance() {
         .query_async(&mut test_conn)
         .await
         .unwrap();
-    assert!(ttl > 10, "Total counter key should have TTL > 10, got {}", ttl);
+    assert!(ttl > 10, "Total counter key should have TTL > 10, got {ttl}");
 }
 
 /// Test that TTL refresh handles empty connection manager gracefully.
@@ -270,8 +270,8 @@ async fn test_ttl_refresh_idempotent() {
 
     // Register a few connections
     for i in 0..5 {
-        let conn_id = format!("conn_{}", i);
-        let user_id = uid(&format!("user_{}", i));
+        let conn_id = format!("conn_{i}");
+        let user_id = uid(&format!("user_{i}"));
         manager.register(conn_id, user_id).await.unwrap();
     }
 
@@ -310,11 +310,11 @@ fn test_ttl_refresh_batch_size_reasonable() {
 // TTL Task Shutdown Tests (Task #85)
 // ============================================================================
 
-/// Test that shutdown() cancels the TTL refresh task.
+/// Test that `shutdown()` cancels the TTL refresh task.
 ///
 /// This test verifies:
-/// 1. The TTL refresh task is running after with_redis() is called
-/// 2. shutdown() sends the cancellation signal
+/// 1. The TTL refresh task is running after `with_redis()` is called
+/// 2. `shutdown()` sends the cancellation signal
 /// 3. The task terminates after shutdown
 #[tokio::test]
 #[ignore = "Requires Docker (testcontainers)"]
@@ -356,8 +356,8 @@ async fn test_ttl_refresh_task_responds_quickly_to_shutdown() {
 
     // Register some connections
     for i in 0..5 {
-        let user_id = uid(&format!("user_{}", i));
-        manager.register(format!("conn_{}", i), user_id).await.unwrap();
+        let user_id = uid(&format!("user_{i}"));
+        manager.register(format!("conn_{i}"), user_id).await.unwrap();
     }
 
     // Measure how long shutdown takes
@@ -369,21 +369,20 @@ async fn test_ttl_refresh_task_responds_quickly_to_shutdown() {
     // The actual task termination happens asynchronously
     assert!(
         elapsed < Duration::from_millis(100),
-        "shutdown() took too long: {:?}. Should just cancel tokens synchronously.",
-        elapsed
+        "shutdown() took too long: {elapsed:?}. Should just cancel tokens synchronously."
     );
 }
 
 /// Test that shutdown is idempotent.
 ///
-/// Multiple calls to shutdown() should be safe and not panic.
+/// Multiple calls to `shutdown()` should be safe and not panic.
 #[tokio::test]
 #[ignore = "Requires Docker (testcontainers)"]
 async fn test_ttl_shutdown_is_idempotent() {
     let (_container, conn) = setup_redis().await;
 
     let manager = ConnectionManager::new(ConnectionLimits::default())
-        .with_redis(conn.clone(), "idempotent:");
+        .with_redis(conn, "idempotent:");
 
     // Call shutdown multiple times
     manager.shutdown();
@@ -396,8 +395,8 @@ async fn test_ttl_shutdown_is_idempotent() {
 
 /// Test that manager without Redis doesn't need shutdown.
 ///
-/// A ConnectionManager without Redis configured should work fine
-/// without calling shutdown() (no background tasks to cancel).
+/// A `ConnectionManager` without Redis configured should work fine
+/// without calling `shutdown()` (no background tasks to cancel).
 #[tokio::test]
 async fn test_manager_without_redis_works_without_shutdown() {
     let manager = ConnectionManager::new(ConnectionLimits::default());
@@ -428,8 +427,8 @@ async fn test_shutdown_during_active_operations() {
     let manager_clone = manager.clone();
     let register_handle = tokio::spawn(async move {
         for i in 0..50 {
-            let user_id = uid(&format!("concurrent_user_{}", i));
-            let _ = manager_clone.register(format!("concurrent_conn_{}", i), user_id).await;
+            let user_id = uid(&format!("concurrent_user_{i}"));
+            let _ = manager_clone.register(format!("concurrent_conn_{i}"), user_id).await;
             tokio::time::sleep(Duration::from_millis(1)).await;
         }
     });
@@ -446,16 +445,16 @@ async fn test_shutdown_during_active_operations() {
     // Manager should be in a consistent state
     // (exact count depends on timing, but should be valid)
     let count = manager.connection_count();
-    assert!(count <= 50, "Connection count should be at most 50, got {}", count);
+    assert!(count <= 50, "Connection count should be at most 50, got {count}");
 }
 
 /// Test that the disconnect retry task is also cancelled on shutdown.
 ///
-/// ConnectionManager spawns two tasks with Redis:
+/// `ConnectionManager` spawns two tasks with Redis:
 /// 1. TTL refresh task
 /// 2. Disconnect retry task
 ///
-/// Both should be cancelled by shutdown().
+/// Both should be cancelled by `shutdown()`.
 #[tokio::test]
 #[ignore = "Requires Docker (testcontainers)"]
 async fn test_shutdown_cancels_disconnect_retry_task() {
@@ -514,8 +513,7 @@ async fn test_distributed_counter_ttl_is_2x_refresh_interval() {
     // We allow a small margin for test execution time
     assert!(
         (115..=125).contains(&ttl),
-        "Distributed counter TTL should be ~120s (2x refresh interval), got {}s",
-        ttl
+        "Distributed counter TTL should be ~120s (2x refresh interval), got {ttl}s"
     );
 }
 
@@ -549,8 +547,7 @@ async fn test_distributed_counter_expires_after_ttl() {
         .expect("Failed to get initial TTL");
     assert!(
         initial_ttl > 0,
-        "Counter should have a TTL set, got {}",
-        initial_ttl
+        "Counter should have a TTL set, got {initial_ttl}"
     );
 
     // Manually reduce TTL to 2 seconds to simulate expiry
@@ -608,17 +605,13 @@ async fn test_ttl_multiplier_provides_safety_margin() {
     assert!(
         ttl >= refresh_interval_secs * 3 / 2, // At least 1.5x
         "TTL should provide safety margin for at least one missed refresh. \
-         TTL={}s, refresh_interval={}s",
-        ttl,
-        refresh_interval_secs
+         TTL={ttl}s, refresh_interval={refresh_interval_secs}s"
     );
 
     // Verify TTL is at most 2.5x the refresh interval (quick crash detection)
     assert!(
         ttl <= refresh_interval_secs * 5 / 2, // At most 2.5x
         "TTL should allow quick crash detection. \
-         TTL={}s, refresh_interval={}s",
-        ttl,
-        refresh_interval_secs
+         TTL={ttl}s, refresh_interval={refresh_interval_secs}s"
     );
 }

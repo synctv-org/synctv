@@ -159,7 +159,7 @@ mod tests {
         assert!(result.is_err());
         match result.unwrap_err() {
             Error::Internal(msg) => assert_eq!(msg, "all retries exhausted"),
-            other => panic!("Expected Internal error, got: {:?}", other),
+            other => panic!("Expected Internal error, got: {other:?}"),
         }
     }
 
@@ -208,7 +208,7 @@ mod tests {
         assert!(result.is_err());
         match result.unwrap_err() {
             Error::Internal(msg) => assert_eq!(msg, "no retries allowed"),
-            other => panic!("Expected Internal error, got: {:?}", other),
+            other => panic!("Expected Internal error, got: {other:?}"),
         }
     }
 
@@ -226,7 +226,7 @@ mod tests {
         assert_eq!(attempts.load(Ordering::SeqCst), 1);
         match result.unwrap_err() {
             Error::Internal(msg) => assert_eq!(msg, "single attempt"),
-            other => panic!("Expected Internal error, got: {:?}", other),
+            other => panic!("Expected Internal error, got: {other:?}"),
         }
     }
 
@@ -250,7 +250,7 @@ mod tests {
         assert!(result.is_err());
         match result.unwrap_err() {
             Error::Authorization(msg) => assert_eq!(msg, "access denied"),
-            other => panic!("Expected Authorization error, got: {:?}", other),
+            other => panic!("Expected Authorization error, got: {other:?}"),
         }
     }
 
@@ -311,14 +311,12 @@ mod tests {
         // Should be at least 30ms (10 + 20) but allow for some variance
         assert!(
             elapsed.as_millis() >= 25,
-            "Expected at least 25ms delay, got {:?}",
-            elapsed
+            "Expected at least 25ms delay, got {elapsed:?}"
         );
         // Should not be excessively long (with jitter, max ~80ms)
         assert!(
             elapsed.as_millis() < 150,
-            "Expected less than 150ms delay, got {:?}",
-            elapsed
+            "Expected less than 150ms delay, got {elapsed:?}"
         );
     }
 
@@ -455,7 +453,7 @@ mod tests {
         assert!(result.is_err());
         match result.unwrap_err() {
             Error::Internal(msg) => assert_eq!(msg, "all retries exhausted"),
-            other => panic!("Expected Internal error, got: {:?}", other),
+            other => panic!("Expected Internal error, got: {other:?}"),
         }
     }
 
@@ -487,14 +485,13 @@ mod tests {
                 assert!(msg.contains("timeout test"));
                 assert!(msg.contains("timeout"));
             }
-            other => panic!("Expected Timeout error, got: {:?}", other),
+            other => panic!("Expected Timeout error, got: {other:?}"),
         }
 
         // Should timeout around 50ms, not wait for all 10 retries
         assert!(
             elapsed.as_millis() < 200,
-            "Expected timeout around 50ms, got {:?}",
-            elapsed
+            "Expected timeout around 50ms, got {elapsed:?}"
         );
     }
 
@@ -512,7 +509,7 @@ mod tests {
         assert!(result.is_err());
         match result.unwrap_err() {
             Error::NotFound(msg) => assert_eq!(msg, "not found"),
-            other => panic!("Expected NotFound error, got: {:?}", other),
+            other => panic!("Expected NotFound error, got: {other:?}"),
         }
     }
 
@@ -538,8 +535,7 @@ mod tests {
         // Should complete almost instantly
         assert!(
             elapsed.as_millis() < 100,
-            "Expected fast completion, got {:?}",
-            elapsed
+            "Expected fast completion, got {elapsed:?}"
         );
     }
 }

@@ -3,7 +3,7 @@
 //! Tests verify state consistency across services (Database + Redis + Memory Cache)
 //! in multi-replica deployments.
 //!
-//! Run with: cargo test --test cluster_consistency_tests
+//! Run with: cargo test --test `cluster_consistency_tests`
 //!
 //! # Test Coverage
 //!
@@ -13,7 +13,7 @@
 //!
 //! # Requirements
 //!
-//! - Docker for testcontainers (PostgreSQL + Redis)
+//! - Docker for testcontainers (`PostgreSQL` + Redis)
 #![allow(clippy::unwrap_used)]
 
 use synctv_core::{
@@ -45,7 +45,7 @@ use testcontainers::runners::AsyncRunner;
 // Test Infrastructure
 // ============================================================================
 
-/// Test infrastructure with shared PostgreSQL and Redis
+/// Test infrastructure with shared `PostgreSQL` and Redis
 pub struct TestInfra {
     pub pool: PgPool,
     pub redis_url: String,
@@ -68,8 +68,7 @@ async fn create_test_infra() -> TestInfra {
     let pg_port = postgres.get_host_port_ipv4(5432).await.expect("Failed to get port");
 
     let database_url = format!(
-        "postgres://synctv:synctv_test@{}:{}/synctv_test",
-        pg_host, pg_port
+        "postgres://synctv:synctv_test@{pg_host}:{pg_port}/synctv_test"
     );
 
     let pool = {
@@ -104,7 +103,7 @@ async fn create_test_infra() -> TestInfra {
         .expect("Failed to start Redis container");
 
     let redis_port = redis.get_host_port_ipv4(6379).await.expect("Failed to get port");
-    let redis_url = format!("redis://127.0.0.1:{}", redis_port);
+    let redis_url = format!("redis://127.0.0.1:{redis_port}");
 
     TestInfra {
         pool,
@@ -120,7 +119,7 @@ fn make_user(username: &str) -> User {
     User {
         id: UserId::new(),
         username: username.to_string(),
-        email: Some(format!("{}@test.com", username)),
+        email: Some(format!("{username}@test.com")),
         password_hash: "test_hash".to_string(),
         role: UserRole::User,
         status: UserStatus::Active,
@@ -177,7 +176,7 @@ async fn setup_test_room(pool: &PgPool) -> (User, Room) {
 /// Test that permission changes are synchronized across replicas via Redis.
 ///
 /// Scenario:
-/// 1. Two PermissionService instances (simulating two replicas) share Redis
+/// 1. Two `PermissionService` instances (simulating two replicas) share Redis
 /// 2. Node A modifies user permissions
 /// 3. Node A broadcasts invalidation via Redis
 /// 4. Node B receives invalidation and clears its cache
@@ -322,9 +321,9 @@ async fn test_permission_cache_hit_on_same_node() {
 /// Test that playback state changes are synchronized across replicas.
 ///
 /// Scenario:
-/// 1. Two PlaybackService instances share Redis
+/// 1. Two `PlaybackService` instances share Redis
 /// 2. Node A updates playback state
-/// 3. Node A broadcasts PlaybackStateUpdate via Redis
+/// 3. Node A broadcasts `PlaybackStateUpdate` via Redis
 /// 4. Node B receives update and caches it
 /// 5. Node B's query returns cached state (no DB read)
 #[tokio::test]
@@ -441,7 +440,7 @@ async fn test_playback_state_cross_replica_sync() {
     assert!((state_b_after.current_time - 42.5).abs() < 0.01, "Node B should see current_time = 42.5");
 }
 
-/// Test playback state invalidation message contains correct room_id.
+/// Test playback state invalidation message contains correct `room_id`.
 #[tokio::test]
 #[ignore = "Requires Docker"]
 async fn test_playback_state_invalidation_message_content() {
@@ -478,10 +477,10 @@ async fn test_playback_state_invalidation_message_content() {
                 InvalidationMessage::PlaybackState { room_id: r } => {
                     assert_eq!(r, room_id.as_str());
                 }
-                _ => panic!("Expected PlaybackState message, got: {:?}", msg),
+                _ => panic!("Expected PlaybackState message, got: {msg:?}"),
             }
         }
-        _ = tokio::time::sleep(tokio::time::Duration::from_secs(5)) => {
+        () = tokio::time::sleep(tokio::time::Duration::from_secs(5)) => {
             panic!("Timeout waiting for playback state invalidation message");
         }
     }
@@ -495,7 +494,7 @@ async fn test_playback_state_invalidation_message_content() {
 ///
 /// Scenario:
 /// 1. Two nodes share Redis
-/// 2. Node A modifies room settings (e.g., max_members)
+/// 2. Node A modifies room settings (e.g., `max_members`)
 /// 3. Node A broadcasts invalidation
 /// 4. Node B receives invalidation
 /// 5. Node B's next query fetches fresh settings from DB
@@ -589,10 +588,10 @@ async fn test_room_settings_invalidation_message_broadcast() {
                 InvalidationMessage::RoomSettings { room_id: r } => {
                     assert_eq!(r, room_id.as_str());
                 }
-                _ => panic!("Expected RoomSettings message, got: {:?}", msg),
+                _ => panic!("Expected RoomSettings message, got: {msg:?}"),
             }
         }
-        _ = tokio::time::sleep(tokio::time::Duration::from_secs(5)) => {
+        () = tokio::time::sleep(tokio::time::Duration::from_secs(5)) => {
             panic!("Timeout waiting for room settings invalidation message");
         }
     }
@@ -661,7 +660,7 @@ async fn test_concurrent_invalidation_messages() {
             msg = receiver.recv() => {
                 received.push(msg.expect("Failed to receive message"));
             }
-            _ = tokio::time::sleep(tokio::time::Duration::from_secs(5)) => {
+            () = tokio::time::sleep(tokio::time::Duration::from_secs(5)) => {
                 panic!("Timeout waiting for messages");
             }
         }
@@ -750,6 +749,6 @@ async fn start_redis() -> (testcontainers::ContainerAsync<Redis>, String) {
         .await
         .expect("Failed to start Redis");
     let port = container.get_host_port_ipv4(6379).await.expect("Failed to get port");
-    let redis_url = format!("redis://127.0.0.1:{}", port);
+    let redis_url = format!("redis://127.0.0.1:{port}");
     (container, redis_url)
 }

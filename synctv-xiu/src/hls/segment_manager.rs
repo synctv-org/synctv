@@ -228,7 +228,7 @@ mod tests {
 
         // Create manager with short retention
         let config = CleanupConfig {
-            interval: Duration::from_secs(3600), // Don't auto-run in test
+            interval: Duration::from_hours(1), // Don't auto-run in test
             retention: Duration::from_millis(50),
         };
 

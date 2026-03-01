@@ -1,12 +1,12 @@
-//! TieredCache epoch guard tests
+//! `TieredCache` epoch guard tests
 //!
-//! Tests that concurrent get() vs invalidate() is correctly handled by the epoch
-//! counter: when an invalidation arrives while a SingleFlight L2 fetch is in-flight,
+//! Tests that concurrent `get()` vs `invalidate()` is correctly handled by the epoch
+//! counter: when an invalidation arrives while a `SingleFlight` L2 fetch is in-flight,
 //! the stale result is NOT written to L1.
 //!
 //! Uses a mock L2 backend with artificial delay to simulate the race condition.
 //!
-//! Run with: cargo test --test tiered_cache_epoch_tests
+//! Run with: cargo test --test `tiered_cache_epoch_tests`
 #![allow(clippy::unwrap_used)]
 
 use async_trait::async_trait;
@@ -57,7 +57,7 @@ impl Timestamped for TestValue {
 struct DelayedL2 {
     /// Values stored in the mock L2
     store: tokio::sync::RwLock<std::collections::HashMap<String, String>>,
-    /// How long to delay on get()
+    /// How long to delay on `get()`
     get_delay: std::time::Duration,
 }
 

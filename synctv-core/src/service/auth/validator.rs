@@ -244,7 +244,7 @@ mod tests {
         let token = create_test_token(&jwt_service, "user456");
 
         // Valid HTTP authorization header
-        let claims = validator.validate_http(&format!("Bearer {}", token)).unwrap();
+        let claims = validator.validate_http(&format!("Bearer {token}")).unwrap();
         assert_eq!(claims.sub, "user456");
 
         // Invalid format
@@ -260,7 +260,7 @@ mod tests {
         let token = create_test_token(&jwt_service, "user789");
 
         let user_id = validator
-            .validate_http_extract_user_id(&format!("Bearer {}", token))
+            .validate_http_extract_user_id(&format!("Bearer {token}"))
             .unwrap();
         assert_eq!(user_id.as_str(), "user789");
     }
@@ -274,7 +274,7 @@ mod tests {
 
         // Valid gRPC metadata
         let mut metadata = MetadataMap::new();
-        metadata.insert("authorization", format!("Bearer {}", token).parse().unwrap());
+        metadata.insert("authorization", format!("Bearer {token}").parse().unwrap());
 
         let claims = validator.validate_grpc(&metadata).unwrap();
         assert_eq!(claims.sub, "user999");
@@ -293,7 +293,7 @@ mod tests {
         let token = create_test_token(&jwt_service, "user111");
 
         let mut metadata = MetadataMap::new();
-        metadata.insert("authorization", format!("Bearer {}", token).parse().unwrap());
+        metadata.insert("authorization", format!("Bearer {token}").parse().unwrap());
 
         let user_id = validator.validate_grpc_extract_user_id(&metadata).unwrap();
         assert_eq!(user_id.as_str(), "user111");
@@ -308,7 +308,7 @@ mod tests {
 
         // Valid token
         let mut metadata = MetadataMap::new();
-        metadata.insert("authorization", format!("Bearer {}", token).parse().unwrap());
+        metadata.insert("authorization", format!("Bearer {token}").parse().unwrap());
 
         let claims = validator.validate_grpc_as_status(&metadata).unwrap();
         assert_eq!(claims.sub, "user222");

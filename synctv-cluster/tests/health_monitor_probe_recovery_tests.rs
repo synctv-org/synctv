@@ -1,7 +1,7 @@
-//! CL7: HealthMonitor probe recovery
+//! CL7: `HealthMonitor` probe recovery
 //!
-//! - Pre-set node to Unhealthy, call process_heartbeats with fresh node
-//! - Assert status transitions to Healthy after process_heartbeats when node
+//! - Pre-set node to Unhealthy, call `process_heartbeats` with fresh node
+//! - Assert status transitions to Healthy after `process_heartbeats` when node
 //!   becomes stale and then fresh again
 
 #![allow(clippy::unwrap_used)]

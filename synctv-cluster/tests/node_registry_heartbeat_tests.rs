@@ -1,6 +1,6 @@
-//! CL2: NodeRegistry heartbeat TTL (testcontainer Redis)
+//! CL2: `NodeRegistry` heartbeat TTL (testcontainer Redis)
 //!
-//! - Register node, DEL Redis key manually, call heartbeat(), assert re-registered via get_all_nodes()
+//! - Register node, DEL Redis key manually, call `heartbeat()`, assert re-registered via `get_all_nodes()`
 //! - Force epoch mismatch by writing modified epoch to Redis, verify auto-retry
 
 #![allow(clippy::unwrap_used)]
@@ -35,7 +35,7 @@ async fn setup_redis() -> (
         .await
         .expect("Failed to get Redis port");
 
-    let redis_url = format!("redis://{}:{}", redis_host, redis_port);
+    let redis_url = format!("redis://{redis_host}:{redis_port}");
     let redis_client =
         redis::Client::open(redis_url.as_str()).expect("Failed to create Redis client");
 
@@ -49,7 +49,7 @@ async fn setup_redis() -> (
                     retries += 1;
                     tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
                 }
-                Err(e) => panic!("Redis connection failed after {} retries: {}", retries, e),
+                Err(e) => panic!("Redis connection failed after {retries} retries: {e}"),
             }
         }
     };
@@ -62,7 +62,7 @@ async fn setup_redis() -> (
     (redis_container, redis_client, redis_url)
 }
 
-/// Register node, DEL Redis key manually, call heartbeat(), assert re-registered.
+/// Register node, DEL Redis key manually, call `heartbeat()`, assert re-registered.
 #[tokio::test]
 #[ignore = "Requires Docker (testcontainers)"]
 async fn test_heartbeat_reregisters_after_key_deletion() {
@@ -208,8 +208,6 @@ async fn test_heartbeat_auto_retries_on_epoch_mismatch() {
 
     assert!(
         new_epoch > modified_epoch,
-        "New epoch ({}) should be greater than modified epoch ({})",
-        new_epoch,
-        modified_epoch
+        "New epoch ({new_epoch}) should be greater than modified epoch ({modified_epoch})"
     );
 }

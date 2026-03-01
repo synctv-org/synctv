@@ -1,9 +1,9 @@
-//! UserOAuthProviderRepository integration tests
+//! `UserOAuthProviderRepository` integration tests
 //!
-//! Tests: upsert with different user_id, transaction executor path,
-//!        delete_all_for_user_with_executor.
+//! Tests: upsert with different `user_id`, transaction executor path,
+//!        `delete_all_for_user_with_executor`.
 //!
-//! Run with: cargo test -p synctv-core --test user_oauth_provider_repository_tests
+//! Run with: cargo test -p synctv-core --test `user_oauth_provider_repository_tests`
 #![allow(clippy::unwrap_used)]
 
 use synctv_core_testing::{create_test_pool};
@@ -21,7 +21,7 @@ fn make_user(username: &str) -> User {
     User {
         id: UserId::new(),
         username: username.to_string(),
-        email: Some(format!("{}@test.com", username)),
+        email: Some(format!("{username}@test.com")),
         password_hash: "hash".to_string(),
         role: UserRole::User,
         status: UserStatus::Active,

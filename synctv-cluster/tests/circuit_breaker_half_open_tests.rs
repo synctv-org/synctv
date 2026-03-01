@@ -1,4 +1,4 @@
-//! CL1: GrpcCircuitBreakerRegistry half-open probe concurrency
+//! CL1: `GrpcCircuitBreakerRegistry` half-open probe concurrency
 //!
 //! Tests that the circuit breaker correctly transitions between states and
 //! that the half-open probe guard allows exactly one concurrent caller.
@@ -67,8 +67,7 @@ async fn test_open_circuit_rejects_all_concurrent_calls() {
     let permitted = permitted_count.load(Ordering::Relaxed);
     assert_eq!(
         permitted, 0,
-        "All 10 concurrent calls should be rejected when circuit is open, got {}",
-        permitted
+        "All 10 concurrent calls should be rejected when circuit is open, got {permitted}"
     );
 }
 
@@ -115,7 +114,7 @@ async fn test_success_before_threshold_keeps_closed() {
     assert!(registry.is_call_permitted(addr).await);
 }
 
-/// Verify is_cluster_degraded threshold (>50% open).
+/// Verify `is_cluster_degraded` threshold (>50% open).
 #[tokio::test]
 async fn test_cluster_degraded_via_registry() {
     let registry = GrpcCircuitBreakerRegistry::new();
@@ -139,7 +138,7 @@ async fn test_cluster_degraded_via_registry() {
     assert_eq!(healthy[0], "d:50051");
 }
 
-/// Verify healthy_endpoints excludes open circuits.
+/// Verify `healthy_endpoints` excludes open circuits.
 #[tokio::test]
 async fn test_healthy_endpoints_excludes_open() {
     let registry = GrpcCircuitBreakerRegistry::new();

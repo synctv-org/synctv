@@ -1,9 +1,9 @@
 //! Alist Password Encryption Tests
 //!
 //! Tests that Alist passwords are encrypted at rest in credential storage.
-//! These tests verify the encryption behavior of InMemoryCredentialStorage.
+//! These tests verify the encryption behavior of `InMemoryCredentialStorage`.
 //!
-//! Run with: cargo test --test alist_password_encryption_tests
+//! Run with: cargo test --test `alist_password_encryption_tests`
 
 #![allow(clippy::unwrap_used)]
 use synctv_media_providers::{CredentialData, InMemoryCredentialStorage, CredentialStorage, ProviderType, FieldEncryption};
@@ -20,7 +20,7 @@ fn test_encryption_key() -> Vec<u8> {
 
 // ========== TEST: FieldEncryption directly ==========
 
-/// Test that FieldEncryption works correctly
+/// Test that `FieldEncryption` works correctly
 /// This is the foundational test - if encryption works, storage will work
 #[test]
 fn test_field_encryption_works() {
@@ -216,7 +216,7 @@ async fn test_storage_without_encryption_backward_compat() {
 
 // ========== TEST: Emby api_key round trip with encryption ==========
 
-/// Test that Emby api_key can be correctly stored and retrieved with encryption
+/// Test that Emby `api_key` can be correctly stored and retrieved with encryption
 #[tokio::test]
 async fn test_emby_api_key_round_trip_with_encryption() {
     let encryption_key = test_encryption_key();
@@ -261,7 +261,7 @@ async fn test_emby_api_key_round_trip_with_encryption() {
 
 // ========== TEST: List credentials decrypts all ==========
 
-/// Test that list_by_user and list_by_provider return decrypted credentials
+/// Test that `list_by_user` and `list_by_provider` return decrypted credentials
 #[tokio::test]
 async fn test_list_credentials_are_decrypted() {
     let encryption_key = test_encryption_key();
@@ -331,7 +331,7 @@ async fn test_list_credentials_are_decrypted() {
 
 // ========== TEST: is_encrypted detection ==========
 
-/// Test that FieldEncryption::is_encrypted correctly detects encrypted values
+/// Test that `FieldEncryption::is_encrypted` correctly detects encrypted values
 #[test]
 fn test_is_encrypted_detection() {
     assert!(FieldEncryption::is_encrypted("enc:some_base64_data"));

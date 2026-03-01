@@ -1,20 +1,20 @@
 //! Room cluster state synchronization tests
 //!
 //! Tests cluster-wide state synchronization including multi-replica room creation,
-//! member change synchronization, network partition recovery, and Redis PubSub.
+//! member change synchronization, network partition recovery, and Redis `PubSub`.
 //!
-//! Run with: cargo test --test room_cluster_sync_tests
+//! Run with: cargo test --test `room_cluster_sync_tests`
 //!
 //! # Test Coverage
 //!
 //! - Multi-replica room creation synchronization
 //! - Multi-replica member change synchronization
 //! - Network partition recovery simulation
-//! - Redis PubSub message delivery
+//! - Redis `PubSub` message delivery
 //!
 //! # Requirements
 //!
-//! - Docker for testcontainers (PostgreSQL + Redis)
+//! - Docker for testcontainers (`PostgreSQL` + Redis)
 #![allow(clippy::unwrap_used)]
 
 use synctv_core::{
@@ -45,7 +45,7 @@ use testcontainers::runners::AsyncRunner;
 // Test Infrastructure
 // ============================================================================
 
-/// Test infrastructure with shared PostgreSQL and Redis
+/// Test infrastructure with shared `PostgreSQL` and Redis
 pub struct TestInfra {
     pub pool: PgPool,
     pub redis_url: String,
@@ -68,8 +68,7 @@ async fn create_test_infra() -> TestInfra {
     let pg_port = postgres.get_host_port_ipv4(5432).await.expect("Failed to get port");
 
     let database_url = format!(
-        "postgres://synctv:synctv_test@{}:{}/synctv_test",
-        pg_host, pg_port
+        "postgres://synctv:synctv_test@{pg_host}:{pg_port}/synctv_test"
     );
 
     let pool = {
@@ -104,7 +103,7 @@ async fn create_test_infra() -> TestInfra {
         .expect("Failed to start Redis container");
 
     let redis_port = redis.get_host_port_ipv4(6379).await.expect("Failed to get port");
-    let redis_url = format!("redis://127.0.0.1:{}", redis_port);
+    let redis_url = format!("redis://127.0.0.1:{redis_port}");
 
     TestInfra {
         pool,
@@ -120,7 +119,7 @@ fn make_user(username: &str) -> User {
     User {
         id: UserId::new(),
         username: username.to_string(),
-        email: Some(format!("{}@test.com", username)),
+        email: Some(format!("{username}@test.com")),
         password_hash: "test_hash".to_string(),
         role: UserRole::User,
         status: UserStatus::Active,
@@ -157,7 +156,7 @@ async fn setup_test_room(pool: &PgPool, room_name: &str) -> (User, Room) {
     let user_repo = UserRepository::new(pool.clone());
     let room_repo = RoomRepository::new(pool.clone());
 
-    let owner = user_repo.create(&make_user(&format!("{}_owner", room_name))).await.expect("Failed to create owner");
+    let owner = user_repo.create(&make_user(&format!("{room_name}_owner"))).await.expect("Failed to create owner");
     let room = room_repo.create(&make_room(room_name, "Test", &owner.id))
         .await
         .expect("Failed to create room");
@@ -232,7 +231,7 @@ async fn test_room_settings_synchronized_across_replicas() {
 /// Test that member joins are synchronized across replicas via Redis.
 ///
 /// Scenario:
-/// 1. Two PermissionService instances share Redis
+/// 1. Two `PermissionService` instances share Redis
 /// 2. Node A adds a member
 /// 3. Node A broadcasts invalidation via Redis
 /// 4. Node B receives invalidation and clears cache
@@ -493,7 +492,7 @@ async fn test_operations_work_without_redis() {
 // Test: Redis PubSub Message Delivery
 // ============================================================================
 
-/// Test that room invalidation messages are delivered via Redis PubSub.
+/// Test that room invalidation messages are delivered via Redis `PubSub`.
 #[tokio::test]
 #[ignore = "Requires Docker"]
 async fn test_room_invalidation_message_delivery() {
@@ -531,16 +530,16 @@ async fn test_room_invalidation_message_delivery() {
                 InvalidationMessage::Room { room_id: r } => {
                     assert_eq!(r, room_id.as_str(), "Room ID should match");
                 }
-                _ => panic!("Expected Room message, got: {:?}", msg),
+                _ => panic!("Expected Room message, got: {msg:?}"),
             }
         }
-        _ = tokio::time::sleep(tokio::time::Duration::from_secs(5)) => {
+        () = tokio::time::sleep(tokio::time::Duration::from_secs(5)) => {
             panic!("Timeout waiting for room invalidation message");
         }
     }
 }
 
-/// Test that user invalidation messages are delivered via Redis PubSub.
+/// Test that user invalidation messages are delivered via Redis `PubSub`.
 #[tokio::test]
 #[ignore = "Requires Docker"]
 async fn test_user_invalidation_message_delivery() {
@@ -574,10 +573,10 @@ async fn test_user_invalidation_message_delivery() {
                 InvalidationMessage::User { user_id: u } => {
                     assert_eq!(u, user_id.as_str(), "User ID should match");
                 }
-                _ => panic!("Expected User message, got: {:?}", msg),
+                _ => panic!("Expected User message, got: {msg:?}"),
             }
         }
-        _ = tokio::time::sleep(tokio::time::Duration::from_secs(5)) => {
+        () = tokio::time::sleep(tokio::time::Duration::from_secs(5)) => {
             panic!("Timeout waiting for user invalidation message");
         }
     }
@@ -617,10 +616,10 @@ async fn test_room_permission_invalidation_message_delivery() {
                 InvalidationMessage::RoomPermission { room_id: r } => {
                     assert_eq!(r, room_id.as_str(), "Room ID should match");
                 }
-                _ => panic!("Expected RoomPermission message, got: {:?}", msg),
+                _ => panic!("Expected RoomPermission message, got: {msg:?}"),
             }
         }
-        _ = tokio::time::sleep(tokio::time::Duration::from_secs(5)) => {
+        () = tokio::time::sleep(tokio::time::Duration::from_secs(5)) => {
             panic!("Timeout waiting for room permission invalidation message");
         }
     }
@@ -683,7 +682,7 @@ async fn test_concurrent_invalidation_messages_ordered() {
             msg = receiver.recv() => {
                 received.push(msg.expect("Failed to receive message"));
             }
-            _ = tokio::time::sleep(tokio::time::Duration::from_secs(5)) => {
+            () = tokio::time::sleep(tokio::time::Duration::from_secs(5)) => {
                 panic!("Timeout waiting for messages");
             }
         }
@@ -717,7 +716,7 @@ async fn test_member_count_synchronized_across_replicas() {
     let member_repo = RoomMemberRepository::new(pool.clone());
 
     for i in 0..5 {
-        let user = user_repo.create(&make_user(&format!("count_member_{}", i))).await.expect("Failed to create member");
+        let user = user_repo.create(&make_user(&format!("count_member_{i}"))).await.expect("Failed to create member");
         let member = RoomMember::new(room.id.clone(), user.id.clone(), RoomRole::Member);
         member_repo.add(&member).await.expect("Failed to add member");
     }
@@ -803,6 +802,6 @@ async fn start_redis() -> (ContainerAsync<Redis>, String) {
         .await
         .expect("Failed to start Redis");
     let port = container.get_host_port_ipv4(6379).await.expect("Failed to get port");
-    let redis_url = format!("redis://127.0.0.1:{}", port);
+    let redis_url = format!("redis://127.0.0.1:{port}");
     (container, redis_url)
 }

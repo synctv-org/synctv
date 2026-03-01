@@ -2,7 +2,7 @@
 //!
 //! Tests for version-based optimistic locking on playlist updates.
 //!
-//! Run with: cargo test --test playlist_optimistic_lock_tests
+//! Run with: cargo test --test `playlist_optimistic_lock_tests`
 #![allow(clippy::unwrap_used)]
 
 use synctv_core_testing::create_test_pool;
@@ -15,13 +15,13 @@ use synctv_core::{
     Error,
 };
 use chrono::Utc;
-/// Default PostgreSQL version for test containers
+/// Default `PostgreSQL` version for test containers
 fn make_user(username: &str) -> User {
     let now = Utc::now();
     User {
         id: UserId::new(),
         username: username.to_string(),
-        email: Some(format!("{}@test.com", username)),
+        email: Some(format!("{username}@test.com")),
         password_hash: "hash".to_string(),
         role: UserRole::User,
         status: UserStatus::Active,
@@ -69,13 +69,13 @@ fn make_playlist(room_id: &RoomId, name: &str, parent_id: Option<&PlaylistId>, p
     }
 }
 
-/// Test: Version mismatch should return OptimisticLockConflict error
+/// Test: Version mismatch should return `OptimisticLockConflict` error
 ///
 /// Scenario:
 /// 1. Create a playlist (version = 0)
 /// 2. Fetch the playlist
 /// 3. Manually increment version in DB to simulate concurrent update
-/// 4. Try to update using old version (0) - should fail with OptimisticLockConflict
+/// 4. Try to update using old version (0) - should fail with `OptimisticLockConflict`
 #[tokio::test]
 #[ignore = "Requires Docker"]
 async fn test_optimistic_lock_version_mismatch() {
@@ -112,8 +112,7 @@ async fn test_optimistic_lock_version_mismatch() {
     // Should return OptimisticLockConflict error
     assert!(
         matches!(result, Err(Error::OptimisticLockConflict)),
-        "Expected OptimisticLockConflict error, got: {:?}",
-        result
+        "Expected OptimisticLockConflict error, got: {result:?}"
     );
 }
 
@@ -238,8 +237,7 @@ async fn test_optimistic_lock_concurrent_conflict() {
     let result2 = playlist_repo.update_with_version(&updater2_copy, playlist.version).await;
     assert!(
         matches!(result2, Err(Error::OptimisticLockConflict)),
-        "Second update with stale version should fail with OptimisticLockConflict, got: {:?}",
-        result2
+        "Second update with stale version should fail with OptimisticLockConflict, got: {result2:?}"
     );
 
     // Verify the playlist still has updater1's changes

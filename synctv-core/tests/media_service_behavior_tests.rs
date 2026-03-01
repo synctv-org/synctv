@@ -3,7 +3,7 @@
 //! Tests the service-layer logic for media operations including validation,
 //! batch limits, and request construction.
 //!
-//! Run with: cargo test --test media_service_behavior_tests
+//! Run with: cargo test --test `media_service_behavior_tests`
 #![allow(clippy::unwrap_used)]
 
 use synctv_core::models::{MediaId, PlaylistId, UserId};
@@ -13,10 +13,10 @@ use synctv_core::service::media::{AddMediaRequest, EditMediaRequest};
 // Batch size validation
 // ============================================================================
 
-/// Mirrors the batch size limit from MediaService::add_media_batch
+/// Mirrors the batch size limit from `MediaService::add_media_batch`
 const MAX_BATCH_SIZE: usize = 100;
 
-fn validate_batch_size(items_count: usize) -> Result<(), &'static str> {
+const fn validate_batch_size(items_count: usize) -> Result<(), &'static str> {
     if items_count > MAX_BATCH_SIZE {
         return Err("Batch size cannot exceed 100 items");
     }
@@ -48,7 +48,7 @@ fn test_add_media_batch_empty_accepted() {
 // Permission logic tests (extracted from MediaService)
 // ============================================================================
 
-/// Determines which permission is needed for remove_media based on ownership.
+/// Determines which permission is needed for `remove_media` based on ownership.
 /// Returns "self" if the user owns the media, "any" otherwise.
 fn required_delete_permission(creator_id: Option<&UserId>, requester_id: &UserId) -> &'static str {
     if creator_id == Some(requester_id) {
@@ -58,7 +58,7 @@ fn required_delete_permission(creator_id: Option<&UserId>, requester_id: &UserId
     }
 }
 
-/// Determines which permission is needed for edit_media based on ownership.
+/// Determines which permission is needed for `edit_media` based on ownership.
 fn required_edit_permission(creator_id: Option<&UserId>, requester_id: &UserId) -> &'static str {
     if creator_id == Some(requester_id) {
         "EDIT_MOVIE_SELF"
@@ -141,7 +141,7 @@ fn test_remove_batch_mixed_permissions() {
     // In a batch delete with mixed ownership:
     // - Items owned by requester need DELETE_MOVIE_SELF
     // - Items owned by others need DELETE_MOVIE_ANY
-    let creators = vec![Some(user_a.clone()), Some(user_b.clone()), None];
+    let creators = vec![Some(user_a), Some(user_b), None];
 
     let mut needs_self = false;
     let mut needs_any = false;

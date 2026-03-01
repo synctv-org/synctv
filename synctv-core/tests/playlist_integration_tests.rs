@@ -2,7 +2,7 @@
 //!
 //! Tests playlist CRUD, tree structure, position sorting, cycle prevention, and cascade delete.
 //!
-//! Run with: cargo test --test playlist_integration_tests
+//! Run with: cargo test --test `playlist_integration_tests`
 #![allow(clippy::unwrap_used)]
 
 use synctv_core_testing::create_test_pool;
@@ -14,13 +14,13 @@ use synctv_core::{
     repository::{RoomRepository, UserRepository, PlaylistRepository},
 };
 use chrono::Utc;
-/// Default PostgreSQL version for test containers
+/// Default `PostgreSQL` version for test containers
 fn make_user(username: &str) -> User {
     let now = Utc::now();
     User {
         id: UserId::new(),
         username: username.to_string(),
-        email: Some(format!("{}@test.com", username)),
+        email: Some(format!("{username}@test.com")),
         password_hash: "hash".to_string(),
         role: UserRole::User,
         status: UserStatus::Active,
@@ -192,8 +192,7 @@ async fn test_cycle_prevention_trigger() {
     let err_msg = format!("{}", result.unwrap_err());
     assert!(
         err_msg.contains("Circular reference detected") || err_msg.contains("cycle"),
-        "Error should mention circular reference, got: {}",
-        err_msg
+        "Error should mention circular reference, got: {err_msg}"
     );
 }
 
@@ -272,11 +271,11 @@ fn test_advisory_lock_key_consistency_between_methods() {
             h.finish()
         };
 
-        let parent_hash = parent_id.map(|pid| {
+        let parent_hash = parent_id.map_or(0, |pid| {
             let mut h = std::collections::hash_map::DefaultHasher::new();
             pid.hash(&mut h);
             h.finish()
-        }).unwrap_or(0);
+        });
 
         let room_bits = (room_hash & 0x7FFFFFFF) as i64;
         let parent_bits = (parent_hash & 0x7FFFFFFF) as i64;
@@ -293,12 +292,11 @@ fn test_advisory_lock_key_consistency_between_methods() {
     ];
 
     // Verify keys are computed correctly and consistently
-    for (room_id, parent_id) in test_cases.iter() {
+    for (room_id, parent_id) in &test_cases {
         let key = compute_lock_key(room_id, *parent_id);
 
         println!(
-            "room={}, parent={:?} => lock_key={}",
-            room_id, parent_id, key
+            "room={room_id}, parent={parent_id:?} => lock_key={key}"
         );
 
         // Key should be a valid i64
@@ -348,8 +346,7 @@ fn test_advisory_lock_key_no_collision_between_different_parents() {
     // probability of collision. We can't guarantee no collisions in this test,
     // but we document the risk.
     println!(
-        "Old keys: {} {} {} {}",
-        key1, key2, key3, key4
+        "Old keys: {key1} {key2} {key3} {key4}"
     );
 
     // The NEW implementation should be deterministic and collision-free
@@ -363,11 +360,11 @@ fn test_advisory_lock_key_no_collision_between_different_parents() {
             h.finish()
         };
 
-        let parent_hash = parent_id.map(|pid| {
+        let parent_hash = parent_id.map_or(0, |pid| {
             let mut h = std::collections::hash_map::DefaultHasher::new();
             pid.hash(&mut h);
             h.finish()
-        }).unwrap_or(0);
+        });
 
         // Combine using a method that reduces collision probability
         // This uses prime number multiplication to spread values
@@ -383,8 +380,7 @@ fn test_advisory_lock_key_no_collision_between_different_parents() {
     // With the new approach, different inputs should produce different keys
     // (for reasonable inputs)
     println!(
-        "New keys: {} {} {} {}",
-        new_key1, new_key2, new_key3, new_key4
+        "New keys: {new_key1} {new_key2} {new_key3} {new_key4}"
     );
 }
 
@@ -466,8 +462,7 @@ async fn test_cross_room_parent_id_rejected() {
     let err_msg = format!("{:?}", result.unwrap_err());
     assert!(
         err_msg.contains("constraint") || err_msg.contains("Constraint") || err_msg.contains("violation"),
-        "Error should be a constraint violation, got: {}",
-        err_msg
+        "Error should be a constraint violation, got: {err_msg}"
     );
 }
 

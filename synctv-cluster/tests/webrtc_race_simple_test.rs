@@ -21,9 +21,9 @@ async fn test_simple_rtc_state_check() {
         max_per_user: 10,
         max_per_room: 10,
         max_total: 100,
-        idle_timeout: Duration::from_secs(300),
-        max_duration: Duration::from_secs(86400),
-        webrtc_session_timeout: Duration::from_secs(3600),
+        idle_timeout: Duration::from_mins(5),
+        max_duration: Duration::from_hours(24),
+        webrtc_session_timeout: Duration::from_hours(1),
     };
     let mgr = ConnectionManager::new(limits);
 

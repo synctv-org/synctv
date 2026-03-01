@@ -2701,7 +2701,7 @@ mod tests {
             room_id: room_id(),
             user_id: user_id(),
             username: "bob".to_string(),
-            state: state.clone(),
+            state,
             timestamp: now(),
         };
 
@@ -3022,7 +3022,7 @@ mod tests {
         assert_eq!(config.available_permits(), 0, "No permits should remain");
 
         // Next acquisition should fail
-        let failed = semaphore.clone().try_acquire_owned();
+        let failed = semaphore.try_acquire_owned();
         assert!(failed.is_err(), "Should fail when no permits available");
 
         // Drop all permits
@@ -3169,7 +3169,7 @@ mod tests {
     #[test]
     fn test_validate_danmaku_color_empty_string() {
         // Empty string should be rejected
-        let result = super::validate_danmaku_color(&Some("".to_string()));
+        let result = super::validate_danmaku_color(&Some(String::new()));
         assert!(result.is_err());
     }
 

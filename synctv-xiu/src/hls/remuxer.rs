@@ -1083,7 +1083,7 @@ mod tests {
         });
 
         // Generate M3U8
-        let m3u8 = state.generate_m3u8(|ts_name| format!("/api/hls/{}", ts_name));
+        let m3u8 = state.generate_m3u8(|ts_name| format!("/api/hls/{ts_name}"));
 
         // Verify M3U8 content
         assert!(m3u8.contains("#EXTM3U"));
@@ -1115,7 +1115,7 @@ mod tests {
         });
 
         // Generate M3U8
-        let m3u8 = state.generate_m3u8(|ts_name| format!("/api/hls/{}", ts_name));
+        let m3u8 = state.generate_m3u8(|ts_name| format!("/api/hls/{ts_name}"));
 
         // Verify discontinuity tag is present
         assert!(m3u8.contains("#EXT-X-DISCONTINUITY"));
@@ -1142,7 +1142,7 @@ mod tests {
         });
 
         // Generate M3U8
-        let m3u8 = state.generate_m3u8(|ts_name| format!("/api/hls/{}", ts_name));
+        let m3u8 = state.generate_m3u8(|ts_name| format!("/api/hls/{ts_name}"));
 
         // Verify ENDLIST tag is present
         assert!(m3u8.contains("#EXT-X-ENDLIST"));
@@ -1170,7 +1170,7 @@ mod tests {
 
         // Generate M3U8 with custom URL generator (e.g., adding auth token)
         let m3u8 = state.generate_m3u8(|ts_name| {
-            format!("/api/room/live/hls/data/room123/media456/{}?token=abc123", ts_name)
+            format!("/api/room/live/hls/data/room123/media456/{ts_name}?token=abc123")
         });
 
         // Verify custom URL format is used

@@ -652,7 +652,7 @@ mod tests {
         JwtValidator::new(jwt_service.clone())
     }
 
-    /// Create a valid test token for a specific user_id
+    /// Create a valid test token for a specific `user_id`
     fn create_test_token(jwt_service: &JwtService, user_id: &str) -> String {
         let user_id = UserId::from_string(user_id.to_string());
         jwt_service.sign_token(&user_id, TokenType::Access, 0).unwrap()

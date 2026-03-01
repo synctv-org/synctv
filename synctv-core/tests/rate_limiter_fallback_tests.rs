@@ -3,7 +3,7 @@
 //! Tests that the Redis rate limiter falls back to in-memory when Redis is unavailable,
 //! and that this behavior is properly monitored with Prometheus metrics.
 //!
-//! Run with: cargo test -p synctv-core --test rate_limiter_fallback_tests
+//! Run with: cargo test -p synctv-core --test `rate_limiter_fallback_tests`
 #![allow(clippy::unwrap_used)]
 #![allow(clippy::assertions_on_constants)]
 
@@ -53,13 +53,13 @@ fn test_fallback_behavior_documentation() {
 
 /// Documents the difference between regular and strict mode
 ///
-/// # Regular Mode (check_rate_limit)
+/// # Regular Mode (`check_rate_limit`)
 ///
 /// - Falls back to in-memory on Redis errors
 /// - Graceful degradation, service continues
 /// - Per-replica limits during outage
 ///
-/// # Strict Mode (check_rate_limit_strict)
+/// # Strict Mode (`check_rate_limit_strict`)
 ///
 /// - Fails closed on Redis errors (denies request)
 /// - Used for distributed critical operations

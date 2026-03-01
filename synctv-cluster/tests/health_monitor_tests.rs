@@ -1,6 +1,6 @@
-//! HealthMonitor integration tests
+//! `HealthMonitor` integration tests
 //!
-//! Tests for process_heartbeats logic: stale nodes marked unhealthy,
+//! Tests for `process_heartbeats` logic: stale nodes marked unhealthy,
 //! fresh nodes marked healthy (verifies the bug fix), and backoff
 //! multiplier capping.
 
@@ -114,10 +114,7 @@ fn test_backoff_multiplier_capped() {
 
         assert!(
             backoff_multiplier <= MAX_BACKOFF_MULTIPLIER,
-            "Backoff multiplier {} exceeds max {} at {} failures",
-            backoff_multiplier,
-            MAX_BACKOFF_MULTIPLIER,
-            failures
+            "Backoff multiplier {backoff_multiplier} exceeds max {MAX_BACKOFF_MULTIPLIER} at {failures} failures"
         );
 
         // Verify specific values
@@ -126,7 +123,7 @@ fn test_backoff_multiplier_capped() {
             1 => assert_eq!(backoff_multiplier, 2),
             2 => assert_eq!(backoff_multiplier, 4),
             3 => assert_eq!(backoff_multiplier, 8),
-            _ => assert_eq!(backoff_multiplier, 8, "Should cap at 8x for {} failures", failures),
+            _ => assert_eq!(backoff_multiplier, 8, "Should cap at 8x for {failures} failures"),
         }
     }
 }

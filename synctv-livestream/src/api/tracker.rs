@@ -581,7 +581,7 @@ mod tests {
         assert_eq!(user_streams[0], ("room2".to_string(), "media2".to_string()));
     }
 
-    /// Test that clear properly handles StreamHub restart scenario
+    /// Test that clear properly handles `StreamHub` restart scenario
     #[test]
     fn test_clear_streamhub_restart_scenario() {
         let tracker = Arc::new(StreamTracker::new());

@@ -235,11 +235,12 @@ impl UnitOfWork {
         self.committed || self.rolled_back
     }
 
-    /// Create a UnitOfWork for testing purposes that simulates an uncommitted state.
+    /// Create a `UnitOfWork` for testing purposes that simulates an uncommitted state.
     ///
     /// This allows testing the panic behavior without a real database connection.
     #[cfg(test)]
-    pub fn new_uncommitted_for_testing() -> Self {
+    #[must_use] 
+    pub const fn new_uncommitted_for_testing() -> Self {
         Self {
             tx: None,
             committed: false,
@@ -248,15 +249,15 @@ impl UnitOfWork {
         }
     }
 
-    /// Mark the UnitOfWork as committed for testing purposes
+    /// Mark the `UnitOfWork` as committed for testing purposes
     #[cfg(test)]
-    pub fn mark_committed_for_testing(&mut self) {
+    pub const fn mark_committed_for_testing(&mut self) {
         self.committed = true;
     }
 
-    /// Mark the UnitOfWork as rolled back for testing purposes
+    /// Mark the `UnitOfWork` as rolled back for testing purposes
     #[cfg(test)]
-    pub fn mark_rolled_back_for_testing(&mut self) {
+    pub const fn mark_rolled_back_for_testing(&mut self) {
         self.rolled_back = true;
     }
 }
@@ -335,7 +336,7 @@ mod tests {
     #[test]
     fn test_transaction_error_clone() {
         let err = TransactionError("clone me");
-        let cloned = err.clone();
+        let cloned = err;
         assert_eq!(cloned.0, "clone me");
     }
 
@@ -390,7 +391,7 @@ mod tests {
 
     // ========== TDD Tests for Uncommitted Detection ==========
 
-    /// Test: Uncommitted UnitOfWork panics in debug mode when dropped.
+    /// Test: Uncommitted `UnitOfWork` panics in debug mode when dropped.
     /// This is the key safety feature to catch developer mistakes early.
     #[test]
     fn test_uncommitted_uow_panics_in_debug_mode() {
@@ -428,7 +429,7 @@ mod tests {
         }
     }
 
-    /// Test: Committed UnitOfWork drops cleanly without panic.
+    /// Test: Committed `UnitOfWork` drops cleanly without panic.
     #[test]
     fn test_committed_uow_drops_cleanly() {
         let result = catch_unwind(AssertUnwindSafe(|| {
@@ -443,7 +444,7 @@ mod tests {
         );
     }
 
-    /// Test: Explicitly rolled back UnitOfWork drops cleanly without panic.
+    /// Test: Explicitly rolled back `UnitOfWork` drops cleanly without panic.
     #[test]
     fn test_rolled_back_uow_drops_cleanly() {
         let result = catch_unwind(AssertUnwindSafe(|| {
@@ -500,7 +501,7 @@ mod tests {
         assert!(result.is_ok(), "UnitOfWork with both flags should drop safely");
     }
 
-    /// Test: is_handled method returns correct state.
+    /// Test: `is_handled` method returns correct state.
     #[test]
     fn test_is_handled_method() {
         // Test committed state

@@ -1,14 +1,14 @@
-//! PublisherManager unit tests using InMemoryStreamRegistry.
+//! `PublisherManager` unit tests using `InMemoryStreamRegistry`.
 //!
 //! These tests verify publish/unpublish handling and active publisher tracking.
-//! They use InMemoryStreamRegistry instead of MockStreamRegistry (which is only
+//! They use `InMemoryStreamRegistry` instead of `MockStreamRegistry` (which is only
 //! available in cfg(test) within the crate).
 
 #![allow(clippy::unwrap_used)]
 use std::sync::Arc;
 use synctv_livestream::relay::{InMemoryStreamRegistry, StreamRegistryTrait};
 
-/// Helper to create a test PublisherManager with an InMemoryStreamRegistry.
+/// Helper to create a test `PublisherManager` with an `InMemoryStreamRegistry`.
 fn setup() -> (
     synctv_livestream::relay::PublisherManager,
     Arc<InMemoryStreamRegistry>,

@@ -1316,12 +1316,12 @@ mod tests {
         let validator = UsernameValidator::new();
         let err = validator.validate("ab").unwrap_err();
         assert!(err.to_string().contains("username"));
-        assert!(err.to_string().contains("3"));
+        assert!(err.to_string().contains('3'));
 
         let validator = PasswordValidator::new();
         let err = validator.validate("weak").unwrap_err();
         assert!(err.to_string().contains("password"));
-        assert!(err.to_string().contains("8"));
+        assert!(err.to_string().contains('8'));
     }
 
     #[test]

@@ -613,7 +613,7 @@ mod tests {
             limiter
                 .check_rate_limit(key, 10, 1)
                 .await
-                .unwrap_or_else(|_| panic!("Request {} should succeed", i));
+                .unwrap_or_else(|_| panic!("Request {i} should succeed"));
         }
 
         let result = limiter.check_rate_limit(key, 10, 1).await;
@@ -679,7 +679,7 @@ mod tests {
             limiter
                 .check_rate_limit(key, 10, 1)
                 .await
-                .unwrap_or_else(|_| panic!("Governor request {} should succeed", i));
+                .unwrap_or_else(|_| panic!("Governor request {i} should succeed"));
         }
 
         let result = limiter.check_rate_limit(key, 10, 1).await;
@@ -905,7 +905,7 @@ mod tests {
             limiter
                 .check_rate_limit("key", 10, 1)
                 .await
-                .unwrap_or_else(|_| panic!("Request {} should succeed after get_quota calls", i));
+                .unwrap_or_else(|_| panic!("Request {i} should succeed after get_quota calls"));
         }
     }
 
@@ -939,7 +939,7 @@ mod tests {
                 limiter
                     .check_rate_limit("fb_key", 5, 1)
                     .await
-                    .unwrap_or_else(|_| panic!("Request {} should succeed", i));
+                    .unwrap_or_else(|_| panic!("Request {i} should succeed"));
             }
             assert!(
                 matches!(

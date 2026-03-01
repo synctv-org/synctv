@@ -1341,7 +1341,7 @@ mod tests {
             .l1_blacklist
             .insert(
                 "jti:abc".to_string(),
-                (true, Instant::now() + Duration::from_secs(60)),
+                (true, Instant::now() + Duration::from_mins(1)),
             )
             .await;
 
@@ -1358,7 +1358,7 @@ mod tests {
             .l1_blacklist
             .insert(
                 "jti:def".to_string(),
-                (false, Instant::now() + Duration::from_secs(60)),
+                (false, Instant::now() + Duration::from_mins(1)),
             )
             .await;
 
@@ -1375,7 +1375,7 @@ mod tests {
             .l1_blacklist
             .insert(
                 "jti:expired".to_string(),
-                (true, Instant::now() - Duration::from_secs(1)),
+                (true, Instant::now().checked_sub(Duration::from_secs(1)).unwrap()),
             )
             .await;
 
@@ -1394,7 +1394,7 @@ mod tests {
             .l1_family
             .insert(
                 "family:user42".to_string(),
-                (Some(ts), Instant::now() + Duration::from_secs(60)),
+                (Some(ts), Instant::now() + Duration::from_mins(1)),
             )
             .await;
 
@@ -1409,7 +1409,7 @@ mod tests {
             .l1_family
             .insert(
                 "family:user99".to_string(),
-                (None, Instant::now() + Duration::from_secs(60)),
+                (None, Instant::now() + Duration::from_mins(1)),
             )
             .await;
 
@@ -1425,7 +1425,7 @@ mod tests {
             .l1_blacklist
             .insert(
                 "jti:overwrite".to_string(),
-                (false, Instant::now() + Duration::from_secs(60)),
+                (false, Instant::now() + Duration::from_mins(1)),
             )
             .await;
         assert!(!store.is_blacklisted("jti:overwrite").await);
@@ -1732,7 +1732,7 @@ mod tests {
             .l1_blacklist
             .insert(
                 "jti:l1_only_test".to_string(),
-                (true, Instant::now() + Duration::from_secs(60)),
+                (true, Instant::now() + Duration::from_mins(1)),
             )
             .await;
 

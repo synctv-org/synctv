@@ -1,4 +1,4 @@
-//! RoomMessageHub integration tests
+//! `RoomMessageHub` integration tests
 //!
 //! Tests for message routing, targeted broadcast, room removal, and
 //! safe unsubscribe of unknown connections.

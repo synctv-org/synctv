@@ -1,6 +1,6 @@
-//! Tests for StreamRelayServiceImpl authentication logic.
+//! Tests for `StreamRelayServiceImpl` authentication logic.
 //!
-//! These tests verify the authenticate() method behavior with
+//! These tests verify the `authenticate()` method behavior with
 //! different cluster secret configurations.
 
 #![allow(clippy::unwrap_used)]
@@ -10,8 +10,8 @@ use tokio_util::sync::CancellationToken;
 use tonic::metadata::MetadataValue;
 use tonic::Request;
 
-/// Helper to create a StreamRelayServiceImpl for testing.
-/// Uses InMemoryStreamRegistry to avoid Redis dependency.
+/// Helper to create a `StreamRelayServiceImpl` for testing.
+/// Uses `InMemoryStreamRegistry` to avoid Redis dependency.
 fn create_test_service() -> synctv_livestream::grpc::StreamRelayServiceImpl {
     let registry = Arc::new(InMemoryStreamRegistry::new());
     let (event_sender, _rx) = tokio::sync::mpsc::channel(64);

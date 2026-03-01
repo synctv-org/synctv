@@ -1,16 +1,16 @@
 //! gRPC layer tests for synctv-api
 //!
-//! Tests the rate limit layer functions (token_rate_limit_key stability, tier mapping)
-//! and the ClusterAuthInterceptor. Also verifies Bug B12 fix (alive flag on clean close).
+//! Tests the rate limit layer functions (`token_rate_limit_key` stability, tier mapping)
+//! and the `ClusterAuthInterceptor`. Also verifies Bug B12 fix (alive flag on clean close).
 
 #![allow(clippy::unwrap_used)]
 // ============================================================================
 // token_rate_limit_key stability tests (Bug B8 fix)
 // ============================================================================
 
-/// Verify token_rate_limit_key is stable: same input -> same output.
+/// Verify `token_rate_limit_key` is stable: same input -> same output.
 ///
-/// After the B8 fix, the function uses SHA-256 instead of DefaultHasher,
+/// After the B8 fix, the function uses SHA-256 instead of `DefaultHasher`,
 /// ensuring the key is deterministic across process restarts.
 #[test]
 fn test_token_rate_limit_key_stable() {
@@ -132,11 +132,11 @@ fn test_cluster_auth_interceptor_missing_header() {
 // GrpcRateLimitTier mapping tests
 // ============================================================================
 
-/// Verify the tier_from_path function maps known gRPC paths correctly.
+/// Verify the `tier_from_path` function maps known gRPC paths correctly.
 /// These tests verify the rate limit tier extraction from gRPC service paths.
 ///
-/// Since tier_from_path is pub(crate), we test the behavior indirectly
-/// by verifying the GrpcRateLimitTier configuration values.
+/// Since `tier_from_path` is pub(crate), we test the behavior indirectly
+/// by verifying the `GrpcRateLimitTier` configuration values.
 #[test]
 fn test_grpc_rate_limit_tier_config_defaults() {
     let config = synctv_core::GrpcRateLimitConfig::default();
@@ -161,8 +161,7 @@ fn test_grpc_rate_limit_tier_key_suffixes_unique() {
     for suffix in &suffixes {
         assert!(
             seen.insert(suffix),
-            "Duplicate rate limit key suffix: {}",
-            suffix
+            "Duplicate rate limit key suffix: {suffix}"
         );
     }
 }

@@ -2,8 +2,8 @@
 //!
 //! Tests token validation, expiration, and JTI store deduplication.
 //!
-//! Run with: cargo test --test publish_key_tests
-//! Run Docker tests: cargo test --test publish_key_tests -- --ignored
+//! Run with: cargo test --test `publish_key_tests`
+//! Run Docker tests: cargo test --test `publish_key_tests` -- --ignored
 #![allow(clippy::unwrap_used)]
 
 use synctv_core::models::{MediaId, RoomId, UserId};
@@ -150,7 +150,7 @@ use testcontainers_modules::redis::Redis;
 
     let host = container.get_host().await.expect("Failed to get Redis host");
     let port = container.get_host_port_ipv4(6379).await.expect("Failed to get Redis port");
-    let redis_url = format!("redis://{}:{}", host, port);
+    let redis_url = format!("redis://{host}:{port}");
     let client = redis::Client::open(redis_url.as_str()).expect("Failed to create Redis client");
     let conn = redis::aio::ConnectionManager::new(client)
         .await
@@ -184,7 +184,7 @@ use testcontainers_modules::redis::Redis;
 
     let host = container.get_host().await.expect("Failed to get Redis host");
     let port = container.get_host_port_ipv4(6379).await.expect("Failed to get Redis port");
-    let redis_url = format!("redis://{}:{}", host, port);
+    let redis_url = format!("redis://{host}:{port}");
     let client = redis::Client::open(redis_url.as_str()).expect("Failed to create Redis client");
     let conn = redis::aio::ConnectionManager::new(client)
         .await

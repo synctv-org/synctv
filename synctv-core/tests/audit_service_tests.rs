@@ -2,8 +2,8 @@
 //!
 //! Tests audit service buffering, unbuffered writes, and query logic.
 //!
-//! Run with: cargo test --test audit_service_tests
-//! Run Docker tests: cargo test --test audit_service_tests -- --ignored
+//! Run with: cargo test --test `audit_service_tests`
+//! Run Docker tests: cargo test --test `audit_service_tests` -- --ignored
 #![allow(clippy::unwrap_used)]
 
 use synctv_core_testing::create_test_pool;
@@ -193,7 +193,7 @@ async fn test_buffered_service_enqueues_without_error() {
 #[tokio::test]
 async fn test_unbuffered_service_dropped_count_zero() {
     let pool = sqlx::PgPool::connect_lazy("postgresql://fake").unwrap();
-    let service = AuditService::new_unbuffered(pool.clone());
+    let service = AuditService::new_unbuffered(pool);
     assert_eq!(service.dropped_count(), 0);
 }
 
@@ -223,11 +223,11 @@ async fn test_log_stream_kicked_writes_audit_log() {
     // Verify the audit log was written correctly
     #[allow(clippy::type_complexity)]
     let row: (String, Option<String>, Option<String>, Option<String>, Option<String>, Option<String>) = sqlx::query_as(
-        r#"
+        r"
         SELECT action, target_type, target_id, ip_address, user_agent, details::text
         FROM audit_logs
         WHERE actor_id = 'admin_001' AND action = 'stream_kicked'
-        "#,
+        ",
     )
     .fetch_one(&pool)
     .await
@@ -269,11 +269,11 @@ async fn test_log_stream_kicked_without_reason() {
 
     // Verify the audit log was written correctly
     let row: (String, Option<String>) = sqlx::query_as(
-        r#"
+        r"
         SELECT action, details::text
         FROM audit_logs
         WHERE actor_id = 'admin_002' AND action = 'stream_kicked'
-        "#,
+        ",
     )
     .fetch_one(&pool)
     .await
@@ -399,11 +399,11 @@ async fn test_buffer_full_increments_dropped_count() {
     for i in 0..100 {
         let result = service
             .log(
-                format!("actor_{}", i),
+                format!("actor_{i}"),
                 "admin".to_string(),
                 AuditAction::UserCreated,
                 AuditTargetType::User,
-                Some(format!("user_{}", i)),
+                Some(format!("user_{i}")),
                 serde_json::json!({}),
                 None,
                 None,
@@ -430,8 +430,6 @@ async fn test_buffer_full_increments_dropped_count() {
     // The exact number depends on timing, but should be > 0
     assert!(
         dropped > 0 || error_count > 0,
-        "With capacity 2 and 100 events, should have dropped events or errors. dropped={}, errors={}",
-        dropped,
-        error_count
+        "With capacity 2 and 100 events, should have dropped events or errors. dropped={dropped}, errors={error_count}"
     );
 }

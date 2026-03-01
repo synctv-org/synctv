@@ -1,11 +1,11 @@
-//! RTMP Authentication tests for extract_token_from_query and related auth logic.
+//! RTMP Authentication tests for `extract_token_from_query` and related auth logic.
 //!
-//! Tests the token extraction helper used in RtmpAuthCallbackImpl::on_publish.
-//! The extract_token_from_query function is private, so we test it indirectly
+//! Tests the token extraction helper used in `RtmpAuthCallbackImpl::on_publish`.
+//! The `extract_token_from_query` function is private, so we test it indirectly
 //! or test the public-facing behavior via the auth trait.
 
 #![allow(clippy::unwrap_used)]
-/// Since extract_token_from_query is private, we replicate the logic here
+/// Since `extract_token_from_query` is private, we replicate the logic here
 /// to test the same algorithm. This validates the URL-decoding behavior that
 /// the actual implementation uses.
 fn extract_token_from_query(query: &str) -> Option<String> {
@@ -74,7 +74,7 @@ fn test_extract_token_from_query_only_token() {
 fn test_extract_token_from_query_jwt_like() {
     // JWT tokens often contain dots and base64 characters
     let jwt = "eyJhbGciOiJIUzI1NiJ9.eyJtIjoibWVkaWExMjMifQ.signature";
-    let query = format!("token={}", jwt);
+    let query = format!("token={jwt}");
     let result = extract_token_from_query(&query);
     assert_eq!(result, Some(jwt.to_string()));
 }
@@ -190,12 +190,12 @@ impl AuthCallback for MockAuthCallback {
 
         // Clean up the registry entry
         if let Err(e) = self.registry.unregister_publisher(app_name, stream_name).await {
-            eprintln!("Failed to rollback publisher registration: {}", e);
+            eprintln!("Failed to rollback publisher registration: {e}");
         }
     }
 }
 
-/// Test that on_publish_rollback is called and properly cleans up registry
+/// Test that `on_publish_rollback` is called and properly cleans up registry
 #[tokio::test]
 async fn test_publish_rollback_cleans_registry() {
     let registry = Arc::new(InMemoryStreamRegistry::new());
@@ -305,7 +305,7 @@ struct MockRtmpSettingsAuthCallback {
 }
 
 impl MockRtmpSettingsAuthCallback {
-    fn new(rtmp_player_enabled: bool) -> Self {
+    const fn new(rtmp_player_enabled: bool) -> Self {
         Self { rtmp_player_enabled }
     }
 }
@@ -331,8 +331,7 @@ impl AuthCallback for MockRtmpSettingsAuthCallback {
         // Check room settings for RTMP player
         if !self.rtmp_player_enabled {
             return Err(format!(
-                "RTMP play rejected for room {}: rtmp_player is disabled in room settings. Use HTTP-FLV or HLS.",
-                app_name
+                "RTMP play rejected for room {app_name}: rtmp_player is disabled in room settings. Use HTTP-FLV or HLS."
             ).into());
         }
         Ok(())
@@ -347,7 +346,7 @@ impl AuthCallback for MockRtmpSettingsAuthCallback {
     }
 }
 
-/// Test that RTMP play is rejected when rtmp_player is disabled (default)
+/// Test that RTMP play is rejected when `rtmp_player` is disabled (default)
 #[tokio::test]
 async fn rtmp_play_rejected_when_disabled() {
     let auth = MockRtmpSettingsAuthCallback::new(false);
@@ -366,7 +365,7 @@ async fn rtmp_play_rejected_when_disabled() {
     );
 }
 
-/// Test that RTMP play is allowed when rtmp_player is enabled
+/// Test that RTMP play is allowed when `rtmp_player` is enabled
 #[tokio::test]
 async fn rtmp_play_allowed_when_enabled() {
     let auth = MockRtmpSettingsAuthCallback::new(true);

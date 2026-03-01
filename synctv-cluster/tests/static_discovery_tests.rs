@@ -1,13 +1,13 @@
-//! StaticDiscovery integration tests
+//! `StaticDiscovery` integration tests
 //!
-//! Tests for the derive_http_address helper function used to construct
+//! Tests for the `derive_http_address` helper function used to construct
 //! HTTP addresses from gRPC addresses.
 
 #![allow(clippy::unwrap_used)]
 // StaticDiscovery::derive_http_address is a private method.
 // We test the same logic by reconstructing the function behavior directly.
 
-/// Replicate the derive_http_address logic from StaticDiscovery.
+/// Replicate the `derive_http_address` logic from `StaticDiscovery`.
 fn derive_http_address(grpc_address: &str, default_http_port: u16) -> String {
     if let Some(colon_pos) = grpc_address.rfind(':') {
         let host = &grpc_address[..colon_pos];

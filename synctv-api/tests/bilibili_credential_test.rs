@@ -1,9 +1,9 @@
 //! Test for Bilibili credential encryption in proxy routes
 //!
-//! This test verifies that credential_encryption is properly passed through
-//! to the resolve_provider_playback_result function in proxy handlers.
+//! This test verifies that `credential_encryption` is properly passed through
+//! to the `resolve_provider_playback_result` function in proxy handlers.
 //!
-//! Run with: cargo test --package synctv-api bilibili_credential
+//! Run with: cargo test --package synctv-api `bilibili_credential`
 
 #![allow(clippy::unwrap_used)]
 use synctv_core::provider::{MediaProvider, PlaybackResult, PlaybackInfo, ProviderContext, ProviderError};
@@ -14,14 +14,14 @@ use async_trait::async_trait;
 // Mock provider that checks if credential_encryption is passed
 // ============================================================================
 
-/// A mock Bilibili provider that records whether credential_encryption was provided
+/// A mock Bilibili provider that records whether `credential_encryption` was provided
 struct MockBilibiliProvider {
-    /// Records if credential_encryption was Some when generate_playback was called
+    /// Records if `credential_encryption` was Some when `generate_playback` was called
     encryption_was_provided: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl MockBilibiliProvider {
-    fn new(encryption_was_provided: std::sync::Arc<std::sync::atomic::AtomicBool>) -> Self {
+    const fn new(encryption_was_provided: std::sync::Arc<std::sync::atomic::AtomicBool>) -> Self {
         Self { encryption_was_provided }
     }
 }
@@ -68,10 +68,10 @@ impl MediaProvider for MockBilibiliProvider {
 // Test: credential_encryption should be passed to provider
 // ============================================================================
 
-/// Test that resolve_provider_playback_result passes credential_encryption to the provider.
+/// Test that `resolve_provider_playback_result` passes `credential_encryption` to the provider.
 ///
-/// This is important because Bilibili cookies stored in source_config are encrypted.
-/// If credential_encryption is not passed (i.e., None is passed instead), the provider
+/// This is important because Bilibili cookies stored in `source_config` are encrypted.
+/// If `credential_encryption` is not passed (i.e., None is passed instead), the provider
 /// cannot decrypt the credentials and playback will fail for content requiring login.
 ///
 /// The bug was in synctv-api/src/http/providers/bilibili.rs:114 where `None` was passed
@@ -128,8 +128,8 @@ async fn test_bilibili_proxy_m3u8_passes_credential_encryption() {
     );
 }
 
-/// Test that verifies the code signature of resolve_provider_playback_result
-/// accepts credential_encryption parameter
+/// Test that verifies the code signature of `resolve_provider_playback_result`
+/// accepts `credential_encryption` parameter
 #[tokio::test]
 async fn test_resolve_provider_playback_result_signature() {
     // This test exists to ensure the function signature is correct.

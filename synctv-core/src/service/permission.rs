@@ -754,7 +754,7 @@ mod tests {
             room_settings_repo: None,
             cache: Arc::new(
                 moka::future::CacheBuilder::new(10)
-                    .time_to_live(Duration::from_secs(60))
+                    .time_to_live(Duration::from_mins(1))
                     .build(),
             ),
             degraded_cache: Arc::new(
@@ -1017,7 +1017,7 @@ mod tests {
 
     #[test]
     fn test_flush_rate_limit_allows_after_interval() {
-        let last_flush = parking_lot::Mutex::new(Instant::now() - Duration::from_secs(20));
+        let last_flush = parking_lot::Mutex::new(Instant::now().checked_sub(Duration::from_secs(20)).unwrap());
         let elapsed = last_flush.lock().elapsed();
         assert!(elapsed >= Duration::from_secs(PermissionService::FLUSH_RATE_LIMIT_SECS));
     }

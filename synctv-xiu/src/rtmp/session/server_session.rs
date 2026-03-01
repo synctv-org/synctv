@@ -424,8 +424,8 @@ impl ServerSession {
                 tracing::info!("[ S<-C ] [create stream] ");
                 self.on_create_stream(transaction_id).await?;
             }
-            "deleteStream" => {
-                if !others.is_empty() {
+            "deleteStream"
+                if !others.is_empty() => {
                     let stream_id = match others.pop() {
                         Some(Amf0ValueType::Number(streamid)) => streamid,
                         _ => 0.0,
@@ -440,7 +440,6 @@ impl ServerSession {
                     self.on_delete_stream(transaction_id, &stream_id).await?;
                     self.state = ServerSessionState::DeleteStream;
                 }
-            }
             "play" => {
                 tracing::info!(
                     "[ S<-C ] [play]  app_name: {}, stream_name: {}",

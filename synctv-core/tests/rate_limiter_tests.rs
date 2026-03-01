@@ -2,8 +2,8 @@
 //!
 //! Tests in-memory rate limiter behavior and Redis rate limiter with testcontainers.
 //!
-//! Run with: cargo test --test rate_limiter_tests
-//! Run Docker tests: cargo test --test rate_limiter_tests -- --ignored
+//! Run with: cargo test --test `rate_limiter_tests`
+//! Run Docker tests: cargo test --test `rate_limiter_tests` -- --ignored
 #![allow(clippy::unwrap_used)]
 
 use synctv_core::service::{RateLimiter, RateLimitError};
@@ -125,7 +125,7 @@ async fn create_redis_connection_manager() -> (redis::aio::ConnectionManager, te
 
     let host = container.get_host().await.expect("Failed to get Redis host");
     let port = container.get_host_port_ipv4(6379).await.expect("Failed to get Redis port");
-    let redis_url = format!("redis://{}:{}", host, port);
+    let redis_url = format!("redis://{host}:{port}");
     let client = redis::Client::open(redis_url.as_str()).expect("Failed to create Redis client");
     let conn = redis::aio::ConnectionManager::new(client)
         .await

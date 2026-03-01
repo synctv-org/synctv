@@ -485,7 +485,7 @@ mod tests {
             let reg = registry.clone();
             handles.push(thread::spawn(move || {
                 reg.register_factory(
-                    &format!("factory_{}", i),
+                    &format!("factory_{i}"),
                     Box::new(|_instance_id, _config| Ok(Arc::new(MockProvider {}))),
                 );
             }));
@@ -498,9 +498,9 @@ mod tests {
 
         // Create instances with each factory
         for i in 0..10 {
-            let factory_name = format!("factory_{}", i);
+            let factory_name = format!("factory_{i}");
             registry
-                .create_instance(&factory_name, &format!("inst_{}", i), serde_json::json!({}))
+                .create_instance(&factory_name, &format!("inst_{i}"), serde_json::json!({}))
                 .unwrap();
         }
 

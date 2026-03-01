@@ -19,7 +19,7 @@ fn test_logout_requires_credentials() {
     assert!(!client.has_credentials(), "Client should not have credentials");
 }
 
-/// Test that client with credentials reports has_credentials correctly
+/// Test that client with credentials reports `has_credentials` correctly
 #[test]
 fn test_client_with_credentials() {
     let client = EmbyClient::with_credentials(
@@ -32,7 +32,7 @@ fn test_client_with_credentials() {
     assert!(client.has_credentials(), "Client should have credentials");
 }
 
-/// Test that delete_active_encodings requires a valid play_session_id
+/// Test that `delete_active_encodings` requires a valid `play_session_id`
 #[test]
 fn test_delete_active_encodings_rejects_empty_session_id() {
     // This test verifies that the function validates input
@@ -52,7 +52,7 @@ fn test_delete_active_encodings_rejects_empty_session_id() {
     assert!(client.has_credentials());
 }
 
-/// Test that report_playback_start validates item_id
+/// Test that `report_playback_start` validates `item_id`
 #[test]
 fn test_report_playback_start_validates_item_id() {
     // Client with credentials
@@ -66,7 +66,7 @@ fn test_report_playback_start_validates_item_id() {
     assert!(client.has_credentials());
 }
 
-/// Test that report_playback_progress validates item_id
+/// Test that `report_playback_progress` validates `item_id`
 #[test]
 fn test_report_playback_progress_validates_item_id() {
     let client = EmbyClient::with_credentials(
@@ -79,7 +79,7 @@ fn test_report_playback_progress_validates_item_id() {
     assert!(client.has_credentials());
 }
 
-/// Test that report_playback_stop validates item_id
+/// Test that `report_playback_stop` validates `item_id`
 #[test]
 fn test_report_playback_stop_validates_item_id() {
     let client = EmbyClient::with_credentials(
@@ -95,7 +95,7 @@ fn test_report_playback_stop_validates_item_id() {
 // The following tests verify error type structure and display implementations
 // These ensure callers can distinguish between different error types
 
-/// Test that EmbyError has an InvalidConfig variant
+/// Test that `EmbyError` has an `InvalidConfig` variant
 #[test]
 fn test_emby_error_has_invalid_config_variant() {
     use synctv_media_providers::EmbyError;
@@ -104,12 +104,11 @@ fn test_emby_error_has_invalid_config_variant() {
     let msg = err.to_string();
     assert!(
         msg.contains("Invalid configuration") || msg.contains("test error"),
-        "Error message should describe the error: {}",
-        msg
+        "Error message should describe the error: {msg}"
     );
 }
 
-/// Test that EmbyError has an Auth variant
+/// Test that `EmbyError` has an Auth variant
 #[test]
 fn test_emby_error_has_auth_variant() {
     use synctv_media_providers::EmbyError;
@@ -118,12 +117,11 @@ fn test_emby_error_has_auth_variant() {
     let msg = err.to_string();
     assert!(
         msg.contains("Authentication") || msg.contains("login failed"),
-        "Error message should describe auth error: {}",
-        msg
+        "Error message should describe auth error: {msg}"
     );
 }
 
-/// Test that EmbyError has an Http variant
+/// Test that `EmbyError` has an Http variant
 #[test]
 fn test_emby_error_has_http_variant() {
     use synctv_media_providers::EmbyError;
@@ -137,12 +135,11 @@ fn test_emby_error_has_http_variant() {
     let msg = err.to_string();
     assert!(
         msg.contains("404") || msg.contains("HTTP"),
-        "Error message should include HTTP status: {}",
-        msg
+        "Error message should include HTTP status: {msg}"
     );
 }
 
-/// Test that EmbyError has a Network variant
+/// Test that `EmbyError` has a Network variant
 #[test]
 fn test_emby_error_has_network_variant() {
     use synctv_media_providers::EmbyError;
@@ -151,12 +148,11 @@ fn test_emby_error_has_network_variant() {
     let msg = err.to_string();
     assert!(
         msg.contains("Network") || msg.contains("connection"),
-        "Error message should describe network error: {}",
-        msg
+        "Error message should describe network error: {msg}"
     );
 }
 
-/// Test that EmbyError is Send + Sync (required for async)
+/// Test that `EmbyError` is Send + Sync (required for async)
 #[test]
 fn test_emby_error_is_send_sync() {
     use synctv_media_providers::EmbyError;
@@ -183,8 +179,7 @@ fn test_item_id_validation_rejects_path_traversal() {
         // These should be valid formats
         assert!(
             id.chars().all(|c| c.is_alphanumeric() || c == '-' || c == '_'),
-            "ID '{}' should be valid",
-            id
+            "ID '{id}' should be valid"
         );
     }
 
@@ -194,11 +189,11 @@ fn test_item_id_validation_rejects_path_traversal() {
         // These should be invalid
         let is_invalid = id.is_empty()
             || !id.chars().all(|c| c.is_alphanumeric() || c == '-' || c == '_');
-        assert!(is_invalid, "ID '{}' should be invalid", id);
+        assert!(is_invalid, "ID '{id}' should be invalid");
     }
 }
 
-/// Test that the client can be created and host() returns expected value
+/// Test that the client can be created and `host()` returns expected value
 #[test]
 fn test_client_host_accessor() {
     let client = EmbyClient::new("https://emby.example.com").unwrap();
@@ -283,7 +278,7 @@ async fn test_logout_returns_error_on_500() {
     assert!(result.is_err(), "logout should return error on 500, got: {result:?}");
 }
 
-/// Test that delete_active_encodings returns an error on non-success response.
+/// Test that `delete_active_encodings` returns an error on non-success response.
 #[tokio::test]
 async fn test_delete_active_encodings_returns_error_on_500() {
     let server = MockServer::start().await;
@@ -303,7 +298,7 @@ async fn test_delete_active_encodings_returns_error_on_500() {
     );
 }
 
-/// Test that delete_active_encodings returns an error on 404 Not Found.
+/// Test that `delete_active_encodings` returns an error on 404 Not Found.
 #[tokio::test]
 async fn test_delete_active_encodings_returns_error_on_404() {
     let server = MockServer::start().await;
@@ -323,7 +318,7 @@ async fn test_delete_active_encodings_returns_error_on_404() {
     );
 }
 
-/// Test that report_playback_start returns an error on non-success response.
+/// Test that `report_playback_start` returns an error on non-success response.
 #[tokio::test]
 async fn test_report_playback_start_returns_error_on_500() {
     let server = MockServer::start().await;
@@ -346,7 +341,7 @@ async fn test_report_playback_start_returns_error_on_500() {
     );
 }
 
-/// Test that report_playback_stop returns an error on non-success response.
+/// Test that `report_playback_stop` returns an error on non-success response.
 #[tokio::test]
 async fn test_report_playback_stop_returns_error_on_500() {
     let server = MockServer::start().await;
@@ -369,7 +364,7 @@ async fn test_report_playback_stop_returns_error_on_500() {
     );
 }
 
-/// Test that report_playback_progress returns an error on non-success response.
+/// Test that `report_playback_progress` returns an error on non-success response.
 #[tokio::test]
 async fn test_report_playback_progress_returns_error_on_500() {
     let server = MockServer::start().await;
@@ -410,7 +405,7 @@ async fn test_logout_succeeds_on_204() {
     assert!(result.is_ok(), "logout should succeed on 204: {result:?}");
 }
 
-/// Test that delete_active_encodings succeeds on 204 No Content.
+/// Test that `delete_active_encodings` succeeds on 204 No Content.
 #[tokio::test]
 async fn test_delete_active_encodings_succeeds_on_204() {
     let server = MockServer::start().await;

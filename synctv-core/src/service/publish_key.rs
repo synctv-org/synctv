@@ -389,7 +389,7 @@ mod tests {
     #[test]
     fn test_publish_key_service_new() {
         let service = create_publish_key_service();
-        let debug = format!("{:?}", service);
+        let debug = format!("{service:?}");
         assert!(debug.contains("token_ttl_hours"));
         assert!(debug.contains("24"));
     }
@@ -398,7 +398,7 @@ mod tests {
     fn test_publish_key_service_with_default_ttl() {
         let jwt = create_jwt_service();
         let service = PublishKeyService::with_default_ttl(jwt);
-        let debug = format!("{:?}", service);
+        let debug = format!("{service:?}");
         assert!(debug.contains("24"));
     }
 

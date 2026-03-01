@@ -1,9 +1,9 @@
-//! MemberService integration tests
+//! `MemberService` integration tests
 //!
 //! Tests member management including max members, kick hierarchy, ban/unban,
-//! and permission operations with real PostgreSQL via testcontainers.
+//! and permission operations with real `PostgreSQL` via testcontainers.
 //!
-//! Run with: cargo test -p synctv-core --test member_service_tests -- --nocapture
+//! Run with: cargo test -p synctv-core --test `member_service_tests` -- --nocapture
 #![allow(clippy::unwrap_used)]
 
 use std::sync::Arc;
@@ -57,7 +57,7 @@ fn make_user(username: &str) -> User {
     User {
         id: UserId::new(),
         username: username.to_string(),
-        email: Some(format!("{}@test.com", username)),
+        email: Some(format!("{username}@test.com")),
         password_hash: "hash".to_string(),
         role: UserRole::User,
         status: UserStatus::Active,
@@ -157,9 +157,9 @@ async fn test_kick_member_role_hierarchy() {
     assert!(result.is_err(), "Admin cannot kick Creator");
     match result.unwrap_err() {
         Error::Authorization(msg) => {
-            assert!(msg.contains("cannot kick") || msg.contains("equal or higher"), "Error should mention role hierarchy: {}", msg);
+            assert!(msg.contains("cannot kick") || msg.contains("equal or higher"), "Error should mention role hierarchy: {msg}");
         }
-        other => panic!("Expected Authorization error, got: {:?}", other),
+        other => panic!("Expected Authorization error, got: {other:?}"),
     }
 }
 
@@ -406,7 +406,7 @@ struct MockKickBroadcaster {
 }
 
 impl MockKickBroadcaster {
-    fn new() -> Self {
+    const fn new() -> Self {
         Self {
             kick_from_room_calls: std::sync::atomic::AtomicU64::new(0),
             kick_user_calls: std::sync::atomic::AtomicU64::new(0),
@@ -533,8 +533,7 @@ async fn test_ban_allows_propagation_delay_for_cross_replica_disconnect() {
     // cross-replica broadcasting is configured.
     assert!(
         elapsed < std::time::Duration::from_millis(200),
-        "Ban without event_broadcaster should complete quickly, took {:?}",
-        elapsed
+        "Ban without event_broadcaster should complete quickly, took {elapsed:?}"
     );
 }
 
@@ -619,15 +618,13 @@ async fn test_ban_with_event_broadcaster_includes_propagation_delay() {
     // The ban operation should take at least 100ms due to the propagation delay
     assert!(
         elapsed >= std::time::Duration::from_millis(100),
-        "Ban with event_broadcaster should include ~100ms propagation delay, took {:?}",
-        elapsed
+        "Ban with event_broadcaster should include ~100ms propagation delay, took {elapsed:?}"
     );
 
     // But should not take excessively long
     assert!(
         elapsed < std::time::Duration::from_millis(500),
-        "Ban operation should not take excessively long, took {:?}",
-        elapsed
+        "Ban operation should not take excessively long, took {elapsed:?}"
     );
 }
 
@@ -672,8 +669,8 @@ async fn test_kick_member_also_broadcasts_kick_event() {
 
 // ========== Remove Member TOCTOU Race Condition Tests ==========
 
-/// Test that remove_member handles the case atomically where a member is removed
-/// concurrently. The operation should return NotFound if the member doesn't exist
+/// Test that `remove_member` handles the case atomically where a member is removed
+/// concurrently. The operation should return `NotFound` if the member doesn't exist
 /// or was already removed, rather than proceeding with cache invalidation etc.
 #[tokio::test]
 #[ignore = "Requires Docker"]
@@ -707,16 +704,15 @@ async fn test_remove_member_returns_not_found_for_non_member() {
         Error::NotFound(msg) => {
             assert!(
                 msg.contains("Not a member") || msg.contains("not found"),
-                "Error should indicate member not found: {}",
-                msg
+                "Error should indicate member not found: {msg}"
             );
         }
-        other => panic!("Expected NotFound error, got: {:?}", other),
+        other => panic!("Expected NotFound error, got: {other:?}"),
     }
 }
 
-/// Test that remove_member is idempotent-safe: calling it twice should return
-/// NotFound on the second call (member was already removed).
+/// Test that `remove_member` is idempotent-safe: calling it twice should return
+/// `NotFound` on the second call (member was already removed).
 #[tokio::test]
 #[ignore = "Requires Docker"]
 async fn test_remove_member_idempotent_not_found_after_removal() {
@@ -776,15 +772,14 @@ async fn test_remove_member_idempotent_not_found_after_removal() {
         Error::NotFound(msg) => {
             assert!(
                 msg.contains("Not a member") || msg.contains("not found"),
-                "Error should indicate member not found: {}",
-                msg
+                "Error should indicate member not found: {msg}"
             );
         }
-        other => panic!("Expected NotFound error, got: {:?}", other),
+        other => panic!("Expected NotFound error, got: {other:?}"),
     }
 }
 
-/// Test concurrent remove_member calls: both should complete without errors,
+/// Test concurrent `remove_member` calls: both should complete without errors,
 /// and the member should be removed (only one should actually do the removal).
 #[tokio::test]
 #[ignore = "Requires Docker"]
@@ -834,7 +829,7 @@ async fn test_remove_member_concurrent_no_race() {
             match ms.remove_member(room_id, user_id).await {
                 Ok(()) => sc.fetch_add(1, Ordering::SeqCst),
                 Err(Error::NotFound(_)) => nc.fetch_add(1, Ordering::SeqCst),
-                Err(e) => panic!("Unexpected error: {:?}", e),
+                Err(e) => panic!("Unexpected error: {e:?}"),
             }
         }));
     }

@@ -1,8 +1,8 @@
-//! RoomPlaybackStateRepository integration tests
+//! `RoomPlaybackStateRepository` integration tests
 //!
-//! Tests create_or_get idempotency and update optimistic locking.
+//! Tests `create_or_get` idempotency and update optimistic locking.
 //!
-//! Run with: cargo test --test playback_repository_tests
+//! Run with: cargo test --test `playback_repository_tests`
 #![allow(clippy::unwrap_used)]
 
 use synctv_core_testing::{create_test_pool};
@@ -19,7 +19,7 @@ fn make_user(username: &str) -> User {
     User {
         id: UserId::new(),
         username: username.to_string(),
-        email: Some(format!("{}@test.com", username)),
+        email: Some(format!("{username}@test.com")),
         password_hash: "hash".to_string(),
         role: UserRole::User,
         status: UserStatus::Active,

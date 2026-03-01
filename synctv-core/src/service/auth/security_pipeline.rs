@@ -523,7 +523,7 @@ mod tests {
 
         // Test that we can check if blacklist store is set via the builder
         // This is a compile-time check that the types are correct
-        let _: Arc<dyn TokenBlacklistStore> = blacklist_store.clone();
+        let _: Arc<dyn TokenBlacklistStore> = blacklist_store;
         let _: KeyBuilder = key_builder;
     }
 }

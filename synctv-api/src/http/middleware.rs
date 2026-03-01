@@ -894,7 +894,7 @@ mod tests {
             user_id: synctv_core::models::id::UserId::from_string("test123".to_string()),
             password_version: 0,
         };
-        let cloned = auth_user.clone();
+        let cloned = auth_user;
         assert_eq!(cloned.user_id.as_str(), "test123");
     }
 

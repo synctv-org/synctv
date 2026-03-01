@@ -1,8 +1,8 @@
 //! WebRTC Session Cleanup Race Condition Tests
 //!
 //! Tests for race condition between WebRTC session timeout cleanup and
-//! explicit leave/disconnect. The issue: peer_count can become negative
-//! due to race between remove_peer and cleanup_task.
+//! explicit leave/disconnect. The issue: `peer_count` can become negative
+//! due to race between `remove_peer` and `cleanup_task`.
 //!
 //! Test scenarios:
 //! - Session timeout clears RTC state
@@ -36,8 +36,8 @@ async fn test_timeout_clears_rtc_state() {
         max_per_user: 10,
         max_per_room: 10,
         max_total: 100,
-        idle_timeout: Duration::from_secs(300),
-        max_duration: Duration::from_secs(86400),
+        idle_timeout: Duration::from_mins(5),
+        max_duration: Duration::from_hours(24),
         webrtc_session_timeout: timeout,
     };
     let mgr = ConnectionManager::new(limits);
@@ -98,8 +98,8 @@ async fn test_multiple_concurrent_timeouts() {
         max_per_user: 10,
         max_per_room: 10,
         max_total: 100,
-        idle_timeout: Duration::from_secs(300),
-        max_duration: Duration::from_secs(86400),
+        idle_timeout: Duration::from_mins(5),
+        max_duration: Duration::from_hours(24),
         webrtc_session_timeout: timeout,
     };
     let mgr = ConnectionManager::new(limits);
@@ -109,7 +109,7 @@ async fn test_multiple_concurrent_timeouts() {
 
     // Register multiple connections and join WebRTC
     for i in 0..5 {
-        let conn_id = format!("conn{}", i);
+        let conn_id = format!("conn{i}");
         mgr.register(conn_id.clone(), user.clone()).await.unwrap();
         mgr.join_room(&conn_id, room.clone()).await.unwrap();
         mgr.mark_rtc_joined(&room, &user, &conn_id, true);
@@ -134,10 +134,10 @@ async fn test_multiple_concurrent_timeouts() {
 
     // Verify each connection individually has rtc_joined=false
     for i in 0..5 {
-        let conn_id = format!("conn{}", i);
+        let conn_id = format!("conn{i}");
         let conn = mgr.get_connection(&conn_id);
-        assert!(conn.is_some(), "Connection {} should exist", conn_id);
-        assert!(!conn.unwrap().rtc_joined, "Connection {} should not be RTC-joined", conn_id);
+        assert!(conn.is_some(), "Connection {conn_id} should exist");
+        assert!(!conn.unwrap().rtc_joined, "Connection {conn_id} should not be RTC-joined");
     }
 }
 
@@ -155,8 +155,8 @@ async fn test_timeout_does_not_affect_active_sessions() {
         max_per_user: 10,
         max_per_room: 10,
         max_total: 100,
-        idle_timeout: Duration::from_secs(300),
-        max_duration: Duration::from_secs(86400),
+        idle_timeout: Duration::from_mins(5),
+        max_duration: Duration::from_hours(24),
         webrtc_session_timeout: timeout,
     };
     let mgr = ConnectionManager::new(limits);
@@ -201,8 +201,8 @@ async fn test_explicit_leave_after_timeout_is_idempotent() {
         max_per_user: 10,
         max_per_room: 10,
         max_total: 100,
-        idle_timeout: Duration::from_secs(300),
-        max_duration: Duration::from_secs(86400),
+        idle_timeout: Duration::from_mins(5),
+        max_duration: Duration::from_hours(24),
         webrtc_session_timeout: timeout,
     };
     let mgr = ConnectionManager::new(limits);
@@ -256,8 +256,8 @@ async fn test_connection_info_accurate_after_timeout() {
         max_per_user: 10,
         max_per_room: 10,
         max_total: 100,
-        idle_timeout: Duration::from_secs(300),
-        max_duration: Duration::from_secs(86400),
+        idle_timeout: Duration::from_mins(5),
+        max_duration: Duration::from_hours(24),
         webrtc_session_timeout: timeout,
     };
     let mgr = ConnectionManager::new(limits);

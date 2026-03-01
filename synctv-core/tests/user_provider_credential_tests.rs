@@ -1,8 +1,8 @@
 //! User Provider Credential Repository Tests
 //!
-//! Integration tests for the UserProviderCredentialRepository.
+//! Integration tests for the `UserProviderCredentialRepository`.
 //!
-//! Run with: cargo test --test user_provider_credential_tests -- --ignored
+//! Run with: cargo test --test `user_provider_credential_tests` -- --ignored
 //! (Requires Docker)
 #![allow(clippy::unwrap_used)]
 
@@ -16,7 +16,7 @@ use synctv_core::{
 fn make_user(username: &str) -> User {
     User::new(
         username.to_string(),
-        Some(format!("{}@test.com", username)),
+        Some(format!("{username}@test.com")),
         "hash".to_string(),
         None,
     )

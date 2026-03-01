@@ -1,8 +1,8 @@
-//! PostgreSQL Credential Storage Tests
+//! `PostgreSQL` Credential Storage Tests
 //!
 //! Integration tests for PostgreSQL-backed credential storage.
 //!
-//! Run with: cargo test --test credential_storage_tests -- --ignored
+//! Run with: cargo test --test `credential_storage_tests` -- --ignored
 //! (Requires Docker)
 
 #![allow(clippy::unwrap_used)]
@@ -99,7 +99,7 @@ async fn test_in_memory_storage_multiple_providers() {
     assert!(bilibili.is_some());
 
     let alist_server_id =
-        CredentialData::alist("https://alist.example.com".into(), "".into(), "".into())
+        CredentialData::alist("https://alist.example.com".into(), String::new(), String::new())
             .server_id();
     let alist = storage
         .get("user1", ProviderType::Alist, &alist_server_id)
@@ -108,7 +108,7 @@ async fn test_in_memory_storage_multiple_providers() {
     assert!(alist.is_some());
 
     let emby_server_id =
-        CredentialData::emby("https://emby.example.com".into(), "".into(), "".into()).server_id();
+        CredentialData::emby("https://emby.example.com".into(), String::new(), String::new()).server_id();
     let emby = storage
         .get("user1", ProviderType::Emby, &emby_server_id)
         .await
@@ -125,7 +125,7 @@ async fn test_in_memory_storage_concurrent_access() {
     for i in 0..10 {
         let s = storage.clone();
         handles.push(tokio::spawn(async move {
-            let user_id = format!("user{}", i);
+            let user_id = format!("user{i}");
             s.set(&user_id, None, CredentialData::bilibili(HashMap::new()))
                 .await
                 .unwrap();
@@ -173,7 +173,7 @@ async fn test_credential_storage_as_trait_object() {
 ///
 /// This demonstrates how an application would:
 /// 1. Receive cookies from Bilibili login
-/// 2. Store them using CredentialStorage
+/// 2. Store them using `CredentialStorage`
 /// 3. Retrieve them later for API calls
 #[tokio::test]
 async fn test_bilibili_credential_flow_pattern() {
@@ -287,7 +287,7 @@ async fn test_alist_credential_flow_pattern() {
 
 /// Test the Emby credential flow pattern.
 ///
-/// Emby credentials include host, api_key, and emby_user_id.
+/// Emby credentials include host, `api_key`, and `emby_user_id`.
 #[tokio::test]
 async fn test_emby_credential_flow_pattern() {
     let storage = InMemoryCredentialStorage::new();
@@ -439,7 +439,7 @@ async fn test_list_credentials_for_ui() {
     assert!(instance_names.contains("家庭Emby"));
 }
 
-/// Test that StoredCredential is Clone and can be shared across threads.
+/// Test that `StoredCredential` is Clone and can be shared across threads.
 #[tokio::test]
 async fn test_stored_credential_thread_safety() {
     use std::sync::Arc;

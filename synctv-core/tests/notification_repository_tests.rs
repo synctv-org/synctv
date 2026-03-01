@@ -1,9 +1,9 @@
-//! NotificationRepository integration tests
+//! `NotificationRepository` integration tests
 //!
-//! Tests: mark_as_read cross-user guard, mark_all_as_read before parameter,
-//!        delete_older_than boundary, list_by_user_with_count empty total_count=0.
+//! Tests: `mark_as_read` cross-user guard, `mark_all_as_read` before parameter,
+//!        `delete_older_than` boundary, `list_by_user_with_count` empty `total_count=0`.
 //!
-//! Run with: cargo test -p synctv-core --test notification_repository_tests
+//! Run with: cargo test -p synctv-core --test `notification_repository_tests`
 #![allow(clippy::unwrap_used)]
 
 use synctv_core_testing::{create_test_pool};
@@ -21,7 +21,7 @@ fn make_user(username: &str) -> User {
     User {
         id: UserId::new(),
         username: username.to_string(),
-        email: Some(format!("{}@test.com", username)),
+        email: Some(format!("{username}@test.com")),
         password_hash: "hash".to_string(),
         role: UserRole::User,
         status: UserStatus::Active,
@@ -249,7 +249,7 @@ async fn test_list_by_user_with_count_returns_correct_total() {
 
     for i in 0..5 {
         notif_repo
-            .create(&make_notif_request(&user.id, &format!("notif_{}", i)))
+            .create(&make_notif_request(&user.id, &format!("notif_{i}")))
             .await
             .unwrap();
     }

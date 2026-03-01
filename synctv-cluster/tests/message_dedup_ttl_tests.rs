@@ -1,9 +1,9 @@
-//! CL10: MessageDeduplicator TTL
+//! CL10: `MessageDeduplicator` TTL
 //!
-//! - tokio::time::pause, mark key, advance past dedup window, assert reprocessable
+//! - `tokio::time::pause`, mark key, advance past dedup window, assert reprocessable
 //!
-//! Note: moka's TTL is based on std::time::Instant (wall clock), not tokio's
-//! mock clock. Therefore, tokio::time::pause does NOT affect moka's TTL
+//! Note: moka's TTL is based on `std::time::Instant` (wall clock), not tokio's
+//! mock clock. Therefore, `tokio::time::pause` does NOT affect moka's TTL
 //! expiration. We use a very short TTL (1s) and actually wait for expiry.
 
 #![allow(clippy::unwrap_used)]
@@ -24,12 +24,12 @@ fn make_key(event_type: &str, ts: i64) -> DedupKey {
 /// Mark a key, wait for TTL expiry, verify it can be reprocessed.
 ///
 /// Uses a very short dedup window (1 second) to make the test fast.
-/// We must actually sleep (wall clock) since moka uses std::time.
+/// We must actually sleep (wall clock) since moka uses `std::time`.
 #[tokio::test]
 async fn test_dedup_ttl_expiry_allows_reprocessing() {
     let dedup = MessageDeduplicator::new(
         Duration::from_secs(1),      // 1 second dedup window
-        Duration::from_secs(60),     // cleanup interval (unused by moka)
+        Duration::from_mins(1),     // cleanup interval (unused by moka)
     );
 
     let key = make_key("chat", 1000);
@@ -54,7 +54,7 @@ async fn test_dedup_ttl_expiry_allows_reprocessing() {
     // Re-create with the same short TTL
     let dedup2 = MessageDeduplicator::new(
         Duration::from_secs(1),
-        Duration::from_secs(60),
+        Duration::from_mins(1),
     );
 
     let key2 = make_key("chat", 2000);
@@ -78,11 +78,11 @@ async fn test_dedup_ttl_expiry_allows_reprocessing() {
 async fn test_dedup_short_ttl_vs_long_ttl() {
     let short_dedup = MessageDeduplicator::new(
         Duration::from_millis(500),   // 500ms window
-        Duration::from_secs(60),
+        Duration::from_mins(1),
     );
     let long_dedup = MessageDeduplicator::new(
-        Duration::from_secs(60),      // 60s window
-        Duration::from_secs(60),
+        Duration::from_mins(1),      // 60s window
+        Duration::from_mins(1),
     );
 
     let key = make_key("chat", 3000);
@@ -111,12 +111,12 @@ async fn test_dedup_short_ttl_vs_long_ttl() {
     );
 }
 
-/// Verify that mark_processed also respects TTL.
+/// Verify that `mark_processed` also respects TTL.
 #[tokio::test]
 async fn test_mark_processed_respects_ttl() {
     let dedup = MessageDeduplicator::new(
         Duration::from_secs(1),
-        Duration::from_secs(60),
+        Duration::from_mins(1),
     );
 
     let key = make_key("playback", 4000);
@@ -137,7 +137,7 @@ async fn test_mark_processed_respects_ttl() {
     );
 }
 
-/// Concurrent should_process with TTL: exactly one succeeds per TTL window.
+/// Concurrent `should_process` with TTL: exactly one succeeds per TTL window.
 #[tokio::test]
 async fn test_concurrent_should_process_per_ttl_window() {
     use std::sync::Arc;
@@ -145,7 +145,7 @@ async fn test_concurrent_should_process_per_ttl_window() {
 
     let dedup = Arc::new(MessageDeduplicator::new(
         Duration::from_secs(1),
-        Duration::from_secs(60),
+        Duration::from_mins(1),
     ));
     let key = make_key("sync", 5000);
 
@@ -209,12 +209,12 @@ async fn test_concurrent_should_process_per_ttl_window() {
     );
 }
 
-/// len() and is_empty() should reflect TTL expiry.
+/// `len()` and `is_empty()` should reflect TTL expiry.
 #[tokio::test]
 async fn test_len_reflects_ttl_expiry() {
     let dedup = MessageDeduplicator::new(
         Duration::from_secs(1),
-        Duration::from_secs(60),
+        Duration::from_mins(1),
     );
 
     assert!(dedup.is_empty());

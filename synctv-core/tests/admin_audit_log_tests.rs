@@ -6,8 +6,8 @@
 //! - Graceful degradation when database fails
 //! - Async write verification
 //!
-//! Run with: cargo test -p synctv-core --test admin_audit_log_tests -- --nocapture
-//! Docker tests: cargo test -p synctv-core --test admin_audit_log_tests -- --ignored --nocapture
+//! Run with: cargo test -p synctv-core --test `admin_audit_log_tests` -- --nocapture
+//! Docker tests: cargo test -p synctv-core --test `admin_audit_log_tests` -- --ignored --nocapture
 #![allow(clippy::unwrap_used)]
 
 use std::sync::Arc;
@@ -62,11 +62,11 @@ async fn test_audit_log_integrity_all_fields() {
         Option<String>,
         Option<String>,
     ) = sqlx::query_as(
-        r#"
+        r"
         SELECT id, actor_id, actor_username, action, target_type, target_id, ip_address, user_agent
         FROM audit_logs
         WHERE actor_id = 'user_001'
-        "#,
+        ",
     )
     .fetch_one(&pool)
     .await
@@ -263,11 +263,11 @@ async fn test_buffer_full_drops_events_with_fake_pool() {
     for i in 0..100 {
         match service
             .log(
-                format!("buffer_actor_{}", i),
+                format!("buffer_actor_{i}"),
                 "buffer_tester".to_string(),
                 AuditAction::UserCreated,
                 AuditTargetType::User,
-                Some(format!("target_{}", i)),
+                Some(format!("target_{i}")),
                 serde_json::json!({}),
                 None,
                 None,
@@ -435,11 +435,11 @@ async fn test_concurrent_audit_logging() {
         let handle = tokio::spawn(async move {
             b.wait().await;
             s.log(
-                format!("conc_act_{}", i),
-                format!("concurrent_tester_{}", i),
+                format!("conc_act_{i}"),
+                format!("concurrent_tester_{i}"),
                 AuditAction::UserCreated,
                 AuditTargetType::User,
-                Some(format!("concurrent_target_{}", i)),
+                Some(format!("concurrent_target_{i}")),
                 serde_json::json!({"index": i}),
                 None,
                 None,
@@ -496,7 +496,7 @@ async fn test_all_audit_actions_are_logged() {
     for (i, action) in actions.iter().enumerate() {
         service
             .log(
-                format!("act_actr_{}", i),
+                format!("act_actr_{i}"),
                 "action_tester".to_string(),
                 action.clone(),
                 match action {
@@ -511,7 +511,7 @@ async fn test_all_audit_actions_are_logged() {
                     AuditAction::StreamKicked => AuditTargetType::Stream,
                     _ => AuditTargetType::Settings,
                 },
-                Some(format!("action_target_{}", i)),
+                Some(format!("action_target_{i}")),
                 serde_json::json!({}),
                 None,
                 None,
@@ -570,11 +570,11 @@ async fn test_all_target_types_are_logged() {
     for (i, (target_type, _expected)) in target_types.iter().enumerate() {
         service
             .log(
-                format!("tgt_actr_{}", i),
+                format!("tgt_actr_{i}"),
                 "target_tester".to_string(),
                 AuditAction::UserCreated,
                 target_type.clone(),
-                Some(format!("target_{}", i)),
+                Some(format!("target_{i}")),
                 serde_json::json!({}),
                 None,
                 None,
@@ -694,11 +694,11 @@ async fn test_log_stream_kicked_helper() {
         .expect("Stream kick log should succeed");
 
     let row: (String, String, Option<String>, String, serde_json::Value) = sqlx::query_as(
-        r#"
+        r"
         SELECT action, target_type, target_id, actor_username, details
         FROM audit_logs
         WHERE actor_id = 'stream_actor'
-        "#,
+        ",
     )
     .fetch_one(&pool)
     .await

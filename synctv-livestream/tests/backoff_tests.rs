@@ -1,13 +1,13 @@
 //! Tests for the exponential backoff with jitter utility.
 //!
 //! These tests verify the backoff calculation after the B10 fix
-//! (removing the off-by-one .saturating_sub(1)).
+//! (removing the off-by-one .`saturating_sub(1)`).
 
 #![allow(clippy::unwrap_used)]
 use std::time::Instant;
 
 /// Helper: compute the expected base delay for a given attempt.
-/// After the B10 fix: base = initial_ms * 2^attempt (capped at attempt=16)
+/// After the B10 fix: base = `initial_ms` * 2^attempt (capped at attempt=16)
 fn expected_base(attempt: u32, initial_ms: u64) -> u64 {
     initial_ms.saturating_mul(1u64 << attempt.min(16))
 }
@@ -25,8 +25,7 @@ async fn test_backoff_attempt_0() {
     // Allow some scheduling slack
     assert!(
         (50..=200).contains(&elapsed),
-        "attempt 0 delay was {}ms, expected ~100ms",
-        elapsed
+        "attempt 0 delay was {elapsed}ms, expected ~100ms"
     );
 }
 
@@ -58,8 +57,7 @@ async fn test_backoff_exponential_growth() {
     // attempt 1 base = 200, should be noticeably larger than attempt 0
     assert!(
         elapsed_1 >= 100,
-        "attempt 1 delay was {}ms, expected >= 100ms",
-        elapsed_1
+        "attempt 1 delay was {elapsed_1}ms, expected >= 100ms"
     );
 }
 
@@ -76,8 +74,7 @@ async fn test_backoff_caps_at_max() {
     // With jitter: [375, 500] (75% to 100% of max_ms)
     assert!(
         elapsed <= 600,
-        "attempt 10 delay was {}ms, should be capped at ~500ms",
-        elapsed
+        "attempt 10 delay was {elapsed}ms, should be capped at ~500ms"
     );
 }
 
@@ -99,16 +96,14 @@ async fn test_backoff_jitter_within_bounds() {
         // Allow generous slack for scheduling jitter
         assert!(
             elapsed <= max_expected + 100,
-            "attempt {} delay {}ms exceeded max {}ms + slack",
-            attempt, elapsed, max_expected
+            "attempt {attempt} delay {elapsed}ms exceeded max {max_expected}ms + slack"
         );
 
         // The delay should be at least some portion of the minimum
         // (very loose check because OS scheduling can introduce delays)
         assert!(
             elapsed >= min_expected.saturating_sub(50),
-            "attempt {} delay {}ms was below min {}ms - slack",
-            attempt, elapsed, min_expected
+            "attempt {attempt} delay {elapsed}ms was below min {min_expected}ms - slack"
         );
     }
 }
@@ -126,7 +121,6 @@ async fn test_backoff_high_attempt_saturates() {
 
     assert!(
         elapsed <= 1200,
-        "high attempt delay {}ms should be capped at max_ms",
-        elapsed
+        "high attempt delay {elapsed}ms should be capped at max_ms"
     );
 }

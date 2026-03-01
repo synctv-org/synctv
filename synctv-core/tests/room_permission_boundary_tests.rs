@@ -3,7 +3,7 @@
 //! Tests permission boundaries including role hierarchy enforcement,
 //! cross-room permission isolation, and permission escalation prevention.
 //!
-//! Run with: cargo test --test room_permission_boundary_tests
+//! Run with: cargo test --test `room_permission_boundary_tests`
 //!
 //! # Test Coverage
 //!
@@ -15,7 +15,7 @@
 //!
 //! # Requirements
 //!
-//! - Docker for testcontainers (PostgreSQL)
+//! - Docker for testcontainers (`PostgreSQL`)
 #![allow(clippy::unwrap_used)]
 
 use testcontainers::ContainerAsync;
@@ -60,8 +60,7 @@ async fn create_test_pool() -> TestPostgres {
     let port = container.get_host_port_ipv4(5432).await.expect("Failed to get port");
 
     let database_url = format!(
-        "postgres://synctv:synctv_test@{}:{}/synctv_test",
-        host, port
+        "postgres://synctv:synctv_test@{host}:{port}/synctv_test"
     );
 
     let pool = {
@@ -98,7 +97,7 @@ fn make_user(username: &str) -> User {
     User {
         id: UserId::new(),
         username: username.to_string(),
-        email: Some(format!("{}@test.com", username)),
+        email: Some(format!("{username}@test.com")),
         password_hash: "test_hash".to_string(),
         role: UserRole::User,
         status: UserStatus::Active,
@@ -135,7 +134,7 @@ async fn setup_test_room(pool: &PgPool, room_name: &str) -> (User, Room) {
     let user_repo = UserRepository::new(pool.clone());
     let room_repo = RoomRepository::new(pool.clone());
 
-    let owner = user_repo.create(&make_user(&format!("{}_owner", room_name))).await.expect("Failed to create owner");
+    let owner = user_repo.create(&make_user(&format!("{room_name}_owner"))).await.expect("Failed to create owner");
     let room = room_repo.create(&make_room(room_name, "Test room", &owner.id))
         .await
         .expect("Failed to create room");
@@ -161,11 +160,11 @@ fn make_member_service(pool: PgPool) -> MemberService {
     );
 
     let mut member_service = MemberService::new(
-        member_repo.clone(),
-        room_repo.clone(),
+        member_repo,
+        room_repo,
         permission_service,
     );
-    member_service.set_room_settings_repo(RoomSettingsRepository::new(pool.clone()));
+    member_service.set_room_settings_repo(RoomSettingsRepository::new(pool));
     member_service
 }
 
@@ -300,10 +299,10 @@ async fn test_member_cannot_kick() {
                 msg.to_lowercase().contains("permission")
                     || msg.to_lowercase().contains("denied")
                     || msg.contains("KICK"),
-                "Error should mention permission: {}", msg
+                "Error should mention permission: {msg}"
             );
         }
-        other => panic!("Expected Authorization error, got: {:?}", other),
+        other => panic!("Expected Authorization error, got: {other:?}"),
     }
 }
 
@@ -596,7 +595,7 @@ async fn test_admin_cannot_create_admin() {
     assert!(result.is_err(), "Admin cannot create new Admin");
 }
 
-/// Test that permission grant requires GRANT_PERMISSION.
+/// Test that permission grant requires `GRANT_PERMISSION`.
 #[tokio::test]
 #[ignore = "Requires Docker"]
 async fn test_grant_permission_requires_permission() {
@@ -695,10 +694,10 @@ async fn test_kick_respects_role_hierarchy() {
                     || msg.to_lowercase().contains("denied")
                     || msg.contains("cannot kick")
                     || msg.contains("higher"),
-                "Error should mention permission or role: {}", msg
+                "Error should mention permission or role: {msg}"
             );
         }
-        other => panic!("Expected Authorization error, got: {:?}", other),
+        other => panic!("Expected Authorization error, got: {other:?}"),
     }
 }
 
@@ -780,7 +779,7 @@ async fn test_revoked_permission_denied() {
     assert!(!effective.has(PermissionBits::SEND_CHAT), "SEND_CHAT should be denied after revocation");
 }
 
-/// Test that Member without SEND_CHAT cannot send messages.
+/// Test that Member without `SEND_CHAT` cannot send messages.
 #[tokio::test]
 #[ignore = "Requires Docker"]
 async fn test_member_without_send_chat_cannot_send() {

@@ -17,7 +17,7 @@ fn test_kick_user_is_critical() {
     let user_id = UserId::new();
     let event = ClusterEvent::KickUser {
         event_id: String::new(),
-        user_id: user_id.clone(),
+        user_id,
         reason: "test kick".to_string(),
         timestamp: chrono::Utc::now(),
     };
@@ -37,7 +37,7 @@ fn test_kick_publisher_is_critical() {
     let media_id = MediaId::new();
     let event = ClusterEvent::KickPublisher {
         event_id: String::new(),
-        room_id: room_id.clone(),
+        room_id,
         media_id,
         reason: "test kick publisher".to_string(),
         timestamp: chrono::Utc::now(),
@@ -58,8 +58,8 @@ fn test_kick_user_from_room_is_critical() {
     let room_id = RoomId::new();
     let event = ClusterEvent::KickUserFromRoom {
         event_id: String::new(),
-        user_id: user_id.clone(),
-        room_id: room_id.clone(),
+        user_id,
+        room_id,
         reason: "test kick from room".to_string(),
         timestamp: chrono::Utc::now(),
     };
@@ -80,7 +80,7 @@ fn test_permission_changed_is_critical() {
     let room_id = RoomId::new();
     let event = ClusterEvent::PermissionChanged {
         event_id: String::new(),
-        room_id: room_id.clone(),
+        room_id,
         target_user_id,
         target_username: "test_target".to_string(),
         changed_by,
@@ -175,7 +175,7 @@ fn test_playback_state_changed_is_not_critical() {
         user_id,
         room_id: room_id.clone(),
         username: "test_user".to_string(),
-        state: synctv_core::models::playback::RoomPlaybackState::new(room_id.clone()),
+        state: synctv_core::models::playback::RoomPlaybackState::new(room_id),
         timestamp: chrono::Utc::now(),
     };
     assert!(

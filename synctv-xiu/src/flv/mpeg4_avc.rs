@@ -252,8 +252,8 @@ impl Mpeg4AvcProcessor {
                 h264_nal_type::H264_NAL_PPS | h264_nal_type::H264_NAL_SPS => {
                     sps_pps_flag = true;
                 }
-                h264_nal_type::H264_NAL_IDR => {
-                    if !sps_pps_flag {
+                h264_nal_type::H264_NAL_IDR
+                    if !sps_pps_flag => {
                         sps_pps_flag = true;
 
                         bytes_writer
@@ -261,7 +261,6 @@ impl Mpeg4AvcProcessor {
                         bytes_writer
                             .prepend(&self.mpeg4_avc.sps_annexb_data.get_current_bytes()[..])?;
                     }
-                }
                 _ => {}
             }
 
@@ -358,7 +357,7 @@ mod tests {
         let mut bytes_reader = BytesReader::new(b);
 
         for _ in 0..4 {
-            size = bytes_reader.read_u8().unwrap() as u32 + (size << 8);
+            size = u32::from(bytes_reader.read_u8().unwrap()) + (size << 8);
         }
         assert_eq!(size, 1000, "Expected big-endian bytes to decode to 1000");
     }

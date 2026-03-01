@@ -879,7 +879,7 @@ mod tests {
 
     #[test]
     fn test_update_playback_request_deserialize_empty() {
-        let json = r#"{}"#;
+        let json = r"{}";
         let req: UpdatePlaybackRequest = serde_json::from_str(json).unwrap();
         assert!(req.state.is_none());
         assert!(req.position.is_none());

@@ -1,13 +1,13 @@
-//! Tests for HlsProxyClient cache version overflow handling.
+//! Tests for `HlsProxyClient` cache version overflow handling.
 //!
-//! These tests verify that the cache version counter in HlsProxyClient
-//! handles overflow correctly when approaching u64::MAX.
+//! These tests verify that the cache version counter in `HlsProxyClient`
+//! handles overflow correctly when approaching `u64::MAX`.
 
 #![allow(clippy::unwrap_used)]
 use std::sync::Arc;
 use dashmap::DashMap;
 
-/// Test that cache version can reach near u64::MAX.
+/// Test that cache version can reach near `u64::MAX`.
 #[test]
 fn test_cache_version_near_max() {
     let cache_versions: Arc<DashMap<String, u64>> = Arc::new(DashMap::new());
@@ -17,11 +17,11 @@ fn test_cache_version_near_max() {
     cache_versions.insert(key.clone(), u64::MAX - 1);
 
     // Verify we can read it
-    let version = cache_versions.get(&key).map(|v| *v).unwrap_or(0);
+    let version = cache_versions.get(&key).map_or(0, |v| *v);
     assert_eq!(version, u64::MAX - 1);
 }
 
-/// Test that unchecked increment at u64::MAX causes overflow.
+/// Test that unchecked increment at `u64::MAX` causes overflow.
 /// This documents the current behavior that will wrap to 0.
 #[test]
 fn test_unchecked_increment_overflow_documents_wrap() {
@@ -32,7 +32,7 @@ fn test_unchecked_increment_overflow_documents_wrap() {
     cache_versions.insert(key.clone(), u64::MAX);
 
     // Unchecked increment will overflow (wrap to 0)
-    let mut entry = cache_versions.entry(key.clone()).or_insert(0);
+    let mut entry = cache_versions.entry(key).or_insert(0);
     *entry = entry.wrapping_add(1);
     let version_after = *entry;
     drop(entry);
@@ -41,7 +41,7 @@ fn test_unchecked_increment_overflow_documents_wrap() {
     assert_eq!(version_after, 0);
 }
 
-/// Test that checked_add detects overflow.
+/// Test that `checked_add` detects overflow.
 #[test]
 fn test_checked_add_detects_overflow() {
     let cache_versions: Arc<DashMap<String, u64>> = Arc::new(DashMap::new());
@@ -51,7 +51,7 @@ fn test_checked_add_detects_overflow() {
     cache_versions.insert(key.clone(), u64::MAX);
 
     // Use checked_add to detect overflow
-    let entry = cache_versions.get(&key).map(|v| *v).unwrap_or(0);
+    let entry = cache_versions.get(&key).map_or(0, |v| *v);
     let result = entry.checked_add(1);
 
     // checked_add should return None on overflow
@@ -96,7 +96,7 @@ fn test_normal_increment_works() {
     cache_versions.insert(key.clone(), 100);
 
     // Increment should work normally
-    let mut entry = cache_versions.entry(key.clone()).or_insert(0);
+    let mut entry = cache_versions.entry(key).or_insert(0);
     let current = *entry;
 
     if let Some(new_version) = current.checked_add(1) {
@@ -139,7 +139,6 @@ fn test_multiple_overflow_handling() {
 
     let room3_version = cache_versions
         .get("room3:media3")
-        .map(|v| *v)
-        .unwrap_or(0);
+        .map_or(0, |v| *v);
     assert_eq!(room3_version, 101);
 }

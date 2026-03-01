@@ -1,11 +1,11 @@
-//! EmailTokenService integration tests
+//! `EmailTokenService` integration tests
 //!
-//! Tests the service-level token lifecycle: generate_token, validate_token,
-//! expired token, wrong type, invalidate_user_tokens, concurrent single-use.
+//! Tests the service-level token lifecycle: `generate_token`, `validate_token`,
+//! expired token, wrong type, `invalidate_user_tokens`, concurrent single-use.
 //!
-//! Requires real PostgreSQL via testcontainers.
+//! Requires real `PostgreSQL` via testcontainers.
 //!
-//! Run with: cargo test --test email_token_service_tests
+//! Run with: cargo test --test `email_token_service_tests`
 #![allow(clippy::unwrap_used)]
 
 use synctv_core_testing::{create_test_pool};

@@ -6,8 +6,8 @@
 //! - Role upgrade/downgrade scenarios
 //! - Cross-role operation restrictions
 //!
-//! Run with: cargo test -p synctv-core --test admin_permission_boundary_tests -- --nocapture
-//! Docker tests: cargo test -p synctv-core --test admin_permission_boundary_tests -- --ignored --nocapture
+//! Run with: cargo test -p synctv-core --test `admin_permission_boundary_tests` -- --nocapture
+//! Docker tests: cargo test -p synctv-core --test `admin_permission_boundary_tests` -- --ignored --nocapture
 #![allow(clippy::unwrap_used)]
 
 use std::sync::Arc;
@@ -61,7 +61,7 @@ fn make_user_with_role(username: &str, role: UserRole) -> User {
     User {
         id: UserId::new(),
         username: username.to_string(),
-        email: Some(format!("{}@test.com", username)),
+        email: Some(format!("{username}@test.com")),
         password_hash: "hash".to_string(),
         role,
         status: UserStatus::Active,

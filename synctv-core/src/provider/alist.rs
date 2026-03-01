@@ -926,7 +926,7 @@ mod tests {
 
     /// Test helper to verify cursor-based pagination bounds.
     /// The sequential mode algorithm should:
-    /// 1. Process one page at a time (max PAGE_SIZE items in memory)
+    /// 1. Process one page at a time (max `PAGE_SIZE` items in memory)
     /// 2. Find current item and look for next within same or next page
     /// 3. Not accumulate items across pages (bounded memory)
     #[test]
@@ -955,7 +955,7 @@ mod tests {
         // We discard current page and fetch next, still only PAGE_SIZE in memory
     }
 
-    /// Test shuffle mode memory bounds (capped at MAX_ITEMS).
+    /// Test shuffle mode memory bounds (capped at `MAX_ITEMS`).
     #[test]
     fn test_shuffle_pagination_memory_bounds() {
         const PAGE_SIZE: usize = 50;

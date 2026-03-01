@@ -2,7 +2,7 @@
 //!
 //! Tests the complete room lifecycle: create, read, update, soft delete, CASCADE behavior.
 //!
-//! Run with: cargo test --test room_integration_tests
+//! Run with: cargo test --test `room_integration_tests`
 #![allow(clippy::unwrap_used)]
 
 use synctv_core_testing::{create_test_pool};
@@ -14,13 +14,13 @@ use synctv_core::{
     repository::{RoomRepository, UserRepository, RoomMemberRepository, PlaylistRepository},
 };
 use chrono::Utc;
-/// Default PostgreSQL version for test containers
+/// Default `PostgreSQL` version for test containers
 fn make_user(username: &str) -> User {
     let now = Utc::now();
     User {
         id: UserId::new(),
         username: username.to_string(),
-        email: Some(format!("{}@test.com", username)),
+        email: Some(format!("{username}@test.com")),
         password_hash: "hash".to_string(),
         role: UserRole::User,
         status: UserStatus::Active,
@@ -307,7 +307,7 @@ async fn test_concurrent_room_creation_unique_ids() {
         let repo = room_repo.clone();
         let oid = owner_id.clone();
         let handle = tokio::spawn(async move {
-            let room = make_room(&format!("Concurrent Room {}", i), "", &oid);
+            let room = make_room(&format!("Concurrent Room {i}"), "", &oid);
             repo.create(&room).await
         });
         handles.push(handle);
@@ -379,7 +379,7 @@ async fn test_update_stale_version_returns_optimistic_lock_conflict() {
     let err = room_repo.update(&stale_room, original_version).await.unwrap_err();
     assert!(
         matches!(err, synctv_core::Error::OptimisticLockConflict),
-        "Expected OptimisticLockConflict, got: {:?}", err
+        "Expected OptimisticLockConflict, got: {err:?}"
     );
 }
 
@@ -405,7 +405,7 @@ async fn test_update_soft_deleted_room_returns_not_found() {
     let err = room_repo.update(&updated, version).await.unwrap_err();
     assert!(
         matches!(err, synctv_core::Error::NotFound(_)),
-        "Expected NotFound for soft-deleted room, got: {:?}", err
+        "Expected NotFound for soft-deleted room, got: {err:?}"
     );
 }
 
@@ -425,6 +425,6 @@ async fn test_update_nonexistent_room_returns_not_found() {
     let err = room_repo.update(&room, 0).await.unwrap_err();
     assert!(
         matches!(err, synctv_core::Error::NotFound(_)),
-        "Expected NotFound for nonexistent room, got: {:?}", err
+        "Expected NotFound for nonexistent room, got: {err:?}"
     );
 }

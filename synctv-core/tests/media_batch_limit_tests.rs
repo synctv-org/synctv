@@ -1,8 +1,8 @@
 //! Media service batch size limit tests
 //!
-//! Tests that batch operations have proper size limits to prevent DoS attacks.
+//! Tests that batch operations have proper size limits to prevent `DoS` attacks.
 //!
-//! Run with: cargo test --package synctv-core media_batch_limit_tests
+//! Run with: cargo test --package synctv-core `media_batch_limit_tests`
 #![allow(clippy::unwrap_used)]
 
 /// Maximum batch size for all batch operations
@@ -15,7 +15,7 @@ const MAX_BATCH_SIZE: usize = 100;
 
 fn validate_batch_size(count: usize) -> Result<(), String> {
     if count > MAX_BATCH_SIZE {
-        return Err(format!("Batch size exceeds maximum of {}", MAX_BATCH_SIZE));
+        return Err(format!("Batch size exceeds maximum of {MAX_BATCH_SIZE}"));
     }
     Ok(())
 }

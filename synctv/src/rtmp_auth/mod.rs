@@ -733,7 +733,7 @@ mod tests {
             media_id: "m1".to_string(),
             user_id: "u1".to_string(),
         };
-        let cloned = event.clone();
+        let cloned = event;
         match cloned {
             StreamLifecycleEvent::Started { room_id, .. } => {
                 assert_eq!(room_id, "r1");

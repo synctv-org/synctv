@@ -1,9 +1,9 @@
-//! RoomSettingsRepository integration tests
+//! `RoomSettingsRepository` integration tests
 //!
-//! Tests: set_settings_with_version CAS (concurrent insert race, stale version -> OptimisticLockConflict),
-//!        get_batch silent JSON deserialization drop.
+//! Tests: `set_settings_with_version` CAS (concurrent insert race, stale version -> `OptimisticLockConflict`),
+//!        `get_batch` silent JSON deserialization drop.
 //!
-//! Run with: cargo test -p synctv-core --test room_settings_repository_tests
+//! Run with: cargo test -p synctv-core --test `room_settings_repository_tests`
 #![allow(clippy::unwrap_used)]
 
 use synctv_core_testing::{create_test_pool};
@@ -21,7 +21,7 @@ fn make_user(username: &str) -> User {
     User {
         id: UserId::new(),
         username: username.to_string(),
-        email: Some(format!("{}@test.com", username)),
+        email: Some(format!("{username}@test.com")),
         password_hash: "hash".to_string(),
         role: UserRole::User,
         status: UserStatus::Active,

@@ -1,11 +1,11 @@
-//! Tests for StreamRegistry local-Redis consistency mechanisms (Task #39).
+//! Tests for `StreamRegistry` local-Redis consistency mechanisms (Task #39).
 //!
 //! These tests verify that:
 //! 1. Reconciliation on startup ensures local state matches Redis
 //! 2. Periodic sync mechanism catches and repairs inconsistencies
 //!
-//! The tests use InMemoryStreamRegistry as a stand-in for Redis since both
-//! implement StreamRegistryTrait with the same semantics.
+//! The tests use `InMemoryStreamRegistry` as a stand-in for Redis since both
+//! implement `StreamRegistryTrait` with the same semantics.
 
 #![allow(clippy::unwrap_used)]
 use std::sync::Arc;
@@ -577,7 +577,7 @@ async fn test_periodic_sync_identifies_streams_needing_heartbeats() {
     let mut local_streams = Vec::new();
     for (room_id, media_id) in &all_streams {
         let info = registry.get_publisher(room_id, media_id).await.unwrap();
-        if info.map(|i| i.node_id == "local-node").unwrap_or(false) {
+        if info.is_some_and(|i| i.node_id == "local-node") {
             local_streams.push((room_id.clone(), media_id.clone()));
         }
     }
@@ -599,7 +599,7 @@ async fn test_periodic_sync_handles_empty_results() {
     let mut local_streams = Vec::new();
     for (room_id, media_id) in &streams {
         let info = registry.get_publisher(room_id, media_id).await.unwrap();
-        if info.map(|i| i.node_id == "local-node").unwrap_or(false) {
+        if info.is_some_and(|i| i.node_id == "local-node") {
             local_streams.push((room_id.clone(), media_id.clone()));
         }
     }
@@ -673,7 +673,7 @@ async fn test_startup_reconciliation_multi_node_registry() {
     let mut node1_streams = Vec::new();
     for (room_id, media_id) in &all_streams {
         let info = registry.get_publisher(room_id, media_id).await.unwrap();
-        if info.as_ref().map(|i| i.node_id == "node1").unwrap_or(false) {
+        if info.as_ref().is_some_and(|i| i.node_id == "node1") {
             node1_streams.push((room_id.clone(), media_id.clone()));
         }
     }
@@ -697,7 +697,7 @@ async fn test_startup_reconciliation_no_local_entries() {
     let mut local_streams = Vec::new();
     for (room_id, media_id) in &all_streams {
         let info = registry.get_publisher(room_id, media_id).await.unwrap();
-        if info.map(|i| i.node_id == "local-node").unwrap_or(false) {
+        if info.is_some_and(|i| i.node_id == "local-node") {
             local_streams.push((room_id.clone(), media_id.clone()));
         }
     }

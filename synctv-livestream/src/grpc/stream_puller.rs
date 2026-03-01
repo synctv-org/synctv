@@ -426,8 +426,8 @@ mod tests {
     }
 
     /// Test that connection pool health tracking works correctly.
-    /// This test verifies that the pool's get_error_count method returns
-    /// the correct error count after calling record_connection_error.
+    /// This test verifies that the pool's `get_error_count` method returns
+    /// the correct error count after calling `record_connection_error`.
     #[tokio::test]
     async fn test_connection_pool_health_tracking() {
         let pool = GrpcConnectionPool::with_defaults();
@@ -449,7 +449,7 @@ mod tests {
         assert_eq!(pool.get_error_count(addr), None);
     }
 
-    /// Test that record_connection_error increments error count for existing connections.
+    /// Test that `record_connection_error` increments error count for existing connections.
     /// This simulates the scenario where a previously healthy connection starts failing.
     #[tokio::test]
     async fn test_connection_pool_error_count_increments() {
@@ -494,11 +494,11 @@ mod tests {
         assert!(pool.is_empty());
     }
 
-    /// Test that record_connection_error is called when get_channel fails.
-    /// This verifies the first error path in connect_and_stream().
+    /// Test that `record_connection_error` is called when `get_channel` fails.
+    /// This verifies the first error path in `connect_and_stream()`.
     ///
-    /// When get_channel() fails (connection cannot be established):
-    /// - record_connection_error should be called (no-op since no entry exists)
+    /// When `get_channel()` fails (connection cannot be established):
+    /// - `record_connection_error` should be called (no-op since no entry exists)
     /// - invalidate should be called (no-op since no entry exists)
     /// - The pool should remain empty
     #[tokio::test]
@@ -525,17 +525,17 @@ mod tests {
         assert!(pool.is_empty());
     }
 
-    /// Test that record_connection_error is properly tracked for streaming errors.
+    /// Test that `record_connection_error` is properly tracked for streaming errors.
     ///
     /// This test simulates the scenario where:
     /// 1. A connection is successfully established (entry added to pool)
-    /// 2. A streaming error occurs (record_connection_error is called)
+    /// 2. A streaming error occurs (`record_connection_error` is called)
     /// 3. The error count should be incremented
     ///
     /// In production, this corresponds to:
-    /// - get_channel succeeds (entry added to pool)
-    /// - pull_rtmp_stream fails OR stream.message() fails
-    /// - record_connection_error is called (increments counter)
+    /// - `get_channel` succeeds (entry added to pool)
+    /// - `pull_rtmp_stream` fails OR `stream.message()` fails
+    /// - `record_connection_error` is called (increments counter)
     #[tokio::test]
     async fn test_health_tracking_on_streaming_error() {
         let pool = GrpcConnectionPool::with_defaults();
@@ -566,10 +566,10 @@ mod tests {
 
     /// Test that the connection pool properly handles the error threshold.
     ///
-    /// When consecutive errors reach CONNECTION_ERROR_EVICTION_THRESHOLD (3),
+    /// When consecutive errors reach `CONNECTION_ERROR_EVICTION_THRESHOLD` (3),
     /// the connection should be marked as unhealthy.
     ///
-    /// This test verifies the error counting mechanism that GrpcStreamPuller
+    /// This test verifies the error counting mechanism that `GrpcStreamPuller`
     /// relies on for health tracking.
     #[tokio::test]
     async fn test_connection_pool_error_threshold() {
@@ -595,7 +595,7 @@ mod tests {
         assert!(pool.is_empty());
     }
 
-    /// Test that GrpcStreamPuller uses the connection pool correctly.
+    /// Test that `GrpcStreamPuller` uses the connection pool correctly.
     ///
     /// This test verifies that:
     /// 1. The puller is created with the correct connection pool
@@ -631,10 +631,10 @@ mod tests {
         assert_eq!(puller2.connection_pool.len(), pool.len());
     }
 
-    /// Test that record_connection_error and invalidate work together.
+    /// Test that `record_connection_error` and invalidate work together.
     ///
-    /// In GrpcStreamPuller::connect_and_stream(), when get_channel fails,
-    /// both record_connection_error and invalidate are called.
+    /// In `GrpcStreamPuller::connect_and_stream()`, when `get_channel` fails,
+    /// both `record_connection_error` and invalidate are called.
     /// This test verifies that calling both is safe.
     #[tokio::test]
     async fn test_record_error_and_invalidate_together() {

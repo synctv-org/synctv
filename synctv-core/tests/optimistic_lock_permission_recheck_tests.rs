@@ -1,9 +1,9 @@
 //! Optimistic lock permission recheck tests
 //!
 //! Tests that permission checks are re-evaluated on each retry attempt
-//! in the edit_media optimistic lock loop.
+//! in the `edit_media` optimistic lock loop.
 //!
-//! Run with: cargo test -p synctv-core --test optimistic_lock_permission_recheck_tests
+//! Run with: cargo test -p synctv-core --test `optimistic_lock_permission_recheck_tests`
 #![allow(clippy::unwrap_used)]
 
 use synctv_core::models::PermissionBits;
@@ -14,22 +14,22 @@ use synctv_core::models::PermissionBits;
 ///
 /// # Timeline of the race condition:
 ///
-/// T0: User A (owner) starts edit_media, permission checked (cached) - OK
-/// T1: User B (admin) revokes User A's EDIT_MOVIE_SELF permission
-/// T2: edit_media attempt 1 fails with concurrent modification
-/// T3: edit_media retries, but uses cached permission from T0
-/// T4: edit_media succeeds despite permission being revoked
+/// T0: User A (owner) starts `edit_media`, permission checked (cached) - OK
+/// T1: User B (admin) revokes User A's `EDIT_MOVIE_SELF` permission
+/// T2: `edit_media` attempt 1 fails with concurrent modification
+/// T3: `edit_media` retries, but uses cached permission from T0
+/// T4: `edit_media` succeeds despite permission being revoked
 ///
 /// # Expected behavior after fix:
 ///
-/// T3: edit_media retry checks permission again via check_permission_no_cache
-/// T4: edit_media fails with Authorization error
+/// T3: `edit_media` retry checks permission again via `check_permission_no_cache`
+/// T4: `edit_media` fails with Authorization error
 ///
 /// # The fix:
 ///
 /// Changed from `check_permission` (which may use cache) to
 /// `check_permission_no_cache` (always fetches fresh from database)
-/// inside the retry loop in edit_media.
+/// inside the retry loop in `edit_media`.
 #[test]
 fn test_optimistic_lock_permission_recheck_scenario() {
     // Verify permission bits are correctly defined
@@ -48,7 +48,7 @@ fn test_optimistic_lock_permission_recheck_scenario() {
 
 /// Verify that permission checks happen on each retry attempt
 ///
-/// The edit_media method uses optimistic locking with retries.
+/// The `edit_media` method uses optimistic locking with retries.
 /// Each retry should:
 /// 1. Fetch fresh media data from database
 /// 2. Check permissions (bypassing cache)

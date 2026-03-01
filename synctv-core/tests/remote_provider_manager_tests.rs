@@ -1,11 +1,11 @@
-//! RemoteProviderManager integration tests
+//! `RemoteProviderManager` integration tests
 //!
 //! Tests: channel creation, cache TTL, Redis invalidation, health checks,
 //!        TLS configuration, fallback behavior.
 //!
-//! Run with: cargo test -p synctv-core --test remote_provider_manager_tests
+//! Run with: cargo test -p synctv-core --test `remote_provider_manager_tests`
 //!
-//! NOTE: These tests require Docker for testcontainers (PostgreSQL + Redis).
+//! NOTE: These tests require Docker for testcontainers (`PostgreSQL` + Redis).
 #![allow(clippy::unwrap_used)]
 
 use chrono::Utc;
@@ -23,7 +23,7 @@ use testcontainers::runners::AsyncRunner;
 // Test utilities
 
 
-/// Test infrastructure with PostgreSQL and Redis
+/// Test infrastructure with `PostgreSQL` and Redis
 struct TestInfra {
     pool: PgPool,
     redis_client: redis::Client,
@@ -66,10 +66,9 @@ impl TestInfra {
 
         // Build connection URLs
         let database_url = format!(
-            "postgresql://synctv:synctv_test@{}:{}/synctv_test",
-            pg_host, pg_port
+            "postgresql://synctv:synctv_test@{pg_host}:{pg_port}/synctv_test"
         );
-        let redis_url = format!("redis://{}:{}", redis_host, redis_port);
+        let redis_url = format!("redis://{redis_host}:{redis_port}");
 
         // Connect to Postgres
         let pool = {
@@ -764,7 +763,7 @@ async fn test_add_duplicate_instance_fails() {
 
     if let Err(e) = result {
         assert!(
-            format!("{:?}", e).contains("AlreadyExists"),
+            format!("{e:?}").contains("AlreadyExists"),
             "Error should be AlreadyExists variant"
         );
     }
@@ -841,7 +840,7 @@ async fn test_get_all_instances() {
 
     // Create multiple instances
     for i in 1..=3 {
-        let instance = make_test_instance(&format!("test-instance-18a-{}", i));
+        let instance = make_test_instance(&format!("test-instance-18a-{i}"));
         manager.add(instance).await.unwrap();
     }
 
@@ -926,7 +925,7 @@ async fn test_init_pre_warms_cache() {
 
     // Create instances before init
     for i in 1..=3 {
-        let instance = make_test_instance(&format!("test-instance-20-{}", i));
+        let instance = make_test_instance(&format!("test-instance-20-{i}"));
         manager.add(instance).await.unwrap();
     }
 
@@ -974,11 +973,10 @@ async fn test_ssrf_validation_blocks_internal_ips() {
     );
 
     if let Err(e) = result {
-        let error_msg = format!("{:?}", e);
+        let error_msg = format!("{e:?}");
         assert!(
             error_msg.contains("SSRF") || error_msg.contains("ssrf") || error_msg.contains("internal"),
-            "Error should mention SSRF validation: {}",
-            error_msg
+            "Error should mention SSRF validation: {error_msg}"
         );
     }
 }
@@ -1071,7 +1069,7 @@ async fn test_cache_respects_max_capacity() {
     // Create instances (default max is 1000, so this won't test eviction)
     // This is more of a sanity check that the cache doesn't panic
     for i in 1..=10 {
-        let instance = make_test_instance(&format!("test-instance-24-{}", i));
+        let instance = make_test_instance(&format!("test-instance-24-{i}"));
         manager.add(instance).await.unwrap();
     }
 
@@ -1139,7 +1137,7 @@ async fn test_provider_instance_parse_timeout() {
     instance3.timeout = "5m".to_string();
     assert_eq!(
         instance3.parse_timeout().unwrap(),
-        Duration::from_secs(300)
+        Duration::from_mins(5)
     );
 
     // Test invalid timeout format

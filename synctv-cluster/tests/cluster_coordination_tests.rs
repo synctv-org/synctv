@@ -1,16 +1,16 @@
 //! Integration tests for cluster coordination using actual implementations
 //!
-//! Tests use local-mode NodeRegistry (no Redis) to validate cluster coordination
+//! Tests use local-mode `NodeRegistry` (no Redis) to validate cluster coordination
 //! logic without external dependencies.
 //!
-//! Run with: cargo test --test cluster_coordination_tests
+//! Run with: cargo test --test `cluster_coordination_tests`
 
 #![allow(clippy::unwrap_used)]
 use synctv_cluster::discovery::{NodeInfo, NodeRegistry, HealthMonitor, LoadBalancer, LoadBalancingStrategy};
 use std::collections::HashSet;
 use std::sync::Arc;
 
-/// Helper: create a NodeRegistry (redis::Client::open succeeds without a running server)
+/// Helper: create a `NodeRegistry` (`redis::Client::open` succeeds without a running server)
 fn make_registry(node_id: &str) -> Arc<NodeRegistry> {
     let client = redis::Client::open("redis://localhost:6379").unwrap();
     Arc::new(NodeRegistry::new(client, node_id.to_string(), 30, "test:").unwrap())

@@ -1,4 +1,4 @@
-//! StreamRegistry Consistency Tests
+//! `StreamRegistry` Consistency Tests
 //!
 //! Tests for symmetric registration/unregistration order to ensure
 //! local cache and Redis state remain consistent on failures.
@@ -38,7 +38,7 @@ async fn setup_redis() -> (
         .await
         .expect("Failed to get Redis port");
 
-    let redis_url = format!("redis://{}:{}", redis_host, redis_port);
+    let redis_url = format!("redis://{redis_host}:{redis_port}");
     let redis_client =
         redis::Client::open(redis_url.as_str()).expect("Failed to create Redis client");
 
@@ -52,7 +52,7 @@ async fn setup_redis() -> (
                     retries += 1;
                     tokio::time::sleep(Duration::from_millis(500)).await;
                 }
-                Err(e) => panic!("Redis ConnectionManager failed after {} retries: {}", retries, e),
+                Err(e) => panic!("Redis ConnectionManager failed after {retries} retries: {e}"),
             }
         }
     };
@@ -249,7 +249,7 @@ async fn test_cross_instance_visibility() {
     );
 }
 
-/// Test: get_stream should check local cache first, then Redis.
+/// Test: `get_stream` should check local cache first, then Redis.
 #[tokio::test]
 #[ignore = "Requires Docker (testcontainers)"]
 async fn test_get_stream_local_first_then_redis() {

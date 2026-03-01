@@ -387,15 +387,15 @@ impl User {
     ///
     /// A user has usable password auth if:
     /// - They signed up via email (explicitly set a password), OR
-    /// - They are a legacy user (signup_method is None) with a non-empty password hash, OR
-    /// - They signed up via OAuth2 but later set a password (password_version > 0 indicates
+    /// - They are a legacy user (`signup_method` is None) with a non-empty password hash, OR
+    /// - They signed up via `OAuth2` but later set a password (`password_version` > 0 indicates
     ///   the password was explicitly changed after account creation)
     ///
-    /// OAuth2 users initially receive a random password they don't know (password_version=0).
-    /// If they later use "set password" to establish their own password, password_version
+    /// `OAuth2` users initially receive a random password they don't know (`password_version=0`).
+    /// If they later use "set password" to establish their own password, `password_version`
     /// increments, indicating they now have a usable password.
     #[must_use]
-    pub fn has_usable_password(&self) -> bool {
+    pub const fn has_usable_password(&self) -> bool {
         // Non-empty password hash is a baseline requirement
         if self.password_hash.is_empty() {
             return false;

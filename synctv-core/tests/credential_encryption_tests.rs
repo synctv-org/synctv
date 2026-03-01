@@ -3,7 +3,7 @@
 //! Tests AES-256-GCM encrypt/decrypt cycle, wrong key rejection, and edge cases.
 //! These are pure unit tests (no database needed).
 //!
-//! Run with: cargo test --test credential_encryption_tests
+//! Run with: cargo test --test `credential_encryption_tests`
 #![allow(clippy::unwrap_used)]
 
 use synctv_core::service::credential_encryption::CredentialEncryption;

@@ -2,7 +2,7 @@
 //!
 //! Tests batch ban/delete operations for users and rooms.
 //!
-//! Run with: cargo test --package synctv-core admin_batch
+//! Run with: cargo test --package synctv-core `admin_batch`
 #![allow(clippy::unwrap_used)]
 
 use std::sync::Arc;
@@ -52,8 +52,8 @@ async fn create_test_users(service: &UserService, count: usize, prefix: &str) ->
     for i in 0..count {
         let (user, _, _) = service
             .register(
-                format!("{}_{}", prefix, i),
-                Some(format!("{}@test.com", i)),
+                format!("{prefix}_{i}"),
+                Some(format!("{i}@test.com")),
                 "Password123".to_string(),
                 None,
             )
@@ -76,7 +76,7 @@ async fn batch_ban_users_succeeds() {
 
     // Create 5 test users
     let user_ids = create_test_users(&service, 5, "batch_ban").await;
-    let user_id_strs: Vec<String> = user_ids.iter().map(|id| id.to_string()).collect();
+    let user_id_strs: Vec<String> = user_ids.iter().map(std::string::ToString::to_string).collect();
 
     // Ban all 5 users
     let result = service.batch_ban_users(&user_id_strs).await;
@@ -85,7 +85,7 @@ async fn batch_ban_users_succeeds() {
     // Verify all users are banned
     for user_id in &user_ids {
         let user = service.get_user(user_id).await.expect("User should exist");
-        assert_eq!(user.status, UserStatus::Banned, "User {} should be banned", user_id);
+        assert_eq!(user.status, UserStatus::Banned, "User {user_id} should be banned");
     }
 }
 
@@ -97,7 +97,7 @@ async fn batch_ban_users_exceeds_limit_fails() {
 
     // The size limit check happens before any DB operations, so we don't need
     // to create real users -- fake IDs are enough to trigger the validation.
-    let user_id_strs: Vec<String> = (0..BATCH_SIZE_LIMIT + 1)
+    let user_id_strs: Vec<String> = (0..=BATCH_SIZE_LIMIT)
         .map(|i| format!("fake_user_{i}"))
         .collect();
 
@@ -129,14 +129,14 @@ async fn batch_ban_users_already_banned_skipped() {
     service.update_user(&user, old_version).await.expect("Update should succeed");
 
     // Ban all users (first is already banned)
-    let user_id_strs: Vec<String> = user_ids.iter().map(|id| id.to_string()).collect();
+    let user_id_strs: Vec<String> = user_ids.iter().map(std::string::ToString::to_string).collect();
     let result = service.batch_ban_users(&user_id_strs).await;
     assert!(result.is_ok(), "Batch ban should succeed: {result:?}");
 
     // Verify all users are banned
     for user_id in &user_ids {
         let user = service.get_user(user_id).await.expect("User should exist");
-        assert_eq!(user.status, UserStatus::Banned, "User {} should be banned", user_id);
+        assert_eq!(user.status, UserStatus::Banned, "User {user_id} should be banned");
     }
 }
 
@@ -148,7 +148,7 @@ async fn batch_ban_users_nonexistent_user_fails() {
 
     // Create 2 test users
     let user_ids = create_test_users(&service, 2, "batch_ban_nonexist").await;
-    let mut user_id_strs: Vec<String> = user_ids.iter().map(|id| id.to_string()).collect();
+    let mut user_id_strs: Vec<String> = user_ids.iter().map(std::string::ToString::to_string).collect();
 
     // Add a non-existent user ID
     user_id_strs.push("nonexistent_user_id".to_string());
@@ -191,7 +191,7 @@ async fn batch_delete_users_succeeds() {
 
     // Create 5 test users
     let user_ids = create_test_users(&service, 5, "batch_del").await;
-    let user_id_strs: Vec<String> = user_ids.iter().map(|id| id.to_string()).collect();
+    let user_id_strs: Vec<String> = user_ids.iter().map(std::string::ToString::to_string).collect();
 
     // Delete all 5 users
     let result = service.batch_delete_users(&user_id_strs).await;
@@ -200,7 +200,7 @@ async fn batch_delete_users_succeeds() {
     // Verify all users are soft-deleted
     for user_id in &user_ids {
         let result = service.get_user(user_id).await;
-        assert!(result.is_err(), "User {} should be deleted", user_id);
+        assert!(result.is_err(), "User {user_id} should be deleted");
     }
 }
 
@@ -212,7 +212,7 @@ async fn batch_delete_users_exceeds_limit_fails() {
 
     // The size limit check happens before any DB operations, so we don't need
     // to create real users -- fake IDs are enough to trigger the validation.
-    let user_id_strs: Vec<String> = (0..BATCH_SIZE_LIMIT + 1)
+    let user_id_strs: Vec<String> = (0..=BATCH_SIZE_LIMIT)
         .map(|i| format!("fake_user_{i}"))
         .collect();
 

@@ -2722,7 +2722,7 @@ mod tests {
         let max_len = crate::validation::ROOM_NAME_MAX;
         let name: String = std::iter::repeat_n('\u{4e00}', max_len).collect();
         assert_eq!(name.chars().count(), max_len);
-        assert!(validate_room_name(&name).is_ok(), "Room name with {} CJK characters should be valid", max_len);
+        assert!(validate_room_name(&name).is_ok(), "Room name with {max_len} CJK characters should be valid");
 
         // (ROOM_NAME_MAX + 1) CJK characters should be rejected
         let name_too_long: String = std::iter::repeat_n('\u{4e00}', max_len + 1).collect();
@@ -3073,7 +3073,7 @@ mod tests {
         assert!(!pending_room.is_active());
 
         // Closed status
-        let mut closed_room = room.clone();
+        let mut closed_room = room;
         closed_room.status = RoomStatus::Closed;
         assert!(!closed_room.is_active());
     }
@@ -3086,7 +3086,7 @@ mod tests {
 
         let user_id = crate::models::UserId::new();
         let room1 = Room::new("Room A".to_string(), user_id.clone());
-        let room2 = Room::new("Room B".to_string(), user_id.clone());
+        let room2 = Room::new("Room B".to_string(), user_id);
         assert_ne!(room1.id, room2.id);
     }
 
@@ -3364,7 +3364,7 @@ mod tests {
     fn test_room_new_has_active_status() {
         use crate::models::{Room, UserId, RoomStatus};
         let owner = UserId::new();
-        let room = Room::new("Test Room".to_string(), owner.clone());
+        let room = Room::new("Test Room".to_string(), owner);
         assert_eq!(room.status, RoomStatus::Active);
     }
 
@@ -3375,7 +3375,7 @@ mod tests {
         let room = Room::new_with_description(
             "Test Room".to_string(),
             "A test room".to_string(),
-            owner.clone(),
+            owner,
         );
         assert_eq!(room.status, RoomStatus::Active);
     }
@@ -3386,10 +3386,10 @@ mod tests {
     ///
     /// SCENARIO: Fast path optimization doesn't detect intermediate password changes.
     ///
-    /// 1. Initial check: password "abc123" verified against hash H1, verified_hash = H1
+    /// 1. Initial check: password "abc123" verified against hash H1, `verified_hash` = H1
     /// 2. Password changes: H1 → H2 (different password)
     /// 3. Password changes back: H2 → H1 (same password, same hash if salt reused)
-    /// 4. Under lock: fast path sees verified_hash (H1) == current_hash (H1)
+    /// 4. Under lock: fast path sees `verified_hash` (H1) == `current_hash` (H1)
     /// 5. Fast path skips re-verification, missing the intermediate change
     ///
     /// NOTE: Argon2id uses random salts, so re-hashing the same password produces

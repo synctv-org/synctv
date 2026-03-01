@@ -17,9 +17,10 @@ use synctv_core::{
 use chrono::Utc;
 use sqlx::PgPool;
 
-/// Creates a UserService for testing
+/// Creates a `UserService` for testing
 ///
 /// Uses test-specific configurations for JWT, caching, and brute force protection.
+#[must_use] 
 pub fn make_user_service(pool: PgPool) -> UserService {
     // 32-byte secret for HS256
     let secret = "Test_Secret_Key_For_JWT_Tokens_32Bytes!!";
@@ -42,9 +43,10 @@ pub fn make_user_service(pool: PgPool) -> UserService {
     )
 }
 
-/// Creates a RoomService for testing
+/// Creates a `RoomService` for testing
 ///
-/// Convenience function that creates both UserService and RoomService.
+/// Convenience function that creates both `UserService` and `RoomService`.
+#[must_use] 
 pub fn make_room_service(pool: PgPool) -> RoomService {
     let user_service = make_user_service(pool.clone());
     RoomService::new(pool, user_service)
@@ -62,12 +64,13 @@ pub fn make_room_service(pool: PgPool) -> RoomService {
 /// let user = make_test_user("alice");
 /// let user = user_repo.create(&user).await.unwrap();
 /// ```
+#[must_use] 
 pub fn make_test_user(username: &str) -> User {
     let now = Utc::now();
     User {
         id: UserId::new(),
         username: username.to_string(),
-        email: Some(format!("{}@test.com", username)),
+        email: Some(format!("{username}@test.com")),
         password_hash: "hash".to_string(),
         role: UserRole::User,
         status: UserStatus::Active,
@@ -87,8 +90,8 @@ pub fn make_test_user(username: &str) -> User {
 /// # Arguments
 ///
 /// * `username` - The username for the test user
-/// * `role` - The user role (default: UserRole::User)
-/// * `status` - The user status (default: UserStatus::Active)
+/// * `role` - The user role (default: `UserRole::User`)
+/// * `status` - The user status (default: `UserStatus::Active`)
 ///
 /// # Example
 ///
@@ -96,6 +99,7 @@ pub fn make_test_user(username: &str) -> User {
 /// let admin = make_test_user_with_role("bob", UserRole::Admin);
 /// let admin = user_repo.create(&admin).await.unwrap();
 /// ```
+#[must_use] 
 pub fn make_test_user_with_role(
     username: &str,
     role: UserRole,
@@ -104,7 +108,7 @@ pub fn make_test_user_with_role(
     User {
         id: UserId::new(),
         username: username.to_string(),
-        email: Some(format!("{}@test.com", username)),
+        email: Some(format!("{username}@test.com")),
         password_hash: "hash".to_string(),
         role,
         status: UserStatus::Active,
@@ -122,12 +126,13 @@ pub fn make_test_user_with_role(
 /// Creates a test User with inactive status
 ///
 /// Useful for testing banned/suspended user scenarios.
+#[must_use] 
 pub fn make_test_user_inactive(username: &str) -> User {
     let now = Utc::now();
     User {
         id: UserId::new(),
         username: username.to_string(),
-        email: Some(format!("{}@test.com", username)),
+        email: Some(format!("{username}@test.com")),
         password_hash: "hash".to_string(),
         role: UserRole::User,
         status: UserStatus::Banned,

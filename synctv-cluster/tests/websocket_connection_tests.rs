@@ -1,7 +1,7 @@
 //! WebSocket connection tests
 //!
 //! Tests for connection lifecycle, heartbeat, reconnection, and cleanup.
-//! These tests verify the ConnectionManager behavior for WebSocket-like connections.
+//! These tests verify the `ConnectionManager` behavior for WebSocket-like connections.
 
 #![allow(clippy::unwrap_used)]
 use std::time::Duration;
@@ -80,7 +80,7 @@ async fn test_connection_reconnect_after_disconnect() {
 async fn test_heartbeat_timeout() {
     let limits = ConnectionLimits {
         idle_timeout: Duration::from_millis(50),
-        max_duration: Duration::from_secs(3600),
+        max_duration: Duration::from_hours(1),
         ..Default::default()
     };
     let mgr = ConnectionManager::new(limits);
@@ -239,7 +239,7 @@ async fn test_connection_duration_tracking() {
 async fn test_max_connection_duration() {
     let limits = ConnectionLimits {
         max_duration: Duration::from_millis(100),
-        idle_timeout: Duration::from_secs(3600),
+        idle_timeout: Duration::from_hours(1),
         ..Default::default()
     };
     let mgr = ConnectionManager::new(limits);
@@ -378,7 +378,7 @@ async fn test_activity_tracking() {
 // ============================================================================
 
 /// Test that registering with the same connection ID overwrites the previous one.
-/// The ConnectionManager does not enforce duplicate connection ID rejection.
+/// The `ConnectionManager` does not enforce duplicate connection ID rejection.
 #[tokio::test]
 async fn test_duplicate_register_overwrites() {
     let mgr = ConnectionManager::default();
@@ -417,7 +417,7 @@ async fn test_unregister_non_existent_safe() {
 // Test 15: User from room disconnect signal
 // ============================================================================
 
-/// Test that disconnect_user_from_room sends the correct signal.
+/// Test that `disconnect_user_from_room` sends the correct signal.
 /// Note: This method only sends a signal; it does not directly remove connections.
 /// The actual disconnection is handled by the signal recipient.
 #[tokio::test]

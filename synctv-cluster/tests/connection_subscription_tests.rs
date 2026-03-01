@@ -167,7 +167,7 @@ async fn test_multi_replica_websocket_connections() {
     // Simulate 5 WebSocket clients on node A
     let mut clients_a = Vec::new();
     for i in 0..5 {
-        let user_id = UserId::from_string(format!("ws_client_a_{}", i));
+        let user_id = UserId::from_string(format!("ws_client_a_{i}"));
         let (rx, conn_id) = node_a.subscribe(room_id.clone(), user_id).await;
         clients_a.push((rx, conn_id));
     }
@@ -175,7 +175,7 @@ async fn test_multi_replica_websocket_connections() {
     // Simulate 5 WebSocket clients on node B
     let mut clients_b = Vec::new();
     for i in 0..5 {
-        let user_id = UserId::from_string(format!("ws_client_b_{}", i));
+        let user_id = UserId::from_string(format!("ws_client_b_{i}"));
         let (rx, conn_id) = node_b.subscribe(room_id.clone(), user_id).await;
         clients_b.push((rx, conn_id));
     }
@@ -183,7 +183,7 @@ async fn test_multi_replica_websocket_connections() {
     // Simulate 5 WebSocket clients on node C
     let mut clients_c = Vec::new();
     for i in 0..5 {
-        let user_id = UserId::from_string(format!("ws_client_c_{}", i));
+        let user_id = UserId::from_string(format!("ws_client_c_{i}"));
         let (rx, conn_id) = node_c.subscribe(room_id.clone(), user_id).await;
         clients_c.push((rx, conn_id));
     }

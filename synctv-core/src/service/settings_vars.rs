@@ -124,7 +124,7 @@ impl SettingsStorage {
 
     /// Get a reference to the underlying `SettingsService`.
     #[must_use]
-    pub fn settings_service(&self) -> &Arc<SettingsService> {
+    pub const fn settings_service(&self) -> &Arc<SettingsService> {
         &self.settings_service
     }
 
@@ -547,7 +547,7 @@ mod tests {
         let service = Arc::new(SettingsService::new(repo, pool));
         let storage = Arc::new(SettingsStorage::new(service.clone()));
 
-        let _setting = Setting::<i64>::new("server.max_rooms_per_user", storage.clone(), 10)
+        let _setting = Setting::<i64>::new("server.max_rooms_per_user", storage, 10)
             .with_validator(|v: &i64| {
                 if *v > 0 && *v <= 1000 {
                     Ok(())

@@ -1,4 +1,4 @@
-//! Tests for extract_client_ip in synctv-api/src/http/auth.rs
+//! Tests for `extract_client_ip` in synctv-api/src/http/auth.rs
 //!
 //! Verifies correct IP extraction from trusted/untrusted proxies,
 //! X-Forwarded-For and X-Real-IP header handling.
@@ -16,7 +16,7 @@ fn config_with_proxies(proxies: Vec<&str>) -> Config {
 }
 
 /// Create a socket address from an IPv4 address.
-fn socket(ip: [u8; 4], port: u16) -> SocketAddr {
+const fn socket(ip: [u8; 4], port: u16) -> SocketAddr {
     SocketAddr::new(IpAddr::V4(Ipv4Addr::new(ip[0], ip[1], ip[2], ip[3])), port)
 }
 

@@ -1,8 +1,8 @@
 //! Media optimistic locking integration tests
 //!
-//! Tests for version-based optimistic locking in MediaRepository.
+//! Tests for version-based optimistic locking in `MediaRepository`.
 //!
-//! Run with: cargo test --test media_optimistic_lock_tests
+//! Run with: cargo test --test `media_optimistic_lock_tests`
 #![allow(clippy::unwrap_used)]
 
 use synctv_core_testing::create_test_pool;
@@ -18,13 +18,13 @@ use synctv_core::{
 use chrono::Utc;
 use serde_json::json;
 use sqlx::PgPool;
-/// Default PostgreSQL version for test containers
+/// Default `PostgreSQL` version for test containers
 fn make_user(username: &str) -> User {
     let now = Utc::now();
     User {
         id: UserId::new(),
         username: username.to_string(),
-        email: Some(format!("{}@test.com", username)),
+        email: Some(format!("{username}@test.com")),
         password_hash: "hash".to_string(),
         role: UserRole::User,
         status: UserStatus::Active,
@@ -54,12 +54,12 @@ async fn setup_test_context(suffix: &str) -> TestContext {
     let room_repo = RoomRepository::new(pool.clone());
     let playlist_repo = PlaylistRepository::new(pool.clone());
 
-    let owner = user_repo.create(&make_user(&format!("optlock_owner_{}", suffix))).await.unwrap();
+    let owner = user_repo.create(&make_user(&format!("optlock_owner_{suffix}"))).await.unwrap();
     let room = room_repo.create(&{
         let now = Utc::now();
         Room {
             id: RoomId::new(),
-            name: format!("OptLock Room {}", suffix),
+            name: format!("OptLock Room {suffix}"),
             description: String::new(),
             created_by: owner.id.clone(),
             status: RoomStatus::Active,
@@ -115,7 +115,7 @@ fn make_media(playlist_id: &PlaylistId, room_id: &RoomId, name: &str, position: 
 // Optimistic Locking Tests with version field
 // ============================================================================
 
-/// Test: update_with_version should succeed when version matches
+/// Test: `update_with_version` should succeed when version matches
 #[tokio::test]
 #[ignore = "Requires Docker"]
 async fn test_update_with_version_succeeds_when_version_matches() {
@@ -146,7 +146,7 @@ async fn test_update_with_version_succeeds_when_version_matches() {
     assert_eq!(result.version, 1, "Version should be incremented to 1");
 }
 
-/// Test: update_with_version should return OptimisticLockConflict error when version mismatch
+/// Test: `update_with_version` should return `OptimisticLockConflict` error when version mismatch
 #[tokio::test]
 #[ignore = "Requires Docker"]
 async fn test_update_with_version_conflict_when_version_mismatch() {
@@ -292,7 +292,7 @@ async fn test_sequential_updates_increment_version() {
     assert_eq!(media.version, 4);
 }
 
-/// Test: update_with_version on source_config changes
+/// Test: `update_with_version` on `source_config` changes
 #[tokio::test]
 #[ignore = "Requires Docker"]
 async fn test_update_source_config_with_version() {

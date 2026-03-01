@@ -1,6 +1,6 @@
 //! Circuit breaker tests
 //!
-//! Tests for the failsafe circuit breaker used in NodeRegistry.
+//! Tests for the failsafe circuit breaker used in `NodeRegistry`.
 //! These tests verify the circuit breaker behavior without requiring Redis.
 
 #![allow(clippy::unwrap_used)]
@@ -82,8 +82,7 @@ async fn test_half_open_single_probe_wins_race() {
     let permitted = permitted_count.load(Ordering::Relaxed);
     assert_eq!(
         permitted, 10,
-        "All calls should be permitted after circuit closes, got {}",
-        permitted
+        "All calls should be permitted after circuit closes, got {permitted}"
     );
 }
 
@@ -130,7 +129,7 @@ async fn test_healthy_endpoints_filters_open() {
     let breakers: Vec<_> = endpoints
         .iter()
         .map(|_| {
-            create_test_circuit_breaker(1, Duration::from_secs(10), Duration::from_secs(60))
+            create_test_circuit_breaker(1, Duration::from_secs(10), Duration::from_mins(1))
         })
         .collect();
 
@@ -165,7 +164,7 @@ async fn test_cluster_degraded_threshold() {
     let endpoint_count = 4;
     let breakers: Vec<_> = (0..endpoint_count)
         .map(|_| {
-            create_test_circuit_breaker(1, Duration::from_secs(10), Duration::from_secs(60))
+            create_test_circuit_breaker(1, Duration::from_secs(10), Duration::from_mins(1))
         })
         .collect();
 
@@ -175,13 +174,11 @@ async fn test_cluster_degraded_threshold() {
     }
 
     let open_count = breakers.iter().filter(|cb| !cb.is_call_permitted()).count();
-    let is_degraded = open_count as f64 / endpoint_count as f64 > 0.5;
+    let is_degraded = open_count as f64 / f64::from(endpoint_count) > 0.5;
 
     assert!(
         is_degraded,
-        "Cluster should be degraded when >50% endpoints have open circuits ({}/{} open)",
-        open_count,
-        endpoint_count
+        "Cluster should be degraded when >50% endpoints have open circuits ({open_count}/{endpoint_count} open)"
     );
 }
 
@@ -195,7 +192,7 @@ async fn test_failure_below_threshold_stays_closed() {
     let cb = create_test_circuit_breaker(
         3,
         Duration::from_secs(10),
-        Duration::from_secs(60),
+        Duration::from_mins(1),
     );
 
     // 2 failures (below threshold of 3)

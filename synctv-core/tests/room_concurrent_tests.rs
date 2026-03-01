@@ -3,18 +3,18 @@
 //! Tests concurrent member operations including concurrent joins, role updates,
 //! permission changes, and optimistic lock conflict retry.
 //!
-//! Run with: cargo test --test room_concurrent_tests
+//! Run with: cargo test --test `room_concurrent_tests`
 //!
 //! # Test Coverage
 //!
-//! - Concurrent join with max_members limit
+//! - Concurrent join with `max_members` limit
 //! - Concurrent role updates with role hierarchy enforcement
 //! - Concurrent permission changes with retry
 //! - Optimistic lock conflict handling and retry
 //!
 //! # Requirements
 //!
-//! - Docker for testcontainers (PostgreSQL)
+//! - Docker for testcontainers (`PostgreSQL`)
 #![allow(clippy::unwrap_used)]
 
 use synctv_core::{
@@ -62,8 +62,7 @@ async fn create_test_pool() -> TestPostgres {
     let port = container.get_host_port_ipv4(5432).await.expect("Failed to get port");
 
     let database_url = format!(
-        "postgres://synctv:synctv_test@{}:{}/synctv_test",
-        host, port
+        "postgres://synctv:synctv_test@{host}:{port}/synctv_test"
     );
 
     let pool = {
@@ -100,7 +99,7 @@ fn make_user(username: &str) -> User {
     User {
         id: UserId::new(),
         username: username.to_string(),
-        email: Some(format!("{}@test.com", username)),
+        email: Some(format!("{username}@test.com")),
         password_hash: "test_hash".to_string(),
         role: UserRole::User,
         status: UserStatus::Active,
@@ -174,10 +173,10 @@ async fn get_creator_user_id(pool: &PgPool, room_id: &RoomId) -> UserId {
 // Test: Concurrent Join Operations
 // ============================================================================
 
-/// Test concurrent join operations respect max_members limit.
+/// Test concurrent join operations respect `max_members` limit.
 ///
 /// Scenario:
-/// 1. Create a room with max_members = 10
+/// 1. Create a room with `max_members` = 10
 /// 2. Spawn 30 concurrent join requests
 /// 3. Verify exactly 9 succeed (room capacity 10 - owner = 9)
 /// 4. Verify final member count is 10
@@ -194,7 +193,7 @@ async fn test_concurrent_join_respects_max_members() {
     let user_repo = UserRepository::new(pool.clone());
     let mut users = Vec::with_capacity(30);
     for i in 0..30 {
-        let user = user_repo.create(&make_user(&format!("joiner_{}", i))).await.expect("Failed to create user");
+        let user = user_repo.create(&make_user(&format!("joiner_{i}"))).await.expect("Failed to create user");
         users.push(user);
     }
 
@@ -249,7 +248,7 @@ async fn test_concurrent_join_respects_max_members() {
                 limit_reached_count += 1;
             }
             Err(e) => {
-                panic!("Unexpected error: {:?}", e);
+                panic!("Unexpected error: {e:?}");
             }
         }
     }
@@ -295,7 +294,7 @@ async fn test_concurrent_role_update_member_to_admin() {
     let mut member_users = Vec::with_capacity(10);
 
     for i in 0..10 {
-        let user = user_repo.create(&make_user(&format!("member_{}", i))).await.expect("Failed to create user");
+        let user = user_repo.create(&make_user(&format!("member_{i}"))).await.expect("Failed to create user");
         let member = RoomMember::new(room.id.clone(), user.id.clone(), RoomRole::Member);
         member_repo.add(&member).await.expect("Failed to add member");
         member_users.push(user);
@@ -445,7 +444,7 @@ async fn test_concurrent_permission_grant() {
     let mut member_users = Vec::with_capacity(5);
 
     for i in 0..5 {
-        let user = user_repo.create(&make_user(&format!("perm_member_{}", i))).await.expect("Failed to create user");
+        let user = user_repo.create(&make_user(&format!("perm_member_{i}"))).await.expect("Failed to create user");
         let member = RoomMember::new(room.id.clone(), user.id.clone(), RoomRole::Member);
         member_repo.add(&member).await.expect("Failed to add member");
         member_users.push(user);
@@ -682,11 +681,11 @@ async fn test_optimistic_lock_conflict_on_role_update() {
         Err(Error::Internal(msg)) => {
             assert!(
                 msg.contains("retry") || msg.contains("maximum"),
-                "Should mention retry exhaustion: {}", msg
+                "Should mention retry exhaustion: {msg}"
             );
         }
         Err(other) => {
-            panic!("Unexpected error: {:?}", other);
+            panic!("Unexpected error: {other:?}");
         }
     }
 }
@@ -716,7 +715,7 @@ async fn test_concurrent_leave_and_rejoin() {
     let mut initial_members = Vec::with_capacity(10);
 
     for i in 0..10 {
-        let user = user_repo.create(&make_user(&format!("initial_{}", i))).await.expect("Failed to create user");
+        let user = user_repo.create(&make_user(&format!("initial_{i}"))).await.expect("Failed to create user");
         let member = RoomMember::new(room.id.clone(), user.id.clone(), RoomRole::Member);
         member_repo.add(&member).await.expect("Failed to add member");
         initial_members.push(user);
@@ -742,7 +741,7 @@ async fn test_concurrent_leave_and_rejoin() {
     // Create new users to join
     let mut new_users = Vec::with_capacity(10);
     for i in 0..10 {
-        let user = user_repo.create(&make_user(&format!("new_joiner_{}", i))).await.expect("Failed to create user");
+        let user = user_repo.create(&make_user(&format!("new_joiner_{i}"))).await.expect("Failed to create user");
         new_users.push(user);
     }
 

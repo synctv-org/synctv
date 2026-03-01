@@ -534,7 +534,7 @@ impl EmbyInterface for GrpcEmbyClient {
 mod tests {
     use super::*;
 
-    /// Test that ProviderClientManager can be created with default clients
+    /// Test that `ProviderClientManager` can be created with default clients
     #[test]
     fn test_provider_client_manager_new() {
         let manager = ProviderClientManager::new();
@@ -545,7 +545,7 @@ mod tests {
         let _emby = manager.local_emby_client();
     }
 
-    /// Test that ProviderClientManager implements Clone
+    /// Test that `ProviderClientManager` implements Clone
     #[test]
     fn test_provider_client_manager_clone() {
         let manager = ProviderClientManager::new();
@@ -559,14 +559,14 @@ mod tests {
         assert!(Arc::ptr_eq(&client1, &client2));
     }
 
-    /// Test that ProviderClientManager::default() works
+    /// Test that `ProviderClientManager::default()` works
     #[test]
     fn test_provider_client_manager_default() {
         let manager = ProviderClientManager::default();
         let _ = manager.local_alist_client();
     }
 
-    /// Test that resolve_alist_client returns local client when no channel is provided
+    /// Test that `resolve_alist_client` returns local client when no channel is provided
     #[test]
     fn test_resolve_alist_client_returns_local_when_no_channel() {
         let manager = ProviderClientManager::new();
@@ -576,7 +576,7 @@ mod tests {
         assert!(Arc::ptr_eq(&local_client, &resolved_client));
     }
 
-    /// Test that resolve_bilibili_client returns local client when no channel is provided
+    /// Test that `resolve_bilibili_client` returns local client when no channel is provided
     #[test]
     fn test_resolve_bilibili_client_returns_local_when_no_channel() {
         let manager = ProviderClientManager::new();
@@ -586,7 +586,7 @@ mod tests {
         assert!(Arc::ptr_eq(&local_client, &resolved_client));
     }
 
-    /// Test that resolve_emby_client returns local client when no channel is provided
+    /// Test that `resolve_emby_client` returns local client when no channel is provided
     #[test]
     fn test_resolve_emby_client_returns_local_when_no_channel() {
         let manager = ProviderClientManager::new();
@@ -606,7 +606,7 @@ mod tests {
         assert!(Arc::ptr_eq(&client1, &client2));
     }
 
-    /// Test that global_client_manager returns a valid reference
+    /// Test that `global_client_manager` returns a valid reference
     #[test]
     fn test_global_client_manager_returns_valid_reference() {
         let manager = global_client_manager();
@@ -615,16 +615,16 @@ mod tests {
         let _ = manager.local_emby_client();
     }
 
-    /// Test that multiple calls to global_client_manager return the same instance
+    /// Test that multiple calls to `global_client_manager` return the same instance
     #[test]
     fn test_global_client_manager_singleton() {
-        let manager1 = global_client_manager() as *const ProviderClientManager;
-        let manager2 = global_client_manager() as *const ProviderClientManager;
+        let manager1 = std::ptr::from_ref::<ProviderClientManager>(global_client_manager());
+        let manager2 = std::ptr::from_ref::<ProviderClientManager>(global_client_manager());
 
         assert_eq!(manager1, manager2);
     }
 
-    /// Test backward compatibility: load_local_xxx_client functions work
+    /// Test backward compatibility: `load_local_xxx_client` functions work
     #[test]
     fn test_backward_compatibility_load_functions() {
         // These functions should work as before
@@ -633,7 +633,7 @@ mod tests {
         let _emby = load_local_emby_client();
     }
 
-    /// Test that create_remote_xxx_client functions work
+    /// Test that `create_remote_xxx_client` functions work
     #[test]
     fn test_create_remote_client_functions() {
         // Note: We can't actually test with a real channel here, but we can
@@ -650,7 +650,7 @@ mod tests {
         // The above functions verify these client constructors compile.
     }
 
-    /// Test that ProviderClientManager::with_custom_clients allows mock injection
+    /// Test that `ProviderClientManager::with_custom_clients` allows mock injection
     #[test]
     fn test_custom_clients_injection() {
         // Create custom clients

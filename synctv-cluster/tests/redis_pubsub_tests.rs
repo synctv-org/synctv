@@ -1,20 +1,20 @@
-//! redis_pubsub tests
+//! `redis_pubsub` tests
 //!
-//! Tests for the is_sentinel_failover_error detection function.
+//! Tests for the `is_sentinel_failover_error` detection function.
 //! The function is private, so we test the same logic inline.
 //!
-//! Also tests for catchup_start_id calculation used during reconnection.
+//! Also tests for `catchup_start_id` calculation used during reconnection.
 
 #![allow(clippy::unwrap_used)]
 use std::time::{SystemTime, UNIX_EPOCH};
 
-/// Replicate the is_sentinel_failover_error logic from redis_pubsub.
+/// Replicate the `is_sentinel_failover_error` logic from `redis_pubsub`.
 fn is_sentinel_failover_error(e: &anyhow::Error) -> bool {
     let msg = e.to_string();
     msg.contains("READONLY") || msg.contains("LOADING")
 }
 
-/// Replicate the catchup_start_id logic from redis_pubsub.
+/// Replicate the `catchup_start_id` logic from `redis_pubsub`.
 /// Returns a Redis Stream ID that represents the start of the catchup window.
 fn catchup_start_id(catchup_window_ms: u128) -> String {
     let now_ms = SystemTime::now()
@@ -25,7 +25,7 @@ fn catchup_start_id(catchup_window_ms: u128) -> String {
     format!("{start_ms}-0")
 }
 
-/// Parse a Redis Stream ID into (timestamp_ms, sequence) for comparison.
+/// Parse a Redis Stream ID into (`timestamp_ms`, sequence) for comparison.
 fn parse_stream_id(id: &str) -> Option<(u64, u64)> {
     let parts: Vec<&str> = id.split('-').collect();
     if parts.len() != 2 {
@@ -94,7 +94,7 @@ fn test_is_sentinel_failover_error_other() {
 // reconnection to avoid reading all historical events from "0".
 // ============================================================================
 
-/// Test that catchup_start_id returns a valid Redis Stream ID format.
+/// Test that `catchup_start_id` returns a valid Redis Stream ID format.
 #[test]
 fn test_catchup_start_id_format() {
     let id = catchup_start_id(300_000); // 5 minutes window
@@ -105,7 +105,7 @@ fn test_catchup_start_id_format() {
     assert_eq!(seq, 0, "Sequence should be 0");
 }
 
-/// Test that catchup_start_id is approximately (now - catchup_window).
+/// Test that `catchup_start_id` is approximately (now - `catchup_window`).
 #[test]
 fn test_catchup_start_id_is_within_window() {
     let window_ms: u128 = 300_000; // 5 minutes
@@ -121,16 +121,16 @@ fn test_catchup_start_id_is_within_window() {
     let expected_max = now_ms.saturating_sub(window_ms.saturating_sub(1000));
 
     assert!(
-        ts as u128 >= expected_min,
+        u128::from(ts) >= expected_min,
         "catchup_start_id timestamp should be at least window_ms ago"
     );
     assert!(
-        ts as u128 <= expected_max + 2000, // More tolerance for test execution time
+        u128::from(ts) <= expected_max + 2000, // More tolerance for test execution time
         "catchup_start_id timestamp should be at most window_ms ago (+ tolerance)"
     );
 }
 
-/// Test that catchup_start_id with zero window returns current time.
+/// Test that `catchup_start_id` with zero window returns current time.
 #[test]
 fn test_catchup_start_id_zero_window() {
     let now_ms = SystemTime::now()
@@ -142,14 +142,14 @@ fn test_catchup_start_id_zero_window() {
     let (ts, _) = parse_stream_id(&id).expect("Valid stream ID");
 
     // Should be very close to now (within 2 seconds tolerance)
-    let diff = (ts as u128).abs_diff(now_ms);
+    let diff = u128::from(ts).abs_diff(now_ms);
     assert!(
         diff < 2000,
         "catchup_start_id with zero window should be close to current time, diff={diff}ms"
     );
 }
 
-/// Test that catchup_start_id is NOT "0" (the problematic default).
+/// Test that `catchup_start_id` is NOT "0" (the problematic default).
 /// This is the key test for the bug fix: reconnect should NOT read from "0".
 #[test]
 fn test_catchup_start_id_is_not_zero() {
@@ -164,7 +164,7 @@ fn test_catchup_start_id_is_not_zero() {
     );
 }
 
-/// Test that catchup_start_id is greater than "0" for lexicographic comparison.
+/// Test that `catchup_start_id` is greater than "0" for lexicographic comparison.
 /// Redis Stream IDs are compared lexicographically, so "0" < any timestamp-based ID.
 #[test]
 fn test_catchup_start_id_greater_than_zero() {
@@ -179,7 +179,7 @@ fn test_catchup_start_id_greater_than_zero() {
     );
 }
 
-/// Test that multiple calls to catchup_start_id produce increasing values.
+/// Test that multiple calls to `catchup_start_id` produce increasing values.
 #[test]
 fn test_catchup_start_id_monotonic() {
     let id1 = catchup_start_id(300_000);

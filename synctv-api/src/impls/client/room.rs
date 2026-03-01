@@ -52,7 +52,7 @@ impl ClientApiImpl {
             .await;
 
         let mut room_list = Vec::with_capacity(rooms.len());
-        for (r, count) in rooms.iter().zip(counts.into_iter()) {
+        for (r, count) in rooms.iter().zip(counts) {
             let member_count: Option<i32> = count.try_into().ok();
             room_list.push(room_to_proto_basic(r, None, member_count));
         }
@@ -81,7 +81,7 @@ impl ClientApiImpl {
             .await;
 
         let mut room_list = Vec::with_capacity(rooms.len());
-        for ((room, role, _status, _member_count), count) in rooms.iter().zip(counts.into_iter()) {
+        for ((room, role, _status, _member_count), count) in rooms.iter().zip(counts) {
             let permissions = role.permissions().0;
             let member_count: Option<i32> = count.try_into().ok();
             room_list.push(crate::proto::client::RoomWithRole {
@@ -678,7 +678,7 @@ impl ClientApiImpl {
 
         let mut room_online: Vec<(synctv_core::models::Room, i32)> = rooms
             .into_iter()
-            .zip(distributed_counts.into_iter())
+            .zip(distributed_counts)
             .map(|(room, count)| (room, count as i32))
             .collect();
         room_online.sort_by_key(|item| std::cmp::Reverse(item.1));

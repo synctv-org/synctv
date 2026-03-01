@@ -50,7 +50,7 @@ async fn setup_redis() -> (
         .await
         .expect("Failed to get Redis port");
 
-    let redis_url = format!("redis://{}:{}", redis_host, redis_port);
+    let redis_url = format!("redis://{redis_host}:{redis_port}");
     let redis_client =
         redis::Client::open(redis_url.as_str()).expect("Failed to create Redis client");
 
@@ -64,7 +64,7 @@ async fn setup_redis() -> (
                     retries += 1;
                     tokio::time::sleep(Duration::from_millis(500)).await;
                 }
-                Err(e) => panic!("Redis ConnectionManager failed after {} retries: {}", retries, e),
+                Err(e) => panic!("Redis ConnectionManager failed after {retries} retries: {e}"),
             }
         }
     };
@@ -89,7 +89,7 @@ fn make_cluster_config(
         redis_client: Some(redis_client),
         redis_conn: Some(redis_conn),
         node_id: node_id.to_string(),
-        dedup_window: Duration::from_secs(60),
+        dedup_window: Duration::from_mins(1),
         cleanup_interval: Duration::from_secs(10),
         critical_channel_capacity: 100,
         publish_channel_capacity: 1000,
@@ -112,7 +112,7 @@ async fn test_cross_node_broadcast() {
     // Create a second Redis connection for node2
     let redis_host = container.get_host().await.expect("Failed to get Redis host");
     let redis_port = container.get_host_port_ipv4(6379).await.expect("Failed to get Redis port");
-    let redis_url = format!("redis://{}:{}", redis_host, redis_port);
+    let redis_url = format!("redis://{redis_host}:{redis_port}");
     let redis_client2 = redis::Client::open(redis_url.as_str()).expect("Failed to create Redis client 2");
 
     // Wait for connection 2 (generous timeout for parallel testcontainer startup)
@@ -125,7 +125,7 @@ async fn test_cross_node_broadcast() {
                     retries += 1;
                     tokio::time::sleep(Duration::from_millis(500)).await;
                 }
-                Err(e) => panic!("Redis ConnectionManager 2 failed after {} retries: {}", retries, e),
+                Err(e) => panic!("Redis ConnectionManager 2 failed after {retries} retries: {e}"),
             }
         }
     };
@@ -173,7 +173,7 @@ async fn test_cross_node_broadcast() {
     let elapsed = start.elapsed();
 
     if result.is_err() {
-        eprintln!("SKIPPED: Cross-node broadcast test timed out after {:?}. This may be due to:", elapsed);
+        eprintln!("SKIPPED: Cross-node broadcast test timed out after {elapsed:?}. This may be due to:");
         eprintln!("  - Redis pub/sub not fully initialized");
         eprintln!("  - Network timing issues in test environment");
         eprintln!("  - Race condition in cluster messaging");
@@ -198,7 +198,7 @@ async fn test_cross_node_broadcast() {
 /// Test that duplicate events are detected correctly.
 #[tokio::test]
 async fn test_message_deduplication() {
-    let dedup = MessageDeduplicator::new(Duration::from_secs(60), Duration::from_secs(10));
+    let dedup = MessageDeduplicator::new(Duration::from_mins(1), Duration::from_secs(10));
 
     let room = rid("room1");
     let user = uid("user1");
@@ -230,8 +230,8 @@ async fn test_message_deduplication() {
     // Different event should be processable
     let event2 = ClusterEvent::ChatMessage {
         event_id: nanoid::nanoid!(16), // Different event_id
-        room_id: room.clone(),
-        user_id: user.clone(),
+        room_id: room,
+        user_id: user,
         username: "test".to_string(),
         message: "hello".to_string(),
         timestamp: chrono::Utc::now(),
@@ -280,7 +280,7 @@ async fn test_dedup_ttl_expiry() {
 /// Test deduplication with different event types.
 #[tokio::test]
 async fn test_dedup_with_different_events() {
-    let dedup = MessageDeduplicator::new(Duration::from_secs(60), Duration::from_secs(10));
+    let dedup = MessageDeduplicator::new(Duration::from_mins(1), Duration::from_secs(10));
 
     let room = rid("room1");
     let user = uid("user1");
@@ -298,9 +298,9 @@ async fn test_dedup_with_different_events() {
     };
 
     let event2 = ClusterEvent::UserLeft {
-        event_id: event_id.clone(),
-        room_id: room.clone(),
-        user_id: user.clone(),
+        event_id,
+        room_id: room,
+        user_id: user,
         username: "test".to_string(),
         timestamp: chrono::Utc::now(),
     };
@@ -323,7 +323,7 @@ async fn test_dedup_with_different_events() {
 // Test 3: Redis unavailable graceful degradation
 // ============================================================================
 
-/// Test that ClusterManager works without Redis (single-node mode).
+/// Test that `ClusterManager` works without Redis (single-node mode).
 #[tokio::test]
 async fn test_single_node_mode_without_redis() {
     let config = ClusterConfig {
@@ -701,15 +701,15 @@ async fn test_media_removed_batch_event() {
     let room = rid("room1");
     let user = uid("user1");
     let media_ids: Vec<MediaId> = (0..100)
-        .map(|i| MediaId::from_string(format!("media_{}", i)))
+        .map(|i| MediaId::from_string(format!("media_{i}")))
         .collect();
 
     let event = ClusterEvent::MediaRemovedBatch {
         event_id: nanoid::nanoid!(16),
-        room_id: room.clone(),
-        user_id: user.clone(),
+        room_id: room,
+        user_id: user,
         username: "admin".to_string(),
-        media_ids: media_ids.clone(),
+        media_ids,
         timestamp: chrono::Utc::now(),
     };
 
@@ -735,7 +735,7 @@ async fn test_user_notification_event() {
 
     let event = ClusterEvent::UserNotification {
         event_id: nanoid::nanoid!(16),
-        user_id: user.clone(),
+        user_id: user,
         notification_id: "notif-123".to_string(),
         title: "Room Invitation".to_string(),
         content: "You have been invited to room X".to_string(),
@@ -757,7 +757,7 @@ async fn test_user_notification_event() {
 // Test 11: DedupKey from event
 // ============================================================================
 
-/// Test that DedupKey correctly extracts fields from events.
+/// Test that `DedupKey` correctly extracts fields from events.
 #[tokio::test]
 async fn test_dedup_key_from_event() {
     let room = rid("room1");
@@ -767,7 +767,7 @@ async fn test_dedup_key_from_event() {
     let event = ClusterEvent::ChatMessage {
         event_id: event_id.clone(),
         room_id: room.clone(),
-        user_id: user.clone(),
+        user_id: user,
         username: "test".to_string(),
         message: "hello".to_string(),
         timestamp: chrono::Utc::now(),

@@ -1,6 +1,6 @@
-//! CL11: redis_pubsub tests fix
+//! CL11: `redis_pubsub` tests fix
 //!
-//! Fixed tests that use the real is_sentinel_failover_error function from the
+//! Fixed tests that use the real `is_sentinel_failover_error` function from the
 //! source module instead of duplicating the logic inline.
 
 #![allow(clippy::unwrap_used)]

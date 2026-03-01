@@ -1,10 +1,10 @@
 //! Partition management integration tests
 //!
-//! Verifies that chat_messages DEFAULT partition routes messages correctly,
-//! and that create_chat_message_partitions() creates future partitions.
-//! Also verifies audit_logs DEFAULT partition.
+//! Verifies that `chat_messages` DEFAULT partition routes messages correctly,
+//! and that `create_chat_message_partitions()` creates future partitions.
+//! Also verifies `audit_logs` DEFAULT partition.
 //!
-//! Run with: cargo test --test partition_management_tests
+//! Run with: cargo test --test `partition_management_tests`
 #![allow(clippy::unwrap_used)]
 
 use synctv_core_testing::{create_test_pool};
@@ -15,13 +15,13 @@ use synctv_core::{
     repository::{RoomRepository, UserRepository, ChatRepository},
 };
 use chrono::{Utc, Duration};
-/// Default PostgreSQL version for test containers
+/// Default `PostgreSQL` version for test containers
 fn make_user(username: &str) -> User {
     let now = Utc::now();
     User {
         id: UserId::new(),
         username: username.to_string(),
-        email: Some(format!("{}@test.com", username)),
+        email: Some(format!("{username}@test.com")),
         password_hash: "hash".to_string(),
         role: UserRole::User,
         status: UserStatus::Active,

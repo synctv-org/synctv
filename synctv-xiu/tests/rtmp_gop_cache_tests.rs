@@ -74,7 +74,7 @@ fn test_gop_default_is_empty() {
 #[test]
 fn test_gop_clone() {
     let gop = Gop::new();
-    let gop2 = gop.clone();
+    let gop2 = gop;
 
     assert!(gop2.is_empty());
     assert_eq!(gop2.len(), 0);
@@ -136,7 +136,7 @@ fn test_gops_default() {
 #[test]
 fn test_gops_clone() {
     let gops = Gops::new(5, Some(10000));
-    let gops2 = gops.clone();
+    let gops2 = gops;
 
     assert_eq!(gops2.gop_count(), 1);
     assert_eq!(gops2.max_gop_count(), 5);
@@ -248,7 +248,7 @@ fn test_gops_zero_copy_clone() {
     assert_eq!(gops2.current_total_bytes(), gops.current_total_bytes());
 }
 
-/// Test get_gops() returns frozen GOPs
+/// Test `get_gops()` returns frozen GOPs
 #[test]
 fn test_gops_get_gops_returns_frozen() {
     let mut gops = Gops::new(5, None);
@@ -474,7 +474,7 @@ fn test_gops_rapid_creation() {
     assert!(gops.gop_count() <= 11, "GOP count {} should be <= 11", gops.gop_count());
 }
 
-/// Test is_enabled matches size > 0
+/// Test `is_enabled` matches size > 0
 #[test]
 fn test_gops_is_enabled() {
     let gops_enabled = Gops::new(5, None);
@@ -484,7 +484,7 @@ fn test_gops_is_enabled() {
     assert!(!gops_disabled.is_enabled());
 }
 
-/// Test max_gop_count returns configured size
+/// Test `max_gop_count` returns configured size
 #[test]
 fn test_gops_max_gop_count() {
     let gops = Gops::new(10, None);

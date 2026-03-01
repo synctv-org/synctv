@@ -1,4 +1,4 @@
-//! Tests for GrpcConnectionPool circuit breaker and connection management.
+//! Tests for `GrpcConnectionPool` circuit breaker and connection management.
 //!
 //! These tests verify the circuit breaker behavior within the connection pool.
 
@@ -15,7 +15,7 @@ fn test_pool_creation_with_defaults() {
 
 #[test]
 fn test_pool_creation_with_custom_idle() {
-    let pool = GrpcConnectionPool::new(Duration::from_secs(60));
+    let pool = GrpcConnectionPool::new(Duration::from_mins(1));
     assert!(pool.is_empty());
 }
 
@@ -54,8 +54,7 @@ async fn test_circuit_breaker_opens_at_threshold() {
     let err_msg = result.unwrap_err().to_string();
     assert!(
         err_msg.contains("Circuit breaker open") || err_msg.contains("connect"),
-        "Expected circuit breaker error, got: {}",
-        err_msg
+        "Expected circuit breaker error, got: {err_msg}"
     );
 }
 
@@ -116,7 +115,6 @@ async fn test_different_addresses_independent() {
     let err_msg = result.unwrap_err().to_string();
     assert!(
         err_msg.contains("connect") || err_msg.contains("Failed"),
-        "Expected connection error for different address, got: {}",
-        err_msg
+        "Expected connection error for different address, got: {err_msg}"
     );
 }

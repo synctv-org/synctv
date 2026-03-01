@@ -1,8 +1,8 @@
-//! SettingsRepository integration tests
+//! `SettingsRepository` integration tests
 //!
-//! Tests: get non-existent key, get_all ordering.
+//! Tests: get non-existent key, `get_all` ordering.
 //!
-//! Run with: cargo test -p synctv-core --test settings_repository_tests
+//! Run with: cargo test -p synctv-core --test `settings_repository_tests`
 #![allow(clippy::unwrap_used)]
 
 use synctv_core_testing::{create_test_pool};
@@ -191,8 +191,7 @@ async fn test_concurrent_update_without_optimistic_lock_causes_lost_update() {
     // First update should succeed
     assert!(
         result1.is_ok(),
-        "First concurrent update should succeed, got: {:?}",
-        result1
+        "First concurrent update should succeed, got: {result1:?}"
     );
 
     // Second update should fail with OptimisticLockConflict
@@ -205,8 +204,7 @@ async fn test_concurrent_update_without_optimistic_lock_causes_lost_update() {
     let err = result2.unwrap_err();
     assert!(
         matches!(err, synctv_core::Error::OptimisticLockConflict),
-        "Error should be OptimisticLockConflict, got: {:?}",
-        err
+        "Error should be OptimisticLockConflict, got: {err:?}"
     );
 
     // Verify the final value is from the first update (not lost)

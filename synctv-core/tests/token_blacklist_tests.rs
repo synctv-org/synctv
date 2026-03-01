@@ -1,8 +1,8 @@
 //! Token blacklist tests
 //!
-//! Tests the InMemoryTokenBlacklistStore and FallbackTokenBlacklistStore.
+//! Tests the `InMemoryTokenBlacklistStore` and `FallbackTokenBlacklistStore`.
 //!
-//! Run with: cargo test --test token_blacklist_tests -- --nocapture
+//! Run with: cargo test --test `token_blacklist_tests` -- --nocapture
 #![allow(clippy::unwrap_used)]
 
 use std::sync::Arc;
@@ -55,7 +55,7 @@ async fn test_in_memory_blacklist_ttl_expiry() {
 // Atomic blacklist_if_not_exists tests (Task #10)
 // ============================================================================
 
-/// Test that blacklist_if_not_exists returns false for first insert (first use)
+/// Test that `blacklist_if_not_exists` returns false for first insert (first use)
 #[tokio::test]
 async fn test_in_memory_blacklist_if_not_exists_first_use() {
     let store = InMemoryTokenBlacklistStore::new(10_000, 3600, 86400);
@@ -70,7 +70,7 @@ async fn test_in_memory_blacklist_if_not_exists_first_use() {
     assert!(store.is_blacklisted(key).await);
 }
 
-/// Test that blacklist_if_not_exists returns true for second insert (replay detected)
+/// Test that `blacklist_if_not_exists` returns true for second insert (replay detected)
 #[tokio::test]
 async fn test_in_memory_blacklist_if_not_exists_replay_detected() {
     let store = InMemoryTokenBlacklistStore::new(10_000, 3600, 86400);
@@ -89,7 +89,7 @@ async fn test_in_memory_blacklist_if_not_exists_replay_detected() {
     assert!(store.is_blacklisted(key).await);
 }
 
-/// Test atomicity: concurrent calls to blacklist_if_not_exists should have exactly
+/// Test atomicity: concurrent calls to `blacklist_if_not_exists` should have exactly
 /// one return false (first use) and all others return true (replay detected).
 #[tokio::test]
 async fn test_in_memory_blacklist_if_not_exists_concurrent_atomicity() {
@@ -327,12 +327,12 @@ struct ToggleableStore {
     failing: std::sync::atomic::AtomicBool,
     /// Track blacklist calls
     blacklist_calls: std::sync::atomic::AtomicU64,
-    /// Track set_family_revoked calls
+    /// Track `set_family_revoked` calls
     family_calls: std::sync::atomic::AtomicU64,
 }
 
 impl ToggleableStore {
-    fn new() -> Self {
+    const fn new() -> Self {
         Self {
             failing: std::sync::atomic::AtomicBool::new(true),
             blacklist_calls: std::sync::atomic::AtomicU64::new(0),
@@ -411,7 +411,7 @@ async fn test_multiple_blacklists_during_outage() {
     for i in 0..10 {
         let key = format!("jti:outage_{i}");
         let result = fallback.blacklist(&key, 3600).await;
-        assert!(result.is_ok(), "Blacklist {} should succeed via fallback", i);
+        assert!(result.is_ok(), "Blacklist {i} should succeed via fallback");
     }
 
     // All tokens should be blacklisted in fallback
@@ -419,8 +419,7 @@ async fn test_multiple_blacklists_during_outage() {
         let key = format!("jti:outage_{i}");
         assert!(
             fallback.is_blacklisted(&key).await,
-            "Token {} should be blacklisted in memory fallback",
-            i
+            "Token {i} should be blacklisted in memory fallback"
         );
     }
 }

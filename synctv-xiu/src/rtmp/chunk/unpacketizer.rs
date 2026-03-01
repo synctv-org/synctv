@@ -42,19 +42,19 @@ impl fmt::Display for ChunkReadState {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
             Self::ReadBasicHeader => {
-                write!(f, "ReadBasicHeader",)
+                write!(f, "ReadBasicHeader")
             }
             Self::ReadMessageHeader => {
-                write!(f, "ReadMessageHeader",)
+                write!(f, "ReadMessageHeader")
             }
             Self::ReadExtendedTimestamp => {
-                write!(f, "ReadExtendedTimestamp",)
+                write!(f, "ReadExtendedTimestamp")
             }
             Self::ReadMessagePayload => {
-                write!(f, "ReadMessagePayload",)
+                write!(f, "ReadMessagePayload")
             }
             Self::Finish => {
-                write!(f, "Finish",)
+                write!(f, "Finish")
             }
         }
     }
@@ -667,19 +667,19 @@ mod tests {
             rv.unwrap(),
             UnpackResult::ChunkInfo(expected),
             "not correct"
-        )
+        );
     }
 
     #[test]
     fn test_overflow_add() {
         let aa: u32 = u32::MAX;
-        println!("{}", aa);
+        println!("{aa}");
 
         let (_a, _b) = aa.overflowing_add(5);
 
         let b = aa.wrapping_add(5);
 
-        println!("{}", b);
+        println!("{b}");
     }
 
     use std::collections::VecDeque;
@@ -691,8 +691,8 @@ mod tests {
         queue.push_back(3);
         queue.push_back(4);
 
-        for data in queue.iter() {
-            println!("{}", data);
+        for data in &queue {
+            println!("{data}");
         }
     }
 

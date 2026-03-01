@@ -1,6 +1,6 @@
 //! Service benchmarks for authentication operations
 //!
-//! Run with: cargo bench -p synctv-core --bench auth_service
+//! Run with: cargo bench -p synctv-core --bench `auth_service`
 
 #![allow(clippy::unwrap_used)]
 use std::hint::black_box;
@@ -21,7 +21,7 @@ fn bench_jwt_sign(c: &mut Criterion) {
                 .sign_token(black_box(&user_id), TokenType::Access, 0)
                 .expect("sign failed");
             black_box(token);
-        })
+        });
     });
 }
 
@@ -40,7 +40,7 @@ fn bench_jwt_verify(c: &mut Criterion) {
                 .verify_access_token(black_box(&token))
                 .expect("verify failed");
             black_box(claims);
-        })
+        });
     });
 }
 
@@ -60,7 +60,7 @@ fn bench_password_hash(c: &mut Criterion) {
                     .expect("hash failed")
             });
             black_box(hash);
-        })
+        });
     });
 
     group.finish();
@@ -88,7 +88,7 @@ fn bench_password_verify(c: &mut Criterion) {
                     .expect("verify failed")
             });
             black_box(result);
-        })
+        });
     });
 
     group.finish();
@@ -104,7 +104,7 @@ fn bench_concurrent_token_generation(c: &mut Criterion) {
     let mut group = c.benchmark_group("concurrent_token_generation");
     group.measurement_time(Duration::from_secs(5));
 
-    for num_concurrent in [10, 50, 100].iter() {
+    for num_concurrent in &[10, 50, 100] {
         group.bench_with_input(
             BenchmarkId::from_parameter(num_concurrent),
             num_concurrent,
@@ -127,7 +127,7 @@ fn bench_concurrent_token_generation(c: &mut Criterion) {
                             task.await.unwrap();
                         }
                     });
-                })
+                });
             },
         );
     }

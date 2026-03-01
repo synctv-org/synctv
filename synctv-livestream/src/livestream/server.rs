@@ -720,7 +720,7 @@ mod tests {
     use crate::api::tracker::StreamTracker;
     use tokio::time::{timeout, Duration};
 
-    /// Helper to create a minimal LivestreamConfig for testing
+    /// Helper to create a minimal `LivestreamConfig` for testing
     fn test_config() -> LivestreamConfig {
         LivestreamConfig {
             rtmp_address: "127.0.0.1:0".to_string(),
@@ -735,18 +735,18 @@ mod tests {
         }
     }
 
-    /// Helper to create a UserStreamTracker for testing
+    /// Helper to create a `UserStreamTracker` for testing
     fn test_tracker() -> UserStreamTracker {
         Arc::new(StreamTracker::new())
     }
 
     /// Test that the re-registration task is properly cleaned up on shutdown.
     ///
-    /// This test verifies that when LivestreamHandle::shutdown() is called,
+    /// This test verifies that when `LivestreamHandle::shutdown()` is called,
     /// both the publisher manager task AND the re-registration task terminate,
     /// preventing task leaks.
     ///
-    /// Regression test for: https://github.com/synctv-org/synctv/issues/27
+    /// Regression test for: <https://github.com/synctv-org/synctv/issues/27>
     #[tokio::test]
     async fn test_reregister_task_cleanup_on_shutdown() {
         // Create a mock registry
@@ -783,7 +783,7 @@ mod tests {
         );
     }
 
-    /// Test that the re-registration task stops when cancelled via CancellationToken.
+    /// Test that the re-registration task stops when cancelled via `CancellationToken`.
     ///
     /// This test verifies graceful shutdown properly cancels both tasks.
     #[tokio::test]
@@ -875,12 +875,12 @@ mod tests {
         );
     }
 
-    /// Test that dropping LivestreamHandle without calling shutdown() still cleans up tasks.
+    /// Test that dropping `LivestreamHandle` without calling `shutdown()` still cleans up tasks.
     ///
-    /// This test verifies that the Drop implementation for LivestreamHandle cancels
+    /// This test verifies that the Drop implementation for `LivestreamHandle` cancels
     /// all cancellation tokens, preventing task leaks when the handle is dropped.
     ///
-    /// Regression test for: https://github.com/synctv-org/synctv/issues/28
+    /// Regression test for: <https://github.com/synctv-org/synctv/issues/28>
     #[tokio::test]
     async fn test_drop_cleans_up_tasks() {
         let registry = Arc::new(MockStreamRegistry::new());
@@ -919,9 +919,9 @@ mod tests {
         // cancelled in the Drop impl, which signals the tasks to exit.
     }
 
-    /// Test that HLS cleanup task is cancelled when LivestreamHandle is dropped.
+    /// Test that HLS cleanup task is cancelled when `LivestreamHandle` is dropped.
     ///
-    /// This test verifies that the segment cleanup task (started in start()) is
+    /// This test verifies that the segment cleanup task (started in `start()`) is
     /// properly terminated when the handle is dropped, preventing memory leaks.
     #[tokio::test]
     async fn test_hls_cleanup_task_terminated_on_drop() {

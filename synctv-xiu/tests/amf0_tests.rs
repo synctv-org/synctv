@@ -1,7 +1,7 @@
 //! AMF0 serialization round-trip tests.
 //!
 //! These tests verify that AMF0 values can be written and read back correctly
-//! through the Amf0Writer and Amf0Reader.
+//! through the `Amf0Writer` and `Amf0Reader`.
 
 #![allow(clippy::unwrap_used)]
 use synctv_xiu::flv::amf0::amf0_writer::Amf0Writer;
@@ -9,7 +9,7 @@ use synctv_xiu::flv::amf0::amf0_reader::Amf0Reader;
 use synctv_xiu::flv::amf0::Amf0ValueType;
 use synctv_xiu::bytesio::bytes_reader::BytesReader;
 
-/// Helper: write a value with Amf0Writer, then read it back with Amf0Reader.
+/// Helper: write a value with `Amf0Writer`, then read it back with `Amf0Reader`.
 fn roundtrip(value: &Amf0ValueType) -> Amf0ValueType {
     let mut writer = Amf0Writer::new();
     writer.write_any(value).unwrap();

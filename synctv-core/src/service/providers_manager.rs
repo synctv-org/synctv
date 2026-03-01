@@ -850,7 +850,7 @@ mod tests {
         for i in 0..5 {
             let mgr = manager.clone();
             handles.push(tokio::spawn(async move {
-                let instance_id = format!("alist_concurrent_{}", i);
+                let instance_id = format!("alist_concurrent_{i}");
                 mgr.create_provider("alist", &instance_id, &serde_json::json!({})).await
             }));
         }
@@ -864,7 +864,7 @@ mod tests {
 
         // Verify all instances exist
         for i in 0..5 {
-            let instance_id = format!("alist_concurrent_{}", i);
+            let instance_id = format!("alist_concurrent_{i}");
             assert!(manager.get(&instance_id).await.is_some());
         }
     }

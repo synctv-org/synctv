@@ -1,9 +1,9 @@
-//! CL9: ClusterAuthInterceptor tests
+//! CL9: `ClusterAuthInterceptor` tests
 //!
 //! - Correct secret passes
 //! - Missing header -> unauthenticated
 //! - Wrong secret -> unauthenticated
-//! - constant_time_eq: equal, not-equal same length, different lengths
+//! - `constant_time_eq`: equal, not-equal same length, different lengths
 
 #![allow(clippy::unwrap_used)]
 use tonic::Request;
@@ -91,7 +91,7 @@ fn test_wrong_secret_unauthenticated() {
 // constant_time_eq tests
 // ============================================================================
 
-/// We test the constant_time_eq behavior through the interceptor by verifying
+/// We test the `constant_time_eq` behavior through the interceptor by verifying
 /// that the comparison is correct for equal, not-equal same-length, and
 /// different-length secrets.
 
@@ -153,11 +153,10 @@ fn test_constant_time_eq_one_empty() {
 #[test]
 fn test_debug_does_not_leak_secret() {
     let interceptor = ClusterAuthInterceptor::new("super-secret-value".to_string());
-    let debug_output = format!("{:?}", interceptor);
+    let debug_output = format!("{interceptor:?}");
     assert!(
         !debug_output.contains("super-secret-value"),
-        "Debug output should not contain the secret, got: {}",
-        debug_output
+        "Debug output should not contain the secret, got: {debug_output}"
     );
 }
 

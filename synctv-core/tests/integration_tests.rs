@@ -2,7 +2,7 @@
 //!
 //! These tests verify end-to-end functionality across multiple service layers.
 //!
-//! Run with: cargo test --test integration_tests
+//! Run with: cargo test --test `integration_tests`
 #![allow(clippy::unwrap_used)]
 
 use synctv_core_testing::create_test_jwt_service;
@@ -87,7 +87,7 @@ async fn test_error_handling() {
     let not_found_error = Error::NotFound("User not found".to_string());
     assert!(matches!(not_found_error, Error::NotFound(_)));
 
-    let error_msg = format!("{}", auth_error);
+    let error_msg = format!("{auth_error}");
     assert!(error_msg.contains("Invalid token"));
 }
 
@@ -299,7 +299,7 @@ fn test_playlist_model() {
         room_id: RoomId::new(),
         creator_id: Some(UserId::new()),
         name: "Alist Folder".to_string(),
-        parent_id: Some(root.id.clone()),
+        parent_id: Some(root.id),
         position: 1,
         source_provider: Some("alist".to_string()),
         source_config: Some(serde_json::json!({"url": "http://example.com"})),
@@ -404,7 +404,7 @@ fn test_error_types() {
     ];
 
     for error in &errors {
-        let msg = format!("{}", error);
+        let msg = format!("{error}");
         assert!(!msg.is_empty());
     }
 
@@ -585,8 +585,8 @@ async fn test_e2e_playlist_hierarchy() {
 
     let dynamic_folder = Playlist {
         id: PlaylistId::new(),
-        room_id: room_id.clone(),
-        creator_id: Some(creator_id.clone()),
+        room_id,
+        creator_id: Some(creator_id),
         name: "Alist Movies".to_string(),
         parent_id: Some(root.id.clone()),
         position: 1,
@@ -716,7 +716,7 @@ async fn test_e2e_error_propagation() {
     ];
 
     for error in errors {
-        let msg = format!("{}", error);
+        let msg = format!("{error}");
         assert!(!msg.is_empty());
 
         match error {
@@ -781,7 +781,7 @@ async fn test_permission_cache_invalidation_message_serialization() {
     assert_eq!(decoded, all);
 }
 
-/// Tests that CacheInvalidationService can be created and used without Redis
+/// Tests that `CacheInvalidationService` can be created and used without Redis
 /// (local-only mode for single-node deployments).
 #[tokio::test]
 async fn test_cache_invalidation_service_local_only() {
@@ -812,7 +812,7 @@ async fn test_cache_invalidation_service_local_only() {
         synctv_core::cache::InvalidationMessage::User { user_id } => {
             assert_eq!(user_id, "local_user");
         }
-        other => panic!("Expected User invalidation, got: {:?}", other),
+        other => panic!("Expected User invalidation, got: {other:?}"),
     }
 }
 
@@ -930,7 +930,7 @@ async fn test_token_blacklist_concurrent_operations() {
     for i in 0..100 {
         let blacklist = blacklist.clone();
         let handle = tokio::spawn(async move {
-            let token = format!("token_{}", i);
+            let token = format!("token_{i}");
             blacklist.write().insert(token);
         });
         add_handles.push(handle);
@@ -941,7 +941,7 @@ async fn test_token_blacklist_concurrent_operations() {
     for i in 0..50 {
         let blacklist = blacklist.clone();
         let handle = tokio::spawn(async move {
-            let token = format!("token_{}", i);
+            let token = format!("token_{i}");
             blacklist.read().contains(&token)
         });
         check_handles.push(handle);
@@ -979,7 +979,7 @@ async fn test_playback_state_concurrent_updates() {
         let state = state.clone();
         let handle = tokio::spawn(async move {
             let mut s = state.lock();
-            s.current_time = (i * 1000) as f64;
+            s.current_time = f64::from(i * 1000);
         });
         handles.push(handle);
     }

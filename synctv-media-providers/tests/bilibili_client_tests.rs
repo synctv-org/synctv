@@ -1,13 +1,13 @@
 //! Bilibili client wiremock tests
 //!
-//! Tests for parse_video_page, get_video_url, get_dash_video_url,
-//! and get_live_streams using wiremock mocked endpoints.
+//! Tests for `parse_video_page`, `get_video_url`, `get_dash_video_url`,
+//! and `get_live_streams` using wiremock mocked endpoints.
 //!
-//! Note: BilibiliClient uses a shared static SHARED_CLIENT that hardcodes
+//! Note: `BilibiliClient` uses a shared static `SHARED_CLIENT` that hardcodes
 //! Bilibili's API hostnames. To test with wiremock, we cannot redirect
-//! BilibiliClient methods to a local mock server (they always hit
+//! `BilibiliClient` methods to a local mock server (they always hit
 //! api.bilibili.com). Instead, we test the lower-level utilities and
-//! match_url parsing thoroughly, and add wiremock tests for the helpers
+//! `match_url` parsing thoroughly, and add wiremock tests for the helpers
 //! and error-checking code paths that we CAN intercept.
 
 #![allow(clippy::unwrap_used)]

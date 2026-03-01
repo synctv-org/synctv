@@ -815,7 +815,7 @@ mod tests {
     // Mock OAuth2 Provider
     // ========================================================================
 
-    /// Mock OAuth2 provider for testing authorization URL generation and code exchange.
+    /// Mock `OAuth2` provider for testing authorization URL generation and code exchange.
     /// Returns configurable values without making real HTTP calls.
     #[derive(Clone)]
     struct MockOAuth2Provider {
@@ -850,7 +850,7 @@ mod tests {
 
     #[async_trait]
     impl OAuth2ProviderTrait for MockOAuth2Provider {
-        fn provider_type(&self) -> &str {
+        fn provider_type(&self) -> &'static str {
             "mock"
         }
 
@@ -1923,7 +1923,7 @@ mod tests {
     // Tests: CSRF Protection - Defense in Depth
     // ========================================================================
 
-    /// Test that state tokens with expired created_at timestamps are rejected
+    /// Test that state tokens with expired `created_at` timestamps are rejected
     /// even if they somehow persist in the store (defense-in-depth).
     #[tokio::test]
     async fn test_state_expired_created_at_rejected() {
@@ -2001,7 +2001,7 @@ mod tests {
         assert!(result.is_err());
     }
 
-    /// Test that verify_state includes the created_at expiry check
+    /// Test that `verify_state` includes the `created_at` expiry check
     #[tokio::test]
     async fn test_verify_state_checks_created_at_expiry() {
         let service = create_test_service();
@@ -2074,7 +2074,7 @@ mod tests {
     // ========================================================================
 
     /// Test: cluster mode with in-memory state store returns a descriptive error.
-    /// This is the core issue - in cluster mode, OAuth2 states created on replica A
+    /// This is the core issue - in cluster mode, `OAuth2` states created on replica A
     /// cannot be validated on replica B without shared Redis storage.
     #[tokio::test]
     async fn test_cluster_mode_without_redis_returns_error() {
@@ -2142,7 +2142,7 @@ mod tests {
     }
 
     /// Test: cluster mode validation happens at service creation time.
-    /// This prevents runtime failures later during OAuth2 flows.
+    /// This prevents runtime failures later during `OAuth2` flows.
     #[tokio::test]
     async fn test_cluster_mode_validation_at_creation_time() {
         // Cluster mode should fail immediately at service creation

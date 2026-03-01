@@ -1,8 +1,8 @@
-//! CL4: StreamRegistry Redis (testcontainer Redis)
+//! CL4: `StreamRegistry` Redis (testcontainer Redis)
 //!
-//! - register_stream Redis path, get_all_streams from second instance
-//! - cleanup_stale_active_entries after key expiry
-//! - refresh_ttls pipeline
+//! - `register_stream` Redis path, `get_all_streams` from second instance
+//! - `cleanup_stale_active_entries` after key expiry
+//! - `refresh_ttls` pipeline
 
 #![allow(clippy::unwrap_used)]
 use std::time::Duration;
@@ -36,7 +36,7 @@ async fn setup_redis() -> (
         .await
         .expect("Failed to get Redis port");
 
-    let redis_url = format!("redis://{}:{}", redis_host, redis_port);
+    let redis_url = format!("redis://{redis_host}:{redis_port}");
     let redis_client =
         redis::Client::open(redis_url.as_str()).expect("Failed to create Redis client");
 
@@ -50,7 +50,7 @@ async fn setup_redis() -> (
                     retries += 1;
                     tokio::time::sleep(Duration::from_millis(500)).await;
                 }
-                Err(e) => panic!("Redis ConnectionManager failed after {} retries: {}", retries, e),
+                Err(e) => panic!("Redis ConnectionManager failed after {retries} retries: {e}"),
             }
         }
     };
@@ -65,7 +65,7 @@ async fn setup_redis() -> (
     (redis_container, conn)
 }
 
-/// Test register_stream from one instance, get_all_streams from a second instance.
+/// Test `register_stream` from one instance, `get_all_streams` from a second instance.
 #[tokio::test]
 #[ignore = "Requires Docker (testcontainers)"]
 async fn test_register_stream_cross_instance_visibility() {
@@ -116,7 +116,7 @@ async fn test_register_stream_cross_instance_visibility() {
     assert_eq!(stream2.pub_type, "webrtc");
 }
 
-/// Test cleanup_stale_active_entries after key expiry.
+/// Test `cleanup_stale_active_entries` after key expiry.
 ///
 /// The active set tracks stream identifiers, while metadata keys have TTLs.
 /// When a metadata key expires (simulating a crashed node), the cleanup
@@ -213,7 +213,7 @@ async fn test_cleanup_stale_active_entries_after_expiry() {
     );
 }
 
-/// Test refresh_ttls pipeline refreshes metadata TTLs.
+/// Test `refresh_ttls` pipeline refreshes metadata TTLs.
 #[tokio::test]
 #[ignore = "Requires Docker (testcontainers)"]
 async fn test_refresh_ttls_pipeline() {
@@ -239,7 +239,7 @@ async fn test_refresh_ttls_pipeline() {
         .query_async(&mut test_conn)
         .await
         .unwrap();
-    assert!(ttl1 > 0, "Metadata key should have TTL, got {}", ttl1);
+    assert!(ttl1 > 0, "Metadata key should have TTL, got {ttl1}");
 
     // Set a very low TTL to simulate near-expiry
     let _: () = redis::cmd("EXPIRE")
@@ -256,8 +256,7 @@ async fn test_refresh_ttls_pipeline() {
         .unwrap();
     assert!(
         ttl_before <= 5,
-        "TTL should be <= 5 before refresh, got {}",
-        ttl_before
+        "TTL should be <= 5 before refresh, got {ttl_before}"
     );
 
     // Spawn the TTL refresh task and let it run one cycle
@@ -277,12 +276,11 @@ async fn test_refresh_ttls_pipeline() {
         .unwrap();
     assert!(
         ttl_after > 5,
-        "TTL should be refreshed to > 5 seconds, got {}",
-        ttl_after
+        "TTL should be refreshed to > 5 seconds, got {ttl_after}"
     );
 }
 
-/// Test unregister_stream removes from both local and Redis.
+/// Test `unregister_stream` removes from both local and Redis.
 #[tokio::test]
 #[ignore = "Requires Docker (testcontainers)"]
 async fn test_unregister_stream_removes_from_redis() {

@@ -55,8 +55,7 @@ async fn test_event_propagation_latency() {
     assert_eq!(received.event_type(), "chat_message");
     assert!(
         latency < Duration::from_millis(100),
-        "Event propagation latency ({:?}) exceeds 100ms threshold",
-        latency
+        "Event propagation latency ({latency:?}) exceeds 100ms threshold"
     );
 
     node_a.unsubscribe(&conn_id);

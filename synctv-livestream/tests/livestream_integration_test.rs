@@ -137,8 +137,8 @@ async fn test_complete_hls_workflow() {
 
     // Write test segments using structured (app, stream, name)
     for i in 0..3 {
-        let segment_data = Bytes::from(format!("TS segment data {}", i));
-        storage.write("test_room", "test_media", &format!("segment{}", i), segment_data).await.unwrap();
+        let segment_data = Bytes::from(format!("TS segment data {i}"));
+        storage.write("test_room", "test_media", &format!("segment{i}"), segment_data).await.unwrap();
     }
 
     // Step 2: Register stream in HLS registry
@@ -147,7 +147,7 @@ async fn test_complete_hls_workflow() {
         segments.push_back(SegmentInfo {
             sequence: i,
             duration: 10000,
-            ts_name: format!("segment{}", i),
+            ts_name: format!("segment{i}"),
             discontinuity: false,
             created_at: Instant::now(),
         });
@@ -172,7 +172,7 @@ async fn test_complete_hls_workflow() {
         &infrastructure,
         "test_room",
         "test_media",
-        |ts_name| format!("/api/room/movie/live/hls/data/test_room/test_media/{}.ts", ts_name),
+        |ts_name| format!("/api/room/movie/live/hls/data/test_room/test_media/{ts_name}.ts"),
     ).await.unwrap().expect("playlist should exist for registered stream");
 
     // Verify playlist contains all segments
@@ -209,8 +209,8 @@ async fn test_multiple_room_media_combinations() {
     for (room, media, count) in &test_cases {
         for i in 0..*count {
             let storage = infrastructure.segment_manager.as_ref().unwrap().storage();
-            let segment_data = Bytes::from(format!("{}-{}-seg{}", room, media, i));
-            storage.write(room, media, &format!("seg{}", i), segment_data).await.unwrap();
+            let segment_data = Bytes::from(format!("{room}-{media}-seg{i}"));
+            storage.write(room, media, &format!("seg{i}"), segment_data).await.unwrap();
         }
     }
 
@@ -221,12 +221,12 @@ async fn test_multiple_room_media_combinations() {
                 &infrastructure,
                 room,
                 media,
-                &format!("seg{}", i),
+                &format!("seg{i}"),
             ).await;
 
-            assert!(segment.is_ok(), "Failed to get segment for {}-{}-seg{}", room, media, i);
+            assert!(segment.is_ok(), "Failed to get segment for {room}-{media}-seg{i}");
             let data = segment.unwrap();
-            assert_eq!(data, Bytes::from(format!("{}-{}-seg{}", room, media, i)));
+            assert_eq!(data, Bytes::from(format!("{room}-{media}-seg{i}")));
         }
     }
 }
@@ -312,7 +312,7 @@ async fn test_hls_url_generation_with_custom_callback() {
         &infrastructure,
         "room123",
         "media456",
-        |ts_name| format!("https://cdn.example.com/hls/{}.ts", ts_name),
+        |ts_name| format!("https://cdn.example.com/hls/{ts_name}.ts"),
     ).await.unwrap().expect("playlist should exist");
 
     assert!(playlist.contains("https://cdn.example.com/hls/segment0.ts"));
@@ -323,10 +323,10 @@ async fn test_hls_url_generation_with_custom_callback() {
         &infrastructure,
         "room123",
         "media456",
-        move |ts_name| format!("/api/room/movie/live/hls/data/room123/media456/{}.ts?token={}", ts_name, token),
+        move |ts_name| format!("/api/room/movie/live/hls/data/room123/media456/{ts_name}.ts?token={token}"),
     ).await.unwrap().expect("playlist should exist");
 
-    assert!(playlist.contains(&format!("?token={}", token)));
+    assert!(playlist.contains(&format!("?token={token}")));
 }
 
 #[tokio::test]
@@ -337,13 +337,13 @@ async fn test_segment_cleanup() {
 
     // Write multiple segments
     for i in 0..5 {
-        let data = Bytes::from(format!("segment{}", i));
-        storage.write("room1", "media1", &format!("seg{}", i), data).await.unwrap();
+        let data = Bytes::from(format!("segment{i}"));
+        storage.write("room1", "media1", &format!("seg{i}"), data).await.unwrap();
     }
 
     // Verify all exist
     for i in 0..5 {
-        assert!(storage.exists("room1", "media1", &format!("seg{}", i)).await.unwrap());
+        assert!(storage.exists("room1", "media1", &format!("seg{i}")).await.unwrap());
     }
 
     // Cleanup segments older than 0 seconds (all)
@@ -353,7 +353,7 @@ async fn test_segment_cleanup() {
 
     // Verify all are deleted
     for i in 0..5 {
-        assert!(!storage.exists("room1", "media1", &format!("seg{}", i)).await.unwrap());
+        assert!(!storage.exists("room1", "media1", &format!("seg{i}")).await.unwrap());
     }
 }
 
@@ -365,15 +365,15 @@ async fn test_concurrent_segment_access() {
 
     // Write segments
     for i in 0..10 {
-        let data = Bytes::from(format!("segment{}", i));
-        storage.write("room1", "media1", &format!("seg{}", i), data).await.unwrap();
+        let data = Bytes::from(format!("segment{i}"));
+        storage.write("room1", "media1", &format!("seg{i}"), data).await.unwrap();
     }
 
     // Concurrent reads
     let mut handles = vec![];
     for i in 0..10 {
         let storage_clone = storage.clone();
-        let name = format!("seg{}", i);
+        let name = format!("seg{i}");
         let handle = tokio::spawn(async move {
             storage_clone.read("room1", "media1", &name).await.unwrap()
         });
@@ -383,7 +383,7 @@ async fn test_concurrent_segment_access() {
     // Verify all reads succeeded
     for (i, handle) in handles.into_iter().enumerate() {
         let data = handle.await.unwrap();
-        assert_eq!(data, Bytes::from(format!("segment{}", i)));
+        assert_eq!(data, Bytes::from(format!("segment{i}")));
     }
 }
 
@@ -433,7 +433,7 @@ async fn test_hls_playlist_with_discontinuity() {
         &infrastructure,
         "room1",
         "media1",
-        |ts_name| format!("/{}.ts", ts_name),
+        |ts_name| format!("/{ts_name}.ts"),
     ).await.unwrap().expect("playlist should exist");
 
     assert!(playlist.contains("#EXT-X-DISCONTINUITY"));
@@ -470,7 +470,7 @@ async fn test_hls_playlist_ended_stream() {
         &infrastructure,
         "room1",
         "media1",
-        |ts_name| format!("/{}.ts", ts_name),
+        |ts_name| format!("/{ts_name}.ts"),
     ).await.unwrap().expect("playlist should exist");
 
     assert!(playlist.contains("#EXT-X-ENDLIST"));
@@ -484,21 +484,21 @@ async fn test_path_parameter_separation() {
     // FLV: media_id in path, room_id in query
     let media_id = "media123";
     let room_id = "room456";
-    let flv_path = format!("/api/room/movie/live/flv/{}.flv", media_id);
-    let flv_query = format!("roomId={}", room_id);
+    let flv_path = format!("/api/room/movie/live/flv/{media_id}.flv");
+    let flv_query = format!("roomId={room_id}");
 
     assert!(flv_path.contains(media_id));
     assert!(flv_query.contains(room_id));
 
     // HLS playlist: media_id in path, room_id in query
-    let hls_path = format!("/api/room/movie/live/hls/list/{}", media_id);
-    let hls_query = format!("roomId={}", room_id);
+    let hls_path = format!("/api/room/movie/live/hls/list/{media_id}");
+    let hls_query = format!("roomId={room_id}");
 
     assert!(hls_path.contains(media_id));
     assert!(hls_query.contains(room_id));
 
     // HLS segment: both room_id and media_id in path
-    let segment_path = format!("/api/room/movie/live/hls/data/{}/{}/segment.ts", room_id, media_id);
+    let segment_path = format!("/api/room/movie/live/hls/data/{room_id}/{media_id}/segment.ts");
 
     assert!(segment_path.contains(room_id));
     assert!(segment_path.contains(media_id));
@@ -516,7 +516,7 @@ async fn test_empty_playlist_returns_none() {
         &infrastructure,
         "nonexistent",
         "nonexistent",
-        |ts_name| format!("/{}.ts", ts_name),
+        |ts_name| format!("/{ts_name}.ts"),
     ).await.unwrap();
 
     // Stream not in HLS registry -> None (caller returns HTTP 404)

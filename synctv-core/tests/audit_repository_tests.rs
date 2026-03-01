@@ -1,8 +1,8 @@
-//! AuditLogRepository integration tests
+//! `AuditLogRepository` integration tests
 //!
-//! Tests: list filter combinations, get_by_id 365-day visibility limit.
+//! Tests: list filter combinations, `get_by_id` 365-day visibility limit.
 //!
-//! Run with: cargo test -p synctv-core --test audit_repository_tests
+//! Run with: cargo test -p synctv-core --test `audit_repository_tests`
 #![allow(clippy::unwrap_used)]
 
 use synctv_core_testing::{create_test_pool};
@@ -62,7 +62,7 @@ async fn test_list_filter_by_actor_id() {
     let (rows, total) = repo.list(&query).await.unwrap();
     assert_eq!(total, 1);
     assert_eq!(rows.len(), 1);
-    assert_eq!(rows[0].actor_id.as_deref().map(|s| s.trim()), Some(actor_a.as_str()));
+    assert_eq!(rows[0].actor_id.as_deref().map(str::trim), Some(actor_a.as_str()));
 }
 
 #[tokio::test]

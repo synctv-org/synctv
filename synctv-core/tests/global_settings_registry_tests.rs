@@ -9,7 +9,7 @@
 //! - Concurrent updates
 //! - Settings persistence
 //!
-//! Run with: cargo test --test global_settings_registry_tests
+//! Run with: cargo test --test `global_settings_registry_tests`
 #![allow(clippy::unwrap_used)]
 
 use std::time::Duration;
@@ -689,7 +689,7 @@ async fn test_concurrent_settings_updates_last_write_wins() {
     // Verify at least one concurrent update happened
     let concurrent_writes: Vec<_> = results
         .into_iter()
-        .filter_map(|r| r.ok())
+        .filter_map(std::result::Result::ok)
         .filter(|(_, written, current)| *written != current.clone())
         .collect();
 
@@ -966,8 +966,8 @@ fn test_default_values_are_valid() {
 // SettingsService.update() validation tests (Issue #1)
 // ============================================================================
 
-/// Verify that SettingsRegistry wires providers to SettingsService so that
-/// single-key update() calls validate before persisting.
+/// Verify that `SettingsRegistry` wires providers to `SettingsService` so that
+/// single-key `update()` calls validate before persisting.
 #[tokio::test]
 async fn test_registry_wires_validation_to_settings_service() {
     use synctv_core::service::SettingsService;

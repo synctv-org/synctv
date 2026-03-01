@@ -5,7 +5,7 @@
 //!
 //! Includes both:
 //! - Unit tests: validate individual components in isolation (no server needed)
-//! - E2E tests: full WebSocket lifecycle with real Postgres + Redis (TestInfra)
+//! - E2E tests: full WebSocket lifecycle with real Postgres + Redis (`TestInfra`)
 
 #![allow(clippy::unwrap_used)]
 use synctv_api::http::websocket::{AuthMethod, WsQuery};
@@ -288,7 +288,7 @@ mod jwt_auth {
         let validator = test_validator();
         let user_id = UserId::from_string("user_val".to_string());
         let token = svc.sign_token(&user_id, TokenType::Access, 0).unwrap();
-        let _bearer = format!("Bearer {}", token);
+        let _bearer = format!("Bearer {token}");
 
         let extracted = validator.validate_and_extract_user_id(&token).unwrap();
         assert_eq!(extracted.as_str(), "user_val");
@@ -300,7 +300,7 @@ mod jwt_auth {
         let validator = test_validator();
         let user_id = UserId::from_string("user_http".to_string());
         let token = svc.sign_token(&user_id, TokenType::Access, 0).unwrap();
-        let header = format!("Bearer {}", token);
+        let header = format!("Bearer {token}");
 
         let claims = validator.validate_http(&header).unwrap();
         assert_eq!(claims.sub, "user_http");
@@ -623,7 +623,7 @@ mod websocket_e2e {
 
     const TEST_JWT_SECRET: &str = "this-is-a-test-secret-with-enough-entropy-for-jwt-signing-32chars";
 
-    /// Default PostgreSQL version for test containers
+    /// Default `PostgreSQL` version for test containers
     const POSTGRES_VERSION: &str = "16-alpine";
     /// Default Redis version for test containers
     const REDIS_VERSION: &str = "7-alpine";
@@ -674,7 +674,7 @@ mod websocket_e2e {
                             retries += 1;
                             tokio::time::sleep(std::time::Duration::from_millis(500)).await;
                         }
-                        Err(e) => panic!("PostgreSQL not ready after {} retries: {}", retries, e),
+                        Err(e) => panic!("PostgreSQL not ready after {retries} retries: {e}"),
                     }
                 }
             };
@@ -698,12 +698,12 @@ mod websocket_e2e {
         connection_manager: Arc<ConnectionManager>,
     }
 
-    /// Build a minimal AppState with real database and Redis for E2E testing.
+    /// Build a minimal `AppState` with real database and Redis for E2E testing.
     async fn setup_e2e_server(infra: &TestInfra) -> E2EServer {
         setup_e2e_server_with_node(infra, "test_node_1").await
     }
 
-    /// Build a minimal AppState with a custom `node_id`.
+    /// Build a minimal `AppState` with a custom `node_id`.
     ///
     /// Useful for cross-replica tests: call twice with different node IDs
     /// but the same `TestInfra` to simulate two server replicas.
@@ -889,7 +889,7 @@ mod websocket_e2e {
         }
     }
 
-    /// Register a test user directly via UserService and return their UserId + access token.
+    /// Register a test user directly via `UserService` and return their `UserId` + access token.
     async fn register_test_user(
         user_service: &UserService,
         jwt_service: &JwtService,
@@ -937,7 +937,7 @@ mod websocket_e2e {
     ) -> tokio_tungstenite::WebSocketStream<
         tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
     > {
-        let url = format!("ws://{}/ws/rooms/{}?token={}", addr, room_id, token);
+        let url = format!("ws://{addr}/ws/rooms/{room_id}?token={token}");
         let (ws_stream, response) = tokio_tungstenite::connect_async(&url)
             .await
             .expect("WebSocket connect failed");
@@ -949,7 +949,7 @@ mod websocket_e2e {
         ws_stream
     }
 
-    /// Read the next binary message from the WebSocket and decode it as a ServerMessage.
+    /// Read the next binary message from the WebSocket and decode it as a `ServerMessage`.
     async fn recv_server_message(
         ws: &mut (impl StreamExt<Item = Result<tungstenite::Message, tungstenite::Error>> + Unpin),
     ) -> Option<ServerMessage> {
@@ -989,9 +989,9 @@ mod websocket_e2e {
         collected
     }
 
-    /// Read the next server message, skipping UserJoined and UserLeft events.
+    /// Read the next server message, skipping `UserJoined` and `UserLeft` events.
     /// Useful after draining initial messages when you want to read a specific
-    /// event type (Chat, HeartbeatAck, etc.) without being tripped up by
+    /// event type (Chat, `HeartbeatAck`, etc.) without being tripped up by
     /// membership notifications that arrive at unpredictable times.
     async fn recv_server_message_skip_membership(
         ws: &mut (impl StreamExt<Item = Result<tungstenite::Message, tungstenite::Error>> + Unpin),
@@ -1006,7 +1006,7 @@ mod websocket_e2e {
         }
     }
 
-    /// Encode a ClientMessage and send it as binary over the WebSocket.
+    /// Encode a `ClientMessage` and send it as binary over the WebSocket.
     async fn send_client_message(
         ws: &mut (impl SinkExt<tungstenite::Message, Error = tungstenite::Error> + Unpin),
         msg: &ClientMessage,
@@ -1128,7 +1128,7 @@ mod websocket_e2e {
         .await;
 
         match result {
-            Ok(Some(Ok(tungstenite::Message::Close(_)))) | Ok(None) | Err(_) => {
+            Ok(Some(Ok(tungstenite::Message::Close(_))) | None) | Err(_) => {
                 // All acceptable: either received Close frame, stream ended, or timeout
             }
             Ok(Some(Ok(msg))) => {
@@ -1789,9 +1789,7 @@ mod websocket_e2e {
         // The key assertion: NOT all 15 messages were echoed as chats.
         assert!(
             chat_count < 15 || error_received,
-            "Rate limiter should have blocked some messages: got {} chats, error={}",
-            chat_count,
-            error_received,
+            "Rate limiter should have blocked some messages: got {chat_count} chats, error={error_received}",
         );
 
         ws.close(None).await.expect("close");
@@ -1987,8 +1985,7 @@ mod websocket_e2e {
         let user_conn_count = server.connection_manager.user_connection_count(&user_id);
         assert_eq!(
             user_conn_count, 0,
-            "After all disconnect cycles, user should have 0 connections, got {}",
-            user_conn_count
+            "After all disconnect cycles, user should have 0 connections, got {user_conn_count}"
         );
     }
 
@@ -2358,7 +2355,7 @@ mod websocket_e2e {
             Ok("error_message") => {
                 // Server sent a proper Error response — correct behaviour
             }
-            Ok("connection_closed") | Ok("connection_error") => {
+            Ok("connection_closed" | "connection_error") => {
                 // Server closed the connection on invalid input — also acceptable
             }
             Err(_timeout) => {
@@ -2533,7 +2530,7 @@ mod websocket_connection_limit_timing {
                             retries += 1;
                             tokio::time::sleep(std::time::Duration::from_millis(500)).await;
                         }
-                        Err(e) => panic!("PostgreSQL not ready after {} retries: {}", retries, e),
+                        Err(e) => panic!("PostgreSQL not ready after {retries} retries: {e}"),
                     }
                 }
             };
@@ -2556,7 +2553,7 @@ mod websocket_connection_limit_timing {
         connection_manager: Arc<ConnectionManager>,
     }
 
-    /// Build a server with a very low max_per_user limit (1 connection per user)
+    /// Build a server with a very low `max_per_user` limit (1 connection per user)
     async fn setup_server_with_low_user_limit(infra: &TestInfra) -> LimitTestServer {
         let pool = infra.pool.clone();
         let redis_url = infra.redis_url.clone();
@@ -2600,8 +2597,8 @@ mod websocket_connection_limit_timing {
             max_per_user: 1,
             max_per_room: 200,
             max_total: 10000,
-            idle_timeout: std::time::Duration::from_secs(300),
-            max_duration: std::time::Duration::from_secs(86400),
+            idle_timeout: std::time::Duration::from_mins(5),
+            max_duration: std::time::Duration::from_hours(24),
         };
         let connection_manager = Arc::new(ConnectionManager::new(connection_limits));
         let connection_manager_ret = connection_manager.clone();
@@ -2801,7 +2798,7 @@ mod websocket_connection_limit_timing {
                 );
             }
             Err(e) => {
-                panic!("Expected HTTP error with status 429, got: {:?}", e);
+                panic!("Expected HTTP error with status 429, got: {e:?}");
             }
             Ok((_ws2, response)) => {
                 // BUG: If we get here, the connection was upgraded when it shouldn't have been
@@ -2969,7 +2966,7 @@ mod websocket_connection_limit_timing {
 
 mod slow_client_disconnect_tests {
 
-    /// Test that SLOW_CLIENT_DROP_THRESHOLD constant has expected value.
+    /// Test that `SLOW_CLIENT_DROP_THRESHOLD` constant has expected value.
     /// This threshold determines how many consecutive message drops trigger disconnect.
     #[test]
     fn test_slow_client_drop_threshold_value() {
@@ -2991,12 +2988,12 @@ mod slow_client_disconnect_tests {
         // Simulate 9 drops - should NOT trigger disconnect
         for _i in 0..9 {
             let drops = counter.fetch_add(1, Ordering::Relaxed) + 1;
-            assert!(drops < THRESHOLD, "Drop {} should not trigger disconnect", drops);
+            assert!(drops < THRESHOLD, "Drop {drops} should not trigger disconnect");
         }
 
         // 10th drop - should trigger disconnect
         let drops = counter.fetch_add(1, Ordering::Relaxed) + 1;
-        assert!(drops >= THRESHOLD, "Drop {} should trigger disconnect", drops);
+        assert!(drops >= THRESHOLD, "Drop {drops} should trigger disconnect");
 
         // Reset counter (successful send)
         counter.store(0, Ordering::Relaxed);
@@ -3080,7 +3077,7 @@ mod slow_client_message_recovery {
     }
 
     /// Test that pending disconnects are stored when channel is full.
-    /// This verifies the ConnectionManager pending_disconnects mechanism.
+    /// This verifies the `ConnectionManager` `pending_disconnects` mechanism.
     #[test]
     fn test_pending_disconnects_mechanism_exists() {
         // The pending_disconnects DashMap stores disconnect signals that
@@ -3200,16 +3197,14 @@ mod membership_cache_ttl_tests {
 
         // Worst case should be under 70 seconds (down from ~95 with 60s TTL)
         assert!(worst_case_disconnect_secs < 70,
-            "Worst case disconnect time ({}) should be under 70 seconds",
-            worst_case_disconnect_secs);
+            "Worst case disconnect time ({worst_case_disconnect_secs}) should be under 70 seconds");
 
         // This is a significant improvement from 60s TTL (95s worst case)
         let old_worst_case = 60 + MAX_HEARTBEAT_INTERVAL_SECS;
         let improvement = old_worst_case - worst_case_disconnect_secs;
 
         assert_eq!(improvement, 30,
-            "Should reduce worst case by 30 seconds (from {}s to {}s)",
-            old_worst_case, worst_case_disconnect_secs);
+            "Should reduce worst case by 30 seconds (from {old_worst_case}s to {worst_case_disconnect_secs}s)");
     }
 }
 
@@ -3231,8 +3226,8 @@ mod danmu_sse_tests {
     /// Test that documents current Danmu SSE behavior.
     ///
     /// Current implementation:
-    /// 1. Client requests /proxy/:room_id/:media_id/danmu
-    /// 2. Server returns `danmu_info` event with token and host_list
+    /// 1. Client requests /`proxy/:room_id/:media_id/danmu`
+    /// 2. Server returns `danmu_info` event with token and `host_list`
     /// 3. Client uses this info to connect directly to Bilibili's WebSocket
     /// 4. Keep-alive messages are sent to maintain SSE connection
     #[test]
@@ -3253,7 +3248,7 @@ mod danmu_sse_tests {
     ///
     /// The `danmu_info` event contains:
     /// - token: Authentication token for WebSocket connection
-    /// - host_list: Array of WebSocket server hosts with ports
+    /// - `host_list`: Array of WebSocket server hosts with ports
     #[test]
     fn test_danmu_info_event_structure() {
         use serde_json::json;
@@ -3273,7 +3268,7 @@ mod danmu_sse_tests {
 
         // Verify structure
         assert!(event_data.get("token").is_some());
-        assert!(event_data.get("host_list").is_some_and(|h| h.is_array()));
+        assert!(event_data.get("host_list").is_some_and(serde_json::Value::is_array));
     }
 
     /// Test that documents the future enhancement for continuous streaming.
@@ -3318,7 +3313,7 @@ mod danmu_sse_tests {
     /// Test that documents error handling for non-live media.
     ///
     /// If the media is not a Bilibili live stream, an error event
-    /// should be sent instead of danmu_info.
+    /// should be sent instead of `danmu_info`.
     #[test]
     fn test_danmu_sse_error_for_non_live() {
         use serde_json::json;

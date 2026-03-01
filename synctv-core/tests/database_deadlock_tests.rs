@@ -2,7 +2,7 @@
 //!
 //! Tests verify that the application properly detects and handles deadlocks.
 //!
-//! Run with: cargo test --test database_deadlock_tests
+//! Run with: cargo test --test `database_deadlock_tests`
 //! Requires Docker for testcontainers.
 #![allow(clippy::unwrap_used)]
 
@@ -38,8 +38,7 @@ async fn create_test_pool() -> TestPostgres {
     let port = container.get_host_port_ipv4(5432).await.expect("Failed to get port");
 
     let database_url = format!(
-        "postgres://synctv:synctv_test@{}:{}/synctv_test",
-        host, port
+        "postgres://synctv:synctv_test@{host}:{port}/synctv_test"
     );
 
     let pool = {
@@ -248,14 +247,14 @@ async fn test_deadlock_detection_opposite_lock_order() {
     let has_deadlock = result1.is_err() || result2.is_err();
 
     if has_deadlock {
-        let err1_str = format!("{:?}", result1);
-        let err2_str = format!("{:?}", result2);
-        let combined = format!("{} {}", err1_str, err2_str);
+        let err1_str = format!("{result1:?}");
+        let err2_str = format!("{result2:?}");
+        let combined = format!("{err1_str} {err2_str}");
 
         // PostgreSQL deadlock error code is 40P01
         assert!(
             combined.contains("40P01") || combined.contains("deadlock"),
-            "Expected deadlock error, got: {}", combined
+            "Expected deadlock error, got: {combined}"
         );
     } else {
         assert!(both_ok, "If no deadlock, both transactions should succeed");
@@ -357,11 +356,11 @@ async fn test_deadlock_with_for_update_nowait() {
 
     // Second transaction should fail immediately due to NOWAIT
     if result2.is_err() {
-        let err_msg = format!("{:?}", result2);
+        let err_msg = format!("{result2:?}");
         // Lock not available error (55P03)
         assert!(
             err_msg.contains("55P03") || err_msg.contains("could not obtain lock"),
-            "Expected lock timeout error, got: {}", err_msg
+            "Expected lock timeout error, got: {err_msg}"
         );
     }
 }

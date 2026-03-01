@@ -1,7 +1,7 @@
 //! Media CRUD integration tests
 //! Tests media item creation, unique constraints, deletion, and playlist association.
 //!
-//! Run with: cargo test --test media_integration_tests
+//! Run with: cargo test --test `media_integration_tests`
 #![allow(clippy::unwrap_used)]
 
 use synctv_core_testing::create_test_pool;
@@ -22,7 +22,7 @@ fn make_user(username: &str) -> User {
     User {
         id: UserId::new(),
         username: username.to_string(),
-        email: Some(format!("{}@test.com", username)),
+        email: Some(format!("{username}@test.com")),
         password_hash: "hash".to_string(),
         role: UserRole::User,
         status: UserStatus::Active,
@@ -52,12 +52,12 @@ async fn setup_test_context(suffix: &str) -> TestContext {
     let room_repo = RoomRepository::new(pool.clone());
     let playlist_repo = PlaylistRepository::new(pool.clone());
 
-    let owner = user_repo.create(&make_user(&format!("media_owner_{}", suffix))).await.unwrap();
+    let owner = user_repo.create(&make_user(&format!("media_owner_{suffix}"))).await.unwrap();
     let room = room_repo.create(&{
         let now = Utc::now();
         Room {
             id: RoomId::new(),
-            name: format!("Media Room {}", suffix),
+            name: format!("Media Room {suffix}"),
             description: String::new(),
             created_by: owner.id.clone(),
             status: RoomStatus::Active,
@@ -509,7 +509,7 @@ async fn test_create_batch_chunked_inserts_all() {
     let media_repo = MediaRepository::new(ctx.pool.clone());
 
     let items: Vec<Media> = (0..5)
-        .map(|i| make_media(&ctx.root_playlist.id, &ctx.room.id, &format!("batch_{}.mp4", i), i))
+        .map(|i| make_media(&ctx.root_playlist.id, &ctx.room.id, &format!("batch_{i}.mp4"), i))
         .collect();
 
     let results = media_repo.create_batch(&items).await.unwrap();
@@ -558,7 +558,7 @@ async fn test_count_by_playlists_batch_multiple_playlists() {
             .create(&make_media(
                 &ctx.root_playlist.id,
                 &ctx.room.id,
-                &format!("root_{}.mp4", i),
+                &format!("root_{i}.mp4"),
                 i,
             ))
             .await
@@ -569,7 +569,7 @@ async fn test_count_by_playlists_batch_multiple_playlists() {
             .create(&make_media(
                 &pl2.id,
                 &ctx.room.id,
-                &format!("pl2_{}.mp4", i),
+                &format!("pl2_{i}.mp4"),
                 i,
             ))
             .await
@@ -726,7 +726,7 @@ async fn test_concurrent_add_to_empty_playlist_unique_positions() {
                 playlist_id: playlist_id.clone(),
                 room_id: room_id.clone(),
                 creator_id: None,
-                name: format!("concurrent_{}.mp4", i),
+                name: format!("concurrent_{i}.mp4"),
                 position,
                 source_provider: "direct_url".to_string(),
                 source_config: json!({"url": format!("https://example.com/video{}.mp4", i)}),
@@ -738,7 +738,7 @@ async fn test_concurrent_add_to_empty_playlist_unique_positions() {
             let result = media_repo.create_with_executor(&media, &mut *tx).await;
 
             if let Err(ref e) = result {
-                eprintln!("Task {} failed to create media: {:?}", i, e);
+                eprintln!("Task {i} failed to create media: {e:?}");
             }
 
             tx.commit().await.expect("Failed to commit transaction");
@@ -759,7 +759,7 @@ async fn test_concurrent_add_to_empty_playlist_unique_positions() {
     // All tasks should succeed (no UNIQUE constraint violations)
     let successful_positions: Vec<i32> = results
         .into_iter()
-        .filter_map(|r| r.ok())
+        .filter_map(std::result::Result::ok)
         .collect();
 
     assert_eq!(
@@ -772,13 +772,12 @@ async fn test_concurrent_add_to_empty_playlist_unique_positions() {
 
     // All positions should be unique
     let mut sorted_positions = successful_positions.clone();
-    sorted_positions.sort();
+    sorted_positions.sort_unstable();
     sorted_positions.dedup();
     assert_eq!(
         sorted_positions.len(),
         num_concurrent,
-        "All positions should be unique, got duplicates: {:?}",
-        successful_positions
+        "All positions should be unique, got duplicates: {successful_positions:?}"
     );
 
     // Positions should be 0..9
@@ -805,7 +804,7 @@ async fn test_concurrent_add_to_nonempty_playlist_unique_positions() {
             .create(&make_media(
                 &ctx.root_playlist.id,
                 &ctx.room.id,
-                &format!("existing_{}.mp4", i),
+                &format!("existing_{i}.mp4"),
                 i,
             ))
             .await
@@ -835,7 +834,7 @@ async fn test_concurrent_add_to_nonempty_playlist_unique_positions() {
                 playlist_id: playlist_id.clone(),
                 room_id: room_id.clone(),
                 creator_id: None,
-                name: format!("new_{}.mp4", i),
+                name: format!("new_{i}.mp4"),
                 position,
                 source_provider: "direct_url".to_string(),
                 source_config: json!({"url": format!("https://example.com/new{}.mp4", i)}),
@@ -861,19 +860,18 @@ async fn test_concurrent_add_to_nonempty_playlist_unique_positions() {
 
     let successful_positions: Vec<i32> = results
         .into_iter()
-        .filter_map(|r| r.ok())
+        .filter_map(std::result::Result::ok)
         .collect();
 
     assert_eq!(
         successful_positions.len(),
         num_concurrent,
-        "All {} concurrent adds should succeed",
-        num_concurrent
+        "All {num_concurrent} concurrent adds should succeed"
     );
 
     // All new positions should be unique and >= 5
-    let mut sorted_positions = successful_positions.clone();
-    sorted_positions.sort();
+    let mut sorted_positions = successful_positions;
+    sorted_positions.sort_unstable();
     sorted_positions.dedup();
     assert_eq!(sorted_positions.len(), num_concurrent);
 
@@ -881,8 +879,7 @@ async fn test_concurrent_add_to_nonempty_playlist_unique_positions() {
     for &pos in &sorted_positions {
         assert!(
             (5..10).contains(&pos),
-            "New position {} should be >= 5 and < 10",
-            pos
+            "New position {pos} should be >= 5 and < 10"
         );
     }
 }

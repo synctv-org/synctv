@@ -30,7 +30,7 @@ pub trait MemberEventBroadcaster: Send + Sync {
 /// Role hierarchy level for authorization checks (higher = more authority)
 /// Creator > Admin > Member > Guest
 ///
-/// Note: kick_member/ban_member enforce role hierarchy atomically in SQL
+/// Note: `kick_member/ban_member` enforce role hierarchy atomically in SQL
 /// (see `remove_with_role_check` / `ban_with_role_check` in the repository layer).
 /// This function is kept for unit tests that validate the conceptual hierarchy.
 #[cfg(test)]
@@ -1097,7 +1097,7 @@ mod tests {
     ///
     /// The permission calculation depends on:
     /// 1. The member's role (which changes)
-    /// 2. The room's role-specific permission settings (from RoomSettings)
+    /// 2. The room's role-specific permission settings (from `RoomSettings`)
     ///
     /// When the role changes, we need to invalidate the room settings cache
     /// so that any stale cached room settings are refreshed.
@@ -1149,8 +1149,8 @@ mod tests {
     /// Test that role changes affect permission calculation through room settings.
     ///
     /// This demonstrates why room settings cache invalidation is needed on role change:
-    /// - A Guest has permissions based on guest_* settings in RoomSettings
-    /// - A Member has permissions based on member_* settings in RoomSettings
+    /// - A Guest has permissions based on guest_* settings in `RoomSettings`
+    /// - A Member has permissions based on member_* settings in `RoomSettings`
     /// - When a user's role changes from Guest to Member, their new permissions
     ///   depend on the (potentially cached) member_* settings
     /// - If the room settings cache is stale, the new permissions will be incorrect
@@ -1177,7 +1177,7 @@ mod tests {
         // cached with stale values, the permission check will be wrong.
     }
 
-    /// Test that verifies both UserPermission and RoomSettings invalidation
+    /// Test that verifies both `UserPermission` and `RoomSettings` invalidation
     /// messages can coexist in the invalidation system.
     #[test]
     fn test_dual_invalidation_messages() {
@@ -1192,7 +1192,7 @@ mod tests {
 
         let user_msg = InvalidationMessage::UserPermission {
             room_id: room_id.clone(),
-            user_id: user_id.clone(),
+            user_id,
         };
         let settings_msg = InvalidationMessage::RoomSettings {
             room_id: room_id.clone(),
@@ -1212,7 +1212,7 @@ mod tests {
 
     /// Test that verifies the retry constants are appropriate for concurrent scenarios.
     ///
-    /// The MAX_RETRIES (3) and BACKOFF_BASE_MS (5) should provide enough attempts
+    /// The `MAX_RETRIES` (3) and `BACKOFF_BASE_MS` (5) should provide enough attempts
     /// and backoff time to handle concurrent optimistic lock conflicts.
     #[test]
     fn test_concurrent_retry_constants() {
@@ -1229,21 +1229,21 @@ mod tests {
         assert_eq!(total_backoff_ms, 15); // 5 + 10 = 15ms
     }
 
-    /// Test that verifies AddMemberOptions is Send + Sync safe for concurrent use.
+    /// Test that verifies `AddMemberOptions` is Send + Sync safe for concurrent use.
     #[test]
     fn test_add_member_options_thread_safety() {
         fn assert_send_sync<T: Send + Sync>() {}
         assert_send_sync::<AddMemberOptions>();
     }
 
-    /// Test that verifies RoomMember is Send + Sync safe for concurrent use.
+    /// Test that verifies `RoomMember` is Send + Sync safe for concurrent use.
     #[test]
     fn test_room_member_thread_safety() {
         fn assert_send_sync<T: Send + Sync>() {}
         assert_send_sync::<RoomMember>();
     }
 
-    /// Test that verifies RoomId and UserId are Send + Sync safe.
+    /// Test that verifies `RoomId` and `UserId` are Send + Sync safe.
     #[test]
     fn test_id_types_thread_safety() {
         fn assert_send_sync<T: Send + Sync>() {}
@@ -1251,7 +1251,7 @@ mod tests {
         assert_send_sync::<UserId>();
     }
 
-    /// Test that verifies MemberService is Clone for concurrent use.
+    /// Test that verifies `MemberService` is Clone for concurrent use.
     #[test]
     fn test_member_service_clone() {
         // MemberService implements Clone, allowing it to be shared across tasks
@@ -1261,7 +1261,7 @@ mod tests {
 
     // ========== Error Handling Tests ==========
 
-    /// Test error message format for kick_member authorization failure.
+    /// Test error message format for `kick_member` authorization failure.
     #[test]
     fn test_kick_member_error_messages() {
         // When a lower role tries to kick a higher role
@@ -1269,7 +1269,7 @@ mod tests {
         assert!(expected_msg.contains("equal or higher"));
     }
 
-    /// Test error message format for set_member_role authorization failure.
+    /// Test error message format for `set_member_role` authorization failure.
     #[test]
     fn test_set_member_role_error_messages() {
         // Only creator can change roles
@@ -1277,7 +1277,7 @@ mod tests {
         assert!(expected_msg.contains("creator"));
     }
 
-    /// Test that kick_member prevents self-kick.
+    /// Test that `kick_member` prevents self-kick.
     #[test]
     fn test_kick_self_is_prevented() {
         // The error message for kicking yourself

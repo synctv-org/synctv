@@ -638,6 +638,7 @@ impl RateLimiter {
 
     /// Get the current count for an IP (for testing/debugging).
     #[cfg(test)]
+    #[must_use] 
     pub fn get_count(&self, ip: &str) -> Option<usize> {
         self.counters.get(ip).map(|e| e.value().0)
     }
@@ -838,7 +839,8 @@ impl CorsConfig {
 
     /// Check if wildcard mode is enabled.
     #[cfg(test)]
-    pub fn is_wildcard(&self) -> bool {
+    #[must_use] 
+    pub const fn is_wildcard(&self) -> bool {
         self.wildcard
     }
 }

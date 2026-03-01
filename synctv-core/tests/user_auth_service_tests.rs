@@ -1,12 +1,12 @@
 //! User auth/security service tests
 //!
-//! Tests for UserService::refresh_token, login status checks, delete_user,
-//! change_password/set_password, and create_or_load_by_oauth2.
+//! Tests for `UserService::refresh_token`, login status checks, `delete_user`,
+//! `change_password/set_password`, and `create_or_load_by_oauth2`.
 //!
-//! S1/S2 tests use InMemoryTokenBlacklistStore + InMemoryBruteForceProtection + real JwtService.
+//! S1/S2 tests use `InMemoryTokenBlacklistStore` + `InMemoryBruteForceProtection` + real `JwtService`.
 //! S3/S7/S13 tests use testcontainers PG.
 //!
-//! Run with: cargo test --test user_auth_service_tests
+//! Run with: cargo test --test `user_auth_service_tests`
 #![allow(clippy::unwrap_used)]
 
 use std::sync::Arc;
@@ -546,12 +546,12 @@ async fn test_login_unverified_email_allowed_when_not_required() {
 /// which accounts have emails configured based on different error responses.
 ///
 /// VULNERABILITY DEMONSTRATION:
-/// When email_verification_required=true, the code checks:
+/// When `email_verification_required=true`, the code checks:
 ///   `user.email.is_some() && !user.email_verified`
 ///
 /// This means:
-/// - User WITH email (unverified): blocked (email.is_some() = true)
-/// - User WITHOUT email (OAuth2-only): PASSES (email.is_some() = false)
+/// - User WITH email (unverified): blocked (`email.is_some()` = true)
+/// - User WITHOUT email (OAuth2-only): PASSES (`email.is_some()` = false)
 ///
 /// An attacker can enumerate accounts by attempting login with correct password:
 /// - Blocked → account has email configured
@@ -568,7 +568,7 @@ async fn test_login_email_verification_no_account_enumeration() {
     let (user_with_email, _, _) = service
         .register(
             email_user.clone(),
-            Some(format!("{}@test.com", email_user)),
+            Some(format!("{email_user}@test.com")),
             "StrongPass1".to_string(),
             None,
         )
@@ -628,12 +628,12 @@ async fn test_login_email_verification_no_account_enumeration() {
                 "Both users should receive identical error messages to prevent enumeration"
             );
         }
-        _ => panic!("Both errors should be Authentication errors, got: {:?} and {:?}", email_err, oauth_err),
+        _ => panic!("Both errors should be Authentication errors, got: {email_err:?} and {oauth_err:?}"),
     }
 }
 
-/// Test that when email verification is NOT required, both email and OAuth2
-/// users can login regardless of email_verified status.
+/// Test that when email verification is NOT required, both email and `OAuth2`
+/// users can login regardless of `email_verified` status.
 #[tokio::test]
 #[ignore = "Requires Docker"]
 async fn test_login_no_verification_required_both_user_types_allowed() {
@@ -646,7 +646,7 @@ async fn test_login_no_verification_required_both_user_types_allowed() {
     let (_user_with_email, _, _) = service
         .register(
             email_user.clone(),
-            Some(format!("{}@test.com", email_user)),
+            Some(format!("{email_user}@test.com")),
             "StrongPass1".to_string(),
             None,
         )
@@ -1029,10 +1029,10 @@ async fn test_refresh_token_email_verification_recheck() {
 // S1.5: refresh_token rate limiting tests (HIGH #16)
 // ============================================================================
 
-/// Test that refresh_token endpoint has rate limiting to prevent abuse.
+/// Test that `refresh_token` endpoint has rate limiting to prevent abuse.
 ///
 /// Without rate limiting, an attacker with a stolen refresh token can:
-/// 1. Rapidly call refresh_token to exhaust server resources
+/// 1. Rapidly call `refresh_token` to exhaust server resources
 /// 2. Trigger family revocation, locking out the legitimate user
 ///
 /// Rate limiting should:
@@ -1078,15 +1078,14 @@ async fn test_refresh_token_rate_limiting_per_user() {
             }
             Err(e) => {
                 // Other errors shouldn't happen in this test
-                panic!("Unexpected error during refresh: {:?}", e);
+                panic!("Unexpected error during refresh: {e:?}");
             }
         }
     }
 
     assert!(
         rate_limited,
-        "Refresh token endpoint should be rate limited after {} requests (VULNERABILITY: no rate limiting)",
-        success_count
+        "Refresh token endpoint should be rate limited after {success_count} requests (VULNERABILITY: no rate limiting)"
     );
 
     // Should have had at least some successful refreshes before hitting limit
@@ -1101,8 +1100,8 @@ async fn test_refresh_token_rate_limiting_per_user() {
 ///
 /// RACE CONDITION VULNERABILITY:
 /// The original implementation has a TOCTOU (Time-Of-Check-Time-Of-Use) race:
-/// 1. Request A: is_blacklisted(jti) -> false
-/// 2. Request B: is_blacklisted(jti) -> false (A hasn't blacklisted yet)
+/// 1. Request A: `is_blacklisted(jti)` -> false
+/// 2. Request B: `is_blacklisted(jti)` -> false (A hasn't blacklisted yet)
 /// 3. Request A: blacklist(jti) -> success, issues new token
 /// 4. Request B: blacklist(jti) -> success (upsert), issues new token
 ///
@@ -1186,9 +1185,8 @@ async fn test_refresh_token_concurrent_refresh_race_condition() {
     // All others should fail because the JTI is already blacklisted
     assert_eq!(
         successes, 1,
-        "Exactly ONE concurrent refresh should succeed, got {} successes and {} failures. \
-         RACE CONDITION: multiple requests bypassed the blacklist check!",
-        successes, failures
+        "Exactly ONE concurrent refresh should succeed, got {successes} successes and {failures} failures. \
+         RACE CONDITION: multiple requests bypassed the blacklist check!"
     );
     assert_eq!(
         failures, 9,
@@ -1357,8 +1355,8 @@ async fn test_login_timing_attack_prevention() {
     let avg_wrong_password: std::time::Duration = wrong_password_times.iter().sum::<std::time::Duration>() / num_samples as u32;
 
     // Log for debugging
-    println!("Avg nonexistent user time: {:?}", avg_nonexistent);
-    println!("Avg wrong password time: {:?}", avg_wrong_password);
+    println!("Avg nonexistent user time: {avg_nonexistent:?}");
+    println!("Avg wrong password time: {avg_wrong_password:?}");
 
     // Calculate the difference
     let diff = avg_nonexistent.abs_diff(avg_wrong_password);
@@ -1380,17 +1378,13 @@ async fn test_login_timing_attack_prevention() {
     // The real security property is that both paths perform an Argon2 hash
     // (verified by the MIN_RESPONSE_TIME check below), not that they are
     // identical to within milliseconds.
-    const MAX_ACCEPTABLE_DIFF: std::time::Duration = std::time::Duration::from_millis(2000);
+    const MAX_ACCEPTABLE_DIFF: std::time::Duration = std::time::Duration::from_secs(2);
 
     assert!(
         diff < MAX_ACCEPTABLE_DIFF,
-        "Timing difference ({:?}) exceeds security threshold ({:?}). \
+        "Timing difference ({diff:?}) exceeds security threshold ({MAX_ACCEPTABLE_DIFF:?}). \
          This could allow username enumeration via timing attacks. \
-         Nonexistent avg: {:?}, Wrong password avg: {:?}",
-        diff,
-        MAX_ACCEPTABLE_DIFF,
-        avg_nonexistent,
-        avg_wrong_password
+         Nonexistent avg: {avg_nonexistent:?}, Wrong password avg: {avg_wrong_password:?}"
     );
 
     // Additional check: Ensure both paths take significant time (Argon2 is running)
@@ -1399,9 +1393,7 @@ async fn test_login_timing_attack_prevention() {
     assert!(
         avg_nonexistent >= MIN_RESPONSE_TIME && avg_wrong_password >= MIN_RESPONSE_TIME,
         "Both paths should take significant time due to Argon2 verification. \
-         Nonexistent avg: {:?}, Wrong password avg: {:?}",
-        avg_nonexistent,
-        avg_wrong_password
+         Nonexistent avg: {avg_nonexistent:?}, Wrong password avg: {avg_wrong_password:?}"
     );
 }
 
@@ -1429,10 +1421,8 @@ async fn test_login_uses_constant_time_verification() {
 
     assert!(
         elapsed >= MIN_ARGON2_TIME,
-        "Login for nonexistent user completed too quickly ({:?} < {:?}). \
+        "Login for nonexistent user completed too quickly ({elapsed:?} < {MIN_ARGON2_TIME:?}). \
          This suggests dummy hash verification is NOT being performed, \
-         which enables timing attacks for username enumeration.",
-        elapsed,
-        MIN_ARGON2_TIME
+         which enables timing attacks for username enumeration."
     );
 }

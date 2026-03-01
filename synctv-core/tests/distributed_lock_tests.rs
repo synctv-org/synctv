@@ -11,8 +11,8 @@
 //! - Lock release by non-owner fails
 //! - Redis connection failure handling
 //!
-//! Run with: cargo test --test distributed_lock_tests
-//! Run Docker tests: cargo test --test distributed_lock_tests -- --ignored
+//! Run with: cargo test --test `distributed_lock_tests`
+//! Run Docker tests: cargo test --test `distributed_lock_tests` -- --ignored
 #![allow(clippy::unwrap_used)]
 
 use synctv_core::service::distributed_lock::{DistributedLock, MigrationLock};
@@ -31,7 +31,7 @@ async fn start_redis() -> (testcontainers::ContainerAsync<Redis>, redis::aio::Co
         .get_host_port_ipv4(6379)
         .await
         .expect("Failed to get port");
-    let redis_url = format!("redis://127.0.0.1:{}", port);
+    let redis_url = format!("redis://127.0.0.1:{port}");
     let client = redis::Client::open(redis_url).expect("Failed to create Redis client");
     let conn = redis::aio::ConnectionManager::new(client)
         .await
@@ -139,7 +139,7 @@ async fn test_fencing_token_monotonic_increase() {
 
     for i in 0..5 {
         let result = lock.acquire_with_token(key, ttl).await.unwrap();
-        assert!(result.is_some(), "Acquire {} should succeed", i);
+        assert!(result.is_some(), "Acquire {i} should succeed");
 
         let (lock_value, token) = result.unwrap();
         tokens.push(token);
@@ -601,8 +601,7 @@ async fn test_lock_values_are_unique() {
     assert_eq!(
         unique_count.len(),
         10,
-        "All lock values should be unique, found duplicates: {:?}",
-        lock_values
+        "All lock values should be unique, found duplicates: {lock_values:?}"
     );
 
     // All 10 values should be distinct
@@ -670,11 +669,11 @@ async fn test_special_characters_in_key() {
 
     for key in keys {
         let lock_value = lock.acquire(key, 10).await.unwrap();
-        assert!(lock_value.is_some(), "Acquire with key '{}' should succeed", key);
+        assert!(lock_value.is_some(), "Acquire with key '{key}' should succeed");
 
         let lock_value = lock_value.unwrap();
         let released = lock.release(key, &lock_value).await.unwrap();
-        assert!(released, "Release with key '{}' should succeed", key);
+        assert!(released, "Release with key '{key}' should succeed");
     }
 }
 
@@ -707,11 +706,11 @@ async fn test_rapid_acquire_release_cycles() {
     // Perform 100 rapid acquire/release cycles
     for i in 0..100 {
         let lock_value = lock.acquire(key, ttl).await.unwrap();
-        assert!(lock_value.is_some(), "Cycle {} should acquire lock", i);
+        assert!(lock_value.is_some(), "Cycle {i} should acquire lock");
 
         let lock_value = lock_value.unwrap();
         let released = lock.release(key, &lock_value).await.unwrap();
-        assert!(released, "Cycle {} should release lock", i);
+        assert!(released, "Cycle {i} should release lock");
     }
 }
 

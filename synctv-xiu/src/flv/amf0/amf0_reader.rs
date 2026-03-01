@@ -259,7 +259,7 @@ mod tests {
         let mut buf = [0; 8];
         BigEndian::write_f64(&mut buf, phi);
         assert_eq!(phi, BigEndian::read_f64(&buf));
-        println!("tsetstt")
+        println!("tsetstt");
     }
 
     use super::amf0_markers;
@@ -324,7 +324,7 @@ mod tests {
 
         let _ = amf_reader.read_all();
 
-        print!("test")
+        print!("test");
     }
 
     // fn uint32_to_int24(num: u32) -> i32 {
@@ -346,7 +346,7 @@ mod tests {
 
     fn bytes_to_i24(bytes: [u8; 3]) -> i32 {
         let sign_extend_mask = 0xff_ff << 23;
-        let value = ((bytes[0] as i32) << 16) | ((bytes[1] as i32) << 8) | (bytes[2] as i32);
+        let value = (i32::from(bytes[0]) << 16) | (i32::from(bytes[1]) << 8) | i32::from(bytes[2]);
 
         if value & (1 << 23) != 0 {
             // Sign extend the value
@@ -369,7 +369,7 @@ mod tests {
             let time = bytes_reader.read_u8().unwrap();
             //print!("==time0=={}\n", time);
             //print!("==time1=={}\n", self.tag.composition_time);
-            t = (t << 8) + time as u32;
+            t = (t << 8) + u32::from(time);
         }
 
         println!("number: {}", bytes_to_i24(data));

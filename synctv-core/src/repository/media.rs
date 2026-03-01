@@ -785,9 +785,9 @@ mod tests {
         let creator_id = UserId::new();
 
         let media = Media::from_provider(
-            playlist_id.clone(),
-            room_id.clone(),
-            Some(creator_id.clone()),
+            playlist_id,
+            room_id,
+            Some(creator_id),
             "Test Video".to_string(),
             serde_json::json!({"url": "https://example.com/video.mp4"}),
             "direct_url",
@@ -801,7 +801,7 @@ mod tests {
         assert!(media.is_direct());
     }
 
-    /// Unit test: is_direct() check
+    /// Unit test: `is_direct()` check
     #[test]
     fn test_media_is_direct() {
         let playlist_id = PlaylistId::new();
@@ -832,7 +832,7 @@ mod tests {
         assert!(!bilibili_media.is_direct());
     }
 
-    /// Unit test: Media::from_direct_single_mode
+    /// Unit test: `Media::from_direct_single_mode`
     #[test]
     fn test_media_from_direct_single_mode() {
         let playlist_id = PlaylistId::new();
@@ -845,9 +845,9 @@ mod tests {
         );
 
         let media = Media::from_direct_single_mode(
-            playlist_id.clone(),
-            room_id.clone(),
-            Some(creator_id.clone()),
+            playlist_id,
+            room_id,
+            Some(creator_id),
             "Single Mode Video".to_string(),
             "direct",
             playback_info,
@@ -860,7 +860,7 @@ mod tests {
         assert!(media.source_config.get("playback_infos").is_some());
     }
 
-    /// Unit test: Media::from_direct_multimode
+    /// Unit test: `Media::from_direct_multimode`
     #[test]
     fn test_media_from_direct_multimode() {
         let playlist_id = PlaylistId::new();
@@ -903,7 +903,7 @@ mod tests {
         assert!(media.source_config.get("metadata").is_some());
     }
 
-    /// Unit test: get_playback_result for direct media
+    /// Unit test: `get_playback_result` for direct media
     #[test]
     fn test_get_playback_result_direct() {
         let playlist_id = PlaylistId::new();
@@ -932,7 +932,7 @@ mod tests {
         assert!(playback.playback_infos.contains_key("direct"));
     }
 
-    /// Unit test: get_playback_result returns None for non-direct media
+    /// Unit test: `get_playback_result` returns None for non-direct media
     #[test]
     fn test_get_playback_result_non_direct() {
         let playlist_id = PlaylistId::new();
@@ -1167,7 +1167,7 @@ mod tests {
                     playlist.id.clone(),
                     room.id.clone(),
                     Some(owner.id.clone()),
-                    format!("Video {}", i),
+                    format!("Video {i}"),
                     serde_json::json!({"url": format!("https://example.com/{}.mp4", i)}),
                     "direct_url",
                     "default".to_string(),
@@ -1223,7 +1223,7 @@ mod tests {
                     playlist.id.clone(),
                     room.id.clone(),
                     Some(owner.id.clone()),
-                    format!("Video {}", i),
+                    format!("Video {i}"),
                     serde_json::json!({"url": format!("https://example.com/{}.mp4", i)}),
                     "direct_url",
                     "default".to_string(),
@@ -1239,7 +1239,7 @@ mod tests {
         assert_eq!(result.unwrap().len(), 1001);
     }
 
-    /// Integration test: update_if_unchanged (optimistic locking)
+    /// Integration test: `update_if_unchanged` (optimistic locking)
     #[tokio::test]
     #[ignore = "Requires Docker"]
     #[allow(deprecated)]
@@ -1425,7 +1425,7 @@ mod tests {
                 playlist.id.clone(),
                 room.id.clone(),
                 Some(owner.id.clone()),
-                format!("Video {}", i),
+                format!("Video {i}"),
                 serde_json::json!({}),
                 "direct_url",
                 "default".to_string(),
@@ -1476,7 +1476,7 @@ mod tests {
                 playlist.id.clone(),
                 room.id.clone(),
                 Some(owner.id.clone()),
-                format!("Video {}", i),
+                format!("Video {i}"),
                 serde_json::json!({}),
                 "direct_url",
                 "default".to_string(),
@@ -1543,7 +1543,7 @@ mod tests {
                 playlist.id.clone(),
                 room.id.clone(),
                 Some(owner.id.clone()),
-                format!("Video {}", i),
+                format!("Video {i}"),
                 serde_json::json!({}),
                 "direct_url",
                 "default".to_string(),
@@ -1601,7 +1601,7 @@ mod tests {
                 playlist.id.clone(),
                 room.id.clone(),
                 Some(owner.id.clone()),
-                format!("Video {}", i),
+                format!("Video {i}"),
                 serde_json::json!({}),
                 "direct_url",
                 "default".to_string(),

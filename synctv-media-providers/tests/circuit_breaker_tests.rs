@@ -1,6 +1,6 @@
 //! Circuit Breaker Memory Ordering Tests
 //!
-//! Tests that the circuit breaker uses correct memory ordering (Acquire/Release or SeqCst)
+//! Tests that the circuit breaker uses correct memory ordering (Acquire/Release or `SeqCst`)
 //! for concurrent state transitions, ensuring no data races or visibility issues.
 
 #![allow(clippy::unwrap_used)]
@@ -15,7 +15,7 @@ const STRESS_ITERATIONS: usize = 100_000;
 const CONCURRENT_THREADS: usize = 8;
 
 /// Test that consecutive failure counter works correctly under high concurrency
-/// with SeqCst ordering
+/// with `SeqCst` ordering
 #[test]
 fn test_atomic_counter_seqcst_correctness() {
     let counter = Arc::new(AtomicU32::new(0));
@@ -40,8 +40,7 @@ fn test_atomic_counter_seqcst_correctness() {
     let actual = counter.load(Ordering::SeqCst);
     assert_eq!(
         actual, expected,
-        "Counter should have all increments visible: expected {}, got {}",
-        expected, actual
+        "Counter should have all increments visible: expected {expected}, got {actual}"
     );
 }
 
@@ -78,8 +77,7 @@ fn test_atomic_state_transitions() {
                 let value = failures_clone2.load(Ordering::SeqCst);
                 assert!(
                     value < 1000,
-                    "Value should never exceed reasonable bounds: {}",
-                    value
+                    "Value should never exceed reasonable bounds: {value}"
                 );
             }
         }));
@@ -93,8 +91,7 @@ fn test_atomic_state_transitions() {
     let final_value = failures.load(Ordering::SeqCst);
     assert!(
         final_value < 1000,
-        "Final value should be reasonable: {}",
-        final_value
+        "Final value should be reasonable: {final_value}"
     );
 }
 
@@ -129,7 +126,7 @@ fn test_acquire_release_semantics() {
     consumer.join().unwrap();
 }
 
-/// Test that SeqCst provides total ordering for multiple operations
+/// Test that `SeqCst` provides total ordering for multiple operations
 #[test]
 fn test_seqcst_total_ordering() {
     let a = Arc::new(AtomicU32::new(0));

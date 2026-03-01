@@ -6,13 +6,13 @@
 //! ## Test Cases
 //!
 //! 1. Password verification failure triggers rate limiting
-//! 2. Rate limiting is based on `room_id + client_ip` (not just room_id)
+//! 2. Rate limiting is based on `room_id + client_ip` (not just `room_id`)
 //! 3. After lockout expires, verification is allowed again
 //! 4. Successful password verification resets failure counter
 //! 5. Rate limiting works without IP (room-only mode)
 //! 6. Reset failure is logged to audit log (Task #91)
 //!
-//! Run with: cargo test -p synctv-core --test room_password_rate_limit_tests -- --nocapture
+//! Run with: cargo test -p synctv-core --test `room_password_rate_limit_tests` -- --nocapture
 #![allow(clippy::unwrap_used)]
 
 use std::net::{IpAddr, Ipv4Addr};
@@ -69,7 +69,7 @@ fn make_user(username: &str) -> User {
     User {
         id: UserId::new(),
         username: username.to_string(),
-        email: Some(format!("{}@test.com", username)),
+        email: Some(format!("{username}@test.com")),
         password_hash: "hash".to_string(),
         role: UserRole::User,
         status: UserStatus::Active,
@@ -345,7 +345,7 @@ async fn test_successful_password_verification_resets_failure_counter() {
 
 /// Test 5: Rate limiting works without IP (room-only mode)
 ///
-/// When client IP is not available, rate limiting should still work based on room_id only.
+/// When client IP is not available, rate limiting should still work based on `room_id` only.
 #[tokio::test]
 #[ignore = "Requires Docker"]
 async fn test_room_password_rate_limit_without_ip() {
@@ -396,7 +396,7 @@ async fn test_room_password_rate_limit_without_ip() {
 /// potential brute-force attack patterns even when infrastructure is degraded.
 ///
 /// Note: This test verifies that the audit log entry is created. The actual
-/// Redis failure simulation would require a mock BruteForceProtection service.
+/// Redis failure simulation would require a mock `BruteForceProtection` service.
 #[tokio::test]
 #[ignore = "Requires Docker"]
 async fn test_password_verification_reset_failure_logged_to_audit() {

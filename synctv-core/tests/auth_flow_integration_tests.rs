@@ -2,7 +2,7 @@
 //!
 //! Tests the complete authentication flow: register → verify → login
 //!
-//! Run with: cargo test --test auth_flow_integration_tests
+//! Run with: cargo test --test `auth_flow_integration_tests`
 #![allow(clippy::unwrap_used)]
 
 use synctv_core_testing::{create_test_pool, create_test_jwt_service};
@@ -11,7 +11,7 @@ use synctv_core::{
     repository::UserRepository,
     service::auth::{password::{hash_password, verify_password}, TokenType},
 };
-/// Default PostgreSQL version for test containers
+/// Default `PostgreSQL` version for test containers
 #[tokio::test]
 #[ignore = "Requires Docker"]
 async fn test_complete_registration_flow() {
@@ -20,7 +20,7 @@ async fn test_complete_registration_flow() {
 
     // Step 1: Register user
     let username = format!("test_user_{}", nanoid::nanoid!(10));
-    let email = format!("{}@test.com", username);
+    let email = format!("{username}@test.com");
     let password = "SecurePassword123!";
 
     let password_hash = hash_password(password).await.expect("Failed to hash password");
@@ -95,7 +95,7 @@ async fn test_login_with_wrong_password() {
     let user = User {
         id: UserId::new(),
         username: username.clone(),
-        email: Some(format!("{}@test.com", username)),
+        email: Some(format!("{username}@test.com")),
         password_hash,
         role: UserRole::User,
         status: UserStatus::Active,
@@ -136,7 +136,7 @@ async fn test_login_unverified_user_rejected() {
     let user = User {
         id: UserId::new(),
         username: username.clone(),
-        email: Some(format!("{}@test.com", username)),
+        email: Some(format!("{username}@test.com")),
         password_hash,
         role: UserRole::User,
         status: UserStatus::Pending,
@@ -212,7 +212,7 @@ async fn test_password_change_invalidates_tokens() {
     let user = User {
         id: UserId::new(),
         username: username.clone(),
-        email: Some(format!("{}@test.com", username)),
+        email: Some(format!("{username}@test.com")),
         password_hash,
         role: UserRole::User,
         status: UserStatus::Active,
@@ -277,7 +277,7 @@ async fn test_concurrent_login_attempts() {
     let user = User {
         id: UserId::new(),
         username: username.clone(),
-        email: Some(format!("{}@test.com", username)),
+        email: Some(format!("{username}@test.com")),
         password_hash,
         role: UserRole::User,
         status: UserStatus::Active,
@@ -342,7 +342,7 @@ async fn test_banned_user_login_rejected() {
     let user = User {
         id: UserId::new(),
         username: username.clone(),
-        email: Some(format!("{}@test.com", username)),
+        email: Some(format!("{username}@test.com")),
         password_hash,
         role: UserRole::User,
         status: UserStatus::Banned,
@@ -385,7 +385,7 @@ async fn test_username_case_insensitive_login() {
     let user = User {
         id: UserId::new(),
         username: username.to_lowercase(),
-        email: Some(format!("{}@test.com", username)),
+        email: Some(format!("{username}@test.com")),
         password_hash,
         role: UserRole::User,
         status: UserStatus::Active,

@@ -5,8 +5,8 @@
 //!
 //! Test scenarios:
 //! - WebRTC session expires after timeout period
-//! - WEBRTC_PEERS_ACTIVE metric is decremented on timeout
-//! - Connection rtc_joined flag is cleared on timeout
+//! - `WEBRTC_PEERS_ACTIVE` metric is decremented on timeout
+//! - Connection `rtc_joined` flag is cleared on timeout
 //! - Active sessions are not incorrectly cleaned up
 
 #![allow(clippy::unwrap_used)]
@@ -36,8 +36,8 @@ async fn test_webrtc_session_timeout_after_inactivity() {
         max_per_user: 10,
         max_per_room: 10,
         max_total: 100,
-        idle_timeout: Duration::from_secs(300),
-        max_duration: Duration::from_secs(86400),
+        idle_timeout: Duration::from_mins(5),
+        max_duration: Duration::from_hours(24),
         webrtc_session_timeout: timeout,
     };
     let mgr = ConnectionManager::new(limits);
@@ -77,13 +77,13 @@ async fn test_active_webrtc_session_not_cleaned_up() {
     use synctv_cluster::sync::ConnectionLimits;
 
     // Create a ConnectionManager with long timeout
-    let timeout = Duration::from_secs(3600); // 1 hour timeout
+    let timeout = Duration::from_hours(1); // 1 hour timeout
     let limits = ConnectionLimits {
         max_per_user: 10,
         max_per_room: 10,
         max_total: 100,
-        idle_timeout: Duration::from_secs(300),
-        max_duration: Duration::from_secs(86400),
+        idle_timeout: Duration::from_mins(5),
+        max_duration: Duration::from_hours(24),
         webrtc_session_timeout: timeout,
     };
     let mgr = ConnectionManager::new(limits);
@@ -122,8 +122,8 @@ async fn test_webrtc_leave_clears_timeout_tracking() {
         max_per_user: 10,
         max_per_room: 10,
         max_total: 100,
-        idle_timeout: Duration::from_secs(300),
-        max_duration: Duration::from_secs(86400),
+        idle_timeout: Duration::from_mins(5),
+        max_duration: Duration::from_hours(24),
         webrtc_session_timeout: timeout,
     };
     let mgr = ConnectionManager::new(limits);
@@ -165,8 +165,8 @@ async fn test_multiple_webrtc_sessions_timeout() {
         max_per_user: 10,
         max_per_room: 10,
         max_total: 100,
-        idle_timeout: Duration::from_secs(300),
-        max_duration: Duration::from_secs(86400),
+        idle_timeout: Duration::from_mins(5),
+        max_duration: Duration::from_hours(24),
         webrtc_session_timeout: timeout,
     };
     let mgr = ConnectionManager::new(limits);
@@ -177,7 +177,7 @@ async fn test_multiple_webrtc_sessions_timeout() {
 
     // Register multiple connections and join WebRTC
     for i in 0..3 {
-        let conn_id = format!("conn{}", i);
+        let conn_id = format!("conn{i}");
         mgr.register(conn_id.clone(), user1.clone()).await.unwrap();
         mgr.join_room(&conn_id, room.clone()).await.unwrap();
         mgr.mark_rtc_joined(&room, &user1, &conn_id, true);
@@ -211,8 +211,8 @@ async fn test_webrtc_session_timeout_persists_across_reconnection() {
         max_per_user: 10,
         max_per_room: 10,
         max_total: 100,
-        idle_timeout: Duration::from_secs(300),
-        max_duration: Duration::from_secs(86400),
+        idle_timeout: Duration::from_mins(5),
+        max_duration: Duration::from_hours(24),
         webrtc_session_timeout: timeout,
     };
     let mgr = ConnectionManager::new(limits);

@@ -1,11 +1,11 @@
-//! StreamHub restart race condition tests.
+//! `StreamHub` restart race condition tests.
 //!
-//! Tests verify that the two-phase cleanup protocol during StreamHub restart
+//! Tests verify that the two-phase cleanup protocol during `StreamHub` restart
 //! correctly synchronizes stream stopping with re-registration, preventing
 //! the race condition where active streams are stopped while re-registration
 //! is already in progress.
 //!
-//! Run with: cargo test --test streamhub_restart_tests
+//! Run with: cargo test --test `streamhub_restart_tests`
 
 #![allow(clippy::unwrap_used)]
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -13,7 +13,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{mpsc, oneshot};
 
-/// Simulates the two-phase cleanup protocol used during StreamHub restart.
+/// Simulates the two-phase cleanup protocol used during `StreamHub` restart.
 ///
 /// Phase 1: Send stop request with oneshot sender
 /// Phase 2: Wait for confirmation (with timeout)
@@ -109,8 +109,7 @@ async fn test_two_phase_cleanup_rapid_restarts() {
         let result = tokio::time::timeout(Duration::from_millis(100), stop_done_rx).await;
         assert!(
             result.is_ok(),
-            "Restart {} should complete within timeout",
-            i
+            "Restart {i} should complete within timeout"
         );
     }
 
@@ -199,7 +198,7 @@ async fn test_restart_sequence_ordering() {
     let _ = receiver_handle.await;
 }
 
-/// Test that try_send (non-blocking send) works correctly for the stop channel.
+/// Test that `try_send` (non-blocking send) works correctly for the stop channel.
 #[tokio::test]
 async fn test_try_send_with_oneshot_response() {
     let (stop_streams_tx, mut stop_streams_rx) =

@@ -40,10 +40,10 @@ mod error_responses {
     use super::*;
     use synctv_api::http::error::AppError;
 
-    /// Build a tiny router that returns a specific AppError
+    /// Build a tiny router that returns a specific `AppError`
     fn error_router(error: AppError) -> Router {
         let status = error.status;
-        let message = error.message.clone();
+        let message = error.message;
         Router::new().route(
             "/test",
             get(move || async move {
@@ -335,8 +335,7 @@ mod error_responses {
         for pattern in &sensitive_patterns {
             assert!(
                 !error_msg.contains(&pattern.to_lowercase()),
-                "Response must not contain sensitive pattern: {}",
-                pattern
+                "Response must not contain sensitive pattern: {pattern}"
             );
         }
     }
@@ -734,7 +733,7 @@ mod hsts_headers {
 mod health_endpoints {
     use super::*;
 
-    /// Liveness endpoint does not need AppState -- test it directly
+    /// Liveness endpoint does not need `AppState` -- test it directly
     #[tokio::test]
     async fn test_liveness_returns_200() {
         let app = Router::new().route(
@@ -1150,7 +1149,7 @@ mod api_error_classification {
         for (err, check) in cases {
             let s = err.to_string();
             let kind = classify_error(&s);
-            assert!(check(&kind), "ApiError '{}' misclassified after roundtrip", s);
+            assert!(check(&kind), "ApiError '{s}' misclassified after roundtrip");
         }
     }
 
@@ -1303,7 +1302,7 @@ mod playback_request {
 
     #[test]
     fn test_empty_object() {
-        let json = r#"{}"#;
+        let json = r"{}";
         let req: UpdatePlaybackRequest = serde_json::from_str(json).unwrap();
         assert!(req.state.is_none());
         assert!(req.position.is_none());
@@ -1440,7 +1439,7 @@ mod user_request {
 
     #[test]
     fn test_empty_update() {
-        let json = r#"{}"#;
+        let json = r"{}";
         let req: UpdateUserRequest = serde_json::from_str(json).unwrap();
         assert!(req.username.is_none());
         assert!(req.password.is_none());

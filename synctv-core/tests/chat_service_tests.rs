@@ -3,10 +3,10 @@
 //! Tests chat message and danmaku validation logic that can be tested
 //! without full service dependencies.
 //!
-//! Run with: cargo test --test chat_service_tests
+//! Run with: cargo test --test `chat_service_tests`
 #![allow(clippy::unwrap_used)]
 
-/// Maximum chat message characters (mirrors the constant in ChatService)
+/// Maximum chat message characters (mirrors the constant in `ChatService`)
 const MAX_CHAT_MESSAGE_CHARS: usize = 500;
 
 /// Maximum danmaku characters (mirrors the service validation)
@@ -16,7 +16,7 @@ const MAX_DANMAKU_CHARS: usize = 100;
 // Chat message validation (extracted from ChatService::send_message logic)
 // ============================================================================
 
-/// Validate chat message content (mirrors ChatService::send_message validation)
+/// Validate chat message content (mirrors `ChatService::send_message` validation)
 fn validate_chat_content(content: &str) -> Result<(), &'static str> {
     if content.is_empty() {
         return Err("Message content cannot be empty");
@@ -27,7 +27,7 @@ fn validate_chat_content(content: &str) -> Result<(), &'static str> {
     Ok(())
 }
 
-/// Validate danmaku content (mirrors ChatService::send_danmaku validation)
+/// Validate danmaku content (mirrors `ChatService::send_danmaku` validation)
 fn validate_danmaku_content(content: &str) -> Result<(), &'static str> {
     if content.is_empty() {
         return Err("Danmaku content cannot be empty");
@@ -38,7 +38,7 @@ fn validate_danmaku_content(content: &str) -> Result<(), &'static str> {
     Ok(())
 }
 
-/// Validate danmaku color (mirrors ChatService::send_danmaku validation)
+/// Validate danmaku color (mirrors `ChatService::send_danmaku` validation)
 fn validate_danmaku_color(color: &str) -> Result<(), &'static str> {
     if !color.starts_with('#') || color.len() != 7 {
         return Err("Invalid color format");

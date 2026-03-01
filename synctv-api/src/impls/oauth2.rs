@@ -463,7 +463,7 @@ mod tests {
     /// 2. User exists but is banned
     /// 3. User exists but is deleted
     ///
-    /// This prevents user enumeration attacks via the OAuth2 bind endpoint.
+    /// This prevents user enumeration attacks via the `OAuth2` bind endpoint.
     const USER_ENUM_PROTECTION_ERROR_MESSAGE: &str = "Authentication failed";
 
     #[test]
@@ -553,13 +553,13 @@ mod tests {
     }
 
     /// Test that the unlink provider safety check uses `has_usable_password()`
-    /// instead of just checking signup_method.
+    /// instead of just checking `signup_method`.
     ///
     /// Security: An OAuth2-only user with no other providers and no usable
-    /// password must NOT be allowed to unlink their last OAuth2 provider,
+    /// password must NOT be allowed to unlink their last `OAuth2` provider,
     /// as they would be locked out of their account.
     ///
-    /// This test verifies the model-level behavior used by unlink_provider.
+    /// This test verifies the model-level behavior used by `unlink_provider`.
     #[test]
     fn test_oauth2_unlink_checks_actual_password_capability() {
         use synctv_core::models::{User, UserId, UserRole, UserStatus, SignupMethod};

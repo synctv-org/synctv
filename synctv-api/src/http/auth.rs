@@ -113,7 +113,7 @@ mod tests {
             password: "securepass123".to_string(),
             email: "test@example.com".to_string(),
         };
-        let cloned = req.clone();
+        let cloned = req;
         assert_eq!(cloned.username, "testuser");
         assert_eq!(cloned.email, "test@example.com");
     }

@@ -4,7 +4,7 @@
 //! Validates that state transitions follow expected patterns and that
 //! invalid transitions are properly rejected.
 //!
-//! Run with: cargo test -p synctv-core --test playback_state_machine_tests -- --nocapture
+//! Run with: cargo test -p synctv-core --test `playback_state_machine_tests` -- --nocapture
 #![allow(clippy::unwrap_used)]
 
 use std::sync::Arc;
@@ -56,7 +56,7 @@ fn make_user(username: &str) -> User {
     User {
         id: UserId::new(),
         username: username.to_string(),
-        email: Some(format!("{}@test.com", username)),
+        email: Some(format!("{username}@test.com")),
         password_hash: "hash".to_string(),
         role: UserRole::User,
         status: UserStatus::Active,
@@ -75,9 +75,9 @@ fn make_user(username: &str) -> User {
 // State Machine Tests: Stopped -> Playing Transition
 // ============================================================================
 
-/// Test: Initial state should be stopped (is_playing = false)
+/// Test: Initial state should be stopped (`is_playing` = false)
 ///
-/// A newly created room should have playback state with is_playing = false.
+/// A newly created room should have playback state with `is_playing` = false.
 #[tokio::test]
 #[ignore = "Requires Docker"]
 async fn test_initial_state_is_stopped() {
@@ -110,7 +110,7 @@ async fn test_initial_state_is_stopped() {
 /// Test: Stopped -> Playing transition
 ///
 /// A room in stopped state should be able to transition to playing
-/// when set_playing(true) is called.
+/// when `set_playing(true)` is called.
 #[tokio::test]
 #[ignore = "Requires Docker"]
 async fn test_stopped_to_playing_transition() {
@@ -145,7 +145,7 @@ async fn test_stopped_to_playing_transition() {
 /// Test: Playing -> Paused transition
 ///
 /// A room in playing state should be able to transition to paused
-/// when set_playing(false) is called.
+/// when `set_playing(false)` is called.
 #[tokio::test]
 #[ignore = "Requires Docker"]
 async fn test_playing_to_paused_transition() {
@@ -186,7 +186,7 @@ async fn test_playing_to_paused_transition() {
 /// Test: Paused -> Playing transition
 ///
 /// A room in paused state should be able to resume playing
-/// when set_playing(true) is called.
+/// when `set_playing(true)` is called.
 #[tokio::test]
 #[ignore = "Requires Docker"]
 async fn test_paused_to_playing_transition() {
@@ -342,7 +342,7 @@ async fn test_rapid_state_transitions() {
             .unwrap();
 
         assert_eq!(state.is_playing, playing,
-            "After toggle {}, is_playing should be {}", i, playing);
+            "After toggle {i}, is_playing should be {playing}");
     }
 
     // Final state should be paused (last toggle was false)
@@ -479,7 +479,7 @@ async fn test_position_reset_on_media_switch() {
 /// Test: Speed change preserves computed position
 ///
 /// When changing speed while playing, the computed position should be
-/// preserved (current_time is updated to computed_current_time before speed change).
+/// preserved (`current_time` is updated to `computed_current_time` before speed change).
 #[tokio::test]
 #[ignore = "Requires Docker"]
 async fn test_speed_change_preserves_position() {
@@ -570,10 +570,10 @@ async fn test_speed_change_while_paused() {
 /// Test: Reset returns to initial state
 ///
 /// The reset operation should return playback to initial state:
-/// - is_playing = false
-/// - current_time = 0
+/// - `is_playing` = false
+/// - `current_time` = 0
 /// - speed = 1.0
-/// - playing_media_id = None
+/// - `playing_media_id` = None
 #[tokio::test]
 #[ignore = "Requires Docker"]
 async fn test_reset_returns_to_initial_state() {
@@ -686,12 +686,12 @@ async fn test_concurrent_play_pause_operations() {
         match result {
             Ok(Ok(_)) => success_count += 1,
             Ok(Err(_)) => error_count += 1,
-            Err(e) => panic!("Task panicked: {:?}", e),
+            Err(e) => panic!("Task panicked: {e:?}"),
         }
     }
 
-    println!("Concurrent play/pause: success={}/10, errors={}", success_count, error_count);
-    assert!(success_count >= 5, "At least 50% should succeed, got: {}", success_count);
+    println!("Concurrent play/pause: success={success_count}/10, errors={error_count}");
+    assert!(success_count >= 5, "At least 50% should succeed, got: {success_count}");
 
     // Final state should be consistent (either playing or paused)
     let playback_service = room_service.playback_service();

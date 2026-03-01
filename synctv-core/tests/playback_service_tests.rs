@@ -1,9 +1,9 @@
-//! PlaybackService integration tests
+//! `PlaybackService` integration tests
 //!
 //! Tests playback control including seek, speed, media switching, and
-//! optimistic lock behavior with real PostgreSQL via testcontainers.
+//! optimistic lock behavior with real `PostgreSQL` via testcontainers.
 //!
-//! Run with: cargo test -p synctv-core --test playback_service_tests -- --nocapture
+//! Run with: cargo test -p synctv-core --test `playback_service_tests` -- --nocapture
 #![allow(clippy::unwrap_used)]
 
 use std::sync::Arc;
@@ -56,7 +56,7 @@ fn make_user(username: &str) -> User {
     User {
         id: UserId::new(),
         username: username.to_string(),
-        email: Some(format!("{}@test.com", username)),
+        email: Some(format!("{username}@test.com")),
         password_hash: "hash".to_string(),
         role: UserRole::User,
         status: UserStatus::Active,
@@ -103,9 +103,9 @@ async fn test_seek_negative_rejected() {
     match result.unwrap_err() {
         Error::InvalidInput(msg) => {
             assert!(msg.contains("non-negative") || msg.contains("negative"),
-                "Error should mention non-negative: {}", msg);
+                "Error should mention non-negative: {msg}");
         }
-        other => panic!("Expected InvalidInput error, got: {:?}", other),
+        other => panic!("Expected InvalidInput error, got: {other:?}"),
     }
 }
 
@@ -141,9 +141,9 @@ async fn test_speed_zero_rejected() {
     match result.unwrap_err() {
         Error::InvalidInput(msg) => {
             assert!(msg.contains("Speed") || msg.contains("speed"),
-                "Error should mention speed: {}", msg);
+                "Error should mention speed: {msg}");
         }
-        other => panic!("Expected InvalidInput error, got: {:?}", other),
+        other => panic!("Expected InvalidInput error, got: {other:?}"),
     }
 }
 
@@ -177,9 +177,9 @@ async fn test_speed_above_max_rejected() {
     match result.unwrap_err() {
         Error::InvalidInput(msg) => {
             assert!(msg.contains("Speed") || msg.contains("16"),
-                "Error should mention speed limit: {}", msg);
+                "Error should mention speed limit: {msg}");
         }
-        other => panic!("Expected InvalidInput error, got: {:?}", other),
+        other => panic!("Expected InvalidInput error, got: {other:?}"),
     }
 }
 
@@ -279,7 +279,7 @@ async fn test_playback_optimistic_lock_concurrent() {
         let rs = room_service.clone();
         let rid = room.id.clone();
         let uid = owner.id.clone();
-        let position = (i as f64) * 10.0;
+        let position = f64::from(i) * 10.0;
 
         let handle = tokio::spawn(async move {
             rs.playback_service()
@@ -301,7 +301,7 @@ async fn test_playback_optimistic_lock_concurrent() {
                 assert!(!matches!(e, Error::OptimisticLockConflict),
                     "OptimisticLockConflict should not leak to caller");
             }
-            Err(e) => panic!("Task panicked: {:?}", e),
+            Err(e) => panic!("Task panicked: {e:?}"),
         }
     }
 
@@ -352,7 +352,7 @@ async fn test_rapid_sequential_seek_operations() {
         let rid = room.id.clone();
         let uid = owner.id.clone();
         let b = barrier.clone();
-        let position = (i as f64) * 30.0 + 10.0; // 10, 40, 70, ...
+        let position = f64::from(i).mul_add(30.0, 10.0); // 10, 40, 70, ...
 
         let handle = tokio::spawn(async move {
             b.wait().await;
@@ -376,7 +376,7 @@ async fn test_rapid_sequential_seek_operations() {
                 positions.push(response.state.current_time);
             }
             Ok(Err(_)) => {} // Some may fail due to conflicts
-            Err(e) => panic!("Task panicked: {:?}", e),
+            Err(e) => panic!("Task panicked: {e:?}"),
         }
     }
 
@@ -393,12 +393,12 @@ async fn test_rapid_sequential_seek_operations() {
 // Test: Play Next With Concurrent Playlist Modification
 // ============================================================================
 
-/// Test play_next behavior when playlist is modified concurrently.
+/// Test `play_next` behavior when playlist is modified concurrently.
 ///
 /// Scenario:
 /// - Add multiple media items to playlist
 /// - Start playing first item
-/// - Concurrently call play_next and delete next media
+/// - Concurrently call `play_next` and delete next media
 /// - Verify system handles deletion gracefully
 #[tokio::test]
 #[ignore = "Requires Docker"]
@@ -439,7 +439,7 @@ async fn test_play_next_concurrent_playlist_modification() {
             playlist_id: root_playlist.id.clone(),
             room_id: room.id.clone(),
             creator_id: Some(owner.id.clone()),
-            name: format!("Video {}", i),
+            name: format!("Video {i}"),
             position: i,
             source_provider: "direct_url".to_string(),
             source_config: serde_json::json!({"url": format!("https://example.com/video{}.mp4", i)}),
@@ -480,12 +480,12 @@ async fn test_play_next_concurrent_playlist_modification() {
 // Test: Play Next At End Of Playlist
 // ============================================================================
 
-/// Test play_next behavior at the end of playlist.
+/// Test `play_next` behavior at the end of playlist.
 ///
 /// Scenario:
 /// - Playlist has 3 items
 /// - Play to last item
-/// - Call play_next
+/// - Call `play_next`
 /// - Should return None (no more items) or loop depending on settings
 #[tokio::test]
 #[ignore = "Requires Docker"]
@@ -526,7 +526,7 @@ async fn test_play_next_at_end_of_playlist() {
             playlist_id: root_playlist.id.clone(),
             room_id: room.id.clone(),
             creator_id: Some(owner.id.clone()),
-            name: format!("End Video {}", i),
+            name: format!("End Video {i}"),
             position: i,
             source_provider: "direct_url".to_string(),
             source_config: serde_json::json!({"url": format!("https://example.com/end{}.mp4", i)}),
@@ -568,7 +568,7 @@ async fn test_play_next_at_end_of_playlist() {
     }
 }
 
-/// Test play_next with loop enabled returns to first item.
+/// Test `play_next` with loop enabled returns to first item.
 #[tokio::test]
 #[ignore = "Requires Docker"]
 async fn test_play_next_with_loop_enabled() {
@@ -608,7 +608,7 @@ async fn test_play_next_with_loop_enabled() {
             playlist_id: root_playlist.id.clone(),
             room_id: room.id.clone(),
             creator_id: Some(owner.id.clone()),
-            name: format!("Loop Video {}", i),
+            name: format!("Loop Video {i}"),
             position: i,
             source_provider: "direct_url".to_string(),
             source_config: serde_json::json!({"url": format!("https://example.com/loop{}.mp4", i)}),
@@ -740,7 +740,7 @@ async fn test_concurrent_speed_changes() {
         match result {
             Ok(Ok(_)) => success_count += 1,
             Ok(Err(_)) => {} // Some may fail due to conflicts
-            Err(e) => panic!("Task panicked: {:?}", e),
+            Err(e) => panic!("Task panicked: {e:?}"),
         }
     }
 
@@ -852,7 +852,7 @@ use synctv_core::models::{room_settings, RoomSettings};
 // Test: Seek Response Feedback (Task #37)
 // ============================================================================
 
-/// Test that seek returns seek_applied=true on success.
+/// Test that seek returns `seek_applied=true` on success.
 ///
 /// This test verifies that clients can distinguish between a successful seek
 /// and a degraded response (seek failed but returned current state).
@@ -889,10 +889,10 @@ async fn test_seek_success_returns_applied_true() {
         "Position should be 42.5, got: {}", response.state.current_time);
 }
 
-/// Test that seek returns seek_applied=false with degraded response on retry exhaustion.
+/// Test that seek returns `seek_applied=false` with degraded response on retry exhaustion.
 ///
 /// When optimistic lock retries are exhausted during rapid concurrent seeks,
-/// the method should return the latest state but with seek_applied=false
+/// the method should return the latest state but with `seek_applied=false`
 /// so the client knows the requested position was not applied.
 #[tokio::test]
 #[ignore = "Requires Docker"]
@@ -925,7 +925,7 @@ async fn test_seek_retry_exhaustion_returns_applied_false() {
         let rid = room.id.clone();
         let uid = owner.id.clone();
         let b = barrier.clone();
-        let position = (i as f64) * 10.0 + 1.0; // Different positions
+        let position = f64::from(i).mul_add(10.0, 1.0); // Different positions
 
         let handle = tokio::spawn(async move {
             b.wait().await;
@@ -953,7 +953,7 @@ async fn test_seek_retry_exhaustion_returns_applied_false() {
                 }
             }
             Ok(Err(_)) => {} // Other errors are OK
-            Err(e) => panic!("Task panicked: {:?}", e),
+            Err(e) => panic!("Task panicked: {e:?}"),
         }
     }
 
@@ -965,7 +965,7 @@ async fn test_seek_retry_exhaustion_returns_applied_false() {
     assert!(final_state.current_time >= 0.0, "Final position should be non-negative");
 }
 
-/// Test that SeekResponse contains the state even when seek fails.
+/// Test that `SeekResponse` contains the state even when seek fails.
 ///
 /// Clients should always get a valid state in the response,
 /// regardless of whether the seek was applied.
@@ -1008,7 +1008,7 @@ async fn test_seek_response_always_contains_valid_state() {
     assert!(response.state.speed > 0.0, "State should have valid speed");
 }
 
-/// Test SeekResponse message field is informative when seek fails.
+/// Test `SeekResponse` message field is informative when seek fails.
 ///
 /// When seek fails due to contention, the message should help debugging.
 #[tokio::test]
@@ -1040,7 +1040,7 @@ async fn test_seek_degraded_response_has_informative_message() {
         let rid = room.id.clone();
         let uid = owner.id.clone();
         let b = barrier.clone();
-        let position = (i as f64) * 5.0;
+        let position = f64::from(i) * 5.0;
 
         let handle = tokio::spawn(async move {
             b.wait().await;
@@ -1062,13 +1062,13 @@ async fn test_seek_degraded_response_has_informative_message() {
                     if let Some(msg) = &response.message {
                         assert!(
                             msg.contains("retry") || msg.contains("contention") || msg.contains("failed") || msg.contains("concurrent"),
-                            "Degraded response message should explain failure: {}", msg
+                            "Degraded response message should explain failure: {msg}"
                         );
                     }
                 }
             }
             Ok(Err(_)) => {}
-            Err(e) => panic!("Task panicked: {:?}", e),
+            Err(e) => panic!("Task panicked: {e:?}"),
         }
     }
 }

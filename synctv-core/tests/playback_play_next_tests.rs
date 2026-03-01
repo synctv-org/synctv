@@ -1,12 +1,12 @@
-//! PlaybackService::play_next logic tests
+//! `PlaybackService::play_next` logic tests
 //!
-//! Tests the play_next method's playlist navigation logic for each PlayMode,
+//! Tests the `play_next` method's playlist navigation logic for each `PlayMode`,
 //! including edge cases like deleted media, empty playlists, and legacy field mapping.
 //!
-//! These tests exercise the play_next decision logic with a real PostgreSQL
-//! via testcontainers, since play_next reads from the DB repo layer.
+//! These tests exercise the `play_next` decision logic with a real `PostgreSQL`
+//! via testcontainers, since `play_next` reads from the DB repo layer.
 //!
-//! Run with: cargo test -p synctv-core --test playback_play_next_tests -- --nocapture
+//! Run with: cargo test -p synctv-core --test `playback_play_next_tests` -- --nocapture
 #![allow(clippy::unwrap_used)]
 
 use std::sync::Arc;
@@ -61,7 +61,7 @@ fn make_user(username: &str) -> User {
     User {
         id: UserId::new(),
         username: username.to_string(),
-        email: Some(format!("{}@test.com", username)),
+        email: Some(format!("{username}@test.com")),
         password_hash: "hash".to_string(),
         role: UserRole::User,
         status: UserStatus::Active,
@@ -355,7 +355,7 @@ async fn test_shuffle_returns_different_item() {
     let media1 = insert_media(&pool, &playlist.id, &room.id, "shuf1", 0).await;
     // Add enough items to make collision very unlikely
     for i in 2..=10 {
-        insert_media(&pool, &playlist.id, &room.id, &format!("shuf{}", i), i - 1).await;
+        insert_media(&pool, &playlist.id, &room.id, &format!("shuf{i}"), i - 1).await;
     }
 
     let playback = room_service.playback_service();
@@ -469,7 +469,7 @@ async fn test_legacy_shuffle_playlist_maps_to_shuffle() {
     let playlist = get_root_playlist(&pool, &room.id).await;
     let media1 = insert_media(&pool, &playlist.id, &room.id, "s1", 0).await;
     for i in 2..=5 {
-        insert_media(&pool, &playlist.id, &room.id, &format!("s{}", i), i - 1).await;
+        insert_media(&pool, &playlist.id, &room.id, &format!("s{i}"), i - 1).await;
     }
 
     let playback = room_service.playback_service();

@@ -1,9 +1,9 @@
-//! ProviderInstanceRepository integration tests
+//! `ProviderInstanceRepository` integration tests
 //!
-//! Tests: migrate_plaintext_to_encrypted (idempotency, None fields, rollback),
+//! Tests: `migrate_plaintext_to_encrypted` (idempotency, None fields, rollback),
 //!        encryption prefix edge case.
 //!
-//! Run with: cargo test -p synctv-core --test provider_instance_repository_tests
+//! Run with: cargo test -p synctv-core --test `provider_instance_repository_tests`
 #![allow(clippy::unwrap_used)]
 
 use synctv_core_testing::{create_test_pool};
@@ -28,8 +28,8 @@ fn make_instance(name: &str, jwt_secret: Option<&str>, custom_ca: Option<&str>) 
         name: name.to_string(),
         endpoint: "grpc://localhost:50051".to_string(),
         comment: Some("test instance".to_string()),
-        jwt_secret: jwt_secret.map(|s| s.to_string()),
-        custom_ca: custom_ca.map(|s| s.to_string()),
+        jwt_secret: jwt_secret.map(std::string::ToString::to_string),
+        custom_ca: custom_ca.map(std::string::ToString::to_string),
         timeout: "10s".to_string(),
         tls: false,
         insecure_tls: false,
@@ -155,8 +155,7 @@ async fn test_plaintext_jwt_secret_rejected_by_check_constraint() {
     let err_msg = result.unwrap_err().to_string();
     assert!(
         err_msg.contains("valid_jwt_secret_format") || err_msg.contains("check"),
-        "Error should mention CHECK constraint, got: {}",
-        err_msg
+        "Error should mention CHECK constraint, got: {err_msg}"
     );
 }
 
@@ -190,8 +189,7 @@ async fn test_plaintext_custom_ca_rejected_by_check_constraint() {
     let err_msg = result.unwrap_err().to_string();
     assert!(
         err_msg.contains("valid_custom_ca_format") || err_msg.contains("check"),
-        "Error should mention CHECK constraint, got: {}",
-        err_msg
+        "Error should mention CHECK constraint, got: {err_msg}"
     );
 }
 

@@ -1,9 +1,9 @@
 //! Redis verification code store tests
 //!
-//! Tests the RedisVerificationCodeStore backend via testcontainers:
+//! Tests the `RedisVerificationCodeStore` backend via testcontainers:
 //! roundtrip, attempt counting, TTL expiry.
 //!
-//! Run with: cargo test --test verification_code_redis_tests
+//! Run with: cargo test --test `verification_code_redis_tests`
 #![allow(clippy::unwrap_used)]
 
 use std::sync::Arc;
@@ -22,7 +22,7 @@ async fn start_redis() -> (testcontainers::ContainerAsync<Redis>, Arc<redis::Cli
         .get_host_port_ipv4(6379)
         .await
         .expect("Failed to get port");
-    let redis_url = format!("redis://{}:{}", host, port);
+    let redis_url = format!("redis://{host}:{port}");
     let client = Arc::new(redis::Client::open(redis_url).expect("Failed to create Redis client"));
 
     // Wait for Redis to be ready to accept connections (container port mapping

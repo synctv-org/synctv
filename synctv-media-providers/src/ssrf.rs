@@ -482,7 +482,7 @@ mod tests {
 
     #[test]
     fn test_blocked_private_ipv4() {
-        assert!(is_blocked_ipv4(&Ipv4Addr::new(127, 0, 0, 1)), "loopback");
+        assert!(is_blocked_ipv4(&Ipv4Addr::LOCALHOST), "loopback");
         assert!(is_blocked_ipv4(&Ipv4Addr::new(10, 0, 0, 1)), "10.x");
         assert!(is_blocked_ipv4(&Ipv4Addr::new(172, 16, 0, 1)), "172.16.x");
         assert!(is_blocked_ipv4(&Ipv4Addr::new(172, 31, 255, 255)), "172.31.x");
@@ -494,11 +494,11 @@ mod tests {
         // CGNAT / Shared Address Space: 100.64.0.0/10
         assert!(is_blocked_ipv4(&Ipv4Addr::new(100, 64, 0, 1)), "CGNAT start");
         assert!(is_blocked_ipv4(&Ipv4Addr::new(100, 127, 255, 254)), "CGNAT end");
-        assert!(is_blocked_ipv4(&Ipv4Addr::new(0, 0, 0, 0)), "current network");
+        assert!(is_blocked_ipv4(&Ipv4Addr::UNSPECIFIED), "current network");
         assert!(is_blocked_ipv4(&Ipv4Addr::new(224, 0, 0, 1)), "multicast");
         assert!(is_blocked_ipv4(&Ipv4Addr::new(240, 0, 0, 1)), "reserved");
         assert!(
-            is_blocked_ipv4(&Ipv4Addr::new(255, 255, 255, 255)),
+            is_blocked_ipv4(&Ipv4Addr::BROADCAST),
             "broadcast"
         );
     }
@@ -542,7 +542,7 @@ mod tests {
 
     #[test]
     fn test_is_blocked_ip_v4() {
-        assert!(is_blocked_ip(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1))));
+        assert!(is_blocked_ip(IpAddr::V4(Ipv4Addr::LOCALHOST)));
         assert!(is_blocked_ip(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1))));
         assert!(!is_blocked_ip(IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8))));
     }
@@ -657,7 +657,7 @@ mod tests {
     #[test]
     fn test_ssrf_safe_dns_resolver_clone() {
         let resolver = SsrfSafeDnsResolver;
-        let _cloned = resolver.clone();
+        let _cloned = resolver;
     }
 
     #[test]
@@ -685,7 +685,7 @@ mod tests {
         let private_ipv4 =
             SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)), 443);
         let loopback_ipv4 =
-            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 443);
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 443);
         let public_ipv6 = SocketAddr::new(
             IpAddr::V6(Ipv6Addr::new(0x2606, 0x4700, 0x4700, 0, 0, 0, 0, 0x1111)),
             443,
@@ -734,7 +734,7 @@ mod tests {
         let addrs: Vec<SocketAddr> = vec![
             SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 1)), 443), // private
             SocketAddr::new(IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8)), 443),  // public
-            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 443), // loopback
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 443), // loopback
             SocketAddr::new(IpAddr::V4(Ipv4Addr::new(1, 1, 1, 1)), 443),  // public
             SocketAddr::new(IpAddr::V4(Ipv4Addr::new(169, 254, 1, 1)), 443), // link-local
         ];

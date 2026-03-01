@@ -918,7 +918,7 @@ mod tests {
         assert!(puller.is_err());
     }
 
-    /// Test that new_async() properly resolves DNS and sets resolved_addr.
+    /// Test that `new_async()` properly resolves DNS and sets `resolved_addr`.
     /// This test uses a real external hostname that should resolve.
     #[tokio::test]
     async fn test_external_puller_async_sets_resolved_addr() {
@@ -940,7 +940,7 @@ mod tests {
         assert!(puller.resolved_addr.is_some(), "resolved_addr should be set by new_async");
     }
 
-    /// Test that new_async() rejects SSRF-protected URLs (private IPs, localhost, etc.)
+    /// Test that `new_async()` rejects SSRF-protected URLs (private IPs, localhost, etc.)
     #[tokio::test]
     async fn test_external_puller_async_ssrf_protection() {
         let (sender, _) = tokio::sync::mpsc::channel(64);

@@ -194,7 +194,7 @@ mod ssrf_tests {
     fn test_blocked_ipv4_reserved_range() {
         assert!(is_blocked_ipv4(&Ipv4Addr::new(240, 0, 0, 0)));
         assert!(is_blocked_ipv4(&Ipv4Addr::new(250, 1, 2, 3)));
-        assert!(is_blocked_ipv4(&Ipv4Addr::new(255, 255, 255, 255)));
+        assert!(is_blocked_ipv4(&Ipv4Addr::BROADCAST));
     }
 
     #[test]
@@ -228,7 +228,7 @@ mod ssrf_tests {
     #[test]
     fn test_is_blocked_ip_dispatches_correctly() {
         use std::net::IpAddr;
-        assert!(is_blocked_ip(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1))));
+        assert!(is_blocked_ip(IpAddr::V4(Ipv4Addr::LOCALHOST)));
         assert!(is_blocked_ip(IpAddr::V6(Ipv6Addr::LOCALHOST)));
         assert!(!is_blocked_ip(IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8))));
     }

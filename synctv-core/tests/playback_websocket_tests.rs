@@ -4,9 +4,9 @@
 //! multi-user synchronization, and cluster broadcast behavior.
 //!
 //! Note: This tests the notification/broadcast layer, not actual WebSocket connections.
-//! The PlaybackService uses PlaybackBroadcaster trait for abstraction.
+//! The `PlaybackService` uses `PlaybackBroadcaster` trait for abstraction.
 //!
-//! Run with: cargo test -p synctv-core --test playback_websocket_tests -- --nocapture
+//! Run with: cargo test -p synctv-core --test `playback_websocket_tests` -- --nocapture
 #![allow(clippy::unwrap_used)]
 
 use std::sync::Arc;
@@ -60,7 +60,7 @@ fn make_user(username: &str) -> User {
     User {
         id: UserId::new(),
         username: username.to_string(),
-        email: Some(format!("{}@test.com", username)),
+        email: Some(format!("{username}@test.com")),
         password_hash: "hash".to_string(),
         role: UserRole::User,
         status: UserStatus::Active,
@@ -440,9 +440,9 @@ async fn test_multiple_state_changes_trigger_broadcasts() {
     assert!(!broadcasts[3].is_playing, "4th: paused");
 }
 
-/// Test: Broadcast contains correct room_id
+/// Test: Broadcast contains correct `room_id`
 ///
-/// Each broadcast should contain the correct room_id.
+/// Each broadcast should contain the correct `room_id`.
 #[tokio::test]
 #[ignore = "Requires Docker"]
 async fn test_broadcast_contains_correct_room_id() {
@@ -571,9 +571,9 @@ async fn test_no_broadcaster_configured() {
 // WebSocket Push Tests: BroadcastResult
 // ============================================================================
 
-/// Test: BroadcastResult is_success method
+/// Test: `BroadcastResult` `is_success` method
 ///
-/// Test the BroadcastResult::is_success() method.
+/// Test the `BroadcastResult::is_success()` method.
 #[test]
 fn test_broadcast_result_is_success() {
     // Both local and redis sent
@@ -694,7 +694,7 @@ async fn test_concurrent_operations_produce_consistent_broadcasts() {
         let rid = room.id.clone();
         let uid = owner.id.clone();
         let b = barrier.clone();
-        let pos = (i as f64) * 10.0;
+        let pos = f64::from(i) * 10.0;
 
         handles.push(tokio::spawn(async move {
             b.wait().await;
@@ -714,9 +714,9 @@ async fn test_concurrent_operations_produce_consistent_broadcasts() {
 
     for (i, broadcast) in broadcasts.iter().enumerate() {
         assert!(broadcast.current_time >= 0.0,
-            "Broadcast {} should have valid position", i);
+            "Broadcast {i} should have valid position");
         assert!(broadcast.version > 0 || i == 0,
-            "Broadcast {} should have valid version", i);
+            "Broadcast {i} should have valid version");
     }
 }
 

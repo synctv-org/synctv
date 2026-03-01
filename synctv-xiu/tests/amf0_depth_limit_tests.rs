@@ -34,7 +34,7 @@ fn create_large_object(key_count: usize) -> Amf0ValueType {
     Amf0ValueType::Object(properties)
 }
 
-/// Helper: write a value with Amf0Writer, then read it back with Amf0Reader.
+/// Helper: write a value with `Amf0Writer`, then read it back with `Amf0Reader`.
 fn roundtrip(value: &Amf0ValueType) -> Result<Amf0ValueType, synctv_xiu::flv::amf0::Amf0ReadError> {
     let mut writer = Amf0Writer::new();
     writer.write_any(value).unwrap();

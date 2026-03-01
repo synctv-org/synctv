@@ -177,7 +177,7 @@ mod tests {
     #[test]
     fn test_timeout_config() {
         let config = TimeoutConfig::new()
-            .with_db_query_timeout(Duration::from_secs(60));
+            .with_db_query_timeout(Duration::from_mins(1));
 
         assert_eq!(config.db_query.as_secs(), 60);
     }

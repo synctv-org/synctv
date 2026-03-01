@@ -445,7 +445,7 @@ mod tests {
         assert!("hello".len() < 500);
     }
 
-    /// Test color validation logic extracted from send_danmaku
+    /// Test color validation logic extracted from `send_danmaku`
     fn validate_color(color: &str) -> Result<(), &'static str> {
         if !color.starts_with('#') || color.len() != 7 {
             return Err("Invalid color format");

@@ -1,10 +1,10 @@
-//! CL3: NodeRegistry ClusterMode transitions
+//! CL3: `NodeRegistry` `ClusterMode` transitions
 //!
-//! - Trip circuit breaker (3 failures) -> ClusterMode::Degraded, get_all_nodes returns local cache
-//! - After degraded mode, get_all_nodes falls back to local cache
+//! - Trip circuit breaker (3 failures) -> `ClusterMode::Degraded`, `get_all_nodes` returns local cache
+//! - After degraded mode, `get_all_nodes` falls back to local cache
 //!
 //! Note: These tests use a dummy Redis client that can't actually connect, so
-//! each get_all_nodes() call fails and records a circuit breaker error. After 3
+//! each `get_all_nodes()` call fails and records a circuit breaker error. After 3
 //! consecutive failures, the circuit breaker opens, switching to Degraded mode.
 
 #![allow(clippy::unwrap_used)]
@@ -12,7 +12,7 @@ use std::sync::Arc;
 use synctv_cluster::discovery::node_registry::{NodeInfo, NodeRegistry};
 use synctv_cluster::ClusterMode;
 
-/// Helper: create a NodeRegistry with a dummy Redis client (no server needed).
+/// Helper: create a `NodeRegistry` with a dummy Redis client (no server needed).
 /// Connection attempts will fail fast.
 fn make_registry(node_id: &str) -> Arc<NodeRegistry> {
     // Use a definitely-non-listening address for fast failure
@@ -27,8 +27,8 @@ fn make_registry(node_id: &str) -> Arc<NodeRegistry> {
     )
 }
 
-/// Trip circuit breaker (3 failures) -> ClusterMode::Degraded.
-/// In degraded mode, get_all_nodes returns local cache instead of error.
+/// Trip circuit breaker (3 failures) -> `ClusterMode::Degraded`.
+/// In degraded mode, `get_all_nodes` returns local cache instead of error.
 #[tokio::test]
 async fn test_cluster_mode_degrades_after_circuit_breaker_trips() {
     let registry = make_registry("self");
@@ -87,7 +87,7 @@ async fn test_cluster_mode_degrades_after_circuit_breaker_trips() {
     );
 }
 
-/// Verify ClusterMode Display trait.
+/// Verify `ClusterMode` Display trait.
 #[test]
 fn test_cluster_mode_display() {
     assert_eq!(format!("{}", ClusterMode::Normal), "Normal");
@@ -104,7 +104,7 @@ async fn test_degraded_mode_returns_all_local_nodes() {
     // Populate local cache with several nodes
     for i in 0..5 {
         let node = NodeInfo::new(
-            format!("node-{}", i),
+            format!("node-{i}"),
             format!("localhost:{}", 50051 + i),
             format!("localhost:{}", 8080 + i),
         );
@@ -135,7 +135,7 @@ async fn test_degraded_mode_returns_all_local_nodes() {
     );
 }
 
-/// Verify cluster starts Normal and is_nodes_stale() is true initially
+/// Verify cluster starts Normal and `is_nodes_stale()` is true initially
 /// (never refreshed from Redis).
 #[test]
 fn test_initial_state_is_normal_and_stale() {
@@ -153,7 +153,7 @@ fn test_initial_state_is_normal_and_stale() {
     );
 }
 
-/// Verify that ClusterMode::Normal nodes are not stale after successful refresh.
+/// Verify that `ClusterMode::Normal` nodes are not stale after successful refresh.
 /// (Requires Redis, so this is a unit test of the concept.)
 #[test]
 fn test_cluster_mode_equality() {

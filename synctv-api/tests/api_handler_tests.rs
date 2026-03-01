@@ -35,7 +35,7 @@ mod update_playback_validation {
     use synctv_api::http::error::AppError;
     use synctv_api::http::room::UpdatePlaybackRequest;
 
-    /// Simulate the update_playback handler validation logic:
+    /// Simulate the `update_playback` handler validation logic:
     /// Empty body (all None) should produce 400
     #[tokio::test]
     async fn test_empty_body_returns_400() {
@@ -132,7 +132,7 @@ mod update_playback_validation {
                     return Err::<Json<Value>, AppError>(AppError::bad_request("empty"));
                 }
                 match req.state.as_deref() {
-                    Some("playing") | Some("paused") => {}
+                    Some("playing" | "paused") => {}
                     Some(_) => {
                         return Err(AppError::bad_request("Invalid state value"));
                     }
@@ -167,7 +167,7 @@ mod update_playback_validation {
                     return Err::<Json<Value>, AppError>(AppError::bad_request("empty"));
                 }
                 match req.state.as_deref() {
-                    Some("playing") | Some("paused") => {}
+                    Some("playing" | "paused") => {}
                     Some(_) => {
                         return Err(AppError::bad_request("Invalid state value"));
                     }
@@ -226,7 +226,7 @@ mod update_user_validation {
     use synctv_api::http::error::AppError;
     use synctv_api::http::user::UpdateUserRequest;
 
-    /// Password without old_password should produce 400
+    /// Password without `old_password` should produce 400
     #[tokio::test]
     async fn test_password_without_old_password_returns_400() {
         let app = Router::new().route(
@@ -327,7 +327,7 @@ mod update_user_validation {
             .contains("No valid update fields"));
     }
 
-    /// Password with old_password should pass validation
+    /// Password with `old_password` should pass validation
     #[tokio::test]
     async fn test_password_with_old_password_passes() {
         let app = Router::new().route(
@@ -422,7 +422,7 @@ mod create_ticket_validation {
     use synctv_api::http::error::AppError;
     use synctv_api::http::ticket::CreateTicketRequest;
 
-    /// ws_ticket_service=None should produce 500 (internal server error)
+    /// `ws_ticket_service=None` should produce 500 (internal server error)
     #[tokio::test]
     async fn test_ws_ticket_service_none_returns_500() {
         let app = Router::new().route(
@@ -463,7 +463,7 @@ mod create_ticket_validation {
         assert_eq!(json["status"], 500);
     }
 
-    /// Empty room_id should produce 400
+    /// Empty `room_id` should produce 400
     #[tokio::test]
     async fn test_empty_room_id_returns_400() {
         let app = Router::new().route(
@@ -492,7 +492,7 @@ mod create_ticket_validation {
         assert!(json["error"].as_str().unwrap().contains("room_id is required"));
     }
 
-    /// Whitespace-only room_id should also produce 400
+    /// Whitespace-only `room_id` should also produce 400
     #[tokio::test]
     async fn test_whitespace_room_id_returns_400() {
         let app = Router::new().route(
@@ -603,7 +603,7 @@ mod admin_validate_path_id {
         ];
         for id in test_ids {
             let result = validate_id(id, "test_id");
-            assert!(result.is_err(), "ID '{}' should be rejected", id);
+            assert!(result.is_err(), "ID '{id}' should be rejected");
         }
     }
 
@@ -617,7 +617,7 @@ mod admin_validate_path_id {
         assert!(matches!(err, ValidationError::TooLong { .. }));
     }
 
-    /// Integration: validate_path_id wraps validate_id into AppError
+    /// Integration: `validate_path_id` wraps `validate_id` into `AppError`
     #[test]
     fn test_validate_path_id_produces_bad_request_app_error() {
         use synctv_api::http::error::AppError;
@@ -757,7 +757,7 @@ mod message_stream_validation {
         assert!(err.message.contains("Not a member"));
     }
 
-    /// cluster_manager=None should produce unavailable error
+    /// `cluster_manager=None` should produce unavailable error
     #[test]
     fn test_cluster_manager_none_produces_unavailable() {
         // The gRPC handler at client_service.rs:573-575 returns Status::unavailable
@@ -878,7 +878,7 @@ mod admin_role_guard {
 mod live_streaming_validation {
     use synctv_api::http::error::AppError;
 
-    /// live_streaming_infrastructure=None should produce 500
+    /// `live_streaming_infrastructure=None` should produce 500
     #[test]
     fn test_live_infrastructure_none_produces_500() {
         // Reproduce live.rs:117-118
@@ -917,7 +917,7 @@ mod live_streaming_validation {
         assert_eq!(err.status, axum::http::StatusCode::UNAUTHORIZED);
     }
 
-    /// LiveQuery deserialization edge cases
+    /// `LiveQuery` deserialization edge cases
     #[test]
     fn test_live_query_deserialize_full() {
         use synctv_api::http::live::LiveQuery;
@@ -987,7 +987,7 @@ mod websocket_auth_priority {
         assert!(query.token.is_none());
     }
 
-    /// Auth priority: no header, no ticket, token present -> should use TokenQuery
+    /// Auth priority: no header, no ticket, token present -> should use `TokenQuery`
     #[test]
     fn test_auth_priority_token_query_last() {
         let headers = axum::http::HeaderMap::new();
@@ -1022,7 +1022,7 @@ mod websocket_auth_priority {
         assert!(err.message.contains("Missing authentication"));
     }
 
-    /// AuthMethod enum equality checks
+    /// `AuthMethod` enum equality checks
     #[test]
     fn test_auth_method_enum_values() {
         assert_eq!(AuthMethod::Header, AuthMethod::Header);
@@ -1032,7 +1032,7 @@ mod websocket_auth_priority {
         assert_ne!(AuthMethod::Ticket, AuthMethod::TokenQuery);
     }
 
-    /// WsQuery deserialization
+    /// `WsQuery` deserialization
     #[test]
     fn test_ws_query_deserialization_combinations() {
         // Both token and ticket
@@ -1042,7 +1042,7 @@ mod websocket_auth_priority {
         assert!(query.ticket.is_some());
 
         // Neither
-        let json = r#"{}"#;
+        let json = r"{}";
         let query: WsQuery = serde_json::from_str(json).unwrap();
         assert!(query.token.is_none());
         assert!(query.ticket.is_none());
@@ -1070,7 +1070,7 @@ mod websocket_auth_priority {
 mod optional_services_absent {
     use synctv_api::http::error::AppError;
 
-    /// email_service=None should produce appropriate error
+    /// `email_service=None` should produce appropriate error
     #[test]
     fn test_email_service_none() {
         let email_service: Option<()> = None;
@@ -1082,7 +1082,7 @@ mod optional_services_absent {
         assert!(err.message.contains("Email service not configured"));
     }
 
-    /// notification_api=None should produce appropriate error
+    /// `notification_api=None` should produce appropriate error
     #[tokio::test]
     async fn test_notification_api_none_returns_error() {
         use super::*;
@@ -1105,7 +1105,7 @@ mod optional_services_absent {
         assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
     }
 
-    /// oauth2_api=None should produce appropriate error
+    /// `oauth2_api=None` should produce appropriate error
     #[tokio::test]
     async fn test_oauth2_api_none_returns_error() {
         use super::*;
@@ -1128,7 +1128,7 @@ mod optional_services_absent {
         assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
     }
 
-    /// ws_ticket_service=None produces correct error code
+    /// `ws_ticket_service=None` produces correct error code
     #[test]
     fn test_ws_ticket_service_none_error_message() {
         let ws_ticket_service: Option<()> = None;
@@ -1143,7 +1143,7 @@ mod optional_services_absent {
         assert!(err.message.contains("Redis required"));
     }
 
-    /// admin_api=None should produce correct error
+    /// `admin_api=None` should produce correct error
     #[test]
     fn test_admin_api_none_error() {
         // Reproduce admin.rs:147-152
@@ -1195,10 +1195,9 @@ mod optional_services_absent {
             assert_eq!(
                 err.status,
                 axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-                "Service '{}' should produce 500",
-                name
+                "Service '{name}' should produce 500"
             );
-            assert!(!err.message.is_empty(), "Service '{}' error should have a message", name);
+            assert!(!err.message.is_empty(), "Service '{name}' error should have a message");
         }
     }
 }
@@ -1225,19 +1224,16 @@ mod error_response_format {
         let obj = json.as_object().unwrap();
         assert!(
             obj.contains_key("error"),
-            "Response for {} must contain 'error' field",
-            expected_status
+            "Response for {expected_status} must contain 'error' field"
         );
         assert!(
             obj.contains_key("status"),
-            "Response for {} must contain 'status' field",
-            expected_status
+            "Response for {expected_status} must contain 'status' field"
         );
         assert_eq!(
             json["status"].as_u64().unwrap() as u16,
             expected_status.as_u16(),
-            "Status field must match HTTP status for {}",
-            expected_status
+            "Status field must match HTTP status for {expected_status}"
         );
     }
 
@@ -1302,7 +1298,7 @@ mod error_response_format {
 mod validation_coverage {
     use synctv_api::http::validation::*;
 
-    /// validate_id rejects various injection attempts
+    /// `validate_id` rejects various injection attempts
     #[test]
     fn test_validate_id_rejects_injections() {
         // These contain characters that remain invalid after sanitization
@@ -1324,7 +1320,7 @@ mod validation_coverage {
         }
     }
 
-    /// validate_id sanitizes control characters before validation
+    /// `validate_id` sanitizes control characters before validation
     /// A null byte in the middle of valid chars gets stripped, so "user\x00null"
     /// becomes "usernull" which is valid
     #[test]
@@ -1337,7 +1333,7 @@ mod validation_coverage {
         assert_eq!(result.unwrap(), "username");
     }
 
-    /// validate_room_id rejects special characters
+    /// `validate_room_id` rejects special characters
     #[test]
     fn test_validate_room_id_rejects_special() {
         assert!(validate_room_id("room@123").is_err());
@@ -1346,7 +1342,7 @@ mod validation_coverage {
         assert!(validate_room_id("room/123").is_err());
     }
 
-    /// validate_room_id accepts valid IDs
+    /// `validate_room_id` accepts valid IDs
     #[test]
     fn test_validate_room_id_accepts_valid() {
         assert!(validate_room_id("room123").is_ok());
@@ -1355,7 +1351,7 @@ mod validation_coverage {
         assert!(validate_room_id("ABC123").is_ok());
     }
 
-    /// validate_email rejects invalid formats
+    /// `validate_email` rejects invalid formats
     #[test]
     fn test_validate_email_edge_cases() {
         assert!(validate_email("@example.com").is_err());
@@ -1364,7 +1360,7 @@ mod validation_coverage {
         assert!(validate_email("user space@example.com").is_err());
     }
 
-    /// validate_playback_position edge cases
+    /// `validate_playback_position` edge cases
     #[test]
     fn test_validate_playback_position_boundaries() {
         assert!(validate_playback_position(0.0).is_ok());
@@ -1376,7 +1372,7 @@ mod validation_coverage {
         assert!(validate_playback_position(f64::NEG_INFINITY).is_err());
     }
 
-    /// validate_playback_speed boundaries
+    /// `validate_playback_speed` boundaries
     #[test]
     fn test_validate_playback_speed_boundaries() {
         assert!(validate_playback_speed(0.25).is_ok()); // Min
@@ -1386,7 +1382,7 @@ mod validation_coverage {
         assert!(validate_playback_speed(f64::NAN).is_err());
     }
 
-    /// sanitize_string removes control characters
+    /// `sanitize_string` removes control characters
     #[test]
     fn test_sanitize_string_control_chars() {
         assert_eq!(sanitize_string("hello\x00world").as_ref(), "helloworld");
@@ -1403,7 +1399,7 @@ mod api_error_type_safe_mapping {
     use synctv_api::http::error::{map_api_error, AppError};
     use synctv_api::impls::ApiError;
 
-    /// Each ApiError variant maps to the correct HTTP status code via From<ApiError>
+    /// Each `ApiError` variant maps to the correct HTTP status code via From<ApiError>
     #[test]
     fn test_api_error_to_app_error_status_mapping() {
         let cases: Vec<(ApiError, axum::http::StatusCode)> = vec![
@@ -1421,7 +1417,7 @@ mod api_error_type_safe_mapping {
         }
     }
 
-    /// map_api_error preserves error codes
+    /// `map_api_error` preserves error codes
     #[test]
     fn test_map_api_error_preserves_error_code() {
         let api_err = ApiError::NotFound("room".into());
@@ -1451,7 +1447,7 @@ mod api_error_type_safe_mapping {
 mod grpc_status_mapping {
     use synctv_api::impls::ApiError;
 
-    /// ApiError should produce correct tonic status codes via proto error
+    /// `ApiError` should produce correct tonic status codes via proto error
     #[test]
     fn test_api_error_to_proto_error_message() {
         let cases = vec![
@@ -1481,8 +1477,7 @@ mod grpc_status_mapping {
             let proto_err = api_err.to_proto_error();
             assert!(
                 proto_err.message.contains(expected_msg),
-                "Proto error message should contain '{}'",
-                expected_msg
+                "Proto error message should contain '{expected_msg}'"
             );
         }
     }
@@ -1524,7 +1519,7 @@ mod grpc_status_mapping {
 mod grpc_api_validation {
     use synctv_api::http::validation::{validate_id, ValidationError};
 
-    /// Test room_id validation: empty string should be rejected
+    /// Test `room_id` validation: empty string should be rejected
     #[test]
     fn test_validate_room_id_empty() {
         let result = validate_id("", "room_id");
@@ -1535,7 +1530,7 @@ mod grpc_api_validation {
         }
     }
 
-    /// Test room_id validation: invalid characters should be rejected
+    /// Test `room_id` validation: invalid characters should be rejected
     #[test]
     fn test_validate_room_id_invalid_chars() {
         let result = validate_id("room@123!", "room_id");
@@ -1546,7 +1541,7 @@ mod grpc_api_validation {
         }
     }
 
-    /// Test room_id validation: valid ID should pass
+    /// Test `room_id` validation: valid ID should pass
     #[test]
     fn test_validate_room_id_valid() {
         let result = validate_id("room_123-abc", "room_id");
@@ -1554,7 +1549,7 @@ mod grpc_api_validation {
         assert_eq!(result.unwrap(), "room_123-abc");
     }
 
-    /// Test media_id validation: empty string should be rejected
+    /// Test `media_id` validation: empty string should be rejected
     #[test]
     fn test_validate_media_id_empty() {
         let result = validate_id("", "media_id");
@@ -1565,7 +1560,7 @@ mod grpc_api_validation {
         }
     }
 
-    /// Test media_id validation: too long should be rejected
+    /// Test `media_id` validation: too long should be rejected
     #[test]
     fn test_validate_media_id_too_long() {
         let long_id = "a".repeat(100);
@@ -1577,7 +1572,7 @@ mod grpc_api_validation {
         }
     }
 
-    /// Test media_id validation: valid ID should pass
+    /// Test `media_id` validation: valid ID should pass
     #[test]
     fn test_validate_media_id_valid() {
         let result = validate_id("media_123-xyz", "media_id");
@@ -1607,7 +1602,7 @@ mod grpc_api_validation {
 mod add_media_batch_provider_instance {
     use synctv_api::proto::client::AddMediaRequest;
 
-    /// Test that AddMediaRequest has provider_instance_name field
+    /// Test that `AddMediaRequest` has `provider_instance_name` field
     #[test]
     fn test_add_media_request_has_provider_instance_name() {
         let req = AddMediaRequest {
@@ -1620,7 +1615,7 @@ mod add_media_batch_provider_instance {
         assert_eq!(req.provider_instance_name, "bilibili_main");
     }
 
-    /// Test that AddMediaRequest with empty provider_instance_name works
+    /// Test that `AddMediaRequest` with empty `provider_instance_name` works
     #[test]
     fn test_add_media_request_empty_provider_instance_name() {
         let req = AddMediaRequest {
@@ -1633,7 +1628,7 @@ mod add_media_batch_provider_instance {
         assert!(req.provider_instance_name.is_empty());
     }
 
-    /// Test that provider_instance_name can be used to specify provider instance
+    /// Test that `provider_instance_name` can be used to specify provider instance
     #[test]
     fn test_provider_instance_name_variations() {
         let cases = vec![

@@ -1,9 +1,9 @@
-//! TieredCache integration tests with Redis L2 backend
+//! `TieredCache` integration tests with Redis L2 backend
 //!
 //! Tests the L2 (Redis) caching layer, including set/get, invalidation,
 //! and clear operations.
 //!
-//! Run with: cargo test --test tiered_cache_tests -- --nocapture
+//! Run with: cargo test --test `tiered_cache_tests` -- --nocapture
 #![allow(clippy::unwrap_used)]
 
 use std::sync::Arc;
@@ -25,7 +25,7 @@ async fn start_redis() -> (testcontainers::ContainerAsync<Redis>, redis::aio::Co
         .get_host_port_ipv4(6379)
         .await
         .expect("Failed to get port");
-    let redis_url = format!("redis://127.0.0.1:{}", port);
+    let redis_url = format!("redis://127.0.0.1:{port}");
     let client = redis::Client::open(redis_url).expect("Failed to create Redis client");
     let conn = redis::aio::ConnectionManager::new(client)
         .await

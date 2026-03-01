@@ -1,10 +1,10 @@
-//! RoomMemberRepository integration tests
+//! `RoomMemberRepository` integration tests
 //!
-//! Tests the core room member operations: add_with_options, role-check ban/remove,
+//! Tests the core room member operations: `add_with_options`, role-check ban/remove,
 //! atomic permission grants/revokes, permission reset, batch counts, pagination,
-//! and diagnose_add_conflict error branches.
+//! and `diagnose_add_conflict` error branches.
 //!
-//! Run with: cargo test --test room_member_repository_tests
+//! Run with: cargo test --test `room_member_repository_tests`
 #![allow(clippy::unwrap_used)]
 
 use synctv_core_testing::{create_test_pool};
@@ -23,7 +23,7 @@ fn make_user(username: &str) -> User {
     User {
         id: UserId::new(),
         username: username.to_string(),
-        email: Some(format!("{}@test.com", username)),
+        email: Some(format!("{username}@test.com")),
         password_hash: "hash".to_string(),
         role: UserRole::User,
         status: UserStatus::Active,
@@ -170,7 +170,7 @@ async fn test_add_with_options_max_members_zero_bypass() {
 
     // Add many members - all should succeed
     for i in 0..5 {
-        let user = user_repo.create(&make_user(&format!("user_zero_{}", i))).await.unwrap();
+        let user = user_repo.create(&make_user(&format!("user_zero_{i}"))).await.unwrap();
         let member = make_member(room.id.clone(), user.id.clone(), RoomRole::Member);
         member_repo.add_with_options(&member, &options).await.unwrap();
     }
@@ -453,13 +453,13 @@ async fn test_count_by_rooms_batch_basic() {
 
     // Add 2 members to room1
     for i in 0..2 {
-        let u = user_repo.create(&make_user(&format!("batch_u1_{}", i))).await.unwrap();
+        let u = user_repo.create(&make_user(&format!("batch_u1_{i}"))).await.unwrap();
         member_repo.add(&make_member(room1.id.clone(), u.id.clone(), RoomRole::Member)).await.unwrap();
     }
 
     // Add 3 members to room2
     for i in 0..3 {
-        let u = user_repo.create(&make_user(&format!("batch_u2_{}", i))).await.unwrap();
+        let u = user_repo.create(&make_user(&format!("batch_u2_{i}"))).await.unwrap();
         member_repo.add(&make_member(room2.id.clone(), u.id.clone(), RoomRole::Member)).await.unwrap();
     }
 
@@ -498,7 +498,7 @@ async fn test_list_by_user_with_details_pagination() {
 
     // Create 5 rooms and add user to each
     for i in 0..5 {
-        let room = room_repo.create(&make_room(&format!("Room Pag {}", i), &owner.id)).await.unwrap();
+        let room = room_repo.create(&make_room(&format!("Room Pag {i}"), &owner.id)).await.unwrap();
         let member = make_member(room.id.clone(), user.id.clone(), RoomRole::Member);
         member_repo.add(&member).await.unwrap();
         // Small delay to ensure distinct joined_at timestamps for stable ordering
@@ -723,7 +723,7 @@ async fn test_update_permissions_after_member_left_should_fail() {
 
     match result {
         Err(Error::OptimisticLockConflict) => { /* Expected */ }
-        Err(e) => panic!("Expected OptimisticLockConflict, got: {:?}", e),
+        Err(e) => panic!("Expected OptimisticLockConflict, got: {e:?}"),
         Ok(_) => panic!("update_permissions should not succeed for departed member"),
     }
 }

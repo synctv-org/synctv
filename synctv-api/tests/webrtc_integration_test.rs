@@ -3,7 +3,7 @@
 //! Comprehensive tests for WebRTC functionality including:
 //! - ICE servers configuration (STUN/TURN)
 //! - WebRTC signaling (Offer/Answer/ICE candidate exchange)
-//! - Permission checks (USE_WEBRTC permission required)
+//! - Permission checks (`USE_WEBRTC` permission required)
 //! - Multi-user peer-to-peer scenarios
 //!
 //! These tests validate the complete WebRTC flow from ICE server discovery
@@ -308,7 +308,7 @@ mod permissions {
         let webrtc = PermissionBits::USE_WEBRTC;
 
         // A power of 2 has exactly one bit set: (x & (x-1)) == 0 for x > 0
-        assert!(webrtc > 0 && (webrtc & (webrtc - 1)) == 0,
+        assert!(webrtc > 0 && webrtc.is_power_of_two(),
             "USE_WEBRTC should be a power of 2");
     }
 
@@ -400,7 +400,7 @@ mod ice_filtering {
     use std::net::IpAddr;
 
     /// Check if an IP address is private, loopback, or link-local
-    fn is_private_or_internal(ip: &IpAddr) -> bool {
+    const fn is_private_or_internal(ip: &IpAddr) -> bool {
         match ip {
             IpAddr::V4(ipv4) => {
                 ipv4.is_private() || ipv4.is_loopback() || ipv4.is_link_local()
@@ -425,8 +425,7 @@ mod ice_filtering {
             let parsed: IpAddr = ip.parse().unwrap();
             assert!(
                 is_private_or_internal(&parsed),
-                "{} should be considered private/internal",
-                ip
+                "{ip} should be considered private/internal"
             );
         }
     }
@@ -439,8 +438,7 @@ mod ice_filtering {
             let parsed: IpAddr = ip.parse().unwrap();
             assert!(
                 !is_private_or_internal(&parsed),
-                "{} should be considered public",
-                ip
+                "{ip} should be considered public"
             );
         }
     }

@@ -3,7 +3,7 @@
 //! Tests verify stream lifecycle from RTMP publish to HLS playback,
 //! including authorization checks.
 //!
-//! Run with: cargo test --test stream_lifecycle_tests
+//! Run with: cargo test --test `stream_lifecycle_tests`
 
 #![allow(clippy::unwrap_used)]
 use std::sync::Arc;
@@ -56,7 +56,7 @@ async fn test_stream_key_validation_structure() {
         let is_valid = invalid.split_once('/').is_some_and(|(room, rest)| {
             !room.is_empty() && rest.contains("token=")
         });
-        assert!(!is_valid, "Key '{}' should be invalid", invalid);
+        assert!(!is_valid, "Key '{invalid}' should be invalid");
     }
 }
 
@@ -193,7 +193,7 @@ async fn test_concurrent_stream_publishes() {
     // Simulate 10 concurrent publishes
     for i in 0..10 {
         let streams = active_streams.clone();
-        let stream_id = format!("room_{}/media_{}", i, i);
+        let stream_id = format!("room_{i}/media_{i}");
 
         let handle = tokio::spawn(async move {
             let mut streams = streams.lock().await;
@@ -206,7 +206,7 @@ async fn test_concurrent_stream_publishes() {
                 tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
                 stream_id
             } else {
-                panic!("Stream {} already exists", stream_id);
+                panic!("Stream {stream_id} already exists");
             }
         });
 
@@ -333,11 +333,11 @@ async fn test_stream_bitrate_limits() {
         const MAX_BITRATE: u32 = 10000; // 10 Mbps
 
         if bitrate_kbps < MIN_BITRATE {
-            return Err(format!("Bitrate too low: {} < {}", bitrate_kbps, MIN_BITRATE));
+            return Err(format!("Bitrate too low: {bitrate_kbps} < {MIN_BITRATE}"));
         }
 
         if bitrate_kbps > MAX_BITRATE {
-            return Err(format!("Bitrate too high: {} > {}", bitrate_kbps, MAX_BITRATE));
+            return Err(format!("Bitrate too high: {bitrate_kbps} > {MAX_BITRATE}"));
         }
 
         Ok(())
@@ -587,11 +587,11 @@ async fn test_publisher_info_serde_defaults() {
 // Tests verify that HLS cleanup tasks are properly terminated when
 // LivestreamHandle is dropped without calling shutdown().
 
-/// Test that dropping LivestreamHandle without calling shutdown() terminates the HLS cleanup task.
+/// Test that dropping `LivestreamHandle` without calling `shutdown()` terminates the HLS cleanup task.
 ///
 /// This verifies the fix for Task #28: HLS segment cleanup task leak.
-/// Before the fix, the cleanup task would run forever if LivestreamHandle
-/// was dropped without calling shutdown().
+/// Before the fix, the cleanup task would run forever if `LivestreamHandle`
+/// was dropped without calling `shutdown()`.
 #[tokio::test]
 async fn test_hls_cleanup_task_terminates_on_drop() {
     use std::sync::atomic::{AtomicBool, Ordering};
@@ -610,7 +610,7 @@ async fn test_hls_cleanup_task_terminates_on_drop() {
         task_running_clone.store(true, Ordering::SeqCst);
         loop {
             tokio::select! {
-                _ = tokio::time::sleep(Duration::from_millis(100)) => {
+                () = tokio::time::sleep(Duration::from_millis(100)) => {
                     // Simulate cleanup work
                 }
                 () = cancel_token_clone.cancelled() => {
@@ -637,13 +637,13 @@ async fn test_hls_cleanup_task_terminates_on_drop() {
     assert!(!task_running.load(Ordering::SeqCst), "Task should have stopped after cancellation");
 }
 
-/// Test that LivestreamHandle properly tracks and aborts the HLS cleanup task.
+/// Test that `LivestreamHandle` properly tracks and aborts the HLS cleanup task.
 ///
-/// This verifies that the hls_cleanup_handle field is properly initialized
+/// This verifies that the `hls_cleanup_handle` field is properly initialized
 /// and that Drop aborts it.
 ///
-/// Note: This test uses the SegmentManager directly to verify the fix without
-/// requiring the full LivestreamServer infrastructure.
+/// Note: This test uses the `SegmentManager` directly to verify the fix without
+/// requiring the full `LivestreamServer` infrastructure.
 #[tokio::test]
 async fn test_livestream_handle_tracks_hls_cleanup() {
     use synctv_xiu::hls::segment_manager::{SegmentManager, CleanupConfig};
@@ -655,7 +655,7 @@ async fn test_livestream_handle_tracks_hls_cleanup() {
     let storage = Arc::new(MemoryStorage::new());
     let config = CleanupConfig {
         interval: Duration::from_millis(100),
-        retention: Duration::from_secs(60),
+        retention: Duration::from_mins(1),
     };
     let segment_manager = Arc::new(SegmentManager::new(storage, config));
 

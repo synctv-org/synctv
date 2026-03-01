@@ -1,13 +1,13 @@
-//! Test that UpdateUserPassword API does not include force_logout parameter.
+//! Test that `UpdateUserPassword` API does not include `force_logout` parameter.
 //!
-//! This test verifies that the force_logout parameter has been removed from
-//! the UpdateUserPassword API, as the implementation does not support
+//! This test verifies that the `force_logout` parameter has been removed from
+//! the `UpdateUserPassword` API, as the implementation does not support
 //! token blacklisting for session invalidation.
 
 #![allow(clippy::unwrap_used)]
 use synctv_proto::admin::{UpdateUserPasswordRequest, UpdateUserPasswordResponse};
 
-/// Verify that UpdateUserPasswordRequest does NOT have force_logout field.
+/// Verify that `UpdateUserPasswordRequest` does NOT have `force_logout` field.
 /// This test ensures the API matches the actual implementation behavior.
 #[test]
 fn test_update_password_request_no_force_logout() {
@@ -33,7 +33,7 @@ fn test_update_password_request_no_force_logout() {
     assert!(json.contains("reason"));
 }
 
-/// Verify that UpdateUserPasswordResponse does NOT have sessions_invalidated field.
+/// Verify that `UpdateUserPasswordResponse` does NOT have `sessions_invalidated` field.
 /// This test ensures the response matches the actual implementation behavior.
 #[test]
 fn test_update_password_response_no_sessions_invalidated() {

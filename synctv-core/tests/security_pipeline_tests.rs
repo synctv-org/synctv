@@ -1,9 +1,9 @@
-//! SecurityPipeline integration tests
+//! `SecurityPipeline` integration tests
 //!
 //! Tests the post-JWT security pipeline: password version checks, user status
 //! checks, cache fast-path, and the B3 bug fix (DB error propagation).
 //!
-//! Run with: cargo test --test security_pipeline_tests -- --nocapture
+//! Run with: cargo test --test `security_pipeline_tests` -- --nocapture
 #![allow(clippy::unwrap_used)]
 
 use std::sync::Arc;
@@ -597,7 +597,7 @@ async fn test_non_blacklisted_access_token_allowed() {
     assert!(result.is_ok(), "Non-blacklisted token should be allowed");
 }
 
-/// Test that when require_blacklist is true and no blacklist store is configured,
+/// Test that when `require_blacklist` is true and no blacklist store is configured,
 /// the pipeline rejects requests.
 #[tokio::test]
 #[ignore = "Requires Docker"]
@@ -623,7 +623,7 @@ async fn test_require_blacklist_true_rejects_without_store() {
     );
 }
 
-/// Test that when require_blacklist is false, requests pass even without blacklist store.
+/// Test that when `require_blacklist` is false, requests pass even without blacklist store.
 #[tokio::test]
 #[ignore = "Requires Docker"]
 async fn test_require_blacklist_false_allows_without_store() {
@@ -769,7 +769,7 @@ async fn test_blacklist_store_error_rejects_request_fail_closed() {
     );
 }
 
-/// Test that the default is_blacklisted_checked (which delegates to is_blacklisted)
+/// Test that the default `is_blacklisted_checked` (which delegates to `is_blacklisted`)
 /// works correctly for in-memory stores that cannot fail.
 #[tokio::test]
 #[ignore = "Requires Docker"]

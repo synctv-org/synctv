@@ -178,16 +178,14 @@ async fn test_cors_multiple_allowed_origins() {
         assert_eq!(
             response.status(),
             StatusCode::NO_CONTENT,
-            "Origin {} should be allowed",
-            origin
+            "Origin {origin} should be allowed"
         );
 
         let headers = response.headers();
         assert_eq!(
             headers.get("Access-Control-Allow-Origin").map(|v| v.to_str().unwrap()),
             Some(*origin),
-            "Origin {} should be echoed back",
-            origin
+            "Origin {origin} should be echoed back"
         );
     }
 }
@@ -222,7 +220,7 @@ async fn test_cors_wildcard_mode_allows_all() {
 // Security: Wildcard CORS function deprecation tests
 // ==================================================================
 
-/// Test that deprecated proxy_options_preflight returns warning header
+/// Test that deprecated `proxy_options_preflight` returns warning header
 /// This function uses wildcard (*) which is insecure for production use.
 #[tokio::test]
 async fn test_deprecated_preflight_includes_warning_header() {
@@ -250,7 +248,7 @@ async fn test_deprecated_preflight_includes_warning_header() {
     );
 }
 
-/// Test that deprecated proxy_options_preflight still returns wildcard
+/// Test that deprecated `proxy_options_preflight` still returns wildcard
 /// (backward compatibility test - this behavior is intentionally insecure)
 #[tokio::test]
 async fn test_deprecated_preflight_returns_wildcard_for_backward_compat() {
@@ -284,7 +282,7 @@ async fn test_rate_limited_preflight_with_cors_validates_origin() {
 
     let allowed_origins = vec!["https://example.com".to_string()];
     let cors_config = Arc::new(synctv_proxy::CorsConfig::new(allowed_origins));
-    let limiter = Arc::new(synctv_proxy::RateLimiter::new(100, Duration::from_secs(60)));
+    let limiter = Arc::new(synctv_proxy::RateLimiter::new(100, Duration::from_mins(1)));
 
     // Allowed origin should succeed
     let response = synctv_proxy::proxy_options_preflight_rate_limited_with_cors(
@@ -315,7 +313,7 @@ async fn test_rate_limited_preflight_rejects_disallowed_origin() {
 
     let allowed_origins = vec!["https://example.com".to_string()];
     let cors_config = Arc::new(synctv_proxy::CorsConfig::new(allowed_origins));
-    let limiter = Arc::new(synctv_proxy::RateLimiter::new(100, Duration::from_secs(60)));
+    let limiter = Arc::new(synctv_proxy::RateLimiter::new(100, Duration::from_mins(1)));
 
     // Disallowed origin should be rejected even when rate limit allows
     let response = synctv_proxy::proxy_options_preflight_rate_limited_with_cors(
@@ -340,7 +338,7 @@ async fn test_rate_limited_preflight_returns_429_when_exceeded() {
     let allowed_origins = vec!["https://example.com".to_string()];
     let cors_config = Arc::new(synctv_proxy::CorsConfig::new(allowed_origins));
     // Very low limit for testing
-    let limiter = Arc::new(synctv_proxy::RateLimiter::new(2, Duration::from_secs(60)));
+    let limiter = Arc::new(synctv_proxy::RateLimiter::new(2, Duration::from_mins(1)));
 
     // Use up the rate limit
     let _ = limiter.check("192.168.1.1");
@@ -394,7 +392,7 @@ async fn test_wildcard_mode_no_credentials() {
 async fn test_old_rate_limited_preflight_is_deprecated() {
     use std::time::Duration;
 
-    let limiter = Arc::new(synctv_proxy::RateLimiter::new(100, Duration::from_secs(60)));
+    let limiter = Arc::new(synctv_proxy::RateLimiter::new(100, Duration::from_mins(1)));
 
     // The old function without CORS config should be deprecated
     #[allow(deprecated)]

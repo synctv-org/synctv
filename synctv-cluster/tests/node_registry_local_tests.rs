@@ -1,12 +1,12 @@
-//! Tests for local-only NodeRegistry mode (no Redis required)
+//! Tests for local-only `NodeRegistry` mode (no Redis required)
 //!
-//! These tests verify that NodeRegistry can function in a degraded/local mode
+//! These tests verify that `NodeRegistry` can function in a degraded/local mode
 //! when Redis is unavailable, supporting the "non-cluster mode can work without Redis" architecture.
 
 #![allow(clippy::unwrap_used)]
 use synctv_cluster::{ClusterMode, NodeInfo, NodeRegistry};
 
-/// Test that NodeRegistry can be created in local-only mode without Redis.
+/// Test that `NodeRegistry` can be created in local-only mode without Redis.
 #[tokio::test]
 async fn test_new_local_only_creates_registry() {
     // This should succeed without requiring a Redis connection
@@ -110,7 +110,7 @@ async fn test_local_only_empty_cache_returns_empty() {
     assert!(all_nodes.is_empty(), "Should return empty for empty cache");
 }
 
-/// Test that is_nodes_stale returns true for local-only registry that never refreshed.
+/// Test that `is_nodes_stale` returns true for local-only registry that never refreshed.
 #[tokio::test]
 async fn test_local_only_is_nodes_stale_when_never_refreshed() {
     let registry = NodeRegistry::new_local_only(
@@ -126,7 +126,7 @@ async fn test_local_only_is_nodes_stale_when_never_refreshed() {
     );
 }
 
-/// Test that merge_dns_peers works in local-only mode.
+/// Test that `merge_dns_peers` works in local-only mode.
 #[tokio::test]
 async fn test_local_only_merge_dns_peers() {
     let registry = NodeRegistry::new_local_only(

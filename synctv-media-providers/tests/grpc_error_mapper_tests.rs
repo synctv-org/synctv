@@ -1,8 +1,8 @@
-//! Integration tests for gRPC error_mapper
+//! Integration tests for gRPC `error_mapper`
 //!
-//! Verifies that AlistError, BilibiliError, and EmbyError all correctly
-//! map to the expected tonic::Status codes through the shared
-//! map_provider_error function.
+//! Verifies that `AlistError`, `BilibiliError`, and `EmbyError` all correctly
+//! map to the expected `tonic::Status` codes through the shared
+//! `map_provider_error` function.
 
 #![allow(clippy::unwrap_used)]
 use synctv_media_providers::grpc::error_mapper::map_provider_error;

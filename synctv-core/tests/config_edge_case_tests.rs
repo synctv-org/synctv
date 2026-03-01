@@ -3,7 +3,7 @@
 //! Tests trusted proxy matching, database URL password masking,
 //! and config serialization roundtrip.
 //!
-//! Run with: cargo test --test config_edge_case_tests
+//! Run with: cargo test --test `config_edge_case_tests`
 #![allow(clippy::unwrap_used)]
 
 use synctv_core::config::{

@@ -1,8 +1,8 @@
-//! Database performance benchmarks with real PostgreSQL
+//! Database performance benchmarks with real `PostgreSQL`
 //!
-//! Run with: cargo bench --bench database_benchmarks
+//! Run with: cargo bench --bench `database_benchmarks`
 //!
-//! Note: These benchmarks use testcontainers to start a PostgreSQL container.
+//! Note: These benchmarks use testcontainers to start a `PostgreSQL` container.
 //! They require Docker to be running.
 //!
 //! Performance targets:
@@ -72,7 +72,7 @@ fn make_user(username: &str) -> User {
     User {
         id: UserId::new(),
         username: username.to_string(),
-        email: Some(format!("{}@test.com", username)),
+        email: Some(format!("{username}@test.com")),
         password_hash: "hash".to_string(),
         role: UserRole::User,
         status: UserStatus::Active,
@@ -142,7 +142,7 @@ fn bench_list_rooms_with_data(c: &mut Criterion) {
     for &room_count in &[100, 500, 1000] {
         // Seed data
         for i in 0..room_count {
-            let room = make_room(&format!("bench_room_{}_{}", room_count, i), &owner.id);
+            let room = make_room(&format!("bench_room_{room_count}_{i}"), &owner.id);
             rt.block_on(room_repo.create(&room)).unwrap();
         }
 
@@ -198,7 +198,7 @@ fn bench_list_media_with_data(c: &mut Criterion) {
                 playlist_id: playlist.id.clone(),
                 room_id: room.id.clone(),
                 creator_id: None,
-                name: format!("media_{}_{}", media_count, i),
+                name: format!("media_{media_count}_{i}"),
                 position: i,
                 source_provider: "direct_url".to_string(),
                 source_config: serde_json::json!({"url": format!("https://example.com/{}.mp4", i)}),
@@ -234,7 +234,7 @@ fn bench_batch_insert_operations(c: &mut Criterion) {
     let user_repo = UserRepository::new(pool.clone());
     let room_repo = RoomRepository::new(pool.clone());
     let playlist_repo = PlaylistRepository::new(pool.clone());
-    let media_repo = MediaRepository::new(pool.clone());
+    let media_repo = MediaRepository::new(pool);
 
     // Create test data
     let owner = rt.block_on(user_repo.create(&make_user("batch_insert_owner"))).unwrap();
@@ -247,7 +247,7 @@ fn bench_batch_insert_operations(c: &mut Criterion) {
 
     // Test different batch sizes
     for &batch_size in &[10, 50, 100] {
-        let playlist = make_playlist(&room.id, None, &format!("batch_playlist_{}", batch_size));
+        let playlist = make_playlist(&room.id, None, &format!("batch_playlist_{batch_size}"));
         let _playlist = rt.block_on(playlist_repo.create(&playlist)).unwrap();
 
         let bench_id = BenchmarkId::new("media", batch_size);
@@ -270,7 +270,7 @@ fn bench_batch_insert_operations(c: &mut Criterion) {
                                 playlist_id: new_playlist.id.clone(),
                                 room_id: room_id.clone(),
                                 creator_id: None,
-                                name: format!("batch_media_{}", i),
+                                name: format!("batch_media_{i}"),
                                 position: i,
                                 source_provider: "direct_url".to_string(),
                                 source_config: serde_json::json!({"url": "https://example.com/video.mp4"}),
@@ -297,7 +297,7 @@ fn bench_index_effectiveness(c: &mut Criterion) {
 
     let user_repo = UserRepository::new(pool.clone());
     let room_repo = RoomRepository::new(pool.clone());
-    let member_repo = RoomMemberRepository::new(pool.clone());
+    let member_repo = RoomMemberRepository::new(pool);
 
     // Create test data
     let owner = rt.block_on(user_repo.create(&make_user("index_owner"))).unwrap();
@@ -306,7 +306,7 @@ fn bench_index_effectiveness(c: &mut Criterion) {
 
     // Create members
     for i in 0..500 {
-        let user = rt.block_on(user_repo.create(&make_user(&format!("member_{}", i)))).unwrap();
+        let user = rt.block_on(user_repo.create(&make_user(&format!("member_{i}")))).unwrap();
         let member = RoomMember::new(room.id.clone(), user.id.clone(), RoomRole::Member);
         rt.block_on(member_repo.add(&member)).unwrap();
     }
@@ -331,7 +331,7 @@ fn bench_single_row_operations(c: &mut Criterion) {
     let (_container, pool) = rt.block_on(setup_test_db());
 
     let user_repo = UserRepository::new(pool.clone());
-    let room_repo = RoomRepository::new(pool.clone());
+    let room_repo = RoomRepository::new(pool);
 
     let owner = rt.block_on(user_repo.create(&make_user("crud_owner"))).unwrap();
 
@@ -368,13 +368,13 @@ fn bench_pagination_offset_performance(c: &mut Criterion) {
     let (_container, pool) = rt.block_on(setup_test_db());
 
     let user_repo = UserRepository::new(pool.clone());
-    let room_repo = RoomRepository::new(pool.clone());
+    let room_repo = RoomRepository::new(pool);
 
     let owner = rt.block_on(user_repo.create(&make_user("pagination_owner"))).unwrap();
 
     // Create 1000 rooms
     for i in 0..1000 {
-        let room = make_room(&format!("page_room_{:04}", i), &owner.id);
+        let room = make_room(&format!("page_room_{i:04}"), &owner.id);
         rt.block_on(room_repo.create(&room)).unwrap();
     }
 

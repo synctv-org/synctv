@@ -701,7 +701,7 @@ mod tests {
             is_dir: false,
             modified: 1700000000,
             sign: "abc".to_string(),
-            thumb: "".to_string(),
+            thumb: String::new(),
             r#type: 2,
         };
         let proto: crate::grpc::alist::fs_list_resp::FsListContent = content.into();
@@ -719,8 +719,8 @@ mod tests {
                     size: 100,
                     is_dir: false,
                     modified: 0,
-                    sign: "".to_string(),
-                    thumb: "".to_string(),
+                    sign: String::new(),
+                    thumb: String::new(),
                     r#type: 0,
                 },
                 crate::alist::types::HttpFsListContent {
@@ -728,8 +728,8 @@ mod tests {
                     size: 0,
                     is_dir: true,
                     modified: 0,
-                    sign: "".to_string(),
-                    thumb: "".to_string(),
+                    sign: String::new(),
+                    thumb: String::new(),
                     r#type: 1,
                 },
             ],

@@ -1,9 +1,9 @@
-//! OAuth2 Redis state store integration tests
+//! `OAuth2` Redis state store integration tests
 //!
-//! Tests the RedisOAuthStateStore: store, consume, TTL expiry,
+//! Tests the `RedisOAuthStateStore`: store, consume, TTL expiry,
 //! and atomic single-use consumption under concurrency.
 //!
-//! Run with: cargo test --test oauth2_state_store_tests -- --nocapture
+//! Run with: cargo test --test `oauth2_state_store_tests` -- --nocapture
 #![allow(clippy::unwrap_used)]
 
 use std::sync::Arc;
@@ -22,7 +22,7 @@ async fn start_redis() -> (testcontainers::ContainerAsync<Redis>, redis::aio::Co
         .get_host_port_ipv4(6379)
         .await
         .expect("Failed to get port");
-    let redis_url = format!("redis://127.0.0.1:{}", port);
+    let redis_url = format!("redis://127.0.0.1:{port}");
     let client = redis::Client::open(redis_url).expect("Failed to create Redis client");
     let conn = redis::aio::ConnectionManager::new(client)
         .await
@@ -47,7 +47,7 @@ async fn test_redis_oauth_state_store_and_consume() {
     let store = RedisOAuthStateStore::new(conn);
 
     let state = make_state("github");
-    let ttl = std::time::Duration::from_secs(60);
+    let ttl = std::time::Duration::from_mins(1);
 
     // Store
     store.store("token_1", &state, ttl).await.unwrap();
@@ -75,7 +75,7 @@ async fn test_redis_oauth_state_consume_is_atomic() {
     let store = Arc::new(RedisOAuthStateStore::new(conn));
 
     let state = make_state("atomic_test");
-    let ttl = std::time::Duration::from_secs(60);
+    let ttl = std::time::Duration::from_mins(1);
     store.store("atomic_token", &state, ttl).await.unwrap();
 
     // Spawn 20 concurrent consumers
@@ -150,7 +150,7 @@ async fn test_redis_oauth_state_concurrent_with_barrier() {
     let store = Arc::new(RedisOAuthStateStore::new(conn));
 
     let state = make_state("barrier_test");
-    let ttl = std::time::Duration::from_secs(60);
+    let ttl = std::time::Duration::from_mins(1);
     store.store("barrier_token", &state, ttl).await.unwrap();
 
     // Use barrier to maximize concurrency - all threads start at exactly the same time
@@ -209,38 +209,38 @@ async fn test_redis_oauth_state_multiple_tokens_isolated() {
     let (_container, conn) = start_redis().await;
     let store = RedisOAuthStateStore::new(conn);
 
-    let ttl = std::time::Duration::from_secs(60);
+    let ttl = std::time::Duration::from_mins(1);
 
     // Store multiple states
     for i in 0..10 {
         let state = OAuth2State {
-            instance_name: format!("provider_{}", i),
+            instance_name: format!("provider_{i}"),
             redirect_url: None,
             created_at: chrono::Utc::now(),
             bind_user_id: None,
-            pkce_verifier: format!("verifier_{}", i),
+            pkce_verifier: format!("verifier_{i}"),
         };
-        store.store(&format!("token_{}", i), &state, ttl).await.unwrap();
+        store.store(&format!("token_{i}"), &state, ttl).await.unwrap();
     }
 
     // Consume in random order and verify each is isolated
     let order = [5, 2, 8, 1, 9, 0, 3, 7, 4, 6];
     for &i in &order {
-        let result = store.consume(&format!("token_{}", i)).await.unwrap();
-        assert!(result.is_some(), "Token {} should be found", i);
+        let result = store.consume(&format!("token_{i}")).await.unwrap();
+        assert!(result.is_some(), "Token {i} should be found");
         let state = result.unwrap();
-        assert_eq!(state.instance_name, format!("provider_{}", i));
-        assert_eq!(state.pkce_verifier, format!("verifier_{}", i));
+        assert_eq!(state.instance_name, format!("provider_{i}"));
+        assert_eq!(state.pkce_verifier, format!("verifier_{i}"));
     }
 
     // All tokens should now be consumed
     for i in 0..10 {
-        let result = store.consume(&format!("token_{}", i)).await.unwrap();
-        assert!(result.is_none(), "Token {} should be already consumed", i);
+        let result = store.consume(&format!("token_{i}")).await.unwrap();
+        assert!(result.is_none(), "Token {i} should be already consumed");
     }
 }
 
-/// Test that expired state tokens (based on created_at) are correctly rejected
+/// Test that expired state tokens (based on `created_at`) are correctly rejected
 /// even if they somehow persist in Redis.
 #[tokio::test]
 #[ignore = "Requires Docker"]
@@ -259,7 +259,7 @@ async fn test_redis_oauth_state_created_at_expiry_check() {
     };
 
     // Store with long TTL (simulating Redis TTL not being enforced)
-    let long_ttl = std::time::Duration::from_secs(3600);
+    let long_ttl = std::time::Duration::from_hours(1);
     store.store("expired_by_created_at", &state, long_ttl).await.unwrap();
 
     // The state should be retrievable from Redis (TTL not expired)

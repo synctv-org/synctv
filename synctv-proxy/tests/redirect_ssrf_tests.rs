@@ -229,7 +229,7 @@ fn test_redirect_to_ipv6_unique_local_blocked() {
 // Redirect SSRF: Integration test (via proxy_fetch_and_forward)
 // ==================================================================
 
-/// Verify that proxy_fetch_and_forward blocks SSRF attempts.
+/// Verify that `proxy_fetch_and_forward` blocks SSRF attempts.
 /// Since wiremock runs on loopback, we can't actually test redirect chains,
 /// but we can verify that the initial URL validation blocks private IPs.
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
@@ -250,7 +250,7 @@ async fn test_proxy_blocks_private_ip_initial_url() {
     );
 }
 
-/// Verify that proxy_fetch_and_forward blocks loopback addresses.
+/// Verify that `proxy_fetch_and_forward` blocks loopback addresses.
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_proxy_blocks_loopback_initial_url() {
     let headers = axum::http::HeaderMap::new();
@@ -263,7 +263,7 @@ async fn test_proxy_blocks_loopback_initial_url() {
     assert!(result.is_err(), "Should block loopback URL");
 }
 
-/// Verify that proxy_fetch_and_forward blocks cloud metadata endpoints.
+/// Verify that `proxy_fetch_and_forward` blocks cloud metadata endpoints.
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_proxy_blocks_cloud_metadata_url() {
     let headers = axum::http::HeaderMap::new();
@@ -419,7 +419,7 @@ fn test_redirect_to_localhost_subdomain_blocked() {
 // Redirect SSRF: Redirect chain limit enforcement
 // ==================================================================
 
-/// The MAX_REDIRECTS constant should be defined and reasonable.
+/// The `MAX_REDIRECTS` constant should be defined and reasonable.
 /// This test documents the expected behavior.
 #[test]
 fn test_max_redirects_constant_is_reasonable() {

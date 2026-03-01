@@ -1,7 +1,7 @@
-//! Tests for InMemoryStreamRegistry (standalone mode without Redis).
+//! Tests for `InMemoryStreamRegistry` (standalone mode without Redis).
 //!
 //! These tests verify that the in-memory registry provides the same
-//! semantics as the Redis-backed StreamRegistry.
+//! semantics as the Redis-backed `StreamRegistry`.
 
 #![allow(clippy::unwrap_used)]
 use synctv_livestream::relay::{InMemoryStreamRegistry, StreamRegistryTrait};
@@ -439,8 +439,7 @@ async fn test_concurrent_cleanup_all_for_node() {
     let streams = registry.list_active_streams().await.unwrap();
     assert!(
         streams.is_empty(),
-        "All publishers should be cleaned up, got: {:?}",
-        streams
+        "All publishers should be cleaned up, got: {streams:?}"
     );
 }
 

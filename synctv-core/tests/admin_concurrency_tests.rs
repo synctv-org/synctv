@@ -6,8 +6,8 @@
 //! - Settings update concurrency with optimistic lock
 //! - Optimistic lock conflict retry scenarios
 //!
-//! Run with: cargo test -p synctv-core --test admin_concurrency_tests -- --nocapture
-//! Docker tests: cargo test -p synctv-core --test admin_concurrency_tests -- --ignored --nocapture
+//! Run with: cargo test -p synctv-core --test `admin_concurrency_tests` -- --nocapture
+//! Docker tests: cargo test -p synctv-core --test `admin_concurrency_tests` -- --ignored --nocapture
 #![allow(clippy::unwrap_used)]
 
 use std::sync::Arc;
@@ -38,7 +38,7 @@ fn make_user_with_role(username: &str, role: UserRole) -> User {
     User {
         id: UserId::new(),
         username: username.to_string(),
-        email: Some(format!("{}@test.com", username)),
+        email: Some(format!("{username}@test.com")),
         password_hash: "hash".to_string(),
         role,
         status: UserStatus::Active,
@@ -135,7 +135,7 @@ async fn test_concurrent_user_ban_operations() {
     let mut users = Vec::with_capacity(10);
     for i in 0..10 {
         let user = user_repo
-            .create(&make_user_with_role(&format!("concurrent_ban_{}", i), UserRole::User))
+            .create(&make_user_with_role(&format!("concurrent_ban_{i}"), UserRole::User))
             .await
             .expect("Failed to create user");
         users.push(user);
@@ -164,7 +164,7 @@ async fn test_concurrent_user_ban_operations() {
                 assert_eq!(updated.status, UserStatus::Banned);
                 success_count += 1;
             }
-            Err(e) => panic!("Ban operation should succeed: {:?}", e),
+            Err(e) => panic!("Ban operation should succeed: {e:?}"),
         }
     }
 
@@ -219,7 +219,7 @@ async fn test_concurrent_ban_unban_same_user() {
     for handle in handles {
         match handle.await.expect("Task panicked") {
             Ok(_) => success_count += 1,
-            Err(e) => panic!("Status operation should succeed: {:?}", e),
+            Err(e) => panic!("Status operation should succeed: {e:?}"),
         }
     }
 
@@ -246,7 +246,7 @@ async fn test_concurrent_room_ban_operations() {
     // Create multiple rooms
     let mut room_ids = Vec::with_capacity(10);
     for i in 0..10 {
-        let (_owner, room) = setup_test_room(&pool, &format!("Concurrent Ban Room {}", i)).await;
+        let (_owner, room) = setup_test_room(&pool, &format!("Concurrent Ban Room {i}")).await;
         room_ids.push(room.id);
     }
 
@@ -273,7 +273,7 @@ async fn test_concurrent_room_ban_operations() {
                 assert!(updated.is_banned);
                 success_count += 1;
             }
-            Err(e) => panic!("Room ban should succeed: {:?}", e),
+            Err(e) => panic!("Room ban should succeed: {e:?}"),
         }
     }
 
@@ -322,7 +322,7 @@ async fn test_concurrent_room_status_changes() {
     for handle in handles {
         match handle.await.expect("Task panicked") {
             Ok(_) => success_count += 1,
-            Err(e) => panic!("Status change should succeed: {:?}", e),
+            Err(e) => panic!("Status change should succeed: {e:?}"),
         }
     }
 
@@ -363,7 +363,7 @@ async fn test_concurrent_global_settings_update_optimistic_lock() {
             loop {
                 let current = repo_clone.get_by_id(&uid).await.expect("Query failed").expect("User exists");
                 let mut updated = current.clone();
-                updated.email = Some(format!("updated_{}@test.com", i));
+                updated.email = Some(format!("updated_{i}@test.com"));
 
                 match repo_clone.update(&updated, current.version).await {
                     Ok(result) => break Ok(result),
@@ -388,7 +388,7 @@ async fn test_concurrent_global_settings_update_optimistic_lock() {
         match handle.await.expect("Task panicked") {
             Ok(_) => success_count += 1,
             Err(Error::OptimisticLockConflict) => conflict_count += 1,
-            Err(e) => panic!("Unexpected error: {:?}", e),
+            Err(e) => panic!("Unexpected error: {e:?}"),
         }
     }
 
@@ -505,7 +505,7 @@ async fn test_optimistic_lock_retry_succeeds() {
     assert!(result1.is_ok(), "First update should succeed");
 
     // Second should succeed with retry
-    assert!(result2.is_ok(), "Second update should succeed with retry: {:?}", result2);
+    assert!(result2.is_ok(), "Second update should succeed with retry: {result2:?}");
 }
 
 // ============================================================================
@@ -574,7 +574,7 @@ async fn test_concurrent_room_ban_with_members_joining() {
     let mut users = Vec::with_capacity(10);
     for i in 0..10 {
         let user = user_repo
-            .create(&make_user_with_role(&format!("join_ban_{}", i), UserRole::User))
+            .create(&make_user_with_role(&format!("join_ban_{i}"), UserRole::User))
             .await
             .expect("Failed to create user");
         users.push(user);
@@ -700,7 +700,7 @@ async fn test_concurrent_room_settings_update() {
                             break Err(Error::OptimisticLockConflict);
                         }
                         let base_ms = 10u64 * (1u64 << retries.min(5));
-                        let jitter = (i as u64 * 7 + retries as u64 * 3) % base_ms;
+                        let jitter = (i as u64 * 7 + u64::from(retries) * 3) % base_ms;
                         tokio::time::sleep(tokio::time::Duration::from_millis(base_ms + jitter)).await;
                     }
                     Err(e) => break Err(e),
@@ -715,9 +715,9 @@ async fn test_concurrent_room_settings_update() {
 
     for handle in handles {
         match handle.await.expect("Task panicked") {
-            Ok(_) => success_count += 1,
+            Ok(()) => success_count += 1,
             Err(Error::OptimisticLockConflict) => conflict_count += 1,
-            Err(e) => panic!("Unexpected error: {:?}", e),
+            Err(e) => panic!("Unexpected error: {e:?}"),
         }
     }
 
@@ -798,7 +798,7 @@ async fn test_concurrent_role_updates_same_user() {
         match handle.await.expect("Task panicked") {
             Ok(_) => success_count += 1,
             Err(Error::OptimisticLockConflict) => {}
-            Err(e) => panic!("Unexpected error: {:?}", e),
+            Err(e) => panic!("Unexpected error: {e:?}"),
         }
     }
 

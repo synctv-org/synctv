@@ -1,4 +1,4 @@
-//! ConnectionManager integration tests (no Redis required)
+//! `ConnectionManager` integration tests (no Redis required)
 //!
 //! Tests for connection lifecycle, room joins, limits, disconnect signals,
 //! and RTC filtering.
@@ -85,8 +85,8 @@ async fn test_disconnect_signal_reliability_under_load() {
 
     // Register multiple connections
     for i in 0..10 {
-        let user = uid(&format!("u{}", i));
-        mgr.register(format!("c{}", i), user.clone()).await.unwrap();
+        let user = uid(&format!("u{i}"));
+        mgr.register(format!("c{i}"), user.clone()).await.unwrap();
     }
 
     // Subscribe to receive signals
@@ -94,7 +94,7 @@ async fn test_disconnect_signal_reliability_under_load() {
 
     // Send multiple disconnect signals rapidly
     for i in 0..10 {
-        mgr.disconnect_connection(&format!("c{}", i));
+        mgr.disconnect_connection(&format!("c{i}"));
     }
 
     // All signals should be received (broadcast channel should handle this)
@@ -172,7 +172,7 @@ async fn test_max_duration_timeout() {
 
     let limits = synctv_cluster::sync::ConnectionLimits {
         max_duration: Duration::from_millis(50),
-        idle_timeout: Duration::from_secs(3600), // effectively disabled
+        idle_timeout: Duration::from_hours(1), // effectively disabled
         ..Default::default()
     };
     let mgr = ConnectionManager::new(limits);

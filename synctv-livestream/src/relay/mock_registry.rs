@@ -6,17 +6,18 @@ use chrono::Utc;
 use super::registry::PublisherInfo;
 use super::registry_trait::StreamRegistryTrait;
 
-/// Mock StreamRegistry for testing without Redis
+/// Mock `StreamRegistry` for testing without Redis
 #[derive(Debug, Clone)]
 pub struct MockStreamRegistry {
     publishers: std::sync::Arc<tokio::sync::Mutex<std::collections::HashMap<(String, String), PublisherInfo>>>,
-    /// Epoch counter for each stream (room_id, media_id)
+    /// Epoch counter for each stream (`room_id`, `media_id`)
     epoch_counters: std::sync::Arc<tokio::sync::Mutex<std::collections::HashMap<(String, String), u64>>>,
     /// Counter for register calls (for testing task leaks)
     register_call_count: std::sync::Arc<std::sync::atomic::AtomicUsize>,
 }
 
 impl MockStreamRegistry {
+    #[must_use] 
     pub fn new() -> Self {
         Self {
             publishers: std::sync::Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
@@ -25,6 +26,7 @@ impl MockStreamRegistry {
         }
     }
 
+    #[must_use] 
     pub fn with_publishers(publishers: std::collections::HashMap<(String, String), PublisherInfo>) -> Self {
         Self {
             publishers: std::sync::Arc::new(tokio::sync::Mutex::new(publishers)),
@@ -33,7 +35,8 @@ impl MockStreamRegistry {
         }
     }
 
-    /// Get the count of register_publisher calls (for testing task leaks)
+    /// Get the count of `register_publisher` calls (for testing task leaks)
+    #[must_use] 
     pub fn register_call_count(&self) -> usize {
         self.register_call_count.load(std::sync::atomic::Ordering::SeqCst)
     }

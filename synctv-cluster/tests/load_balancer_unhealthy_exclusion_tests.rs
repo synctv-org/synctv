@@ -1,4 +1,4 @@
-//! CL8: LoadBalancer unhealthy exclusion
+//! CL8: `LoadBalancer` unhealthy exclusion
 //!
 //! - 3 nodes: 2 Unhealthy + 1 Healthy -> only healthy selected (10 calls)
 //! - All unhealthy -> fallback behavior (selects random from full set)
@@ -13,7 +13,7 @@ use synctv_cluster::discovery::load_balancer::{LoadBalancer, LoadBalancingStrate
 use synctv_cluster::discovery::node_registry::{NodeInfo, NodeRegistry};
 use synctv_cluster::NodeHealth;
 
-/// Helper: create a NodeRegistry and populate it with nodes.
+/// Helper: create a `NodeRegistry` and populate it with nodes.
 async fn setup_registry(node_ids: &[&str]) -> Arc<NodeRegistry> {
     let registry = Arc::new(
         NodeRegistry::new(
@@ -28,8 +28,8 @@ async fn setup_registry(node_ids: &[&str]) -> Arc<NodeRegistry> {
     for id in node_ids {
         let node = NodeInfo::new(
             id.to_string(),
-            format!("{}:50051", id),
-            format!("{}:8080", id),
+            format!("{id}:50051"),
+            format!("{id}:8080"),
         );
         registry.test_insert_local(node).await;
     }
@@ -59,14 +59,13 @@ async fn test_only_healthy_node_selected() {
         let selected = lb.select_node().await.unwrap();
         assert_eq!(
             selected, "node-c",
-            "Only healthy node-c should be selected, got {} on iteration {}",
-            selected, i
+            "Only healthy node-c should be selected, got {selected} on iteration {i}"
         );
     }
 }
 
-/// All unhealthy -> LoadBalancer falls back to random selection from full set.
-/// (The LoadBalancer's fallback behavior when all are unhealthy is to pick
+/// All unhealthy -> `LoadBalancer` falls back to random selection from full set.
+/// (The `LoadBalancer`'s fallback behavior when all are unhealthy is to pick
 /// a random one from the full set rather than return an error.)
 #[tokio::test]
 async fn test_all_unhealthy_falls_back_to_random() {
@@ -118,8 +117,7 @@ async fn test_degraded_nodes_selectable() {
     // All degraded nodes should be selectable
     assert!(
         selected_ids.len() >= 2,
-        "Degraded nodes should be selectable, got {:?}",
-        selected_ids
+        "Degraded nodes should be selectable, got {selected_ids:?}"
     );
 }
 
@@ -206,7 +204,6 @@ async fn test_unknown_health_treated_as_healthy() {
     );
     assert!(
         selected_ids.contains("node-b") || selected_ids.contains("node-c"),
-        "Nodes without health status should be selectable, got {:?}",
-        selected_ids
+        "Nodes without health status should be selectable, got {selected_ids:?}"
     );
 }

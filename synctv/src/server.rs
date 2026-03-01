@@ -538,8 +538,7 @@ mod tests {
             let result: Result<std::net::SocketAddr, _> = addr.parse();
             assert!(
                 result.is_err(),
-                "Expected '{}' to be invalid, but it parsed successfully",
-                addr
+                "Expected '{addr}' to be invalid, but it parsed successfully"
             );
         }
     }
@@ -559,8 +558,7 @@ mod tests {
             let result: Result<std::net::SocketAddr, _> = addr.parse();
             assert!(
                 result.is_ok(),
-                "Expected '{}' to be valid, but it failed to parse",
-                addr
+                "Expected '{addr}' to be valid, but it failed to parse"
             );
         }
     }
@@ -577,8 +575,7 @@ mod tests {
         let result = tokio::net::TcpListener::bind(bound_addr).await;
         assert!(
             result.is_err(),
-            "Expected binding to already-bound port {} to fail",
-            bound_addr
+            "Expected binding to already-bound port {bound_addr} to fail"
         );
 
         // Clean up

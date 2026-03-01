@@ -353,7 +353,7 @@ mod tests {
     use std::time::Duration;
     use tokio::sync::Mutex;
 
-    /// Mock TNetIO that captures writes and ignores reads
+    /// Mock `TNetIO` that captures writes and ignores reads
     struct MockNetIO {
         written: Vec<u8>,
     }

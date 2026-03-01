@@ -21,7 +21,7 @@ fn test_m3u8_generation_basic() {
         segments.push_back(SegmentInfo {
             sequence: i,
             duration: 5000, // 5 seconds
-            ts_name: format!("seg{}.ts", i),
+            ts_name: format!("seg{i}.ts"),
             discontinuity: false,
             created_at: Instant::now(),
         });
@@ -36,7 +36,7 @@ fn test_m3u8_generation_basic() {
         created_at: Instant::now(),
     };
 
-    let m3u8 = state.generate_m3u8(|ts_name| format!("/hls/{}", ts_name));
+    let m3u8 = state.generate_m3u8(|ts_name| format!("/hls/{ts_name}"));
 
     // Verify M3U8 structure
     assert!(m3u8.contains("#EXTM3U"));
@@ -76,7 +76,7 @@ fn test_m3u8_generation_ended_stream() {
         marked_for_cleanup: false,
     };
 
-    let m3u8 = state.generate_m3u8(|ts_name| format!("/hls/{}", ts_name));
+    let m3u8 = state.generate_m3u8(|ts_name| format!("/hls/{ts_name}"));
 
     // Should have ENDLIST for ended stream
     assert!(m3u8.contains("#EXT-X-ENDLIST"));
@@ -113,7 +113,7 @@ fn test_m3u8_discontinuity() {
         created_at: std::time::Instant::now(),
     };
 
-    let m3u8 = state.generate_m3u8(|ts_name| format!("/hls/{}", ts_name));
+    let m3u8 = state.generate_m3u8(|ts_name| format!("/hls/{ts_name}"));
 
     // Verify discontinuity tag appears before second segment
     assert!(m3u8.contains("#EXT-X-DISCONTINUITY"));
@@ -147,7 +147,7 @@ fn test_m3u8_custom_url_generator() {
 
     let token = "secret-jwt-token";
     let m3u8 = state.generate_m3u8(|ts_name| {
-        format!("/api/hls/data/{}?token={}", ts_name, token)
+        format!("/api/hls/data/{ts_name}?token={token}")
     });
 
     // Verify custom URL with auth token
@@ -193,7 +193,7 @@ fn test_m3u8_variable_duration() {
         created_at: std::time::Instant::now(),
     };
 
-    let m3u8 = state.generate_m3u8(|ts_name| format!("/hls/{}", ts_name));
+    let m3u8 = state.generate_m3u8(|ts_name| format!("/hls/{ts_name}"));
 
     // Target duration should be rounded up to max segment duration (7 seconds)
     assert!(m3u8.contains("#EXT-X-TARGETDURATION:7"));
@@ -216,7 +216,7 @@ fn test_m3u8_empty_segments() {
         created_at: std::time::Instant::now(),
     };
 
-    let m3u8 = state.generate_m3u8(|ts_name| format!("/hls/{}", ts_name));
+    let m3u8 = state.generate_m3u8(|ts_name| format!("/hls/{ts_name}"));
 
     // Should still generate valid M3U8 structure
     assert!(m3u8.contains("#EXTM3U"));
@@ -239,7 +239,7 @@ fn test_m3u8_sliding_window() {
         segments.push_back(SegmentInfo {
             sequence: i,
             duration: 5000,
-            ts_name: format!("seg{}.ts", i),
+            ts_name: format!("seg{i}.ts"),
             discontinuity: false,
             created_at: Instant::now(),
         });
@@ -254,7 +254,7 @@ fn test_m3u8_sliding_window() {
         created_at: std::time::Instant::now(),
     };
 
-    let m3u8 = state.generate_m3u8(|ts_name| format!("/hls/{}", ts_name));
+    let m3u8 = state.generate_m3u8(|ts_name| format!("/hls/{ts_name}"));
 
     // Media sequence should reflect first segment in window
     assert!(m3u8.contains("#EXT-X-MEDIA-SEQUENCE:100"));
@@ -296,7 +296,7 @@ fn test_segment_duration_precision() {
         created_at: std::time::Instant::now(),
     };
 
-    let m3u8 = state.generate_m3u8(|ts_name| format!("/hls/{}", ts_name));
+    let m3u8 = state.generate_m3u8(|ts_name| format!("/hls/{ts_name}"));
 
     // Verify 3 decimal places precision
     assert!(m3u8.contains("#EXTINF:5.123,"));
@@ -380,7 +380,7 @@ fn test_m3u8_multiple_discontinuities() {
         created_at: std::time::Instant::now(),
     };
 
-    let m3u8 = state.generate_m3u8(|ts_name| format!("/hls/{}", ts_name));
+    let m3u8 = state.generate_m3u8(|ts_name| format!("/hls/{ts_name}"));
 
     // Count discontinuity markers
     let discontinuity_count = m3u8.matches("#EXT-X-DISCONTINUITY").count();

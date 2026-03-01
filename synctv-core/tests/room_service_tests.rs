@@ -1,8 +1,8 @@
-//! RoomService integration tests
+//! `RoomService` integration tests
 //!
-//! Tests the RoomService business logic layer with real PostgreSQL via testcontainers.
+//! Tests the `RoomService` business logic layer with real `PostgreSQL` via testcontainers.
 //!
-//! Run with: cargo test -p synctv-core --test room_service_tests -- --nocapture
+//! Run with: cargo test -p synctv-core --test `room_service_tests` -- --nocapture
 #![allow(clippy::unwrap_used)]
 
 use std::sync::Arc;
@@ -59,7 +59,7 @@ fn make_user(username: &str) -> User {
     User {
         id: UserId::new(),
         username: username.to_string(),
-        email: Some(format!("{}@test.com", username)),
+        email: Some(format!("{username}@test.com")),
         password_hash: "hash".to_string(),
         role: UserRole::User,
         status: UserStatus::Active,
@@ -240,9 +240,9 @@ async fn test_join_room_wrong_password_rejected() {
     assert!(result.is_err());
     match result.unwrap_err() {
         Error::Authorization(msg) => {
-            assert!(msg.contains("Invalid password") || msg.contains("password"), "Error should mention password: {}", msg);
+            assert!(msg.contains("Invalid password") || msg.contains("password"), "Error should mention password: {msg}");
         }
-        other => panic!("Expected Authorization error, got: {:?}", other),
+        other => panic!("Expected Authorization error, got: {other:?}"),
     }
 }
 
@@ -275,9 +275,9 @@ async fn test_join_room_password_required_not_provided() {
     assert!(result.is_err());
     match result.unwrap_err() {
         Error::Authorization(msg) => {
-            assert!(msg.contains("Password required") || msg.contains("password"), "Error should mention password required: {}", msg);
+            assert!(msg.contains("Password required") || msg.contains("password"), "Error should mention password required: {msg}");
         }
-        other => panic!("Expected Authorization error, got: {:?}", other),
+        other => panic!("Expected Authorization error, got: {other:?}"),
     }
 }
 
@@ -310,9 +310,9 @@ async fn test_leave_room_creator_cannot_leave() {
     assert!(result.is_err());
     match result.unwrap_err() {
         Error::Authorization(msg) => {
-            assert!(msg.contains("creator") || msg.contains("Creator"), "Error should mention creator: {}", msg);
+            assert!(msg.contains("creator") || msg.contains("Creator"), "Error should mention creator: {msg}");
         }
-        other => panic!("Expected Authorization error, got: {:?}", other),
+        other => panic!("Expected Authorization error, got: {other:?}"),
     }
 }
 
@@ -464,13 +464,13 @@ async fn test_settings_cas_exhaustion_returns_internal() {
             // This is acceptable - the test is probabilistic.
         }
         Err(Error::Internal(msg)) => {
-            assert!(msg.contains("maximum retry"), "Should mention retry exhaustion: {}", msg);
+            assert!(msg.contains("maximum retry"), "Should mention retry exhaustion: {msg}");
         }
         Err(Error::OptimisticLockConflict) => {
             panic!("Bug B6: OptimisticLockConflict should NOT leak; should be wrapped in Internal error");
         }
         Err(other) => {
-            panic!("Unexpected error: {:?}", other);
+            panic!("Unexpected error: {other:?}");
         }
     }
 }
@@ -526,11 +526,10 @@ async fn test_banned_user_cannot_rejoin_room() {
         Error::Authorization(msg) => {
             assert!(
                 msg.contains("banned") || msg.contains("ban"),
-                "Error should mention ban: {}",
-                msg
+                "Error should mention ban: {msg}"
             );
         }
-        other => panic!("Expected Authorization error, got: {:?}", other),
+        other => panic!("Expected Authorization error, got: {other:?}"),
     }
 }
 
@@ -590,9 +589,9 @@ async fn test_room_description_over_500_rejected() {
     assert!(result.is_err());
     match result.unwrap_err() {
         Error::InvalidInput(msg) => {
-            assert!(msg.contains("description") || msg.contains("500"), "Should mention description limit: {}", msg);
+            assert!(msg.contains("description") || msg.contains("500"), "Should mention description limit: {msg}");
         }
-        other => panic!("Expected InvalidInput error, got: {:?}", other),
+        other => panic!("Expected InvalidInput error, got: {other:?}"),
     }
 }
 
@@ -668,11 +667,10 @@ async fn test_join_room_password_changed_during_join_with_correct_old_password_f
         Error::Authorization(msg) => {
             assert!(
                 msg.contains("Invalid password") || msg.contains("password"),
-                "Error should mention password: {}",
-                msg
+                "Error should mention password: {msg}"
             );
         }
-        other => panic!("Expected Authorization error, got: {:?}", other),
+        other => panic!("Expected Authorization error, got: {other:?}"),
     }
 }
 
@@ -823,11 +821,10 @@ async fn test_join_room_password_added_during_join_requires_password() {
         Error::Authorization(msg) => {
             assert!(
                 msg.contains("Password required") || msg.contains("password"),
-                "Error should mention password required: {}",
-                msg
+                "Error should mention password required: {msg}"
             );
         }
-        other => panic!("Expected Authorization error, got: {:?}", other),
+        other => panic!("Expected Authorization error, got: {other:?}"),
     }
 
     // Join with correct password should succeed
@@ -883,7 +880,7 @@ impl synctv_core::service::distributed_lock::MigrationLock for MockDistributedLo
         }
 
         self.acquired_keys.lock().unwrap().push(key.to_string());
-        Ok(Some(format!("lock-value-{}", key)))
+        Ok(Some(format!("lock-value-{key}")))
     }
 
     async fn release(&self, key: &str, _lock_value: &str) -> anyhow::Result<bool> {
@@ -1223,9 +1220,9 @@ async fn test_ban_prevents_room_access_even_with_cached_permissions() {
 
     match result.unwrap_err() {
         Error::Authorization(msg) => {
-            assert!(msg.contains("banned"), "Error should mention ban: {}", msg);
+            assert!(msg.contains("banned"), "Error should mention ban: {msg}");
         }
-        other => panic!("Expected Authorization error, got: {:?}", other),
+        other => panic!("Expected Authorization error, got: {other:?}"),
     }
 }
 
@@ -1277,7 +1274,7 @@ async fn test_settings_update_retries_on_version_conflict() {
 
     // At least one should succeed (possibly both with retries)
     // The retry mechanism should handle version conflicts
-    let success_count = r1.unwrap().is_ok() as u8 + r2.unwrap().is_ok() as u8;
+    let success_count = u8::from(r1.unwrap().is_ok()) + u8::from(r2.unwrap().is_ok());
     assert!(success_count >= 1, "At least one update should succeed with retry mechanism");
 }
 
@@ -1334,13 +1331,13 @@ async fn test_settings_update_returns_internal_error_after_max_retries() {
             // This is acceptable - the test is probabilistic
         }
         Err(Error::Internal(msg)) => {
-            assert!(msg.contains("retry"), "Should mention retry exhaustion: {}", msg);
+            assert!(msg.contains("retry"), "Should mention retry exhaustion: {msg}");
         }
         Err(Error::OptimisticLockConflict) => {
             panic!("OptimisticLockConflict should be wrapped in Internal error");
         }
         Err(other) => {
-            panic!("Unexpected error: {:?}", other);
+            panic!("Unexpected error: {other:?}");
         }
     }
 }
@@ -1519,11 +1516,10 @@ async fn test_password_verification_handles_malformed_hash_gracefully() {
         synctv_core::Error::Internal(msg) => {
             assert!(
                 msg.contains("Invalid password hash format") || msg.contains("verification"),
-                "Error message should indicate hash format issue: {}",
-                msg
+                "Error message should indicate hash format issue: {msg}"
             );
         }
-        other => panic!("Expected Internal error for malformed hash, got: {:?}", other),
+        other => panic!("Expected Internal error for malformed hash, got: {other:?}"),
     }
 }
 
@@ -1621,11 +1617,10 @@ async fn test_max_members_enforced_on_join() {
         Error::InvalidInput(msg) => {
             assert!(
                 msg.contains("full") || msg.contains("max") || msg.contains("capacity"),
-                "Error should mention room capacity: {}",
-                msg
+                "Error should mention room capacity: {msg}"
             );
         }
-        other => panic!("Expected InvalidInput error, got: {:?}", other),
+        other => panic!("Expected InvalidInput error, got: {other:?}"),
     }
 }
 
@@ -1654,7 +1649,7 @@ async fn test_max_members_zero_means_unlimited() {
 
     // Add many members - all should succeed
     for i in 0..20 {
-        let joiner = user_repo.create(&make_user(&format!("unlim_joiner_{}", i))).await.unwrap();
+        let joiner = user_repo.create(&make_user(&format!("unlim_joiner_{i}"))).await.unwrap();
         let result = room_service.join_room(room.id.clone(), joiner.id.clone(), None).await;
         assert!(result.is_ok(), "Joiner {} should succeed (unlimited room): {:?}", i, result.err());
     }
@@ -1739,11 +1734,10 @@ async fn test_room_settings_update_validates_permissions_no_escalation() {
         Error::InvalidInput(msg) => {
             assert!(
                 msg.contains("Guest") && msg.contains("permissions"),
-                "Error should mention permission escalation: {}",
-                msg
+                "Error should mention permission escalation: {msg}"
             );
         }
-        other => panic!("Expected InvalidInput error, got: {:?}", other),
+        other => panic!("Expected InvalidInput error, got: {other:?}"),
     }
 }
 
@@ -1946,9 +1940,9 @@ async fn test_cannot_join_closed_room() {
 
     match result.unwrap_err() {
         Error::InvalidInput(msg) => {
-            assert!(msg.contains("closed"), "Error should mention room is closed: {}", msg);
+            assert!(msg.contains("closed"), "Error should mention room is closed: {msg}");
         }
-        other => panic!("Expected InvalidInput error, got: {:?}", other),
+        other => panic!("Expected InvalidInput error, got: {other:?}"),
     }
 }
 
@@ -1989,9 +1983,9 @@ async fn test_cannot_join_banned_room() {
 
     match result.unwrap_err() {
         Error::Authorization(msg) => {
-            assert!(msg.contains("banned"), "Error should mention ban: {}", msg);
+            assert!(msg.contains("banned"), "Error should mention ban: {msg}");
         }
-        other => panic!("Expected Authorization error, got: {:?}", other),
+        other => panic!("Expected Authorization error, got: {other:?}"),
     }
 }
 
@@ -2147,7 +2141,7 @@ async fn test_admin_delete_room_requires_admin_role() {
     if let Err(Error::Authorization(msg)) = result {
         assert!(msg.contains("admin") || msg.contains("Admin"), "Error message should mention admin requirement");
     } else {
-        panic!("Expected Authorization error, got {:?}", result);
+        panic!("Expected Authorization error, got {result:?}");
     }
 
     // Room should still exist (not deleted)
@@ -2237,9 +2231,9 @@ async fn test_delete_nonexistent_room_returns_error() {
 
     match result.unwrap_err() {
         Error::NotFound(msg) => {
-            assert!(msg.contains("not found") || msg.contains("deleted"), "Error should mention not found: {}", msg);
+            assert!(msg.contains("not found") || msg.contains("deleted"), "Error should mention not found: {msg}");
         }
-        other => panic!("Expected NotFound error, got: {:?}", other),
+        other => panic!("Expected NotFound error, got: {other:?}"),
     }
 }
 
@@ -2287,7 +2281,7 @@ async fn test_get_member_count_batch_efficient_query() {
     for i in 0..5 {
         let (room, _) = room_service
             .create_room(
-                format!("Batch Room {}", i),
+                format!("Batch Room {i}"),
                 String::new(),
                 owner.id.clone(),
                 None,
@@ -2356,7 +2350,7 @@ async fn test_list_rooms_by_creator() {
     for i in 0..3 {
         room_service
             .create_room(
-                format!("Owner Room {}", i),
+                format!("Owner Room {i}"),
                 String::new(),
                 owner.id.clone(),
                 None,
@@ -2370,7 +2364,7 @@ async fn test_list_rooms_by_creator() {
     for i in 0..2 {
         room_service
             .create_room(
-                format!("Other Room {}", i),
+                format!("Other Room {i}"),
                 String::new(),
                 other.id.clone(),
                 None,
@@ -2406,7 +2400,7 @@ async fn test_list_rooms_pagination() {
     for i in 0..15 {
         room_service
             .create_room(
-                format!("Page Room {:02}", i),
+                format!("Page Room {i:02}"),
                 String::new(),
                 owner.id.clone(),
                 None,
@@ -2476,11 +2470,10 @@ async fn test_guest_cannot_join_password_protected_room() {
         Error::Authorization(msg) => {
             assert!(
                 msg.contains("password") || msg.contains("Guest"),
-                "Error should mention password or guests: {}",
-                msg
+                "Error should mention password or guests: {msg}"
             );
         }
-        other => panic!("Expected Authorization error, got: {:?}", other),
+        other => panic!("Expected Authorization error, got: {other:?}"),
     }
 }
 
@@ -2575,10 +2568,10 @@ async fn test_update_room_description_too_long_fails() {
     assert!(result.is_err(), "Description > 500 chars should fail");
 }
 
-/// Test: User without UPDATE_ROOM_SETTINGS permission cannot update room description
+/// Test: User without `UPDATE_ROOM_SETTINGS` permission cannot update room description
 ///
 /// This verifies that the permission check is enforced for description updates.
-/// Only room owner (or users with UPDATE_ROOM_SETTINGS permission) should be able
+/// Only room owner (or users with `UPDATE_ROOM_SETTINGS` permission) should be able
 /// to modify the room description.
 #[tokio::test]
 #[ignore = "Requires Docker"]
@@ -2622,7 +2615,7 @@ async fn test_update_room_description_permission_denied() {
     assert_eq!(room_after.description, "Original description");
 }
 
-/// Test: Room owner can update room description (has implicit UPDATE_ROOM_SETTINGS)
+/// Test: Room owner can update room description (has implicit `UPDATE_ROOM_SETTINGS`)
 #[tokio::test]
 #[ignore = "Requires Docker"]
 async fn test_update_room_description_owner_allowed() {
@@ -2698,10 +2691,10 @@ async fn test_join_room_idempotent_same_user() {
 
 // ========== Max Members Concurrent Tests ==========
 
-/// Test that max_members is correctly read from RoomSettings when joining.
+/// Test that `max_members` is correctly read from `RoomSettings` when joining.
 ///
-/// This test verifies that when max_members=0 is passed to with_max_members(0),
-/// the system correctly reads the actual max_members value from RoomSettings.
+/// This test verifies that when `max_members=0` is passed to `with_max_members(0)`,
+/// the system correctly reads the actual `max_members` value from `RoomSettings`.
 #[tokio::test]
 #[ignore = "Requires Docker"]
 async fn test_max_members_read_from_room_settings_on_join() {
@@ -2731,7 +2724,7 @@ async fn test_max_members_read_from_room_settings_on_join() {
 
     // Add 99 more members to reach the limit (owner + 99 = 100)
     for i in 0..99 {
-        let joiner = user_repo.create(&make_user(&format!("settings_joiner_{}", i))).await.unwrap();
+        let joiner = user_repo.create(&make_user(&format!("settings_joiner_{i}"))).await.unwrap();
         let result = room_service.join_room(room.id.clone(), joiner.id.clone(), None).await;
         assert!(result.is_ok(), "Joiner {} should succeed: {:?}", i, result.err());
     }
@@ -2749,18 +2742,17 @@ async fn test_max_members_read_from_room_settings_on_join() {
         Error::InvalidInput(msg) => {
             assert!(
                 msg.contains("full") || msg.contains("max") || msg.contains("capacity"),
-                "Error should mention room capacity: {}",
-                msg
+                "Error should mention room capacity: {msg}"
             );
         }
-        other => panic!("Expected InvalidInput error, got: {:?}", other),
+        other => panic!("Expected InvalidInput error, got: {other:?}"),
     }
 }
 
-/// Test that concurrent joins cannot exceed max_members limit.
+/// Test that concurrent joins cannot exceed `max_members` limit.
 ///
 /// This test spawns multiple concurrent join requests and verifies that
-/// even under concurrent access, the room never exceeds its max_members limit.
+/// even under concurrent access, the room never exceeds its `max_members` limit.
 #[tokio::test]
 #[ignore = "Requires Docker"]
 async fn test_concurrent_joins_cannot_exceed_max_members() {
@@ -2790,7 +2782,7 @@ async fn test_concurrent_joins_cannot_exceed_max_members() {
     // Create 20 users who will try to join concurrently
     let mut users = Vec::new();
     for i in 0..20 {
-        let user = user_repo.create(&make_user(&format!("concurrent_joiner_{}", i))).await.unwrap();
+        let user = user_repo.create(&make_user(&format!("concurrent_joiner_{i}"))).await.unwrap();
         users.push(user);
     }
 
@@ -2821,7 +2813,7 @@ async fn test_concurrent_joins_cannot_exceed_max_members() {
                     // (shouldn't happen in this test since all users are unique)
                 }
                 Err(e) => {
-                    panic!("Unexpected error type: {:?}", e);
+                    panic!("Unexpected error type: {e:?}");
                 }
             }
         });
@@ -2850,9 +2842,9 @@ async fn test_concurrent_joins_cannot_exceed_max_members() {
     assert_eq!(successes + failures, 20, "All 20 users should have been processed");
 }
 
-/// Test that max_members=0 in RoomSettings means unlimited members.
+/// Test that `max_members=0` in `RoomSettings` means unlimited members.
 ///
-/// This verifies that when RoomSettings.max_members is explicitly set to 0,
+/// This verifies that when `RoomSettings.max_members` is explicitly set to 0,
 /// the room accepts unlimited members (no capacity enforcement).
 #[tokio::test]
 #[ignore = "Requires Docker"]
@@ -2884,7 +2876,7 @@ async fn test_max_members_zero_in_settings_means_unlimited() {
 
     // Add 50 members - all should succeed since max_members=0 means unlimited
     for i in 0..50 {
-        let joiner = user_repo.create(&make_user(&format!("unlimited_explicit_{}", i))).await.unwrap();
+        let joiner = user_repo.create(&make_user(&format!("unlimited_explicit_{i}"))).await.unwrap();
         let result = room_service.join_room(room.id.clone(), joiner.id.clone(), None).await;
         assert!(
             result.is_ok(),
@@ -2905,7 +2897,7 @@ async fn test_max_members_zero_in_settings_means_unlimited() {
 /// Test that soft-delete immediately cleans up non-critical data (playlists, media, members).
 ///
 /// This test verifies the optimized soft-delete strategy:
-/// 1. Room row gets deleted_at set (soft-delete)
+/// 1. Room row gets `deleted_at` set (soft-delete)
 /// 2. Non-critical data (playlists, media, playback state, members, settings) is immediately deleted
 /// 3. Only audit log entries are preserved
 #[tokio::test]

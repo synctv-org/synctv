@@ -44,7 +44,7 @@ async fn test_redis_pubsub_no_message_loss() {
             room_id: room_id.clone(),
             user_id: UserId::from_string("sender".to_string()),
             username: "sender".to_string(),
-            message: format!("Message {}", i),
+            message: format!("Message {i}"),
             timestamp: Utc::now(),
             position: None,
             color: None,
@@ -86,9 +86,8 @@ async fn test_redis_pubsub_no_message_loss() {
     for (i, msg) in received_messages.iter().enumerate() {
         assert_eq!(
             msg,
-            &format!("Message {}", i),
-            "Message {} out of order",
-            i
+            &format!("Message {i}"),
+            "Message {i} out of order"
         );
     }
 
@@ -129,7 +128,7 @@ async fn test_redis_stream_catchup() {
             room_id: room_id.clone(),
             user_id: UserId::from_string("publisher".to_string()),
             username: "publisher".to_string(),
-            message: format!("Catchup message {}", i),
+            message: format!("Catchup message {i}"),
             timestamp: Utc::now(),
             position: None,
             color: None,
@@ -165,7 +164,7 @@ async fn test_redis_stream_catchup() {
         .expect("Failed to start subscriber");
 
     // Wait for the subscriber to connect
-    tokio::time::sleep(Duration::from_millis(1000)).await;
+    tokio::time::sleep(Duration::from_secs(1)).await;
 
     // Publish one more message (should be received live)
     let final_event = ClusterEvent::ChatMessage {
@@ -286,7 +285,7 @@ async fn test_redis_failure_and_recovery() {
             room_id: room_id.clone(),
             user_id: UserId::from_string("recovery_user_a".to_string()),
             username: "user_a".to_string(),
-            message: format!("Ordered message {}", i),
+            message: format!("Ordered message {i}"),
             timestamp: Utc::now(),
             position: None,
             color: None,
@@ -308,7 +307,7 @@ async fn test_redis_failure_and_recovery() {
 
     // Verify ordering
     for (i, msg) in received_messages.iter().enumerate() {
-        assert_eq!(msg, &format!("Ordered message {}", i), "Message {} should be in order", i);
+        assert_eq!(msg, &format!("Ordered message {i}"), "Message {i} should be in order");
     }
 
     // Cleanup
@@ -367,7 +366,7 @@ async fn test_redis_reconnection_event_preservation() {
             room_id: room_id.clone(),
             user_id: UserId::from_string("reconnect_sender".to_string()),
             username: "sender".to_string(),
-            message: format!("Rapid message {}", i),
+            message: format!("Rapid message {i}"),
             timestamp: Utc::now(),
             position: None,
             color: None,
@@ -395,8 +394,7 @@ async fn test_redis_reconnection_event_preservation() {
     // We should receive most if not all messages (allowing for some network loss)
     assert!(
         received_count >= 18,
-        "Should receive at least 18 out of 20 messages, got {}",
-        received_count
+        "Should receive at least 18 out of 20 messages, got {received_count}"
     );
 
     // Cleanup

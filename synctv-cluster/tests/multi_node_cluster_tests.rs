@@ -143,18 +143,15 @@ async fn test_node_discovery_three_nodes() {
     let node_ids: Vec<String> = nodes.iter().map(|n| n.node_id.clone()).collect();
     assert!(
         node_ids.contains(&"node_a".to_string()),
-        "Should contain node_a: {:?}",
-        node_ids
+        "Should contain node_a: {node_ids:?}"
     );
     assert!(
         node_ids.contains(&"node_b".to_string()),
-        "Should contain node_b: {:?}",
-        node_ids
+        "Should contain node_b: {node_ids:?}"
     );
     assert!(
         node_ids.contains(&"node_c".to_string()),
-        "Should contain node_c: {:?}",
-        node_ids
+        "Should contain node_c: {node_ids:?}"
     );
     assert_eq!(nodes.len(), 3, "Should have exactly 3 nodes");
 
@@ -193,14 +190,12 @@ async fn test_node_discovery_three_nodes() {
     let remaining_ids: Vec<String> = nodes_after.iter().map(|n| n.node_id.clone()).collect();
     assert!(
         !remaining_ids.contains(&"node_c".to_string()),
-        "Node C should be unregistered: {:?}",
-        remaining_ids
+        "Node C should be unregistered: {remaining_ids:?}"
     );
     assert_eq!(
         nodes_after.len(),
         2,
-        "Should have 2 remaining nodes: {:?}",
-        remaining_ids
+        "Should have 2 remaining nodes: {remaining_ids:?}"
     );
 }
 
@@ -357,8 +352,7 @@ async fn test_leader_election_single_leader() {
     assert_eq!(
         remaining_leaders.len(),
         1,
-        "Exactly one remaining node should be leader after failover, got: {:?}",
-        remaining_leaders
+        "Exactly one remaining node should be leader after failover, got: {remaining_leaders:?}"
     );
 
     // Cleanup

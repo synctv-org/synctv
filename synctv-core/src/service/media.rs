@@ -1038,8 +1038,7 @@ mod tests {
             "headers": {"Referer": "https://example.com"}
         });
         let size = serde_json::to_string(&small_config)
-            .map(|s| s.len())
-            .unwrap_or(0);
+            .map_or(0, |s| s.len());
         assert!(size < 200, "Small config should be under 200 bytes");
     }
 
@@ -1052,8 +1051,7 @@ mod tests {
             "data": large_string
         });
         let size = serde_json::to_string(&large_config)
-            .map(|s| s.len())
-            .unwrap_or(0);
+            .map_or(0, |s| s.len());
         assert!(size > MAX_SOURCE_CONFIG_SIZE, "Large config should exceed 1MB");
     }
 
@@ -1073,12 +1071,11 @@ mod tests {
         });
 
         let size = serde_json::to_string(&exact_config)
-            .map(|s| s.len())
-            .unwrap_or(0);
+            .map_or(0, |s| s.len());
 
         // Should be exactly at or just under the limit
         assert!(size <= MAX_SOURCE_CONFIG_SIZE,
-            "Config should be at or under 1MB, got {} bytes", size);
+            "Config should be at or under 1MB, got {size} bytes");
     }
 
     #[test]
@@ -1096,11 +1093,10 @@ mod tests {
         });
 
         let size = serde_json::to_string(&over_config)
-            .map(|s| s.len())
-            .unwrap_or(0);
+            .map_or(0, |s| s.len());
 
         assert!(size > MAX_SOURCE_CONFIG_SIZE,
-            "Config should exceed 1MB, got {} bytes", size);
+            "Config should exceed 1MB, got {size} bytes");
     }
 
     #[test]
@@ -1130,12 +1126,11 @@ mod tests {
         });
 
         let size = serde_json::to_string(&nested_config)
-            .map(|s| s.len())
-            .unwrap_or(0);
+            .map_or(0, |s| s.len());
 
         // Complex nested structures should still be under limit
         assert!(size < MAX_SOURCE_CONFIG_SIZE,
-            "Nested config should be under 1MB, got {} bytes", size);
+            "Nested config should be under 1MB, got {size} bytes");
     }
 
     #[test]
@@ -1150,12 +1145,11 @@ mod tests {
         });
 
         let size = serde_json::to_string(&unicode_config)
-            .map(|s| s.len()) // len() gives bytes, not characters
-            .unwrap_or(0);
+            .map_or(0, |s| s.len());
 
         // 100 emoji * 4 bytes each = 400 bytes + JSON overhead
         assert!(size > 400 && size < 500,
-            "Unicode size should be counted in bytes, got {} bytes", size);
+            "Unicode size should be counted in bytes, got {size} bytes");
     }
 
     // ========== Optimistic Lock Error Messages (Task #51) ==========

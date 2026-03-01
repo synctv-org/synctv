@@ -645,7 +645,7 @@ mod tests {
     #[test]
     fn test_playlist_positions_can_be_ordered() {
         let mut playlists: Vec<i32> = vec![3, 1, 4, 1, 5, 9, 2, 6];
-        playlists.sort();
+        playlists.sort_unstable();
         assert_eq!(playlists, vec![1, 1, 2, 3, 4, 5, 6, 9]);
     }
 
@@ -679,8 +679,7 @@ mod tests {
         let attempts_needed = conflicts + 1; // 3 attempts
         assert!(
             attempts_needed <= 3,
-            "Need {} attempts but MAX_RETRIES is 3",
-            attempts_needed
+            "Need {attempts_needed} attempts but MAX_RETRIES is 3"
         );
     }
 

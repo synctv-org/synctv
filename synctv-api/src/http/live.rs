@@ -572,7 +572,7 @@ async fn handle_room_streams(
 mod tests {
     use super::*;
 
-    /// Test LiveQuery deserialization
+    /// Test `LiveQuery` deserialization
     #[test]
     fn test_live_query_deserialize() {
         // Query with room_id and token (using snake_case as per convention)
@@ -591,7 +591,7 @@ mod tests {
         assert!(query.token.is_none());
     }
 
-    /// Test LiveQuery structure
+    /// Test `LiveQuery` structure
     #[test]
     fn test_live_query_structure() {
         let query = LiveQuery {
@@ -621,7 +621,7 @@ mod tests {
         assert_eq!(&png_header[0..8], &[0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]);
 
         // Verify IHDR chunk
-        assert_eq!(&png_header[12..16], "IHDR".as_bytes());
+        assert_eq!(&png_header[12..16], b"IHDR");
 
         // Verify dimensions
         let width = u32::from_be_bytes([png_header[16], png_header[17], png_header[18], png_header[19]]);
@@ -630,7 +630,7 @@ mod tests {
         assert_eq!(height, 8);
     }
 
-    /// Test room_id and media_id separation in paths
+    /// Test `room_id` and `media_id` separation in paths
     #[test]
     fn test_room_media_path_separation() {
         // HLS segment path should have both room_id and media_id
@@ -666,7 +666,7 @@ mod tests {
         assert!(query.token.is_none());
     }
 
-    /// Test media_id in path and room_id in query
+    /// Test `media_id` in path and `room_id` in query
     #[test]
     fn test_media_in_path_room_in_query() {
         // FLV endpoint: /api/room/movie/live/flv/:media_id.flv?room_id=:room_id

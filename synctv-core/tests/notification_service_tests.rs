@@ -2,7 +2,7 @@
 //!
 //! Tests event construction, subscription, event type names, and serialization.
 //!
-//! Run with: cargo test --test notification_service_tests
+//! Run with: cargo test --test `notification_service_tests`
 #![allow(clippy::unwrap_used)]
 
 use std::sync::Arc;

@@ -1,7 +1,7 @@
 //! Common helpers for cluster integration tests
 //!
 //! This module provides shared infrastructure for multi-replica cluster tests,
-//! including Redis container management and ClusterManager creation.
+//! including Redis container management and `ClusterManager` creation.
 
 #![allow(clippy::unwrap_used)]
 use std::time::Duration;
@@ -39,7 +39,7 @@ impl TestRedis {
             .await
             .expect("Failed to get Redis port");
 
-        let redis_url = format!("redis://{}:{}", redis_host, redis_port);
+        let redis_url = format!("redis://{redis_host}:{redis_port}");
 
         // Wait for Redis to be ready (generous timeout for parallel testcontainer startup)
         let client = redis::Client::open(redis_url.as_str())
@@ -59,8 +59,7 @@ impl TestRedis {
                 }
                 Err(_) if retries < 60 => {}
                 Err(e) => panic!(
-                    "Redis not ready after {} retries: {}",
-                    retries, e
+                    "Redis not ready after {retries} retries: {e}"
                 ),
             }
             retries += 1;

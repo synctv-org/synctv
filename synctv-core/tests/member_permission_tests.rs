@@ -1,9 +1,9 @@
-//! MemberService permission tests (S6)
+//! `MemberService` permission tests (S6)
 //!
-//! Tests set_member_permissions GRANT_PERMISSION check, optimistic lock retry,
-//! and reset_member_permissions with real PostgreSQL via testcontainers.
+//! Tests `set_member_permissions` `GRANT_PERMISSION` check, optimistic lock retry,
+//! and `reset_member_permissions` with real `PostgreSQL` via testcontainers.
 //!
-//! Run with: cargo test -p synctv-core --test member_permission_tests -- --nocapture
+//! Run with: cargo test -p synctv-core --test `member_permission_tests` -- --nocapture
 #![allow(clippy::unwrap_used)]
 
 use std::sync::Arc;
@@ -56,7 +56,7 @@ fn make_user(username: &str) -> User {
     User {
         id: UserId::new(),
         username: username.to_string(),
-        email: Some(format!("{}@test.com", username)),
+        email: Some(format!("{username}@test.com")),
         password_hash: "hash".to_string(),
         role: UserRole::User,
         status: UserStatus::Active,
@@ -106,7 +106,7 @@ async fn test_set_member_permissions_requires_grant_permission() {
     assert!(result.is_err(), "Member without GRANT_PERMISSION should be denied");
     match result.unwrap_err() {
         Error::Authorization(_) => {}
-        other => panic!("Expected Authorization error, got: {:?}", other),
+        other => panic!("Expected Authorization error, got: {other:?}"),
     }
 }
 
@@ -200,13 +200,13 @@ async fn test_set_member_permissions_optimistic_lock_retry() {
         Ok(_) => {}  // Retries succeeded
         Err(Error::Internal(msg)) => {
             assert!(msg.contains("retry") || msg.contains("maximum"),
-                "Should mention retry exhaustion: {}", msg);
+                "Should mention retry exhaustion: {msg}");
         }
         Err(Error::OptimisticLockConflict) => {
             panic!("OptimisticLockConflict should not leak to caller");
         }
         Err(other) => {
-            panic!("Unexpected error: {:?}", other);
+            panic!("Unexpected error: {other:?}");
         }
     }
 }
@@ -293,6 +293,6 @@ async fn test_reset_member_permissions_requires_grant_permission() {
     assert!(result.is_err(), "Member without GRANT_PERMISSION should be denied");
     match result.unwrap_err() {
         Error::Authorization(_) => {}
-        other => panic!("Expected Authorization error, got: {:?}", other),
+        other => panic!("Expected Authorization error, got: {other:?}"),
     }
 }

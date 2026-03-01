@@ -1109,7 +1109,7 @@ mod tests {
     #[test]
     fn test_set_user_role_request_all_roles() {
         for role in &["root", "admin", "user"] {
-            let json = format!(r#"{{"role":"{}"}}"#, role);
+            let json = format!(r#"{{"role":"{role}"}}"#);
             let req: SetUserRoleRequest = serde_json::from_str(&json).expect("deserialize");
             assert_eq!(req.role, *role);
         }
@@ -1138,7 +1138,7 @@ mod tests {
 
     #[test]
     fn test_ban_request_empty_reason_default() {
-        let json = r#"{}"#;
+        let json = r"{}";
         let req: BanRequest = serde_json::from_str(json).expect("deserialize");
         assert_eq!(req.reason, ""); // #[serde(default)]
     }
@@ -1153,7 +1153,7 @@ mod tests {
     #[test]
     fn test_set_room_password_empty_clears_password() {
         // Empty password means remove password
-        let json = r#"{}"#;
+        let json = r"{}";
         let req: SetRoomPasswordAdminRequest = serde_json::from_str(json).expect("deserialize");
         assert_eq!(req.password, ""); // #[serde(default)]
     }
@@ -1222,7 +1222,7 @@ mod tests {
             user_id: UserId::from_string("admin1".to_string()),
             role: synctv_core::models::UserRole::Admin,
         };
-        let cloned = auth.clone();
+        let cloned = auth;
         assert_eq!(cloned.user_id.as_str(), "admin1");
     }
 
@@ -1273,7 +1273,7 @@ mod tests {
                 _ => None,
             };
             let actual = actual_opt.expect("Role must be one of root/admin/user");
-            assert_eq!(actual, expected_i32, "Role '{}' mapping mismatch", role_str);
+            assert_eq!(actual, expected_i32, "Role '{role_str}' mapping mismatch");
         }
     }
 
@@ -1282,7 +1282,7 @@ mod tests {
         let role_str = "superuser";
         let result = match role_str {
             "root" | "admin" | "user" => Ok(()),
-            _ => Err(AppError::bad_request(format!("Unknown role: {}", role_str))),
+            _ => Err(AppError::bad_request(format!("Unknown role: {role_str}"))),
         };
         assert!(result.is_err());
         let err = result.unwrap_err();
@@ -1306,7 +1306,7 @@ mod tests {
                 "banned" => synctv_proto::common::UserStatus::Banned as i32,
                 _ => synctv_proto::common::UserStatus::Unspecified as i32,
             };
-            assert_eq!(actual, expected, "Status '{}' mismatch", status_str);
+            assert_eq!(actual, expected, "Status '{status_str}' mismatch");
         }
     }
 
@@ -1388,7 +1388,7 @@ mod tests {
         ];
         for invalid_name in invalid_names {
             let result = validate_path_id(invalid_name, "name");
-            assert!(result.is_err(), "Expected '{}' to be invalid", invalid_name);
+            assert!(result.is_err(), "Expected '{invalid_name}' to be invalid");
         }
     }
 
@@ -1405,7 +1405,7 @@ mod tests {
         ];
         for valid_name in valid_names {
             let result = validate_path_id(valid_name, "name");
-            assert!(result.is_ok(), "Expected '{}' to be valid", valid_name);
+            assert!(result.is_ok(), "Expected '{valid_name}' to be valid");
         }
     }
 
@@ -1479,7 +1479,7 @@ mod tests {
         ];
         for malicious_name in malicious_names {
             let result = validate_path_id(malicious_name, "name");
-            assert!(result.is_err(), "Expected '{}' to be rejected", malicious_name);
+            assert!(result.is_err(), "Expected '{malicious_name}' to be rejected");
         }
     }
 
@@ -1494,7 +1494,7 @@ mod tests {
         ];
         for valid_name in valid_names {
             let result = validate_path_id(valid_name, "name");
-            assert!(result.is_ok(), "Expected '{}' to be valid", valid_name);
+            assert!(result.is_ok(), "Expected '{valid_name}' to be valid");
         }
     }
 }

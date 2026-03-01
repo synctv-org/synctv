@@ -1,7 +1,7 @@
 //! Cluster startup failure handling tests.
 //!
 //! Verifies that when cluster mode is explicitly enabled (cluster.enabled = true):
-//! 1. ClusterManager initialization failure is a fatal error (not silent degradation)
+//! 1. `ClusterManager` initialization failure is a fatal error (not silent degradation)
 //! 2. Cache invalidation startup failure is a fatal error (not just a warning)
 //!
 //! In standalone mode (cluster.enabled = false), these failures should be non-fatal.
@@ -153,10 +153,10 @@ fn test_cluster_mode_requires_redis_url() {
         e.contains("Redis is required when cluster mode is enabled") ||
         e.contains("cluster.enabled=true")
     );
-    assert!(has_redis_error, "Error message should mention Redis requirement, got: {:?}", error_messages);
+    assert!(has_redis_error, "Error message should mention Redis requirement, got: {error_messages:?}");
 }
 
-/// Test cluster mode requires cluster_secret
+/// Test cluster mode requires `cluster_secret`
 #[test]
 fn test_cluster_mode_requires_cluster_secret() {
     let mut config = cluster_test_config();
@@ -169,7 +169,7 @@ fn test_cluster_mode_requires_cluster_secret() {
     let errors = result.unwrap_err();
     let error_messages: Vec<_> = errors.iter().collect();
     let has_secret_error = error_messages.iter().any(|e| e.contains("cluster_secret"));
-    assert!(has_secret_error, "Error message should mention cluster_secret requirement, got: {:?}", error_messages);
+    assert!(has_secret_error, "Error message should mention cluster_secret requirement, got: {error_messages:?}");
 }
 
 /// Test standalone mode allows no Redis

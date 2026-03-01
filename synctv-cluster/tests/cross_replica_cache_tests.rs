@@ -92,7 +92,7 @@ async fn test_cross_replica_cache_invalidation() {
                 received_room = true;
             }
             other => {
-                panic!("Unexpected invalidation message: {:?}", other);
+                panic!("Unexpected invalidation message: {other:?}");
             }
         }
     }
@@ -243,8 +243,7 @@ async fn test_cross_replica_permission_cache_invalidation_via_cache_service() {
         }
         other => {
             panic!(
-                "Expected User invalidation, got: {:?}",
-                other
+                "Expected User invalidation, got: {other:?}"
             );
         }
     }
@@ -336,7 +335,7 @@ async fn test_cluster_permission_cache_consistency() {
         InvalidationMessage::User { user_id: received_user_id } => {
             assert_eq!(received_user_id, user_id, "User ID should match");
         }
-        other => panic!("Expected User invalidation, got: {:?}", other),
+        other => panic!("Expected User invalidation, got: {other:?}"),
     }
 
     // Test 2: Room permission invalidation
@@ -359,7 +358,7 @@ async fn test_cluster_permission_cache_consistency() {
         InvalidationMessage::Room { room_id: received_room_id } => {
             assert_eq!(received_room_id, room_id, "Room ID should match");
         }
-        other => panic!("Expected Room invalidation, got: {:?}", other),
+        other => panic!("Expected Room invalidation, got: {other:?}"),
     }
 
     // Test 3: Multiple invalidations in rapid succession
@@ -367,7 +366,7 @@ async fn test_cluster_permission_cache_consistency() {
     for i in 0..10 {
         let event = ClusterEvent::CacheInvalidate {
             event_id: nanoid::nanoid!(16),
-            targets: vec![CacheTarget::User { user_id: format!("rapid_user_{}", i) }],
+            targets: vec![CacheTarget::User { user_id: format!("rapid_user_{i}") }],
             timestamp: Utc::now(),
         };
         node_a.broadcast(event);
@@ -384,7 +383,7 @@ async fn test_cluster_permission_cache_consistency() {
         }
         match tokio::time::timeout(remaining, rx_b.recv()).await {
             Ok(Ok(InvalidationMessage::User { .. })) => received_count += 1,
-            Ok(Ok(other)) => panic!("Unexpected message: {:?}", other),
+            Ok(Ok(other)) => panic!("Unexpected message: {other:?}"),
             Ok(Err(_)) => break,
             Err(_) => break,
         }
@@ -534,7 +533,7 @@ async fn test_concurrent_permission_cache_updates() {
             let event = ClusterEvent::CacheInvalidate {
                 event_id: nanoid::nanoid!(16),
                 targets: vec![CacheTarget::User {
-                    user_id: format!("concurrent_user_a_{}", i),
+                    user_id: format!("concurrent_user_a_{i}"),
                 }],
                 timestamp: Utc::now(),
             };
@@ -549,7 +548,7 @@ async fn test_concurrent_permission_cache_updates() {
             let event = ClusterEvent::CacheInvalidate {
                 event_id: nanoid::nanoid!(16),
                 targets: vec![CacheTarget::User {
-                    user_id: format!("concurrent_user_b_{}", i),
+                    user_id: format!("concurrent_user_b_{i}"),
                 }],
                 timestamp: Utc::now(),
             };
@@ -564,7 +563,7 @@ async fn test_concurrent_permission_cache_updates() {
             let event = ClusterEvent::CacheInvalidate {
                 event_id: nanoid::nanoid!(16),
                 targets: vec![CacheTarget::User {
-                    user_id: format!("concurrent_user_c_{}", i),
+                    user_id: format!("concurrent_user_c_{i}"),
                 }],
                 timestamp: Utc::now(),
             };
@@ -590,9 +589,7 @@ async fn test_concurrent_permission_cache_updates() {
     let final_count = received_count.load(Ordering::SeqCst);
     assert!(
         final_count >= total_invalidations as u32,
-        "Should receive at least {} invalidations, got {}",
-        total_invalidations,
-        final_count
+        "Should receive at least {total_invalidations} invalidations, got {final_count}"
     );
 
     // Note: Arc<ClusterManager> doesn't have shutdown, need to access inner

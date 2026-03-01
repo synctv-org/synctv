@@ -1,4 +1,4 @@
-//! BlacklistCheckLayer tests for synctv-api
+//! `BlacklistCheckLayer` tests for synctv-api
 //!
 //! Tests the gRPC blacklist check tower layer behavior:
 //! - Requests without Authorization header pass through (public endpoints)
@@ -35,7 +35,7 @@ fn test_bearer_extraction_standard_case() {
 }
 
 /// No Authorization header means the request should pass through
-/// (public endpoints like ListRooms, health checks).
+/// (public endpoints like `ListRooms`, health checks).
 #[test]
 fn test_no_auth_header_means_passthrough() {
     let headers = http::HeaderMap::new();

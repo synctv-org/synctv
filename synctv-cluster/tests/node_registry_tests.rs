@@ -1,6 +1,6 @@
-//! NodeRegistry integration tests (no Redis required)
+//! `NodeRegistry` integration tests (no Redis required)
 //!
-//! Tests for fencing token behavior and NodeInfo construction.
+//! Tests for fencing token behavior and `NodeInfo` construction.
 
 #![allow(clippy::unwrap_used)]
 use synctv_cluster::discovery::node_registry::{FencingToken, NodeInfo};

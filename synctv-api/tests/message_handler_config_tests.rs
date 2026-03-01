@@ -1,11 +1,11 @@
-//! Tests for StreamMessageHandler configuration - TDD tests for removing global state
+//! Tests for `StreamMessageHandler` configuration - TDD tests for removing global state
 //!
 //! These tests verify that:
 //! 1. Message processing concurrency limit is configurable per-AppState (not global)
-//! 2. Different AppState instances can have different concurrency limits
+//! 2. Different `AppState` instances can have different concurrency limits
 //! 3. Tests are properly isolated (no global state pollution)
 //!
-//! The global MESSAGE_PROCESSING_SEMAPHORE has been replaced with instance-level
+//! The global `MESSAGE_PROCESSING_SEMAPHORE` has been replaced with instance-level
 //! configuration via `MessageConcurrencyConfig`.
 
 #![allow(clippy::unwrap_used)]
@@ -150,7 +150,7 @@ mod tests {
         // Next 5 acquisitions should fail
         for i in 0..5 {
             let result = config.semaphore().try_acquire_owned();
-            assert!(result.is_err(), "Permit {} should fail (exhausted)", i);
+            assert!(result.is_err(), "Permit {i} should fail (exhausted)");
         }
 
         // Drop all permits
@@ -172,8 +172,8 @@ mod integration_tests {
     // This test will FAIL until StreamMessageHandler::new accepts a config parameter
     // ============================================================================
 
-    /// Test that StreamMessageHandler can be configured with a custom concurrency config.
-    /// This test uses the synctv_api::impls::MessageConcurrencyConfig type
+    /// Test that `StreamMessageHandler` can be configured with a custom concurrency config.
+    /// This test uses the `synctv_api::impls::MessageConcurrencyConfig` type
     /// which needs to be added to the messaging module.
     #[test]
     fn test_stream_message_handler_accepts_concurrency_config() {
@@ -193,7 +193,7 @@ mod integration_tests {
         // exists and can be used.
     }
 
-    /// Test that two different AppState instances can have different concurrency limits.
+    /// Test that two different `AppState` instances can have different concurrency limits.
     /// This is the key isolation test - different instances should not share semaphores.
     #[test]
     fn test_different_app_states_have_isolated_concurrency() {

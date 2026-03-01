@@ -1,6 +1,6 @@
 //! Leader election tests
 //!
-//! Tests for leader guard cancellation via the LeaderElect trait,
+//! Tests for leader guard cancellation via the `LeaderElect` trait,
 //! first-election timing (verifies the bug fix), and vacancy events.
 //! These tests do not require a running Redis instance.
 
@@ -9,8 +9,8 @@ use std::time::Duration;
 use synctv_cluster::leader::{LeaderElect, LeadershipEvent};
 use tokio::sync::broadcast;
 
-/// A minimal mock elector that exposes a broadcast::Sender so tests can
-/// inject arbitrary LeadershipEvents.
+/// A minimal mock elector that exposes a `broadcast::Sender` so tests can
+/// inject arbitrary `LeadershipEvents`.
 struct MockElector {
     tx: broadcast::Sender<LeadershipEvent>,
 }
@@ -115,8 +115,7 @@ async fn test_first_election_not_delayed() {
 
     assert!(
         elapsed < Duration::from_millis(50),
-        "First tick of tokio::time::interval should fire immediately, took {:?}",
-        elapsed
+        "First tick of tokio::time::interval should fire immediately, took {elapsed:?}"
     );
 }
 
@@ -194,7 +193,7 @@ fn test_redis_time_prevents_clock_skew_split_brain() {
     );
 }
 
-/// Test that saturating_sub handles timestamp underflow correctly
+/// Test that `saturating_sub` handles timestamp underflow correctly
 /// (when Redis time goes backwards due to clock adjustments)
 #[test]
 fn test_redis_time_saturating_sub_handles_underflow() {

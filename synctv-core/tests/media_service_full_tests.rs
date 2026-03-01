@@ -1,9 +1,9 @@
-//! MediaService integration tests (S8/S9)
+//! `MediaService` integration tests (S8/S9)
 //!
-//! Tests add_media permission check, add_media_batch size limit,
-//! edit_media cross-room check and optimistic lock retry with real PostgreSQL.
+//! Tests `add_media` permission check, `add_media_batch` size limit,
+//! `edit_media` cross-room check and optimistic lock retry with real `PostgreSQL`.
 //!
-//! Run with: cargo test -p synctv-core --test media_service_full_tests -- --nocapture
+//! Run with: cargo test -p synctv-core --test `media_service_full_tests` -- --nocapture
 #![allow(clippy::unwrap_used)]
 
 use std::sync::Arc;
@@ -57,7 +57,7 @@ fn make_user(username: &str) -> User {
     User {
         id: UserId::new(),
         username: username.to_string(),
-        email: Some(format!("{}@test.com", username)),
+        email: Some(format!("{username}@test.com")),
         password_hash: "hash".to_string(),
         role: UserRole::User,
         status: UserStatus::Active,
@@ -80,7 +80,7 @@ async fn get_root_playlist(pool: &PgPool, room_id: &synctv_core::models::RoomId)
         .expect("Root playlist should exist")
 }
 
-/// Register a "direct_url" provider instance so add_media tests can reference it.
+/// Register a "`direct_url`" provider instance so `add_media` tests can reference it.
 async fn register_direct_url_provider(room_service: &RoomService) {
     room_service
         .media_service()
@@ -135,7 +135,7 @@ async fn test_add_media_without_permission_denied() {
     assert!(result.is_err(), "Should fail without ADD_MOVIE permission");
     match result.unwrap_err() {
         Error::Authorization(_) => {}
-        other => panic!("Expected Authorization error, got: {:?}", other),
+        other => panic!("Expected Authorization error, got: {other:?}"),
     }
 }
 
@@ -239,7 +239,7 @@ async fn test_add_media_batch_over_100_rejected() {
     let requests: Vec<AddMediaRequest> = (0..101)
         .map(|i| AddMediaRequest {
             playlist_id: playlist.id.clone(),
-            name: format!("Batch Video {}", i),
+            name: format!("Batch Video {i}"),
             provider_instance_name: "direct_url".to_string(),
             source_config: serde_json::json!({"url": format!("https://example.com/batch{}.mp4", i)}),
         })
@@ -253,9 +253,9 @@ async fn test_add_media_batch_over_100_rejected() {
     match result.unwrap_err() {
         Error::InvalidInput(msg) => {
             assert!(msg.contains("100") || msg.contains("batch") || msg.contains("exceed"),
-                "Should mention batch size limit: {}", msg);
+                "Should mention batch size limit: {msg}");
         }
-        other => panic!("Expected InvalidInput error, got: {:?}", other),
+        other => panic!("Expected InvalidInput error, got: {other:?}"),
     }
 }
 
@@ -311,7 +311,7 @@ async fn test_add_media_batch_exactly_100_accepted() {
     let requests: Vec<AddMediaRequest> = (0..100)
         .map(|i| AddMediaRequest {
             playlist_id: playlist.id.clone(),
-            name: format!("Video {}", i),
+            name: format!("Video {i}"),
             provider_instance_name: "direct_url".to_string(),
             source_config: serde_json::json!({"url": format!("https://example.com/v{}.mp4", i)}),
         })
@@ -389,13 +389,13 @@ async fn test_edit_media_optimistic_lock_retry_exhaustion() {
         Ok(_) => {}
         Err(Error::Internal(msg)) => {
             assert!(msg.contains("retri") || msg.contains("retry") || msg.contains("maximum") || msg.contains("concurrent"),
-                "Should mention retry exhaustion: {}", msg);
+                "Should mention retry exhaustion: {msg}");
         }
         Err(Error::OptimisticLockConflict) => {
             panic!("OptimisticLockConflict should not leak to caller");
         }
         Err(other) => {
-            panic!("Unexpected error: {:?}", other);
+            panic!("Unexpected error: {other:?}");
         }
     }
 }
@@ -405,10 +405,10 @@ async fn test_edit_media_optimistic_lock_retry_exhaustion() {
 // These tests verify that media position values are validated before being
 // passed to the database. Positions should be non-negative and within i32 bounds.
 
-/// Test that reorder_media_batch rejects negative positions.
+/// Test that `reorder_media_batch` rejects negative positions.
 ///
 /// This verifies input validation: negative positions are invalid and
-/// should be rejected with InvalidInput error before hitting the database.
+/// should be rejected with `InvalidInput` error before hitting the database.
 #[tokio::test]
 #[ignore = "Requires Docker"]
 async fn test_reorder_media_rejects_negative_position() {
@@ -466,18 +466,17 @@ async fn test_reorder_media_rejects_negative_position() {
         Error::InvalidInput(msg) => {
             assert!(
                 msg.to_lowercase().contains("position"),
-                "Error should mention position: {}",
-                msg
+                "Error should mention position: {msg}"
             );
         }
-        other => panic!("Expected InvalidInput error, got: {:?}", other),
+        other => panic!("Expected InvalidInput error, got: {other:?}"),
     }
 }
 
-/// Test that reorder_media_batch rejects extremely large positions (overflow).
+/// Test that `reorder_media_batch` rejects extremely large positions (overflow).
 ///
-/// This verifies input validation: positions larger than i32::MAX are invalid
-/// and should be rejected with InvalidInput error.
+/// This verifies input validation: positions larger than `i32::MAX` are invalid
+/// and should be rejected with `InvalidInput` error.
 #[tokio::test]
 #[ignore = "Requires Docker"]
 async fn test_reorder_media_rejects_overflow_position() {
@@ -540,7 +539,7 @@ async fn test_reorder_media_rejects_overflow_position() {
     // This test documents the expected behavior at the boundary.
 }
 
-/// Test that reorder_media_batch accepts valid positions (0 and positive).
+/// Test that `reorder_media_batch` accepts valid positions (0 and positive).
 #[tokio::test]
 #[ignore = "Requires Docker"]
 async fn test_reorder_media_accepts_valid_positions() {

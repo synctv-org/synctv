@@ -1,10 +1,10 @@
-//! ChatService integration tests
+//! `ChatService` integration tests
 //!
-//! Tests send_message permission check, chat_enabled setting, rate limit mapping,
-//! danmaku_enabled check, and delete_message permission logic with real PostgreSQL
+//! Tests `send_message` permission check, `chat_enabled` setting, rate limit mapping,
+//! `danmaku_enabled` check, and `delete_message` permission logic with real `PostgreSQL`
 //! via testcontainers.
 //!
-//! Run with: cargo test -p synctv-core --test chat_service_full_tests -- --nocapture
+//! Run with: cargo test -p synctv-core --test `chat_service_full_tests` -- --nocapture
 #![allow(clippy::unwrap_used)]
 
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -68,7 +68,7 @@ fn make_chat_service_with_config(pool: PgPool, rate_limit_config: RateLimitConfi
 
     let member_repo = RoomMemberRepository::new(pool.clone());
     let room_repo = RoomRepository::new(pool.clone());
-    let room_settings_repo = RoomSettingsRepository::new(pool.clone());
+    let room_settings_repo = RoomSettingsRepository::new(pool);
 
     let mut permission_service = PermissionService::new(
         member_repo,
@@ -110,7 +110,7 @@ fn make_user(username: &str) -> User {
     User {
         id: UserId::new(),
         username: username.to_string(),
-        email: Some(format!("{}@test.com", username)),
+        email: Some(format!("{username}@test.com")),
         password_hash: "hash".to_string(),
         role: UserRole::User,
         status: UserStatus::Active,
@@ -163,7 +163,7 @@ async fn test_send_message_without_send_chat_permission_denied() {
     assert!(result.is_err(), "send_message should fail without SEND_CHAT permission");
     match result.unwrap_err() {
         Error::Authorization(_) => {}
-        other => panic!("Expected Authorization error, got: {:?}", other),
+        other => panic!("Expected Authorization error, got: {other:?}"),
     }
 }
 
@@ -195,9 +195,9 @@ async fn test_send_message_chat_disabled_rejected() {
     assert!(result.is_err(), "send_message should fail when chat is disabled");
     match result.unwrap_err() {
         Error::Authorization(msg) => {
-            assert!(msg.contains("disabled") || msg.contains("Chat"), "Error should mention chat disabled: {}", msg);
+            assert!(msg.contains("disabled") || msg.contains("Chat"), "Error should mention chat disabled: {msg}");
         }
-        other => panic!("Expected Authorization error, got: {:?}", other),
+        other => panic!("Expected Authorization error, got: {other:?}"),
     }
 }
 
@@ -267,7 +267,7 @@ async fn test_send_message_rate_limit_triggers() {
     let mut rate_limited = false;
     for i in 0..20 {
         let result = chat_service
-            .send_message(room.id.clone(), creator.id.clone(), format!("msg{}", i))
+            .send_message(room.id.clone(), creator.id.clone(), format!("msg{i}"))
             .await;
         if let Err(Error::RateLimited(_)) = &result {
             rate_limited = true;
@@ -312,9 +312,9 @@ async fn test_send_danmaku_disabled_rejected() {
     assert!(result.is_err(), "send_danmaku should fail when danmaku is disabled");
     match result.unwrap_err() {
         Error::Authorization(msg) => {
-            assert!(msg.contains("disabled") || msg.contains("Danmaku"), "Error should mention danmaku disabled: {}", msg);
+            assert!(msg.contains("disabled") || msg.contains("Danmaku"), "Error should mention danmaku disabled: {msg}");
         }
-        other => panic!("Expected Authorization error, got: {:?}", other),
+        other => panic!("Expected Authorization error, got: {other:?}"),
     }
 }
 
@@ -386,7 +386,7 @@ async fn test_delete_message_non_owner_requires_delete_chat_permission() {
     assert!(result.is_err(), "Non-owner without DELETE_CHAT should be denied");
     match result.unwrap_err() {
         Error::Authorization(_) => {}
-        other => panic!("Expected Authorization error, got: {:?}", other),
+        other => panic!("Expected Authorization error, got: {other:?}"),
     }
 }
 
@@ -444,7 +444,7 @@ struct CountingMockBroadcaster {
 }
 
 impl CountingMockBroadcaster {
-    fn new() -> Self {
+    const fn new() -> Self {
         Self {
             broadcast_count: AtomicUsize::new(0),
             last_room_id: std::sync::Mutex::new(None),
@@ -483,7 +483,7 @@ impl EventBroadcaster for CountingMockBroadcaster {
     }
 }
 
-/// Helper function to create ChatService with a counting mock broadcaster
+/// Helper function to create `ChatService` with a counting mock broadcaster
 #[allow(dead_code)]
 fn make_chat_service_with_broadcaster(pool: PgPool, broadcaster: Arc<CountingMockBroadcaster>) -> (ChatService, UsernameCache) {
     let chat_repo = Arc::new(ChatRepository::new(pool.clone()));
@@ -495,7 +495,7 @@ fn make_chat_service_with_broadcaster(pool: PgPool, broadcaster: Arc<CountingMoc
 
     let member_repo = RoomMemberRepository::new(pool.clone());
     let room_repo = RoomRepository::new(pool.clone());
-    let room_settings_repo = RoomSettingsRepository::new(pool.clone());
+    let room_settings_repo = RoomSettingsRepository::new(pool);
 
     let mut permission_service = PermissionService::new(
         member_repo,
@@ -688,7 +688,7 @@ async fn test_get_history_cursor_pagination_basic() {
     let mut sent_messages = Vec::new();
     for i in 0..5 {
         let msg = chat_service
-            .send_message(room.id.clone(), creator.id.clone(), format!("message_{}", i))
+            .send_message(room.id.clone(), creator.id.clone(), format!("message_{i}"))
             .await
             .unwrap();
         sent_messages.push(msg);
@@ -776,7 +776,7 @@ async fn test_get_history_single_page() {
     // Send 3 messages
     for i in 0..3 {
         chat_service
-            .send_message(room.id.clone(), creator.id.clone(), format!("msg_{}", i))
+            .send_message(room.id.clone(), creator.id.clone(), format!("msg_{i}"))
             .await
             .unwrap();
         tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
@@ -817,7 +817,7 @@ async fn test_get_history_limit_capped_at_100() {
     // Send 105 messages
     for i in 0..105 {
         chat_service
-            .send_message(room.id.clone(), creator.id.clone(), format!("msg_{}", i))
+            .send_message(room.id.clone(), creator.id.clone(), format!("msg_{i}"))
             .await
             .unwrap();
     }

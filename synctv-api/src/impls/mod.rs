@@ -531,7 +531,7 @@ mod tests {
         for (api_err, check) in cases {
             let as_string = api_err.to_string();
             let classified = classify_error(&as_string);
-            assert!(check(&classified), "ApiError '{}' misclassified after Display roundtrip", as_string);
+            assert!(check(&classified), "ApiError '{as_string}' misclassified after Display roundtrip");
         }
     }
 

@@ -1340,7 +1340,7 @@ mod tests {
         // Verify the target_id format is "room_id:media_id"
         let room_id = "room_abc123";
         let media_id = "media_xyz789";
-        let expected_target_id = format!("{}:{}", room_id, media_id);
+        let expected_target_id = format!("{room_id}:{media_id}");
         assert_eq!(expected_target_id, "room_abc123:media_xyz789");
     }
 
@@ -1492,7 +1492,7 @@ mod tests {
         // Verify the target_id format is "user_id:jti"
         let user_id = "user_123";
         let jti = "jti_abc456";
-        let target_id = format!("{}:{}", user_id, jti);
+        let target_id = format!("{user_id}:{jti}");
         assert_eq!(target_id, "user_123:jti_abc456");
     }
 
@@ -1501,7 +1501,7 @@ mod tests {
         // Verify the target_id format uses new_jti
         let user_id = "user_123";
         let new_jti = "jti_new_789";
-        let target_id = format!("{}:{}", user_id, new_jti);
+        let target_id = format!("{user_id}:{new_jti}");
         assert_eq!(target_id, "user_123:jti_new_789");
     }
 

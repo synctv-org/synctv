@@ -262,7 +262,7 @@ fn test_validate_static_loopback_blocked() {
 // (tested indirectly through a helper that mirrors the logic)
 // ==================================================================
 
-/// Mirror of the media_type derivation logic from proxy_fetch_and_forward.
+/// Mirror of the `media_type` derivation logic from `proxy_fetch_and_forward`.
 /// Extracted here to enable direct unit testing.
 fn derive_media_type(content_type: &str) -> &'static str {
     if content_type.contains("mpegurl") || content_type.contains("m3u8") {
@@ -893,7 +893,7 @@ fn test_m3u8_ssrf_deep_traversal() {
     );
 }
 
-/// Test that the rewrite_m3u8 function properly handles EXT-X-MAP with
+/// Test that the `rewrite_m3u8` function properly handles EXT-X-MAP with
 /// a URI that attempts SSRF.
 #[test]
 fn test_m3u8_ssrf_ext_x_map_internal_uri() {
@@ -922,7 +922,7 @@ fn test_m3u8_ssrf_ext_x_map_internal_uri() {
     );
 }
 
-/// Test make_absolute with various malicious inputs
+/// Test `make_absolute` with various malicious inputs
 #[test]
 fn test_make_absolute_with_traversal() {
     let base = url::Url::parse("https://cdn.example.com/hls/stream/master.m3u8").unwrap();
@@ -966,7 +966,7 @@ fn test_m3u8_ssrf_protocol_relative() {
     );
 }
 
-/// Test that make_absolute doesn't allow scheme injection
+/// Test that `make_absolute` doesn't allow scheme injection
 #[test]
 fn test_make_absolute_scheme_injection() {
     let base = url::Url::parse("https://cdn.example.com/hls/master.m3u8").unwrap();
@@ -986,7 +986,7 @@ fn test_make_absolute_scheme_injection() {
 // ==================================================================
 
 /// Test that malicious URLs in M3U8 are blocked when the proxy tries to fetch them.
-/// This tests the full chain: rewrite_m3u8 -> validate_proxy_url_static
+/// This tests the full chain: `rewrite_m3u8` -> `validate_proxy_url_static`
 #[test]
 fn test_m3u8_ssrf_file_url_blocked_by_validator() {
     let m3u8 = "#EXTM3U\nfile:///etc/passwd\n";

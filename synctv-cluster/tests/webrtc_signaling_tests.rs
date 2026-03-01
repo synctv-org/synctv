@@ -28,7 +28,7 @@ fn test_ice_candidate_event_serialization() {
     let room = rid("room1");
     let event = ClusterEvent::WebRTCSignaling {
         event_id: nanoid::nanoid!(16),
-        room_id: room.clone(),
+        room_id: room,
         message_type: "ice_candidate".to_string(),
         from: "user1|conn1".to_string(),
         to: "user2:conn2".to_string(),
@@ -40,7 +40,7 @@ fn test_ice_candidate_event_serialization() {
     let json = serde_json::to_string(&event).expect("Should serialize");
     // Note: serde(rename_all = "snake_case") converts WebRTCSignaling to web_r_t_c_signaling
     // because it treats each uppercase letter as a separate word.
-    assert!(json.contains(r#""type":"web_r_t_c_signaling"#), "JSON should contain type field: {}", json);
+    assert!(json.contains(r#""type":"web_r_t_c_signaling"#), "JSON should contain type field: {json}");
     assert!(json.contains("ice_candidate"));
     assert!(json.contains("candidate:842163049"));
 
@@ -102,17 +102,17 @@ async fn test_ice_candidate_routing() {
 #[test]
 fn test_sdp_offer_event() {
     let room = rid("room1");
-    let offer_sdp = r#"v=0
+    let offer_sdp = r"v=0
 o=- 4611731400430051338 2 IN IP4 127.0.0.1
 s=-
 t=0 0
 a=group:BUNDLE 0 1
 m=audio 9 UDP/TLS/RTP/SAVPF 111 103 104 9 0 8 106 105 13 110 112 113 126
-..."#;
+...";
 
     let event = ClusterEvent::WebRTCSignaling {
         event_id: nanoid::nanoid!(16),
-        room_id: room.clone(),
+        room_id: room,
         message_type: "offer".to_string(),
         from: "caller|conn1".to_string(),
         to: "callee:conn2".to_string(),
@@ -136,16 +136,16 @@ m=audio 9 UDP/TLS/RTP/SAVPF 111 103 104 9 0 8 106 105 13 110 112 113 126
 #[test]
 fn test_sdp_answer_event() {
     let room = rid("room1");
-    let answer_sdp = r#"v=0
+    let answer_sdp = r"v=0
 o=- 4611731400430051339 2 IN IP4 127.0.0.1
 s=-
 t=0 0
 a=group:BUNDLE 0 1
-..."#;
+...";
 
     let event = ClusterEvent::WebRTCSignaling {
         event_id: nanoid::nanoid!(16),
-        room_id: room.clone(),
+        room_id: room,
         message_type: "answer".to_string(),
         from: "callee|conn2".to_string(),
         to: "caller:conn1".to_string(),
@@ -220,8 +220,8 @@ fn test_webrtc_join_event() {
 
     let event = ClusterEvent::WebRTCJoin {
         event_id: nanoid::nanoid!(16),
-        room_id: room.clone(),
-        user_id: user.clone(),
+        room_id: room,
+        user_id: user,
         conn_id: "conn1".to_string(),
         username: "testuser".to_string(),
         timestamp: chrono::Utc::now(),
@@ -241,8 +241,8 @@ fn test_webrtc_leave_event() {
 
     let event = ClusterEvent::WebRTCLeave {
         event_id: nanoid::nanoid!(16),
-        room_id: room.clone(),
-        user_id: user.clone(),
+        room_id: room,
+        user_id: user,
         conn_id: "conn1".to_string(),
         timestamp: chrono::Utc::now(),
     };
@@ -301,7 +301,7 @@ async fn test_webrtc_join_leave_broadcast() {
 // Test 4: Connection manager RTC state
 // ============================================================================
 
-/// Test RTC connection tracking in ConnectionManager.
+/// Test RTC connection tracking in `ConnectionManager`.
 #[tokio::test]
 async fn test_rtc_connection_tracking() {
     let mgr = ConnectionManager::default();
@@ -340,7 +340,7 @@ async fn test_rtc_connection_tracking() {
 // Test 5: Signaling message format validation
 // ============================================================================
 
-/// Test from field parsing (user_id|conn_id format).
+/// Test from field parsing (`user_id|conn_id` format).
 #[test]
 fn test_signaling_from_field_format() {
     let from = "user123|conn456";
@@ -357,7 +357,7 @@ fn test_signaling_from_field_format() {
     assert_eq!(parts[1], "conn789");
 }
 
-/// Test to field parsing (user_id:conn_id or just conn_id).
+/// Test to field parsing (`user_id:conn_id` or just `conn_id`).
 #[test]
 fn test_signaling_to_field_format() {
     // Full format: user_id:conn_id
@@ -507,7 +507,7 @@ fn test_large_sdp_payload() {
     let large_sdp = format!(
         "v=0\n{}\n",
         (0..100)
-            .map(|i| format!("a=candidate:{} typical candidate line", i))
+            .map(|i| format!("a=candidate:{i} typical candidate line"))
             .collect::<Vec<_>>()
             .join("\n")
     );

@@ -1,9 +1,9 @@
 //! RTMP authentication integration tests
 //!
-//! Tests the core RTMP authentication components with real PostgreSQL and Redis via testcontainers.
+//! Tests the core RTMP authentication components with real `PostgreSQL` and Redis via testcontainers.
 //!
-//! Run with: cargo test -p synctv-core --test rtmp_auth_integration_tests
-//! Run with ignored tests: cargo test -p synctv-core --test rtmp_auth_integration_tests -- --ignored
+//! Run with: cargo test -p synctv-core --test `rtmp_auth_integration_tests`
+//! Run with ignored tests: cargo test -p synctv-core --test `rtmp_auth_integration_tests` -- --ignored
 //!
 //! # Test Coverage
 //!
@@ -12,11 +12,11 @@
 //! - Banned/deleted user handling
 //! - Banned/pending room handling
 //! - Cross-replica user→stream mapping (Redis)
-//! - Room settings rtmp_player
+//! - Room settings `rtmp_player`
 //!
 //! # Requirements
 //!
-//! - Docker for testcontainers (PostgreSQL + Redis)
+//! - Docker for testcontainers (`PostgreSQL` + Redis)
 #![allow(clippy::unwrap_used)]
 
 use std::sync::Arc;
@@ -64,8 +64,7 @@ async fn create_test_infra() -> (
     let pg_port = postgres.get_host_port_ipv4(5432).await.expect("Failed to get port");
 
     let database_url = format!(
-        "postgresql://synctv:synctv_test@{}:{}/synctv_test",
-        pg_host, pg_port
+        "postgresql://synctv:synctv_test@{pg_host}:{pg_port}/synctv_test"
     );
 
     let pool = {
@@ -106,7 +105,7 @@ async fn create_test_infra() -> (
         .await
         .expect("Failed to get Redis port");
 
-    let redis_url = format!("redis://{}:{}", redis_host, redis_port);
+    let redis_url = format!("redis://{redis_host}:{redis_port}");
 
     let redis_client = redis::Client::open(redis_url.as_str()).expect("Failed to create Redis client");
     let redis_conn = redis::aio::ConnectionManager::new(redis_client)
@@ -156,7 +155,7 @@ async fn create_test_user(pool: &sqlx::PgPool, username: &str, role: UserRole) -
     let user = User {
         id: UserId::new(),
         username: username.to_string(),
-        email: Some(format!("{}@test.com", username)),
+        email: Some(format!("{username}@test.com")),
         password_hash: "test_hash".to_string(),
         signup_method: Some(SignupMethod::Email),
         role,
@@ -300,8 +299,7 @@ async fn rtmp_auth_test_expired_token_rejected() {
     let err_msg = result.unwrap_err().to_string();
     assert!(
         err_msg.contains("expired") || err_msg.contains("Expired"),
-        "Error should mention expiration: {}",
-        err_msg
+        "Error should mention expiration: {err_msg}"
     );
 }
 
@@ -484,7 +482,7 @@ async fn rtmp_auth_test_cross_replica_user_stream_mapping() {
     let media_id = MediaId::new();
 
     // Simulate writing user stream mapping to Redis
-    let stream_key = format!("{}:{}", room_id, media_id);
+    let stream_key = format!("{room_id}:{media_id}");
     let redis_key = "synctv:rtmp:user_streams";
 
     let mut conn = redis_conn.clone();

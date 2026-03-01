@@ -757,7 +757,7 @@ mod tests {
         );
     }
 
-    /// Test: from_store allows custom backends for testing purposes.
+    /// Test: `from_store` allows custom backends for testing purposes.
     #[test]
     fn test_from_store_allows_custom_backend() {
         let store = Arc::new(InMemoryTicketStore::new(30));

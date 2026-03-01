@@ -2004,7 +2004,7 @@ mod tests {
         let mut config = valid_prod_config();
         config.server.http_port = 0;
         let errors = config.validate().unwrap_err();
-        assert!(errors.iter().any(|e| e.contains("http_port") && e.contains("0")));
+        assert!(errors.iter().any(|e| e.contains("http_port") && e.contains('0')));
     }
 
     #[test]
@@ -2068,7 +2068,7 @@ mod tests {
         let mut config = valid_prod_config();
         config.bootstrap.root_username = "ab".to_string();
         let errors = config.validate().unwrap_err();
-        assert!(errors.iter().any(|e| e.contains("Root username") && e.contains("3")));
+        assert!(errors.iter().any(|e| e.contains("Root username") && e.contains('3')));
     }
 
     #[test]
@@ -2185,8 +2185,7 @@ mod tests {
         let errors = config.validate().unwrap_err();
         assert!(
             errors.iter().any(|e| e.contains("Redis is required when cluster mode is enabled")),
-            "Expected cluster+no-redis error, got: {:?}",
-            errors
+            "Expected cluster+no-redis error, got: {errors:?}"
         );
     }
 
@@ -2210,8 +2209,7 @@ mod tests {
         let errors = config.validate().unwrap_err();
         assert!(
             errors.iter().any(|e| e.contains("Redis is required when cluster mode is enabled")),
-            "Expected cluster+no-redis error, got: {:?}",
-            errors
+            "Expected cluster+no-redis error, got: {errors:?}"
         );
     }
 
@@ -2224,8 +2222,7 @@ mod tests {
         let errors = config.validate().unwrap_err();
         assert!(
             errors.iter().any(|e| e.contains("cluster_secret must be set when cluster mode is enabled")),
-            "Expected cluster_secret error, got: {:?}",
-            errors
+            "Expected cluster_secret error, got: {errors:?}"
         );
     }
 

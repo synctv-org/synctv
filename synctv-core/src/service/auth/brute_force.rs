@@ -782,7 +782,7 @@ impl BruteForceProtection {
     /// Test-only method to check lockout duration for a given attempt count.
     #[cfg(test)]
     #[must_use]
-    pub fn lockout_duration_for_test(&self, attempts: u64) -> Option<u64> {
+    pub const fn lockout_duration_for_test(&self, attempts: u64) -> Option<u64> {
         self.lockout_duration_with_config(attempts)
     }
 
@@ -963,7 +963,7 @@ mod tests {
     // RedisAttemptTracker degradation tracking tests
     // ========================================================================
 
-    /// Test that RedisAttemptTracker initializes with degradation tracking in clean state
+    /// Test that `RedisAttemptTracker` initializes with degradation tracking in clean state
     #[test]
     fn test_redis_tracker_initial_state_not_degraded() {
         // Create a mock RedisAttemptTracker to test initial state
@@ -1003,7 +1003,7 @@ mod tests {
         assert_eq!(degraded_count.load(Ordering::Relaxed), 6);
     }
 
-    /// Test that InMemoryAttemptTracker never reports as degraded
+    /// Test that `InMemoryAttemptTracker` never reports as degraded
     /// (it's always the intended backend, not a fallback)
     #[tokio::test]
     async fn test_in_memory_tracker_is_intended_backend() {
@@ -1030,7 +1030,7 @@ mod tests {
     // Fail-closed mode tests
     // ========================================================================
 
-    /// Test that the fail_closed flag is correctly set
+    /// Test that the `fail_closed` flag is correctly set
     #[test]
     fn test_fail_closed_flag_semantics() {
         // Test the atomic bool semantics for fail_closed mode
@@ -1044,7 +1044,7 @@ mod tests {
         // fail_closed=false should allow fallback to in-memory cache
     }
 
-    /// Test that InMemoryAttemptTracker always returns Ok
+    /// Test that `InMemoryAttemptTracker` always returns Ok
     #[tokio::test]
     async fn test_in_memory_tracker_never_fails() {
         let tracker = InMemoryAttemptTracker::new(1000, 900);

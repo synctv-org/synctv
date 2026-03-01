@@ -3,7 +3,7 @@
 //! Tests verify cache invalidation works correctly across multiple replicas
 //! using Redis Pub/Sub or Streams.
 //!
-//! Run with: cargo test --test cache_invalidation_tests
+//! Run with: cargo test --test `cache_invalidation_tests`
 //! Requires Docker for testcontainers.
 #![allow(clippy::unwrap_used)]
 
@@ -24,7 +24,7 @@ async fn start_redis() -> (testcontainers::ContainerAsync<Redis>, String) {
         .await
         .expect("Failed to start Redis");
     let port = container.get_host_port_ipv4(6379).await.expect("Failed to get port");
-    let redis_url = format!("redis://127.0.0.1:{}", port);
+    let redis_url = format!("redis://127.0.0.1:{port}");
     (container, redis_url)
 }
 
@@ -89,7 +89,7 @@ async fn test_cache_invalidation_broadcast_received() {
                 _ => panic!("Unexpected message type"),
             }
         }
-        _ = tokio::time::sleep(tokio::time::Duration::from_secs(5)) => {
+        () = tokio::time::sleep(tokio::time::Duration::from_secs(5)) => {
             panic!("Timeout waiting for invalidation message");
         }
     }
@@ -128,7 +128,7 @@ async fn test_cache_invalidation_all_message() {
             let msg = msg.expect("Failed to receive message");
             assert_eq!(msg, InvalidationMessage::All);
         }
-        _ = tokio::time::sleep(tokio::time::Duration::from_secs(5)) => {
+        () = tokio::time::sleep(tokio::time::Duration::from_secs(5)) => {
             panic!("Timeout waiting for invalidation message");
         }
     }
@@ -172,7 +172,7 @@ async fn test_cache_invalidation_room_permission() {
                 _ => panic!("Expected RoomPermission message"),
             }
         }
-        _ = tokio::time::sleep(tokio::time::Duration::from_secs(5)) => {
+        () = tokio::time::sleep(tokio::time::Duration::from_secs(5)) => {
             panic!("Timeout waiting for invalidation message");
         }
     }
@@ -314,7 +314,7 @@ async fn test_cache_invalidation_broadcast_local() {
             let received = received.expect("Should receive local broadcast");
             assert_eq!(received, msg);
         }
-        _ = tokio::time::sleep(tokio::time::Duration::from_secs(2)) => {
+        () = tokio::time::sleep(tokio::time::Duration::from_secs(2)) => {
             panic!("Timeout waiting for local broadcast message");
         }
     }
@@ -358,7 +358,7 @@ async fn test_cache_invalidation_playback_state() {
                 _ => panic!("Expected PlaybackState message"),
             }
         }
-        _ = tokio::time::sleep(tokio::time::Duration::from_secs(5)) => {
+        () = tokio::time::sleep(tokio::time::Duration::from_secs(5)) => {
             panic!("Timeout waiting for invalidation message");
         }
     }
@@ -373,7 +373,7 @@ async fn test_cache_invalidation_playback_state() {
 /// This test verifies the critical invariant that cache invalidation occurs
 /// before the transaction commits, preventing the following race condition:
 ///
-/// 1. Transaction commits (deleted_at is set)
+/// 1. Transaction commits (`deleted_at` is set)
 /// 2. Another request reads stale data from cache (room still appears active)
 /// 3. Cache is invalidated (too late - stale data was already served)
 ///

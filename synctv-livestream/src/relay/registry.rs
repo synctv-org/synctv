@@ -866,7 +866,7 @@ mod tests {
             .await
             .expect("Failed to get Redis port");
 
-        let redis_url = format!("redis://{}:{}", redis_host, redis_port);
+        let redis_url = format!("redis://{redis_host}:{redis_port}");
         let redis_client = redis::Client::open(redis_url.as_str()).expect("Failed to create Redis client");
         let conn_mgr = RedisConnectionManager::new(redis_client.clone())
             .await

@@ -4,7 +4,7 @@
 //! and isolation guarantees when multiple transactions attempt to modify the same
 //! room members simultaneously.
 //!
-//! Run with: cargo test --test transaction_isolation_tests
+//! Run with: cargo test --test `transaction_isolation_tests`
 //! Requires Docker for testcontainers.
 #![allow(clippy::unwrap_used)]
 
@@ -17,7 +17,7 @@ use sqlx::PgPool;
 use std::sync::Arc;
 use tokio::sync::Barrier;
 
-/// Default PostgreSQL version for test containers
+/// Default `PostgreSQL` version for test containers
 /// Helper to create a test database pool with proper schema
 /// Create a test user in the database (required for FK constraints)
 async fn create_test_user(pool: &PgPool, user_id: &UserId) {

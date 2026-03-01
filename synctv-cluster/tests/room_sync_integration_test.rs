@@ -5,7 +5,7 @@
 //! creates two `RoomMessageHub` instances backed by the same Redis, simulating
 //! a multi-replica deployment.
 //!
-//! Run with: cargo test --package synctv-cluster --test room_sync_integration_test
+//! Run with: cargo test --package synctv-cluster --test `room_sync_integration_test`
 
 #![allow(clippy::unwrap_used)]
 use std::time::Duration;
@@ -20,7 +20,7 @@ use testcontainers_modules::redis::Redis;
 #[allow(dead_code)]
 const REDIS_VERSION: &str = "7-alpine";
 
-/// Redis test infrastructure (shared with integration_test.rs pattern).
+/// Redis test infrastructure (shared with `integration_test.rs` pattern).
 struct TestRedis {
     redis_url: String,
     _redis: ContainerAsync<Redis>,
@@ -42,7 +42,7 @@ impl TestRedis {
             .await
             .expect("Failed to get Redis port");
 
-        let redis_url = format!("redis://{}:{}", redis_host, redis_port);
+        let redis_url = format!("redis://{redis_host}:{redis_port}");
 
         Self {
             redis_url,
@@ -269,7 +269,7 @@ async fn test_room_lifecycle_events_across_replicas() {
         RoomLifecycleEvent::RoomActivated(rid) => {
             assert_eq!(rid.as_str(), "lifecycle_room");
         }
-        other => panic!("Expected RoomActivated, got {:?}", other),
+        other => panic!("Expected RoomActivated, got {other:?}"),
     }
 
     // Second subscriber in same room should NOT trigger another RoomActivated
@@ -308,7 +308,7 @@ async fn test_room_lifecycle_events_across_replicas() {
         RoomLifecycleEvent::RoomDeactivated(rid) => {
             assert_eq!(rid.as_str(), "lifecycle_room");
         }
-        other => panic!("Expected RoomDeactivated, got {:?}", other),
+        other => panic!("Expected RoomDeactivated, got {other:?}"),
     }
 }
 
@@ -359,8 +359,7 @@ async fn test_audit_redis_subscriptions_reports_without_local_populate() {
 
     assert_eq!(
         recovered, 3,
-        "Should recover 3 subscriptions from Redis, got {}",
-        recovered
+        "Should recover 3 subscriptions from Redis, got {recovered}"
     );
 
     // Local state of hub B should still be empty (audit_redis_subscriptions is read-only)

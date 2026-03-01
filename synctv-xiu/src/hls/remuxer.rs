@@ -28,6 +28,7 @@ use crate::streamhub::{
 use bytes::{Bytes, BytesMut};
 use dashmap::DashMap;
 use std::collections::VecDeque;
+use std::fmt::Write;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
@@ -94,11 +95,11 @@ impl StreamProcessorState {
             .map(|s| (s.duration + 999) / 1000)
             .max()
             .unwrap_or(10);
-        m3u8_content.push_str(&format!("#EXT-X-TARGETDURATION:{max_duration_sec}\n"));
+        let _ = write!(m3u8_content, "#EXT-X-TARGETDURATION:{max_duration_sec}\n");
 
         // Media sequence (first segment in playlist)
         let first_seq = self.segments.front().map_or(0, |s| s.sequence);
-        m3u8_content.push_str(&format!("#EXT-X-MEDIA-SEQUENCE:{first_seq}\n"));
+        let _ = write!(m3u8_content, "#EXT-X-MEDIA-SEQUENCE:{first_seq}\n");
 
         // Segments
         for segment in &self.segments {
@@ -107,11 +108,11 @@ impl StreamProcessorState {
             }
 
             let duration_sec = segment.duration as f64 / 1000.0;
-            m3u8_content.push_str(&format!("#EXTINF:{duration_sec:.3},\n"));
+            let _ = write!(m3u8_content, "#EXTINF:{duration_sec:.3},\n");
 
             // Use closure to generate segment URL (allows custom auth, CDN URLs, etc)
             let segment_url = gen_ts_url(&segment.ts_name);
-            m3u8_content.push_str(&format!("{segment_url}\n"));
+            let _ = write!(m3u8_content, "{segment_url}\n");
         }
 
         if self.is_ended {
@@ -495,7 +496,7 @@ impl StreamHandler {
         };
 
         processor
-            .process_stream(&mut self.data_consumer, &self.activity_callback)
+            .process_stream(&mut self.data_consumer, self.activity_callback.as_ref())
             .await?;
 
         // Deactivate drop guard - we'll unsubscribe explicitly
@@ -525,12 +526,10 @@ impl StreamHandler {
         // If a new publisher started within the 60s window, its registry entry
         // will have a different created_at — we must not remove it or delete
         // its segments.
-        let is_still_owner = if let Some(entry) = self.stream_registry.get(&registry_key) {
-            entry.read().created_at == handler_created_at
-        } else {
-            // Entry already removed (e.g. by a concurrent cleanup); nothing to do.
-            false
-        };
+        let is_still_owner = self
+            .stream_registry
+            .get(&registry_key)
+            .map_or(false, |entry| entry.read().created_at == handler_created_at);
 
         if is_still_owner {
             self.stream_registry.remove(&registry_key);
@@ -607,7 +606,7 @@ impl StreamHandler {
         Ok(())
     }
 
-    async fn unsubscribe_from_stream_hub(&mut self) -> Result<(), HlsRemuxerError> {
+    async fn unsubscribe_from_stream_hub(&self) -> Result<(), HlsRemuxerError> {
         let sub_info = SubscriberInfo {
             id: self.subscriber_id,
             sub_type: SubscribeType::RtmpRemux2Hls,
@@ -771,7 +770,7 @@ impl StreamProcessor {
     async fn process_stream(
         &mut self,
         data_consumer: &mut FrameDataReceiver,
-        activity_callback: &Option<PublisherActivityCallback>,
+        activity_callback: Option<&PublisherActivityCallback>,
     ) -> Result<(), HlsRemuxerError> {
         // Use a longer timeout for stream end detection
         // The original logic had a flaw: it would increment retry_count on any
@@ -850,9 +849,8 @@ impl StreamProcessor {
                     HlsRemuxerError::DemuxError(format!("Video demux error: {e:?}"))
                 })?;
 
-                let video_data = match video_data {
-                    Some(data) => data,
-                    None => return Ok(()),
+                let Some(video_data) = video_data else {
+                    return Ok(());
                 };
 
                 // Detect codec on first video frame and re-initialize TsMuxer if HEVC.
@@ -1033,6 +1031,7 @@ impl StreamProcessor {
             // Mark stream as ended if this is the last segment
             if is_eof {
                 state.is_ended = true;
+                drop(state);
                 tracing::info!("Stream ended: {}/{}", self.app_name, self.stream_name);
             }
         }

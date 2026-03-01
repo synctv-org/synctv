@@ -53,7 +53,7 @@ impl RtmpServer {
     /// becomes a child of `parent`, so cancelling `parent` will also shut down
     /// this RTMP server and all its sessions.
     #[must_use]
-    pub fn with_cancellation_token(mut self, parent: CancellationToken) -> Self {
+    pub fn with_cancellation_token(mut self, parent: &CancellationToken) -> Self {
         self.shutdown_token = parent.child_token();
         self
     }

@@ -37,7 +37,7 @@ impl ProtocolControlMessagesWriter {
     ) -> Result<(), ControlMessagesError> {
         self.write_control_message_header(msg_type_id::SET_CHUNK_SIZE, 4)?;
         self.writer
-            .write_u32::<BigEndian>(chunk_size & 0x7FFFFFFF)?; //first bit must be 0
+            .write_u32::<BigEndian>(chunk_size & 0x7FFF_FFFF)?; //first bit must be 0
 
         self.writer.flush().await?;
         Ok(())

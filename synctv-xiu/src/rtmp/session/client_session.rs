@@ -103,12 +103,10 @@ impl ClientSession {
         gop_num: usize,
         per_stream_max_bytes: Option<usize>,
     ) -> Self {
-        let remote_addr = if let Ok(addr) = stream.peer_addr() {
+        let remote_addr = stream.peer_addr().map_or(None, |addr| {
             tracing::info!("server session: {addr}");
             Some(addr)
-        } else {
-            None
-        };
+        });
 
         let tcp_io: Box<dyn TNetIO + Send + Sync> = Box::new(TcpIO::new(stream));
         let net_io = Arc::new(Mutex::new(tcp_io));
@@ -578,7 +576,7 @@ impl ClientSession {
     }
 
     pub async fn on_set_peer_bandwidth(&mut self) -> Result<(), SessionError> {
-        self.send_window_acknowledgement_size(5000000).await?;
+        self.send_window_acknowledgement_size(5_000_000).await?;
 
         Ok(())
     }
@@ -612,7 +610,6 @@ impl ClientSession {
                     }
                     self.is_subscribed = true;
                 }
-                "NetStream.Publish.Reset" => {}
                 "NetStream.Play.Start" => {
                     //pull from remote rtmp server and publish to local session
                     self.common

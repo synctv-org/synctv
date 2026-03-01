@@ -86,12 +86,10 @@ impl MemoryStorageInner {
     /// Evict the oldest entry by sequence number. Returns true if evicted.
     fn evict_oldest(&mut self) -> bool {
         // BTreeMap iteration starts at the smallest key (oldest seq)
-        let oldest_seq = if let Some((&seq, _)) = self.time_index.iter().next() {
-            seq
-        } else {
+        let Some((&seq, _)) = self.time_index.iter().next() else {
             return false;
         };
-        if let Some(key) = self.time_index.remove(&oldest_seq) {
+        if let Some(key) = self.time_index.remove(&seq) {
             if let Some(entry) = self.data.remove(&key) {
                 self.total_bytes -= entry.data.len();
             }
@@ -199,6 +197,7 @@ impl MemoryStorage {
         inner.data.clear();
         inner.time_index.clear();
         inner.total_bytes = 0;
+        drop(inner);
         tracing::info!("Cleared memory storage");
     }
 }
@@ -245,6 +244,7 @@ impl HlsStorage for MemoryStorage {
                 write_time,
             },
         );
+        drop(inner);
 
         tracing::trace!("Wrote to memory: {} ({} bytes)", key, size);
 
@@ -254,16 +254,19 @@ impl HlsStorage for MemoryStorage {
     async fn read(&self, app: &str, stream: &str, name: &str) -> Result<Bytes> {
         let key = make_key(app, stream, name);
         let inner = self.inner.read();
-        if let Some(entry) = inner.data.get(&key) {
-            tracing::trace!("Read from memory: {} ({} bytes)", key, entry.data.len());
-            Ok(entry.data.clone())
-        } else {
-            tracing::warn!("Key not found in memory: {}", key);
-            Err(Error::new(
-                ErrorKind::NotFound,
-                format!("Key not found: {key}"),
-            ))
-        }
+        inner.data.get(&key).map_or_else(
+            || {
+                tracing::warn!("Key not found in memory: {}", key);
+                Err(Error::new(
+                    ErrorKind::NotFound,
+                    format!("Key not found: {key}"),
+                ))
+            },
+            |entry| {
+                tracing::trace!("Read from memory: {} ({} bytes)", key, entry.data.len());
+                Ok(entry.data.clone())
+            },
+        )
     }
 
     async fn delete(&self, app: &str, stream: &str, name: &str) -> Result<()> {
@@ -272,6 +275,7 @@ impl HlsStorage for MemoryStorage {
         if inner.remove(&key) {
             tracing::trace!("Deleted from memory: {}", key);
         }
+        drop(inner);
         Ok(())
     }
 

@@ -82,7 +82,8 @@ impl FlvMuxer {
         //data size
         self.writer.write_u24::<BigEndian>(data_size)?;
         //timestamp
-        self.writer.write_u24::<BigEndian>(timestamp & 0xffffff)?;
+        self.writer
+            .write_u24::<BigEndian>(timestamp & 0x00ff_ffff)?;
         //timestamp extended.
         let timestamp_ext = (timestamp >> 24 & 0xff) as u8;
         self.writer.write_u8(timestamp_ext)?;
@@ -92,7 +93,7 @@ impl FlvMuxer {
         Ok(())
     }
 
-    pub fn write_flv_tag_body(&mut self, body: BytesMut) -> Result<(), FlvMuxerError> {
+    pub fn write_flv_tag_body(&mut self, body: &BytesMut) -> Result<(), FlvMuxerError> {
         self.writer.write(&body[..])?;
         Ok(())
     }

@@ -117,10 +117,6 @@ impl MessageParser {
                 }));
             }
 
-            msg_type_id::SHARED_OBJ_AMF3 | msg_type_id::SHARED_OBJ_AMF0 => {}
-
-            msg_type_id::AGGREGATE => {}
-
             _ => {}
         }
         tracing::warn!(
@@ -169,11 +165,8 @@ mod tests {
         loop {
             let result = unpacker.read_chunk();
 
-            let rv = match result {
-                Ok(val) => val,
-                Err(_) => {
-                    break;
-                }
+            let Ok(rv) = result else {
+                break;
             };
 
             if let UnpackResult::ChunkInfo(chunk_info) = rv {

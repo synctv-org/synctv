@@ -1089,7 +1089,7 @@ impl BilibiliClient {
                 // Parse DASH data into structured format
                 let dash_info = json.data.dash;
                 let (regular_dash, hevc_dash) =
-                    parse_dash_info(&dash_info, &json.data.support_formats)?;
+                    parse_dash_info(&dash_info, &json.data.support_formats);
 
                 Ok((regular_dash, hevc_dash))
             }
@@ -1360,7 +1360,7 @@ impl BilibiliClient {
 
                 let dash_info = json.result.dash;
                 let (regular_dash, hevc_dash) =
-                    parse_dash_info(&dash_info, &json.result.support_formats)?;
+                    parse_dash_info(&dash_info, &json.result.support_formats);
 
                 Ok((regular_dash, hevc_dash))
             }
@@ -1535,7 +1535,7 @@ impl BilibiliClient {
                     }
                     for format in &stream.format {
                         for codec in &format.codec {
-                            let quality = codec.current_qn as u32;
+                            let quality = u32::try_from(codec.current_qn);
                             let desc = codec
                                 .accept_qn
                                 .first()
@@ -1552,7 +1552,7 @@ impl BilibiliClient {
 
                             if !urls.is_empty() {
                                 streams.push(LiveStream {
-                                    quality,
+                                    quality: quality.expect("REASON"),
                                     urls,
                                     desc,
                                 });
@@ -1698,7 +1698,7 @@ impl LiveDanmakuConnection {
         let mut read = self.read.lock().await;
 
         match read.next().await {
-            Some(Ok(Message::Binary(data))) => parse_danmaku_packet(&data),
+            Some(Ok(Message::Binary(data))) => Ok(parse_danmaku_packet(&data)),
             Some(Ok(Message::Close(_))) => Err(BilibiliError::Parse(
                 "Danmaku WebSocket connection closed by server".to_string(),
             )),
@@ -1812,9 +1812,9 @@ const MAX_DANMAKU_DECOMPRESS_SIZE: u64 = 16 * 1024 * 1024;
 /// A single binary frame may contain multiple sub-packets (especially when
 /// compressed with zlib/brotli). This function collects all parsed messages
 /// instead of returning only the first one.
-fn parse_danmaku_packet(data: &[u8]) -> Result<Vec<DanmakuMessage>, BilibiliError> {
+fn parse_danmaku_packet(data: &[u8]) -> std::vec::Vec<DanmakuMessage> {
     if data.len() < 16 {
-        return Ok(Vec::new());
+        return Vec::new();
     }
 
     // Parse header
@@ -1847,7 +1847,7 @@ fn parse_danmaku_packet(data: &[u8]) -> Result<Vec<DanmakuMessage>, BilibiliErro
                     let mut limited = decoder.take(MAX_DANMAKU_DECOMPRESS_SIZE);
                     let mut out = Vec::new();
                     if limited.read_to_end(&mut out).is_err() {
-                        return Ok(Vec::new());
+                        return Vec::new();
                     }
                     out
                 }
@@ -1858,11 +1858,11 @@ fn parse_danmaku_packet(data: &[u8]) -> Result<Vec<DanmakuMessage>, BilibiliErro
                     let mut limited = decoder.take(MAX_DANMAKU_DECOMPRESS_SIZE);
                     let mut out = Vec::new();
                     if limited.read_to_end(&mut out).is_err() {
-                        return Ok(Vec::new());
+                        return Vec::new();
                     }
                     out
                 }
-                _ => return Ok(Vec::new()),
+                _ => return Vec::new(),
             };
 
             // Compressed data contains concatenated sub-packets with headers;
@@ -1907,7 +1907,7 @@ fn parse_danmaku_packet(data: &[u8]) -> Result<Vec<DanmakuMessage>, BilibiliErro
         _ => {}
     }
 
-    Ok(messages)
+    messages
 }
 
 /// Parse danmaku command from JSON
@@ -1966,14 +1966,15 @@ fn parse_danmaku_cmd(cmd: &str, json: &serde_json::Value) -> DanmakuMessage {
                     .and_then(|v| v.as_str())
                     .unwrap_or("")
                     .to_string();
-                let count = data
-                    .get("num")
-                    .and_then(serde_json::Value::as_u64)
-                    .unwrap_or(1) as u32;
+                let count = u32::try_from(
+                    data.get("num")
+                        .and_then(serde_json::Value::as_u64)
+                        .unwrap_or(1),
+                );
                 return DanmakuMessage::Gift {
                     user,
                     gift_name,
-                    count,
+                    count: count.expect("REASON"),
                 };
             }
         }
@@ -2177,7 +2178,7 @@ impl From<&DashData> for crate::grpc::bilibili::DashInfo {
 fn parse_dash_info(
     dash_info: &types::DashInfo,
     support_formats: &[types::SupportFormat],
-) -> Result<(DashData, DashData), BilibiliError> {
+) -> (DashData, DashData) {
     let duration = dash_info.duration;
     let min_buffer_time = dash_info.min_buffer_time;
 
@@ -2257,7 +2258,7 @@ fn parse_dash_info(
         audio_streams: parsed_audios,
     };
 
-    Ok((regular_dash, hevc_dash))
+    (regular_dash, hevc_dash)
 }
 
 /// Generate DASH MPD XML from structured data

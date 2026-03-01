@@ -29,7 +29,7 @@ fn map_bilibili_error(context: &str, e: &ProviderClientError) -> Status {
             _ => {}
         }
     }
-    map_provider_error(context, &e)
+    map_provider_error(context, e)
 }
 
 /// Bilibili gRPC server

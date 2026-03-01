@@ -100,7 +100,7 @@ impl StreamDataTransceiver {
     /// `FrameData` uses `Bytes` internally so clone is O(1) reference count bump.
     fn fan_out_frame(
         snapshot: &[(Uuid, FrameDataSender, Arc<AtomicU64>)],
-        data: FrameData,
+        data: &FrameData,
     ) -> Vec<Uuid> {
         let mut closed_ids = Vec::new();
         for (id, sender, drop_count) in snapshot {
@@ -128,7 +128,7 @@ impl StreamDataTransceiver {
     /// Drop counters are snapshotted as Arc<AtomicU64> so no lock is needed during fan-out.
     fn fan_out_packet(
         snapshot: &[(Uuid, PacketDataSender, Arc<AtomicU64>)],
-        data: PacketData,
+        data: &PacketData,
     ) -> Vec<Uuid> {
         let mut closed_ids = Vec::new();
         for (id, sender, drop_count) in snapshot {
@@ -172,6 +172,7 @@ impl StreamDataTransceiver {
                     .iter()
                     .map(|(id, sc)| (*id, sc.sender.clone(), Arc::clone(&sc.drop_count)))
                     .collect();
+                drop(guard);
                 *cached_gen = current_gen;
             }
 
@@ -181,14 +182,13 @@ impl StreamDataTransceiver {
 
             // Fan out to all subscribers without holding any lock.
             // FrameData uses Bytes internally so clone is O(1) Arc reference bump.
-            let closed_ids = Self::fan_out_frame(cached_snapshot, val);
+            let closed_ids = Self::fan_out_frame(cached_snapshot, &val);
 
             // Remove closed subscribers and bump generation
             if !closed_ids.is_empty() {
                 let closed_count = closed_ids.len();
-                let mut guard = frame_senders.lock().await;
                 for id in &closed_ids {
-                    guard.remove(id);
+                    frame_senders.lock().await.remove(id);
                     tracing::debug!("Removed closed frame subscriber: {}", id);
                 }
                 // Bump generation so next call rebuilds snapshot
@@ -282,6 +282,7 @@ impl StreamDataTransceiver {
                     .iter()
                     .map(|(id, sc)| (*id, sc.sender.clone(), Arc::clone(&sc.drop_count)))
                     .collect();
+                drop(guard);
                 *cached_gen = current_gen;
             }
 
@@ -289,13 +290,12 @@ impl StreamDataTransceiver {
                 return;
             }
 
-            let closed_ids = Self::fan_out_packet(cached_snapshot, val);
+            let closed_ids = Self::fan_out_packet(cached_snapshot, &val);
 
             if !closed_ids.is_empty() {
                 let closed_count = closed_ids.len();
-                let mut guard = packet_senders.lock().await;
                 for id in &closed_ids {
-                    guard.remove(id);
+                    packet_senders.lock().await.remove(id);
                     tracing::debug!("Removed closed packet subscriber: {}", id);
                 }
                 generation.fetch_add(1, Ordering::Release);
@@ -388,7 +388,6 @@ impl StreamDataTransceiver {
                             aac_packet_type::AAC_RAW => {
                                 guard.publisher.audio.recv_bytes += data_size;
                             }
-                            aac_packet_type::AAC_SEQHDR => {}
                             _ => {}
                         }
                         guard.total_recv_bytes += data_size;
@@ -583,9 +582,9 @@ impl StreamDataTransceiver {
                             // Remove from both sender maps and update statistics
                             // in a single logical block to minimize lock hold times.
                             {
-                                let mut fs = frame_senders.lock().await;
+                                frame_senders.lock().await.remove(&info.id);
                                 let mut ps = packet_senders.lock().await;
-                                fs.remove(&info.id);
+
                                 ps.remove(&info.id);
                             }
                             frame_generation.fetch_add(1, Ordering::Release);
@@ -722,13 +721,16 @@ impl StreamsHub {
                 Ok(())
             }
             Err(panic_payload) => {
-                let msg = if let Some(s) = panic_payload.downcast_ref::<&str>() {
-                    (*s).to_string()
-                } else if let Some(s) = panic_payload.downcast_ref::<String>() {
-                    s.clone()
-                } else {
-                    "unknown panic".to_string()
-                };
+                let msg = panic_payload.downcast_ref::<&str>().map_or_else(
+                    || {
+                        if let Some(s) = panic_payload.downcast_ref::<String>() {
+                            s.clone()
+                        } else {
+                            "unknown panic".to_string()
+                        }
+                    },
+                    |s| (*s).to_string(),
+                );
                 tracing::error!(
                     "StreamHub event_loop panicked: {}. \
                      The streaming infrastructure is no longer functional.",

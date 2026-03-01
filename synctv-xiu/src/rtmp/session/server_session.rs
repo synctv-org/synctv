@@ -83,12 +83,10 @@ impl ServerSession {
         per_stream_max_bytes: Option<usize>,
         callbacks: Arc<StreamEventCallbacks>,
     ) -> Self {
-        let remote_addr = if let Ok(addr) = stream.peer_addr() {
+        let remote_addr = stream.peer_addr().map_or(None, |addr| {
             tracing::info!("server session: {addr}");
             Some(addr)
-        } else {
-            None
-        };
+        });
 
         let tcp_io: Box<dyn TNetIO + Send + Sync> = Box::new(TcpIO::new(stream));
         let net_io = Arc::new(Mutex::new(tcp_io));
@@ -385,7 +383,7 @@ impl ServerSession {
                 .await?;
             }
             RtmpMessageData::SetChunkSize { chunk_size } => {
-                self.on_set_chunk_size(*chunk_size as usize)?;
+                self.on_set_chunk_size(*chunk_size as usize);
             }
             RtmpMessageData::AudioData { data } => {
                 self.common.on_audio_data(data, timestamp).await?;
@@ -470,7 +468,7 @@ impl ServerSession {
         Ok(())
     }
 
-    fn on_set_chunk_size(&mut self, chunk_size: usize) -> Result<(), SessionError> {
+    fn on_set_chunk_size(&mut self, chunk_size: usize) -> () {
         // L-3: Clamp chunk_size to safe range [128, 65536] to prevent
         // excessive buffer allocation from malicious clients.
         const MIN_CHUNK_SIZE: usize = 128;
@@ -493,7 +491,6 @@ impl ServerSession {
             );
         }
         self.unpacketizer.update_max_chunk_size(clamped);
-        Ok(())
     }
 
     fn parse_connect_properties(&mut self, command_obj: &IndexMap<String, Amf0ValueType>) {
@@ -690,7 +687,7 @@ impl ServerSession {
         Ok(())
     }
 
-    fn get_request_url(&mut self, raw_stream_name: String) -> String {
+    fn get_request_url(&self, raw_stream_name: &str) -> String {
         if let Some(tc_url) = &self.connect_properties.tc_url {
             format!("{tc_url}/{raw_stream_name}")
         } else {
@@ -820,11 +817,10 @@ impl ServerSession {
                 })?;
         }
 
-        let query = if let Some(query_val) = &self.query {
-            query_val.clone()
-        } else {
-            String::from("none")
-        };
+        let query = self
+            .query
+            .as_ref()
+            .map_or_else(|| String::from("none"), |query_val| query_val.clone());
 
         tracing::info!(
             "[ S->C ] [stream is record]  app_name: {}, stream_name: {}, query: {}",
@@ -834,7 +830,7 @@ impl ServerSession {
         );
 
         /*Now it can update the request url*/
-        self.common.request_url = self.get_request_url(raw_stream_name);
+        self.common.request_url = self.get_request_url(&raw_stream_name);
         self.common
             .subscribe_from_stream_hub(self.app_name.clone(), self.stream_name.clone())
             .await?;
@@ -923,22 +919,18 @@ impl ServerSession {
         }
 
         /*Now it can update the request url*/
-        self.common.request_url = self.get_request_url(stream_name_with_query);
+        self.common.request_url = self.get_request_url(&stream_name_with_query);
 
-        let _ = match other_values.remove(0) {
-            Amf0ValueType::UTF8String(val) => val,
-            _ => {
-                return Err(SessionError {
-                    value: SessionErrorValue::Amf0ValueCountNotCorrect,
-                });
-            }
+        let Amf0ValueType::UTF8String(_) = other_values.remove(0) else {
+            return Err(SessionError {
+                value: SessionErrorValue::Amf0ValueCountNotCorrect,
+            });
         };
 
-        let query = if let Some(query_val) = &self.query {
-            query_val.clone()
-        } else {
-            String::from("none")
-        };
+        let query = self
+            .query
+            .as_ref()
+            .map_or_else(|| String::from("none"), |query_val| query_val.clone());
 
         tracing::info!(
             "[ S<-C ] [publish]  app_name: {}, stream_name: {}, query: {}",

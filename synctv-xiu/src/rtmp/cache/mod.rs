@@ -98,7 +98,7 @@ impl Cache {
                 let mut aac_processor = Mpeg4AacProcessor::default();
 
                 let aac = aac_processor
-                    .extend_data(remain_bytes)?
+                    .extend_data(&remain_bytes)?
                     .audio_specific_config_load()?;
 
                 let statistic_audio_codec = StatisticData::AudioCodec {

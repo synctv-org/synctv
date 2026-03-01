@@ -253,7 +253,7 @@ mod tests {
 
     #[test]
     fn test_bit_opertion() {
-        let pts: i64 = 1627702096;
+        let pts: i64 = 1_627_702_096;
 
         let val = ((pts << 1) & 0xFE) as u8;
 
@@ -264,9 +264,9 @@ mod tests {
     #[test]
     fn test_bit_opertion2() {
         let flags = 0xC0;
-        let pts: i64 = 1627702096;
+        let pts: i64 = 1_627_702_096;
 
-        let b9 = ((flags >> 2) & 0x30)/* 0011/0010 */ | (((pts >> 30) & 0x07) << 1) as u8 /* PTS 30-32 */ | 0x01 /* marker_bit */;
+        let b9 = ((flags >> 2) & 0x30) as u8 /* 0011/0010 */ | (((pts >> 30) & 0x07) << 1) as u8 /* PTS 30-32 */ | 0x01 /* marker_bit */;
         println!("=======b9{b9}=======");
 
         let b10 = (pts >> 22) as u8; /* PTS 22-29 */
@@ -285,7 +285,7 @@ mod tests {
     #[test]
     fn test_bit_opertion3() {
         //let flags = 0xC0;
-        let pts: i64 = 1627702096;
+        let pts: i64 = 1_627_702_096;
 
         let b12 = ((pts & 0x7fff) << 1) | 1; /* PTS 7-14 */
         println!("=======b12{}=======", b12 >> 8_u8);

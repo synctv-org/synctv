@@ -1,3 +1,4 @@
+use std::fmt::Write;
 use {
     super::{define::h264_nal_type, errors::Mpeg4AvcHevcError},
     crate::bytesio::{bytes_reader::BytesReader, bytes_writer::BytesWriter},
@@ -91,7 +92,7 @@ pub fn print(data: BytesMut) {
     let mut idx = 0;
     let mut line = String::new();
     for i in data {
-        line.push_str(&format!("{i:02X} "));
+        let _ = write!(line, "{i:02X} ");
         idx += 1;
         if idx % 16 == 0 {
             tracing::trace!("{}", line);

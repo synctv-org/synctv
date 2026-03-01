@@ -53,9 +53,9 @@ impl Gop {
     /// correctness if fields are added in the future.
     pub(crate) const fn frame_memory_size(data: &FrameData) -> usize {
         match data {
-            FrameData::Video { data, .. } => data.len(),
-            FrameData::Audio { data, .. } => data.len(),
-            FrameData::MetaData { data, .. } => data.len(),
+            FrameData::Video { data, .. }
+            | FrameData::Audio { data, .. }
+            | FrameData::MetaData { data, .. } => data.len(),
             FrameData::MediaInfo { media_info } => {
                 std::mem::size_of::<crate::streamhub::define::MediaInfo>() + media_info.heap_size()
             }

@@ -72,7 +72,7 @@ impl SpsParser {
     }
 
     pub fn extend_data(&mut self, data: BytesMut) -> Result<(), H264Error> {
-        self.bits_reader.extend_data(data)?;
+        self.bits_reader.extend_data(&data)?;
         Ok(())
     }
 

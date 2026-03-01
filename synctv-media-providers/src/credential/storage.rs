@@ -173,7 +173,7 @@ impl InMemoryCredentialStorage {
     #[must_use]
     pub fn with_encryption(key_bytes: &[u8]) -> Self {
         let encryption =
-            FieldEncryption::new(&key_bytes).expect("Encryption key must be exactly 32 bytes");
+            FieldEncryption::new(key_bytes).expect("Encryption key must be exactly 32 bytes");
         Self {
             credentials: Arc::new(RwLock::new(HashMap::new())),
             encryption: Some(encryption),

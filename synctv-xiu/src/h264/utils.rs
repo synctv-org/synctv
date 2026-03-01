@@ -52,15 +52,15 @@ mod tests {
         // 8 => 1001 => 0001001
 
         let mut bytes_reader = BytesReader::new(BytesMut::new());
-        bytes_reader.extend_from_slice(&[0b00000001]).unwrap();
-        bytes_reader.extend_from_slice(&[0b00000010]).unwrap();
-        bytes_reader.extend_from_slice(&[0b00000011]).unwrap();
-        bytes_reader.extend_from_slice(&[0b00000100]).unwrap();
-        bytes_reader.extend_from_slice(&[0b00000101]).unwrap();
-        bytes_reader.extend_from_slice(&[0b00000110]).unwrap();
-        bytes_reader.extend_from_slice(&[0b00000111]).unwrap();
-        bytes_reader.extend_from_slice(&[0b00001000]).unwrap();
-        bytes_reader.extend_from_slice(&[0b00001001]).unwrap();
+        bytes_reader.extend_from_slice(&[0b0000_0001]).unwrap();
+        bytes_reader.extend_from_slice(&[0b0000_0010]).unwrap();
+        bytes_reader.extend_from_slice(&[0b0000_0011]).unwrap();
+        bytes_reader.extend_from_slice(&[0b0000_0100]).unwrap();
+        bytes_reader.extend_from_slice(&[0b0000_0101]).unwrap();
+        bytes_reader.extend_from_slice(&[0b0000_0110]).unwrap();
+        bytes_reader.extend_from_slice(&[0b0000_0111]).unwrap();
+        bytes_reader.extend_from_slice(&[0b0000_1000]).unwrap();
+        bytes_reader.extend_from_slice(&[0b0000_1001]).unwrap();
 
         let mut bits_reader = BitsReader::new(bytes_reader);
 

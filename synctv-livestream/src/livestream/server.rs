@@ -353,7 +353,7 @@ impl LivestreamServer {
                     per_stream_max_bytes,
                 )
                 .with_callbacks(stream_callbacks)
-                .with_cancellation_token(rtmp_session_token.clone());
+                .with_cancellation_token(&rtmp_session_token.clone());
                 let rtmp_handle = tokio::spawn(async move {
                     if let Err(e) = rtmp_server.run().await {
                         error!("RTMP server error: {}", e);

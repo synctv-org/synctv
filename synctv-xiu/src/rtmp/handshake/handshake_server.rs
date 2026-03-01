@@ -250,14 +250,14 @@ impl THandshakeServer for ComplexHandshakeServer {
         key.extend_from_slice(&define::RTMP_SERVER_KEY);
 
         let mut digest_processor = DigestProcessor::new(BytesMut::new(), key);
-        let tmp_key = digest_processor.make_digest(Vec::from(&self.c1_digest[..]))?;
+        let tmp_key = digest_processor.make_digest(&Vec::from(&self.c1_digest[..]))?;
 
         /*generate the digest for s2 data*/
         let mut data: BytesMut = BytesMut::new();
         data.extend_from_slice(&writer.get_current_bytes()[..1504]);
 
         let mut digest_processor_2 = DigestProcessor::new(BytesMut::new(), tmp_key);
-        let digtest = digest_processor_2.make_digest(Vec::from(&data[..]))?;
+        let digtest = digest_processor_2.make_digest(&Vec::from(&data[..]))?;
 
         let content = [data, digtest].concat();
 
@@ -395,14 +395,14 @@ mod tests {
     fn build_c0c1() -> Vec<u8> {
         let mut data = Vec::with_capacity(1 + define::RTMP_HANDSHAKE_SIZE);
         // C0: RTMP version byte
-        data.push(define::RTMP_VERSION as u8);
+        data.push(u8::try_from(define::RTMP_VERSION).expect("REASON"));
         // C1: 4 bytes timestamp + 4 bytes zeros + 1528 bytes random
         let timestamp: u32 = 12345;
         data.extend_from_slice(&timestamp.to_be_bytes());
         data.extend_from_slice(&[0u8; 4]); // version zeros
                                            // Fill remaining 1528 bytes with pattern
         for i in 0..(define::RTMP_HANDSHAKE_SIZE - 8) {
-            data.push((i % 256) as u8);
+            data.push(u8::try_from(i % 256).expect("REASON"));
         }
         data
     }
@@ -462,7 +462,9 @@ mod tests {
         let io = make_io();
         let mut server = SimpleHandshakeServer::new(io);
         // Only provide C0 (1 byte), no C1 data
-        server.extend_data(&[define::RTMP_VERSION as u8]).unwrap();
+        server
+            .extend_data(&[u8::try_from(define::RTMP_VERSION).expect("REASON")])
+            .unwrap();
         server.read_c0().unwrap();
         // C1 requires 1536 bytes but none available
         let result = server.read_c1();
@@ -566,7 +568,9 @@ mod tests {
     fn test_complex_handshake_read_c0() {
         let io = make_io();
         let mut server = ComplexHandshakeServer::new(io);
-        server.extend_data(&[define::RTMP_VERSION as u8]).unwrap();
+        server
+            .extend_data(&[u8::try_from(define::RTMP_VERSION).expect("REASON")])
+            .unwrap();
         assert!(server.read_c0().is_ok());
     }
 

@@ -139,7 +139,7 @@ impl StatisticsCalculate {
         Self { stream, exit }
     }
 
-    async fn calculate(&mut self) {
+    async fn calculate(&self) {
         let stream_statistics_clone = &mut self.stream.lock().await;
 
         stream_statistics_clone.publisher.video.bitrate =

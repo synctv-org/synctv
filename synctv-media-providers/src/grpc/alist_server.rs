@@ -14,7 +14,7 @@ use tonic::{Request, Response, Status};
 
 /// Map Alist errors to appropriate gRPC status codes using the shared mapper.
 fn map_alist_error(context: &str, e: &AlistError) -> Status {
-    map_provider_error(context, &e)
+    map_provider_error(context, e)
 }
 
 /// Alist gRPC server

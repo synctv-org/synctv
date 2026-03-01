@@ -104,9 +104,8 @@ impl HlsStorage for FileStorage {
         let mut deleted = 0;
         let mut entries = fs::read_dir(&dir).await?;
         while let Some(entry) = entries.next_entry().await? {
-            let ft = match entry.file_type().await {
-                Ok(ft) => ft,
-                Err(_) => continue,
+            let Ok(ft) = entry.file_type().await else {
+                continue;
             };
             if ft.is_file() && fs::remove_file(entry.path()).await.is_ok() {
                 deleted += 1;
@@ -137,9 +136,8 @@ impl HlsStorage for FileStorage {
         let mut deleted = 0;
         let mut stream_dirs = fs::read_dir(&app_dir).await?;
         while let Some(stream_entry) = stream_dirs.next_entry().await? {
-            let ft = match stream_entry.file_type().await {
-                Ok(ft) => ft,
-                Err(_) => continue,
+            let Ok(ft) = stream_entry.file_type().await else {
+                continue;
             };
             if !ft.is_dir() {
                 continue;
@@ -147,9 +145,8 @@ impl HlsStorage for FileStorage {
             let stream_dir = stream_entry.path();
             let mut entries = fs::read_dir(&stream_dir).await?;
             while let Some(entry) = entries.next_entry().await? {
-                let ft = match entry.file_type().await {
-                    Ok(ft) => ft,
-                    Err(_) => continue,
+                let Ok(ft) = entry.file_type().await else {
+                    continue;
                 };
                 if ft.is_file() && fs::remove_file(entry.path()).await.is_ok() {
                     deleted += 1;
@@ -176,9 +173,8 @@ impl HlsStorage for FileStorage {
         // Walk base_path/app/stream/files recursively
         let mut app_dirs = fs::read_dir(&self.base_path).await?;
         while let Some(app_entry) = app_dirs.next_entry().await? {
-            let ft = match app_entry.file_type().await {
-                Ok(ft) => ft,
-                Err(_) => continue,
+            let Ok(ft) = app_entry.file_type().await else {
+                continue;
             };
             if !ft.is_dir() {
                 continue;
@@ -186,9 +182,8 @@ impl HlsStorage for FileStorage {
             let app_dir = app_entry.path();
             let mut stream_dirs = fs::read_dir(&app_dir).await?;
             while let Some(stream_entry) = stream_dirs.next_entry().await? {
-                let ft = match stream_entry.file_type().await {
-                    Ok(ft) => ft,
-                    Err(_) => continue,
+                let Ok(ft) = stream_entry.file_type().await else {
+                    continue;
                 };
                 if !ft.is_dir() {
                     continue;
@@ -197,9 +192,8 @@ impl HlsStorage for FileStorage {
                 let mut entries = fs::read_dir(&stream_dir).await?;
                 while let Some(entry) = entries.next_entry().await? {
                     let path = entry.path();
-                    let ft = match entry.file_type().await {
-                        Ok(ft) => ft,
-                        Err(_) => continue,
+                    let Ok(ft) = entry.file_type().await else {
+                        continue;
                     };
                     if !ft.is_file() {
                         continue;

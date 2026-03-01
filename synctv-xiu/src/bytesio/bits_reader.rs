@@ -20,7 +20,7 @@ impl BitsReader {
         }
     }
 
-    pub fn extend_data(&mut self, bytes: BytesMut) -> Result<(), BitError> {
+    pub fn extend_data(&mut self, bytes: &BytesMut) -> Result<(), BitError> {
         self.reader.extend_from_slice(&bytes[..])?;
         Ok(())
     }
@@ -116,7 +116,7 @@ mod tests {
         bytes_reader.extend_from_slice(&[data_0]).unwrap();
         let data_1 = 7u8;
         bytes_reader.extend_from_slice(&[data_1]).unwrap();
-        bytes_reader.extend_from_slice(&[0b00000010]).unwrap();
+        bytes_reader.extend_from_slice(&[0b0000_0010]).unwrap();
 
         let mut bit_reader = BitsReader::new(bytes_reader);
         assert!(bit_reader.read_n_bits(16).unwrap() == 0x207);

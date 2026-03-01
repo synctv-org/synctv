@@ -51,7 +51,7 @@ impl PatMuxer {
         }
     }
 
-    pub fn write(&mut self, pat: Pat) -> Result<BytesMut, MpegTsError> {
+    pub fn write(&mut self, pat: &Pat) -> Result<BytesMut, MpegTsError> {
         /*table id*/
         self.bytes_writer.write_u8(epat_pid::PAT_TID_PAS as u8)?;
 
@@ -78,7 +78,7 @@ impl PatMuxer {
         }
 
         /*crc32*/
-        let crc32_value = crc32::gen_crc32(0xffffffff, self.bytes_writer.get_current_bytes());
+        let crc32_value = crc32::gen_crc32(0xffff_ffff, self.bytes_writer.get_current_bytes());
         self.bytes_writer.write_u32::<LittleEndian>(crc32_value)?;
 
         Ok(self.bytes_writer.extract_current_bytes())
@@ -120,7 +120,7 @@ mod tests {
     fn test_pat_muxer_write_empty_pmt() {
         let mut muxer = PatMuxer::new();
         let pat = Pat::new();
-        let result = muxer.write(pat);
+        let result = muxer.write(&pat);
         assert!(result.is_ok());
         let data = result.unwrap();
         // PAT header: table_id(1) + section_length(2) + transport_stream_id(2) + version(1) + section_nums(2) + crc32(4) = 12 bytes
@@ -145,7 +145,7 @@ mod tests {
             streams: Vec::new(),
         });
 
-        let result = muxer.write(pat);
+        let result = muxer.write(&pat);
         assert!(result.is_ok());
         let data = result.unwrap();
         // PAT header(12) + PMT entry(4) = 16 bytes

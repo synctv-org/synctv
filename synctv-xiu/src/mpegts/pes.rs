@@ -152,13 +152,13 @@ impl PesMuxer {
             let b15 = (stream_data.dts >> 22) as u8; /* DTS 22-29 */
             self.bytes_writer.write_u8(b15)?;
 
-            let b16 =  ((stream_data.dts >> 14) & 0xFE) as u8 /* DTS 15-21 */ | 0x01 /* marker_bit */;
+            let b16 = ((stream_data.dts >> 14) & 0xFE) as u8 /* DTS 15-21 */ | 0x01 /* marker_bit */;
             self.bytes_writer.write_u8(b16)?;
 
             let b17 = (stream_data.dts >> 7) as u8; /* DTS 7-14 */
             self.bytes_writer.write_u8(b17)?;
 
-            let b18 = ((stream_data.dts << 1) as u8 & 0xFE) /* DTS 0-6 */ | 0x01 /* marker_bit */;
+            let b18 = ((stream_data.dts << 1) & 0xFE) as u8 /* DTS 0-6 */ | 0x01 /* marker_bit */;
             self.bytes_writer.write_u8(b18)?;
         }
 
@@ -182,8 +182,7 @@ impl PesMuxer {
         } else {
             self.bytes_writer
                 .write_u8_at(4, (pes_payload_length >> 8) as u8)?;
-            self.bytes_writer
-                .write_u8_at(5, (pes_payload_length) as u8)?;
+            self.bytes_writer.write_u8_at(5, pes_payload_length as u8)?;
         }
 
         Ok(())

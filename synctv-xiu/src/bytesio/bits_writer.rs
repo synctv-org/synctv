@@ -22,7 +22,7 @@ impl BitsWriter {
         }
     }
 
-    pub fn write_bytes(&mut self, data: BytesMut) -> Result<(), BitError> {
+    pub fn write_bytes(&mut self, data: &BytesMut) -> Result<(), BitError> {
         self.writer.write(&data[..])?;
         Ok(())
     }

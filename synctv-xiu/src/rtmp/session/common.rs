@@ -373,12 +373,10 @@ impl Common {
         Ok(())
     }
 
-    fn get_subscriber_info(&mut self) -> SubscriberInfo {
-        let remote_addr = if let Some(addr) = self.remote_addr {
-            addr.to_string()
-        } else {
-            String::from("unknown")
-        };
+    fn get_subscriber_info(&self) -> SubscriberInfo {
+        let remote_addr = self
+            .remote_addr
+            .map_or_else(|| String::from("unknown"), |addr| addr.to_string());
 
         let sub_type = match self.session_type {
             SessionType::Client => SubscribeType::RtmpRelay,
@@ -398,12 +396,10 @@ impl Common {
         }
     }
 
-    fn get_publisher_info(&mut self) -> PublisherInfo {
-        let remote_addr = if let Some(addr) = self.remote_addr {
-            addr.to_string()
-        } else {
-            String::from("unknown")
-        };
+    fn get_publisher_info(&self) -> PublisherInfo {
+        let remote_addr = self
+            .remote_addr
+            .map_or_else(|| String::from("unknown"), |addr| addr.to_string());
 
         let pub_type = match self.session_type {
             SessionType::Client => PublishType::RtmpRelay,

@@ -217,7 +217,7 @@ impl FlvAudioTagDemuxer {
 
         let tag_header = AudioTagHeader::unmarshal(&mut reader)?;
         self.aac_processor
-            .extend_data(reader.extract_remaining_bytes())?;
+            .extend_data(&reader.extract_remaining_bytes())?;
 
         if tag_header.sound_format == SoundFormat::AAC as u8 {
             match tag_header.aac_packet_type {
@@ -286,7 +286,7 @@ impl FlvDemuxer {
         /*stream id*/
         self.bytes_reader.read_u24::<BigEndian>()?;
 
-        let dts: u32 = (timestamp & 0xffffff) | (u32::from(timestamp_ext) << 24);
+        let dts: u32 = (timestamp & 0x00ff_ffff) | (u32::from(timestamp_ext) << 24);
 
         /*data*/
         let body = self.bytes_reader.read_bytes(data_size as usize)?;
@@ -505,7 +505,7 @@ mod tests {
         let tag = result.unwrap();
         if let Some(FlvData::Video { timestamp, .. }) = tag {
             // Expected: (0x123456 & 0xffffff) | (0x78 << 24) = 0x78123456 = 2014734422
-            assert_eq!(timestamp, 0x78123456);
+            assert_eq!(timestamp, 0x7812_3456);
         } else {
             panic!("Expected video tag");
         }

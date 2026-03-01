@@ -199,17 +199,19 @@ impl TNetIO for TcpIO {
     async fn read(&mut self) -> Result<BytesMut, BytesIOError> {
         let message = self.stream.next().await;
 
-        match message {
-            Some(data) => match data {
+        message.map_or_else(
+            || {
+                Err(BytesIOError {
+                    value: BytesIOErrorValue::NoneReturn,
+                })
+            },
+            |data| match data {
                 Ok(bytes) => Ok(bytes),
                 Err(err) => Err(BytesIOError {
                     value: BytesIOErrorValue::IOError(err),
                 }),
             },
-            None => Err(BytesIOError {
-                value: BytesIOErrorValue::NoneReturn,
-            }),
-        }
+        )
     }
 }
 

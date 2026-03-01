@@ -178,7 +178,7 @@ impl HttpFlvSession {
             .write_flv_tag_header(tag_type, data_len, timestamp)
             .map_err(|e| anyhow::anyhow!("Failed to write FLV tag header: {e:?}"))?;
         self.muxer
-            .write_flv_tag_body(data)
+            .write_flv_tag_body(&data)
             .map_err(|e| anyhow::anyhow!("Failed to write FLV tag body: {e:?}"))?;
         self.muxer
             .write_previous_tag_size(data_len + HEADER_LENGTH)
@@ -256,7 +256,7 @@ impl HttpFlvSession {
         Ok(())
     }
 
-    async fn unsubscribe_from_stream_hub(&mut self) -> anyhow::Result<()> {
+    async fn unsubscribe_from_stream_hub(&self) -> anyhow::Result<()> {
         let sub_info = SubscriberInfo {
             id: self.subscriber_id,
             sub_type: SubscribeType::RtmpRemux2HttpFlv,

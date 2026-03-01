@@ -1,7 +1,4 @@
-use {
-    super::errors::NetConnectionError, crate::bytesio::bytes_reader::BytesReader,
-    crate::flv::amf0::amf0_reader::Amf0Reader,
-};
+use {crate::bytesio::bytes_reader::BytesReader, crate::flv::amf0::amf0_reader::Amf0Reader};
 
 #[allow(dead_code)]
 pub struct NetConnectionReader {
@@ -11,7 +8,5 @@ pub struct NetConnectionReader {
 
 impl NetConnectionReader {
     #[allow(dead_code)]
-    const fn onconnect(&mut self) -> Result<(), NetConnectionError> {
-        Ok(())
-    }
+    const fn onconnect(&self) -> () {}
 }

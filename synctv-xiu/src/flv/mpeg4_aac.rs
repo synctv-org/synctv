@@ -99,7 +99,7 @@ impl Mpeg4AacProcessor {
         }
     }
 
-    pub fn extend_data(&mut self, data: BytesMut) -> Result<&mut Self, MpegAacError> {
+    pub fn extend_data(&mut self, data: &BytesMut) -> Result<&mut Self, MpegAacError> {
         self.bytes_reader.extend_from_slice(&data[..])?;
         Ok(self)
     }
@@ -140,7 +140,7 @@ impl Mpeg4AacProcessor {
     pub fn audio_specific_config_load2(&mut self) -> Result<(), MpegAacError> {
         let remain_bytes = self.bytes_reader.extract_remaining_bytes();
         // self.bits_reader.extend_from_bytesmut(remain_bytes);
-        self.bits_reader.extend_data(remain_bytes)?;
+        self.bits_reader.extend_data(&remain_bytes)?;
 
         self.mpeg4_aac.object_type = self.get_audio_object_type()?;
         self.mpeg4_aac.sampling_frequency_index = self.get_sampling_frequency()?;
@@ -321,7 +321,7 @@ impl Mpeg4AacProcessor {
         let mut tag: u64 = 0;
 
         let mut pce_bits_vec = BitsWriter::new(BytesWriter::new());
-        pce_bits_vec.write_bytes(self.mpeg4_aac.pce.clone())?;
+        pce_bits_vec.write_bytes(&self.mpeg4_aac.pce.clone())?;
 
         self.mpeg4_aac.channels = 0;
 
@@ -429,7 +429,7 @@ impl Mpeg4AacProcessor {
     }
 
     pub fn adts_save(&mut self) -> Result<(), MpegAacError> {
-        let id = 0; // 0-MPEG4/1-MPEG2
+        let id = 0u8; // 0-MPEG4/1-MPEG2
         let len = (self.bytes_reader.len() + 7) as u32;
         self.bytes_writer.write_u8(0xFF)?; //0
         self.bytes_writer.write_u8(
@@ -449,7 +449,7 @@ impl Mpeg4AacProcessor {
             .write_u8(((channel_configuration & 0x03) << 6) | ((len >> 11) as u8 & 0x03))?; //3
         self.bytes_writer.write_u8((len >> 3) as u8)?; //4
         self.bytes_writer
-            .write_u8((((len & 0x07) as u8) << 5) | 0x1F)?; //5
+            .write_u8(((len & 0x07) as u8) << 5 | 0x1F)?; //5
         self.bytes_writer.write_u8(0xFC)?; //6
 
         self.bytes_writer

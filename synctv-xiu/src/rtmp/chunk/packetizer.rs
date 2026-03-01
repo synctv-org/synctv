@@ -44,7 +44,7 @@ impl ChunkPacketizer {
             extended_timestamp: None,
         }
     }
-    fn zip_chunk_header(&mut self, chunk_info: &mut ChunkInfo) -> Result<PackResult, PackError> {
+    fn zip_chunk_header(&mut self, chunk_info: &mut ChunkInfo) -> PackResult {
         chunk_info.basic_header.format = 0;
 
         if let Some(pre_header) = self
@@ -93,7 +93,7 @@ impl ChunkPacketizer {
             },
         );
 
-        Ok(PackResult::Success)
+        PackResult::Success
     }
 
     fn write_basic_header(&mut self, fmt: u8, csid: u32) -> Result<(), PackError> {
@@ -118,15 +118,15 @@ impl ChunkPacketizer {
         let message_header_timestamp: u32;
         (self.extended_timestamp, message_header_timestamp) = match basic_header.format {
             0 => {
-                if message_header.timestamp >= 0xFFFFFF {
+                if message_header.timestamp >= 0x00FF_FFFF {
                     message_header.extended_timestamp_type = ExtendTimestampType::FORMAT0;
-                    (Some(message_header.timestamp), 0xFFFFFF)
+                    (Some(message_header.timestamp), 0x00FF_FFFF)
                 } else {
                     (None, message_header.timestamp)
                 }
             }
             1 | 2 => {
-                if message_header.timestamp_delta >= 0xFFFFFF {
+                if message_header.timestamp_delta >= 0x00FF_FFFF {
                     //if use the format1,2's extended timestamp, there may be a problem for
                     //av timestamp.
                     tracing::warn!(
@@ -135,7 +135,7 @@ impl ChunkPacketizer {
                         message_header.timestamp_delta
                     );
                     message_header.extended_timestamp_type = ExtendTimestampType::FORMAT12;
-                    (Some(message_header.timestamp_delta), 0xFFFFFF)
+                    (Some(message_header.timestamp_delta), 0x00FF_FFFF)
                 } else {
                     (None, message_header.timestamp_delta)
                 }
@@ -180,7 +180,7 @@ impl ChunkPacketizer {
     }
 
     pub async fn write_chunk(&mut self, chunk_info: &mut ChunkInfo) -> Result<(), PackError> {
-        self.zip_chunk_header(chunk_info)?;
+        self.zip_chunk_header(chunk_info);
 
         tracing::trace!(
             "write_chunk  current timestamp: {}",

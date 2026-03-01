@@ -273,8 +273,8 @@ impl ChunkUnpacketizer {
     pub fn read_basic_header(&mut self) -> Result<UnpackResult, UnpackError> {
         let byte = self.reader.read_u8()?;
 
-        let format_id = (byte >> 6) & 0b00000011;
-        let mut csid = u32::from(byte & 0b00111111);
+        let format_id = (byte >> 6) & 0b0000_0011;
+        let mut csid = u32::from(byte & 0b0011_1111);
 
         match csid {
             0 => {
@@ -433,7 +433,7 @@ impl ChunkUnpacketizer {
                     }
                 }
 
-                if self.current_message_header().timestamp >= 0xFFFFFF {
+                if self.current_message_header().timestamp >= 0x00FF_FFFF {
                     self.current_message_header().extended_timestamp_type =
                         ExtendTimestampType::FORMAT0;
                 }
@@ -484,7 +484,7 @@ impl ChunkUnpacketizer {
                     }
                 }
 
-                if self.current_message_header().timestamp_delta >= 0xFFFFFF {
+                if self.current_message_header().timestamp_delta >= 0x00FF_FFFF {
                     self.current_message_header().extended_timestamp_type =
                         ExtendTimestampType::FORMAT12;
                 }
@@ -506,7 +506,7 @@ impl ChunkUnpacketizer {
                 self.current_message_header().timestamp_delta =
                     self.reader.read_u24::<BigEndian>()?;
 
-                if self.current_message_header().timestamp_delta >= 0xFFFFFF {
+                if self.current_message_header().timestamp_delta >= 0x00FF_FFFF {
                     self.current_message_header().extended_timestamp_type =
                         ExtendTimestampType::FORMAT12;
                 }
@@ -582,10 +582,11 @@ impl ChunkUnpacketizer {
             "read_message_payload whole msg length: {whole_msg_length} and remaining bytes need to be read: {remaining_bytes}"
         );
 
-        let mut need_read_length = remaining_bytes;
-        if whole_msg_length > self.max_chunk_size {
-            need_read_length = min(remaining_bytes, self.max_chunk_size);
-        }
+        let need_read_length = if whole_msg_length > self.max_chunk_size {
+            min(remaining_bytes, self.max_chunk_size)
+        } else {
+            remaining_bytes
+        };
 
         let remaining_mut = self.current_chunk_info.payload.remaining_mut();
         if need_read_length > remaining_mut {

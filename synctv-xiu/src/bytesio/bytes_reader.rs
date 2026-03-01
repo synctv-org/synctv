@@ -292,7 +292,7 @@ mod tests {
             Self { reader }
         }
 
-        pub fn extend_from_slice(&mut self, data: &[u8]) {
+        pub fn extend_from_slice(&self, data: &[u8]) {
             self.reader.borrow_mut().extend_from_slice(data).unwrap();
         }
     }
@@ -301,7 +301,7 @@ mod tests {
     fn test_struct_rc_refcell() {
         let reader = Rc::new(RefCell::new(BytesReader::new(BytesMut::new())));
 
-        let mut ref_struct = RefStruct::new(reader);
+        let ref_struct = RefStruct::new(reader);
 
         let xs: [u8; 3] = [1, 2, 3];
         ref_struct.extend_from_slice(&xs);

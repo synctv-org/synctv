@@ -117,11 +117,11 @@ impl TsMuxer {
 
         if 0 == self.pat_period || (self.pat_period + define::PAT_PERIOD) <= dts {
             self.pat_period = dts;
-            let pat_data = pat::PatMuxer::new().write(self.pat.clone())?;
+            let pat_data = pat::PatMuxer::new().write(&self.pat.clone())?;
 
             self.write_ts_header_for_pat_pmt(
                 epat_pid::PAT_TID_PAS,
-                pat_data,
+                &pat_data,
                 self.pat_continuity_counter,
             )?;
             self.pat_continuity_counter = (self.pat_continuity_counter + 1) % 16;
@@ -131,7 +131,7 @@ impl TsMuxer {
                 let payload_data = pmt::PmtMuxer::new().write(pmt_data)?;
                 self.write_ts_header_for_pat_pmt(
                     pmt_data.pid,
-                    payload_data,
+                    &payload_data,
                     self.pmt_continuity_counter,
                 )?;
                 self.pmt_continuity_counter = (self.pmt_continuity_counter + 1) % 16;
@@ -147,7 +147,7 @@ impl TsMuxer {
     pub fn write_ts_header_for_pat_pmt(
         &mut self,
         pid: u16,
-        payload: BytesMut,
+        payload: &BytesMut,
         continuity_counter: u8,
     ) -> Result<(), MpegTsError> {
         /*sync byte*/
@@ -393,7 +393,7 @@ impl TsMuxer {
 
     pub fn add_stream(&mut self, codecid: u8, extra_data: BytesMut) -> Result<u16, MpegTsError> {
         if self.pat.pmt.is_empty() {
-            self.add_program(1, BytesMut::new())?;
+            self.add_program(1, &BytesMut::new())?;
         }
 
         self.pmt_add_stream(0, codecid, extra_data)
@@ -439,7 +439,7 @@ impl TsMuxer {
         Ok(self.pid.saturating_sub(1))
     }
 
-    pub fn add_program(&mut self, program_number: u16, info: BytesMut) -> Result<(), MpegTsError> {
+    pub fn add_program(&mut self, program_number: u16, info: &BytesMut) -> Result<(), MpegTsError> {
         for cur_pmt in &self.pat.pmt {
             if cur_pmt.program_number == program_number {
                 return Err(MpegTsError {

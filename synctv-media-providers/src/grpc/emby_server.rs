@@ -16,7 +16,7 @@ use tonic::{Request, Response, Status};
 
 /// Map Emby errors to appropriate gRPC status codes using the shared mapper.
 fn map_emby_error(context: &str, e: &EmbyError) -> Status {
-    map_provider_error(context, &e)
+    map_provider_error(context, e)
 }
 
 /// Emby gRPC server

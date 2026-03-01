@@ -989,8 +989,6 @@ mod websocket_e2e {
                         ProtoCodec::decode_server_message(&bytes).expect("decode server message"),
                     );
                 }
-                Ok(tungstenite::Message::Ping(_)) => continue,
-                Ok(tungstenite::Message::Pong(_)) => continue,
                 Ok(tungstenite::Message::Close(_)) => return None,
                 Err(e) => panic!("WebSocket error: {e}"),
                 _ => continue,
@@ -1027,8 +1025,8 @@ mod websocket_e2e {
         loop {
             let msg = recv_server_message(ws).await?;
             match &msg.message {
-                Some(server_message::Message::UserJoined(_)) => continue,
-                Some(server_message::Message::UserLeft(_)) => continue,
+                Some(server_message::Message::UserJoined(_))
+                | Some(server_message::Message::UserLeft(_)) => continue,
                 _ => return Some(msg),
             }
         }
@@ -1164,7 +1162,7 @@ mod websocket_e2e {
         let result = tokio::time::timeout(std::time::Duration::from_secs(5), ws.next()).await;
 
         match result {
-            Ok(Some(Ok(tungstenite::Message::Close(_))) | None) | Err(_) => {
+            Ok(Some(Ok(tungstenite::Message::Close(_))) | None) | Err(_) | Ok(Some(Err(_))) => {
                 // All acceptable: either received Close frame, stream ended, or timeout
             }
             Ok(Some(Ok(msg))) => {
@@ -1173,9 +1171,6 @@ mod websocket_e2e {
                     !matches!(msg, tungstenite::Message::Binary(_)),
                     "Should not receive new binary messages after close"
                 );
-            }
-            Ok(Some(Err(_))) => {
-                // Connection error after close is acceptable
             }
         }
     }
@@ -1556,10 +1551,7 @@ mod websocket_e2e {
 
         // Should time out (no message received) or return None
         match result {
-            Err(_) => {
-                // Timeout: correct -- user2 did not get room A's message
-            }
-            Ok(None) => {
+            Err(_) | Ok(None) => {
                 // Stream ended: also acceptable (no cross-room leak)
             }
             Ok(Some(msg)) => {
@@ -1699,9 +1691,7 @@ mod websocket_e2e {
         let result = tokio::time::timeout(std::time::Duration::from_secs(5), async {
             loop {
                 match ws2.next().await {
-                    Some(Ok(tungstenite::Message::Close(_))) => return true,
-                    None => return true,
-                    Some(Err(_)) => return true,
+                    Some(Ok(tungstenite::Message::Close(_))) | None | Some(Err(_)) => return true,
                     Some(Ok(tungstenite::Message::Binary(_))) => {
                         // May still receive buffered messages; keep draining
                         continue;
@@ -2435,10 +2425,7 @@ mod websocket_e2e {
         .await;
 
         match result {
-            Ok("error_message") => {
-                // Server sent a proper Error response — correct behaviour
-            }
-            Ok("connection_closed" | "connection_error") => {
+            Ok("error_message") | Ok("connection_closed" | "connection_error") => {
                 // Server closed the connection on invalid input — also acceptable
             }
             Err(_timeout) => {

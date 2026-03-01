@@ -37,7 +37,7 @@ impl DigestProcessor {
     pub fn generate_and_fill_digest(&mut self) -> Result<Vec<u8>, DigestError> {
         let (left_part, _, right_part) = self.cook_raw_message(SchemaVersion::Schema0)?;
         let raw_message = [left_part.clone(), right_part.clone()].concat();
-        let computed_digest = self.make_digest(raw_message)?;
+        let computed_digest = self.make_digest(&raw_message)?;
 
         let result = [left_part, computed_digest, right_part].concat();
 
@@ -47,12 +47,12 @@ impl DigestProcessor {
     pub fn generate_digest(&mut self) -> Result<BytesMut, DigestError> {
         let (left_part, _, right_part) = self.cook_raw_message(SchemaVersion::Schema0)?;
         let raw_message = [left_part, right_part].concat();
-        let digest = self.make_digest(raw_message)?;
+        let digest = self.make_digest(&raw_message)?;
 
         Ok(digest)
     }
 
-    fn find_digest_offset(&mut self, version: SchemaVersion) -> Result<usize, DigestError> {
+    fn find_digest_offset(&self, version: &SchemaVersion) -> Result<usize, DigestError> {
         let mut digest_offset: usize = 0;
 
         match version {
@@ -98,7 +98,7 @@ impl DigestProcessor {
         &mut self,
         version: SchemaVersion,
     ) -> Result<(BytesMut, BytesMut, BytesMut), DigestError> {
-        let digest_offset: usize = self.find_digest_offset(version)?;
+        let digest_offset: usize = self.find_digest_offset(&version)?;
 
         let mut new_reader = BytesReader::new(self.reader.get_remaining_bytes());
 
@@ -108,7 +108,7 @@ impl DigestProcessor {
 
         Ok((left_part, digest_data, right_part))
     }
-    pub fn make_digest(&mut self, raw_message: Vec<u8>) -> Result<BytesMut, DigestError> {
+    pub fn make_digest(&mut self, raw_message: &[u8]) -> Result<BytesMut, DigestError> {
         let mut mac = Hmac::<Sha256>::new_from_slice(&self.key[..]).map_err(|_| DigestError {
             value: DigestErrorValue::HmacInitError,
         })?;
@@ -131,7 +131,7 @@ impl DigestProcessor {
         let (left_part, digest_data, right_part) = self.cook_raw_message(version)?;
         let raw_message = [left_part, right_part].concat();
 
-        let computed_digest = self.make_digest(raw_message)?;
+        let computed_digest = self.make_digest(&raw_message)?;
 
         if digest_data == computed_digest {
             return Ok(digest_data);

@@ -60,7 +60,7 @@ pub async fn json_with_limit<T: serde::de::DeserializeOwned>(
     response: reqwest::Response,
 ) -> Result<T, ProviderClientError> {
     if let Some(cl) = response.content_length() {
-        if cl as usize > MAX_RESPONSE_SIZE {
+        if usize::try_from(cl).map_or(true, |s| s > MAX_RESPONSE_SIZE) {
             return Err(ProviderClientError::ResponseTooLarge { size: cl });
         }
     }

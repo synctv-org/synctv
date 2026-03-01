@@ -1,6 +1,6 @@
 use std::sync::Arc;
 use std::time::Duration;
-use tracing::{error, info, warn};
+use tracing::{info, warn};
 
 #[cfg(feature = "k8s")]
 use synctv_cluster::discovery::K8sDnsDiscovery;
@@ -17,42 +17,43 @@ use synctv_core::Config;
 ///
 /// This is the common code shared between the "`k8s_dns`" and "redis" discovery
 /// branches. Both modes use a Redis-backed `NodeRegistry` for health tracking.
+///
+/// # D1 fix: When cluster is explicitly enabled (`cluster.enabled = true`),
+/// failures are treated as fatal and returned as `Err`. Previously, failures
+/// silently returned `(None, None, None)`, leaving the node in a ghost state
+/// where it believes it's in a cluster but has no registry or heartbeat.
 pub async fn init_cluster_components(
     redis_handles: &RedisHandles,
     cm: &Arc<ClusterManager>,
     config: &Config,
     connection_manager: &ConnectionManager,
-) -> (
-    Option<Arc<NodeRegistry>>,
-    Option<Arc<HealthMonitor>>,
-    Option<Arc<LoadBalancer>>,
-) {
+) -> Result<
+    (
+        Arc<NodeRegistry>,
+        Arc<HealthMonitor>,
+        Arc<LoadBalancer>,
+    ),
+    anyhow::Error,
+> {
     let node_id = cm.node_id().to_string();
     let heartbeat_timeout_secs: i64 = 30;
 
-    let registry = match NodeRegistry::new(
+    let registry = NodeRegistry::new(
         redis_handles.client.clone(),
         node_id.clone(),
         heartbeat_timeout_secs,
         &config.redis.key_prefix,
-    ) {
-        Ok(r) => Arc::new(r),
-        Err(e) => {
-            warn!("Failed to create NodeRegistry: {}", e);
-            return (None, None, None);
-        }
-    };
+    )
+    .map(Arc::new)
+    .map_err(|e| anyhow::anyhow!("Failed to create NodeRegistry: {}", e))?;
 
     let advertise_grpc = config.advertise_grpc_address();
     let advertise_http = config.advertise_http_address();
 
-    if let Err(e) = registry
+    registry
         .register(advertise_grpc.clone(), advertise_http.clone())
         .await
-    {
-        warn!("Failed to register node in Redis: {}", e);
-        return (None, None, None);
-    }
+        .map_err(|e| anyhow::anyhow!("Failed to register node in Redis: {}", e))?;
 
     info!(
         node_id = %node_id,
@@ -87,7 +88,7 @@ pub async fn init_cluster_components(
     );
     info!("Load balancer initialized with LeastConnections strategy");
 
-    (Some(registry), Some(health_monitor), Some(lb))
+    Ok((registry, health_monitor, lb))
 }
 
 /// Initialize cluster discovery infrastructure (`NodeRegistry` + `HealthMonitor` + `LoadBalancer`).
@@ -97,127 +98,131 @@ pub async fn init_cluster_components(
 ///   "`k8s_dns`" - Kubernetes headless service DNS discovery
 ///
 /// Returns (`NodeRegistry`, `HealthMonitor`, `LoadBalancer`, optional DNS refresh handle).
+///
+/// # D1 fix: Returns `Result` instead of silently degrading to `(None, None, None, None)`.
+/// When cluster mode is explicitly enabled, any failure is propagated to the caller
+/// as a fatal error, preventing the node from running in a ghost state.
 pub async fn init_cluster_discovery(
     config: &Config,
     redis_handles: &RedisHandles,
     cm: &Arc<ClusterManager>,
     connection_manager: &ConnectionManager,
-) -> (
-    Option<Arc<NodeRegistry>>,
-    Option<Arc<HealthMonitor>>,
-    Option<Arc<LoadBalancer>>,
-    Option<tokio::task::JoinHandle<()>>,
-) {
+) -> Result<
+    (
+        Option<Arc<NodeRegistry>>,
+        Option<Arc<HealthMonitor>>,
+        Option<Arc<LoadBalancer>>,
+        Option<tokio::task::JoinHandle<()>>,
+    ),
+    anyhow::Error,
+> {
     let discovery_mode = config.cluster.discovery_mode.as_str();
 
     match discovery_mode {
         #[cfg(feature = "k8s")]
         "k8s_dns" => {
             info!("Using K8s DNS discovery mode");
-            match K8sDnsDiscovery::from_env(config.server.grpc_port, config.server.http_port) {
-                Ok(k8s_discovery) => {
-                    // Perform initial DNS resolution
-                    if let Err(e) = k8s_discovery.refresh().await {
-                        warn!("Initial K8s DNS resolution failed (will retry): {}", e);
-                    }
-                    let peers = k8s_discovery.get_peers().await;
-                    info!(
-                        dns_name = %k8s_discovery.dns_name(),
-                        peer_count = peers.len(),
-                        "K8s DNS discovery initialized"
-                    );
+            let k8s_discovery =
+                K8sDnsDiscovery::from_env(config.server.grpc_port, config.server.http_port)
+                    .map_err(|e| {
+                        anyhow::anyhow!(
+                            "Failed to initialize K8s DNS discovery: {}. \
+                             Ensure HEADLESS_SERVICE_NAME and POD_NAMESPACE env vars are set.",
+                            e
+                        )
+                    })?;
 
-                    // Start background refresh loop (re-resolve every 10 seconds)
-                    let dns_refresh_handle = k8s_discovery.start_refresh_loop(10).await;
+            // Perform initial DNS resolution
+            if let Err(e) = k8s_discovery.refresh().await {
+                warn!("Initial K8s DNS resolution failed (will retry): {}", e);
+            }
+            let peers = k8s_discovery.get_peers().await;
+            info!(
+                dns_name = %k8s_discovery.dns_name(),
+                peer_count = peers.len(),
+                "K8s DNS discovery initialized"
+            );
 
-                    let (nr, hm, lb) =
-                        init_cluster_components(redis_handles, cm, config, connection_manager)
-                            .await;
+            // Start background refresh loop (re-resolve every 10 seconds)
+            let dns_refresh_handle = k8s_discovery.start_refresh_loop(10).await;
 
-                    // Bridge: periodically merge DNS-discovered peers into the
-                    // NodeRegistry so HealthMonitor/LoadBalancer see newly-scaled
-                    // pods before they self-register via Redis heartbeat.
-                    if let Some(ref registry) = nr {
-                        let dns = k8s_discovery.clone();
-                        let reg = registry.clone();
-                        let bridge_cancel = cm.cancel_token();
-                        tokio::spawn(async move {
-                            let mut timer = tokio::time::interval(Duration::from_secs(15));
-                            loop {
-                                tokio::select! {
-                                    () = bridge_cancel.cancelled() => {
-                                        info!("K8s DNS -> NodeRegistry sync bridge shutting down");
-                                        return;
-                                    }
-                                    _ = timer.tick() => {
-                                        let dns_peers = dns.get_peers_as_node_info().await;
-                                        if !dns_peers.is_empty() {
-                                            reg.merge_dns_peers(dns_peers).await;
-                                        }
-                                    }
+            let (registry, hm, lb) =
+                init_cluster_components(redis_handles, cm, config, connection_manager).await?;
+
+            // Bridge: periodically merge DNS-discovered peers into the
+            // NodeRegistry so HealthMonitor/LoadBalancer see newly-scaled
+            // pods before they self-register via Redis heartbeat.
+            {
+                let dns = k8s_discovery.clone();
+                let reg = registry.clone();
+                let bridge_cancel = cm.cancel_token();
+                tokio::spawn(async move {
+                    let mut timer = tokio::time::interval(Duration::from_secs(15));
+                    loop {
+                        tokio::select! {
+                            () = bridge_cancel.cancelled() => {
+                                info!("K8s DNS -> NodeRegistry sync bridge shutting down");
+                                return;
+                            }
+                            _ = timer.tick() => {
+                                let dns_peers = dns.get_peers_as_node_info().await;
+                                if !dns_peers.is_empty() {
+                                    reg.merge_dns_peers(dns_peers).await;
                                 }
                             }
-                        });
-                        info!("K8s DNS -> NodeRegistry sync bridge started (15s interval)");
+                        }
                     }
-
-                    (nr, hm, lb, Some(dns_refresh_handle))
-                }
-                Err(e) => {
-                    error!("Failed to initialize K8s DNS discovery: {}", e);
-                    error!("Ensure HEADLESS_SERVICE_NAME and POD_NAMESPACE env vars are set");
-                    (None, None, None, None)
-                }
+                });
+                info!("K8s DNS -> NodeRegistry sync bridge started (15s interval)");
             }
+
+            Ok((
+                Some(registry),
+                Some(hm),
+                Some(lb),
+                Some(dns_refresh_handle),
+            ))
         }
         #[cfg(not(feature = "k8s"))]
-        "k8s_dns" => {
-            error!(
-                "K8s DNS discovery mode requires the 'k8s' feature. \
-                 Rebuild with: cargo build --features k8s"
-            );
-            (None, None, None, None)
-        }
+        "k8s_dns" => Err(anyhow::anyhow!(
+            "K8s DNS discovery mode requires the 'k8s' feature. \
+             Rebuild with: cargo build --features k8s"
+        )),
         "static" => {
             info!("Using static peer discovery mode");
-            let (nr, hm, lb) =
-                init_cluster_components(redis_handles, cm, config, connection_manager).await;
+            let (registry, hm, lb) =
+                init_cluster_components(redis_handles, cm, config, connection_manager).await?;
 
-            // Start static discovery background probe loop if we have a NodeRegistry
-            let static_handle = if let Some(ref registry) = nr {
-                let peer_configs: Vec<StaticPeerConfig> = config
-                    .cluster
-                    .peers
-                    .iter()
-                    .map(|addr| StaticPeerConfig {
-                        grpc_address: addr.clone(),
-                        http_address: None,
-                    })
-                    .collect();
+            // Start static discovery background probe loop
+            let peer_configs: Vec<StaticPeerConfig> = config
+                .cluster
+                .peers
+                .iter()
+                .map(|addr| StaticPeerConfig {
+                    grpc_address: addr.clone(),
+                    http_address: None,
+                })
+                .collect();
 
-                if peer_configs.is_empty() {
-                    warn!("Static discovery mode selected but no peers configured (cluster.peers is empty)");
-                }
+            if peer_configs.is_empty() {
+                warn!("Static discovery mode selected but no peers configured (cluster.peers is empty)");
+            }
 
-                let static_config = StaticDiscoveryConfig {
-                    peers: peer_configs,
-                    probe_interval_secs: 10,
-                    connect_timeout: Duration::from_secs(3),
-                    cluster_secret: config.server.cluster_secret.clone(),
-                    default_http_port: config.server.http_port,
-                };
-
-                let static_discovery =
-                    StaticDiscovery::new(static_config, registry.clone(), cm.cancel_token());
-
-                let handle = static_discovery.start();
-                info!("Static peer discovery started");
-                Some(handle)
-            } else {
-                None
+            let static_config = StaticDiscoveryConfig {
+                peers: peer_configs,
+                probe_interval_secs: 10,
+                connect_timeout: Duration::from_secs(3),
+                cluster_secret: config.server.cluster_secret.clone(),
+                default_http_port: config.server.http_port,
             };
 
-            (nr, hm, lb, static_handle)
+            let static_discovery =
+                StaticDiscovery::new(static_config, registry.clone(), cm.cancel_token());
+
+            let handle = static_discovery.start();
+            info!("Static peer discovery started");
+
+            Ok((Some(registry), Some(hm), Some(lb), Some(handle)))
         }
         _ => {
             // Default: Redis-based discovery
@@ -228,9 +233,9 @@ pub async fn init_cluster_discovery(
                 );
             }
 
-            let (nr, hm, lb) =
-                init_cluster_components(redis_handles, cm, config, connection_manager).await;
-            (nr, hm, lb, None)
+            let (registry, hm, lb) =
+                init_cluster_components(redis_handles, cm, config, connection_manager).await?;
+            Ok((Some(registry), Some(hm), Some(lb), None))
         }
     }
 }

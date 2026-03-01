@@ -16,10 +16,13 @@ async fn start_redis() -> (
 ) {
     use testcontainers::runners::AsyncRunner;
 
-    let container = Redis::default()
-        .start()
-        .await
-        .expect("Failed to start Redis");
+    let container = tokio::time::timeout(
+        std::time::Duration::from_secs(30),
+        Redis::default().start(),
+    )
+    .await
+    .expect("Docker container startup timed out (is Docker running?)")
+    .expect("Failed to start Redis");
     let port = container
         .get_host_port_ipv4(6379)
         .await

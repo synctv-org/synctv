@@ -19,7 +19,11 @@ tokio = { workspace = true, features = ["time"] }
 tracing.workspace = true
 synctv-proto.workspace = true
 synctv-media-providers.workspace = true
+moka = { workspace = true }
 dashmap.workspace = true
+sha2.workspace = true
+hex.workspace = true
+bytes.workspace = true
 
 [dev-dependencies]
 wiremock = { workspace = true }

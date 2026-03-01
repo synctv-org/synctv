@@ -932,3 +932,95 @@ fn test_max_playlist_size_greater_than_batch_limit() {
         "MAX_PLAYLIST_SIZE must exceed single batch limit"
     );
 }
+
+// === E1: publish_room_cache_invalidation helper tests ===
+
+#[test]
+fn test_build_room_cache_invalidation_event_produces_correct_target() {
+    // The helper should produce a CacheInvalidate event targeting the given room
+    use synctv_cluster::sync::{CacheTarget, ClusterEvent};
+
+    let rid = RoomId::from_string("test_room_e1".to_string());
+    let request = super::ClientApiImpl::build_room_cache_invalidation_request(&rid);
+
+    match request.event {
+        ClusterEvent::CacheInvalidate {
+            ref targets,
+            ref event_id,
+            ..
+        } => {
+            assert_eq!(targets.len(), 1, "Should have exactly one cache target");
+            match &targets[0] {
+                CacheTarget::Room { room_id } => {
+                    assert_eq!(room_id, "test_room_e1");
+                }
+                other => panic!("Expected CacheTarget::Room, got {:?}", other),
+            }
+            assert!(
+                !event_id.is_empty(),
+                "event_id should be a non-empty nanoid"
+            );
+        }
+        other => panic!(
+            "Expected ClusterEvent::CacheInvalidate, got {:?}",
+            std::mem::discriminant(&other)
+        ),
+    }
+}
+
+// === A6: Permission calculation in get_joined_rooms tests ===
+
+#[test]
+fn test_joined_rooms_permission_needs_three_layer_calculation() {
+    // This test documents the bug: role.permissions() gives only role-level
+    // defaults, missing room-level and member-level overrides.
+    //
+    // Correct calculation requires:
+    //   1. Global default for role (from SettingsRegistry)
+    //   2. Room-level overrides (room_added / room_removed)
+    //   3. Member-level overrides (added/removed permissions)
+    //
+    // Using role.permissions() directly skips layers 1 (global settings) and 2 (room overrides).
+
+    let mut member = make_test_member(RoomRole::Member);
+    // Give the member custom permission overrides
+    member.added_permissions = 0xFF00;
+    member.removed_permissions = 0x00;
+
+    // role.permissions() ignores member overrides completely
+    let role_only = member.role.permissions();
+    let effective_with_role_only = member.effective_permissions(role_only);
+
+    // The effective permissions should include the added_permissions overlay
+    // which means role-only is NOT sufficient when member has overrides
+    assert_ne!(
+        role_only.0, effective_with_role_only.0,
+        "Member with added_permissions should differ from pure role default"
+    );
+}
+
+#[test]
+fn test_effective_permissions_applies_member_overrides() {
+    // Verify that effective_permissions correctly applies member-level
+    // added and removed permissions on top of the role default
+    let mut member = make_test_member(RoomRole::Member);
+    let base = RoomRole::Member.permissions();
+
+    // Add a specific permission bit
+    member.added_permissions = 0x100;
+    let effective = member.effective_permissions(base);
+    assert!(
+        effective.0 & 0x100 != 0,
+        "Added permission bit should be present in effective permissions"
+    );
+
+    // Remove a specific permission bit that the role default includes
+    member.added_permissions = 0;
+    member.removed_permissions = base.0; // remove ALL role defaults
+    let effective = member.effective_permissions(base);
+    assert_eq!(
+        effective.0 & base.0,
+        0,
+        "All removed permission bits should be cleared"
+    );
+}

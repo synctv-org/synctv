@@ -38,9 +38,12 @@ fn validate_danmaku_content(content: &str) -> Result<(), &'static str> {
     Ok(())
 }
 
-/// Validate danmaku color (mirrors `ChatService::send_danmaku` validation)
+/// Validate danmaku color (mirrors `ChatService::send_danmaku` validation).
+///
+/// Uses `chars().count()` instead of `.len()` to correctly reject
+/// multi-byte UTF-8 strings that happen to have a byte-length of 7.
 fn validate_danmaku_color(color: &str) -> Result<(), &'static str> {
-    if !color.starts_with('#') || color.len() != 7 {
+    if !color.starts_with('#') || color.chars().count() != 7 {
         return Err("Invalid color format");
     }
     if !color[1..].chars().all(|c| c.is_ascii_hexdigit()) {
@@ -166,4 +169,94 @@ fn test_danmaku_color_non_hex_chars_rejected() {
 fn test_danmaku_color_xss_payloads_rejected() {
     assert!(validate_danmaku_color("#<>\"'&;").is_err());
     assert!(validate_danmaku_color("#script").is_err());
+}
+
+/// Test that multi-byte UTF-8 strings with a byte-length of 7 are correctly rejected.
+///
+/// Before the fix, `color.len() != 7` used byte-length, which could pass for a
+/// multi-byte string that happens to be 7 bytes. With `chars().count() != 7`,
+/// we correctly count Unicode characters.
+#[test]
+fn test_danmaku_color_multibyte_utf8_rejected() {
+    // "#" (1 byte) + two 3-byte characters = 7 bytes total, but only 3 chars
+    let multibyte = format!("#{}", "\u{00E9}\u{00E9}"); // "#ee" with accented e's
+    assert_eq!(multibyte.len(), 5); // 1 + 2 + 2 = 5 bytes
+    assert!(
+        validate_danmaku_color(&multibyte).is_err(),
+        "Multi-byte UTF-8 string should be rejected"
+    );
+
+    // A string that is exactly 7 bytes but fewer than 7 chars:
+    // "#" (1 byte) + 2 x 3-byte chars = 7 bytes, 3 chars
+    let tricky = "#\u{4E16}\u{754C}"; // "#" + 2 CJK chars, each 3 bytes
+    assert_eq!(tricky.len(), 7); // 1 + 3 + 3 = 7 bytes
+    assert_eq!(tricky.chars().count(), 3); // only 3 chars
+    assert!(
+        validate_danmaku_color(tricky).is_err(),
+        "String with 7 bytes but 3 chars should be rejected by chars().count()"
+    );
+}
+
+/// Test that the ChatMessage.user_id field is correctly Optional in the model
+#[test]
+fn test_chat_message_user_id_is_optional() {
+    use synctv_core::models::{ChatMessage, RoomId, UserId};
+
+    // ChatMessage::new wraps user_id in Some
+    let msg = ChatMessage::new(
+        RoomId::from_string("room1".to_string()),
+        UserId::from_string("user1".to_string()),
+        "hello".to_string(),
+    );
+    assert_eq!(
+        msg.user_id,
+        Some(UserId::from_string("user1".to_string())),
+        "ChatMessage::new should wrap user_id in Some"
+    );
+
+    // Can construct a ChatMessage with None user_id (simulating deleted user)
+    let orphaned = ChatMessage {
+        id: "test_id_1234".to_string(),
+        room_id: RoomId::from_string("room1".to_string()),
+        user_id: None,
+        content: "orphaned message".to_string(),
+        message_type: 1,
+        created_at: chrono::Utc::now(),
+    };
+    assert!(
+        orphaned.user_id.is_none(),
+        "Orphaned message should have None user_id"
+    );
+}
+
+/// Test DanmakuPosition::as_str returns correct string representations
+#[test]
+fn test_danmaku_position_as_str() {
+    use synctv_core::models::DanmakuPosition;
+
+    assert_eq!(DanmakuPosition::Top.as_str(), "top");
+    assert_eq!(DanmakuPosition::Bottom.as_str(), "bottom");
+    assert_eq!(DanmakuPosition::Scroll.as_str(), "scroll");
+}
+
+/// Test that content at the boundary (exactly 500 chars) is accepted
+/// and content at 501 chars is rejected
+#[test]
+fn test_chat_message_boundary_500_chars() {
+    let at_limit: String = "a".repeat(500);
+    assert!(validate_chat_content(&at_limit).is_ok());
+
+    let over_limit: String = "a".repeat(501);
+    assert!(validate_chat_content(&over_limit).is_err());
+}
+
+/// Test that danmaku content at the boundary (exactly 100 chars) is accepted
+/// and content at 101 chars is rejected
+#[test]
+fn test_danmaku_content_boundary_100_chars() {
+    let at_limit: String = "b".repeat(100);
+    assert!(validate_danmaku_content(&at_limit).is_ok());
+
+    let over_limit: String = "b".repeat(101);
+    assert!(validate_danmaku_content(&over_limit).is_err());
 }

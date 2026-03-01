@@ -1621,7 +1621,7 @@ impl BilibiliClient {
 
                             if !urls.is_empty() {
                                 streams.push(LiveStream {
-                                    quality: quality.expect("REASON"),
+                                    quality: quality.unwrap_or(0),
                                     urls,
                                     desc,
                                 });
@@ -1972,7 +1972,7 @@ pub fn build_auth_packet(room_id: u64, token: &str) -> Vec<u8> {
     let mut packet = Vec::with_capacity(packet_length);
 
     // Header
-    packet.extend_from_slice(&u32::try_from(packet_length).expect("REASON").to_be_bytes());
+    packet.extend_from_slice(&u32::try_from(packet_length).unwrap_or(u32::MAX).to_be_bytes());
     packet.extend_from_slice(&16u16.to_be_bytes()); // header length
     packet.extend_from_slice(&1u16.to_be_bytes()); // protocol version
     packet.extend_from_slice(&7u32.to_be_bytes()); // operation = auth
@@ -2169,7 +2169,7 @@ fn parse_danmaku_cmd(cmd: &str, json: &serde_json::Value) -> DanmakuMessage {
                 return DanmakuMessage::Gift {
                     user,
                     gift_name,
-                    count: count.expect("REASON"),
+                    count: count.unwrap_or(u32::MAX),
                 };
             }
         }
@@ -3300,5 +3300,62 @@ mod tests {
         // Should return None for expired key
         let result = get_valid_wbi_key().await;
         assert!(result.is_none());
+    }
+
+    // ========== B5: .expect("REASON") panic prevention ==========
+
+    #[test]
+    fn test_parse_danmaku_gift_with_huge_count_no_panic() {
+        // The gift count field could exceed u32::MAX, which would cause
+        // u32::try_from().expect("REASON") to panic. After the fix,
+        // it should use unwrap_or(u32::MAX) instead.
+        let json = serde_json::json!({
+            "cmd": "SEND_GIFT",
+            "data": {
+                "uname": "TestUser",
+                "giftName": "TestGift",
+                "num": u64::from(u32::MAX) + 1  // exceeds u32
+            }
+        });
+
+        // This should NOT panic after the fix
+        let result = parse_danmaku_cmd("SEND_GIFT", &json);
+        match result {
+            DanmakuMessage::Gift { count, .. } => {
+                assert_eq!(count, u32::MAX, "Overflow should clamp to u32::MAX");
+            }
+            _ => panic!("Expected Gift message variant"),
+        }
+    }
+
+    #[test]
+    fn test_parse_danmaku_gift_with_normal_count() {
+        let json = serde_json::json!({
+            "cmd": "SEND_GIFT",
+            "data": {
+                "uname": "TestUser",
+                "giftName": "TestGift",
+                "num": 5
+            }
+        });
+
+        let result = parse_danmaku_cmd("SEND_GIFT", &json);
+        match result {
+            DanmakuMessage::Gift { count, .. } => {
+                assert_eq!(count, 5);
+            }
+            _ => panic!("Expected Gift message variant"),
+        }
+    }
+
+    #[test]
+    fn test_build_auth_packet_does_not_panic_on_normal_token() {
+        // build_auth_packet uses u32::try_from(packet_length).expect("REASON")
+        // Normal tokens should work fine
+        let packet = build_auth_packet(12345, "normal_token_value");
+        assert!(!packet.is_empty());
+        // The first 4 bytes encode the packet length as big-endian u32
+        let len = u32::from_be_bytes([packet[0], packet[1], packet[2], packet[3]]);
+        assert_eq!(len as usize, packet.len());
     }
 }

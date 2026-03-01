@@ -35,18 +35,25 @@ struct TestInfra {
 impl TestInfra {
     async fn new() -> Self {
         // Start containers
-        let pg_container = testcontainers_modules::postgres::Postgres::default()
-            .with_user("synctv")
-            .with_password("synctv_test")
-            .with_db_name("synctv_test")
-            .with_tag("16-alpine")
-            .start()
-            .await
-            .expect("Failed to start Postgres");
-        let redis_container = testcontainers_modules::redis::Redis::default()
-            .start()
-            .await
-            .expect("Failed to start Redis");
+        let pg_container = tokio::time::timeout(
+            std::time::Duration::from_secs(30),
+            testcontainers_modules::postgres::Postgres::default()
+                .with_user("synctv")
+                .with_password("synctv_test")
+                .with_db_name("synctv_test")
+                .with_tag("16-alpine")
+                .start(),
+        )
+        .await
+        .expect("Docker container startup timed out (is Docker running?)")
+        .expect("Failed to start Postgres");
+        let redis_container = tokio::time::timeout(
+            std::time::Duration::from_secs(30),
+            testcontainers_modules::redis::Redis::default().start(),
+        )
+        .await
+        .expect("Docker container startup timed out (is Docker running?)")
+        .expect("Failed to start Redis");
 
         // Get mapped ports
         let pg_host = pg_container

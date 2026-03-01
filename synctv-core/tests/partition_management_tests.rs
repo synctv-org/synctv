@@ -71,7 +71,7 @@ async fn test_chat_message_default_partition_routing() {
     let msg = ChatMessage {
         id: nanoid::nanoid!(12),
         room_id: room.id.clone(),
-        user_id: owner.id.clone(),
+        user_id: Some(owner.id.clone()),
         content: "Future message".to_string(),
         message_type: 1,
         created_at: far_future,

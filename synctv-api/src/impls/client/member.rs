@@ -7,10 +7,15 @@ use super::convert::{members_to_proto, proto_role_to_room_role, room_member_to_p
 use super::ClientApiImpl;
 
 impl ClientApiImpl {
+    /// Get room members with pagination (E8 fix).
+    ///
+    /// Uses `get_room_members_paginated` to avoid loading ALL members into memory,
+    /// matching the pattern used by the admin endpoint.
     pub async fn get_room_members(
         &self,
         user_id: &str,
         room_id: &str,
+        req: crate::proto::client::GetRoomMembersRequest,
     ) -> Result<crate::proto::client::GetRoomMembersResponse, ApiError> {
         let uid = UserId::from_string(user_id.to_string());
         let rid = RoomId::from_string(room_id.to_string());
@@ -21,9 +26,19 @@ impl ClientApiImpl {
             .await
             .map_err(|e| ApiError::Authorization(format!("Forbidden: {e}")))?;
 
-        let members = self
+        // E8 fix: Use database-level pagination instead of loading all members
+        // Safely convert i32 to u32 (negative values default to safe values)
+        let page = u32::try_from(req.page).unwrap_or(1);
+        let page_size = u32::try_from(req.page_size)
+            .ok()
+            .filter(|&ps| ps > 0)
+            .map(|ps| ps.min(100))
+            .unwrap_or(50);
+        let pagination = synctv_core::models::PageParams::new(Some(page), Some(page_size));
+
+        let (members, total) = self
             .room_service
-            .get_room_members(&rid)
+            .get_room_members_paginated(&rid, pagination)
             .await
             .map_err(ApiError::from)?;
 
@@ -38,10 +53,9 @@ impl ClientApiImpl {
             self.room_service.permission_service(),
         );
 
-        let total = proto_members.len() as i32;
         Ok(crate::proto::client::GetRoomMembersResponse {
             members: proto_members,
-            total,
+            total: total as i32,
         })
     }
 
@@ -203,10 +217,11 @@ impl ClientApiImpl {
         self.connection_manager
             .disconnect_user_from_room(&target_uid, &rid);
 
-        // Broadcast KickUserFromRoom cluster event so other replicas also disconnect this user
+        // Broadcast KickUserFromRoom cluster event so other replicas also disconnect this user (non-blocking)
         if let Some(ref tx) = self.redis_publish_tx {
-            if let Err(e) = tx
-                .send(synctv_cluster::sync::PublishRequest {
+            crate::impls::try_publish_cluster_event(
+                tx,
+                synctv_cluster::sync::PublishRequest {
                     event: synctv_cluster::sync::ClusterEvent::KickUserFromRoom {
                         event_id: nanoid::nanoid!(16),
                         room_id: rid.clone(),
@@ -214,11 +229,8 @@ impl ClientApiImpl {
                         reason: "kicked".to_string(),
                         timestamp: chrono::Utc::now(),
                     },
-                })
-                .await
-            {
-                tracing::error!(room_id = %rid.as_str(), user_id = %target_uid.as_str(), "Failed to publish KickUserFromRoom cluster event: {e}");
-            }
+                },
+            );
         }
 
         // Notify other replicas to invalidate permission cache
@@ -253,10 +265,11 @@ impl ClientApiImpl {
         self.connection_manager
             .disconnect_user_from_room(&target_uid, &rid);
 
-        // Broadcast KickUserFromRoom cluster event so other replicas also disconnect this user
+        // Broadcast KickUserFromRoom cluster event so other replicas also disconnect this user (non-blocking)
         if let Some(ref tx) = self.redis_publish_tx {
-            if let Err(e) = tx
-                .send(synctv_cluster::sync::PublishRequest {
+            crate::impls::try_publish_cluster_event(
+                tx,
+                synctv_cluster::sync::PublishRequest {
                     event: synctv_cluster::sync::ClusterEvent::KickUserFromRoom {
                         event_id: nanoid::nanoid!(16),
                         room_id: rid.clone(),
@@ -264,11 +277,8 @@ impl ClientApiImpl {
                         reason: "banned".to_string(),
                         timestamp: chrono::Utc::now(),
                     },
-                })
-                .await
-            {
-                tracing::error!(room_id = %rid.as_str(), user_id = %target_uid.as_str(), "Failed to publish KickUserFromRoom cluster event: {e}");
-            }
+                },
+            );
         }
 
         // Notify other replicas to invalidate permission cache

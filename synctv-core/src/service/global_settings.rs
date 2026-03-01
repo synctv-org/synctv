@@ -573,24 +573,94 @@ impl SettingsRegistry {
     #[must_use]
     pub fn to_public_settings(&self) -> PublicSettings {
         PublicSettings {
-            signup_enabled: self.signup_enabled.get().unwrap_or(true),
-            allow_room_creation: self.allow_room_creation.get().unwrap_or(true),
-            max_rooms_per_user: self.max_rooms_per_user.get().unwrap_or(10),
-            max_members_per_room: self.max_members_per_room.get().unwrap_or(100),
-            disable_create_room: self.disable_create_room.get().unwrap_or(false),
-            create_room_need_review: self.create_room_need_review.get().unwrap_or(false),
-            room_ttl: self.room_ttl.get().unwrap_or(172800),
-            room_must_need_pwd: self.room_must_need_pwd.get().unwrap_or(false),
-            room_must_no_need_pwd: self.room_must_no_need_pwd.get().unwrap_or(false),
-            signup_need_review: self.signup_need_review.get().unwrap_or(false),
-            enable_password_signup: self.enable_password_signup.get().unwrap_or(true),
-            enable_guest: self.enable_guest.get().unwrap_or(true),
-            movie_proxy: self.movie_proxy.get().unwrap_or(true),
-            live_proxy: self.live_proxy.get().unwrap_or(true),
-            ts_disguised_as_png: self.ts_disguised_as_png.get().unwrap_or(true),
-            custom_publish_host: self.custom_publish_host.get().unwrap_or_default(),
-            email_whitelist_enabled: self.email_whitelist_enabled.get().unwrap_or(false),
+            signup_enabled: self.get_or_warn("signup_enabled", &self.signup_enabled, true),
+            allow_room_creation: self.get_or_warn(
+                "allow_room_creation",
+                &self.allow_room_creation,
+                true,
+            ),
+            max_rooms_per_user: self.get_or_warn(
+                "max_rooms_per_user",
+                &self.max_rooms_per_user,
+                10,
+            ),
+            max_members_per_room: self.get_or_warn(
+                "max_members_per_room",
+                &self.max_members_per_room,
+                100,
+            ),
+            disable_create_room: self.get_or_warn(
+                "disable_create_room",
+                &self.disable_create_room,
+                false,
+            ),
+            create_room_need_review: self.get_or_warn(
+                "create_room_need_review",
+                &self.create_room_need_review,
+                false,
+            ),
+            room_ttl: self.get_or_warn("room_ttl", &self.room_ttl, 172800),
+            room_must_need_pwd: self.get_or_warn(
+                "room_must_need_pwd",
+                &self.room_must_need_pwd,
+                false,
+            ),
+            room_must_no_need_pwd: self.get_or_warn(
+                "room_must_no_need_pwd",
+                &self.room_must_no_need_pwd,
+                false,
+            ),
+            signup_need_review: self.get_or_warn(
+                "signup_need_review",
+                &self.signup_need_review,
+                false,
+            ),
+            enable_password_signup: self.get_or_warn(
+                "enable_password_signup",
+                &self.enable_password_signup,
+                true,
+            ),
+            enable_guest: self.get_or_warn("enable_guest", &self.enable_guest, true),
+            movie_proxy: self.get_or_warn("movie_proxy", &self.movie_proxy, true),
+            live_proxy: self.get_or_warn("live_proxy", &self.live_proxy, true),
+            ts_disguised_as_png: self.get_or_warn(
+                "ts_disguised_as_png",
+                &self.ts_disguised_as_png,
+                true,
+            ),
+            custom_publish_host: self
+                .custom_publish_host
+                .get()
+                .unwrap_or_else(|e| {
+                    tracing::warn!(
+                        setting = "custom_publish_host",
+                        error = %e,
+                        "Failed to read setting for public settings, using default"
+                    );
+                    String::new()
+                }),
+            email_whitelist_enabled: self.get_or_warn(
+                "email_whitelist_enabled",
+                &self.email_whitelist_enabled,
+                false,
+            ),
         }
+    }
+
+    /// Helper to get a setting value with a warning log on failure.
+    fn get_or_warn<T>(&self, name: &str, setting: &Setting<T>, default: T) -> T
+    where
+        T: Clone + std::fmt::Display + std::str::FromStr + Send + Sync + 'static,
+        <T as std::str::FromStr>::Err: std::error::Error + Send + Sync,
+    {
+        setting.get().unwrap_or_else(|e| {
+            tracing::warn!(
+                setting = name,
+                error = %e,
+                "Failed to read setting for public settings, using default"
+            );
+            default
+        })
     }
 }
 

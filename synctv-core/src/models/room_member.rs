@@ -252,16 +252,25 @@ impl RoomMember {
     }
 
     /// Ban this member from the room
+    ///
+    /// Sets `left_at` to satisfy the DB constraint requiring `left_at IS NOT NULL`
+    /// when `status = Banned`. A banned member is effectively no longer active in
+    /// the room, so `left_at` records when the ban took effect.
     pub fn ban(&mut self, banned_by: UserId, reason: Option<String>) {
+        let now = Utc::now();
         self.status = MemberStatus::Banned;
-        self.banned_at = Some(Utc::now());
+        self.left_at = Some(now);
+        self.banned_at = Some(now);
         self.banned_by = Some(banned_by);
         self.banned_reason = reason;
     }
 
     /// Unban this member
+    ///
+    /// Clears `left_at` since the member is now active again.
     pub fn unban(&mut self) {
         self.status = MemberStatus::Active;
+        self.left_at = None;
         self.banned_at = None;
         self.banned_by = None;
         self.banned_reason = None;
@@ -423,5 +432,65 @@ mod tests {
         let mut banned_member = test_member(RoomRole::Member);
         banned_member.status = MemberStatus::Banned;
         assert!(!banned_member.is_active());
+    }
+
+    // ─── C1: ban() must set left_at ──────────────────────────────────
+
+    #[test]
+    fn test_ban_sets_left_at() {
+        let mut member = test_member(RoomRole::Member);
+        assert!(member.left_at.is_none(), "Precondition: left_at starts as None");
+
+        let banner = UserId("banner".to_string());
+        member.ban(banner.clone(), Some("bad behavior".to_string()));
+
+        assert_eq!(member.status, MemberStatus::Banned);
+        assert!(
+            member.left_at.is_some(),
+            "ban() must set left_at to satisfy DB constraint (left_at IS NOT NULL when status=Banned)"
+        );
+        assert!(member.banned_at.is_some());
+        assert_eq!(member.banned_by, Some(banner));
+        assert_eq!(member.banned_reason, Some("bad behavior".to_string()));
+    }
+
+    #[test]
+    fn test_unban_clears_left_at() {
+        let mut member = test_member(RoomRole::Member);
+        let banner = UserId("banner".to_string());
+        member.ban(banner, None);
+        assert!(member.left_at.is_some(), "Precondition: ban sets left_at");
+
+        member.unban();
+
+        assert_eq!(member.status, MemberStatus::Active);
+        assert!(
+            member.left_at.is_none(),
+            "unban() must clear left_at since user is active again"
+        );
+        assert!(member.banned_at.is_none());
+        assert!(member.banned_by.is_none());
+        assert!(member.banned_reason.is_none());
+    }
+
+    // ─── MemberStatus::Left consistency ──────────────────────────────
+
+    #[test]
+    fn test_leave_sets_status_and_left_at() {
+        let mut member = test_member(RoomRole::Member);
+        assert_eq!(member.status, MemberStatus::Active, "Precondition: starts active");
+        assert!(member.left_at.is_none(), "Precondition: left_at starts as None");
+
+        member.leave();
+
+        assert_eq!(
+            member.status,
+            MemberStatus::Left,
+            "leave() must set status to Left"
+        );
+        assert!(
+            member.left_at.is_some(),
+            "leave() must set left_at timestamp"
+        );
     }
 }

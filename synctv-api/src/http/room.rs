@@ -284,15 +284,28 @@ pub async fn get_playback(
 
 // ==================== Room Members Endpoints ====================
 
-/// Get room members
+/// Pagination query for room members.
+#[derive(serde::Deserialize, Default)]
+pub struct MembersPaginationQuery {
+    page: Option<i32>,
+    page_size: Option<i32>,
+}
+
+/// Get room members (E8: with pagination)
 pub async fn get_room_members(
     auth: AuthUser,
     State(state): State<AppState>,
     Path(room_id): Path<String>,
+    Query(q): Query<MembersPaginationQuery>,
 ) -> AppResult<Json<GetRoomMembersResponse>> {
+    let (page, page_size) = super::validation::validate_pagination(q.page, q.page_size);
     let response = state
         .client_api
-        .get_room_members(&auth.user_id.to_string(), &room_id)
+        .get_room_members(
+            &auth.user_id.to_string(),
+            &room_id,
+            crate::proto::client::GetRoomMembersRequest { page, page_size },
+        )
         .await
         .map_err(super::error::map_api_error)?;
 

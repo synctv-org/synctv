@@ -309,9 +309,14 @@ impl RoomService {
 
     /// Log an audit event if the audit service is configured.
     /// Failures are logged as warnings but never propagated.
+    ///
+    /// The `actor_username` is passed from the caller (API layer) to avoid
+    /// a separate DB lookup. Pass an empty string if the username is not
+    /// available (e.g., in background tasks).
     async fn audit_log(
         &self,
         actor_id: &UserId,
+        actor_username: &str,
         action: AuditAction,
         target_type: AuditTargetType,
         target_id: Option<String>,
@@ -321,7 +326,7 @@ impl RoomService {
             if let Err(e) = audit
                 .log(
                     actor_id.as_str().to_string(),
-                    String::new(),
+                    actor_username.to_string(),
                     action,
                     target_type,
                     target_id,
@@ -976,6 +981,7 @@ impl RoomService {
         // Audit log (preserved - not deleted with room data)
         self.audit_log(
             &user_id,
+            "",
             AuditAction::RoomDeleted,
             AuditTargetType::Room,
             Some(room_id.as_str().to_string()),
@@ -1044,6 +1050,7 @@ impl RoomService {
         // Audit log
         self.audit_log(
             &admin_id,
+            "",
             AuditAction::RoomApproved,
             AuditTargetType::Room,
             Some(room_id.as_str().to_string()),
@@ -1114,6 +1121,7 @@ impl RoomService {
         // Audit log
         self.audit_log(
             &admin_id,
+            "",
             AuditAction::RoomRejected,
             AuditTargetType::Room,
             Some(room_id.as_str().to_string()),
@@ -2275,7 +2283,7 @@ impl RoomService {
         let message = ChatMessage {
             id: nanoid::nanoid!(12),
             room_id,
-            user_id,
+            user_id: Some(user_id),
             content,
             message_type: 1, // text message
             created_at: Utc::now(),

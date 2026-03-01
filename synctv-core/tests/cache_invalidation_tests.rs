@@ -19,10 +19,13 @@ use testcontainers_modules::redis::Redis;
 use tokio::sync::RwLock;
 
 async fn start_redis() -> (testcontainers::ContainerAsync<Redis>, String) {
-    let container = Redis::default()
-        .start()
-        .await
-        .expect("Failed to start Redis");
+    let container = tokio::time::timeout(
+        std::time::Duration::from_secs(30),
+        Redis::default().start(),
+    )
+    .await
+    .expect("Docker container startup timed out (is Docker running?)")
+    .expect("Failed to start Redis");
     let port = container
         .get_host_port_ipv4(6379)
         .await
@@ -428,14 +431,18 @@ async fn test_cache_invalidation_before_commit() {
         service::{InMemoryTokenBlacklistStore, RoomService, UserService},
     };
     // Start PostgreSQL
-    let postgres = Postgres::default()
-        .with_db_name("synctv_test")
-        .with_user("synctv")
-        .with_password("synctv_test")
-        .with_tag("16-alpine")
-        .start()
-        .await
-        .expect("Failed to start Postgres container");
+    let postgres = tokio::time::timeout(
+        std::time::Duration::from_secs(30),
+        Postgres::default()
+            .with_db_name("synctv_test")
+            .with_user("synctv")
+            .with_password("synctv_test")
+            .with_tag("16-alpine")
+            .start(),
+    )
+    .await
+    .expect("Docker container startup timed out (is Docker running?)")
+    .expect("Failed to start Postgres container");
 
     let connection_string = format!(
         "postgresql://synctv:synctv_test@127.0.0.1:{}/synctv_test",
@@ -615,14 +622,18 @@ async fn test_cache_invalidation_rollback_safety() {
         service::{InMemoryTokenBlacklistStore, RoomService, UserService},
     };
     // Start PostgreSQL
-    let postgres = Postgres::default()
-        .with_db_name("synctv_test")
-        .with_user("synctv")
-        .with_password("synctv_test")
-        .with_tag("16-alpine")
-        .start()
-        .await
-        .expect("Failed to start Postgres container");
+    let postgres = tokio::time::timeout(
+        std::time::Duration::from_secs(30),
+        Postgres::default()
+            .with_db_name("synctv_test")
+            .with_user("synctv")
+            .with_password("synctv_test")
+            .with_tag("16-alpine")
+            .start(),
+    )
+    .await
+    .expect("Docker container startup timed out (is Docker running?)")
+    .expect("Failed to start Postgres container");
 
     let connection_string = format!(
         "postgresql://synctv:synctv_test@127.0.0.1:{}/synctv_test",

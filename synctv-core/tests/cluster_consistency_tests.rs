@@ -51,14 +51,18 @@ pub struct TestInfra {
 
 async fn create_test_infra() -> TestInfra {
     // Start PostgreSQL
-    let postgres = Postgres::default()
-        .with_db_name("synctv_test")
-        .with_user("synctv")
-        .with_password("synctv_test")
-        .with_tag("16-alpine")
-        .start()
-        .await
-        .expect("Failed to start Postgres container");
+    let postgres = tokio::time::timeout(
+        std::time::Duration::from_secs(30),
+        Postgres::default()
+            .with_db_name("synctv_test")
+            .with_user("synctv")
+            .with_password("synctv_test")
+            .with_tag("16-alpine")
+            .start(),
+    )
+    .await
+    .expect("Docker container startup timed out (is Docker running?)")
+    .expect("Failed to start Postgres container");
 
     let pg_host = postgres.get_host().await.expect("Failed to get host");
     let pg_port = postgres
@@ -94,10 +98,13 @@ async fn create_test_infra() -> TestInfra {
         .expect("Failed to run migrations");
 
     // Start Redis
-    let redis = Redis::default()
-        .start()
-        .await
-        .expect("Failed to start Redis container");
+    let redis = tokio::time::timeout(
+        std::time::Duration::from_secs(30),
+        Redis::default().start(),
+    )
+    .await
+    .expect("Docker container startup timed out (is Docker running?)")
+    .expect("Failed to start Redis container");
 
     let redis_port = redis
         .get_host_port_ipv4(6379)
@@ -854,10 +861,13 @@ async fn test_cache_consistency_without_redis() {
 // ============================================================================
 
 async fn start_redis() -> (testcontainers::ContainerAsync<Redis>, String) {
-    let container = Redis::default()
-        .start()
-        .await
-        .expect("Failed to start Redis");
+    let container = tokio::time::timeout(
+        std::time::Duration::from_secs(30),
+        Redis::default().start(),
+    )
+    .await
+    .expect("Docker container startup timed out (is Docker running?)")
+    .expect("Failed to start Redis");
     let port = container
         .get_host_port_ipv4(6379)
         .await

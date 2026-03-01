@@ -649,16 +649,25 @@ mod websocket_e2e {
     }
 
     impl TestInfra {
+        /// Applies a 30-second timeout to container startup to fail fast when Docker
+        /// is unavailable (instead of hanging indefinitely).
         async fn new() -> Self {
-            let (pg_container, redis_container) = tokio::join!(
-                Postgres::default()
-                    .with_db_name("synctv_test")
-                    .with_user("synctv")
-                    .with_password("synctv_test")
-                    .with_tag(POSTGRES_VERSION)
-                    .start(),
-                Redis::default().with_tag(REDIS_VERSION).start(),
-            );
+            let (pg_container, redis_container) = tokio::time::timeout(
+                std::time::Duration::from_secs(30),
+                async {
+                    tokio::join!(
+                        Postgres::default()
+                            .with_db_name("synctv_test")
+                            .with_user("synctv")
+                            .with_password("synctv_test")
+                            .with_tag(POSTGRES_VERSION)
+                            .start(),
+                        Redis::default().with_tag(REDIS_VERSION).start(),
+                    )
+                },
+            )
+            .await
+            .expect("Docker container startup timed out (is Docker running?)");
             let pg_container = pg_container.expect("Failed to start Postgres");
             let redis_container = redis_container.expect("Failed to start Redis");
 
@@ -875,6 +884,16 @@ mod websocket_e2e {
             credential_encryption: None,
         };
 
+        let guest_token_validator = Arc::new(
+            synctv_core::service::auth::GuestTokenValidator::new(Arc::new(
+                jwt_service.clone(),
+            ))
+            .with_blacklist(
+                user_service.token_blacklist_store(),
+                user_service.key_builder().clone(),
+            ),
+        );
+
         let state = synctv_api::AppState {
             router_config: Arc::new(router_config),
             rate_limit_config,
@@ -886,6 +905,7 @@ mod websocket_e2e {
                         user_service.key_builder().clone(),
                     ),
             ),
+            guest_token_validator,
             client_api,
             admin_api: None,
             notification_api: None,
@@ -2567,16 +2587,25 @@ mod websocket_connection_limit_timing {
     }
 
     impl TestInfra {
+        /// Applies a 30-second timeout to container startup to fail fast when Docker
+        /// is unavailable (instead of hanging indefinitely).
         async fn new() -> Self {
-            let (pg_container, redis_container) = tokio::join!(
-                Postgres::default()
-                    .with_db_name("synctv_test")
-                    .with_user("synctv")
-                    .with_password("synctv_test")
-                    .with_tag(POSTGRES_VERSION)
-                    .start(),
-                Redis::default().with_tag(REDIS_VERSION).start(),
-            );
+            let (pg_container, redis_container) = tokio::time::timeout(
+                std::time::Duration::from_secs(30),
+                async {
+                    tokio::join!(
+                        Postgres::default()
+                            .with_db_name("synctv_test")
+                            .with_user("synctv")
+                            .with_password("synctv_test")
+                            .with_tag(POSTGRES_VERSION)
+                            .start(),
+                        Redis::default().with_tag(REDIS_VERSION).start(),
+                    )
+                },
+            )
+            .await
+            .expect("Docker container startup timed out (is Docker running?)");
             let pg_container = pg_container.expect("Failed to start Postgres");
             let redis_container = redis_container.expect("Failed to start Redis");
 
@@ -2779,6 +2808,16 @@ mod websocket_connection_limit_timing {
             credential_encryption: None,
         };
 
+        let guest_token_validator = Arc::new(
+            synctv_core::service::auth::GuestTokenValidator::new(Arc::new(
+                jwt_service.clone(),
+            ))
+            .with_blacklist(
+                user_service.token_blacklist_store(),
+                user_service.key_builder().clone(),
+            ),
+        );
+
         let state = synctv_api::AppState {
             router_config: Arc::new(router_config),
             rate_limit_config,
@@ -2790,6 +2829,7 @@ mod websocket_connection_limit_timing {
                         user_service.key_builder().clone(),
                     ),
             ),
+            guest_token_validator,
             client_api,
             admin_api: None,
             notification_api: None,

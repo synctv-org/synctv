@@ -24,11 +24,16 @@ pub struct TestRedis {
 impl TestRedis {
     /// Start a new Redis container for testing.
     /// Waits until Redis is actually accepting connections before returning.
+    /// Applies a 30-second timeout to container startup to fail fast when Docker
+    /// is unavailable (instead of hanging indefinitely).
     pub async fn start() -> Self {
-        let redis_container = Redis::default()
-            .start()
-            .await
-            .expect("Failed to start Redis container");
+        let redis_container = tokio::time::timeout(
+            Duration::from_secs(30),
+            Redis::default().start(),
+        )
+        .await
+        .expect("Docker container startup timed out (is Docker running?)")
+        .expect("Failed to start Redis container");
 
         let redis_host = redis_container
             .get_host()

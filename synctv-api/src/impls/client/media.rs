@@ -287,20 +287,7 @@ impl ClientApiImpl {
             .map_err(|e| ApiError::Internal(format!("Failed to edit media: {e}")))?;
 
         // Invalidate room cache on other replicas so they see updated metadata
-        if let Some(ref tx) = self.redis_publish_tx {
-            crate::impls::try_publish_cluster_event(
-                tx,
-                synctv_cluster::sync::PublishRequest {
-                    event: synctv_cluster::sync::ClusterEvent::CacheInvalidate {
-                        event_id: nanoid::nanoid!(16),
-                        targets: vec![synctv_cluster::sync::CacheTarget::Room {
-                            room_id: rid.as_str().to_string(),
-                        }],
-                        timestamp: chrono::Utc::now(),
-                    },
-                },
-            );
-        }
+        self.publish_room_cache_invalidation(&rid);
 
         Ok(crate::proto::client::EditMediaResponse {
             media: Some(media_to_proto(&media)),
@@ -646,20 +633,7 @@ impl ClientApiImpl {
             .map_err(ApiError::from)?;
 
         // Invalidate room cache on other replicas so they refresh playlist order
-        if let Some(ref tx) = self.redis_publish_tx {
-            crate::impls::try_publish_cluster_event(
-                tx,
-                synctv_cluster::sync::PublishRequest {
-                    event: synctv_cluster::sync::ClusterEvent::CacheInvalidate {
-                        event_id: nanoid::nanoid!(16),
-                        targets: vec![synctv_cluster::sync::CacheTarget::Room {
-                            room_id: rid.as_str().to_string(),
-                        }],
-                        timestamp: chrono::Utc::now(),
-                    },
-                },
-            );
-        }
+        self.publish_room_cache_invalidation(&rid);
 
         Ok(crate::proto::client::ReorderMediaBatchResponse { success: true })
     }
@@ -940,20 +914,7 @@ impl ClientApiImpl {
             .map_err(ApiError::from)?;
 
         // Invalidate room cache on other replicas so they refresh playlist order
-        if let Some(ref tx) = self.redis_publish_tx {
-            crate::impls::try_publish_cluster_event(
-                tx,
-                synctv_cluster::sync::PublishRequest {
-                    event: synctv_cluster::sync::ClusterEvent::CacheInvalidate {
-                        event_id: nanoid::nanoid!(16),
-                        targets: vec![synctv_cluster::sync::CacheTarget::Room {
-                            room_id: rid.as_str().to_string(),
-                        }],
-                        timestamp: chrono::Utc::now(),
-                    },
-                },
-            );
-        }
+        self.publish_room_cache_invalidation(&rid);
 
         Ok(crate::proto::client::SwapMediaResponse { success: true })
     }

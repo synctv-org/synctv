@@ -46,20 +46,7 @@ impl ClientApiImpl {
             .map_err(ApiError::from)?;
 
         // Invalidate room cache on other replicas for playlist structure change
-        if let Some(ref tx) = self.redis_publish_tx {
-            crate::impls::try_publish_cluster_event(
-                tx,
-                synctv_cluster::sync::PublishRequest {
-                    event: synctv_cluster::sync::ClusterEvent::CacheInvalidate {
-                        event_id: nanoid::nanoid!(16),
-                        targets: vec![synctv_cluster::sync::CacheTarget::Room {
-                            room_id: rid.as_str().to_string(),
-                        }],
-                        timestamp: chrono::Utc::now(),
-                    },
-                },
-            );
-        }
+        self.publish_room_cache_invalidation(&rid);
 
         let item_count = self
             .room_service
@@ -115,20 +102,7 @@ impl ClientApiImpl {
             .map_err(ApiError::from)?;
 
         // Invalidate room cache on other replicas for playlist update
-        if let Some(ref tx) = self.redis_publish_tx {
-            crate::impls::try_publish_cluster_event(
-                tx,
-                synctv_cluster::sync::PublishRequest {
-                    event: synctv_cluster::sync::ClusterEvent::CacheInvalidate {
-                        event_id: nanoid::nanoid!(16),
-                        targets: vec![synctv_cluster::sync::CacheTarget::Room {
-                            room_id: rid.as_str().to_string(),
-                        }],
-                        timestamp: chrono::Utc::now(),
-                    },
-                },
-            );
-        }
+        self.publish_room_cache_invalidation(&rid);
 
         let item_count = self
             .room_service
@@ -166,20 +140,7 @@ impl ClientApiImpl {
             .map_err(ApiError::from)?;
 
         // Invalidate room cache on other replicas for playlist deletion
-        if let Some(ref tx) = self.redis_publish_tx {
-            crate::impls::try_publish_cluster_event(
-                tx,
-                synctv_cluster::sync::PublishRequest {
-                    event: synctv_cluster::sync::ClusterEvent::CacheInvalidate {
-                        event_id: nanoid::nanoid!(16),
-                        targets: vec![synctv_cluster::sync::CacheTarget::Room {
-                            room_id: rid.as_str().to_string(),
-                        }],
-                        timestamp: chrono::Utc::now(),
-                    },
-                },
-            );
-        }
+        self.publish_room_cache_invalidation(&rid);
 
         Ok(crate::proto::client::DeletePlaylistResponse { success: true })
     }

@@ -99,6 +99,8 @@ pub struct AppState {
     pub jwt_validator: Arc<synctv_core::service::auth::JwtValidator>,
     /// Shared security pipeline for post-JWT checks (password, user status)
     pub security_pipeline: Arc<synctv_core::service::SecurityPipeline>,
+    /// Shared guest token validator (JWT + blacklist check)
+    pub guest_token_validator: Arc<synctv_core::service::auth::GuestTokenValidator>,
     // Unified API implementation layer
     pub client_api: Arc<crate::impls::ClientApiImpl>,
     pub admin_api: Option<Arc<crate::impls::AdminApiImpl>>,
@@ -233,11 +235,25 @@ fn build_app_state(config: RouterConfig) -> AppState {
     ));
     let emby_api = Arc::new(crate::impls::EmbyApiImpl::new(config.emby_provider.clone()));
 
+    // B1: Create shared GuestTokenValidator with blacklist support
+    // This ensures guest tokens are checked against the blacklist (for kicked guests)
+    // instead of only verifying the JWT signature.
+    let guest_token_validator = Arc::new(
+        synctv_core::service::auth::GuestTokenValidator::new(Arc::new(
+            config.jwt_service.clone(),
+        ))
+        .with_blacklist(
+            config.user_service.token_blacklist_store(),
+            config.user_service.key_builder().clone(),
+        ),
+    );
+
     AppState {
         router_config: Arc::new(config),
         rate_limit_config,
         jwt_validator,
         security_pipeline,
+        guest_token_validator,
         client_api,
         admin_api,
         notification_api,

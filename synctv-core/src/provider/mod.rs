@@ -169,8 +169,37 @@ pub fn build_playback_cache_key(key_prefix: &str, provider_name: &str, identifie
 
 /// Build a fallback cache key for unknown/invalid provider configurations.
 ///
-/// Returns a cache key that won't match any valid configuration but still
-/// follows the expected format.
+/// Includes a SHA256 hash of the `source_config` to prevent cache pollution
+/// when multiple different invalid configs share the same provider name.
+///
+/// # Arguments
+///
+/// * `key_prefix` - The cache key prefix
+/// * `provider_name` - The provider name
+/// * `source_config` - The raw source config value (used for unique hashing)
+///
+/// # Returns
+///
+/// A cache key string: `{key_prefix}:playback:{provider}:unknown:{sha256_hash}`
+#[must_use]
+pub fn build_unknown_cache_key_with_config(
+    key_prefix: &str,
+    provider_name: &str,
+    source_config: &serde_json::Value,
+) -> String {
+    use sha2::{Digest, Sha256};
+    format!(
+        "{}:playback:{}:unknown:{:x}",
+        key_prefix,
+        provider_name,
+        Sha256::digest(source_config.to_string().as_bytes())
+    )
+}
+
+/// Build a fallback cache key for unknown/invalid provider configurations.
+///
+/// **Deprecated**: prefer [`build_unknown_cache_key_with_config`] which includes
+/// config hashing to prevent cache pollution across different invalid configs.
 ///
 /// # Arguments
 ///
@@ -276,7 +305,39 @@ mod tests {
         let key1 = build_unknown_cache_key("prefix", "alist");
         let key2 = build_unknown_cache_key("prefix", "emby");
         assert_ne!(key1, key2);
-        assert!(key1.ends_with(":alist:unknown"));
-        assert!(key2.ends_with(":emby:unknown"));
+        assert!(key1.contains(":alist:"));
+        assert!(key2.contains(":emby:"));
+    }
+
+    // ========== A7: build_unknown_cache_key collision prevention ==========
+
+    #[test]
+    fn test_build_unknown_cache_key_different_configs_different_keys() {
+        // Two different invalid configs should produce different cache keys
+        // to prevent cache pollution (one user's error polluting another's cache).
+        let config1 = serde_json::json!({"host": "https://a.com", "invalid": true});
+        let config2 = serde_json::json!({"host": "https://b.com", "invalid": true});
+
+        let key1 = build_unknown_cache_key_with_config("prefix", "emby", &config1);
+        let key2 = build_unknown_cache_key_with_config("prefix", "emby", &config2);
+
+        assert_ne!(
+            key1, key2,
+            "Different invalid configs must produce different cache keys"
+        );
+    }
+
+    #[test]
+    fn test_build_unknown_cache_key_same_config_same_key() {
+        // Same invalid config should produce the same cache key (deterministic)
+        let config = serde_json::json!({"host": "https://a.com", "invalid": true});
+
+        let key1 = build_unknown_cache_key_with_config("prefix", "emby", &config);
+        let key2 = build_unknown_cache_key_with_config("prefix", "emby", &config);
+
+        assert_eq!(
+            key1, key2,
+            "Same invalid config must produce same cache key"
+        );
     }
 }

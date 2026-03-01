@@ -10,6 +10,7 @@ CREATE TABLE IF NOT EXISTS chat_messages (
     created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (id, created_at),  -- Partition key must be in PK
     CONSTRAINT chat_messages_message_type_check CHECK (message_type BETWEEN 1 AND 3),
+    CONSTRAINT chat_messages_content_length_check CHECK (length(content) <= 10000),
     FOREIGN KEY (room_id) REFERENCES rooms(id) ON DELETE CASCADE,
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL
 ) PARTITION BY RANGE (created_at);

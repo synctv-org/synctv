@@ -178,17 +178,19 @@ impl MediaProvider for AlistProvider {
             _ => ProviderError::InvalidUrl(e.to_string()),
         })?;
 
-        // Validate path is not empty and doesn't contain path traversal
+        // Validate path is not empty and doesn't contain path traversal.
+        // Uses the shared validate_path_for_traversal which handles URL-encoded
+        // variants (%2e%2e, %252e%252e), backslash traversal, null bytes, etc.
         if config.path.is_empty() {
             return Err(ProviderError::InvalidConfig(
                 "Alist path must not be empty".to_string(),
             ));
         }
-        if config.path.contains("..") {
-            return Err(ProviderError::InvalidConfig(
-                "Alist path must not contain path traversal (..)".to_string(),
-            ));
-        }
+        validate_path_for_traversal(&config.path).map_err(|e| {
+            ProviderError::InvalidConfig(format!(
+                "Alist path must not contain path traversal: {e}"
+            ))
+        })?;
 
         // Validate token is non-empty
         if config.token.is_empty() {
@@ -248,6 +250,13 @@ impl MediaProvider for AlistProvider {
                 ProviderError::InvalidUrl(format!("SSRF protection: {msg}"))
             }
             _ => ProviderError::InvalidUrl(e.to_string()),
+        })?;
+
+        // Re-validate path at request time (defense-in-depth against traversal)
+        validate_path_for_traversal(&config.path).map_err(|e| {
+            ProviderError::InvalidConfig(format!(
+                "Alist path must not contain path traversal: {e}"
+            ))
         })?;
 
         // Get appropriate client based on instance_name from config
@@ -407,7 +416,7 @@ impl MediaProvider for AlistProvider {
             let identifier = format!("{}:{}:{}", config.host, config.token, config.path);
             super::build_playback_cache_key(ctx.key_prefix, "alist", &identifier)
         } else {
-            super::build_unknown_cache_key(ctx.key_prefix, "alist")
+            super::build_unknown_cache_key_with_config(ctx.key_prefix, "alist", source_config)
         }
     }
 
@@ -820,11 +829,12 @@ mod tests {
                 "Alist path must not be empty".to_string(),
             ));
         }
-        if config.path.contains("..") {
-            return Err(ProviderError::InvalidConfig(
-                "Alist path must not contain path traversal (..)".to_string(),
-            ));
-        }
+        // Use the shared validate_path_for_traversal (matches actual impl)
+        validate_path_for_traversal(&config.path).map_err(|e| {
+            ProviderError::InvalidConfig(format!(
+                "Alist path must not contain path traversal: {e}"
+            ))
+        })?;
         if config.token.is_empty() {
             return Err(ProviderError::InvalidConfig(
                 "Alist token must not be empty".to_string(),
@@ -1058,5 +1068,54 @@ mod tests {
 
         // Should be allowed without encryption since no sensitive data
         assert!(!has_sensitive_credentials(&config_without_token));
+    }
+
+    // ========== B6: Alist URL-encoded path traversal ==========
+
+    #[test]
+    fn test_alist_url_encoded_path_traversal_rejected() {
+        // The current Alist validation only checks for literal ".."
+        // but URL-encoded traversal like "%2e%2e/" should also be caught.
+        // After the fix, validate_source_config should use the shared
+        // validate_path_for_traversal function.
+
+        // URL-encoded .. (%2e%2e)
+        assert!(
+            validate_path_for_traversal("%2e%2e/etc/passwd").is_err(),
+            "URL-encoded dot-dot must be rejected by validate_path_for_traversal"
+        );
+
+        // Mixed case
+        assert!(
+            validate_path_for_traversal("%2E%2E/secret").is_err(),
+            "Uppercase URL-encoded dot-dot must be rejected"
+        );
+
+        // Double-encoded
+        assert!(
+            validate_path_for_traversal("%252e%252e/etc").is_err(),
+            "Double-encoded traversal must be rejected"
+        );
+    }
+
+    #[test]
+    fn test_alist_validate_config_uses_shared_path_traversal_check() {
+        // After the fix, the Alist validate_source_config should use
+        // validate_path_for_traversal instead of simple contains("..")
+
+        // This config uses URL-encoded traversal: %2e%2e/etc/passwd
+        let config = json!({
+            "host": "https://alist.example.com",
+            "token": "my-token",
+            "path": "/media/%2e%2e/etc/passwd"
+        });
+
+        // After the fix, the config should be rejected
+        let parsed = AlistSourceConfig::try_from(&config).unwrap();
+        let result = validate_path_for_traversal(&parsed.path);
+        assert!(
+            result.is_err(),
+            "Alist path with URL-encoded traversal must be rejected"
+        );
     }
 }

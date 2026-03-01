@@ -37,14 +37,18 @@ pub type TestContainer = ContainerAsync<Postgres>;
 /// }
 /// ```
 pub async fn create_test_pool() -> (TestContainer, PgPool) {
-    let postgres = Postgres::default()
-        .with_db_name("synctv_test")
-        .with_user("synctv")
-        .with_password("synctv_test")
-        .with_tag(POSTGRES_VERSION)
-        .start()
-        .await
-        .expect("Failed to start Postgres container");
+    let postgres = tokio::time::timeout(
+        std::time::Duration::from_secs(30),
+        Postgres::default()
+            .with_db_name("synctv_test")
+            .with_user("synctv")
+            .with_password("synctv_test")
+            .with_tag(POSTGRES_VERSION)
+            .start(),
+    )
+    .await
+    .expect("Docker container startup timed out (is Docker running?)")
+    .expect("Failed to start Postgres container");
 
     let connection_string = format!(
         "postgresql://synctv:synctv_test@127.0.0.1:{}/synctv_test",
@@ -98,14 +102,18 @@ pub async fn create_test_pool() -> (TestContainer, PgPool) {
 /// let (_container, pool) = create_test_pool_with_db("my_test_db").await;
 /// ```
 pub async fn create_test_pool_with_db(db_name: &str) -> (TestContainer, PgPool) {
-    let postgres = Postgres::default()
-        .with_db_name(db_name)
-        .with_user("synctv")
-        .with_password("synctv_test")
-        .with_tag(POSTGRES_VERSION)
-        .start()
-        .await
-        .expect("Failed to start Postgres container");
+    let postgres = tokio::time::timeout(
+        std::time::Duration::from_secs(30),
+        Postgres::default()
+            .with_db_name(db_name)
+            .with_user("synctv")
+            .with_password("synctv_test")
+            .with_tag(POSTGRES_VERSION)
+            .start(),
+    )
+    .await
+    .expect("Docker container startup timed out (is Docker running?)")
+    .expect("Failed to start Postgres container");
 
     let connection_string = format!(
         "postgresql://synctv:synctv_test@127.0.0.1:{}/{}",

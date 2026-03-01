@@ -248,9 +248,14 @@ impl MemberService {
 
     /// Log an audit event if the audit service is configured.
     /// Failures are logged as warnings but never propagated.
+    ///
+    /// The `actor_username` is passed from the caller (API layer) to avoid
+    /// a separate DB lookup. Pass an empty string if the username is not
+    /// available (e.g., in background tasks).
     async fn audit_log(
         &self,
         actor_id: &UserId,
+        actor_username: &str,
         action: AuditAction,
         target_type: AuditTargetType,
         target_id: Option<String>,
@@ -260,7 +265,7 @@ impl MemberService {
             if let Err(e) = audit
                 .log(
                     actor_id.as_str().to_string(),
-                    String::new(), // username not available at service layer
+                    actor_username.to_string(),
                     action,
                     target_type,
                     target_id,
@@ -443,6 +448,7 @@ impl MemberService {
         // Audit log
         self.audit_log(
             &kicker_id,
+            "",
             AuditAction::MemberKicked,
             AuditTargetType::Member,
             Some(target_user_id.as_str().to_string()),
@@ -518,6 +524,7 @@ impl MemberService {
         // Audit log
         self.audit_log(
             &granter_id,
+            "",
             AuditAction::MemberPermissionUpdated,
             AuditTargetType::Member,
             Some(target_user_id.as_str().to_string()),
@@ -566,6 +573,7 @@ impl MemberService {
         // Audit log
         self.audit_log(
             &granter_id,
+            "",
             AuditAction::PermissionGranted,
             AuditTargetType::Member,
             Some(target_user_id.as_str().to_string()),
@@ -613,6 +621,7 @@ impl MemberService {
         // Audit log
         self.audit_log(
             &granter_id,
+            "",
             AuditAction::PermissionRevoked,
             AuditTargetType::Member,
             Some(target_user_id.as_str().to_string()),
@@ -811,6 +820,7 @@ impl MemberService {
         // Audit log
         self.audit_log(
             &admin_id,
+            "",
             AuditAction::MemberBanned,
             AuditTargetType::Member,
             Some(target_user_id.as_str().to_string()),
@@ -853,6 +863,7 @@ impl MemberService {
         // Audit log
         self.audit_log(
             &admin_id,
+            "",
             AuditAction::MemberUnbanned,
             AuditTargetType::Member,
             Some(target_user_id.as_str().to_string()),
@@ -935,6 +946,7 @@ impl MemberService {
         // Audit log
         self.audit_log(
             &creator_id,
+            "",
             AuditAction::MemberRoleUpdated,
             AuditTargetType::Member,
             Some(target_user_id.as_str().to_string()),
@@ -999,6 +1011,7 @@ impl MemberService {
         // Audit log
         self.audit_log(
             &admin_id,
+            "",
             AuditAction::MemberStatusUpdated,
             AuditTargetType::Member,
             Some(target_user_id.as_str().to_string()),

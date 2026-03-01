@@ -371,7 +371,7 @@ pub async fn serve(grpc_config: GrpcServerConfig<'_>) -> anyhow::Result<()> {
             user_service.token_blacklist_store(),
             user_service.key_builder().clone(),
         );
-    let blacklist_layer = blacklist_layer::BlacklistCheckLayer::new(jwt_service, security_pipeline);
+    let blacklist_layer = blacklist_layer::BlacklistCheckLayer::new(jwt_service.clone(), security_pipeline);
     // Distributed rate limiting layer: uses Redis when available (shared across
     // replicas), falls back to in-memory governor when Redis is unavailable.
     // Determines tier per-request from the gRPC service path.
@@ -612,6 +612,15 @@ pub async fn serve(grpc_config: GrpcServerConfig<'_>) -> anyhow::Result<()> {
                         user_service.token_blacklist_store(),
                         user_service.key_builder().clone(),
                     ),
+            ),
+            guest_token_validator: Arc::new(
+                synctv_core::service::auth::GuestTokenValidator::new(Arc::new(
+                    jwt_service.clone(),
+                ))
+                .with_blacklist(
+                    user_service.token_blacklist_store(),
+                    user_service.key_builder().clone(),
+                ),
             ),
             client_api: client_api.clone(),
             admin_api: None,

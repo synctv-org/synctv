@@ -34,10 +34,13 @@ async fn setup_redis() -> (
     redis::Client,
     redis::aio::ConnectionManager,
 ) {
-    let redis_container = Redis::default()
-        .start()
-        .await
-        .expect("Failed to start Redis container");
+    let redis_container = tokio::time::timeout(
+        Duration::from_secs(30),
+        Redis::default().start(),
+    )
+    .await
+    .expect("Docker container startup timed out (is Docker running?)")
+    .expect("Failed to start Redis container");
 
     let redis_host = redis_container
         .get_host()

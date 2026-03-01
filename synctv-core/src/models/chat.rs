@@ -7,7 +7,10 @@ use super::id::{RoomId, UserId};
 pub struct ChatMessage {
     pub id: String, // nanoid(12)
     pub room_id: RoomId,
-    pub user_id: UserId,
+    /// The user who sent this message.
+    ///
+    /// `None` when the original author has been deleted (`ON DELETE SET NULL`).
+    pub user_id: Option<UserId>,
     pub content: String,
     /// Message type: 1=text, 2=system, 3=action
     pub message_type: i16,
@@ -20,7 +23,7 @@ impl ChatMessage {
         Self {
             id: super::id::generate_id(),
             room_id,
-            user_id,
+            user_id: Some(user_id),
             content,
             message_type: 1, // default: text
             created_at: Utc::now(),
@@ -67,6 +70,20 @@ pub enum DanmakuPosition {
     Top = 0,
     Bottom = 1,
     Scroll = 2,
+}
+
+impl DanmakuPosition {
+    /// Returns the string representation used by the notification service.
+    ///
+    /// These strings match the `RoomEvent::Danmaku.position` field convention.
+    #[must_use]
+    pub const fn as_str(&self) -> &'static str {
+        match self {
+            Self::Top => "top",
+            Self::Bottom => "bottom",
+            Self::Scroll => "scroll",
+        }
+    }
 }
 
 impl DanmakuMessage {

@@ -410,17 +410,28 @@ impl MediaProvider for BilibiliProvider {
                     cid,
                     cookies: sanitized_cookies.clone(),
                 };
-                if let Ok(subtitle_resp) = client.get_subtitles(subtitle_request).await {
-                    subtitles = subtitle_resp
-                        .subtitles
-                        .into_iter()
-                        .map(|(name, url)| SubtitleTrack {
-                            language: name.clone(),
-                            name,
-                            url,
-                            format: "json".to_string(),
-                        })
-                        .collect();
+                match client.get_subtitles(subtitle_request).await {
+                    Ok(subtitle_resp) => {
+                        subtitles = subtitle_resp
+                            .subtitles
+                            .into_iter()
+                            .map(|(name, url)| SubtitleTrack {
+                                language: name.clone(),
+                                name,
+                                url,
+                                format: "json".to_string(),
+                            })
+                            .collect();
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            bvid = %bvid,
+                            aid = %aid,
+                            cid = %cid,
+                            error = %e,
+                            "Failed to fetch Bilibili subtitles for video, continuing without subtitles"
+                        );
+                    }
                 }
 
                 // Store DASH duration metadata
@@ -484,17 +495,27 @@ impl MediaProvider for BilibiliProvider {
                     cid,
                     cookies: sanitized_cookies.clone(),
                 };
-                if let Ok(subtitle_resp) = client.get_subtitles(subtitle_request).await {
-                    subtitles = subtitle_resp
-                        .subtitles
-                        .into_iter()
-                        .map(|(name, url)| SubtitleTrack {
-                            language: name.clone(),
-                            name,
-                            url,
-                            format: "json".to_string(),
-                        })
-                        .collect();
+                match client.get_subtitles(subtitle_request).await {
+                    Ok(subtitle_resp) => {
+                        subtitles = subtitle_resp
+                            .subtitles
+                            .into_iter()
+                            .map(|(name, url)| SubtitleTrack {
+                                language: name.clone(),
+                                name,
+                                url,
+                                format: "json".to_string(),
+                            })
+                            .collect();
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            epid = %epid,
+                            cid = %cid,
+                            error = %e,
+                            "Failed to fetch Bilibili subtitles for PGC content, continuing without subtitles"
+                        );
+                    }
                 }
 
                 // Store DASH duration metadata
@@ -556,10 +577,12 @@ impl MediaProvider for BilibiliProvider {
                 let live_expires_at = Some(Utc::now().timestamp() + 120);
 
                 for stream in live_resp.live_streams {
+                    // Append the quality code to the key to prevent collisions
+                    // when multiple streams share the same description string.
                     let quality_name = if stream.desc.is_empty() {
                         format!("quality_{}", stream.quality)
                     } else {
-                        stream.desc
+                        format!("{}_{}", stream.desc, stream.quality)
                     };
                     playback_infos.insert(
                         quality_name,
@@ -763,7 +786,7 @@ impl MediaProvider for BilibiliProvider {
             let full_id = format!("{identifier}:{user_hash}");
             super::build_playback_cache_key(ctx.key_prefix, "bilibili", &full_id)
         } else {
-            super::build_unknown_cache_key(ctx.key_prefix, "bilibili")
+            super::build_unknown_cache_key_with_config(ctx.key_prefix, "bilibili", source_config)
         }
     }
 }

@@ -157,7 +157,14 @@ impl SyncTvServer {
                                     reason = %reason,
                                     "Received cluster-wide stream kick"
                                 );
-                                let _ = infra.kick_publisher(room_id.as_str(), media_id.as_str());
+                                if let Err(e) = infra.kick_publisher(room_id.as_str(), media_id.as_str()) {
+                                    warn!(
+                                        room_id = %room_id.as_str(),
+                                        media_id = %media_id.as_str(),
+                                        error = %e,
+                                        "Failed to kick publisher from StreamHub"
+                                    );
+                                }
                             }
                             ClusterEvent::KickUser {
                                 user_id, reason, ..
@@ -215,34 +222,45 @@ impl SyncTvServer {
         let _ = shutdown_tx.send(true);
         cleanup_cancel.cancel();
 
-        // Wait for gRPC and HTTP servers to finish with a timeout
-        let drain_timeout = self.config.server.shutdown_drain_timeout_seconds;
+        // D6 fix: Track total shutdown start time to compute remaining budget for
+        // each phase. The total drain budget is `shutdown_drain_timeout_seconds`.
+        // Previously, both HTTP drain and connection drain each used the full
+        // timeout, potentially exceeding K8s grace period (2x the configured value).
+        let shutdown_start = tokio::time::Instant::now();
+        let total_drain_budget = Duration::from_secs(self.config.server.shutdown_drain_timeout_seconds);
+
+        // Phase 1: Wait for gRPC and HTTP servers to finish (use 60% of budget).
+        let http_drain_budget = total_drain_budget * 60 / 100;
         info!(
             "Waiting up to {}s for gRPC and HTTP servers to shut down...",
-            drain_timeout
+            http_drain_budget.as_secs()
         );
-        let _ = tokio::time::timeout(Duration::from_secs(drain_timeout), async {
+        let _ = tokio::time::timeout(http_drain_budget, async {
             let _ = grpc_handle.await;
             let _ = http_handle.await;
         })
         .await;
         info!("gRPC and HTTP servers shut down");
 
-        // Drain active connections BEFORE shutting down the cluster manager.
+        // Phase 2: Drain active connections BEFORE shutting down the cluster manager.
         // Events generated during drain (UserLeft, etc.) need the pub/sub
         // system to be alive so they can be broadcast to other replicas.
+        //
+        // D6 fix: Use the REMAINING time from the total budget instead of a
+        // separate full timeout, ensuring total shutdown stays within K8s grace period.
         {
-            let drain_timeout =
-                Duration::from_secs(self.config.server.shutdown_drain_timeout_seconds);
+            let elapsed = shutdown_start.elapsed();
+            let remaining_budget = total_drain_budget.saturating_sub(elapsed);
             let drain_poll_interval = Duration::from_millis(500);
             let active = self.services.connection_manager.connection_count();
-            if active > 0 {
+            if active > 0 && remaining_budget > Duration::ZERO {
                 info!(
-                    "Waiting up to {}s for {} active connection(s) to drain...",
-                    drain_timeout.as_secs(),
-                    active
+                    "Waiting up to {}s for {} active connection(s) to drain ({}s elapsed)...",
+                    remaining_budget.as_secs(),
+                    active,
+                    elapsed.as_secs()
                 );
-                let deadline = tokio::time::Instant::now() + drain_timeout;
+                let deadline = tokio::time::Instant::now() + remaining_budget;
                 loop {
                     let remaining = self.services.connection_manager.connection_count();
                     if remaining == 0 {
@@ -258,6 +276,11 @@ impl SyncTvServer {
                     }
                     tokio::time::sleep(drain_poll_interval).await;
                 }
+            } else if active > 0 {
+                warn!(
+                    "No remaining drain budget for {} active connection(s) (HTTP drain consumed full budget)",
+                    active
+                );
             }
         }
 
@@ -307,15 +330,10 @@ impl SyncTvServer {
         self.services.connection_manager.shutdown();
         info!("Connection manager shut down");
 
-        // Deregister node from cluster registry
-        if let Some(ref registry) = self.services.node_registry {
-            info!("Deregistering node from cluster registry...");
-            if let Err(e) = registry.unregister().await {
-                warn!("Failed to deregister node from cluster registry: {}", e);
-            } else {
-                info!("Node deregistered from cluster registry");
-            }
-        }
+        // Minor fix: Removed redundant `registry.unregister()` call.
+        // `ClusterManager::shutdown()` already calls `registry.unregister()` during
+        // heartbeat state cleanup. Calling it again here was a no-op (the node is
+        // already deregistered) but added unnecessary Redis round-trip and log noise.
 
         // Shut down STUN server
         if let Some(ref stun) = self.services.stun_server {

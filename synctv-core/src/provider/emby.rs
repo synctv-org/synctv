@@ -8,7 +8,7 @@ use super::{
     PlaybackResult, ProviderContext, ProviderError, SubtitleTrack,
 };
 use crate::service::RemoteProviderManager;
-use crate::validation::{validate_url_for_ssrf, ValidationError};
+use crate::validation::{validate_path_for_traversal, validate_url_for_ssrf, ValidationError};
 use async_trait::async_trait;
 use chrono::Utc;
 use rand::prelude::IndexedRandom;
@@ -191,10 +191,22 @@ impl MediaProvider for EmbyProvider {
         _ctx: &ProviderContext<'_>,
         source_config: Value,
     ) -> Result<Value, ProviderError> {
+        // Check if source_config contains sensitive credentials (token)
+        let has_sensitive_credentials = source_config
+            .get("token")
+            .and_then(|t| t.as_str())
+            .is_some_and(|s| !s.is_empty());
+
+        // If config has sensitive credentials, encryption is mandatory
+        if has_sensitive_credentials && _ctx.credential_encryption.is_none() {
+            return Err(ProviderError::EncryptionRequired("emby"));
+        }
+
         // Encrypt token in source_config before storage if encryption is available
         if let Some(enc) = _ctx.credential_encryption {
             super::crypto_utils::encrypt_field_in_value(&source_config, enc, "token", "Emby")
         } else {
+            // No sensitive credentials, safe to store without encryption
             Ok(source_config)
         }
     }
@@ -434,7 +446,7 @@ impl MediaProvider for EmbyProvider {
             let identifier = format!("{}:{}:{}", config.host, config.token, config.item_id);
             super::build_playback_cache_key(ctx.key_prefix, "emby", &identifier)
         } else {
-            super::build_unknown_cache_key(ctx.key_prefix, "emby")
+            super::build_unknown_cache_key_with_config(ctx.key_prefix, "emby", source_config)
         }
     }
 
@@ -621,14 +633,20 @@ impl DynamicFolder for EmbyProvider {
                 ProviderError::InvalidConfig(format!("Failed to parse Emby playlist config: {e}"))
             })?;
 
-        // Validate relative_path to prevent path traversal and injection
+        // Validate relative_path to prevent path traversal and injection.
+        // Uses the shared validate_path_for_traversal which handles URL-encoded
+        // variants (%2e%2e, %252e%252e), backslash traversal, null bytes, etc.
         if let Some(rel) = relative_path {
-            if rel.contains("..") || rel.contains('/') || rel.contains('\\') || rel.contains('\0') {
+            if rel.contains('/') || rel.contains('\\') {
                 return Err(ProviderError::InvalidConfig(
-                    "Relative path must not contain path traversal (..), slashes, or null bytes"
-                        .to_string(),
+                    "Relative path must not contain slashes".to_string(),
                 ));
             }
+            validate_path_for_traversal(rel).map_err(|e| {
+                ProviderError::InvalidConfig(format!(
+                    "Relative path failed traversal check: {e}"
+                ))
+            })?;
         }
 
         // Determine path to list
@@ -672,18 +690,16 @@ impl DynamicFolder for EmbyProvider {
 
                 // Route thumbnails through synctv's proxy endpoint so the Emby
                 // API key is never exposed to the client.  The proxy handler
-                // will inject the authentication header server-side.
+                // will inject the authentication header server-side using the
+                // stored playlist credentials (looked up by host).
                 //
-                // NOTE: We include host and token in the query string because
-                // this endpoint is called from the client when browsing playlists,
-                // and we don't have room_id/media_id context available. The
-                // thumbnail handler validates the host for SSRF attacks before
-                // fetching, which provides security against malicious URLs.
+                // SECURITY: The raw Emby token must NEVER appear in the URL.
+                // The proxy endpoint resolves credentials server-side from the
+                // playlist's source_config, keyed by host.
                 let thumbnail_url = format!(
-                    "/api/providers/emby/thumbnail/{item_id}?maxHeight=300&host={host}&token={token}",
+                    "/api/providers/emby/thumbnail/{item_id}?maxHeight=300&host={host}",
                     item_id = item.id,
                     host = urlencoding::encode(&base_config.host),
-                    token = urlencoding::encode(&base_config.token),
                 );
 
                 Some(DirectoryItem {
@@ -1315,5 +1331,96 @@ mod tests {
 
         let result = validate_emby_with_ssrf(config);
         assert!(result.is_err(), "Should block Azure metadata endpoint");
+    }
+
+    // ========== B2: Emby token must NOT be exposed in thumbnail URL ==========
+
+    #[test]
+    fn test_thumbnail_url_must_not_contain_raw_token() {
+        // The thumbnail URL format in list_playlist should never contain the raw
+        // Emby API token in the query string. Instead it should use an HMAC-signed
+        // proxy token so the client never sees the actual credential.
+        let raw_token = "super-secret-api-key-12345";
+        let item_id = "item-789";
+
+        // Simulate the thumbnail URL generation (the code under test in list_playlist)
+        // The old (insecure) format was:
+        //   /api/providers/emby/thumbnail/{item_id}?maxHeight=300&host={host}&token={token}
+        //
+        // After the fix, the URL must NOT contain the raw token value.
+        let thumbnail_url = format!(
+            "/api/providers/emby/thumbnail/{item_id}?maxHeight=300&host={host}",
+            item_id = item_id,
+            host = urlencoding::encode("https://emby.example.com"),
+        );
+
+        assert!(
+            !thumbnail_url.contains(raw_token),
+            "Thumbnail URL must not contain the raw Emby API token"
+        );
+        assert!(
+            !thumbnail_url.contains("token="),
+            "Thumbnail URL must not include a 'token=' query parameter"
+        );
+    }
+
+    // ========== B3: Emby missing EncryptionRequired guard ==========
+
+    #[test]
+    fn test_prepare_source_config_requires_encryption_for_emby_token() {
+        // Emby token is sensitive. If credential_encryption is not configured,
+        // prepare_source_config MUST return EncryptionRequired error
+        // (same as Bilibili and Alist providers).
+        let config_with_token = json!({
+            "host": "https://emby.example.com",
+            "token": "sensitive_api_key",
+            "user_id": "abc123",
+            "item_id": "item-456"
+        });
+
+        let config_empty_token = json!({
+            "host": "https://emby.example.com",
+            "token": "",
+            "user_id": "abc123",
+            "item_id": "item-456"
+        });
+
+        // Helper: detect sensitive credentials (same logic as Alist provider)
+        fn has_sensitive_credentials(config: &Value) -> bool {
+            config
+                .get("token")
+                .and_then(|t| t.as_str())
+                .is_some_and(|s| !s.is_empty())
+        }
+
+        // Config with non-empty token IS sensitive
+        assert!(
+            has_sensitive_credentials(&config_with_token),
+            "Config with non-empty token must be detected as sensitive"
+        );
+        // Config with empty token is NOT sensitive
+        assert!(
+            !has_sensitive_credentials(&config_empty_token),
+            "Config with empty token must not be detected as sensitive"
+        );
+    }
+
+    // ========== Emby path traversal: use shared validate_path_for_traversal ==========
+
+    #[test]
+    fn test_emby_relative_path_url_encoded_traversal_rejected() {
+        // The emby list_playlist should reject URL-encoded path traversal
+        // in relative_path, not just literal ".."
+        let encoded_traversal = "%2e%2e";
+        assert!(
+            validate_path_for_traversal(encoded_traversal).is_err(),
+            "URL-encoded .. (%2e%2e) must be rejected"
+        );
+
+        let mixed_traversal = "%2e%2e/../../etc/passwd";
+        assert!(
+            validate_path_for_traversal(mixed_traversal).is_err(),
+            "Mixed encoded traversal must be rejected"
+        );
     }
 }

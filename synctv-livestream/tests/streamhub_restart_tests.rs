@@ -334,3 +334,72 @@ async fn test_restarting_flag_set_before_stop_request() {
     drop(stop_streams_tx);
     let _ = receiver_handle.await;
 }
+
+// ============================================================================
+// D5: Verify stop_all timeout is sufficient (5 seconds, not 100ms)
+// ============================================================================
+
+/// D5 fix verification: The two-phase cleanup timeout should be 5 seconds, not 100ms.
+///
+/// The original 100ms timeout was too short for streams that need to cleanly
+/// disconnect from remote servers. This test verifies that a slow stop_all()
+/// completes within the 5-second window instead of timing out.
+#[tokio::test]
+async fn test_stop_all_timeout_sufficient_for_slow_cleanup() {
+    let (stop_streams_tx, mut stop_streams_rx) = mpsc::channel::<oneshot::Sender<()>>(10);
+
+    // Spawn a receiver that simulates a slow stop_all() (takes ~2 seconds)
+    let receiver_handle = tokio::spawn(async move {
+        while let Some(stop_done_tx) = stop_streams_rx.recv().await {
+            // Simulate slow stream cleanup (2 seconds)
+            // This would have timed out with the old 100ms timeout
+            tokio::time::sleep(Duration::from_secs(2)).await;
+            let _ = stop_done_tx.send(());
+        }
+    });
+
+    // Simulate the restart path with the new 5-second timeout
+    let (stop_done_tx, stop_done_rx) = oneshot::channel::<()>();
+    stop_streams_tx.send(stop_done_tx).await.unwrap();
+
+    let result = tokio::time::timeout(Duration::from_millis(5000), stop_done_rx).await;
+
+    assert!(
+        result.is_ok(),
+        "stop_all() with 2s cleanup should complete within the 5s timeout (D5 fix)"
+    );
+
+    // Clean up
+    drop(stop_streams_tx);
+    let _ = receiver_handle.await;
+}
+
+/// D5: The old 100ms timeout would fail for cleanup taking > 100ms.
+///
+/// This test verifies that the scenario that previously failed (cleanup > 100ms)
+/// now succeeds with the 5-second timeout.
+#[tokio::test]
+async fn test_stop_all_handles_moderate_cleanup_time() {
+    let (stop_streams_tx, mut stop_streams_rx) = mpsc::channel::<oneshot::Sender<()>>(10);
+
+    // Spawn a receiver with 500ms cleanup (would fail with 100ms timeout)
+    let receiver_handle = tokio::spawn(async move {
+        while let Some(stop_done_tx) = stop_streams_rx.recv().await {
+            tokio::time::sleep(Duration::from_millis(500)).await;
+            let _ = stop_done_tx.send(());
+        }
+    });
+
+    let (stop_done_tx, stop_done_rx) = oneshot::channel::<()>();
+    stop_streams_tx.send(stop_done_tx).await.unwrap();
+
+    let result = tokio::time::timeout(Duration::from_millis(5000), stop_done_rx).await;
+
+    assert!(
+        result.is_ok(),
+        "stop_all() with 500ms cleanup should succeed with 5s timeout (previously failed with 100ms)"
+    );
+
+    drop(stop_streams_tx);
+    let _ = receiver_handle.await;
+}

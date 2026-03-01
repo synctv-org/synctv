@@ -288,9 +288,14 @@ where
         let token = JwtValidator::extract_bearer_token(auth_str)
             .map_err(|e| AppError::unauthorized(format!("{e}")))?;
 
+        // B1 FIX: Use GuestTokenValidator::validate_async() which checks the
+        // token blacklist (for kicked guests) in addition to JWT signature/expiry.
+        // Previously this only called jwt_service.verify_guest_token() which
+        // allowed kicked guests to continue accessing the room until token expiry.
         let claims = app_state
-            .jwt_service
-            .verify_guest_token(&token)
+            .guest_token_validator
+            .validate_async(&token)
+            .await
             .map_err(|e| AppError::unauthorized(format!("{e}")))?;
 
         if !claims.is_guest() {

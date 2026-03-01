@@ -611,6 +611,80 @@ async fn test_delete_old_messages_partition_pruning() {
     }
 }
 
+// ─── Task #7: list_by_room initial load needs partition lower bound ──
+
+/// Verify that list_by_room (initial load, no cursor) includes a created_at
+/// lower bound so PostgreSQL can prune old partitions. Without this, an initial
+/// chat history load scans ALL partitions of the chat_messages table.
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_list_by_room_initial_load_has_partition_lower_bound() {
+    let (_container, pool) = create_test_pool().await;
+    let chat_repo = ChatRepository::new(pool.clone());
+    let (user, room) = setup_room(&pool, "chat_init_prune_user", "chat_init_prune_room").await;
+
+    // Insert a message older than 90 days via raw SQL
+    let old_date = Utc::now() - Duration::days(100);
+    let old_msg_id = synctv_core::models::generate_id();
+    sqlx::query(
+        r"INSERT INTO chat_messages (id, room_id, user_id, content, message_type, created_at)
+          VALUES ($1, $2, $3, 'old message', 1, $4)",
+    )
+    .bind(&old_msg_id)
+    .bind(room.id.as_str())
+    .bind(user.id.as_str())
+    .bind(old_date)
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    // Insert a recent message
+    let msg = make_chat_message(&room.id, &user.id, "recent message");
+    chat_repo.create(&msg).await.unwrap();
+
+    // Initial load (no cursor / before parameter) should only return recent messages
+    let messages = chat_repo.list_by_room(&room.id, None, 100).await.unwrap();
+
+    // The old message (>90 days) should NOT be returned due to partition pruning filter
+    assert_eq!(messages.len(), 1, "Initial load should only return messages within 90-day window");
+    assert_eq!(messages[0].content, "recent message");
+}
+
+/// Verify that list_by_room_cursor (initial load, no cursor) includes a created_at
+/// lower bound for partition pruning.
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_list_by_room_cursor_initial_load_has_partition_lower_bound() {
+    let (_container, pool) = create_test_pool().await;
+    let chat_repo = ChatRepository::new(pool.clone());
+    let (user, room) = setup_room(&pool, "chat_cursor_prune_user", "chat_cursor_prune_room").await;
+
+    // Insert a message older than 90 days via raw SQL
+    let old_date = Utc::now() - Duration::days(100);
+    let old_msg_id = synctv_core::models::generate_id();
+    sqlx::query(
+        r"INSERT INTO chat_messages (id, room_id, user_id, content, message_type, created_at)
+          VALUES ($1, $2, $3, 'old cursor message', 1, $4)",
+    )
+    .bind(&old_msg_id)
+    .bind(room.id.as_str())
+    .bind(user.id.as_str())
+    .bind(old_date)
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    // Insert a recent message
+    let msg = make_chat_message(&room.id, &user.id, "recent cursor message");
+    chat_repo.create(&msg).await.unwrap();
+
+    // Initial load (no cursor) should only return recent messages
+    let (messages, _cursor) = chat_repo.list_by_room_cursor(&room.id, None, 100).await.unwrap();
+
+    assert_eq!(messages.len(), 1, "Initial cursor load should only return messages within 90-day window");
+    assert_eq!(messages[0].content, "recent cursor message");
+}
+
 /// Performance regression test: compare cleanup queries with and without partition pruning filter
 #[tokio::test]
 #[ignore = "Requires Docker"]

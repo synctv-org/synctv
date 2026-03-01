@@ -26,7 +26,7 @@ use base64::Engine;
 use rand::RngExt;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
-use tracing::{debug, error, warn};
+use tracing::{debug, warn};
 
 use crate::models::{RoomId, UserId};
 use crate::{Error, Result};
@@ -306,21 +306,21 @@ impl WsTicketService {
                 ));
             }
 
+            if Self::detect_multi_replica_environment() {
+                return Err(Error::Internal(
+                    "MULTI-REPLICA RISK: WebSocket ticket service cannot use in-memory storage \
+                     in a multi-replica environment (Kubernetes / Docker Swarm / REPLICAS env detected). \
+                     Tickets created on one replica will NOT be valid on others. \
+                     Configure Redis to fix this."
+                        .to_string(),
+                ));
+            }
+
             warn!(
                 "WebSocket ticket service using in-memory storage. \
                  This is only suitable for single-replica deployments. \
                  For multi-replica setups, configure Redis."
             );
-
-            if Self::detect_multi_replica_environment() {
-                error!(
-                    "MULTI-REPLICA RISK: WebSocket ticket service is using in-memory storage, \
-                     but the environment appears to be a multi-replica deployment \
-                     (Kubernetes / Docker Swarm / REPLICAS env detected). \
-                     Tickets created on one replica will NOT be valid on others. \
-                     Configure Redis to fix this."
-                );
-            }
 
             Ok(Self::with_memory(ticket_ttl_secs))
         }
@@ -788,5 +788,30 @@ mod tests {
 
         assert_eq!(service.backend_name(), "memory");
         assert_eq!(service.ticket_ttl_secs(), 45);
+    }
+
+    // ========== D7: detect_multi_replica should fail, not just warn ==========
+
+    /// Test: detect_multi_replica_environment returns a bool (not panic).
+    /// When it returns true, WsTicketService::new should return an error
+    /// instead of silently using in-memory storage.
+    #[test]
+    fn test_detect_multi_replica_returns_bool() {
+        // This just verifies detect_multi_replica_environment doesn't panic.
+        // In CI without Kubernetes env vars it should return false.
+        let _result = WsTicketService::detect_multi_replica_environment();
+    }
+
+    /// Test: verify that when detect_multi_replica_environment() would return true
+    /// (which we can't easily test without setting env vars), the error message
+    /// from the cluster_mode=true path is descriptive and mentions replicas.
+    #[test]
+    fn test_cluster_error_mentions_multi_replica_risk() {
+        let result = WsTicketService::new(None, None, true);
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("replica"),
+            "Error should explain multi-replica risk; got: {err_msg}"
+        );
     }
 }

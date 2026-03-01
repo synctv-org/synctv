@@ -604,9 +604,10 @@ impl Application {
         }
 
         // Cluster discovery (NodeRegistry, HealthMonitor) — requires Redis
+        // D1 fix: When cluster is explicitly enabled, discovery failures are fatal.
         let (node_registry, health_monitor, _load_balancer, dns_refresh_handle) =
             if let (Some(ref cm), Some(ref rh)) = (&cluster_manager, &infra.redis_handles) {
-                init_cluster_discovery(&infra.config, rh, cm, &connection_manager).await
+                init_cluster_discovery(&infra.config, rh, cm, &connection_manager).await?
             } else {
                 (None, None, None, None)
             };

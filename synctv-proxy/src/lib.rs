@@ -4,6 +4,8 @@
 //! Provides reusable functions for proxying media streams and rewriting M3U8
 //! playlists.  Used by per-provider proxy routes in `synctv-api`.
 
+pub mod slice_cache;
+
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::{Arc, LazyLock};
@@ -274,23 +276,30 @@ pub async fn proxy_fetch_and_forward(
     result
 }
 
-/// Inner implementation of proxy fetch, separated for metrics wrapping.
-async fn proxy_fetch_and_forward_inner(cfg: ProxyConfig<'_>) -> Result<Response, anyhow::Error> {
-    validate_proxy_url(cfg.url).await?;
+/// Allowlisted client headers forwarded to the upstream origin.
+///
+/// Only these headers are passed through to avoid leaking auth tokens, cookies,
+/// or other sensitive data from the original client request.
+const CLIENT_HEADER_ALLOWLIST: &[&str] = &[
+    "range",
+    "if-none-match",
+    "if-modified-since",
+    "accept",
+    "accept-language",
+    "user-agent",
+];
 
+/// Build a proxy request for the given URL, forwarding allowlisted client
+/// headers and applying provider-specific headers.
+///
+/// This is the single point of request construction used by both the initial
+/// fetch and retry attempts.
+fn build_proxy_request(cfg: &ProxyConfig<'_>) -> reqwest::RequestBuilder {
     let mut request = PROXY_CLIENT.get(cfg.url);
 
     // Forward only allowlisted client headers to avoid leaking auth tokens / cookies
     for (name, value) in cfg.client_headers {
-        if !matches!(
-            name.as_str(),
-            "range"
-                | "if-none-match"
-                | "if-modified-since"
-                | "accept"
-                | "accept-language"
-                | "user-agent"
-        ) {
+        if !CLIENT_HEADER_ALLOWLIST.contains(&name.as_str()) {
             continue;
         }
         if let Ok(v) = value.to_str() {
@@ -298,8 +307,14 @@ async fn proxy_fetch_and_forward_inner(cfg: ProxyConfig<'_>) -> Result<Response,
         }
     }
 
-    request = apply_provider_headers(request, cfg.url, cfg.provider_headers);
+    apply_provider_headers(request, cfg.url, cfg.provider_headers)
+}
 
+/// Inner implementation of proxy fetch, separated for metrics wrapping.
+async fn proxy_fetch_and_forward_inner(cfg: ProxyConfig<'_>) -> Result<Response, anyhow::Error> {
+    validate_proxy_url(cfg.url).await?;
+
+    let request = build_proxy_request(&cfg);
     let proxy_result = send_with_redirect_validation(request).await?;
 
     // Retry only on specific retryable 5xx server errors (500, 502, 503, 504).
@@ -316,23 +331,7 @@ async fn proxy_fetch_and_forward_inner(cfg: ProxyConfig<'_>) -> Result<Response,
             );
             tokio::time::sleep(retry_delay).await;
 
-            let mut retry_req = PROXY_CLIENT.get(cfg.url);
-            for (name, value) in cfg.client_headers {
-                if matches!(
-                    name.as_str(),
-                    "range"
-                        | "if-none-match"
-                        | "if-modified-since"
-                        | "accept"
-                        | "accept-language"
-                        | "user-agent"
-                ) {
-                    if let Ok(v) = value.to_str() {
-                        retry_req = retry_req.header(name.as_str(), v);
-                    }
-                }
-            }
-            retry_req = apply_provider_headers(retry_req, cfg.url, cfg.provider_headers);
+            let retry_req = build_proxy_request(&cfg);
             let retry_result = send_with_redirect_validation(retry_req).await?;
             (retry_result.response, retry_result.followed_redirects)
         } else {
@@ -548,205 +547,6 @@ pub async fn proxy_options_preflight() -> Response {
     build_deprecated_preflight_response()
 }
 
-// ------------------------------------------------------------------
-// Rate limiting
-// ------------------------------------------------------------------
-
-/// A simple in-memory rate limiter based on source IP addresses.
-///
-/// Uses a sliding window algorithm with configurable limit and window duration.
-/// Each IP address gets its own counter that resets after the window expires.
-///
-/// # Thread Safety
-///
-/// This implementation is thread-safe and can be shared across multiple handlers.
-/// Uses `DashMap` internally for concurrent access without global locking.
-///
-/// # Example
-///
-/// ```
-/// use std::time::Duration;
-/// use synctv_proxy::RateLimiter;
-///
-/// let limiter = RateLimiter::new(100, Duration::from_secs(60));
-///
-/// // Check if a request from this IP should be allowed
-/// if limiter.check("192.168.1.1") {
-///     // Request allowed
-/// } else {
-///     // Rate limit exceeded
-/// }
-/// ```
-pub struct RateLimiter {
-    /// Maximum requests allowed per window per IP.
-    limit: usize,
-    /// Window duration for rate limiting.
-    window: Duration,
-    /// Map of IP addresses to (count, `window_start`).
-    /// Uses `DashMap` for concurrent access.
-    counters: std::sync::Arc<dashmap::DashMap<String, (usize, std::time::Instant)>>,
-}
-
-impl RateLimiter {
-    /// Create a new rate limiter with the given limit and window.
-    ///
-    /// # Arguments
-    ///
-    /// * `limit` - Maximum number of requests allowed per window per IP.
-    /// * `window` - Duration of the rate limiting window.
-    #[must_use]
-    pub fn new(limit: usize, window: Duration) -> Self {
-        Self {
-            limit,
-            window,
-            counters: std::sync::Arc::new(dashmap::DashMap::new()),
-        }
-    }
-
-    /// Check if a request from the given IP should be allowed.
-    ///
-    /// Returns `true` if the request is within the rate limit,
-    /// `false` if the limit has been exceeded.
-    ///
-    /// This method is thread-safe and can be called from multiple threads.
-    ///
-    /// Note: This method performs lazy cleanup of expired entries to prevent
-    /// memory leaks. Periodically, expired entries are removed from the internal
-    /// map.
-    #[must_use]
-    pub fn check(&self, ip: &str) -> bool {
-        use std::sync::atomic::{AtomicU64, Ordering};
-
-        let now = std::time::Instant::now();
-
-        // Periodically cleanup expired entries to prevent memory leaks.
-        // Use an atomic counter to trigger cleanup every ~100 checks when map is large.
-        // This amortizes the cleanup cost across many operations.
-        static CHECK_COUNTER: AtomicU64 = AtomicU64::new(0);
-        let check_count = CHECK_COUNTER.fetch_add(1, Ordering::Relaxed);
-        if self.counters.len() > 100 && check_count % 100 == 0 {
-            self.cleanup_expired();
-        }
-
-        // Try to get existing entry
-        if let Some(mut entry) = self.counters.get_mut(ip) {
-            let (count, window_start) = *entry.value();
-
-            // Check if window has expired
-            if now.duration_since(window_start) > self.window {
-                // Reset the window
-                *entry.value_mut() = (1, now);
-                return true;
-            }
-
-            // Check if within limit
-            if count < self.limit {
-                *entry.value_mut() = (count + 1, window_start);
-                return true;
-            }
-
-            // Over limit
-            return false;
-        }
-
-        // New entry
-        self.counters.insert(ip.to_string(), (1, now));
-        true
-    }
-
-    /// Get the current count for an IP (for testing/debugging).
-    #[cfg(test)]
-    #[must_use]
-    pub fn get_count(&self, ip: &str) -> Option<usize> {
-        self.counters.get(ip).map(|e| e.value().0)
-    }
-
-    /// Get the total number of entries (for testing/debugging).
-    #[cfg(test)]
-    #[must_use]
-    pub fn len(&self) -> usize {
-        self.counters.len()
-    }
-
-    /// Remove expired entries from the counters.
-    ///
-    /// This is called lazily during check operations to prevent memory leaks.
-    fn cleanup_expired(&self) {
-        let now = std::time::Instant::now();
-        // Retain only entries that haven't expired
-        self.counters
-            .retain(|_, (_, window_start)| now.duration_since(*window_start) <= self.window);
-    }
-}
-
-/// Preflight handler with rate limiting based on source IP.
-///
-/// Returns 429 Too Many Requests if the rate limit is exceeded,
-/// otherwise returns standard CORS preflight headers.
-///
-/// **Deprecated**: This function uses `Access-Control-Allow-Origin: *` which is
-/// insecure for production use. Use `proxy_options_preflight_rate_limited_with_cors`
-/// with an explicit allowed origins list instead.
-///
-/// # Arguments
-///
-/// * `client_ip` - The client's IP address (extracted from connection or X-Forwarded-For).
-/// * `limiter` - The rate limiter to use.
-#[deprecated(
-    since = "0.2.0",
-    note = "Use `proxy_options_preflight_rate_limited_with_cors` with explicit origin list"
-)]
-#[allow(clippy::unused_async)]
-pub async fn proxy_options_preflight_rate_limited(
-    client_ip: Option<&str>,
-    limiter: std::sync::Arc<RateLimiter>,
-) -> Response {
-    let ip_key = client_ip.unwrap_or("unknown");
-
-    if !limiter.check(ip_key) {
-        return build_rate_limit_response();
-    }
-
-    build_deprecated_preflight_response()
-}
-
-/// Preflight handler with rate limiting and explicit CORS origin validation.
-///
-/// Combines rate limiting with secure CORS validation. Returns:
-/// - 429 Too Many Requests if the rate limit is exceeded
-/// - 403 Forbidden if the origin is not in the allowed list
-/// - 204 No Content with proper CORS headers if both checks pass
-///
-/// # Arguments
-///
-/// * `origin` - The Origin header value from the request.
-/// * `config` - The CORS configuration specifying allowed origins.
-/// * `client_ip` - The client's IP address (extracted from connection or X-Forwarded-For).
-/// * `limiter` - The rate limiter to use.
-///
-/// # Security
-///
-/// - Origins not in the allowed list receive 403 Forbidden.
-/// - When the allowed list is empty, all origins are rejected (secure default).
-/// - Rate limiting prevents abuse of preflight endpoints.
-/// - The `Vary: Origin` header is included for proper caching.
-#[allow(clippy::unused_async)]
-pub async fn proxy_options_preflight_rate_limited_with_cors(
-    origin: Option<&str>,
-    config: std::sync::Arc<CorsConfig>,
-    client_ip: Option<&str>,
-    limiter: std::sync::Arc<RateLimiter>,
-) -> Response {
-    // First check rate limit
-    let ip_key = client_ip.unwrap_or("unknown");
-
-    if !limiter.check(ip_key) {
-        return build_rate_limit_response();
-    }
-
-    // Then check CORS
-    handle_cors_preflight(origin, &config)
-}
 
 // ------------------------------------------------------------------
 // CORS preflight helper functions
@@ -756,18 +556,6 @@ pub async fn proxy_options_preflight_rate_limited_with_cors(
 const CORS_ALLOW_METHODS: &str = "GET, OPTIONS";
 const CORS_ALLOW_HEADERS: &str = "Authorization, Content-Type, Accept, Range";
 const CORS_MAX_AGE: &str = "86400";
-
-/// Build a rate limit exceeded response.
-///
-/// Returns 429 Too Many Requests with Retry-After header.
-fn build_rate_limit_response() -> Response {
-    Response::builder()
-        .status(StatusCode::TOO_MANY_REQUESTS)
-        .header("Content-Type", "text/plain")
-        .header("Retry-After", "60")
-        .body(Body::from("Rate limit exceeded"))
-        .expect("Failed to build rate limit response")
-}
 
 /// Build a CORS preflight response for wildcard mode.
 ///
@@ -1261,27 +1049,6 @@ mod tests {
     // ------------------------------------------------------------------
 
     #[test]
-    fn test_build_rate_limit_response() {
-        let response = build_rate_limit_response();
-
-        assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
-        assert_eq!(
-            response
-                .headers()
-                .get("Content-Type")
-                .map(|v| v.to_str().unwrap()),
-            Some("text/plain")
-        );
-        assert_eq!(
-            response
-                .headers()
-                .get("Retry-After")
-                .map(|v| v.to_str().unwrap()),
-            Some("60")
-        );
-    }
-
-    #[test]
     fn test_build_wildcard_cors_response() {
         let response = build_wildcard_cors_response();
 
@@ -1557,125 +1324,4 @@ mod tests {
         assert!(validate_proxy_url_static("file:///etc/passwd").is_err());
     }
 
-    // ------------------------------------------------------------------
-    // RateLimiter tests
-    // ------------------------------------------------------------------
-
-    #[test]
-    fn test_rate_limiter_allows_within_limit() {
-        let limiter = RateLimiter::new(3, std::time::Duration::from_secs(60));
-        assert!(limiter.check("192.168.1.1"));
-        assert!(limiter.check("192.168.1.1"));
-        assert!(limiter.check("192.168.1.1"));
-    }
-
-    #[test]
-    fn test_rate_limiter_blocks_over_limit() {
-        let limiter = RateLimiter::new(2, std::time::Duration::from_secs(60));
-        assert!(limiter.check("192.168.1.1"));
-        assert!(limiter.check("192.168.1.1"));
-        assert!(!limiter.check("192.168.1.1")); // Should be blocked
-    }
-
-    #[test]
-    fn test_rate_limiter_resets_after_window() {
-        let limiter = RateLimiter::new(2, std::time::Duration::from_millis(50));
-        assert!(limiter.check("192.168.1.1"));
-        assert!(limiter.check("192.168.1.1"));
-        assert!(!limiter.check("192.168.1.1")); // Blocked
-
-        // Wait for window to expire
-        std::thread::sleep(std::time::Duration::from_millis(60));
-        assert!(limiter.check("192.168.1.1")); // Should be allowed again
-    }
-
-    #[test]
-    fn test_rate_limiter_independent_per_ip() {
-        let limiter = RateLimiter::new(1, std::time::Duration::from_secs(60));
-        assert!(limiter.check("192.168.1.1"));
-        assert!(!limiter.check("192.168.1.1")); // Blocked
-
-        // Different IP should have its own limit
-        assert!(limiter.check("192.168.1.2"));
-    }
-
-    // ------------------------------------------------------------------
-    // P1: RateLimiter memory leak - expired entry cleanup tests
-    // ------------------------------------------------------------------
-
-    #[test]
-    fn test_rate_limiter_cleanup_removes_expired_entries() {
-        // Test that old entries are cleaned up to prevent memory leaks
-        // Cleanup triggers when len() > 100 and every 100th check (global counter)
-        let limiter = RateLimiter::new(1, std::time::Duration::from_millis(50));
-
-        // Add 101 entries to trigger cleanup threshold
-        for i in 0..101 {
-            let _ = limiter.check(&format!("ip{}", i));
-        }
-
-        // All 101 entries should exist
-        assert_eq!(limiter.len(), 101);
-
-        // Wait for window to expire
-        std::thread::sleep(std::time::Duration::from_millis(60));
-
-        // Make 100 checks to ensure we hit check_count % 100 == 0 at least once
-        // (since the counter is global, we need to ensure cleanup triggers)
-        for i in 0..100 {
-            let _ = limiter.check(&format!("trigger_{}", i));
-        }
-
-        // After cleanup, expired entries should be removed
-        // The implementation cleans up expired entries during check when thresholds are met
-        assert!(
-            limiter.len() <= 110, // At most the 100 trigger entries + some remaining
-            "Expired entries should be cleaned up, got {} entries",
-            limiter.len()
-        );
-    }
-
-    #[test]
-    fn test_rate_limiter_cleanup_does_not_remove_valid_entries() {
-        // Test that valid entries are not removed during cleanup
-        let limiter = RateLimiter::new(5, std::time::Duration::from_secs(60));
-
-        // Add entries
-        let _ = limiter.check("ip1");
-        let _ = limiter.check("ip2");
-
-        // Both entries should exist and be valid
-        assert_eq!(limiter.len(), 2);
-        assert!(limiter.check("ip1")); // Should still be within limit
-        assert_eq!(limiter.get_count("ip1"), Some(2));
-    }
-
-    #[test]
-    fn test_rate_limiter_no_memory_leak_with_many_ips() {
-        // Simulate many different IPs over time to verify no memory leak
-        let limiter = RateLimiter::new(1, std::time::Duration::from_millis(10));
-
-        // Simulate 1000 different IPs
-        for i in 0..1000_u64 {
-            let _ = limiter.check(&format!("ip{}", i));
-        }
-
-        // Should have 1000 entries
-        assert_eq!(limiter.len(), 1000);
-
-        // Wait for all to expire
-        std::thread::sleep(std::time::Duration::from_millis(20));
-
-        // Make 100 checks to ensure cleanup triggers (global counter % 100 == 0)
-        for i in 0..100 {
-            let _ = limiter.check(&format!("trigger_{}", i));
-        }
-
-        // After cleanup, expired entries should be removed
-        assert!(
-            limiter.len() <= 110, // At most the 100 trigger entries + some remaining
-            "Most expired entries should be cleaned up, got {} entries",
-            limiter.len()
-        );
-    }
 }

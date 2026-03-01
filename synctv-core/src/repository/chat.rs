@@ -29,7 +29,7 @@ impl ChatRepository {
         )
         .bind(&message.id)
         .bind(message.room_id.as_str())
-        .bind(message.user_id.as_str())
+        .bind(message.user_id.as_ref().map(|uid| uid.as_str()))
         .bind(&message.content)
         .bind(message.message_type)
         .bind(message.created_at)
@@ -69,11 +69,14 @@ impl ChatRepository {
             .fetch_all(&self.pool)
             .await?
         } else {
+            // Initial load (no cursor): add a created_at lower bound so PostgreSQL
+            // can prune old partitions. Matches the 90-day retention period.
             sqlx::query_as::<_, ChatMessage>(
                 r"
                 SELECT id, room_id, user_id, content, message_type, created_at
                 FROM chat_messages
                 WHERE room_id = $1
+                  AND created_at >= NOW() - INTERVAL '90 days'
                 ORDER BY created_at DESC
                 LIMIT $2
                 ",
@@ -123,11 +126,14 @@ impl ChatRepository {
             .fetch_all(&self.pool)
             .await?
         } else {
+            // Initial load (no cursor): add a created_at lower bound so PostgreSQL
+            // can prune old partitions. Matches the 90-day retention period.
             sqlx::query_as::<_, ChatMessage>(
                 r"
                 SELECT id, room_id, user_id, content, message_type, created_at
                 FROM chat_messages
                 WHERE room_id = $1
+                  AND created_at >= NOW() - INTERVAL '90 days'
                 ORDER BY created_at DESC, id DESC
                 LIMIT $2
                 ",

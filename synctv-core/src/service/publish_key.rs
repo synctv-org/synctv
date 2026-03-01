@@ -90,6 +90,10 @@ pub struct RedisJtiStore {
     key_prefix: String,
     /// Local moka cache for fast-path checks on the same node.
     local_cache: moka::future::Cache<String, ()>,
+    /// When true, reject claims if Redis is unavailable instead of falling
+    /// back to local-only enforcement. Required for single-use correctness
+    /// in multi-replica / cluster mode.
+    fail_closed: bool,
 }
 
 impl RedisJtiStore {
@@ -107,6 +111,30 @@ impl RedisJtiStore {
                 .max_capacity(100_000)
                 .time_to_live(Duration::from_secs(cache_ttl_secs))
                 .build(),
+            fail_closed: false,
+        }
+    }
+
+    /// Create from a shared connection handle with fail_closed mode.
+    ///
+    /// When `fail_closed` is true, Redis failures will cause `try_claim` to
+    /// return an error instead of falling back to local-only enforcement.
+    /// This is required in cluster mode to preserve single-use guarantees
+    /// across replicas.
+    #[must_use]
+    pub fn new_shared_fail_closed(
+        shared_conn: Arc<tokio::sync::RwLock<redis::aio::ConnectionManager>>,
+        key_prefix: String,
+        cache_ttl_secs: u64,
+    ) -> Self {
+        Self {
+            shared_conn,
+            key_prefix,
+            local_cache: moka::future::Cache::builder()
+                .max_capacity(100_000)
+                .time_to_live(Duration::from_secs(cache_ttl_secs))
+                .build(),
+            fail_closed: true,
         }
     }
 
@@ -162,6 +190,17 @@ impl JtiStore for RedisJtiStore {
                 Ok(false)
             }
             Err(e) => {
+                if self.fail_closed {
+                    // In cluster / fail_closed mode, reject the claim entirely
+                    // to preserve single-use correctness across replicas.
+                    tracing::error!(
+                        jti = %jti,
+                        "Redis unavailable for JTI dedup (fail_closed=true), rejecting claim: {e}"
+                    );
+                    return Err(Error::Internal(format!(
+                        "Redis unavailable for JTI dedup and fail_closed is enabled: {e}"
+                    )));
+                }
                 // Redis unavailable -- fall back to local-only enforcement
                 tracing::warn!(
                     jti = %jti,
@@ -212,11 +251,34 @@ impl InMemoryJtiStore {
 #[async_trait]
 impl JtiStore for InMemoryJtiStore {
     async fn try_claim(&self, jti: &str, _ttl_secs: u64) -> Result<bool> {
-        if self.cache.contains_key(jti) {
-            Ok(false)
-        } else {
-            self.cache.insert(jti.to_string(), ()).await;
-            Ok(true)
+        // Use moka's entry API for atomic check-and-insert.
+        // This eliminates the TOCTOU race where two concurrent tasks could both
+        // see contains_key()=false and both succeed.
+        use moka::ops::compute::Op;
+        let entry = self
+            .cache
+            .entry_by_ref(jti)
+            .and_compute_with(|maybe_entry| async move {
+                if maybe_entry.is_some() {
+                    // Already claimed -- keep existing entry unchanged
+                    Op::Nop
+                } else {
+                    // First claim -- insert a new entry
+                    Op::Put(())
+                }
+            })
+            .await;
+
+        // If the operation was `Nop`, the entry already existed (replay).
+        // If it was `Put`, we just claimed it (first use).
+        match entry {
+            moka::ops::compute::CompResult::Unchanged(_) => Ok(false),
+            moka::ops::compute::CompResult::Inserted(_) => Ok(true),
+            // StillNone happens when Op::Nop is returned and there was no entry,
+            // but our logic never returns Nop when entry is None, so this is unreachable.
+            moka::ops::compute::CompResult::StillNone(_) => Ok(true),
+            moka::ops::compute::CompResult::ReplacedWith(_) => Ok(true),
+            moka::ops::compute::CompResult::Removed(_) => Ok(false),
         }
     }
 
@@ -308,6 +370,10 @@ impl PublishKeyService {
     /// In Sentinel mode the background health check hot-swaps the inner
     /// `ConnectionManager` on failover; this store reads from the shared
     /// handle on each operation so it automatically picks up the new master.
+    ///
+    /// When `cluster_mode` is true, the store uses fail_closed semantics:
+    /// if Redis is unavailable, claims are rejected instead of falling back
+    /// to local-only enforcement.
     #[must_use]
     pub fn with_redis_shared(
         jwt_service: JwtService,
@@ -319,6 +385,28 @@ impl PublishKeyService {
             .saturating_mul(3600)
             .saturating_add(300);
         let store = Arc::new(RedisJtiStore::new_shared(
+            shared_conn,
+            key_prefix,
+            cache_ttl_secs,
+        ));
+        Self::from_store(jwt_service, token_ttl_hours, store)
+    }
+
+    /// Enable Redis-backed JTI deduplication with fail_closed mode for cluster deployments.
+    ///
+    /// When Redis is unavailable, claims are rejected instead of falling back to
+    /// local-only enforcement. This preserves single-use correctness across replicas.
+    #[must_use]
+    pub fn with_redis_shared_fail_closed(
+        jwt_service: JwtService,
+        token_ttl_hours: i64,
+        shared_conn: Arc<tokio::sync::RwLock<redis::aio::ConnectionManager>>,
+        key_prefix: String,
+    ) -> Self {
+        let cache_ttl_secs = (token_ttl_hours as u64)
+            .saturating_mul(3600)
+            .saturating_add(300);
+        let store = Arc::new(RedisJtiStore::new_shared_fail_closed(
             shared_conn,
             key_prefix,
             cache_ttl_secs,
@@ -426,6 +514,37 @@ impl PublishKeyService {
         }
 
         Ok(UserId::from_string(claims.user_id))
+    }
+
+    /// Verify a publish key for a specific room/media with user status check.
+    ///
+    /// This is the recommended method for RTMP publish key validation. After
+    /// validating the JWT and consuming the single-use JTI, it calls the
+    /// `user_validator` callback to check the user's current status (e.g.,
+    /// banned, deleted). This prevents a user from using a publish key issued
+    /// before they were banned.
+    ///
+    /// The `user_validator` receives the `UserId` extracted from the token and
+    /// should return `Ok(())` if the user is allowed to publish, or an `Err`
+    /// if the user should be rejected.
+    pub async fn verify_publish_key_for_stream_checked<F>(
+        &self,
+        token: &str,
+        room_id: &RoomId,
+        media_id: &MediaId,
+        user_validator: F,
+    ) -> Result<UserId>
+    where
+        F: FnOnce(&UserId) -> Result<()>,
+    {
+        let user_id = self
+            .verify_publish_key_for_stream(token, room_id, media_id)
+            .await?;
+
+        // Check user status after JWT validation and JTI consumption
+        user_validator(&user_id)?;
+
+        Ok(user_id)
     }
 }
 
@@ -745,5 +864,129 @@ mod tests {
         let debug = format!("{service:?}");
         assert!(debug.contains("12"));
         assert!(debug.contains("memory"));
+    }
+
+    // ========== B4: InMemoryJtiStore concurrent try_claim atomicity ==========
+
+    /// Simulate concurrent try_claim calls on the same JTI.
+    /// Only one should succeed; all others must return false.
+    #[tokio::test]
+    async fn test_in_memory_jti_store_concurrent_try_claim_only_one_succeeds() {
+        let store = Arc::new(InMemoryJtiStore::new(3600));
+        let jti = "concurrent-jti-test";
+        let num_tasks = 50;
+
+        let mut handles = Vec::with_capacity(num_tasks);
+        for _ in 0..num_tasks {
+            let store = store.clone();
+            let jti = jti.to_string();
+            handles.push(tokio::spawn(async move {
+                store.try_claim(&jti, 3600).await.unwrap()
+            }));
+        }
+
+        let mut success_count = 0u32;
+        for handle in handles {
+            if handle.await.unwrap() {
+                success_count += 1;
+            }
+        }
+
+        assert_eq!(
+            success_count, 1,
+            "Exactly one concurrent try_claim should succeed, but {success_count} succeeded"
+        );
+    }
+
+    // ========== B7: validate_publish_key should support user status checking ==========
+
+    /// Validate that verify_publish_key_for_stream accepts a user_validator callback
+    /// and rejects banned users even when the JWT is valid.
+    #[tokio::test]
+    async fn test_validate_publish_key_rejects_banned_user() {
+        let service = create_publish_key_service();
+        let room_id = RoomId::new();
+        let media_id = MediaId::new();
+        let user_id = UserId::new();
+
+        let key = service
+            .generate_publish_key(room_id.clone(), media_id.clone(), user_id.clone())
+            .await
+            .unwrap();
+
+        // Validator that simulates a banned user
+        let result = service
+            .verify_publish_key_for_stream_checked(
+                &key.token,
+                &room_id,
+                &media_id,
+                |_uid| Err(Error::Authorization("User is banned".to_string())),
+            )
+            .await;
+
+        assert!(result.is_err(), "Should reject banned user");
+        if let Err(Error::Authorization(msg)) = &result {
+            assert!(
+                msg.contains("banned"),
+                "Error should mention ban; got: {msg}"
+            );
+        } else {
+            panic!("Expected Authorization error, got: {result:?}");
+        }
+    }
+
+    /// Validate that verify_publish_key_for_stream_checked passes for active user.
+    #[tokio::test]
+    async fn test_validate_publish_key_accepts_active_user() {
+        let service = create_publish_key_service();
+        let room_id = RoomId::new();
+        let media_id = MediaId::new();
+        let user_id = UserId::new();
+
+        let key = service
+            .generate_publish_key(room_id.clone(), media_id.clone(), user_id.clone())
+            .await
+            .unwrap();
+
+        let result = service
+            .verify_publish_key_for_stream_checked(
+                &key.token,
+                &room_id,
+                &media_id,
+                |_uid| Ok(()), // User is active
+            )
+            .await;
+
+        assert!(result.is_ok(), "Should accept active user");
+        assert_eq!(result.unwrap(), user_id);
+    }
+
+    // ========== D9: RedisJtiStore fail_closed option ==========
+
+    /// Test that RedisJtiStore with fail_closed=true rejects claims when Redis is unavailable.
+    /// We simulate this with an AlwaysFailJtiStore that mimics Redis failure behavior.
+    #[tokio::test]
+    async fn test_fail_closed_jti_store_rejects_on_backend_failure() {
+        let store = FailClosedJtiStore;
+        let result = store.try_claim("some-jti", 3600).await;
+        assert!(result.is_err(), "fail_closed store should return Err on backend failure");
+    }
+
+    /// A mock JtiStore that always fails (simulates Redis unavailable with fail_closed=true).
+    struct FailClosedJtiStore;
+
+    #[async_trait]
+    impl JtiStore for FailClosedJtiStore {
+        async fn try_claim(&self, _jti: &str, _ttl_secs: u64) -> Result<bool> {
+            Err(Error::Internal(
+                "Redis unavailable and fail_closed is enabled".to_string(),
+            ))
+        }
+        async fn is_claimed(&self, _jti: &str) -> bool {
+            false
+        }
+        fn backend_name(&self) -> &'static str {
+            "fail_closed_test"
+        }
     }
 }

@@ -116,26 +116,21 @@ impl UsernameCache {
 
     /// Set username for a user ID
     ///
-    /// Updates both memory cache and Redis cache.
-    /// If a `CacheInvalidationService` is configured, broadcasts the invalidation
-    /// to other replicas so they evict stale L1 entries.
+    /// Updates both memory cache (L1) and Redis cache (L2).
+    ///
+    /// This method does NOT broadcast invalidation to other replicas. The
+    /// rationale: `set()` writes the correct value to L2 (Redis), which is
+    /// shared across all nodes. Other nodes will pick up the updated value
+    /// from L2 when their L1 TTL expires. If immediate cross-node eviction
+    /// is needed (e.g., after a username change), call [`invalidate`] instead.
+    ///
+    /// Previously, `set()` called `invalidate_username()` which broadcast to
+    /// all nodes, causing the just-written value to be deleted on the self
+    /// node when the invalidation listener processed the message.
     pub async fn set(&self, user_id: &UserId, username: &str) -> Result<()> {
         self.inner
             .set(user_id, CachedUsername::new(username.to_string()))
-            .await?;
-
-        // Broadcast invalidation to other replicas (best effort)
-        if let Some(ref service) = self.invalidation_service {
-            if let Err(e) = service.invalidate_username(user_id).await {
-                tracing::warn!(
-                    error = %e,
-                    user_id = %user_id.as_str(),
-                    "Failed to broadcast username cache invalidation to other replicas"
-                );
-            }
-        }
-
-        Ok(())
+            .await
     }
 
     /// Get multiple usernames at once
@@ -203,12 +198,15 @@ impl UsernameCache {
     /// Preload usernames into cache
     ///
     /// Useful for warming up the cache with frequently accessed users.
+    /// Writes each entry to both L1 and L2 without broadcasting any
+    /// invalidation messages (since `set()` does not broadcast).
     pub async fn preload(&self, entries: HashMap<UserId, String>) -> Result<()> {
+        let count = entries.len();
         for (user_id, username) in entries {
             self.set(&user_id, &username).await?;
         }
 
-        tracing::debug!("Username cache preloaded");
+        tracing::debug!(count, "Username cache preloaded");
         Ok(())
     }
 }
@@ -315,5 +313,126 @@ mod tests {
 
         cache.invalidate_by_id("user1").await;
         assert!(cache.get(&user_id).await.unwrap().is_none());
+    }
+
+    /// Regression test: set() with an invalidation service configured must NOT
+    /// self-invalidate. Previously, set() called invalidate_username() which
+    /// broadcast to all nodes including self, causing the just-written value
+    /// to be immediately deleted.
+    #[tokio::test]
+    async fn test_set_with_invalidation_service_no_self_invalidation() {
+        let invalidation_service = Arc::new(CacheInvalidationService::new(
+            None,
+            "test-node".to_string(),
+            "test:cache:invalidate:stream".to_string(),
+        ));
+
+        let cache = UsernameCache::new(
+            Arc::new(crate::cache::NoopCacheL2),
+            "test:".to_string(),
+            100,
+            0,
+        )
+        .with_invalidation_service(invalidation_service);
+
+        let user_id = create_test_user_id("user1");
+
+        // set() should write the value and NOT self-invalidate
+        cache.set(&user_id, "alice").await.unwrap();
+
+        let retrieved = cache.get(&user_id).await.unwrap();
+        assert_eq!(
+            retrieved.as_deref(),
+            Some("alice"),
+            "set() must not self-invalidate: value should be retrievable immediately after set()"
+        );
+    }
+
+    /// Regression test: preload() calls set() for each entry. After fixing
+    /// set() to not broadcast invalidation, all preloaded entries must be
+    /// retrievable.
+    #[tokio::test]
+    async fn test_preload_all_entries_retrievable() {
+        let invalidation_service = Arc::new(CacheInvalidationService::new(
+            None,
+            "test-node".to_string(),
+            "test:cache:invalidate:stream".to_string(),
+        ));
+
+        let cache = UsernameCache::new(
+            Arc::new(crate::cache::NoopCacheL2),
+            "test:".to_string(),
+            100,
+            0,
+        )
+        .with_invalidation_service(invalidation_service);
+
+        let mut entries = HashMap::new();
+        entries.insert(create_test_user_id("u1"), "alice".to_string());
+        entries.insert(create_test_user_id("u2"), "bob".to_string());
+        entries.insert(create_test_user_id("u3"), "charlie".to_string());
+        entries.insert(create_test_user_id("u4"), "diana".to_string());
+        entries.insert(create_test_user_id("u5"), "eve".to_string());
+
+        cache.preload(entries.clone()).await.unwrap();
+
+        // All preloaded entries must be retrievable
+        for (user_id, expected_name) in &entries {
+            let retrieved = cache.get(user_id).await.unwrap();
+            assert_eq!(
+                retrieved.as_deref(),
+                Some(expected_name.as_str()),
+                "preload entry for {} should be retrievable",
+                user_id.as_str()
+            );
+        }
+
+        // Verify batch lookup also works
+        let all_ids: Vec<UserId> = entries.keys().cloned().collect();
+        let batch = cache.get_batch(&all_ids).await.unwrap();
+        assert_eq!(
+            batch.len(),
+            entries.len(),
+            "batch lookup should return all preloaded entries"
+        );
+    }
+
+    /// set() must NOT broadcast any invalidation message. Only invalidate()
+    /// should broadcast to other replicas.
+    #[tokio::test]
+    async fn test_set_does_not_broadcast_invalidation() {
+        let invalidation_service = Arc::new(CacheInvalidationService::new(
+            None,
+            "test-node".to_string(),
+            "test:cache:invalidate:stream".to_string(),
+        ));
+
+        let mut receiver = invalidation_service.subscribe();
+
+        let cache = UsernameCache::new(
+            Arc::new(crate::cache::NoopCacheL2),
+            "test:".to_string(),
+            100,
+            0,
+        )
+        .with_invalidation_service(invalidation_service);
+
+        let user_id = create_test_user_id("user1");
+
+        // set() should NOT produce any invalidation message
+        cache.set(&user_id, "alice").await.unwrap();
+
+        // Give a short window for any message to arrive
+        let result = tokio::time::timeout(
+            std::time::Duration::from_millis(50),
+            receiver.recv(),
+        )
+        .await;
+
+        assert!(
+            result.is_err(),
+            "set() should not broadcast any invalidation message; \
+             invalidation should only happen on explicit invalidate() calls"
+        );
     }
 }

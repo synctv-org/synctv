@@ -332,9 +332,20 @@ where
 
         if needs_update {
             // Raw value changed (or first load), re-parse
+            let key = self.key;
             let value = new_raw.as_ref().map_or_else(
                 || self.default_value.clone(),
-                |raw| raw.parse().unwrap_or_else(|_| self.default_value.clone()),
+                |raw| {
+                    raw.parse().unwrap_or_else(|e| {
+                        warn!(
+                            key = key,
+                            raw_value = %raw,
+                            error = %e,
+                            "Failed to parse setting value, using default"
+                        );
+                        self.default_value.clone()
+                    })
+                },
             );
 
             // Update both caches

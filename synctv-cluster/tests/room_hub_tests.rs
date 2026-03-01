@@ -160,3 +160,109 @@ async fn test_unsubscribe_unknown_safe() {
     assert_eq!(hub.connection_count(), 0);
     assert_eq!(hub.room_count(), 0);
 }
+
+// ============================================================================
+// D2: Lifecycle events are emitted on subscribe/unsubscribe
+// ============================================================================
+
+/// D2 fix verification: lifecycle_tx.send() results are checked (not silently dropped).
+/// This test verifies that lifecycle events are still delivered correctly when
+/// receivers are active.
+#[tokio::test]
+async fn test_lifecycle_events_emitted_on_subscribe_unsubscribe() {
+    use synctv_cluster::sync::room_hub::RoomLifecycleEvent;
+
+    let hub = RoomMessageHub::new();
+    let mut lifecycle_rx = hub.subscribe_lifecycle();
+
+    let room = rid("lc_room");
+    let user = uid("lc_user");
+
+    // Subscribe should emit RoomActivated
+    let _rx = hub
+        .subscribe(room.clone(), user.clone(), "lc_conn".to_string())
+        .await;
+
+    let event = lifecycle_rx.try_recv().unwrap();
+    match event {
+        RoomLifecycleEvent::RoomActivated(r) => assert_eq!(r, room),
+        other => panic!("Expected RoomActivated, got: {other:?}"),
+    }
+
+    // Unsubscribe the only subscriber should emit RoomDeactivated
+    hub.unsubscribe("lc_conn");
+
+    let event = lifecycle_rx.try_recv().unwrap();
+    match event {
+        RoomLifecycleEvent::RoomDeactivated(r) => assert_eq!(r, room),
+        other => panic!("Expected RoomDeactivated, got: {other:?}"),
+    }
+}
+
+/// D2: lifecycle events are not lost when multiple rooms are created quickly.
+#[tokio::test]
+async fn test_lifecycle_events_not_lost_under_room_churn() {
+    use synctv_cluster::sync::room_hub::RoomLifecycleEvent;
+
+    let hub = RoomMessageHub::new();
+    let mut lifecycle_rx = hub.subscribe_lifecycle();
+
+    // Rapidly create and destroy 10 rooms
+    for i in 0..10 {
+        let room = rid(&format!("churn_room_{i}"));
+        let user = uid(&format!("churn_user_{i}"));
+        let conn_id = format!("churn_conn_{i}");
+
+        let _rx = hub
+            .subscribe(room.clone(), user.clone(), conn_id.clone())
+            .await;
+        hub.unsubscribe(&conn_id);
+    }
+
+    // We should receive all 20 events (10 activated + 10 deactivated)
+    let mut activated = 0;
+    let mut deactivated = 0;
+    while let Ok(event) = lifecycle_rx.try_recv() {
+        match event {
+            RoomLifecycleEvent::RoomActivated(_) => activated += 1,
+            RoomLifecycleEvent::RoomDeactivated(_) => deactivated += 1,
+        }
+    }
+
+    assert_eq!(
+        activated, 10,
+        "All 10 RoomActivated events should be received"
+    );
+    assert_eq!(
+        deactivated, 10,
+        "All 10 RoomDeactivated events should be received"
+    );
+}
+
+/// D2: remove_room emits a RoomDeactivated lifecycle event.
+#[tokio::test]
+async fn test_remove_room_emits_deactivated_event() {
+    use synctv_cluster::sync::room_hub::RoomLifecycleEvent;
+
+    let hub = RoomMessageHub::new();
+    let mut lifecycle_rx = hub.subscribe_lifecycle();
+
+    let room = rid("rm_room");
+    let user = uid("rm_user");
+
+    let _rx = hub
+        .subscribe(room.clone(), user.clone(), "rm_conn".to_string())
+        .await;
+
+    // Consume the RoomActivated event
+    let _ = lifecycle_rx.try_recv().unwrap();
+
+    // Remove the room (simulates cross-replica deletion)
+    hub.remove_room(&room);
+
+    let event = lifecycle_rx.try_recv().unwrap();
+    match event {
+        RoomLifecycleEvent::RoomDeactivated(r) => assert_eq!(r, room),
+        other => panic!("Expected RoomDeactivated on remove_room, got: {other:?}"),
+    }
+}

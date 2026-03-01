@@ -1196,3 +1196,452 @@ async fn test_get_history_messages_from_correct_room() {
         "Room2 history should only contain room2 messages"
     );
 }
+
+// ========== A1: send_danmaku broadcasts to notification service ==========
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_send_danmaku_broadcasts_to_room_members() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let room_service = make_room_service(pool.clone());
+
+    let creator = user_repo
+        .create(&make_user("danmaku_broadcast_creator"))
+        .await
+        .unwrap();
+
+    // Create a counting mock broadcaster
+    let broadcaster = Arc::new(CountingMockBroadcaster::new());
+
+    // Build chat service with the counting broadcaster
+    let (chat_service, username_cache) =
+        make_chat_service_with_broadcaster(pool.clone(), broadcaster.clone());
+
+    username_cache
+        .set(&creator.id, &creator.username)
+        .await
+        .unwrap();
+
+    // Create a room
+    let (room, _) = room_service
+        .create_room(
+            "Danmaku Broadcast Room".to_string(),
+            String::new(),
+            creator.id.clone(),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+    // Verify no broadcasts before sending
+    assert_eq!(
+        broadcaster.get_broadcast_count(),
+        0,
+        "No broadcasts should have occurred yet"
+    );
+
+    // Send a danmaku
+    let request = SendDanmakuRequest {
+        room_id: room.id.clone(),
+        content: "Test danmaku".to_string(),
+        color: "#FF0000".to_string(),
+        position: DanmakuPosition::Top,
+    };
+
+    let danmaku = chat_service
+        .send_danmaku(room.id.clone(), creator.id.clone(), request)
+        .await
+        .expect("send_danmaku should succeed");
+
+    // Verify broadcast was triggered
+    assert!(
+        broadcaster.get_broadcast_count() > 0,
+        "At least one broadcast should have been triggered for danmaku"
+    );
+
+    // Verify broadcast was sent to the correct room
+    let last_room_id = broadcaster
+        .get_last_room_id()
+        .expect("Should have a room ID");
+    assert_eq!(
+        last_room_id,
+        room.id.as_str(),
+        "Broadcast should be sent to the correct room"
+    );
+
+    // Verify broadcast was a danmaku event
+    let last_event_type = broadcaster
+        .get_last_event_type()
+        .expect("Should have an event type");
+    assert_eq!(
+        last_event_type, "danmaku",
+        "Event type should be danmaku"
+    );
+
+    // Verify the danmaku message content
+    assert_eq!(danmaku.content, "Test danmaku", "Danmaku content should match");
+    assert_eq!(danmaku.color, "#FF0000", "Danmaku color should match");
+}
+
+// ========== A2: ChatMessage.user_id is None for deleted users ==========
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_chat_history_with_deleted_user_returns_none_user_id() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let room_service = make_room_service(pool.clone());
+    let (chat_service, username_cache) = make_chat_service(pool.clone());
+
+    let creator = user_repo
+        .create(&make_user("deleted_user_chat_creator"))
+        .await
+        .unwrap();
+    username_cache
+        .set(&creator.id, &creator.username)
+        .await
+        .unwrap();
+
+    let (room, _) = room_service
+        .create_room(
+            "Deleted User Chat Room".to_string(),
+            String::new(),
+            creator.id.clone(),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+    // Send a message
+    let msg = chat_service
+        .send_message(
+            room.id.clone(),
+            creator.id.clone(),
+            "Message from soon-deleted user".to_string(),
+        )
+        .await
+        .unwrap();
+
+    // Verify user_id is Some before deletion
+    assert!(
+        msg.user_id.is_some(),
+        "user_id should be Some before user deletion"
+    );
+
+    // Simulate user deletion: SET NULL on user_id via raw SQL
+    // (foreign key ON DELETE SET NULL)
+    sqlx::query("UPDATE chat_messages SET user_id = NULL WHERE id = $1 AND created_at = $2")
+        .bind(&msg.id)
+        .bind(msg.created_at)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    // Retrieve the message from history
+    let (history, _) = chat_service
+        .get_history(&room.id, None, 10)
+        .await
+        .expect("get_history should succeed after user deletion");
+
+    assert_eq!(history.len(), 1, "Should still have the message");
+    assert!(
+        history[0].user_id.is_none(),
+        "user_id should be None for deleted user's message"
+    );
+    assert_eq!(
+        history[0].content, "Message from soon-deleted user",
+        "Content should be preserved"
+    );
+}
+
+// ========== C4: Oversized message rejected ==========
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_send_message_oversized_content_rejected() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let room_service = make_room_service(pool.clone());
+    let (chat_service, username_cache) = make_chat_service(pool.clone());
+
+    let creator = user_repo
+        .create(&make_user("oversized_msg_creator"))
+        .await
+        .unwrap();
+    username_cache
+        .set(&creator.id, &creator.username)
+        .await
+        .unwrap();
+
+    let (room, _) = room_service
+        .create_room(
+            "Oversized Msg Room".to_string(),
+            String::new(),
+            creator.id.clone(),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+    // Send a message that exceeds MAX_CHAT_MESSAGE_CHARS (500 chars)
+    let oversized_content: String = "x".repeat(501);
+    let result = chat_service
+        .send_message(room.id.clone(), creator.id.clone(), oversized_content)
+        .await;
+
+    assert!(
+        result.is_err(),
+        "Oversized message should be rejected"
+    );
+    match result.unwrap_err() {
+        Error::InvalidInput(msg) => {
+            assert!(
+                msg.contains("500") || msg.contains("characters"),
+                "Error should mention character limit: {msg}"
+            );
+        }
+        other => panic!("Expected InvalidInput error, got: {other:?}"),
+    }
+}
+
+// ========== send_message with valid content ==========
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_send_message_valid_content_persisted() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let room_service = make_room_service(pool.clone());
+    let (chat_service, username_cache) = make_chat_service(pool.clone());
+
+    let creator = user_repo
+        .create(&make_user("valid_msg_creator"))
+        .await
+        .unwrap();
+    username_cache
+        .set(&creator.id, &creator.username)
+        .await
+        .unwrap();
+
+    let (room, _) = room_service
+        .create_room(
+            "Valid Msg Room".to_string(),
+            String::new(),
+            creator.id.clone(),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+    let msg = chat_service
+        .send_message(
+            room.id.clone(),
+            creator.id.clone(),
+            "Hello, valid message!".to_string(),
+        )
+        .await
+        .expect("Valid message should be persisted");
+
+    assert_eq!(msg.content, "Hello, valid message!");
+    assert_eq!(msg.user_id, Some(creator.id.clone()));
+    assert_eq!(msg.room_id, room.id);
+    assert!(!msg.id.is_empty());
+
+    // Verify via history
+    let (history, _) = chat_service
+        .get_history(&room.id, None, 10)
+        .await
+        .unwrap();
+    assert_eq!(history.len(), 1);
+    assert_eq!(history[0].content, "Hello, valid message!");
+}
+
+// ========== Content filtering (HTML/XSS stripping) ==========
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_send_message_html_xss_stripped() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let room_service = make_room_service(pool.clone());
+    let (chat_service, username_cache) = make_chat_service(pool.clone());
+
+    let creator = user_repo
+        .create(&make_user("xss_strip_creator"))
+        .await
+        .unwrap();
+    username_cache
+        .set(&creator.id, &creator.username)
+        .await
+        .unwrap();
+
+    let (room, _) = room_service
+        .create_room(
+            "XSS Strip Room".to_string(),
+            String::new(),
+            creator.id.clone(),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+    // Send message with HTML/XSS payload
+    let msg = chat_service
+        .send_message(
+            room.id.clone(),
+            creator.id.clone(),
+            "<script>alert('xss')</script>Hello safe world".to_string(),
+        )
+        .await
+        .expect("Message with HTML should be filtered, not rejected");
+
+    // The content filter strips HTML tags, so <script> should be removed
+    assert!(
+        !msg.content.contains("<script>"),
+        "HTML script tags should be stripped from message content: got '{}'",
+        msg.content
+    );
+    assert!(
+        msg.content.contains("Hello safe world"),
+        "Safe text content should be preserved: got '{}'",
+        msg.content
+    );
+}
+
+// ========== Danmaku without notification service still works ==========
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_send_danmaku_without_notification_service_still_returns() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let room_service = make_room_service(pool.clone());
+    let (chat_service, username_cache) = make_chat_service(pool.clone());
+
+    let creator = user_repo
+        .create(&make_user("danmaku_no_notify"))
+        .await
+        .unwrap();
+    username_cache
+        .set(&creator.id, &creator.username)
+        .await
+        .unwrap();
+
+    let (room, _) = room_service
+        .create_room(
+            "Danmaku No Notify Room".to_string(),
+            String::new(),
+            creator.id.clone(),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+    // Note: make_chat_service does NOT set notification_service (it's None)
+
+    let request = SendDanmakuRequest {
+        room_id: room.id.clone(),
+        content: "Danmaku without notify".to_string(),
+        color: "#00FF00".to_string(),
+        position: DanmakuPosition::Scroll,
+    };
+
+    // Should succeed even without notification service
+    let danmaku = chat_service
+        .send_danmaku(room.id.clone(), creator.id.clone(), request)
+        .await
+        .expect("send_danmaku should succeed without notification service");
+
+    assert_eq!(danmaku.content, "Danmaku without notify");
+    assert_eq!(danmaku.color, "#00FF00");
+    assert_eq!(danmaku.position, DanmakuPosition::Scroll);
+}
+
+// ========== Delete message with None user_id (deleted user) ==========
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_delete_message_with_deleted_user_requires_permission() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let room_service = make_room_service(pool.clone());
+    let (chat_service, username_cache) = make_chat_service(pool.clone());
+
+    let creator = user_repo
+        .create(&make_user("del_msg_null_creator"))
+        .await
+        .unwrap();
+    let member = user_repo
+        .create(&make_user("del_msg_null_member"))
+        .await
+        .unwrap();
+    username_cache
+        .set(&creator.id, &creator.username)
+        .await
+        .unwrap();
+    username_cache
+        .set(&member.id, &member.username)
+        .await
+        .unwrap();
+
+    let (room, _) = room_service
+        .create_room(
+            "Del Null User Room".to_string(),
+            String::new(),
+            creator.id.clone(),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+    room_service
+        .join_room(room.id.clone(), member.id.clone(), None)
+        .await
+        .unwrap();
+
+    // Creator sends a message
+    let msg = chat_service
+        .send_message(
+            room.id.clone(),
+            creator.id.clone(),
+            "Orphaned message".to_string(),
+        )
+        .await
+        .unwrap();
+
+    // Simulate user deletion: SET user_id to NULL
+    sqlx::query("UPDATE chat_messages SET user_id = NULL WHERE id = $1 AND created_at = $2")
+        .bind(&msg.id)
+        .bind(msg.created_at)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    // Member (without DELETE_CHAT permission) tries to delete orphaned message
+    // Since user_id is NULL, they are not the sender, so they need DELETE_CHAT permission
+    let result = chat_service.delete_message(&msg.id, &member.id).await;
+
+    assert!(
+        result.is_err(),
+        "Non-owner should be denied deletion of orphaned message without DELETE_CHAT permission"
+    );
+    match result.unwrap_err() {
+        Error::Authorization(_) => {}
+        other => panic!("Expected Authorization error, got: {other:?}"),
+    }
+
+    // Room creator (has all permissions) should be able to delete
+    let result = chat_service.delete_message(&msg.id, &creator.id).await;
+    assert!(
+        result.is_ok(),
+        "Room creator (with DELETE_CHAT) should be able to delete orphaned message"
+    );
+}

@@ -17,14 +17,20 @@ use synctv_core::models::id::{RoomId, UserId};
 const REDIS_VERSION: &str = "7-alpine";
 
 /// Helper to create a Redis container and connection manager.
+///
+/// Applies a 30-second timeout to container startup to fail fast when Docker
+/// is unavailable (instead of hanging indefinitely).
 async fn setup_redis() -> (
     testcontainers::ContainerAsync<Redis>,
     redis::aio::ConnectionManager,
 ) {
-    let redis_container = Redis::default()
-        .start()
-        .await
-        .expect("Failed to start Redis container");
+    let redis_container = tokio::time::timeout(
+        Duration::from_secs(30),
+        Redis::default().start(),
+    )
+    .await
+    .expect("Docker container startup timed out (is Docker running?)")
+    .expect("Failed to start Redis container");
 
     let redis_host = redis_container
         .get_host()

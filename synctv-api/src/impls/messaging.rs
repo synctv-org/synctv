@@ -185,19 +185,8 @@ impl CachedMembership {
     }
 }
 
-/// Convert a `RoomRole` from the core models to the proto `RoomMemberRole` as i32.
-const fn room_role_to_proto(role: synctv_core::models::RoomRole) -> i32 {
-    match role {
-        synctv_core::models::RoomRole::Creator => {
-            synctv_proto::common::RoomMemberRole::Creator as i32
-        }
-        synctv_core::models::RoomRole::Admin => synctv_proto::common::RoomMemberRole::Admin as i32,
-        synctv_core::models::RoomRole::Member => {
-            synctv_proto::common::RoomMemberRole::Member as i32
-        }
-        synctv_core::models::RoomRole::Guest => synctv_proto::common::RoomMemberRole::Guest as i32,
-    }
-}
+// Re-use the canonical room_role_to_proto from client::convert (E2: deduplicate)
+use crate::impls::client::room_role_to_proto;
 
 /// Trait for sending server messages to clients
 ///
@@ -491,11 +480,20 @@ impl StreamMessageHandler {
         // must independently monitor admin events and disconnect when targeted.
         let mut admin_rx = self.cluster_manager.subscribe_admin_events();
 
+        // E6 fix: Fetch member data ONCE and pass to both methods
+        let member_data = self
+            .room_service
+            .member_service()
+            .get_member(&self.room_id, &self.user_id)
+            .await
+            .ok()
+            .flatten();
+
         // Send initial user joined notification
-        stream.send(self.create_user_joined_message(&room_id_str).await)?;
+        stream.send(self.create_user_joined_message(&room_id_str, member_data.as_ref()))?;
 
         // Broadcast UserJoined event to other replicas
-        self.broadcast_user_joined().await;
+        self.broadcast_user_joined(member_data.as_ref());
 
         // Create heartbeat interval OUTSIDE the loop so it doesn't reset
         // when other select! branches fire.
@@ -920,19 +918,21 @@ impl StreamMessageHandler {
 
     /// Create initial user joined message with actual role and permissions
     /// fetched from the room membership data.
-    async fn create_user_joined_message(&self, room_id: &str) -> ServerMessage {
+    /// Create the initial `UserJoined` server message.
+    ///
+    /// E6 fix: Accepts pre-fetched member data to avoid a redundant DB query
+    /// (the same data is also needed by `broadcast_user_joined`).
+    fn create_user_joined_message(
+        &self,
+        room_id: &str,
+        member: Option<&synctv_core::models::RoomMember>,
+    ) -> ServerMessage {
         use crate::proto::client::server_message::Message;
         use crate::proto::client::UserJoinedRoom;
-        use synctv_proto::common::RoomMember;
+        use synctv_proto::common::RoomMember as ProtoRoomMember;
 
-        // Fetch the actual role and permissions from the membership record
-        let (role_proto, permissions, added, removed, admin_added, admin_removed) = match self
-            .room_service
-            .member_service()
-            .get_member(&self.room_id, &self.user_id)
-            .await
-        {
-            Ok(Some(member)) => {
+        let (role_proto, permissions, added, removed, admin_added, admin_removed) = match member {
+            Some(member) => {
                 let effective = member.effective_permissions(member.role.permissions());
                 let role = room_role_to_proto(member.role);
                 (
@@ -944,7 +944,7 @@ impl StreamMessageHandler {
                     member.admin_removed_permissions,
                 )
             }
-            _ => {
+            None => {
                 // Fallback: if we can't fetch membership, use Member defaults
                 (
                     synctv_proto::common::RoomMemberRole::Member as i32,
@@ -960,7 +960,7 @@ impl StreamMessageHandler {
         ServerMessage {
             message: Some(Message::UserJoined(UserJoinedRoom {
                 room_id: room_id.to_string(),
-                member: Some(RoomMember {
+                member: Some(ProtoRoomMember {
                     room_id: room_id.to_string(),
                     user_id: self.user_id.as_str().to_string(),
                     username: self.username.clone(),
@@ -978,20 +978,17 @@ impl StreamMessageHandler {
     }
 
     /// Broadcast `UserJoined` event to cluster replicas
-    async fn broadcast_user_joined(&self) {
-        // Fetch the actual role and permissions from the membership record
-        let (role_proto, permissions) = match self
-            .room_service
-            .member_service()
-            .get_member(&self.room_id, &self.user_id)
-            .await
-        {
-            Ok(Some(member)) => {
+    /// Broadcast `UserJoined` event to cluster replicas.
+    ///
+    /// E6 fix: Accepts pre-fetched member data to avoid a redundant DB query.
+    fn broadcast_user_joined(&self, member: Option<&synctv_core::models::RoomMember>) {
+        let (role_proto, permissions) = match member {
+            Some(member) => {
                 let effective = member.effective_permissions(member.role.permissions());
                 let role = room_role_to_proto(member.role);
                 (role, effective)
             }
-            _ => {
+            None => {
                 // Fallback: if we can't fetch membership, use Member defaults
                 (
                     synctv_proto::common::RoomMemberRole::Member as i32,
@@ -1271,15 +1268,24 @@ impl StreamMessageHandler {
 
         let cancel_token = tokio_util::sync::CancellationToken::new();
 
+        // E6 fix: Fetch member data ONCE and pass to both methods
+        let member_data = self
+            .room_service
+            .member_service()
+            .get_member(&self.room_id, &self.user_id)
+            .await
+            .ok()
+            .flatten();
+
         // Send initial UserJoined message to the client (mirrors run() behavior)
         let room_id_str = self.room_id.as_str().to_string();
-        let initial_msg = self.create_user_joined_message(&room_id_str).await;
+        let initial_msg = self.create_user_joined_message(&room_id_str, member_data.as_ref());
         if let Err(e) = self.sender.send(initial_msg) {
             tracing::error!("Failed to send initial UserJoined message in start(): {e}");
         }
 
         // Broadcast UserJoined event to other replicas (mirrors run() behavior)
-        self.broadcast_user_joined().await;
+        self.broadcast_user_joined(member_data.as_ref());
 
         // Use bounded channel to prevent memory exhaustion from fast clients
         let (tx, mut rx) = tokio::sync::mpsc::channel::<ClientMessage>(256);

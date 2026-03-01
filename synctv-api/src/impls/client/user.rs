@@ -63,6 +63,13 @@ impl ClientApiImpl {
     ) -> Result<crate::proto::client::SetPasswordResponse, ApiError> {
         let uid = UserId::from_string(user_id.to_string());
 
+        // B10 FIX: Validate new password strength at the API layer, consistent with
+        // the register endpoint. The core service also validates, but the HTTP-level
+        // check catches common/weak passwords (dictionary check) and provides
+        // user-friendly error messages before hitting the database.
+        crate::http::validation::validate_password(&req.new_password)
+            .map_err(|e| ApiError::InvalidInput(e.to_string()))?;
+
         // Verify old password before allowing change
         self.user_service
             .change_password(&uid, &req.old_password, &req.new_password)

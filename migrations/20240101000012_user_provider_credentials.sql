@@ -10,7 +10,7 @@ CREATE TABLE user_media_provider_credentials (
     provider VARCHAR(32) NOT NULL,  -- bilibili, alist, emby
 
     -- Server Identifier (required, distinguishes different servers/accounts)
-    server_id VARCHAR(64) NOT NULL,  -- Alist/Emby: MD5(host), Bilibili: "bilibili" or account id
+    server_id VARCHAR(64) NOT NULL,  -- Alist/Emby: SHA-256(host), Bilibili: "bilibili" or account id
 
     -- Associated Provider Instance (optional)
     provider_instance_name VARCHAR(64),
@@ -48,7 +48,7 @@ CREATE TRIGGER update_user_media_provider_credentials_updated_at
 -- Comments
 COMMENT ON TABLE user_media_provider_credentials IS 'User credentials for media providers. Credential data is encrypted at rest when encryption key is configured.';
 COMMENT ON COLUMN user_media_provider_credentials.provider IS 'Media provider type (bilibili, alist, emby)';
-COMMENT ON COLUMN user_media_provider_credentials.server_id IS 'Server identifier (required): Bilibili uses "bilibili" (one per user), Alist/Emby use MD5(host)';
+COMMENT ON COLUMN user_media_provider_credentials.server_id IS 'Server identifier (required): Bilibili uses "bilibili" (one per user), Alist/Emby use SHA-256(host)';
 COMMENT ON COLUMN user_media_provider_credentials.provider_instance_name IS 'Associated media provider instance name (optional, for specifying parsing instance)';
 COMMENT ON COLUMN user_media_provider_credentials.credential_data IS 'Credential data (JSONB). Encrypted at rest via AES-256-GCM when SYNCTV_CREDENTIAL_ENCRYPTION_KEY is configured.';
 COMMENT ON COLUMN user_media_provider_credentials.expires_at IS 'Credential expiration time (optional, for tokens/cookies with TTL)';

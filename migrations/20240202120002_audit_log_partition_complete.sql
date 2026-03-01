@@ -187,11 +187,14 @@ BEGIN
     cutoff_date := CURRENT_DATE - (keep_months || ' months')::INTERVAL;
 
     -- 查找需要删除的分区
+    -- Defense-in-depth: regex ensures we only drop actual partition tables
+    -- (audit_logs_YYYY_MM) and never ancillary tables like indexes or constraints.
     FOR partition_record IN
         SELECT tablename
         FROM pg_tables
         WHERE schemaname = 'public'
           AND tablename LIKE 'audit_logs_%'
+          AND tablename ~ '^audit_logs_[0-9]{4}_[0-9]{2}$'
           AND tablename < 'audit_logs_' || TO_CHAR(cutoff_date, 'YYYY_MM')
         ORDER BY tablename
     LOOP

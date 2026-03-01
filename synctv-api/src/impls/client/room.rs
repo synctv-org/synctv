@@ -40,11 +40,13 @@ impl ClientApiImpl {
         &self,
         req: crate::proto::client::ListRoomsRequest,
     ) -> Result<crate::proto::client::ListRoomsResponse, ApiError> {
+        // Clamp negative i32 values to valid u32 range before passing to PageParams.
+        // Without this, -1i32 as u32 wraps to u32::MAX, causing absurd page numbers.
+        let page = u32::try_from(req.page).unwrap_or(1);
+        let page_size = u32::try_from(req.page_size).unwrap_or(1);
+
         let mut query = synctv_core::models::RoomListQuery {
-            pagination: synctv_core::models::PageParams::new(
-                Some(req.page as u32),
-                Some(req.page_size as u32),
-            ),
+            pagination: synctv_core::models::PageParams::new(Some(page), Some(page_size)),
             ..Default::default()
         };
         if !req.search.is_empty() {
@@ -82,8 +84,10 @@ impl ClientApiImpl {
         page_size: i32,
     ) -> Result<crate::proto::client::ListParticipatedRoomsResponse, ApiError> {
         let uid = UserId::from_string(user_id.to_string());
-        let pagination =
-            synctv_core::models::PageParams::new(Some(page as u32), Some(page_size as u32));
+        // Clamp negative i32 values to valid u32 range before passing to PageParams.
+        let page = u32::try_from(page).unwrap_or(1);
+        let page_size = u32::try_from(page_size).unwrap_or(1);
+        let pagination = synctv_core::models::PageParams::new(Some(page), Some(page_size));
         let (rooms, total) = self
             .room_service
             .list_joined_rooms_with_details(&uid, pagination)
@@ -98,9 +102,30 @@ impl ClientApiImpl {
             .room_connection_count_distributed_batch(&room_id_refs)
             .await;
 
+        // Batch-fetch room settings for three-layer permission calculation (A6 fix)
+        let room_id_strs: Vec<&str> = rooms.iter().map(|(r, _, _, _)| r.id.as_str()).collect();
+        let room_settings_map = self
+            .room_service
+            .get_room_settings_batch(&room_id_strs)
+            .await
+            .unwrap_or_default();
+
         let mut room_list = Vec::with_capacity(rooms.len());
         for ((room, role, _status, _member_count), count) in rooms.iter().zip(counts) {
-            let permissions = role.permissions().0;
+            // A6 fix: Use proper three-layer permission calculation instead of
+            // role.permissions() which only gives role-level defaults.
+            // calculate_role_default_permissions applies:
+            //   1. Global default permissions (from SettingsRegistry)
+            //   2. Room-level overrides (room_added / room_removed)
+            let settings = room_settings_map
+                .get(room.id.as_str())
+                .cloned()
+                .unwrap_or_default();
+            let permissions = self
+                .room_service
+                .permission_service()
+                .calculate_role_default_permissions(role, &settings)
+                .0;
             let member_count: Option<i32> = count.try_into().ok();
             room_list.push(crate::proto::client::RoomWithRole {
                 room: Some(room_to_proto_basic(room, None, member_count)),
@@ -124,6 +149,12 @@ impl ClientApiImpl {
         req.name = crate::http::validation::validate_room_name(&req.name)
             .map_err(|e| ApiError::InvalidInput(e.to_string()))?;
 
+        // Validate and sanitize room description against ROOM_DESCRIPTION_MAX
+        if !req.description.is_empty() {
+            req.description = crate::http::validation::validate_room_description(&req.description)
+                .map_err(|e| ApiError::InvalidInput(e.to_string()))?;
+        }
+
         let uid = UserId::from_string(user_id.to_string());
 
         let settings = if req.settings.is_empty() {
@@ -144,10 +175,11 @@ impl ClientApiImpl {
             .await
             .map_err(ApiError::from)?;
 
-        // Publish RoomCreated cluster event for cross-replica propagation
+        // Publish RoomCreated cluster event for cross-replica propagation (non-blocking)
         if let Some(ref tx) = self.redis_publish_tx {
-            if let Err(e) = tx
-                .send(synctv_cluster::sync::PublishRequest {
+            crate::impls::try_publish_cluster_event(
+                tx,
+                synctv_cluster::sync::PublishRequest {
                     event: synctv_cluster::sync::ClusterEvent::RoomCreated {
                         event_id: nanoid::nanoid!(16),
                         room_id: room.id.clone(),
@@ -155,11 +187,8 @@ impl ClientApiImpl {
                         creator_id: uid,
                         timestamp: chrono::Utc::now(),
                     },
-                })
-                .await
-            {
-                tracing::error!(room_id = %room.id.as_str(), "Failed to publish RoomCreated cluster event: {e}");
-            }
+                },
+            );
         }
 
         let member_count = self
@@ -309,10 +338,11 @@ impl ClientApiImpl {
 
         // Publish UserLeft cluster event so other replicas also disconnect this user.
         // Using UserLeft (not KickUserFromRoom) to correctly distinguish voluntary
-        // departure from administrative kicks in audit logs.
+        // departure from administrative kicks in audit logs. (non-blocking)
         if let Some(ref tx) = self.redis_publish_tx {
-            if let Err(e) = tx
-                .send(synctv_cluster::sync::PublishRequest {
+            crate::impls::try_publish_cluster_event(
+                tx,
+                synctv_cluster::sync::PublishRequest {
                     event: synctv_cluster::sync::ClusterEvent::UserLeft {
                         event_id: nanoid::nanoid!(16),
                         room_id: rid,
@@ -320,11 +350,8 @@ impl ClientApiImpl {
                         username,
                         timestamp: chrono::Utc::now(),
                     },
-                })
-                .await
-            {
-                tracing::error!("Failed to publish UserLeft cluster event for leave_room: {e}");
-            }
+                },
+            );
         }
 
         Ok(crate::proto::client::LeaveRoomResponse { success: true })
@@ -349,21 +376,19 @@ impl ClientApiImpl {
             .map_err(ApiError::from)?;
 
         // 2. Publish RoomDeleted cluster event so other replicas disconnect
-        //    their users. Only reached after successful DB deletion.
+        //    their users. Only reached after successful DB deletion. (non-blocking)
         if let Some(ref tx) = self.redis_publish_tx {
-            if let Err(e) = tx
-                .send(synctv_cluster::sync::PublishRequest {
+            crate::impls::try_publish_cluster_event(
+                tx,
+                synctv_cluster::sync::PublishRequest {
                     event: synctv_cluster::sync::ClusterEvent::RoomDeleted {
                         event_id: nanoid::nanoid!(16),
                         room_id: rid.clone(),
                         deleted_by: uid,
                         timestamp: chrono::Utc::now(),
                     },
-                })
-                .await
-            {
-                tracing::error!(room_id = %rid.as_str(), "Failed to publish RoomDeleted cluster event: {e}");
-            }
+                },
+            );
         }
 
         // 3. Force disconnect all local connections in the deleted room
@@ -406,7 +431,7 @@ impl ClientApiImpl {
             .await
             .map_err(ApiError::from)?;
 
-        // Publish RoomSettingsChanged cluster event for cross-replica propagation
+        // Publish RoomSettingsChanged cluster event for cross-replica propagation (non-blocking)
         if let Some(ref tx) = self.redis_publish_tx {
             let username = self
                 .user_service
@@ -415,8 +440,9 @@ impl ClientApiImpl {
                 .map(|u| u.username)
                 .unwrap_or_default();
 
-            if let Err(e) = tx
-                .send(synctv_cluster::sync::PublishRequest {
+            crate::impls::try_publish_cluster_event(
+                tx,
+                synctv_cluster::sync::PublishRequest {
                     event: synctv_cluster::sync::ClusterEvent::RoomSettingsChanged {
                         event_id: nanoid::nanoid!(16),
                         room_id: rid.clone(),
@@ -425,11 +451,8 @@ impl ClientApiImpl {
                         settings_json: req.settings.clone(),
                         timestamp: chrono::Utc::now(),
                     },
-                })
-                .await
-            {
-                tracing::error!(room_id = %rid.as_str(), "Failed to publish RoomSettingsChanged cluster event: {e}");
-            }
+                },
+            );
         }
 
         // Get updated room
@@ -494,20 +517,7 @@ impl ClientApiImpl {
             .map_err(|e| ApiError::Internal(format!("Failed to update password: {e}")))?;
 
         // Invalidate room cache on other replicas so password check uses fresh data
-        if let Some(ref tx) = self.redis_publish_tx {
-            crate::impls::try_publish_cluster_event(
-                tx,
-                synctv_cluster::sync::PublishRequest {
-                    event: synctv_cluster::sync::ClusterEvent::CacheInvalidate {
-                        event_id: nanoid::nanoid!(16),
-                        targets: vec![synctv_cluster::sync::CacheTarget::Room {
-                            room_id: rid.as_str().to_string(),
-                        }],
-                        timestamp: chrono::Utc::now(),
-                    },
-                },
-            );
-        }
+        self.publish_room_cache_invalidation(&rid);
 
         Ok(crate::proto::client::SetRoomPasswordResponse { success: true })
     }
@@ -645,7 +655,7 @@ impl ClientApiImpl {
             .await
             .map_err(ApiError::from)?;
 
-        // Broadcast RoomSettingsChanged cluster event for cross-replica propagation
+        // Broadcast RoomSettingsChanged cluster event for cross-replica propagation (non-blocking)
         if let Some(ref tx) = self.redis_publish_tx {
             let username = self
                 .user_service
@@ -654,8 +664,9 @@ impl ClientApiImpl {
                 .map(|u| u.username)
                 .unwrap_or_default();
 
-            if let Err(e) = tx
-                .send(synctv_cluster::sync::PublishRequest {
+            crate::impls::try_publish_cluster_event(
+                tx,
+                synctv_cluster::sync::PublishRequest {
                     event: synctv_cluster::sync::ClusterEvent::RoomSettingsChanged {
                         event_id: nanoid::nanoid!(16),
                         room_id: rid,
@@ -664,13 +675,8 @@ impl ClientApiImpl {
                         settings_json: settings_json.as_bytes().to_vec(),
                         timestamp: chrono::Utc::now(),
                     },
-                })
-                .await
-            {
-                tracing::error!(
-                    "Failed to publish RoomSettingsChanged cluster event for reset: {e}"
-                );
-            }
+                },
+            );
         }
 
         Ok(crate::proto::client::ResetRoomSettingsResponse {
@@ -687,12 +693,13 @@ impl ClientApiImpl {
         let uid = UserId::from_string(user_id.to_string());
 
         let pagination = synctv_core::models::PageParams::new(
-            Some(if req.page == 0 { 1 } else { req.page as u32 }),
-            Some(if req.page_size == 0 || req.page_size > 50 {
-                10
-            } else {
-                req.page_size as u32
-            }),
+            Some(u32::try_from(req.page).unwrap_or(1)),
+            Some(
+                u32::try_from(req.page_size)
+                    .ok()
+                    .filter(|&ps| ps > 0 && ps <= 50)
+                    .unwrap_or(10),
+            ),
         );
 
         let (rooms_with_count, total) = self
@@ -792,7 +799,7 @@ impl ClientApiImpl {
         &self,
         req: crate::proto::client::GetHotRoomsRequest,
     ) -> Result<crate::proto::client::GetHotRoomsResponse, ApiError> {
-        let limit = if req.limit == 0 || req.limit > 50 {
+        let limit = if req.limit <= 0 || req.limit > 50 {
             10
         } else {
             i64::from(req.limit)
@@ -932,7 +939,7 @@ impl ClientApiImpl {
         // Collect unique user IDs to batch fetch usernames
         let user_ids: Vec<synctv_core::models::UserId> = messages
             .iter()
-            .map(|m| m.user_id.clone())
+            .filter_map(|m| m.user_id.clone())
             .collect::<std::collections::HashSet<_>>()
             .into_iter()
             .collect();
@@ -951,15 +958,22 @@ impl ClientApiImpl {
         let proto_messages = messages
             .into_iter()
             .map(|m| {
-                let username = username_map
-                    .get(m.user_id.as_str())
-                    .cloned()
-                    .unwrap_or_else(|| format!("user_{}", m.user_id.as_str()));
+                let (user_id_str, username) = match &m.user_id {
+                    Some(uid) => {
+                        let uid_str = uid.as_str().to_string();
+                        let name = username_map
+                            .get(&uid_str)
+                            .cloned()
+                            .unwrap_or_else(|| format!("user_{uid_str}"));
+                        (uid_str, name)
+                    }
+                    None => (String::new(), "[deleted]".to_string()),
+                };
 
                 crate::proto::client::ChatMessageReceive {
                     id: m.id.clone(),
                     room_id: m.room_id.as_str().to_string(),
-                    user_id: m.user_id.as_str().to_string(),
+                    user_id: user_id_str,
                     username,
                     content: m.content,
                     timestamp: m.created_at.timestamp(),

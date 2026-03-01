@@ -90,7 +90,11 @@ impl PermissionService {
             settings_registry,
             invalidation_service: None,
             cache_degraded: Arc::new(AtomicBool::new(false)),
-            last_flush_time: Arc::new(parking_lot::Mutex::new(Instant::now())),
+            last_flush_time: Arc::new(parking_lot::Mutex::new(
+                Instant::now()
+                    .checked_sub(Duration::from_secs(Self::FLUSH_RATE_LIMIT_SECS))
+                    .unwrap_or(Instant::now()),
+            )),
             degradation_started: Arc::new(parking_lot::Mutex::new(None)),
         }
     }
@@ -288,7 +292,11 @@ impl PermissionService {
             settings_registry,
             invalidation_service: None,
             cache_degraded: Arc::new(AtomicBool::new(false)),
-            last_flush_time: Arc::new(parking_lot::Mutex::new(Instant::now())),
+            last_flush_time: Arc::new(parking_lot::Mutex::new(
+                Instant::now()
+                    .checked_sub(Duration::from_secs(Self::FLUSH_RATE_LIMIT_SECS))
+                    .unwrap_or(Instant::now()),
+            )),
             degradation_started: Arc::new(parking_lot::Mutex::new(None)),
         }
     }
@@ -767,7 +775,13 @@ mod tests {
             settings_registry: None,
             invalidation_service: None,
             cache_degraded: Arc::new(AtomicBool::new(false)),
-            last_flush_time: Arc::new(parking_lot::Mutex::new(Instant::now())),
+            last_flush_time: Arc::new(parking_lot::Mutex::new(
+                Instant::now()
+                    .checked_sub(Duration::from_secs(
+                        PermissionService::FLUSH_RATE_LIMIT_SECS,
+                    ))
+                    .unwrap_or(Instant::now()),
+            )),
             degradation_started: Arc::new(parking_lot::Mutex::new(None)),
         }
     }
@@ -1415,5 +1429,37 @@ mod tests {
         // Replace with second repo - should work without panicking
         service.set_room_settings_repo(settings_repo2);
         assert!(service.has_room_settings_repo());
+    }
+
+    // ========== D12: Permission first flush should be allowed immediately ==========
+
+    #[test]
+    fn test_first_flush_allowed_immediately_after_startup() {
+        let service = make_service();
+
+        // Immediately after construction, a flush should be allowed
+        // (last_flush_time is initialized to the past, not Instant::now())
+        let elapsed = service.last_flush_time.lock().elapsed();
+        assert!(
+            elapsed >= Duration::from_secs(PermissionService::FLUSH_RATE_LIMIT_SECS),
+            "First flush should be allowed immediately after startup, \
+             but elapsed={elapsed:?} < FLUSH_RATE_LIMIT_SECS={}s",
+            PermissionService::FLUSH_RATE_LIMIT_SECS
+        );
+    }
+
+    #[test]
+    fn test_flush_rate_limit_blocks_rapid_second_flush() {
+        let service = make_service();
+
+        // Simulate a flush happening "now"
+        *service.last_flush_time.lock() = Instant::now();
+
+        // Immediately after, a second flush should be blocked
+        let elapsed = service.last_flush_time.lock().elapsed();
+        assert!(
+            elapsed < Duration::from_secs(PermissionService::FLUSH_RATE_LIMIT_SECS),
+            "Second flush immediately after first should be blocked"
+        );
     }
 }

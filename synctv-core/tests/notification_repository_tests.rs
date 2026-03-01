@@ -277,3 +277,180 @@ async fn test_list_by_user_with_count_returns_correct_total() {
     assert_eq!(notifications.len(), 2, "Page should have 2 items");
     assert_eq!(total, 5, "Total count should be 5");
 }
+
+// ─── C2: Partition pruning tests for notification queries ─────────────
+
+/// Verify that list_by_user_with_count includes created_at lower bound
+/// for partition pruning. Without it, PostgreSQL scans all partitions.
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_list_by_user_with_count_has_partition_pruning() {
+    let (_container, pool) = create_test_pool().await;
+    let notif_repo = NotificationRepository::new(pool.clone());
+
+    let user = create_user(&pool, "notif_prune_list").await;
+
+    // Insert a notification older than 6 months via raw SQL
+    let old_date = Utc::now() - Duration::days(200);
+    sqlx::query(
+        r"INSERT INTO notifications (id, user_id, type, title, content, data, is_read, created_at, updated_at)
+          VALUES (gen_random_uuid(), $1, 'system_announcement', 'Old Notif', 'old', '{}', false, $2, $2)",
+    )
+    .bind(user.id.as_str())
+    .bind(old_date)
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    // Insert a recent notification
+    notif_repo
+        .create(&make_notif_request(&user.id, "Recent"))
+        .await
+        .unwrap();
+
+    let query = NotificationListQuery {
+        pagination: PageParams::default(),
+        is_read: None,
+        notification_type: None,
+    };
+
+    let (notifications, total) = notif_repo
+        .list_by_user_with_count(&user.id, &query)
+        .await
+        .unwrap();
+
+    // Only the recent notification should be returned (old one outside 6-month window)
+    assert_eq!(total, 1, "Old notification outside 6-month window should be excluded");
+    assert_eq!(notifications.len(), 1);
+    assert_eq!(notifications[0].title, "Recent");
+}
+
+/// Verify that count_by_user includes created_at lower bound for partition pruning.
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_count_by_user_has_partition_pruning() {
+    let (_container, pool) = create_test_pool().await;
+    let notif_repo = NotificationRepository::new(pool.clone());
+
+    let user = create_user(&pool, "notif_prune_count").await;
+
+    // Insert a notification older than 6 months
+    let old_date = Utc::now() - Duration::days(200);
+    sqlx::query(
+        r"INSERT INTO notifications (id, user_id, type, title, content, data, is_read, created_at, updated_at)
+          VALUES (gen_random_uuid(), $1, 'system_announcement', 'Old', 'old', '{}', false, $2, $2)",
+    )
+    .bind(user.id.as_str())
+    .bind(old_date)
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    // Insert a recent one
+    notif_repo
+        .create(&make_notif_request(&user.id, "Recent"))
+        .await
+        .unwrap();
+
+    let count = notif_repo.count_by_user(&user.id, None, None).await.unwrap();
+    assert_eq!(count, 1, "Old notification outside 6-month window should not be counted");
+}
+
+/// Verify that count_unread includes created_at lower bound for partition pruning.
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_count_unread_has_partition_pruning() {
+    let (_container, pool) = create_test_pool().await;
+    let notif_repo = NotificationRepository::new(pool.clone());
+
+    let user = create_user(&pool, "notif_prune_unread").await;
+
+    // Insert an old unread notification (> 6 months)
+    let old_date = Utc::now() - Duration::days(200);
+    sqlx::query(
+        r"INSERT INTO notifications (id, user_id, type, title, content, data, is_read, created_at, updated_at)
+          VALUES (gen_random_uuid(), $1, 'system_announcement', 'Old Unread', 'old', '{}', false, $2, $2)",
+    )
+    .bind(user.id.as_str())
+    .bind(old_date)
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    // Insert a recent unread notification
+    notif_repo
+        .create(&make_notif_request(&user.id, "Recent Unread"))
+        .await
+        .unwrap();
+
+    let count = notif_repo.count_unread(&user.id).await.unwrap();
+    assert_eq!(count, 1, "Old unread notification outside 6-month window should not be counted");
+}
+
+/// Verify that mark_as_read includes created_at lower bound for partition pruning.
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_mark_as_read_has_partition_pruning() {
+    let (_container, pool) = create_test_pool().await;
+    let notif_repo = NotificationRepository::new(pool.clone());
+
+    let user = create_user(&pool, "notif_prune_mark").await;
+
+    // Create a recent notification and mark as read - should work
+    let notif = notif_repo
+        .create(&make_notif_request(&user.id, "Recent"))
+        .await
+        .unwrap();
+
+    let affected = notif_repo
+        .mark_as_read(&user.id, &[notif.id])
+        .await
+        .unwrap();
+    assert_eq!(affected, 1, "Should mark recent notification as read");
+}
+
+/// Verify that delete includes created_at lower bound for partition pruning.
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_delete_has_partition_pruning() {
+    let (_container, pool) = create_test_pool().await;
+    let notif_repo = NotificationRepository::new(pool.clone());
+
+    let user = create_user(&pool, "notif_prune_delete").await;
+
+    // Create and delete a recent notification - should work
+    let notif = notif_repo
+        .create(&make_notif_request(&user.id, "To Delete"))
+        .await
+        .unwrap();
+
+    notif_repo.delete(&user.id, notif.id).await.unwrap();
+
+    // Verify it was deleted
+    let fetched = notif_repo.get_by_id(notif.id).await.unwrap();
+    assert!(fetched.is_none(), "Notification should be deleted");
+}
+
+/// Verify that delete_all_read includes created_at lower bound for partition pruning.
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_delete_all_read_has_partition_pruning() {
+    let (_container, pool) = create_test_pool().await;
+    let notif_repo = NotificationRepository::new(pool.clone());
+
+    let user = create_user(&pool, "notif_prune_del_read").await;
+
+    // Create a notification and mark as read
+    let notif = notif_repo
+        .create(&make_notif_request(&user.id, "Read"))
+        .await
+        .unwrap();
+    notif_repo
+        .mark_as_read(&user.id, &[notif.id])
+        .await
+        .unwrap();
+
+    // Delete all read - should succeed
+    let deleted = notif_repo.delete_all_read(&user.id).await.unwrap();
+    assert_eq!(deleted, 1, "Should delete the read notification");
+}

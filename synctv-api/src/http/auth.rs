@@ -4,7 +4,7 @@
 
 use axum::{extract::State, Json};
 
-use super::{AppResult, AppState};
+use super::{AppError, AppResult, AppState};
 use crate::proto::client::{
     LoginRequest, LoginResponse, RefreshTokenRequest, RefreshTokenResponse, RegisterRequest,
     RegisterResponse,
@@ -104,19 +104,23 @@ pub async fn logout(
     State(state): State<AppState>,
     headers: axum::http::HeaderMap,
 ) -> AppResult<Json<LogoutResponse>> {
-    // Extract raw Bearer token from Authorization header
-    let raw_token = headers
+    // D13 FIX: Return an error when no valid Authorization header is present.
+    // Previously, the handler returned success: true even without a token,
+    // which confused clients and did not actually blacklist anything.
+    let auth_value = headers
         .get(axum::http::header::AUTHORIZATION)
-        .and_then(|v| v.to_str().ok())
-        .and_then(|v| synctv_core::service::auth::JwtValidator::extract_bearer_token(v).ok());
+        .ok_or_else(|| AppError::unauthorized("Missing Authorization header"))?
+        .to_str()
+        .map_err(|_| AppError::unauthorized("Invalid Authorization header encoding"))?;
 
-    if let Some(token) = raw_token {
-        state
-            .client_api
-            .logout(&token)
-            .await
-            .map_err(super::error::map_api_error)?;
-    }
+    let token = synctv_core::service::auth::JwtValidator::extract_bearer_token(auth_value)
+        .map_err(|e| AppError::unauthorized(format!("{e}")))?;
+
+    state
+        .client_api
+        .logout(&token)
+        .await
+        .map_err(super::error::map_api_error)?;
 
     Ok(Json(LogoutResponse { success: true }))
 }

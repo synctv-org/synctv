@@ -35,6 +35,7 @@ use crate::http::{AppError, AppState};
 use crate::impls::messaging::{MessageSender, ProtoCodec, StreamMessage, StreamMessageHandler};
 use crate::proto::client::{ClientMessage, ServerMessage};
 use synctv_core::models::{RoomId, UserId};
+use synctv_core::service::auth::JwtValidator;
 use synctv_core::service::{ContentFilter, RateLimitConfig};
 
 /// Threshold for consecutive slow-client drops before disconnecting them
@@ -143,22 +144,27 @@ async fn extract_user_id(
     let validator = &state.jwt_validator;
 
     // First, try Authorization header (most secure)
+    // B8 FIX: Use JwtValidator::extract_bearer_token for case-insensitive "Bearer "
+    // matching, consistent with the HTTP AuthUser extractor. Also return an error
+    // when the header is present but has an invalid format, instead of silently
+    // falling through to query parameters.
     if let Some(auth_header) = headers.get("Authorization") {
         if let Ok(auth_str) = auth_header.to_str() {
-            if let Some(token) = auth_str.strip_prefix("Bearer ") {
-                let claims = validator
-                    .validate_token(token)
-                    .map_err(|e| AppError::unauthorized(format!("Invalid token: {e}")))?;
+            let token = JwtValidator::extract_bearer_token(auth_str)
+                .map_err(|e| AppError::unauthorized(format!("Invalid Authorization header: {e}")))?;
 
-                // Run SecurityPipeline checks (password version, banned/deleted status)
-                let authenticated = state
-                    .security_pipeline
-                    .check(&claims)
-                    .await
-                    .map_err(|e| AppError::unauthorized(format!("{e}")))?;
+            let claims = validator
+                .validate_token(&token)
+                .map_err(|e| AppError::unauthorized(format!("Invalid token: {e}")))?;
 
-                return Ok((authenticated.user_id, AuthMethod::Header));
-            }
+            // Run SecurityPipeline checks (password version, banned/deleted status)
+            let authenticated = state
+                .security_pipeline
+                .check(&claims)
+                .await
+                .map_err(|e| AppError::unauthorized(format!("{e}")))?;
+
+            return Ok((authenticated.user_id, AuthMethod::Header));
         }
     }
 

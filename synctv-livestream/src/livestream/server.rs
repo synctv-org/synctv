@@ -117,17 +117,28 @@ impl LivestreamHandle {
         // Shutdown in reverse startup order
         info!("Starting shutdown of livestream components...");
 
-        // 1. Abort external publish cleanup (periodic timer, no graceful signal)
+        // 1. D4 fix: Stop all managed stream pools to prevent zombie streams.
+        // This must happen before aborting cleanup tasks so in-flight stop operations
+        // can complete properly.
+        info!("Stopping all managed pull streams...");
+        self.pull_manager.stop_all().await;
+        info!("All managed pull streams stopped");
+
+        info!("Stopping all managed external publish streams...");
+        self.infrastructure.external_publish_manager.stop_all().await;
+        info!("All managed external publish streams stopped");
+
+        // 2. Abort external publish cleanup (periodic timer, no graceful signal)
         self.external_publish_cleanup.abort();
         let _ = (&mut self.external_publish_cleanup).await;
         info!("External publish cleanup stopped");
 
-        // 2. Abort pull manager cleanup (periodic timer, no graceful signal)
+        // 3. Abort pull manager cleanup (periodic timer, no graceful signal)
         self.pull_manager_cleanup.abort();
         let _ = (&mut self.pull_manager_cleanup).await;
         info!("Pull manager cleanup stopped");
 
-        // 3. Stop the inner re-registration task gracefully via cancellation token
+        // 4. Stop the inner re-registration task gracefully via cancellation token
         self.reregister_cancel_token.cancel();
         if timeout(timeout_duration, &mut self.reregister_task_handle)
             .await
@@ -140,12 +151,13 @@ impl LivestreamHandle {
             all_graceful = false;
         }
 
-        // 4. Abort publisher manager event loop (no graceful signal)
+        // 5. Abort publisher manager event loop (no graceful signal)
         self.publisher_manager_handle.abort();
         let _ = (&mut self.publisher_manager_handle).await;
         info!("Publisher manager stopped");
 
-        // 5. Stop HLS remuxer gracefully via cancellation token, with timeout fallback
+        // 6. Stop HLS tasks gracefully: first cancel the token, then await both
+        // the remuxer and the cleanup task.
         self.hls_shutdown_token.cancel();
         if timeout(timeout_duration, &mut self.hls_remuxer_handle)
             .await
@@ -158,7 +170,20 @@ impl LivestreamHandle {
             all_graceful = false;
         }
 
-        // 6. Abort StreamHub (last, as other components depend on it).
+        // D4/Minor fix: Await HLS cleanup task during graceful shutdown
+        // (previously only aborted on non-graceful shutdown path).
+        if timeout(timeout_duration, &mut self.hls_cleanup_handle)
+            .await
+            .is_ok()
+        {
+            info!("HLS cleanup task stopped gracefully");
+        } else {
+            warn!("HLS cleanup task shutdown timed out, aborting");
+            self.hls_cleanup_handle.abort();
+            all_graceful = false;
+        }
+
+        // 7. Abort StreamHub (last, as other components depend on it).
         // The RTMP server is managed inside the hub loop and will be
         // cancelled automatically when the hub task is aborted.
         self.hub_handle.abort();
@@ -406,11 +431,12 @@ impl LivestreamServer {
                 match stop_streams_tx.try_send(stop_done_tx) {
                     Ok(()) => {
                         // Wait for stop_all() to complete with a timeout.
-                        // The timeout ensures we don't block indefinitely if the
-                        // receiver task is stuck. 100ms is enough time for most
-                        // stream cleanup operations to complete.
+                        // D5 fix: Increased from 100ms to 5000ms. The original 100ms was
+                        // too short for streams that need to cleanly disconnect from
+                        // remote servers or flush pending data. 5 seconds gives enough
+                        // time for most cleanup operations while preventing indefinite blocks.
                         match tokio::time::timeout(
-                            std::time::Duration::from_millis(100),
+                            std::time::Duration::from_millis(5000),
                             stop_done_rx,
                         )
                         .await
@@ -422,7 +448,7 @@ impl LivestreamServer {
                                 warn!("StreamHub restart: stop_done sender dropped, proceeding anyway");
                             }
                             Err(_) => {
-                                warn!("StreamHub restart: stop_all() timed out after 100ms, proceeding anyway");
+                                warn!("StreamHub restart: stop_all() timed out after 5000ms, proceeding anyway");
                             }
                         }
                     }

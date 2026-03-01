@@ -250,6 +250,38 @@ impl ClientApiImpl {
         self
     }
 
+    /// Build a `PublishRequest` for room cache invalidation.
+    ///
+    /// This is a pure function that constructs the event without any I/O,
+    /// making it easily testable.
+    #[must_use]
+    pub fn build_room_cache_invalidation_request(
+        room_id: &synctv_core::models::RoomId,
+    ) -> synctv_cluster::sync::PublishRequest {
+        synctv_cluster::sync::PublishRequest {
+            event: synctv_cluster::sync::ClusterEvent::CacheInvalidate {
+                event_id: nanoid::nanoid!(16),
+                targets: vec![synctv_cluster::sync::CacheTarget::Room {
+                    room_id: room_id.as_str().to_string(),
+                }],
+                timestamp: chrono::Utc::now(),
+            },
+        }
+    }
+
+    /// Publish a room cache invalidation event to other cluster replicas.
+    ///
+    /// Uses non-blocking `try_publish_cluster_event` internally (D8).
+    /// No-op when Redis is not configured.
+    fn publish_room_cache_invalidation(&self, room_id: &synctv_core::models::RoomId) {
+        if let Some(ref tx) = self.redis_publish_tx {
+            crate::impls::try_publish_cluster_event(
+                tx,
+                Self::build_room_cache_invalidation_request(room_id),
+            );
+        }
+    }
+
     /// Kick a stream both locally and cluster-wide via Redis Pub/Sub.
     ///
     /// Used after media deletion to terminate any active RTMP stream.

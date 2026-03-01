@@ -292,6 +292,63 @@ impl AuthCallback for SyncTvRtmpAuth {
             }
         }
     }
+
+    /// A5: Rollback publisher registration when `StreamHub` publish fails after auth.
+    ///
+    /// Called when `on_publish` succeeded (registered in Redis, inserted tracker entry,
+    /// wrote user_streams hash) but a later step (e.g., `StreamHub` publish) failed.
+    /// Cleans up all state changes made during `on_publish`:
+    /// 1. Unregister publisher from Redis
+    /// 2. Remove user->stream mapping from local tracker
+    /// 3. Remove cross-replica `rtmp:user_streams` Redis hash field
+    async fn on_publish_rollback(&self, app_name: &str, stream_name: &str, _query: Option<&str>) {
+        tracing::warn!(
+            room_id = %app_name,
+            media_id = %stream_name,
+            "Rolling back publisher registration due to StreamHub failure"
+        );
+
+        // 1. Unregister publisher from Redis
+        if let Err(e) = self.registry.unregister_publisher(app_name, stream_name).await {
+            tracing::warn!(
+                room_id = %app_name,
+                media_id = %stream_name,
+                error = %e,
+                "Failed to rollback publisher registration from Redis"
+            );
+        }
+
+        // 2. Remove user->stream mapping from local tracker
+        let tracked = self
+            .user_stream_tracker
+            .remove_by_app_stream(app_name, stream_name);
+
+        // 3. Clean up cross-replica HSET entry
+        if let Some((ref user_id, _, _)) = tracked {
+            if let Some(ref conn) = self.redis_conn {
+                let mut conn = conn.clone();
+                let key = self.user_streams_key();
+                let result: Result<(), redis::RedisError> = redis::cmd("HDEL")
+                    .arg(&key)
+                    .arg(user_id.as_str())
+                    .query_async(&mut conn)
+                    .await;
+                if let Err(e) = result {
+                    tracing::warn!(
+                        user_id = %user_id,
+                        "Failed to remove rtmp:user_streams entry on rollback (non-fatal): {}",
+                        e
+                    );
+                }
+            }
+        }
+
+        tracing::info!(
+            room_id = %app_name,
+            media_id = %stream_name,
+            "Publisher registration rolled back successfully"
+        );
+    }
 }
 
 /// Extract and URL-decode the `token` parameter from a query string.

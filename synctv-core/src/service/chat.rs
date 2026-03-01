@@ -219,8 +219,14 @@ impl ChatService {
             .await?
             .ok_or_else(|| Error::NotFound("Message not found".to_string()))?;
 
-        // Check if user is the sender or has DELETE_CHAT permission
-        if message.user_id != *user_id {
+        // Check if user is the sender or has DELETE_CHAT permission.
+        // If the original author has been deleted (user_id is None), treat as
+        // non-owner and require DELETE_CHAT permission.
+        let is_sender = message
+            .user_id
+            .as_ref()
+            .map_or(false, |uid| uid == user_id);
+        if !is_sender {
             // Not the sender, check DELETE_CHAT permission via PermissionService
             self.permission_service
                 .check_permission(&message.room_id, user_id, PermissionBits::DELETE_CHAT)
@@ -291,8 +297,13 @@ impl ChatService {
             ));
         }
 
-        // Validate color format (hex color: #RRGGBB with hex digits only)
-        if !request.color.starts_with('#') || request.color.len() != 7 {
+        // Validate color format (hex color: #RRGGBB with hex digits only).
+        //
+        // We use `chars().count()` instead of `.len()` to correctly reject
+        // multi-byte UTF-8 strings that happen to have a byte-length of 7.
+        // For a valid ASCII `#RRGGBB` string, chars().count() == len() == 7,
+        // so the behavior is identical for valid input.
+        if !request.color.starts_with('#') || request.color.chars().count() != 7 {
             return Err(Error::InvalidInput("Invalid color format".to_string()));
         }
         if !request.color[1..].chars().all(|c| c.is_ascii_hexdigit()) {
@@ -300,6 +311,13 @@ impl ChatService {
                 "Invalid color format: must be hex digits".to_string(),
             ));
         }
+
+        // Get username for broadcast
+        let username = self
+            .username_cache
+            .get(&user_id)
+            .await?
+            .ok_or_else(|| Error::NotFound("User not found".to_string()))?;
 
         // Filter content
         let filtered_content = self
@@ -314,14 +332,32 @@ impl ChatService {
             "Danmaku sent"
         );
 
+        // Capture position string before moving request.position
+        let position_str = request.position.as_str();
+
         // Create danmaku message
         let danmaku = DanmakuMessage::new(
-            room_id,
-            user_id,
-            filtered_content,
+            room_id.clone(),
+            user_id.clone(),
+            filtered_content.clone(),
             request.color,
             request.position,
         );
+
+        // Broadcast danmaku message to room members
+        if let Some(ref notification_service) = self.notification_service {
+            if let Err(e) = notification_service
+                .notify_danmaku(&room_id, &user_id, &username, &filtered_content, position_str)
+                .await
+            {
+                error!(
+                    room_id = room_id.as_str(),
+                    user_id = user_id.as_str(),
+                    error = %e,
+                    "Failed to broadcast danmaku to room members"
+                );
+            }
+        }
 
         Ok(danmaku)
     }
@@ -475,9 +511,12 @@ mod tests {
         assert!("hello".len() < 500);
     }
 
-    /// Test color validation logic extracted from `send_danmaku`
+    /// Test color validation logic extracted from `send_danmaku`.
+    ///
+    /// Uses `chars().count()` instead of `.len()` to correctly reject
+    /// multi-byte UTF-8 strings that happen to have a byte-length of 7.
     fn validate_color(color: &str) -> Result<(), &'static str> {
-        if !color.starts_with('#') || color.len() != 7 {
+        if !color.starts_with('#') || color.chars().count() != 7 {
             return Err("Invalid color format");
         }
         if !color[1..].chars().all(|c| c.is_ascii_hexdigit()) {
@@ -525,5 +564,22 @@ mod tests {
     fn test_color_validation_special_chars() {
         assert!(validate_color("#<>\"'&;").is_err());
         assert!(validate_color("#script").is_err());
+    }
+
+    /// Test that multi-byte UTF-8 strings with a byte-length of 7 are rejected.
+    ///
+    /// Before the fix, `color.len() != 7` used byte-length, so a string like
+    /// "#" + two 3-byte CJK chars (7 bytes total, 3 chars) would pass the length
+    /// check. With `chars().count() != 7`, we correctly reject this.
+    #[test]
+    fn test_color_validation_multibyte_utf8_rejected() {
+        // "#" (1 byte) + 2 CJK characters (3 bytes each) = 7 bytes, but 3 chars
+        let tricky = "#\u{4E16}\u{754C}";
+        assert_eq!(tricky.len(), 7, "Should be 7 bytes");
+        assert_eq!(tricky.chars().count(), 3, "Should be 3 chars");
+        assert!(
+            validate_color(tricky).is_err(),
+            "Multi-byte string with 7 bytes but 3 chars should be rejected"
+        );
     }
 }

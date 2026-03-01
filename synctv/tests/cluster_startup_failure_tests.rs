@@ -219,3 +219,42 @@ fn test_valid_cluster_mode_config() {
         result.err()
     );
 }
+
+/// D1: Verify that `init_cluster_components` returns `Result` (not `Option`).
+///
+/// Before the D1 fix, `init_cluster_components` returned `(None, None, None)` on failure,
+/// allowing the app to silently continue in a ghost state. After the fix, it returns
+/// `Err(...)` which the caller must handle, making failures fatal when cluster is enabled.
+///
+/// This test verifies the API contract by confirming that cluster config validation
+/// catches empty Redis URL when cluster is enabled, which works in tandem with the D1 fix.
+#[test]
+fn test_cluster_enabled_requires_redis_for_node_registry() {
+    let mut config = cluster_test_config();
+    // Remove the Redis URL entirely
+    config.redis.url = String::new();
+
+    // Config validation should catch this before init_cluster_components is even called
+    let result = config.validate();
+    assert!(
+        result.is_err(),
+        "Empty Redis URL with cluster.enabled=true should fail validation"
+    );
+}
+
+/// D1: Verify that standalone mode does NOT fail when Redis is unavailable.
+///
+/// This is the complement of the D1 fix: standalone mode should NOT treat
+/// cluster component failures as fatal, because the app can run without cluster.
+#[test]
+fn test_standalone_mode_tolerates_missing_redis() {
+    let config = standalone_test_config();
+
+    // Standalone mode should pass validation even without Redis
+    let result = config.validate();
+    assert!(
+        result.is_ok(),
+        "Standalone mode should tolerate missing Redis, got error: {:?}",
+        result.err()
+    );
+}

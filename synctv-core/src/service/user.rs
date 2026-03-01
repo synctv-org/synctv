@@ -106,6 +106,35 @@ impl UserService {
         self.refresh_rate_limiter = RateLimiter::new(Some(redis_conn), key_prefix);
     }
 
+    /// Validate that a user is allowed to access the system.
+    ///
+    /// Checks for banned, pending, or soft-deleted status, and optionally
+    /// email verification. Returns a generic error message to prevent
+    /// user enumeration.
+    ///
+    /// This is shared between `login()`, `refresh_token()`, and other
+    /// authentication flows to avoid duplicating the same checks.
+    fn validate_user_access(&self, user: &User) -> Result<()> {
+        // Reject banned, pending, or soft-deleted users (generic message to prevent enumeration)
+        if user.status == UserStatus::Banned
+            || user.status == UserStatus::Pending
+            || user.deleted_at.is_some()
+        {
+            return Err(Error::Authentication("Authentication failed".to_string()));
+        }
+
+        // Check email verification when required.
+        // OAuth2 users are exempt: they authenticated via an external provider,
+        // so requiring email verification would lock them out if the provider
+        // didn't confirm their email.
+        let is_oauth2_user = user.signup_method == Some(crate::models::SignupMethod::OAuth2);
+        if self.email_verification_required && !user.email_verified && !is_oauth2_user {
+            return Err(Error::Authentication("Authentication failed".to_string()));
+        }
+
+        Ok(())
+    }
+
     /// Register a new user
     ///
     /// Uniqueness of username/email is enforced atomically by the database
@@ -391,32 +420,14 @@ impl UserService {
             }
         };
 
-        // Check if user is banned, pending, or soft-deleted (generic message to prevent enumeration)
-        if user.status == crate::models::UserStatus::Banned
-            || user.status == crate::models::UserStatus::Pending
-            || user.deleted_at.is_some()
-        {
+        // Check user status and email verification (shared with refresh_token)
+        if let Err(e) = self.validate_user_access(&user) {
             // Record failure (account is locked/deleted but attacker shouldn't know)
             // Use both username and IP tracking to prevent enumeration
-            if let Err(e) = self.brute_force.record_failure(&username, client_ip).await {
-                tracing::warn!(error = %e, "Failed to record login failure for brute-force tracking");
+            if let Err(bf_err) = self.brute_force.record_failure(&username, client_ip).await {
+                tracing::warn!(error = %bf_err, "Failed to record login failure for brute-force tracking");
             }
-            return Err(Error::Authentication("Authentication failed".to_string()));
-        }
-
-        // Check email verification when required (generic message to prevent
-        // account enumeration via different error responses).
-        //
-        // OAuth2 users are exempt: they authenticated via an external provider,
-        // so requiring email verification would lock them out if the provider
-        // didn't confirm their email. The security pipeline already checks
-        // user status (Active/Banned/Pending) which covers OAuth2 users.
-        //
-        // For non-OAuth2 users, we check !email_verified directly without
-        // checking email.is_some() to prevent account enumeration.
-        let is_oauth2_user = user.signup_method == Some(crate::models::SignupMethod::OAuth2);
-        if self.email_verification_required && !user.email_verified && !is_oauth2_user {
-            return Err(Error::Authentication("Authentication failed".to_string()));
+            return Err(e);
         }
 
         // Successful login: reset brute-force counters (username + IP)
@@ -547,23 +558,8 @@ impl UserService {
             .await?
             .ok_or_else(|| Error::Authentication("Authentication failed".to_string()))?;
 
-        // Reject banned, pending, or soft-deleted users (generic message to prevent enumeration)
-        if user.status == crate::models::UserStatus::Banned
-            || user.status == crate::models::UserStatus::Pending
-            || user.deleted_at.is_some()
-        {
-            return Err(Error::Authentication("Authentication failed".to_string()));
-        }
-
-        // Re-check email verification: if the requirement was enabled after the token was
-        // issued (or the user's email was un-verified by an admin), deny the refresh.
-        //
-        // OAuth2 users are exempt (same logic as login()) since they authenticated
-        // via an external provider. Use generic error message for consistency.
-        let is_oauth2_user = user.signup_method == Some(crate::models::SignupMethod::OAuth2);
-        if self.email_verification_required && !user.email_verified && !is_oauth2_user {
-            return Err(Error::Authentication("Authentication failed".to_string()));
-        }
+        // Check user status and email verification (shared with login)
+        self.validate_user_access(&user)?;
 
         // Reject refresh tokens issued with an old password version
         if let Some(token_pv) = claims.pv {

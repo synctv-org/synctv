@@ -248,7 +248,7 @@ impl ChatMessageFixture {
         crate::models::ChatMessage {
             id: self.id,
             room_id: self.room_id,
-            user_id: self.user_id,
+            user_id: Some(self.user_id),
             content: self.content,
             message_type: 1,
             created_at: Utc::now(),
@@ -492,7 +492,7 @@ mod tests {
             .build();
 
         assert_eq!(message.room_id, room_id);
-        assert_eq!(message.user_id, user_id);
+        assert_eq!(message.user_id, Some(user_id));
         assert_eq!(message.content, "Hello, world!");
     }
 }

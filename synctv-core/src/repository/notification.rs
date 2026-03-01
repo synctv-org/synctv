@@ -84,6 +84,9 @@ impl NotificationRepository {
     /// Uses `COUNT(*) OVER()` window function to return both the list and total count
     /// in a single query, avoiding a separate count round trip.
     /// Dynamic query building eliminates the need for separate query variants per filter combo.
+    ///
+    /// Adds a `created_at >= NOW() - INTERVAL '6 months'` filter to enable
+    /// partition pruning on the range-partitioned `notifications` table.
     pub async fn list_by_user_with_count(
         &self,
         user_id: &UserId,
@@ -98,6 +101,9 @@ impl NotificationRepository {
              FROM notifications WHERE user_id = ",
         );
         qb.push_bind(user_id.as_str());
+
+        // Partition pruning: limit scan to the retention window (6 months)
+        qb.push(" AND created_at >= NOW() - INTERVAL '6 months'");
 
         if let Some(notification_type) = &query.notification_type {
             qb.push(" AND type = ");
@@ -127,6 +133,9 @@ impl NotificationRepository {
     }
 
     /// Count notifications for a user (for pagination)
+    ///
+    /// Adds a `created_at >= NOW() - INTERVAL '6 months'` filter to enable
+    /// partition pruning on the range-partitioned `notifications` table.
     pub async fn count_by_user(
         &self,
         user_id: &UserId,
@@ -136,6 +145,9 @@ impl NotificationRepository {
         let mut qb: sqlx::QueryBuilder<sqlx::Postgres> =
             sqlx::QueryBuilder::new("SELECT COUNT(*) FROM notifications WHERE user_id = ");
         qb.push_bind(user_id.as_str());
+
+        // Partition pruning: limit scan to the retention window (6 months)
+        qb.push(" AND created_at >= NOW() - INTERVAL '6 months'");
 
         if let Some(notification_type) = notification_type {
             qb.push(" AND type = ");
@@ -152,12 +164,16 @@ impl NotificationRepository {
     }
 
     /// Get unread count for a user
+    ///
+    /// Adds a `created_at >= NOW() - INTERVAL '6 months'` filter to enable
+    /// partition pruning on the range-partitioned `notifications` table.
     pub async fn count_unread(&self, user_id: &UserId) -> Result<i64> {
         let count: i64 = sqlx::query_scalar(
             r"
             SELECT COUNT(*)
             FROM notifications
             WHERE user_id = $1 AND is_read = FALSE
+              AND created_at >= NOW() - INTERVAL '6 months'
             ",
         )
         .bind(user_id.as_str())
@@ -168,6 +184,9 @@ impl NotificationRepository {
     }
 
     /// Mark notifications as read
+    ///
+    /// Adds a `created_at >= NOW() - INTERVAL '6 months'` filter to enable
+    /// partition pruning on the range-partitioned `notifications` table.
     pub async fn mark_as_read(&self, user_id: &UserId, notification_ids: &[Uuid]) -> Result<u64> {
         if notification_ids.is_empty() {
             return Ok(0);
@@ -178,6 +197,7 @@ impl NotificationRepository {
             UPDATE notifications
             SET is_read = TRUE, updated_at = NOW()
             WHERE user_id = $1 AND id = ANY($2)
+              AND created_at >= NOW() - INTERVAL '6 months'
             ",
         )
         .bind(user_id.as_str())
@@ -189,6 +209,9 @@ impl NotificationRepository {
     }
 
     /// Mark all notifications as read before a certain time (or all if no time specified)
+    ///
+    /// Adds a `created_at >= NOW() - INTERVAL '6 months'` filter to enable
+    /// partition pruning on the range-partitioned `notifications` table.
     pub async fn mark_all_as_read(
         &self,
         user_id: &UserId,
@@ -200,6 +223,7 @@ impl NotificationRepository {
                 UPDATE notifications
                 SET is_read = TRUE, updated_at = NOW()
                 WHERE user_id = $1 AND is_read = FALSE AND created_at <= $2
+                  AND created_at >= NOW() - INTERVAL '6 months'
                 ",
             )
             .bind(user_id.as_str())
@@ -212,6 +236,7 @@ impl NotificationRepository {
                 UPDATE notifications
                 SET is_read = TRUE, updated_at = NOW()
                 WHERE user_id = $1 AND is_read = FALSE
+                  AND created_at >= NOW() - INTERVAL '6 months'
                 ",
             )
             .bind(user_id.as_str())
@@ -223,11 +248,17 @@ impl NotificationRepository {
     }
 
     /// Delete a notification
+    ///
+    /// Adds a `created_at >= NOW() - INTERVAL '6 months'` filter to enable
+    /// partition pruning on the range-partitioned `notifications` table.
+    /// Notifications older than 6 months are purged by `delete_older_than`,
+    /// so this time bound is safe for user-facing delete operations.
     pub async fn delete(&self, user_id: &UserId, notification_id: Uuid) -> Result<()> {
         let result = sqlx::query(
             r"
             DELETE FROM notifications
             WHERE user_id = $1 AND id = $2
+              AND created_at >= NOW() - INTERVAL '6 months'
             ",
         )
         .bind(user_id.as_str())
@@ -243,11 +274,15 @@ impl NotificationRepository {
     }
 
     /// Delete all read notifications for a user
+    ///
+    /// Adds a `created_at >= NOW() - INTERVAL '6 months'` filter to enable
+    /// partition pruning on the range-partitioned `notifications` table.
     pub async fn delete_all_read(&self, user_id: &UserId) -> Result<u64> {
         let result = sqlx::query(
             r"
             DELETE FROM notifications
             WHERE user_id = $1 AND is_read = TRUE
+              AND created_at >= NOW() - INTERVAL '6 months'
             ",
         )
         .bind(user_id.as_str())

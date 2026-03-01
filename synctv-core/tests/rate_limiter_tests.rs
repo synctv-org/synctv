@@ -129,10 +129,13 @@ async fn create_redis_connection_manager() -> (
     use testcontainers::runners::AsyncRunner;
     use testcontainers_modules::redis::Redis;
 
-    let container = Redis::default()
-        .start()
-        .await
-        .expect("Failed to start Redis container");
+    let container = tokio::time::timeout(
+        std::time::Duration::from_secs(30),
+        Redis::default().start(),
+    )
+    .await
+    .expect("Docker container startup timed out (is Docker running?)")
+    .expect("Failed to start Redis container");
 
     let host = container
         .get_host()

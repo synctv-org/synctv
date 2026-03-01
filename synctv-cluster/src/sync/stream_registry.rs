@@ -643,6 +643,72 @@ mod tests {
         );
     }
 
+    /// A4: Test that `spawn_ttl_refresh_task` runs periodically and can be cancelled.
+    ///
+    /// Without Redis, `refresh_ttls` is a no-op, but we verify the task lifecycle:
+    /// it starts, runs at least one cycle, and stops cleanly on cancellation.
+    #[tokio::test]
+    async fn test_ttl_refresh_task_runs_and_cancels() {
+        let registry = StreamRegistry::new("replica1".to_string());
+
+        // Register a stream so refresh_ttls has something to iterate
+        registry
+            .register_stream("app/ttl_test", "rtmp", None)
+            .await
+            .unwrap();
+
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let handle = registry.spawn_ttl_refresh_task(
+            std::time::Duration::from_millis(50),
+            cancel.clone(),
+        );
+
+        // Let the task run for a few cycles
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+        // Stream should still be registered (refresh doesn't remove streams)
+        assert!(registry.is_local_stream("app/ttl_test"));
+
+        // Cancel the task
+        cancel.cancel();
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            handle,
+        )
+        .await;
+        assert!(
+            result.is_ok(),
+            "TTL refresh task should stop within timeout after cancellation"
+        );
+    }
+
+    /// A4: Test that `spawn_active_set_cleanup_task` runs and cancels cleanly.
+    #[tokio::test]
+    async fn test_active_set_cleanup_task_runs_and_cancels() {
+        let registry = StreamRegistry::new("replica1".to_string());
+
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let handle = registry.spawn_active_set_cleanup_task(
+            std::time::Duration::from_millis(50),
+            cancel.clone(),
+        );
+
+        // Let the task run for a few cycles
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+        // Cancel and verify clean shutdown
+        cancel.cancel();
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            handle,
+        )
+        .await;
+        assert!(
+            result.is_ok(),
+            "Active set cleanup task should stop within timeout after cancellation"
+        );
+    }
+
     #[tokio::test]
     async fn test_register_unregister_consistency_invariant() {
         // Test the key invariant: register and unregister should be symmetric.

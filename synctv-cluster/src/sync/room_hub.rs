@@ -267,11 +267,19 @@ impl RoomMessageHub {
             }
         }
 
-        // Emit lifecycle event if this is the first subscriber for the room
+        // Emit lifecycle event if this is the first subscriber for the room.
+        // D2 fix: log warning if send fails (no receivers) instead of silently dropping.
         if is_new_room {
-            let _ = self
+            if let Err(e) = self
                 .lifecycle_tx
-                .send(RoomLifecycleEvent::RoomActivated(room_id.clone()));
+                .send(RoomLifecycleEvent::RoomActivated(room_id.clone()))
+            {
+                warn!(
+                    room_id = %room_id.as_str(),
+                    "Failed to emit RoomActivated lifecycle event (no receivers): {}",
+                    e
+                );
+            }
         }
 
         info!(
@@ -341,11 +349,19 @@ impl RoomMessageHub {
                 });
             }
 
-            // Emit lifecycle event if the last subscriber left
+            // Emit lifecycle event if the last subscriber left.
+            // D2 fix: log warning on send failure instead of silently dropping.
             if room_deactivated {
-                let _ = self
+                if let Err(e) = self
                     .lifecycle_tx
-                    .send(RoomLifecycleEvent::RoomDeactivated(room_id.clone()));
+                    .send(RoomLifecycleEvent::RoomDeactivated(room_id.clone()))
+                {
+                    warn!(
+                        room_id = %room_id.as_str(),
+                        "Failed to emit RoomDeactivated lifecycle event (no receivers): {}",
+                        e
+                    );
+                }
             }
 
             info!(
@@ -709,10 +725,18 @@ impl RoomMessageHub {
             for sub in subscribers.values() {
                 self.connections.remove(&sub.connection_id);
             }
-            // Emit lifecycle event since the room is no longer active
-            let _ = self
+            // Emit lifecycle event since the room is no longer active.
+            // D2 fix: log warning on send failure instead of silently dropping.
+            if let Err(e) = self
                 .lifecycle_tx
-                .send(RoomLifecycleEvent::RoomDeactivated(room_id.clone()));
+                .send(RoomLifecycleEvent::RoomDeactivated(room_id.clone()))
+            {
+                warn!(
+                    room_id = %room_id.as_str(),
+                    "Failed to emit RoomDeactivated lifecycle event on room removal (no receivers): {}",
+                    e
+                );
+            }
             info!(
                 room_id = %room_id.as_str(),
                 removed_connections = subscribers.len(),

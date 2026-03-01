@@ -485,9 +485,10 @@ impl RoomService for ClientServiceImpl {
     ) -> Result<Response<GetRoomMembersResponse>, Status> {
         let user_id = self.get_user_id(&request).await?;
         let room_id = self.get_room_id(&request)?;
+        let req = request.into_inner();
         let response = self
             .client_api
-            .get_room_members(user_id.as_str(), room_id.as_str())
+            .get_room_members(user_id.as_str(), room_id.as_str(), req)
             .await
             .map_err(map_api_error)?;
         Ok(Response::new(response))

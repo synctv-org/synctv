@@ -198,8 +198,14 @@ impl SettingsService {
             .send((key.to_string(), Some(setting.value.clone())));
 
         // Notify local listeners
-        let json_value: serde_json::Value =
-            value.parse().unwrap_or_else(|_| serde_json::json!(value));
+        let json_value: serde_json::Value = value.parse().unwrap_or_else(|e| {
+            warn!(
+                key = key,
+                error = %e,
+                "Setting value is not valid JSON, wrapping as string"
+            );
+            serde_json::json!(value)
+        });
         self.notify_listeners(key, &json_value).await;
 
         info!("Updated setting '{}'", setting.key);
@@ -332,10 +338,14 @@ impl SettingsService {
                 .reload_sender
                 .send((setting.key.clone(), Some(setting.value.clone())));
 
-            let json_value: serde_json::Value = setting
-                .value
-                .parse()
-                .unwrap_or_else(|_| serde_json::json!(&setting.value));
+            let json_value: serde_json::Value = setting.value.parse().unwrap_or_else(|e| {
+                warn!(
+                    key = %setting.key,
+                    error = %e,
+                    "Setting value is not valid JSON, wrapping as string (batch)"
+                );
+                serde_json::json!(&setting.value)
+            });
             self.notify_listeners(&setting.key, &json_value).await;
             info!("Updated setting '{}' (batch)", setting.key);
         }
@@ -510,10 +520,15 @@ impl SettingsService {
                     .send((key.to_string(), Some(setting.value.clone())));
 
                 // Notify local listeners
-                let json_value: serde_json::Value = setting
-                    .value
-                    .parse()
-                    .unwrap_or_else(|_| serde_json::json!(setting.value));
+                let json_value: serde_json::Value =
+                    setting.value.parse().unwrap_or_else(|e| {
+                        warn!(
+                            key = key,
+                            error = %e,
+                            "Setting value is not valid JSON, wrapping as string (reload)"
+                        );
+                        serde_json::json!(setting.value)
+                    });
                 self.notify_listeners(key, &json_value).await;
 
                 info!("Setting '{}' reloaded from database", key);

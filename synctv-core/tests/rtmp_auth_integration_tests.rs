@@ -50,14 +50,18 @@ async fn create_test_infra() -> (
     redis::aio::ConnectionManager,
 ) {
     // Start PostgreSQL
-    let postgres = Postgres::default()
-        .with_db_name("synctv_test")
-        .with_user("synctv")
-        .with_password("synctv_test")
-        .with_tag("16-alpine")
-        .start()
-        .await
-        .expect("Failed to start Postgres container");
+    let postgres = tokio::time::timeout(
+        std::time::Duration::from_secs(30),
+        Postgres::default()
+            .with_db_name("synctv_test")
+            .with_user("synctv")
+            .with_password("synctv_test")
+            .with_tag("16-alpine")
+            .start(),
+    )
+    .await
+    .expect("Docker container startup timed out (is Docker running?)")
+    .expect("Failed to start Postgres container");
 
     let pg_host = postgres.get_host().await.expect("Failed to get host");
     let pg_port = postgres
@@ -94,10 +98,13 @@ async fn create_test_infra() -> (
 
     // Start Redis
     use testcontainers::runners::AsyncRunner;
-    let redis = Redis::default()
-        .start()
-        .await
-        .expect("Failed to start Redis container");
+    let redis = tokio::time::timeout(
+        std::time::Duration::from_secs(30),
+        Redis::default().start(),
+    )
+    .await
+    .expect("Docker container startup timed out (is Docker running?)")
+    .expect("Failed to start Redis container");
 
     let redis_host = redis.get_host().await.expect("Failed to get Redis host");
     let redis_port = redis

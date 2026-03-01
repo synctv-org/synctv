@@ -61,9 +61,15 @@ impl MediaProvider for LiveProxyProvider {
             .ok_or_else(|| ProviderError::InvalidConfig("Missing url".to_string()))?;
 
         let mut result = super::build_live_playback(&self.base_url, media_id, room_id);
+        // Only include the hostname of the source URL in metadata to avoid
+        // leaking internal infrastructure paths/stream-keys to clients.
+        let redacted_host = url::Url::parse(source_url)
+            .ok()
+            .and_then(|u| u.host_str().map(String::from))
+            .unwrap_or_else(|| "unknown".to_string());
         result
             .metadata
-            .insert("source_url".to_string(), json!(source_url));
+            .insert("source_host".to_string(), json!(redacted_host));
         result
             .metadata
             .insert("provider".to_string(), json!("live_proxy"));
@@ -159,4 +165,62 @@ async fn validate_source_url_host(raw: &str) -> Result<(), ProviderError> {
     Err(ProviderError::InvalidConfig(format!(
         "Unsupported URL scheme: {raw}"
     )))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    // ========== B9: LiveProxy metadata must not expose source URL ==========
+
+    #[tokio::test]
+    async fn test_live_proxy_metadata_does_not_expose_source_url() {
+        let provider = LiveProxyProvider::new("https://localhost:8080");
+        let ctx = ProviderContext::new("test");
+
+        let source_config = json!({
+            "url": "rtmp://secret-internal-server.local/live/stream-key",
+            "room_id": "room-123",
+            "media_id": "media-456"
+        });
+
+        let result = provider.generate_playback(&ctx, &source_config).await.unwrap();
+
+        // The metadata must NOT contain the full source URL.
+        // Exposing it would leak internal infrastructure URLs to clients.
+        assert!(
+            !result.metadata.contains_key("source_url"),
+            "Metadata must not contain 'source_url' key (leaks internal URL)"
+        );
+
+        // If there is any URL-like info, it should be at most the hostname
+        for (key, value) in &result.metadata {
+            if let Some(s) = value.as_str() {
+                assert!(
+                    !s.contains("secret-internal-server.local/live/stream-key"),
+                    "Metadata key '{key}' contains full source URL path, which leaks internal info"
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn test_live_proxy_metadata_contains_provider_tag() {
+        let provider = LiveProxyProvider::new("https://localhost:8080");
+        let ctx = ProviderContext::new("test");
+
+        let source_config = json!({
+            "url": "rtmp://example.com/live/stream",
+            "room_id": "room-1",
+            "media_id": "media-1"
+        });
+
+        let result = provider.generate_playback(&ctx, &source_config).await.unwrap();
+        assert_eq!(
+            result.metadata.get("provider").and_then(|v| v.as_str()),
+            Some("live_proxy"),
+            "Metadata should still contain provider tag"
+        );
+    }
 }

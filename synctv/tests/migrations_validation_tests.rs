@@ -9,8 +9,6 @@
 
 #![allow(clippy::unwrap_used)]
 
-use std::time::Duration;
-
 // ============================================================================
 // Mock MigrationLock tests
 // ============================================================================
@@ -351,10 +349,13 @@ mod integration_tests {
     #[ignore = "Requires Docker"]
     async fn test_redis_migration_lock_integration() {
         // Start Redis container
-        let container = Redis::default()
-            .start()
-            .await
-            .expect("Failed to start Redis");
+        let container = tokio::time::timeout(
+            std::time::Duration::from_secs(30),
+            Redis::default().start(),
+        )
+        .await
+        .expect("Docker container startup timed out (is Docker running?)")
+        .expect("Failed to start Redis");
         let port = container
             .get_host_port_ipv4(6379)
             .await
@@ -404,10 +405,13 @@ mod integration_tests {
         use std::sync::Arc;
 
         // Start Redis container
-        let container = Redis::default()
-            .start()
-            .await
-            .expect("Failed to start Redis");
+        let container = tokio::time::timeout(
+            std::time::Duration::from_secs(30),
+            Redis::default().start(),
+        )
+        .await
+        .expect("Docker container startup timed out (is Docker running?)")
+        .expect("Failed to start Redis");
         let port = container
             .get_host_port_ipv4(6379)
             .await

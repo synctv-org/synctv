@@ -381,6 +381,11 @@ impl ClusterManager {
         let is_quarantined = self.is_quarantined.clone();
         let leader_elector = self.leader_elector.clone();
 
+        // D3 fix: Clone the stored addresses into the spawned task so they can be
+        // used for re-registration when the local cache has empty addresses.
+        let stored_grpc_address = grpc_address.clone();
+        let stored_http_address = http_address.clone();
+
         let registry_for_task = node_registry.clone();
         let handle = tokio::spawn(async move {
             let node_registry = registry_for_task;
@@ -415,8 +420,21 @@ impl ClusterManager {
                             Ok(HeartbeatResult::NeedReregistration) => {
                                 // NodeRegistry::heartbeat() already attempted auto-registration
                                 // internally. If we still get NeedReregistration, it means the
-                                // internal retry failed. Just log and let the next tick try again.
-                                warn!("Node key expired in Redis, internal auto-registration failed; will retry on next heartbeat");
+                                // internal retry failed.
+                                // D3 fix: Use stored addresses for explicit re-registration.
+                                warn!("Node key expired in Redis, internal auto-registration failed; \
+                                       attempting re-registration with stored addresses");
+                                if let Err(e) = node_registry
+                                    .register(stored_grpc_address.clone(), stored_http_address.clone())
+                                    .await
+                                {
+                                    error!(
+                                        error = %e,
+                                        "Re-registration with stored addresses also failed; will retry on next heartbeat"
+                                    );
+                                } else {
+                                    info!("Re-registration with stored addresses succeeded");
+                                }
                             }
                             Ok(HeartbeatResult::EpochMismatch(remote_epoch)) => {
                                 // Increment epoch mismatch counter
@@ -424,8 +442,27 @@ impl ClusterManager {
                                 warn!(
                                     remote_epoch = remote_epoch,
                                     consecutive_mismatches = mismatches,
-                                    "Epoch mismatch during heartbeat, internal auto-registration failed"
+                                    "Epoch mismatch during heartbeat, internal auto-registration failed; \
+                                     attempting re-registration with stored addresses"
                                 );
+
+                                // D3 fix: Use stored addresses for explicit re-registration.
+                                if let Err(e) = node_registry
+                                    .register(stored_grpc_address.clone(), stored_http_address.clone())
+                                    .await
+                                {
+                                    error!(
+                                        error = %e,
+                                        "Re-registration with stored addresses also failed after epoch mismatch"
+                                    );
+                                } else {
+                                    info!("Re-registration with stored addresses succeeded after epoch mismatch");
+                                    // Reset epoch mismatch counter on successful re-registration
+                                    epoch_mismatch_count.store(0, Ordering::Relaxed);
+                                    is_quarantined.store(false, Ordering::Release);
+                                    synctv_core::metrics::cluster::CLUSTER_EPOCH_MISMATCH_QUARANTINE.set(0);
+                                    continue;
+                                }
 
                                 // After 2 consecutive epoch mismatches, enter quarantine
                                 if mismatches >= 2 {
@@ -448,14 +485,28 @@ impl ClusterManager {
                                 }
                             }
                             Ok(HeartbeatResult::EmptyAddress) => {
-                                // Cannot re-register because local cache has empty addresses.
-                                // This typically happens when the node was never successfully
-                                // registered or the local cache was cleared. The node will
-                                // remain unreachable until addresses are recovered.
-                                error!(
-                                    "Heartbeat skipped: local cache has empty address(es); \
-                                     node cannot be reached by peers until addresses are recovered"
+                                // D3 fix: Use stored addresses to recover from empty local cache.
+                                // This typically happens when the local cache was cleared or
+                                // the node was never successfully registered.
+                                warn!(
+                                    "Heartbeat: local cache has empty address(es); \
+                                     attempting re-registration with stored addresses \
+                                     (grpc={}, http={})",
+                                    stored_grpc_address, stored_http_address
                                 );
+                                if let Err(e) = node_registry
+                                    .register(stored_grpc_address.clone(), stored_http_address.clone())
+                                    .await
+                                {
+                                    error!(
+                                        error = %e,
+                                        "Re-registration with stored addresses failed; \
+                                         node remains unreachable by peers"
+                                    );
+                                } else {
+                                    info!("Re-registration with stored addresses succeeded; \
+                                           node should be reachable again");
+                                }
                             }
                             Err(e) => {
                                 // Increment independent failure counter for business logic

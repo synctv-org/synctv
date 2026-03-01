@@ -150,9 +150,20 @@ async fn batch_ban_users_nonexistent_user_fails() {
     // Add a non-existent user ID
     user_id_strs.push("nonexistent_user_id".to_string());
 
-    // Attempt batch ban
-    let result = service.batch_ban_users(&user_id_strs).await;
-    assert!(result.is_err(), "Batch ban should fail with non-existent user");
+    // Attempt batch ban – the overall call succeeds but individual results
+    // report per-user success/failure.
+    let results = service.batch_ban_users(&user_id_strs).await
+        .expect("batch_ban_users returns Ok with per-user results");
+
+    // The two real users should succeed
+    let ok_count = results.iter().filter(|(_, r)| r.is_ok()).count();
+    let err_count = results.iter().filter(|(_, r)| r.is_err()).count();
+    assert_eq!(ok_count, 2, "Two real users should be banned successfully");
+    assert_eq!(err_count, 1, "Non-existent user should fail");
+
+    // Verify the failing entry is the non-existent user
+    let failed: Vec<_> = results.iter().filter(|(_, r)| r.is_err()).collect();
+    assert_eq!(failed[0].0, "nonexistent_user_id");
 }
 
 #[tokio::test]

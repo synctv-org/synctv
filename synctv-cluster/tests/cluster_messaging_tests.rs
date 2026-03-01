@@ -53,15 +53,15 @@ async fn setup_redis() -> (
     let redis_client =
         redis::Client::open(redis_url.as_str()).expect("Failed to create Redis client");
 
-    // Wait for Redis with retries
+    // Wait for Redis with retries (generous timeout for parallel testcontainer startup)
     let conn = {
         let mut retries = 0;
         loop {
             match redis::aio::ConnectionManager::new(redis_client.clone()).await {
                 Ok(conn) => break conn,
-                Err(_) if retries < 20 => {
+                Err(_) if retries < 60 => {
                     retries += 1;
-                    tokio::time::sleep(Duration::from_millis(100)).await;
+                    tokio::time::sleep(Duration::from_millis(500)).await;
                 }
                 Err(e) => panic!("Redis ConnectionManager failed after {} retries: {}", retries, e),
             }
@@ -114,15 +114,15 @@ async fn test_cross_node_broadcast() {
     let redis_url = format!("redis://{}:{}", redis_host, redis_port);
     let redis_client2 = redis::Client::open(redis_url.as_str()).expect("Failed to create Redis client 2");
 
-    // Wait for connection 2
+    // Wait for connection 2 (generous timeout for parallel testcontainer startup)
     let conn2 = {
         let mut retries = 0;
         loop {
             match redis::aio::ConnectionManager::new(redis_client2.clone()).await {
                 Ok(conn) => break conn,
-                Err(_) if retries < 20 => {
+                Err(_) if retries < 60 => {
                     retries += 1;
-                    tokio::time::sleep(Duration::from_millis(100)).await;
+                    tokio::time::sleep(Duration::from_millis(500)).await;
                 }
                 Err(e) => panic!("Redis ConnectionManager 2 failed after {} retries: {}", retries, e),
             }

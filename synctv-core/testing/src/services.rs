@@ -16,7 +16,7 @@ use crate::constants;
 ///
 /// # Example
 ///
-/// ```ignore
+/// ```text
 /// use synctv_core_testing::create_test_jwt_service;
 ///
 /// let jwt_service = create_test_jwt_service();
@@ -36,7 +36,7 @@ pub fn create_test_jwt_service() -> JwtService {
 ///
 /// # Example
 ///
-/// ```ignore
+/// ```text
 /// let jwt_service = create_test_jwt_service_with_secret("my-custom-secret-32-chars-long!!");
 /// ```
 #[must_use] 
@@ -50,7 +50,7 @@ pub fn create_test_jwt_service_with_secret(secret: &str) -> JwtService {
 ///
 /// # Example
 ///
-/// ```ignore
+/// ```text
 /// use synctv_core_testing::create_test_brute_force_protection;
 ///
 /// let protection = create_test_brute_force_protection();
@@ -67,7 +67,7 @@ pub fn create_test_brute_force_protection() -> BruteForceProtection {
 ///
 /// # Example
 ///
-/// ```ignore
+/// ```text
 /// use synctv_core_testing::create_test_attempt_tracker;
 ///
 /// let tracker = create_test_attempt_tracker();
@@ -84,7 +84,7 @@ pub fn create_test_attempt_tracker() -> InMemoryAttemptTracker {
 ///
 /// # Example
 ///
-/// ```ignore
+/// ```text
 /// use synctv_core_testing::create_test_token_blacklist_store;
 ///
 /// let store = create_test_token_blacklist_store();

@@ -206,14 +206,10 @@ async fn test_bilibili_credential_flow_pattern() {
     assert_eq!(retrieved.id, stored.id);
 
     // Step 4: Extract cookies for API calls
-    match &retrieved.data {
-        CredentialData::Bilibili { cookies } => {
-            assert_eq!(cookies.get("SESSDATA"), Some(&"sess_value_123".to_string()));
-            assert_eq!(cookies.get("bili_jct"), Some(&"csrf_token_456".to_string()));
-            // These cookies would be passed to BilibiliService methods
-        }
-        _ => panic!("Expected Bilibili credential data"),
-    }
+    let cookies = retrieved.data.as_bilibili().expect("Expected Bilibili credential data");
+    assert_eq!(cookies.get("SESSDATA"), Some(&"sess_value_123".to_string()));
+    assert_eq!(cookies.get("bili_jct"), Some(&"csrf_token_456".to_string()));
+    // These cookies would be passed to BilibiliService methods
 }
 
 /// Test the Alist credential flow pattern.
@@ -269,14 +265,10 @@ async fn test_alist_credential_flow_pattern() {
         .unwrap()
         .expect("first alist credential should exist");
 
-    match &retrieved1.data {
-        CredentialData::Alist { host, username, password } => {
-            assert_eq!(host, host1);
-            assert_eq!(username, "admin");
-            assert_eq!(password, "hashed_password_1");
-        }
-        _ => panic!("Expected Alist credential data"),
-    }
+    let (host, username, password) = retrieved1.data.as_alist().expect("Expected Alist credential data");
+    assert_eq!(host, host1);
+    assert_eq!(username, "admin");
+    assert_eq!(password, "hashed_password_1");
 
     // Step 5: Verify second server
     let server2_id = cred2.server_id.clone();
@@ -286,14 +278,10 @@ async fn test_alist_credential_flow_pattern() {
         .unwrap()
         .expect("second alist credential should exist");
 
-    match &retrieved2.data {
-        CredentialData::Alist { host, username, password } => {
-            assert_eq!(host, host2);
-            assert_eq!(username, "user");
-            assert_eq!(password, "hashed_password_2");
-        }
-        _ => panic!("Expected Alist credential data"),
-    }
+    let (host, username, password) = retrieved2.data.as_alist().expect("Expected Alist credential data");
+    assert_eq!(host, host2);
+    assert_eq!(username, "user");
+    assert_eq!(password, "hashed_password_2");
 }
 
 /// Test the Emby credential flow pattern.
@@ -327,15 +315,11 @@ async fn test_emby_credential_flow_pattern() {
         .expect("emby credential should exist");
 
     // Step 3: Verify credential data for API calls
-    match &retrieved.data {
-        CredentialData::Emby { host: h, api_key, emby_user_id } => {
-            assert_eq!(h, host);
-            assert_eq!(api_key, "api_token_abc123");
-            assert_eq!(emby_user_id, "emby_user_id_456");
-            // These would be passed to EmbyService methods
-        }
-        _ => panic!("Expected Emby credential data"),
-    }
+    let (h, api_key, emby_user_id) = retrieved.data.as_emby().expect("Expected Emby credential data");
+    assert_eq!(h, host);
+    assert_eq!(api_key, "api_token_abc123");
+    assert_eq!(emby_user_id, "emby_user_id_456");
+    // These would be passed to EmbyService methods
 }
 
 /// Test credential update pattern (e.g., after token refresh).
@@ -367,13 +351,9 @@ async fn test_credential_update_pattern() {
     assert_eq!(all.len(), 1);
 
     // Verify updated data
-    match &all[0].data {
-        CredentialData::Bilibili { cookies } => {
-            assert_eq!(cookies.get("SESSDATA"), Some(&"new_session".to_string()));
-            assert_eq!(cookies.get("refreshed"), Some(&"true".to_string()));
-        }
-        _ => panic!("Expected Bilibili credential data"),
-    }
+    let cookies = all[0].data.as_bilibili().expect("Expected Bilibili credential data");
+    assert_eq!(cookies.get("SESSDATA"), Some(&"new_session".to_string()));
+    assert_eq!(cookies.get("refreshed"), Some(&"true".to_string()));
 }
 
 /// Test credential deletion pattern (e.g., on logout).

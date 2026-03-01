@@ -173,11 +173,10 @@ mod ssrf_tests {
 
     #[test]
     fn test_blocked_ipv4_cgnat_boundary() {
-        // Note: CGNAT (100.64.0.0/10) is NOT blocked - it's technically routable
-        // All these addresses should be allowed
-        assert!(!is_blocked_ipv4(&Ipv4Addr::new(100, 64, 0, 0)));
-        assert!(!is_blocked_ipv4(&Ipv4Addr::new(100, 127, 255, 255)));
-        // Just outside CGNAT range should also be allowed
+        // CGNAT / Shared Address Space (100.64.0.0/10, RFC 6598) is blocked
+        assert!(is_blocked_ipv4(&Ipv4Addr::new(100, 64, 0, 0)));
+        assert!(is_blocked_ipv4(&Ipv4Addr::new(100, 127, 255, 255)));
+        // Just outside CGNAT range should NOT be blocked
         assert!(!is_blocked_ipv4(&Ipv4Addr::new(100, 63, 255, 255)));
         assert!(!is_blocked_ipv4(&Ipv4Addr::new(100, 128, 0, 0)));
     }

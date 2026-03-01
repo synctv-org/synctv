@@ -52,11 +52,6 @@ mod patterns {
         Regex::new(r"^[a-zA-Z0-9_-]+$").expect("Invalid room_id regex")
     });
 
-    /// Valid email format (basic validation)
-    pub static EMAIL: LazyLock<Regex> = LazyLock::new(|| {
-        Regex::new(r"^[^\s@]+@[^\s@]+\.[^\s@]+$").expect("Invalid email regex")
-    });
-
     /// URL format (http/https only)
     pub static URL: LazyLock<Regex> = LazyLock::new(|| {
         Regex::new(r"^https?://[^\s]+$").expect("Invalid URL regex")
@@ -393,6 +388,15 @@ pub fn validate_url_with_options(url: &str, allow_private_ips: bool) -> Validati
 }
 
 /// Validate email format
+///
+/// Performs structural validation following RFC 5321 constraints:
+/// - Total length max 254 characters
+/// - Local part max 64 characters
+/// - Local part: alphanumeric, dots, hyphens, underscores, plus signs
+/// - No leading/trailing dots or consecutive dots in local part
+/// - Domain must contain at least one dot
+/// - Domain labels: alphanumeric and hyphens, no leading/trailing hyphens
+/// - TLD must be at least 2 characters and alphabetic
 pub fn validate_email(email: &str) -> ValidationResult<String> {
     let sanitized = sanitize_string(email);
 
@@ -408,8 +412,74 @@ pub fn validate_email(email: &str) -> ValidationResult<String> {
         });
     }
 
-    if !patterns::EMAIL.is_match(&sanitized) {
+    // Split on '@' -- must have exactly one
+    let parts: Vec<&str> = sanitized.splitn(3, '@').collect();
+    if parts.len() != 2 || parts[0].is_empty() || parts[1].is_empty() {
         return Err(ValidationError::InvalidFormat { field: "email" });
+    }
+
+    let local = parts[0];
+    let domain = parts[1];
+
+    // RFC 5321: local part max 64 characters
+    if local.len() > 64 {
+        return Err(ValidationError::TooLong {
+            field: "email local part",
+            max: 64,
+            actual: local.len(),
+        });
+    }
+
+    // Local part character validation: alphanumeric, dots, hyphens, underscores, plus
+    if !local.chars().all(|c| c.is_alphanumeric() || c == '.' || c == '-' || c == '_' || c == '+') {
+        return Err(ValidationError::InvalidFormat { field: "email" });
+    }
+
+    // No leading/trailing dots in local part
+    if local.starts_with('.') || local.ends_with('.') {
+        return Err(ValidationError::InvalidFormat { field: "email" });
+    }
+
+    // No consecutive dots in local part
+    if local.contains("..") {
+        return Err(ValidationError::InvalidFormat { field: "email" });
+    }
+
+    // Domain must contain at least one dot
+    if !domain.contains('.') {
+        return Err(ValidationError::InvalidFormat { field: "email" });
+    }
+
+    // Domain must not start/end with dot or hyphen
+    if domain.starts_with('.') || domain.ends_with('.') || domain.starts_with('-') || domain.ends_with('-') {
+        return Err(ValidationError::InvalidFormat { field: "email" });
+    }
+
+    // Validate each domain label
+    let labels: Vec<&str> = domain.split('.').collect();
+    for label in &labels {
+        if label.is_empty() {
+            return Err(ValidationError::InvalidFormat { field: "email" });
+        }
+        if label.len() > 63 {
+            return Err(ValidationError::InvalidFormat { field: "email" });
+        }
+        if !label.chars().all(|c| c.is_alphanumeric() || c == '-') {
+            return Err(ValidationError::InvalidFormat { field: "email" });
+        }
+        if label.starts_with('-') || label.ends_with('-') {
+            return Err(ValidationError::InvalidFormat { field: "email" });
+        }
+    }
+
+    // TLD must be at least 2 characters and alphabetic
+    if let Some(tld) = labels.last() {
+        if tld.len() < 2 {
+            return Err(ValidationError::InvalidFormat { field: "email" });
+        }
+        if !tld.chars().all(|c| c.is_alphabetic()) {
+            return Err(ValidationError::InvalidFormat { field: "email" });
+        }
     }
 
     Ok(sanitized.to_lowercase())
@@ -474,7 +544,7 @@ pub const MAX_PAGE: i32 = 10000;
 ///
 /// # Examples
 /// ```
-/// use synctv_api::http::validation::validate_page;
+/// use synctv_api::http::validation::{validate_page, MAX_PAGE};
 ///
 /// assert_eq!(validate_page(None), 1);
 /// assert_eq!(validate_page(Some(0)), 1); // Minimum is 1
@@ -494,7 +564,7 @@ pub fn validate_page(page: Option<i32>) -> i32 {
 ///
 /// # Examples
 /// ```
-/// use synctv_api::http::validation::validate_page_size;
+/// use synctv_api::http::validation::{validate_page_size, MAX_PAGE_SIZE};
 ///
 /// assert_eq!(validate_page_size(None), 20);
 /// assert_eq!(validate_page_size(Some(0)), 1); // Minimum is 1
@@ -888,6 +958,68 @@ mod tests {
         assert_eq!(validate_email("USER@EXAMPLE.COM").unwrap(), "user@example.com");
         assert!(validate_email("invalid-email").is_err());
         assert!(validate_email("").is_err());
+    }
+
+    #[test]
+    fn test_validate_email_rejects_single_char_tld() {
+        // TLD must be at least 2 characters
+        assert!(validate_email("a@b.c").is_err());
+        assert!(validate_email("user@domain.x").is_err());
+    }
+
+    #[test]
+    fn test_validate_email_rejects_long_emails() {
+        // RFC 5321: total email length max 254 chars
+        let long_local = "a".repeat(64);
+        let long_email = format!("{}@{}.com", long_local, "b".repeat(254 - 64 - 5));
+        assert!(validate_email(&long_email).is_err());
+    }
+
+    #[test]
+    fn test_validate_email_rejects_long_local_part() {
+        // RFC 5321: local part max 64 chars
+        let long_local = "a".repeat(65);
+        let email = format!("{}@example.com", long_local);
+        assert!(validate_email(&email).is_err());
+    }
+
+    #[test]
+    fn test_validate_email_accepts_valid_emails() {
+        assert!(validate_email("user@example.com").is_ok());
+        assert!(validate_email("user.name@example.com").is_ok());
+        assert!(validate_email("user+tag@example.co.uk").is_ok());
+        assert!(validate_email("user123@sub.domain.com").is_ok());
+        assert!(validate_email("a@example.com").is_ok()); // Single char local is fine
+    }
+
+    #[test]
+    fn test_validate_email_rejects_invalid_patterns() {
+        assert!(validate_email("@example.com").is_err()); // No local part
+        assert!(validate_email("user@").is_err()); // No domain
+        assert!(validate_email("user@.com").is_err()); // Domain starts with dot
+        assert!(validate_email("user@domain").is_err()); // No TLD dot
+        assert!(validate_email("user@@example.com").is_err()); // Double @
+        assert!(validate_email("user@exam ple.com").is_err()); // Space in domain
+        assert!(validate_email("us er@example.com").is_err()); // Space in local
+    }
+
+    #[test]
+    fn test_validate_email_tld_must_be_alphabetic() {
+        // TLD should be alphabetic, not numeric
+        assert!(validate_email("user@example.123").is_err());
+        assert!(validate_email("user@example.c0m").is_err());
+    }
+
+    #[test]
+    fn test_validate_email_rejects_consecutive_dots() {
+        assert!(validate_email("user..name@example.com").is_err());
+        assert!(validate_email("user@example..com").is_err());
+    }
+
+    #[test]
+    fn test_validate_email_rejects_leading_trailing_dots() {
+        assert!(validate_email(".user@example.com").is_err());
+        assert!(validate_email("user.@example.com").is_err());
     }
 
     #[test]

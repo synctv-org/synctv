@@ -540,4 +540,35 @@ mod tests {
             + result.chat_messages_deleted;
         assert_eq!(total, 203);
     }
+
+    #[test]
+    fn test_expired_token_cleanup_enabled_by_default() {
+        // Verify the default config enables email token cleanup (non-zero retention)
+        let config = CleanupConfig::default();
+        assert!(
+            config.expired_token_retention_days > 0,
+            "Email token cleanup should be enabled by default (expired_token_retention_days={})",
+            config.expired_token_retention_days,
+        );
+    }
+
+    #[test]
+    fn test_expired_token_cleanup_disabled_when_zero() {
+        // When expired_token_retention_days is 0, email token cleanup should be skipped.
+        // This is verified by the `if self.config.expired_token_retention_days > 0` guard
+        // in run_all(). We verify the config allows disabling.
+        let config = CleanupConfig {
+            expired_token_retention_days: 0,
+            ..CleanupConfig::default()
+        };
+        assert_eq!(config.expired_token_retention_days, 0);
+    }
+
+    /// Verify the `delete_expired_tokens` method exists and has the expected async signature.
+    /// The actual SQL execution requires a live PgPool (integration test territory).
+    #[test]
+    fn test_delete_expired_tokens_method_exists() {
+        let _: fn(&CleanupService) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<u64>> + Send + '_>> =
+            |svc| Box::pin(svc.delete_expired_tokens());
+    }
 }

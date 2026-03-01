@@ -266,9 +266,7 @@ mod tests {
             DirectUrlProvider::validate_url_not_internal("http://169.254.169.254/latest/meta-data")
                 .is_err()
         );
-        // Note: CGNAT (100.64.0.0/10) is NOT blocked by url_jail by default
-        // because it's a routable carrier-grade NAT range (RFC 6598), not private (RFC 1918).
-        // Use a custom policy with PolicyBuilder to block it if needed.
+        // CGNAT (100.64.0.0/10, RFC 6598) is blocked by the SSRF validator.
     }
 
     #[test]

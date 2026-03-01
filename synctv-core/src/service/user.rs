@@ -59,10 +59,9 @@ impl UserService {
         key_builder: KeyBuilder,
         brute_force: BruteForceProtection,
     ) -> Self {
-        // Create in-memory rate limiter for refresh token endpoint
-        // Uses in-memory only since refresh rate limiting is per-instance
-        // (global enforcement is not critical for this use case)
-        let refresh_rate_limiter = RateLimiter::in_memory_only("synctv".to_string());
+        // Create in-memory rate limiter for refresh token endpoint.
+        // Can be upgraded to Redis-backed via set_refresh_rate_limiter_redis().
+        let refresh_rate_limiter = RateLimiter::in_memory_only("synctv:".to_string());
 
         Self {
             repository: UserRepository::new(pool),
@@ -86,6 +85,18 @@ impl UserService {
     /// Enable email verification requirement for login (call when email service is configured)
     pub const fn set_email_verification_required(&mut self, required: bool) {
         self.email_verification_required = required;
+    }
+
+    /// Upgrade the refresh token rate limiter to use Redis for cross-replica enforcement.
+    ///
+    /// In cluster mode with N replicas, per-instance rate limiting allows N * limit
+    /// requests per window globally. Using Redis-backed rate limiting ensures the
+    /// limit is enforced globally across all replicas.
+    ///
+    /// When Redis is unavailable at runtime, the Redis-backed limiter gracefully
+    /// degrades to in-memory limiting (same as the default behavior).
+    pub fn set_refresh_rate_limiter_redis(&mut self, redis_conn: redis::aio::ConnectionManager, key_prefix: String) {
+        self.refresh_rate_limiter = RateLimiter::new(Some(redis_conn), key_prefix);
     }
 
     /// Register a new user
@@ -1353,5 +1364,43 @@ mod tests {
     }
 
     // ========== Integration Tests ==========
+
+    // ========== Refresh Rate Limiter Backend Tests ==========
+
+    #[tokio::test]
+    async fn test_refresh_rate_limiter_default_is_in_memory() {
+        // When no Redis is provided, the refresh rate limiter should use in-memory backend
+        let pool = PgPool::connect_lazy("postgresql://invalid:invalid@127.0.0.1:1/invalid").unwrap();
+        let jwt_service = crate::service::auth::JwtService::new(
+            "test-secret-key-minimum-length-32-chars-required"
+        ).unwrap();
+        let username_cache = crate::cache::UsernameCache::new(
+            Arc::new(crate::cache::NoopCacheL2),
+            "test:".to_string(),
+            100,
+            0,
+        );
+        let token_blacklist: Arc<dyn TokenBlacklistStore> = Arc::new(
+            crate::service::InMemoryTokenBlacklistStore::new(100, 3600, 86400)
+        );
+        let key_builder = crate::cache::KeyBuilder::new("test");
+        let brute_force = BruteForceProtection::in_memory("test".to_string());
+
+        let user_service = super::UserService::new(
+            pool,
+            jwt_service,
+            username_cache,
+            PasswordComplexityConfig::default(),
+            token_blacklist,
+            key_builder,
+            brute_force,
+        );
+
+        assert_eq!(
+            user_service.refresh_rate_limiter.backend_name(),
+            "memory",
+            "Default refresh rate limiter should be in-memory"
+        );
+    }
 
 }

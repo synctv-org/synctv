@@ -20,7 +20,8 @@ pub struct TestRedis {
 }
 
 impl TestRedis {
-    /// Start a new Redis container for testing
+    /// Start a new Redis container for testing.
+    /// Waits until Redis is actually accepting connections before returning.
     pub async fn start() -> Self {
         let redis_container = Redis::default()
             .start()
@@ -37,6 +38,32 @@ impl TestRedis {
             .expect("Failed to get Redis port");
 
         let redis_url = format!("redis://{}:{}", redis_host, redis_port);
+
+        // Wait for Redis to be ready (generous timeout for parallel testcontainer startup)
+        let client = redis::Client::open(redis_url.as_str())
+            .expect("Failed to create Redis client for readiness check");
+        let mut retries = 0;
+        loop {
+            match redis::aio::ConnectionManager::new(client.clone()).await {
+                Ok(mut conn) => {
+                    // Verify with PING
+                    if redis::cmd("PING")
+                        .query_async::<()>(&mut conn)
+                        .await
+                        .is_ok()
+                    {
+                        break;
+                    }
+                }
+                Err(_) if retries < 60 => {}
+                Err(e) => panic!(
+                    "Redis not ready after {} retries: {}",
+                    retries, e
+                ),
+            }
+            retries += 1;
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        }
 
         Self {
             redis_url,

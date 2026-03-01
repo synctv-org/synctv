@@ -7,7 +7,7 @@
 ///
 /// # Example
 ///
-/// ```ignore
+/// ```text
 /// use synctv_core_testing::assertions::assert_in_range;
 ///
 /// let delay = calculate_delay();
@@ -31,7 +31,7 @@ macro_rules! assert_in_range {
 ///
 /// # Example
 ///
-/// ```ignore
+/// ```text
 /// let result = assert_ok!(some_operation());
 /// ```
 #[macro_export]
@@ -48,7 +48,7 @@ macro_rules! assert_ok {
 ///
 /// # Example
 ///
-/// ```ignore
+/// ```text
 /// let error = assert_err!(some_operation());
 /// ```
 #[macro_export]

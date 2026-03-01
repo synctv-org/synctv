@@ -15,18 +15,44 @@ use crate::ssrf::ssrf_safe_dns_resolver;
 
 /// Validate that a path does not contain traversal components (`..` or `.`).
 /// Rejects paths that attempt directory traversal to escape the intended root.
-/// URL-encoded paths are decoded before validation to prevent encoded bypass attempts.
+///
+/// Defends against:
+/// - Simple `..` traversal
+/// - URL-encoded traversal (`%2e%2e`, `%2f`)
+/// - Double/multi-layer URL encoding (`%252e%252e` -> `%2e%2e` -> `..`)
+/// - Mixed-case encoding (`%2E`, `%2F`)
+/// - Backslash variants (`\`, `%5c`, `%5C`)
+/// - Null bytes (`%00`, literal `\0`)
 fn validate_path(path: &str) -> Result<(), AlistError> {
-    // Decode URL encoding first to catch encoded traversal attempts
-    // Manual decoding of common URL-encoded traversal patterns
-    let decoded = path
-        .replace("%2e", ".")
-        .replace("%2E", ".")
-        .replace("%2f", "/")
-        .replace("%2F", "/");
+    // Reject null bytes (literal or encoded) immediately
+    if path.contains('\0') || path.contains("%00") {
+        return Err(AlistError::InvalidConfig(
+            "Path contains null bytes".to_string(),
+        ));
+    }
+
+    // Recursively URL-decode until the value stabilizes.
+    // This catches double encoding (%252e -> %2e -> .) and deeper layers.
+    let mut decoded = path.to_string();
+    for _ in 0..10 {
+        let next = percent_decode_path(&decoded);
+        if next == decoded {
+            break;
+        }
+        // Check for null bytes introduced by decoding
+        if next.contains('\0') {
+            return Err(AlistError::InvalidConfig(
+                "Path contains null bytes (encoded)".to_string(),
+            ));
+        }
+        decoded = next;
+    }
+
+    // Normalize backslashes to forward slashes
+    let normalized = decoded.replace('\\', "/");
 
     // Check for directory traversal components
-    for component in decoded.split('/') {
+    for component in normalized.split('/') {
         if component == ".." || component == "." {
             return Err(AlistError::InvalidConfig(format!(
                 "Path traversal detected: '{component}' components are not allowed"
@@ -34,6 +60,36 @@ fn validate_path(path: &str) -> Result<(), AlistError> {
         }
     }
     Ok(())
+}
+
+/// Percent-decode a path string in a single pass.
+/// Handles `%XX` hex sequences (case-insensitive).
+fn percent_decode_path(input: &str) -> String {
+    let bytes = input.as_bytes();
+    let mut result = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            if let (Some(hi), Some(lo)) = (hex_val(bytes[i + 1]), hex_val(bytes[i + 2])) {
+                result.push(hi << 4 | lo);
+                i += 3;
+                continue;
+            }
+        }
+        result.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&result).into_owned()
+}
+
+/// Convert an ASCII hex character to its numeric value (0-15), case-insensitive.
+const fn hex_val(b: u8) -> Option<u8> {
+    match b {
+        b'0'..=b'9' => Some(b - b'0'),
+        b'a'..=b'f' => Some(b - b'a' + 10),
+        b'A'..=b'F' => Some(b - b'A' + 10),
+        _ => None,
+    }
 }
 
 /// Shared HTTP client for all Alist requests (connection pooling)
@@ -464,6 +520,48 @@ mod tests {
         // Single dot and dotfiles should be allowed
         assert!(validate_path("/movies/.hidden").is_ok());
         assert!(validate_path("/.config/app").is_ok());
+    }
+
+    #[test]
+    fn test_validate_path_double_encoded_traversal() {
+        // %252e%252e -> first decode -> %2e%2e -> second decode -> ..
+        assert!(validate_path("/movies/%252e%252e/etc/passwd").is_err());
+        // Triple encoding
+        assert!(validate_path("/movies/%25252e%25252e/secret").is_err());
+    }
+
+    #[test]
+    fn test_validate_path_backslash_traversal() {
+        // Backslash used as path separator
+        assert!(validate_path("/movies/..\\..\\etc\\passwd").is_err());
+        // URL-encoded backslash (%5c / %5C)
+        assert!(validate_path("/movies/..%5c..%5cetc%5cpasswd").is_err());
+        assert!(validate_path("/movies/..%5C..%5Cetc").is_err());
+    }
+
+    #[test]
+    fn test_validate_path_null_bytes() {
+        // Literal null byte
+        assert!(validate_path("/movies/video\0.mp4").is_err());
+        // URL-encoded null byte
+        assert!(validate_path("/movies/video%00.mp4").is_err());
+    }
+
+    #[test]
+    fn test_validate_path_encoded_traversal_single_layer() {
+        // Single-layer URL-encoded .. (%2e%2e / %2f)
+        assert!(validate_path("/movies/%2e%2e%2fetc%2fpasswd").is_err());
+        assert!(validate_path("/movies/%2E%2E%2Fetc").is_err());
+    }
+
+    #[test]
+    fn test_validate_path_valid_paths_still_pass() {
+        assert!(validate_path("/").is_ok());
+        assert!(validate_path("/movies/video.mp4").is_ok());
+        assert!(validate_path("/a/b/c/d").is_ok());
+        assert!(validate_path("/movies/.hidden-file").is_ok());
+        assert!(validate_path("/path/with spaces/file.mp4").is_ok());
+        assert!(validate_path("/path/file%20name.mp4").is_ok());
     }
 
     #[test]

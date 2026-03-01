@@ -255,8 +255,10 @@ impl AdminService for AdminServiceImpl {
         request: Request<ReconnectProviderInstanceRequest>,
     ) -> Result<Response<ReconnectProviderInstanceResponse>, Status> {
         self.check_admin(&request).await?;
+        let admin_user_id = super::interceptors::extract_user_id(&request)?;
+        let ctx = grpc_request_context(&request);
         let req = request.into_inner();
-        let resp = self.admin_api.reconnect_provider_instance(req).await.map_err(map_api_error)?;
+        let resp = self.admin_api.reconnect_provider_instance(req, &admin_user_id, &ctx).await.map_err(map_api_error)?;
         Ok(Response::new(resp))
     }
 
@@ -445,7 +447,8 @@ impl AdminService for AdminServiceImpl {
         let admin_user_id = super::interceptors::extract_user_id(&request)?;
         let ctx = grpc_request_context(&request);
         let req = request.into_inner();
-        let resp = self.admin_api.batch_delete_users(req, &admin_user_id, &ctx).await.map_err(map_api_error)?;
+        // check_root guarantees caller is Root
+        let resp = self.admin_api.batch_delete_users(req, &admin_user_id, synctv_core::models::UserRole::Root, &ctx).await.map_err(map_api_error)?;
         Ok(Response::new(resp))
     }
 

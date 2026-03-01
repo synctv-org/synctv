@@ -139,21 +139,29 @@ impl EmbyClient {
             "Pw": password,
         });
 
-        let response = self
-            .client
-            .post(&url)
-            .headers(self.build_headers()?)
-            .json(&body)
-            .send()
-            .await?;
+        let headers = self.build_headers()?;
+        let client = self.client.clone();
 
-        if !response.status().is_success() {
-            return Err(EmbyError::Auth(format!("Login failed: {}", response.status())));
-        }
+        let (token, user_id) = with_retry(|| {
+            let url = url.clone();
+            let body = body.clone();
+            let headers = headers.clone();
+            let client = client.clone();
+            async move {
+                let response = client
+                    .post(&url)
+                    .headers(headers)
+                    .json(&body)
+                    .send()
+                    .await?;
 
-        let auth_resp: AuthResponse = json_with_limit(response).await?;
-        let token = auth_resp.access_token;
-        let user_id = auth_resp.user.id;
+                let response = check_response(response).await?;
+                let auth_resp: AuthResponse = json_with_limit(response).await?;
+                let token = auth_resp.access_token;
+                let user_id = auth_resp.user.id;
+                Ok((token, user_id))
+            }
+        }).await?;
 
         self.set_credentials(token.clone(), user_id.clone());
         Ok((token, user_id))

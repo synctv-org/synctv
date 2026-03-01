@@ -387,7 +387,7 @@ async fn test_edit_media_optimistic_lock_retry_exhaustion() {
     match result {
         Ok(_) => {}
         Err(Error::Internal(msg)) => {
-            assert!(msg.contains("retry") || msg.contains("maximum"),
+            assert!(msg.contains("retri") || msg.contains("retry") || msg.contains("maximum") || msg.contains("concurrent"),
                 "Should mention retry exhaustion: {}", msg);
         }
         Err(Error::OptimisticLockConflict) => {

@@ -1124,6 +1124,9 @@ impl ConnectionManager {
     /// Returns list of connection IDs that should be disconnected
     pub fn check_timeouts(&self) -> Vec<String> {
         let mut to_disconnect = Vec::new();
+        // Collect RTC timeout mutations to apply after iteration to avoid
+        // DashMap deadlock (iter() holds a read lock, mark_rtc_joined needs write).
+        let mut rtc_timeouts: Vec<(RoomId, UserId, String)> = Vec::new();
 
         for entry in self.connections.iter() {
             let conn = entry.value();
@@ -1163,15 +1166,20 @@ impl ConnectionManager {
                             webrtc_session_timeout = ?self.limits.webrtc_session_timeout,
                             "WebRTC session timeout"
                         );
-                        // Mark as left WebRTC session
+                        // Defer mutation to after iteration to avoid DashMap deadlock
                         if let Some(room_id) = &conn.room_id {
-                            self.mark_rtc_joined(room_id, &conn.user_id, &conn.connection_id, false);
+                            rtc_timeouts.push((room_id.clone(), conn.user_id.clone(), conn.connection_id.clone()));
                         }
                         // Add to disconnect list to force reconnection
                         to_disconnect.push(conn.connection_id.clone());
                     }
                 }
             }
+        }
+
+        // Now apply RTC state mutations outside the DashMap iteration
+        for (room_id, user_id, conn_id) in rtc_timeouts {
+            self.mark_rtc_joined(&room_id, &user_id, &conn_id, false);
         }
 
         to_disconnect

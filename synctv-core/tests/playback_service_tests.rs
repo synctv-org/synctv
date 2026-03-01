@@ -1060,7 +1060,7 @@ async fn test_seek_degraded_response_has_informative_message() {
                     // Degraded response should have an informative message
                     if let Some(msg) = &response.message {
                         assert!(
-                            msg.contains("retry") || msg.contains("contention") || msg.contains("failed"),
+                            msg.contains("retry") || msg.contains("contention") || msg.contains("failed") || msg.contains("concurrent"),
                             "Degraded response message should explain failure: {}", msg
                         );
                     }

@@ -644,3 +644,127 @@ fn test_playlist_to_proto_dynamic() {
     assert!(proto.is_dynamic);
     assert!(proto.is_folder); // has source_provider
 }
+
+// === URL-Derived Title Sanitization Tests (Issue 3) ===
+
+#[test]
+fn test_sanitize_url_derived_title_normal() {
+    let title = super::media::sanitize_url_derived_title("my_video.mp4");
+    assert_eq!(title, "my_video.mp4");
+}
+
+#[test]
+fn test_sanitize_url_derived_title_percent_encoded() {
+    let title = super::media::sanitize_url_derived_title("my%20video.mp4");
+    assert_eq!(title, "my video.mp4");
+}
+
+#[test]
+fn test_sanitize_url_derived_title_control_chars_stripped() {
+    let title = super::media::sanitize_url_derived_title("bad\x00name.mp4");
+    assert_eq!(title, "badname.mp4");
+}
+
+#[test]
+fn test_sanitize_url_derived_title_empty_becomes_empty() {
+    let title = super::media::sanitize_url_derived_title("");
+    assert_eq!(title, "");
+}
+
+#[test]
+fn test_sanitize_url_derived_title_truncates_long_names() {
+    use crate::http::validation::limits::MEDIA_TITLE_MAX;
+
+    // Create a title that exceeds MEDIA_TITLE_MAX (500 chars)
+    let long_name = "a".repeat(MEDIA_TITLE_MAX + 100);
+    let title = super::media::sanitize_url_derived_title(&long_name);
+    assert!(
+        title.len() <= MEDIA_TITLE_MAX,
+        "URL-derived title should be truncated to MEDIA_TITLE_MAX ({MEDIA_TITLE_MAX}), got {}",
+        title.len()
+    );
+    assert_eq!(title.len(), MEDIA_TITLE_MAX);
+}
+
+#[test]
+fn test_sanitize_url_derived_title_truncates_at_char_boundary() {
+    use crate::http::validation::limits::MEDIA_TITLE_MAX;
+
+    // Create a string with multi-byte UTF-8 characters that would cause a
+    // non-char-boundary truncation if done naively.
+    // Each CJK character is 3 bytes. Fill to just over the limit.
+    let num_chars = (MEDIA_TITLE_MAX / 3) + 10; // will exceed MEDIA_TITLE_MAX in bytes
+    let long_cjk: String = std::iter::repeat('\u{4e00}').take(num_chars).collect();
+    assert!(long_cjk.len() > MEDIA_TITLE_MAX);
+
+    let title = super::media::sanitize_url_derived_title(&long_cjk);
+    assert!(
+        title.len() <= MEDIA_TITLE_MAX,
+        "Truncated title should not exceed MEDIA_TITLE_MAX"
+    );
+    // Verify it's valid UTF-8 (would panic on invalid boundary)
+    assert!(title.is_char_boundary(title.len()));
+}
+
+#[test]
+fn test_sanitize_url_derived_title_exactly_at_max() {
+    use crate::http::validation::limits::MEDIA_TITLE_MAX;
+
+    let exact = "b".repeat(MEDIA_TITLE_MAX);
+    let title = super::media::sanitize_url_derived_title(&exact);
+    assert_eq!(title.len(), MEDIA_TITLE_MAX);
+    assert_eq!(title, exact);
+}
+
+// === Pagination Normalization Tests (Issue 2) ===
+
+#[test]
+fn test_pagination_page_zero_treated_as_one() {
+    // validate_page should treat page=0 as page=1 (1-based pagination)
+    assert_eq!(crate::http::validation::validate_page(Some(0)), 1);
+}
+
+#[test]
+fn test_pagination_page_negative_treated_as_one() {
+    assert_eq!(crate::http::validation::validate_page(Some(-1)), 1);
+    assert_eq!(crate::http::validation::validate_page(Some(-100)), 1);
+}
+
+#[test]
+fn test_pagination_page_none_defaults_to_one() {
+    assert_eq!(crate::http::validation::validate_page(None), 1);
+}
+
+#[test]
+fn test_pagination_page_positive_passes_through() {
+    assert_eq!(crate::http::validation::validate_page(Some(1)), 1);
+    assert_eq!(crate::http::validation::validate_page(Some(5)), 5);
+    assert_eq!(crate::http::validation::validate_page(Some(100)), 100);
+}
+
+// === Permission Check Presence Tests (Issue 1) ===
+// These tests verify that the REORDER_PLAYLIST permission bit exists and is
+// used in the correct context. The actual API-layer permission enforcement
+// is tested via integration tests that require a running database, but these
+// unit tests verify the permission constant is properly defined.
+
+#[test]
+fn test_reorder_playlist_permission_bit_exists() {
+    use synctv_core::models::PermissionBits;
+    // REORDER_PLAYLIST must be a distinct, non-zero permission bit
+    let perm = PermissionBits::REORDER_PLAYLIST;
+    assert_ne!(perm, 0, "REORDER_PLAYLIST permission bit must be non-zero");
+    // It should be a power of two (single bit)
+    assert!(perm.is_power_of_two(), "REORDER_PLAYLIST should be a single permission bit");
+}
+
+#[test]
+fn test_reorder_playlist_permission_in_creator_defaults() {
+    use synctv_core::models::{PermissionBits, RoomRole};
+    // Creator role should include REORDER_PLAYLIST by default
+    let creator_perms = RoomRole::Creator.permissions();
+    assert!(
+        creator_perms.0 & PermissionBits::REORDER_PLAYLIST != 0,
+        "Creator role should have REORDER_PLAYLIST permission"
+    );
+}

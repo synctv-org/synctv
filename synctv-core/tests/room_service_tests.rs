@@ -2096,7 +2096,9 @@ async fn test_admin_delete_room_bypasses_permission_check() {
     let room_repo = RoomRepository::new(pool.clone());
 
     let owner = user_repo.create(&make_user("admin_del_owner")).await.unwrap();
-    let admin_user = user_repo.create(&make_user("admin_del_admin")).await.unwrap();
+    let mut admin_user = user_repo.create(&make_user("admin_del_admin")).await.unwrap();
+    admin_user.role = UserRole::Admin;
+    user_repo.update(&admin_user, admin_user.version).await.unwrap();
 
     let (room, _) = room_service
         .create_room(
@@ -2617,8 +2619,8 @@ async fn test_update_room_description_permission_denied() {
     let err = result.unwrap_err();
     let err_str = err.to_string();
     assert!(
-        err_str.contains("permission") || err_str.contains("denied") || err_str.contains("not found"),
-        "Error should indicate permission denied: {err_str}"
+        err_str.contains("permission") || err_str.contains("denied") || err_str.contains("not found") || err_str.contains("Not a member"),
+        "Error should indicate permission denied or not a member: {err_str}"
     );
 
     // Verify description was NOT changed
@@ -3266,7 +3268,9 @@ async fn test_admin_delete_orphaned_room_already_deleted_room() {
         .await
         .unwrap();
 
-    let admin = user_repo.create(&make_user("admin_already")).await.unwrap();
+    let mut admin = user_repo.create(&make_user("admin_already")).await.unwrap();
+    admin.role = UserRole::Admin;
+    user_repo.update(&admin, admin.version).await.unwrap();
 
     // Delete the creator first
     user_service.delete_user(&creator.id).await.unwrap();

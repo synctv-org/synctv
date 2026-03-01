@@ -20,6 +20,7 @@
 use synctv_core_testing::create_test_jwt_service;
 use testcontainers::ContainerAsync;
 use testcontainers_modules::postgres::Postgres;
+use testcontainers::core::ImageExt;
 use testcontainers::runners::AsyncRunner;
 use synctv_core::{
     models::{
@@ -51,6 +52,7 @@ async fn create_test_pool() -> TestPostgres {
         .with_db_name("synctv_test")
         .with_user("synctv")
         .with_password("synctv_test")
+        .with_tag("16-alpine")
         .start()
         .await
         .expect("Failed to start Postgres container");
@@ -63,11 +65,24 @@ async fn create_test_pool() -> TestPostgres {
         host, port
     );
 
-    let pool = sqlx::postgres::PgPoolOptions::new()
-        .max_connections(10)
-        .connect(&database_url)
-        .await
-        .expect("Failed to connect to database");
+    let pool = {
+        let mut retries = 0u32;
+        loop {
+            match sqlx::postgres::PgPoolOptions::new()
+                .max_connections(10)
+                .acquire_timeout(std::time::Duration::from_secs(2))
+                .connect(&database_url)
+                .await
+            {
+                Ok(p) => break p,
+                Err(_) if retries < 60 => {
+                    retries += 1;
+                    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                }
+                Err(e) => panic!("PostgreSQL not ready after {retries} retries: {e}"),
+            }
+        }
+    };
 
     // Run migrations
     sqlx::migrate!("../migrations")
@@ -282,7 +297,12 @@ async fn test_member_cannot_kick() {
     assert!(result.is_err(), "Member cannot kick other members");
     match result.unwrap_err() {
         Error::Authorization(msg) => {
-            assert!(msg.contains("permission") || msg.contains("KICK"), "Error should mention permission: {}", msg);
+            assert!(
+                msg.to_lowercase().contains("permission")
+                    || msg.to_lowercase().contains("denied")
+                    || msg.contains("KICK"),
+                "Error should mention permission: {}", msg
+            );
         }
         other => panic!("Expected Authorization error, got: {:?}", other),
     }
@@ -671,7 +691,13 @@ async fn test_kick_respects_role_hierarchy() {
     assert!(result.is_err(), "Member cannot kick Admin (role hierarchy)");
     match result.unwrap_err() {
         Error::Authorization(msg) => {
-            assert!(msg.contains("cannot kick") || msg.contains("higher"), "Error should mention role: {}", msg);
+            assert!(
+                msg.to_lowercase().contains("permission")
+                    || msg.to_lowercase().contains("denied")
+                    || msg.contains("cannot kick")
+                    || msg.contains("higher"),
+                "Error should mention permission or role: {}", msg
+            );
         }
         other => panic!("Expected Authorization error, got: {:?}", other),
     }

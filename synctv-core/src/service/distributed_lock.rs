@@ -1695,12 +1695,16 @@ mod tests {
 
     // ========== Redlock Integration Tests (Require Docker) ==========
 
-    #[tokio::test]
-    #[ignore = "Requires 3 Docker Redis instances - run manually"]
-    async fn test_redlock_acquire_and_release() {
-        // This test requires 3 independent Redis instances
-        // Setup: docker run -d -p 6379:6379 redis; docker run -d -p 6380:6379 redis; docker run -d -p 6381:6379 redis
-        let config = RedlockConfig {
+    /// Helper: create a Redlock config pointing at 3 local Redis instances.
+    /// Returns None (skip) if Redis is not available on port 6379.
+    async fn redlock_test_config() -> Option<RedlockConfig> {
+        // Quick connectivity check before committing to the test
+        let client = redis::Client::open("redis://127.0.0.1:6379").ok()?;
+        if client.get_connection_manager().await.is_err() {
+            eprintln!("Skipping redlock test: Redis not available on 127.0.0.1:6379");
+            return None;
+        }
+        Some(RedlockConfig {
             master_urls: vec![
                 "redis://127.0.0.1:6379".to_string(),
                 "redis://127.0.0.1:6380".to_string(),
@@ -1709,7 +1713,15 @@ mod tests {
             ttl_ms: 10_000,
             acquire_timeout_ms: 5_000,
             retry_interval_ms: 50,
-        };
+        })
+    }
+
+    #[tokio::test]
+    #[ignore = "Requires 3 Docker Redis instances - run manually"]
+    async fn test_redlock_acquire_and_release() {
+        // This test requires 3 independent Redis instances
+        // Setup: docker run -d -p 6379:6379 redis; docker run -d -p 6380:6379 redis; docker run -d -p 6381:6379 redis
+        let Some(config) = redlock_test_config().await else { return };
 
         let redlock = Redlock::new(config).await.unwrap();
 
@@ -1737,16 +1749,7 @@ mod tests {
     async fn test_redlock_survives_single_master_failure() {
         // Redlock should work even if one master is down
         // This test simulates partial unavailability
-        let config = RedlockConfig {
-            master_urls: vec![
-                "redis://127.0.0.1:6379".to_string(),
-                "redis://127.0.0.1:6380".to_string(),
-                "redis://127.0.0.1:6381".to_string(),
-            ],
-            ttl_ms: 10_000,
-            acquire_timeout_ms: 5_000,
-            retry_interval_ms: 50,
-        };
+        let Some(config) = redlock_test_config().await else { return };
 
         let redlock = Redlock::new(config).await.unwrap();
 
@@ -1761,19 +1764,16 @@ mod tests {
     async fn test_redlock_split_brain_prevention() {
         // This test verifies that Redlock prevents split-brain during failover
         // Simulate by having two clients compete for the same lock
-        let config = RedlockConfig {
-            master_urls: vec![
-                "redis://127.0.0.1:6379".to_string(),
-                "redis://127.0.0.1:6380".to_string(),
-                "redis://127.0.0.1:6381".to_string(),
-            ],
+        let Some(config) = redlock_test_config().await else { return };
+        let config2 = RedlockConfig {
+            retry_interval_ms: 10,
             ttl_ms: 5_000,
             acquire_timeout_ms: 2_000,
-            retry_interval_ms: 10,
+            ..config.clone()
         };
 
-        let redlock1 = Redlock::new(config.clone()).await.unwrap();
-        let redlock2 = Redlock::new(config).await.unwrap();
+        let redlock1 = Redlock::new(config2.clone()).await.unwrap();
+        let redlock2 = Redlock::new(config2).await.unwrap();
 
         // Client 1 acquires lock
         let guard1 = redlock1.acquire("test:redlock3").await.unwrap();
@@ -1793,16 +1793,7 @@ mod tests {
     #[tokio::test]
     #[ignore = "Requires 3 Docker Redis instances - run manually"]
     async fn test_redlock_guard_drop_releases_lock() {
-        let config = RedlockConfig {
-            master_urls: vec![
-                "redis://127.0.0.1:6379".to_string(),
-                "redis://127.0.0.1:6380".to_string(),
-                "redis://127.0.0.1:6381".to_string(),
-            ],
-            ttl_ms: 10_000,
-            acquire_timeout_ms: 5_000,
-            retry_interval_ms: 50,
-        };
+        let Some(config) = redlock_test_config().await else { return };
 
         let redlock = Redlock::new(config).await.unwrap();
 

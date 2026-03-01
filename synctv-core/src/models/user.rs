@@ -383,10 +383,42 @@ impl User {
         self.status.can_join_room()
     }
 
+    /// Check if this user has a usable password for authentication.
+    ///
+    /// A user has usable password auth if:
+    /// - They signed up via email (explicitly set a password), OR
+    /// - They are a legacy user (signup_method is None) with a non-empty password hash, OR
+    /// - They signed up via OAuth2 but later set a password (password_version > 0 indicates
+    ///   the password was explicitly changed after account creation)
+    ///
+    /// OAuth2 users initially receive a random password they don't know (password_version=0).
+    /// If they later use "set password" to establish their own password, password_version
+    /// increments, indicating they now have a usable password.
+    #[must_use]
+    pub fn has_usable_password(&self) -> bool {
+        // Non-empty password hash is a baseline requirement
+        if self.password_hash.is_empty() {
+            return false;
+        }
+
+        match self.signup_method {
+            Some(SignupMethod::Email) => true,
+            Some(SignupMethod::OAuth2) => {
+                // OAuth2 users get a random password at signup (pv=0).
+                // If pv > 0, the user explicitly changed/set their password.
+                self.password_version > 0
+            }
+            None => {
+                // Legacy users: assume they have a usable password if hash is non-empty
+                true
+            }
+        }
+    }
+
     /// Check if user can unbind a provider
     /// `OAuth2` users cannot remove all `OAuth2` providers unless they have email
     /// Email users cannot remove their email
-    #[must_use] 
+    #[must_use]
     pub const fn can_unbind_provider(&self, has_oauth2_count: usize, has_email: bool) -> bool {
         match self.signup_method {
             None => {
@@ -425,4 +457,99 @@ pub struct UserListQuery {
     pub search: Option<String>,
     pub status: Option<String>, // "active", "banned", etc.
     pub role: Option<String>,   // "user", "admin", "root"
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_test_user(signup_method: Option<SignupMethod>, password_hash: &str, password_version: i32) -> User {
+        let now = Utc::now();
+        User {
+            id: UserId::new(),
+            username: "testuser".to_string(),
+            email: Some("test@example.com".to_string()),
+            password_hash: password_hash.to_string(),
+            role: UserRole::User,
+            status: UserStatus::Active,
+            signup_method,
+            email_verified: true,
+            created_at: now,
+            updated_at: now,
+            password_changed_at: now,
+            password_version,
+            version: 0,
+            deleted_at: None,
+        }
+    }
+
+    // ========================================================================
+    // has_usable_password tests
+    // ========================================================================
+
+    #[test]
+    fn test_email_user_has_usable_password() {
+        let user = make_test_user(Some(SignupMethod::Email), "$argon2id$fake_hash", 0);
+        assert!(
+            user.has_usable_password(),
+            "Email signup user with non-empty hash should have usable password"
+        );
+    }
+
+    #[test]
+    fn test_email_user_empty_hash_no_usable_password() {
+        let user = make_test_user(Some(SignupMethod::Email), "", 0);
+        assert!(
+            !user.has_usable_password(),
+            "Email signup user with empty hash should NOT have usable password"
+        );
+    }
+
+    #[test]
+    fn test_oauth2_user_initial_no_usable_password() {
+        // OAuth2 users start with password_version=0 and a random hash they don't know
+        let user = make_test_user(Some(SignupMethod::OAuth2), "$argon2id$random_hash", 0);
+        assert!(
+            !user.has_usable_password(),
+            "OAuth2 user with pv=0 should NOT have usable password (random password they don't know)"
+        );
+    }
+
+    #[test]
+    fn test_oauth2_user_after_setting_password_has_usable_password() {
+        // OAuth2 user who later explicitly set a password (pv > 0)
+        let user = make_test_user(Some(SignupMethod::OAuth2), "$argon2id$explicit_hash", 1);
+        assert!(
+            user.has_usable_password(),
+            "OAuth2 user with pv > 0 should have usable password (they explicitly set one)"
+        );
+    }
+
+    #[test]
+    fn test_oauth2_user_empty_hash_no_usable_password() {
+        let user = make_test_user(Some(SignupMethod::OAuth2), "", 1);
+        assert!(
+            !user.has_usable_password(),
+            "OAuth2 user with empty hash should NOT have usable password regardless of pv"
+        );
+    }
+
+    #[test]
+    fn test_legacy_user_has_usable_password() {
+        // Legacy users (signup_method=None) with non-empty hash
+        let user = make_test_user(None, "$argon2id$legacy_hash", 0);
+        assert!(
+            user.has_usable_password(),
+            "Legacy user with non-empty hash should have usable password"
+        );
+    }
+
+    #[test]
+    fn test_legacy_user_empty_hash_no_usable_password() {
+        let user = make_test_user(None, "", 0);
+        assert!(
+            !user.has_usable_password(),
+            "Legacy user with empty hash should NOT have usable password"
+        );
+    }
 }

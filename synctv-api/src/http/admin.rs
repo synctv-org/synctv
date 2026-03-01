@@ -610,6 +610,7 @@ async fn batch_delete_users(
                 user_ids: req.user_ids,
             },
             &auth.user_id,
+            synctv_core::models::UserRole::Root, // AuthRoot guarantees caller is Root
             &rctx.0,
         )
         .await
@@ -964,14 +965,15 @@ async fn delete_provider(
 }
 
 async fn reconnect_provider(
-    _auth: AuthAdmin,
+    auth: AuthAdmin,
+    rctx: ReqCtx,
     State(state): State<AppState>,
     Path(name): Path<String>,
 ) -> AppResult<Json<admin::ReconnectProviderInstanceResponse>> {
     validate_path_id(&name, "name")?;
     let api = require_admin_api(&state)?;
     let resp = api
-        .reconnect_provider_instance(admin::ReconnectProviderInstanceRequest { name })
+        .reconnect_provider_instance(admin::ReconnectProviderInstanceRequest { name }, &auth.user_id, &rctx.0)
         .await
         .map_err(admin_err_to_app_error)?;
     Ok(Json(resp))

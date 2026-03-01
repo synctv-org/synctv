@@ -439,28 +439,28 @@ impl SettingsRegistry {
 
     /// Set `room_must_need_pwd` with cross-validation against `room_must_no_need_pwd`.
     ///
-    /// Returns an error if setting this to `true` while `room_must_no_need_pwd` is
-    /// already `true`, since the two settings are contradictory.
+    /// Routes through `SettingsService::update_batch()` which reads the
+    /// contradictory setting from the database within a transaction, preventing
+    /// race conditions in multi-replica deployments where two replicas could
+    /// simultaneously set contradictory values based on stale cache reads.
     pub async fn set_room_must_need_pwd(&self, value: bool) -> crate::Result<()> {
-        if value && self.room_must_no_need_pwd.get().unwrap_or(false) {
-            return Err(crate::Error::InvalidInput(
-                "room_must_need_pwd and room_must_no_need_pwd cannot both be true".into(),
-            ));
-        }
-        self.room_must_need_pwd.set(value).await
+        self.storage.settings_service().update_batch(vec![
+            ("room.room_must_need_pwd".to_string(), value.to_string()),
+        ]).await?;
+        Ok(())
     }
 
     /// Set `room_must_no_need_pwd` with cross-validation against `room_must_need_pwd`.
     ///
-    /// Returns an error if setting this to `true` while `room_must_need_pwd` is
-    /// already `true`, since the two settings are contradictory.
+    /// Routes through `SettingsService::update_batch()` which reads the
+    /// contradictory setting from the database within a transaction, preventing
+    /// race conditions in multi-replica deployments where two replicas could
+    /// simultaneously set contradictory values based on stale cache reads.
     pub async fn set_room_must_no_need_pwd(&self, value: bool) -> crate::Result<()> {
-        if value && self.room_must_need_pwd.get().unwrap_or(false) {
-            return Err(crate::Error::InvalidInput(
-                "room_must_need_pwd and room_must_no_need_pwd cannot both be true".into(),
-            ));
-        }
-        self.room_must_no_need_pwd.set(value).await
+        self.storage.settings_service().update_batch(vec![
+            ("room.room_must_no_need_pwd".to_string(), value.to_string()),
+        ]).await?;
+        Ok(())
     }
 
     /// Build a `PublicSettings` snapshot from the current registry values.

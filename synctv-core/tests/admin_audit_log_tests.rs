@@ -52,7 +52,7 @@ async fn test_audit_log_integrity_all_fields() {
 
     // Verify all fields are stored correctly
     let row: (
-        String,
+        i64,
         String,
         String,
         String,
@@ -71,8 +71,8 @@ async fn test_audit_log_integrity_all_fields() {
     .await
     .expect("Query should succeed");
 
-    assert!(!row.0.is_empty(), "ID should be generated");
-    assert_eq!(row.1, "user_001", "Actor ID should match");
+    assert!(row.0 > 0, "ID should be generated");
+    assert_eq!(row.1.trim(), "user_001", "Actor ID should match");
     assert_eq!(row.2, "test_admin", "Actor username should match");
     assert_eq!(row.3, "user_banned", "Action should match");
     assert_eq!(row.4, Some("user".to_string()), "Target type should match");
@@ -230,7 +230,7 @@ async fn test_audit_log_multiple_actions_same_actor() {
     assert_eq!(count, actions.len() as i64, "All actions should be logged");
 
     // Verify unique IDs for each log
-    let ids: Vec<(String,)> = sqlx::query_as(
+    let ids: Vec<(i64,)> = sqlx::query_as(
         "SELECT id FROM audit_logs WHERE actor_id = 'multi_actor' ORDER BY created_at",
     )
     .fetch_all(&pool)
@@ -317,7 +317,7 @@ async fn test_unbuffered_service_never_drops() {
     // With fake pool, it will return an error but not drop
     let result = service
         .log(
-            "unbuffered_actor".to_string(),
+            "unbuf_actor".to_string(),
             "unbuffered_tester".to_string(),
             AuditAction::UserCreated,
             AuditTargetType::User,
@@ -351,7 +351,7 @@ async fn test_buffered_write_eventually_visible() {
     // Log an event
     service
         .log(
-            "buffered_write_actor".to_string(),
+            "buf_wr_actr".to_string(),
             "buffered_writer".to_string(),
             AuditAction::UserCreated,
             AuditTargetType::User,
@@ -368,7 +368,7 @@ async fn test_buffered_write_eventually_visible() {
 
     // Event should be visible in database
     let count: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM audit_logs WHERE actor_id = 'buffered_write_actor'",
+        "SELECT COUNT(*) FROM audit_logs WHERE actor_id = 'buf_wr_actr'",
     )
     .fetch_one(&pool)
     .await
@@ -387,7 +387,7 @@ async fn test_unbuffered_write_immediately_visible() {
     // Log an event
     service
         .log(
-            "unbuffered_immediate".to_string(),
+            "unbuf_immed".to_string(),
             "immediate_writer".to_string(),
             AuditAction::UserCreated,
             AuditTargetType::User,
@@ -401,7 +401,7 @@ async fn test_unbuffered_write_immediately_visible() {
 
     // No sleep needed - should be immediately visible
     let count: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM audit_logs WHERE actor_id = 'unbuffered_immediate'",
+        "SELECT COUNT(*) FROM audit_logs WHERE actor_id = 'unbuf_immed'",
     )
     .fetch_one(&pool)
     .await
@@ -434,7 +434,7 @@ async fn test_concurrent_audit_logging() {
         let handle = tokio::spawn(async move {
             b.wait().await;
             s.log(
-                format!("concurrent_actor_{}", i),
+                format!("conc_act_{}", i),
                 format!("concurrent_tester_{}", i),
                 AuditAction::UserCreated,
                 AuditTargetType::User,
@@ -459,7 +459,7 @@ async fn test_concurrent_audit_logging() {
 
     // Verify all are in database
     let count: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM audit_logs WHERE actor_id LIKE 'concurrent_actor_%'",
+        "SELECT COUNT(*) FROM audit_logs WHERE actor_id LIKE 'conc_act_%'",
     )
     .fetch_one(&pool)
     .await
@@ -495,7 +495,7 @@ async fn test_all_audit_actions_are_logged() {
     for (i, action) in actions.iter().enumerate() {
         service
             .log(
-                format!("action_actor_{}", i),
+                format!("act_actr_{}", i),
                 "action_tester".to_string(),
                 action.clone(),
                 match action {
@@ -569,7 +569,7 @@ async fn test_all_target_types_are_logged() {
     for (i, (target_type, _expected)) in target_types.iter().enumerate() {
         service
             .log(
-                format!("target_actor_{}", i),
+                format!("tgt_actr_{}", i),
                 "target_tester".to_string(),
                 AuditAction::UserCreated,
                 target_type.clone(),
@@ -643,7 +643,7 @@ async fn test_audit_log_with_all_optionals() {
 
     service
         .log(
-            "all_optionals_actor".to_string(),
+            "allopt_actr".to_string(),
             "all_optionals_tester".to_string(),
             AuditAction::UserCreated,
             AuditTargetType::User,
@@ -656,7 +656,7 @@ async fn test_audit_log_with_all_optionals() {
         .expect("Log should succeed");
 
     let row: (Option<String>, Option<String>, Option<String>, serde_json::Value) = sqlx::query_as(
-        "SELECT target_id, ip_address, user_agent, details FROM audit_logs WHERE actor_id = 'all_optionals_actor'",
+        "SELECT target_id, ip_address, user_agent, details FROM audit_logs WHERE actor_id = 'allopt_actr'",
     )
     .fetch_one(&pool)
     .await
@@ -721,7 +721,7 @@ async fn test_log_stream_kicked_without_reason() {
 
     service
         .log_stream_kicked(
-            "stream_no_reason".to_string(),
+            "strm_norson".to_string(),
             "stream_admin".to_string(),
             "room_abc".to_string(),
             "media_xyz".to_string(),
@@ -733,7 +733,7 @@ async fn test_log_stream_kicked_without_reason() {
         .expect("Stream kick log should succeed");
 
     let row: (serde_json::Value,) = sqlx::query_as(
-        "SELECT details FROM audit_logs WHERE actor_id = 'stream_no_reason'",
+        "SELECT details FROM audit_logs WHERE actor_id = 'strm_norson'",
     )
     .fetch_one(&pool)
     .await

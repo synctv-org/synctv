@@ -662,7 +662,21 @@ mod websocket_e2e {
             );
             let redis_url = format!("redis://{redis_host}:{redis_port}");
 
-            let pool = PgPool::connect(&database_url).await.expect("connect pg");
+            // Wait for PostgreSQL to be ready (testcontainer port may be mapped
+            // before PG is fully accepting connections).
+            let pool = {
+                let mut retries = 0u32;
+                loop {
+                    match PgPool::connect(&database_url).await {
+                        Ok(p) => break p,
+                        Err(_) if retries < 60 => {
+                            retries += 1;
+                            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                        }
+                        Err(e) => panic!("PostgreSQL not ready after {} retries: {}", retries, e),
+                    }
+                }
+            };
             sqlx::migrate!("../migrations").run(&pool).await.expect("migrations");
 
             Self {
@@ -2510,7 +2524,21 @@ mod websocket_connection_limit_timing {
             );
             let redis_url = format!("redis://{redis_host}:{redis_port}");
 
-            let pool = PgPool::connect(&database_url).await.expect("connect pg");
+            // Wait for PostgreSQL to be ready (testcontainer port may be mapped
+            // before PG is fully accepting connections).
+            let pool = {
+                let mut retries = 0u32;
+                loop {
+                    match PgPool::connect(&database_url).await {
+                        Ok(p) => break p,
+                        Err(_) if retries < 60 => {
+                            retries += 1;
+                            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                        }
+                        Err(e) => panic!("PostgreSQL not ready after {} retries: {}", retries, e),
+                    }
+                }
+            };
             sqlx::migrate!("../migrations").run(&pool).await.expect("migrations");
 
             Self {

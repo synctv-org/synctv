@@ -106,6 +106,56 @@ impl CredentialData {
         }
     }
 
+    /// Try to extract Alist credential fields.
+    ///
+    /// Returns `(host, username, password)` if this is an Alist credential,
+    /// or an error describing the type mismatch.
+    pub fn as_alist(&self) -> std::result::Result<(&str, &str, &str), String> {
+        match self {
+            Self::Alist {
+                host,
+                username,
+                password,
+            } => Ok((host, username, password)),
+            other => Err(format!(
+                "Expected Alist credential data, got {}",
+                other.provider_type()
+            )),
+        }
+    }
+
+    /// Try to extract Emby credential fields.
+    ///
+    /// Returns `(host, api_key, emby_user_id)` if this is an Emby credential,
+    /// or an error describing the type mismatch.
+    pub fn as_emby(&self) -> std::result::Result<(&str, &str, &str), String> {
+        match self {
+            Self::Emby {
+                host,
+                api_key,
+                emby_user_id,
+            } => Ok((host, api_key, emby_user_id)),
+            other => Err(format!(
+                "Expected Emby credential data, got {}",
+                other.provider_type()
+            )),
+        }
+    }
+
+    /// Try to extract Bilibili credential fields.
+    ///
+    /// Returns the cookies map if this is a Bilibili credential,
+    /// or an error describing the type mismatch.
+    pub fn as_bilibili(&self) -> std::result::Result<&HashMap<String, String>, String> {
+        match self {
+            Self::Bilibili { cookies } => Ok(cookies),
+            other => Err(format!(
+                "Expected Bilibili credential data, got {}",
+                other.provider_type()
+            )),
+        }
+    }
+
     /// Get the server ID for this credential
     /// - Bilibili: constant "bilibili"
     /// - Alist/Emby: SHA-256 hash of host

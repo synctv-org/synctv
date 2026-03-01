@@ -14,10 +14,14 @@ use sqlx::{PgPool, Row};
 
 use crate::models::settings::{get_default_settings, SettingsGroup};
 use crate::repository::SettingsRepository;
+use crate::service::settings_vars::SettingProvider;
 use crate::{Error, InternalExt};
 
 /// Change listener callback type
 pub type SettingsChangeListener = Arc<dyn Fn(&str, &serde_json::Value) + Send + Sync>;
+
+/// Type alias for the shared setting providers map
+pub(crate) type SettingProviders = Arc<parking_lot::RwLock<std::collections::HashMap<String, Arc<dyn SettingProvider>>>>;
 
 /// System settings service
 #[derive(Clone)]
@@ -31,6 +35,9 @@ pub struct SettingsService {
     // Broadcast channel for notifying SettingsStorage of remote reload events.
     // Payload is the setting key that was reloaded along with its new value.
     reload_sender: broadcast::Sender<(String, Option<String>)>,
+    // Shared reference to registered setting providers for validation.
+    // Set by `SettingsStorage` after construction via `set_providers()`.
+    setting_providers: Arc<parking_lot::RwLock<Option<SettingProviders>>>,
 }
 
 impl std::fmt::Debug for SettingsService {
@@ -52,7 +59,31 @@ impl SettingsService {
             cache: Arc::new(DashMap::new()),
             listeners: Arc::new(RwLock::new(Vec::new())),
             reload_sender,
+            setting_providers: Arc::new(parking_lot::RwLock::new(None)),
         }
+    }
+
+    /// Set the shared setting providers map.
+    ///
+    /// Called by `SettingsStorage` after construction so that `update()` can
+    /// validate values before persisting them to the database.
+    pub(crate) fn set_providers(&self, providers: SettingProviders) {
+        *self.setting_providers.write() = Some(providers);
+    }
+
+    /// Validate a setting value using the registered provider for its key.
+    ///
+    /// Returns `Ok(())` if no provider is registered for the key (unknown keys
+    /// are allowed through) or if the provider accepts the value.
+    pub fn validate_setting(&self, key: &str, value: &str) -> Result<(), Error> {
+        let providers_lock = self.setting_providers.read();
+        if let Some(providers) = providers_lock.as_ref() {
+            let providers_read = providers.read();
+            if let Some(provider) = providers_read.get(key) {
+                provider.is_valid_raw(value)?;
+            }
+        }
+        Ok(())
     }
 
     /// Subscribe to reload events triggered by remote replicas.
@@ -133,12 +164,18 @@ impl SettingsService {
     }
 
     /// Update a setting value by key
+    ///
+    /// Validates the value against the registered provider (if any) before
+    /// persisting to the database.
     pub async fn update(
         &self,
         key: &str,
         value: String,
     ) -> Result<SettingsGroup, Error> {
         debug!("Updating setting '{}'", key);
+
+        // Validate before writing to database
+        self.validate_setting(key, &value)?;
 
         // Update in database
         let setting = self
@@ -173,8 +210,11 @@ impl SettingsService {
     /// settings table is never left in a partially-updated state. Cache and local
     /// listeners are updated only after the transaction commits successfully.
     ///
-    /// Cross-validates contradictory settings before writing (e.g.,
-    /// `room_must_need_pwd` and `room_must_no_need_pwd` cannot both be true).
+    /// Validates each value against its registered provider before writing.
+    ///
+    /// Cross-validates contradictory settings using the database (not cache) to
+    /// prevent race conditions in multi-replica deployments where two replicas
+    /// could simultaneously set contradictory values based on stale cache reads.
     pub async fn update_batch(
         &self,
         updates: impl IntoIterator<Item = (String, String)>,
@@ -184,27 +224,51 @@ impl SettingsService {
             return Ok(vec![]);
         }
 
+        // Validate each value against its registered provider
+        for (key, value) in &updates {
+            self.validate_setting(key, value)?;
+        }
+
+        let mut tx = self.pool.begin().await
+            .map_err(|e| Error::Internal(format!("Failed to start settings transaction: {e}")))?;
+
         // Cross-validate contradictory room password settings.
-        // Build effective values: use the batch value if present, otherwise fall back to cache.
+        // Build effective values: use the batch value if present, otherwise read
+        // fresh from the database **within the transaction** to prevent stale-cache
+        // race conditions in multi-replica deployments.
         {
             let batch_map: std::collections::HashMap<&str, &str> = updates
                 .iter()
                 .map(|(k, v)| (k.as_str(), v.as_str()))
                 .collect();
 
-            let must_need_pwd = batch_map
-                .get("room.room_must_need_pwd").map_or_else(|| {
-                    self.cache
-                        .get("room.room_must_need_pwd")
-                        .is_some_and(|s| s.value == "true")
-                }, |v| *v == "true");
+            let must_need_pwd = if let Some(v) = batch_map.get("room.room_must_need_pwd") {
+                *v == "true"
+            } else {
+                // Read from DB within the transaction for consistency
+                sqlx::query_scalar::<_, String>(
+                    "SELECT value FROM settings WHERE key = $1 FOR UPDATE"
+                )
+                .bind("room.room_must_need_pwd")
+                .fetch_optional(&mut *tx)
+                .await
+                .map_err(|e| Error::Internal(format!("Failed to read room_must_need_pwd: {e}")))?
+                .is_some_and(|v| v == "true")
+            };
 
-            let must_no_need_pwd = batch_map
-                .get("room.room_must_no_need_pwd").map_or_else(|| {
-                    self.cache
-                        .get("room.room_must_no_need_pwd")
-                        .is_some_and(|s| s.value == "true")
-                }, |v| *v == "true");
+            let must_no_need_pwd = if let Some(v) = batch_map.get("room.room_must_no_need_pwd") {
+                *v == "true"
+            } else {
+                // Read from DB within the transaction for consistency
+                sqlx::query_scalar::<_, String>(
+                    "SELECT value FROM settings WHERE key = $1 FOR UPDATE"
+                )
+                .bind("room.room_must_no_need_pwd")
+                .fetch_optional(&mut *tx)
+                .await
+                .map_err(|e| Error::Internal(format!("Failed to read room_must_no_need_pwd: {e}")))?
+                .is_some_and(|v| v == "true")
+            };
 
             if must_need_pwd && must_no_need_pwd {
                 return Err(Error::InvalidInput(
@@ -212,9 +276,6 @@ impl SettingsService {
                 ));
             }
         }
-
-        let mut tx = self.pool.begin().await
-            .map_err(|e| Error::Internal(format!("Failed to start settings transaction: {e}")))?;
 
         let mut updated = Vec::with_capacity(updates.len());
         for (key, value) in &updates {
@@ -680,5 +741,89 @@ mod tests {
             let from_model = get_default_settings(group_name);
             assert_eq!(from_helper, from_model, "Mismatch for group: {group_name}");
         }
+    }
+
+    // ========== validate_setting tests ==========
+
+    /// A mock `SettingProvider` that rejects any value not equal to "valid".
+    struct MockProvider;
+
+    #[async_trait::async_trait]
+    impl crate::service::settings_vars::SettingProvider for MockProvider {
+        fn get_raw(&self) -> Option<String> {
+            Some("valid".to_string())
+        }
+        async fn set_raw(&self, _value: String) -> crate::Result<()> {
+            Ok(())
+        }
+        fn is_valid_raw(&self, value: &str) -> crate::Result<()> {
+            if value == "valid" {
+                Ok(())
+            } else {
+                Err(crate::Error::InvalidInput("Only 'valid' is accepted".into()))
+            }
+        }
+    }
+
+    /// Helper to build a `SettingsService` with a mock provider registered.
+    /// Uses a fake pool URL that is never actually connected (no DB needed).
+    fn service_with_mock_provider(key: &str) -> SettingsService {
+        // We cannot easily construct a PgPool without a running DB, but
+        // validate_setting is purely in-memory. We can build the providers
+        // map directly.
+        let providers: SettingProviders = Arc::new(parking_lot::RwLock::new(
+            std::collections::HashMap::new(),
+        ));
+        providers.write().insert(key.to_string(), Arc::new(MockProvider) as Arc<dyn crate::service::settings_vars::SettingProvider>);
+
+        // Build a minimal SettingsService (pool will never be used).
+        // Safety: we use the lazy pool option from sqlx which won't connect
+        // until a query is executed.
+        let pool_opts = sqlx::postgres::PgPoolOptions::new().max_connections(1);
+        let pool = pool_opts.connect_lazy("postgres://fake:fake@localhost/fake").unwrap();
+        let repo = crate::repository::SettingsRepository::new(pool.clone());
+        let service = SettingsService::new(repo, pool);
+        service.set_providers(providers);
+        service
+    }
+
+    #[tokio::test]
+    async fn test_validate_setting_rejects_invalid_value() {
+        let service = service_with_mock_provider("test.key");
+        let result = service.validate_setting("test.key", "invalid");
+        assert!(result.is_err(), "Should reject invalid values");
+        let err = result.unwrap_err();
+        assert!(
+            matches!(err, crate::Error::InvalidInput(_)),
+            "Error should be InvalidInput, got: {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_validate_setting_accepts_valid_value() {
+        let service = service_with_mock_provider("test.key");
+        let result = service.validate_setting("test.key", "valid");
+        assert!(result.is_ok(), "Should accept valid values");
+    }
+
+    #[tokio::test]
+    async fn test_validate_setting_passes_unknown_keys() {
+        let service = service_with_mock_provider("test.key");
+        // A key with no registered provider should pass validation
+        let result = service.validate_setting("unknown.key", "anything");
+        assert!(result.is_ok(), "Unknown keys should pass validation");
+    }
+
+    #[tokio::test]
+    async fn test_validate_setting_no_providers_set() {
+        // Build a SettingsService without any providers wired up
+        let pool_opts = sqlx::postgres::PgPoolOptions::new().max_connections(1);
+        let pool = pool_opts.connect_lazy("postgres://fake:fake@localhost/fake").unwrap();
+        let repo = crate::repository::SettingsRepository::new(pool.clone());
+        let service = SettingsService::new(repo, pool);
+        // No set_providers call - providers is None
+
+        let result = service.validate_setting("any.key", "any_value");
+        assert!(result.is_ok(), "Should pass when no providers are registered");
     }
 }

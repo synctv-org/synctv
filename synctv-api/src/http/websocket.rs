@@ -48,8 +48,8 @@ const SLOW_CLIENT_DROP_THRESHOLD: u32 = 10;
 ///
 /// # Example
 ///
-/// ```ignore
-/// async fn handle_socket(...) {
+/// ```text
+/// async fn handle_socket() {
 ///     let _guard = MetricsGuard::new();
 ///
 ///     // Even if this panics, metrics will be decremented

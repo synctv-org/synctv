@@ -10,7 +10,7 @@ use chrono::Utc;
 ///
 /// # Example
 ///
-/// ```ignore
+/// ```text
 /// use synctv_core_testing::TestUser;
 ///
 /// let user = TestUser::new()
@@ -121,7 +121,7 @@ impl TestUser {
     ///
     /// # Example
     ///
-    /// ```ignore
+    /// ```text
     /// let user = TestUser::new()
     ///     .with_password("SecurePassword123!")
     ///     .build_async()
@@ -157,7 +157,7 @@ impl TestUser {
 ///
 /// # Example
 ///
-/// ```ignore
+/// ```text
 /// use synctv_core_testing::TestRoom;
 ///
 /// let room = TestRoom::new()

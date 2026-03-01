@@ -268,10 +268,8 @@ async fn test_rtmp_provider_rejects_ipv4_mapped_private_base_url() {
 // ============================================================================
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
-async fn test_rtmp_provider_allows_cgnat_base_url() {
-    // CGNAT is technically routable (not RFC1918 private), so it's allowed by default.
-    // The core SSRFValidator follows url_jail's behavior of not blocking CGNAT.
-    // If you need to block CGNAT, use a custom validator with PolicyBuilder.
+async fn test_rtmp_provider_blocks_cgnat_base_url() {
+    // CGNAT / Shared Address Space (100.64.0.0/10, RFC 6598) is blocked for SSRF protection.
     let cgnat_urls = vec![
         "http://100.64.0.1:8080",
         "http://100.100.100.100:8080",
@@ -281,8 +279,8 @@ async fn test_rtmp_provider_allows_cgnat_base_url() {
     for base_url in cgnat_urls {
         let result = RtmpProvider::new_validated(base_url);
         assert!(
-            result.is_ok(),
-            "RtmpProvider should allow CGNAT base_url (routable): {base_url}"
+            result.is_err(),
+            "RtmpProvider should block CGNAT base_url: {base_url}"
         );
     }
 }

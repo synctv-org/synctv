@@ -669,3 +669,135 @@ fn create_user_service_with_blacklist(
         brute_force,
     )
 }
+
+fn create_user_service_with_dyn_blacklist(
+    pool: PgPool,
+    token_blacklist: Arc<dyn TokenBlacklistStore>,
+    key_builder: KeyBuilder,
+) -> UserService {
+    let jwt_service = create_jwt_service();
+    let username_cache = cache::UsernameCache::new(
+        Arc::new(NoopCacheL2),
+        "test:username:".to_string(),
+        1000,
+        0,
+    );
+    let brute_force = BruteForceProtection::in_memory("test".to_string());
+
+    UserService::new(
+        pool,
+        jwt_service,
+        username_cache,
+        PasswordComplexityConfig::default(),
+        token_blacklist,
+        key_builder,
+        brute_force,
+    )
+}
+
+// ============================================================================
+// Fail-closed blacklist store error handling tests (Issue: storage errors)
+// ============================================================================
+
+/// A blacklist store whose `is_blacklisted_checked` always returns an error,
+/// simulating a database/Redis outage.
+struct ErroringBlacklistStore;
+
+#[async_trait::async_trait]
+impl TokenBlacklistStore for ErroringBlacklistStore {
+    async fn is_blacklisted(&self, _key: &str) -> bool {
+        // Legacy fail-open behavior
+        false
+    }
+
+    async fn is_blacklisted_checked(&self, _key: &str) -> synctv_core::Result<bool> {
+        Err(synctv_core::Error::Internal(
+            "Simulated storage outage".to_string(),
+        ))
+    }
+
+    async fn blacklist(&self, _key: &str, _ttl_secs: u64) -> synctv_core::Result<()> {
+        Err(synctv_core::Error::Internal(
+            "Simulated storage outage".to_string(),
+        ))
+    }
+
+    async fn get_family_revoked_at(&self, _key: &str) -> Option<i64> {
+        None
+    }
+
+    async fn set_family_revoked(&self, _key: &str, _timestamp: i64, _ttl_secs: u64) {}
+}
+
+/// Test that when the blacklist store encounters a storage error during
+/// `is_blacklisted_checked`, the security pipeline rejects the request
+/// (fail-closed behavior).
+///
+/// This prevents blacklisted tokens (e.g., from logout) from being accepted
+/// during database/Redis outages.
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_blacklist_store_error_rejects_request_fail_closed() {
+    let (_container, pool) = create_test_pool().await;
+    let user = insert_user(&pool, &make_user(UserStatus::Active, 0)).await;
+
+    let erroring_store: Arc<dyn TokenBlacklistStore> = Arc::new(ErroringBlacklistStore);
+    let key_builder = KeyBuilder::new("test");
+    let user_service = Arc::new(create_user_service_with_dyn_blacklist(
+        pool,
+        erroring_store.clone(),
+        key_builder.clone(),
+    ));
+
+    let pipeline = SecurityPipeline::new(user_service)
+        .with_token_blacklist(erroring_store, key_builder);
+
+    let claims = make_claims(&user.id, Some(0));
+
+    // The store will return an error from is_blacklisted_checked.
+    // The pipeline should fail-closed and reject the request.
+    let result = pipeline.check(&claims).await;
+    assert!(
+        result.is_err(),
+        "Request should be rejected when blacklist store returns an error (fail-closed)"
+    );
+    let err = result.unwrap_err();
+    assert!(
+        matches!(&err, Error::Authentication(msg) if msg.contains("temporarily unavailable")),
+        "Error should indicate temporary unavailability, got: {err}"
+    );
+}
+
+/// Test that the default is_blacklisted_checked (which delegates to is_blacklisted)
+/// works correctly for in-memory stores that cannot fail.
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_in_memory_blacklist_store_is_blacklisted_checked_ok() {
+    let (_container, pool) = create_test_pool().await;
+    let user = insert_user(&pool, &make_user(UserStatus::Active, 0)).await;
+
+    let store = Arc::new(InMemoryTokenBlacklistStore::new(10_000, 3600, 86400));
+    let key_builder = KeyBuilder::new("test");
+    let user_service = Arc::new(create_user_service_with_blacklist(
+        pool,
+        store.clone(),
+        key_builder.clone(),
+    ));
+
+    let pipeline = SecurityPipeline::new(user_service)
+        .with_token_blacklist(store.clone(), key_builder.clone());
+
+    let claims = make_claims(&user.id, Some(0));
+
+    // Non-blacklisted token should pass
+    let result = pipeline.check(&claims).await;
+    assert!(result.is_ok(), "Non-blacklisted token should pass with in-memory store");
+
+    // Blacklist the token
+    let bl_key = key_builder.access_token_blacklist(&claims.jti);
+    store.blacklist(&bl_key, 3600).await.unwrap();
+
+    // Blacklisted token should be rejected
+    let result2 = pipeline.check(&claims).await;
+    assert!(result2.is_err(), "Blacklisted token should be rejected");
+}

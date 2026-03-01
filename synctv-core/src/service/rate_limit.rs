@@ -129,7 +129,7 @@ impl InMemoryGovernorLimiter {
 fn extract_rate_limit_tier(key: &str) -> &'static str {
     const KNOWN_TIERS: &[&str] = &[
         "auth", "read", "write", "media", "chat", "danmaku",
-        "room_password_check", "grpc", "api",
+        "room_password_check", "grpc", "api", "refresh",
     ];
     for segment in key.rsplit(':') {
         for &tier in KNOWN_TIERS {

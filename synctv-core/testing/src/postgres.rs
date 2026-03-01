@@ -1,6 +1,7 @@
 //! `PostgreSQL` test container helpers
 
 use sqlx::PgPool;
+use sqlx::postgres::PgPoolOptions;
 use testcontainers::core::ImageExt;
 use testcontainers::runners::AsyncRunner;
 use testcontainers::ContainerAsync;
@@ -26,7 +27,7 @@ pub type TestContainer = ContainerAsync<Postgres>;
 ///
 /// # Example
 ///
-/// ```ignore
+/// ```text
 /// use synctv_core_testing::create_test_pool;
 ///
 /// #[tokio::test]
@@ -50,9 +51,28 @@ pub async fn create_test_pool() -> (TestContainer, PgPool) {
         postgres.get_host_port_ipv4(5432).await.expect("Failed to get port")
     );
 
-    let pool = PgPool::connect(&connection_string)
-        .await
-        .expect("Failed to create pool");
+    // Retry connection until PG is fully ready (container port may be mapped
+    // before the server accepts connections).  Use a short acquire timeout so
+    // each attempt fails fast instead of blocking 30s (the default), which
+    // prevents 60 retries × 30s = 30-minute hangs under Docker pressure.
+    let pool = {
+        let mut retries = 0u32;
+        loop {
+            match PgPoolOptions::new()
+                .acquire_timeout(std::time::Duration::from_secs(2))
+                .max_connections(5)
+                .connect(&connection_string)
+                .await
+            {
+                Ok(p) => break p,
+                Err(_) if retries < 60 => {
+                    retries += 1;
+                    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                }
+                Err(e) => panic!("PostgreSQL not ready after {retries} retries: {e}"),
+            }
+        }
+    };
 
     // Run migrations from the parent crate
     sqlx::migrate!("../../migrations")
@@ -71,7 +91,7 @@ pub async fn create_test_pool() -> (TestContainer, PgPool) {
 ///
 /// # Example
 ///
-/// ```ignore
+/// ```text
 /// let (_container, pool) = create_test_pool_with_db("my_test_db").await;
 /// ```
 pub async fn create_test_pool_with_db(db_name: &str) -> (TestContainer, PgPool) {
@@ -90,9 +110,24 @@ pub async fn create_test_pool_with_db(db_name: &str) -> (TestContainer, PgPool) 
         db_name
     );
 
-    let pool = PgPool::connect(&connection_string)
-        .await
-        .expect("Failed to create pool");
+    let pool = {
+        let mut retries = 0u32;
+        loop {
+            match PgPoolOptions::new()
+                .acquire_timeout(std::time::Duration::from_secs(2))
+                .max_connections(5)
+                .connect(&connection_string)
+                .await
+            {
+                Ok(p) => break p,
+                Err(_) if retries < 60 => {
+                    retries += 1;
+                    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                }
+                Err(e) => panic!("PostgreSQL not ready after {retries} retries: {e}"),
+            }
+        }
+    };
 
     sqlx::migrate!("../../migrations")
         .run(&pool)

@@ -140,7 +140,6 @@ impl Default for MessageConcurrencyConfig {
 /// This struct stores the result of a membership check to avoid
 /// repeated database queries during heartbeat validation.
 #[derive(Clone, Copy, Debug)]
-#[allow(dead_code)] // Fields used for caching but not yet read
 struct CachedMembership {
     /// Whether the user is still a valid member of the room
     is_member: bool,
@@ -150,7 +149,6 @@ struct CachedMembership {
 
 impl CachedMembership {
     /// Create a cached membership from a member lookup result.
-    #[allow(dead_code)] // Will be used when implementing cache lookup
     fn from_member(member: Option<&synctv_core::models::RoomMember>) -> Self {
         match member {
             Some(m) => Self {
@@ -394,6 +392,16 @@ impl StreamMessageHandler {
     pub fn with_concurrency(mut self, config: Arc<MessageConcurrencyConfig>) -> Self {
         self.concurrency_config = config;
         self
+    }
+
+    /// Invalidate the membership cache entry for a specific user in a room.
+    ///
+    /// Called when a `KickUser` or `KickUserFromRoom` admin event is received,
+    /// ensuring that the heartbeat check will re-query the database on the next
+    /// tick instead of trusting the stale cached "member" status.
+    pub fn invalidate_membership_cache(&self, room_id: &RoomId, user_id: &UserId) {
+        let cache_key = (room_id.as_str().to_string(), user_id.as_str().to_string());
+        self.membership_cache.invalidate(&cache_key);
     }
 
     /// Run the complete message loop using unified IO abstraction
@@ -672,6 +680,11 @@ impl StreamMessageHandler {
                 admin_event = admin_rx.recv() => {
                     match admin_event {
                         Ok(ClusterEvent::KickUser { ref user_id, ref reason, .. }) => {
+                            // Invalidate membership cache immediately so the banned user
+                            // cannot send messages during the remaining cache TTL window.
+                            let cache_key = (self.room_id.as_str().to_string(), user_id.as_str().to_string());
+                            self.membership_cache.invalidate(&cache_key);
+
                             if *user_id == self.user_id {
                                 tracing::info!(
                                     user_id = %self.user_id.as_str(),
@@ -682,6 +695,11 @@ impl StreamMessageHandler {
                             }
                         }
                         Ok(ClusterEvent::KickUserFromRoom { ref user_id, ref room_id, ref reason, .. }) => {
+                            // Invalidate membership cache immediately so the kicked/banned
+                            // user cannot send messages during the remaining cache TTL window.
+                            let cache_key = (room_id.as_str().to_string(), user_id.as_str().to_string());
+                            self.membership_cache.invalidate(&cache_key);
+
                             if *user_id == self.user_id && *room_id == self.room_id {
                                 tracing::info!(
                                     user_id = %self.user_id.as_str(),
@@ -788,6 +806,12 @@ impl StreamMessageHandler {
                 // verifies the user is still a valid (non-banned, non-removed)
                 // member of the room. This catches cases where the disconnect
                 // signal channel lagged and the ban/kick signal was lost.
+                //
+                // Uses the membership cache to reduce database queries: if a
+                // cached entry exists and shows the user as a valid member, the
+                // DB query is skipped. When a KickUser or KickUserFromRoom admin
+                // event arrives, the cache entry is invalidated immediately,
+                // forcing the next heartbeat to re-query the DB.
                 _ = heartbeat_interval.tick() => {
                     if !stream.is_alive() {
                         tracing::info!("Connection no longer alive");
@@ -798,9 +822,34 @@ impl StreamMessageHandler {
                         break;
                     }
 
-                    // Periodic membership re-validation (backstop for lost disconnect signals).
+                    // Check membership cache first to avoid unnecessary DB queries.
+                    let cache_key = (self.room_id.as_str().to_string(), self.user_id.as_str().to_string());
+                    if let Some(cached) = self.membership_cache.get(&cache_key) {
+                        if cached.is_banned {
+                            tracing::info!(
+                                user_id = %self.user_id.as_str(),
+                                room_id = %self.room_id.as_str(),
+                                "Periodic check (cached): user is banned, disconnecting"
+                            );
+                            break;
+                        }
+                        if !cached.is_member {
+                            tracing::info!(
+                                user_id = %self.user_id.as_str(),
+                                room_id = %self.room_id.as_str(),
+                                "Periodic check (cached): user is no longer a member, disconnecting"
+                            );
+                            break;
+                        }
+                        // Cache hit with valid member status -- skip DB query
+                        continue;
+                    }
+
+                    // Cache miss: query database and populate cache.
                     match self.room_service.member_service().get_member(&self.room_id, &self.user_id).await {
                         Ok(Some(member)) => {
+                            let cached = CachedMembership::from_member(Some(&member));
+                            self.membership_cache.insert(cache_key, cached);
                             if member.status == synctv_core::models::MemberStatus::Banned {
                                 tracing::info!(
                                     user_id = %self.user_id.as_str(),
@@ -811,6 +860,8 @@ impl StreamMessageHandler {
                             }
                         }
                         Ok(None) => {
+                            let cached = CachedMembership::from_member(None);
+                            self.membership_cache.insert(cache_key, cached);
                             tracing::info!(
                                 user_id = %self.user_id.as_str(),
                                 room_id = %self.room_id.as_str(),
@@ -821,6 +872,7 @@ impl StreamMessageHandler {
                         Err(e) => {
                             // Log but don't disconnect — transient DB error should not
                             // kick valid users. Will retry on the next 30-second tick.
+                            // Don't cache the error -- next tick will retry.
                             tracing::warn!(
                                 error = %e,
                                 user_id = %self.user_id.as_str(),
@@ -3135,5 +3187,156 @@ mod tests {
 
         let result = super::validate_danmaku_color(&Some("#\u{0000}F0000".to_string())); // Null byte
         assert!(result.is_err());
+    }
+
+    // ========== Membership Cache Invalidation Tests ==========
+
+    #[test]
+    fn test_membership_cache_stores_and_retrieves() {
+        // Verify the membership cache can store and retrieve entries
+        let cache: moka::sync::Cache<(String, String), super::CachedMembership> =
+            moka::sync::Cache::builder()
+                .time_to_live(super::MEMBERSHIP_CACHE_TTL)
+                .build();
+
+        let key = ("room1".to_string(), "user1".to_string());
+        let membership = super::CachedMembership {
+            is_member: true,
+            is_banned: false,
+        };
+
+        cache.insert(key.clone(), membership);
+        let cached = cache.get(&key);
+        assert!(cached.is_some());
+        let cached = cached.unwrap();
+        assert!(cached.is_member);
+        assert!(!cached.is_banned);
+    }
+
+    #[test]
+    fn test_membership_cache_invalidation_removes_entry() {
+        // Verify that invalidate() removes the cached entry so the next
+        // lookup returns None (forcing a DB re-query on next heartbeat)
+        let cache: moka::sync::Cache<(String, String), super::CachedMembership> =
+            moka::sync::Cache::builder()
+                .time_to_live(super::MEMBERSHIP_CACHE_TTL)
+                .build();
+
+        let key = ("room1".to_string(), "user1".to_string());
+        let membership = super::CachedMembership {
+            is_member: true,
+            is_banned: false,
+        };
+
+        cache.insert(key.clone(), membership);
+        assert!(cache.get(&key).is_some(), "Entry should exist before invalidation");
+
+        // Invalidate the entry (simulates receiving KickUser/KickUserFromRoom event)
+        cache.invalidate(&key);
+        assert!(
+            cache.get(&key).is_none(),
+            "Entry should be removed after invalidation"
+        );
+    }
+
+    #[test]
+    fn test_membership_cache_invalidation_only_affects_target_user() {
+        // Verify that invalidating one user's cache does not affect other users
+        let cache: moka::sync::Cache<(String, String), super::CachedMembership> =
+            moka::sync::Cache::builder()
+                .time_to_live(super::MEMBERSHIP_CACHE_TTL)
+                .build();
+
+        let key_user1 = ("room1".to_string(), "user1".to_string());
+        let key_user2 = ("room1".to_string(), "user2".to_string());
+
+        cache.insert(
+            key_user1.clone(),
+            super::CachedMembership {
+                is_member: true,
+                is_banned: false,
+            },
+        );
+        cache.insert(
+            key_user2.clone(),
+            super::CachedMembership {
+                is_member: true,
+                is_banned: false,
+            },
+        );
+
+        // Invalidate only user1
+        cache.invalidate(&key_user1);
+
+        assert!(
+            cache.get(&key_user1).is_none(),
+            "User1 entry should be invalidated"
+        );
+        assert!(
+            cache.get(&key_user2).is_some(),
+            "User2 entry should still be cached"
+        );
+    }
+
+    #[test]
+    fn test_cached_membership_from_member_banned() {
+        // Verify CachedMembership correctly identifies banned users
+        use synctv_core::models::{MemberStatus, RoomMember, RoomRole};
+
+        let member = RoomMember {
+            room_id: room_id(),
+            user_id: user_id(),
+            role: RoomRole::Member,
+            status: MemberStatus::Banned,
+            added_permissions: 0,
+            removed_permissions: 0,
+            admin_added_permissions: 0,
+            admin_removed_permissions: 0,
+            joined_at: now(),
+            left_at: None,
+            version: 1,
+            banned_at: Some(now()),
+            banned_by: None,
+            banned_reason: Some("test ban".to_string()),
+        };
+
+        let cached = super::CachedMembership::from_member(Some(&member));
+        assert!(cached.is_member);
+        assert!(cached.is_banned, "Banned user should have is_banned=true");
+    }
+
+    #[test]
+    fn test_cached_membership_from_member_none() {
+        // Verify CachedMembership correctly handles non-members
+        let cached = super::CachedMembership::from_member(None);
+        assert!(!cached.is_member, "Non-member should have is_member=false");
+        assert!(!cached.is_banned);
+    }
+
+    #[test]
+    fn test_cached_membership_from_member_active() {
+        // Verify CachedMembership correctly identifies active members
+        use synctv_core::models::{MemberStatus, RoomMember, RoomRole};
+
+        let member = RoomMember {
+            room_id: room_id(),
+            user_id: user_id(),
+            role: RoomRole::Member,
+            status: MemberStatus::Active,
+            added_permissions: 0,
+            removed_permissions: 0,
+            admin_added_permissions: 0,
+            admin_removed_permissions: 0,
+            joined_at: now(),
+            left_at: None,
+            version: 1,
+            banned_at: None,
+            banned_by: None,
+            banned_reason: None,
+        };
+
+        let cached = super::CachedMembership::from_member(Some(&member));
+        assert!(cached.is_member);
+        assert!(!cached.is_banned, "Active member should not be banned");
     }
 }

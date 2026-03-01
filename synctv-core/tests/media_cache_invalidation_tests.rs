@@ -7,8 +7,8 @@
 use std::sync::Arc;
 use synctv_core_testing::{create_test_pool, create_test_jwt_service};
 use synctv_core::{
-    models::{Room, RoomId, RoomStatus, UserId, User, UserRole, UserStatus, Playlist, PlaylistId},
-    repository::{UserRepository, RoomRepository, PlaylistRepository, MediaRepository},
+    models::{Room, RoomId, RoomMember, RoomRole, MemberStatus, RoomStatus, UserId, User, UserRole, UserStatus, Playlist, PlaylistId},
+    repository::{UserRepository, RoomRepository, RoomMemberRepository, PlaylistRepository, MediaRepository},
     service::{
         media::{MediaService, AddMediaRequest, EditMediaRequest},
         permission::PermissionService,
@@ -71,13 +71,33 @@ async fn test_edit_media_sends_notification() {
         }
     }).await.unwrap();
 
+    // Add room owner as a member so permission checks pass
+    let member_repo_setup = RoomMemberRepository::new(pool.clone());
+    let owner_member = RoomMember {
+        room_id: room.id.clone(),
+        user_id: owner.id.clone(),
+        role: RoomRole::Creator,
+        status: MemberStatus::Active,
+        added_permissions: 0,
+        removed_permissions: 0,
+        admin_added_permissions: 0,
+        admin_removed_permissions: 0,
+        joined_at: Utc::now(),
+        left_at: None,
+        version: 0,
+        banned_at: None,
+        banned_by: None,
+        banned_reason: None,
+    };
+    member_repo_setup.add(&owner_member).await.expect("Failed to add owner as room member");
+
     let playlist = playlist_repo.create(&{
         let now = Utc::now();
         Playlist {
             id: PlaylistId::new(),
             room_id: room.id.clone(),
             creator_id: Some(owner.id.clone()),
-            name: "Root".to_string(),
+            name: String::new(),
             parent_id: None,
             position: 0,
             source_provider: None,
@@ -145,15 +165,8 @@ async fn test_edit_media_sends_notification() {
         300,  // cache_ttl_secs
     );
 
-    let provider_instance_repo = synctv_core::repository::ProviderInstanceRepository::new(pool.clone());
-    let remote_provider_manager = synctv_core::service::RemoteProviderManager::new(
-        Arc::new(provider_instance_repo),
-        None, // No Redis
-        None, // No cluster manager
-    );
-    let providers_manager = Arc::new(ProvidersManager::new(Arc::new(remote_provider_manager)));
-
-    // Register direct_url provider
+    // Register direct_url provider instance BEFORE creating RemoteProviderManager
+    // (the manager caches instances at init, so it must exist first)
     let provider_repo = synctv_core::repository::ProviderInstanceRepository::new(pool.clone());
     let provider = synctv_core::models::ProviderInstance {
         name: "direct_url".to_string(),
@@ -170,6 +183,21 @@ async fn test_edit_media_sends_notification() {
         updated_at: Utc::now(),
     };
     provider_repo.create(&provider).await.unwrap();
+
+    let provider_instance_repo = synctv_core::repository::ProviderInstanceRepository::new(pool.clone());
+    let remote_provider_manager = synctv_core::service::RemoteProviderManager::new(
+        Arc::new(provider_instance_repo),
+        None, // No Redis
+        None, // No cluster manager
+    );
+    let providers_manager = Arc::new(ProvidersManager::new(Arc::new(remote_provider_manager)));
+
+    // Register the "direct_url" provider in the in-memory instances map
+    // (DB insert alone is insufficient — ProvidersManager.get() reads from memory)
+    providers_manager
+        .create_provider("direct_url", "direct_url", &json!({}))
+        .await
+        .expect("Failed to create direct_url provider instance");
 
     let mut media_service = MediaService::new(
         media_repo,
@@ -209,26 +237,26 @@ async fn test_edit_media_sends_notification() {
 
     assert_eq!(updated_media.name, "Updated Media");
 
-    // Verify notification was sent
-    let (notif_room_id, event) = tokio::time::timeout(
-        Duration::from_secs(2),
-        rx.recv(),
-    )
-    .await
-    .expect("Timeout waiting for notification")
-    .expect("Failed to receive notification");
-
-    assert_eq!(notif_room_id, room.id);
-
-    match event {
-        synctv_core::service::notification::RoomEvent::MediaUpdated { media_id, title, .. } => {
-            assert_eq!(media_id, media.id.as_str());
-            assert_eq!(title, "Updated Media");
-        }
-        _ => {
-            panic!("Expected MediaUpdated event, got {:?}", event);
+    // Drain events until we find MediaUpdated (add_media also emits MediaAdded)
+    let mut found_update = false;
+    for _ in 0..10 {
+        let result = tokio::time::timeout(Duration::from_secs(2), rx.recv()).await;
+        match result {
+            Ok(Ok((notif_room_id, event))) => {
+                assert_eq!(notif_room_id, room.id);
+                if let synctv_core::service::notification::RoomEvent::MediaUpdated { media_id, title, .. } = event {
+                    assert_eq!(media_id, media.id.as_str());
+                    assert_eq!(title, "Updated Media");
+                    found_update = true;
+                    break;
+                }
+                // Otherwise it's a MediaAdded event from add_media — skip it
+            }
+            Ok(Err(e)) => panic!("Channel error: {e}"),
+            Err(_) => break, // timeout
         }
     }
+    assert!(found_update, "Expected to receive MediaUpdated event");
 
     assert!(notification_sent.load(Ordering::Acquire), "Mock broadcaster should have been called");
 }
@@ -262,13 +290,33 @@ async fn test_edit_media_without_notification_service_succeeds() {
         }
     }).await.unwrap();
 
+    // Add room owner as a member so permission checks pass
+    let member_repo_setup = RoomMemberRepository::new(pool.clone());
+    let owner_member = RoomMember {
+        room_id: room.id.clone(),
+        user_id: owner.id.clone(),
+        role: RoomRole::Creator,
+        status: MemberStatus::Active,
+        added_permissions: 0,
+        removed_permissions: 0,
+        admin_added_permissions: 0,
+        admin_removed_permissions: 0,
+        joined_at: Utc::now(),
+        left_at: None,
+        version: 0,
+        banned_at: None,
+        banned_by: None,
+        banned_reason: None,
+    };
+    member_repo_setup.add(&owner_member).await.expect("Failed to add owner as room member");
+
     let playlist = playlist_repo.create(&{
         let now = Utc::now();
         Playlist {
             id: PlaylistId::new(),
             room_id: room.id.clone(),
             creator_id: Some(owner.id.clone()),
-            name: "Root".to_string(),
+            name: String::new(),
             parent_id: None,
             position: 0,
             source_provider: None,
@@ -290,15 +338,7 @@ async fn test_edit_media_without_notification_service_succeeds() {
         300,  // cache_ttl_secs
     );
 
-    let provider_instance_repo = synctv_core::repository::ProviderInstanceRepository::new(pool.clone());
-    let remote_provider_manager = synctv_core::service::RemoteProviderManager::new(
-        Arc::new(provider_instance_repo),
-        None, // No Redis
-        None, // No cluster manager
-    );
-    let providers_manager = Arc::new(ProvidersManager::new(Arc::new(remote_provider_manager)));
-
-    // Register direct_url provider
+    // Register direct_url provider instance BEFORE creating RemoteProviderManager
     let provider_repo = synctv_core::repository::ProviderInstanceRepository::new(pool.clone());
     let provider = synctv_core::models::ProviderInstance {
         name: "direct_url".to_string(),
@@ -315,6 +355,20 @@ async fn test_edit_media_without_notification_service_succeeds() {
         updated_at: Utc::now(),
     };
     provider_repo.create(&provider).await.unwrap();
+
+    let provider_instance_repo = synctv_core::repository::ProviderInstanceRepository::new(pool.clone());
+    let remote_provider_manager = synctv_core::service::RemoteProviderManager::new(
+        Arc::new(provider_instance_repo),
+        None, // No Redis
+        None, // No cluster manager
+    );
+    let providers_manager = Arc::new(ProvidersManager::new(Arc::new(remote_provider_manager)));
+
+    // Register the "direct_url" provider in the in-memory instances map
+    providers_manager
+        .create_provider("direct_url", "direct_url", &json!({}))
+        .await
+        .expect("Failed to create direct_url provider instance");
 
     let media_service = MediaService::new(
         media_repo,

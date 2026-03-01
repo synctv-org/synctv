@@ -513,7 +513,7 @@ pub struct SSRFValidator {
 impl Default for SSRFValidator {
     fn default() -> Self {
         // No additional blocked IPs by default (url_jail handles standard private ranges)
-        // Note: CGNAT (100.64.0.0/10) is NOT blocked by default as it's technically routable
+        // CGNAT (100.64.0.0/10, RFC 6598) is blocked in the pre-url_jail IP check
         let blocked_ips = vec![];
 
         // Blocked hostnames (internal/private hostnames)
@@ -606,10 +606,16 @@ impl SSRFValidator {
                     }
 
                     // Check for additional blocked IP ranges that url_jail doesn't block
-                    // These include multicast, reserved, and current network ranges
-                    // Note: CGNAT (100.64.0.0/10) is NOT blocked as it's technically routable
+                    // These include CGNAT, multicast, reserved, and current network ranges
                     if let IpAddr::V4(ipv4) = ip {
                         let octets = ipv4.octets();
+
+                        // CGNAT / Shared Address Space: 100.64.0.0/10 (RFC 6598)
+                        if octets[0] == 100 && (64..=127).contains(&octets[1]) {
+                            return Err(ValidationError::SSRF(format!(
+                                "CGNAT IP {ip} is blocked"
+                            )));
+                        }
 
                         // Current network: 0.0.0.0/8
                         if octets[0] == 0 {
@@ -670,6 +676,39 @@ impl SSRFValidator {
                         return Err(ValidationError::SSRF(format!(
                             "IP {ip} is in custom blocklist"
                         )));
+                    }
+
+                    // Check for additional blocked IP ranges that url_jail doesn't block
+                    if let IpAddr::V4(ipv4) = ip {
+                        let octets = ipv4.octets();
+
+                        // CGNAT / Shared Address Space: 100.64.0.0/10 (RFC 6598)
+                        if octets[0] == 100 && (64..=127).contains(&octets[1]) {
+                            return Err(ValidationError::SSRF(format!(
+                                "CGNAT IP {ip} is blocked"
+                            )));
+                        }
+
+                        // Current network: 0.0.0.0/8
+                        if octets[0] == 0 {
+                            return Err(ValidationError::SSRF(format!(
+                                "Current network IP {ip} is blocked"
+                            )));
+                        }
+
+                        // Multicast: 224.0.0.0/4
+                        if (224..=239).contains(&octets[0]) {
+                            return Err(ValidationError::SSRF(format!(
+                                "Multicast IP {ip} is blocked"
+                            )));
+                        }
+
+                        // Reserved/Broadcast: 240.0.0.0/4
+                        if octets[0] >= 240 {
+                            return Err(ValidationError::SSRF(format!(
+                                "Reserved IP {ip} is blocked"
+                            )));
+                        }
                     }
                 }
             }
@@ -1004,6 +1043,20 @@ pub fn validate_path_for_traversal(path: &str) -> Result<(), ValidationError> {
                         field: "path".to_string(),
                         message: "must not contain URL-encoded dot character".to_string(),
                     });
+                }
+
+                // Check for double-encoded dot: %252e / %252E
+                // %25 decodes to %, so %252e -> %2e -> .
+                if byte_val == 0x25 && i + 4 < bytes.len() {
+                    let inner_hex = &path[i + 3..i + 5];
+                    if let Ok(inner_val) = u8::from_str_radix(inner_hex, 16) {
+                        if inner_val == 0x2E {
+                            return Err(ValidationError::Field {
+                                field: "path".to_string(),
+                                message: "must not contain double-encoded dot character".to_string(),
+                            });
+                        }
+                    }
                 }
 
                 // Also check for encoded / or \ after a dot
@@ -1434,24 +1487,18 @@ mod tests {
     }
 
     // ========== SSRF: CGNAT Range (100.64.0.0/10) ==========
-    // Note: url_jail does NOT block CGNAT by default as it's not strictly private.
-    // If CGNAT blocking is needed, use PolicyBuilder to add custom CIDR blocks.
 
     #[test]
-    fn test_ssrf_cgnat_range_not_blocked_by_default() {
-        // url_jail's PublicOnly policy allows CGNAT addresses
-        // because they are routable (not private per RFC 1918)
+    fn test_ssrf_cgnat_range_blocked() {
+        // CGNAT / Shared Address Space (100.64.0.0/10, RFC 6598) is blocked
         let validator = SSRFValidator::new();
 
-        // CGNAT range is NOT blocked by default (it's routable)
-        assert!(validator.validate_url("http://100.64.0.0/path").is_ok());
-        assert!(validator.validate_url("http://100.100.100.100/path").is_ok());
+        assert!(validator.validate_url("http://100.64.0.0/path").is_err());
+        assert!(validator.validate_url("http://100.100.100.100/path").is_err());
+        assert!(validator.validate_url("http://100.127.255.255/path").is_err());
 
-        // To block CGNAT, create a custom policy:
-        // use url_jail::PolicyBuilder;
-        // let policy = PolicyBuilder::new(Policy::PublicOnly)
-        //     .block_cidr("100.64.0.0/10")
-        //     .build();
+        // Just outside CGNAT range should be allowed
+        assert!(validator.validate_url("http://100.128.0.0/path").is_ok());
     }
 
     // ========== SSRF: IPv6 Unique Local (fc00::/7) ==========

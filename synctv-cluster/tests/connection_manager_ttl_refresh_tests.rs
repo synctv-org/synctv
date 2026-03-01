@@ -44,9 +44,9 @@ async fn setup_redis() -> (
         loop {
             match redis::aio::ConnectionManager::new(redis_client.clone()).await {
                 Ok(conn) => break conn,
-                Err(_) if retries < 20 => {
+                Err(_) if retries < 60 => {
                     retries += 1;
-                    tokio::time::sleep(Duration::from_millis(100)).await;
+                    tokio::time::sleep(Duration::from_millis(500)).await;
                 }
                 Err(e) => panic!("Redis ConnectionManager failed after {} retries: {}", retries, e),
             }

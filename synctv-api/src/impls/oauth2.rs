@@ -318,9 +318,10 @@ impl OAuth2ApiImpl {
             .filter(|p| **p != provider_type)
             .count();
 
-        // Check if user has a real password (OAuth2 users get a random password they don't know,
-        // but we check signup_method to distinguish)
-        let has_password_auth = user.signup_method != Some(synctv_core::models::SignupMethod::OAuth2);
+        // Check if user has a usable password (can authenticate without any OAuth2 provider).
+        // This checks both signup_method AND whether the user has explicitly set a password,
+        // handling the case where an OAuth2 user later sets their own password.
+        let has_password_auth = user.has_usable_password();
 
         if remaining_providers == 0 && !has_password_auth {
             return Err(ApiError::InvalidInput(
@@ -549,5 +550,62 @@ mod tests {
             }
             _ => panic!("User enumeration protection should use ApiError::Authentication"),
         }
+    }
+
+    /// Test that the unlink provider safety check uses `has_usable_password()`
+    /// instead of just checking signup_method.
+    ///
+    /// Security: An OAuth2-only user with no other providers and no usable
+    /// password must NOT be allowed to unlink their last OAuth2 provider,
+    /// as they would be locked out of their account.
+    ///
+    /// This test verifies the model-level behavior used by unlink_provider.
+    #[test]
+    fn test_oauth2_unlink_checks_actual_password_capability() {
+        use synctv_core::models::{User, UserId, UserRole, UserStatus, SignupMethod};
+
+        let now = chrono::Utc::now();
+
+        // Case 1: OAuth2 user with pv=0 (random password, never set their own)
+        let oauth2_user_no_password = User {
+            id: UserId::new(),
+            username: "oauth2_user".to_string(),
+            email: None,
+            password_hash: "$argon2id$v=19$m=16384,t=3,p=1$random$hash".to_string(),
+            role: UserRole::User,
+            status: UserStatus::Active,
+            signup_method: Some(SignupMethod::OAuth2),
+            email_verified: false,
+            created_at: now,
+            updated_at: now,
+            password_changed_at: now,
+            password_version: 0,
+            version: 0,
+            deleted_at: None,
+        };
+        assert!(
+            !oauth2_user_no_password.has_usable_password(),
+            "OAuth2 user with pv=0 should NOT have usable password"
+        );
+
+        // Case 2: OAuth2 user who later set a password (pv=1)
+        let oauth2_user_with_password = User {
+            password_version: 1,
+            ..oauth2_user_no_password.clone()
+        };
+        assert!(
+            oauth2_user_with_password.has_usable_password(),
+            "OAuth2 user with pv=1 should have usable password (they explicitly set one)"
+        );
+
+        // Case 3: Email signup user always has usable password
+        let email_user = User {
+            signup_method: Some(SignupMethod::Email),
+            ..oauth2_user_no_password
+        };
+        assert!(
+            email_user.has_usable_password(),
+            "Email signup user should always have usable password"
+        );
     }
 }

@@ -7,6 +7,33 @@ use synctv_core::models::{ProviderType, RoomId, UserId};
 use super::ClientApiImpl;
 use super::convert::{media_to_proto, playlist_to_proto};
 
+/// Sanitize and truncate a title extracted from a URL path segment.
+///
+/// Unlike user-provided titles (which are validated and rejected if invalid),
+/// URL-derived titles are best-effort: we sanitize control characters and
+/// truncate to [`MEDIA_TITLE_MAX`] to ensure they fit in the database.
+pub(super) fn sanitize_url_derived_title(raw: &str) -> String {
+    use crate::http::validation::limits::MEDIA_TITLE_MAX;
+
+    // URL-decode percent-encoded characters (e.g., "my%20video.mp4" -> "my video.mp4")
+    let decoded = percent_encoding::percent_decode_str(raw)
+        .decode_utf8()
+        .unwrap_or(std::borrow::Cow::Borrowed(raw));
+    // Sanitize control characters and trim whitespace
+    let sanitized = crate::http::validation::sanitize_string(&decoded);
+
+    // Truncate to max allowed length (byte-safe: find last char boundary)
+    if sanitized.len() > MEDIA_TITLE_MAX {
+        let mut end = MEDIA_TITLE_MAX;
+        while end > 0 && !sanitized.is_char_boundary(end) {
+            end -= 1;
+        }
+        sanitized[..end].to_string()
+    } else {
+        sanitized.into_owned()
+    }
+}
+
 impl ClientApiImpl {
     /// Validate `source_config` URLs for SSRF protection.
     ///
@@ -63,13 +90,13 @@ impl ClientApiImpl {
                 .map_err(|e| ApiError::InvalidInput(format!("Invalid source_config JSON: {e}")))?
         };
 
-        // Use provided title or default
+        // Use provided title or extract from URL (with validation/truncation)
         let title = if req.title.is_empty() {
-            source_config.get("url")
+            let raw = source_config.get("url")
                 .and_then(|u| u.as_str())
                 .and_then(|u| u.split('/').next_back())
-                .unwrap_or("Unknown")
-                .to_string()
+                .unwrap_or("Unknown");
+            sanitize_url_derived_title(raw)
         } else {
             // Validate user-provided title for length and security
             crate::http::validation::validate_media_title(&req.title)
@@ -322,11 +349,11 @@ impl ClientApiImpl {
                     .map_err(|e| ApiError::InvalidInput(format!("Invalid source_config JSON: {e}")))?
             };
             let title = if item.title.is_empty() {
-                source_config.get("url")
+                let raw = source_config.get("url")
                     .and_then(|u| u.as_str())
                     .and_then(|u| u.split('/').next_back())
-                    .unwrap_or("Unknown")
-                    .to_string()
+                    .unwrap_or("Unknown");
+                sanitize_url_derived_title(raw)
             } else {
                 // Validate user-provided title for length and security
                 crate::http::validation::validate_media_title(&item.title)
@@ -462,6 +489,15 @@ impl ClientApiImpl {
 
         let uid = UserId::from_string(user_id.to_string());
         let rid = RoomId::from_string(room_id.to_string());
+
+        // Defense-in-depth: check REORDER_PLAYLIST permission at the API layer
+        // (the service layer also checks, but checking here provides early rejection
+        // and consistent error handling with other API methods like clear_playlist)
+        self.room_service
+            .check_permission(&rid, &uid, synctv_core::models::PermissionBits::REORDER_PLAYLIST)
+            .await
+            .map_err(|e| ApiError::Authorization(format!("Forbidden: {e}")))?;
+
         let updates_converted: Vec<(synctv_core::models::MediaId, i32)> = req.updates
             .into_iter()
             .map(|u| (synctv_core::models::MediaId::from_string(u.media_id), u.position))
@@ -713,6 +749,15 @@ impl ClientApiImpl {
     ) -> Result<crate::proto::client::SwapMediaResponse, ApiError> {
         let uid = UserId::from_string(user_id.to_string());
         let rid = RoomId::from_string(room_id.to_string());
+
+        // Defense-in-depth: check REORDER_PLAYLIST permission at the API layer
+        // (the service layer also checks, but checking here provides early rejection
+        // and consistent error handling with other API methods like clear_playlist)
+        self.room_service
+            .check_permission(&rid, &uid, synctv_core::models::PermissionBits::REORDER_PLAYLIST)
+            .await
+            .map_err(|e| ApiError::Authorization(format!("Forbidden: {e}")))?;
+
         let media_id1 = synctv_core::models::MediaId::from_string(req.media_id1.clone());
         let media_id2 = synctv_core::models::MediaId::from_string(req.media_id2.clone());
 

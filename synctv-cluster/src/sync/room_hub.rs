@@ -103,6 +103,10 @@ pub struct RoomMessageHub {
     /// Cancellation token for the auto-spawned TTL refresh background task.
     /// Cancelled on `shutdown()` to stop the task gracefully.
     ttl_refresh_cancel: Arc<tokio_util::sync::CancellationToken>,
+
+    /// Cancellation token for the auto-spawned stale subscription cleanup task.
+    /// Cancelled on `shutdown()` to stop the task gracefully.
+    stale_cleanup_cancel: Arc<tokio_util::sync::CancellationToken>,
 }
 
 impl RoomMessageHub {
@@ -118,6 +122,7 @@ impl RoomMessageHub {
             redis_key_prefix: String::new(),
             redis_key_ttl_secs: 300, // 5 minutes default
             ttl_refresh_cancel: Arc::new(tokio_util::sync::CancellationToken::new()),
+            stale_cleanup_cancel: Arc::new(tokio_util::sync::CancellationToken::new()),
         }
     }
 
@@ -127,9 +132,13 @@ impl RoomMessageHub {
     /// for cross-replica visibility and recovery after restarts. Local DashMaps
     /// remain as a fast cache for message routing.
     ///
-    /// Automatically spawns a background TTL refresh task (at 40% of
-    /// `redis_key_ttl_secs` interval) to prevent active subscription keys from
-    /// expiring. The task is cancelled when `shutdown()` is called.
+    /// Automatically spawns two background tasks:
+    /// 1. **TTL refresh** (at 40% of `redis_key_ttl_secs` interval) to prevent
+    ///    active subscription keys from expiring.
+    /// 2. **Stale subscription cleanup** (every 60 seconds) to remove orphaned
+    ///    Redis entries left by failed fire-and-forget cleanup in `unsubscribe()`.
+    ///
+    /// Both tasks are cancelled when `shutdown()` is called.
     #[must_use]
     pub fn with_redis(mut self, conn: redis::aio::ConnectionManager, key_prefix: &str) -> Self {
         self.redis_conn = Some(conn);
@@ -145,14 +154,24 @@ impl RoomMessageHub {
         let refresh_interval_secs = (self.redis_key_ttl_secs as f64 * 0.4).clamp(30.0, 120.0) as u64;
         let _handle = self.spawn_ttl_refresh_task(Duration::from_secs(refresh_interval_secs), cancel);
 
+        // Auto-spawn the stale subscription cleanup task to remove orphaned
+        // Redis entries that accumulate when fire-and-forget cleanup fails.
+        let stale_cancel = tokio_util::sync::CancellationToken::new();
+        self.stale_cleanup_cancel = Arc::new(stale_cancel.clone());
+        let _cleanup_handle = self.spawn_stale_subscription_cleanup_task(
+            Duration::from_secs(60),
+            stale_cancel,
+        );
+
         self
     }
 
-    /// Cancel the auto-spawned TTL refresh background task.
+    /// Cancel the auto-spawned background tasks (TTL refresh and stale cleanup).
     ///
-    /// Should be called during graceful shutdown to stop the background task.
+    /// Should be called during graceful shutdown to stop background tasks.
     pub fn shutdown(&self) {
         self.ttl_refresh_cancel.cancel();
+        self.stale_cleanup_cancel.cancel();
     }
 
     /// Set the TTL for Redis subscription keys (crash-safety mechanism).
@@ -838,6 +857,161 @@ impl RoomMessageHub {
         }
     }
 
+    /// Clean up orphaned Redis subscription entries that no longer have
+    /// corresponding local subscribers.
+    ///
+    /// This handles cases where `unsubscribe()` fire-and-forget Redis cleanup
+    /// failed (e.g., Redis was slow or temporarily unavailable). Without this
+    /// periodic scan, stale entries would accumulate until their TTL expires.
+    ///
+    /// The cleanup is conservative: it only removes entries from Redis that
+    /// do not exist in the local `connections` map. Entries from other replicas
+    /// are left intact (they are identified by not having a local connection).
+    async fn cleanup_orphaned_redis_subscriptions(&self) {
+        let Some(ref conn) = self.redis_conn else {
+            return;
+        };
+        let mut conn = conn.clone();
+
+        // Scan for all connection mapping keys (room_hub:conn:*)
+        let pattern = format!("{}room_hub:conn:*", self.redis_key_prefix);
+        let prefix = format!("{}room_hub:conn:", self.redis_key_prefix);
+        let mut cleaned = 0u64;
+        let mut errors = 0u64;
+
+        let mut cursor: u64 = 0;
+        loop {
+            let scan_result: Result<(u64, Vec<String>), _> = redis::cmd("SCAN")
+                .arg(cursor)
+                .arg("MATCH")
+                .arg(&pattern)
+                .arg("COUNT")
+                .arg(100)
+                .query_async(&mut conn)
+                .await;
+
+            match scan_result {
+                Ok((new_cursor, keys)) => {
+                    cursor = new_cursor;
+
+                    for key in keys {
+                        // Extract connection_id from key
+                        if let Some(conn_id) = key.strip_prefix(&prefix) {
+                            // Only clean up entries that were ours (exist in neither
+                            // local connections nor rooms). Entries from other replicas
+                            // should not be touched.
+                            if !self.connections.contains_key(conn_id) {
+                                // Fetch the room_id to also clean up the room hash
+                                let room_id_result: Result<Option<String>, _> =
+                                    conn.get(&key).await;
+
+                                match room_id_result {
+                                    Ok(Some(room_id_str)) => {
+                                        let room_key = format!(
+                                            "{}room_hub:room:{}",
+                                            self.redis_key_prefix, room_id_str
+                                        );
+                                        // Remove connection from room hash and delete conn key
+                                        let mut pipe = redis::pipe();
+                                        pipe.hdel(&room_key, conn_id).ignore();
+                                        pipe.del(&key).ignore();
+                                        if let Err(e) = pipe.query_async::<()>(&mut conn).await {
+                                            errors += 1;
+                                            warn!(
+                                                connection_id = %conn_id,
+                                                error = %e,
+                                                "Failed to clean up orphaned Redis subscription"
+                                            );
+                                        } else {
+                                            cleaned += 1;
+                                            debug!(
+                                                connection_id = %conn_id,
+                                                room_id = %room_id_str,
+                                                "Cleaned up orphaned Redis subscription"
+                                            );
+                                        }
+                                    }
+                                    Ok(None) => {
+                                        // Connection key exists but has no value -- just delete it
+                                        if let Err(e) = conn.del::<_, ()>(&key).await {
+                                            errors += 1;
+                                            warn!(
+                                                connection_id = %conn_id,
+                                                error = %e,
+                                                "Failed to delete empty orphaned connection key"
+                                            );
+                                        } else {
+                                            cleaned += 1;
+                                        }
+                                    }
+                                    Err(e) => {
+                                        errors += 1;
+                                        warn!(
+                                            connection_id = %conn_id,
+                                            error = %e,
+                                            "Failed to read orphaned connection key"
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    if cursor == 0 {
+                        break;
+                    }
+                }
+                Err(e) => {
+                    errors += 1;
+                    warn!(error = %e, "Failed to SCAN Redis for orphaned subscriptions");
+                    break;
+                }
+            }
+        }
+
+        if cleaned > 0 || errors > 0 {
+            info!(
+                orphaned_cleaned = cleaned,
+                cleanup_errors = errors,
+                "Cleaned up orphaned Redis subscription entries"
+            );
+        }
+    }
+
+    /// Spawn a background task that periodically scans for and removes orphaned
+    /// Redis subscription entries.
+    ///
+    /// Orphaned entries occur when the fire-and-forget Redis cleanup in
+    /// `unsubscribe()` fails due to Redis being slow or temporarily unavailable.
+    /// This task ensures eventual cleanup by scanning every `interval`.
+    ///
+    /// The task is automatically cancelled when `shutdown()` is called via the
+    /// provided `cancel_token`.
+    #[must_use]
+    pub fn spawn_stale_subscription_cleanup_task(
+        &self,
+        interval: Duration,
+        cancel_token: tokio_util::sync::CancellationToken,
+    ) -> tokio::task::JoinHandle<()> {
+        let hub = self.clone();
+        tokio::spawn(async move {
+            let mut ticker = tokio::time::interval(interval);
+            // Skip the first immediate tick
+            ticker.tick().await;
+            loop {
+                tokio::select! {
+                    () = cancel_token.cancelled() => {
+                        info!("Room hub stale subscription cleanup task shutting down");
+                        return;
+                    }
+                    _ = ticker.tick() => {
+                        hub.cleanup_orphaned_redis_subscriptions().await;
+                    }
+                }
+            }
+        })
+    }
+
     /// Spawn a background task that periodically refreshes TTLs on Redis
     /// subscription keys to prevent them from expiring while subscriptions
     /// are still active.
@@ -1050,5 +1224,105 @@ mod tests {
         hub.remove_room(&room_id);
         let event = lifecycle_rx.try_recv().unwrap();
         assert!(matches!(event, RoomLifecycleEvent::RoomDeactivated(ref rid) if rid.as_str() == "test_room"));
+    }
+
+    #[tokio::test]
+    async fn test_unsubscribe_cleans_up_local_state_even_without_redis() {
+        // Verify that unsubscribe properly cleans up local state (rooms + connections)
+        // even when Redis is not configured. This is the baseline behavior.
+        let hub = RoomMessageHub::new();
+        let room_id = RoomId::from_string("test_room".to_string());
+        let user_id = UserId::from_string("user1".to_string());
+
+        let _rx = hub.subscribe(room_id.clone(), user_id.clone(), "conn1".to_string()).await;
+        assert_eq!(hub.subscriber_count(&room_id), 1);
+        assert_eq!(hub.connection_count(), 1);
+
+        hub.unsubscribe("conn1");
+
+        // Local state should be fully cleaned up
+        assert_eq!(hub.subscriber_count(&room_id), 0);
+        assert_eq!(hub.connection_count(), 0);
+        assert_eq!(hub.room_count(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_cleanup_orphaned_subscriptions_noop_without_redis() {
+        // Without Redis configured, the cleanup method should be a no-op
+        // (no panics, no errors)
+        let hub = RoomMessageHub::new();
+        hub.cleanup_orphaned_redis_subscriptions().await;
+        // If we reach here without panic, the test passes
+    }
+
+    #[tokio::test]
+    async fn test_stale_cleanup_task_can_be_cancelled() {
+        // Verify the stale cleanup task respects cancellation tokens
+        let hub = RoomMessageHub::new();
+        let cancel = tokio_util::sync::CancellationToken::new();
+        let handle = hub.spawn_stale_subscription_cleanup_task(
+            Duration::from_millis(50),
+            cancel.clone(),
+        );
+
+        // Let it run briefly
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        // Cancel and verify the task completes
+        cancel.cancel();
+        let result = tokio::time::timeout(Duration::from_secs(2), handle).await;
+        assert!(result.is_ok(), "Cleanup task should complete after cancellation");
+    }
+
+    #[tokio::test]
+    async fn test_shutdown_cancels_all_background_tasks() {
+        // Verify that shutdown() cancels both the TTL refresh and stale cleanup tasks
+        let hub = RoomMessageHub::new();
+
+        // Manually spawn tasks with known cancel tokens to verify they stop
+        let ttl_cancel = tokio_util::sync::CancellationToken::new();
+        let cleanup_cancel = tokio_util::sync::CancellationToken::new();
+
+        let ttl_handle = hub.spawn_ttl_refresh_task(
+            Duration::from_millis(50),
+            ttl_cancel.clone(),
+        );
+        let cleanup_handle = hub.spawn_stale_subscription_cleanup_task(
+            Duration::from_millis(50),
+            cleanup_cancel.clone(),
+        );
+
+        // Let tasks start running
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        // Cancel both
+        ttl_cancel.cancel();
+        cleanup_cancel.cancel();
+
+        // Both tasks should complete within a reasonable timeout
+        let ttl_result = tokio::time::timeout(Duration::from_secs(2), ttl_handle).await;
+        let cleanup_result = tokio::time::timeout(Duration::from_secs(2), cleanup_handle).await;
+
+        assert!(ttl_result.is_ok(), "TTL refresh task should complete after cancellation");
+        assert!(cleanup_result.is_ok(), "Stale cleanup task should complete after cancellation");
+    }
+
+    #[tokio::test]
+    async fn test_remove_room_cleans_connection_tracking() {
+        // Verify that remove_room removes connections from the tracking map
+        let hub = RoomMessageHub::new();
+        let room_id = RoomId::from_string("test_room".to_string());
+        let user1 = UserId::from_string("user1".to_string());
+        let user2 = UserId::from_string("user2".to_string());
+
+        let _rx1 = hub.subscribe(room_id.clone(), user1.clone(), "conn1".to_string()).await;
+        let _rx2 = hub.subscribe(room_id.clone(), user2.clone(), "conn2".to_string()).await;
+
+        assert_eq!(hub.connection_count(), 2);
+
+        hub.remove_room(&room_id);
+
+        assert_eq!(hub.connection_count(), 0);
+        assert_eq!(hub.room_count(), 0);
     }
 }

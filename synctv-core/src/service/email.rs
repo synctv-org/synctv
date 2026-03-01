@@ -160,6 +160,10 @@ impl VerificationCodeStore for RedisVerificationCodeStore {
         // Expiry is handled by Redis TTL (set via SET EX in store_code), so
         // there is no need for a Lua-side time comparison.
         //
+        // We preserve the remaining TTL manually via PTTL + SET PX instead of
+        // using KEEPTTL, because KEEPTTL requires Redis >= 6.0 and may not be
+        // available in all test/CI environments.
+        //
         // Returns:
         //   -1 = key not found (expired via TTL or never stored)
         //   -3 = too many attempts (deleted)
@@ -171,12 +175,17 @@ impl VerificationCodeStore for RedisVerificationCodeStore {
             if not data then return -1 end
             local obj = cjson.decode(data)
             obj['attempts'] = obj['attempts'] + 1
-            if obj['attempts'] > tonumber(ARGV[2]) then
+            if obj['attempts'] >= tonumber(ARGV[2]) then
                 redis.call('DEL', KEYS[1])
                 return -3
             end
             if obj['code'] ~= ARGV[1] then
-                redis.call('SET', KEYS[1], cjson.encode(obj), 'KEEPTTL')
+                local pttl = redis.call('PTTL', KEYS[1])
+                if pttl > 0 then
+                    redis.call('SET', KEYS[1], cjson.encode(obj), 'PX', pttl)
+                else
+                    redis.call('SET', KEYS[1], cjson.encode(obj))
+                end
                 return -4
             end
             redis.call('DEL', KEYS[1])
@@ -266,7 +275,7 @@ impl VerificationCodeStore for InMemoryVerificationCodeStore {
 
             // Increment and check attempts
             vc.attempts += 1;
-            if vc.attempts > max_attempts {
+            if vc.attempts >= max_attempts {
                 *error_slot.lock().unwrap() = Some(Error::InvalidInput(
                     "Too many failed attempts".to_string(),
                 ));

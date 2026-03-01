@@ -202,12 +202,11 @@ mod tests {
 
     #[test]
     fn test_blocked_cgnat() {
-        // Note: url_jail doesn't block CGNAT (100.64.0.0/10) by default
-        // because it's a routable carrier-grade NAT range (RFC 6598), not private (RFC 1918).
-        // Use custom policy with PolicyBuilder to block if needed.
-        // These would pass with the default PublicOnly policy:
-        // assert!(validate_host("http://100.64.0.1").is_ok());
-        // assert!(validate_host("http://100.127.255.255").is_ok());
+        // CGNAT / Shared Address Space (100.64.0.0/10, RFC 6598) is blocked
+        assert!(validate_host("http://100.64.0.1").is_err());
+        assert!(validate_host("http://100.127.255.255").is_err());
+        // Just outside CGNAT range should be allowed
+        assert!(validate_host("http://100.128.0.1").is_ok());
     }
 
     #[test]

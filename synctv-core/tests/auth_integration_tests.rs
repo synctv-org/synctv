@@ -36,17 +36,21 @@ use testcontainers_modules::redis::Redis;
 use testcontainers::runners::AsyncRunner;
 
 const REDIS_VERSION: &str = "7-alpine";
+const POSTGRES_VERSION: &str = "16-alpine";
 
 // ============================================================================
 // Test Infrastructure
 // ============================================================================
 
 async fn create_test_infra() -> (ContainerAsync<Postgres>, ContainerAsync<Redis>, PgPool, String) {
+    use testcontainers::core::ImageExt;
+
     // Start PostgreSQL
     let postgres = Postgres::default()
         .with_db_name("synctv_test")
         .with_user("synctv")
         .with_password("synctv_test")
+        .with_tag(POSTGRES_VERSION)
         .start()
         .await
         .expect("Failed to start Postgres container");
@@ -59,11 +63,25 @@ async fn create_test_infra() -> (ContainerAsync<Postgres>, ContainerAsync<Redis>
         pg_host, pg_port
     );
 
-    let pool = sqlx::postgres::PgPoolOptions::new()
-        .max_connections(10)
-        .connect(&database_url)
-        .await
-        .expect("Failed to connect to database");
+    // Retry connection until PG is fully ready
+    let pool = {
+        let mut retries = 0u32;
+        loop {
+            match sqlx::postgres::PgPoolOptions::new()
+                .max_connections(10)
+                .acquire_timeout(std::time::Duration::from_secs(2))
+                .connect(&database_url)
+                .await
+            {
+                Ok(p) => break p,
+                Err(_) if retries < 60 => {
+                    retries += 1;
+                    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                }
+                Err(e) => panic!("PostgreSQL not ready after {retries} retries: {e}"),
+            }
+        }
+    };
 
     // Run migrations
     sqlx::migrate!("../migrations")

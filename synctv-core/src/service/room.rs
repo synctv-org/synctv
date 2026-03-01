@@ -44,7 +44,7 @@
 //!
 //! Use the `invalidate_room_caches()` helper method for transactional operations:
 //!
-//! ```ignore
+//! ```text
 //! let mut tx = self.pool.begin().await?;
 //! // ... perform database operations ...
 //! self.invalidate_room_caches(&room_id).await;  // BEFORE commit
@@ -58,7 +58,7 @@
 //! invalidation can happen after the database operation completes. These operations
 //! typically only need room cache invalidation (not permission/playback):
 //!
-//! ```ignore
+//! ```text
 //! self.room_repo.update_status(&room_id, new_status).await?;
 //! self.notify_room_invalidation(&room_id).await;  // Room cache only
 //! ```
@@ -2557,7 +2557,7 @@ impl RoomService {
     ///
     /// ## Usage Pattern
     ///
-    /// ```ignore
+    /// ```text
     /// let mut tx = self.pool.begin().await?;
     /// // ... perform database operations ...
     /// // Invalidate BEFORE commit

@@ -679,11 +679,8 @@ mod tests {
             .expect("Failed to store credential");
 
         // The returned credential should have decrypted password (for caller convenience)
-        if let CredentialData::Alist { password, .. } = &stored.data {
-            assert_eq!(password, plain_password, "Returned password should be decrypted");
-        } else {
-            panic!("Expected Alist credential data");
-        }
+        let (_, _, password) = stored.data.as_alist().expect("Expected Alist credential data");
+        assert_eq!(password, plain_password, "Returned password should be decrypted");
 
         // Retrieve the credential
         let retrieved = storage
@@ -693,11 +690,8 @@ mod tests {
             .expect("Credential should exist");
 
         // The retrieved password should be decrypted
-        if let CredentialData::Alist { password, .. } = &retrieved.data {
-            assert_eq!(password, plain_password, "Retrieved password should be decrypted");
-        } else {
-            panic!("Expected Alist credential data");
-        }
+        let (_, _, password) = retrieved.data.as_alist().expect("Expected Alist credential data");
+        assert_eq!(password, plain_password, "Retrieved password should be decrypted");
     }
 
     #[tokio::test]
@@ -721,11 +715,8 @@ mod tests {
             .expect("Failed to store credential");
 
         // The returned credential should have decrypted api_key
-        if let CredentialData::Emby { api_key: key, .. } = &stored.data {
-            assert_eq!(key, api_key, "Returned api_key should be decrypted");
-        } else {
-            panic!("Expected Emby credential data");
-        }
+        let (_, key, _) = stored.data.as_emby().expect("Expected Emby credential data");
+        assert_eq!(key, api_key, "Returned api_key should be decrypted");
 
         // Retrieve the credential
         let retrieved = storage
@@ -735,11 +726,8 @@ mod tests {
             .expect("Credential should exist");
 
         // The retrieved api_key should be decrypted
-        if let CredentialData::Emby { api_key: key, .. } = &retrieved.data {
-            assert_eq!(key, api_key, "Retrieved api_key should be decrypted");
-        } else {
-            panic!("Expected Emby credential data");
-        }
+        let (_, key, _) = retrieved.data.as_emby().expect("Expected Emby credential data");
+        assert_eq!(key, api_key, "Retrieved api_key should be decrypted");
     }
 
     #[tokio::test]
@@ -756,10 +744,102 @@ mod tests {
             .expect("Failed to store credential");
 
         // Bilibili cookies should not be encrypted
-        if let CredentialData::Bilibili { cookies: c } = &stored.data {
-            assert_eq!(c.get("SESSDATA"), Some(&"test_session".to_string()));
-        } else {
-            panic!("Expected Bilibili credential data");
-        }
+        let c = stored.data.as_bilibili().expect("Expected Bilibili credential data");
+        assert_eq!(c.get("SESSDATA"), Some(&"test_session".to_string()));
+    }
+
+    // ========== Type Mismatch Tests ==========
+
+    #[test]
+    fn test_as_alist_returns_error_on_type_mismatch() {
+        let emby_data = CredentialData::emby(
+            "https://emby.example.com".to_string(),
+            "key".to_string(),
+            "uid".to_string(),
+        );
+        let result = emby_data.as_alist();
+        assert!(result.is_err());
+        assert!(
+            result.unwrap_err().contains("Expected Alist"),
+            "Error message should mention expected type"
+        );
+
+        let bilibili_data = CredentialData::bilibili(HashMap::new());
+        assert!(bilibili_data.as_alist().is_err());
+    }
+
+    #[test]
+    fn test_as_emby_returns_error_on_type_mismatch() {
+        let alist_data = CredentialData::alist(
+            "https://alist.example.com".to_string(),
+            "user".to_string(),
+            "pass".to_string(),
+        );
+        let result = alist_data.as_emby();
+        assert!(result.is_err());
+        assert!(
+            result.unwrap_err().contains("Expected Emby"),
+            "Error message should mention expected type"
+        );
+
+        let bilibili_data = CredentialData::bilibili(HashMap::new());
+        assert!(bilibili_data.as_emby().is_err());
+    }
+
+    #[test]
+    fn test_as_bilibili_returns_error_on_type_mismatch() {
+        let alist_data = CredentialData::alist(
+            "https://alist.example.com".to_string(),
+            "user".to_string(),
+            "pass".to_string(),
+        );
+        let result = alist_data.as_bilibili();
+        assert!(result.is_err());
+        assert!(
+            result.unwrap_err().contains("Expected Bilibili"),
+            "Error message should mention expected type"
+        );
+
+        let emby_data = CredentialData::emby(
+            "https://emby.example.com".to_string(),
+            "key".to_string(),
+            "uid".to_string(),
+        );
+        assert!(emby_data.as_bilibili().is_err());
+    }
+
+    #[test]
+    fn test_as_alist_returns_correct_fields() {
+        let data = CredentialData::alist(
+            "https://alist.example.com".to_string(),
+            "admin".to_string(),
+            "secret".to_string(),
+        );
+        let (host, username, password) = data.as_alist().unwrap();
+        assert_eq!(host, "https://alist.example.com");
+        assert_eq!(username, "admin");
+        assert_eq!(password, "secret");
+    }
+
+    #[test]
+    fn test_as_emby_returns_correct_fields() {
+        let data = CredentialData::emby(
+            "https://emby.example.com".to_string(),
+            "my_api_key".to_string(),
+            "user_42".to_string(),
+        );
+        let (host, api_key, emby_user_id) = data.as_emby().unwrap();
+        assert_eq!(host, "https://emby.example.com");
+        assert_eq!(api_key, "my_api_key");
+        assert_eq!(emby_user_id, "user_42");
+    }
+
+    #[test]
+    fn test_as_bilibili_returns_correct_fields() {
+        let mut cookies = HashMap::new();
+        cookies.insert("SESSDATA".to_string(), "abc123".to_string());
+        let data = CredentialData::bilibili(cookies);
+        let c = data.as_bilibili().unwrap();
+        assert_eq!(c.get("SESSDATA"), Some(&"abc123".to_string()));
     }
 }

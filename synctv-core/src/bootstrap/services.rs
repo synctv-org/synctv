@@ -258,6 +258,23 @@ pub async fn init_services(
         brute_force,
     );
     user_service.set_cache_invalidation(cache_invalidation.clone());
+
+    // Upgrade refresh token rate limiter to Redis-backed when available.
+    // This ensures the refresh rate limit is enforced globally across all replicas
+    // in cluster mode, preventing N * limit bypass with N replicas.
+    if let Some(ref conn) = redis_conn_plain {
+        user_service.set_refresh_rate_limiter_redis(
+            conn.clone(),
+            format!("{}refresh_rl:", config.redis.key_prefix),
+        );
+        info!("Refresh token rate limiter upgraded to Redis-backed (cross-replica)");
+    } else if cluster_mode {
+        warn!(
+            "Refresh token rate limiter is using in-memory counters but cluster mode is active. \
+             With N replicas, an attacker can make N * rate_limit requests per window. \
+             Configure Redis to enforce global rate limits."
+        );
+    }
     info!("UserService initialized");
 
     // Initialize RoomService

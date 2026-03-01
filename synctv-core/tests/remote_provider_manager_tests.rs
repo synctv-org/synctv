@@ -16,6 +16,7 @@ use synctv_core::{
 use sqlx::PgPool;
 use std::sync::Arc;
 use std::time::Duration;
+use testcontainers::core::ImageExt;
 use testcontainers::runners::AsyncRunner;
 
 // Test utilities
@@ -36,6 +37,10 @@ impl TestInfra {
     async fn new() -> Self {
         // Start containers
         let pg_container = testcontainers_modules::postgres::Postgres::default()
+            .with_user("synctv")
+            .with_password("synctv_test")
+            .with_db_name("synctv_test")
+            .with_tag("16-alpine")
             .start()
             .await
             .expect("Failed to start Postgres");
@@ -66,9 +71,24 @@ impl TestInfra {
         let redis_url = format!("redis://{}:{}", redis_host, redis_port);
 
         // Connect to Postgres
-        let pool = PgPool::connect(&database_url)
-            .await
-            .expect("Failed to connect to Postgres");
+        let pool = {
+            let mut retries = 0u32;
+            loop {
+                match sqlx::postgres::PgPoolOptions::new()
+                    .acquire_timeout(std::time::Duration::from_secs(2))
+                    .max_connections(5)
+                    .connect(&database_url)
+                    .await
+                {
+                    Ok(p) => break p,
+                    Err(_) if retries < 60 => {
+                        retries += 1;
+                        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                    }
+                    Err(e) => panic!("PostgreSQL not ready after {retries} retries: {e}"),
+                }
+            }
+        };
 
         // Run migrations
         sqlx::migrate!("../migrations")

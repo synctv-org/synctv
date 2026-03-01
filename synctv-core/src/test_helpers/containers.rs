@@ -4,6 +4,7 @@
 //! runs migrations, and provides ready-to-use connections.
 
 use sqlx::PgPool;
+use sqlx::postgres::PgPoolOptions;
 use testcontainers::core::ImageExt;
 use testcontainers::runners::AsyncRunner;
 use testcontainers::ContainerAsync;
@@ -77,10 +78,26 @@ impl TestInfra {
         );
         let redis_url = format!("redis://{}:{}", redis_host, redis_port);
 
-        // Connect to Postgres
-        let pool = PgPool::connect(&database_url)
-            .await
-            .expect("Failed to connect to Postgres container");
+        // Connect to Postgres with retry (container port may be mapped before
+        // the server accepts connections)
+        let pool = {
+            let mut retries = 0u32;
+            loop {
+                match PgPoolOptions::new()
+                    .acquire_timeout(std::time::Duration::from_secs(2))
+                    .max_connections(5)
+                    .connect(&database_url)
+                    .await
+                {
+                    Ok(p) => break p,
+                    Err(_) if retries < 60 => {
+                        retries += 1;
+                        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                    }
+                    Err(e) => panic!("Failed to connect to Postgres container: {e}"),
+                }
+            }
+        };
 
         // Run migrations
         sqlx::migrate!("../migrations")
@@ -143,9 +160,24 @@ impl TestInfra {
             pg_host, pg_port
         );
 
-        let pool = PgPool::connect(&database_url)
-            .await
-            .expect("Failed to connect to Postgres container");
+        let pool = {
+            let mut retries = 0u32;
+            loop {
+                match PgPoolOptions::new()
+                    .acquire_timeout(std::time::Duration::from_secs(2))
+                    .max_connections(5)
+                    .connect(&database_url)
+                    .await
+                {
+                    Ok(p) => break p,
+                    Err(_) if retries < 60 => {
+                        retries += 1;
+                        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                    }
+                    Err(e) => panic!("Failed to connect to Postgres container: {e}"),
+                }
+            }
+        };
 
         sqlx::migrate!("../migrations")
             .run(&pool)

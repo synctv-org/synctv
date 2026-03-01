@@ -727,7 +727,9 @@ impl AdminApiImpl {
                 .map_or_else(|_| admin_user_id.as_str().to_string(), |u| u.username);
             let mut details = serde_json::Map::new();
             details.insert("instance_name".to_string(), serde_json::Value::String(instance.name.clone()));
-            details.insert("endpoint".to_string(), serde_json::Value::String(instance.endpoint.clone()));
+            details.insert("endpoint".to_string(), serde_json::Value::String(
+                mask_url_credentials(&instance.endpoint),
+            ));
             if let Err(e) = self.audit_service.log(
                 admin_user_id.as_str().to_string(),
                 admin_username.clone(),
@@ -889,6 +891,8 @@ impl AdminApiImpl {
     pub async fn reconnect_provider_instance(
         &self,
         req: crate::proto::admin::ReconnectProviderInstanceRequest,
+        admin_user_id: &UserId,
+        ctx: &RequestContext,
     ) -> Result<crate::proto::admin::ReconnectProviderInstanceResponse, ApiError> {
         // Atomic reconnect: invalidate cached channel and re-create from DB config
         self.provider_instance_manager.reconnect(&req.name).await
@@ -900,6 +904,35 @@ impl AdminApiImpl {
         let instance = instances.into_iter()
             .find(|i| i.name == req.name)
             .ok_or_else(|| ApiError::NotFound(format!("Provider instance '{}' not found", req.name)))?;
+
+        // Audit log: provider instance reconnection.
+        {
+            let admin_username = self.user_service.get_user(admin_user_id).await
+                .map_or_else(|_| admin_user_id.as_str().to_string(), |u| u.username);
+            let mut details = serde_json::Map::new();
+            details.insert("instance_name".to_string(), serde_json::Value::String(instance.name.clone()));
+            details.insert("endpoint".to_string(), serde_json::Value::String(
+                mask_url_credentials(&instance.endpoint),
+            ));
+            if let Err(e) = self.audit_service.log(
+                admin_user_id.as_str().to_string(),
+                admin_username.clone(),
+                synctv_core::service::AuditAction::ProviderInstanceReconnected,
+                synctv_core::service::AuditTargetType::ProviderInstance,
+                Some(instance.name.clone()),
+                serde_json::Value::Object(details),
+                ctx.ip_address.clone(),
+                ctx.user_agent.clone(),
+            ).await {
+                tracing::error!(
+                    error = %e,
+                    admin_user_id = %admin_user_id.as_str(),
+                    instance_name = %instance.name,
+                    action = "provider_instance_reconnected",
+                    "AUDIT LOG FAILURE: failed to record provider instance reconnection.",
+                );
+            }
+        }
 
         Ok(crate::proto::admin::ReconnectProviderInstanceResponse {
             instance: Some(provider_instance_to_proto(instance)),
@@ -1996,52 +2029,85 @@ impl AdminApiImpl {
         &self,
         req: crate::proto::admin::BatchBanUsersRequest,
         admin_user_id: &UserId,
-        _caller_role: UserRole,
+        caller_role: UserRole,
         ctx: &RequestContext,
     ) -> Result<crate::proto::admin::BatchBanUsersResponse, ApiError> {
-        let results = self.user_service.batch_ban_users(&req.user_ids).await
-            .map_err(ApiError::from)?;
-
-        let mut proto_results = Vec::with_capacity(results.len());
+        // Pre-filter: check role hierarchy for each target user before delegating
+        // to the service layer. Users that violate hierarchy are skipped with an error.
+        let mut allowed_ids = Vec::with_capacity(req.user_ids.len());
+        let mut proto_results = Vec::with_capacity(req.user_ids.len());
         let mut succeeded = 0i32;
         let mut failed = 0i32;
 
-        for (user_id, result) in results {
-            match result {
-                Ok(()) => {
-                    proto_results.push(crate::proto::admin::BatchResultItem {
-                        id: user_id.clone(),
-                        success: true,
-                        error: String::new(),
-                    });
-                    succeeded += 1;
-
-                    // Disconnect user and kick streams
-                    let uid = UserId::from_string(user_id);
-                    self.connection_manager.disconnect_user(&uid);
-
-                    if let Some(infra) = &self.live_streaming_infrastructure {
-                        infra.kick_user_publishers(uid.as_str()).await;
-                    }
-
-                    if let Some(tx) = &self.redis_publish_tx {
-                        super::try_publish_cluster_event(tx, PublishRequest {
-                            event: ClusterEvent::KickUser {
-                                event_id: nanoid::nanoid!(16),
-                                user_id: uid,
-                                reason: "batch_banned".to_string(),
-                                timestamp: chrono::Utc::now(),
-                            },
+        for user_id_str in &req.user_ids {
+            let uid = UserId::from_string(user_id_str.clone());
+            match self.user_service.get_user(&uid).await {
+                Ok(target_user) => {
+                    if let Err(e) = check_role_hierarchy(caller_role, target_user.role, "ban") {
+                        proto_results.push(crate::proto::admin::BatchResultItem {
+                            id: user_id_str.clone(),
+                            success: false,
+                            error: e.to_string(),
                         });
+                        failed += 1;
+                        continue;
                     }
+                    allowed_ids.push(user_id_str.clone());
                 }
                 Err(e) => {
+                    // User not found - let it pass through to service for consistent error handling
                     proto_results.push(crate::proto::admin::BatchResultItem {
-                        id: user_id,
+                        id: user_id_str.clone(),
                         success: false,
                         error: e.to_string(),
                     });
                     failed += 1;
+                }
+            }
+        }
+
+        // Process the allowed users through the service layer
+        if !allowed_ids.is_empty() {
+            let results = self.user_service.batch_ban_users(&allowed_ids).await
+                .map_err(ApiError::from)?;
+
+            for (user_id, result) in results {
+                match result {
+                    Ok(()) => {
+                        proto_results.push(crate::proto::admin::BatchResultItem {
+                            id: user_id.clone(),
+                            success: true,
+                            error: String::new(),
+                        });
+                        succeeded += 1;
+
+                        // Disconnect user and kick streams
+                        let uid = UserId::from_string(user_id);
+                        self.connection_manager.disconnect_user(&uid);
+
+                        if let Some(infra) = &self.live_streaming_infrastructure {
+                            infra.kick_user_publishers(uid.as_str()).await;
+                        }
+
+                        if let Some(tx) = &self.redis_publish_tx {
+                            super::try_publish_cluster_event(tx, PublishRequest {
+                                event: ClusterEvent::KickUser {
+                                    event_id: nanoid::nanoid!(16),
+                                    user_id: uid,
+                                    reason: "batch_banned".to_string(),
+                                    timestamp: chrono::Utc::now(),
+                                },
+                            });
+                        }
+                    }
+                    Err(e) => {
+                        proto_results.push(crate::proto::admin::BatchResultItem {
+                            id: user_id,
+                            success: false,
+                            error: e.to_string(),
+                        });
+                        failed += 1;
+                    }
                 }
             }
         }
@@ -2090,51 +2156,84 @@ impl AdminApiImpl {
         &self,
         req: crate::proto::admin::BatchDeleteUsersRequest,
         admin_user_id: &UserId,
+        caller_role: UserRole,
         ctx: &RequestContext,
     ) -> Result<crate::proto::admin::BatchDeleteUsersResponse, ApiError> {
-        let results = self.user_service.batch_delete_users(&req.user_ids).await
-            .map_err(ApiError::from)?;
-
-        let mut proto_results = Vec::with_capacity(results.len());
+        // Pre-filter: check role hierarchy for each target user before delegating
+        // to the service layer. Users that violate hierarchy are skipped with an error.
+        let mut allowed_ids = Vec::with_capacity(req.user_ids.len());
+        let mut proto_results = Vec::with_capacity(req.user_ids.len());
         let mut succeeded = 0i32;
         let mut failed = 0i32;
 
-        for (user_id, result) in results {
-            match result {
-                Ok(()) => {
-                    proto_results.push(crate::proto::admin::BatchResultItem {
-                        id: user_id.clone(),
-                        success: true,
-                        error: String::new(),
-                    });
-                    succeeded += 1;
-
-                    // Disconnect user and kick streams
-                    let uid = UserId::from_string(user_id);
-                    self.connection_manager.disconnect_user(&uid);
-
-                    if let Some(infra) = &self.live_streaming_infrastructure {
-                        infra.kick_user_publishers(uid.as_str()).await;
-                    }
-
-                    if let Some(tx) = &self.redis_publish_tx {
-                        super::try_publish_cluster_event(tx, PublishRequest {
-                            event: ClusterEvent::KickUser {
-                                event_id: nanoid::nanoid!(16),
-                                user_id: uid,
-                                reason: "batch_deleted".to_string(),
-                                timestamp: chrono::Utc::now(),
-                            },
+        for user_id_str in &req.user_ids {
+            let uid = UserId::from_string(user_id_str.clone());
+            match self.user_service.get_user(&uid).await {
+                Ok(target_user) => {
+                    if let Err(e) = check_role_hierarchy(caller_role, target_user.role, "delete") {
+                        proto_results.push(crate::proto::admin::BatchResultItem {
+                            id: user_id_str.clone(),
+                            success: false,
+                            error: e.to_string(),
                         });
+                        failed += 1;
+                        continue;
                     }
+                    allowed_ids.push(user_id_str.clone());
                 }
                 Err(e) => {
                     proto_results.push(crate::proto::admin::BatchResultItem {
-                        id: user_id,
+                        id: user_id_str.clone(),
                         success: false,
                         error: e.to_string(),
                     });
                     failed += 1;
+                }
+            }
+        }
+
+        // Process the allowed users through the service layer
+        if !allowed_ids.is_empty() {
+            let results = self.user_service.batch_delete_users(&allowed_ids).await
+                .map_err(ApiError::from)?;
+
+            for (user_id, result) in results {
+                match result {
+                    Ok(()) => {
+                        proto_results.push(crate::proto::admin::BatchResultItem {
+                            id: user_id.clone(),
+                            success: true,
+                            error: String::new(),
+                        });
+                        succeeded += 1;
+
+                        // Disconnect user and kick streams
+                        let uid = UserId::from_string(user_id);
+                        self.connection_manager.disconnect_user(&uid);
+
+                        if let Some(infra) = &self.live_streaming_infrastructure {
+                            infra.kick_user_publishers(uid.as_str()).await;
+                        }
+
+                        if let Some(tx) = &self.redis_publish_tx {
+                            super::try_publish_cluster_event(tx, PublishRequest {
+                                event: ClusterEvent::KickUser {
+                                    event_id: nanoid::nanoid!(16),
+                                    user_id: uid,
+                                    reason: "batch_deleted".to_string(),
+                                    timestamp: chrono::Utc::now(),
+                                },
+                            });
+                        }
+                    }
+                    Err(e) => {
+                        proto_results.push(crate::proto::admin::BatchResultItem {
+                            id: user_id,
+                            success: false,
+                            error: e.to_string(),
+                        });
+                        failed += 1;
+                    }
                 }
             }
         }
@@ -2474,6 +2573,46 @@ fn seconds_to_timeout_string(seconds: u32) -> String {
     format!("{seconds}s")
 }
 
+/// Strip credentials (username/password) from a URL before including it in audit logs.
+///
+/// If the input is not a valid URL, returns it unchanged (best-effort masking).
+fn mask_url_credentials(endpoint: &str) -> String {
+    match url::Url::parse(endpoint) {
+        Ok(mut parsed) => {
+            if !parsed.username().is_empty() || parsed.password().is_some() {
+                // Clear credentials - set_username/set_password return Err only for cannot-be-a-base URLs
+                let _ = parsed.set_username("");
+                let _ = parsed.set_password(None);
+            }
+            parsed.to_string()
+        }
+        Err(_) => endpoint.to_string(),
+    }
+}
+
+/// Check if the caller has sufficient role to operate on a target user.
+///
+/// Returns `Ok(())` if the caller's role is high enough to modify the target user,
+/// or `Err(ApiError::Authorization(...))` if the role hierarchy would be violated.
+///
+/// Rules:
+/// - Only Root can operate on Root users
+/// - Only Root can operate on Admin users
+/// - Admin and Root can operate on regular Users
+fn check_role_hierarchy(caller_role: UserRole, target_role: UserRole, action: &str) -> Result<(), ApiError> {
+    if target_role == UserRole::Root && caller_role != UserRole::Root {
+        return Err(ApiError::Authorization(format!(
+            "Only root users can {action} root users"
+        )));
+    }
+    if target_role == UserRole::Admin && caller_role != UserRole::Root {
+        return Err(ApiError::Authorization(format!(
+            "Only root users can {action} admin users"
+        )));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2777,5 +2916,92 @@ mod tests {
     #[test]
     fn test_admin_can_reset_user_password() {
         assert!(password_reset_allowed(UserRole::Admin, UserRole::User));
+    }
+
+    // === URL Credential Masking Tests ===
+
+    #[test]
+    fn test_mask_url_credentials_with_user_and_password() {
+        let url = "https://user:secretpass@server.example.com/api";
+        let masked = mask_url_credentials(url);
+        assert!(!masked.contains("user:"), "Username should be stripped: {masked}");
+        assert!(!masked.contains("secretpass"), "Password should be stripped: {masked}");
+        assert!(masked.contains("server.example.com/api"), "Host and path should remain: {masked}");
+    }
+
+    #[test]
+    fn test_mask_url_credentials_with_user_only() {
+        let url = "https://admin@server.example.com:8096/emby";
+        let masked = mask_url_credentials(url);
+        assert!(!masked.contains("admin@"), "Username should be stripped: {masked}");
+        assert!(masked.contains("server.example.com:8096/emby"), "Host and path should remain: {masked}");
+    }
+
+    #[test]
+    fn test_mask_url_credentials_without_credentials() {
+        let url = "https://server.example.com/api";
+        let masked = mask_url_credentials(url);
+        assert_eq!(masked, "https://server.example.com/api");
+    }
+
+    #[test]
+    fn test_mask_url_credentials_invalid_url_passthrough() {
+        let url = "not-a-valid-url";
+        let masked = mask_url_credentials(url);
+        assert_eq!(masked, "not-a-valid-url");
+    }
+
+    #[test]
+    fn test_mask_url_credentials_empty_string() {
+        let masked = mask_url_credentials("");
+        assert_eq!(masked, "");
+    }
+
+    #[test]
+    fn test_mask_url_credentials_preserves_port_and_query() {
+        let url = "https://user:pass@host.com:9090/path?key=val";
+        let masked = mask_url_credentials(url);
+        assert!(!masked.contains("user"), "Username should be stripped: {masked}");
+        assert!(!masked.contains("pass"), "Password should be stripped: {masked}");
+        assert!(masked.contains("host.com:9090"), "Host and port should remain: {masked}");
+        assert!(masked.contains("key=val"), "Query should remain: {masked}");
+    }
+
+    // === Role Hierarchy Check Tests (batch operations) ===
+
+    #[test]
+    fn test_check_role_hierarchy_root_can_operate_on_all() {
+        assert!(check_role_hierarchy(UserRole::Root, UserRole::Root, "ban").is_ok());
+        assert!(check_role_hierarchy(UserRole::Root, UserRole::Admin, "ban").is_ok());
+        assert!(check_role_hierarchy(UserRole::Root, UserRole::User, "ban").is_ok());
+    }
+
+    #[test]
+    fn test_check_role_hierarchy_admin_cannot_operate_on_root() {
+        let result = check_role_hierarchy(UserRole::Admin, UserRole::Root, "ban");
+        assert!(result.is_err(), "Admin should not be able to ban Root users");
+        match result {
+            Err(ApiError::Authorization(msg)) => {
+                assert!(msg.contains("root"), "Error should mention root: {msg}");
+            }
+            other => panic!("Expected Authorization error, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_check_role_hierarchy_admin_cannot_operate_on_admin() {
+        let result = check_role_hierarchy(UserRole::Admin, UserRole::Admin, "delete");
+        assert!(result.is_err(), "Admin should not be able to delete Admin users");
+        match result {
+            Err(ApiError::Authorization(msg)) => {
+                assert!(msg.contains("root"), "Error should mention root: {msg}");
+            }
+            other => panic!("Expected Authorization error, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_check_role_hierarchy_admin_can_operate_on_user() {
+        assert!(check_role_hierarchy(UserRole::Admin, UserRole::User, "ban").is_ok());
     }
 }

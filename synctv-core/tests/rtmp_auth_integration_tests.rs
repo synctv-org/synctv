@@ -36,6 +36,7 @@ use synctv_core::{
 use testcontainers::ContainerAsync;
 use testcontainers_modules::postgres::Postgres;
 use testcontainers_modules::redis::Redis;
+use testcontainers::core::ImageExt;
 
 
 // ============================================================================
@@ -53,6 +54,7 @@ async fn create_test_infra() -> (
         .with_db_name("synctv_test")
         .with_user("synctv")
         .with_password("synctv_test")
+        .with_tag("16-alpine")
         .start()
         .await
         .expect("Failed to start Postgres container");
@@ -65,11 +67,24 @@ async fn create_test_infra() -> (
         pg_host, pg_port
     );
 
-    let pool = sqlx::postgres::PgPoolOptions::new()
-        .max_connections(10)
-        .connect(&database_url)
-        .await
-        .expect("Failed to connect to database");
+    let pool = {
+        let mut retries = 0u32;
+        loop {
+            match sqlx::postgres::PgPoolOptions::new()
+                .max_connections(10)
+                .acquire_timeout(std::time::Duration::from_secs(2))
+                .connect(&database_url)
+                .await
+            {
+                Ok(p) => break p,
+                Err(_) if retries < 60 => {
+                    retries += 1;
+                    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                }
+                Err(e) => panic!("PostgreSQL not ready after {retries} retries: {e}"),
+            }
+        }
+    };
 
     // Run migrations
     sqlx::migrate!("../migrations")
@@ -358,14 +373,13 @@ async fn rtmp_auth_test_deleted_user_validation() {
         .await
         .expect("Failed to generate publish key");
 
-    // Soft-delete the user
+    // Soft-delete the user via the repository's delete method
     let user_repo = UserRepository::new(pool.clone());
-    let mut deleted_user = user.clone();
-    deleted_user.deleted_at = Some(chrono::Utc::now());
-    user_repo
-        .update(&deleted_user, deleted_user.version)
+    let deleted = user_repo
+        .delete(&user.id)
         .await
         .expect("Failed to delete user");
+    assert!(deleted, "delete should have affected one row");
 
     // Token should still be valid at the JWT level
     let _claims = publish_key_service
@@ -373,14 +387,12 @@ async fn rtmp_auth_test_deleted_user_validation() {
         .await
         .expect("Token validation should succeed (user status check is separate)");
 
-    // But RTMP auth should reject based on deleted_at
+    // But RTMP auth should reject based on deleted_at:
+    // get_user filters out soft-deleted users (WHERE deleted_at IS NULL),
+    // so the deleted user should not be found.
     let user_service = Arc::new(create_user_service(pool.clone()));
-    let updated_user = user_service
-        .get_user(&user.id)
-        .await
-        .expect("Failed to load user");
-
-    assert!(updated_user.deleted_at.is_some(), "User should be marked as deleted");
+    let result = user_service.get_user(&user.id).await;
+    assert!(result.is_err(), "Soft-deleted user should not be found by get_user");
 }
 
 // ============================================================================
@@ -533,18 +545,18 @@ async fn rtmp_auth_test_rtmp_player_settings() {
 
     // Verify default rtmp_player is disabled
     let settings_repo = RoomSettingsRepository::new(pool.clone());
-    let settings = settings_repo
-        .get(&room.id)
+    let (settings, version) = settings_repo
+        .get_with_version(&room.id)
         .await
         .expect("Failed to load settings");
 
     assert!(!settings.rtmp_player.0, "rtmp_player should be disabled by default");
 
-    // Enable rtmp_player
+    // Enable rtmp_player (use the current version for optimistic locking)
     let mut updated_settings = settings;
     updated_settings.rtmp_player.0 = true;
     settings_repo
-        .set_settings_with_version(&room.id, &updated_settings, 0)
+        .set_settings_with_version(&room.id, &updated_settings, version)
         .await
         .expect("Failed to update settings");
 

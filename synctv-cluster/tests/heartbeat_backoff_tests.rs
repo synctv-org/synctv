@@ -45,9 +45,9 @@ async fn setup_redis() -> (
         loop {
             match redis_client.get_multiplexed_async_connection().await {
                 Ok(conn) => break conn,
-                Err(_) if retries < 20 => {
+                Err(_) if retries < 60 => {
                     retries += 1;
-                    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+                    tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
                 }
                 Err(e) => panic!("Redis connection failed after {} retries: {}", retries, e),
             }

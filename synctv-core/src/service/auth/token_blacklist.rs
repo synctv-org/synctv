@@ -51,6 +51,22 @@ pub trait TokenBlacklistStore: Send + Sync {
     /// Check if a JTI key is blacklisted (already used).
     async fn is_blacklisted(&self, key: &str) -> bool;
 
+    /// Check if a JTI key is blacklisted, propagating storage errors.
+    ///
+    /// Unlike [`is_blacklisted`] which returns `false` on errors (fail-open),
+    /// this method returns `Err` on storage failures so the caller can decide
+    /// whether to fail-open or fail-closed.
+    ///
+    /// The default implementation delegates to [`is_blacklisted`] and always
+    /// returns `Ok`, which is safe for in-memory stores that cannot fail.
+    /// Database-backed stores should override this to propagate errors.
+    ///
+    /// Used by the [`SecurityPipeline`] for access token blacklist checks
+    /// where fail-closed semantics are required for security.
+    async fn is_blacklisted_checked(&self, key: &str) -> Result<bool> {
+        Ok(self.is_blacklisted(key).await)
+    }
+
     /// Blacklist a JTI key with the given TTL in seconds.
     ///
     /// Returns `Err` only on critical failures where the caller should
@@ -276,6 +292,23 @@ impl TokenBlacklistStore for PgTokenBlacklistStore {
         .fetch_one(&self.pool)
         .await
         .unwrap_or(false)
+    }
+
+    async fn is_blacklisted_checked(&self, key: &str) -> Result<bool> {
+        sqlx::query_scalar::<_, bool>(
+            "SELECT EXISTS(SELECT 1 FROM token_blacklist WHERE jti = $1 AND expires_at > NOW())"
+        )
+        .bind(key)
+        .fetch_one(&self.pool)
+        .await
+        .map_err(|e| {
+            tracing::error!(
+                key = %key,
+                error = %e,
+                "Failed to check token blacklist in PostgreSQL (fail-closed)"
+            );
+            crate::Error::Internal(format!("Token blacklist check failed: {e}"))
+        })
     }
 
     async fn blacklist(&self, key: &str, ttl_secs: u64) -> Result<()> {
@@ -565,6 +598,72 @@ impl TokenBlacklistStore for TieredTokenBlacklistStore {
         found
     }
 
+    async fn is_blacklisted_checked(&self, key: &str) -> Result<bool> {
+        // --- L1 check ---
+        if let Some((is_bl, expiry)) = self.l1_blacklist.get(key).await {
+            if Instant::now() < expiry {
+                return Ok(is_bl);
+            }
+            // Expired entry; fall through to L2/PG
+        }
+
+        // --- L2 check (Redis) ---
+        if let Some(ref redis_conn) = self.redis_conn {
+            let redis_key = self.bl_key(key);
+            let result: redis::RedisResult<Option<String>> = {
+                let mut conn = redis_conn.clone();
+                conn.get(&redis_key).await
+            };
+            match result {
+                Ok(Some(val)) => {
+                    let is_bl = val == "1";
+                    let l1_ttl = if is_bl { L1_POSITIVE_TTL } else { L1_NEGATIVE_TTL };
+                    self.l1_blacklist
+                        .insert(key.to_string(), (is_bl, Instant::now() + l1_ttl))
+                        .await;
+                    return Ok(is_bl);
+                }
+                Ok(None) => {
+                    // L2 miss, continue to PG
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, key = %key, "Redis L2 blacklist lookup failed, falling back to PG");
+                }
+            }
+        }
+
+        // --- PG check (primary, error-propagating) ---
+        let found = self.pg.is_blacklisted_checked(key).await?;
+
+        if found {
+            // Positive: populate L1 + L2
+            self.l1_blacklist
+                .insert(key.to_string(), (true, Instant::now() + L1_POSITIVE_TTL))
+                .await;
+            if let Some(ref redis_conn) = self.redis_conn {
+                let redis_key = self.bl_key(key);
+                let mut conn = redis_conn.clone();
+                let _: redis::RedisResult<()> = conn
+                    .set_ex(&redis_key, "1", L1_POSITIVE_TTL.as_secs())
+                    .await;
+            }
+        } else {
+            // Negative sentinel: populate L1 + L2
+            self.l1_blacklist
+                .insert(key.to_string(), (false, Instant::now() + L1_NEGATIVE_TTL))
+                .await;
+            if let Some(ref redis_conn) = self.redis_conn {
+                let redis_key = self.bl_key(key);
+                let mut conn = redis_conn.clone();
+                let _: redis::RedisResult<()> = conn
+                    .set_ex(&redis_key, "0", L2_NEGATIVE_TTL_SECS)
+                    .await;
+            }
+        }
+
+        Ok(found)
+    }
+
     async fn blacklist(&self, key: &str, ttl_secs: u64) -> Result<()> {
         // 1. Write to PG (durable primary)
         self.pg.blacklist(key, ttl_secs).await?;
@@ -788,6 +887,15 @@ impl TokenBlacklistStore for FallbackTokenBlacklistStore {
         }
         // Then check primary
         self.primary.is_blacklisted(key).await
+    }
+
+    async fn is_blacklisted_checked(&self, key: &str) -> Result<bool> {
+        // Check fallback first (fast path, always available, cannot fail)
+        if self.fallback.is_blacklisted(key).await {
+            return Ok(true);
+        }
+        // Then check primary (propagating errors)
+        self.primary.is_blacklisted_checked(key).await
     }
 
     async fn blacklist(&self, key: &str, ttl_secs: u64) -> Result<()> {
@@ -1085,6 +1193,15 @@ impl TokenBlacklistStore for RedisSyncableTokenBlacklistStore {
         }
         // Then check primary
         self.primary.is_blacklisted(key).await
+    }
+
+    async fn is_blacklisted_checked(&self, key: &str) -> Result<bool> {
+        // Check fallback first (fast path, always available, cannot fail)
+        if self.fallback.is_blacklisted(key).await {
+            return Ok(true);
+        }
+        // Then check primary (propagating errors)
+        self.primary.is_blacklisted_checked(key).await
     }
 
     async fn blacklist(&self, key: &str, ttl_secs: u64) -> Result<()> {

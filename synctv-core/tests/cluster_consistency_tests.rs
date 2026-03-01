@@ -37,6 +37,7 @@ use std::sync::Arc;
 use testcontainers::ContainerAsync;
 use testcontainers_modules::postgres::Postgres;
 use testcontainers_modules::redis::Redis;
+use testcontainers::core::ImageExt;
 use testcontainers::runners::AsyncRunner;
 
 /// Default PostgreSQL version for test containers
@@ -57,6 +58,10 @@ pub struct TestInfra {
 async fn create_test_infra() -> TestInfra {
     // Start PostgreSQL
     let postgres = Postgres::default()
+        .with_db_name("synctv_test")
+        .with_user("synctv")
+        .with_password("synctv_test")
+        .with_tag("16-alpine")
         .start()
         .await
         .expect("Failed to start Postgres container");
@@ -69,11 +74,24 @@ async fn create_test_infra() -> TestInfra {
         pg_host, pg_port
     );
 
-    let pool = sqlx::postgres::PgPoolOptions::new()
-        .max_connections(10)
-        .connect(&database_url)
-        .await
-        .expect("Failed to connect to database");
+    let pool = {
+        let mut retries = 0u32;
+        loop {
+            match sqlx::postgres::PgPoolOptions::new()
+                .max_connections(10)
+                .acquire_timeout(std::time::Duration::from_secs(2))
+                .connect(&database_url)
+                .await
+            {
+                Ok(p) => break p,
+                Err(_) if retries < 60 => {
+                    retries += 1;
+                    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                }
+                Err(e) => panic!("PostgreSQL not ready after {retries} retries: {e}"),
+            }
+        }
+    };
 
     // Run migrations
     sqlx::migrate!("../migrations")
@@ -196,7 +214,11 @@ async fn test_permission_change_cross_replica_sync() {
         "test:cache:invalidate".to_string(),
     ));
 
-    // Start cache invalidation services
+    // Start cache invalidation services so the XREADGROUP listener runs
+    cache_invalidation_2.start().await.expect("Failed to start cache invalidation service 2");
+    // Give subscriber time to connect
+    tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
+
     // Create permission services with cache invalidation using with_invalidation constructor
     let permission_service_a = PermissionService::with_invalidation(
         member_repo.clone(),
@@ -245,8 +267,11 @@ async fn test_permission_change_cross_replica_sync() {
         .await
         .expect("Failed to get updated permissions");
 
-    // Verify Node B sees the updated permissions
-    assert_eq!(perms_b_after, PermissionBits(12345), "Node B should see updated permissions after invalidation");
+    // Verify Node B sees the updated permissions.
+    // effective_permissions = (role_default | added_permissions) & !removed_permissions
+    // So the result should have the added bits set (but also role_default bits).
+    assert_ne!(perms_b_after, perms_b_initial, "Node B permissions should have changed");
+    assert_eq!(perms_b_after.0 & 12345, 12345, "Node B should see the added permission bits");
 }
 
 /// Test permission cache hit after first query.
@@ -324,6 +349,11 @@ async fn test_playback_state_cross_replica_sync() {
         "node_b".to_string(),
         "test:cache:playback".to_string(),
     ));
+
+    // Start cache invalidation service 2 so node B receives cross-replica messages
+    cache_invalidation_2.start().await.expect("Failed to start cache invalidation service 2");
+    tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
+
     // Create playback services
     let playback_repo = RoomPlaybackStateRepository::new(pool.clone());
     let member_repo = RoomMemberRepository::new(pool.clone());
@@ -432,8 +462,11 @@ async fn test_playback_state_invalidation_message_content() {
         "test:cache:playback_msg".to_string(),
     ));
 
-
+    // Start the Redis listener on service2 so it picks up XADD messages
+    service2.start().await.expect("Failed to start service2");
     let mut receiver = service2.subscribe();
+    // Give the background subscriber time to connect
+    tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
 
     let room_id = RoomId::new();
     service1.invalidate_playback_state(&room_id)
@@ -540,8 +573,10 @@ async fn test_room_settings_invalidation_message_broadcast() {
         "test:cache:room_settings".to_string(),
     ));
 
-
+    // Start the Redis listener on service2 so it picks up XADD messages
+    service2.start().await.expect("Failed to start service2");
     let mut receiver = service2.subscribe();
+    tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
 
     let room_id = RoomId::new();
 
@@ -589,8 +624,10 @@ async fn test_concurrent_invalidation_messages() {
         "test:cache:concurrent".to_string(),
     ));
 
-
+    // Start the Redis listener on service2 so it picks up XADD messages
+    service2.start().await.expect("Failed to start service2");
     let mut receiver = service2.subscribe();
+    tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
 
     // Send multiple invalidations concurrently
     let room1 = RoomId::new();
@@ -700,7 +737,10 @@ async fn test_cache_consistency_without_redis() {
         .await
         .expect("Failed to get updated permissions");
 
-    assert_eq!(perms_after, PermissionBits(99999), "Should see updated permissions after local invalidation");
+    // effective_permissions = (role_default | added_permissions) & !removed_permissions
+    // So the result should have the added bits set and differ from the initial value.
+    assert_ne!(perms_after, perms, "Permissions should have changed after invalidation");
+    assert_eq!(perms_after.0 & 99999, 99999, "Should see the added permission bits after local invalidation");
 }
 
 // ============================================================================

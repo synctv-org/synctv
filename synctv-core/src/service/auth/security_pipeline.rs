@@ -275,11 +275,14 @@ impl SecurityPipeline {
     ///
     /// - If both `token_blacklist` and `key_builder` are configured, the method
     ///   checks if the token's JTI is blacklisted and returns an error if so.
+    ///   If the blacklist store encounters a storage error (e.g., database/Redis
+    ///   unavailable), the method **fails closed** -- the request is rejected to
+    ///   prevent blacklisted tokens from bypassing the check during outages.
     /// - If the blacklist store is not configured and `require_blacklist` is true,
     ///   the method returns an error to prevent bypassing the blacklist check.
-    /// - If the blacklist store is not configured and `require_blacklist` is false
-    ///   (default), a warning is logged but the request is allowed to proceed
-    ///   for backward compatibility.
+    /// - If the blacklist store is not configured and `require_blacklist` is false,
+    ///   a warning is logged but the request is allowed to proceed
+    ///   (for development/testing only).
     async fn check_access_token_blacklist(&self, claims: &Claims) -> Result<()> {
         // Skip check if JTI is empty (shouldn't happen for valid tokens)
         if claims.jti.is_empty() {
@@ -289,10 +292,26 @@ impl SecurityPipeline {
         match (&self.token_blacklist, &self.key_builder) {
             (Some(store), Some(kb)) => {
                 let key = kb.access_token_blacklist(&claims.jti);
-                if store.is_blacklisted(&key).await {
-                    return Err(Error::Authentication("Authentication failed".to_string()));
+                // Use is_blacklisted_checked to propagate storage errors.
+                // On error, fail-closed: treat as blacklisted to prevent bypass
+                // during storage outages.
+                match store.is_blacklisted_checked(&key).await {
+                    Ok(true) => {
+                        Err(Error::Authentication("Authentication failed".to_string()))
+                    }
+                    Ok(false) => Ok(()),
+                    Err(e) => {
+                        tracing::error!(
+                            user_id = %claims.sub,
+                            jti = %claims.jti,
+                            error = %e,
+                            "Access token blacklist check failed due to storage error (fail-closed)"
+                        );
+                        Err(Error::Authentication(
+                            "Authentication service temporarily unavailable".to_string(),
+                        ))
+                    }
                 }
-                Ok(())
             }
             _ => {
                 // Blacklist store not configured
@@ -307,7 +326,7 @@ impl SecurityPipeline {
                         "Authentication service misconfigured".to_string(),
                     ))
                 } else {
-                    // Fail-open: log warning but allow (backward compatibility)
+                    // Fail-open: log warning but allow (development/testing only)
                     tracing::warn!(
                         user_id = %claims.sub,
                         jti = %claims.jti,

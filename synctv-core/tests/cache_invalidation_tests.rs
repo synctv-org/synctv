@@ -13,6 +13,7 @@ use synctv_core::{
 use testcontainers::ContainerAsync;
 use testcontainers_modules::postgres::Postgres;
 use testcontainers_modules::redis::Redis;
+use testcontainers::core::ImageExt;
 use testcontainers::runners::AsyncRunner;
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -399,11 +400,13 @@ async fn test_cache_invalidation_before_commit() {
         service::auth::{JwtService, BruteForceProtection},
     };
     use sqlx::PgPool;
+    use sqlx::postgres::PgPoolOptions;
         // Start PostgreSQL
     let postgres = Postgres::default()
         .with_db_name("synctv_test")
         .with_user("synctv")
         .with_password("synctv_test")
+        .with_tag("16-alpine")
         .start()
         .await
         .expect("Failed to start Postgres container");
@@ -413,9 +416,24 @@ async fn test_cache_invalidation_before_commit() {
         postgres.get_host_port_ipv4(5432).await.expect("Failed to get port")
     );
 
-    let pool = PgPool::connect(&connection_string)
-        .await
-        .expect("Failed to create pool");
+    let pool = {
+        let mut retries = 0u32;
+        loop {
+            match PgPoolOptions::new()
+                .acquire_timeout(std::time::Duration::from_secs(2))
+                .max_connections(5)
+                .connect(&connection_string)
+                .await
+            {
+                Ok(p) => break p,
+                Err(_) if retries < 60 => {
+                    retries += 1;
+                    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                }
+                Err(e) => panic!("PostgreSQL not ready after {retries} retries: {e}"),
+            }
+        }
+    };
 
     sqlx::migrate!("../migrations")
         .run(&pool)
@@ -549,11 +567,13 @@ async fn test_cache_invalidation_rollback_safety() {
         service::auth::{JwtService, BruteForceProtection},
     };
     use sqlx::{PgPool, Transaction};
+    use sqlx::postgres::PgPoolOptions;
         // Start PostgreSQL
     let postgres = Postgres::default()
         .with_db_name("synctv_test")
         .with_user("synctv")
         .with_password("synctv_test")
+        .with_tag("16-alpine")
         .start()
         .await
         .expect("Failed to start Postgres container");
@@ -563,9 +583,24 @@ async fn test_cache_invalidation_rollback_safety() {
         postgres.get_host_port_ipv4(5432).await.expect("Failed to get port")
     );
 
-    let pool = PgPool::connect(&connection_string)
-        .await
-        .expect("Failed to create pool");
+    let pool = {
+        let mut retries = 0u32;
+        loop {
+            match PgPoolOptions::new()
+                .acquire_timeout(std::time::Duration::from_secs(2))
+                .max_connections(5)
+                .connect(&connection_string)
+                .await
+            {
+                Ok(p) => break p,
+                Err(_) if retries < 60 => {
+                    retries += 1;
+                    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                }
+                Err(e) => panic!("PostgreSQL not ready after {retries} retries: {e}"),
+            }
+        }
+    };
 
     sqlx::migrate!("../migrations")
         .run(&pool)

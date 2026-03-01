@@ -139,6 +139,39 @@ impl AnyLeaderElector {
             }
         }
     }
+
+    /// Gracefully resign leadership by releasing the distributed lock.
+    ///
+    /// This method is called when:
+    /// - The node enters quarantine due to epoch mismatch (split-brain detection)
+    /// - The application is shutting down
+    /// - Leadership needs to be voluntarily relinquished
+    ///
+    /// # Behavior
+    ///
+    /// - If this node is not the leader, this is a no-op
+    /// - If this node is the leader, releases the distributed lock (Redis or K8s Lease)
+    /// - Sends a `LeadershipEvent::Lost` to all subscribers
+    /// - Updates metrics to reflect leadership loss
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// // When entering quarantine due to epoch mismatch
+    /// if is_quarantined && elector.is_leader() {
+    ///     elector.resign().await;
+    /// }
+    /// ```
+    pub async fn resign(&self) {
+        match self {
+            AnyLeaderElector::Redis(e) => e.resign().await,
+            #[cfg(feature = "k8s")]
+            AnyLeaderElector::K8s(e) => e.resign_public().await,
+            AnyLeaderElector::Disabled => {
+                // No-op: Disabled elector never has leadership to resign
+            }
+        }
+    }
 }
 
 impl LeaderElect for AnyLeaderElector {
@@ -704,7 +737,20 @@ impl LeaderElector {
     }
 
     /// Gracefully resign leadership by releasing the lock.
-    async fn resign(&self) {
+    ///
+    /// This method is called automatically when:
+    /// - The election loop is cancelled (shutdown)
+    /// - The node enters quarantine due to epoch mismatch (split-brain detection)
+    ///
+    /// It can also be called manually to voluntarily give up leadership.
+    ///
+    /// # Behavior
+    ///
+    /// - If this node is not the leader, this is a no-op
+    /// - If this node is the leader, releases the distributed lock
+    /// - Sends a `LeadershipEvent::Lost` to all subscribers
+    /// - Updates metrics to reflect leadership loss
+    pub async fn resign(&self) {
         let value = self.lock_value.lock().await.take();
         if let Some(value) = value {
             info!(identity = %self.identity, "Resigning leadership");

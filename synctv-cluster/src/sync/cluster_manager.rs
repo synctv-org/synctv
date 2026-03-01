@@ -441,10 +441,8 @@ impl ClusterManager {
                                     if let Some(ref elector) = leader_elector {
                                         if elector.is_leader() {
                                             warn!("Resigning leadership due to epoch mismatch (split-brain prevention)");
-                                            // Note: LeaderElector::resign is private, so we rely on
-                                            // the natural leader election loop to detect leadership loss
-                                            // when the node is in quarantine. The is_leader() check
-                                            // elsewhere will prevent quarantined nodes from acting as leader.
+                                            // Call resign to immediately release the distributed lock
+                                            elector.resign().await;
                                         }
                                     }
                                 }

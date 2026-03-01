@@ -393,6 +393,60 @@ impl RoomMemberRepository {
             .collect()
     }
 
+    /// List active members in a room with database-level pagination
+    ///
+    /// Uses `COUNT(*) OVER()` window function to atomically get total count and data
+    /// in a single query, avoiding the race condition of separate COUNT + SELECT queries.
+    ///
+    /// Returns a tuple of (members, total_count) where:
+    /// - `members`: Vec of `RoomMemberWithUser` for the current page
+    /// - `total_count`: Total number of active members in the room (i64)
+    ///
+    /// # Exclusions
+    ///
+    /// This method excludes:
+    /// - Members who have left the room (`left_at IS NOT NULL`)
+    /// - Banned members (`status = Banned`)
+    /// - Soft-deleted users (`u.deleted_at IS NOT NULL`)
+    pub async fn list_by_room_paginated(
+        &self,
+        room_id: &RoomId,
+        pagination: PageParams,
+    ) -> Result<(Vec<RoomMemberWithUser>, i64)> {
+        let limit = pagination.limit() as i64;
+        let offset = pagination.offset() as i64;
+
+        // Single query using COUNT(*) OVER() window function for atomic count + fetch
+        let rows = sqlx::query(
+            "SELECT
+                rm.room_id, rm.user_id, rm.role, rm.status,
+                rm.added_permissions, rm.removed_permissions,
+                rm.admin_added_permissions, rm.admin_removed_permissions,
+                rm.joined_at, rm.banned_at, rm.banned_reason,
+                u.username,
+                COUNT(*) OVER() as total_count
+             FROM room_members rm
+             JOIN users u ON rm.user_id = u.id
+             WHERE rm.room_id = $1 AND rm.left_at IS NULL AND rm.status != $2 AND u.deleted_at IS NULL
+             ORDER BY rm.joined_at ASC
+             LIMIT $3 OFFSET $4",
+        )
+        .bind(room_id.as_str())
+        .bind(MemberStatus::Banned)
+        .bind(limit)
+        .bind(offset)
+        .fetch_all(&self.pool)
+        .await?;
+
+        let total_count = rows.first().map_or(0, |r| r.get::<i64, _>("total_count"));
+        let members: Result<Vec<RoomMemberWithUser>> = rows
+            .into_iter()
+            .map(|row| self.row_to_member_with_user(row))
+            .collect();
+
+        Ok((members?, total_count))
+    }
+
     /// List all active members in a room with online status
     pub async fn list_by_room_with_online(
         &self,

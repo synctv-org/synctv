@@ -44,6 +44,37 @@ pub const ROOM_NAME_MAX: usize = 100;
 /// Maximum room description length (must match DB constraint `rooms_description_length_check`)
 pub const ROOM_DESCRIPTION_MAX: usize = 500;
 
+// ============================================================================
+// Reserved usernames — prevent phishing/impersonation attacks
+// ============================================================================
+
+/// Reserved usernames that cannot be used to prevent phishing/impersonation.
+/// Case-insensitive matching is applied.
+///
+/// These usernames are commonly used by system administrators and support staff,
+/// so allowing regular users to claim them could enable social engineering attacks.
+pub const RESERVED_USERNAMES: &[&str] = &[
+    "admin",
+    "administrator",
+    "system",
+    "root",
+    "moderator",
+    "mod",
+    "support",
+    "help",
+    "official",
+    "staff",
+    "owner",
+    "bot",
+    "service",
+    "sysop",
+    "operator",
+    "dev",
+    "developer",
+    "security",
+    "team",
+];
+
 /// Validation error
 #[derive(Debug, Clone, thiserror::Error)]
 pub enum ValidationError {
@@ -122,6 +153,17 @@ impl UsernameValidator {
                 return Err(ValidationError::Field {
                     field: "username".to_string(),
                     message: "cannot start with underscore or hyphen".to_string(),
+                });
+            }
+        }
+
+        // Check reserved usernames (case-insensitive)
+        let lower_username = username.to_lowercase();
+        for reserved in RESERVED_USERNAMES {
+            if lower_username == *reserved {
+                return Err(ValidationError::Field {
+                    field: "username".to_string(),
+                    message: format!("'{username}' is reserved and cannot be used"),
                 });
             }
         }

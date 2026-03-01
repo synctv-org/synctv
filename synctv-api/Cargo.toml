@@ -94,6 +94,7 @@ http-body-util = { workspace = true }
 futures.workspace = true
 synctv-proto.workspace = true
 synctv-core.workspace = true
+synctv-core-testing.workspace = true
 synctv-cluster.workspace = true
 serde_json.workspace = true
 chrono.workspace = true

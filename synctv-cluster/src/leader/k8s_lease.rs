@@ -760,6 +760,26 @@ impl K8sLeaderElector {
     pub fn consecutive_losses(&self) -> u64 {
         self.consecutive_losses.load(Ordering::Relaxed)
     }
+
+    /// Gracefully resign leadership by releasing the K8s Lease.
+    ///
+    /// This is the public interface for resigning leadership, which creates
+    /// the K8s API client internally. Used by `AnyLeaderElector::resign()`.
+    ///
+    /// # Behavior
+    ///
+    /// - If this pod is not the leader, this is a no-op
+    /// - If this pod is the leader, clears the holder identity on the Lease
+    /// - Sends a `LeadershipEvent::Lost` to all subscribers
+    /// - Updates metrics to reflect leadership loss
+    pub async fn resign_public(&self) {
+        if !self.is_leader() {
+            return;
+        }
+
+        let leases: Api<Lease> = Api::namespaced(self.client.clone(), &self.namespace);
+        self.resign(&leases).await;
+    }
 }
 
 impl super::LeaderElect for K8sLeaderElector {

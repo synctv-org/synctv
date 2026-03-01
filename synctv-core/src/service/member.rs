@@ -677,6 +677,26 @@ impl MemberService {
         self.member_repo.list_by_room(room_id).await
     }
 
+    /// Get members of a room with database-level pagination
+    ///
+    /// Uses `COUNT(*) OVER()` window function for atomic count + fetch in a single query.
+    /// Returns (members, total_count) tuple.
+    ///
+    /// # Performance
+    ///
+    /// This method should be used instead of `list_members` + in-memory pagination
+    /// when dealing with rooms that may have many members. It only loads the
+    /// requested page from the database.
+    pub async fn list_members_paginated(
+        &self,
+        room_id: &RoomId,
+        pagination: PageParams,
+    ) -> Result<(Vec<RoomMemberWithUser>, i64)> {
+        self.member_repo
+            .list_by_room_paginated(room_id, pagination)
+            .await
+    }
+
     /// Get member count for a room
     pub async fn count_members(&self, room_id: &RoomId) -> Result<i32> {
         self.member_repo.count_by_room(room_id).await

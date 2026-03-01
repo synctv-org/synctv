@@ -250,6 +250,7 @@ criterion = { version = "0.8", features = ["html_reports", "async_tokio"] }
 # Internal workspace crates
 synctv-proto = { path = "synctv-proto" }
 synctv-core = { path = "synctv-core" }
+synctv-core-testing = { path = "synctv-core/testing" }
 synctv-api = { path = "synctv-api" }
 synctv-cluster = { path = "synctv-cluster", default-features = false }
 synctv-media-providers = { path = "synctv-media-providers" }

@@ -7,7 +7,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::{
-    cache::{CacheInvalidationService, InvalidationMessage, SingleFlight},
+    cache::{CacheInvalidationService, InvalidationMessage, PlaybackStateCache, SingleFlight},
     models::{
         MediaId, PermissionBits, PlayMode, PlaylistId, RoomId, RoomPlaybackState, RoomSettings,
         UserId,
@@ -108,6 +108,9 @@ pub struct PlaybackService {
     cluster_broadcaster: Arc<parking_lot::RwLock<Option<Arc<dyn PlaybackBroadcaster>>>>,
     /// L1 in-memory cache for playback state, keyed by `room_id`
     playback_cache: Arc<moka::future::Cache<String, RoomPlaybackState>>,
+    /// Optional L2 cache (Redis) for cross-replica consistency
+    /// When set, L1 misses check L2 before falling back to DB
+    l2_cache: Option<PlaybackStateCache>,
     /// Optional cache invalidation service for cross-replica cache sync
     invalidation_service: Option<Arc<CacheInvalidationService>>,
     /// `SingleFlight` to prevent thundering herd on cache miss.
@@ -147,6 +150,7 @@ impl PlaybackService {
                     .time_to_live(Duration::from_secs(Self::DEFAULT_CACHE_TTL_SECS))
                     .build(),
             ),
+            l2_cache: None,
             invalidation_service: None,
             single_flight: SingleFlight::new(),
         }
@@ -283,6 +287,14 @@ impl PlaybackService {
         self.invalidation_service = Some(service);
     }
 
+    /// Set the L2 cache (Redis) for cross-replica consistency.
+    ///
+    /// When configured, L1 cache misses will check L2 before falling back to DB.
+    /// This provides a fallback when PubSub invalidation messages are lost.
+    pub fn set_l2_cache(&mut self, cache: PlaybackStateCache) {
+        self.l2_cache = Some(cache);
+    }
+
     /// Broadcast a playback state change to local clients and cluster replicas.
     ///
     /// Uses the cluster broadcaster as the single broadcast path. The cluster
@@ -333,20 +345,44 @@ impl PlaybackService {
 
     /// Get playback state for a room.
     ///
-    /// Checks the L1 in-memory cache first; on miss, uses `SingleFlight` to ensure
-    /// only one concurrent DB fetch per `room_id`, then populates the cache.
+    /// Checks the L1 in-memory cache first; on miss, checks L2 (Redis) if configured;
+    /// on L2 miss, uses `SingleFlight` to ensure only one concurrent DB fetch per
+    /// `room_id`, then populates both L1 and L2 caches.
     pub async fn get_state(&self, room_id: &RoomId) -> Result<RoomPlaybackState> {
         let cache_key = room_id.as_str().to_string();
 
         // L1 cache hit
         if let Some(state) = self.playback_cache.get(&cache_key).await {
+            crate::metrics::cache::CACHE_HITS
+                .with_label_values(&["playback", "l1"])
+                .inc();
             return Ok(state);
         }
 
-        // Cache miss — use SingleFlight to prevent thundering herd:
+        // L2 cache check (if configured)
+        if let Some(ref l2_cache) = self.l2_cache {
+            if let Some(state) = l2_cache.get(room_id).await? {
+                // L2 hit - populate L1 and return
+                self.playback_cache
+                    .insert(cache_key.clone(), state.clone())
+                    .await;
+                crate::metrics::cache::CACHE_HITS
+                    .with_label_values(&["playback", "l2"])
+                    .inc();
+                tracing::debug!(
+                    room_id = %room_id.as_str(),
+                    version = state.version,
+                    "Playback state cache hit (L2)"
+                );
+                return Ok(state);
+            }
+        }
+
+        // L1 and L2 miss — use SingleFlight to prevent thundering herd:
         // Only one task loads from DB for a given room_id; others wait for the result.
         let repo = self.playback_repo.clone();
         let cache = self.playback_cache.clone();
+        let l2_cache = self.l2_cache.clone();
         let room_id_clone = room_id.clone();
 
         let state = self
@@ -360,10 +396,21 @@ impl PlaybackService {
                         Err(e) => return Err(e.to_string()),
                     };
 
-                    // Populate cache
+                    // Populate L1 cache
                     cache
                         .insert(state.room_id.as_str().to_string(), state.clone())
                         .await;
+
+                    // Populate L2 cache (if configured)
+                    if let Some(ref l2) = l2_cache {
+                        if let Err(e) = l2.set(&state.room_id, state.clone()).await {
+                            tracing::warn!(
+                                room_id = %state.room_id.as_str(),
+                                error = %e,
+                                "Failed to set playback state in L2 cache"
+                            );
+                        }
+                    }
 
                     Ok(state)
                 },
@@ -371,6 +418,10 @@ impl PlaybackService {
             )
             .await
             .map_err(Error::Internal)?;
+
+        crate::metrics::cache::CACHE_MISSES
+            .with_label_values(&["playback", "l1_l2"])
+            .inc();
 
         Ok(state)
     }
@@ -391,9 +442,20 @@ impl PlaybackService {
             }
         }
 
-        // Invalidate local cache
+        // Invalidate L1 cache
         let cache_key = room_id.as_str().to_string();
         self.playback_cache.invalidate(&cache_key).await;
+
+        // Invalidate L2 cache (if configured)
+        if let Some(ref l2_cache) = self.l2_cache {
+            if let Err(e) = l2_cache.invalidate(room_id).await {
+                tracing::warn!(
+                    error = %e,
+                    room_id = %room_id.as_str(),
+                    "Failed to invalidate playback state from L2 cache"
+                );
+            }
+        }
     }
 
     /// Play/pause playback
@@ -931,11 +993,25 @@ impl PlaybackService {
             // Save with optimistic locking
             match self.playback_repo.update(&state).await {
                 Ok(updated_state) => {
-                    // Invalidate local cache so the next read fetches fresh data.
+                    // Invalidate local L1 cache so the next read fetches fresh data.
                     // This avoids write-through which would self-invalidate when the
                     // Redis Pub/Sub bounce-back arrives.
                     let cache_key = room_id.as_str().to_string();
                     self.playback_cache.invalidate(&cache_key).await;
+
+                    // Update L2 cache with the new state (if configured).
+                    // Uses set_if_newer to prevent stale data from overwriting fresh data.
+                    // This provides a fallback when PubSub messages are lost.
+                    if let Some(ref l2_cache) = self.l2_cache {
+                        if let Err(e) = l2_cache.set_if_newer(&room_id, updated_state.clone()).await
+                        {
+                            tracing::warn!(
+                                error = %e,
+                                room_id = %room_id.as_str(),
+                                "Failed to update playback state in L2 cache"
+                            );
+                        }
+                    }
 
                     // Broadcast updated state to other replicas so they can write
                     // it directly into their L1 cache, avoiding the stale-read

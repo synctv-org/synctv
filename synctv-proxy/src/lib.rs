@@ -12,7 +12,7 @@ use std::time::Duration;
 use axum::{
     body::Body,
     http::{HeaderMap, StatusCode},
-    response::{IntoResponse, Response},
+    response::Response,
 };
 use synctv_media_providers::ssrf;
 

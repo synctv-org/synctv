@@ -2,6 +2,7 @@
 
 use crate::impls::ApiError;
 use synctv_core::models::UserId;
+use synctv_core::validation::UsernameValidator;
 
 use super::convert::user_to_proto;
 use super::ClientApiImpl;
@@ -28,33 +29,11 @@ impl ClientApiImpl {
         user_id: &str,
         req: crate::proto::client::SetUsernameRequest,
     ) -> Result<crate::proto::client::SetUsernameResponse, ApiError> {
-        // Validate username length and charset (consistent with registration rules)
+        // Validate username using centralized validator (includes reserved word check)
         let username = req.new_username.trim().to_string();
-        if username.chars().count() < synctv_core::validation::USERNAME_MIN {
-            return Err(ApiError::InvalidInput(format!(
-                "Username must be at least {} characters",
-                synctv_core::validation::USERNAME_MIN
-            )));
-        }
-        if username.chars().count() > synctv_core::validation::USERNAME_MAX {
-            return Err(ApiError::InvalidInput(format!(
-                "Username must be at most {} characters",
-                synctv_core::validation::USERNAME_MAX
-            )));
-        }
-        if !username
-            .chars()
-            .all(|c| c.is_alphanumeric() || c == '_' || c == '-')
-        {
-            return Err(ApiError::InvalidInput(
-                "Username can only contain letters, numbers, underscores, and hyphens".to_string(),
-            ));
-        }
-        if username.starts_with('_') || username.starts_with('-') {
-            return Err(ApiError::InvalidInput(
-                "Username cannot start with underscore or hyphen".to_string(),
-            ));
-        }
+        UsernameValidator::new()
+            .validate(&username)
+            .map_err(|e| ApiError::InvalidInput(e.to_string()))?;
 
         let uid = UserId::from_string(user_id.to_string());
         let user = self

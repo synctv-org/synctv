@@ -1,7 +1,5 @@
 //! `PostgreSQL` test container helpers
 
-use std::time::Duration;
-
 use sqlx::postgres::PgPoolOptions;
 use sqlx::PgPool;
 use testcontainers::core::ImageExt;

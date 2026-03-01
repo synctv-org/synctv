@@ -1819,6 +1819,25 @@ impl RoomService {
         self.member_service.list_members(room_id).await
     }
 
+    /// Get room members with database-level pagination
+    ///
+    /// Uses `COUNT(*) OVER()` for atomic count + fetch.
+    /// Returns (members, total_count) tuple.
+    ///
+    /// # Performance
+    ///
+    /// This method should be preferred over `get_room_members` for admin endpoints
+    /// where rooms may have large numbers of members.
+    pub async fn get_room_members_paginated(
+        &self,
+        room_id: &RoomId,
+        pagination: crate::models::PageParams,
+    ) -> Result<(Vec<crate::models::RoomMemberWithUser>, i64)> {
+        self.member_service
+            .list_members_paginated(room_id, pagination)
+            .await
+    }
+
     /// Get member count for a room
     pub async fn get_member_count(&self, room_id: &RoomId) -> Result<i32> {
         self.member_service.count_members(room_id).await

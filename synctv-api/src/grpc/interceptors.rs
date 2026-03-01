@@ -84,6 +84,11 @@ impl AuthInterceptor {
 
     /// Inject `RoomContext` - validates JWT, extracts `user_id` and `room_id` from x-room-id header
     /// Used for `RoomService` and `MediaService`
+    ///
+    /// The room_id is validated against the same rules as HTTP endpoints:
+    /// - Must not be empty
+    /// - Must not exceed 64 characters (ID_MAX limit)
+    /// - Must contain only alphanumeric characters, underscores, and hyphens
     #[allow(clippy::result_large_err)]
     pub fn inject_room<T>(&self, mut request: Request<T>) -> Result<Request<T>, Status> {
         // Extract and validate the bearer token
@@ -95,13 +100,16 @@ impl AuthInterceptor {
             .map_err(|e| Status::unauthenticated(format!("Token verification failed: {e}")))?;
 
         // Extract room_id from x-room-id header
-        let room_id = request
+        let room_id_str = request
             .metadata()
             .get("x-room-id")
             .ok_or_else(|| Status::invalid_argument("Missing x-room-id header"))?
             .to_str()
-            .map_err(|_| Status::invalid_argument("Invalid x-room-id header"))?
-            .to_string();
+            .map_err(|_| Status::invalid_argument("Invalid x-room-id header"))?;
+
+        // Validate room_id format (same rules as HTTP layer)
+        let room_id = crate::room_id_validation::parse_room_id(room_id_str)
+            .map_err(|e| Status::invalid_argument(format!("Invalid room_id: {e}")))?;
 
         // Inject UserContext (for nested structure)
         let user_context = UserContext {
@@ -118,7 +126,7 @@ impl AuthInterceptor {
                 iat: claims.iat,
                 pv: claims.pv,
             },
-            room_id,
+            room_id: room_id.0,
         };
         request.extensions_mut().insert(room_context);
 

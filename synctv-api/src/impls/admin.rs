@@ -46,7 +46,7 @@ pub async fn validate_admin_auth(
     let user = user_service
         .get_user(&user_id)
         .await
-        .map_err(|_| ApiError::Authentication("Failed to verify user".to_string()))?;
+        .map_err(|_| ApiError::Authentication("Authentication failed".to_string()))?;
 
     if user.is_deleted() || user.status == UserStatus::Banned || user.status == UserStatus::Pending
     {
@@ -399,28 +399,27 @@ impl AdminApiImpl {
     ) -> Result<crate::proto::admin::GetRoomMembersResponse, ApiError> {
         let rid = crate::room_id_validation::parse_room_id(&req.room_id)
             .map_err(|e| ApiError::InvalidInput(e.to_string()))?;
-        let members = self
+
+        // Use database-level pagination instead of loading all members into memory
+        let page = if req.page > 0 { req.page as u32 } else { 1 };
+        let page_size = if req.page_size > 0 {
+            req.page_size as u32
+        } else {
+            50
+        };
+        let pagination = synctv_core::models::PageParams::new(Some(page), Some(page_size));
+
+        let (members, total) = self
             .room_service
-            .get_room_members(&rid)
+            .get_room_members_paginated(&rid, pagination)
             .await
             .map_err(ApiError::from)?;
 
-        let total = members.len() as i32;
-
-        // Apply pagination in-memory since the underlying service returns all members.
-        let page = if req.page > 0 { req.page } else { 1 };
-        let page_size = if req.page_size > 0 { req.page_size } else { 50 };
-        let skip = ((page - 1) * page_size) as usize;
-        let proto_members: Vec<_> = members
-            .iter()
-            .skip(skip)
-            .take(page_size as usize)
-            .map(admin_room_member_to_proto)
-            .collect();
+        let proto_members: Vec<_> = members.iter().map(admin_room_member_to_proto).collect();
 
         Ok(crate::proto::admin::GetRoomMembersResponse {
             members: proto_members,
-            total,
+            total: total as i32,
         })
     }
 

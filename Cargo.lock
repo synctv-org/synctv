@@ -5498,6 +5498,7 @@ dependencies = [
  "subtle",
  "synctv-cluster",
  "synctv-core",
+ "synctv-core-testing",
  "synctv-livestream",
  "synctv-media-providers",
  "synctv-proto",

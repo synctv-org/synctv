@@ -283,11 +283,12 @@ impl Drop for UnitOfWork {
         //
         // In debug mode, panic to catch the bug early.
         // In release mode, just log a warning.
-        assert!(!needs_handling, 
-                            "UnitOfWork dropped without explicit commit or rollback! \
-                             This is likely a bug - transactions should be explicitly committed or rolled back. \
-                             The transaction will be rolled back automatically."
-                        );
+        assert!(
+            !needs_handling,
+            "UnitOfWork dropped without explicit commit or rollback! \
+             This is likely a bug - transactions should be explicitly committed or rolled back. \
+             The transaction will be rolled back automatically."
+        );
     }
 }
 

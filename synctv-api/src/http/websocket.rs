@@ -487,28 +487,24 @@ pub async fn websocket_handler(
         return Err(AppError::service_unavailable());
     }
 
-    // CRITICAL: Check per-room connection limit BEFORE WebSocket upgrade.
-    // This prevents unauthorized connections from consuming resources by upgrading
-    // and then being disconnected. The check happens here to return HTTP 429
-    // (Too Many Requests) instead of HTTP 101 (Switching Protocols).
-    if let Err(e) = state.connection_manager.can_accept_room_connection(&rid) {
-        // Return HTTP 429 Too Many Requests for capacity limit
+    // CRITICAL: Atomically reserve per-room connection slot BEFORE WebSocket upgrade.
+    // This prevents the TOCTOU race condition where concurrent requests all pass
+    // the limit check before any of them register, bypassing the connection limit.
+    // The reservation is released after join_room completes inside handle_socket.
+    if let Err(e) = state.connection_manager.reserve_room_slot(&rid) {
         return Err(AppError::too_many_requests(e));
     }
 
-    // CRITICAL: Check per-user connection limit BEFORE WebSocket upgrade.
-    // This prevents users from exceeding their connection limit by upgrading
-    // and then being disconnected. The check happens here to return HTTP 429
-    // (Too Many Requests) instead of HTTP 101 (Switching Protocols).
-    if let Err(e) = state
-        .connection_manager
-        .can_accept_user_connection(&user_id)
-    {
-        // Return HTTP 429 Too Many Requests for capacity limit
+    // CRITICAL: Atomically reserve per-user connection slot BEFORE WebSocket upgrade.
+    // Same TOCTOU protection as the room reservation above.
+    if let Err(e) = state.connection_manager.reserve_user_slot(&user_id) {
+        // Roll back the room reservation on failure
+        state.connection_manager.release_room_reservation(&rid);
         return Err(AppError::too_many_requests(e));
     }
 
-    // Authentication and membership verified, upgrade to WebSocket
+    // Authentication and membership verified, upgrade to WebSocket.
+    // Reservations are released inside handle_socket after join_room completes.
     // Limit max message size to 64KB (default is 64MB which is excessive for signaling)
     Ok(ws
         .max_message_size(64 * 1024)
@@ -536,6 +532,14 @@ async fn handle_socket(
         room_id
     );
 
+    let rid = RoomId::from_string(room_id.clone());
+
+    // Release pre-upgrade reservations. The actual connection limit enforcement
+    // now happens atomically inside register()/join_room(). The reservation
+    // only existed to prevent the TOCTOU race during the HTTP→WS upgrade gap.
+    state.connection_manager.release_room_reservation(&rid);
+    state.connection_manager.release_user_reservation(&user_id);
+
     // Check if cluster_manager is available BEFORE incrementing metrics.
     // This prevents counter drift: if we return early, we never incremented,
     // so there's nothing to decrement.
@@ -549,8 +553,6 @@ async fn handle_socket(
     // Create RAII guard for metrics - ensures metrics are decremented even on panic.
     // This must be created AFTER all early-return checks to prevent false decrements.
     let _metrics_guard = MetricsGuard::new();
-
-    let rid = RoomId::from_string(room_id.clone());
 
     // Use the shared rate limiter from app state
     let rate_limiter = Arc::new(state.rate_limiter.clone());

@@ -8,5 +8,5 @@ pub struct NetConnectionReader {
 
 impl NetConnectionReader {
     #[allow(dead_code)]
-    const fn onconnect(&self) -> () {}
+    const fn onconnect(&self) {}
 }

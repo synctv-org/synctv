@@ -518,13 +518,18 @@ async fn test_optimistic_lock_retry_succeeds() {
     let result1 = handle1.await.expect("Task 1 panicked");
     let result2 = handle2.await.expect("Task 2 panicked");
 
-    // First should always succeed
-    assert!(result1.is_ok(), "First update should succeed");
-
-    // Second should succeed with retry
+    // Task 2 (with retry) should always succeed regardless of race order
     assert!(
         result2.is_ok(),
-        "Second update should succeed with retry: {result2:?}"
+        "Update with retry should succeed: {result2:?}"
+    );
+
+    // Task 1 (no retry) may or may not succeed depending on timing —
+    // if Task 2's first attempt commits before Task 1, Task 1 gets an
+    // OptimisticLockConflict with no retry to recover.
+    assert!(
+        result1.is_ok() || matches!(result1, Err(Error::OptimisticLockConflict)),
+        "Task without retry should either succeed or get OptimisticLockConflict: {result1:?}"
     );
 }
 

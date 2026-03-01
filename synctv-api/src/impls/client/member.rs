@@ -3,7 +3,7 @@
 use crate::impls::ApiError;
 use synctv_core::models::{RoomId, UserId};
 
-use super::convert::{proto_role_to_room_role, room_member_to_proto};
+use super::convert::{members_to_proto, proto_role_to_room_role, room_member_to_proto};
 use super::ClientApiImpl;
 
 impl ClientApiImpl {
@@ -27,22 +27,16 @@ impl ClientApiImpl {
             .await
             .map_err(ApiError::from)?;
 
-        // Fetch room settings for proper three-layer permission calculation
         let room_settings = self
             .room_service
             .get_room_settings(&rid)
             .await
             .unwrap_or_default();
-        let permission_service = self.room_service.permission_service();
-
-        let proto_members: Vec<_> = members
-            .into_iter()
-            .map(|m| {
-                let role_default =
-                    permission_service.calculate_role_default_permissions(&m.role, &room_settings);
-                room_member_to_proto(m, role_default)
-            })
-            .collect();
+        let proto_members = members_to_proto(
+            members,
+            &room_settings,
+            self.room_service.permission_service(),
+        );
 
         let total = proto_members.len() as i32;
         Ok(crate::proto::client::GetRoomMembersResponse {
@@ -128,9 +122,19 @@ impl ClientApiImpl {
             .await
             .map_err(ApiError::from)?;
 
-        // Notify other replicas to invalidate permission cache
-        self.publish_permission_changed(&rid, &target_uid, &uid)
-            .await;
+        // Notify other replicas to invalidate permission cache.
+        // Log a warning if this fails so operators can detect stale-permission drift.
+        if !self
+            .publish_permission_changed(&rid, &target_uid, &uid)
+            .await
+        {
+            tracing::warn!(
+                room_id = %rid.as_str(),
+                target_user_id = %target_uid.as_str(),
+                "Permission change saved but cache invalidation failed; \
+                 other replicas may serve stale permissions until cache expires"
+            );
+        }
 
         // Get updated member directly instead of fetching all members
         let member = self

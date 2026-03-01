@@ -384,11 +384,8 @@ impl StreamDataTransceiver {
                         }
                         guard.total_send_bytes += data_size;
                     } else {
-                        match aac_packet_type {
-                            aac_packet_type::AAC_RAW => {
-                                guard.publisher.audio.recv_bytes += data_size;
-                            }
-                            _ => {}
+                        if aac_packet_type == aac_packet_type::AAC_RAW {
+                            guard.publisher.audio.recv_bytes += data_size;
                         }
                         guard.total_recv_bytes += data_size;
                     }

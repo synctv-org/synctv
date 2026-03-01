@@ -164,7 +164,7 @@ impl TsMuxer {
         self.bytes_writer.write_u8(0x00)?; //4
 
         /*payload data*/
-        self.bytes_writer.write(&payload)?;
+        self.bytes_writer.write(payload)?;
 
         let left_size = ts::TS_PACKET_SIZE
             .saturating_sub(payload.len() as u8)

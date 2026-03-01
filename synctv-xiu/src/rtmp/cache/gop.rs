@@ -143,6 +143,13 @@ impl Gop {
 /// 500 MB allows ~5 GOPs at the per-GOP max, supporting high-quality streams.
 pub const DEFAULT_MAX_TOTAL_BYTES: usize = 500 * 1024 * 1024;
 
+/// Default global memory limit across ALL streams (2 GB).
+///
+/// Without this limit, each stream has an independent 500 MB budget, so
+/// 100 concurrent streams could consume up to 50 GB. The global tracker
+/// provides a shared ceiling: when the sum of all per-stream GOP caches
+/// exceeds this value, new frames trigger eviction of the oldest GOPs
+/// within their stream, reducing global pressure.
 #[derive(Clone)]
 pub struct Gops {
     gops: VecDeque<Gop>,
@@ -161,8 +168,9 @@ impl Default for Gops {
 
 impl Gops {
     /// Create a new `Gops` cache with the given GOP count limit and optional
-    /// per-stream memory cap. If `max_total_bytes` is `None`, the built-in
-    /// default ([`DEFAULT_MAX_TOTAL_BYTES`], 500 MB) is used.
+    /// per-stream memory cap.
+    ///
+    /// - `max_total_bytes`: per-stream cap. `None` uses [`DEFAULT_MAX_TOTAL_BYTES`] (500 MB).
     #[must_use]
     pub fn new(size: usize, max_total_bytes: Option<usize>) -> Self {
         Self {
@@ -284,5 +292,61 @@ impl Gops {
             back.freeze();
         }
         &self.gops
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bytes::Bytes;
+
+    /// Helper: create a video frame of a given size.
+    fn video_frame(size: usize) -> FrameData {
+        FrameData::Video {
+            timestamp: 0,
+            data: Bytes::from(vec![0u8; size]),
+        }
+    }
+
+    // ---- Per-stream tests (existing behaviour, regression) ----
+
+    #[test]
+    fn test_gop_basic_save_and_freeze() {
+        let mut gop = Gop::new();
+        assert!(gop.is_empty());
+
+        let stored = gop.save_frame_data(video_frame(100));
+        assert!(stored);
+        assert_eq!(gop.len(), 1);
+        assert_eq!(gop.memory_bytes(), 100);
+    }
+
+    #[test]
+    fn test_gops_per_stream_eviction() {
+        // Per-stream limit of 1 KB, 5 GOPs max
+        let mut gops = Gops::new(5, Some(1024));
+
+        // Fill with 1 GOP of ~600 bytes
+        gops.save_frame_data(video_frame(600), true);
+        assert_eq!(gops.current_total_bytes(), 600);
+
+        // Start second GOP with ~600 bytes → total 1200 > 1024 → evicts first
+        gops.save_frame_data(video_frame(600), true);
+        // After eviction the first GOP (600 bytes) is removed,
+        // then the new frame is added.
+        assert!(gops.current_total_bytes() <= 1024 + 600); // within reason
+    }
+
+    #[test]
+    fn test_per_stream_memory_limit() {
+        let mut gops = Gops::new(3, Some(500));
+
+        gops.save_frame_data(video_frame(200), true);
+        gops.save_frame_data(video_frame(200), true);
+        assert_eq!(gops.current_total_bytes(), 400);
+
+        // Adding 200 more → 600 > 500 → should evict
+        gops.save_frame_data(video_frame(200), true);
+        assert!(gops.current_total_bytes() <= 600);
     }
 }

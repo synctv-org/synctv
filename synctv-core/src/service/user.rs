@@ -407,16 +407,15 @@ impl UserService {
         // Check email verification when required (generic message to prevent
         // account enumeration via different error responses).
         //
-        // IMPORTANT: We check !email_verified directly without checking email.is_some()
-        // to prevent account enumeration. If we only checked users WITH email,
-        // attackers could distinguish:
-        // - Login fails → account has email configured
-        // - Login succeeds → OAuth2-only account (no email)
+        // OAuth2 users are exempt: they authenticated via an external provider,
+        // so requiring email verification would lock them out if the provider
+        // didn't confirm their email. The security pipeline already checks
+        // user status (Active/Banned/Pending) which covers OAuth2 users.
         //
-        // By checking email_verified for ALL users, both types are handled uniformly:
-        // - Email users with unverified email: blocked
-        // - OAuth2 users (no email, email_verified=false): blocked
-        if self.email_verification_required && !user.email_verified {
+        // For non-OAuth2 users, we check !email_verified directly without
+        // checking email.is_some() to prevent account enumeration.
+        let is_oauth2_user = user.signup_method == Some(crate::models::SignupMethod::OAuth2);
+        if self.email_verification_required && !user.email_verified && !is_oauth2_user {
             return Err(Error::Authentication("Authentication failed".to_string()));
         }
 
@@ -559,9 +558,10 @@ impl UserService {
         // Re-check email verification: if the requirement was enabled after the token was
         // issued (or the user's email was un-verified by an admin), deny the refresh.
         //
-        // IMPORTANT: Same logic as login() - check email_verified without email.is_some()
-        // to prevent account enumeration. Use generic error message for consistency.
-        if self.email_verification_required && !user.email_verified {
+        // OAuth2 users are exempt (same logic as login()) since they authenticated
+        // via an external provider. Use generic error message for consistency.
+        let is_oauth2_user = user.signup_method == Some(crate::models::SignupMethod::OAuth2);
+        if self.email_verification_required && !user.email_verified && !is_oauth2_user {
             return Err(Error::Authentication("Authentication failed".to_string()));
         }
 
@@ -706,9 +706,11 @@ impl UserService {
     /// Set user password (admin use, no old password required)
     ///
     /// After updating the password, all existing tokens for the user are
-    /// invalidated. This is done by updating the `password_changed_at`
-    /// timestamp in the database, which causes all tokens with iat <
-    /// `password_changed_at` to be rejected by the security pipeline.
+    /// invalidated. This is done by:
+    /// 1. Updating the `password_changed_at` timestamp and incrementing `password_version`
+    ///    in the database, which causes all access tokens with old pv to be rejected.
+    /// 2. Revoking the entire refresh token family for the user, which causes all
+    ///    existing refresh tokens to be rejected on the next refresh attempt.
     pub async fn set_password(&self, user_id: &UserId, new_password: &str) -> Result<User> {
         // Validate new password
         self.validate_password(new_password)?;
@@ -722,6 +724,23 @@ impl UserService {
             .repository
             .update_password(user_id, &password_hash)
             .await?;
+
+        // Revoke all refresh token families for this user so existing refresh
+        // tokens cannot be used to obtain new access tokens. The password_version
+        // check catches access tokens, but refresh tokens need explicit family
+        // revocation to prevent an attacker with a stolen refresh token from
+        // getting new access tokens after a password change.
+        let now = chrono::Utc::now().timestamp();
+        let family_key = self
+            .key_builder
+            .refresh_token_family_revoked(user_id.as_str());
+        let family_ttl = self
+            .jwt_service
+            .refresh_token_duration_seconds()
+            .saturating_add(3600);
+        self.token_blacklist
+            .set_family_revoked(&family_key, now, family_ttl)
+            .await;
 
         // Invalidate user cache across all replicas
         self.notify_user_invalidation(user_id).await;
@@ -1494,6 +1513,126 @@ mod tests {
             user_service.refresh_rate_limiter.backend_name(),
             "memory",
             "Default refresh rate limiter should be in-memory"
+        );
+    }
+
+    // === OAuth2 Email Verification Bypass Tests (P1#7) ===
+
+    /// OAuth2 users should not be blocked by email_verification_required.
+    /// This test verifies the logic that exempts OAuth2 signup method users.
+    #[test]
+    fn test_oauth2_user_bypasses_email_verification_check() {
+        let now = chrono::Utc::now();
+
+        // Simulate an OAuth2 user with email_verified=false
+        let oauth2_user = crate::models::User {
+            id: crate::models::UserId::new(),
+            username: "oauth2user".to_string(),
+            email: None,
+            password_hash: "hash".to_string(),
+            role: crate::models::UserRole::User,
+            status: crate::models::UserStatus::Active,
+            signup_method: Some(crate::models::SignupMethod::OAuth2),
+            email_verified: false,
+            created_at: now,
+            updated_at: now,
+            password_changed_at: now,
+            password_version: 0,
+            version: 0,
+            deleted_at: None,
+        };
+
+        // The check in login(): email_verification_required && !email_verified && !is_oauth2
+        let email_verification_required = true;
+        let is_oauth2_user = oauth2_user.signup_method == Some(crate::models::SignupMethod::OAuth2);
+
+        // OAuth2 user should NOT be blocked
+        let would_block =
+            email_verification_required && !oauth2_user.email_verified && !is_oauth2_user;
+        assert!(
+            !would_block,
+            "OAuth2 user should bypass email verification check"
+        );
+    }
+
+    /// Non-OAuth2 users with email_verified=false should still be blocked.
+    #[test]
+    fn test_email_user_still_blocked_by_email_verification() {
+        let now = chrono::Utc::now();
+
+        let email_user = crate::models::User {
+            id: crate::models::UserId::new(),
+            username: "emailuser".to_string(),
+            email: Some("user@example.com".to_string()),
+            password_hash: "hash".to_string(),
+            role: crate::models::UserRole::User,
+            status: crate::models::UserStatus::Active,
+            signup_method: Some(crate::models::SignupMethod::Email),
+            email_verified: false,
+            created_at: now,
+            updated_at: now,
+            password_changed_at: now,
+            password_version: 0,
+            version: 0,
+            deleted_at: None,
+        };
+
+        let email_verification_required = true;
+        let is_oauth2_user = email_user.signup_method == Some(crate::models::SignupMethod::OAuth2);
+
+        // Email user should still be blocked
+        let would_block =
+            email_verification_required && !email_user.email_verified && !is_oauth2_user;
+        assert!(
+            would_block,
+            "Email user with unverified email should be blocked"
+        );
+    }
+
+    /// OAuth2 user with email_verified=true should also pass (no regression).
+    #[test]
+    fn test_oauth2_user_with_verified_email_passes() {
+        let now = chrono::Utc::now();
+
+        let oauth2_user = crate::models::User {
+            id: crate::models::UserId::new(),
+            username: "oauth2verified".to_string(),
+            email: Some("verified@example.com".to_string()),
+            password_hash: "hash".to_string(),
+            role: crate::models::UserRole::User,
+            status: crate::models::UserStatus::Active,
+            signup_method: Some(crate::models::SignupMethod::OAuth2),
+            email_verified: true,
+            created_at: now,
+            updated_at: now,
+            password_changed_at: now,
+            password_version: 0,
+            version: 0,
+            deleted_at: None,
+        };
+
+        let email_verification_required = true;
+        let is_oauth2_user = oauth2_user.signup_method == Some(crate::models::SignupMethod::OAuth2);
+
+        let would_block =
+            email_verification_required && !oauth2_user.email_verified && !is_oauth2_user;
+        assert!(
+            !would_block,
+            "OAuth2 user with verified email should not be blocked"
+        );
+    }
+
+    /// When email_verification_required=false, nobody should be blocked.
+    #[test]
+    fn test_no_email_verification_required_passes_all() {
+        let email_verification_required = false;
+        let email_verified = false;
+        let is_oauth2_user = false;
+
+        let would_block = email_verification_required && !email_verified && !is_oauth2_user;
+        assert!(
+            !would_block,
+            "No one should be blocked when email verification is not required"
         );
     }
 }

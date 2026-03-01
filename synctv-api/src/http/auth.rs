@@ -10,6 +10,12 @@ use crate::proto::client::{
     RegisterResponse,
 };
 
+/// Simple success response for logout
+#[derive(serde::Serialize)]
+pub struct LogoutResponse {
+    pub success: bool,
+}
+
 /// Extract the real client IP from a request.
 ///
 /// Only trusts `X-Forwarded-For` / `X-Real-IP` headers when the direct
@@ -88,6 +94,31 @@ pub async fn refresh_token(
         .map_err(super::error::map_api_error)?;
 
     Ok(Json(response))
+}
+
+/// Logout: blacklist the current access token.
+///
+/// Requires a valid Bearer token in the Authorization header. The token's JTI
+/// is added to the blacklist with its remaining TTL so it cannot be reused.
+pub async fn logout(
+    State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
+) -> AppResult<Json<LogoutResponse>> {
+    // Extract raw Bearer token from Authorization header
+    let raw_token = headers
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| synctv_core::service::auth::JwtValidator::extract_bearer_token(v).ok());
+
+    if let Some(token) = raw_token {
+        state
+            .client_api
+            .logout(&token)
+            .await
+            .map_err(super::error::map_api_error)?;
+    }
+
+    Ok(Json(LogoutResponse { success: true }))
 }
 
 #[cfg(test)]
@@ -231,5 +262,21 @@ mod tests {
             email: "user@example.com".to_string(),
         };
         assert_eq!(req.username.chars().count(), 4);
+    }
+
+    // ========== Logout Response Tests ==========
+
+    #[test]
+    fn test_logout_response_serialization() {
+        let resp = LogoutResponse { success: true };
+        let json = serde_json::to_string(&resp).expect("serialize");
+        assert!(json.contains(r#""success":true"#));
+    }
+
+    #[test]
+    fn test_logout_response_failure() {
+        let resp = LogoutResponse { success: false };
+        let json = serde_json::to_string(&resp).expect("serialize");
+        assert!(json.contains(r#""success":false"#));
     }
 }

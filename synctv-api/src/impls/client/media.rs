@@ -107,6 +107,26 @@ impl ClientApiImpl {
                 .map_err(|e| ApiError::InvalidInput(format!("Invalid media title: {e}")))?
         };
 
+        // Check total playlist size limit before adding
+        let root_playlist = self
+            .room_service
+            .playlist_service()
+            .get_root_playlist(&rid)
+            .await
+            .map_err(ApiError::from)?;
+        let existing_count = self
+            .room_service
+            .media_service()
+            .count_playlist_media(&root_playlist.id)
+            .await
+            .map_err(ApiError::from)? as usize;
+        if existing_count >= Self::MAX_PLAYLIST_SIZE {
+            return Err(ApiError::InvalidInput(format!(
+                "Playlist has reached maximum size of {} items",
+                Self::MAX_PLAYLIST_SIZE
+            )));
+        }
+
         // Use the parsed provider as the instance name. For DirectUrl, this is
         // empty (no remote provider). For other types, use the provider string
         // from the request so the core layer knows which provider to use.
@@ -361,6 +381,12 @@ impl ClientApiImpl {
         })
     }
 
+    /// Maximum total media items allowed in a single room's playlist.
+    ///
+    /// Prevents unbounded playlist growth which could degrade database
+    /// performance and client rendering.
+    pub const MAX_PLAYLIST_SIZE: usize = 1000;
+
     /// Add multiple media items in a batch (atomic - all succeed or all fail)
     pub async fn add_media_batch(
         &self,
@@ -381,6 +407,30 @@ impl ClientApiImpl {
 
         let uid = UserId::from_string(user_id.to_string());
         let rid = RoomId::from_string(room_id.to_string());
+
+        // Check total playlist size limit to prevent unbounded growth
+        let root_playlist = self
+            .room_service
+            .playlist_service()
+            .get_root_playlist(&rid)
+            .await
+            .map_err(ApiError::from)?;
+        let existing_count = self
+            .room_service
+            .media_service()
+            .count_playlist_media(&root_playlist.id)
+            .await
+            .map_err(ApiError::from)? as usize;
+        let new_total = existing_count + req.items.len();
+        if new_total > Self::MAX_PLAYLIST_SIZE {
+            return Err(ApiError::InvalidInput(format!(
+                "Playlist would exceed maximum size of {} items \
+                 (current: {}, adding: {})",
+                Self::MAX_PLAYLIST_SIZE,
+                existing_count,
+                req.items.len()
+            )));
+        }
 
         // Build batch items for the atomic service call
         let mut items: Vec<(String, serde_json::Value, String)> =

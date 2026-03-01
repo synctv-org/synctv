@@ -149,6 +149,7 @@ fn extract_rate_limit_tier(key: &str) -> &'static str {
         "grpc",
         "api",
         "refresh",
+        "email",
     ];
     for segment in key.rsplit(':') {
         for &tier in KNOWN_TIERS {

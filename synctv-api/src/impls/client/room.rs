@@ -4,7 +4,7 @@ use crate::impls::ApiError;
 use synctv_core::models::{RoomId, UserId};
 
 use super::convert::{
-    media_to_proto, playback_state_to_proto, room_member_to_proto, room_role_to_proto,
+    media_to_proto, members_to_proto, playback_state_to_proto, room_role_to_proto,
     room_to_proto_basic,
 };
 use super::ClientApiImpl;
@@ -254,22 +254,16 @@ impl ClientApiImpl {
             .ok()
             .map(|s| playback_state_to_proto(&s));
 
-        // Fetch room settings for proper three-layer permission calculation
         let room_settings = self
             .room_service
             .get_room_settings(&rid)
             .await
             .unwrap_or_default();
-        let permission_service = self.room_service.permission_service();
-
-        let proto_members: Vec<_> = members
-            .into_iter()
-            .map(|m| {
-                let role_default =
-                    permission_service.calculate_role_default_permissions(&m.role, &room_settings);
-                room_member_to_proto(m, role_default)
-            })
-            .collect();
+        let proto_members = members_to_proto(
+            members,
+            &room_settings,
+            self.room_service.permission_service(),
+        );
 
         let member_count = self
             .connection_manager

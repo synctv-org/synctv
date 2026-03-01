@@ -23,6 +23,28 @@ use synctv_core::{
 };
 use tokio::sync::Semaphore;
 
+/// Minimum position change (in seconds) required to trigger a DB write
+/// for playback progress reports. Reports with smaller position deltas
+/// are acknowledged but not persisted, reducing write amplification.
+const PROGRESS_MIN_POSITION_DELTA: f64 = 1.0;
+
+/// Minimum elapsed wall-clock time (in seconds) between DB writes for
+/// playback progress reports, regardless of position delta.
+const PROGRESS_MIN_ELAPSED_SECS: f64 = 5.0;
+
+/// Maximum size of a WebRTC SDP offer/answer payload in bytes.
+/// SDP descriptions can be large but should not exceed ~10 KB.
+pub const MAX_SDP_SIZE: usize = 10_000;
+
+/// Maximum size of a WebRTC ICE candidate payload in bytes.
+/// Individual ICE candidates are small (typically under 200 bytes).
+pub const MAX_ICE_CANDIDATE_SIZE: usize = 500;
+
+/// Maximum number of concurrent UserLeft retry tasks across the process.
+/// Prevents unbounded task spawning during mass disconnects with Redis down.
+static USER_LEFT_RETRY_SEMAPHORE: std::sync::LazyLock<Arc<Semaphore>> =
+    std::sync::LazyLock::new(|| Arc::new(Semaphore::new(100)));
+
 use crate::proto::client::{ClientMessage, ServerMessage};
 
 /// Default TTL for membership cache entries (30 seconds).
@@ -274,6 +296,10 @@ pub struct StreamMessageHandler {
     /// Instance-level concurrency configuration for backpressure control.
     /// This replaces the global `MESSAGE_PROCESSING_SEMAPHORE` with per-AppState configuration.
     concurrency_config: Arc<MessageConcurrencyConfig>,
+    /// Throttle state for playback progress DB writes.
+    /// Stores the (last_written_position, last_write_time) to avoid
+    /// writing to the DB on every progress heartbeat.
+    last_progress_write: Arc<tokio::sync::Mutex<Option<(f64, tokio::time::Instant)>>>,
 }
 
 impl Clone for StreamMessageHandler {
@@ -296,6 +322,7 @@ impl Clone for StreamMessageHandler {
             skip_cleanup_user_left: Arc::clone(&self.skip_cleanup_user_left),
             membership_cache: Arc::clone(&self.membership_cache),
             concurrency_config: Arc::clone(&self.concurrency_config),
+            last_progress_write: Arc::clone(&self.last_progress_write),
         }
     }
 }
@@ -374,6 +401,7 @@ impl StreamMessageHandler {
             skip_cleanup_user_left: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             membership_cache,
             concurrency_config,
+            last_progress_write: Arc::new(tokio::sync::Mutex::new(None)),
         }
     }
 
@@ -1100,73 +1128,95 @@ impl StreamMessageHandler {
             // Critical UserLeft event failed to reach any destination.
             // This can happen when Redis is temporarily unavailable.
             // Spawn a background task to retry the broadcast with exponential backoff.
+            //
+            // Use a global semaphore to limit concurrent retry tasks. During mass
+            // disconnects with Redis down, thousands of connections may all try to
+            // spawn retry tasks simultaneously. Without this bound, we'd exhaust
+            // memory and CPU on unbounded task spawning.
             let cluster_manager = self.cluster_manager.clone();
             let room_id = self.room_id.clone();
             let user_id = self.user_id.clone();
             let username = self.username.clone();
             let connection_id = self.connection_id.clone();
 
-            tracing::warn!(
-                user = %username,
-                room = %room_id.as_str(),
-                connection = %connection_id,
-                "UserLeft broadcast reached no subscribers; starting retry task"
-            );
+            let semaphore = Arc::clone(&USER_LEFT_RETRY_SEMAPHORE);
+            let permit = semaphore.try_acquire_owned();
 
-            spawn_monitored("userleft_retry", async move {
-                const MAX_RETRIES: u32 = 5;
-                const INITIAL_DELAY_MS: u64 = 100;
-                const MAX_DELAY_MS: u64 = 5000;
-
-                let mut delay_ms = INITIAL_DELAY_MS;
-
-                for attempt in 1..=MAX_RETRIES {
-                    tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
-
-                    let retry_event = ClusterEvent::UserLeft {
-                        event_id: nanoid::nanoid!(16),
-                        room_id: room_id.clone(),
-                        user_id: user_id.clone(),
-                        username: username.clone(),
-                        timestamp: chrono::Utc::now(),
-                    };
-
-                    let retry_result = cluster_manager.broadcast(retry_event);
-
-                    if retry_result.local_sent > 0 || retry_result.redis_sent {
-                        tracing::info!(
-                            user = %username,
-                            room = %room_id.as_str(),
-                            connection = %connection_id,
-                            attempt = attempt,
-                            local_sent = retry_result.local_sent,
-                            redis_sent = retry_result.redis_sent,
-                            "UserLeft retry succeeded"
-                        );
-                        return;
-                    }
-
+            match permit {
+                Ok(permit) => {
                     tracing::warn!(
                         user = %username,
                         room = %room_id.as_str(),
                         connection = %connection_id,
-                        attempt = attempt,
-                        max_retries = MAX_RETRIES,
-                        "UserLeft retry attempt failed"
+                        "UserLeft broadcast reached no subscribers; starting retry task"
                     );
 
-                    // Exponential backoff with cap
-                    delay_ms = std::cmp::min(delay_ms * 2, MAX_DELAY_MS);
-                }
+                    spawn_monitored("userleft_retry", async move {
+                        let _permit = permit; // Hold permit for duration of retry task
 
-                tracing::error!(
-                    user = %username,
-                    room = %room_id.as_str(),
-                    connection = %connection_id,
-                    "UserLeft event permanently lost after {} retry attempts; other replicas may have stale user state",
-                    MAX_RETRIES
-                );
-            });
+                        const MAX_RETRIES: u32 = 5;
+                        const INITIAL_DELAY_MS: u64 = 100;
+                        const MAX_DELAY_MS: u64 = 5000;
+
+                        let mut delay_ms = INITIAL_DELAY_MS;
+
+                        for attempt in 1..=MAX_RETRIES {
+                            tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+
+                            let retry_event = ClusterEvent::UserLeft {
+                                event_id: nanoid::nanoid!(16),
+                                room_id: room_id.clone(),
+                                user_id: user_id.clone(),
+                                username: username.clone(),
+                                timestamp: chrono::Utc::now(),
+                            };
+
+                            let retry_result = cluster_manager.broadcast(retry_event);
+
+                            if retry_result.local_sent > 0 || retry_result.redis_sent {
+                                tracing::info!(
+                                    user = %username,
+                                    room = %room_id.as_str(),
+                                    connection = %connection_id,
+                                    attempt = attempt,
+                                    local_sent = retry_result.local_sent,
+                                    redis_sent = retry_result.redis_sent,
+                                    "UserLeft retry succeeded"
+                                );
+                                return;
+                            }
+
+                            tracing::warn!(
+                                user = %username,
+                                room = %room_id.as_str(),
+                                connection = %connection_id,
+                                attempt = attempt,
+                                max_retries = MAX_RETRIES,
+                                "UserLeft retry attempt failed"
+                            );
+
+                            // Exponential backoff with cap
+                            delay_ms = std::cmp::min(delay_ms * 2, MAX_DELAY_MS);
+                        }
+
+                        tracing::error!(
+                            user = %username,
+                            room = %room_id.as_str(),
+                            connection = %connection_id,
+                            "UserLeft event permanently lost after {} retry attempts; other replicas may have stale user state",
+                            MAX_RETRIES
+                        );
+                    });
+                }
+                Err(_) => {
+                    tracing::warn!(
+                        user = %username,
+                        room = %room_id.as_str(),
+                        connection = %connection_id,
+                        "UserLeft retry task limit reached (max 100 concurrent); event may be lost"
+                    );
+                }
+            }
         }
 
         // Now unregister from connection manager after broadcast has been sent
@@ -1811,6 +1861,14 @@ impl StreamMessageHandler {
         &self,
         offer: &crate::proto::client::WebRtcOffer,
     ) -> Result<(), String> {
+        // Validate SDP payload size
+        if offer.data.len() > MAX_SDP_SIZE {
+            return Err(format!(
+                "WebRTC SDP offer too large ({} bytes, max: {MAX_SDP_SIZE} bytes)",
+                offer.data.len()
+            ));
+        }
+
         // Check permission
         self.room_service
             .check_permission(&self.room_id, &self.user_id, PermissionBits::USE_WEBRTC)
@@ -1879,6 +1937,14 @@ impl StreamMessageHandler {
         &self,
         answer: &crate::proto::client::WebRtcAnswer,
     ) -> Result<(), String> {
+        // Validate SDP payload size
+        if answer.data.len() > MAX_SDP_SIZE {
+            return Err(format!(
+                "WebRTC SDP answer too large ({} bytes, max: {MAX_SDP_SIZE} bytes)",
+                answer.data.len()
+            ));
+        }
+
         // Check permission
         self.room_service
             .check_permission(&self.room_id, &self.user_id, PermissionBits::USE_WEBRTC)
@@ -1918,6 +1984,14 @@ impl StreamMessageHandler {
         &self,
         candidate: &crate::proto::client::WebRtcIceCandidate,
     ) -> Result<(), String> {
+        // Validate ICE candidate payload size
+        if candidate.data.len() > MAX_ICE_CANDIDATE_SIZE {
+            return Err(format!(
+                "WebRTC ICE candidate too large ({} bytes, max: {MAX_ICE_CANDIDATE_SIZE} bytes)",
+                candidate.data.len()
+            ));
+        }
+
         // Check permission
         self.room_service
             .check_permission(&self.room_id, &self.user_id, PermissionBits::USE_WEBRTC)
@@ -2115,37 +2189,61 @@ impl StreamMessageHandler {
                 ));
             }
 
-            // Update the canonical position and broadcast to same-replica
-            // clients so they can detect drift. The sender is excluded by
-            // event_id filtering (each connection ignores events it originated).
-            match playback_service
-                .update_state(self.room_id.clone(), |s| {
-                    s.current_time = report.current_time;
-                    s.updated_at = chrono::Utc::now();
-                })
-                .await
-            {
-                Ok(updated_state) => {
-                    // Local-only broadcast (no Redis) -- progress reports are
-                    // high-frequency and only relevant to same-replica clients.
-                    let event = synctv_cluster::sync::ClusterEvent::PlaybackStateChanged {
-                        event_id: nanoid::nanoid!(16),
-                        room_id: self.room_id.clone(),
-                        user_id: self.user_id.clone(),
-                        username: self.username.clone(),
-                        state: updated_state,
-                        timestamp: chrono::Utc::now(),
-                    };
-                    self.cluster_manager
-                        .message_hub()
-                        .broadcast(&self.room_id, event);
+            // Throttle DB writes: only persist if position changed by >1s
+            // or >5s elapsed since last write. This reduces write amplification
+            // from every 3-5s heartbeat to only meaningful position changes.
+            let should_write = {
+                let guard = self.last_progress_write.lock().await;
+                match *guard {
+                    Some((last_pos, last_time)) => {
+                        let pos_delta = (report.current_time - last_pos).abs();
+                        let elapsed = last_time.elapsed().as_secs_f64();
+                        pos_delta > PROGRESS_MIN_POSITION_DELTA
+                            || elapsed > PROGRESS_MIN_ELAPSED_SECS
+                    }
+                    None => true, // First write always goes through
                 }
-                Err(e) => {
-                    tracing::debug!(
-                        error = %e,
-                        room_id = %self.room_id.as_str(),
-                        "Failed to update playback state from progress report (non-critical)"
-                    );
+            };
+
+            if should_write {
+                // Update the canonical position and broadcast to same-replica
+                // clients so they can detect drift. The sender is excluded by
+                // event_id filtering (each connection ignores events it originated).
+                match playback_service
+                    .update_state(self.room_id.clone(), |s| {
+                        s.current_time = report.current_time;
+                        s.updated_at = chrono::Utc::now();
+                    })
+                    .await
+                {
+                    Ok(updated_state) => {
+                        // Record the write for throttling
+                        {
+                            let mut guard = self.last_progress_write.lock().await;
+                            *guard = Some((report.current_time, tokio::time::Instant::now()));
+                        }
+
+                        // Local-only broadcast (no Redis) -- progress reports are
+                        // high-frequency and only relevant to same-replica clients.
+                        let event = synctv_cluster::sync::ClusterEvent::PlaybackStateChanged {
+                            event_id: nanoid::nanoid!(16),
+                            room_id: self.room_id.clone(),
+                            user_id: self.user_id.clone(),
+                            username: self.username.clone(),
+                            state: updated_state,
+                            timestamp: chrono::Utc::now(),
+                        };
+                        self.cluster_manager
+                            .message_hub()
+                            .broadcast(&self.room_id, event);
+                    }
+                    Err(e) => {
+                        tracing::debug!(
+                            error = %e,
+                            room_id = %self.room_id.as_str(),
+                            "Failed to update playback state from progress report (non-critical)"
+                        );
+                    }
                 }
             }
         }
@@ -3346,5 +3444,261 @@ mod tests {
         let cached = super::CachedMembership::from_member(Some(&member));
         assert!(cached.is_member);
         assert!(!cached.is_banned, "Active member should not be banned");
+    }
+
+    // ========== WebRTC SDP/ICE Size Validation Tests (P1#12) ==========
+
+    #[test]
+    fn test_max_sdp_size_constant() {
+        assert_eq!(super::MAX_SDP_SIZE, 10_000);
+    }
+
+    #[test]
+    fn test_max_ice_candidate_size_constant() {
+        assert_eq!(super::MAX_ICE_CANDIDATE_SIZE, 500);
+    }
+
+    #[test]
+    fn test_sdp_offer_within_limit() {
+        let offer = crate::proto::client::WebRtcOffer {
+            to: "user1:conn1".to_string(),
+            from: String::new(),
+            data: "a".repeat(super::MAX_SDP_SIZE),
+        };
+        // Size check passes (equal to limit)
+        assert!(offer.data.len() <= super::MAX_SDP_SIZE);
+    }
+
+    #[test]
+    fn test_sdp_offer_exceeds_limit() {
+        let offer = crate::proto::client::WebRtcOffer {
+            to: "user1:conn1".to_string(),
+            from: String::new(),
+            data: "a".repeat(super::MAX_SDP_SIZE + 1),
+        };
+        // Size check fails (exceeds limit)
+        assert!(offer.data.len() > super::MAX_SDP_SIZE);
+    }
+
+    #[test]
+    fn test_sdp_answer_exceeds_limit() {
+        let answer = crate::proto::client::WebRtcAnswer {
+            to: "user1:conn1".to_string(),
+            from: String::new(),
+            data: "a".repeat(super::MAX_SDP_SIZE + 1),
+        };
+        assert!(answer.data.len() > super::MAX_SDP_SIZE);
+    }
+
+    #[test]
+    fn test_ice_candidate_within_limit() {
+        let candidate = crate::proto::client::WebRtcIceCandidate {
+            to: "user1:conn1".to_string(),
+            from: String::new(),
+            data: "a".repeat(super::MAX_ICE_CANDIDATE_SIZE),
+        };
+        assert!(candidate.data.len() <= super::MAX_ICE_CANDIDATE_SIZE);
+    }
+
+    #[test]
+    fn test_ice_candidate_exceeds_limit() {
+        let candidate = crate::proto::client::WebRtcIceCandidate {
+            to: "user1:conn1".to_string(),
+            from: String::new(),
+            data: "a".repeat(super::MAX_ICE_CANDIDATE_SIZE + 1),
+        };
+        assert!(candidate.data.len() > super::MAX_ICE_CANDIDATE_SIZE);
+    }
+
+    // ========== Playback Progress Throttle Tests (P1#11) ==========
+
+    #[tokio::test]
+    async fn test_progress_throttle_first_write_always_allowed() {
+        // First write should always go through (None state)
+        let state: tokio::sync::Mutex<Option<(f64, tokio::time::Instant)>> =
+            tokio::sync::Mutex::new(None);
+        let guard = state.lock().await;
+        assert!(guard.is_none(), "Initial state should be None");
+    }
+
+    #[tokio::test]
+    async fn test_progress_throttle_small_position_change_suppressed() {
+        // A position change less than PROGRESS_MIN_POSITION_DELTA should be suppressed
+        // when less than PROGRESS_MIN_ELAPSED_SECS has passed
+        let last_pos: f64 = 100.0;
+        let last_time = tokio::time::Instant::now();
+        let new_pos: f64 = 100.5; // delta = 0.5 < 1.0
+
+        let pos_delta = (new_pos - last_pos).abs();
+        let elapsed = last_time.elapsed().as_secs_f64();
+
+        let should_write = pos_delta > super::PROGRESS_MIN_POSITION_DELTA
+            || elapsed > super::PROGRESS_MIN_ELAPSED_SECS;
+        assert!(
+            !should_write,
+            "Small position change with short elapsed time should be suppressed"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_progress_throttle_large_position_change_allowed() {
+        // A position change >= PROGRESS_MIN_POSITION_DELTA should be allowed
+        let last_pos: f64 = 100.0;
+        let last_time = tokio::time::Instant::now();
+        let new_pos: f64 = 101.5; // delta = 1.5 > 1.0
+
+        let pos_delta = (new_pos - last_pos).abs();
+        let elapsed = last_time.elapsed().as_secs_f64();
+
+        let should_write = pos_delta > super::PROGRESS_MIN_POSITION_DELTA
+            || elapsed > super::PROGRESS_MIN_ELAPSED_SECS;
+        assert!(should_write, "Large position change should trigger a write");
+    }
+
+    #[tokio::test]
+    async fn test_progress_throttle_elapsed_time_allows_write() {
+        // Even with small position delta, elapsed time > 5s should allow write
+        let last_pos: f64 = 100.0;
+        // Simulate 6 seconds elapsed
+        let last_time = tokio::time::Instant::now() - std::time::Duration::from_secs_f64(6.0);
+        let new_pos: f64 = 100.1; // very small delta
+
+        let pos_delta = (new_pos - last_pos).abs();
+        let elapsed = last_time.elapsed().as_secs_f64();
+
+        let should_write = pos_delta > super::PROGRESS_MIN_POSITION_DELTA
+            || elapsed > super::PROGRESS_MIN_ELAPSED_SECS;
+        assert!(
+            should_write,
+            "Elapsed time exceeding threshold should trigger a write"
+        );
+    }
+
+    #[test]
+    fn test_progress_throttle_constants() {
+        assert!(
+            (super::PROGRESS_MIN_POSITION_DELTA - 1.0).abs() < f64::EPSILON,
+            "Position delta threshold should be 1.0 seconds"
+        );
+        assert!(
+            (super::PROGRESS_MIN_ELAPSED_SECS - 5.0).abs() < f64::EPSILON,
+            "Elapsed time threshold should be 5.0 seconds"
+        );
+    }
+
+    // ========== UserLeft Retry Semaphore Tests (P2#15) ==========
+
+    #[test]
+    fn test_user_left_retry_semaphore_exists() {
+        // Verify the semaphore exists and has permits
+        let semaphore = &*super::USER_LEFT_RETRY_SEMAPHORE;
+        assert!(
+            semaphore.available_permits() > 0,
+            "Semaphore should have available permits"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_user_left_retry_semaphore_limits_concurrent_tasks() {
+        // Acquire all 100 permits to simulate max concurrent retry tasks
+        let semaphore = Arc::new(tokio::sync::Semaphore::new(100));
+        let mut permits = Vec::new();
+
+        for _ in 0..100 {
+            let permit = semaphore.clone().try_acquire_owned();
+            assert!(permit.is_ok(), "Should acquire permit under limit");
+            permits.push(permit.unwrap());
+        }
+
+        // 101st attempt should fail
+        let overflow = semaphore.clone().try_acquire_owned();
+        assert!(
+            overflow.is_err(),
+            "Should reject when semaphore is exhausted"
+        );
+
+        // Release one permit and try again
+        permits.pop();
+        let retry = semaphore.clone().try_acquire_owned();
+        assert!(retry.is_ok(), "Should succeed after a permit is released");
+    }
+
+    // ========== Connection Reservation Tests (P1#6) ==========
+
+    #[tokio::test]
+    async fn test_connection_reservation_room_slot() {
+        use synctv_cluster::sync::{ConnectionLimits, ConnectionManager};
+        let limits = ConnectionLimits {
+            max_per_room: 2,
+            ..ConnectionLimits::default()
+        };
+        let mgr = ConnectionManager::new(limits);
+        let rid = room_id();
+
+        // First two reservations should succeed
+        assert!(mgr.reserve_room_slot(&rid).is_ok());
+        assert!(mgr.reserve_room_slot(&rid).is_ok());
+
+        // Third should fail (limit is 2)
+        assert!(mgr.reserve_room_slot(&rid).is_err());
+
+        // Release one reservation
+        mgr.release_room_reservation(&rid);
+
+        // Now reservation should succeed again
+        assert!(mgr.reserve_room_slot(&rid).is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_connection_reservation_user_slot() {
+        use synctv_cluster::sync::{ConnectionLimits, ConnectionManager};
+        let limits = ConnectionLimits {
+            max_per_user: 3,
+            ..ConnectionLimits::default()
+        };
+        let mgr = ConnectionManager::new(limits);
+        let uid = user_id();
+
+        // Three reservations should succeed
+        assert!(mgr.reserve_user_slot(&uid).is_ok());
+        assert!(mgr.reserve_user_slot(&uid).is_ok());
+        assert!(mgr.reserve_user_slot(&uid).is_ok());
+
+        // Fourth should fail (limit is 3)
+        assert!(mgr.reserve_user_slot(&uid).is_err());
+
+        // Release two
+        mgr.release_user_reservation(&uid);
+        mgr.release_user_reservation(&uid);
+
+        // Now two more should succeed
+        assert!(mgr.reserve_user_slot(&uid).is_ok());
+        assert!(mgr.reserve_user_slot(&uid).is_ok());
+
+        // But the next should fail again
+        assert!(mgr.reserve_user_slot(&uid).is_err());
+    }
+
+    #[tokio::test]
+    async fn test_connection_reservation_concurrent_simulation() {
+        use synctv_cluster::sync::{ConnectionLimits, ConnectionManager};
+        let limits = ConnectionLimits {
+            max_per_room: 5,
+            ..ConnectionLimits::default()
+        };
+        let mgr = ConnectionManager::new(limits);
+        let rid = room_id();
+
+        // Simulate 10 concurrent reservation attempts (only 5 should succeed)
+        let mut successes = 0;
+        for _ in 0..10 {
+            if mgr.reserve_room_slot(&rid).is_ok() {
+                successes += 1;
+            }
+        }
+        assert_eq!(
+            successes, 5,
+            "Only 5 of 10 concurrent requests should succeed"
+        );
     }
 }

@@ -600,41 +600,24 @@ async fn test_login_email_verification_no_account_enumeration() {
         .await
         .expect("Failed to set active status");
 
-    // Both users should receive the SAME error message when attempting login
-    // with correct password but unverified email status
+    // Email user with unverified email should be blocked
     let email_result = service
         .login(email_user, "StrongPass1".to_string(), None)
         .await;
 
+    // OAuth2 user should bypass email verification (pre-verified by provider)
     let oauth_result = service
         .login(oauth_user.username.clone(), "StrongPass1".to_string(), None)
         .await;
 
-    // Both should fail (CRITICAL: before fix, oauth_result would succeed!)
     assert!(
         email_result.is_err(),
         "Email user with unverified email should be blocked"
     );
     assert!(
-        oauth_result.is_err(),
-        "OAuth2 user with no email should also be blocked (VULNERABILITY: currently passes)"
+        oauth_result.is_ok(),
+        "OAuth2 user should bypass email verification (authenticated by provider)"
     );
-
-    // Both should return the SAME error type and message
-    let email_err = email_result.unwrap_err();
-    let oauth_err = oauth_result.unwrap_err();
-
-    match (&email_err, &oauth_err) {
-        (Error::Authentication(msg1), Error::Authentication(msg2)) => {
-            assert_eq!(
-                msg1, msg2,
-                "Both users should receive identical error messages to prevent enumeration"
-            );
-        }
-        _ => panic!(
-            "Both errors should be Authentication errors, got: {email_err:?} and {oauth_err:?}"
-        ),
-    }
 }
 
 /// Test that when email verification is NOT required, both email and `OAuth2`

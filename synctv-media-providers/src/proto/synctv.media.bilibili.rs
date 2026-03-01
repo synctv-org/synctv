@@ -17,7 +17,7 @@ pub struct LoginWithQrCodeReq {
     pub key: ::prost::alloc::string::String,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
-#[derive(Clone, PartialEq, Eq, ::prost::Message)]
+#[derive(Clone, PartialEq, ::prost::Message)]
 pub struct LoginWithQrCodeResp {
     #[prost(enumeration = "QrCodeStatus", tag = "1")]
     pub status: i32,
@@ -66,7 +66,7 @@ pub struct LoginWithSmsReq {
     pub captcha_key: ::prost::alloc::string::String,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
-#[derive(Clone, PartialEq, Eq, ::prost::Message)]
+#[derive(Clone, PartialEq, ::prost::Message)]
 pub struct LoginWithSmsResp {
     #[prost(map = "string, string", tag = "1")]
     pub cookies: ::std::collections::HashMap<
@@ -75,7 +75,7 @@ pub struct LoginWithSmsResp {
     >,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
-#[derive(Clone, PartialEq, Eq, ::prost::Message)]
+#[derive(Clone, PartialEq, ::prost::Message)]
 pub struct VideoPageInfo {
     #[prost(string, tag = "2")]
     pub title: ::prost::alloc::string::String,
@@ -101,7 +101,7 @@ pub struct VideoInfo {
     pub live: bool,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
-#[derive(Clone, PartialEq, Eq, ::prost::Message)]
+#[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ParseVideoPageReq {
     #[prost(map = "string, string", tag = "1")]
     pub cookies: ::std::collections::HashMap<
@@ -116,7 +116,7 @@ pub struct ParseVideoPageReq {
     pub sections: bool,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
-#[derive(Clone, PartialEq, Eq, ::prost::Message)]
+#[derive(Clone, PartialEq, ::prost::Message)]
 pub struct VideoUrl {
     #[prost(string, repeated, tag = "1")]
     pub accept_description: ::prost::alloc::vec::Vec<::prost::alloc::string::String>,
@@ -139,7 +139,7 @@ pub struct VideoSegment {
     pub size: u64,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
-#[derive(Clone, PartialEq, Eq, ::prost::Message)]
+#[derive(Clone, PartialEq, ::prost::Message)]
 pub struct GetVideoUrlReq {
     #[prost(map = "string, string", tag = "1")]
     pub cookies: ::std::collections::HashMap<
@@ -156,7 +156,7 @@ pub struct GetVideoUrlReq {
     pub quality: u64,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
-#[derive(Clone, PartialEq, Eq, ::prost::Message)]
+#[derive(Clone, PartialEq, ::prost::Message)]
 pub struct GetDashVideoUrlReq {
     #[prost(map = "string, string", tag = "1")]
     pub cookies: ::std::collections::HashMap<
@@ -247,7 +247,7 @@ pub struct SegmentBase {
     pub initialization_range: ::prost::alloc::string::String,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
-#[derive(Clone, PartialEq, Eq, ::prost::Message)]
+#[derive(Clone, PartialEq, ::prost::Message)]
 pub struct GetSubtitlesReq {
     #[prost(map = "string, string", tag = "1")]
     pub cookies: ::std::collections::HashMap<
@@ -262,7 +262,7 @@ pub struct GetSubtitlesReq {
     pub cid: u64,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
-#[derive(Clone, PartialEq, Eq, ::prost::Message)]
+#[derive(Clone, PartialEq, ::prost::Message)]
 pub struct GetSubtitlesResp {
     #[prost(map = "string, string", tag = "1")]
     pub subtitles: ::std::collections::HashMap<
@@ -271,7 +271,7 @@ pub struct GetSubtitlesResp {
     >,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
-#[derive(Clone, PartialEq, Eq, ::prost::Message)]
+#[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ParsePgcPageReq {
     #[prost(map = "string, string", tag = "1")]
     pub cookies: ::std::collections::HashMap<
@@ -284,7 +284,7 @@ pub struct ParsePgcPageReq {
     pub epid: u64,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
-#[derive(Clone, PartialEq, Eq, ::prost::Message)]
+#[derive(Clone, PartialEq, ::prost::Message)]
 pub struct GetPgcurlReq {
     #[prost(map = "string, string", tag = "1")]
     pub cookies: ::std::collections::HashMap<
@@ -299,7 +299,7 @@ pub struct GetPgcurlReq {
     pub quality: u64,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
-#[derive(Clone, PartialEq, Eq, ::prost::Message)]
+#[derive(Clone, PartialEq, ::prost::Message)]
 pub struct GetDashPgcurlReq {
     #[prost(map = "string, string", tag = "1")]
     pub cookies: ::std::collections::HashMap<
@@ -320,7 +320,7 @@ pub struct GetDashPgcurlResp {
     pub hevc_dash: ::core::option::Option<DashInfo>,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
-#[derive(Clone, PartialEq, Eq, ::prost::Message)]
+#[derive(Clone, PartialEq, ::prost::Message)]
 pub struct UserInfoReq {
     #[prost(map = "string, string", tag = "1")]
     pub cookies: ::std::collections::HashMap<
@@ -355,7 +355,7 @@ pub struct MatchResp {
     pub id: ::prost::alloc::string::String,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
-#[derive(Clone, PartialEq, Eq, ::prost::Message)]
+#[derive(Clone, PartialEq, ::prost::Message)]
 pub struct GetLiveStreamsReq {
     #[prost(map = "string, string", tag = "1")]
     pub cookies: ::std::collections::HashMap<
@@ -378,13 +378,13 @@ pub struct LiveStream {
     pub desc: ::prost::alloc::string::String,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
-#[derive(Clone, PartialEq, Eq, ::prost::Message)]
+#[derive(Clone, PartialEq, ::prost::Message)]
 pub struct GetLiveStreamsResp {
     #[prost(message, repeated, tag = "1")]
     pub live_streams: ::prost::alloc::vec::Vec<LiveStream>,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
-#[derive(Clone, PartialEq, Eq, ::prost::Message)]
+#[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ParseLivePageReq {
     #[prost(map = "string, string", tag = "1")]
     pub cookies: ::std::collections::HashMap<
@@ -395,7 +395,7 @@ pub struct ParseLivePageReq {
     pub room_id: u64,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
-#[derive(Clone, PartialEq, Eq, ::prost::Message)]
+#[derive(Clone, PartialEq, ::prost::Message)]
 pub struct GetLiveDanmuInfoReq {
     #[prost(map = "string, string", tag = "1")]
     pub cookies: ::std::collections::HashMap<
@@ -406,7 +406,7 @@ pub struct GetLiveDanmuInfoReq {
     pub room_id: u64,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
-#[derive(Clone, PartialEq, Eq, ::prost::Message)]
+#[derive(Clone, PartialEq, ::prost::Message)]
 pub struct GetLiveDanmuInfoResp {
     #[prost(string, tag = "1")]
     pub token: ::prost::alloc::string::String,
@@ -443,7 +443,7 @@ impl QrCodeStatus {
     ///
     /// The values are not transformed in any way and thus are considered stable
     /// (if the ProtoBuf definition does not change) and safe for programmatic use.
-    pub const fn as_str_name(&self) -> &'static str {
+    pub fn as_str_name(&self) -> &'static str {
         match self {
             Self::Unknown => "UNKNOWN",
             Self::Expired => "EXPIRED",
@@ -1106,7 +1106,7 @@ pub mod bilibili_server {
         ///
         /// Default: `4MB`
         #[must_use]
-        pub const fn max_decoding_message_size(mut self, limit: usize) -> Self {
+        pub fn max_decoding_message_size(mut self, limit: usize) -> Self {
             self.max_decoding_message_size = Some(limit);
             self
         }
@@ -1114,7 +1114,7 @@ pub mod bilibili_server {
         ///
         /// Default: `usize::MAX`
         #[must_use]
-        pub const fn max_encoding_message_size(mut self, limit: usize) -> Self {
+        pub fn max_encoding_message_size(mut self, limit: usize) -> Self {
             self.max_encoding_message_size = Some(limit);
             self
         }

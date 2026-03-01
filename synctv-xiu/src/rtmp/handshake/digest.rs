@@ -112,7 +112,7 @@ impl DigestProcessor {
         let mut mac = Hmac::<Sha256>::new_from_slice(&self.key[..]).map_err(|_| DigestError {
             value: DigestErrorValue::HmacInitError,
         })?;
-        mac.update(&raw_message);
+        mac.update(raw_message);
         let result = mac.finalize().into_bytes();
 
         if result.len() != define::RTMP_DIGEST_LENGTH {

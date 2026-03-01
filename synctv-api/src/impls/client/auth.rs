@@ -74,4 +74,41 @@ impl ClientApiImpl {
             refresh_token,
         })
     }
+
+    /// Logout: blacklist the current access token so it cannot be reused.
+    ///
+    /// Extracts the JTI from the raw Bearer token, computes the remaining TTL,
+    /// and adds it to the token blacklist. The token will be rejected by the
+    /// security pipeline on subsequent requests.
+    pub async fn logout(&self, raw_token: &str) -> Result<(), ApiError> {
+        match self.jwt_service.verify_access_token(raw_token) {
+            Ok(claims) => {
+                if !claims.jti.is_empty() {
+                    let now = chrono::Utc::now().timestamp();
+                    let remaining_ttl = (claims.exp - now).max(0) as u64;
+                    if remaining_ttl > 0 {
+                        if let Err(e) = self
+                            .user_service
+                            .blacklist_access_token(&claims.jti, remaining_ttl)
+                            .await
+                        {
+                            // Log the failure but still return success to the client.
+                            // The token will expire naturally if blacklisting fails.
+                            tracing::warn!(
+                                error = %e,
+                                jti = %claims.jti,
+                                "Failed to blacklist access token on logout; token will expire naturally",
+                            );
+                        }
+                    }
+                }
+            }
+            Err(e) => {
+                // Token may be expired or malformed. Still succeed; the client
+                // is logging out and the token is no longer useful anyway.
+                tracing::debug!(error = %e, "Could not parse token during logout; skipping blacklist");
+            }
+        }
+        Ok(())
+    }
 }

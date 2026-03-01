@@ -32,7 +32,7 @@ pub struct FsGetReq {
     pub user_agent: ::prost::alloc::string::String,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
-#[derive(Clone, PartialEq, Eq, ::prost::Message)]
+#[derive(Clone, PartialEq, ::prost::Message)]
 pub struct FsGetResp {
     #[prost(string, tag = "1")]
     pub name: ::prost::alloc::string::String,
@@ -105,7 +105,7 @@ pub struct FsListReq {
     pub refresh: bool,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
-#[derive(Clone, PartialEq, Eq, ::prost::Message)]
+#[derive(Clone, PartialEq, ::prost::Message)]
 pub struct FsListResp {
     #[prost(message, repeated, tag = "1")]
     pub content: ::prost::alloc::vec::Vec<fs_list_resp::FsListContent>,
@@ -274,7 +274,7 @@ pub struct FsSearchReq {
     pub password: ::prost::alloc::string::String,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
-#[derive(Clone, PartialEq, Eq, ::prost::Message)]
+#[derive(Clone, PartialEq, ::prost::Message)]
 pub struct FsSearchResp {
     #[prost(message, repeated, tag = "1")]
     pub content: ::prost::alloc::vec::Vec<fs_search_resp::FsSearchContent>,
@@ -601,7 +601,7 @@ pub mod alist_server {
         ///
         /// Default: `4MB`
         #[must_use]
-        pub const fn max_decoding_message_size(mut self, limit: usize) -> Self {
+        pub fn max_decoding_message_size(mut self, limit: usize) -> Self {
             self.max_decoding_message_size = Some(limit);
             self
         }
@@ -609,7 +609,7 @@ pub mod alist_server {
         ///
         /// Default: `usize::MAX`
         #[must_use]
-        pub const fn max_encoding_message_size(mut self, limit: usize) -> Self {
+        pub fn max_encoding_message_size(mut self, limit: usize) -> Self {
             self.max_encoding_message_size = Some(limit);
             self
         }

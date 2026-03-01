@@ -267,13 +267,20 @@ impl ClientApiImpl {
     ///
     /// Fetches actual usernames and effective permissions before broadcasting
     /// so that receivers get correct data without needing additional lookups.
+    ///
+    /// Returns `true` if the event was successfully queued (or no Redis is
+    /// configured), `false` if publishing failed (channel full/closed).
     async fn publish_permission_changed(
         &self,
         room_id: &RoomId,
         target_user_id: &UserId,
         changed_by: &UserId,
-    ) {
-        if let Some(ref tx) = self.redis_publish_tx {
+    ) -> bool {
+        let Some(ref tx) = self.redis_publish_tx else {
+            // No Redis configured -- nothing to publish, considered success
+            return true;
+        };
+        {
             // Fetch room settings for proper three-layer permission calculation
             let room_settings = self
                 .room_service
@@ -339,26 +346,45 @@ impl ClientApiImpl {
                 .map(|u| u.username)
                 .unwrap_or_default();
 
-            crate::impls::try_publish_cluster_event(
-                tx,
-                synctv_cluster::sync::PublishRequest {
-                    event: synctv_cluster::sync::ClusterEvent::PermissionChanged {
-                        event_id: nanoid::nanoid!(16),
-                        room_id: room_id.clone(),
-                        target_user_id: target_user_id.clone(),
-                        target_username,
-                        changed_by: changed_by.clone(),
-                        changed_by_username,
-                        new_permissions,
-                        role,
-                        added_permissions: synctv_core::models::PermissionBits(added_permissions),
-                        removed_permissions: synctv_core::models::PermissionBits(
-                            removed_permissions,
-                        ),
-                        timestamp: chrono::Utc::now(),
-                    },
+            let request = synctv_cluster::sync::PublishRequest {
+                event: synctv_cluster::sync::ClusterEvent::PermissionChanged {
+                    event_id: nanoid::nanoid!(16),
+                    room_id: room_id.clone(),
+                    target_user_id: target_user_id.clone(),
+                    target_username,
+                    changed_by: changed_by.clone(),
+                    changed_by_username,
+                    new_permissions,
+                    role,
+                    added_permissions: synctv_core::models::PermissionBits(added_permissions),
+                    removed_permissions: synctv_core::models::PermissionBits(removed_permissions),
+                    timestamp: chrono::Utc::now(),
                 },
-            );
+            };
+            match tx.try_send(request) {
+                Ok(()) => true,
+                Err(err) => {
+                    match &err {
+                        tokio::sync::mpsc::error::TrySendError::Full(_) => {
+                            synctv_core::metrics::cluster::CLUSTER_EVENTS_DROPPED
+                                .with_label_values(&["channel_full"])
+                                .inc();
+                        }
+                        tokio::sync::mpsc::error::TrySendError::Closed(_) => {
+                            synctv_core::metrics::cluster::CLUSTER_EVENTS_DROPPED
+                                .with_label_values(&["channel_closed"])
+                                .inc();
+                        }
+                    }
+                    tracing::warn!(
+                        room_id = %room_id.as_str(),
+                        target_user_id = %target_user_id.as_str(),
+                        "Failed to publish permission change event: {err}, \
+                         other replicas may serve stale permissions"
+                    );
+                    false
+                }
+            }
         }
     }
 }

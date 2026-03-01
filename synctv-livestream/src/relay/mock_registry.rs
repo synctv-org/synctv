@@ -17,6 +17,8 @@ pub struct MockStreamRegistry {
         std::sync::Arc<tokio::sync::Mutex<std::collections::HashMap<(String, String), u64>>>,
     /// Counter for register calls (for testing task leaks)
     register_call_count: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    /// When true, `get_publisher` returns an error (simulates Redis failure)
+    fail_get_publisher: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl MockStreamRegistry {
@@ -30,6 +32,7 @@ impl MockStreamRegistry {
                 std::collections::HashMap::new(),
             )),
             register_call_count: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            fail_get_publisher: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
         }
     }
 
@@ -43,6 +46,7 @@ impl MockStreamRegistry {
                 std::collections::HashMap::new(),
             )),
             register_call_count: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            fail_get_publisher: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
         }
     }
 
@@ -51,6 +55,12 @@ impl MockStreamRegistry {
     pub fn register_call_count(&self) -> usize {
         self.register_call_count
             .load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// Set whether `get_publisher` should fail (simulates Redis failure)
+    pub fn set_fail_get_publisher(&self, fail: bool) {
+        self.fail_get_publisher
+            .store(fail, std::sync::atomic::Ordering::SeqCst);
     }
 }
 
@@ -145,6 +155,12 @@ impl StreamRegistryTrait for MockStreamRegistry {
     }
 
     async fn get_publisher(&self, room_id: &str, media_id: &str) -> Result<Option<PublisherInfo>> {
+        if self
+            .fail_get_publisher
+            .load(std::sync::atomic::Ordering::SeqCst)
+        {
+            return Err(anyhow::anyhow!("Simulated Redis failure in get_publisher"));
+        }
         let publishers = self.publishers.lock().await;
         Ok(publishers
             .get(&(room_id.to_string(), media_id.to_string()))

@@ -22,6 +22,11 @@ use tracing::{error, info, warn};
 /// At ~8KB per FLV tag (typical video frame), 512 entries ≈ 4MB buffer per client.
 pub const FLV_RESPONSE_CHANNEL_CAPACITY: usize = 512;
 
+/// Maximum number of consecutive dropped frames before disconnecting a slow subscriber.
+/// At 30fps video, 150 consecutive drops ≈ 5 seconds of missed content.
+/// The subscriber's playback is unrecoverable at this point.
+pub const MAX_CONSECUTIVE_DROPPED_FRAMES: u32 = 150;
+
 /// HTTP-FLV session (per-client connection)
 pub struct HttpFlvSession {
     pub app_name: String,
@@ -36,6 +41,12 @@ pub struct HttpFlvSession {
     pub has_audio: bool,
     pub has_video: bool,
     pub has_send_header: bool,
+    /// P2#18: Track consecutive dropped frames for slow client detection.
+    /// Reset to 0 on each successful send. When this reaches
+    /// `MAX_CONSECUTIVE_DROPPED_FRAMES`, the session is disconnected.
+    consecutive_dropped_frames: u32,
+    /// Total number of dropped frames for monitoring/logging.
+    pub total_dropped_frames: u64,
 }
 
 impl HttpFlvSession {
@@ -59,6 +70,8 @@ impl HttpFlvSession {
             has_audio: false,
             has_video: false,
             has_send_header: false,
+            consecutive_dropped_frames: 0,
+            total_dropped_frames: 0,
         }
     }
 
@@ -193,12 +206,34 @@ impl HttpFlvSession {
         let data = self.muxer.writer.extract_current_bytes();
         let bytes = bytes::Bytes::from(data.to_vec());
 
-        // Use try_send to apply backpressure: if the client is too slow and the
-        // channel is full, drop the frame rather than accumulating unbounded memory.
+        // P2#18: Use try_send to apply backpressure. Track consecutive dropped frames
+        // and disconnect the subscriber after too many drops to prevent a slow client
+        // from permanently consuming publisher resources.
         match self.response_producer.try_send(Ok(bytes)) {
-            Ok(()) => {}
+            Ok(()) => {
+                // Successful send resets the consecutive drop counter
+                self.consecutive_dropped_frames = 0;
+            }
             Err(mpsc::error::TrySendError::Full(_)) => {
-                warn!(stream = %self.stream_name, "FLV response channel full, dropping frame (slow client)");
+                self.consecutive_dropped_frames += 1;
+                self.total_dropped_frames += 1;
+                if self.consecutive_dropped_frames >= MAX_CONSECUTIVE_DROPPED_FRAMES {
+                    warn!(
+                        stream = %self.stream_name,
+                        consecutive_drops = self.consecutive_dropped_frames,
+                        total_drops = self.total_dropped_frames,
+                        "Disconnecting slow FLV subscriber: too many consecutive dropped frames"
+                    );
+                    return Err(anyhow::anyhow!(
+                        "Slow subscriber disconnected after {} consecutive dropped frames",
+                        self.consecutive_dropped_frames
+                    ));
+                }
+                warn!(
+                    stream = %self.stream_name,
+                    consecutive_drops = self.consecutive_dropped_frames,
+                    "FLV response channel full, dropping frame (slow client)"
+                );
             }
             Err(mpsc::error::TrySendError::Closed(_)) => {
                 return Err(anyhow::anyhow!("Response channel closed"));
@@ -330,5 +365,159 @@ mod tests {
         assert!(!session.has_send_header);
         assert!(!session.has_audio);
         assert!(!session.has_video);
+        assert_eq!(session.consecutive_dropped_frames, 0);
+        assert_eq!(session.total_dropped_frames, 0);
+    }
+
+    /// P2#18: Test that flush_response_data drops frames when channel is full
+    /// without blocking the publisher, and tracks the drop count.
+    #[test]
+    fn test_flush_drops_frames_when_channel_full() {
+        let (event_sender, _) = tokio::sync::mpsc::channel(64);
+        // Create a channel with capacity 1 so it fills immediately
+        let (response_tx, _response_rx) = mpsc::channel(1);
+
+        let mut session = HttpFlvSession::new(
+            "live".to_string(),
+            "test/stream".to_string(),
+            event_sender,
+            response_tx,
+        );
+
+        // Write FLV header data to the muxer buffer so flush has data to send
+        session
+            .muxer
+            .write_flv_header(true, true)
+            .expect("header write");
+        // First flush should succeed (channel has capacity 1)
+        assert!(session.flush_response_data().is_ok());
+        assert_eq!(session.consecutive_dropped_frames, 0);
+
+        // Fill the channel again
+        session
+            .muxer
+            .write_flv_header(true, true)
+            .expect("header write");
+        // Second flush should succeed (receiver still alive, first message consumed capacity)
+        // Actually the first message is still in the channel, so this should drop
+        session
+            .muxer
+            .write_flv_header(true, true)
+            .expect("header write");
+        let result = session.flush_response_data();
+        // Channel is full (capacity 1, one message pending), frame should be dropped
+        assert!(result.is_ok());
+        assert_eq!(session.consecutive_dropped_frames, 1);
+        assert_eq!(session.total_dropped_frames, 1);
+    }
+
+    /// P2#18: Test that consecutive drops beyond the threshold disconnects the subscriber.
+    #[test]
+    fn test_slow_subscriber_disconnected_after_max_drops() {
+        let (event_sender, _) = tokio::sync::mpsc::channel(64);
+        // Channel capacity 1, but we won't read from it
+        let (response_tx, _response_rx) = mpsc::channel(1);
+
+        let mut session = HttpFlvSession::new(
+            "live".to_string(),
+            "test/stream".to_string(),
+            event_sender,
+            response_tx,
+        );
+
+        // Fill the channel first
+        session
+            .muxer
+            .write_flv_header(true, true)
+            .expect("header write");
+        session.flush_response_data().ok();
+
+        // Now simulate MAX_CONSECUTIVE_DROPPED_FRAMES drops
+        for i in 0..MAX_CONSECUTIVE_DROPPED_FRAMES {
+            session
+                .muxer
+                .write_flv_header(true, true)
+                .expect("header write");
+            let result = session.flush_response_data();
+            if i < MAX_CONSECUTIVE_DROPPED_FRAMES - 1 {
+                assert!(
+                    result.is_ok(),
+                    "Should not disconnect before reaching threshold (drop #{})",
+                    i + 1
+                );
+            } else {
+                assert!(
+                    result.is_err(),
+                    "Should disconnect after {} consecutive drops",
+                    MAX_CONSECUTIVE_DROPPED_FRAMES
+                );
+                let err_msg = result.unwrap_err().to_string();
+                assert!(
+                    err_msg.contains("Slow subscriber disconnected"),
+                    "Error should mention slow subscriber: {}",
+                    err_msg
+                );
+            }
+        }
+
+        assert_eq!(
+            session.total_dropped_frames,
+            u64::from(MAX_CONSECUTIVE_DROPPED_FRAMES)
+        );
+    }
+
+    /// P2#18: Test that consecutive drop counter resets on successful send.
+    #[tokio::test]
+    async fn test_drop_counter_resets_on_successful_send() {
+        let (event_sender, _) = tokio::sync::mpsc::channel(64);
+        // Channel capacity 2 so we can control fill/drain
+        let (response_tx, mut response_rx) = mpsc::channel(2);
+
+        let mut session = HttpFlvSession::new(
+            "live".to_string(),
+            "test/stream".to_string(),
+            event_sender,
+            response_tx,
+        );
+
+        // Fill the channel
+        session
+            .muxer
+            .write_flv_header(true, true)
+            .expect("header write");
+        session.flush_response_data().ok();
+        session
+            .muxer
+            .write_flv_header(true, true)
+            .expect("header write");
+        session.flush_response_data().ok();
+
+        // Next send should drop (channel full)
+        session
+            .muxer
+            .write_flv_header(true, true)
+            .expect("header write");
+        session.flush_response_data().ok();
+        assert_eq!(session.consecutive_dropped_frames, 1);
+
+        // Drain the channel
+        response_rx.recv().await;
+        response_rx.recv().await;
+
+        // Next send should succeed and reset the counter
+        session
+            .muxer
+            .write_flv_header(true, true)
+            .expect("header write");
+        let result = session.flush_response_data();
+        assert!(result.is_ok());
+        assert_eq!(
+            session.consecutive_dropped_frames, 0,
+            "Counter should reset after successful send"
+        );
+        assert_eq!(
+            session.total_dropped_frames, 1,
+            "Total should still reflect the one drop"
+        );
     }
 }

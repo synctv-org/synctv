@@ -935,5 +935,24 @@ mod tests {
         assert!(req.speed.is_none());
         assert!(req.media_id.is_none());
         assert!(req.playlist_id.is_none());
+        assert!(req.version.is_none());
+    }
+
+    #[test]
+    fn test_update_playback_request_deserialize_with_version() {
+        let json = r#"{"state": "playing", "version": 42}"#;
+        let req: UpdatePlaybackRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(req.state.as_deref(), Some("playing"));
+        assert_eq!(req.version, Some(42));
+    }
+
+    #[test]
+    fn test_update_playback_request_version_defaults_to_none() {
+        let json = r#"{"state": "paused"}"#;
+        let req: UpdatePlaybackRequest = serde_json::from_str(json).unwrap();
+        assert!(
+            req.version.is_none(),
+            "version should default to None when not provided"
+        );
     }
 }

@@ -33,7 +33,8 @@ pub struct Cache {
 
 impl Cache {
     /// Create a new cache with the given GOP count and optional per-stream memory limit.
-    /// If `max_total_bytes` is `None`, the default (50 MB) is used.
+    ///
+    /// - `max_total_bytes`: per-stream cap. `None` uses the default (500 MB).
     #[must_use]
     pub fn new(
         gop_num: usize,

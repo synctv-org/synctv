@@ -111,6 +111,28 @@ impl Services {
 ///
 /// When `redis_handles` is `None` (standalone mode without Redis), all services
 /// use in-memory fallbacks.
+/// Check whether cluster mode requires Redis and Redis is absent.
+///
+/// Returns `Ok(())` when the configuration is valid, or `Err` when cluster
+/// mode is enabled but Redis handles are not provided.
+///
+/// This is extracted as a standalone function so it can be unit-tested
+/// without constructing a full `PgPool` or `CacheInvalidationService`.
+pub fn validate_cluster_redis_requirement(
+    config: &Config,
+    has_redis: bool,
+) -> Result<(), anyhow::Error> {
+    let cluster_mode = config.cluster.enabled || !config.server.cluster_secret.is_empty();
+    if cluster_mode && !has_redis {
+        return Err(anyhow::anyhow!(
+            "Cluster mode is enabled (cluster.enabled=true or cluster_secret is set) but Redis \
+             is not configured. Redis is required for cross-replica coordination in cluster mode. \
+             Either configure redis.url or disable cluster mode."
+        ));
+    }
+    Ok(())
+}
+
 pub async fn init_services(
     pool: PgPool,
     config: &Config,
@@ -118,6 +140,11 @@ pub async fn init_services(
     cache_invalidation: Arc<CacheInvalidationService>,
 ) -> Result<Services, anyhow::Error> {
     info!("Initializing services...");
+
+    // ── Fail-fast: cluster mode requires Redis ──────────────────────────
+    validate_cluster_redis_requirement(config, redis_handles.is_some())?;
+
+    let cluster_mode = config.cluster.enabled || !config.server.cluster_secret.is_empty();
 
     // Initialize JWT service
     info!("Loading JWT keys...");
@@ -186,9 +213,6 @@ pub async fn init_services(
         "User and room caches initialized (l1_capacity={}, l1_ttl={}s, l2_ttl={}s)",
         config.cache.l1_capacity, config.cache.l1_ttl_seconds, config.cache.l2_ttl_seconds
     );
-
-    // Determine if cluster mode is active (used for startup warnings below)
-    let cluster_mode = config.cluster.enabled || !config.server.cluster_secret.is_empty();
 
     // Initialize brute-force protection
     //
@@ -438,12 +462,15 @@ pub async fn init_services(
     }
 
     // Initialize Publish Key service (for RTMP streaming)
-    let publish_key_service = if let Some(ref conn) = redis_conn_plain {
-        info!("Publish key service initialized with Redis-backed JTI deduplication");
-        PublishKeyService::with_redis(
+    //
+    // Use Redis-backed JTI dedup when available (shared handle follows Sentinel failover).
+    // Falls back to in-memory for standalone mode.
+    let publish_key_service = if let Some(ref rh) = redis_handles {
+        info!("Publish key service initialized with Redis JTI deduplication");
+        PublishKeyService::with_redis_shared(
             jwt_service.clone(),
             24,
-            conn.clone(),
+            rh.conn.clone(),
             config.redis.key_prefix.clone(),
         )
     } else {
@@ -726,5 +753,77 @@ fn init_email_service(
             error!("Failed to initialize email service: {}", e);
             None
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Helper: create a default config with cluster mode disabled.
+    fn standalone_config() -> Config {
+        Config::default()
+    }
+
+    /// Helper: create a config with cluster.enabled = true.
+    fn cluster_enabled_config() -> Config {
+        let mut cfg = Config::default();
+        cfg.cluster.enabled = true;
+        cfg
+    }
+
+    /// Helper: create a config with a non-empty cluster_secret (implicit cluster mode).
+    fn cluster_secret_config() -> Config {
+        let mut cfg = Config::default();
+        cfg.server.cluster_secret = "s3cret-token-for-test".to_string();
+        cfg
+    }
+
+    // ── P0#5: Cluster mode must fail-fast without Redis ─────────────
+
+    #[test]
+    fn test_cluster_enabled_without_redis_returns_error() {
+        let config = cluster_enabled_config();
+        let result = validate_cluster_redis_requirement(&config, false);
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(
+            msg.contains("Cluster mode is enabled"),
+            "Error message should mention cluster mode: {msg}"
+        );
+        assert!(
+            msg.contains("Redis"),
+            "Error message should mention Redis: {msg}"
+        );
+    }
+
+    #[test]
+    fn test_cluster_secret_without_redis_returns_error() {
+        let config = cluster_secret_config();
+        let result = validate_cluster_redis_requirement(&config, false);
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(msg.contains("cluster_secret"));
+    }
+
+    #[test]
+    fn test_cluster_enabled_with_redis_is_ok() {
+        let config = cluster_enabled_config();
+        let result = validate_cluster_redis_requirement(&config, true);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_standalone_without_redis_is_ok() {
+        let config = standalone_config();
+        let result = validate_cluster_redis_requirement(&config, false);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_standalone_with_redis_is_ok() {
+        let config = standalone_config();
+        let result = validate_cluster_redis_requirement(&config, true);
+        assert!(result.is_ok());
     }
 }

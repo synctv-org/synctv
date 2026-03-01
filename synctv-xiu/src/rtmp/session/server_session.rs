@@ -468,7 +468,7 @@ impl ServerSession {
         Ok(())
     }
 
-    fn on_set_chunk_size(&mut self, chunk_size: usize) -> () {
+    fn on_set_chunk_size(&mut self, chunk_size: usize) {
         // L-3: Clamp chunk_size to safe range [128, 65536] to prevent
         // excessive buffer allocation from malicious clients.
         const MIN_CHUNK_SIZE: usize = 128;

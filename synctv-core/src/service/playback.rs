@@ -1089,12 +1089,17 @@ impl PlaybackService {
         .await
     }
 
-    /// Like `update_multiple`, but accepts an optional `expected_version` hint.
+    /// Like `update_multiple`, but accepts an optional `expected_version` for CAS
+    /// (compare-and-swap) semantics.
     ///
-    /// Previously this performed a separate pre-read to check the version before
-    /// the update, but the SQL `WHERE version = $N` optimistic lock in
-    /// `update_state()` already provides the same protection without the extra
-    /// DB round-trip. The parameter is retained for API compatibility.
+    /// When `expected_version` is `Some(v)`, the current playback version is read
+    /// from the database and compared with `v`. If they differ, the call returns
+    /// `Error::OptimisticLockConflict` immediately without attempting the update.
+    /// This lets the caller detect stale state before the internal retry loop
+    /// silently resolves the conflict.
+    ///
+    /// When `expected_version` is `None`, the update proceeds directly through
+    /// the internal retry loop (last-writer-wins).
     #[allow(clippy::too_many_arguments)]
     pub async fn update_multiple_with_version(
         &self,
@@ -1105,7 +1110,7 @@ impl PlaybackService {
         speed: Option<f64>,
         media_id: Option<MediaId>,
         playlist_id: Option<Option<PlaylistId>>,
-        _expected_version: Option<i64>,
+        expected_version: Option<i64>,
     ) -> Result<RoomPlaybackState> {
         // Check permissions based on what's being updated
         let mut required_perms = PermissionBits::NONE;
@@ -1152,9 +1157,16 @@ impl PlaybackService {
             }
         }
 
-        // NOTE: No separate pre-read version check here. The SQL UPDATE in
-        // update_state() uses `WHERE version = $N` for optimistic locking,
-        // which is sufficient to detect conflicts without an extra DB round-trip.
+        // CAS check: when the caller provides an expected version, verify that
+        // the current DB version matches before entering the retry loop. This
+        // surfaces stale-state errors to the caller instead of silently retrying.
+        if let Some(expected) = expected_version {
+            let current = self.playback_repo.get(&room_id).await?;
+            let current_version = current.map_or(0, |s| s.version);
+            if current_version != expected {
+                return Err(Error::OptimisticLockConflict);
+            }
+        }
 
         let state = self
             .update_state(room_id.clone(), |state| {
@@ -1287,6 +1299,70 @@ mod tests {
 
             assert_eq!(backoff_attempt_0, 5);
             assert_eq!(backoff_attempt_1, 10);
+        }
+    }
+
+    /// Tests for the CAS (compare-and-swap) version check in
+    /// `update_multiple_with_version`. These replicate the pre-check logic
+    /// without requiring a database.
+    mod cas_version_pre_check_tests {
+        use crate::Error;
+
+        /// Replicates the CAS pre-check from `update_multiple_with_version`:
+        /// when `expected_version` is provided, the current DB version must match.
+        fn check_cas_version(
+            current_version: i64,
+            expected_version: Option<i64>,
+        ) -> crate::Result<()> {
+            if let Some(expected) = expected_version {
+                if current_version != expected {
+                    return Err(Error::OptimisticLockConflict);
+                }
+            }
+            Ok(())
+        }
+
+        #[test]
+        fn test_cas_correct_version_succeeds() {
+            let result = check_cas_version(5, Some(5));
+            assert!(result.is_ok(), "Matching version should succeed");
+        }
+
+        #[test]
+        fn test_cas_wrong_version_returns_conflict() {
+            let result = check_cas_version(5, Some(3));
+            assert!(result.is_err(), "Stale version should return conflict");
+            match result.unwrap_err() {
+                Error::OptimisticLockConflict => {} // expected
+                other => panic!("Expected OptimisticLockConflict, got: {other:?}"),
+            }
+        }
+
+        #[test]
+        fn test_cas_no_version_skips_check() {
+            // When no expected version is provided, the check is skipped
+            let result = check_cas_version(999, None);
+            assert!(
+                result.is_ok(),
+                "No expected version should skip CAS check (last-writer-wins)"
+            );
+        }
+
+        #[test]
+        fn test_cas_version_zero_matches_initial_state() {
+            // Initial playback state has version=0
+            let result = check_cas_version(0, Some(0));
+            assert!(result.is_ok(), "Version 0 should match initial state");
+        }
+
+        #[test]
+        fn test_cas_version_zero_expected_but_updated() {
+            // Caller expects version 0 but state was already updated to version 1
+            let result = check_cas_version(1, Some(0));
+            assert!(
+                result.is_err(),
+                "Stale version 0 when current is 1 should conflict"
+            );
         }
     }
 

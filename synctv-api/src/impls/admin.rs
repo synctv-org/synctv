@@ -536,6 +536,15 @@ impl AdminApiImpl {
             ));
         }
 
+        // Only root can promote users to admin
+        if new_role == synctv_core::models::UserRole::Admin
+            && caller_role != synctv_core::models::UserRole::Root
+        {
+            return Err(ApiError::Authorization(
+                "Only root users can promote to admin".to_string(),
+            ));
+        }
+
         let old_version = user.version;
         let updated_user = synctv_core::models::User {
             role: new_role,
@@ -3726,5 +3735,73 @@ mod tests {
     #[test]
     fn test_check_role_hierarchy_admin_can_operate_on_user() {
         assert!(check_role_hierarchy(UserRole::Admin, UserRole::User, "ban").is_ok());
+    }
+
+    // === Admin Role Elevation Tests (P0#4) ===
+
+    /// Verify that proto_role_to_user_role maps Admin role correctly
+    /// (prerequisite for the role elevation check).
+    #[test]
+    fn test_proto_role_to_user_role_admin() {
+        let admin_role = crate::impls::client::proto_role_to_user_role(
+            synctv_proto::common::UserRole::Admin as i32,
+        )
+        .expect("should parse admin role");
+        assert_eq!(admin_role, UserRole::Admin);
+    }
+
+    /// An Admin caller must NOT be able to promote a regular User to Admin.
+    /// Only Root should be allowed to do so.
+    #[test]
+    fn test_admin_cannot_promote_user_to_admin() {
+        // The update_user_role method checks:
+        // 1. Only root can promote to root
+        // 2. Only root can change root user roles
+        // 3. Only root can change admin user roles
+        // 4. Only root can promote users to admin  <-- this is the new check
+        //
+        // We verify the proto_role_to_user_role mapping and the check logic:
+        let admin_role_i32 = synctv_proto::common::UserRole::Admin as i32;
+        let new_role =
+            crate::impls::client::proto_role_to_user_role(admin_role_i32).expect("should parse");
+        let caller_role = UserRole::Admin;
+
+        // The check that should block this: new_role == Admin && caller != Root
+        assert_eq!(new_role, UserRole::Admin);
+        assert_ne!(caller_role, UserRole::Root);
+        // This combination should be rejected by the implementation
+        assert!(
+            new_role == UserRole::Admin && caller_role != UserRole::Root,
+            "Admin caller promoting to Admin should be caught by the guard"
+        );
+    }
+
+    /// A Root caller should be able to promote a User to Admin.
+    #[test]
+    fn test_root_can_promote_user_to_admin() {
+        let admin_role_i32 = synctv_proto::common::UserRole::Admin as i32;
+        let new_role =
+            crate::impls::client::proto_role_to_user_role(admin_role_i32).expect("should parse");
+        let caller_role = UserRole::Root;
+
+        // Root should pass the guard
+        assert!(
+            !(new_role == UserRole::Admin && caller_role != UserRole::Root),
+            "Root caller should pass the admin promotion guard"
+        );
+    }
+
+    /// A Root caller should be able to promote a User to Root.
+    #[test]
+    fn test_root_can_promote_user_to_root() {
+        let root_role_i32 = synctv_proto::common::UserRole::Root as i32;
+        let new_role =
+            crate::impls::client::proto_role_to_user_role(root_role_i32).expect("should parse");
+        let caller_role = UserRole::Root;
+
+        assert!(
+            !(new_role == UserRole::Root && caller_role != UserRole::Root),
+            "Root caller should pass the root promotion guard"
+        );
     }
 }

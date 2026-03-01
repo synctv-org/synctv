@@ -392,6 +392,24 @@ impl RoomService {
             "Creating new room"
         );
 
+        // Check global settings: room creation must be allowed
+        if let Some(ref registry) = self.settings_registry {
+            // `disable_create_room` takes precedence (explicit disable)
+            if registry.disable_create_room.get().unwrap_or(false) {
+                tracing::warn!(user_id = %created_by, "Room creation rejected: disable_create_room is true");
+                return Err(Error::Authorization(
+                    "Room creation is currently disabled".to_string(),
+                ));
+            }
+            // `allow_room_creation` defaults to true; when explicitly set to false, block
+            if !registry.allow_room_creation.get().unwrap_or(true) {
+                tracing::warn!(user_id = %created_by, "Room creation rejected: allow_room_creation is false");
+                return Err(Error::Authorization(
+                    "Room creation is currently disabled".to_string(),
+                ));
+            }
+        }
+
         // Validate room name using centralized validator
         crate::validation::RoomNameValidator::new()
             .validate(&name)
@@ -3704,6 +3722,77 @@ mod tests {
         // The problem: fast path can't distinguish between:
         // - No change (safe to skip)
         // - A->B->A change (unsafe to skip, but hash comparison can't tell)
+    }
+
+    // ========== Room Creation Global Settings Checks ==========
+
+    /// Replicates the `allow_room_creation` / `disable_create_room` guard logic
+    /// from `do_create_room` for unit testing without a database.
+    fn check_room_creation_allowed(
+        disable_create_room: bool,
+        allow_room_creation: bool,
+    ) -> crate::Result<()> {
+        if disable_create_room {
+            return Err(Error::Authorization(
+                "Room creation is currently disabled".to_string(),
+            ));
+        }
+        if !allow_room_creation {
+            return Err(Error::Authorization(
+                "Room creation is currently disabled".to_string(),
+            ));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_room_creation_blocked_when_disable_create_room_is_true() {
+        let result = check_room_creation_allowed(true, true);
+        assert!(
+            result.is_err(),
+            "Should reject when disable_create_room=true"
+        );
+        match result.unwrap_err() {
+            Error::Authorization(msg) => {
+                assert!(msg.contains("disabled"), "got: {msg}");
+            }
+            other => panic!("Expected Authorization, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_room_creation_blocked_when_allow_room_creation_is_false() {
+        let result = check_room_creation_allowed(false, false);
+        assert!(
+            result.is_err(),
+            "Should reject when allow_room_creation=false"
+        );
+        match result.unwrap_err() {
+            Error::Authorization(msg) => {
+                assert!(msg.contains("disabled"), "got: {msg}");
+            }
+            other => panic!("Expected Authorization, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_room_creation_allowed_with_defaults() {
+        // Default: disable_create_room=false, allow_room_creation=true
+        let result = check_room_creation_allowed(false, true);
+        assert!(
+            result.is_ok(),
+            "Should allow room creation with default settings"
+        );
+    }
+
+    #[test]
+    fn test_disable_create_room_takes_precedence_over_allow() {
+        // Even if allow_room_creation=true, disable_create_room=true should block
+        let result = check_room_creation_allowed(true, true);
+        assert!(
+            result.is_err(),
+            "disable_create_room=true should take precedence over allow_room_creation=true"
+        );
     }
 
     // ========== Integration Test Placeholders ==========

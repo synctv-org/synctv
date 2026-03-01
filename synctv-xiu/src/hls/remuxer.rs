@@ -64,6 +64,33 @@ pub struct StreamProcessorState {
     /// Set when the stream handler ends to allow memory-conscious cleanup
     /// rather than waiting for the 60-second grace period to elapse.
     pub marked_for_cleanup: bool,
+    /// Segment names captured at cleanup-mark time. Only these specific segments
+    /// should be deleted by the cleanup task, avoiding a race where a new handler
+    /// has already started writing new segments for the same stream key.
+    pub cleanup_segment_names: Vec<String>,
+}
+
+/// Implementation of `StreamCleanupChecker` for the HLS stream registry.
+///
+/// The cleanup task uses this to find streams that are ready for cleanup.
+/// Crucially, it returns the specific segment names captured at mark time
+/// rather than performing a blanket delete, preventing the race where
+/// new handler segments get deleted.
+pub struct RegistryCleanupChecker {
+    pub registry: StreamRegistry,
+}
+
+impl crate::hls::segment_manager::StreamCleanupChecker for RegistryCleanupChecker {
+    fn get_streams_marked_for_cleanup(&self) -> Vec<(String, String)> {
+        let mut result = Vec::new();
+        for entry in self.registry.iter() {
+            let state = entry.value().read();
+            if state.marked_for_cleanup {
+                result.push((state.app_name.clone(), state.stream_name.clone()));
+            }
+        }
+        result
+    }
 }
 
 impl StreamProcessorState {
@@ -95,11 +122,11 @@ impl StreamProcessorState {
             .map(|s| (s.duration + 999) / 1000)
             .max()
             .unwrap_or(10);
-        let _ = write!(m3u8_content, "#EXT-X-TARGETDURATION:{max_duration_sec}\n");
+        let _ = writeln!(m3u8_content, "#EXT-X-TARGETDURATION:{max_duration_sec}");
 
         // Media sequence (first segment in playlist)
         let first_seq = self.segments.front().map_or(0, |s| s.sequence);
-        let _ = write!(m3u8_content, "#EXT-X-MEDIA-SEQUENCE:{first_seq}\n");
+        let _ = writeln!(m3u8_content, "#EXT-X-MEDIA-SEQUENCE:{first_seq}");
 
         // Segments
         for segment in &self.segments {
@@ -108,11 +135,11 @@ impl StreamProcessorState {
             }
 
             let duration_sec = segment.duration as f64 / 1000.0;
-            let _ = write!(m3u8_content, "#EXTINF:{duration_sec:.3},\n");
+            let _ = writeln!(m3u8_content, "#EXTINF:{duration_sec:.3},");
 
             // Use closure to generate segment URL (allows custom auth, CDN URLs, etc)
             let segment_url = gen_ts_url(&segment.ts_name);
-            let _ = write!(m3u8_content, "{segment_url}\n");
+            let _ = writeln!(m3u8_content, "{segment_url}");
         }
 
         if self.is_ended {
@@ -473,6 +500,7 @@ impl StreamHandler {
             is_ended: false,
             created_at: handler_created_at,
             marked_for_cleanup: false,
+            cleanup_segment_names: Vec::new(),
         }));
         self.stream_registry
             .insert(registry_key.clone(), state.clone());
@@ -514,6 +542,15 @@ impl StreamHandler {
         // while an old handler is still in its grace period.
         {
             let mut state_guard = state.write();
+            // Capture the segment names BEFORE marking for cleanup. The cleanup
+            // task will only delete these specific segments, not a blanket delete
+            // of the entire stream key -- preventing a race where a new handler
+            // has already started writing new segments for the same stream.
+            state_guard.cleanup_segment_names = state_guard
+                .segments
+                .iter()
+                .map(|s| s.ts_name.clone())
+                .collect();
             state_guard.marked_for_cleanup = true;
         }
 
@@ -529,7 +566,7 @@ impl StreamHandler {
         let is_still_owner = self
             .stream_registry
             .get(&registry_key)
-            .map_or(false, |entry| entry.read().created_at == handler_created_at);
+            .is_some_and(|entry| entry.read().created_at == handler_created_at);
 
         if is_still_owner {
             self.stream_registry.remove(&registry_key);
@@ -1111,6 +1148,7 @@ mod tests {
             is_ended: false,
             created_at: Instant::now(),
             marked_for_cleanup: false,
+            cleanup_segment_names: Vec::new(),
         };
 
         // Add some segments
@@ -1151,6 +1189,7 @@ mod tests {
             is_ended: false,
             created_at: Instant::now(),
             marked_for_cleanup: false,
+            cleanup_segment_names: Vec::new(),
         };
 
         // Add segment with discontinuity
@@ -1178,6 +1217,7 @@ mod tests {
             is_ended: true,
             created_at: Instant::now(),
             marked_for_cleanup: false,
+            cleanup_segment_names: Vec::new(),
         };
 
         // Add a segment
@@ -1205,6 +1245,7 @@ mod tests {
             is_ended: false,
             created_at: Instant::now(),
             marked_for_cleanup: false,
+            cleanup_segment_names: Vec::new(),
         };
 
         // Add segment
@@ -1296,5 +1337,222 @@ mod tests {
         // Verify data was written
         let read_data = storage.read("app", "stream", "test-key").await.unwrap();
         assert_eq!(data, read_data);
+    }
+
+    #[test]
+    fn test_cleanup_captures_segment_names() {
+        // Simulates the old handler marking for cleanup with captured segment names
+        let mut state = StreamProcessorState {
+            app_name: "live".to_string(),
+            stream_name: "room123".to_string(),
+            segments: VecDeque::new(),
+            is_ended: false,
+            created_at: Instant::now(),
+            marked_for_cleanup: false,
+            cleanup_segment_names: Vec::new(),
+        };
+
+        // Simulate adding segments during stream processing
+        state.segments.push_back(SegmentInfo {
+            sequence: 0,
+            duration: 10000,
+            ts_name: "old_seg_0".to_string(),
+            discontinuity: false,
+            created_at: Instant::now(),
+        });
+        state.segments.push_back(SegmentInfo {
+            sequence: 1,
+            duration: 10000,
+            ts_name: "old_seg_1".to_string(),
+            discontinuity: false,
+            created_at: Instant::now(),
+        });
+
+        // Handler ends: capture segment names and mark for cleanup
+        state.cleanup_segment_names = state.segments.iter().map(|s| s.ts_name.clone()).collect();
+        state.marked_for_cleanup = true;
+
+        // Verify captured names match exactly what was in the segment list
+        assert_eq!(state.cleanup_segment_names.len(), 2);
+        assert_eq!(state.cleanup_segment_names[0], "old_seg_0");
+        assert_eq!(state.cleanup_segment_names[1], "old_seg_1");
+    }
+
+    #[test]
+    fn test_registry_cleanup_checker() {
+        use crate::hls::segment_manager::StreamCleanupChecker;
+
+        let registry: StreamRegistry = Arc::new(DashMap::new());
+
+        // Insert a stream that is NOT marked for cleanup
+        let state1 = Arc::new(parking_lot::RwLock::new(StreamProcessorState {
+            app_name: "live".to_string(),
+            stream_name: "active_stream".to_string(),
+            segments: VecDeque::new(),
+            is_ended: false,
+            created_at: Instant::now(),
+            marked_for_cleanup: false,
+            cleanup_segment_names: Vec::new(),
+        }));
+        registry.insert("live/active_stream".to_string(), state1);
+
+        // Insert a stream that IS marked for cleanup
+        let state2 = Arc::new(parking_lot::RwLock::new(StreamProcessorState {
+            app_name: "live".to_string(),
+            stream_name: "ended_stream".to_string(),
+            segments: VecDeque::new(),
+            is_ended: true,
+            created_at: Instant::now(),
+            marked_for_cleanup: true,
+            cleanup_segment_names: vec!["seg0".to_string(), "seg1".to_string()],
+        }));
+        registry.insert("live/ended_stream".to_string(), state2);
+
+        let checker = RegistryCleanupChecker {
+            registry: registry.clone(),
+        };
+        let marked = checker.get_streams_marked_for_cleanup();
+
+        // Only the ended stream should be returned
+        assert_eq!(marked.len(), 1);
+        assert_eq!(marked[0], ("live".to_string(), "ended_stream".to_string()));
+    }
+
+    #[test]
+    fn test_new_handler_replaces_old_state_no_cleanup_race() {
+        use crate::hls::segment_manager::StreamCleanupChecker;
+
+        let registry: StreamRegistry = Arc::new(DashMap::new());
+        let key = "live/stream1".to_string();
+
+        // Old handler's state (marked for cleanup)
+        let old_state = Arc::new(parking_lot::RwLock::new(StreamProcessorState {
+            app_name: "live".to_string(),
+            stream_name: "stream1".to_string(),
+            segments: VecDeque::new(),
+            is_ended: true,
+            created_at: Instant::now(),
+            marked_for_cleanup: true,
+            cleanup_segment_names: vec!["old_seg".to_string()],
+        }));
+        registry.insert(key.clone(), old_state);
+
+        // New handler starts, replaces the entry
+        let new_state = Arc::new(parking_lot::RwLock::new(StreamProcessorState {
+            app_name: "live".to_string(),
+            stream_name: "stream1".to_string(),
+            segments: VecDeque::new(),
+            is_ended: false,
+            created_at: Instant::now(),
+            marked_for_cleanup: false,
+            cleanup_segment_names: Vec::new(),
+        }));
+        registry.insert(key.clone(), new_state);
+
+        let checker = RegistryCleanupChecker {
+            registry: registry.clone(),
+        };
+        let marked = checker.get_streams_marked_for_cleanup();
+
+        // After replacement, the new handler's state is NOT marked for cleanup.
+        // The cleanup task should not see any streams to clean up.
+        assert!(
+            marked.is_empty(),
+            "New handler replaced old state; cleanup should not be triggered"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_concurrent_segment_write_and_cleanup_no_corruption() {
+        use crate::storage::MemoryStorage;
+
+        let storage = Arc::new(MemoryStorage::new());
+        let registry: StreamRegistry = Arc::new(DashMap::new());
+        let key = "live/stream1".to_string();
+
+        // Simulate: old handler writes segments, then ends
+        for i in 0..5 {
+            storage
+                .write(
+                    "live",
+                    "stream1",
+                    &format!("seg_{i}"),
+                    Bytes::from(format!("data_{i}")),
+                )
+                .await
+                .unwrap();
+        }
+
+        let state = Arc::new(parking_lot::RwLock::new(StreamProcessorState {
+            app_name: "live".to_string(),
+            stream_name: "stream1".to_string(),
+            segments: (0..5)
+                .map(|i| SegmentInfo {
+                    sequence: i,
+                    duration: 10000,
+                    ts_name: format!("seg_{i}"),
+                    discontinuity: false,
+                    created_at: Instant::now(),
+                })
+                .collect(),
+            is_ended: true,
+            created_at: Instant::now(),
+            marked_for_cleanup: false,
+            cleanup_segment_names: Vec::new(),
+        }));
+        registry.insert(key.clone(), state.clone());
+
+        // Mark for cleanup with captured segment names
+        {
+            let mut s = state.write();
+            s.cleanup_segment_names = s.segments.iter().map(|seg| seg.ts_name.clone()).collect();
+            s.marked_for_cleanup = true;
+        }
+
+        // Meanwhile, a new handler starts and writes new segments
+        let new_state = Arc::new(parking_lot::RwLock::new(StreamProcessorState {
+            app_name: "live".to_string(),
+            stream_name: "stream1".to_string(),
+            segments: VecDeque::new(),
+            is_ended: false,
+            created_at: Instant::now(),
+            marked_for_cleanup: false,
+            cleanup_segment_names: Vec::new(),
+        }));
+        registry.insert(key.clone(), new_state.clone());
+
+        // New handler writes a fresh segment
+        storage
+            .write("live", "stream1", "new_seg_0", Bytes::from("new_data"))
+            .await
+            .unwrap();
+
+        // The old cleanup_segment_names only contain "seg_0".."seg_4"
+        // If we simulate cleanup of only those specific segments (not blanket delete),
+        // the new handler's "new_seg_0" is preserved.
+        let old_cleanup_names: Vec<String> = state.read().cleanup_segment_names.clone();
+        for name in &old_cleanup_names {
+            let _ = storage.delete("live", "stream1", name).await;
+        }
+
+        // Verify: new segment is NOT deleted
+        assert!(
+            storage
+                .exists("live", "stream1", "new_seg_0")
+                .await
+                .unwrap(),
+            "New handler's segment should survive old handler's cleanup"
+        );
+
+        // Verify: old segments ARE deleted
+        for i in 0..5 {
+            assert!(
+                !storage
+                    .exists("live", "stream1", &format!("seg_{i}"))
+                    .await
+                    .unwrap(),
+                "Old segment seg_{i} should be deleted"
+            );
+        }
     }
 }

@@ -33,6 +33,7 @@ fn test_m3u8_generation_basic() {
         segments,
         is_ended: false,
         marked_for_cleanup: false,
+        cleanup_segment_names: Vec::new(),
         created_at: Instant::now(),
     };
 
@@ -74,6 +75,7 @@ fn test_m3u8_generation_ended_stream() {
         is_ended: true,
         created_at: std::time::Instant::now(),
         marked_for_cleanup: false,
+        cleanup_segment_names: Vec::new(),
     };
 
     let m3u8 = state.generate_m3u8(|ts_name| format!("/hls/{ts_name}"));
@@ -110,6 +112,7 @@ fn test_m3u8_discontinuity() {
         segments,
         is_ended: false,
         marked_for_cleanup: false,
+        cleanup_segment_names: Vec::new(),
         created_at: std::time::Instant::now(),
     };
 
@@ -145,6 +148,7 @@ fn test_m3u8_custom_url_generator() {
         segments,
         is_ended: false,
         marked_for_cleanup: false,
+        cleanup_segment_names: Vec::new(),
         created_at: std::time::Instant::now(),
     };
 
@@ -191,6 +195,7 @@ fn test_m3u8_variable_duration() {
         segments,
         is_ended: false,
         marked_for_cleanup: false,
+        cleanup_segment_names: Vec::new(),
         created_at: std::time::Instant::now(),
     };
 
@@ -214,6 +219,7 @@ fn test_m3u8_empty_segments() {
         segments: VecDeque::new(),
         is_ended: false,
         marked_for_cleanup: false,
+        cleanup_segment_names: Vec::new(),
         created_at: std::time::Instant::now(),
     };
 
@@ -252,6 +258,7 @@ fn test_m3u8_sliding_window() {
         segments,
         is_ended: false,
         marked_for_cleanup: false,
+        cleanup_segment_names: Vec::new(),
         created_at: std::time::Instant::now(),
     };
 
@@ -294,6 +301,7 @@ fn test_segment_duration_precision() {
         segments,
         is_ended: false,
         marked_for_cleanup: false,
+        cleanup_segment_names: Vec::new(),
         created_at: std::time::Instant::now(),
     };
 
@@ -323,6 +331,7 @@ fn test_m3u8_url_special_chars() {
         segments,
         is_ended: false,
         marked_for_cleanup: false,
+        cleanup_segment_names: Vec::new(),
         created_at: std::time::Instant::now(),
     };
 
@@ -378,6 +387,7 @@ fn test_m3u8_multiple_discontinuities() {
         segments,
         is_ended: false,
         marked_for_cleanup: false,
+        cleanup_segment_names: Vec::new(),
         created_at: std::time::Instant::now(),
     };
 

@@ -197,6 +197,15 @@ pub struct ConnectionManager {
     /// Broadcast channel for disconnect signals
     disconnect_tx: Arc<broadcast::Sender<DisconnectSignal>>,
 
+    /// Pending room slot reservations (pre-upgrade).
+    /// Counts how many WebSocket upgrades are in-flight for each room.
+    /// Used to prevent TOCTOU race conditions on connection limits.
+    pending_room_reservations: Arc<DashMap<RoomId, AtomicUsize>>,
+
+    /// Pending user slot reservations (pre-upgrade).
+    /// Counts how many WebSocket upgrades are in-flight for each user.
+    pending_user_reservations: Arc<DashMap<UserId, AtomicUsize>>,
+
     /// Pending disconnect signals that failed to send (channel full).
     /// These are retried by a background task to ensure reliable delivery.
     pending_disconnects: Arc<DashMap<u64, (DisconnectSignal, Instant)>>,
@@ -283,6 +292,8 @@ impl ConnectionManager {
             total_connections_ever: Arc::new(AtomicU64::new(0)),
             total_messages: Arc::new(AtomicU64::new(0)),
             disconnect_tx: Arc::new(disconnect_tx),
+            pending_room_reservations: Arc::new(DashMap::new()),
+            pending_user_reservations: Arc::new(DashMap::new()),
             pending_disconnects: Arc::new(DashMap::new()),
             pending_disconnect_id: Arc::new(AtomicU64::new(0)),
             dropped_disconnect_signals: Arc::new(AtomicU64::new(0)),
@@ -686,6 +697,103 @@ impl ConnectionManager {
         }
 
         Ok(())
+    }
+
+    /// Atomically reserve a room connection slot BEFORE WebSocket upgrade.
+    ///
+    /// This prevents the TOCTOU race where `can_accept_room_connection` succeeds
+    /// for N concurrent requests that all pass the check before any registers.
+    /// The reservation counter is checked alongside the actual connection count.
+    ///
+    /// The caller MUST call `release_room_reservation` after `join_room` completes
+    /// (success or failure) or if the WebSocket upgrade fails.
+    ///
+    /// Returns Ok(()) if the slot was reserved, or Err if the room is at capacity.
+    pub fn reserve_room_slot(&self, room_id: &RoomId) -> Result<(), String> {
+        let counter = self
+            .pending_room_reservations
+            .entry(room_id.clone())
+            .or_insert_with(|| AtomicUsize::new(0));
+
+        // Atomically try to reserve a slot by checking combined count
+        loop {
+            let pending = counter.load(Ordering::Acquire);
+            let registered = self
+                .room_connections
+                .get(room_id)
+                .map(|v| v.len())
+                .unwrap_or(0);
+            let effective = registered + pending;
+
+            if effective >= self.limits.max_per_room {
+                return Err(format!(
+                    "Room at capacity ({effective} connections, max: {})",
+                    self.limits.max_per_room
+                ));
+            }
+
+            // Try to atomically increment the pending count
+            if counter
+                .compare_exchange_weak(pending, pending + 1, Ordering::AcqRel, Ordering::Acquire)
+                .is_ok()
+            {
+                return Ok(());
+            }
+            // CAS failed, retry with fresh values
+        }
+    }
+
+    /// Release a room connection slot reservation.
+    ///
+    /// Must be called after `join_room` completes (success or failure) or
+    /// if the WebSocket upgrade fails.
+    pub fn release_room_reservation(&self, room_id: &RoomId) {
+        if let Some(counter) = self.pending_room_reservations.get(room_id) {
+            counter.fetch_sub(1, Ordering::AcqRel);
+        }
+    }
+
+    /// Atomically reserve a user connection slot BEFORE WebSocket upgrade.
+    ///
+    /// Same semantics as `reserve_room_slot` but for per-user limits.
+    /// The caller MUST call `release_user_reservation` after registration
+    /// completes or on failure.
+    pub fn reserve_user_slot(&self, user_id: &UserId) -> Result<(), String> {
+        let counter = self
+            .pending_user_reservations
+            .entry(user_id.clone())
+            .or_insert_with(|| AtomicUsize::new(0));
+
+        loop {
+            let pending = counter.load(Ordering::Acquire);
+            let registered = self
+                .user_connections
+                .get(user_id)
+                .map(|v| v.len())
+                .unwrap_or(0);
+            let effective = registered + pending;
+
+            if effective >= self.limits.max_per_user {
+                return Err(format!(
+                    "User at capacity ({effective} connections, max: {})",
+                    self.limits.max_per_user
+                ));
+            }
+
+            if counter
+                .compare_exchange_weak(pending, pending + 1, Ordering::AcqRel, Ordering::Acquire)
+                .is_ok()
+            {
+                return Ok(());
+            }
+        }
+    }
+
+    /// Release a user connection slot reservation.
+    pub fn release_user_reservation(&self, user_id: &UserId) {
+        if let Some(counter) = self.pending_user_reservations.get(user_id) {
+            counter.fetch_sub(1, Ordering::AcqRel);
+        }
     }
 
     /// Register a new connection
@@ -2690,5 +2798,121 @@ mod tests {
         assert_eq!(deserialized.room_id, Some("room1".to_string()));
         assert_eq!(deserialized.message_count, 5);
         assert!(deserialized.rtc_joined);
+    }
+
+    // ========== Connection Reservation Tests (P1#6) ==========
+
+    #[tokio::test]
+    async fn test_reserve_room_slot_enforces_limit() {
+        let limits = ConnectionLimits {
+            max_per_room: 3,
+            ..ConnectionLimits::default()
+        };
+        let mgr = ConnectionManager::new(limits);
+        let rid = RoomId("test_room".to_string());
+
+        assert!(mgr.reserve_room_slot(&rid).is_ok());
+        assert!(mgr.reserve_room_slot(&rid).is_ok());
+        assert!(mgr.reserve_room_slot(&rid).is_ok());
+        assert!(
+            mgr.reserve_room_slot(&rid).is_err(),
+            "Fourth reservation should fail (limit=3)"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_release_room_reservation_frees_slot() {
+        let limits = ConnectionLimits {
+            max_per_room: 1,
+            ..ConnectionLimits::default()
+        };
+        let mgr = ConnectionManager::new(limits);
+        let rid = RoomId("test_room".to_string());
+
+        assert!(mgr.reserve_room_slot(&rid).is_ok());
+        assert!(mgr.reserve_room_slot(&rid).is_err());
+
+        mgr.release_room_reservation(&rid);
+        assert!(
+            mgr.reserve_room_slot(&rid).is_ok(),
+            "Should succeed after releasing reservation"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_reserve_user_slot_enforces_limit() {
+        let limits = ConnectionLimits {
+            max_per_user: 2,
+            ..ConnectionLimits::default()
+        };
+        let mgr = ConnectionManager::new(limits);
+        let uid = UserId("test_user".to_string());
+
+        assert!(mgr.reserve_user_slot(&uid).is_ok());
+        assert!(mgr.reserve_user_slot(&uid).is_ok());
+        assert!(
+            mgr.reserve_user_slot(&uid).is_err(),
+            "Third reservation should fail (limit=2)"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_release_user_reservation_frees_slot() {
+        let limits = ConnectionLimits {
+            max_per_user: 1,
+            ..ConnectionLimits::default()
+        };
+        let mgr = ConnectionManager::new(limits);
+        let uid = UserId("test_user".to_string());
+
+        assert!(mgr.reserve_user_slot(&uid).is_ok());
+        assert!(mgr.reserve_user_slot(&uid).is_err());
+
+        mgr.release_user_reservation(&uid);
+        assert!(
+            mgr.reserve_user_slot(&uid).is_ok(),
+            "Should succeed after releasing reservation"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_reserve_room_slot_independent_rooms() {
+        let limits = ConnectionLimits {
+            max_per_room: 1,
+            ..ConnectionLimits::default()
+        };
+        let mgr = ConnectionManager::new(limits);
+        let rid1 = RoomId("room_a".to_string());
+        let rid2 = RoomId("room_b".to_string());
+
+        assert!(mgr.reserve_room_slot(&rid1).is_ok());
+        assert!(
+            mgr.reserve_room_slot(&rid2).is_ok(),
+            "Different rooms should have independent limits"
+        );
+        assert!(mgr.reserve_room_slot(&rid1).is_err());
+        assert!(mgr.reserve_room_slot(&rid2).is_err());
+    }
+
+    #[tokio::test]
+    async fn test_reserve_release_idempotent() {
+        let limits = ConnectionLimits {
+            max_per_room: 2,
+            ..ConnectionLimits::default()
+        };
+        let mgr = ConnectionManager::new(limits);
+        let rid = RoomId("test_room".to_string());
+
+        // Release without prior reservation should not panic
+        mgr.release_room_reservation(&rid);
+
+        // Normal reserve/release cycle
+        assert!(mgr.reserve_room_slot(&rid).is_ok());
+        mgr.release_room_reservation(&rid);
+
+        // Should still be able to reserve up to the limit
+        assert!(mgr.reserve_room_slot(&rid).is_ok());
+        assert!(mgr.reserve_room_slot(&rid).is_ok());
+        assert!(mgr.reserve_room_slot(&rid).is_err());
     }
 }

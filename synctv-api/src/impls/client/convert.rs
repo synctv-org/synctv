@@ -193,6 +193,28 @@ pub(super) fn room_member_to_proto(
     }
 }
 
+/// Convert a list of `RoomMemberWithUser` into proto `RoomMember` messages,
+/// applying the three-layer permission calculation for each member using
+/// the given room settings.
+///
+/// This eliminates the duplicated pattern of:
+///   1. Fetch room settings
+///   2. For each member: `calculate_role_default_permissions` + `room_member_to_proto`
+pub(super) fn members_to_proto(
+    members: Vec<synctv_core::models::RoomMemberWithUser>,
+    room_settings: &synctv_core::models::RoomSettings,
+    permission_service: &synctv_core::service::PermissionService,
+) -> Vec<synctv_proto::common::RoomMember> {
+    members
+        .into_iter()
+        .map(|m| {
+            let role_default =
+                permission_service.calculate_role_default_permissions(&m.role, room_settings);
+            room_member_to_proto(m, role_default)
+        })
+        .collect()
+}
+
 /// Convert provider `PlaybackInfo` to models `PlaybackInfo`
 #[must_use]
 pub fn provider_playback_info_to_model(

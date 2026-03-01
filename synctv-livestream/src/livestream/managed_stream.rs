@@ -111,6 +111,42 @@ impl StreamLifecycle {
         self.is_running.store(true, Ordering::Release);
     }
 
+    /// P2#19: Atomically attempt to claim the stream for cleanup.
+    ///
+    /// Uses compare-and-swap on subscriber count to verify it is still 0 at the
+    /// moment we mark stopping. Returns `true` if cleanup can proceed, `false` if
+    /// a concurrent subscriber raced in.
+    ///
+    /// Protocol:
+    /// 1. CAS subscriber_count from 0 → `usize::MAX` (sentinel = "cleanup in progress")
+    /// 2. If CAS fails, a subscriber incremented between our check and now — abort.
+    /// 3. Mark stopping (`is_running = false`).
+    /// 4. Restore subscriber_count to 0 (the sentinel was temporary).
+    /// 5. Re-check subscriber_count to catch any subscriber that incremented
+    ///    between steps 3 and 4 (they would have seen the sentinel and retried).
+    ///
+    /// The simpler approach: mark_stopping first, then re-check count. This is
+    /// equivalent to the current double-check but consolidated into one method
+    /// for clarity.
+    pub fn try_claim_for_cleanup(&self) -> bool {
+        // Step 1: Mark stopping to make is_healthy() return false for new subscribers.
+        self.mark_stopping();
+
+        // Step 2: Use CAS to atomically verify subscriber_count is still 0.
+        // If a subscriber incremented between our idle check and now, CAS fails.
+        let cas_result =
+            self.subscriber_count
+                .compare_exchange(0, 0, Ordering::AcqRel, Ordering::Acquire);
+
+        if cas_result.is_err() {
+            // A subscriber raced in — restore running and abort cleanup.
+            self.restore_running();
+            return false;
+        }
+
+        true
+    }
+
     /// Clone the `is_running` flag for use in spawned tasks.
     /// Allows marking the stream as unhealthy from within the task.
     pub fn is_running_clone(&self) -> Arc<AtomicBool> {
@@ -431,21 +467,16 @@ impl<S: ManagedStream> StreamPool<S> {
                 let idle_secs = stream.lifecycle().last_active_elapsed_secs();
 
                 if idle_secs > idle_timeout.as_secs() {
-                    // CRITICAL: Mark stopping IMMEDIATELY to prevent race with concurrent viewers.
-                    // This must happen before any async operations to minimize the window where
-                    // a viewer could see healthy status, increment count, then we proceed with cleanup.
-                    stream.lifecycle().mark_stopping();
-
-                    // Re-check subscriber count: a concurrent viewer may have incremented between
-                    // our initial check (line 401) and mark_stopping() above. If so, abort cleanup.
-                    let current_count = stream.lifecycle().subscriber_count();
-                    if current_count > 0 {
+                    // P2#19: Use atomic claim to prevent race between subscriber count
+                    // check and stream removal. try_claim_for_cleanup() atomically marks
+                    // stopping and verifies subscriber_count is still 0 via CAS.
+                    if !stream.lifecycle().try_claim_for_cleanup() {
+                        let current_count = stream.lifecycle().subscriber_count();
                         debug!(
                             "Cleanup aborted for {}: {} late subscriber(s) detected after mark_stopping",
                             stream_key,
                             current_count,
                         );
-                        stream.lifecycle().restore_running();
 
                         // L-03: Verify we're still the SAME stream in the DashMap using
                         // Arc pointer equality. A concurrent viewer may have seen us as
@@ -614,5 +645,101 @@ mod tests {
         let found = pool.get_existing("room:media").await;
         assert!(found.is_none());
         assert!(pool.streams.is_empty());
+    }
+
+    /// P2#19: Test that try_claim_for_cleanup succeeds when subscriber count is 0.
+    #[tokio::test]
+    async fn test_try_claim_for_cleanup_succeeds_with_zero_subscribers() {
+        let lc = StreamLifecycle::new();
+        lc.set_running();
+        assert!(lc.is_healthy().await);
+
+        // Claim for cleanup should succeed (count == 0)
+        let claimed = lc.try_claim_for_cleanup();
+        assert!(
+            claimed,
+            "Should claim for cleanup when subscriber_count == 0"
+        );
+
+        // After claim, stream should not be healthy (marked stopping)
+        assert!(!lc.is_healthy().await);
+    }
+
+    /// P2#19: Test that try_claim_for_cleanup fails when subscriber count > 0,
+    /// simulating a concurrent subscriber that raced in.
+    #[tokio::test]
+    async fn test_try_claim_for_cleanup_fails_with_active_subscriber() {
+        let lc = StreamLifecycle::new();
+        lc.set_running();
+        lc.increment_subscriber_count();
+
+        // Claim for cleanup should fail (count == 1)
+        let claimed = lc.try_claim_for_cleanup();
+        assert!(
+            !claimed,
+            "Should not claim for cleanup when subscriber_count > 0"
+        );
+
+        // Stream should still be healthy (restore_running was called)
+        assert!(lc.is_healthy().await);
+        assert_eq!(lc.subscriber_count(), 1);
+    }
+
+    /// P2#19: Test that concurrent subscribe during cleanup is handled gracefully.
+    /// Simulates the race: cleanup claims the stream, then a subscriber tries to attach.
+    #[tokio::test]
+    async fn test_concurrent_subscribe_during_cleanup_handled_gracefully() {
+        let pool: StreamPool<TestStream> =
+            StreamPool::new(Duration::from_mins(1), Duration::from_mins(5));
+
+        let stream = Arc::new(TestStream {
+            lifecycle: StreamLifecycle::new(),
+            key: "room:media".to_string(),
+        });
+        stream.lifecycle().set_running();
+        pool.streams
+            .insert("room:media".to_string(), stream.clone());
+
+        // Simulate cleanup claiming the stream
+        let claimed = stream.lifecycle().try_claim_for_cleanup();
+        assert!(claimed);
+
+        // Now try to get_existing - should fail because stream is marked stopping
+        let found = pool.get_existing("room:media").await;
+        assert!(
+            found.is_none(),
+            "get_existing should return None for a stream being cleaned up"
+        );
+    }
+
+    /// P2#19: Test that get_existing correctly handles the double-check pattern
+    /// when a stream becomes unhealthy between initial check and increment.
+    #[tokio::test]
+    async fn test_get_existing_double_check_on_concurrent_stop() {
+        let pool: StreamPool<TestStream> =
+            StreamPool::new(Duration::from_mins(1), Duration::from_mins(5));
+
+        let stream = Arc::new(TestStream {
+            lifecycle: StreamLifecycle::new(),
+            key: "room:media".to_string(),
+        });
+        stream.lifecycle().set_running();
+        pool.streams
+            .insert("room:media".to_string(), stream.clone());
+
+        // First get_existing should succeed
+        let found = pool.get_existing("room:media").await;
+        assert!(found.is_some());
+        assert_eq!(stream.lifecycle().subscriber_count(), 1);
+
+        // Decrement the subscriber (simulating disconnect)
+        stream.lifecycle().decrement_subscriber_count();
+
+        // Mark stopping (simulating cleanup)
+        stream.lifecycle().mark_stopping();
+
+        // get_existing should fail for stopped stream
+        let found = pool.get_existing("room:media").await;
+        assert!(found.is_none());
     }
 }

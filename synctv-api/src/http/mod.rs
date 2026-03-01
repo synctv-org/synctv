@@ -367,6 +367,7 @@ fn register_write_routes(state: &AppState) -> Router<AppState> {
             "/api/rooms/{room_id}/playback/stop",
             post(room::stop_playback),
         )
+        .route("/api/user/logout", post(auth::logout))
         .route("/api/user", axum::routing::patch(user::update_user))
         .route("/api/user/me", axum::routing::delete(user::delete_me))
         .route(

@@ -437,14 +437,18 @@ impl PublisherManager {
                 return Ok(());
             }
             Err(e) => {
-                // Redis failure: skip tracking for this cycle to avoid registering with
-                // an empty user_id, which would overwrite correct ownership information.
+                // P1#13: Fail-closed on Redis failure. If we cannot verify the publisher
+                // in the registry, we must reject the stream rather than allowing it to
+                // continue without heartbeat tracking. An untracked publisher would stay
+                // active indefinitely with an empty user_id, bypassing ownership checks.
                 error!(
                     "Failed to query registry for publisher info (room={}, media={}): {}. \
-                     Skipping heartbeat tracking for this publish event to avoid incorrect ownership",
+                     Rejecting stream to prevent untracked publisher (fail-closed)",
                     room_id, media_id, e
                 );
-                return Ok(());
+                return Err(e.context(format!(
+                    "Redis failure during publish tracking for room={room_id}, media={media_id}"
+                )));
             }
         };
         self.active_publishers.insert(publisher_key.clone(), entry);
@@ -1232,6 +1236,71 @@ mod tests {
             .unwrap()
             .idle_secs();
         assert!(after <= 1); // just touched
+    }
+
+    /// P1#13: Verify that handle_publish returns an error when Redis fails,
+    /// ensuring the stream is rejected (fail-closed behavior).
+    #[tokio::test]
+    async fn test_handle_publish_fails_closed_on_redis_failure() {
+        let registry = Arc::new(MockStreamRegistry::new());
+        // Pre-register publisher so it exists
+        registry
+            .try_register_publisher("room123", "media456", "test-node-1", "user1", "")
+            .await
+            .unwrap();
+
+        // Enable Redis failure simulation
+        registry.set_fail_get_publisher(true);
+
+        let (manager, _rx) = test_manager(registry, "test-node-1");
+
+        let identifier = StreamIdentifier::Rtmp {
+            app_name: "room123".to_string(),
+            stream_name: "media456".to_string(),
+        };
+
+        // handle_publish should return Err when Redis fails
+        let result = manager.handle_publish(identifier).await;
+        assert!(
+            result.is_err(),
+            "Stream should be rejected on Redis failure"
+        );
+
+        // Verify publisher was NOT tracked (fail-closed: no untracked publisher)
+        assert!(
+            !manager.active_publishers.contains_key("room123:media456"),
+            "Publisher should not be tracked when Redis fails"
+        );
+    }
+
+    /// P1#13: Verify that the broadcast event handler propagates the error from
+    /// handle_publish when Redis fails, so the stream hub can reject the connection.
+    #[tokio::test]
+    async fn test_broadcast_event_propagates_redis_failure() {
+        let registry = Arc::new(MockStreamRegistry::new());
+        registry
+            .try_register_publisher("room1", "media1", "test-node", "user1", "")
+            .await
+            .unwrap();
+
+        // Enable Redis failure simulation
+        registry.set_fail_get_publisher(true);
+
+        let (manager, _rx) = test_manager(registry, "test-node");
+
+        let event = synctv_xiu::streamhub::define::BroadcastEvent::Publish {
+            identifier: StreamIdentifier::Rtmp {
+                app_name: "room1".to_string(),
+                stream_name: "media1".to_string(),
+            },
+            pub_type: synctv_xiu::streamhub::define::PublishType::RtmpPush,
+        };
+
+        let result = manager.handle_broadcast_event(event).await;
+        assert!(
+            result.is_err(),
+            "Broadcast event handler should propagate Redis failure"
+        );
     }
 
     #[tokio::test]

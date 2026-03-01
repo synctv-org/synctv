@@ -81,28 +81,49 @@ pub trait JtiStore: Send + Sync {
 // ============================================================================
 
 /// Redis-backed JTI store for cluster-wide deduplication using SETNX.
+///
+/// Uses a shared `Arc<RwLock<ConnectionManager>>` so that in Sentinel mode the
+/// background health check can hot-swap the inner connection on failover and
+/// this store automatically picks up the new master.
 pub struct RedisJtiStore {
-    conn: redis::aio::ConnectionManager,
+    shared_conn: Arc<tokio::sync::RwLock<redis::aio::ConnectionManager>>,
     key_prefix: String,
     /// Local moka cache for fast-path checks on the same node.
     local_cache: moka::future::Cache<String, ()>,
 }
 
 impl RedisJtiStore {
+    /// Create from a shared connection handle (Sentinel-safe).
     #[must_use]
-    pub fn new(
-        conn: redis::aio::ConnectionManager,
+    pub fn new_shared(
+        shared_conn: Arc<tokio::sync::RwLock<redis::aio::ConnectionManager>>,
         key_prefix: String,
         cache_ttl_secs: u64,
     ) -> Self {
         Self {
-            conn,
+            shared_conn,
             key_prefix,
             local_cache: moka::future::Cache::builder()
                 .max_capacity(100_000)
                 .time_to_live(Duration::from_secs(cache_ttl_secs))
                 .build(),
         }
+    }
+
+    /// Create from a plain `ConnectionManager` (wraps it in a new `Arc<RwLock<>>`).
+    ///
+    /// Convenience for standalone mode or tests where no shared handle exists.
+    #[must_use]
+    pub fn new(
+        conn: redis::aio::ConnectionManager,
+        key_prefix: String,
+        cache_ttl_secs: u64,
+    ) -> Self {
+        Self::new_shared(
+            Arc::new(tokio::sync::RwLock::new(conn)),
+            key_prefix,
+            cache_ttl_secs,
+        )
     }
 }
 
@@ -114,12 +135,13 @@ impl JtiStore for RedisJtiStore {
             return Ok(false);
         }
 
+        // Obtain a fresh connection snapshot (follows Sentinel failover).
+        let redis_key = format!("{}publish_key:jti:{}", self.key_prefix, jti);
+        let mut conn = self.shared_conn.read().await.clone();
+        let ttl_ms = ttl_secs.saturating_mul(1000);
         // Cross-replica check: atomic SET key value PX <ms> NX
         // Using a single SET command with NX and PX flags is atomic in Redis,
         // eliminating the TOCTOU gap between a separate SETNX + EXPIRE pair.
-        let redis_key = format!("{}publish_key:jti:{}", self.key_prefix, jti);
-        let mut conn = self.conn.clone();
-        let ttl_ms = ttl_secs.saturating_mul(1000);
         let set_result: std::result::Result<Option<String>, _> = redis::cmd("SET")
             .arg(&redis_key)
             .arg(1i64)
@@ -263,6 +285,10 @@ impl PublishKeyService {
     }
 
     /// Enable Redis-backed JTI deduplication for multi-replica deployments.
+    ///
+    /// Wraps the plain `ConnectionManager` in an `Arc<RwLock<>>`. For
+    /// Sentinel mode, prefer [`with_redis_shared`] so the store
+    /// automatically follows failover.
     #[must_use]
     pub fn with_redis(
         jwt_service: JwtService,
@@ -274,6 +300,29 @@ impl PublishKeyService {
             .saturating_mul(3600)
             .saturating_add(300);
         let store = Arc::new(RedisJtiStore::new(conn, key_prefix, cache_ttl_secs));
+        Self::from_store(jwt_service, token_ttl_hours, store)
+    }
+
+    /// Enable Redis-backed JTI deduplication using a shared connection handle.
+    ///
+    /// In Sentinel mode the background health check hot-swaps the inner
+    /// `ConnectionManager` on failover; this store reads from the shared
+    /// handle on each operation so it automatically picks up the new master.
+    #[must_use]
+    pub fn with_redis_shared(
+        jwt_service: JwtService,
+        token_ttl_hours: i64,
+        shared_conn: Arc<tokio::sync::RwLock<redis::aio::ConnectionManager>>,
+        key_prefix: String,
+    ) -> Self {
+        let cache_ttl_secs = (token_ttl_hours as u64)
+            .saturating_mul(3600)
+            .saturating_add(300);
+        let store = Arc::new(RedisJtiStore::new_shared(
+            shared_conn,
+            key_prefix,
+            cache_ttl_secs,
+        ));
         Self::from_store(jwt_service, token_ttl_hours, store)
     }
 
@@ -662,5 +711,39 @@ mod tests {
             .unwrap();
 
         assert_ne!(key1.token, key2.token);
+    }
+
+    #[tokio::test]
+    async fn test_in_memory_jti_store_backend_name() {
+        let store = InMemoryJtiStore::new(3600);
+        assert_eq!(store.backend_name(), "memory");
+    }
+
+    #[tokio::test]
+    async fn test_in_memory_jti_store_claim_and_reject() {
+        let store = InMemoryJtiStore::new(3600);
+
+        // First claim should succeed
+        assert!(store.try_claim("jti-1", 3600).await.unwrap());
+        // Second claim of same JTI should fail
+        assert!(!store.try_claim("jti-1", 3600).await.unwrap());
+        // Different JTI should succeed
+        assert!(store.try_claim("jti-2", 3600).await.unwrap());
+
+        // is_claimed should reflect state
+        assert!(store.is_claimed("jti-1").await);
+        assert!(store.is_claimed("jti-2").await);
+        assert!(!store.is_claimed("jti-3").await);
+    }
+
+    #[tokio::test]
+    async fn test_publish_key_service_from_store_custom_backend() {
+        let store = Arc::new(InMemoryJtiStore::new(3600));
+        let jwt = create_jwt_service();
+        let service = PublishKeyService::from_store(jwt, 12, store);
+
+        let debug = format!("{service:?}");
+        assert!(debug.contains("12"));
+        assert!(debug.contains("memory"));
     }
 }

@@ -5,8 +5,20 @@
 //!
 //! Uses proto-generated types for request/response to ensure type consistency
 //! with gRPC handlers.
+//!
+//! ## Rate Limiting
+//!
+//! These endpoints apply two layers of rate limiting:
+//! 1. **Per-IP** (via `auth_rate_limit` middleware): 5 req/min shared with other auth endpoints.
+//! 2. **Per-email** (handler-level): 3 requests per hour per email address, preventing
+//!    email spam and user enumeration even when the attacker rotates IPs.
+//!
+//! The per-IP middleware limit is applied externally in `register_all_routes`.
+//! The per-email limit is checked inside the handlers that actually send emails
+//! (`send_verification_email` and `request_password_reset`).
 
 use axum::{extract::State, response::Json, routing::post, Router};
+use synctv_core::service::rate_limit::RateLimitError;
 
 use crate::http::{AppError, AppResult, AppState};
 use crate::impls::EmailApiImpl;
@@ -15,6 +27,11 @@ use crate::proto::client::{
     ConfirmPasswordResetResponse, RequestPasswordResetRequest, RequestPasswordResetResponse,
     SendVerificationEmailRequest, SendVerificationEmailResponse,
 };
+
+/// Per-email rate limit: 3 requests per hour.
+/// Prevents email spam even when the attacker rotates source IPs.
+const EMAIL_ADDR_MAX_REQUESTS: u32 = 3;
+const EMAIL_ADDR_WINDOW_SECONDS: u64 = 3600;
 
 /// Build an `EmailApiImpl` from `AppState`, or return an error if email is not configured.
 fn require_email_api(state: &AppState) -> Result<EmailApiImpl, AppError> {
@@ -36,6 +53,27 @@ fn require_email_api(state: &AppState) -> Result<EmailApiImpl, AppError> {
     ))
 }
 
+/// Check per-email rate limit. Returns an `AppError` with 429 and Retry-After
+/// if the limit is exceeded.
+async fn check_email_rate_limit(state: &AppState, email: &str) -> Result<(), AppError> {
+    let normalized = email.to_lowercase();
+    let key = format!("email:addr:{normalized}");
+    match state
+        .rate_limiter
+        .check_rate_limit(&key, EMAIL_ADDR_MAX_REQUESTS, EMAIL_ADDR_WINDOW_SECONDS)
+        .await
+    {
+        Ok(()) => Ok(()),
+        Err(RateLimitError::RateLimitExceeded {
+            retry_after_seconds,
+        }) => Err(AppError::rate_limited(retry_after_seconds)),
+        Err(_) => {
+            // Unexpected backend error - fail closed
+            Err(AppError::rate_limited(1))
+        }
+    }
+}
+
 /// Create email-related routes
 ///
 /// Rate limiting is applied externally in `create_router` where `AppState` is available.
@@ -51,10 +89,15 @@ pub fn create_email_router() -> Router<AppState> {
 ///
 /// POST /api/email/verify/send
 /// Public endpoint - no authentication required
+///
+/// Rate limited per-email (3/hour) in addition to per-IP middleware.
 pub async fn send_verification_email(
     State(state): State<AppState>,
     Json(req): Json<SendVerificationEmailRequest>,
 ) -> AppResult<Json<SendVerificationEmailResponse>> {
+    // Per-email rate limit (handler-level, in addition to per-IP middleware)
+    check_email_rate_limit(&state, &req.email).await?;
+
     let email_api = require_email_api(&state)?;
 
     let result = email_api
@@ -92,10 +135,15 @@ pub async fn confirm_email(
 ///
 /// POST /api/email/password/reset
 /// Public endpoint - no authentication required
+///
+/// Rate limited per-email (3/hour) in addition to per-IP middleware.
 pub async fn request_password_reset(
     State(state): State<AppState>,
     Json(req): Json<RequestPasswordResetRequest>,
 ) -> AppResult<Json<RequestPasswordResetResponse>> {
+    // Per-email rate limit (handler-level, in addition to per-IP middleware)
+    check_email_rate_limit(&state, &req.email).await?;
+
     let email_api = require_email_api(&state)?;
 
     let result = email_api

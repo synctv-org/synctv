@@ -182,6 +182,7 @@ async fn test_complete_hls_workflow() {
         is_ended: false,
         created_at: std::time::Instant::now(),
         marked_for_cleanup: false,
+        cleanup_segment_names: Vec::new(),
     }));
 
     if let Some(registry) = &infrastructure.hls_stream_registry {
@@ -294,6 +295,7 @@ async fn test_registry_key_format_consistency() {
         is_ended: false,
         created_at: std::time::Instant::now(),
         marked_for_cleanup: false,
+        cleanup_segment_names: Vec::new(),
     }));
 
     if let Some(registry) = &infrastructure.hls_stream_registry {
@@ -333,6 +335,7 @@ async fn test_hls_url_generation_with_custom_callback() {
         is_ended: false,
         created_at: std::time::Instant::now(),
         marked_for_cleanup: false,
+        cleanup_segment_names: Vec::new(),
     }));
 
     if let Some(registry) = &infrastructure.hls_stream_registry {
@@ -474,6 +477,7 @@ async fn test_hls_playlist_with_discontinuity() {
         is_ended: false,
         created_at: std::time::Instant::now(),
         marked_for_cleanup: false,
+        cleanup_segment_names: Vec::new(),
     }));
 
     if let Some(registry) = &infrastructure.hls_stream_registry {
@@ -512,6 +516,7 @@ async fn test_hls_playlist_ended_stream() {
         is_ended: true,
         created_at: std::time::Instant::now(),
         marked_for_cleanup: false,
+        cleanup_segment_names: Vec::new(),
     }));
 
     if let Some(registry) = &infrastructure.hls_stream_registry {

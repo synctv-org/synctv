@@ -4,15 +4,15 @@
 //!        encryption prefix edge case.
 //!
 //! Run with: cargo test -p synctv-core --test provider_instance_repository_tests
+#![allow(clippy::unwrap_used)]
 
-use synctv_core_testing::{create_test_pool, create_test_jwt_service};
+use synctv_core_testing::{create_test_pool};
 use synctv_core::{
     models::ProviderInstance,
     repository::ProviderInstanceRepository,
     service::CredentialEncryption,
 };
 use chrono::Utc;
-use sqlx::PgPool;
 fn test_key() -> Vec<u8> {
     vec![
         0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07,
@@ -143,7 +143,7 @@ async fn test_plaintext_jwt_secret_rejected_by_check_constraint() {
     .bind("10s")
     .bind(false)
     .bind(false)
-    .bind(&vec!["bilibili"] as &[&str])
+    .bind(&["bilibili"] as &[&str])
     .bind(true)
     .execute(&pool)
     .await;
@@ -178,7 +178,7 @@ async fn test_plaintext_custom_ca_rejected_by_check_constraint() {
     .bind("10s")
     .bind(false)
     .bind(false)
-    .bind(&vec!["bilibili"] as &[&str])
+    .bind(&["bilibili"] as &[&str])
     .bind(true)
     .execute(&pool)
     .await;
@@ -212,7 +212,7 @@ async fn test_null_secrets_allowed_by_check_constraint() {
     .bind("10s")
     .bind(false)
     .bind(false)
-    .bind(&vec!["bilibili"] as &[&str])
+    .bind(&["bilibili"] as &[&str])
     .bind(true)
     .execute(&pool)
     .await;
@@ -243,7 +243,7 @@ async fn test_enc_prefixed_secrets_allowed_by_check_constraint() {
     .bind("10s")
     .bind(false)
     .bind(false)
-    .bind(&vec!["bilibili"] as &[&str])
+    .bind(&["bilibili"] as &[&str])
     .bind(true)
     .execute(&pool)
     .await;

@@ -8,6 +8,7 @@
 //! database connections. These tests verify the layer's bearer token extraction
 //! and structural behavior.
 
+#![allow(clippy::unwrap_used)]
 use axum::http;
 
 // ============================================================================

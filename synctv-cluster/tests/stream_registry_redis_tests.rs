@@ -4,16 +4,17 @@
 //! - cleanup_stale_active_entries after key expiry
 //! - refresh_ttls pipeline
 
+#![allow(clippy::unwrap_used)]
 use std::time::Duration;
 
 use redis::AsyncCommands;
-use testcontainers::core::ImageExt;
 use testcontainers::runners::AsyncRunner;
 use testcontainers_modules::redis::Redis;
 
 use synctv_cluster::sync::stream_registry::StreamRegistry;
 
 /// Default Redis version for test containers
+#[allow(dead_code)]
 const REDIS_VERSION: &str = "7-alpine";
 
 /// Helper to create a Redis container and connection manager.

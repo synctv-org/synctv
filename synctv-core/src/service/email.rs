@@ -244,6 +244,7 @@ impl VerificationCodeStore for InMemoryVerificationCodeStore {
         Ok(())
     }
 
+    #[allow(clippy::unwrap_used)] // Mutex is uncontended; lock() cannot fail
     async fn verify_code(&self, email: &str, code: &str, max_attempts: u32, ttl_minutes: i64) -> Result<()> {
         use moka::ops::compute::Op;
 

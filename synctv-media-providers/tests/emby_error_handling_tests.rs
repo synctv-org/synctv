@@ -3,6 +3,7 @@
 //! Tests that Emby client methods return proper errors instead of silently
 //! ignoring failures for logout, delete, and report operations.
 
+#![allow(clippy::unwrap_used)]
 use synctv_media_providers::EmbyClient;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -221,7 +222,7 @@ fn test_api_prefix_detection() {
 fn test_set_api_prefix() {
     let mut client = EmbyClient::new("https://media.example.com").unwrap();
     client.set_api_prefix("/custom");
-    assert!(client.has_credentials() == false);
+    assert!(!client.has_credentials());
 }
 
 /// Test error when host URL is invalid (this should be handled at construction)
@@ -252,7 +253,7 @@ async fn test_logout_returns_error_on_401() {
         .mount(&server)
         .await;
 
-    let client = EmbyClient::with_credentials(&server.uri(), "token123", "user-uuid-123").unwrap();
+    let client = EmbyClient::with_credentials(server.uri(), "token123", "user-uuid-123").unwrap();
     let result = client.logout().await;
 
     assert!(result.is_err(), "logout should return error on 401, got: {result:?}");
@@ -276,7 +277,7 @@ async fn test_logout_returns_error_on_500() {
         .mount(&server)
         .await;
 
-    let client = EmbyClient::with_credentials(&server.uri(), "token123", "user-uuid-123").unwrap();
+    let client = EmbyClient::with_credentials(server.uri(), "token123", "user-uuid-123").unwrap();
     let result = client.logout().await;
 
     assert!(result.is_err(), "logout should return error on 500, got: {result:?}");
@@ -293,7 +294,7 @@ async fn test_delete_active_encodings_returns_error_on_500() {
         .mount(&server)
         .await;
 
-    let client = EmbyClient::with_credentials(&server.uri(), "token123", "user-uuid-123").unwrap();
+    let client = EmbyClient::with_credentials(server.uri(), "token123", "user-uuid-123").unwrap();
     let result = client.delete_active_encodings("session-123").await;
 
     assert!(
@@ -313,7 +314,7 @@ async fn test_delete_active_encodings_returns_error_on_404() {
         .mount(&server)
         .await;
 
-    let client = EmbyClient::with_credentials(&server.uri(), "token123", "user-uuid-123").unwrap();
+    let client = EmbyClient::with_credentials(server.uri(), "token123", "user-uuid-123").unwrap();
     let result = client.delete_active_encodings("session-123").await;
 
     assert!(
@@ -334,7 +335,7 @@ async fn test_report_playback_start_returns_error_on_500() {
         .mount(&server)
         .await;
 
-    let client = EmbyClient::with_credentials(&server.uri(), "token123", "user-uuid-123").unwrap();
+    let client = EmbyClient::with_credentials(server.uri(), "token123", "user-uuid-123").unwrap();
     let result = client
         .report_playback_start("item-abc", "session-1", Some("source-1"), 0)
         .await;
@@ -357,7 +358,7 @@ async fn test_report_playback_stop_returns_error_on_500() {
         .mount(&server)
         .await;
 
-    let client = EmbyClient::with_credentials(&server.uri(), "token123", "user-uuid-123").unwrap();
+    let client = EmbyClient::with_credentials(server.uri(), "token123", "user-uuid-123").unwrap();
     let result = client
         .report_playback_stop("item-abc", "session-1", 50000)
         .await;
@@ -380,7 +381,7 @@ async fn test_report_playback_progress_returns_error_on_500() {
         .mount(&server)
         .await;
 
-    let client = EmbyClient::with_credentials(&server.uri(), "token123", "user-uuid-123").unwrap();
+    let client = EmbyClient::with_credentials(server.uri(), "token123", "user-uuid-123").unwrap();
     let result = client
         .report_playback_progress("item-abc", "session-1", Some("source-1"), 25000, false)
         .await;
@@ -403,7 +404,7 @@ async fn test_logout_succeeds_on_204() {
         .mount(&server)
         .await;
 
-    let client = EmbyClient::with_credentials(&server.uri(), "token123", "user-uuid-123").unwrap();
+    let client = EmbyClient::with_credentials(server.uri(), "token123", "user-uuid-123").unwrap();
     let result = client.logout().await;
 
     assert!(result.is_ok(), "logout should succeed on 204: {result:?}");
@@ -420,7 +421,7 @@ async fn test_delete_active_encodings_succeeds_on_204() {
         .mount(&server)
         .await;
 
-    let client = EmbyClient::with_credentials(&server.uri(), "token123", "user-uuid-123").unwrap();
+    let client = EmbyClient::with_credentials(server.uri(), "token123", "user-uuid-123").unwrap();
     let result = client.delete_active_encodings("session-123").await;
 
     assert!(

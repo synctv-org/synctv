@@ -4,6 +4,7 @@
 //! stack overflow or memory exhaustion from malicious deeply nested
 //! or oversized objects.
 
+#![allow(clippy::unwrap_used)]
 use synctv_xiu::flv::amf0::amf0_writer::Amf0Writer;
 use synctv_xiu::flv::amf0::amf0_reader::Amf0Reader;
 use synctv_xiu::flv::amf0::Amf0ValueType;

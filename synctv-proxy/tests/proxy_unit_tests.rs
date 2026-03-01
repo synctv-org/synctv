@@ -1,5 +1,6 @@
 //! Unit tests for pure functions in the synctv-proxy crate.
 
+#![allow(clippy::unwrap_used)]
 use std::collections::HashMap;
 use synctv_proxy::{
     apply_provider_headers, make_absolute, percent_encode, rewrite_m3u8,

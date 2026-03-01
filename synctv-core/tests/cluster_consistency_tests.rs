@@ -14,12 +14,13 @@
 //! # Requirements
 //!
 //! - Docker for testcontainers (PostgreSQL + Redis)
+#![allow(clippy::unwrap_used)]
 
 use synctv_core::{
     cache::{CacheInvalidationService, InvalidationMessage},
     models::{
         Room, RoomId, RoomMember, RoomRole, RoomSettings, RoomStatus,
-        UserId, User, UserRole, UserStatus, PermissionBits,
+        UserId, User, UserRole, UserStatus,
         room_settings::MaxMembers,
     },
     repository::{
@@ -39,9 +40,6 @@ use testcontainers_modules::postgres::Postgres;
 use testcontainers_modules::redis::Redis;
 use testcontainers::core::ImageExt;
 use testcontainers::runners::AsyncRunner;
-
-/// Default PostgreSQL version for test containers
-/// Default Redis version for test containers
 
 // ============================================================================
 // Test Infrastructure
@@ -512,8 +510,7 @@ async fn test_room_settings_cross_replica_sync() {
 
     // Create room settings
     let room_settings_repo = RoomSettingsRepository::new(pool.clone());
-    let mut initial_settings = RoomSettings::default();
-    initial_settings.max_members = MaxMembers(10);
+    let initial_settings = RoomSettings { max_members: MaxMembers(10), ..Default::default() };
     room_settings_repo.set_settings(&room.id, &initial_settings).await.expect("Failed to create settings");
 
     // Create cache invalidation services
@@ -522,7 +519,7 @@ async fn test_room_settings_cross_replica_sync() {
         "node_a".to_string(),
         "test:cache:settings".to_string(),
     ));
-    let cache_invalidation_2 = Arc::new(CacheInvalidationService::new(
+    let _cache_invalidation_2 = Arc::new(CacheInvalidationService::new(
         Some(redis_client.clone()),
         "node_b".to_string(),
         "test:cache:settings".to_string(),

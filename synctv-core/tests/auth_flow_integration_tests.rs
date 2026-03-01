@@ -3,14 +3,14 @@
 //! Tests the complete authentication flow: register → verify → login
 //!
 //! Run with: cargo test --test auth_flow_integration_tests
+#![allow(clippy::unwrap_used)]
 
 use synctv_core_testing::{create_test_pool, create_test_jwt_service};
 use synctv_core::{
     models::{User, UserId, UserRole, UserStatus, SignupMethod},
     repository::UserRepository,
-    service::auth::{jwt::JwtService, password::{hash_password, verify_password}, TokenType},
+    service::auth::{password::{hash_password, verify_password}, TokenType},
 };
-use sqlx::PgPool;
 /// Default PostgreSQL version for test containers
 #[tokio::test]
 #[ignore = "Requires Docker"]
@@ -44,7 +44,7 @@ async fn test_complete_registration_flow() {
 
     let created_user = user_repo.create(&user).await.expect("Failed to create user");
     assert_eq!(created_user.status, UserStatus::Pending);
-    assert_eq!(created_user.email_verified, false);
+    assert!(!created_user.email_verified);
 
     // Step 2: Verify email (simulate)
     let mut verified_user = created_user.clone();
@@ -408,8 +408,7 @@ async fn test_username_case_insensitive_login() {
 
     // Depending on database collation, this may or may not find the user
     // Most implementations should be case-insensitive for usernames
-    if result.is_some() {
-        let fetched = result.unwrap();
+    if let Some(fetched) = result {
         assert_eq!(fetched.username.to_lowercase(), username.to_lowercase());
     }
 }

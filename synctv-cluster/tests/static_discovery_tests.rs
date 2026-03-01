@@ -3,6 +3,7 @@
 //! Tests for the derive_http_address helper function used to construct
 //! HTTP addresses from gRPC addresses.
 
+#![allow(clippy::unwrap_used)]
 // StaticDiscovery::derive_http_address is a private method.
 // We test the same logic by reconstructing the function behavior directly.
 

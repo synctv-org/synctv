@@ -2,13 +2,13 @@
 //!
 //! This module provides common utilities used across room-related tests
 //! to reduce code duplication and improve maintainability.
+#![allow(clippy::unwrap_used)]
 
 use std::sync::Arc;
 use synctv_core::{
     cache::{KeyBuilder, UsernameCache, NoopCacheL2},
     config::PasswordComplexityConfig,
     models::{User, UserId, UserRole, UserStatus},
-    repository::UserRepository,
     service::{
         RoomService, UserService, InMemoryTokenBlacklistStore,
         auth::{JwtService, BruteForceProtection},

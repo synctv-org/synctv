@@ -245,7 +245,7 @@ testcontainers-modules = { version = "0.14", features = ["postgres", "redis"] }
 tokio-tungstenite = "0.26"
 
 # Benchmarking
-criterion = { version = "0.8", features = ["html_reports"] }
+criterion = { version = "0.8", features = ["html_reports", "async_tokio"] }
 
 # Internal workspace crates
 synctv-proto = { path = "synctv-proto" }

@@ -4,8 +4,9 @@
 //! and that this behavior is properly monitored with Prometheus metrics.
 //!
 //! Run with: cargo test -p synctv-core --test rate_limiter_fallback_tests
+#![allow(clippy::unwrap_used)]
+#![allow(clippy::assertions_on_constants)]
 
-use synctv_core::service::{RateLimiter, RateLimitError};
 
 // ============================================================================
 // Fallback behavior documentation tests

@@ -3,6 +3,7 @@
 //! Tests settings cache behavior, default values, and model operations.
 //!
 //! Run with: cargo test --test settings_service_tests
+#![allow(clippy::unwrap_used)]
 
 use synctv_core::models::settings::{
     SettingsGroup, get_default_settings, default_server_settings,

@@ -4,10 +4,11 @@
 //! and permission operations with real PostgreSQL via testcontainers.
 //!
 //! Run with: cargo test -p synctv-core --test member_service_tests -- --nocapture
+#![allow(clippy::unwrap_used)]
 
 use std::sync::Arc;
 
-use synctv_core_testing::{create_test_pool, create_test_jwt_service};
+use synctv_core_testing::{create_test_pool};
 use synctv_core::{
     cache::{KeyBuilder, UsernameCache, NoopCacheL2},
     config::PasswordComplexityConfig,
@@ -83,8 +84,7 @@ async fn test_add_member_respects_max_members() {
     let owner = user_repo.create(&make_user("max_owner")).await.unwrap();
 
     // Create room with max_members = 2 (creator counts as 1)
-    let mut settings = synctv_core::models::RoomSettings::default();
-    settings.max_members = MaxMembers(2);
+    let settings = synctv_core::models::RoomSettings { max_members: MaxMembers(2), ..Default::default() };
 
     let (room, _) = room_service
         .create_room(
@@ -414,10 +414,12 @@ impl MockKickBroadcaster {
         }
     }
 
+    #[allow(dead_code)]
     fn kick_from_room_count(&self) -> u64 {
         self.kick_from_room_calls.load(std::sync::atomic::Ordering::SeqCst)
     }
 
+    #[allow(dead_code)]
     fn last_kick_reason(&self) -> Option<String> {
         self.last_kick_reason.lock().unwrap().clone()
     }
@@ -459,7 +461,7 @@ async fn test_ban_broadcasts_kick_event_with_reason() {
 
     // Set up mock broadcaster
     let member_service = room_service.member_service();
-    let mock_broadcaster = Arc::new(MockKickBroadcaster::new());
+    let _mock_broadcaster = Arc::new(MockKickBroadcaster::new());
 
     // We need to create a new member service with the mock broadcaster
     // Since member_service() returns a reference to the existing service,

@@ -3,12 +3,13 @@
 //! These tests verify that the global_attempt_count is properly reset
 //! after a successful long-lived connection.
 
+#![allow(clippy::unwrap_used)]
 /// Test that attempt counter is reset after long connection.
 /// This test currently PASSES because we're documenting the bug.
 #[test]
 fn test_attempt_reset_after_long_connection_documents_bug() {
     let mut attempt: u32 = 5;
-    let mut global_attempt_count: u32 = 100;
+    let global_attempt_count: u32 = 100;
 
     // Simulate a successful long connection (> 1 minute)
     let stream_duration = std::time::Duration::from_secs(120);
@@ -111,11 +112,11 @@ fn test_boundary_above_threshold() {
 #[test]
 fn test_global_attempt_count_growth() {
     // Simulate multiple short failures without a long connection
-    let mut attempt: u32 = 0;
+    let mut _attempt: u32 = 0;
     let mut global_attempt_count: u32 = 0;
 
     for _ in 0..200 {
-        attempt += 1;
+        _attempt += 1;
         global_attempt_count += 1;
 
         // Simulate short failure, no reset
@@ -123,7 +124,7 @@ fn test_global_attempt_count_growth() {
         let min_successful_duration = std::time::Duration::from_secs(60);
 
         if stream_duration > min_successful_duration {
-            attempt = 0;
+            _attempt = 0;
             global_attempt_count = 0;
         }
     }
@@ -137,12 +138,12 @@ fn test_global_attempt_count_growth() {
 fn test_global_max_attempts_reached() {
     const GLOBAL_MAX_ATTEMPTS: u32 = 1000;
 
-    let mut attempt: u32 = 0;
+    let mut _attempt: u32 = 0;
     let mut global_attempt_count: u32 = 0;
     let mut hit_limit = false;
 
     for _ in 0..1100 {
-        attempt += 1;
+        _attempt += 1;
         global_attempt_count += 1;
 
         if global_attempt_count > GLOBAL_MAX_ATTEMPTS {
@@ -155,7 +156,7 @@ fn test_global_max_attempts_reached() {
         let min_successful_duration = std::time::Duration::from_secs(60);
 
         if stream_duration > min_successful_duration {
-            attempt = 0;
+            _attempt = 0;
             // BUG: should also reset global_attempt_count
         }
     }
@@ -168,12 +169,12 @@ fn test_global_max_attempts_reached() {
 fn test_long_connection_reset_prevents_limit() {
     const GLOBAL_MAX_ATTEMPTS: u32 = 1000;
 
-    let mut attempt: u32 = 0;
+    let mut _attempt: u32 = 0;
     let mut global_attempt_count: u32 = 0;
     let mut hit_limit = false;
 
     for i in 0..1100 {
-        attempt += 1;
+        _attempt += 1;
         global_attempt_count += 1;
 
         if global_attempt_count > GLOBAL_MAX_ATTEMPTS {
@@ -190,7 +191,7 @@ fn test_long_connection_reset_prevents_limit() {
         let min_successful_duration = std::time::Duration::from_secs(60);
 
         if stream_duration > min_successful_duration {
-            attempt = 0;
+            _attempt = 0;
             global_attempt_count = 0; // FIX: reset both counters
         }
     }

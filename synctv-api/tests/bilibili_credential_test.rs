@@ -5,6 +5,7 @@
 //!
 //! Run with: cargo test --package synctv-api bilibili_credential
 
+#![allow(clippy::unwrap_used)]
 use synctv_core::provider::{MediaProvider, PlaybackResult, PlaybackInfo, ProviderContext, ProviderError};
 use synctv_core::service::CredentialEncryption;
 use async_trait::async_trait;

@@ -74,6 +74,7 @@ impl CachedUser {
 
     /// Create a new `CachedUser` with explicit `updated_at` timestamp
     #[must_use]
+    #[allow(clippy::too_many_arguments)]
     pub const fn with_updated_at(
         id: String,
         username: String,

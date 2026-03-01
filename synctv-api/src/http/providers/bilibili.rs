@@ -36,7 +36,7 @@ pub fn bilibili_routes() -> Router<AppState> {
         // Note: MPD and stream proxying removed as DASH manifest structures were simplified
         .route(
             "/proxy/{room_id}/{media_id}/subtitle/{name}",
-            get(proxy_subtitle).options(synctv_proxy::proxy_options_preflight),
+            get(proxy_subtitle).options(super::proxy_options_preflight),
         )
         .route("/proxy/{room_id}/{media_id}/m3u8", get(proxy_m3u8))
         .route("/proxy/{room_id}/{media_id}/danmu", get(danmu_sse))

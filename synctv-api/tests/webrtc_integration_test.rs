@@ -9,6 +9,7 @@
 //! These tests validate the complete WebRTC flow from ICE server discovery
 //! to peer connection establishment through signaling messages.
 
+#![allow(clippy::unwrap_used)]
 use synctv_core::config::{Config, WebRTCConfig, WebRTCMode};
 use synctv_core::models::PermissionBits;
 
@@ -18,17 +19,19 @@ use synctv_core::models::PermissionBits;
 
 /// Create a test configuration with WebRTC enabled
 fn test_webrtc_config() -> Config {
-    let mut config = Config::default();
-    config.webrtc = WebRTCConfig {
-        mode: WebRTCMode::PeerToPeer,
-        enable_builtin_stun: true,
-        stun_port: 3478,
-        stun_host: "0.0.0.0".to_string(),
-        stun_external_addr: "203.0.113.1:3478".to_string(),
-        turn_shared_secret: String::new(), // No TURN for basic tests
-        turn_server_urls: vec![],
-        turn_credential_ttl_seconds: 86400,
-        filter_private_ice_candidates: true,
+    let mut config = Config {
+        webrtc: WebRTCConfig {
+            mode: WebRTCMode::PeerToPeer,
+            enable_builtin_stun: true,
+            stun_port: 3478,
+            stun_host: "0.0.0.0".to_string(),
+            stun_external_addr: "203.0.113.1:3478".to_string(),
+            turn_shared_secret: String::new(), // No TURN for basic tests
+            turn_server_urls: vec![],
+            turn_credential_ttl_seconds: 86400,
+            filter_private_ice_candidates: true,
+        },
+        ..Config::default()
     };
     config.server.advertise_host = "test.example.com".to_string();
     config

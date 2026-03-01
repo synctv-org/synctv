@@ -4,6 +4,7 @@
 //! and clear operations.
 //!
 //! Run with: cargo test --test tiered_cache_tests -- --nocapture
+#![allow(clippy::unwrap_used)]
 
 use std::sync::Arc;
 use synctv_core::cache::{
@@ -14,8 +15,6 @@ use synctv_core::cache::{
 use synctv_core::models::{UserId, UserRole, UserStatus};
 use testcontainers_modules::redis::Redis;
 use testcontainers::runners::AsyncRunner;
-
-const REDIS_VERSION: &str = "7-alpine";
 
 async fn start_redis() -> (testcontainers::ContainerAsync<Redis>, redis::aio::ConnectionManager) {
     let container = Redis::default()

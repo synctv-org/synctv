@@ -3,8 +3,9 @@
 //! Tests playlist CRUD, tree structure, position sorting, cycle prevention, and cascade delete.
 //!
 //! Run with: cargo test --test playlist_integration_tests
+#![allow(clippy::unwrap_used)]
 
-use synctv_core_testing::{create_test_pool, create_test_jwt_service};
+use synctv_core_testing::create_test_pool;
 use synctv_core::{
     models::{
         Room, RoomId, RoomStatus, UserId, User, UserRole, UserStatus,
@@ -13,7 +14,6 @@ use synctv_core::{
     repository::{RoomRepository, UserRepository, PlaylistRepository},
 };
 use chrono::Utc;
-use sqlx::PgPool;
 /// Default PostgreSQL version for test containers
 fn make_user(username: &str) -> User {
     let now = Utc::now();
@@ -302,7 +302,7 @@ fn test_advisory_lock_key_consistency_between_methods() {
         );
 
         // Key should be a valid i64
-        assert!(key != 0 || (*room_id == "room_xyz" && *parent_id == None),
+        assert!(key != 0 || (*room_id == "room_xyz" && parent_id.is_none()),
             "Lock key should be non-zero for non-trivial inputs");
     }
 

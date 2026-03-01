@@ -2,10 +2,10 @@
 //!
 //! These tests verify that rate limiting based on source IP works correctly.
 
+#![allow(clippy::unwrap_used)]
+#![allow(deprecated)]
 use std::time::Duration;
 
-// The deprecated function is intentionally tested for backward compatibility
-#[allow(deprecated)]
 use synctv_proxy::{proxy_options_preflight_rate_limited, RateLimiter};
 
 // ==================================================================

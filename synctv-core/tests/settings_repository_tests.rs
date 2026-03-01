@@ -3,10 +3,10 @@
 //! Tests: get non-existent key, get_all ordering.
 //!
 //! Run with: cargo test -p synctv-core --test settings_repository_tests
+#![allow(clippy::unwrap_used)]
 
-use synctv_core_testing::{create_test_pool, create_test_jwt_service};
+use synctv_core_testing::{create_test_pool};
 use synctv_core::repository::SettingsRepository;
-use sqlx::PgPool;
 // ─── get non-existent key ────────────────────────────────────────────
 
 #[tokio::test]

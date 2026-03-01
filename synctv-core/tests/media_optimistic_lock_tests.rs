@@ -3,11 +3,11 @@
 //! Tests for version-based optimistic locking in MediaRepository.
 //!
 //! Run with: cargo test --test media_optimistic_lock_tests
+#![allow(clippy::unwrap_used)]
 
-use synctv_core_testing::{create_test_pool, create_test_jwt_service};
+use synctv_core_testing::create_test_pool;
 use testcontainers::ContainerAsync;
 use testcontainers_modules::postgres::Postgres;
-use testcontainers_modules::redis::Redis;
 use synctv_core::{
     models::{
         Room, RoomId, RoomStatus, UserId, User, UserRole, UserStatus,

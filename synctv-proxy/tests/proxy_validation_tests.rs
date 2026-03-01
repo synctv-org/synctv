@@ -6,6 +6,7 @@
 //! - SSRF protection edge cases
 //! - CORS preflight behavior
 
+#![allow(clippy::unwrap_used)]
 use std::collections::HashMap;
 
 use synctv_proxy::{

@@ -3,6 +3,7 @@
 //! Tests for message routing, targeted broadcast, room removal, and
 //! safe unsubscribe of unknown connections.
 
+#![allow(clippy::unwrap_used)]
 use synctv_cluster::RoomMessageHub;
 use synctv_cluster::sync::events::ClusterEvent;
 use synctv_core::models::id::{RoomId, UserId};

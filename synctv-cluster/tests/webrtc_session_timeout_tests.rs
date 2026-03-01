@@ -9,7 +9,8 @@
 //! - Connection rtc_joined flag is cleared on timeout
 //! - Active sessions are not incorrectly cleaned up
 
-use std::time::{Duration, Instant};
+#![allow(clippy::unwrap_used)]
+use std::time::Duration;
 use synctv_cluster::ConnectionManager;
 use synctv_core::models::id::{RoomId, UserId};
 
@@ -171,7 +172,7 @@ async fn test_multiple_webrtc_sessions_timeout() {
     let mgr = ConnectionManager::new(limits);
 
     let user1 = uid("user1");
-    let user2 = uid("user2");
+    let _user2 = uid("user2");
     let room = rid("room1");
 
     // Register multiple connections and join WebRTC
@@ -252,7 +253,7 @@ async fn test_webrtc_session_timeout_persists_across_reconnection() {
 
 #[tokio::test]
 async fn test_default_webrtc_session_timeout() {
-    use synctv_cluster::sync::ConnectionLimits;
+    
 
     // Create a ConnectionManager with default limits
     let mgr = ConnectionManager::default();

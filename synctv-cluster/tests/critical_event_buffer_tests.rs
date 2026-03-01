@@ -3,6 +3,7 @@
 //! These tests verify that critical events (kick/ban) are never dropped
 //! even when the normal retry buffer is full.
 
+#![allow(clippy::unwrap_used)]
 use synctv_cluster::sync::events::ClusterEvent;
 use synctv_core::models::id::{MediaId, RoomId, UserId};
 use synctv_core::models::PermissionBits;

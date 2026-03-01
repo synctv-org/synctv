@@ -590,7 +590,7 @@ mod tests {
 
         // Both Arcs point to different instances (second replaced first in map)
         // but first is still valid via Arc
-        assert!(Arc::ptr_eq(&provider1, &provider2) == false);
+        assert!(!Arc::ptr_eq(&provider1, &provider2));
 
         // The manager now returns the second instance
         let stored = manager.get("alist_singleton").await.unwrap();

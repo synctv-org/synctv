@@ -5,11 +5,12 @@
 //! via testcontainers.
 //!
 //! Run with: cargo test -p synctv-core --test chat_service_full_tests -- --nocapture
+#![allow(clippy::unwrap_used)]
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
-use synctv_core_testing::{create_test_pool, create_test_jwt_service};
+use synctv_core_testing::{create_test_pool};
 use synctv_core::{
     cache::{KeyBuilder, UsernameCache, NoopCacheL2},
     config::PasswordComplexityConfig,
@@ -180,8 +181,7 @@ async fn test_send_message_chat_disabled_rejected() {
     username_cache.set(&creator.id, &creator.username).await.unwrap();
 
     // Create room with chat disabled
-    let mut settings = RoomSettings::default();
-    settings.chat_enabled = ChatEnabled(false);
+    let settings = RoomSettings { chat_enabled: ChatEnabled(false), ..Default::default() };
     let (room, _) = room_service
         .create_room("Chat Disabled".to_string(), String::new(), creator.id.clone(), None, Some(settings))
         .await
@@ -292,8 +292,7 @@ async fn test_send_danmaku_disabled_rejected() {
     username_cache.set(&creator.id, &creator.username).await.unwrap();
 
     // Create room with danmaku disabled
-    let mut settings = RoomSettings::default();
-    settings.danmaku_enabled = DanmakuEnabled(false);
+    let settings = RoomSettings { danmaku_enabled: DanmakuEnabled(false), ..Default::default() };
     let (room, _) = room_service
         .create_room("Danmaku Disabled".to_string(), String::new(), creator.id.clone(), None, Some(settings))
         .await

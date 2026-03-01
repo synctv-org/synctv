@@ -7,6 +7,7 @@
 //!
 //! Run with: cargo test --test streamhub_restart_tests
 
+#![allow(clippy::unwrap_used)]
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;

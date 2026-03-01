@@ -2,6 +2,7 @@
 //!
 //! Tests for json_with_limit, check_response, and with_retry using mock HTTP responses.
 
+#![allow(clippy::unwrap_used)]
 use synctv_media_providers::error::*;
 use wiremock::matchers::method;
 use wiremock::{Mock, MockServer, ResponseTemplate};

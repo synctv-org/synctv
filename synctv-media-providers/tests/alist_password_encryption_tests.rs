@@ -5,6 +5,7 @@
 //!
 //! Run with: cargo test --test alist_password_encryption_tests
 
+#![allow(clippy::unwrap_used)]
 use synctv_media_providers::{CredentialData, InMemoryCredentialStorage, CredentialStorage, ProviderType, FieldEncryption};
 
 // Test key for encryption (32 bytes for AES-256)

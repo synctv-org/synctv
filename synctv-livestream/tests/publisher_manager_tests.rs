@@ -4,6 +4,7 @@
 //! They use InMemoryStreamRegistry instead of MockStreamRegistry (which is only
 //! available in cfg(test) within the crate).
 
+#![allow(clippy::unwrap_used)]
 use std::sync::Arc;
 use synctv_livestream::relay::{InMemoryStreamRegistry, StreamRegistryTrait};
 

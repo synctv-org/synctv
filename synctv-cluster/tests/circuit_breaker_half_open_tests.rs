@@ -7,6 +7,7 @@
 //! We cannot mock time in these tests, so we test the behaviors that are
 //! observable without waiting for the backoff window to expire.
 
+#![allow(clippy::unwrap_used)]
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 

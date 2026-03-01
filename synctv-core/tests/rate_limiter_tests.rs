@@ -4,6 +4,7 @@
 //!
 //! Run with: cargo test --test rate_limiter_tests
 //! Run Docker tests: cargo test --test rate_limiter_tests -- --ignored
+#![allow(clippy::unwrap_used)]
 
 use synctv_core::service::{RateLimiter, RateLimitError};
 

@@ -1,3 +1,4 @@
+#![cfg_attr(test, allow(clippy::unwrap_used))]
 // synctv-livestream - Live streaming infrastructure for SyncTV
 //
 // Architecture (following xiu's modular design):

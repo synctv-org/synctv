@@ -4,6 +4,7 @@
 //! the UpdateUserPassword API, as the implementation does not support
 //! token blacklisting for session invalidation.
 
+#![allow(clippy::unwrap_used)]
 use synctv_proto::admin::{UpdateUserPasswordRequest, UpdateUserPasswordResponse};
 
 /// Verify that UpdateUserPasswordRequest does NOT have force_logout field.

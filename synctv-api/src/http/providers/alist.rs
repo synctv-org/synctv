@@ -24,7 +24,7 @@ pub fn alist_routes() -> Router<AppState> {
         // Provider-specific proxy routes
         .route(
             "/proxy/{room_id}/{media_id}",
-            get(proxy_stream).options(synctv_proxy::proxy_options_preflight),
+            get(proxy_stream).options(super::proxy_options_preflight),
         )
         .route("/proxy/{room_id}/{media_id}/m3u8", get(proxy_m3u8))
 }

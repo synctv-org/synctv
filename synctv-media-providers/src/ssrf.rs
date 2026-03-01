@@ -662,7 +662,7 @@ mod tests {
 
     #[test]
     fn test_ssrf_safe_dns_resolver_default() {
-        let _resolver = SsrfSafeDnsResolver::default();
+        let _resolver = SsrfSafeDnsResolver;
     }
 
     #[test]
@@ -759,12 +759,11 @@ mod tests {
     #[test]
     fn test_policy_public_only() {
         // PublicOnly should block all private IPs
-        assert!(check_url_with_policy(
+        assert!(!check_url_with_policy(
             "http://192.168.1.1/",
             Policy::PublicOnly
         )
-        .is_ok()
-            == false);
+        .is_ok());
 
         // Public IPs should be allowed
         assert!(
@@ -782,8 +781,7 @@ mod tests {
         .is_ok());
 
         // Loopback should still be blocked
-        assert!(check_url_with_policy("http://127.0.0.1/", Policy::AllowPrivate).is_ok()
-            == false);
+        assert!(!check_url_with_policy("http://127.0.0.1/", Policy::AllowPrivate).is_ok());
     }
 
     #[tokio::test]
@@ -794,10 +792,9 @@ mod tests {
 
         // Custom blocked range
         assert!(
-            check_url_with_custom_policy("http://203.0.113.1/", policy.clone())
+            !check_url_with_custom_policy("http://203.0.113.1/", policy.clone())
                 .await
                 .is_ok()
-                == false
         );
 
         // Public IP outside custom range should still work
@@ -816,11 +813,11 @@ mod tests {
     fn test_cloud_metadata_endpoints_blocked() {
         // AWS metadata (link-local IP is blocked)
         assert!(
-            check_url("http://169.254.169.254/latest/meta-data/").is_ok() == false
+            !check_url("http://169.254.169.254/latest/meta-data/").is_ok()
         );
 
         // Google Cloud metadata (via hostname - url_jail blocks this)
-        assert!(check_url("http://metadata.google.internal/").is_ok() == false);
+        assert!(!check_url("http://metadata.google.internal/").is_ok());
 
         // Note: url_jail doesn't block metadata.azure by default
         // Azure metadata IP (169.254.169.254) is blocked via the link-local range

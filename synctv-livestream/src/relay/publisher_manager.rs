@@ -845,21 +845,22 @@ impl PublisherManager {
                             break;
                         }
                         Err(e) => {
-                            last_error = Some(e);
                             if attempt < MAX_HEARTBEAT_RETRIES - 1 {
                                 let delay_ms = HEARTBEAT_RETRY_BASE_DELAY_MS * (1 << attempt);
                                 warn!(
                                     "Heartbeat attempt {} failed for room {} / media {}: {}. Retrying in {}ms",
-                                    attempt + 1, room_id, media_id, last_error.as_ref().unwrap(), delay_ms
+                                    attempt + 1, room_id, media_id, e, delay_ms
                                 );
+                                last_error = Some(e);
                                 sleep(Duration::from_millis(delay_ms)).await;
                             } else {
                                 error!(
                                     "All {} heartbeat attempts failed for room {} / media {}: {}. \
                                      Incrementing consecutive failure counter.",
                                     MAX_HEARTBEAT_RETRIES, room_id, media_id,
-                                    last_error.as_ref().unwrap()
+                                    e
                                 );
+                                last_error = Some(e);
                             }
                         }
                     }

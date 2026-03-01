@@ -3,6 +3,7 @@
 //! These tests verify that the in-memory registry provides the same
 //! semantics as the Redis-backed StreamRegistry.
 
+#![allow(clippy::unwrap_used)]
 use synctv_livestream::relay::{InMemoryStreamRegistry, StreamRegistryTrait};
 
 #[tokio::test]

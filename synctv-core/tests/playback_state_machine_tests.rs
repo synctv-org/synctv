@@ -5,10 +5,11 @@
 //! invalid transitions are properly rejected.
 //!
 //! Run with: cargo test -p synctv-core --test playback_state_machine_tests -- --nocapture
+#![allow(clippy::unwrap_used)]
 
 use std::sync::Arc;
 
-use synctv_core_testing::{create_test_pool, create_test_jwt_service};
+use synctv_core_testing::{create_test_pool};
 use synctv_core::{
     cache::{KeyBuilder, UsernameCache, NoopCacheL2},
     config::PasswordComplexityConfig,
@@ -695,7 +696,8 @@ async fn test_concurrent_play_pause_operations() {
     // Final state should be consistent (either playing or paused)
     let playback_service = room_service.playback_service();
     let state = playback_service.get_state(&room.id).await.unwrap();
-    assert!(state.is_playing || !state.is_playing, "Final state should be valid boolean");
+    // Final state is valid - we just verify we can read it without error
+    let _ = state.is_playing;
 }
 
 // ============================================================================

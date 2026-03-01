@@ -1,3 +1,4 @@
+#![allow(clippy::unwrap_used)]
 // Path handling tests for live streaming
 //
 // Tests that paths match synctv-go format:
@@ -85,17 +86,17 @@ fn test_hls_segment_disguised_path_format() {
 fn test_path_parsing() {
     // Test parsing FLV path
     let flv_path = "/api/room/movie/live/flv/media123.flv";
-    let flv_media_id = flv_path.split('/').last().unwrap().replace(".flv", "");
+    let flv_media_id = flv_path.split('/').next_back().unwrap().replace(".flv", "");
     assert_eq!(flv_media_id, "media123");
 
     // Test parsing HLS playlist path
     let hls_path = "/api/room/movie/live/hls/list/media456";
-    let hls_media_id = hls_path.split('/').last().unwrap();
+    let hls_media_id = hls_path.split('/').next_back().unwrap();
     assert_eq!(hls_media_id, "media456");
 
     // Test parsing HLS playlist path with .m3u8
     let hls_path_m3u8 = "/api/room/movie/live/hls/list/media789.m3u8";
-    let hls_media_id_m3u8 = hls_path_m3u8.split('/').last().unwrap().replace(".m3u8", "");
+    let hls_media_id_m3u8 = hls_path_m3u8.split('/').next_back().unwrap().replace(".m3u8", "");
     assert_eq!(hls_media_id_m3u8, "media789");
 
     // Test parsing HLS segment path

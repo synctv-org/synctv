@@ -86,3 +86,15 @@ macro_rules! provider_proxy_handlers {
 }
 
 pub(crate) use provider_proxy_handlers;
+
+/// Wildcard CORS preflight handler for provider proxy routes.
+///
+/// This is the non-deprecated replacement for `synctv_proxy::proxy_options_preflight`.
+/// It uses `proxy_options_preflight_with_cors` with a wildcard `CorsConfig`, which is
+/// appropriate for this native-app-only project.
+#[allow(clippy::unused_async)]
+pub(crate) async fn proxy_options_preflight() -> axum::response::Response {
+    static WILDCARD_CONFIG: std::sync::LazyLock<std::sync::Arc<synctv_proxy::CorsConfig>> =
+        std::sync::LazyLock::new(|| std::sync::Arc::new(synctv_proxy::CorsConfig::new_wildcard()));
+    synctv_proxy::proxy_options_preflight_with_cors(None, WILDCARD_CONFIG.clone()).await
+}

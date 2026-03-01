@@ -7,10 +7,11 @@
 //! The PlaybackService uses PlaybackBroadcaster trait for abstraction.
 //!
 //! Run with: cargo test -p synctv-core --test playback_websocket_tests -- --nocapture
+#![allow(clippy::unwrap_used)]
 
 use std::sync::Arc;
 
-use synctv_core_testing::{create_test_pool, create_test_jwt_service};
+use synctv_core_testing::{create_test_pool};
 use synctv_core::{
     cache::{KeyBuilder, UsernameCache, NoopCacheL2},
     config::PasswordComplexityConfig,

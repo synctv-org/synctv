@@ -3,6 +3,7 @@
 //! These tests verify that the proxy blocks redirects to private IP addresses
 //! and other SSRF-vulnerable targets, even when the initial URL is safe.
 
+#![allow(clippy::unwrap_used)]
 use std::collections::HashMap;
 
 use synctv_proxy::{proxy_fetch_and_forward, validate_proxy_url, validate_proxy_url_static, NoopMetrics, ProxyConfig};
@@ -430,5 +431,5 @@ fn test_max_redirects_constant_is_reasonable() {
     // A redirect chain exceeding 10 hops should produce an error.
     // The actual testing of this requires a mock server, which is done
     // in proxy_integration_tests.rs.
-    assert!(true, "MAX_REDIRECTS is documented as 10");
+    // MAX_REDIRECTS is documented as 10 - this test is intentionally a no-op.
 }

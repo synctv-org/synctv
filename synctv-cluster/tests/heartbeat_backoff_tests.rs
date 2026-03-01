@@ -3,9 +3,9 @@
 //! These tests verify that when heartbeat fails, the re-registration attempt
 //! uses exponential backoff to avoid hammering Redis during outages.
 
+#![allow(clippy::unwrap_used)]
 use std::sync::Arc;
 use std::time::Duration;
-use testcontainers::core::ImageExt;
 use testcontainers::runners::AsyncRunner;
 use testcontainers_modules::redis::Redis;
 
@@ -13,6 +13,7 @@ use synctv_cluster::discovery::node_registry::NodeRegistry;
 use synctv_cluster::HeartbeatResult;
 
 /// Default Redis version for test containers
+#[allow(dead_code)]
 const REDIS_VERSION: &str = "7-alpine";
 
 /// Helper to create a Redis container and client.

@@ -231,6 +231,7 @@ mod tests {
     /// The actual SQL (`SELECT cleanup_expired_email_tokens()`) requires a
     /// live database, so integration testing is done via the migration test suite.
     #[test]
+    #[allow(clippy::type_complexity)]
     fn test_email_token_cleanup_method_exists() {
         // Verify the cleanup method has the expected signature
         let _: fn(&DatabaseMaintenanceService) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), sqlx::Error>> + Send + '_>> =

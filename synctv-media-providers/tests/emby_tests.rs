@@ -2,6 +2,7 @@
 //!
 //! Tests for item ID validation, API prefix detection, and HTTP API interactions using wiremock.
 
+#![allow(clippy::unwrap_used)]
 use synctv_media_providers::EmbyClient;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -95,7 +96,7 @@ async fn test_emby_client_login_success() {
         .mount(&server)
         .await;
 
-    let mut client = EmbyClient::new(&server.uri()).unwrap();
+    let mut client = EmbyClient::new(server.uri()).unwrap();
     let (token, user_id) = client.login("admin", "password123").await.unwrap();
     assert_eq!(token, "emby-test-token-xyz");
     assert_eq!(user_id, "user-uuid-123");
@@ -133,7 +134,7 @@ async fn test_emby_client_get_items_success() {
         .await;
 
     let client =
-        EmbyClient::with_credentials(&server.uri(), "token123", "user-uuid-123").unwrap();
+        EmbyClient::with_credentials(server.uri(), "token123", "user-uuid-123").unwrap();
     let resp = client.get_items(None, None).await.unwrap();
     assert_eq!(resp.total_record_count, 2);
     assert_eq!(resp.items.len(), 2);
@@ -187,7 +188,7 @@ async fn test_emby_report_playback_start_success() {
         .await;
 
     let client =
-        EmbyClient::with_credentials(&server.uri(), "token123", "user-uuid-123").unwrap();
+        EmbyClient::with_credentials(server.uri(), "token123", "user-uuid-123").unwrap();
     let result = client
         .report_playback_start("item-abc", "session-1", Some("source-1"), 0)
         .await;
@@ -206,7 +207,7 @@ async fn test_emby_report_playback_stop_success() {
         .await;
 
     let client =
-        EmbyClient::with_credentials(&server.uri(), "token123", "user-uuid-123").unwrap();
+        EmbyClient::with_credentials(server.uri(), "token123", "user-uuid-123").unwrap();
     let result = client
         .report_playback_stop("item-abc", "session-1", 50000)
         .await;
@@ -225,7 +226,7 @@ async fn test_emby_report_playback_progress_success() {
         .await;
 
     let client =
-        EmbyClient::with_credentials(&server.uri(), "token123", "user-uuid-123").unwrap();
+        EmbyClient::with_credentials(server.uri(), "token123", "user-uuid-123").unwrap();
     let result = client
         .report_playback_progress("item-abc", "session-1", Some("source-1"), 25000, false)
         .await;
@@ -247,7 +248,7 @@ async fn test_emby_report_playback_progress_paused() {
         .await;
 
     let client =
-        EmbyClient::with_credentials(&server.uri(), "token123", "user-uuid-123").unwrap();
+        EmbyClient::with_credentials(server.uri(), "token123", "user-uuid-123").unwrap();
     let result = client
         .report_playback_progress("item-abc", "session-1", None, 25000, true)
         .await;
@@ -268,7 +269,7 @@ async fn test_emby_delete_active_encodings_success() {
         .await;
 
     let client =
-        EmbyClient::with_credentials(&server.uri(), "token123", "user-uuid-123").unwrap();
+        EmbyClient::with_credentials(server.uri(), "token123", "user-uuid-123").unwrap();
     let result = client.delete_active_encodings("session-1").await;
     assert!(
         result.is_ok(),
@@ -351,7 +352,7 @@ async fn test_emby_get_playback_info_success() {
         .await;
 
     let client =
-        EmbyClient::with_credentials(&server.uri(), "token123", "user-uuid-123").unwrap();
+        EmbyClient::with_credentials(server.uri(), "token123", "user-uuid-123").unwrap();
     let resp = client
         .get_playback_info("item-1", None, None, None, None)
         .await
@@ -374,7 +375,7 @@ async fn test_emby_logout_success() {
         .await;
 
     let client =
-        EmbyClient::with_credentials(&server.uri(), "token123", "user-uuid-123").unwrap();
+        EmbyClient::with_credentials(server.uri(), "token123", "user-uuid-123").unwrap();
     let result = client.logout().await;
     assert!(result.is_ok(), "Logout should succeed: {result:?}");
 }
@@ -410,7 +411,7 @@ async fn emby_thumbnail_extract_from_primary_tag() {
         .await;
 
     let client =
-        EmbyClient::with_credentials(&server.uri(), "token123", "user-uuid-123").unwrap();
+        EmbyClient::with_credentials(server.uri(), "token123", "user-uuid-123").unwrap();
     let resp = client.get_items(None, None).await.unwrap();
     assert_eq!(resp.items.len(), 1);
 
@@ -448,7 +449,7 @@ async fn emby_thumbnail_extract_from_thumb_tag() {
         .await;
 
     let client =
-        EmbyClient::with_credentials(&server.uri(), "token123", "user-uuid-123").unwrap();
+        EmbyClient::with_credentials(server.uri(), "token123", "user-uuid-123").unwrap();
     let resp = client.get_items(None, None).await.unwrap();
     assert_eq!(resp.items.len(), 1);
 
@@ -484,7 +485,7 @@ async fn emby_thumbnail_no_image_tags_returns_none() {
         .await;
 
     let client =
-        EmbyClient::with_credentials(&server.uri(), "token123", "user-uuid-123").unwrap();
+        EmbyClient::with_credentials(server.uri(), "token123", "user-uuid-123").unwrap();
     let resp = client.get_items(None, None).await.unwrap();
     assert_eq!(resp.items.len(), 1);
 

@@ -4,11 +4,11 @@
 //!
 //! Run with: cargo test --test user_provider_credential_tests -- --ignored
 //! (Requires Docker)
+#![allow(clippy::unwrap_used)]
 
 use chrono::{Duration, Utc};
 use serde_json::json;
-use sqlx::PgPool;
-use synctv_core_testing::{create_test_pool, create_test_jwt_service};
+use synctv_core_testing::{create_test_pool};
 use synctv_core::{
     models::{User, UserProviderCredential},
     repository::{UserProviderCredentialRepository, UserRepository},

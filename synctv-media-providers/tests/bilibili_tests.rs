@@ -4,6 +4,7 @@
 //! Private methods (is_wbi_stale_error, build_cookie_header) are tested
 //! inline in src/bilibili/client.rs via #[cfg(test)].
 
+#![allow(clippy::unwrap_used)]
 use synctv_media_providers::BilibiliClient;
 
 // === match_url Tests ===

@@ -6,6 +6,7 @@
 //! These tests use `tower::ServiceExt::oneshot()` for HTTP handler tests and
 //! direct function calls for validation logic. No database or Redis required.
 
+#![allow(clippy::unwrap_used)]
 use axum::{
     body::Body,
     http::{Request, StatusCode},
@@ -436,7 +437,7 @@ mod create_ticket_validation {
 
                 // Simulate ws_ticket_service = None (ticket.rs:91-95)
                 let ws_ticket_service: Option<()> = None;
-                let _service = ws_ticket_service.ok_or_else(|| {
+                ws_ticket_service.ok_or_else(|| {
                     AppError::internal_server_error(
                         "WebSocket ticket service not configured (Redis required)",
                     )
@@ -1156,6 +1157,7 @@ mod optional_services_absent {
 
     /// Multiple absent services should each produce their own error message
     #[test]
+    #[allow(clippy::type_complexity)]
     fn test_distinct_error_messages_for_each_service() {
         let services: Vec<(&str, fn() -> AppError)> = vec![
             (
@@ -1277,7 +1279,7 @@ mod error_response_format {
     #[tokio::test]
     async fn test_service_unavailable_response_format() {
         assert_error_response(
-            || AppError::service_unavailable(),
+            AppError::service_unavailable,
             StatusCode::SERVICE_UNAVAILABLE,
         )
         .await;

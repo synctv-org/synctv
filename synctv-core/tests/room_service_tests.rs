@@ -3,10 +3,11 @@
 //! Tests the RoomService business logic layer with real PostgreSQL via testcontainers.
 //!
 //! Run with: cargo test -p synctv-core --test room_service_tests -- --nocapture
+#![allow(clippy::unwrap_used)]
 
 use std::sync::Arc;
 
-use synctv_core_testing::{create_test_pool, create_test_jwt_service};
+use synctv_core_testing::{create_test_pool};
 use synctv_core::{
     cache::{KeyBuilder, UsernameCache, NoopCacheL2},
     config::PasswordComplexityConfig,
@@ -850,6 +851,7 @@ struct MockDistributedLock {
     lock_held: std::sync::atomic::AtomicBool,
 }
 
+#[allow(dead_code)]
 impl MockDistributedLock {
     fn new() -> Self {
         Self::default()
@@ -1583,8 +1585,7 @@ async fn test_max_members_enforced_on_join() {
     let owner = user_repo.create(&make_user("max_owner")).await.unwrap();
 
     // Create room with max_members = 3 (owner counts as 1)
-    let mut settings = synctv_core::models::RoomSettings::default();
-    settings.max_members = synctv_core::models::room_settings::MaxMembers(3);
+    let settings = synctv_core::models::RoomSettings { max_members: synctv_core::models::room_settings::MaxMembers(3), ..Default::default() };
 
     let (room, _) = room_service
         .create_room(
@@ -1638,8 +1639,7 @@ async fn test_max_members_zero_means_unlimited() {
     let owner = user_repo.create(&make_user("unlim_owner")).await.unwrap();
 
     // Create room with max_members = 0 (unlimited)
-    let mut settings = synctv_core::models::RoomSettings::default();
-    settings.max_members = synctv_core::models::room_settings::MaxMembers(0);
+    let settings = synctv_core::models::RoomSettings { max_members: synctv_core::models::room_settings::MaxMembers(0), ..Default::default() };
 
     let (room, _) = room_service
         .create_room(
@@ -1670,8 +1670,7 @@ async fn test_max_members_enforced_at_limit_boundary() {
     let owner = user_repo.create(&make_user("boundary_owner")).await.unwrap();
 
     // Create room with max_members = 1 (owner only)
-    let mut settings = synctv_core::models::RoomSettings::default();
-    settings.max_members = synctv_core::models::room_settings::MaxMembers(1);
+    let settings = synctv_core::models::RoomSettings { max_members: synctv_core::models::room_settings::MaxMembers(1), ..Default::default() };
 
     let (room, _) = room_service
         .create_room(
@@ -1760,8 +1759,7 @@ async fn test_room_settings_guest_mode_change_kicks_guests() {
     let guest = user_repo.create(&make_user("guest_kick_guest")).await.unwrap();
 
     // Create room with guest join allowed
-    let mut settings = synctv_core::models::RoomSettings::default();
-    settings.allow_guest_join = synctv_core::models::room_settings::AllowGuestJoin(true);
+    let settings = synctv_core::models::RoomSettings { allow_guest_join: synctv_core::models::room_settings::AllowGuestJoin(true), ..Default::default() };
 
     let (room, _) = room_service
         .create_room(
@@ -1807,9 +1805,7 @@ async fn test_room_settings_password_required_triggers_guest_kick() {
     let owner = user_repo.create(&make_user("pwd_kick_owner")).await.unwrap();
 
     // Create room without password, guest join allowed
-    let mut settings = synctv_core::models::RoomSettings::default();
-    settings.allow_guest_join = synctv_core::models::room_settings::AllowGuestJoin(true);
-    settings.require_password = synctv_core::models::room_settings::RequirePassword(false);
+    let settings = synctv_core::models::RoomSettings { allow_guest_join: synctv_core::models::room_settings::AllowGuestJoin(true), require_password: synctv_core::models::room_settings::RequirePassword(false), ..Default::default() };
 
     let (room, _) = room_service
         .create_room(
@@ -2010,7 +2006,7 @@ async fn test_room_creation_creates_all_related_records_atomically() {
 
     let owner = user_repo.create(&make_user("atomic_owner")).await.unwrap();
 
-    let (room, member) = room_service
+    let (room, _member) = room_service
         .create_room(
             "Atomic Room".to_string(),
             String::new(),
@@ -2459,8 +2455,7 @@ async fn test_guest_cannot_join_password_protected_room() {
     let owner = user_repo.create(&make_user("guest_pwd_owner")).await.unwrap();
 
     // Create room with password and guest join enabled
-    let mut settings = synctv_core::models::RoomSettings::default();
-    settings.allow_guest_join = synctv_core::models::room_settings::AllowGuestJoin(true);
+    let settings = synctv_core::models::RoomSettings { allow_guest_join: synctv_core::models::room_settings::AllowGuestJoin(true), ..Default::default() };
 
     let (room, _) = room_service
         .create_room(
@@ -2499,8 +2494,7 @@ async fn test_check_guest_allowed_when_disabled_globally() {
 
     let owner = user_repo.create(&make_user("guest_disabled_owner")).await.unwrap();
 
-    let mut settings = synctv_core::models::RoomSettings::default();
-    settings.allow_guest_join = synctv_core::models::room_settings::AllowGuestJoin(true);
+    let settings = synctv_core::models::RoomSettings { allow_guest_join: synctv_core::models::room_settings::AllowGuestJoin(true), ..Default::default() };
 
     let (room, _) = room_service
         .create_room(
@@ -2780,8 +2774,7 @@ async fn test_concurrent_joins_cannot_exceed_max_members() {
     let owner = user_repo.create(&make_user("concurrent_owner")).await.unwrap();
 
     // Create room with max_members = 5 (owner counts as 1, so 4 more can join)
-    let mut settings = synctv_core::models::RoomSettings::default();
-    settings.max_members = synctv_core::models::room_settings::MaxMembers(5);
+    let settings = synctv_core::models::RoomSettings { max_members: synctv_core::models::room_settings::MaxMembers(5), ..Default::default() };
 
     let (room, _) = room_service
         .create_room(
@@ -2872,8 +2865,7 @@ async fn test_max_members_zero_in_settings_means_unlimited() {
     let owner = user_repo.create(&make_user("unlimited_owner")).await.unwrap();
 
     // Create room with max_members = 0 (unlimited)
-    let mut settings = synctv_core::models::RoomSettings::default();
-    settings.max_members = synctv_core::models::room_settings::MaxMembers(0);
+    let settings = synctv_core::models::RoomSettings { max_members: synctv_core::models::room_settings::MaxMembers(0), ..Default::default() };
 
     let (room, _) = room_service
         .create_room(

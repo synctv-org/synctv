@@ -4,8 +4,9 @@
 //!        cleanup_old_messages keep_count=0 no-op, cleanup_all_rooms activity_window_minutes=0.
 //!
 //! Run with: cargo test -p synctv-core --test chat_repository_tests
+#![allow(clippy::unwrap_used)]
 
-use synctv_core_testing::{create_test_pool, create_test_jwt_service};
+use synctv_core_testing::create_test_pool;
 use synctv_core::{
     models::{
         ChatMessage, UserId, User, UserRole, UserStatus, RoomId, Room, RoomStatus,

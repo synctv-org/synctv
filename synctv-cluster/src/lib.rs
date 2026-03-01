@@ -1,3 +1,5 @@
+#![cfg_attr(test, allow(clippy::unwrap_used))]
+
 pub mod sync;
 pub mod discovery;
 pub mod grpc;

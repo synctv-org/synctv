@@ -311,9 +311,9 @@ impl ExternalStreamPuller {
 
             // If the connection failed on the first attempt and we have a pending
             // confirm_tx, signal the failure so the caller doesn't wait forever.
-            if result.is_err() {
+            if let Err(ref e) = result {
                 if let Some(tx) = self.confirm_tx.take() {
-                    let _ = tx.send(Err(format!("{}", result.as_ref().unwrap_err())));
+                    let _ = tx.send(Err(format!("{e}")));
                 }
             }
 

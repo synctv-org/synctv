@@ -4,6 +4,7 @@
 //! the error Display formatting that is exposed to gRPC clients.
 //!
 //! Run with: cargo test --test error_conversion_tests
+#![allow(clippy::unwrap_used)]
 
 use synctv_core::Error;
 
@@ -123,10 +124,7 @@ fn test_error_display_format() {
 fn test_internal_ext_maps_error() {
     use synctv_core::error::InternalExt;
 
-    let result: Result<(), std::io::Error> = Err(std::io::Error::new(
-        std::io::ErrorKind::Other,
-        "disk full",
-    ));
+    let result: Result<(), std::io::Error> = Err(std::io::Error::other("disk full"));
 
     let mapped = result.internal("Failed to write file");
     assert!(mapped.is_err());

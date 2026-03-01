@@ -5,21 +5,18 @@
 //!
 //! Run with: cargo test --test cache_invalidation_tests
 //! Requires Docker for testcontainers.
+#![allow(clippy::unwrap_used)]
 
 use synctv_core::{
     cache::{CacheInvalidationService, InvalidationMessage},
     models::{RoomId, UserId},
 };
-use testcontainers::ContainerAsync;
 use testcontainers_modules::postgres::Postgres;
 use testcontainers_modules::redis::Redis;
 use testcontainers::core::ImageExt;
 use testcontainers::runners::AsyncRunner;
 use std::sync::Arc;
 use tokio::sync::RwLock;
-
-/// Default Redis version for test containers
-const REDIS_VERSION: &str = "7-alpine";
 
 async fn start_redis() -> (testcontainers::ContainerAsync<Redis>, String) {
     let container = Redis::default()
@@ -399,7 +396,6 @@ async fn test_cache_invalidation_before_commit() {
         config::PasswordComplexityConfig,
         service::auth::{JwtService, BruteForceProtection},
     };
-    use sqlx::PgPool;
     use sqlx::postgres::PgPoolOptions;
         // Start PostgreSQL
     let postgres = Postgres::default()
@@ -468,7 +464,7 @@ async fn test_cache_invalidation_before_commit() {
     let room_repo = RoomRepository::new(pool.clone());
 
     let user_id = UserId::new();
-    let user = user_repo.create(&User {
+    let _user = user_repo.create(&User {
         id: user_id.clone(),
         username: "test_user".to_string(),
         email: Some("test@example.com".to_string()),
@@ -486,7 +482,7 @@ async fn test_cache_invalidation_before_commit() {
     }).await.expect("Failed to create user");
 
     let room_id = RoomId::new();
-    let room = room_repo.create(&Room {
+    let _room = room_repo.create(&Room {
         id: room_id.clone(),
         name: "Test Room".to_string(),
         description: "A test room".to_string(),
@@ -566,7 +562,7 @@ async fn test_cache_invalidation_rollback_safety() {
         config::PasswordComplexityConfig,
         service::auth::{JwtService, BruteForceProtection},
     };
-    use sqlx::{PgPool, Transaction};
+    use sqlx::Transaction;
     use sqlx::postgres::PgPoolOptions;
         // Start PostgreSQL
     let postgres = Postgres::default()

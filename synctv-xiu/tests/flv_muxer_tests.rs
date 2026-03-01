@@ -3,6 +3,7 @@
 //! Verifies correct FLV header flag bytes for different audio/video combinations
 //! and tag timestamp encoding.
 
+#![allow(clippy::unwrap_used)]
 use synctv_xiu::flv::muxer::FlvMuxer;
 
 #[test]

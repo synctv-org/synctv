@@ -2,6 +2,7 @@
 //!
 //! These tests verify the circuit breaker behavior within the connection pool.
 
+#![allow(clippy::unwrap_used)]
 use std::time::Duration;
 use synctv_livestream::grpc::GrpcConnectionPool;
 

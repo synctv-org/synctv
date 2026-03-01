@@ -6,6 +6,7 @@
 //! - There is a delay between retry attempts
 //! - Retry behavior is properly logged
 
+#![allow(clippy::unwrap_used)]
 use std::collections::HashMap;
 
 use axum::http::StatusCode;

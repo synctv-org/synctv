@@ -4,6 +4,7 @@
 //! The extract_token_from_query function is private, so we test it indirectly
 //! or test the public-facing behavior via the auth trait.
 
+#![allow(clippy::unwrap_used)]
 /// Since extract_token_from_query is private, we replicate the logic here
 /// to test the same algorithm. This validates the URL-decoding behavior that
 /// the actual implementation uses.
@@ -324,7 +325,7 @@ impl AuthCallback for MockRtmpSettingsAuthCallback {
     async fn on_play(
         &self,
         app_name: &str,
-        stream_name: &str,
+        _stream_name: &str,
         _query: Option<&str>,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         // Check room settings for RTMP player

@@ -1033,7 +1033,7 @@ mod tests {
         // The ban_member method uses the same role_level check:
         // role_level(&target_member.role) >= role_level(&admin_member.role) => deny
         // Admin banning Member: 1 >= 2 = false => allowed
-        assert!(!(role_level(&RoomRole::Member) >= role_level(&RoomRole::Admin)));
+        assert!((role_level(&RoomRole::Member) < role_level(&RoomRole::Admin)));
         // Member banning Admin: 2 >= 1 = true => denied
         assert!(role_level(&RoomRole::Admin) >= role_level(&RoomRole::Member));
         // Admin banning Admin: 2 >= 2 = true => denied (equal role)

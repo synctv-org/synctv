@@ -3,8 +3,9 @@
 //! Tests: list filter combinations, get_by_id 365-day visibility limit.
 //!
 //! Run with: cargo test -p synctv-core --test audit_repository_tests
+#![allow(clippy::unwrap_used)]
 
-use synctv_core_testing::{create_test_pool, create_test_jwt_service};
+use synctv_core_testing::{create_test_pool};
 use synctv_core::repository::{AuditLogRepository, AuditLogQuery};
 use synctv_core::models::{PageParams, generate_id};
 use chrono::{Utc, Duration};

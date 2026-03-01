@@ -7,6 +7,7 @@
 //! Uses a mock L2 backend with artificial delay to simulate the race condition.
 //!
 //! Run with: cargo test --test tiered_cache_epoch_tests
+#![allow(clippy::unwrap_used)]
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};

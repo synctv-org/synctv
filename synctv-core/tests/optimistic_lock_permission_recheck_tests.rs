@@ -4,6 +4,7 @@
 //! in the edit_media optimistic lock loop.
 //!
 //! Run with: cargo test -p synctv-core --test optimistic_lock_permission_recheck_tests
+#![allow(clippy::unwrap_used)]
 
 use synctv_core::models::PermissionBits;
 
@@ -32,8 +33,11 @@ use synctv_core::models::PermissionBits;
 #[test]
 fn test_optimistic_lock_permission_recheck_scenario() {
     // Verify permission bits are correctly defined
-    assert!(PermissionBits::EDIT_MOVIE_SELF > 0);
-    assert!(PermissionBits::EDIT_MOVIE_ANY > 0);
+    #[allow(clippy::assertions_on_constants)]
+    {
+        assert!(PermissionBits::EDIT_MOVIE_SELF > 0);
+        assert!(PermissionBits::EDIT_MOVIE_ANY > 0);
+    }
 
     // This test documents the expected behavior:
     // - edit_media has a retry loop for optimistic locking

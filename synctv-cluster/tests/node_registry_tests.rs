@@ -2,6 +2,7 @@
 //!
 //! Tests for fencing token behavior and NodeInfo construction.
 
+#![allow(clippy::unwrap_used)]
 use synctv_cluster::discovery::node_registry::{FencingToken, NodeInfo};
 
 // ============================================================================

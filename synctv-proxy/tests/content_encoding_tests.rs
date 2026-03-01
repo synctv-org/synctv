@@ -3,6 +3,7 @@
 //! These tests verify that the proxy correctly handles various Content-Encoding
 //! scenarios, including single encodings and multiple encoding combinations.
 
+#![allow(clippy::unwrap_used)]
 /// Unit tests for the content-encoding parsing logic.
 ///
 /// These tests verify the function that determines if reqwest would have

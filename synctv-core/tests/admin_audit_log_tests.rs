@@ -8,15 +8,15 @@
 //!
 //! Run with: cargo test -p synctv-core --test admin_audit_log_tests -- --nocapture
 //! Docker tests: cargo test -p synctv-core --test admin_audit_log_tests -- --ignored --nocapture
+#![allow(clippy::unwrap_used)]
 
 use std::sync::Arc;
 use std::time::Duration;
 
-use synctv_core_testing::{create_test_pool, create_test_jwt_service};
+use synctv_core_testing::create_test_pool;
 use synctv_core::service::{
     AuditService, AuditAction, AuditTargetType,
 };
-use sqlx::PgPool;
 // ============================================================================
 // Test Infrastructure
 // ============================================================================
@@ -51,6 +51,7 @@ async fn test_audit_log_integrity_all_fields() {
         .expect("Log should succeed");
 
     // Verify all fields are stored correctly
+    #[allow(clippy::type_complexity)]
     let row: (
         i64,
         String,
@@ -559,7 +560,7 @@ async fn test_all_target_types_are_logged() {
 
     let service = AuditService::new_unbuffered(pool.clone());
 
-    let target_types = vec![
+    let target_types = [
         (AuditTargetType::User, "user"),
         (AuditTargetType::Room, "room"),
         (AuditTargetType::Stream, "stream"),

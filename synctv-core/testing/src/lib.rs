@@ -1,3 +1,4 @@
+#![allow(clippy::unwrap_used)]
 //! Shared test helpers for synctv-core tests
 //!
 //! This crate provides common test utilities to reduce code duplication

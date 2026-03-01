@@ -5,6 +5,7 @@
 //! Run with: cargo test --test credential_storage_tests -- --ignored
 //! (Requires Docker)
 
+#![allow(clippy::unwrap_used)]
 use std::collections::HashMap;
 
 use synctv_media_providers::{

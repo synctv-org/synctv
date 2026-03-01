@@ -367,7 +367,7 @@ mod tests {
     #[test]
     fn test_uow_drop_when_committed_is_safe() {
         // Dropping a committed UnitOfWork should not panic
-        let mut uow = UnitOfWork {
+        let uow = UnitOfWork {
             tx: None,
             committed: true,
             rolled_back: false,

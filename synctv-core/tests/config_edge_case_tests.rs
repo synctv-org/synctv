@@ -4,6 +4,7 @@
 //! and config serialization roundtrip.
 //!
 //! Run with: cargo test --test config_edge_case_tests
+#![allow(clippy::unwrap_used)]
 
 use synctv_core::config::{
     BootstrapConfig, Config, ServerConfig, DatabaseConfig, RedisConfig, RedisDeploymentMode,

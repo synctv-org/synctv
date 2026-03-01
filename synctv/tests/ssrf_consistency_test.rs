@@ -7,6 +7,7 @@
 //! These two modules live in separate crates. This integration test catches
 //! drift between them.
 
+#![allow(clippy::unwrap_used)]
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
 use synctv_core::validation::SSRFValidator;

@@ -3,6 +3,7 @@
 //! These tests verify that AMF0 values can be written and read back correctly
 //! through the Amf0Writer and Amf0Reader.
 
+#![allow(clippy::unwrap_used)]
 use synctv_xiu::flv::amf0::amf0_writer::Amf0Writer;
 use synctv_xiu::flv::amf0::amf0_reader::Amf0Reader;
 use synctv_xiu::flv::amf0::Amf0ValueType;

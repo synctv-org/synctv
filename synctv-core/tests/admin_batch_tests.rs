@@ -3,10 +3,11 @@
 //! Tests batch ban/delete operations for users and rooms.
 //!
 //! Run with: cargo test --package synctv-core admin_batch
+#![allow(clippy::unwrap_used)]
 
 use std::sync::Arc;
 
-use synctv_core_testing::{create_test_pool, create_test_jwt_service};
+use synctv_core_testing::{create_test_pool};
 use synctv_core::{
     cache::{KeyBuilder, UsernameCache, NoopCacheL2},
     config::PasswordComplexityConfig,
@@ -94,9 +95,11 @@ async fn batch_ban_users_exceeds_limit_fails() {
     let (_container, pool) = create_test_pool().await;
     let service = create_user_service(pool);
 
-    // Create more users than the limit
-    let user_ids = create_test_users(&service, BATCH_SIZE_LIMIT + 1, "batch_limit").await;
-    let user_id_strs: Vec<String> = user_ids.iter().map(|id| id.to_string()).collect();
+    // The size limit check happens before any DB operations, so we don't need
+    // to create real users -- fake IDs are enough to trigger the validation.
+    let user_id_strs: Vec<String> = (0..BATCH_SIZE_LIMIT + 1)
+        .map(|i| format!("fake_user_{i}"))
+        .collect();
 
     // Attempt to ban more than limit
     let result = service.batch_ban_users(&user_id_strs).await;
@@ -207,9 +210,11 @@ async fn batch_delete_users_exceeds_limit_fails() {
     let (_container, pool) = create_test_pool().await;
     let service = create_user_service(pool);
 
-    // Create more users than the limit
-    let user_ids = create_test_users(&service, BATCH_SIZE_LIMIT + 1, "batch_del_limit").await;
-    let user_id_strs: Vec<String> = user_ids.iter().map(|id| id.to_string()).collect();
+    // The size limit check happens before any DB operations, so we don't need
+    // to create real users -- fake IDs are enough to trigger the validation.
+    let user_id_strs: Vec<String> = (0..BATCH_SIZE_LIMIT + 1)
+        .map(|i| format!("fake_user_{i}"))
+        .collect();
 
     // Attempt to delete more than limit
     let result = service.batch_delete_users(&user_id_strs).await;

@@ -2,6 +2,7 @@
 //!
 //! These tests verify that the RtmpProvider validates its base_url configuration
 //! and source_config fields to prevent Server-Side Request Forgery attacks.
+#![allow(clippy::unwrap_used)]
 
 use synctv_core::provider::{MediaProvider, ProviderContext, ProviderError, RtmpProvider};
 use serde_json::json;

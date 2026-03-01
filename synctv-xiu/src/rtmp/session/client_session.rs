@@ -92,6 +92,7 @@ pub struct ClientSession {
 }
 
 impl ClientSession {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         stream: TcpStream,
         client_type: ClientSessionType,

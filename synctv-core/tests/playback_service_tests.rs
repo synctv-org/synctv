@@ -4,10 +4,11 @@
 //! optimistic lock behavior with real PostgreSQL via testcontainers.
 //!
 //! Run with: cargo test -p synctv-core --test playback_service_tests -- --nocapture
+#![allow(clippy::unwrap_used)]
 
 use std::sync::Arc;
 
-use synctv_core_testing::{create_test_pool, create_test_jwt_service};
+use synctv_core_testing::create_test_pool;
 use synctv_core::{
     cache::{KeyBuilder, UsernameCache, NoopCacheL2},
     config::PasswordComplexityConfig,
@@ -439,7 +440,7 @@ async fn test_play_next_concurrent_playlist_modification() {
             room_id: room.id.clone(),
             creator_id: Some(owner.id.clone()),
             name: format!("Video {}", i),
-            position: i as i32,
+            position: i,
             source_provider: "direct_url".to_string(),
             source_config: serde_json::json!({"url": format!("https://example.com/video{}.mp4", i)}),
             provider_instance_name: None,
@@ -526,7 +527,7 @@ async fn test_play_next_at_end_of_playlist() {
             room_id: room.id.clone(),
             creator_id: Some(owner.id.clone()),
             name: format!("End Video {}", i),
-            position: i as i32,
+            position: i,
             source_provider: "direct_url".to_string(),
             source_config: serde_json::json!({"url": format!("https://example.com/end{}.mp4", i)}),
             provider_instance_name: None,
@@ -545,9 +546,11 @@ async fn test_play_next_at_end_of_playlist() {
         .unwrap();
 
     // Sequential mode (no loop) - play_next should return None
-    let mut settings = RoomSettings::default();
-    settings.auto_play_next = room_settings::AutoPlayNext(false);
-    settings.loop_playlist = room_settings::LoopPlaylist(false);
+    let settings = RoomSettings {
+        auto_play_next: room_settings::AutoPlayNext(false),
+        loop_playlist: room_settings::LoopPlaylist(false),
+        ..Default::default()
+    };
 
     let result = playback_service
         .play_next(&room.id, &settings)
@@ -606,7 +609,7 @@ async fn test_play_next_with_loop_enabled() {
             room_id: room.id.clone(),
             creator_id: Some(owner.id.clone()),
             name: format!("Loop Video {}", i),
-            position: i as i32,
+            position: i,
             source_provider: "direct_url".to_string(),
             source_config: serde_json::json!({"url": format!("https://example.com/loop{}.mp4", i)}),
             provider_instance_name: None,
@@ -625,8 +628,7 @@ async fn test_play_next_with_loop_enabled() {
         .unwrap();
 
     // Loop mode enabled
-    let mut settings = RoomSettings::default();
-    settings.loop_playlist = room_settings::LoopPlaylist(true);
+    let settings = RoomSettings { loop_playlist: room_settings::LoopPlaylist(true), ..Default::default() };
 
     let result = playback_service
         .play_next(&room.id, &settings)
@@ -716,12 +718,11 @@ async fn test_concurrent_speed_changes() {
 
     let valid_speeds = [0.5, 1.0, 1.5, 2.0, 0.75, 1.25, 1.75, 2.5, 3.0, 4.0];
 
-    for i in 0..10 {
+    for speed in valid_speeds {
         let rs = room_service.clone();
         let rid = room.id.clone();
         let uid = owner.id.clone();
         let b = barrier.clone();
-        let speed = valid_speeds[i];
 
         let handle = tokio::spawn(async move {
             b.wait().await;

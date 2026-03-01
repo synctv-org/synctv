@@ -16,8 +16,8 @@
 //! # Requirements
 //!
 //! - Docker for testcontainers (PostgreSQL)
+#![allow(clippy::unwrap_used)]
 
-use synctv_core_testing::create_test_jwt_service;
 use testcontainers::ContainerAsync;
 use testcontainers_modules::postgres::Postgres;
 use testcontainers::core::ImageExt;
@@ -36,7 +36,6 @@ use synctv_core::{
 };
 use chrono::Utc;
 use sqlx::PgPool;
-/// Default PostgreSQL version for test containers
 // ============================================================================
 // Test Infrastructure
 // ============================================================================

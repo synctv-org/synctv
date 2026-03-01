@@ -8,6 +8,7 @@
 //! - cluster mode without Redis should return an error (tested in unit tests)
 //!
 //! Run with: cargo test --test ws_ticket_redis_tests
+#![allow(clippy::unwrap_used)]
 
 use synctv_core::models::{RoomId, UserId};
 use synctv_core::service::WsTicketService;

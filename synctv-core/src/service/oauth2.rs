@@ -179,14 +179,14 @@ impl OAuthStateStore for InMemoryOAuthStateStore {
 
     async fn store(&self, token_id: &str, state: &OAuth2State, ttl: std::time::Duration) -> Result<()> {
         let expiry = std::time::Instant::now() + ttl;
-        let mut map = self.states.lock().unwrap();
+        let mut map = self.states.lock().expect("OAuth state lock poisoned");
         Self::sweep_expired(&mut map);
         map.insert(token_id.to_string(), (state.clone(), expiry));
         Ok(())
     }
 
     async fn consume(&self, token_id: &str) -> Result<Option<OAuth2State>> {
-        let mut map = self.states.lock().unwrap();
+        let mut map = self.states.lock().expect("OAuth state lock poisoned");
         Self::sweep_expired(&mut map);
         Ok(map.remove(token_id).map(|(state, _expiry)| state))
     }

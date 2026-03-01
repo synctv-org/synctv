@@ -4,6 +4,7 @@
 //! - All unhealthy -> fallback behavior (selects random from full set)
 //! - Degraded nodes are still selectable
 
+#![allow(clippy::unwrap_used)]
 use std::collections::HashSet;
 use std::sync::Arc;
 

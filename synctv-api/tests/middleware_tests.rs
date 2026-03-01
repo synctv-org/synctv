@@ -3,6 +3,7 @@
 //! Tests AuthUser/GuestUser extractors and rate limit middleware behavior
 //! using axum test utilities (tower::ServiceExt::oneshot).
 
+#![allow(clippy::unwrap_used)]
 use axum::{
     body::Body,
     http::{Request, StatusCode},

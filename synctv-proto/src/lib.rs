@@ -1,3 +1,4 @@
+#![cfg_attr(test, allow(clippy::unwrap_used))]
 //! `SyncTV` Protocol Definitions
 //!
 //! This crate contains all protobuf definitions and generated code for `SyncTV`'s
@@ -41,6 +42,7 @@ pub mod providers {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use prost::Message;
 
@@ -320,8 +322,10 @@ mod tests {
     #[test]
     fn unknown_enum_value_preserved() {
         // Simulate a future enum value (999) that this version doesn't know about
-        let mut user = crate::client::User::default();
-        user.role = 999;
+        let user = crate::client::User {
+            role: 999,
+            ..Default::default()
+        };
         let bytes = user.encode_to_vec();
         let decoded = crate::client::User::decode(bytes.as_slice()).unwrap();
         assert_eq!(decoded.role, 999); // prost preserves unknown enum values as i32

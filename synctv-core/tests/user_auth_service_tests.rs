@@ -7,10 +7,11 @@
 //! S3/S7/S13 tests use testcontainers PG.
 //!
 //! Run with: cargo test --test user_auth_service_tests
+#![allow(clippy::unwrap_used)]
 
 use std::sync::Arc;
 
-use synctv_core_testing::{create_test_pool, create_test_jwt_service};
+use synctv_core_testing::create_test_pool;
 use synctv_core::{
     cache::{KeyBuilder, NoopCacheL2, UsernameCache},
     config::PasswordComplexityConfig,
@@ -1279,8 +1280,10 @@ async fn test_refresh_token_rate_limit_recovers() {
         }
     }
 
-    // Wait for rate limit to reset (60 second window)
-    tokio::time::sleep(std::time::Duration::from_secs(61)).await;
+    // Wait for one rate limit cell to replenish.
+    // GCRA with 10 requests / 60s window replenishes one cell every 6 seconds.
+    // We wait 7 seconds (6s + 1s buffer) rather than the full 61s window reset.
+    tokio::time::sleep(std::time::Duration::from_secs(7)).await;
 
     // Should be able to refresh again after reset using the latest token
     let result = service.refresh_token(current_token).await;
@@ -1358,11 +1361,7 @@ async fn test_login_timing_attack_prevention() {
     println!("Avg wrong password time: {:?}", avg_wrong_password);
 
     // Calculate the difference
-    let diff = if avg_nonexistent > avg_wrong_password {
-        avg_nonexistent - avg_wrong_password
-    } else {
-        avg_wrong_password - avg_nonexistent
-    };
+    let diff = avg_nonexistent.abs_diff(avg_wrong_password);
 
     // SECURITY REQUIREMENT: Timing difference should be less than 2000ms
     //

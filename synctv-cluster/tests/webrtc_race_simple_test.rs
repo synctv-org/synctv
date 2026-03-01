@@ -1,5 +1,6 @@
 //! Simple WebRTC race condition test
 
+#![allow(clippy::unwrap_used)]
 use std::time::Duration;
 use synctv_cluster::ConnectionManager;
 use synctv_core::models::id::{RoomId, UserId};

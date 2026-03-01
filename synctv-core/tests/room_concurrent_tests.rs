@@ -15,8 +15,8 @@
 //! # Requirements
 //!
 //! - Docker for testcontainers (PostgreSQL)
+#![allow(clippy::unwrap_used)]
 
-use synctv_core_testing::create_test_jwt_service;
 use synctv_core::{
     models::{
         Room, RoomId, RoomMember, RoomRole, RoomSettings, RoomStatus,
@@ -38,7 +38,6 @@ use testcontainers_modules::postgres::Postgres;
 use testcontainers::core::ImageExt;
 use testcontainers::runners::AsyncRunner;
 use tokio::sync::Barrier;
-/// Default PostgreSQL version for test containers
 // ============================================================================
 // Test Infrastructure
 // ============================================================================
@@ -148,8 +147,7 @@ async fn setup_test_room(pool: &PgPool, room_name: &str, max_members: u64) -> (U
         .expect("Failed to create room");
 
     // Create room settings with max_members
-    let mut settings = RoomSettings::default();
-    settings.max_members = MaxMembers(max_members);
+    let settings = RoomSettings { max_members: MaxMembers(max_members), ..Default::default() };
     room_settings_repo.set_settings(&room.id, &settings)
         .await
         .expect("Failed to create room settings");

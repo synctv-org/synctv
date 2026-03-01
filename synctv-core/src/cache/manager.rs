@@ -146,7 +146,7 @@ impl CacheManager {
                         } else {
                             warn!(
                                 lagged_messages = n,
-                                skip_flush_secs = LAG_FLUSH_MIN_INTERVAL.checked_sub(elapsed).unwrap().as_secs(),
+                                skip_flush_secs = LAG_FLUSH_MIN_INTERVAL.checked_sub(elapsed).unwrap_or_default().as_secs(),
                                 "CacheManager invalidation listener lagged, skipping flush (rate-limited)"
                             );
                         }

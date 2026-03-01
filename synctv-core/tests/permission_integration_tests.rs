@@ -4,8 +4,9 @@
 //!
 //! Run with: cargo test --test permission_integration_tests
 //! Requires Docker for testcontainers.
+#![allow(clippy::unwrap_used)]
 
-use synctv_core_testing::{create_test_pool, create_test_jwt_service};
+use synctv_core_testing::create_test_pool;
 use synctv_core::{
     models::{Room, RoomId, RoomMember, RoomRole, UserId, MemberStatus, PermissionBits, User, UserStatus, SignupMethod},
     repository::{RoomRepository, RoomMemberRepository, UserRepository},

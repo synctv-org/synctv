@@ -4,10 +4,11 @@
 //! expiry enforcement, and type confusion prevention.
 //!
 //! Run with: cargo test --test jwt_security_tests
+#![allow(clippy::unwrap_used)]
 
 use std::sync::Arc;
 
-use synctv_core_testing::{create_test_pool, create_test_jwt_service};
+use synctv_core_testing::create_test_jwt_service;
 use synctv_core::{
     models::UserId,
     service::auth::{jwt::JwtService, TokenType, JwtValidator},
@@ -258,8 +259,7 @@ async fn test_jwt_future_issued_at_rejection() {
 
     // Some implementations reject future iat, others allow with clock skew
     // Either behavior is acceptable as long as it's consistent
-    if result.is_ok() {
-        let claims = result.unwrap();
+    if let Ok(claims) = result {
         // If accepted, verify the timestamp is actually in the future
         assert!(claims.iat > now, "Future iat should be preserved");
     }

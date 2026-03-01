@@ -1210,7 +1210,7 @@ mod tests {
     #[test]
     fn test_message_stream_buffer_size_reasonable() {
         // Buffer should be at least 10 and at most 1000
-        assert!(MESSAGE_STREAM_BUFFER_SIZE >= 10);
-        assert!(MESSAGE_STREAM_BUFFER_SIZE <= 1000);
+        const { assert!(MESSAGE_STREAM_BUFFER_SIZE >= 10) };
+        const { assert!(MESSAGE_STREAM_BUFFER_SIZE <= 1000) };
     }
 }

@@ -3,9 +3,10 @@
 //! Tests that media edits properly broadcast events.
 //!
 //! Run with: cargo test -p synctv-core --test media_cache_invalidation_tests -- --nocapture
+#![allow(clippy::unwrap_used)]
 
 use std::sync::Arc;
-use synctv_core_testing::{create_test_pool, create_test_jwt_service};
+use synctv_core_testing::{create_test_pool};
 use synctv_core::{
     models::{Room, RoomId, RoomMember, RoomRole, MemberStatus, RoomStatus, UserId, User, UserRole, UserStatus, Playlist, PlaylistId},
     repository::{UserRepository, RoomRepository, RoomMemberRepository, PlaylistRepository, MediaRepository},
@@ -18,7 +19,6 @@ use synctv_core::{
 };
 use chrono::Utc;
 use serde_json::json;
-use sqlx::PgPool;
 use std::time::Duration;
 
 /// Default PostgreSQL version for test containers

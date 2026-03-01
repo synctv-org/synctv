@@ -1213,6 +1213,7 @@ impl Drop for RedlockGuard {
     }
 }
 
+#[cfg(test)]
 mod tests {
     #[allow(unused_imports)]
     use super::*;
@@ -1486,7 +1487,7 @@ mod tests {
     fn test_backoff_calculation() {
         // Test exponential backoff calculation: base_ms * 2^attempt
         let base_ms: u64 = 5;
-        assert_eq!(base_ms * (1 << 0), 5);   // attempt 0: 5ms
+        assert_eq!(base_ms, 5);   // attempt 0: 5ms
         assert_eq!(base_ms * (1 << 1), 10);  // attempt 1: 10ms
         assert_eq!(base_ms * (1 << 2), 20);  // attempt 2: 20ms
         assert_eq!(base_ms * (1 << 3), 40);  // attempt 3: 40ms
@@ -1642,14 +1643,12 @@ mod tests {
     fn test_redlock_minimum_masters() {
         // Redlock requires at least 3 masters
         // This is enforced in Redlock::new()
-        let insufficient_masters = vec!["redis://host1".to_string(), "redis://host2".to_string()];
+        let insufficient_masters = ["redis://host1".to_string(), "redis://host2".to_string()];
         assert!(insufficient_masters.len() < 3);
 
-        let sufficient_masters = vec![
-            "redis://host1".to_string(),
+        let sufficient_masters = ["redis://host1".to_string(),
             "redis://host2".to_string(),
-            "redis://host3".to_string(),
-        ];
+            "redis://host3".to_string()];
         assert!(sufficient_masters.len() >= 3);
     }
 

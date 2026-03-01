@@ -11,14 +11,18 @@
 //! - Batch insert (100 items): < 100ms
 //! - Index lookup: < 1ms
 
-use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
+#![allow(clippy::unwrap_used)]
+use std::hint::black_box;
+
+use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use std::time::{Duration, Instant};
 use synctv_core::{
     models::{
-        MediaId, PlaylistId, RoomId, RoomStatus, UserId, User, UserRole, UserStatus,
-        Room, RoomMember, RoomRole, MemberStatus,
+        MediaId, RoomId, RoomStatus, UserId, User, UserRole, UserStatus,
+        Room, RoomMember, RoomRole, RoomListQuery, PageParams,
         media::Media,
         playlist::Playlist,
+        id::PlaylistId,
     },
     repository::{MediaRepository, PlaylistRepository, RoomMemberRepository, RoomRepository, UserRepository},
 };
@@ -100,6 +104,25 @@ fn make_room(name: &str, owner_id: &UserId) -> Room {
     }
 }
 
+/// Create test playlist
+fn make_playlist(room_id: &RoomId, parent_id: Option<&PlaylistId>, name: &str) -> Playlist {
+    let now = Utc::now();
+    Playlist {
+        id: PlaylistId::new(),
+        room_id: room_id.clone(),
+        creator_id: None,
+        name: name.to_string(),
+        parent_id: parent_id.cloned(),
+        position: 0,
+        source_provider: None,
+        source_config: None,
+        provider_instance_name: None,
+        created_at: now,
+        updated_at: now,
+        version: 0,
+    }
+}
+
 /// Benchmark: Room list queries with different data sizes
 fn bench_list_rooms_with_data(c: &mut Criterion) {
     let rt = tokio::runtime::Runtime::new().unwrap();
@@ -128,7 +151,11 @@ fn bench_list_rooms_with_data(c: &mut Criterion) {
 
         group.bench_with_input(bench_id, &room_count, |b, _| {
             b.to_async(&rt).iter(|| async {
-                let rooms = room_repo.list(None, 0, 20).await.unwrap();
+                let query = RoomListQuery {
+                    pagination: PageParams::new(Some(1), Some(20)),
+                    ..Default::default()
+                };
+                let rooms = room_repo.list(&query).await.unwrap();
                 black_box(rooms);
             });
         });
@@ -155,7 +182,7 @@ fn bench_list_media_with_data(c: &mut Criterion) {
     let room = make_room("media_bench_room", &owner.id);
     let room = rt.block_on(room_repo.create(&room)).unwrap();
 
-    let playlist = Playlist::new(room.id.clone(), None, "bench_playlist".to_string());
+    let playlist = make_playlist(&room.id, None, "bench_playlist");
     let playlist = rt.block_on(playlist_repo.create(&playlist)).unwrap();
 
     let mut group = c.benchmark_group("list_media");
@@ -172,7 +199,7 @@ fn bench_list_media_with_data(c: &mut Criterion) {
                 room_id: room.id.clone(),
                 creator_id: None,
                 name: format!("media_{}_{}", media_count, i),
-                position: i as i32,
+                position: i,
                 source_provider: "direct_url".to_string(),
                 source_config: serde_json::json!({"url": format!("https://example.com/{}.mp4", i)}),
                 provider_instance_name: None,
@@ -187,7 +214,7 @@ fn bench_list_media_with_data(c: &mut Criterion) {
 
         group.bench_with_input(bench_id, &media_count, |b, _| {
             b.to_async(&rt).iter(|| async {
-                let media = media_repo.list_by_playlist(&playlist.id, 0, 20).await.unwrap();
+                let media = media_repo.get_by_playlist_limit_offset(&playlist.id, 20, 0).await.unwrap();
                 black_box(media);
             });
         });
@@ -219,25 +246,22 @@ fn bench_batch_insert_operations(c: &mut Criterion) {
     group.sample_size(20);
 
     // Test different batch sizes
-    for &batch_size in &[10, 50, 100].iter() {
-        let playlist = Playlist::new(room.id.clone(), None, format!("batch_playlist_{}", batch_size));
-        let playlist = rt.block_on(playlist_repo.create(&playlist)).unwrap();
+    for &batch_size in &[10, 50, 100] {
+        let playlist = make_playlist(&room.id, None, &format!("batch_playlist_{}", batch_size));
+        let _playlist = rt.block_on(playlist_repo.create(&playlist)).unwrap();
 
         let bench_id = BenchmarkId::new("media", batch_size);
         group.throughput(Throughput::Elements(batch_size as u64));
 
         group.bench_with_input(bench_id, &batch_size, |b, &batch_size| {
             b.iter_custom(|iters| {
-                let playlist_id = playlist.id.clone();
                 let room_id = room.id.clone();
-                let pool = pool.clone();
-                let batch_size = batch_size;
 
                 rt.block_on(async {
                     let start = Instant::now();
                     for _ in 0..iters {
                         // Create a new playlist for each iteration
-                        let new_playlist = Playlist::new(room_id.clone(), None, format!("batch_{}", uuid::Uuid::new_v4()));
+                        let new_playlist = make_playlist(&room_id, None, &format!("batch_{}", uuid::Uuid::new_v4()));
                         let new_playlist = playlist_repo.create(&new_playlist).await.unwrap();
 
                         for i in 0..batch_size {
@@ -293,7 +317,7 @@ fn bench_index_effectiveness(c: &mut Criterion) {
     // Test indexed lookup (room_id is indexed)
     group.bench_function("get_by_room_indexed", |b| {
         b.to_async(&rt).iter(|| async {
-            let members = member_repo.list_by_room(&room.id, 0, 10).await.unwrap();
+            let members = member_repo.list_by_room(&room.id).await.unwrap();
             black_box(members);
         });
     });
@@ -323,7 +347,7 @@ fn bench_single_row_operations(c: &mut Criterion) {
         });
     });
 
-    // Pre-create a room for get/update/delete tests
+    // Pre-create a room for get tests
     let room = make_room("crud_test_room", &owner.id);
     let created_room = rt.block_on(room_repo.create(&room)).unwrap();
 
@@ -332,14 +356,6 @@ fn bench_single_row_operations(c: &mut Criterion) {
         b.to_async(&rt).iter(|| async {
             let room = room_repo.get_by_id(&created_room.id).await.unwrap();
             black_box(room);
-        });
-    });
-
-    // Benchmark: Single room update
-    group.bench_function("update_room", |b| {
-        b.to_async(&rt).iter(|| async {
-            let updated = room_repo.update_name(&created_room.id, &format!("updated_{}", uuid::Uuid::new_v4())).await.unwrap();
-            black_box(updated);
         });
     });
 
@@ -365,13 +381,17 @@ fn bench_pagination_offset_performance(c: &mut Criterion) {
     let mut group = c.benchmark_group("pagination_offset");
     group.sample_size(50);
 
-    // Test different offsets
-    for &offset in &[0, 100, 500, 900].iter() {
-        let bench_id = BenchmarkId::new("offset", offset);
+    // Test different page numbers (simulating different offsets)
+    for &page in &[1u32, 5, 25, 45] {
+        let bench_id = BenchmarkId::new("page", page);
 
-        group.bench_with_input(bench_id, &offset, |b, &offset| {
+        group.bench_with_input(bench_id, &page, |b, &page| {
             b.to_async(&rt).iter(|| async {
-                let rooms = room_repo.list(None, offset, 20).await.unwrap();
+                let query = RoomListQuery {
+                    pagination: PageParams::new(Some(page), Some(20)),
+                    ..Default::default()
+                };
+                let rooms = room_repo.list(&query).await.unwrap();
                 black_box(rooms);
             });
         });

@@ -2,6 +2,7 @@
 //!
 //! Tests for path validation, client creation, and HTTP API interactions using wiremock.
 
+#![allow(clippy::unwrap_used)]
 use synctv_media_providers::AlistClient;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -63,7 +64,7 @@ async fn test_validate_path_normal_paths_accepted() {
         .mount(&server)
         .await;
 
-    let client = AlistClient::with_token(&server.uri(), "token123").unwrap();
+    let client = AlistClient::with_token(server.uri(), "token123").unwrap();
     let result = client.fs_get("/movies/video.mp4", None).await;
     assert!(result.is_ok(), "Normal path should be accepted: {result:?}");
 }
@@ -94,7 +95,7 @@ async fn test_validate_path_dotfiles_accepted() {
         .mount(&server)
         .await;
 
-    let client = AlistClient::with_token(&server.uri(), "token123").unwrap();
+    let client = AlistClient::with_token(server.uri(), "token123").unwrap();
     let result = client.fs_get("/movies/.hidden", None).await;
     assert!(result.is_ok(), "Dotfile path should be accepted: {result:?}");
 }
@@ -117,7 +118,7 @@ async fn test_alist_client_login_success() {
         .mount(&server)
         .await;
 
-    let mut client = AlistClient::new(&server.uri()).unwrap();
+    let mut client = AlistClient::new(server.uri()).unwrap();
     let token = client.login("admin", "password123", false).await.unwrap();
     assert_eq!(token, "test-jwt-token-abc123");
     assert!(client.has_token());
@@ -139,7 +140,7 @@ async fn test_alist_client_login_wrong_password() {
         .mount(&server)
         .await;
 
-    let mut client = AlistClient::new(&server.uri()).unwrap();
+    let mut client = AlistClient::new(server.uri()).unwrap();
     let result = client.login("admin", "wrong_password", false).await;
     assert!(result.is_err());
     let err_msg = result.unwrap_err().to_string();
@@ -177,7 +178,7 @@ async fn test_alist_client_fs_get_success() {
         .mount(&server)
         .await;
 
-    let client = AlistClient::with_token(&server.uri(), "token123").unwrap();
+    let client = AlistClient::with_token(server.uri(), "token123").unwrap();
     let resp = client.fs_get("/movies/movie.mkv", None).await.unwrap();
     assert_eq!(resp.name, "movie.mkv");
     assert_eq!(resp.size, 2_000_000_000);
@@ -210,7 +211,7 @@ async fn test_alist_client_fs_list_success() {
         .mount(&server)
         .await;
 
-    let client = AlistClient::with_token(&server.uri(), "token123").unwrap();
+    let client = AlistClient::with_token(server.uri(), "token123").unwrap();
     let resp = client.fs_list("/movies", 1, 20, None).await.unwrap();
     assert_eq!(resp.total, 2);
     assert_eq!(resp.content.len(), 2);
@@ -253,7 +254,7 @@ async fn test_alist_client_5xx_retries() {
         .mount(&server)
         .await;
 
-    let client = AlistClient::with_token(&server.uri(), "token123").unwrap();
+    let client = AlistClient::with_token(server.uri(), "token123").unwrap();
     let result = client.fs_get("/movies/video.mp4", None).await;
     assert!(
         result.is_ok(),
@@ -305,7 +306,7 @@ async fn test_alist_client_fs_other_success() {
         .mount(&server)
         .await;
 
-    let client = AlistClient::with_token(&server.uri(), "token123").unwrap();
+    let client = AlistClient::with_token(server.uri(), "token123").unwrap();
     let resp = client.fs_other("/movies/video.mp4", "video_preview", None).await.unwrap();
     assert_eq!(resp.drive_id, "drive-abc");
     assert_eq!(resp.file_id, "file-xyz");
@@ -340,7 +341,7 @@ async fn test_alist_client_fs_other_no_preview() {
         .mount(&server)
         .await;
 
-    let client = AlistClient::with_token(&server.uri(), "token123").unwrap();
+    let client = AlistClient::with_token(server.uri(), "token123").unwrap();
     let resp = client.fs_other("/docs/readme.txt", "video_preview", None).await.unwrap();
     assert!(resp.video_preview_play_info.is_none());
 }
@@ -383,7 +384,7 @@ async fn test_alist_client_fs_search_success() {
         .mount(&server)
         .await;
 
-    let client = AlistClient::with_token(&server.uri(), "token123").unwrap();
+    let client = AlistClient::with_token(server.uri(), "token123").unwrap();
     let resp = client.fs_search("/movies", "inception", 1, 1, 20, None).await.unwrap();
     assert_eq!(resp.total, 2);
     assert_eq!(resp.content.len(), 2);
@@ -412,7 +413,7 @@ async fn test_alist_client_fs_search_empty_results() {
         .mount(&server)
         .await;
 
-    let client = AlistClient::with_token(&server.uri(), "token123").unwrap();
+    let client = AlistClient::with_token(server.uri(), "token123").unwrap();
     let resp = client.fs_search("/movies", "nonexistent", 0, 1, 20, None).await.unwrap();
     assert_eq!(resp.total, 0);
     assert!(resp.content.is_empty());
@@ -459,7 +460,7 @@ async fn test_alist_client_me_success() {
         .mount(&server)
         .await;
 
-    let client = AlistClient::with_token(&server.uri(), "token123").unwrap();
+    let client = AlistClient::with_token(server.uri(), "token123").unwrap();
     let resp = client.me().await.unwrap();
     assert_eq!(resp.id, 1);
     assert_eq!(resp.username, "admin");
@@ -485,7 +486,7 @@ async fn test_alist_client_me_unauthorized() {
         .mount(&server)
         .await;
 
-    let client = AlistClient::with_token(&server.uri(), "bad-token").unwrap();
+    let client = AlistClient::with_token(server.uri(), "bad-token").unwrap();
     let result = client.me().await;
     assert!(result.is_err());
     let err_msg = result.unwrap_err().to_string();
@@ -515,7 +516,7 @@ async fn test_alist_client_login_hashed_success() {
         .mount(&server)
         .await;
 
-    let mut client = AlistClient::new(&server.uri()).unwrap();
+    let mut client = AlistClient::new(server.uri()).unwrap();
     let token = client.login("admin", "sha256_hash_of_password", true).await.unwrap();
     assert_eq!(token, "hashed-login-token-xyz");
     assert!(client.has_token());
@@ -537,7 +538,7 @@ async fn test_alist_client_login_hashed_wrong_password() {
         .mount(&server)
         .await;
 
-    let mut client = AlistClient::new(&server.uri()).unwrap();
+    let mut client = AlistClient::new(server.uri()).unwrap();
     let result = client.login("admin", "wrong_hash", true).await;
     assert!(result.is_err());
 }

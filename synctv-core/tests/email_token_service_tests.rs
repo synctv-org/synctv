@@ -6,15 +6,15 @@
 //! Requires real PostgreSQL via testcontainers.
 //!
 //! Run with: cargo test --test email_token_service_tests
+#![allow(clippy::unwrap_used)]
 
-use synctv_core_testing::{create_test_pool, create_test_jwt_service};
+use synctv_core_testing::{create_test_pool};
 use synctv_core::{
     models::{User, UserId, UserRole, UserStatus},
     repository::UserRepository,
     service::email_token::{EmailTokenService, EmailTokenType},
 };
 use chrono::Utc;
-use sqlx::PgPool;
 fn make_user(username: &str) -> User {
     let now = Utc::now();
     User {

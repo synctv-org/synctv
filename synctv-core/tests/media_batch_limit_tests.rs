@@ -3,6 +3,7 @@
 //! Tests that batch operations have proper size limits to prevent DoS attacks.
 //!
 //! Run with: cargo test --package synctv-core media_batch_limit_tests
+#![allow(clippy::unwrap_used)]
 
 /// Maximum batch size for all batch operations
 /// This value mirrors the constant in synctv-core/src/service/media.rs

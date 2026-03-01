@@ -4,6 +4,7 @@
 //! batch limits, and request construction.
 //!
 //! Run with: cargo test --test media_service_behavior_tests
+#![allow(clippy::unwrap_used)]
 
 use synctv_core::models::{MediaId, PlaylistId, UserId};
 use synctv_core::service::media::{AddMediaRequest, EditMediaRequest};

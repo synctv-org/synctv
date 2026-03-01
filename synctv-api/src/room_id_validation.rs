@@ -39,6 +39,7 @@ pub fn parse_room_id(id: &str) -> Result<RoomId, ValidationError> {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
 

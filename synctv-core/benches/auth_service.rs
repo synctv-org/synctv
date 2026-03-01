@@ -2,7 +2,10 @@
 //!
 //! Run with: cargo bench -p synctv-core --bench auth_service
 
-use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
+#![allow(clippy::unwrap_used)]
+use std::hint::black_box;
+
+use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 use synctv_core::models::UserId;
 use synctv_core::service::auth::{hash_password, verify_password, JwtService, TokenType};
 use std::time::Duration;

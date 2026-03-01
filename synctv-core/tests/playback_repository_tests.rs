@@ -3,8 +3,9 @@
 //! Tests create_or_get idempotency and update optimistic locking.
 //!
 //! Run with: cargo test --test playback_repository_tests
+#![allow(clippy::unwrap_used)]
 
-use synctv_core_testing::{create_test_pool, create_test_jwt_service};
+use synctv_core_testing::{create_test_pool};
 use synctv_core::{
     models::{
         Room, RoomId, RoomStatus, UserId, User, UserRole, UserStatus,
@@ -13,7 +14,6 @@ use synctv_core::{
     Error,
 };
 use chrono::Utc;
-use sqlx::PgPool;
 fn make_user(username: &str) -> User {
     let now = Utc::now();
     User {
@@ -162,6 +162,6 @@ async fn test_update_concurrent_tasks_one_gets_conflict() {
     assert_eq!(failures, 1, "Exactly one update should fail with OptimisticLockConflict");
 
     // Verify the failure is OptimisticLockConflict
-    let err = if r1.is_err() { r1.unwrap_err() } else { r2.unwrap_err() };
+    let err = r1.as_ref().err().or_else(|| r2.as_ref().err()).expect("One should be Err");
     assert!(matches!(err, Error::OptimisticLockConflict));
 }

@@ -5,20 +5,14 @@
 //! (via testcontainers). Each "node" has its own `node_id` but connects
 //! to the same Redis, simulating a multi-replica deployment.
 
-use std::sync::Arc;
+#![allow(clippy::unwrap_used)]
 use std::time::Duration;
 
 use chrono::Utc;
 use synctv_cluster::sync::events::{CacheTarget, ClusterEvent};
-use synctv_cluster::{ClusterConfig, ClusterManager, MessageDeduplicator, RoomMessageHub};
-use synctv_cluster::sync::redis_pubsub::RedisPubSub;
+use synctv_cluster::{ClusterConfig, ClusterManager};
 use synctv_core::cache::{CacheInvalidationService, InvalidationMessage};
-use synctv_core::models::id::{MediaId, RoomId, UserId};
-use testcontainers::ContainerAsync;
-use testcontainers::runners::AsyncRunner;
-use testcontainers_modules::redis::Redis;
-use tokio::sync::broadcast;
-
+use synctv_core::models::id::{RoomId, UserId};
 mod integration_test_helpers;
 use integration_test_helpers::{create_node, TestRedis};
 
@@ -504,11 +498,8 @@ async fn test_concurrent_permission_cache_updates() {
     let handle_a = tokio::spawn(async move {
         let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
         while tokio::time::Instant::now() < deadline {
-            match tokio::time::timeout(Duration::from_millis(100), rx_a.recv()).await {
-                Ok(Ok(InvalidationMessage::User { .. })) => {
-                    count_a.fetch_add(1, Ordering::SeqCst);
-                }
-                _ => {}
+            if let Ok(Ok(InvalidationMessage::User { .. })) = tokio::time::timeout(Duration::from_millis(100), rx_a.recv()).await {
+                count_a.fetch_add(1, Ordering::SeqCst);
             }
         }
     });
@@ -517,11 +508,8 @@ async fn test_concurrent_permission_cache_updates() {
     let handle_b = tokio::spawn(async move {
         let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
         while tokio::time::Instant::now() < deadline {
-            match tokio::time::timeout(Duration::from_millis(100), rx_b.recv()).await {
-                Ok(Ok(InvalidationMessage::User { .. })) => {
-                    count_b.fetch_add(1, Ordering::SeqCst);
-                }
-                _ => {}
+            if let Ok(Ok(InvalidationMessage::User { .. })) = tokio::time::timeout(Duration::from_millis(100), rx_b.recv()).await {
+                count_b.fetch_add(1, Ordering::SeqCst);
             }
         }
     });
@@ -530,11 +518,8 @@ async fn test_concurrent_permission_cache_updates() {
     let handle_c = tokio::spawn(async move {
         let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
         while tokio::time::Instant::now() < deadline {
-            match tokio::time::timeout(Duration::from_millis(100), rx_c.recv()).await {
-                Ok(Ok(InvalidationMessage::User { .. })) => {
-                    count_c.fetch_add(1, Ordering::SeqCst);
-                }
-                _ => {}
+            if let Ok(Ok(InvalidationMessage::User { .. })) = tokio::time::timeout(Duration::from_millis(100), rx_c.recv()).await {
+                count_c.fetch_add(1, Ordering::SeqCst);
             }
         }
     });

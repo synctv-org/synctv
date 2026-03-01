@@ -13,11 +13,12 @@
 //! 6. Reset failure is logged to audit log (Task #91)
 //!
 //! Run with: cargo test -p synctv-core --test room_password_rate_limit_tests -- --nocapture
+#![allow(clippy::unwrap_used)]
 
 use std::net::{IpAddr, Ipv4Addr};
 use std::sync::Arc;
 
-use synctv_core_testing::{create_test_pool, create_test_jwt_service};
+use synctv_core_testing::create_test_pool;
 use synctv_core::{
     cache::{KeyBuilder, NoopCacheL2, UsernameCache},
     config::PasswordComplexityConfig,
@@ -26,7 +27,7 @@ use synctv_core::{
     service::{
         RoomService, UserService, InMemoryTokenBlacklistStore,
         auth::{BruteForceProtection, JwtService},
-        audit::{AuditService, AuditTargetType},
+        audit::AuditService,
     },
 };
 use chrono::Utc;

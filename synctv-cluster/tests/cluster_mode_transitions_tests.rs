@@ -7,6 +7,7 @@
 //! each get_all_nodes() call fails and records a circuit breaker error. After 3
 //! consecutive failures, the circuit breaker opens, switching to Degraded mode.
 
+#![allow(clippy::unwrap_used)]
 use std::sync::Arc;
 use synctv_cluster::discovery::node_registry::{NodeInfo, NodeRegistry};
 use synctv_cluster::ClusterMode;

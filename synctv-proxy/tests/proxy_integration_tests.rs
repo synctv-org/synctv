@@ -6,6 +6,7 @@
 //! wiremock directly use a plain reqwest client and then test the response
 //! transformation logic separately.
 
+#![allow(clippy::unwrap_used)]
 use std::collections::HashMap;
 use std::time::Duration;
 

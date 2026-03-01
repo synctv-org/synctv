@@ -908,8 +908,8 @@ pub async fn validate_rtmp_url_host_with_dns(raw: &str) -> ValidationResult<()> 
         if let Some(end) = authority.find(']') {
             let host = &authority[1..end];
             let remainder = &authority[end + 1..];
-            let port = if remainder.starts_with(':') {
-                remainder[1..].parse::<u16>().unwrap_or(1935)
+            let port = if let Some(stripped) = remainder.strip_prefix(':') {
+                stripped.parse::<u16>().unwrap_or(1935)
             } else {
                 1935
             };

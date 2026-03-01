@@ -3,6 +3,7 @@
 //! Tests for WebRTC signaling events: ICE candidate exchange, SDP offer/answer,
 //! TURN credential acquisition, and signaling timeouts.
 
+#![allow(clippy::unwrap_used)]
 use std::time::Duration;
 
 use synctv_cluster::sync::events::ClusterEvent;

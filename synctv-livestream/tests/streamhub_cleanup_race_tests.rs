@@ -14,6 +14,7 @@
 //!
 //! Run with: cargo test --test streamhub_cleanup_race_tests
 
+#![allow(clippy::unwrap_used)]
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;

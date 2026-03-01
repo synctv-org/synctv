@@ -2,6 +2,7 @@
 //!
 //! Tests that truncated SPS data returns an error instead of panicking.
 
+#![allow(clippy::unwrap_used)]
 use synctv_xiu::h264::sps::SpsParser;
 use synctv_xiu::bytesio::bytes_reader::BytesReader;
 use bytes::BytesMut;

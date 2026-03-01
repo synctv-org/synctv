@@ -4,6 +4,7 @@
 //! - Assert status transitions to Healthy after process_heartbeats when node
 //!   becomes stale and then fresh again
 
+#![allow(clippy::unwrap_used)]
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -88,7 +89,7 @@ async fn test_stale_then_fresh_stays_unhealthy_until_probed() {
         "localhost:50051".to_string(),
         "localhost:8080".to_string(),
     );
-    HealthMonitor::process_heartbeats(&health_status, &[fresh_node.clone()], 30).await;
+    HealthMonitor::process_heartbeats(&health_status, std::slice::from_ref(&fresh_node), 30).await;
 
     {
         let status = health_status.read().await;

@@ -8,6 +8,7 @@
 //! The global MESSAGE_PROCESSING_SEMAPHORE has been replaced with instance-level
 //! configuration via `MessageConcurrencyConfig`.
 
+#![allow(clippy::unwrap_used)]
 use std::sync::Arc;
 use synctv_api::impls::MessageConcurrencyConfig;
 

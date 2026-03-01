@@ -3,6 +3,7 @@
 //! Tests the rate limit layer functions (token_rate_limit_key stability, tier mapping)
 //! and the ClusterAuthInterceptor. Also verifies Bug B12 fix (alive flag on clean close).
 
+#![allow(clippy::unwrap_used)]
 // ============================================================================
 // token_rate_limit_key stability tests (Bug B8 fix)
 // ============================================================================

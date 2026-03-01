@@ -4,8 +4,9 @@
 //!        get_batch silent JSON deserialization drop.
 //!
 //! Run with: cargo test -p synctv-core --test room_settings_repository_tests
+#![allow(clippy::unwrap_used)]
 
-use synctv_core_testing::{create_test_pool, create_test_jwt_service};
+use synctv_core_testing::{create_test_pool};
 use synctv_core::{
     models::{
         UserId, User, UserRole, UserStatus, RoomId, Room, RoomStatus, RoomSettings,

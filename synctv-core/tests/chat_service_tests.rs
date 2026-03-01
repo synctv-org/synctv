@@ -4,6 +4,7 @@
 //! without full service dependencies.
 //!
 //! Run with: cargo test --test chat_service_tests
+#![allow(clippy::unwrap_used)]
 
 /// Maximum chat message characters (mirrors the constant in ChatService)
 const MAX_CHAT_MESSAGE_CHARS: usize = 500;

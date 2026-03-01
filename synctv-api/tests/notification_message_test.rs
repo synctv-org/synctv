@@ -3,6 +3,7 @@
 //! This test verifies that the Notification variant in ServerMessage
 //! properly handles user notifications without abusing the ErrorMessage variant.
 
+#![allow(clippy::unwrap_used)]
 use synctv_api::proto::client::{
     server_message::Message, ServerMessage,
 };

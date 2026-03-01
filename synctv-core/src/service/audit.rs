@@ -365,6 +365,7 @@ impl AuditService {
     }
 
     /// Write a single audit record to the database
+    #[allow(clippy::too_many_arguments)]
     async fn write_single(
         pool: &PgPool,
         action_str: &str,
@@ -1348,12 +1349,12 @@ mod tests {
         // Verify the details JSON structure contains all expected fields
         let room_id = "test_room";
         let media_id = "test_media";
-        let reason = Some("Test reason".to_string());
+        let reason = "Test reason".to_string();
 
         let details = serde_json::json!({
             "room_id": room_id,
             "media_id": media_id,
-            "reason": reason.unwrap_or_default()
+            "reason": reason
         });
 
         assert_eq!(details["room_id"], "test_room");

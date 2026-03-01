@@ -51,13 +51,15 @@ struct ConnectionInfoPersistent {
 impl From<&ConnectionInfo> for ConnectionInfoPersistent {
     fn from(info: &ConnectionInfo) -> Self {
         let now = SystemTime::now();
-        let connected_at_unix = now.duration_since(UNIX_EPOCH).unwrap().as_secs()
+        let now_unix = now.duration_since(UNIX_EPOCH)
+            .expect("SystemTime is before UNIX_EPOCH")
+            .as_secs();
+        let connected_at_unix = now_unix
             .saturating_sub(info.connected_at.elapsed().as_secs());
-        let last_activity_unix = now.duration_since(UNIX_EPOCH).unwrap().as_secs()
+        let last_activity_unix = now_unix
             .saturating_sub(info.last_activity.elapsed().as_secs());
         let rtc_joined_at_unix = info.rtc_joined_at.map(|joined| {
-            now.duration_since(UNIX_EPOCH).unwrap().as_secs()
-                .saturating_sub(joined.elapsed().as_secs())
+            now_unix.saturating_sub(joined.elapsed().as_secs())
         });
 
         Self {
@@ -449,7 +451,8 @@ impl ConnectionManager {
             const RETRY_INTERVAL: Duration = Duration::from_millis(100);
             /// Maximum age of a pending disconnect signal before it's dropped (5 seconds).
             const MAX_SIGNAL_AGE: Duration = Duration::from_secs(5);
-            /// Maximum retry attempts per signal.
+            /// Maximum retry attempts per signal (used by age-based eviction via `MAX_SIGNAL_AGE`).
+            #[allow(dead_code)]
             const MAX_RETRIES: u32 = 50; // 50 * 100ms = 5 seconds
 
             let mut ticker = tokio::time::interval(RETRY_INTERVAL);
@@ -527,7 +530,6 @@ impl ConnectionManager {
         match self.disconnect_tx.send(signal.clone()) {
             Ok(_) => {
                 // Signal sent successfully
-                return;
             }
             Err(_) => {
                 // Channel might be full or have no receivers
@@ -648,7 +650,6 @@ impl ConnectionManager {
     /// preventing users from exceeding their connection limit.
     ///
     /// Returns Ok(()) if the user can accept a connection, or Err with reason if at limit.
-    #[must_use]
     pub fn can_accept_user_connection(&self, user_id: &UserId) -> Result<(), String> {
         // Check local user connection limit
         let user_entry = self.user_connections.get(user_id);
@@ -671,7 +672,6 @@ impl ConnectionManager {
     /// preventing unauthorized connections from being upgraded.
     ///
     /// Returns Ok(()) if the room can accept a connection, or Err with reason if at capacity.
-    #[must_use]
     pub fn can_accept_room_connection(&self, room_id: &RoomId) -> Result<(), String> {
         // Check local room connection limit
         let room_entry = self.room_connections.get(room_id);
@@ -1048,7 +1048,7 @@ impl ConnectionManager {
                 let retry_tx = self.pending_retries_tx.clone();
 
                 let cleanup = async {
-                    let this = &*self;
+                    let this = self;
 
                     // Decrement total distributed counter
                     let total_key = format!("{key_prefix}connections:total");
@@ -1572,14 +1572,14 @@ impl ConnectionManager {
 
             // Add counter keys to batch
             while counter_offset < counter_keys_vec.len() && batch_keys.len() < TTL_REFRESH_BATCH_SIZE {
-                batch_keys.push(&counter_keys_vec[counter_offset]);
+                batch_keys.push(counter_keys_vec[counter_offset]);
                 batch_counter_count += 1;
                 counter_offset += 1;
             }
 
             // Add metadata keys to batch
             while metadata_offset < metadata_keys_vec.len() && batch_keys.len() < TTL_REFRESH_BATCH_SIZE {
-                batch_keys.push(&metadata_keys_vec[metadata_offset]);
+                batch_keys.push(metadata_keys_vec[metadata_offset]);
                 batch_metadata_count += 1;
                 metadata_offset += 1;
             }

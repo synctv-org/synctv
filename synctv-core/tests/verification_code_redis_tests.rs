@@ -4,6 +4,7 @@
 //! roundtrip, attempt counting, TTL expiry.
 //!
 //! Run with: cargo test --test verification_code_redis_tests
+#![allow(clippy::unwrap_used)]
 
 use std::sync::Arc;
 use synctv_core::service::{EmailService, RedisVerificationCodeStore, VerificationCodeStore};

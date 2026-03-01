@@ -1,3 +1,5 @@
+#![cfg_attr(test, allow(clippy::unwrap_used))]
+
 mod app;
 mod bootstrap;
 mod cluster_bridge;

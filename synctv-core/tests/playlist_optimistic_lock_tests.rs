@@ -3,8 +3,9 @@
 //! Tests for version-based optimistic locking on playlist updates.
 //!
 //! Run with: cargo test --test playlist_optimistic_lock_tests
+#![allow(clippy::unwrap_used)]
 
-use synctv_core_testing::{create_test_pool, create_test_jwt_service};
+use synctv_core_testing::create_test_pool;
 use synctv_core::{
     models::{
         Room, RoomId, RoomStatus, UserId, User, UserRole, UserStatus,
@@ -14,7 +15,6 @@ use synctv_core::{
     Error,
 };
 use chrono::Utc;
-use sqlx::PgPool;
 /// Default PostgreSQL version for test containers
 fn make_user(username: &str) -> User {
     let now = Utc::now();

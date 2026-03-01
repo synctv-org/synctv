@@ -15,6 +15,7 @@
 //! # Requirements
 //!
 //! - Docker for testcontainers (PostgreSQL + Redis)
+#![allow(clippy::unwrap_used)]
 
 use std::sync::Arc;
 
@@ -35,7 +36,6 @@ use testcontainers_modules::postgres::Postgres;
 use testcontainers_modules::redis::Redis;
 use testcontainers::runners::AsyncRunner;
 
-const REDIS_VERSION: &str = "7-alpine";
 const POSTGRES_VERSION: &str = "16-alpine";
 
 // ============================================================================

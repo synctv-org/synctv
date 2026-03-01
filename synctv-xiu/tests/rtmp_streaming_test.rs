@@ -9,6 +9,7 @@
 //! 6. Fan-out frame/packet delivery
 //! 7. Statistics data processing
 
+#![allow(clippy::unwrap_used)]
 use bytes::{Bytes, BytesMut};
 use std::sync::Arc;
 

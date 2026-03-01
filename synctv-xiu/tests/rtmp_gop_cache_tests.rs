@@ -14,8 +14,9 @@
 //! When `save_frame_data` is called with `is_key_frame=true`:
 //! 1. It first pushes a new empty GOP to the deque
 //! 2. Then adds the frame to this new GOP
-//! This means the first keyframe creates 2 GOPs (initial + new), not 1.
+//!    This means the first keyframe creates 2 GOPs (initial + new), not 1.
 
+#![allow(clippy::unwrap_used)]
 use synctv_xiu::rtmp::cache::gop::{Gop, Gops, DEFAULT_MAX_TOTAL_BYTES};
 use synctv_xiu::streamhub::define::FrameData;
 use bytes::Bytes;

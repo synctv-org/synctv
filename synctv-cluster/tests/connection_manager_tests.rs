@@ -3,6 +3,7 @@
 //! Tests for connection lifecycle, room joins, limits, disconnect signals,
 //! and RTC filtering.
 
+#![allow(clippy::unwrap_used)]
 use std::time::Duration;
 use synctv_cluster::{ConnectionManager};
 use synctv_core::models::id::{RoomId, UserId};
@@ -21,7 +22,7 @@ fn rid(s: &str) -> RoomId {
 
 #[tokio::test]
 async fn test_disconnect_signal_queued_when_no_receiver() {
-    use synctv_cluster::sync::DisconnectSignal;
+    
 
     let mgr = ConnectionManager::default();
     let user = uid("u1");
@@ -78,7 +79,7 @@ async fn test_disconnect_user_from_room_signal() {
 
 #[tokio::test]
 async fn test_disconnect_signal_reliability_under_load() {
-    use synctv_cluster::sync::DisconnectSignal;
+    
 
     let mgr = ConnectionManager::default();
 

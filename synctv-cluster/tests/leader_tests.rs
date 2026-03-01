@@ -4,6 +4,7 @@
 //! first-election timing (verifies the bug fix), and vacancy events.
 //! These tests do not require a running Redis instance.
 
+#![allow(clippy::unwrap_used)]
 use std::time::Duration;
 use synctv_cluster::leader::{LeaderElect, LeadershipEvent};
 use tokio::sync::broadcast;

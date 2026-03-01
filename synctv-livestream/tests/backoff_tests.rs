@@ -3,6 +3,7 @@
 //! These tests verify the backoff calculation after the B10 fix
 //! (removing the off-by-one .saturating_sub(1)).
 
+#![allow(clippy::unwrap_used)]
 use std::time::Instant;
 
 /// Helper: compute the expected base delay for a given attempt.
@@ -23,7 +24,7 @@ async fn test_backoff_attempt_0() {
     // attempt=0: base = 100 * 2^0 = 100, with +/- 25% jitter = [75, 125]
     // Allow some scheduling slack
     assert!(
-        elapsed >= 50 && elapsed <= 200,
+        (50..=200).contains(&elapsed),
         "attempt 0 delay was {}ms, expected ~100ms",
         elapsed
     );

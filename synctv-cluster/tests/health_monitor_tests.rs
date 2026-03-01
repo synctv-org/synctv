@@ -4,6 +4,7 @@
 //! fresh nodes marked healthy (verifies the bug fix), and backoff
 //! multiplier capping.
 
+#![allow(clippy::unwrap_used)]
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;

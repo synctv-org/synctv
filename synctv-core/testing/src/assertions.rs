@@ -2,6 +2,7 @@
 //!
 //! This module provides reusable assertion macros to reduce boilerplate
 //! across tests.
+#![allow(clippy::unwrap_used)]
 
 /// Asserts that a value is within a range
 ///
@@ -63,11 +64,9 @@ macro_rules! assert_err {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     #[test]
     fn test_assert_error_macro() {
-        let result: Result<(), String> = Err("test error".to_string());
+        let _result: Result<(), String> = Err("test error".to_string());
         // This should compile - we can't actually test it without the Error enum
         // assert_error!(result, String);
     }

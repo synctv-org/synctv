@@ -7,6 +7,7 @@
 //! - Unit tests: validate individual components in isolation (no server needed)
 //! - E2E tests: full WebSocket lifecycle with real Postgres + Redis (TestInfra)
 
+#![allow(clippy::unwrap_used)]
 use synctv_api::http::websocket::{AuthMethod, WsQuery};
 
 // ============================================================================
@@ -977,16 +978,13 @@ mod websocket_e2e {
         quiet_ms: u64,
     ) -> Vec<ServerMessage> {
         let mut collected = Vec::new();
-        loop {
-            match tokio::time::timeout(
-                std::time::Duration::from_millis(quiet_ms),
-                recv_server_message(ws),
-            )
-            .await
-            {
-                Ok(Some(msg)) => collected.push(msg),
-                _ => break,
-            }
+        while let Ok(Some(msg)) = tokio::time::timeout(
+            std::time::Duration::from_millis(quiet_ms),
+            recv_server_message(ws),
+        )
+        .await
+        {
+            collected.push(msg);
         }
         collected
     }
@@ -1971,7 +1969,7 @@ mod websocket_e2e {
                 recv_server_message_skip_membership(&mut ws),
             )
             .await
-            .expect(&format!("timeout on heartbeat in cycle {cycle}"))
+            .unwrap_or_else(|_| panic!("timeout on heartbeat in cycle {cycle}"))
             .expect("stream ended");
             assert!(
                 matches!(ack.message, Some(server_message::Message::HeartbeatAck(_))),
@@ -1979,7 +1977,7 @@ mod websocket_e2e {
             );
 
             // Graceful disconnect
-            ws.close(None).await.expect(&format!("close in cycle {cycle}"));
+            ws.close(None).await.unwrap_or_else(|_| panic!("close in cycle {cycle}"));
 
             // Wait for server to process the disconnect and clean up state
             tokio::time::sleep(std::time::Duration::from_millis(500)).await;
@@ -2467,7 +2465,7 @@ mod websocket_e2e {
 #[cfg(test)]
 mod websocket_connection_limit_timing {
     use std::sync::Arc;
-    use futures::StreamExt;
+    
     use tokio::net::TcpListener;
     use tokio_tungstenite::tungstenite;
 
@@ -3099,8 +3097,7 @@ mod slow_client_message_recovery {
         const PENDING_DISCONNECT_TTL_SECS: u64 = 60;
         const RETRY_INTERVAL_SECS: u64 = 5;
 
-        assert!(PENDING_DISCONNECT_TTL_SECS > RETRY_INTERVAL_SECS,
-            "TTL should be longer than retry interval for at least one retry attempt");
+        const { assert!(PENDING_DISCONNECT_TTL_SECS > RETRY_INTERVAL_SECS) };
     }
 
     /// Test that membership validation serves as fallback for missed signals.
@@ -3117,8 +3114,7 @@ mod slow_client_message_recovery {
         const MEMBERSHIP_CACHE_TTL_SECS: u64 = 30;
         const HEARTBEAT_INTERVAL_SECS: u64 = 30;
 
-        assert!(MEMBERSHIP_CACHE_TTL_SECS >= HEARTBEAT_INTERVAL_SECS,
-            "Cache TTL should allow at least one heartbeat check before expiry");
+        const { assert!(MEMBERSHIP_CACHE_TTL_SECS >= HEARTBEAT_INTERVAL_SECS) };
     }
 
     /// Test the relationship between message channel capacity and recovery.
@@ -3138,7 +3134,7 @@ mod slow_client_message_recovery {
 
         // This is the expected flow for slow client handling
         const SLOW_CLIENT_DROP_THRESHOLD: u32 = 10;
-        assert!(SLOW_CLIENT_DROP_THRESHOLD > 0);
+        const { assert!(SLOW_CLIENT_DROP_THRESHOLD > 0) };
     }
 }
 
@@ -3181,9 +3177,7 @@ mod membership_cache_ttl_tests {
         const MIN_HEARTBEAT_INTERVAL_SECS: u64 = 25;
 
         // TTL should be at least as long as minimum heartbeat interval
-        assert!(MEMBERSHIP_CACHE_TTL_SECS >= MIN_HEARTBEAT_INTERVAL_SECS,
-            "Cache TTL ({}) should be >= minimum heartbeat interval ({})",
-            MEMBERSHIP_CACHE_TTL_SECS, MIN_HEARTBEAT_INTERVAL_SECS);
+        const { assert!(MEMBERSHIP_CACHE_TTL_SECS >= MIN_HEARTBEAT_INTERVAL_SECS) };
     }
 
     /// Test that worst-case disconnect time is acceptable.
@@ -3252,7 +3246,7 @@ mod danmu_sse_tests {
 
         // Keep-alive interval
         const KEEP_ALIVE_INTERVAL_SECS: u64 = 15;
-        assert!(KEEP_ALIVE_INTERVAL_SECS > 0);
+        const { assert!(KEEP_ALIVE_INTERVAL_SECS > 0) };
     }
 
     /// Test that documents expected SSE event structure.
@@ -3349,9 +3343,9 @@ mod danmu_sse_tests {
 
         // This ensures the connection stays active even when
         // no danmaku is being received
-        assert!(KEEP_ALIVE_INTERVAL_SECS >= 10, "Keep-alive should be frequent enough");
-        assert!(KEEP_ALIVE_INTERVAL_SECS <= 30, "Keep-alive should not be too frequent");
-        assert!(!KEEP_ALIVE_TEXT.is_empty());
+        const { assert!(KEEP_ALIVE_INTERVAL_SECS >= 10) };
+        const { assert!(KEEP_ALIVE_INTERVAL_SECS <= 30) };
+        const { assert!(!KEEP_ALIVE_TEXT.is_empty()) };
     }
 }
 

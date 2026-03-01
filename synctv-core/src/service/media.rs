@@ -369,10 +369,10 @@ impl MediaService {
 
     /// Edit media item
     ///
-    /// Uses optimistic locking via `added_at` (immutable per row) to detect
-    /// concurrent modifications. If another edit changes the row between our
-    /// read and write, the conditional UPDATE returns no rows and we retry
-    /// with fresh data.
+    /// Uses optimistic locking via `version` column to detect concurrent
+    /// modifications. If another edit changes the row between our read and
+    /// write, the conditional UPDATE returns no rows and we retry with fresh
+    /// data.
     pub async fn edit_media(
         &self,
         room_id: RoomId,
@@ -410,9 +410,8 @@ impl MediaService {
                 .check_permission_no_cache(&room_id, &user_id, required_permission)
                 .await?;
 
-            // Capture the old values before applying changes to detect concurrent edits
-            let old_name = media.name.clone();
-            let old_position = media.position;
+            // Capture the version before applying changes to detect concurrent edits
+            let expected_version = media.version;
 
             // Update fields
             if let Some(ref name) = request.name {
@@ -423,10 +422,9 @@ impl MediaService {
             }
 
             // Conditional update: only succeed if no other edit changed the row
-            match self.media_repo.update_if_unchanged(
+            match self.media_repo.update_with_version(
                 &media,
-                &old_name,
-                old_position,
+                expected_version,
             ).await {
                 Ok(Some(updated_media)) => {
                     tracing::info!(
@@ -1143,7 +1141,7 @@ mod tests {
     #[test]
     fn test_source_config_unicode_content_size() {
         // Unicode characters should be counted correctly in bytes, not characters
-        const MAX_SOURCE_CONFIG_SIZE: usize = 1024 * 1024; // 1MB
+        // (MAX_SOURCE_CONFIG_SIZE is 1MB but this test just validates byte counting)
 
         // Unicode emoji takes 4 bytes in UTF-8
         let unicode_string = "🎉".repeat(100);

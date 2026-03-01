@@ -6,6 +6,7 @@
 //! Run with: cargo test -p synctv-core --test remote_provider_manager_tests
 //!
 //! NOTE: These tests require Docker for testcontainers (PostgreSQL + Redis).
+#![allow(clippy::unwrap_used)]
 
 use chrono::Utc;
 use synctv_core::{
@@ -468,7 +469,7 @@ async fn test_tls_configuration_secure() {
     let redis_conn = Some(infra.redis_connection_manager().await);
     let redis_client = Some(infra.redis_client.clone());
 
-    let repo = ProviderInstanceRepository::new(infra.pool.clone());
+    let _repo = ProviderInstanceRepository::new(infra.pool.clone());
 
     // Create instance with secure TLS (not insecure)
     let instance = make_test_instance_tls("test-instance-8", false);

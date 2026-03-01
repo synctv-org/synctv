@@ -17,6 +17,7 @@
 //! # Requirements
 //!
 //! - Docker for testcontainers (PostgreSQL + Redis)
+#![allow(clippy::unwrap_used)]
 
 use std::sync::Arc;
 
@@ -238,7 +239,6 @@ async fn create_test_room(
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
-#[ignore = "Requires Docker"]
 async fn rtmp_auth_test_publish_key_generation_and_validation() {
     let (_postgres, _redis, pool, _redis_conn) = create_test_infra().await;
 
@@ -271,7 +271,6 @@ async fn rtmp_auth_test_publish_key_generation_and_validation() {
 // ============================================================================
 
 #[tokio::test]
-#[ignore = "Requires Docker"]
 #[ignore = "Requires Docker"]
 async fn rtmp_auth_test_expired_token_rejected() {
     let (_postgres, _redis, pool, _redis_conn) = create_test_infra().await;
@@ -312,7 +311,6 @@ async fn rtmp_auth_test_expired_token_rejected() {
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
-#[ignore = "Requires Docker"]
 async fn rtmp_auth_test_banned_user_validation() {
     let (_postgres, _redis, pool, _redis_conn) = create_test_infra().await;
 
@@ -337,7 +335,7 @@ async fn rtmp_auth_test_banned_user_validation() {
         .expect("Failed to ban user");
 
     // Token should still be valid at the JWT level (user status is checked separately)
-    let claims = publish_key_service
+    let _claims = publish_key_service
         .validate_publish_key(&key.token)
         .await
         .expect("Token validation should succeed (user status check is separate)");
@@ -357,7 +355,6 @@ async fn rtmp_auth_test_banned_user_validation() {
 // ============================================================================
 
 #[tokio::test]
-#[ignore = "Requires Docker"]
 #[ignore = "Requires Docker"]
 async fn rtmp_auth_test_deleted_user_validation() {
     let (_postgres, _redis, pool, _redis_conn) = create_test_infra().await;
@@ -401,7 +398,6 @@ async fn rtmp_auth_test_deleted_user_validation() {
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
-#[ignore = "Requires Docker"]
 async fn rtmp_auth_test_banned_room_rejects_operations() {
     let (_postgres, _redis, pool, _redis_conn) = create_test_infra().await;
 
@@ -440,7 +436,6 @@ async fn rtmp_auth_test_banned_room_rejects_operations() {
 // ============================================================================
 
 #[tokio::test]
-#[ignore = "Requires Docker"]
 #[ignore = "Requires Docker"]
 async fn rtmp_auth_test_pending_room_rejects_operations() {
     let (_postgres, _redis, pool, _redis_conn) = create_test_infra().await;
@@ -481,7 +476,6 @@ async fn rtmp_auth_test_pending_room_rejects_operations() {
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
-#[ignore = "Requires Docker"]
 async fn rtmp_auth_test_cross_replica_user_stream_mapping() {
     let (_postgres, _redis, _pool, redis_conn) = create_test_infra().await;
 
@@ -490,7 +484,7 @@ async fn rtmp_auth_test_cross_replica_user_stream_mapping() {
     let media_id = MediaId::new();
 
     // Simulate writing user stream mapping to Redis
-    let stream_key = format!("{}:{}", room_id.to_string(), media_id.to_string());
+    let stream_key = format!("{}:{}", room_id, media_id);
     let redis_key = "synctv:rtmp:user_streams";
 
     let mut conn = redis_conn.clone();
@@ -536,7 +530,6 @@ async fn rtmp_auth_test_cross_replica_user_stream_mapping() {
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
-#[ignore = "Requires Docker"]
 async fn rtmp_auth_test_rtmp_player_settings() {
     let (_postgres, _redis, pool, _redis_conn) = create_test_infra().await;
 
@@ -574,7 +567,6 @@ async fn rtmp_auth_test_rtmp_player_settings() {
 // ============================================================================
 
 #[tokio::test]
-#[ignore = "Requires Docker"]
 #[ignore = "Requires Docker"]
 async fn rtmp_auth_test_non_room_member_rejected() {
     let (_postgres, _redis, pool, _redis_conn) = create_test_infra().await;

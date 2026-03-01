@@ -8,10 +8,11 @@
 //!
 //! Run with: cargo test -p synctv-core --test admin_permission_boundary_tests -- --nocapture
 //! Docker tests: cargo test -p synctv-core --test admin_permission_boundary_tests -- --ignored --nocapture
+#![allow(clippy::unwrap_used)]
 
 use std::sync::Arc;
 
-use synctv_core_testing::{create_test_pool, create_test_jwt_service};
+use synctv_core_testing::{create_test_pool};
 use synctv_core::{
     cache::{KeyBuilder, NoopCacheL2, UsernameCache},
     config::PasswordComplexityConfig,

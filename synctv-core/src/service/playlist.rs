@@ -636,7 +636,7 @@ mod tests {
     #[test]
     fn test_nesting_depth_limit() {
         let max_ancestors = 9;
-        assert!(max_ancestors + 1 <= 10);
+        assert!(max_ancestors < 10);
         assert!(max_ancestors + 1 + 1 > 10);
     }
 

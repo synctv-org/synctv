@@ -4,6 +4,7 @@
 //!
 //! Run with: cargo test --test publish_key_tests
 //! Run Docker tests: cargo test --test publish_key_tests -- --ignored
+#![allow(clippy::unwrap_used)]
 
 use synctv_core::models::{MediaId, RoomId, UserId};
 use synctv_core::service::{

@@ -5,6 +5,7 @@
 //! - connection_manager=None -> empty results
 //! - deregister_node: epoch-required check
 
+#![allow(clippy::unwrap_used)]
 use std::sync::Arc;
 use tonic::Request;
 

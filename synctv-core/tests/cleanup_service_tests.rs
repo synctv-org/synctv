@@ -5,10 +5,11 @@
 //! checks (but use testcontainers for run_all verification).
 //!
 //! Run with: cargo test -p synctv-core --test cleanup_service_tests -- --nocapture
+#![allow(clippy::unwrap_used)]
 
 use std::sync::Arc;
 
-use synctv_core_testing::{create_test_pool, create_test_jwt_service};
+use synctv_core_testing::{create_test_pool};
 use synctv_core::service::{
     cleanup::{CleanupConfig, CleanupService},
     LeaderCheck, AlwaysLeader,

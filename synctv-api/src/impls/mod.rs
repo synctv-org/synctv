@@ -517,6 +517,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::type_complexity)]
     fn test_api_error_display_roundtrips_through_classify() {
         // ApiError::Display produces prefixed strings that classify_by_prefix recognizes
         let cases: Vec<(ApiError, fn(&ErrorKind) -> bool)> = vec![

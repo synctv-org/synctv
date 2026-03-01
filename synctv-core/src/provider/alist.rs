@@ -967,7 +967,7 @@ mod tests {
         // Old behavior: would fetch 20 pages = 1000 items (or hit MAX_PAGES limit)
         // New behavior: stops at MAX_ITEMS = 200 items (4 pages)
 
-        let pages_to_fetch = (MAX_ITEMS + PAGE_SIZE - 1) / PAGE_SIZE; // 4 pages
+        let pages_to_fetch = MAX_ITEMS.div_ceil(PAGE_SIZE); // 4 pages
         let items_fetched = pages_to_fetch * PAGE_SIZE; // 200 items
 
         assert_eq!(pages_to_fetch, 4);

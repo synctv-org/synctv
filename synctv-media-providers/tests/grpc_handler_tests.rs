@@ -2,6 +2,7 @@
 //!
 //! Tests for gRPC service validation layers (input validation before dispatching to HTTP clients).
 
+#![allow(clippy::unwrap_used)]
 use synctv_media_providers::grpc::validation::{validate_host, validate_required};
 
 // === Bilibili gRPC validation ===

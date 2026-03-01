@@ -4,6 +4,7 @@
 //! PermissionBits, RoomRole, room permission calculations.
 //!
 //! Run with: cargo test --test model_logic_tests
+#![allow(clippy::unwrap_used)]
 
 use synctv_core::models::{
     PermissionBits,

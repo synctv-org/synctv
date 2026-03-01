@@ -14,6 +14,7 @@
 //! or `degraded_operation_count()` to detect Redis connectivity issues.
 //!
 //! Run with: cargo test --test brute_force_tests -- --nocapture
+#![allow(clippy::unwrap_used)]
 
 use std::net::{IpAddr, Ipv4Addr};
 use std::sync::Arc;
@@ -179,8 +180,6 @@ async fn test_brute_force_reset_unlocks() {
 
 use testcontainers_modules::redis::Redis;
 use testcontainers::runners::AsyncRunner;
-
-const REDIS_VERSION: &str = "7-alpine";
 
 async fn start_redis() -> (testcontainers::ContainerAsync<Redis>, redis::aio::ConnectionManager) {
     let container = Redis::default()
@@ -391,7 +390,7 @@ async fn test_redis_tracker_success_clears_degraded_flag() {
 
     // Multiple successful operations
     for i in 1..=3 {
-        tracker.record_failure(key, now + i, 900).await;
+        let _ = tracker.record_failure(key, now + i, 900).await;
         assert!(
             !tracker.is_degraded(),
             "After successful record_failure #{i}, should not be degraded"
@@ -404,7 +403,7 @@ async fn test_redis_tracker_success_clears_degraded_flag() {
     assert!(!tracker.is_degraded(), "After successful get_attempts, should not be degraded");
 
     // Reset should also clear degraded flag
-    tracker.reset(key).await;
+    let _ = tracker.reset(key).await;
     assert!(!tracker.is_degraded(), "After successful reset, should not be degraded");
 
     let (count, _) = tracker.get_attempts(key).await.unwrap();
@@ -426,8 +425,8 @@ async fn test_redis_tracker_fallback_not_used_when_redis_healthy() {
 
     // Record failures - should go to Redis, not fallback
     tracker.record_failure(key, now, 900).await.unwrap();
-    tracker.record_failure(key, now + 1, 900).await;
-    tracker.record_failure(key, now + 2, 900).await;
+    let _ = tracker.record_failure(key, now + 1, 900).await;
+    let _ = tracker.record_failure(key, now + 2, 900).await;
 
     // Read back - should get data from Redis
     let (count, ts) = tracker.get_attempts(key).await.unwrap();

@@ -4,6 +4,7 @@
 //! These are pure unit tests (no database needed).
 //!
 //! Run with: cargo test --test credential_encryption_tests
+#![allow(clippy::unwrap_used)]
 
 use synctv_core::service::credential_encryption::CredentialEncryption;
 use serde_json::json;

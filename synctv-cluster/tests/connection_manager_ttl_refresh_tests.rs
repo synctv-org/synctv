@@ -2,10 +2,10 @@
 //!
 //! Tests for batch TTL refresh with large number of connections.
 
+#![allow(clippy::unwrap_used)]
 use std::time::{Duration, Instant};
 
 use redis::AsyncCommands;
-use testcontainers::core::ImageExt;
 use testcontainers::runners::AsyncRunner;
 use testcontainers_modules::redis::Redis;
 
@@ -13,6 +13,7 @@ use synctv_cluster::sync::{ConnectionLimits, ConnectionManager};
 use synctv_core::models::id::{RoomId, UserId};
 
 /// Default Redis version for test containers
+#[allow(dead_code)]
 const REDIS_VERSION: &str = "7-alpine";
 
 /// Helper to create a Redis container and connection manager.
@@ -297,8 +298,8 @@ fn test_ttl_refresh_batch_size_reasonable() {
     const EXPECTED_BATCH_SIZE: usize = 1000;
 
     // Verify the expected batch size is in a reasonable range
-    assert!(EXPECTED_BATCH_SIZE >= 100, "Batch size should be at least 100 for efficiency");
-    assert!(EXPECTED_BATCH_SIZE <= 10_000, "Batch size should be at most 10,000 to avoid large payloads");
+    const { assert!(EXPECTED_BATCH_SIZE >= 100) };
+    const { assert!(EXPECTED_BATCH_SIZE <= 10_000) };
 
     // Note: The actual TTL_REFRESH_BATCH_SIZE constant is private in the module.
     // We verify the design constraint here that batch sizes should be 1000.
@@ -512,7 +513,7 @@ async fn test_distributed_counter_ttl_is_2x_refresh_interval() {
     // TTL should be approximately 120 seconds (2x the 60s refresh interval)
     // We allow a small margin for test execution time
     assert!(
-        ttl >= 115 && ttl <= 125,
+        (115..=125).contains(&ttl),
         "Distributed counter TTL should be ~120s (2x refresh interval), got {}s",
         ttl
     );

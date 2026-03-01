@@ -3,6 +3,7 @@
 //! Tests that credential storage validates host URLs against SSRF attacks
 //! before persisting them to the database.
 
+#![allow(clippy::unwrap_used)]
 use std::collections::HashMap;
 use synctv_media_providers::{CredentialData, InMemoryCredentialStorage, CredentialStorage, ProviderType};
 

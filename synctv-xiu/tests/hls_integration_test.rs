@@ -6,6 +6,7 @@
 //! 3. Stream registry operations
 //! 4. Storage abstraction
 
+#![allow(clippy::unwrap_used)]
 use std::collections::VecDeque;
 use std::time::Instant;
 use synctv_xiu::hls::{SegmentInfo, StreamProcessorState};

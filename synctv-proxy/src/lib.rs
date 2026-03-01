@@ -1,3 +1,4 @@
+#![cfg_attr(test, allow(clippy::unwrap_used))]
 //! Shared media proxy utilities
 //!
 //! Provides reusable functions for proxying media streams and rewriting M3U8
@@ -1164,6 +1165,7 @@ pub fn validate_proxy_url_static(raw: &str) -> Result<(), anyhow::Error> {
 }
 
 #[cfg(test)]
+#[allow(deprecated)]
 mod tests {
     use super::*;
     use axum::http::StatusCode;

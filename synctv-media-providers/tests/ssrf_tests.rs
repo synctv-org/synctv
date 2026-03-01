@@ -3,6 +3,7 @@
 //! Tests for Teredo (2001::/32), 6to4 (2002::/16), IPv4-mapped IPv6,
 //! and additional edge cases in the SSRF module.
 
+#![allow(clippy::unwrap_used)]
 use std::net::{Ipv4Addr, Ipv6Addr};
 use synctv_media_providers::ssrf::{
     check_hostname, check_url, is_blocked_ip, is_blocked_ipv4, is_blocked_ipv6,

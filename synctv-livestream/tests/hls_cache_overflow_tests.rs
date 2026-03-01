@@ -3,6 +3,7 @@
 //! These tests verify that the cache version counter in HlsProxyClient
 //! handles overflow correctly when approaching u64::MAX.
 
+#![allow(clippy::unwrap_used)]
 use std::sync::Arc;
 use dashmap::DashMap;
 

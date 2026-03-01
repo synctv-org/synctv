@@ -5,6 +5,7 @@
 //!
 //! Also tests for catchup_start_id calculation used during reconnection.
 
+#![allow(clippy::unwrap_used)]
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Replicate the is_sentinel_failover_error logic from redis_pubsub.
@@ -206,8 +207,8 @@ fn test_catchup_start_id_large_window_no_underflow() {
     let id = catchup_start_id(large_window);
     let (ts, seq) = parse_stream_id(&id).expect("Valid stream ID");
 
-    // Should still be a valid ID (not negative, not garbage)
-    assert!(ts > 0 || ts == 0, "Timestamp should be valid");
+    // Should still be a valid ID (parsed successfully above)
+    let _ = ts; // timestamp is always valid (unsigned)
     assert_eq!(seq, 0, "Sequence should be 0");
     // Due to saturating_sub, if window > now, we get 0
     // This is acceptable - it means reading from the beginning
@@ -228,7 +229,8 @@ fn test_stream_id_comparison_for_reconnect() {
     let (old_ts, _) = parse_stream_id(old_cursor).expect("Valid old cursor");
     let (new_ts, _) = parse_stream_id(&catchup_id).expect("Valid catchup ID");
 
+    // Both timestamps should be valid (parsed successfully above).
     // The comparison should work numerically, not lexicographically
-    // (Redis Stream IDs are {timestamp}-{sequence}, not simple strings)
-    assert!(old_ts < new_ts || old_ts >= new_ts, "Comparison should be valid");
+    // (Redis Stream IDs are {timestamp}-{sequence}, not simple strings).
+    let _ = old_ts.cmp(&new_ts); // Verify Ord comparison compiles
 }

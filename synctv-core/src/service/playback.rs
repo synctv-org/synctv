@@ -1031,6 +1031,7 @@ impl PlaybackService {
     }
 
     /// Update multiple playback properties at once
+    #[allow(clippy::too_many_arguments)]
     pub async fn update_multiple(
         &self,
         room_id: RoomId,
@@ -1050,6 +1051,7 @@ impl PlaybackService {
     /// the update, but the SQL `WHERE version = $N` optimistic lock in
     /// `update_state()` already provides the same protection without the extra
     /// DB round-trip. The parameter is retained for API compatibility.
+    #[allow(clippy::too_many_arguments)]
     pub async fn update_multiple_with_version(
         &self,
         room_id: RoomId,
@@ -1151,7 +1153,7 @@ mod tests {
     #[test]
     fn test_speed_validation_bounds() {
         // UI bounds: 0.25 <= speed <= 4.0
-        let valid = |s: f64| s >= 0.25 && s <= 4.0;
+        let valid = |s: f64| (0.25..=4.0).contains(&s);
 
         // Valid boundary values
         assert!(valid(0.25));
@@ -1178,10 +1180,10 @@ mod tests {
         assert!(position < 0.0, "Negative seek positions should be rejected");
 
         let position = 0.0_f64;
-        assert!(!(position < 0.0), "Zero seek position should be accepted");
+        assert!(position >= 0.0, "Zero seek position should be accepted");
 
         let position = 42.5_f64;
-        assert!(!(position < 0.0), "Positive seek position should be accepted");
+        assert!(position >= 0.0, "Positive seek position should be accepted");
     }
 
     #[test]
@@ -1232,7 +1234,7 @@ mod tests {
             // attempt 1: base * 2 = 10ms
             let base_ms = PlaybackService::BACKOFF_BASE_MS;
 
-            let backoff_attempt_0 = base_ms * (1 << 0); // 5ms
+            let backoff_attempt_0 = base_ms; // 5ms
             let backoff_attempt_1 = base_ms * (1 << 1); // 10ms
 
             assert_eq!(backoff_attempt_0, 5);

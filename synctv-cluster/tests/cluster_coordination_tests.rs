@@ -5,6 +5,7 @@
 //!
 //! Run with: cargo test --test cluster_coordination_tests
 
+#![allow(clippy::unwrap_used)]
 use synctv_cluster::discovery::{NodeInfo, NodeRegistry, HealthMonitor, LoadBalancer, LoadBalancingStrategy};
 use std::collections::HashSet;
 use std::sync::Arc;

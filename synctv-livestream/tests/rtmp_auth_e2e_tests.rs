@@ -7,6 +7,7 @@
 //! - Authentication failure cleanup
 //! - on_unpublish callback behavior
 
+#![allow(clippy::unwrap_used)]
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -104,8 +105,8 @@ impl AuthCallback for MockRtmpAuthCallback {
     async fn on_publish(
         &self,
         app_name: &str,
-        stream_name: &str,
-        query: Option<&str>,
+        _stream_name: &str,
+        _query: Option<&str>,
     ) -> Result<Option<AuthPublishRewrite>, Box<dyn std::error::Error + Send + Sync>> {
         self.tracker.publish_count.fetch_add(1, Ordering::SeqCst);
 

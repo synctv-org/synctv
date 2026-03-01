@@ -7,10 +7,11 @@
 //! via testcontainers, since play_next reads from the DB repo layer.
 //!
 //! Run with: cargo test -p synctv-core --test playback_play_next_tests -- --nocapture
+#![allow(clippy::unwrap_used)]
 
 use std::sync::Arc;
 
-use synctv_core_testing::{create_test_pool, create_test_jwt_service};
+use synctv_core_testing::create_test_pool;
 use synctv_core::{
     cache::{KeyBuilder, UsernameCache, NoopCacheL2},
     config::PasswordComplexityConfig,
@@ -76,14 +77,15 @@ fn make_user(username: &str) -> User {
 }
 
 fn make_settings_with_mode(mode: PlayMode) -> RoomSettings {
-    let mut settings = RoomSettings::default();
-    settings.auto_play = AutoPlay::new(AutoPlaySettings {
-        enabled: true,
-        mode,
-        delay: 0,
-    });
-    settings.auto_play_next = AutoPlayNext(true);
-    settings
+    RoomSettings {
+        auto_play: AutoPlay::new(AutoPlaySettings {
+            enabled: true,
+            mode,
+            delay: 0,
+        }),
+        auto_play_next: AutoPlayNext(true),
+        ..Default::default()
+    }
 }
 
 /// Helper: get the root playlist for a room
@@ -401,13 +403,15 @@ async fn test_auto_play_disabled_returns_none() {
     playback.switch_media(room.id.clone(), owner.id.clone(), media1.id.clone()).await.unwrap();
 
     // Disabled: auto_play.enabled = false AND auto_play_next = false
-    let mut settings = RoomSettings::default();
-    settings.auto_play = AutoPlay::new(AutoPlaySettings {
-        enabled: false,
-        mode: PlayMode::Sequential,
-        delay: 0,
-    });
-    settings.auto_play_next = AutoPlayNext(false);
+    let settings = RoomSettings {
+        auto_play: AutoPlay::new(AutoPlaySettings {
+            enabled: false,
+            mode: PlayMode::Sequential,
+            delay: 0,
+        }),
+        auto_play_next: AutoPlayNext(false),
+        ..Default::default()
+    };
 
     let result = playback.play_next(&room.id, &settings).await.unwrap();
     assert!(result.is_none(), "play_next should return None when auto_play disabled");
@@ -435,9 +439,11 @@ async fn test_legacy_loop_playlist_maps_to_repeat_all() {
     playback.switch_media(room.id.clone(), owner.id.clone(), media1.id.clone()).await.unwrap();
 
     // Use legacy field: loop_playlist = true, auto_play.mode = Sequential (default)
-    let mut settings = RoomSettings::default();
-    settings.auto_play_next = AutoPlayNext(true);
-    settings.loop_playlist = LoopPlaylist(true);
+    let settings = RoomSettings {
+        auto_play_next: AutoPlayNext(true),
+        loop_playlist: LoopPlaylist(true),
+        ..Default::default()
+    };
     // auto_play.mode stays Sequential, which triggers legacy fallback
 
     let result = playback.play_next(&room.id, &settings).await.unwrap();
@@ -470,9 +476,11 @@ async fn test_legacy_shuffle_playlist_maps_to_shuffle() {
     playback.switch_media(room.id.clone(), owner.id.clone(), media1.id.clone()).await.unwrap();
 
     // Legacy shuffle_playlist = true
-    let mut settings = RoomSettings::default();
-    settings.auto_play_next = AutoPlayNext(true);
-    settings.shuffle_playlist = ShufflePlaylist(true);
+    let settings = RoomSettings {
+        auto_play_next: AutoPlayNext(true),
+        shuffle_playlist: ShufflePlaylist(true),
+        ..Default::default()
+    };
 
     let result = playback.play_next(&room.id, &settings).await.unwrap();
     assert!(result.is_some(), "Legacy shuffle_playlist should enable shuffle behavior");

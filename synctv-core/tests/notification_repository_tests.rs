@@ -4,8 +4,9 @@
 //!        delete_older_than boundary, list_by_user_with_count empty total_count=0.
 //!
 //! Run with: cargo test -p synctv-core --test notification_repository_tests
+#![allow(clippy::unwrap_used)]
 
-use synctv_core_testing::{create_test_pool, create_test_jwt_service};
+use synctv_core_testing::{create_test_pool};
 use synctv_core::{
     models::{
         UserId, User, UserRole, UserStatus,

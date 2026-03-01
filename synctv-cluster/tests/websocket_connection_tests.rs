@@ -3,6 +3,7 @@
 //! Tests for connection lifecycle, heartbeat, reconnection, and cleanup.
 //! These tests verify the ConnectionManager behavior for WebSocket-like connections.
 
+#![allow(clippy::unwrap_used)]
 use std::time::Duration;
 
 use synctv_cluster::ConnectionManager;

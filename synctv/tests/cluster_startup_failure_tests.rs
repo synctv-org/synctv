@@ -6,6 +6,7 @@
 //!
 //! In standalone mode (cluster.enabled = false), these failures should be non-fatal.
 
+#![allow(clippy::unwrap_used)]
 use synctv_core::{
     config::{
         Config, ServerConfig, DatabaseConfig, RedisConfig, JwtConfig, LoggingConfig,

@@ -1,4 +1,5 @@
 //! Tests for client API implementation
+#![allow(clippy::unwrap_used)]
 
 use super::convert::*;
 use super::{validate_password_for_set, validate_password_for_verify};
@@ -19,14 +20,8 @@ fn test_timing_attack_delay_constant_is_sufficient() {
     // Verify the delay constant is at least 200ms as per the security requirement.
     // A delay of 200-250ms is sufficient to mask timing differences in password
     // verification while not being overly burdensome to legitimate users.
-    assert!(
-        MIN_PASSWORD_CHECK_DELAY_MS >= 200,
-        "MIN_PASSWORD_CHECK_DELAY_MS should be at least 200ms for timing attack protection"
-    );
-    assert!(
-        MIN_PASSWORD_CHECK_DELAY_MS <= 500,
-        "MIN_PASSWORD_CHECK_DELAY_MS should not exceed 500ms to avoid excessive latency for legitimate users"
-    );
+    const { assert!(MIN_PASSWORD_CHECK_DELAY_MS >= 200) };
+    const { assert!(MIN_PASSWORD_CHECK_DELAY_MS <= 500) };
 }
 
 #[test]
@@ -49,7 +44,7 @@ fn test_timing_attack_delay_matches_room_rs() {
 /// Test that the timing delay calculation logic works correctly.
 #[test]
 fn test_timing_delay_calculation() {
-    use std::time::{Duration, Instant};
+    use std::time::Duration;
 
     // Simulate the timing protection logic
     fn calculate_sleep_duration(elapsed: Duration, min_delay: Duration) -> Option<Duration> {
@@ -123,7 +118,7 @@ fn test_timing_protection_simulation() {
     use std::time::{Duration, Instant};
 
     // Simulate the timing protection logic exactly as implemented in room.rs
-    fn simulate_password_check_timing(password_valid: bool, operation_time_ms: u64) -> Duration {
+    fn simulate_password_check_timing(_password_valid: bool, operation_time_ms: u64) -> Duration {
         let start = Instant::now();
         let min_delay = Duration::from_millis(MIN_PASSWORD_CHECK_DELAY_MS);
 
@@ -158,11 +153,7 @@ fn test_timing_protection_simulation() {
 
     // The difference between them should be small (bounded by the minimum delay)
     // With a 250ms minimum, both should be within ~100ms of each other
-    let diff = if fast_result > slow_result {
-        fast_result - slow_result
-    } else {
-        slow_result - fast_result
-    };
+    let diff = fast_result.abs_diff(slow_result);
     assert!(
         diff < Duration::from_millis(100),
         "Timing difference between fast and slow operations should be bounded: {:?}",
@@ -181,14 +172,8 @@ fn test_timing_delay_in_recommended_range() {
     // - 250ms: Recommended value providing extra safety margin
     // - Below 200ms: May still be vulnerable to statistical timing attacks
     // - Above 300ms: Noticeably impacts user experience
-    assert!(
-        MIN_PASSWORD_CHECK_DELAY_MS >= 200,
-        "Delay should be at least 200ms to prevent timing attacks"
-    );
-    assert!(
-        MIN_PASSWORD_CHECK_DELAY_MS <= 300,
-        "Delay should not exceed 300ms to maintain acceptable UX"
-    );
+    const { assert!(MIN_PASSWORD_CHECK_DELAY_MS >= 200) };
+    const { assert!(MIN_PASSWORD_CHECK_DELAY_MS <= 300) };
 }
 
 /// Test that verifies the timing protection cannot be bypassed by early returns.
@@ -694,7 +679,7 @@ fn test_sanitize_url_derived_title_truncates_at_char_boundary() {
     // non-char-boundary truncation if done naively.
     // Each CJK character is 3 bytes. Fill to just over the limit.
     let num_chars = (MEDIA_TITLE_MAX / 3) + 10; // will exceed MEDIA_TITLE_MAX in bytes
-    let long_cjk: String = std::iter::repeat('\u{4e00}').take(num_chars).collect();
+    let long_cjk: String = std::iter::repeat_n('\u{4e00}', num_chars).collect();
     assert!(long_cjk.len() > MEDIA_TITLE_MAX);
 
     let title = super::media::sanitize_url_derived_title(&long_cjk);

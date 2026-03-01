@@ -10,6 +10,7 @@
 //! - Settings persistence
 //!
 //! Run with: cargo test --test global_settings_registry_tests
+#![allow(clippy::unwrap_used)]
 
 use std::time::Duration;
 use tokio::time::sleep;
@@ -23,8 +24,8 @@ use synctv_core::service::turn_server::generate_turn_credentials;
 #[test]
 fn test_bool_setting_conversion() {
     // Valid conversions
-    assert_eq!("true".parse::<bool>().unwrap(), true);
-    assert_eq!("false".parse::<bool>().unwrap(), false);
+    assert!("true".parse::<bool>().unwrap());
+    assert!(!"false".parse::<bool>().unwrap());
     assert_eq!(true.to_string(), "true");
     assert_eq!(false.to_string(), "false");
 
@@ -540,8 +541,6 @@ fn test_public_settings_skips_empty_custom_publish_host() {
 
 #[test]
 fn test_settings_registry_has_all_required_fields() {
-    use std::any::type_name;
-
     // This test verifies that SettingsRegistry contains all documented settings
     // by checking field names and types at compile time
 

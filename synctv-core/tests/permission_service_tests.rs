@@ -4,10 +4,11 @@
 //! verifying that the three-layer permission system works end-to-end.
 //!
 //! Run with: cargo test -p synctv-core --test permission_service_tests -- --nocapture
+#![allow(clippy::unwrap_used)]
 
 use std::sync::Arc;
 
-use synctv_core_testing::{create_test_pool, create_test_jwt_service};
+use synctv_core_testing::create_test_pool;
 use synctv_core::{
     cache::{KeyBuilder, UsernameCache, NoopCacheL2},
     config::PasswordComplexityConfig,

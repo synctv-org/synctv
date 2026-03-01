@@ -3,6 +3,7 @@
 //! Tests for FanOutResult construction, merge_user_statuses logic,
 //! and ClusterClient with no remote nodes.
 
+#![allow(clippy::unwrap_used)]
 use std::sync::Arc;
 
 use synctv_cluster::grpc::client::{ClusterClient, ClusterClientConfig, FanOutResult};

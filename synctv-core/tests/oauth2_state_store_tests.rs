@@ -4,6 +4,7 @@
 //! and atomic single-use consumption under concurrency.
 //!
 //! Run with: cargo test --test oauth2_state_store_tests -- --nocapture
+#![allow(clippy::unwrap_used)]
 
 use std::sync::Arc;
 use synctv_core::service::{OAuthStateStore, OAuth2State, RedisOAuthStateStore};

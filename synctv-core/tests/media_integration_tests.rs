@@ -2,8 +2,9 @@
 //! Tests media item creation, unique constraints, deletion, and playlist association.
 //!
 //! Run with: cargo test --test media_integration_tests
+#![allow(clippy::unwrap_used)]
 
-use synctv_core_testing::{create_test_pool, create_test_jwt_service};
+use synctv_core_testing::create_test_pool;
 use synctv_core::{
     models::{
         Room, RoomId, RoomStatus, UserId, User, UserRole, UserStatus,
@@ -14,10 +15,8 @@ use synctv_core::{
 use chrono::Utc;
 use serde_json::json;
 use sqlx::PgPool;
-use std::sync::Arc;
 use testcontainers::ContainerAsync;
 use testcontainers_modules::postgres::Postgres;
-use testcontainers::runners::AsyncRunner;
 fn make_user(username: &str) -> User {
     let now = Utc::now();
     User {
@@ -390,6 +389,7 @@ async fn test_swap_positions_no_constraint_violation() {
 // Optimistic locking: update_if_unchanged tests
 // ============================================================================
 
+#[allow(deprecated)]
 #[tokio::test]
 #[ignore = "Requires Docker"]
 async fn test_update_if_unchanged_succeeds_when_row_unchanged() {
@@ -417,6 +417,7 @@ async fn test_update_if_unchanged_succeeds_when_row_unchanged() {
     assert_eq!(result.name, "opt_renamed.mp4");
 }
 
+#[allow(deprecated)]
 #[tokio::test]
 #[ignore = "Requires Docker"]
 async fn test_update_if_unchanged_returns_none_when_changed_concurrently() {
@@ -879,7 +880,7 @@ async fn test_concurrent_add_to_nonempty_playlist_unique_positions() {
     // All should be in range [5, 10)
     for &pos in &sorted_positions {
         assert!(
-            pos >= 5 && pos < 10,
+            (5..10).contains(&pos),
             "New position {} should be >= 5 and < 10",
             pos
         );

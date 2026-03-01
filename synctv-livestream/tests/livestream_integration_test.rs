@@ -1,3 +1,4 @@
+#![allow(clippy::unwrap_used)]
 // Integration tests for live streaming infrastructure
 //
 // Tests the complete flow from API to storage, including:

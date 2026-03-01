@@ -3,8 +3,8 @@
 //! Tests for cross-node message broadcasting, deduplication, and Redis fallback.
 //! Uses testcontainers for Redis integration tests.
 
+#![allow(clippy::unwrap_used)]
 use std::time::Duration;
-use testcontainers::core::ImageExt;
 use testcontainers::runners::AsyncRunner;
 use testcontainers_modules::redis::Redis;
 
@@ -15,6 +15,7 @@ use synctv_cluster::sync::events::{CacheTarget, ClusterEvent, NotificationLevel}
 use synctv_core::models::id::{MediaId, RoomId, UserId};
 
 /// Default Redis version for test containers
+#[allow(dead_code)]
 const REDIS_VERSION: &str = "7-alpine";
 
 fn uid(s: &str) -> UserId {

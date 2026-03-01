@@ -6,6 +6,7 @@
 //! These tests use `tower::ServiceExt::oneshot()` to test the axum router
 //! without starting a TCP server, and do not require database or Redis.
 
+#![allow(clippy::unwrap_used)]
 use axum::{
     body::Body,
     http::{Request, StatusCode},
@@ -1135,6 +1136,7 @@ mod api_error_classification {
     }
 
     #[test]
+    #[allow(clippy::type_complexity)]
     fn test_api_error_display_roundtrips() {
         // Ensure Display output classifies correctly when parsed back
         let cases: &[(ApiError, fn(&ErrorKind) -> bool)] = &[

@@ -5,6 +5,7 @@
 //!
 //! Run with: cargo test --test stream_lifecycle_tests
 
+#![allow(clippy::unwrap_used)]
 use std::sync::Arc;
 use synctv_core::models::{RoomId, MediaId};
 
@@ -62,6 +63,7 @@ async fn test_stream_key_validation_structure() {
 #[tokio::test]
 async fn test_stream_lifecycle_states() {
     #[derive(Debug, PartialEq, Clone)]
+    #[allow(dead_code)]
     enum StreamState {
         Idle,
         Connecting,
@@ -70,10 +72,8 @@ async fn test_stream_lifecycle_states() {
         Stopped,
     }
 
-    let mut state = StreamState::Idle;
-
     // Lifecycle: Idle -> Connecting -> Publishing -> Stopping -> Stopped
-    state = StreamState::Connecting;
+    let mut state = StreamState::Connecting;
     assert_eq!(state, StreamState::Connecting);
 
     state = StreamState::Publishing;
@@ -102,7 +102,7 @@ async fn test_rtmp_url_construction() {
     let stream_key = format!("{}?token={}", media_id.as_str(), token);
 
     assert!(rtmp_url.starts_with("rtmp://"));
-    assert!(rtmp_url.contains(&room_id.as_str()));
+    assert!(rtmp_url.contains(room_id.as_str()));
     assert!(stream_key.contains("token="));
 }
 
@@ -114,7 +114,7 @@ async fn test_hls_playlist_path_generation() {
     // HLS master playlist path
     let master_playlist = format!("/hls/{}/{}/master.m3u8", room_id.as_str(), media_id.as_str());
     assert!(master_playlist.ends_with(".m3u8"));
-    assert!(master_playlist.contains(&room_id.as_str()));
+    assert!(master_playlist.contains(room_id.as_str()));
 
     // HLS media playlist path
     let media_playlist = format!("/hls/{}/{}/index.m3u8", room_id.as_str(), media_id.as_str());
@@ -234,9 +234,9 @@ async fn test_stream_cleanup_on_disconnect() {
 
     #[derive(Clone)]
     struct StreamInfo {
-        room_id: String,
-        media_id: String,
-        started_at: chrono::DateTime<chrono::Utc>,
+        _room_id: String,
+        _media_id: String,
+        _started_at: chrono::DateTime<chrono::Utc>,
     }
 
     let active_streams = Arc::new(Mutex::new(HashMap::<String, StreamInfo>::new()));
@@ -244,9 +244,9 @@ async fn test_stream_cleanup_on_disconnect() {
     // Add a stream
     let stream_key = "room_123/media_456";
     let stream_info = StreamInfo {
-        room_id: "room_123".to_string(),
-        media_id: "media_456".to_string(),
-        started_at: chrono::Utc::now(),
+        _room_id: "room_123".to_string(),
+        _media_id: "media_456".to_string(),
+        _started_at: chrono::Utc::now(),
     };
 
     {

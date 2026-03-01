@@ -10,6 +10,7 @@
 //! match_url parsing thoroughly, and add wiremock tests for the helpers
 //! and error-checking code paths that we CAN intercept.
 
+#![allow(clippy::unwrap_used)]
 use synctv_media_providers::BilibiliClient;
 
 // ============================================================================

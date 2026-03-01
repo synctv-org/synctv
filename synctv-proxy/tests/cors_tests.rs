@@ -3,6 +3,7 @@
 //! These tests verify that CORS headers are properly restricted based on
 //! an allowed origins list, rather than using a wildcard (*).
 
+#![allow(clippy::unwrap_used)]
 use std::sync::Arc;
 
 use axum::http::StatusCode;

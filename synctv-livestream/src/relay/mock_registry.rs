@@ -62,14 +62,12 @@ impl StreamRegistryTrait for MockStreamRegistry {
         let mut epoch_counters = self.epoch_counters.lock().await;
         let key = (room_id.to_string(), media_id.to_string());
 
-        if publishers.contains_key(&key) {
-            Ok(false)
-        } else {
+        if let std::collections::hash_map::Entry::Vacant(entry) = publishers.entry(key.clone()) {
             // Increment epoch counter
-            let epoch = epoch_counters.entry(key.clone()).or_insert(0);
+            let epoch = epoch_counters.entry(key).or_insert(0);
             *epoch += 1;
 
-            publishers.insert(key, PublisherInfo {
+            entry.insert(PublisherInfo {
                 node_id: node_id.to_string(),
                 grpc_address: grpc_address.to_string(),
                 app_name: app_name.to_string(),
@@ -78,6 +76,8 @@ impl StreamRegistryTrait for MockStreamRegistry {
                 epoch: *epoch,
             });
             Ok(true)
+        } else {
+            Ok(false)
         }
     }
 
@@ -93,14 +93,12 @@ impl StreamRegistryTrait for MockStreamRegistry {
         let mut epoch_counters = self.epoch_counters.lock().await;
         let key = (room_id.to_string(), media_id.to_string());
 
-        if publishers.contains_key(&key) {
-            Ok(false)
-        } else {
+        if let std::collections::hash_map::Entry::Vacant(entry) = publishers.entry(key.clone()) {
             // Increment epoch counter
-            let epoch = epoch_counters.entry(key.clone()).or_insert(0);
+            let epoch = epoch_counters.entry(key).or_insert(0);
             *epoch += 1;
 
-            publishers.insert(key, PublisherInfo {
+            entry.insert(PublisherInfo {
                 node_id: node_id.to_string(),
                 grpc_address: grpc_address.to_string(),
                 app_name: "live".to_string(),
@@ -109,6 +107,8 @@ impl StreamRegistryTrait for MockStreamRegistry {
                 epoch: *epoch,
             });
             Ok(true)
+        } else {
+            Ok(false)
         }
     }
 

@@ -1310,9 +1310,15 @@ mod tests {
 
     // Helper: create a TieredTokenBlacklistStore with no Redis and a lazy PG pool
     // that won't be contacted (for L1-only tests).
+    // Uses a very short acquire_timeout so tests that accidentally hit PG
+    // fail fast instead of blocking for 30+ seconds.
     fn make_tiered_l1_only() -> TieredTokenBlacklistStore {
         // connect_lazy won't actually connect until a query is executed.
-        let pool = PgPool::connect_lazy("postgres://dummy:dummy@localhost/dummy")
+        // The short acquire_timeout ensures any accidental PG contact fails
+        // within 1 second rather than the default 30+ seconds.
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .acquire_timeout(Duration::from_secs(1))
+            .connect_lazy("postgres://dummy:dummy@localhost/dummy")
             .expect("connect_lazy should not fail");
         TieredTokenBlacklistStore::new(
             PgTokenBlacklistStore::new(pool),

@@ -3,6 +3,7 @@
 //! Tests the InMemoryTokenBlacklistStore and FallbackTokenBlacklistStore.
 //!
 //! Run with: cargo test --test token_blacklist_tests -- --nocapture
+#![allow(clippy::unwrap_used)]
 
 use std::sync::Arc;
 use synctv_core::service::{

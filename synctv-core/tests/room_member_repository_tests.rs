@@ -5,8 +5,9 @@
 //! and diagnose_add_conflict error branches.
 //!
 //! Run with: cargo test --test room_member_repository_tests
+#![allow(clippy::unwrap_used)]
 
-use synctv_core_testing::{create_test_pool, create_test_jwt_service};
+use synctv_core_testing::{create_test_pool};
 use synctv_core::{
     models::{
         Room, RoomId, RoomMember, RoomRole, RoomStatus, UserId, MemberStatus,
@@ -17,7 +18,6 @@ use synctv_core::{
     Error,
 };
 use chrono::Utc;
-use sqlx::PgPool;
 fn make_user(username: &str) -> User {
     let now = Utc::now();
     User {
@@ -470,7 +470,7 @@ async fn test_count_by_rooms_batch_basic() {
     assert_eq!(counts.get(room1.id.as_str()), Some(&2));
     assert_eq!(counts.get(room2.id.as_str()), Some(&3));
     // Zero-member room absent from map
-    assert!(counts.get(room3.id.as_str()).is_none());
+    assert!(!counts.contains_key(room3.id.as_str()));
 }
 
 #[tokio::test]
@@ -683,7 +683,7 @@ async fn test_update_permissions_after_member_left_should_fail() {
 
     // Add member with no permissions
     let new_member = make_member(room.id.clone(), member_user.id.clone(), RoomRole::Member);
-    let member = member_repo
+    let _member = member_repo
         .add_with_options(&new_member, &AddMemberOptions::new())
         .await
         .unwrap();

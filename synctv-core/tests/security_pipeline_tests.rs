@@ -4,10 +4,11 @@
 //! checks, cache fast-path, and the B3 bug fix (DB error propagation).
 //!
 //! Run with: cargo test --test security_pipeline_tests -- --nocapture
+#![allow(clippy::unwrap_used)]
 
 use std::sync::Arc;
 
-use synctv_core_testing::{create_test_pool, create_test_jwt_service};
+use synctv_core_testing::create_test_pool;
 use synctv_core::{
     cache::{self, user_cache::CachedUser, NoopCacheL2, UserCache},
     config::PasswordComplexityConfig,
@@ -602,7 +603,7 @@ async fn test_non_blacklisted_access_token_allowed() {
 #[ignore = "Requires Docker"]
 async fn test_require_blacklist_true_rejects_without_store() {
     let (_container, pool) = create_test_pool().await;
-    let user = insert_user(&pool, &make_user(UserStatus::Active, 0)).await;
+    let _user = insert_user(&pool, &make_user(UserStatus::Active, 0)).await;
     let user_service = Arc::new(create_user_service(pool));
 
     // Try to build a pipeline with require_blacklist=true but no blacklist store

@@ -4,6 +4,7 @@
 //! reprocessing, len/is_empty tracking, and different events at the same
 //! timestamp produce different dedup keys.
 
+#![allow(clippy::unwrap_used)]
 use synctv_cluster::{MessageDeduplicator, DedupKey};
 
 fn make_key(event_type: &str, room: &str, user: &str, ts: i64, hash: u64) -> DedupKey {

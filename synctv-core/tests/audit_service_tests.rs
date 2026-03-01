@@ -4,8 +4,9 @@
 //!
 //! Run with: cargo test --test audit_service_tests
 //! Run Docker tests: cargo test --test audit_service_tests -- --ignored
+#![allow(clippy::unwrap_used)]
 
-use synctv_core_testing::{create_test_pool, create_test_jwt_service};
+use synctv_core_testing::create_test_pool;
 use synctv_core::service::{
     AuditService, AuditAction, AuditTargetType,
 };
@@ -220,6 +221,7 @@ async fn test_log_stream_kicked_writes_audit_log() {
         .expect("log_stream_kicked should succeed");
 
     // Verify the audit log was written correctly
+    #[allow(clippy::type_complexity)]
     let row: (String, Option<String>, Option<String>, Option<String>, Option<String>, Option<String>) = sqlx::query_as(
         r#"
         SELECT action, target_type, target_id, ip_address, user_agent, details::text

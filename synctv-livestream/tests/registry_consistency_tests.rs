@@ -7,6 +7,7 @@
 //! The tests use InMemoryStreamRegistry as a stand-in for Redis since both
 //! implement StreamRegistryTrait with the same semantics.
 
+#![allow(clippy::unwrap_used)]
 use std::sync::Arc;
 use synctv_livestream::relay::{InMemoryStreamRegistry, StreamRegistryTrait};
 

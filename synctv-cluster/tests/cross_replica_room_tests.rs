@@ -5,20 +5,12 @@
 //! (via testcontainers). Each "node" has its own `node_id` but connects
 //! to the same Redis, simulating a multi-replica deployment.
 
-use std::sync::Arc;
+#![allow(clippy::unwrap_used)]
 use std::time::Duration;
 
 use chrono::Utc;
-use synctv_cluster::sync::events::{CacheTarget, ClusterEvent};
-use synctv_cluster::{ClusterConfig, ClusterManager, MessageDeduplicator, RoomMessageHub};
-use synctv_cluster::sync::redis_pubsub::RedisPubSub;
-use synctv_core::cache::{CacheInvalidationService, InvalidationMessage};
+use synctv_cluster::sync::events::ClusterEvent;
 use synctv_core::models::id::{MediaId, RoomId, UserId};
-use testcontainers::ContainerAsync;
-use testcontainers::runners::AsyncRunner;
-use testcontainers_modules::redis::Redis;
-use tokio::sync::broadcast;
-
 mod integration_test_helpers;
 use integration_test_helpers::{create_node, TestRedis};
 
@@ -291,7 +283,7 @@ async fn test_cross_replica_room_settings_changed() {
     } = &received
     {
         let parsed: serde_json::Value =
-            serde_json::from_slice(&settings_json).expect("valid JSON");
+            serde_json::from_slice(settings_json).expect("valid JSON");
         assert_eq!(parsed["max_members"], 50);
         assert_eq!(parsed["chat_enabled"], false);
     } else {

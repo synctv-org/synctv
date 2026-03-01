@@ -3,6 +3,7 @@
 //! These tests verify that DNS resolution is not duplicated unnecessarily
 //! while maintaining security against DNS rebinding attacks.
 
+#![allow(clippy::unwrap_used)]
 use synctv_proxy::validate_proxy_url;
 
 // ==================================================================

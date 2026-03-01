@@ -10,7 +10,7 @@
 //! 3. **Panic handling**: shutdown should log warning on panic, not crash
 //! 4. **Idempotency**: multiple shutdown calls should be safe
 
-use std::sync::atomic::AtomicBool;
+#![allow(clippy::unwrap_used)]
 use std::sync::Arc;
 use std::time::Duration;
 

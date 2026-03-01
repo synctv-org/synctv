@@ -753,6 +753,7 @@ impl K8sLeaderElector {
 
     /// Returns `true` if we recently lost leadership and should wait before
     /// attempting to re-acquire. Uses exponential backoff based on consecutive losses.
+    #[allow(dead_code)]
     fn in_grace_period(&self) -> bool {
         self.grace_period_remaining().is_some()
     }
@@ -884,11 +885,7 @@ mod tests {
             Arc::new(parking_lot::Mutex::new(None));
 
         let guard = leadership_lost_at.lock();
-        let result = if let Some(_lost_at) = *guard {
-            true
-        } else {
-            false
-        };
+        let result = guard.is_some();
         drop(guard);
 
         assert!(!result, "Should not be in grace period when no loss recorded");

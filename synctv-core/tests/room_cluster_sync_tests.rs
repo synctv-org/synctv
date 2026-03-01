@@ -15,12 +15,13 @@
 //! # Requirements
 //!
 //! - Docker for testcontainers (PostgreSQL + Redis)
+#![allow(clippy::unwrap_used)]
 
 use synctv_core::{
     cache::{CacheInvalidationService, InvalidationMessage},
     models::{
         Room, RoomId, RoomMember, RoomRole, RoomSettings, RoomStatus,
-        UserId, User, UserRole, UserStatus, PermissionBits,
+        UserId, User, UserRole, UserStatus,
         room_settings::MaxMembers,
     },
     repository::{
@@ -214,8 +215,7 @@ async fn test_room_settings_synchronized_across_replicas() {
     // Create room with settings on "Node A"
     let (_owner, room) = setup_test_room(pool, "Settings Sync Room").await;
     let room_settings_repo_a = RoomSettingsRepository::new(pool.clone());
-    let mut settings = RoomSettings::default();
-    settings.max_members = MaxMembers(42);
+    let settings = RoomSettings { max_members: MaxMembers(42), ..Default::default() };
     room_settings_repo_a.set_settings(&room.id, &settings).await.expect("Failed to set settings");
 
     // "Node B" reads settings

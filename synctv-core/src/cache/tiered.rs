@@ -109,6 +109,7 @@ where
     /// * `l2_ttl_seconds` - TTL for L2 cache entries in seconds
     /// * `key_prefix` - L2 key prefix (e.g., "synctv:user:")
     /// * `cache_type` - Label for metrics (e.g., "user", "room")
+    ///
     /// Minimum L2 TTL in seconds. Prevents persistent keys in L2 from
     /// unbounded memory growth when `l2_ttl_seconds` is misconfigured as 0.
     const MIN_L2_TTL_SECONDS: u64 = 60;
@@ -818,6 +819,6 @@ mod tests {
         // Normal TTL should be within +-10%
         let ttl = 100;
         let result = add_ttl_jitter(ttl);
-        assert!(result >= 90 && result <= 110, "TTL jitter out of range: {result}");
+        assert!((90..=110).contains(&result), "TTL jitter out of range: {result}");
     }
 }

@@ -2658,6 +2658,7 @@ impl RoomService {
 }
 
 #[cfg(test)]
+#[allow(clippy::field_reassign_with_default)]
 mod tests {
     use crate::Error;
     use crate::models::{
@@ -2719,12 +2720,12 @@ mod tests {
         // Each CJK character is 3 bytes in UTF-8 but 1 character.
         // ROOM_NAME_MAX (100) CJK chars = 300 bytes, should be valid.
         let max_len = crate::validation::ROOM_NAME_MAX;
-        let name: String = std::iter::repeat('\u{4e00}').take(max_len).collect();
+        let name: String = std::iter::repeat_n('\u{4e00}', max_len).collect();
         assert_eq!(name.chars().count(), max_len);
         assert!(validate_room_name(&name).is_ok(), "Room name with {} CJK characters should be valid", max_len);
 
         // (ROOM_NAME_MAX + 1) CJK characters should be rejected
-        let name_too_long: String = std::iter::repeat('\u{4e00}').take(max_len + 1).collect();
+        let name_too_long: String = std::iter::repeat_n('\u{4e00}', max_len + 1).collect();
         assert!(validate_room_name(&name_too_long).is_err(), "Room name with {} CJK characters should be rejected", max_len + 1);
     }
 
@@ -2762,12 +2763,12 @@ mod tests {
     fn test_description_counts_unicode_characters_not_bytes() {
         // Each CJK character is 3 bytes in UTF-8 but 1 character.
         // 500 CJK chars = 1500 bytes, should be valid.
-        let desc: String = std::iter::repeat('\u{4e00}').take(500).collect();
+        let desc: String = std::iter::repeat_n('\u{4e00}', 500).collect();
         assert_eq!(desc.chars().count(), 500);
         assert!(validate_room_description(&desc).is_ok());
 
         // 501 CJK characters should be rejected even though 255 ASCII chars would be fine
-        let desc_too_long: String = std::iter::repeat('\u{4e00}').take(501).collect();
+        let desc_too_long: String = std::iter::repeat_n('\u{4e00}', 501).collect();
         assert!(validate_room_description(&desc_too_long).is_err());
     }
 
@@ -3172,11 +3173,11 @@ mod tests {
         }
 
         // Mixed Unicode: emoji are single characters but multi-byte
-        let emoji_desc: String = std::iter::repeat('\u{1F600}').take(500).collect();
+        let emoji_desc: String = std::iter::repeat_n('\u{1F600}', 500).collect();
         assert_eq!(emoji_desc.chars().count(), 500);
         assert!(validate_desc(&emoji_desc).is_ok());
 
-        let emoji_over: String = std::iter::repeat('\u{1F600}').take(501).collect();
+        let emoji_over: String = std::iter::repeat_n('\u{1F600}', 501).collect();
         assert!(validate_desc(&emoji_over).is_err());
     }
 
@@ -3361,7 +3362,7 @@ mod tests {
 
     #[test]
     fn test_room_new_has_active_status() {
-        use crate::models::{Room, RoomId, UserId, RoomStatus};
+        use crate::models::{Room, UserId, RoomStatus};
         let owner = UserId::new();
         let room = Room::new("Test Room".to_string(), owner.clone());
         assert_eq!(room.status, RoomStatus::Active);
@@ -3369,7 +3370,7 @@ mod tests {
 
     #[test]
     fn test_room_new_with_description_has_active_status() {
-        use crate::models::{Room, RoomId, UserId, RoomStatus};
+        use crate::models::{Room, UserId, RoomStatus};
         let owner = UserId::new();
         let room = Room::new_with_description(
             "Test Room".to_string(),
@@ -3433,16 +3434,16 @@ mod tests {
         let verified_hash: Option<String> = Some(hash1.to_string());
 
         // Initial state: hash1
-        assert_eq!(verified_hash.as_ref().map(|s| s.as_str()), Some(hash1));
+        assert_eq!(verified_hash.as_deref(), Some(hash1));
 
         // Intermediate change: hash1 -> hash2
         let current_hash: Option<&str> = Some(hash2);
-        assert_ne!(verified_hash.as_ref().map(|s| s.as_str()), current_hash, "Hash changed, should re-verify");
+        assert_ne!(verified_hash.as_deref(), current_hash, "Hash changed, should re-verify");
 
         // A->B->A change: hash2 -> hash1 (same as original)
         let current_hash: Option<&str> = Some(hash3);
         assert_eq!(
-            verified_hash.as_ref().map(|s| s.as_str()),
+            verified_hash.as_deref(),
             current_hash,
             "Hash is same as initial, fast path would skip re-verification"
         );

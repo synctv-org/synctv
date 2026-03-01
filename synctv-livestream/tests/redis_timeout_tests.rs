@@ -3,6 +3,7 @@
 //! These tests verify that all Redis operations in synctv-livestream have
 //! proper timeout protection to prevent indefinite blocking on Redis issues.
 
+#![allow(clippy::unwrap_used)]
 use std::time::Duration;
 use tokio::time::timeout;
 

@@ -1,3 +1,4 @@
+#![cfg_attr(test, allow(clippy::unwrap_used))]
 // SyncTV Provider Clients
 //
 // This crate contains pure HTTP client implementations and gRPC servers for various media providers.

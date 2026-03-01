@@ -5,6 +5,7 @@
 //! - Wrong secret -> unauthenticated
 //! - constant_time_eq: equal, not-equal same length, different lengths
 
+#![allow(clippy::unwrap_used)]
 use tonic::Request;
 
 use synctv_cluster::grpc::ClusterAuthInterceptor;

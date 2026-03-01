@@ -4,12 +4,11 @@
 //! and delete_by_prefix (100+ keys with SCAN pagination, prefix isolation).
 //!
 //! Run with: cargo test --test redis_cache_l2_tests
+#![allow(clippy::unwrap_used)]
 
 use synctv_core::cache::{CacheL2Backend, RedisCacheL2};
 use testcontainers::runners::AsyncRunner;
 use testcontainers_modules::redis::Redis;
-
-const REDIS_VERSION: &str = "7-alpine";
 
 async fn start_redis() -> (testcontainers::ContainerAsync<Redis>, redis::aio::ConnectionManager) {
     let container = Redis::default()

@@ -76,15 +76,12 @@ impl EndpointBreaker {
         // Circuit is (or was) open and has now entered the half-open window.
         // Use compare_exchange so only the first concurrent caller is allowed
         // through as the probe; all others are rejected.
-        match self.probe_in_flight.compare_exchange(
+        self.probe_in_flight.compare_exchange(
             false,
             true,
             Ordering::AcqRel,
             Ordering::Acquire,
-        ) {
-            Ok(_) => true,   // Won the race — this caller is the probe
-            Err(_) => false, // Another probe is already in flight; block this caller
-        }
+        ).is_ok()
     }
 
     fn on_success(&self) {

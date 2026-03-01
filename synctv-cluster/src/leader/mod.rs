@@ -681,7 +681,7 @@ impl LeaderElector {
                 failures
             );
             let _ = self.event_tx.send(LeadershipEvent::Vacancy);
-        } else if failures > LEADER_VACANCY_THRESHOLD && failures % LEADER_VACANCY_THRESHOLD == 0 {
+        } else if failures > LEADER_VACANCY_THRESHOLD && failures.is_multiple_of(LEADER_VACANCY_THRESHOLD) {
             // Periodic reminder at every N failures
             warn!(
                 identity = %self.identity,

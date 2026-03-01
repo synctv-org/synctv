@@ -10,6 +10,7 @@
 //! 7. Bilibili type deserialization
 //! 8. gRPC validation layer
 
+#![allow(clippy::unwrap_used)]
 use synctv_media_providers::error::*;
 
 // === ProviderClientError Display Tests ===

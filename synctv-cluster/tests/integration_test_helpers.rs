@@ -3,6 +3,7 @@
 //! This module provides shared infrastructure for multi-replica cluster tests,
 //! including Redis container management and ClusterManager creation.
 
+#![allow(clippy::unwrap_used)]
 use std::time::Duration;
 use synctv_cluster::{ClusterConfig, ClusterManager};
 use testcontainers::runners::AsyncRunner;
@@ -10,6 +11,7 @@ use testcontainers::ContainerAsync;
 use testcontainers_modules::redis::Redis;
 
 /// Default Redis version for test containers
+#[allow(dead_code)]
 pub const REDIS_VERSION: &str = "7-alpine";
 
 /// Redis test infrastructure that manages a single Redis container.
@@ -95,6 +97,7 @@ pub async fn create_node(redis_url: &str, node_id: &str) -> ClusterManager {
 }
 
 /// Helper: create a `ClusterManager` with custom configuration
+#[allow(dead_code)]
 pub async fn create_node_with_config(redis_url: &str, node_id: &str, mut config_modifier: impl FnMut(&mut ClusterConfig)) -> ClusterManager {
     let client = redis::Client::open(redis_url).expect("Failed to open Redis client");
     let conn = client.get_connection_manager().await.expect("Failed to get ConnectionManager");

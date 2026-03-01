@@ -6,6 +6,7 @@
 //! mock clock. Therefore, tokio::time::pause does NOT affect moka's TTL
 //! expiration. We use a very short TTL (1s) and actually wait for expiry.
 
+#![allow(clippy::unwrap_used)]
 use std::time::Duration;
 use synctv_cluster::{DedupKey, MessageDeduplicator};
 

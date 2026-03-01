@@ -9,6 +9,7 @@
 //! - Connection cleanup checks RTC state to prevent double-decrement
 //! - Idempotent RTC state transitions
 
+#![allow(clippy::unwrap_used)]
 use std::time::Duration;
 use synctv_cluster::ConnectionManager;
 use synctv_core::models::id::{RoomId, UserId};

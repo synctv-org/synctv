@@ -3,6 +3,7 @@
 //! These tests verify that NodeRegistry can function in a degraded/local mode
 //! when Redis is unavailable, supporting the "non-cluster mode can work without Redis" architecture.
 
+#![allow(clippy::unwrap_used)]
 use synctv_cluster::{ClusterMode, NodeInfo, NodeRegistry};
 
 /// Test that NodeRegistry can be created in local-only mode without Redis.

@@ -3,6 +3,7 @@
 //! These tests verify the authenticate() method behavior with
 //! different cluster secret configurations.
 
+#![allow(clippy::unwrap_used)]
 use std::sync::Arc;
 use synctv_livestream::relay::InMemoryStreamRegistry;
 use tokio_util::sync::CancellationToken;

@@ -193,7 +193,7 @@ impl AdminApiImpl {
         let room = self.room_service.get_room(&rid).await
             .map_err(ApiError::from)?;
         let creator_username = self.user_service
-            .get_usernames(&[room.created_by.clone()])
+            .get_usernames(std::slice::from_ref(&room.created_by))
             .await
             .ok()
             .and_then(|m| m.into_values().next());

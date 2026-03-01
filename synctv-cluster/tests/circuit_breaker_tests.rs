@@ -3,6 +3,7 @@
 //! Tests for the failsafe circuit breaker used in NodeRegistry.
 //! These tests verify the circuit breaker behavior without requiring Redis.
 
+#![allow(clippy::unwrap_used)]
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
@@ -125,7 +126,7 @@ async fn test_half_open_probe_failure_reopens() {
 #[tokio::test]
 async fn test_healthy_endpoints_filters_open() {
     // Simulate 3 endpoints with independent circuit breakers
-    let endpoints = vec!["endpoint_a", "endpoint_b", "endpoint_c"];
+    let endpoints = ["endpoint_a", "endpoint_b", "endpoint_c"];
     let breakers: Vec<_> = endpoints
         .iter()
         .map(|_| {

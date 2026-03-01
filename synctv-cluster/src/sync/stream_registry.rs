@@ -148,7 +148,7 @@ impl StreamRegistry {
             pub_type: pub_type.to_string(),
             published_at: SystemTime::now()
                 .duration_since(UNIX_EPOCH)
-                .unwrap()
+                .expect("SystemTime is before UNIX_EPOCH")
                 .as_secs(),
             publisher_addr,
         };
@@ -309,13 +309,11 @@ impl StreamRegistry {
 
                         match conn_clone.mget::<_, Vec<Option<String>>>(&meta_keys).await {
                             Ok(values) => {
-                                for json_opt in values {
-                                    if let Some(json) = json_opt {
-                                        match serde_json::from_str::<StreamMetadata>(&json) {
-                                            Ok(meta) => results.push(meta),
-                                            Err(e) => {
-                                                warn!("Failed to parse stream metadata: {e}");
-                                            }
+                                for json in values.into_iter().flatten() {
+                                    match serde_json::from_str::<StreamMetadata>(&json) {
+                                        Ok(meta) => results.push(meta),
+                                        Err(e) => {
+                                            warn!("Failed to parse stream metadata: {e}");
                                         }
                                     }
                                 }

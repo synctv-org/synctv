@@ -312,137 +312,6 @@ fn extract_token_from_query(query: &str) -> Option<String> {
     None
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    // ========== extract_token_from_query ==========
-
-    #[test]
-    fn test_extract_token_single_param() {
-        let result = extract_token_from_query("token=abc123");
-        assert_eq!(result.as_deref(), Some("abc123"));
-    }
-
-    #[test]
-    fn test_extract_token_among_multiple_params() {
-        let result = extract_token_from_query("foo=bar&token=my_jwt_token&baz=qux");
-        assert_eq!(result.as_deref(), Some("my_jwt_token"));
-    }
-
-    #[test]
-    fn test_extract_token_first_param() {
-        let result = extract_token_from_query("token=first_token&other=value");
-        assert_eq!(result.as_deref(), Some("first_token"));
-    }
-
-    #[test]
-    fn test_extract_token_last_param() {
-        let result = extract_token_from_query("other=value&token=last_token");
-        assert_eq!(result.as_deref(), Some("last_token"));
-    }
-
-    #[test]
-    fn test_extract_token_missing_returns_none() {
-        let result = extract_token_from_query("foo=bar&baz=qux");
-        assert_eq!(result, None);
-    }
-
-    #[test]
-    fn test_extract_token_empty_query_returns_none() {
-        let result = extract_token_from_query("");
-        assert_eq!(result, None);
-    }
-
-    #[test]
-    fn test_extract_token_empty_value() {
-        let result = extract_token_from_query("token=");
-        assert_eq!(result.as_deref(), Some(""));
-    }
-
-    #[test]
-    fn test_extract_token_similar_key_not_matched() {
-        // "mytoken=" should not match "token="
-        let result = extract_token_from_query("mytoken=abc&stream_token=def");
-        assert_eq!(result, None);
-    }
-
-    #[test]
-    fn test_extract_token_jwt_like_value() {
-        let jwt = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U";
-        let query = format!("token={jwt}");
-        let result = extract_token_from_query(&query);
-        assert_eq!(result.as_deref(), Some(jwt));
-    }
-
-    #[test]
-    fn test_extract_token_percent_encoded_plus() {
-        // JWT tokens with `+` encoded as `%2B` must round-trip correctly (Issue #44)
-        let result = extract_token_from_query("token=foo%2Bbar");
-        assert_eq!(result.as_deref(), Some("foo+bar"));
-    }
-
-    #[test]
-    fn test_extract_token_plus_sign_in_token() {
-        // `+` used literally in query strings (not encoded) should be preserved
-        let result = extract_token_from_query("token=abc+def");
-        // percent_decode_str does NOT convert `+` to space (only %20 is space in strict mode)
-        assert_eq!(result.as_deref(), Some("abc+def"));
-    }
-
-    // ========== StreamLifecycleEvent ==========
-
-    #[test]
-    fn test_stream_lifecycle_event_started_fields() {
-        let event = StreamLifecycleEvent::Started {
-            room_id: "room1".to_string(),
-            media_id: "media1".to_string(),
-            user_id: "user1".to_string(),
-        };
-        match event {
-            StreamLifecycleEvent::Started { room_id, media_id, user_id } => {
-                assert_eq!(room_id, "room1");
-                assert_eq!(media_id, "media1");
-                assert_eq!(user_id, "user1");
-            }
-            other => unreachable!("Expected Started variant, got: {other:?}"),
-        }
-    }
-
-    #[test]
-    fn test_stream_lifecycle_event_stopped_fields() {
-        let event = StreamLifecycleEvent::Stopped {
-            room_id: "room1".to_string(),
-            media_id: "media1".to_string(),
-            user_id: "user1".to_string(),
-        };
-        match event {
-            StreamLifecycleEvent::Stopped { room_id, media_id, user_id } => {
-                assert_eq!(room_id, "room1");
-                assert_eq!(media_id, "media1");
-                assert_eq!(user_id, "user1");
-            }
-            other => unreachable!("Expected Stopped variant, got: {other:?}"),
-        }
-    }
-
-    #[test]
-    fn test_stream_lifecycle_event_clone() {
-        let event = StreamLifecycleEvent::Started {
-            room_id: "r1".to_string(),
-            media_id: "m1".to_string(),
-            user_id: "u1".to_string(),
-        };
-        let cloned = event.clone();
-        match cloned {
-            StreamLifecycleEvent::Started { room_id, .. } => {
-                assert_eq!(room_id, "r1");
-            }
-            other => unreachable!("Expected Started variant, got: {other:?}"),
-        }
-    }
-}
-
 /// Validated publish claims with authorization level
 struct ValidatedPublish {
     room_id: String,
@@ -740,5 +609,136 @@ impl SyncTvRtmpAuth {
         }
 
         None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ========== extract_token_from_query ==========
+
+    #[test]
+    fn test_extract_token_single_param() {
+        let result = extract_token_from_query("token=abc123");
+        assert_eq!(result.as_deref(), Some("abc123"));
+    }
+
+    #[test]
+    fn test_extract_token_among_multiple_params() {
+        let result = extract_token_from_query("foo=bar&token=my_jwt_token&baz=qux");
+        assert_eq!(result.as_deref(), Some("my_jwt_token"));
+    }
+
+    #[test]
+    fn test_extract_token_first_param() {
+        let result = extract_token_from_query("token=first_token&other=value");
+        assert_eq!(result.as_deref(), Some("first_token"));
+    }
+
+    #[test]
+    fn test_extract_token_last_param() {
+        let result = extract_token_from_query("other=value&token=last_token");
+        assert_eq!(result.as_deref(), Some("last_token"));
+    }
+
+    #[test]
+    fn test_extract_token_missing_returns_none() {
+        let result = extract_token_from_query("foo=bar&baz=qux");
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_extract_token_empty_query_returns_none() {
+        let result = extract_token_from_query("");
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_extract_token_empty_value() {
+        let result = extract_token_from_query("token=");
+        assert_eq!(result.as_deref(), Some(""));
+    }
+
+    #[test]
+    fn test_extract_token_similar_key_not_matched() {
+        // "mytoken=" should not match "token="
+        let result = extract_token_from_query("mytoken=abc&stream_token=def");
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_extract_token_jwt_like_value() {
+        let jwt = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U";
+        let query = format!("token={jwt}");
+        let result = extract_token_from_query(&query);
+        assert_eq!(result.as_deref(), Some(jwt));
+    }
+
+    #[test]
+    fn test_extract_token_percent_encoded_plus() {
+        // JWT tokens with `+` encoded as `%2B` must round-trip correctly (Issue #44)
+        let result = extract_token_from_query("token=foo%2Bbar");
+        assert_eq!(result.as_deref(), Some("foo+bar"));
+    }
+
+    #[test]
+    fn test_extract_token_plus_sign_in_token() {
+        // `+` used literally in query strings (not encoded) should be preserved
+        let result = extract_token_from_query("token=abc+def");
+        // percent_decode_str does NOT convert `+` to space (only %20 is space in strict mode)
+        assert_eq!(result.as_deref(), Some("abc+def"));
+    }
+
+    // ========== StreamLifecycleEvent ==========
+
+    #[test]
+    fn test_stream_lifecycle_event_started_fields() {
+        let event = StreamLifecycleEvent::Started {
+            room_id: "room1".to_string(),
+            media_id: "media1".to_string(),
+            user_id: "user1".to_string(),
+        };
+        match event {
+            StreamLifecycleEvent::Started { room_id, media_id, user_id } => {
+                assert_eq!(room_id, "room1");
+                assert_eq!(media_id, "media1");
+                assert_eq!(user_id, "user1");
+            }
+            other => unreachable!("Expected Started variant, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_stream_lifecycle_event_stopped_fields() {
+        let event = StreamLifecycleEvent::Stopped {
+            room_id: "room1".to_string(),
+            media_id: "media1".to_string(),
+            user_id: "user1".to_string(),
+        };
+        match event {
+            StreamLifecycleEvent::Stopped { room_id, media_id, user_id } => {
+                assert_eq!(room_id, "room1");
+                assert_eq!(media_id, "media1");
+                assert_eq!(user_id, "user1");
+            }
+            other => unreachable!("Expected Stopped variant, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_stream_lifecycle_event_clone() {
+        let event = StreamLifecycleEvent::Started {
+            room_id: "r1".to_string(),
+            media_id: "m1".to_string(),
+            user_id: "u1".to_string(),
+        };
+        let cloned = event.clone();
+        match cloned {
+            StreamLifecycleEvent::Started { room_id, .. } => {
+                assert_eq!(room_id, "r1");
+            }
+            other => unreachable!("Expected Started variant, got: {other:?}"),
+        }
     }
 }

@@ -3,6 +3,7 @@
 //! Verifies correct IP extraction from trusted/untrusted proxies,
 //! X-Forwarded-For and X-Real-IP header handling.
 
+#![allow(clippy::unwrap_used)]
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use synctv_api::http::auth::extract_client_ip;
 use synctv_core::Config;

@@ -3,12 +3,13 @@
 //! These tests verify end-to-end functionality across multiple service layers.
 //!
 //! Run with: cargo test --test integration_tests
+#![allow(clippy::unwrap_used)]
 
-use synctv_core_testing::{create_test_pool, create_test_jwt_service};
+use synctv_core_testing::create_test_jwt_service;
 use synctv_core::{
     models::UserId,
     service::{
-        auth::{jwt::JwtService, TokenType},
+        auth::TokenType,
     },
 };
 

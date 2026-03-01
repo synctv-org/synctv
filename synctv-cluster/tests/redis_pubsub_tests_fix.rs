@@ -3,6 +3,7 @@
 //! Fixed tests that use the real is_sentinel_failover_error function from the
 //! source module instead of duplicating the logic inline.
 
+#![allow(clippy::unwrap_used)]
 use synctv_cluster::sync::redis_pubsub::is_sentinel_failover_error;
 
 // ============================================================================

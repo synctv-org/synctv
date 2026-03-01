@@ -8,10 +8,11 @@
 //!
 //! Run with: cargo test -p synctv-core --test admin_concurrency_tests -- --nocapture
 //! Docker tests: cargo test -p synctv-core --test admin_concurrency_tests -- --ignored --nocapture
+#![allow(clippy::unwrap_used)]
 
 use std::sync::Arc;
 
-use synctv_core_testing::{create_test_pool, create_test_jwt_service};
+use synctv_core_testing::{create_test_pool};
 use synctv_core::{
     cache::{KeyBuilder, NoopCacheL2, UsernameCache},
     config::PasswordComplexityConfig,
@@ -68,6 +69,7 @@ fn make_room(name: &str, description: &str, owner: &UserId) -> Room {
     }
 }
 
+#[allow(dead_code)]
 fn make_user_service(pool: PgPool) -> UserService {
     let secret = "Test_Secret_Key_For_JWT_Tokens_32Bytes!!";
     let jwt_service = JwtService::new(secret).expect("Failed to create JwtService");
@@ -89,6 +91,7 @@ fn make_user_service(pool: PgPool) -> UserService {
     )
 }
 
+#[allow(dead_code)]
 fn make_room_service(pool: PgPool) -> RoomService {
     let user_service = make_user_service(pool.clone());
     RoomService::new(pool, user_service)
@@ -636,11 +639,7 @@ async fn test_concurrent_room_ban_with_members_joining() {
     }
 
     // Collect result for ban handle
-    let mut ban_success = false;
-    match ban_handle.await.expect("Task panicked") {
-        Ok(_) => ban_success = true,
-        Err(_) => {}
-    }
+    let ban_success = ban_handle.await.expect("Task panicked").is_ok();
 
     // Ban should succeed
     assert!(ban_success, "Room ban should succeed");

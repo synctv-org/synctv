@@ -198,9 +198,6 @@ mod tests {
     // Returns None if Redis is not available
     async fn try_redis_connection() -> Option<redis::aio::ConnectionManager> {
         let redis_client = redis::Client::open("redis://127.0.0.1:6379").unwrap();
-        match redis::aio::ConnectionManager::new(redis_client).await {
-            Ok(conn) => Some(conn),
-            Err(_) => None,
-        }
+        redis::aio::ConnectionManager::new(redis_client).await.ok()
     }
 }

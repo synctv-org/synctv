@@ -5,18 +5,15 @@
 //! (via testcontainers). Each "node" has its own `node_id` but connects
 //! to the same Redis, simulating a multi-replica deployment.
 
+#![allow(clippy::unwrap_used)]
 use std::sync::Arc;
 use std::time::Duration;
 
 use chrono::Utc;
-use synctv_cluster::sync::events::{CacheTarget, ClusterEvent};
-use synctv_cluster::{ClusterConfig, ClusterManager, MessageDeduplicator, RoomMessageHub};
+use synctv_cluster::sync::events::ClusterEvent;
+use synctv_cluster::{MessageDeduplicator, RoomMessageHub};
 use synctv_cluster::sync::redis_pubsub::RedisPubSub;
-use synctv_core::cache::{CacheInvalidationService, InvalidationMessage};
-use synctv_core::models::id::{MediaId, RoomId, UserId};
-use testcontainers::ContainerAsync;
-use testcontainers::runners::AsyncRunner;
-use testcontainers_modules::redis::Redis;
+use synctv_core::models::id::{RoomId, UserId};
 use tokio::sync::broadcast;
 
 mod integration_test_helpers;
@@ -279,11 +276,8 @@ async fn test_redis_failure_and_recovery() {
     // Test 3: Verify event ordering is maintained after recovery
     // First, drain any remaining messages from node B's queue (e.g., "Local broadcast test")
     // to ensure we start fresh for the ordering test
-    loop {
-        match tokio::time::timeout(Duration::from_millis(100), rx_b.recv()).await {
-            Ok(Some(_)) => continue, // Drain message
-            _ => break, // No more messages or timeout
-        }
+    while let Ok(Some(_)) = tokio::time::timeout(Duration::from_millis(100), rx_b.recv()).await {
+        // Drain message
     }
 
     for i in 0..5 {

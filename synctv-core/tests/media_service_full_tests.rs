@@ -4,10 +4,11 @@
 //! edit_media cross-room check and optimistic lock retry with real PostgreSQL.
 //!
 //! Run with: cargo test -p synctv-core --test media_service_full_tests -- --nocapture
+#![allow(clippy::unwrap_used)]
 
 use std::sync::Arc;
 
-use synctv_core_testing::{create_test_pool, create_test_jwt_service};
+use synctv_core_testing::{create_test_pool};
 use synctv_core::{
     cache::{KeyBuilder, UsernameCache, NoopCacheL2},
     config::PasswordComplexityConfig,
@@ -341,7 +342,7 @@ async fn test_edit_media_optimistic_lock_retry_exhaustion() {
         .await
         .unwrap();
 
-    register_direct_url_provider(&*room_service).await;
+    register_direct_url_provider(&room_service).await;
     let playlist = get_root_playlist(&pool, &room.id).await;
     let media_service = room_service.media_service();
 

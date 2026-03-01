@@ -966,7 +966,7 @@ mod tests {
     #[tokio::test]
     #[ignore = "Requires Docker"]
     async fn test_create_and_get_media() {
-        use crate::test_helpers::{RoomFixture, UserFixture, PlaylistFixture};
+        use crate::test_helpers::{RoomFixture, UserFixture};
         use crate::repository::user::UserRepository;
         use crate::repository::room::RoomRepository;
         use crate::repository::playlist::PlaylistRepository;
@@ -1021,7 +1021,7 @@ mod tests {
     #[tokio::test]
     #[ignore = "Requires Docker"]
     async fn test_update_media() {
-        use crate::test_helpers::{RoomFixture, UserFixture, PlaylistFixture};
+        use crate::test_helpers::{RoomFixture, UserFixture};
         use crate::repository::user::UserRepository;
         use crate::repository::room::RoomRepository;
         use crate::repository::playlist::PlaylistRepository;
@@ -1075,7 +1075,7 @@ mod tests {
     #[tokio::test]
     #[ignore = "Requires Docker"]
     async fn test_delete_media() {
-        use crate::test_helpers::{RoomFixture, UserFixture, PlaylistFixture};
+        use crate::test_helpers::{RoomFixture, UserFixture};
         use crate::repository::user::UserRepository;
         use crate::repository::room::RoomRepository;
         use crate::repository::playlist::PlaylistRepository;
@@ -1132,7 +1132,7 @@ mod tests {
     #[tokio::test]
     #[ignore = "Requires Docker"]
     async fn test_create_batch() {
-        use crate::test_helpers::{RoomFixture, UserFixture, PlaylistFixture};
+        use crate::test_helpers::{RoomFixture, UserFixture};
         use crate::repository::user::UserRepository;
         use crate::repository::room::RoomRepository;
         use crate::repository::playlist::PlaylistRepository;
@@ -1188,7 +1188,7 @@ mod tests {
     #[tokio::test]
     #[ignore = "Requires Docker"]
     async fn test_create_batch_chunk_too_large() {
-        use crate::test_helpers::{RoomFixture, UserFixture, PlaylistFixture};
+        use crate::test_helpers::{RoomFixture, UserFixture};
         use crate::repository::user::UserRepository;
         use crate::repository::room::RoomRepository;
         use crate::repository::playlist::PlaylistRepository;
@@ -1242,8 +1242,9 @@ mod tests {
     /// Integration test: update_if_unchanged (optimistic locking)
     #[tokio::test]
     #[ignore = "Requires Docker"]
+    #[allow(deprecated)]
     async fn test_update_if_unchanged() {
-        use crate::test_helpers::{RoomFixture, UserFixture, PlaylistFixture};
+        use crate::test_helpers::{RoomFixture, UserFixture};
         use crate::repository::user::UserRepository;
         use crate::repository::room::RoomRepository;
         use crate::repository::playlist::PlaylistRepository;
@@ -1312,7 +1313,7 @@ mod tests {
     #[tokio::test]
     #[ignore = "Requires Docker"]
     async fn test_swap_positions() {
-        use crate::test_helpers::{RoomFixture, UserFixture, PlaylistFixture};
+        use crate::test_helpers::{RoomFixture, UserFixture};
         use crate::repository::user::UserRepository;
         use crate::repository::room::RoomRepository;
         use crate::repository::playlist::PlaylistRepository;
@@ -1386,7 +1387,7 @@ mod tests {
     #[tokio::test]
     #[ignore = "Requires Docker"]
     async fn test_count_by_playlist() {
-        use crate::test_helpers::{RoomFixture, UserFixture, PlaylistFixture};
+        use crate::test_helpers::{RoomFixture, UserFixture};
         use crate::repository::user::UserRepository;
         use crate::repository::room::RoomRepository;
         use crate::repository::playlist::PlaylistRepository;
@@ -1441,7 +1442,7 @@ mod tests {
     #[tokio::test]
     #[ignore = "Requires Docker"]
     async fn test_get_playlist_paginated() {
-        use crate::test_helpers::{RoomFixture, UserFixture, PlaylistFixture};
+        use crate::test_helpers::{RoomFixture, UserFixture};
         use crate::repository::user::UserRepository;
         use crate::repository::room::RoomRepository;
         use crate::repository::playlist::PlaylistRepository;
@@ -1507,7 +1508,7 @@ mod tests {
     #[tokio::test]
     #[ignore = "Requires Docker"]
     async fn test_delete_batch() {
-        use crate::test_helpers::{RoomFixture, UserFixture, PlaylistFixture};
+        use crate::test_helpers::{RoomFixture, UserFixture};
         use crate::repository::user::UserRepository;
         use crate::repository::room::RoomRepository;
         use crate::repository::playlist::PlaylistRepository;
@@ -1565,7 +1566,7 @@ mod tests {
     #[tokio::test]
     #[ignore = "Requires Docker"]
     async fn test_get_by_ids() {
-        use crate::test_helpers::{RoomFixture, UserFixture, PlaylistFixture};
+        use crate::test_helpers::{RoomFixture, UserFixture};
         use crate::repository::user::UserRepository;
         use crate::repository::room::RoomRepository;
         use crate::repository::playlist::PlaylistRepository;

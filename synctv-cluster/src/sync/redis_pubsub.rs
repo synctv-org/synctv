@@ -272,6 +272,7 @@ impl RedisPubSub {
     /// `catchup_window_secs` controls how far back to replay Redis Stream events
     /// when this node first connects.  Pass `300` for the default (5 minutes).
     /// `stream_max_length` controls the maximum number of entries per Redis Stream.
+    #[allow(clippy::too_many_arguments)]
     pub fn with_key_prefix(
         redis_client: RedisClient,
         message_hub: Arc<RoomMessageHub>,
@@ -418,7 +419,9 @@ impl RedisPubSub {
             // This ensures user access control events are always delivered even during
             // prolonged Redis outages.
             let mut critical_retry_buffer: Vec<PublishRequest> = Vec::new();
-            // Track whether we've already logged a warning about buffer approaching capacity
+            // Track whether we've already logged a warning about buffer approaching capacity.
+            // Reset to false on each successful reconnection inside the loop.
+            #[allow(unused_assignments)]
             let mut buffer_warn_logged = false;
 
             // Helper to update buffer pressure state
@@ -2127,7 +2130,7 @@ mod tests {
             loop {
                 match redis_client.get_multiplexed_async_connection().await {
                     Ok(conn) => break conn,
-                    Err(e) if retries < 10 => {
+                    Err(_e) if retries < 10 => {
                         retries += 1;
                         tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
                     }
@@ -2252,11 +2255,7 @@ mod tests {
             .as_millis() as u64;
 
         let expected_start = now_ms.saturating_sub(300_000);
-        let diff = if timestamp_ms > expected_start {
-            timestamp_ms - expected_start
-        } else {
-            expected_start - timestamp_ms
-        };
+        let diff = timestamp_ms.abs_diff(expected_start);
 
         // Allow 1 second tolerance for test execution time
         assert!(diff < 1000, "catchup_start_id timestamp should be ~5 minutes ago, diff: {}ms", diff);
@@ -2293,11 +2292,7 @@ mod tests {
             .as_millis() as u64;
 
         let expected_start = now_ms.saturating_sub(60_000);
-        let diff = if timestamp_ms > expected_start {
-            timestamp_ms - expected_start
-        } else {
-            expected_start - timestamp_ms
-        };
+        let diff = timestamp_ms.abs_diff(expected_start);
 
         // Allow 1 second tolerance
         assert!(diff < 1000, "catchup_start_id should use 60s window, diff: {}ms", diff);

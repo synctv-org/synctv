@@ -519,35 +519,37 @@ impl NodeRegistry {
             return;
         }
 
-        if result.is_ok() {
-            if let Some(ref cb) = self.circuit_breaker {
-                cb.on_success();
-            }
-            // Transition back to Normal mode on successful operation
-            let mut mode = self.cluster_mode.write();
-            if *mode != ClusterMode::Normal {
-                tracing::info!(
-                    previous_mode = %*mode,
-                    "Redis operation succeeded, switching back to Normal cluster mode"
-                );
-                *mode = ClusterMode::Normal;
-            }
-        } else {
-            let error = result.as_ref().unwrap_err();
-            let error_str = error.to_string();
-            if error_str.contains("READONLY") || error_str.contains("LOADING") {
-                tracing::warn!(
-                    error = %error_str,
-                    "Redis Sentinel failover detected in operation result, will reconnect"
-                );
-                // Clear cached connection synchronously (best effort via try_lock)
-                if let Ok(mut guard) = self.cached_conn.try_lock() {
-                    *guard = None;
+        match result {
+            Ok(_) => {
+                if let Some(ref cb) = self.circuit_breaker {
+                    cb.on_success();
                 }
-                self.last_health_check.store(0, Ordering::Relaxed);
+                // Transition back to Normal mode on successful operation
+                let mut mode = self.cluster_mode.write();
+                if *mode != ClusterMode::Normal {
+                    tracing::info!(
+                        previous_mode = %*mode,
+                        "Redis operation succeeded, switching back to Normal cluster mode"
+                    );
+                    *mode = ClusterMode::Normal;
+                }
             }
-            if let Some(ref cb) = self.circuit_breaker {
-                cb.on_error();
+            Err(ref error) => {
+                let error_str = error.to_string();
+                if error_str.contains("READONLY") || error_str.contains("LOADING") {
+                    tracing::warn!(
+                        error = %error_str,
+                        "Redis Sentinel failover detected in operation result, will reconnect"
+                    );
+                    // Clear cached connection synchronously (best effort via try_lock)
+                    if let Ok(mut guard) = self.cached_conn.try_lock() {
+                        *guard = None;
+                    }
+                    self.last_health_check.store(0, Ordering::Relaxed);
+                }
+                if let Some(ref cb) = self.circuit_breaker {
+                    cb.on_error();
+                }
             }
         }
     }

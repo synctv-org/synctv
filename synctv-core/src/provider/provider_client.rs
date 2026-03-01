@@ -647,8 +647,7 @@ mod tests {
         fn _test_emby(channel: tonic::transport::Channel) -> EmbyClientArc {
             create_remote_emby_client(channel)
         }
-        // Just verify they exist and compile
-        assert!(true);
+        // The above functions verify these client constructors compile.
     }
 
     /// Test that ProviderClientManager::with_custom_clients allows mock injection

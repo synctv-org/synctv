@@ -3,8 +3,8 @@
 //! - Register node, DEL Redis key manually, call heartbeat(), assert re-registered via get_all_nodes()
 //! - Force epoch mismatch by writing modified epoch to Redis, verify auto-retry
 
+#![allow(clippy::unwrap_used)]
 use std::sync::Arc;
-use testcontainers::core::ImageExt;
 use testcontainers::runners::AsyncRunner;
 use testcontainers_modules::redis::Redis;
 
@@ -12,6 +12,7 @@ use synctv_cluster::discovery::node_registry::NodeRegistry;
 use synctv_cluster::HeartbeatResult;
 
 /// Default Redis version for test containers
+#[allow(dead_code)]
 const REDIS_VERSION: &str = "7-alpine";
 
 /// Helper to create a Redis container and client.

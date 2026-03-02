@@ -55,6 +55,11 @@ pub struct ClusterConfig {
     /// Mirrors `ClusterChannelConfig::stream_max_length`.
     /// Default: 10000
     pub stream_max_length: usize,
+    /// Optional parent cancellation token (e.g., from `ShutdownCoordinator`).
+    /// When provided, the `ClusterManager`'s internal token is created as a
+    /// child of this token, so cancelling the parent also cancels all cluster
+    /// background tasks. When `None`, an independent token is created.
+    pub parent_cancel_token: Option<CancellationToken>,
 }
 
 impl std::fmt::Debug for ClusterConfig {
@@ -76,6 +81,10 @@ impl std::fmt::Debug for ClusterConfig {
             .field("key_prefix", &self.key_prefix)
             .field("catchup_window_secs", &self.catchup_window_secs)
             .field("stream_max_length", &self.stream_max_length)
+            .field(
+                "parent_cancel_token",
+                &self.parent_cancel_token.as_ref().map(|_| "Some(..)"),
+            )
             .finish()
     }
 }
@@ -93,6 +102,7 @@ impl Default for ClusterConfig {
             key_prefix: "synctv:".to_string(),
             catchup_window_secs: 300,
             stream_max_length: 10_000,
+            parent_cancel_token: None,
         }
     }
 }
@@ -269,7 +279,10 @@ impl ClusterManager {
             admin_event_tx,
             redis_pubsub,
             publisher_task: tokio::sync::Mutex::new(publisher_handle),
-            cancel_token: CancellationToken::new(),
+            cancel_token: config
+                .parent_cancel_token
+                .as_ref()
+                .map_or_else(CancellationToken::new, |parent| parent.child_token()),
             critical_channel_capacity: config.critical_channel_capacity,
             publish_channel_capacity: config.publish_channel_capacity,
             heartbeat_state: tokio::sync::Mutex::new(HeartbeatState {
@@ -548,9 +561,9 @@ impl ClusterManager {
     ///
     /// This method:
     /// 1. Cancels the heartbeat loop
-    /// 2. Shuts down Redis Pub/Sub (which drains pending publishes)
-    /// 3. Awaits the publisher task's completion (with a 10s timeout)
-    /// 4. Unregisters this node from Redis
+    /// 2. Unregisters this node from Redis (so peers stop routing traffic immediately)
+    /// 3. Shuts down Redis Pub/Sub (which drains pending publishes)
+    /// 4. Awaits the publisher task's completion (with a 10s timeout)
     /// 5. Shuts down the deduplicator cleanup task
     /// 6. Awaits background task completion
     pub async fn shutdown(&self) {
@@ -558,6 +571,23 @@ impl ClusterManager {
 
         // Cancel heartbeat loop
         self.cancel_token.cancel();
+
+        // Unregister this node from Redis FIRST so peers stop routing traffic
+        // to us immediately, before we start draining pub/sub channels.
+        {
+            let mut state = self.heartbeat_state.lock().await;
+            // Unregister this node from Redis so peers see it go immediately
+            if let Some(ref registry) = state.node_registry {
+                if let Err(e) = registry.unregister().await {
+                    warn!(error = %e, "Failed to unregister node during shutdown");
+                } else {
+                    info!("Node unregistered from Redis during shutdown");
+                }
+            }
+            if let Some(handle) = state.handle.take() {
+                let _ = handle.await;
+            }
+        }
 
         // Cancel Redis Pub/Sub tasks (signals the publisher and subscriber loops to stop)
         if let Some(ref pubsub) = self.redis_pubsub {
@@ -585,22 +615,6 @@ impl ClusterManager {
                     Err(_) => {
                         warn!("Redis publisher task did not finish within 10s timeout during shutdown; proceeding");
                     }
-                }
-            }
-        }
-
-        // Wait for the heartbeat task to finish and unregister
-        {
-            let mut state = self.heartbeat_state.lock().await;
-            if let Some(handle) = state.handle.take() {
-                let _ = handle.await;
-            }
-            // Unregister this node from Redis so peers see it go immediately
-            if let Some(ref registry) = state.node_registry {
-                if let Err(e) = registry.unregister().await {
-                    warn!(error = %e, "Failed to unregister node during shutdown");
-                } else {
-                    info!("Node unregistered from Redis during shutdown");
                 }
             }
         }
@@ -843,6 +857,7 @@ mod tests {
             key_prefix: "synctv:".to_string(),
             catchup_window_secs: 300,
             stream_max_length: 10_000,
+            parent_cancel_token: None,
         };
 
         let manager = ClusterManager::new(config, None, None).await.unwrap();
@@ -904,6 +919,7 @@ mod tests {
             key_prefix: "synctv:".to_string(),
             catchup_window_secs: 300,
             stream_max_length: 10_000,
+            parent_cancel_token: None,
         };
 
         let manager = ClusterManager::new(config, None, None).await.unwrap();
@@ -954,6 +970,7 @@ mod tests {
             key_prefix: "synctv:".to_string(),
             catchup_window_secs: 300,
             stream_max_length: 10_000,
+            parent_cancel_token: None,
         };
 
         let manager = ClusterManager::new(config, None, None).await.unwrap();
@@ -1006,6 +1023,7 @@ mod tests {
             key_prefix: "synctv:".to_string(),
             catchup_window_secs: 300,
             stream_max_length: 10_000,
+            parent_cancel_token: None,
         };
 
         // Create ClusterManager with cache_invalidation but no Redis
@@ -1071,6 +1089,7 @@ mod tests {
             key_prefix: "synctv:".to_string(),
             catchup_window_secs: 300,
             stream_max_length: 10_000,
+            parent_cancel_token: None,
         };
 
         // Create ClusterManager without cache_invalidation and without Redis
@@ -1124,6 +1143,7 @@ mod tests {
             key_prefix: "synctv:".to_string(),
             catchup_window_secs: 300,
             stream_max_length: 10_000,
+            parent_cancel_token: None,
         };
 
         let mut manager = ClusterManager::new(config, None, None)
@@ -1187,6 +1207,7 @@ mod tests {
             key_prefix: "synctv:".to_string(),
             catchup_window_secs: 300,
             stream_max_length: 10_000,
+            parent_cancel_token: None,
         };
 
         let manager = ClusterManager::new(config, None, None)

@@ -1313,7 +1313,7 @@ impl RoomService {
         room_id: &RoomId,
         settings: &RoomSettings,
     ) -> Result<RoomSettings> {
-        super::optimistic_retry::retry_with_optimistic_lock(
+        let result = super::optimistic_retry::retry_with_optimistic_lock(
             Self::MAX_RETRIES,
             Self::BACKOFF_BASE_MS,
             "Settings update failed after maximum retry attempts",
@@ -1325,7 +1325,9 @@ impl RoomService {
                 Ok(settings.clone())
             },
         )
-        .await
+        .await?;
+        self.notify_room_settings_invalidation(room_id).await;
+        Ok(result)
     }
 
     /// Update single room setting by key (requires `UPDATE_ROOM_SETTINGS` permission)
@@ -1391,6 +1393,7 @@ impl RoomService {
         // 4. Post-apply hooks (side effects after commit)
         self.permission_service.invalidate_room_cache(room_id).await;
         self.notify_room_invalidation(room_id).await;
+        self.notify_room_settings_invalidation(room_id).await;
         self.run_post_apply_hooks(room_id, key, value).await;
 
         serde_json::to_string(&settings).internal_with_err("Failed to serialize settings")
@@ -1431,7 +1434,7 @@ impl RoomService {
 
         let default_settings = RoomSettings::default();
 
-        super::optimistic_retry::retry_with_optimistic_lock(
+        let result = super::optimistic_retry::retry_with_optimistic_lock(
             Self::MAX_RETRIES,
             Self::BACKOFF_BASE_MS,
             "Settings reset failed after maximum retry attempts",
@@ -1444,7 +1447,9 @@ impl RoomService {
                     .internal_with_err("Failed to serialize settings")
             },
         )
-        .await
+        .await?;
+        self.notify_room_settings_invalidation(room_id).await;
+        Ok(result)
     }
 
     /// Check room password
@@ -2798,6 +2803,19 @@ impl RoomService {
                     error = %e,
                     room_id = %room_id.as_str(),
                     "Failed to broadcast room cache invalidation"
+                );
+            }
+        }
+    }
+
+    /// Broadcast room settings cache invalidation to other replicas.
+    async fn notify_room_settings_invalidation(&self, room_id: &RoomId) {
+        if let Some(ref service) = self.cache_invalidation {
+            if let Err(e) = service.invalidate_and_broadcast_room_settings(room_id).await {
+                tracing::warn!(
+                    error = %e,
+                    room_id = %room_id.as_str(),
+                    "Failed to broadcast room settings cache invalidation"
                 );
             }
         }

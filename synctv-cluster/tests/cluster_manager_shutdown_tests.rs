@@ -37,6 +37,7 @@ async fn make_cluster_manager(node_id: &str) -> ClusterManager {
         key_prefix: "synctv:".to_string(),
         catchup_window_secs: 300,
         stream_max_length: 10_000,
+        parent_cancel_token: None,
     };
     ClusterManager::new(config, None, None)
         .await
@@ -364,5 +365,89 @@ async fn test_shutdown_pattern_matches_publisher_task() {
         elapsed < Duration::from_secs(15),
         "Shutdown exceeded expected timeout: {elapsed:?}. \
          Heartbeat task handling should match publisher_task pattern with 10s timeout."
+    );
+}
+
+// =====================================================================
+// Test 8: parent cancel token propagation (L11)
+// =====================================================================
+
+/// Test that cancelling a parent token also cancels the ClusterManager's
+/// internal cancel token (child token pattern).
+#[tokio::test]
+async fn test_parent_cancel_token_propagates_cancellation() {
+    use tokio_util::sync::CancellationToken;
+
+    let parent = CancellationToken::new();
+
+    let config = ClusterConfig {
+        redis_client: None,
+        redis_conn: None,
+        node_id: "child-token-test".to_string(),
+        dedup_window: Duration::from_secs(1),
+        cleanup_interval: Duration::from_secs(1),
+        critical_channel_capacity: 1000,
+        publish_channel_capacity: 10_000,
+        key_prefix: "synctv:".to_string(),
+        catchup_window_secs: 300,
+        stream_max_length: 10_000,
+        parent_cancel_token: Some(parent.clone()),
+    };
+
+    let manager = ClusterManager::new(config, None, None)
+        .await
+        .expect("ClusterManager::new should succeed");
+
+    // The child token should not be cancelled yet
+    assert!(
+        !manager.cancel_token().is_cancelled(),
+        "Child token should not be cancelled before parent"
+    );
+
+    // Cancel the parent token
+    parent.cancel();
+
+    // The child token should now be cancelled too
+    assert!(
+        manager.cancel_token().is_cancelled(),
+        "Cancelling parent token should propagate to ClusterManager's child token"
+    );
+}
+
+// =====================================================================
+// Test 9: without parent cancel token, ClusterManager uses independent token
+// =====================================================================
+
+#[tokio::test]
+async fn test_without_parent_cancel_token_uses_independent_token() {
+    let config = ClusterConfig {
+        redis_client: None,
+        redis_conn: None,
+        node_id: "independent-token-test".to_string(),
+        dedup_window: Duration::from_secs(1),
+        cleanup_interval: Duration::from_secs(1),
+        critical_channel_capacity: 1000,
+        publish_channel_capacity: 10_000,
+        key_prefix: "synctv:".to_string(),
+        catchup_window_secs: 300,
+        stream_max_length: 10_000,
+        parent_cancel_token: None,
+    };
+
+    let manager = ClusterManager::new(config, None, None)
+        .await
+        .expect("ClusterManager::new should succeed");
+
+    // Token should not be cancelled
+    assert!(
+        !manager.cancel_token().is_cancelled(),
+        "Independent cancel token should not be cancelled"
+    );
+
+    // Shutdown should cancel it
+    manager.shutdown().await;
+    assert!(
+        manager.cancel_token().is_cancelled(),
+        "Token should be cancelled after shutdown"
     );
 }

@@ -134,11 +134,19 @@ const CIRCUIT_BREAKER_THRESHOLD: u32 = 5;
 /// How long the circuit stays open before allowing a probe attempt (30 seconds).
 const CIRCUIT_BREAKER_COOLDOWN_MS: u64 = 30_000;
 
+/// Default maximum number of connections in the pool.
+const DEFAULT_MAX_POOL_SIZE: usize = 100;
+
 /// Thread-safe gRPC connection pool keyed by node address.
 ///
 /// Channels are reused across callers (tonic `Channel` is clone-cheap and
 /// multiplexes over a single HTTP/2 connection). Stale entries are lazily
 /// evicted on access when they exceed `max_idle`.
+///
+/// The pool enforces a maximum size (`max_size`). When a new connection would
+/// exceed this limit, the oldest (by creation time) entry is evicted to make
+/// room. This prevents unbounded growth during K8s pod churn where stale
+/// addresses accumulate.
 ///
 /// Includes a per-node circuit breaker: after `CIRCUIT_BREAKER_THRESHOLD`
 /// consecutive failures to a node, connection attempts are rejected for
@@ -148,6 +156,8 @@ pub struct GrpcConnectionPool {
     connections: Arc<DashMap<String, PooledChannel>>,
     /// Maximum time a pooled connection is considered healthy before re-creation.
     max_idle: Duration,
+    /// Maximum number of connections allowed in the pool.
+    max_size: usize,
     /// Per-node circuit breaker state
     circuit_breakers: Arc<DashMap<String, Arc<CircuitBreakerState>>>,
 }
@@ -157,19 +167,28 @@ impl GrpcConnectionPool {
     ///
     /// `max_idle` controls how long a cached channel is reused before being
     /// discarded and re-created on the next request.
+    /// `max_size` limits the maximum number of connections in the pool.
     #[must_use]
-    pub fn new(max_idle: Duration) -> Self {
+    pub fn new(max_idle: Duration, max_size: usize) -> Self {
         Self {
             connections: Arc::new(DashMap::new()),
             max_idle,
+            max_size: max_size.max(1), // at least 1
             circuit_breakers: Arc::new(DashMap::new()),
         }
     }
 
-    /// Create a pool with a default max idle time of 5 minutes.
+    /// Create a pool with a default max idle time of 5 minutes and default max
+    /// pool size of 100.
     #[must_use]
     pub fn with_defaults() -> Self {
-        Self::new(Duration::from_mins(5))
+        Self::new(Duration::from_mins(5), DEFAULT_MAX_POOL_SIZE)
+    }
+
+    /// Returns the maximum number of connections allowed in the pool.
+    #[must_use]
+    pub fn max_size(&self) -> usize {
+        self.max_size
     }
 
     /// Get or create a gRPC channel for the given address.
@@ -243,6 +262,11 @@ impl GrpcConnectionPool {
             }
         };
 
+        // Evict oldest entry if pool is at capacity (and this is a new address)
+        if !self.connections.contains_key(address) && self.connections.len() >= self.max_size {
+            self.evict_oldest();
+        }
+
         self.connections.insert(
             address.to_string(),
             PooledChannel {
@@ -294,12 +318,32 @@ impl GrpcConnectionPool {
         }
     }
 
+    /// Evict the oldest connection from the pool to make room for a new one.
+    ///
+    /// Iterates over all entries and removes the one with the earliest
+    /// `created_at` timestamp. This is O(n) but the pool is small (bounded by
+    /// `max_size`), so the cost is negligible.
+    fn evict_oldest(&self) {
+        let oldest = self
+            .connections
+            .iter()
+            .min_by_key(|entry| entry.created_at)
+            .map(|entry| entry.key().clone());
+
+        if let Some(key) = oldest {
+            self.connections.remove(&key);
+            debug!(address = key, "Evicted oldest gRPC connection to make room");
+        }
+    }
+
     /// Remove all stale or unhealthy connections.
     ///
     /// A connection is evicted if:
     /// - Its age exceeds `max_idle` (time-based eviction), OR
     /// - Its consecutive error count has reached `CONNECTION_ERROR_EVICTION_THRESHOLD`
     ///   (health-based eviction).
+    ///
+    /// Also cleans up circuit breaker state for addresses no longer in the pool.
     ///
     /// Can be called periodically from a background task.
     pub fn evict_stale(&self) {
@@ -317,6 +361,12 @@ impl GrpcConnectionPool {
                 evicted
             );
         }
+
+        // Clean up circuit breaker state for addresses no longer in the pool.
+        // This prevents the circuit_breakers DashMap from growing unboundedly
+        // when nodes are removed from the cluster.
+        self.circuit_breakers
+            .retain(|addr, _| self.connections.contains_key(addr));
     }
 
     /// Spawn a background task that calls `evict_stale` every `interval`.
@@ -389,7 +439,7 @@ mod tests {
     #[tokio::test]
     async fn test_pool_evict_stale_with_expired_entry() {
         // Use a very short TTL so entries expire immediately
-        let pool = GrpcConnectionPool::new(Duration::from_millis(1));
+        let pool = GrpcConnectionPool::new(Duration::from_millis(1), 100);
 
         // We can't easily create a real channel without a server, so just test
         // the eviction logic with the empty pool (integration test would cover the full path)
@@ -458,5 +508,91 @@ mod tests {
             .saturating_sub(CIRCUIT_BREAKER_COOLDOWN_MS + 1000);
         cb.opened_at_millis.store(past_ms, Ordering::Release);
         assert!(!cb.is_open(CIRCUIT_BREAKER_COOLDOWN_MS));
+    }
+
+    #[test]
+    fn test_pool_max_size_default() {
+        let pool = GrpcConnectionPool::with_defaults();
+        assert_eq!(pool.max_size(), DEFAULT_MAX_POOL_SIZE);
+    }
+
+    #[test]
+    fn test_pool_max_size_custom() {
+        let pool = GrpcConnectionPool::new(Duration::from_secs(60), 50);
+        assert_eq!(pool.max_size(), 50);
+    }
+
+    #[test]
+    fn test_pool_max_size_minimum_is_one() {
+        // max_size of 0 should be clamped to 1
+        let pool = GrpcConnectionPool::new(Duration::from_secs(60), 0);
+        assert_eq!(pool.max_size(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_pool_enforces_max_size_on_insert() {
+        // Create a pool with max_size = 3
+        let pool = GrpcConnectionPool::new(Duration::from_secs(300), 3);
+
+        // Manually insert entries with staggered creation times.
+        // node-0 is the oldest (created_at furthest in the past).
+        let channel = Channel::from_static("http://[::1]:50051").connect_lazy();
+        let now = Instant::now();
+        for i in 0..3u32 {
+            pool.connections.insert(
+                format!("node-{i}:50051"),
+                PooledChannel {
+                    channel: channel.clone(),
+                    // node-0 is oldest (300s ago), node-1 is 200s ago, node-2 is 100s ago
+                    created_at: now - Duration::from_secs((300 - i as u64 * 100).into()),
+                    consecutive_errors: AtomicU32::new(0),
+                },
+            );
+        }
+        assert_eq!(pool.len(), 3);
+
+        // Trigger evict_oldest (simulating what get_channel would do)
+        pool.evict_oldest();
+        assert_eq!(pool.len(), 2);
+
+        // Verify the oldest entry (node-0) was evicted
+        assert!(pool.connections.get("node-0:50051").is_none());
+        assert!(pool.connections.get("node-1:50051").is_some());
+        assert!(pool.connections.get("node-2:50051").is_some());
+    }
+
+    #[tokio::test]
+    async fn test_evict_stale_cleans_circuit_breakers() {
+        // Test that evict_stale also cleans up circuit breakers for removed addresses.
+        // TTL of 1ms means entries created in the past are immediately stale.
+        let pool = GrpcConnectionPool::new(Duration::from_millis(1), 100);
+        let channel = Channel::from_static("http://[::1]:50051").connect_lazy();
+
+        // Insert a connection created 10 seconds ago (well past 1ms TTL)
+        pool.connections.insert(
+            "node-1:50051".to_string(),
+            PooledChannel {
+                channel: channel.clone(),
+                created_at: Instant::now() - Duration::from_secs(10),
+                consecutive_errors: AtomicU32::new(0),
+            },
+        );
+
+        // Create circuit breaker entries for both an active and stale address
+        pool.circuit_breakers.insert(
+            "node-1:50051".to_string(),
+            Arc::new(CircuitBreakerState::new()),
+        );
+        pool.circuit_breakers.insert(
+            "node-2:50051".to_string(),
+            Arc::new(CircuitBreakerState::new()),
+        );
+        assert_eq!(pool.circuit_breakers.len(), 2);
+
+        // Evict stale -- should remove node-1 (stale TTL) and clean its circuit breaker
+        // and also clean node-2 circuit breaker (no connection in pool)
+        pool.evict_stale();
+        assert!(pool.is_empty());
+        assert_eq!(pool.circuit_breakers.len(), 0);
     }
 }

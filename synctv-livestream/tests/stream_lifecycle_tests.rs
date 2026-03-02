@@ -678,6 +678,7 @@ async fn test_livestream_handle_tracks_hls_cleanup() {
     let config = CleanupConfig {
         interval: Duration::from_millis(100),
         retention: Duration::from_mins(1),
+        max_segments_per_stream: 0,
     };
     let segment_manager = Arc::new(SegmentManager::new(storage, config));
 

@@ -343,6 +343,67 @@ impl HlsStorage for MemoryStorage {
         Ok(deleted)
     }
 
+    async fn list_streams(&self) -> Result<Vec<(String, String)>> {
+        let inner = self.inner.read();
+        let mut streams = std::collections::HashSet::new();
+        for key in inner.data.keys() {
+            // Keys are "app/stream/name"
+            let mut parts = key.splitn(3, '/');
+            if let (Some(app), Some(stream), Some(_)) = (parts.next(), parts.next(), parts.next())
+            {
+                streams.insert((app.to_string(), stream.to_string()));
+            }
+        }
+        Ok(streams.into_iter().collect())
+    }
+
+    async fn count_stream_segments(&self, app: &str, stream: &str) -> Result<usize> {
+        let prefix = format!("{app}/{stream}/");
+        let inner = self.inner.read();
+        Ok(inner.data.keys().filter(|k| k.starts_with(&prefix)).count())
+    }
+
+    async fn delete_oldest_stream_segments(
+        &self,
+        app: &str,
+        stream: &str,
+        max_count: usize,
+    ) -> Result<usize> {
+        let prefix = format!("{app}/{stream}/");
+        let mut inner = self.inner.write();
+
+        // Collect (seq, key) for matching segments, sorted by seq (oldest first)
+        let mut matching: Vec<(u64, String)> = inner
+            .data
+            .iter()
+            .filter(|(k, _)| k.starts_with(&prefix))
+            .map(|(k, e)| (e.seq, k.clone()))
+            .collect();
+        matching.sort_unstable_by_key(|(seq, _)| *seq);
+
+        let total = matching.len();
+        if total <= max_count {
+            return Ok(0);
+        }
+
+        let to_delete = total - max_count;
+        let mut deleted = 0;
+        for (_, key) in matching.into_iter().take(to_delete) {
+            if inner.remove(&key) {
+                deleted += 1;
+            }
+        }
+
+        if deleted > 0 {
+            tracing::debug!(
+                "Deleted {} oldest segments for {}/{} (was {}, max {})",
+                deleted, app, stream, total, max_count
+            );
+        }
+
+        Ok(deleted)
+    }
+
     async fn cleanup(&self, older_than: Duration) -> Result<usize> {
         let mut inner = self.inner.write();
         let cutoff = std::time::Instant::now()

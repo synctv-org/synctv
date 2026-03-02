@@ -31,6 +31,7 @@ async fn test_room_hub_connection_manager_state_consistency() {
         key_prefix: "synctv:".to_string(),
         catchup_window_secs: 300,
         stream_max_length: 10_000,
+        parent_cancel_token: None,
     };
 
     let manager = ClusterManager::new(config, None, None).await.unwrap();
@@ -139,6 +140,7 @@ async fn test_rapid_subscribe_unsubscribe_no_leak() {
         key_prefix: "synctv:".to_string(),
         catchup_window_secs: 300,
         stream_max_length: 10_000,
+        parent_cancel_token: None,
     };
 
     let manager = ClusterManager::new(config, None, None).await.unwrap();

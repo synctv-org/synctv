@@ -312,6 +312,15 @@ impl ExternalStreamPuller {
                 }
             };
 
+            // Create a Drop guard that ensures UnPublish is sent even if this
+            // task is aborted (not just cancelled). The guard is disarmed before
+            // the explicit unpublish call below to prevent double-send.
+            let unpublish_guard = UnpublishGuard::new(
+                self.room_id.clone(),
+                self.media_id.clone(),
+                self.stream_hub_event_sender.clone(),
+            );
+
             let connect_start = std::time::Instant::now();
             let result = match self.source_type {
                 ExternalSourceType::Rtmp => self.connect_and_stream_rtmp(&data_sender).await,
@@ -326,6 +335,10 @@ impl ExternalStreamPuller {
                     let _ = tx.send(Err(format!("{e}")));
                 }
             }
+
+            // Disarm the guard before explicit unpublish to prevent double-send
+            unpublish_guard.disarm();
+            drop(unpublish_guard);
 
             // Always clean up local StreamHub before retry or exit
             if let Err(e) = self.unpublish_from_local_stream_hub().await {
@@ -810,6 +823,86 @@ impl ExternalStreamPuller {
         }
 
         Ok(())
+    }
+}
+
+/// Drop guard that sends UnPublish to StreamHub when dropped.
+///
+/// Ensures cleanup happens even if the puller task is aborted (not just cancelled).
+/// Uses `try_send` for the fast path; spawns an async task if the channel is full.
+struct UnpublishGuard {
+    room_id: String,
+    media_id: String,
+    stream_hub_event_sender: StreamHubEventSender,
+    /// Set to true when the puller has already sent UnPublish (e.g., during normal retry).
+    disarmed: std::sync::atomic::AtomicBool,
+}
+
+impl UnpublishGuard {
+    fn new(
+        room_id: String,
+        media_id: String,
+        stream_hub_event_sender: StreamHubEventSender,
+    ) -> Self {
+        Self {
+            room_id,
+            media_id,
+            stream_hub_event_sender,
+            disarmed: std::sync::atomic::AtomicBool::new(false),
+        }
+    }
+
+    fn disarm(&self) {
+        self.disarmed
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+impl Drop for UnpublishGuard {
+    fn drop(&mut self) {
+        if self.disarmed.load(std::sync::atomic::Ordering::SeqCst) {
+            return;
+        }
+
+        let identifier = StreamIdentifier::Rtmp {
+            app_name: self.room_id.clone(),
+            stream_name: self.media_id.clone(),
+        };
+
+        match self
+            .stream_hub_event_sender
+            .try_send(StreamHubEvent::UnPublish { identifier })
+        {
+            Ok(()) => {
+                debug!(
+                    "UnpublishGuard: sent UnPublish for {}/{}",
+                    self.room_id, self.media_id
+                );
+            }
+            Err(mpsc::error::TrySendError::Full(event)) => {
+                let sender = self.stream_hub_event_sender.clone();
+                let room_id = self.room_id.clone();
+                let media_id = self.media_id.clone();
+                warn!(
+                    "UnpublishGuard: channel full, spawning async UnPublish for {}/{}",
+                    room_id, media_id
+                );
+                tokio::spawn(async move {
+                    if let Err(e) = sender.send(event).await {
+                        warn!(
+                            "UnpublishGuard: async UnPublish failed for {}/{}: {}",
+                            room_id, media_id, e
+                        );
+                    }
+                });
+            }
+            Err(e) => {
+                warn!(
+                    "UnpublishGuard: failed to send UnPublish for {}/{}: {}",
+                    self.room_id, self.media_id, e
+                );
+            }
+        }
     }
 }
 

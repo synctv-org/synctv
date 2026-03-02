@@ -263,29 +263,65 @@ fn test_encrypt_credential_json_emby() {
     }
 }
 
-/// Test that Bilibili cookies are NOT encrypted (they don't need encryption)
+/// Test that Bilibili cookies are encrypted (SESSDATA is a sensitive session token)
 #[test]
-fn test_encrypt_credential_json_bilibili_unchanged() {
-    // Create Bilibili credential
+fn test_encrypt_credential_json_bilibili_sessdata() {
+    let enc = FieldEncryption::new(&test_encryption_key()).unwrap();
+
+    // Create Bilibili credential with SESSDATA
     let mut cookies = std::collections::HashMap::new();
-    cookies.insert("SESSDATA".to_string(), "session_value".to_string());
+    cookies.insert("SESSDATA".to_string(), "secret_session_value".to_string());
     let cred = CredentialData::bilibili(cookies);
 
     // Serialize to JSON
-    let json = serde_json::to_value(&cred).unwrap();
+    let mut json = serde_json::to_value(&cred).unwrap();
 
-    // Bilibili should not have any fields encrypted
-    // (The implementation should skip encryption for Bilibili)
+    // Encrypt cookie values (this is what PostgresCredentialStorage should do)
+    if let Some(obj) = json.as_object_mut() {
+        if let Some(cookies_val) = obj.get_mut("cookies") {
+            if let Some(cookies_obj) = cookies_val.as_object_mut() {
+                for (_key, value) in cookies_obj.iter_mut() {
+                    if let Some(plain) = value.as_str() {
+                        let encrypted = enc.encrypt(plain).unwrap();
+                        *value = serde_json::Value::String(encrypted);
+                    }
+                }
+            }
+        }
+    }
+
+    // Verify plaintext SESSDATA is NOT in the stored data
     let json_str = serde_json::to_string(&json).unwrap();
-
-    // Verify the session value is still visible (not encrypted)
     assert!(
-        json_str.contains("session_value"),
-        "Bilibili cookies should not be encrypted"
+        !json_str.contains("secret_session_value"),
+        "Plaintext SESSDATA should NOT appear in encrypted JSON"
     );
     assert!(
-        !json_str.contains("enc:"),
-        "Bilibili JSON should not contain encrypted data"
+        json_str.contains("enc:"),
+        "Encrypted JSON should contain 'enc:' prefix for SESSDATA"
+    );
+
+    // Verify we can decrypt it back
+    if let Some(obj) = json.as_object_mut() {
+        if let Some(cookies_val) = obj.get_mut("cookies") {
+            if let Some(cookies_obj) = cookies_val.as_object_mut() {
+                for (_key, value) in cookies_obj.iter_mut() {
+                    if let Some(encrypted) = value.as_str() {
+                        if FieldEncryption::is_encrypted(encrypted) {
+                            let decrypted = enc.decrypt(encrypted).unwrap();
+                            *value = serde_json::Value::String(decrypted);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    let restored: CredentialData = serde_json::from_value(json).unwrap();
+    let cookies = restored.as_bilibili().unwrap();
+    assert_eq!(
+        cookies.get("SESSDATA"),
+        Some(&"secret_session_value".to_string())
     );
 }
 
@@ -499,21 +535,21 @@ fn test_full_serialization_encryption_cycle() {
     assert_eq!(password, "my_password");
 }
 
-// ========== TEST: Bilibili credentials should NOT be encrypted ==========
+// ========== TEST: Bilibili SESSDATA should be encrypted ==========
 
-/// Test that Bilibili cookies are not encrypted (they don't contain password-like secrets)
+/// Test that Bilibili SESSDATA is encrypted at rest (it grants full account access)
 #[test]
-fn test_bilibili_not_encrypted() {
-    // Bilibili cookies don't need field-level encryption
-    // This test documents the expected behavior
+fn test_bilibili_sessdata_should_be_encrypted() {
+    let enc = FieldEncryption::new(&test_encryption_key()).unwrap();
 
-    let mut cookies = std::collections::HashMap::new();
-    cookies.insert("SESSDATA".to_string(), "session_value".to_string());
+    let sessdata = "sensitive_session_token_12345";
+    let encrypted = enc.encrypt(sessdata).unwrap();
 
-    let bilibili = CredentialData::bilibili(cookies);
+    // SESSDATA should be encrypted like any other sensitive credential
+    assert!(FieldEncryption::is_encrypted(&encrypted));
+    assert!(!encrypted.contains(sessdata));
 
-    // When stored, Bilibili cookies should pass through unchanged
-    // (The storage implementation should recognize this type doesn't need encryption)
-    let cookies = bilibili.as_bilibili().unwrap();
-    assert_eq!(cookies.get("SESSDATA"), Some(&"session_value".to_string()));
+    // Should decrypt correctly
+    let decrypted = enc.decrypt(&encrypted).unwrap();
+    assert_eq!(decrypted, sessdata);
 }

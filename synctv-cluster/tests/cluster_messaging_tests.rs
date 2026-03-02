@@ -97,6 +97,7 @@ fn make_cluster_config(
         key_prefix: format!("test_{}:", nanoid::nanoid!(8)),
         catchup_window_secs: 300,
         stream_max_length: 1000,
+        parent_cancel_token: None,
     }
 }
 

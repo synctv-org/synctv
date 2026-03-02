@@ -34,6 +34,7 @@ async fn test_cluster_manager_single_node_mode_works() {
         key_prefix: "synctv:".to_string(),
         catchup_window_secs: 300,
         stream_max_length: 1000,
+        parent_cancel_token: None,
     };
 
     let manager = ClusterManager::new(config, None, None)
@@ -66,6 +67,7 @@ async fn test_local_subscribe_and_broadcast() {
         key_prefix: "synctv:".to_string(),
         catchup_window_secs: 300,
         stream_max_length: 1000,
+        parent_cancel_token: None,
     };
 
     let manager = ClusterManager::new(config, None, None)
@@ -138,6 +140,7 @@ async fn test_multiple_subscribers_receive_broadcasts() {
         key_prefix: "synctv:".to_string(),
         catchup_window_secs: 300,
         stream_max_length: 1000,
+        parent_cancel_token: None,
     };
 
     let manager = Arc::new(
@@ -411,6 +414,7 @@ async fn test_lazy_cluster_manager_creation() {
                 key_prefix: "synctv:".to_string(),
                 catchup_window_secs: 300,
                 stream_max_length: 1000,
+                parent_cancel_token: None,
             };
             Arc::new(
                 ClusterManager::new(config, None, None)
@@ -461,6 +465,7 @@ async fn test_local_cluster_manager_supports_room_operations() {
         key_prefix: "synctv:".to_string(),
         catchup_window_secs: 300,
         stream_max_length: 1000,
+        parent_cancel_token: None,
     };
 
     let manager = Arc::new(

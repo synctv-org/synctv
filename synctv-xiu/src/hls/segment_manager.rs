@@ -28,6 +28,9 @@ pub struct CleanupConfig {
     pub interval: Duration,
     /// Delete segments older than this (e.g., 60 seconds)
     pub retention: Duration,
+    /// Maximum number of segments per stream. 0 means unlimited (time-based only).
+    /// When exceeded, the oldest segments for that stream are deleted.
+    pub max_segments_per_stream: usize,
 }
 
 impl Default for CleanupConfig {
@@ -35,6 +38,7 @@ impl Default for CleanupConfig {
         Self {
             interval: Duration::from_secs(10),
             retention: Duration::from_mins(1),
+            max_segments_per_stream: 0,
         }
     }
 }
@@ -107,9 +111,14 @@ impl SegmentManager {
         let mut interval = time::interval(self.config.interval);
 
         tracing::info!(
-            "Segment cleanup task started: interval={:?}, retention={:?}",
+            "Segment cleanup task started: interval={:?}, retention={:?}, max_segments_per_stream={}",
             self.config.interval,
-            self.config.retention
+            self.config.retention,
+            if self.config.max_segments_per_stream == 0 {
+                "unlimited".to_string()
+            } else {
+                self.config.max_segments_per_stream.to_string()
+            }
         );
 
         loop {
@@ -146,6 +155,42 @@ impl SegmentManager {
                                 e
                             );
                         }
+                    }
+                }
+            }
+
+            // Enforce per-stream segment count bound (if configured)
+            if self.config.max_segments_per_stream > 0 {
+                match self.storage.list_streams().await {
+                    Ok(streams) => {
+                        for (app, stream) in streams {
+                            match self
+                                .storage
+                                .delete_oldest_stream_segments(
+                                    &app,
+                                    &stream,
+                                    self.config.max_segments_per_stream,
+                                )
+                                .await
+                            {
+                                Ok(deleted) if deleted > 0 => {
+                                    tracing::info!(
+                                        "Count-based cleanup: deleted {} excess segments for {}/{} (max {})",
+                                        deleted, app, stream, self.config.max_segments_per_stream
+                                    );
+                                }
+                                Err(e) => {
+                                    tracing::warn!(
+                                        "Count-based cleanup failed for {}/{}: {}",
+                                        app, stream, e
+                                    );
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!("Failed to list streams for count-based cleanup: {}", e);
                     }
                 }
             }
@@ -258,6 +303,7 @@ mod tests {
         let config = CleanupConfig {
             interval: Duration::from_hours(1), // Don't auto-run in test
             retention: Duration::from_millis(50),
+            max_segments_per_stream: 0,
         };
 
         let _manager = SegmentManager::new(storage.clone(), config);
@@ -311,5 +357,129 @@ mod tests {
             .exists("live", "room_456", "segment_0")
             .await
             .unwrap());
+    }
+
+    /// M2: Test that max_segments_per_stream config enforces count bounds
+    #[tokio::test]
+    async fn test_segment_count_bound_deletes_oldest() {
+        let storage = Arc::new(MemoryStorage::new());
+
+        // Write 5 segments for one stream
+        for i in 0..5 {
+            storage
+                .write(
+                    "live",
+                    "room_123",
+                    &format!("seg_{i}"),
+                    Bytes::from(format!("data_{i}")),
+                )
+                .await
+                .unwrap();
+        }
+        assert_eq!(storage.key_count().await, 5);
+
+        // Enforce max 3 segments
+        let deleted = storage
+            .delete_oldest_stream_segments("live", "room_123", 3)
+            .await
+            .unwrap();
+
+        assert_eq!(deleted, 2);
+        assert_eq!(storage.key_count().await, 3);
+
+        // Oldest two (seg_0, seg_1) should be deleted
+        assert!(!storage.exists("live", "room_123", "seg_0").await.unwrap());
+        assert!(!storage.exists("live", "room_123", "seg_1").await.unwrap());
+        // Newest three should remain
+        assert!(storage.exists("live", "room_123", "seg_2").await.unwrap());
+        assert!(storage.exists("live", "room_123", "seg_3").await.unwrap());
+        assert!(storage.exists("live", "room_123", "seg_4").await.unwrap());
+    }
+
+    /// M2: Test that count bound does nothing when under limit
+    #[tokio::test]
+    async fn test_segment_count_bound_under_limit_no_op() {
+        let storage = Arc::new(MemoryStorage::new());
+
+        storage
+            .write("live", "room_123", "seg_0", Bytes::from_static(b"data"))
+            .await
+            .unwrap();
+
+        let deleted = storage
+            .delete_oldest_stream_segments("live", "room_123", 5)
+            .await
+            .unwrap();
+
+        assert_eq!(deleted, 0);
+        assert_eq!(storage.key_count().await, 1);
+    }
+
+    /// M2: Test list_streams returns all distinct app/stream pairs
+    #[tokio::test]
+    async fn test_list_streams() {
+        let storage = Arc::new(MemoryStorage::new());
+
+        storage
+            .write("app1", "stream1", "seg0", Bytes::from_static(b"d"))
+            .await
+            .unwrap();
+        storage
+            .write("app1", "stream1", "seg1", Bytes::from_static(b"d"))
+            .await
+            .unwrap();
+        storage
+            .write("app1", "stream2", "seg0", Bytes::from_static(b"d"))
+            .await
+            .unwrap();
+        storage
+            .write("app2", "stream1", "seg0", Bytes::from_static(b"d"))
+            .await
+            .unwrap();
+
+        let mut streams = storage.list_streams().await.unwrap();
+        streams.sort();
+        assert_eq!(streams.len(), 3);
+        assert!(streams.contains(&("app1".to_string(), "stream1".to_string())));
+        assert!(streams.contains(&("app1".to_string(), "stream2".to_string())));
+        assert!(streams.contains(&("app2".to_string(), "stream1".to_string())));
+    }
+
+    /// M2: Test count_stream_segments
+    #[tokio::test]
+    async fn test_count_stream_segments() {
+        let storage = Arc::new(MemoryStorage::new());
+
+        storage
+            .write("app1", "s1", "seg0", Bytes::from_static(b"d"))
+            .await
+            .unwrap();
+        storage
+            .write("app1", "s1", "seg1", Bytes::from_static(b"d"))
+            .await
+            .unwrap();
+        storage
+            .write("app1", "s2", "seg0", Bytes::from_static(b"d"))
+            .await
+            .unwrap();
+
+        assert_eq!(storage.count_stream_segments("app1", "s1").await.unwrap(), 2);
+        assert_eq!(storage.count_stream_segments("app1", "s2").await.unwrap(), 1);
+        assert_eq!(storage.count_stream_segments("app1", "s3").await.unwrap(), 0);
+    }
+
+    /// M2: Test CleanupConfig with max_segments_per_stream
+    #[tokio::test]
+    async fn test_cleanup_config_with_segment_limit() {
+        let config = CleanupConfig {
+            interval: Duration::from_secs(10),
+            retention: Duration::from_mins(1),
+            max_segments_per_stream: 100,
+        };
+        assert_eq!(config.max_segments_per_stream, 100);
+
+        // Default should have unlimited segments
+        let default_config = CleanupConfig::default();
+        assert_eq!(default_config.max_segments_per_stream, 0);
     }
 }

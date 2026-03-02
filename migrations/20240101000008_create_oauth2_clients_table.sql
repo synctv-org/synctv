@@ -24,6 +24,12 @@ CREATE TRIGGER update_oauth2_clients_updated_at
     BEFORE UPDATE ON oauth2_clients
     FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 
+-- Constrain provider to known OAuth2 provider values
+ALTER TABLE oauth2_clients
+    ADD CONSTRAINT valid_oauth2_provider CHECK (
+        provider IN ('qq', 'github', 'google', 'microsoft', 'discord', 'casdoor', 'logto', 'oidc', 'feishu', 'gitee')
+    );
+
 -- Comments
 COMMENT ON TABLE oauth2_clients IS 'OAuth2/OIDC provider mappings (NO TOKENS - only user identity info)';
 COMMENT ON COLUMN oauth2_clients.id IS '12-character nanoid';

@@ -89,7 +89,12 @@ pub async fn proxy_with_cache(
     let range_str = range_header.expect("range_header checked above");
 
     // Total size needed for range parsing.
-    let total_size = head_content_length(url, provider_headers).await?;
+    // Reuse cached metadata when available to avoid a HEAD request on every
+    // range request, even when the slice data is already cached (L4 fix).
+    let total_size = match cache.get_resource_meta(url, provider_headers).await {
+        Some(meta) if meta.total_size.is_some() => meta.total_size.expect("checked above"),
+        _ => head_content_length(url, provider_headers).await?,
+    };
 
     let (range_start, range_end) = parse_range_header(range_str, total_size)?;
 
@@ -168,7 +173,7 @@ pub(super) async fn full_body_cache_path(
     }
 
     // Determine pre-fetch status (MISS vs EXPIRED).
-    let pre_status = cache.full_body_pre_status(url, provider_headers);
+    let pre_status = cache.full_body_pre_status(url, provider_headers).await;
 
     // Fetch from upstream.
     let mut request = PROXY_CLIENT.get(url);

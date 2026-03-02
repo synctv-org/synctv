@@ -9,6 +9,7 @@
 //! are encrypted before storage and decrypted after retrieval:
 //! - Alist: `password` field
 //! - Emby: `api_key` field
+//! - Bilibili: all cookie values (including SESSDATA)
 //!
 //! The encryption uses AES-256-GCM with a 32-byte key.
 
@@ -142,6 +143,7 @@ pub trait CredentialStorage: Send + Sync {
 /// When created with `with_encryption`, sensitive credential fields are encrypted:
 /// - Alist: `password` field
 /// - Emby: `api_key` field
+/// - Bilibili: all cookie values (including SESSDATA)
 pub struct InMemoryCredentialStorage {
     credentials: Arc<RwLock<HashMap<String, StoredCredential>>>,
     encryption: Option<FieldEncryption>,
@@ -223,8 +225,15 @@ impl InMemoryCredentialStorage {
                     emby_user_id,
                 })
             }
-            // Bilibili cookies don't need field-level encryption (no password-like secrets)
-            other @ CredentialData::Bilibili { .. } => Ok(other),
+            CredentialData::Bilibili { cookies } => {
+                let mut encrypted_cookies = HashMap::new();
+                for (key, value) in cookies {
+                    encrypted_cookies.insert(key, enc.encrypt(&value)?);
+                }
+                Ok(CredentialData::Bilibili {
+                    cookies: encrypted_cookies,
+                })
+            }
         }
     }
 
@@ -269,8 +278,20 @@ impl InMemoryCredentialStorage {
                     emby_user_id,
                 })
             }
-            // Bilibili cookies pass through unchanged
-            other @ CredentialData::Bilibili { .. } => Ok(other),
+            CredentialData::Bilibili { cookies } => {
+                let mut decrypted_cookies = HashMap::new();
+                for (key, value) in cookies {
+                    let decrypted_value = if FieldEncryption::is_encrypted(&value) {
+                        enc.decrypt(&value)?
+                    } else {
+                        value
+                    };
+                    decrypted_cookies.insert(key, decrypted_value);
+                }
+                Ok(CredentialData::Bilibili {
+                    cookies: decrypted_cookies,
+                })
+            }
         }
     }
 }
@@ -756,11 +777,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_encryption_bilibili_unaffected() {
+    async fn test_encryption_bilibili_sessdata_encrypted() {
         let storage = InMemoryCredentialStorage::with_encryption(&test_encryption_key());
 
         let mut cookies = HashMap::new();
         cookies.insert("SESSDATA".to_string(), "test_session".to_string());
+        cookies.insert("bili_jct".to_string(), "test_jct_token".to_string());
 
         // Store Bilibili credential
         let stored = storage
@@ -768,12 +790,76 @@ mod tests {
             .await
             .expect("Failed to store credential");
 
-        // Bilibili cookies should not be encrypted
+        // The returned credential should have decrypted cookies (for caller convenience)
         let c = stored
             .data
             .as_bilibili()
             .expect("Expected Bilibili credential data");
-        assert_eq!(c.get("SESSDATA"), Some(&"test_session".to_string()));
+        assert_eq!(
+            c.get("SESSDATA"),
+            Some(&"test_session".to_string()),
+            "Returned SESSDATA should be decrypted"
+        );
+        assert_eq!(
+            c.get("bili_jct"),
+            Some(&"test_jct_token".to_string()),
+            "Returned bili_jct should be decrypted"
+        );
+
+        // Retrieve the credential
+        let retrieved = storage
+            .get("user1", ProviderType::Bilibili, "bilibili")
+            .await
+            .expect("Failed to get credential")
+            .expect("Credential should exist");
+
+        // The retrieved cookies should be decrypted
+        let c = retrieved
+            .data
+            .as_bilibili()
+            .expect("Expected Bilibili credential data");
+        assert_eq!(
+            c.get("SESSDATA"),
+            Some(&"test_session".to_string()),
+            "Retrieved SESSDATA should be decrypted"
+        );
+        assert_eq!(
+            c.get("bili_jct"),
+            Some(&"test_jct_token".to_string()),
+            "Retrieved bili_jct should be decrypted"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_encryption_bilibili_stored_encrypted_at_rest() {
+        let storage = InMemoryCredentialStorage::with_encryption(&test_encryption_key());
+
+        let mut cookies = HashMap::new();
+        cookies.insert("SESSDATA".to_string(), "test_session".to_string());
+
+        storage
+            .set("user1", None, CredentialData::bilibili(cookies))
+            .await
+            .expect("Failed to store credential");
+
+        // Inspect the raw stored data (bypass decryption by reading the map directly)
+        let credentials = storage.credentials.read().await;
+        let stored_raw = credentials
+            .values()
+            .next()
+            .expect("Should have one credential");
+
+        let raw_cookies = stored_raw
+            .data
+            .as_bilibili()
+            .expect("Expected Bilibili credential data");
+
+        // The raw stored SESSDATA should be encrypted (starts with "enc:")
+        let raw_sessdata = raw_cookies.get("SESSDATA").expect("SESSDATA should exist");
+        assert!(
+            FieldEncryption::is_encrypted(raw_sessdata),
+            "SESSDATA should be encrypted at rest, got: {raw_sessdata}"
+        );
     }
 
     // ========== Type Mismatch Tests ==========

@@ -393,6 +393,13 @@ impl LivestreamServer {
                 rtmp_handle.abort();
                 forwarder_handle.abort();
 
+                // L6: Reset RTMP metric gauges after aborting the server.
+                // Aborted sessions may not call their stop callbacks, leaving
+                // gauges permanently inflated. Reset to 0 since all sessions
+                // are terminated on restart.
+                synctv_core::metrics::livestream::LIVESTREAM_ACTIVE_PUBLISHERS.set(0);
+                synctv_core::metrics::livestream::LIVESTREAM_ACTIVE_VIEWERS.set(0);
+
                 restart_count += 1;
 
                 // Record restart metrics with exit reason

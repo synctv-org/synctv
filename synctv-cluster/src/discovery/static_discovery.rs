@@ -164,11 +164,18 @@ impl StaticDiscovery {
                                     Self::derive_http_address(&peer.grpc_address, default_http_port)
                                 });
 
+                                // Use epoch=0 for static discovery peers. We don't
+                                // know the peer's actual epoch, and register_remote
+                                // only accepts registrations where incoming epoch >=
+                                // existing epoch. Using 0 means a static-discovery
+                                // registration will never overwrite a peer that has
+                                // self-registered with its real epoch (>= 1).
                                 let node_info = NodeInfo::new(
                                     node_id.clone(),
                                     peer.grpc_address.clone(),
                                     http_address,
-                                );
+                                )
+                                .with_epoch(0);
                                 let registration_epoch = node_info.epoch;
 
                                 if let Err(e) = node_registry.register_remote(node_info).await {

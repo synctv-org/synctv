@@ -1449,3 +1449,195 @@ fn test_parse_content_range_zero_start() {
     assert_eq!(cr.end, 1);
     assert_eq!(cr.complete_length, Some(1));
 }
+
+// ==================================================================
+// L2 fix: seen_keys bounded (moka-backed, not unbounded DashSet)
+// ==================================================================
+
+/// After inserting entries, seen_keys should track them.
+#[tokio::test]
+async fn test_seen_keys_bounded_tracks_inserted() {
+    let config = SliceCacheConfig {
+        slice_size: 1024,
+        ..Default::default()
+    };
+    let cache = SliceCache::new(config);
+
+    // seen_keys_count should start at 0
+    assert_eq!(cache.seen_keys_count(), 0);
+
+    let mock_server = MockServer::start().await;
+    let total_size: u64 = 2048;
+    let slice0 = Bytes::from(vec![0xAAu8; 1024]);
+
+    Mock::given(method("GET"))
+        .and(path("/test.bin"))
+        .and(header("Range", "bytes=0-1023"))
+        .respond_with(
+            ResponseTemplate::new(206)
+                .set_body_bytes(slice0.clone())
+                .insert_header("Content-Range", format!("bytes 0-1023/{total_size}"))
+                .insert_header("Content-Length", "1024"),
+        )
+        .mount(&mock_server)
+        .await;
+
+    let url = format!("{}/test.bin", mock_server.uri());
+    let headers = HashMap::new();
+
+    let _ = cache
+        .get_or_fetch_slice(&url, &headers, 0, total_size)
+        .await
+        .unwrap();
+
+    // Sync moka's pending tasks so entry_count is accurate
+    cache.sync_seen_keys().await;
+
+    // After inserting one slice, seen_keys should have 1 entry
+    assert_eq!(cache.seen_keys_count(), 1);
+}
+
+// ==================================================================
+// L3 fix: stale lock cleanup
+// ==================================================================
+
+/// After fetching slices and cleaning up, stale locks should be removed.
+#[tokio::test]
+async fn test_stale_locks_cleaned_up() {
+    let config = SliceCacheConfig {
+        slice_size: 1024,
+        ..Default::default()
+    };
+    let cache = SliceCache::new(config);
+
+    let mock_server = MockServer::start().await;
+    let total_size: u64 = 3072;
+    let slice_data = Bytes::from(vec![0xBBu8; 1024]);
+
+    // Mount mocks for 3 slices
+    for i in 0..3u64 {
+        let start = i * 1024;
+        let end = start + 1023;
+        Mock::given(method("GET"))
+            .and(path("/test.bin"))
+            .and(header("Range", format!("bytes={start}-{end}")))
+            .respond_with(
+                ResponseTemplate::new(206)
+                    .set_body_bytes(slice_data.clone())
+                    .insert_header(
+                        "Content-Range",
+                        format!("bytes {start}-{end}/{total_size}"),
+                    )
+                    .insert_header("Content-Length", "1024"),
+            )
+            .mount(&mock_server)
+            .await;
+    }
+
+    let url = format!("{}/test.bin", mock_server.uri());
+    let headers = HashMap::new();
+
+    // Fetch 3 slices - this creates 3 per-key locks
+    for i in 0..3u64 {
+        let _ = cache
+            .get_or_fetch_slice(&url, &headers, i, total_size)
+            .await
+            .unwrap();
+    }
+
+    // After fetching, locks exist but are not held by any task
+    assert!(cache.lock_count() > 0, "Locks should exist after fetching");
+
+    // Explicit cleanup should remove all stale locks (strong_count == 1)
+    cache.cleanup_stale_locks();
+    assert_eq!(
+        cache.lock_count(),
+        0,
+        "All locks should be cleaned up when no tasks hold them"
+    );
+}
+
+// ==================================================================
+// L4 fix: cached metadata avoids HEAD request on range request
+// ==================================================================
+
+/// When resource metadata is cached (from a prior slice fetch), range
+/// requests should not issue a HEAD request to discover total_size.
+#[tokio::test]
+async fn test_cached_meta_avoids_head_request() {
+    let mock_server = MockServer::start().await;
+
+    let total_size: u64 = 4 * 1024 * 1024; // 4MB
+    let slice_data = Bytes::from(vec![0xCCu8; 2 * 1024 * 1024]);
+
+    // HEAD mock - should only be called ONCE (for the first request
+    // before metadata is cached)
+    Mock::given(method("HEAD"))
+        .and(path("/video.mp4"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("Content-Length", total_size.to_string())
+                .insert_header("Accept-Ranges", "bytes"),
+        )
+        .expect(1) // Key assertion: only 1 HEAD request
+        .mount(&mock_server)
+        .await;
+
+    // Slice 0 mock
+    Mock::given(method("GET"))
+        .and(path("/video.mp4"))
+        .and(header("Range", "bytes=0-2097151"))
+        .respond_with(
+            ResponseTemplate::new(206)
+                .set_body_bytes(slice_data.clone())
+                .insert_header(
+                    "Content-Range",
+                    format!("bytes 0-2097151/{total_size}"),
+                )
+                .insert_header("Content-Length", "2097152")
+                .insert_header("Content-Type", "video/mp4"),
+        )
+        .mount(&mock_server)
+        .await;
+
+    let config = SliceCacheConfig::default();
+    let cache = SliceCache::new(config);
+    let url = format!("{}/video.mp4", mock_server.uri());
+    let provider_headers = HashMap::new();
+
+    // First range request: must HEAD to discover total_size
+    let resp1 = synctv_proxy::slice_cache::proxy_with_cache(
+        &cache,
+        Some("bytes=0-999"),
+        &url,
+        &provider_headers,
+    )
+    .await
+    .unwrap();
+    assert_eq!(resp1.status(), StatusCode::PARTIAL_CONTENT);
+    let _ = resp1.into_body().collect().await.unwrap().to_bytes();
+
+    // Verify metadata is now cached
+    let meta = cache.get_resource_meta(&url, &provider_headers).await;
+    assert!(meta.is_some(), "Metadata should be cached after first fetch");
+    assert_eq!(meta.unwrap().total_size, Some(total_size));
+
+    // Second range request: should reuse cached total_size, NO HEAD request
+    // (wiremock's expect(1) on the HEAD mock will fail if a second HEAD is sent)
+    let resp2 = synctv_proxy::slice_cache::proxy_with_cache(
+        &cache,
+        Some("bytes=0-999"),
+        &url,
+        &provider_headers,
+    )
+    .await
+    .unwrap();
+    assert_eq!(resp2.status(), StatusCode::PARTIAL_CONTENT);
+    assert_eq!(
+        resp2
+            .headers()
+            .get("X-Cache-Status")
+            .map(|v| v.to_str().unwrap()),
+        Some("HIT"),
+    );
+}

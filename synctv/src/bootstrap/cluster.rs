@@ -78,7 +78,11 @@ pub async fn init_cluster_components(
             health_monitor.set_join_handle(hm_handle);
         }
         Err(e) => {
-            warn!("Failed to start health monitor: {}", e);
+            return Err(anyhow::anyhow!(
+                "Failed to start health monitor: {}. \
+                 Health monitoring is required for cluster mode.",
+                e
+            ));
         }
     }
 

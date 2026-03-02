@@ -158,12 +158,14 @@ impl OAuthStateStore for RedisOAuthStateStore {
 
 /// In-memory [`OAuthStateStore`] for standalone mode (no Redis).
 ///
-/// Uses a `Mutex<HashMap>` for atomic single-use consumption. TTL is enforced
+/// Uses a `parking_lot::Mutex<HashMap>` for atomic single-use consumption.
+/// `parking_lot::Mutex` is preferred over `std::sync::Mutex` because it is
+/// more efficient and does not suffer from lock poisoning. TTL is enforced
 /// via stored expiry timestamps; expired entries are swept on every `store()`
 /// and `consume()` call to bound memory usage.
 pub struct InMemoryOAuthStateStore {
     /// Map of `token_id` -> (state, `expiry_instant`)
-    states: std::sync::Mutex<HashMap<String, (OAuth2State, std::time::Instant)>>,
+    states: parking_lot::Mutex<HashMap<String, (OAuth2State, std::time::Instant)>>,
 }
 
 impl InMemoryOAuthStateStore {
@@ -171,7 +173,7 @@ impl InMemoryOAuthStateStore {
     #[must_use]
     pub fn new() -> Self {
         Self {
-            states: std::sync::Mutex::new(HashMap::new()),
+            states: parking_lot::Mutex::new(HashMap::new()),
         }
     }
 
@@ -201,14 +203,14 @@ impl OAuthStateStore for InMemoryOAuthStateStore {
         ttl: std::time::Duration,
     ) -> Result<()> {
         let expiry = std::time::Instant::now() + ttl;
-        let mut map = self.states.lock().expect("OAuth state lock poisoned");
+        let mut map = self.states.lock();
         Self::sweep_expired(&mut map);
         map.insert(token_id.to_string(), (state.clone(), expiry));
         Ok(())
     }
 
     async fn consume(&self, token_id: &str) -> Result<Option<OAuth2State>> {
-        let mut map = self.states.lock().expect("OAuth state lock poisoned");
+        let mut map = self.states.lock();
         Self::sweep_expired(&mut map);
         Ok(map.remove(token_id).map(|(state, _expiry)| state))
     }
@@ -2199,5 +2201,67 @@ mod tests {
             service_result.is_err(),
             "Cluster mode validation should fail at service creation"
         );
+    }
+
+    // ========================================================================
+    // Tests: InMemoryOAuthStateStore (parking_lot::Mutex)
+    // ========================================================================
+
+    #[tokio::test]
+    async fn test_in_memory_store_and_consume() {
+        let store = InMemoryOAuthStateStore::new();
+        let state = OAuth2State {
+            instance_name: "test_provider".to_string(),
+            redirect_url: Some("/dashboard".to_string()),
+            created_at: chrono::Utc::now(),
+            bind_user_id: None,
+            pkce_verifier: "test_verifier".to_string(),
+        };
+
+        store
+            .store("token_1", &state, std::time::Duration::from_secs(300))
+            .await
+            .unwrap();
+
+        // First consume succeeds
+        let result = store.consume("token_1").await.unwrap();
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().instance_name, "test_provider");
+
+        // Second consume returns None (single-use)
+        let result = store.consume("token_1").await.unwrap();
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_in_memory_store_expired_entries_swept() {
+        let store = InMemoryOAuthStateStore::new();
+        let state = OAuth2State {
+            instance_name: "expiring".to_string(),
+            redirect_url: None,
+            created_at: chrono::Utc::now(),
+            bind_user_id: None,
+            pkce_verifier: "v".to_string(),
+        };
+
+        // Store with zero TTL (immediately expired)
+        store
+            .store("expired_token", &state, std::time::Duration::from_millis(0))
+            .await
+            .unwrap();
+
+        // Small delay to ensure expiry
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+
+        // Consume should return None because entry is expired
+        let result = store.consume("expired_token").await.unwrap();
+        assert!(result.is_none(), "Expired entry should be swept on consume");
+    }
+
+    #[tokio::test]
+    async fn test_in_memory_store_nonexistent_token() {
+        let store = InMemoryOAuthStateStore::new();
+        let result = store.consume("nonexistent").await.unwrap();
+        assert!(result.is_none());
     }
 }

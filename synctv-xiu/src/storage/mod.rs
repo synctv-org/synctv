@@ -98,6 +98,41 @@ pub trait HlsStorage: Send + Sync {
         Ok(0)
     }
 
+    /// List all distinct (app, stream) pairs currently stored.
+    ///
+    /// Used by `SegmentManager` to enumerate streams for per-stream segment count enforcement.
+    ///
+    /// # Returns
+    /// List of (app, stream) tuples
+    async fn list_streams(&self) -> Result<Vec<(String, String)>> {
+        Ok(Vec::new())
+    }
+
+    /// Count segments for a specific stream.
+    ///
+    /// Used by `SegmentManager` to enforce per-stream segment count limits.
+    ///
+    /// # Returns
+    /// Number of segments stored for this app/stream
+    async fn count_stream_segments(&self, _app: &str, _stream: &str) -> Result<usize> {
+        Ok(0)
+    }
+
+    /// Delete the oldest segments for a stream until count is at or below `max_count`.
+    ///
+    /// Used by `SegmentManager` to enforce per-stream segment count bounds.
+    ///
+    /// # Returns
+    /// Number of segments deleted
+    async fn delete_oldest_stream_segments(
+        &self,
+        _app: &str,
+        _stream: &str,
+        _max_count: usize,
+    ) -> Result<usize> {
+        Ok(0)
+    }
+
     /// Cleanup expired data
     ///
     /// Storage backend scans and deletes all data older than the specified duration.

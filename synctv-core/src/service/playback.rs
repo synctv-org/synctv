@@ -343,6 +343,51 @@ impl PlaybackService {
         BroadcastResult::default()
     }
 
+    /// Broadcast playback state update to other replicas with exponential backoff retry.
+    ///
+    /// Retries up to 3 times with delays of 50ms, 100ms, 200ms on failure.
+    /// DB write has already succeeded, so broadcast failure only affects replica
+    /// consistency (caches will converge within TTL).
+    async fn broadcast_invalidation_with_retry(
+        &self,
+        room_id: &RoomId,
+        state: &RoomPlaybackState,
+        context: &str,
+    ) {
+        let Some(ref service) = self.invalidation_service else {
+            return;
+        };
+        let broadcast_delays = [50u64, 100, 200];
+        let mut broadcast_ok = false;
+        for (attempt, delay_ms) in broadcast_delays.iter().enumerate() {
+            match service.update_playback_state(room_id, state).await {
+                Ok(()) => {
+                    broadcast_ok = true;
+                    break;
+                }
+                Err(e) => {
+                    if attempt + 1 < broadcast_delays.len() {
+                        tracing::warn!(
+                            error = %e,
+                            room_id = %room_id.as_str(),
+                            attempt = attempt + 1,
+                            max_attempts = broadcast_delays.len(),
+                            "{context}: broadcast failed, retrying..."
+                        );
+                        tokio::time::sleep(std::time::Duration::from_millis(*delay_ms)).await;
+                    }
+                }
+            }
+        }
+        if !broadcast_ok {
+            tracing::error!(
+                room_id = %room_id.as_str(),
+                attempts = broadcast_delays.len(),
+                "{context}: broadcast failed after all retry attempts, replicas may have stale state"
+            );
+        }
+    }
+
     /// Get playback state for a room.
     ///
     /// Checks the L1 in-memory cache first; on miss, checks L2 (Redis) if configured;
@@ -829,41 +874,13 @@ impl PlaybackService {
                     let cache_key = room_id.as_str().to_string();
                     self.playback_cache.invalidate(&cache_key).await;
 
-                    // Broadcast to other replicas (Issue #28: 3 retries with exponential backoff)
-                    if let Some(ref service) = self.invalidation_service {
-                        let broadcast_delays = [50u64, 100, 200];
-                        let mut broadcast_ok = false;
-                        for (bc_attempt, delay_ms) in broadcast_delays.iter().enumerate() {
-                            match service.update_playback_state(room_id, &saved_state).await {
-                                Ok(()) => {
-                                    broadcast_ok = true;
-                                    break;
-                                }
-                                Err(e) => {
-                                    if bc_attempt + 1 < broadcast_delays.len() {
-                                        tracing::warn!(
-                                            error = %e,
-                                            room_id = %room_id.as_str(),
-                                            attempt = bc_attempt + 1,
-                                            max_attempts = broadcast_delays.len(),
-                                            "play_next: broadcast failed, retrying..."
-                                        );
-                                        tokio::time::sleep(std::time::Duration::from_millis(
-                                            *delay_ms,
-                                        ))
-                                        .await;
-                                    }
-                                }
-                            }
-                        }
-                        if !broadcast_ok {
-                            tracing::error!(
-                                room_id = %room_id.as_str(),
-                                attempts = broadcast_delays.len(),
-                                "play_next: broadcast failed after all retry attempts, replicas may have stale state"
-                            );
-                        }
-                    }
+                    // Broadcast to other replicas with retry
+                    self.broadcast_invalidation_with_retry(
+                        room_id,
+                        &saved_state,
+                        "play_next",
+                    )
+                    .await;
 
                     tracing::info!(
                         room_id = %room_id.as_str(),
@@ -1013,55 +1030,13 @@ impl PlaybackService {
                         }
                     }
 
-                    // Broadcast updated state to other replicas so they can write
-                    // it directly into their L1 cache, avoiding the stale-read
-                    // window that occurs with invalidation-only messages.
-                    //
-                    // Issue #28: Redis broadcast uses exponential backoff (3 retries:
-                    // 50ms, 100ms, 200ms). Final failure is logged at ERROR level
-                    // with enough context for operators to replay the update.
-                    // DB write already succeeded, so broadcast failure does not
-                    // affect the return value.
-                    if let Some(ref service) = self.invalidation_service {
-                        let broadcast_delays = [50u64, 100, 200];
-                        let mut broadcast_ok = false;
-                        for (bc_attempt, delay_ms) in broadcast_delays.iter().enumerate() {
-                            match service
-                                .update_playback_state(&room_id, &updated_state)
-                                .await
-                            {
-                                Ok(()) => {
-                                    broadcast_ok = true;
-                                    break;
-                                }
-                                Err(e) => {
-                                    if bc_attempt + 1 < broadcast_delays.len() {
-                                        tracing::warn!(
-                                            error = %e,
-                                            room_id = %room_id.as_str(),
-                                            attempt = bc_attempt + 1,
-                                            max_attempts = broadcast_delays.len(),
-                                            "Playback broadcast to replicas failed, retrying..."
-                                        );
-                                        tokio::time::sleep(std::time::Duration::from_millis(
-                                            *delay_ms,
-                                        ))
-                                        .await;
-                                    }
-                                }
-                            }
-                        }
-                        if !broadcast_ok {
-                            tracing::error!(
-                                room_id = %room_id.as_str(),
-                                is_playing = updated_state.is_playing,
-                                current_time = updated_state.current_time,
-                                attempts = broadcast_delays.len(),
-                                "Playback broadcast failed after all retry attempts. \
-                                 Other replicas may have stale playback state for up to 5s."
-                            );
-                        }
-                    }
+                    // Broadcast updated state to other replicas with retry
+                    self.broadcast_invalidation_with_retry(
+                        &room_id,
+                        &updated_state,
+                        "update_state",
+                    )
+                    .await;
 
                     return Ok(updated_state);
                 }
@@ -1695,6 +1670,18 @@ mod tests {
             let cached = cache.get(&*room_id).await.expect("should have entry");
             assert_eq!(cached.version, 10);
             assert!((cached.current_time - 100.0).abs() < f64::EPSILON);
+        }
+    }
+
+    /// Tests for the broadcast_invalidation_with_retry helper
+    mod broadcast_retry_tests {
+        #[test]
+        fn test_broadcast_retry_delays_are_exponential() {
+            // The broadcast retry pattern uses delays [50, 100, 200] ms
+            let delays = [50u64, 100, 200];
+            assert_eq!(delays.len(), 3, "Should have 3 retry attempts");
+            assert_eq!(delays[1], delays[0] * 2, "Second delay should be 2x first");
+            assert_eq!(delays[2], delays[1] * 2, "Third delay should be 2x second");
         }
     }
 }

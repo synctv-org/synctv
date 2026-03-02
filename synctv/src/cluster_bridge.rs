@@ -20,10 +20,11 @@ impl synctv_core::service::PlaybackBroadcaster for ClusterPlaybackBroadcaster {
         let event = synctv_cluster::sync::ClusterEvent::PlaybackStateChanged {
             event_id: nanoid::nanoid!(16),
             room_id: state.room_id.clone(),
-            // For system-initiated broadcasts (auto-play, reset), use a sentinel user_id.
+            // For system-initiated broadcasts (auto-play, reset), use a sentinel user_id
+            // with a clearly-invalid prefix that cannot collide with real user IDs.
             // The consumer in messaging.rs only reads the state payload, not the user fields.
-            user_id: synctv_core::models::UserId::from_string("system".to_string()),
-            username: "system".to_string(),
+            user_id: synctv_core::models::UserId::from_string("__system__".to_string()),
+            username: "__system__".to_string(),
             state: state.clone(),
             timestamp: chrono::Utc::now(),
         };

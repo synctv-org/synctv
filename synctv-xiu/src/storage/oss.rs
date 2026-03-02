@@ -10,7 +10,7 @@
 
 #[cfg(feature = "oss")]
 mod inner {
-    use crate::storage::HlsStorage;
+    use crate::storage::{validate_component, validate_storage_key, HlsStorage};
     use async_trait::async_trait;
     use bytes::Bytes;
     use opendal::{services::S3, Operator};
@@ -131,6 +131,7 @@ mod inner {
     #[async_trait]
     impl HlsStorage for OssStorage {
         async fn write(&self, app: &str, stream: &str, name: &str, data: Bytes) -> Result<()> {
+            validate_storage_key(app, stream, name)?;
             let object_key = self.get_object_key(app, stream, name);
             let size = data.len();
 
@@ -152,6 +153,7 @@ mod inner {
         }
 
         async fn read(&self, app: &str, stream: &str, name: &str) -> Result<Bytes> {
+            validate_storage_key(app, stream, name)?;
             let object_key = self.get_object_key(app, stream, name);
 
             let buffer =
@@ -174,6 +176,7 @@ mod inner {
         }
 
         async fn delete(&self, app: &str, stream: &str, name: &str) -> Result<()> {
+            validate_storage_key(app, stream, name)?;
             let object_key = self.get_object_key(app, stream, name);
 
             self.operator
@@ -193,6 +196,7 @@ mod inner {
         }
 
         async fn exists(&self, app: &str, stream: &str, name: &str) -> Result<bool> {
+            validate_storage_key(app, stream, name)?;
             let object_key = self.get_object_key(app, stream, name);
 
             match self.operator.exists(&object_key).await {
@@ -205,6 +209,8 @@ mod inner {
         }
 
         async fn delete_app_stream(&self, app: &str, stream: &str) -> Result<usize> {
+            validate_component(app, "app")?;
+            validate_component(stream, "stream")?;
             let prefix = self.get_stream_prefix(app, stream);
             let deleted = self.delete_by_prefix_internal(&prefix).await?;
             tracing::debug!(
@@ -217,6 +223,7 @@ mod inner {
         }
 
         async fn delete_app(&self, app: &str) -> Result<usize> {
+            validate_component(app, "app")?;
             let prefix = self.get_app_prefix(app);
             let deleted = self.delete_by_prefix_internal(&prefix).await?;
             tracing::debug!("delete_app {}: deleted {} objects", app, deleted);
@@ -284,6 +291,7 @@ mod inner {
             stream: &str,
             name: &str,
         ) -> Result<Option<String>> {
+            validate_storage_key(app, stream, name)?;
             let object_key = self.get_object_key(app, stream, name);
 
             // If CDN is configured, return CDN URL
@@ -325,6 +333,91 @@ mod inner {
     #[cfg(test)]
     mod tests {
         use super::*;
+
+        #[tokio::test]
+        async fn test_oss_storage_path_traversal_rejected() {
+            let config = OssConfig {
+                endpoint: "s3.amazonaws.com".to_string(),
+                access_key_id: "test".to_string(),
+                secret_access_key: "test".to_string(),
+                bucket: "my-bucket".to_string(),
+                region: Some("us-east-1".to_string()),
+                base_path: "hls/".to_string(),
+                public_url_prefix: "https://cdn.example.com/hls/".to_string(),
+                presign_expires_in: 3600,
+            };
+
+            let storage = OssStorage::new(config).unwrap();
+
+            // Path traversal via ".." in app
+            assert!(storage
+                .write("..", "stream", "name", Bytes::from_static(b"x"))
+                .await
+                .is_err());
+            assert!(storage.read("..", "stream", "name").await.is_err());
+            assert!(storage.delete("..", "stream", "name").await.is_err());
+            assert!(storage.exists("..", "stream", "name").await.is_err());
+            assert!(storage.get_public_url("..", "stream", "name").await.is_err());
+
+            // Path traversal via ".." in stream
+            assert!(storage
+                .write("app", "..", "name", Bytes::from_static(b"x"))
+                .await
+                .is_err());
+            assert!(storage.read("app", "..", "name").await.is_err());
+            assert!(storage.delete("app", "..", "name").await.is_err());
+            assert!(storage.exists("app", "..", "name").await.is_err());
+            assert!(storage.get_public_url("app", "..", "name").await.is_err());
+
+            // Path traversal via ".." in name
+            assert!(storage
+                .write("app", "stream", "..", Bytes::from_static(b"x"))
+                .await
+                .is_err());
+            assert!(storage.read("app", "stream", "..").await.is_err());
+            assert!(storage.delete("app", "stream", "..").await.is_err());
+            assert!(storage.exists("app", "stream", "..").await.is_err());
+            assert!(storage.get_public_url("app", "stream", "..").await.is_err());
+
+            // Slash in component
+            assert!(storage
+                .write("a/b", "stream", "name", Bytes::from_static(b"x"))
+                .await
+                .is_err());
+
+            // Empty component
+            assert!(storage
+                .write("", "stream", "name", Bytes::from_static(b"x"))
+                .await
+                .is_err());
+
+            // Backslash in component
+            assert!(storage
+                .write("a\\b", "stream", "name", Bytes::from_static(b"x"))
+                .await
+                .is_err());
+        }
+
+        #[tokio::test]
+        async fn test_oss_storage_delete_app_stream_path_traversal_rejected() {
+            let config = OssConfig {
+                endpoint: "s3.amazonaws.com".to_string(),
+                access_key_id: "test".to_string(),
+                secret_access_key: "test".to_string(),
+                bucket: "my-bucket".to_string(),
+                region: Some("us-east-1".to_string()),
+                base_path: "hls/".to_string(),
+                public_url_prefix: "https://cdn.example.com/hls/".to_string(),
+                presign_expires_in: 3600,
+            };
+
+            let storage = OssStorage::new(config).unwrap();
+
+            assert!(storage.delete_app_stream("..", "stream").await.is_err());
+            assert!(storage.delete_app_stream("app", "..").await.is_err());
+            assert!(storage.delete_app("..").await.is_err());
+            assert!(storage.delete_app("a/b").await.is_err());
+        }
 
         #[tokio::test]
         async fn test_oss_storage_public_url_with_cdn() {

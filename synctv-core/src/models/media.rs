@@ -461,7 +461,7 @@ impl PlaybackResult {
             room_id,
             name,
             position,
-            playback_infos: std::collections::HashMap::new(),
+            playback_infos: indexmap::IndexMap::new(),
             default_mode: None,
             metadata: std::collections::HashMap::new(),
         }
@@ -488,7 +488,10 @@ pub struct PlaybackResultBuilder {
     room_id: RoomId,
     name: String,
     position: i32,
-    playback_infos: std::collections::HashMap<String, PlaybackInfo>,
+    /// Uses `IndexMap` to guarantee insertion-order determinism when falling
+    /// back to the first mode as default (avoids `HashMap::keys().next()`
+    /// non-determinism).
+    playback_infos: indexmap::IndexMap<String, PlaybackInfo>,
     default_mode: Option<String>,
     metadata: std::collections::HashMap<String, JsonValue>,
 }
@@ -524,7 +527,9 @@ impl PlaybackResultBuilder {
 
     /// Build the `PlaybackResult`
     ///
-    /// Returns None if no modes were added or `default_mode` is not set
+    /// Returns None if no modes were added or `default_mode` is not set.
+    /// When no explicit `default_mode` is set, the first inserted mode is used
+    /// (deterministic because `IndexMap` preserves insertion order).
     #[must_use]
     pub fn build(self) -> Option<PlaybackResult> {
         if self.playback_infos.is_empty() {
@@ -532,7 +537,8 @@ impl PlaybackResultBuilder {
         }
 
         let default_mode = self.default_mode.or_else(|| {
-            // If no default mode specified, use the first mode
+            // If no default mode specified, use the first inserted mode.
+            // This is deterministic because IndexMap preserves insertion order.
             self.playback_infos.keys().next().cloned()
         })?;
 
@@ -547,7 +553,7 @@ impl PlaybackResultBuilder {
             room_id: self.room_id,
             name: self.name,
             position: self.position,
-            playback_infos: self.playback_infos,
+            playback_infos: self.playback_infos.into_iter().collect(),
             default_mode,
             metadata: self.metadata,
         })
@@ -676,5 +682,98 @@ impl PlaybackUrlMetadata {
             fps: None,
             extra: std::collections::HashMap::new(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_playback_result_builder_deterministic_default_mode() {
+        // The builder should always pick the first-inserted mode as default
+        // when no explicit default_mode is set. This must be deterministic
+        // across multiple runs (IndexMap preserves insertion order).
+        let playlist_id = PlaylistId::from_string("pl1".to_string());
+        let room_id = RoomId::from_string("r1".to_string());
+
+        for _ in 0..20 {
+            let result = PlaybackResult::builder(
+                playlist_id.clone(),
+                room_id.clone(),
+                "test".to_string(),
+                0,
+            )
+            .add_mode(
+                "alpha".to_string(),
+                PlaybackInfo::single_url("http://a".to_string(), "A".to_string()),
+            )
+            .add_mode(
+                "beta".to_string(),
+                PlaybackInfo::single_url("http://b".to_string(), "B".to_string()),
+            )
+            .add_mode(
+                "gamma".to_string(),
+                PlaybackInfo::single_url("http://c".to_string(), "C".to_string()),
+            )
+            .build()
+            .expect("build should succeed");
+
+            assert_eq!(
+                result.default_mode, "alpha",
+                "Default mode should always be the first inserted mode"
+            );
+        }
+    }
+
+    #[test]
+    fn test_playback_result_builder_explicit_default_mode() {
+        let playlist_id = PlaylistId::from_string("pl1".to_string());
+        let room_id = RoomId::from_string("r1".to_string());
+
+        let result = PlaybackResult::builder(
+            playlist_id,
+            room_id,
+            "test".to_string(),
+            0,
+        )
+        .add_mode(
+            "direct".to_string(),
+            PlaybackInfo::single_url("http://d".to_string(), "D".to_string()),
+        )
+        .add_mode(
+            "proxy".to_string(),
+            PlaybackInfo::single_url("http://p".to_string(), "P".to_string()),
+        )
+        .default_mode("proxy".to_string())
+        .build()
+        .expect("build should succeed");
+
+        assert_eq!(result.default_mode, "proxy");
+    }
+
+    #[test]
+    fn test_playback_result_builder_empty_returns_none() {
+        let playlist_id = PlaylistId::from_string("pl1".to_string());
+        let room_id = RoomId::from_string("r1".to_string());
+
+        let result = PlaybackResult::builder(playlist_id, room_id, "test".to_string(), 0).build();
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_playback_result_builder_invalid_default_mode_returns_none() {
+        let playlist_id = PlaylistId::from_string("pl1".to_string());
+        let room_id = RoomId::from_string("r1".to_string());
+
+        let result = PlaybackResult::builder(playlist_id, room_id, "test".to_string(), 0)
+            .add_mode(
+                "direct".to_string(),
+                PlaybackInfo::single_url("http://d".to_string(), "D".to_string()),
+            )
+            .default_mode("nonexistent".to_string())
+            .build();
+
+        assert!(result.is_none());
     }
 }

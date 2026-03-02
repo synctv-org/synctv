@@ -299,24 +299,20 @@ impl RoomMessageHub {
         if let Some((_, (room_id, user_id))) = self.connections.remove(connection_id) {
             let mut room_deactivated = false;
 
-            // Remove the subscriber by connection_id (O(1) HashMap lookup).
-            // We must drop the RefMut before calling remove_if, since both
-            // acquire the same shard lock and would deadlock.
-            if let Some(mut subscribers) = self.rooms.get_mut(&room_id) {
-                subscribers.remove(connection_id);
-                drop(subscribers);
-            }
-
-            // Atomically remove the room entry only if it's still empty.
-            // If a concurrent subscribe added a new subscriber between the
-            // retain and this call, the entry won't be empty and won't be removed.
-            if self
-                .rooms
-                .remove_if(&room_id, |_, subscribers| subscribers.is_empty())
-                .is_some()
+            // Atomically remove the subscriber and check if the room is now empty
+            // in a single lock acquisition using the entry API. This prevents a
+            // race where a concurrent subscribe could insert between a separate
+            // remove + remove_if, causing the RoomDeactivated event to be missed
+            // (the new subscriber would see Occupied and skip RoomActivated).
+            if let dashmap::mapref::entry::Entry::Occupied(mut entry) =
+                self.rooms.entry(room_id.clone())
             {
-                room_deactivated = true;
-                debug!(room_id = %room_id.as_str(), "Room has no more subscribers, removed");
+                entry.get_mut().remove(connection_id);
+                if entry.get().is_empty() {
+                    entry.remove();
+                    room_deactivated = true;
+                    debug!(room_id = %room_id.as_str(), "Room has no more subscribers, removed");
+                }
             }
 
             // Remove from Redis (best-effort, don't block unsubscribe path).

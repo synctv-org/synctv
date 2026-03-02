@@ -94,6 +94,7 @@ pub async fn create_node(redis_url: &str, node_id: &str) -> ClusterManager {
         key_prefix: "synctv:".to_string(),
         catchup_window_secs: 300,
         stream_max_length: 10_000,
+        parent_cancel_token: None,
     };
     ClusterManager::new(config, None, None)
         .await
@@ -123,6 +124,7 @@ pub async fn create_node_with_config(
         key_prefix: "synctv:".to_string(),
         catchup_window_secs: 300,
         stream_max_length: 10_000,
+        parent_cancel_token: None,
     };
     config_modifier(&mut config);
     ClusterManager::new(config, None, None)

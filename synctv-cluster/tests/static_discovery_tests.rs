@@ -71,3 +71,34 @@ fn test_static_discovery_config_defaults() {
     assert_eq!(config.default_http_port, 8080);
     assert!(config.cluster_secret.is_empty());
 }
+
+// ============================================================================
+// Test 6: NodeInfo::new starts at epoch 1 (M11 verification)
+// ============================================================================
+
+/// Verify that NodeInfo::new() creates nodes with epoch=1 and that
+/// with_epoch(0) correctly sets epoch=0 for static discovery peers.
+#[test]
+fn test_node_info_epoch_defaults_and_override() {
+    use synctv_cluster::discovery::NodeInfo;
+
+    // Default epoch is 1
+    let info = NodeInfo::new(
+        "node1".to_string(),
+        "localhost:50051".to_string(),
+        "localhost:8080".to_string(),
+    );
+    assert_eq!(info.epoch, 1, "NodeInfo::new should default to epoch=1");
+
+    // Static discovery should use epoch=0 so it never overwrites self-registered nodes
+    let static_info = NodeInfo::new(
+        "static_node".to_string(),
+        "peer:50051".to_string(),
+        "peer:8080".to_string(),
+    )
+    .with_epoch(0);
+    assert_eq!(
+        static_info.epoch, 0,
+        "Static discovery peers should use epoch=0"
+    );
+}

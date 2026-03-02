@@ -53,6 +53,9 @@ hmac.workspace = true
 humantime.workspace = true
 hex.workspace = true
 
+# Ordered collections
+indexmap.workspace = true
+
 # Utilities
 anyhow.workspace = true
 thiserror.workspace = true

@@ -101,7 +101,7 @@ BEGIN
     -- 从当前月开始创建（与 create_chat_message_partitions 行为一致）
     partition_date := DATE_TRUNC('month', CURRENT_DATE);
 
-    FOR i IN 1..months_ahead LOOP
+    FOR i IN 0..months_ahead LOOP
         result := create_audit_logs_partition(partition_date);
         partitions := partitions || result::JSONB;
         success_count := success_count + 1;
@@ -254,7 +254,7 @@ BEGIN
         FROM pg_tables
         WHERE schemaname = 'public'
           AND tablename LIKE 'audit_logs_%'
-          AND tablename NOT LIKE '%_idx%'
+          AND tablename ~ '^audit_logs_[0-9]{4}_[0-9]{2}$'
         ORDER BY tablename DESC
     LOOP
         total_partitions := total_partitions + 1;

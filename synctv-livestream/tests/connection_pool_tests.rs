@@ -15,7 +15,7 @@ fn test_pool_creation_with_defaults() {
 
 #[test]
 fn test_pool_creation_with_custom_idle() {
-    let pool = GrpcConnectionPool::new(Duration::from_mins(1));
+    let pool = GrpcConnectionPool::new(Duration::from_mins(1), 100);
     assert!(pool.is_empty());
 }
 

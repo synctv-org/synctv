@@ -543,6 +543,11 @@ impl Application {
         let permission_service = Some(core.services.room_service.permission_service().clone());
 
         let cluster_manager = if let Some(ref rh) = infra.redis_handles {
+            // Create a cancellation token for the cluster manager that is a child
+            // of the ShutdownCoordinator's token, so coordinator shutdown also
+            // cancels all cluster background tasks.
+            let cluster_cancel = shutdown.register_token("cluster_manager");
+
             let cluster_config = ClusterConfig {
                 redis_client: Some(rh.client.clone()),
                 redis_conn: Some(rh.conn_snapshot().await),
@@ -561,6 +566,7 @@ impl Application {
                 key_prefix: infra.config.redis.key_prefix.clone(),
                 catchup_window_secs: infra.config.cluster.catchup_window_secs,
                 stream_max_length: infra.config.cluster.stream_max_length,
+                parent_cancel_token: Some(cluster_cancel),
             };
             match ClusterManager::new(
                 cluster_config,

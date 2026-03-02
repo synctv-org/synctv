@@ -17,6 +17,9 @@ use super::config::SliceCacheConfig;
 use super::etag::CachedResourceMeta;
 use super::range::{aligned_range_for_slice, parse_content_range};
 
+/// Number of lock cleanup cycles before triggering a stale-lock sweep.
+const LOCK_CLEANUP_INTERVAL: u64 = 64;
+
 // ------------------------------------------------------------------
 // Internal: cache entry wrapper with insertion timestamp for TTL
 // ------------------------------------------------------------------
@@ -61,10 +64,13 @@ pub struct SliceCache {
     locks: dashmap::DashMap<String, SliceLock>,
     /// Per-resource metadata for ETag consistency validation.
     pub(super) meta: dashmap::DashMap<String, CachedResourceMeta>,
-    /// Tracks which cache keys have *ever* been inserted so we can
+    /// Tracks which cache keys have been inserted recently so we can
     /// distinguish `EXPIRED` (was cached, TTL elapsed) from `MISS`
-    /// (never seen before).
-    pub(super) seen_keys: dashmap::DashSet<String>,
+    /// (never seen before). Backed by moka with TTL to prevent unbounded
+    /// growth (previously a DashSet that was never pruned).
+    pub(super) seen_keys: moka::future::Cache<String, ()>,
+    /// Counter for periodic stale lock cleanup.
+    lock_ops: std::sync::atomic::AtomicU64,
 }
 
 impl SliceCache {
@@ -83,12 +89,21 @@ impl SliceCache {
             .time_to_idle(Duration::from_hours(1))
             .build();
 
+        // seen_keys uses a moka cache with a TTL slightly longer than
+        // the main cache's time_to_idle so that "was ever seen" info
+        // outlives the data entry but does not grow unbounded.
+        let seen_keys = moka::future::Cache::builder()
+            .max_capacity(1_000_000)
+            .time_to_idle(Duration::from_hours(2))
+            .build();
+
         Self {
             config,
             inner,
             locks: dashmap::DashMap::new(),
             meta: dashmap::DashMap::new(),
-            seen_keys: dashmap::DashSet::new(),
+            seen_keys,
+            lock_ops: std::sync::atomic::AtomicU64::new(0),
         }
     }
 
@@ -344,7 +359,10 @@ impl SliceCache {
             ttl: self.config.segment_ttl,
         };
         self.inner.insert(key.clone(), entry).await;
-        self.seen_keys.insert(key);
+        self.seen_keys.insert(key.clone(), ()).await;
+
+        // Periodically clean up stale per-key locks to prevent unbounded growth.
+        self.maybe_cleanup_locks();
 
         Ok(data)
     }
@@ -385,10 +403,11 @@ impl SliceCache {
             .is_some_and(|entry| !entry.is_expired())
     }
 
-    /// Check whether a key was *ever* inserted (used to distinguish
-    /// `EXPIRED` from `MISS`).
-    pub(super) fn was_ever_seen(&self, key: &str) -> bool {
-        self.seen_keys.contains(key)
+    /// Check whether a key was recently inserted (used to distinguish
+    /// `EXPIRED` from `MISS`). Backed by a bounded moka cache with TTL,
+    /// so very old entries will naturally expire.
+    pub(super) async fn was_ever_seen(&self, key: &str) -> bool {
+        self.seen_keys.get(key).await.is_some()
     }
 
     /// Determine the slice-level cache status for a set of needed slices.
@@ -407,7 +426,7 @@ impl SliceCache {
                 any_was_seen = true;
             } else {
                 all_valid = false;
-                if self.was_ever_seen(&key) {
+                if self.was_ever_seen(&key).await {
                     any_was_seen = true;
                 }
             }
@@ -452,13 +471,13 @@ impl SliceCache {
     }
 
     /// Determine the full-body cache status *before* fetching.
-    pub(super) fn full_body_pre_status(
+    pub(super) async fn full_body_pre_status(
         &self,
         url: &str,
         provider_headers: &HashMap<String, String>,
     ) -> &'static str {
         let key = Self::full_body_key(url, provider_headers);
-        if self.was_ever_seen(&key) {
+        if self.was_ever_seen(&key).await {
             "EXPIRED"
         } else {
             "MISS"
@@ -481,7 +500,7 @@ impl SliceCache {
             ttl,
         };
         self.inner.insert(key.clone(), entry).await;
-        self.seen_keys.insert(key);
+        self.seen_keys.insert(key, ()).await;
 
         // Store metadata.
         let mk = Self::meta_key(url, provider_headers);
@@ -493,5 +512,50 @@ impl SliceCache {
                 content_type: content_type.map(|s| s.to_string()),
             },
         );
+    }
+
+    // ---------------------------------------------------------------
+    // Lock cleanup (L3 fix)
+    // ---------------------------------------------------------------
+
+    /// Periodically remove stale per-key locks that are not currently held
+    /// by any task.  A lock is considered stale when the only remaining
+    /// `Arc` reference is the one stored in the `DashMap` itself
+    /// (`strong_count == 1`).
+    fn maybe_cleanup_locks(&self) {
+        let count = self
+            .lock_ops
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        if count % LOCK_CLEANUP_INTERVAL != 0 {
+            return;
+        }
+        self.cleanup_stale_locks();
+    }
+
+    /// Remove all per-key locks not currently held by any task.
+    pub fn cleanup_stale_locks(&self) {
+        self.locks
+            .retain(|_key, lock| Arc::strong_count(lock) > 1);
+    }
+
+    /// Return the current number of per-key locks (for diagnostics/testing).
+    #[must_use]
+    pub fn lock_count(&self) -> usize {
+        self.locks.len()
+    }
+
+    /// Return the current number of entries in `seen_keys` (for diagnostics/testing).
+    ///
+    /// Note: moka's `entry_count()` is eventually consistent. Call
+    /// `sync_seen_keys()` first for an accurate count after recent inserts.
+    #[must_use]
+    pub fn seen_keys_count(&self) -> u64 {
+        self.seen_keys.entry_count()
+    }
+
+    /// Run pending maintenance tasks on the seen_keys cache so that
+    /// `entry_count()` reflects recent inserts.
+    pub async fn sync_seen_keys(&self) {
+        self.seen_keys.run_pending_tasks().await;
     }
 }

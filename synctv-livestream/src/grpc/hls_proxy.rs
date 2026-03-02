@@ -101,14 +101,13 @@ impl HlsProxyClient {
     ///
     /// # Arguments
     /// * `segment_cache_ttl` - TTL for cached TS segments (default: 90 seconds)
-    /// * `segment_cache_max_entries` - Max cached segments (default: 1000)
-    /// * `segment_cache_max_bytes` - Max total byte size for segment cache (default: 256 MB)
+    /// * `segment_cache_max_bytes` - Max total byte size for segment cache (default: 256 MB).
+    ///   The cache uses a byte-based weigher so this is a hard memory bound, not an entry count.
     /// * `playlist_cache_ttl` - TTL for cached M3U8 playlists (default: 1 second)
     /// * `cluster_secret` - Optional cluster authentication secret
     #[must_use]
     pub fn new(
         segment_cache_ttl: Duration,
-        _segment_cache_max_entries: u64,
         segment_cache_max_bytes: u64,
         playlist_cache_ttl: Duration,
         cluster_secret: Option<String>,
@@ -147,12 +146,11 @@ impl HlsProxyClient {
         }
     }
 
-    /// Create with default settings (90s segment TTL, 1s playlist TTL, 1000 max segment entries, 256MB max bytes).
+    /// Create with default settings (90s segment TTL, 1s playlist TTL, 256MB max bytes).
     #[must_use]
     pub fn with_defaults(cluster_secret: Option<String>) -> Self {
         Self::new(
             Duration::from_secs(90),
-            1000,
             Self::DEFAULT_MAX_CACHE_BYTES,
             Duration::from_secs(1),
             cluster_secret,
@@ -1207,5 +1205,47 @@ mod tests {
             .get_playlist_with_version_check(room_id, media_id, url_base, 0, 0)
             .await;
         assert!(stale.is_none(), "Old version should be considered stale");
+    }
+
+    #[tokio::test]
+    async fn test_segment_cache_respects_byte_limit() {
+        // Create a client with a very small byte limit (100 bytes).
+        // Inserting segments that exceed this should cause evictions.
+        let client = HlsProxyClient::new(
+            Duration::from_secs(90),
+            100, // 100 bytes max
+            Duration::from_secs(1),
+            None,
+        );
+
+        // Insert entries that together exceed 100 bytes
+        let data_50 = Bytes::from(vec![0u8; 50]);
+        let data_60 = Bytes::from(vec![0u8; 60]);
+
+        client
+            .segment_cache
+            .insert("seg1".to_string(), data_50.clone())
+            .await;
+        client
+            .segment_cache
+            .insert("seg2".to_string(), data_60.clone())
+            .await;
+
+        // Run pending tasks to force eviction processing
+        client.segment_cache.run_pending_tasks().await;
+
+        // The total exceeds 100 bytes (50 + 60 = 110), so at least one entry
+        // should be evicted. The remaining entries' total weight should be <= 100.
+        let has_seg1 = client.segment_cache.get("seg1").await.is_some();
+        let has_seg2 = client.segment_cache.get("seg2").await.is_some();
+
+        // At least one must still be present, but both cannot both be present
+        // if the cache respects the byte limit. (Moka may keep both briefly
+        // until pending tasks run, but after run_pending_tasks they should be
+        // evicted.)
+        assert!(
+            !(has_seg1 && has_seg2),
+            "Cache should evict entries when byte limit is exceeded"
+        );
     }
 }

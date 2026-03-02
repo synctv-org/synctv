@@ -433,4 +433,41 @@ mod tests {
 
         assert_eq!(pull_stream.stream_key(), "room-123:media-456");
     }
+
+    /// M4: Verify that get_existing() properly rolls back subscriber count
+    /// when a stream becomes unhealthy between the two health checks.
+    #[tokio::test]
+    async fn test_subscriber_count_rollback_on_unhealthy_stream() {
+        let pool: StreamPool<PullStream> =
+            StreamPool::new(Duration::from_mins(1), Duration::from_mins(5));
+        let registry = Arc::new(MockStreamRegistry::new()) as Arc<dyn StreamRegistryTrait>;
+        let (stream_hub_event_sender, _) = tokio::sync::mpsc::channel(64);
+
+        let pull_stream = Arc::new(PullStream::new(
+            "room-123".to_string(),
+            "media-456".to_string(),
+            "publisher-node".to_string(),
+            "puller-node".to_string(),
+            registry,
+            stream_hub_event_sender,
+            1,
+        ));
+        pull_stream.lifecycle().set_running();
+        pool.streams
+            .insert("room-123:media-456".to_string(), pull_stream.clone());
+
+        // First get_existing succeeds, subscriber count = 1
+        let result = pool.get_existing("room-123:media-456").await;
+        assert!(result.is_some());
+        assert_eq!(pull_stream.subscriber_count(), 1);
+
+        // Mark unhealthy (simulating stream failure)
+        pull_stream.lifecycle().mark_stopping();
+
+        // get_existing should fail and NOT increment subscriber count
+        let result = pool.get_existing("room-123:media-456").await;
+        assert!(result.is_none());
+        // Subscriber count should still be 1 (not 2)
+        assert_eq!(pull_stream.subscriber_count(), 1);
+    }
 }

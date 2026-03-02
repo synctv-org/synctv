@@ -1133,6 +1133,17 @@ impl CacheInvalidationService {
         self.broadcast_remote(msg).await
     }
 
+    /// Invalidate room settings cache locally and broadcast to other replicas.
+    pub async fn invalidate_and_broadcast_room_settings(&self, room_id: &RoomId) -> Result<()> {
+        let msg = InvalidationMessage::RoomSettings {
+            room_id: room_id.as_str().to_string(),
+        };
+        if let Err(e) = self.local_sender.send(msg.clone()) {
+            warn!(error = %e, "Failed to broadcast room settings invalidation locally");
+        }
+        self.broadcast_remote(msg).await
+    }
+
     /// Invalidate username cache locally and broadcast to other replicas.
     pub async fn invalidate_and_broadcast_username(
         &self,
@@ -1396,5 +1407,43 @@ mod tests {
     fn test_state_sync_interval_constant() {
         // Verify the state sync interval is 60 seconds
         assert_eq!(STATE_SYNC_INTERVAL_SECS, 60);
+    }
+
+    #[test]
+    fn test_room_settings_message_serialization() {
+        let msg = InvalidationMessage::RoomSettings {
+            room_id: "room_abc".to_string(),
+        };
+
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(json.contains("room_settings"));
+        assert!(json.contains("room_abc"));
+
+        let decoded: InvalidationMessage = serde_json::from_str(&json).unwrap();
+        assert_eq!(msg, decoded);
+    }
+
+    #[tokio::test]
+    async fn test_invalidate_and_broadcast_room_settings() {
+        let service = CacheInvalidationService::new(
+            None,
+            "test-node".to_string(),
+            "synctv:cache:invalidate:stream".to_string(),
+        );
+        let mut receiver = service.subscribe();
+
+        let room_id = crate::models::RoomId::from_string("room_settings_test".to_string());
+        service
+            .invalidate_and_broadcast_room_settings(&room_id)
+            .await
+            .unwrap();
+
+        let received = receiver.recv().await.unwrap();
+        match received {
+            InvalidationMessage::RoomSettings { room_id } => {
+                assert_eq!(room_id, "room_settings_test");
+            }
+            other => panic!("Expected RoomSettings, got: {:?}", other),
+        }
     }
 }

@@ -239,6 +239,59 @@ async fn test_lifecycle_events_not_lost_under_room_churn() {
     );
 }
 
+// ============================================================================
+// L9: Atomic unsubscribe prevents missed RoomActivated events
+// ============================================================================
+
+/// When the last subscriber unsubscribes and a new subscriber joins the same
+/// room concurrently, the new subscriber must see a RoomActivated event.
+/// Before the fix, a TOCTOU race between remove-subscriber and remove_if
+/// could cause the new subscribe to see the room entry as Occupied (with 0
+/// subscribers) and skip the RoomActivated event.
+#[tokio::test]
+async fn test_unsubscribe_last_then_subscribe_emits_activated() {
+    use synctv_cluster::sync::room_hub::RoomLifecycleEvent;
+
+    let hub = RoomMessageHub::new();
+    let mut lifecycle_rx = hub.subscribe_lifecycle();
+
+    let room = rid("race_room");
+    let user1 = uid("user1");
+    let user2 = uid("user2");
+
+    // Subscribe first user -> RoomActivated
+    let _rx1 = hub
+        .subscribe(room.clone(), user1.clone(), "conn1".to_string())
+        .await;
+
+    let event = lifecycle_rx.try_recv().unwrap();
+    assert!(matches!(event, RoomLifecycleEvent::RoomActivated(_)));
+
+    // Unsubscribe first user -> RoomDeactivated
+    hub.unsubscribe("conn1");
+
+    let event = lifecycle_rx.try_recv().unwrap();
+    assert!(matches!(event, RoomLifecycleEvent::RoomDeactivated(_)));
+
+    // After the room is fully removed, subscribing a second user must
+    // emit another RoomActivated (the room is re-created from scratch).
+    let _rx2 = hub
+        .subscribe(room.clone(), user2.clone(), "conn2".to_string())
+        .await;
+
+    let event = lifecycle_rx.try_recv().unwrap();
+    match event {
+        RoomLifecycleEvent::RoomActivated(r) => assert_eq!(r, room),
+        other => panic!(
+            "Expected RoomActivated after re-subscribe, got: {other:?}"
+        ),
+    }
+
+    // Verify room has exactly 1 subscriber
+    assert_eq!(hub.subscriber_count(&room), 1);
+    assert_eq!(hub.room_count(), 1);
+}
+
 /// D2: remove_room emits a RoomDeactivated lifecycle event.
 #[tokio::test]
 async fn test_remove_room_emits_deactivated_event() {

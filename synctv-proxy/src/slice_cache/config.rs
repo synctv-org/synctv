@@ -1,7 +1,9 @@
 //! Slice cache configuration.
 //!
-//! Contains [`SliceCacheConfig`] and content-type classification helpers.
+//! Contains [`SliceCacheConfig`], [`CacheBackendConfig`], and content-type
+//! classification helpers.
 
+use std::path::PathBuf;
 use std::time::Duration;
 
 /// Configuration for the slice cache.
@@ -22,6 +24,19 @@ pub struct SliceCacheConfig {
     /// TTL for media segment entries (slices and non-manifest full bodies).
     /// Default: 5 minutes.
     pub segment_ttl: Duration,
+    /// Maximum time an expired entry can still be served as stale.
+    /// Default: 60 seconds.
+    pub stale_max_age: Duration,
+    /// Whether to serve a stale entry while a background revalidation
+    /// is in progress. Default: `true`.
+    pub stale_while_revalidate: bool,
+    /// Which storage backend to use. Default: `Memory`.
+    pub backend: CacheBackendConfig,
+    /// How often the background eviction task runs. Default: 60 seconds.
+    pub eviction_interval: Duration,
+    /// When eviction is triggered, free until usage drops below
+    /// `max_cache_size * watermark_ratio`. Default: 0.875 (7/8).
+    pub watermark_ratio: f64,
 }
 
 impl Default for SliceCacheConfig {
@@ -33,8 +48,30 @@ impl Default for SliceCacheConfig {
             max_cacheable_body: 10 * 1024 * 1024,        // 10 MB
             manifest_ttl: Duration::from_secs(5),
             segment_ttl: Duration::from_mins(5),
+            stale_max_age: Duration::from_secs(60),
+            stale_while_revalidate: true,
+            backend: CacheBackendConfig::default(),
+            eviction_interval: Duration::from_secs(60),
+            watermark_ratio: 0.875, // 7/8
         }
     }
+}
+
+/// Configuration for the cache storage backend.
+#[derive(Clone, Debug, Default)]
+pub enum CacheBackendConfig {
+    /// In-memory backend (default). Fast but not persistent across restarts.
+    #[default]
+    Memory,
+    /// File-based backend. Entries are stored on disk under `cache_dir`
+    /// using a directory hierarchy inspired by nginx's `levels` directive.
+    File {
+        /// Root directory for cache files.
+        cache_dir: PathBuf,
+        /// Directory depth levels, e.g. `(1, 2)` corresponds to nginx's
+        /// `levels=1:2` which creates paths like `cache_dir/a/bc/...`.
+        dir_levels: (usize, usize),
+    },
 }
 
 /// Returns `true` if the content-type looks like an M3U8 or DASH manifest.

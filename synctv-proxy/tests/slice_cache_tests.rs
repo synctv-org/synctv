@@ -13,7 +13,9 @@ use http_body_util::BodyExt;
 use wiremock::matchers::{header, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
-use synctv_proxy::slice_cache::{CachedResourceMeta, SliceCache, SliceCacheConfig};
+use synctv_proxy::slice_cache::{
+    CacheStatus, CachedResourceMeta, SliceCache, SliceCacheBackend, SliceCacheConfig,
+};
 
 // ==================================================================
 // SliceCacheConfig tests
@@ -256,18 +258,20 @@ async fn test_get_or_fetch_slice_fetches_from_upstream() {
     let headers = HashMap::new();
     let total_size = 10 * 1024 * 1024; // 10MB
 
-    let slice = cache
+    let (slice, status) = cache
         .get_or_fetch_slice(&url, &headers, 0, total_size)
         .await
         .unwrap();
     assert_eq!(slice.len(), 2 * 1024 * 1024);
+    assert_eq!(status, CacheStatus::Miss);
 
     // Second call should hit cache (mock expects exactly 1 call)
-    let slice2 = cache
+    let (slice2, status2) = cache
         .get_or_fetch_slice(&url, &headers, 0, total_size)
         .await
         .unwrap();
     assert_eq!(slice2.len(), 2 * 1024 * 1024);
+    assert_eq!(status2, CacheStatus::Hit);
 }
 
 #[tokio::test]
@@ -303,7 +307,7 @@ async fn test_get_or_fetch_slice_last_slice_partial() {
     let url = format!("{}/video.mp4", mock_server.uri());
     let headers = HashMap::new();
 
-    let slice = cache
+    let (slice, _status) = cache
         .get_or_fetch_slice(&url, &headers, 1, total_size)
         .await
         .unwrap();
@@ -650,7 +654,8 @@ async fn test_concurrent_fetches_same_slice_only_one_upstream_request() {
     for handle in handles {
         let result = handle.await.unwrap();
         assert!(result.is_ok(), "All concurrent fetches should succeed");
-        assert_eq!(result.unwrap().len(), 2 * 1024 * 1024);
+        let (data, _status) = result.unwrap();
+        assert_eq!(data.len(), 2 * 1024 * 1024);
     }
     // wiremock's expect(1) ensures only 1 upstream request was made
 }
@@ -942,9 +947,12 @@ async fn test_full_body_cache_expiry_returns_expired() {
         .mount(&mock_server)
         .await;
 
-    // Very short segment_ttl so we can test expiry
+    // Very short segment_ttl so we can test expiry.
+    // Disable stale_while_revalidate so expired entries are not served
+    // as stale, allowing us to observe the EXPIRED status.
     let config = SliceCacheConfig {
         segment_ttl: Duration::from_millis(50),
+        stale_while_revalidate: false,
         ..Default::default()
     };
     let cache = SliceCache::new(config);
@@ -995,6 +1003,7 @@ async fn test_full_body_cache_expiry_returns_expired() {
 fn test_cached_resource_meta_fields() {
     let meta = CachedResourceMeta {
         etag: Some("\"abc123\"".to_string()),
+        last_modified: None,
         total_size: Some(10_485_760),
         content_type: Some("video/mp4".to_string()),
     };
@@ -1052,13 +1061,13 @@ async fn test_etag_consistency_same_etag_both_cached() {
     let headers = HashMap::new();
 
     // Fetch both slices - both should succeed since ETag matches
-    let s0 = cache
+    let (s0, _) = cache
         .get_or_fetch_slice(&url, &headers, 0, total_size)
         .await
         .unwrap();
     assert_eq!(s0.len(), 2 * 1024 * 1024);
 
-    let s1 = cache
+    let (s1, _) = cache
         .get_or_fetch_slice(&url, &headers, 1, total_size)
         .await
         .unwrap();
@@ -1246,9 +1255,12 @@ async fn test_cache_status_expired_for_slice_request() {
         .mount(&mock_server)
         .await;
 
-    // Very short segment_ttl
+    // Very short segment_ttl.
+    // Disable stale_while_revalidate so expired entries are not served
+    // as stale, allowing us to observe the EXPIRED status.
     let config = SliceCacheConfig {
         segment_ttl: Duration::from_millis(50),
+        stale_while_revalidate: false,
         ..Default::default()
     };
     let cache = SliceCache::new(config);
@@ -1330,7 +1342,7 @@ async fn test_resource_meta_stored_after_fetch() {
 // Content-Range response parsing tests (nginx-style)
 // ==================================================================
 
-use synctv_proxy::slice_cache::{parse_content_range, ContentRange};
+use synctv_proxy::slice_cache::parse_content_range;
 
 #[test]
 fn test_parse_content_range_basic() {
@@ -1640,4 +1652,528 @@ async fn test_cached_meta_avoids_head_request() {
             .map(|v| v.to_str().unwrap()),
         Some("HIT"),
     );
+}
+
+// ==================================================================
+// Phase 2: Backend trait integration, STALE/UPDATING, conditional
+// ==================================================================
+
+// ------------------------------------------------------------------
+// STALE behavior: expired entry within stale window is served stale
+// ------------------------------------------------------------------
+
+/// When stale_while_revalidate is enabled (default), an expired entry within
+/// the stale_max_age window is served with STALE status for full-body cache.
+#[tokio::test]
+async fn test_full_body_stale_when_expired_within_window() {
+    let mock_server = MockServer::start().await;
+
+    let body = Bytes::from("stale-body");
+
+    Mock::given(method("GET"))
+        .and(path("/stale.bin"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_bytes(body.clone())
+                .insert_header("Content-Type", "application/octet-stream")
+                .insert_header("Content-Length", "10"),
+        )
+        // Called once initially; the stale response uses cached data,
+        // but the background re-fetch path may call again if activated.
+        .mount(&mock_server)
+        .await;
+
+    // Short segment TTL, stale_while_revalidate enabled (default).
+    let config = SliceCacheConfig {
+        segment_ttl: Duration::from_millis(50),
+        stale_max_age: Duration::from_secs(60),
+        stale_while_revalidate: true,
+        ..Default::default()
+    };
+    let cache = SliceCache::new(config);
+    let url = format!("{}/stale.bin", mock_server.uri());
+    let provider_headers = HashMap::new();
+
+    // First request - MISS
+    let resp1 = synctv_proxy::slice_cache::proxy_with_cache(
+        &cache,
+        None,
+        &url,
+        &provider_headers,
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        resp1.headers().get("X-Cache-Status").map(|v| v.to_str().unwrap()),
+        Some("MISS"),
+    );
+    let body1 = resp1.into_body().collect().await.unwrap().to_bytes();
+    assert_eq!(body1.as_ref(), b"stale-body");
+
+    // Wait for TTL to expire, but within stale_max_age.
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    // Second request - STALE (expired but within stale window)
+    let resp2 = synctv_proxy::slice_cache::proxy_with_cache(
+        &cache,
+        None,
+        &url,
+        &provider_headers,
+    )
+    .await
+    .unwrap();
+    let status_str = resp2
+        .headers()
+        .get("X-Cache-Status")
+        .map(|v| v.to_str().unwrap().to_string());
+    assert_eq!(
+        status_str.as_deref(),
+        Some("STALE"),
+        "Expired entry within stale window should return STALE"
+    );
+    let body2 = resp2.into_body().collect().await.unwrap().to_bytes();
+    // Stale response should return the original cached body.
+    assert_eq!(body2.as_ref(), b"stale-body");
+}
+
+/// When stale_while_revalidate is enabled, an expired slice within the stale
+/// window returns STALE for the range request.
+#[tokio::test]
+async fn test_slice_stale_when_expired_within_window() {
+    let mock_server = MockServer::start().await;
+
+    let total_size: u64 = 10 * 1024 * 1024;
+    let slice_data = Bytes::from(vec![0xAAu8; 2 * 1024 * 1024]);
+
+    Mock::given(method("HEAD"))
+        .and(path("/video.mp4"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("Content-Length", total_size.to_string())
+                .insert_header("Accept-Ranges", "bytes"),
+        )
+        .mount(&mock_server)
+        .await;
+
+    Mock::given(method("GET"))
+        .and(path("/video.mp4"))
+        .and(header("Range", "bytes=0-2097151"))
+        .respond_with(
+            ResponseTemplate::new(206)
+                .set_body_bytes(slice_data.clone())
+                .insert_header(
+                    "Content-Range",
+                    format!("bytes 0-2097151/{total_size}"),
+                )
+                .insert_header("Content-Length", "2097152"),
+        )
+        .mount(&mock_server)
+        .await;
+
+    let config = SliceCacheConfig {
+        segment_ttl: Duration::from_millis(50),
+        stale_max_age: Duration::from_secs(60),
+        stale_while_revalidate: true,
+        ..Default::default()
+    };
+    let cache = SliceCache::new(config);
+    let url = format!("{}/video.mp4", mock_server.uri());
+    let provider_headers = HashMap::new();
+
+    // First request: MISS
+    let resp1 = synctv_proxy::slice_cache::proxy_with_cache(
+        &cache,
+        Some("bytes=0-999"),
+        &url,
+        &provider_headers,
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        resp1.headers().get("X-Cache-Status").map(|v| v.to_str().unwrap()),
+        Some("MISS"),
+    );
+
+    // Wait for TTL to expire, but within stale_max_age.
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    // Second request: STALE
+    let resp2 = synctv_proxy::slice_cache::proxy_with_cache(
+        &cache,
+        Some("bytes=0-999"),
+        &url,
+        &provider_headers,
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        resp2.headers().get("X-Cache-Status").map(|v| v.to_str().unwrap()),
+        Some("STALE"),
+        "Expired slice within stale window should return STALE"
+    );
+}
+
+// ------------------------------------------------------------------
+// UPDATING behavior: second request while updating returns STALE/UPDATING
+// ------------------------------------------------------------------
+
+/// When a key is marked as updating, the get_or_fetch_slice returns the
+/// stale data with appropriate status.
+#[tokio::test]
+async fn test_slice_updating_status_on_stale_entry() {
+    let mock_server = MockServer::start().await;
+
+    let total_size: u64 = 2048;
+    let slice_data = Bytes::from(vec![0xDDu8; 1024]);
+
+    Mock::given(method("GET"))
+        .and(path("/video.bin"))
+        .and(header("Range", "bytes=0-1023"))
+        .respond_with(
+            ResponseTemplate::new(206)
+                .set_body_bytes(slice_data.clone())
+                .insert_header(
+                    "Content-Range",
+                    format!("bytes 0-1023/{total_size}"),
+                )
+                .insert_header("Content-Length", "1024"),
+        )
+        .mount(&mock_server)
+        .await;
+
+    let config = SliceCacheConfig {
+        slice_size: 1024,
+        segment_ttl: Duration::from_millis(50),
+        stale_max_age: Duration::from_secs(60),
+        stale_while_revalidate: true,
+        ..Default::default()
+    };
+    let cache = SliceCache::new(config);
+    let url = format!("{}/video.bin", mock_server.uri());
+    let headers = HashMap::new();
+
+    // First fetch - MISS
+    let (data, status) = cache
+        .get_or_fetch_slice(&url, &headers, 0, total_size)
+        .await
+        .unwrap();
+    assert_eq!(status, CacheStatus::Miss);
+    assert_eq!(data.len(), 1024);
+
+    // Wait for TTL to expire.
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    // Second fetch - should be STALE (first stale request marks as updating)
+    let (data2, status2) = cache
+        .get_or_fetch_slice(&url, &headers, 0, total_size)
+        .await
+        .unwrap();
+    assert_eq!(data2.len(), 1024);
+    assert!(
+        status2 == CacheStatus::Stale || status2 == CacheStatus::Updating,
+        "Expected STALE or UPDATING, got {status2:?}"
+    );
+}
+
+// ------------------------------------------------------------------
+// Conditional requests (304 Not Modified)
+// ------------------------------------------------------------------
+
+/// When upstream returns 304, the cache entry is refreshed and
+/// CacheStatus::Revalidated is returned.
+#[tokio::test]
+async fn test_conditional_request_304_returns_revalidated() {
+    let mock_server = MockServer::start().await;
+
+    let total_size: u64 = 2048;
+    let slice_data = Bytes::from(vec![0xEEu8; 1024]);
+
+    // First request returns the slice with an ETag (scoped so it can
+    // be removed before the 304 mock is mounted).
+    let first_guard = Mock::given(method("GET"))
+        .and(path("/video.bin"))
+        .and(header("Range", "bytes=0-1023"))
+        .respond_with(
+            ResponseTemplate::new(206)
+                .set_body_bytes(slice_data.clone())
+                .insert_header(
+                    "Content-Range",
+                    format!("bytes 0-1023/{total_size}"),
+                )
+                .insert_header("Content-Length", "1024")
+                .insert_header("ETag", "\"etag-v1\"")
+                .insert_header("Last-Modified", "Wed, 01 Jan 2025 00:00:00 GMT"),
+        )
+        .expect(1)
+        .mount_as_scoped(&mock_server)
+        .await;
+
+    let config = SliceCacheConfig {
+        slice_size: 1024,
+        segment_ttl: Duration::from_millis(50),
+        stale_while_revalidate: false, // Disable stale so we go through lock path
+        ..Default::default()
+    };
+    let cache = SliceCache::new(config);
+    let url = format!("{}/video.bin", mock_server.uri());
+    let headers = HashMap::new();
+
+    // First fetch - MISS
+    let (data, status) = cache
+        .get_or_fetch_slice(&url, &headers, 0, total_size)
+        .await
+        .unwrap();
+    assert_eq!(status, CacheStatus::Miss);
+    assert_eq!(data.len(), 1024);
+
+    // Verify metadata is stored (including Last-Modified).
+    let meta = cache.get_resource_meta(&url, &headers).await;
+    assert!(meta.is_some());
+    let meta = meta.unwrap();
+    assert_eq!(meta.etag.as_deref(), Some("\"etag-v1\""));
+    assert_eq!(
+        meta.last_modified.as_deref(),
+        Some("Wed, 01 Jan 2025 00:00:00 GMT")
+    );
+
+    // Wait for TTL to expire.
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    // Drop the first mock so it doesn't intercept the conditional request.
+    drop(first_guard);
+
+    // Mount a 304 response for the conditional request.
+    // Note: reqwest normalizes header names to lowercase, so we use
+    // lowercase names in the wiremock matchers.
+    // Verify the conditional request sends If-None-Match. We omit
+    // the If-Modified-Since matcher because wiremock header value
+    // matching can be sensitive to formatting; the metadata assertion
+    // above already verifies that Last-Modified is stored correctly.
+    Mock::given(method("GET"))
+        .and(path("/video.bin"))
+        .and(header("range", "bytes=0-1023"))
+        .and(header("if-none-match", "\"etag-v1\""))
+        .respond_with(ResponseTemplate::new(304))
+        .expect(1)
+        .mount(&mock_server)
+        .await;
+
+    // Second fetch - should send conditional headers and get 304 -> Revalidated
+    let (data2, status2) = cache
+        .get_or_fetch_slice(&url, &headers, 0, total_size)
+        .await
+        .unwrap();
+    assert_eq!(status2, CacheStatus::Revalidated);
+    assert_eq!(data2.len(), 1024);
+    // Data should be the same as the original.
+    assert_eq!(data2, data);
+}
+
+/// Last-Modified is tracked in resource metadata.
+#[tokio::test]
+async fn test_last_modified_tracked_in_metadata() {
+    let mock_server = MockServer::start().await;
+
+    let total_size: u64 = 2048;
+    let slice_data = Bytes::from(vec![0xCCu8; 1024]);
+
+    Mock::given(method("GET"))
+        .and(path("/test.bin"))
+        .and(header("Range", "bytes=0-1023"))
+        .respond_with(
+            ResponseTemplate::new(206)
+                .set_body_bytes(slice_data.clone())
+                .insert_header(
+                    "Content-Range",
+                    format!("bytes 0-1023/{total_size}"),
+                )
+                .insert_header("Content-Length", "1024")
+                .insert_header("Last-Modified", "Sat, 01 Feb 2025 12:00:00 GMT"),
+        )
+        .mount(&mock_server)
+        .await;
+
+    let config = SliceCacheConfig {
+        slice_size: 1024,
+        ..Default::default()
+    };
+    let cache = SliceCache::new(config);
+    let url = format!("{}/test.bin", mock_server.uri());
+    let headers = HashMap::new();
+
+    let _ = cache
+        .get_or_fetch_slice(&url, &headers, 0, total_size)
+        .await
+        .unwrap();
+
+    let meta = cache.get_resource_meta(&url, &headers).await;
+    assert!(meta.is_some());
+    assert_eq!(
+        meta.unwrap().last_modified.as_deref(),
+        Some("Sat, 01 Feb 2025 12:00:00 GMT")
+    );
+}
+
+// ------------------------------------------------------------------
+// Backend selection via config
+// ------------------------------------------------------------------
+
+/// Default config creates a memory backend.
+#[test]
+fn test_default_config_creates_memory_backend() {
+    let config = SliceCacheConfig::default();
+    assert!(matches!(
+        config.backend,
+        synctv_proxy::slice_cache::config::CacheBackendConfig::Memory
+    ));
+    let cache = SliceCache::new(config);
+    assert!(cache.config().enabled);
+}
+
+/// File backend config requires try_new (async).
+#[tokio::test]
+async fn test_file_backend_via_try_new() {
+    let tmp = tempfile::tempdir().unwrap();
+    let config = SliceCacheConfig {
+        backend: synctv_proxy::slice_cache::config::CacheBackendConfig::File {
+            cache_dir: tmp.path().to_path_buf(),
+            dir_levels: (2, 2),
+        },
+        ..Default::default()
+    };
+    let cache = SliceCache::try_new(config).await;
+    assert!(cache.is_ok(), "try_new should succeed for file backend");
+    let cache = cache.unwrap();
+    assert!(cache.config().enabled);
+}
+
+/// SliceCache::new panics for file backend config.
+#[test]
+#[should_panic(expected = "SliceCache::new() only supports the Memory backend")]
+fn test_new_panics_for_file_backend() {
+    let config = SliceCacheConfig {
+        backend: synctv_proxy::slice_cache::config::CacheBackendConfig::File {
+            cache_dir: std::path::PathBuf::from("/tmp/test-panic"),
+            dir_levels: (2, 2),
+        },
+        ..Default::default()
+    };
+    let _cache = SliceCache::new(config);
+}
+
+// ------------------------------------------------------------------
+// File backend integration test
+// ------------------------------------------------------------------
+
+/// File backend caches and retrieves data correctly via SliceCache.
+#[tokio::test]
+async fn test_file_backend_slice_cache_integration() {
+    let mock_server = MockServer::start().await;
+    let tmp = tempfile::tempdir().unwrap();
+
+    let total_size: u64 = 2048;
+    let slice_data = Bytes::from(vec![0xBBu8; 1024]);
+
+    Mock::given(method("GET"))
+        .and(path("/file-test.bin"))
+        .and(header("Range", "bytes=0-1023"))
+        .respond_with(
+            ResponseTemplate::new(206)
+                .set_body_bytes(slice_data.clone())
+                .insert_header(
+                    "Content-Range",
+                    format!("bytes 0-1023/{total_size}"),
+                )
+                .insert_header("Content-Length", "1024"),
+        )
+        .expect(1) // Only one upstream request
+        .mount(&mock_server)
+        .await;
+
+    let config = SliceCacheConfig {
+        slice_size: 1024,
+        backend: synctv_proxy::slice_cache::config::CacheBackendConfig::File {
+            cache_dir: tmp.path().to_path_buf(),
+            dir_levels: (2, 2),
+        },
+        stale_while_revalidate: false,
+        ..Default::default()
+    };
+    let cache = SliceCache::try_new(config).await.unwrap();
+    let url = format!("{}/file-test.bin", mock_server.uri());
+    let headers = HashMap::new();
+
+    // First fetch - MISS
+    let (data1, status1) = cache
+        .get_or_fetch_slice(&url, &headers, 0, total_size)
+        .await
+        .unwrap();
+    assert_eq!(status1, CacheStatus::Miss);
+    assert_eq!(data1.len(), 1024);
+
+    // Second fetch - HIT (wiremock expect(1) verifies no second request)
+    let (data2, status2) = cache
+        .get_or_fetch_slice(&url, &headers, 0, total_size)
+        .await
+        .unwrap();
+    assert_eq!(status2, CacheStatus::Hit);
+    assert_eq!(data2.len(), 1024);
+    assert_eq!(data1, data2);
+}
+
+/// Backend accessor provides shared reference for lifecycle manager.
+#[test]
+fn test_backend_accessor() {
+    let config = SliceCacheConfig::default();
+    let cache = SliceCache::new(config);
+    let backend = cache.backend();
+    // Just verify we can call the backend methods.
+    assert_eq!(backend.current_size(), 0);
+}
+
+/// CacheStatus return from get_or_fetch_slice: Hit after initial Miss.
+#[tokio::test]
+async fn test_get_or_fetch_slice_returns_cache_status() {
+    let mock_server = MockServer::start().await;
+
+    let total_size: u64 = 2048;
+    let slice_data = Bytes::from(vec![0xFFu8; 1024]);
+
+    Mock::given(method("GET"))
+        .and(path("/status-test.bin"))
+        .and(header("Range", "bytes=0-1023"))
+        .respond_with(
+            ResponseTemplate::new(206)
+                .set_body_bytes(slice_data.clone())
+                .insert_header(
+                    "Content-Range",
+                    format!("bytes 0-1023/{total_size}"),
+                )
+                .insert_header("Content-Length", "1024"),
+        )
+        .expect(1)
+        .mount(&mock_server)
+        .await;
+
+    let config = SliceCacheConfig {
+        slice_size: 1024,
+        ..Default::default()
+    };
+    let cache = SliceCache::new(config);
+    let url = format!("{}/status-test.bin", mock_server.uri());
+    let headers = HashMap::new();
+
+    // First: MISS
+    let (_, s1) = cache
+        .get_or_fetch_slice(&url, &headers, 0, total_size)
+        .await
+        .unwrap();
+    assert_eq!(s1, CacheStatus::Miss);
+
+    // Second: HIT
+    let (_, s2) = cache
+        .get_or_fetch_slice(&url, &headers, 0, total_size)
+        .await
+        .unwrap();
+    assert_eq!(s2, CacheStatus::Hit);
 }

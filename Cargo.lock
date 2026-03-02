@@ -5756,7 +5756,9 @@ name = "synctv-proxy"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-trait",
  "axum",
+ "bincode",
  "bytes",
  "dashmap",
  "futures",
@@ -5765,10 +5767,13 @@ dependencies = [
  "moka",
  "percent-encoding",
  "reqwest 0.13.2",
+ "serde",
  "sha2",
  "synctv-media-providers",
  "synctv-proto",
+ "tempfile",
  "tokio",
+ "tokio-util",
  "tower",
  "tracing",
  "url",

@@ -17,6 +17,7 @@ use crate::{apply_provider_headers, PROXY_CLIENT};
 
 use super::config::is_manifest_content_type;
 use super::range::{aligned_range_for_slice, compute_needed_slices, parse_range_header};
+use super::status::CacheStatus;
 use super::store::SliceCache;
 
 // ------------------------------------------------------------------
@@ -65,7 +66,8 @@ pub async fn head_content_length(
 /// - **No Range header**: full-body cache path.  Bodies up to
 ///   `max_cacheable_body` are cached; oversized ones are streamed with
 ///   `BYPASS`.
-/// - **Single Range**: slice-cache path with `HIT` / `MISS` / `EXPIRED`.
+/// - **Single Range**: slice-cache path with `HIT` / `MISS` / `EXPIRED`
+///   / `STALE` / `UPDATING` / `REVALIDATED`.
 /// - **Multi-Range**: rejected with an error.
 #[allow(clippy::implicit_hasher)]
 pub async fn proxy_with_cache(
@@ -76,7 +78,8 @@ pub async fn proxy_with_cache(
 ) -> Result<Response, anyhow::Error> {
     // ------ BYPASS: cache disabled ------
     if !cache.config().enabled {
-        return stream_through_with_status(url, provider_headers, range_header, "BYPASS").await;
+        return stream_through_with_status(url, provider_headers, range_header, CacheStatus::Bypass)
+            .await;
     }
 
     // ------ No Range header: full-body cache path ------
@@ -105,12 +108,17 @@ pub async fn proxy_with_cache(
         .determine_slice_cache_status(url, provider_headers, &needed)
         .await;
 
-    // Fetch all needed slices.
+    // Fetch all needed slices, tracking the aggregate cache status.
     let mut combined = Vec::new();
+    let mut worst_status = CacheStatus::Hit; // Start optimistic.
+
     for &idx in &needed {
-        let slice_data = cache
+        let (slice_data, slice_status) = cache
             .get_or_fetch_slice(url, provider_headers, idx, total_size)
             .await?;
+
+        // Merge slice status: the "worst" status wins.
+        worst_status = merge_cache_status(worst_status, slice_status);
 
         let (slice_start, _) =
             aligned_range_for_slice(idx, cache.config().slice_size, total_size);
@@ -133,6 +141,24 @@ pub async fn proxy_with_cache(
         combined.extend_from_slice(&slice_data[offset_start..offset_end]);
     }
 
+    // Use the pre-status if all slices were already cached (HIT), otherwise
+    // use the merged status from actual fetches.  The pre_status captures
+    // the EXPIRED distinction that get_or_fetch_slice won't return (it
+    // returns MISS after re-fetching an expired entry).
+    let final_status = if worst_status == CacheStatus::Hit {
+        // All slices hit -- trust the pre-check.
+        pre_status
+    } else if worst_status == CacheStatus::Miss
+        && (pre_status == CacheStatus::Expired || pre_status == CacheStatus::Stale)
+    {
+        // Pre-check saw EXPIRED or STALE (was-seen), slices re-fetched ->
+        // report the pre-check status since it captures the "was cached
+        // before" distinction.
+        pre_status
+    } else {
+        worst_status
+    };
+
     let content_length = combined.len();
 
     Response::builder()
@@ -143,9 +169,28 @@ pub async fn proxy_with_cache(
         )
         .header("Content-Length", content_length.to_string())
         .header("Accept-Ranges", "bytes")
-        .header("X-Cache-Status", pre_status)
+        .header("X-Cache-Status", final_status.as_str())
         .body(Body::from(Bytes::from(combined)))
         .map_err(|e| anyhow::anyhow!("Failed to build cached response: {e}"))
+}
+
+/// Merge two cache statuses, returning the "worse" one.
+///
+/// Priority (worst to best): Miss > Expired > Stale > Updating >
+/// Revalidated > Hit.  Bypass is kept if either operand is Bypass.
+fn merge_cache_status(a: CacheStatus, b: CacheStatus) -> CacheStatus {
+    fn priority(s: CacheStatus) -> u8 {
+        match s {
+            CacheStatus::Hit => 0,
+            CacheStatus::Revalidated => 1,
+            CacheStatus::Updating => 2,
+            CacheStatus::Stale => 3,
+            CacheStatus::Expired => 4,
+            CacheStatus::Miss => 5,
+            CacheStatus::Bypass => 6,
+        }
+    }
+    if priority(a) >= priority(b) { a } else { b }
 }
 
 // ------------------------------------------------------------------
@@ -163,7 +208,7 @@ pub(super) async fn full_body_cache_path(
         let mut builder = Response::builder()
             .status(StatusCode::OK)
             .header("Content-Length", data.len().to_string())
-            .header("X-Cache-Status", status);
+            .header("X-Cache-Status", status.as_str());
         if let Some(ct) = content_type {
             builder = builder.header("Content-Type", ct);
         }
@@ -207,7 +252,7 @@ pub(super) async fn full_body_cache_path(
         // Too large to cache -- stream through with BYPASS.
         let mut builder = Response::builder()
             .status(status)
-            .header("X-Cache-Status", "BYPASS");
+            .header("X-Cache-Status", CacheStatus::Bypass.as_str());
         if let Some(ref ct) = content_type {
             builder = builder.header("Content-Type", ct.as_str());
         }
@@ -235,7 +280,7 @@ pub(super) async fn full_body_cache_path(
         let mut builder = Response::builder()
             .status(status)
             .header("Content-Length", body_bytes.len().to_string())
-            .header("X-Cache-Status", "BYPASS");
+            .header("X-Cache-Status", CacheStatus::Bypass.as_str());
         if let Some(ref ct) = content_type {
             builder = builder.header("Content-Type", ct.as_str());
         }
@@ -263,7 +308,7 @@ pub(super) async fn full_body_cache_path(
     let mut builder = Response::builder()
         .status(status)
         .header("Content-Length", body_bytes.len().to_string())
-        .header("X-Cache-Status", pre_status);
+        .header("X-Cache-Status", pre_status.as_str());
     if let Some(ref ct) = content_type {
         builder = builder.header("Content-Type", ct.as_str());
     }
@@ -283,7 +328,7 @@ pub(super) async fn stream_through_with_status(
     url: &str,
     provider_headers: &HashMap<String, String>,
     range_header: Option<&str>,
-    cache_status: &str,
+    cache_status: CacheStatus,
 ) -> Result<Response, anyhow::Error> {
     let mut request = PROXY_CLIENT.get(url);
     request = apply_provider_headers(request, url, provider_headers);
@@ -305,7 +350,7 @@ pub(super) async fn stream_through_with_status(
 
     let mut builder = Response::builder()
         .status(status)
-        .header("X-Cache-Status", cache_status);
+        .header("X-Cache-Status", cache_status.as_str());
 
     for name in &[
         "content-length",

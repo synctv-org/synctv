@@ -1,11 +1,13 @@
-//! Slice cache store: per-key locking, moka backend, metadata management.
+//! Slice cache store: per-key locking, backend-agnostic storage, metadata
+//! management.
 //!
-//! Contains [`SliceCache`], the central cache struct backed by
-//! `moka::future::Cache` with per-key locking to prevent thundering herd.
+//! Contains [`SliceCache`], the central cache struct backed by a
+//! [`CacheBackend`] (memory or file) with per-key locking to prevent
+//! thundering herd.
 
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use bytes::Bytes;
 use sha2::{Digest, Sha256};
@@ -13,31 +15,14 @@ use tokio::sync::Mutex;
 
 use crate::{apply_provider_headers, PROXY_CLIENT};
 
-use super::config::SliceCacheConfig;
-use super::etag::CachedResourceMeta;
+use super::backend::{CacheBackend, SliceCacheBackend};
+use super::config::{CacheBackendConfig, SliceCacheConfig};
+use super::etag::{CachedResourceMeta, StoredEntry};
 use super::range::{aligned_range_for_slice, parse_content_range};
+use super::status::CacheStatus;
 
 /// Number of lock cleanup cycles before triggering a stale-lock sweep.
 const LOCK_CLEANUP_INTERVAL: u64 = 64;
-
-// ------------------------------------------------------------------
-// Internal: cache entry wrapper with insertion timestamp for TTL
-// ------------------------------------------------------------------
-
-/// Wrapper around cached data that records when the entry was inserted
-/// so that TTL-based expiry can report `EXPIRED` vs `MISS`.
-#[derive(Clone)]
-pub(super) struct CacheEntry {
-    pub(super) data: Bytes,
-    pub(super) inserted_at: Instant,
-    pub(super) ttl: Duration,
-}
-
-impl CacheEntry {
-    pub(super) fn is_expired(&self) -> bool {
-        self.inserted_at.elapsed() > self.ttl
-    }
-}
 
 // ------------------------------------------------------------------
 // SliceCache
@@ -46,20 +31,20 @@ impl CacheEntry {
 /// Per-key Mutex to prevent thundering herd on the same slice.
 type SliceLock = Arc<Mutex<()>>;
 
-/// A slice cache backed by `moka::future::Cache`.
+/// A slice cache backed by a [`CacheBackend`] (memory or file).
 ///
-/// Each cached entry is a [`CacheEntry`] containing the `Bytes` data plus
+/// Each cached entry is a [`StoredEntry`] containing the `Bytes` data plus
 /// insertion metadata.  Per-key locking via a `DashMap<String, Mutex>`
 /// ensures that concurrent requests for the same slice trigger at most a
 /// single upstream fetch.
 ///
-/// Resource metadata (ETag, Content-Type) is stored in a separate
-/// `DashMap` keyed by `url_hash + "meta"` to enable cross-slice ETag
-/// validation.
+/// Resource metadata (ETag, Last-Modified, Content-Type) is stored in a
+/// separate `DashMap` keyed by `url_hash + "meta"` to enable cross-slice
+/// ETag/Last-Modified validation and conditional requests.
 pub struct SliceCache {
     pub(super) config: SliceCacheConfig,
-    /// The moka cache storing entries keyed by SHA256(url + sorted_headers + index).
-    pub(super) inner: moka::future::Cache<String, CacheEntry>,
+    /// The cache backend (memory or file).
+    backend: Arc<CacheBackend>,
     /// Per-key locks to prevent thundering herd.
     locks: dashmap::DashMap<String, SliceLock>,
     /// Per-resource metadata for ETag consistency validation.
@@ -67,28 +52,68 @@ pub struct SliceCache {
     /// Tracks which cache keys have been inserted recently so we can
     /// distinguish `EXPIRED` (was cached, TTL elapsed) from `MISS`
     /// (never seen before). Backed by moka with TTL to prevent unbounded
-    /// growth (previously a DashSet that was never pruned).
+    /// growth.
     pub(super) seen_keys: moka::future::Cache<String, ()>,
+    /// Keys currently being updated (STALE/UPDATING support).
+    updating_keys: dashmap::DashSet<String>,
     /// Counter for periodic stale lock cleanup.
     lock_ops: std::sync::atomic::AtomicU64,
 }
 
 impl SliceCache {
     /// Create a new `SliceCache` with the given configuration.
+    ///
+    /// This constructor works synchronously for the default in-memory
+    /// backend.  For the file backend, use [`try_new`](Self::try_new)
+    /// which creates the cache directory asynchronously.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `config.backend` is [`CacheBackendConfig::File`] -- use
+    /// [`try_new`](Self::try_new) instead.
     #[must_use]
     pub fn new(config: SliceCacheConfig) -> Self {
-        let max_capacity = config.max_cache_size;
-        let inner = moka::future::Cache::builder()
-            .max_capacity(max_capacity)
-            .weigher(|_key: &String, entry: &CacheEntry| -> u32 {
-                u32::try_from(entry.data.len()).unwrap_or(u32::MAX)
-            })
-            // moka's time_to_idle is a hard upper bound; we use our own
-            // soft TTL check for the EXPIRED distinction but let moka
-            // eventually evict truly idle entries.
-            .time_to_idle(Duration::from_hours(1))
-            .build();
+        assert!(
+            matches!(config.backend, CacheBackendConfig::Memory),
+            "SliceCache::new() only supports the Memory backend; \
+             use SliceCache::try_new() for File backend"
+        );
+        let backend = CacheBackend::Memory(super::backend::memory::MemoryBackend::new(
+            config.max_cache_size,
+            Duration::from_hours(1),
+        ));
+        Self::with_backend(config, backend)
+    }
 
+    /// Create a new `SliceCache`, initializing the backend from the
+    /// configuration.  This is the async variant that supports both
+    /// memory and file backends.
+    pub async fn try_new(config: SliceCacheConfig) -> anyhow::Result<Self> {
+        let backend = match &config.backend {
+            CacheBackendConfig::Memory => {
+                CacheBackend::Memory(super::backend::memory::MemoryBackend::new(
+                    config.max_cache_size,
+                    Duration::from_hours(1),
+                ))
+            }
+            CacheBackendConfig::File {
+                cache_dir,
+                dir_levels,
+            } => {
+                let fb = super::backend::file::FileBackend::new(
+                    cache_dir.clone(),
+                    *dir_levels,
+                )
+                .await?;
+                CacheBackend::File(fb)
+            }
+        };
+        Ok(Self::with_backend(config, backend))
+    }
+
+    /// Internal helper: assemble a `SliceCache` from an already-created
+    /// backend.
+    fn with_backend(config: SliceCacheConfig, backend: CacheBackend) -> Self {
         // seen_keys uses a moka cache with a TTL slightly longer than
         // the main cache's time_to_idle so that "was ever seen" info
         // outlives the data entry but does not grow unbounded.
@@ -99,10 +124,11 @@ impl SliceCache {
 
         Self {
             config,
-            inner,
+            backend: Arc::new(backend),
             locks: dashmap::DashMap::new(),
             meta: dashmap::DashMap::new(),
             seen_keys,
+            updating_keys: dashmap::DashSet::new(),
             lock_ops: std::sync::atomic::AtomicU64::new(0),
         }
     }
@@ -111,6 +137,12 @@ impl SliceCache {
     #[must_use]
     pub const fn config(&self) -> &SliceCacheConfig {
         &self.config
+    }
+
+    /// Get a shared reference to the backend (for lifecycle manager).
+    #[must_use]
+    pub fn backend(&self) -> &Arc<CacheBackend> {
+        &self.backend
     }
 
     // ---------------------------------------------------------------
@@ -210,30 +242,50 @@ impl SliceCache {
     /// Get or fetch a single aligned slice.
     ///
     /// If the slice is already in cache (and not expired), returns it
-    /// immediately.  Otherwise, acquires a per-key lock, double-checks the
-    /// cache, and if still missing, fetches from upstream.
+    /// immediately with [`CacheStatus::Hit`].  If the entry is expired
+    /// but within the stale window (`stale_while_revalidate`), returns
+    /// the stale data with [`CacheStatus::Stale`] or
+    /// [`CacheStatus::Updating`].  Otherwise, acquires a per-key lock,
+    /// double-checks the cache, and if still missing, fetches from
+    /// upstream.
     ///
     /// The upstream response's Content-Range is validated against the
     /// requested range (like nginx's header filter at line 166:
     /// `if (cr.start != ctx->start || cr.end != end)`).
     ///
     /// ETag consistency is validated against the stored resource metadata.
+    /// Conditional requests (If-None-Match, If-Modified-Since) are sent
+    /// when stored metadata is available.
     pub async fn get_or_fetch_slice(
         &self,
         url: &str,
         provider_headers: &HashMap<String, String>,
         slice_index: u64,
         total_size: u64,
-    ) -> Result<Bytes, anyhow::Error> {
+    ) -> Result<(Bytes, CacheStatus), anyhow::Error> {
         let key = Self::compute_cache_key(url, provider_headers, slice_index);
 
         // Fast path: check cache without locking.
-        if let Some(entry) = self.inner.get(&key).await {
+        if let Some(entry) = self.backend.get(&key).await {
             if !entry.is_expired() {
-                return Ok(entry.data);
+                return Ok((entry.data, CacheStatus::Hit));
             }
-            // Expired -- fall through to re-fetch.
-            self.inner.remove(&key).await;
+            // Check stale window for stale-while-revalidate.
+            if self.config.stale_while_revalidate
+                && entry.is_stale(self.config.stale_max_age)
+            {
+                // Mark as updating so subsequent requests know a refresh
+                // is expected.  `DashSet::insert` returns true if the key
+                // was not already present.
+                let _ = self.updating_keys.insert(key.clone());
+                if self.updating_keys.contains(&key) {
+                    return Ok((entry.data, CacheStatus::Stale));
+                }
+                return Ok((entry.data, CacheStatus::Updating));
+            }
+            // Expired beyond stale window -- fall through to re-fetch
+            // under the lock. Do NOT remove the entry here; it may be
+            // needed for conditional request (304 Not Modified) handling.
         }
 
         // Acquire per-key lock to prevent thundering herd.
@@ -245,14 +297,29 @@ impl SliceCache {
         let _guard = lock.lock().await;
 
         // Double-check after acquiring lock.
-        if let Some(entry) = self.inner.get(&key).await {
+        if let Some(entry) = self.backend.get(&key).await {
             if !entry.is_expired() {
-                return Ok(entry.data);
+                // Another task may have completed a re-fetch while we were
+                // waiting for the lock.
+                self.updating_keys.remove(&key);
+                return Ok((entry.data, CacheStatus::Hit));
             }
-            self.inner.remove(&key).await;
+            // Still expired -- check stale once more for concurrent stale
+            // serving case, then proceed with re-fetch. Keep the entry
+            // in the backend for now (conditional request may use it).
+            if self.config.stale_while_revalidate
+                && entry.is_stale(self.config.stale_max_age)
+            {
+                // We hold the lock and will do the re-fetch below, so
+                // let stale requests continue being served.
+            }
+            // Do NOT remove here; the entry is still needed for
+            // conditional request (304 Not Modified) support. It will
+            // be overwritten by a successful re-fetch or naturally
+            // evicted by the lifecycle manager.
         }
 
-        // Fetch from upstream.
+        // Build the upstream request.
         let (range_start, range_end) =
             aligned_range_for_slice(slice_index, self.config.slice_size, total_size);
         let range_header = format!("bytes={range_start}-{range_end}");
@@ -261,11 +328,82 @@ impl SliceCache {
         request = apply_provider_headers(request, url, provider_headers);
         request = request.header("Range", &range_header);
 
+        // Conditional request headers: If-None-Match / If-Modified-Since.
+        let mk = Self::meta_key(url, provider_headers);
+        if let Some(meta_ref) = self.meta.get(&mk) {
+            if let Some(ref etag) = meta_ref.etag {
+                request = request.header("If-None-Match", etag.as_str());
+            }
+            if let Some(ref lm) = meta_ref.last_modified {
+                request = request.header("If-Modified-Since", lm.as_str());
+            }
+        }
+
         let resp = request
             .send()
             .await
             .map_err(|e| anyhow::anyhow!("Slice fetch failed: {e}"))?;
 
+        // Handle 304 Not Modified: refresh the TTL and return Revalidated.
+        if resp.status() == reqwest::StatusCode::NOT_MODIFIED {
+            // Consume the (empty) body to release the connection.
+            let _ = resp.bytes().await;
+
+            // Refresh the entry's TTL by re-inserting it.
+            if let Some(existing) = self.backend.get(&key).await {
+                let refreshed = StoredEntry::new(existing.data.clone(), self.config.segment_ttl);
+                let _ = self.backend.put(&key, refreshed).await;
+                self.updating_keys.remove(&key);
+                return Ok((existing.data, CacheStatus::Revalidated));
+            }
+            // Entry was evicted between the conditional request and now --
+            // fall through to a full re-fetch.  This is an unlikely edge
+            // case; we rebuild the request without conditional headers.
+            let mut request2 = PROXY_CLIENT.get(url);
+            request2 = apply_provider_headers(request2, url, provider_headers);
+            request2 = request2.header("Range", &range_header);
+            let resp2 = request2
+                .send()
+                .await
+                .map_err(|e| anyhow::anyhow!("Slice re-fetch failed after 304: {e}"))?;
+            return self
+                .process_slice_response(
+                    resp2,
+                    url,
+                    provider_headers,
+                    &key,
+                    slice_index,
+                    total_size,
+                    range_start,
+                )
+                .await;
+        }
+
+        self.process_slice_response(
+            resp,
+            url,
+            provider_headers,
+            &key,
+            slice_index,
+            total_size,
+            range_start,
+        )
+        .await
+    }
+
+    /// Process a successful (non-304) slice response: validate, store, and
+    /// return the data.
+    #[allow(clippy::too_many_arguments)]
+    async fn process_slice_response(
+        &self,
+        resp: reqwest::Response,
+        url: &str,
+        provider_headers: &HashMap<String, String>,
+        key: &str,
+        slice_index: u64,
+        total_size: u64,
+        range_start: u64,
+    ) -> Result<(Bytes, CacheStatus), anyhow::Error> {
         if !resp.status().is_success() && resp.status() != reqwest::StatusCode::PARTIAL_CONTENT {
             return Err(anyhow::anyhow!(
                 "Upstream returned {} for slice {}",
@@ -302,6 +440,11 @@ impl SliceCache {
             .get("etag")
             .and_then(|v| v.to_str().ok())
             .map(ToString::to_string);
+        let resp_last_modified = resp
+            .headers()
+            .get("last-modified")
+            .and_then(|v| v.to_str().ok())
+            .map(ToString::to_string);
         let resp_content_type = resp
             .headers()
             .get("content-type")
@@ -322,10 +465,7 @@ impl SliceCache {
         // `invalidate_resource`, which needs a write lock on the same shard.
         // Clone the existing ETag out of the DashMap first to avoid deadlock.
         let mk = Self::meta_key(url, provider_headers);
-        let existing_etag_cloned = self
-            .meta
-            .get(&mk)
-            .and_then(|m| m.etag.clone());
+        let existing_etag_cloned = self.meta.get(&mk).and_then(|m| m.etag.clone());
 
         if let Some(existing_etag) = existing_etag_cloned {
             if let Some(new_etag) = &resp_etag {
@@ -346,6 +486,7 @@ impl SliceCache {
                 mk,
                 CachedResourceMeta {
                     etag: resp_etag,
+                    last_modified: resp_last_modified,
                     total_size: Some(total_size),
                     content_type: resp_content_type,
                 },
@@ -353,18 +494,20 @@ impl SliceCache {
         }
 
         // Insert into cache with TTL.
-        let entry = CacheEntry {
-            data: data.clone(),
-            inserted_at: Instant::now(),
-            ttl: self.config.segment_ttl,
-        };
-        self.inner.insert(key.clone(), entry).await;
-        self.seen_keys.insert(key.clone(), ()).await;
+        let entry = StoredEntry::new(data.clone(), self.config.segment_ttl);
+        self.backend
+            .put(key, entry)
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to store slice in cache: {e}"))?;
+        self.seen_keys.insert(key.to_string(), ()).await;
+
+        // Clear updating flag now that fresh data is stored.
+        self.updating_keys.remove(key);
 
         // Periodically clean up stale per-key locks to prevent unbounded growth.
         self.maybe_cleanup_locks();
 
-        Ok(data)
+        Ok((data, CacheStatus::Miss))
     }
 
     /// Invalidate all cached slices for a given resource.
@@ -378,7 +521,7 @@ impl SliceCache {
         let num_slices = total_size.div_ceil(ss);
         for i in 0..num_slices {
             let key = Self::compute_cache_key(url, provider_headers, i);
-            self.inner.remove(&key).await;
+            self.backend.remove(&key).await;
         }
         // Also remove metadata so next fetch establishes a new ETag.
         let mk = Self::meta_key(url, provider_headers);
@@ -397,7 +540,7 @@ impl SliceCache {
         slice_index: u64,
     ) -> bool {
         let key = Self::compute_cache_key(url, provider_headers, slice_index);
-        self.inner
+        self.backend
             .get(&key)
             .await
             .is_some_and(|entry| !entry.is_expired())
@@ -416,9 +559,10 @@ impl SliceCache {
         url: &str,
         provider_headers: &HashMap<String, String>,
         needed: &[u64],
-    ) -> &'static str {
+    ) -> CacheStatus {
         let mut all_valid = true;
         let mut any_was_seen = false;
+        let mut any_stale = false;
 
         for &idx in needed {
             let key = Self::compute_cache_key(url, provider_headers, idx);
@@ -426,18 +570,30 @@ impl SliceCache {
                 any_was_seen = true;
             } else {
                 all_valid = false;
-                if self.was_ever_seen(&key).await {
+                // Check if the entry is in the stale window.
+                if let Some(entry) = self.backend.get(&key).await {
+                    if self.config.stale_while_revalidate
+                        && entry.is_stale(self.config.stale_max_age)
+                    {
+                        any_stale = true;
+                        any_was_seen = true;
+                    } else if entry.is_expired() {
+                        any_was_seen = true;
+                    }
+                } else if self.was_ever_seen(&key).await {
                     any_was_seen = true;
                 }
             }
         }
 
         if all_valid {
-            "HIT"
+            CacheStatus::Hit
+        } else if any_stale {
+            CacheStatus::Stale
         } else if any_was_seen {
-            "EXPIRED"
+            CacheStatus::Expired
         } else {
-            "MISS"
+            CacheStatus::Miss
         }
     }
 
@@ -448,24 +604,42 @@ impl SliceCache {
     /// Try to get a full-body entry from cache.
     ///
     /// Returns `Some((data, content_type, status))` where status is
-    /// `"HIT"` or `None` if not cached / expired.  When expired, we
-    /// return `None` but record it for EXPIRED status reporting.
+    /// [`CacheStatus::Hit`], [`CacheStatus::Stale`], or
+    /// [`CacheStatus::Updating`].  Returns `None` if not cached or
+    /// expired beyond the stale window.
     pub(super) async fn get_full_body(
         &self,
         url: &str,
         provider_headers: &HashMap<String, String>,
-    ) -> Option<(Bytes, Option<String>, &'static str)> {
+    ) -> Option<(Bytes, Option<String>, CacheStatus)> {
         let key = Self::full_body_key(url, provider_headers);
-        if let Some(entry) = self.inner.get(&key).await {
+        if let Some(entry) = self.backend.get(&key).await {
             if !entry.is_expired() {
                 let ct = self
                     .meta
                     .get(&Self::meta_key(url, provider_headers))
                     .and_then(|m| m.content_type.clone());
-                return Some((entry.data.clone(), ct, "HIT"));
+                return Some((entry.data.clone(), ct, CacheStatus::Hit));
             }
-            // Expired -- remove so the re-fetch can insert anew.
-            self.inner.remove(&key).await;
+            // Check stale window.
+            if self.config.stale_while_revalidate
+                && entry.is_stale(self.config.stale_max_age)
+            {
+                let ct = self
+                    .meta
+                    .get(&Self::meta_key(url, provider_headers))
+                    .and_then(|m| m.content_type.clone());
+                let status = if self.updating_keys.contains(&key) {
+                    CacheStatus::Updating
+                } else {
+                    let _ = self.updating_keys.insert(key);
+                    CacheStatus::Stale
+                };
+                return Some((entry.data.clone(), ct, status));
+            }
+            // Expired beyond stale window -- remove so the re-fetch can
+            // insert anew.
+            self.backend.remove(&key).await;
         }
         None
     }
@@ -475,12 +649,12 @@ impl SliceCache {
         &self,
         url: &str,
         provider_headers: &HashMap<String, String>,
-    ) -> &'static str {
+    ) -> CacheStatus {
         let key = Self::full_body_key(url, provider_headers);
         if self.was_ever_seen(&key).await {
-            "EXPIRED"
+            CacheStatus::Expired
         } else {
-            "MISS"
+            CacheStatus::Miss
         }
     }
 
@@ -494,13 +668,16 @@ impl SliceCache {
         ttl: Duration,
     ) {
         let key = Self::full_body_key(url, provider_headers);
-        let entry = CacheEntry {
-            data,
-            inserted_at: Instant::now(),
-            ttl,
-        };
-        self.inner.insert(key.clone(), entry).await;
-        self.seen_keys.insert(key, ()).await;
+        let entry = StoredEntry::new(data, ttl);
+        // Best-effort insert; log the error if it occurs.
+        if let Err(e) = self.backend.put(&key, entry).await {
+            tracing::warn!("Failed to store full-body entry: {e}");
+            return;
+        }
+        self.seen_keys.insert(key.clone(), ()).await;
+
+        // Clear updating flag.
+        self.updating_keys.remove(&key);
 
         // Store metadata.
         let mk = Self::meta_key(url, provider_headers);
@@ -508,6 +685,7 @@ impl SliceCache {
             mk,
             CachedResourceMeta {
                 etag: None,
+                last_modified: None,
                 total_size: None,
                 content_type: content_type.map(|s| s.to_string()),
             },
@@ -526,7 +704,7 @@ impl SliceCache {
         let count = self
             .lock_ops
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        if count % LOCK_CLEANUP_INTERVAL != 0 {
+        if !count.is_multiple_of(LOCK_CLEANUP_INTERVAL) {
             return;
         }
         self.cleanup_stale_locks();

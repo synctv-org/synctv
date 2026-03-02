@@ -1,0 +1,455 @@
+//! Memory-based cache backend using moka.
+//!
+//! Extracted from the original moka-backed `SliceCache` to serve as the
+//! default in-memory backend behind the [`SliceCacheBackend`] trait.
+
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
+use std::time::Duration;
+
+use async_trait::async_trait;
+use dashmap::DashSet;
+
+use super::SliceCacheBackend;
+use crate::slice_cache::etag::StoredEntry;
+
+/// In-memory cache backend backed by [`moka::future::Cache`].
+///
+/// Uses moka's built-in size-weighted eviction plus a parallel [`DashSet`]
+/// for key iteration (moka doesn't natively support iteration).
+///
+/// An [`AtomicU64`] tracks the approximate total data bytes stored.  Both
+/// explicit removals and moka-internal evictions keep this counter accurate
+/// via the eviction listener.
+pub struct MemoryBackend {
+    cache: moka::future::Cache<String, StoredEntry>,
+    /// Shadow set for key enumeration (moka doesn't support iteration).
+    key_set: DashSet<String>,
+    /// Approximate total data bytes stored.
+    ///
+    /// Wrapped in `Arc` so the moka eviction listener can decrement it when
+    /// entries are automatically evicted.
+    total_bytes: Arc<AtomicU64>,
+}
+
+impl MemoryBackend {
+    /// Create a new memory backend.
+    ///
+    /// - `max_capacity`: maximum cache size in bytes (moka's weighted capacity).
+    /// - `time_to_idle`: hard upper bound TTL for moka's internal eviction.
+    #[must_use]
+    pub fn new(max_capacity: u64, time_to_idle: Duration) -> Self {
+        let key_set = DashSet::new();
+        let total_bytes = Arc::new(AtomicU64::new(0));
+
+        // Clones for the eviction listener closure.
+        let key_set_clone = key_set.clone();
+        let total_bytes_clone = Arc::clone(&total_bytes);
+
+        let cache = moka::future::Cache::builder()
+            .max_capacity(max_capacity)
+            .weigher(|_key: &String, entry: &StoredEntry| -> u32 {
+                u32::try_from(entry.data_size()).unwrap_or(u32::MAX)
+            })
+            .time_to_idle(time_to_idle)
+            .eviction_listener(move |key: Arc<String>, value, cause| {
+                // Only handle evictions initiated by moka itself (TTL expiry
+                // or capacity-based size eviction).  `Replaced` and `Explicit`
+                // removals are handled manually in `put` and `remove` to avoid
+                // double-counting the size adjustment.
+                if cause.was_evicted() {
+                    key_set_clone.remove(key.as_ref());
+                    let size = value.data_size();
+                    total_bytes_clone
+                        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |cur| {
+                            Some(cur.saturating_sub(size))
+                        })
+                        .ok();
+                }
+            })
+            .build();
+
+        Self {
+            cache,
+            key_set,
+            total_bytes,
+        }
+    }
+
+    /// Run pending moka maintenance tasks (makes `entry_count` accurate).
+    pub async fn run_pending_tasks(&self) {
+        self.cache.run_pending_tasks().await;
+    }
+}
+
+#[async_trait]
+impl SliceCacheBackend for MemoryBackend {
+    async fn get(&self, key: &str) -> Option<StoredEntry> {
+        self.cache.get(key).await
+    }
+
+    async fn put(&self, key: &str, entry: StoredEntry) -> anyhow::Result<()> {
+        let new_size = entry.data_size();
+
+        // If replacing an existing entry, subtract old size first.
+        // Moka fires the eviction listener with `Replaced` cause, but our
+        // listener ignores it, so we handle the bookkeeping manually here.
+        if let Some(old) = self.cache.get(key).await {
+            let old_size = old.data_size();
+            self.total_bytes
+                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |cur| {
+                    Some(cur.saturating_sub(old_size))
+                })
+                .ok();
+        }
+
+        self.cache.insert(key.to_string(), entry).await;
+        self.key_set.insert(key.to_string());
+        self.total_bytes.fetch_add(new_size, Ordering::Relaxed);
+        Ok(())
+    }
+
+    async fn remove(&self, key: &str) {
+        if let Some(entry) = self.cache.remove(key).await {
+            let size = entry.data_size();
+            self.total_bytes
+                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |cur| {
+                    Some(cur.saturating_sub(size))
+                })
+                .ok();
+        }
+        self.key_set.remove(key);
+    }
+
+    async fn contains(&self, key: &str) -> bool {
+        self.cache.contains_key(key)
+    }
+
+    fn current_size(&self) -> u64 {
+        self.total_bytes.load(Ordering::Relaxed)
+    }
+
+    fn entry_count(&self) -> u64 {
+        self.cache.entry_count()
+    }
+
+    async fn evict_to_size(&self, target_bytes: u64) -> u64 {
+        if self.current_size() <= target_bytes {
+            return 0;
+        }
+
+        // Collect entries with their last_accessed times for LRU ordering.
+        let mut entries: Vec<(String, std::time::SystemTime, u64)> = Vec::new();
+        for key_ref in self.key_set.iter() {
+            let key = key_ref.key().clone();
+            if let Some(entry) = self.cache.get(&key).await {
+                entries.push((key, entry.last_accessed, entry.data_size()));
+            }
+        }
+
+        // Sort by last_accessed ascending (oldest first = LRU).
+        entries.sort_by_key(|e| e.1);
+
+        let mut freed = 0u64;
+        for (key, _, size) in entries {
+            if self.current_size() <= target_bytes {
+                break;
+            }
+            self.remove(&key).await;
+            freed += size;
+        }
+
+        freed
+    }
+
+    async fn evict_expired(&self) -> u64 {
+        let keys: Vec<String> = self.key_set.iter().map(|k| k.key().clone()).collect();
+        let mut count = 0u64;
+        for key in keys {
+            let is_expired = self
+                .cache
+                .get(&key)
+                .await
+                .is_some_and(|entry| entry.is_expired());
+            if is_expired {
+                self.remove(&key).await;
+                count += 1;
+            }
+        }
+        count
+    }
+
+    async fn keys(&self) -> Vec<String> {
+        self.key_set.iter().map(|k| k.key().clone()).collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+
+    use bytes::Bytes;
+
+    /// Helper: create a [`StoredEntry`] with the given data and TTL.
+    fn make_entry(data: &[u8], ttl: Duration) -> StoredEntry {
+        StoredEntry::new(Bytes::from(data.to_vec()), ttl)
+    }
+
+    /// Shorthand for a backend with generous limits.
+    fn default_backend() -> MemoryBackend {
+        MemoryBackend::new(64 * 1024 * 1024, Duration::from_secs(3600))
+    }
+
+    #[tokio::test]
+    async fn test_memory_backend_put_get() {
+        let backend = default_backend();
+        let entry = make_entry(b"hello world", Duration::from_secs(60));
+
+        backend.put("k1", entry.clone()).await.unwrap();
+        let got = backend.get("k1").await;
+        assert!(got.is_some());
+        assert_eq!(got.unwrap().data, Bytes::from_static(b"hello world"));
+    }
+
+    #[tokio::test]
+    async fn test_memory_backend_get_miss() {
+        let backend = default_backend();
+        assert!(backend.get("nonexistent").await.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_memory_backend_remove() {
+        let backend = default_backend();
+        backend
+            .put("k1", make_entry(b"data", Duration::from_secs(60)))
+            .await
+            .unwrap();
+
+        backend.remove("k1").await;
+        assert!(backend.get("k1").await.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_memory_backend_remove_nonexistent() {
+        let backend = default_backend();
+        // Should not panic.
+        backend.remove("ghost").await;
+    }
+
+    #[tokio::test]
+    async fn test_memory_backend_contains() {
+        let backend = default_backend();
+        assert!(!backend.contains("k1").await);
+
+        backend
+            .put("k1", make_entry(b"x", Duration::from_secs(60)))
+            .await
+            .unwrap();
+        // moka's contains_key may be eventually consistent; run pending tasks.
+        backend.run_pending_tasks().await;
+        assert!(backend.contains("k1").await);
+    }
+
+    #[tokio::test]
+    async fn test_memory_backend_current_size() {
+        let backend = default_backend();
+        assert_eq!(backend.current_size(), 0);
+
+        backend
+            .put("k1", make_entry(b"abcde", Duration::from_secs(60)))
+            .await
+            .unwrap();
+        assert_eq!(backend.current_size(), 5);
+
+        backend
+            .put("k2", make_entry(b"12345678", Duration::from_secs(60)))
+            .await
+            .unwrap();
+        assert_eq!(backend.current_size(), 13);
+
+        backend.remove("k1").await;
+        assert_eq!(backend.current_size(), 8);
+    }
+
+    #[tokio::test]
+    async fn test_memory_backend_entry_count() {
+        let backend = default_backend();
+        backend.run_pending_tasks().await;
+        assert_eq!(backend.entry_count(), 0);
+
+        backend
+            .put("k1", make_entry(b"a", Duration::from_secs(60)))
+            .await
+            .unwrap();
+        backend
+            .put("k2", make_entry(b"b", Duration::from_secs(60)))
+            .await
+            .unwrap();
+        backend.run_pending_tasks().await;
+        assert_eq!(backend.entry_count(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_memory_backend_keys() {
+        let backend = default_backend();
+        backend
+            .put("alpha", make_entry(b"1", Duration::from_secs(60)))
+            .await
+            .unwrap();
+        backend
+            .put("beta", make_entry(b"2", Duration::from_secs(60)))
+            .await
+            .unwrap();
+
+        let mut keys = backend.keys().await;
+        keys.sort();
+        assert_eq!(keys, vec!["alpha".to_string(), "beta".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn test_memory_backend_evict_expired() {
+        let backend = default_backend();
+
+        // One entry with a very short TTL.
+        backend
+            .put("short", make_entry(b"gone", Duration::from_millis(10)))
+            .await
+            .unwrap();
+        // One entry with a long TTL.
+        backend
+            .put("long", make_entry(b"stays", Duration::from_secs(3600)))
+            .await
+            .unwrap();
+
+        // Wait for the short entry to expire.
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        let evicted = backend.evict_expired().await;
+        assert_eq!(evicted, 1);
+
+        // The long-lived entry should still be present.
+        assert!(backend.get("long").await.is_some());
+        // The short-lived entry should be gone.
+        assert!(backend.get("short").await.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_memory_backend_evict_to_size() {
+        let backend = default_backend();
+
+        // Insert several entries with staggered access times.
+        for i in 0..5u8 {
+            let data = vec![i; 100];
+            backend
+                .put(
+                    &format!("k{i}"),
+                    make_entry(&data, Duration::from_secs(3600)),
+                )
+                .await
+                .unwrap();
+            // Small sleep to ensure different `last_accessed` timestamps.
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+
+        assert_eq!(backend.current_size(), 500);
+
+        // Evict down to 250 bytes -- should remove the two oldest entries.
+        let freed = backend.evict_to_size(250).await;
+        assert!(freed >= 200, "Expected at least 200 bytes freed, got {freed}");
+        assert!(
+            backend.current_size() <= 250,
+            "Expected size <= 250, got {}",
+            backend.current_size()
+        );
+    }
+
+    #[tokio::test]
+    async fn test_memory_backend_evict_to_size_already_under() {
+        let backend = default_backend();
+        backend
+            .put("k1", make_entry(b"small", Duration::from_secs(60)))
+            .await
+            .unwrap();
+
+        let freed = backend.evict_to_size(1_000_000).await;
+        assert_eq!(freed, 0);
+        assert!(backend.get("k1").await.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_memory_backend_replace_updates_size() {
+        let backend = default_backend();
+
+        backend
+            .put("k1", make_entry(b"short", Duration::from_secs(60)))
+            .await
+            .unwrap();
+        assert_eq!(backend.current_size(), 5);
+
+        // Replace with a larger value.
+        backend
+            .put(
+                "k1",
+                make_entry(b"a much longer value", Duration::from_secs(60)),
+            )
+            .await
+            .unwrap();
+        assert_eq!(backend.current_size(), 19);
+
+        // Replace with a smaller value.
+        backend
+            .put("k1", make_entry(b"tiny", Duration::from_secs(60)))
+            .await
+            .unwrap();
+        assert_eq!(backend.current_size(), 4);
+    }
+
+    #[tokio::test]
+    async fn test_memory_backend_eviction_listener_removes_from_key_set() {
+        // Create a backend with a tiny capacity so moka will evict entries
+        // automatically when capacity is exceeded.
+        let backend = MemoryBackend::new(
+            150, // 150 bytes max
+            Duration::from_secs(3600),
+        );
+
+        // Insert entries totaling more than 150 bytes to trigger eviction.
+        for i in 0..5u8 {
+            let data = vec![i; 50]; // 50 bytes each, 250 total > 150
+            backend
+                .put(
+                    &format!("k{i}"),
+                    make_entry(&data, Duration::from_secs(3600)),
+                )
+                .await
+                .unwrap();
+        }
+
+        // Run pending tasks to force moka's eviction processing.
+        backend.run_pending_tasks().await;
+
+        // After eviction, moka's entry_count should be less than 5.
+        let entry_count = backend.entry_count();
+        assert!(
+            entry_count <= 3,
+            "Expected moka to evict some entries, but entry_count = {entry_count}"
+        );
+
+        // The eviction listener runs asynchronously, so the key_set may
+        // briefly contain stale entries. Verify that keys which remain in
+        // the key_set are actually backed by live cache entries -- i.e.,
+        // any key still in the set should still be gettable from moka.
+        let keys = backend.keys().await;
+        let mut live_count = 0u64;
+        for key in &keys {
+            if backend.get(key).await.is_some() {
+                live_count += 1;
+            }
+        }
+        assert_eq!(
+            live_count, entry_count,
+            "Live keys ({live_count}) should match moka entry_count ({entry_count})"
+        );
+    }
+}

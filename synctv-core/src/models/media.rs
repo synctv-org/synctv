@@ -731,23 +731,18 @@ mod tests {
         let playlist_id = PlaylistId::from_string("pl1".to_string());
         let room_id = RoomId::from_string("r1".to_string());
 
-        let result = PlaybackResult::builder(
-            playlist_id,
-            room_id,
-            "test".to_string(),
-            0,
-        )
-        .add_mode(
-            "direct".to_string(),
-            PlaybackInfo::single_url("http://d".to_string(), "D".to_string()),
-        )
-        .add_mode(
-            "proxy".to_string(),
-            PlaybackInfo::single_url("http://p".to_string(), "P".to_string()),
-        )
-        .default_mode("proxy".to_string())
-        .build()
-        .expect("build should succeed");
+        let result = PlaybackResult::builder(playlist_id, room_id, "test".to_string(), 0)
+            .add_mode(
+                "direct".to_string(),
+                PlaybackInfo::single_url("http://d".to_string(), "D".to_string()),
+            )
+            .add_mode(
+                "proxy".to_string(),
+                PlaybackInfo::single_url("http://p".to_string(), "P".to_string()),
+            )
+            .default_mode("proxy".to_string())
+            .build()
+            .expect("build should succeed");
 
         assert_eq!(result.default_mode, "proxy");
     }

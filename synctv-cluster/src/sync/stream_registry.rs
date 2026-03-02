@@ -658,10 +658,8 @@ mod tests {
             .unwrap();
 
         let cancel = tokio_util::sync::CancellationToken::new();
-        let handle = registry.spawn_ttl_refresh_task(
-            std::time::Duration::from_millis(50),
-            cancel.clone(),
-        );
+        let handle =
+            registry.spawn_ttl_refresh_task(std::time::Duration::from_millis(50), cancel.clone());
 
         // Let the task run for a few cycles
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
@@ -671,11 +669,7 @@ mod tests {
 
         // Cancel the task
         cancel.cancel();
-        let result = tokio::time::timeout(
-            std::time::Duration::from_secs(2),
-            handle,
-        )
-        .await;
+        let result = tokio::time::timeout(std::time::Duration::from_secs(2), handle).await;
         assert!(
             result.is_ok(),
             "TTL refresh task should stop within timeout after cancellation"
@@ -688,21 +682,15 @@ mod tests {
         let registry = StreamRegistry::new("replica1".to_string());
 
         let cancel = tokio_util::sync::CancellationToken::new();
-        let handle = registry.spawn_active_set_cleanup_task(
-            std::time::Duration::from_millis(50),
-            cancel.clone(),
-        );
+        let handle = registry
+            .spawn_active_set_cleanup_task(std::time::Duration::from_millis(50), cancel.clone());
 
         // Let the task run for a few cycles
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
 
         // Cancel and verify clean shutdown
         cancel.cancel();
-        let result = tokio::time::timeout(
-            std::time::Duration::from_secs(2),
-            handle,
-        )
-        .await;
+        let result = tokio::time::timeout(std::time::Duration::from_secs(2), handle).await;
         assert!(
             result.is_ok(),
             "Active set cleanup task should stop within timeout after cancellation"

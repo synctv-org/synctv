@@ -423,11 +423,8 @@ mod tests {
         cache.set(&user_id, "alice").await.unwrap();
 
         // Give a short window for any message to arrive
-        let result = tokio::time::timeout(
-            std::time::Duration::from_millis(50),
-            receiver.recv(),
-        )
-        .await;
+        let result =
+            tokio::time::timeout(std::time::Duration::from_millis(50), receiver.recv()).await;
 
         assert!(
             result.is_err(),

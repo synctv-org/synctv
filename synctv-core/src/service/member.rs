@@ -802,19 +802,15 @@ impl MemberService {
             }
         }
 
-        // Broadcast kick event to all cluster replicas for cross-replica disconnect
+        // Broadcast kick event to all cluster replicas for cross-replica disconnect.
+        // The cluster event system handles propagation asynchronously; no need to
+        // wait here as receivers process events independently.
         if let Some(ref broadcaster) = self.event_broadcaster {
             broadcaster.broadcast_kick_from_room(
                 &room_id,
                 &target_user_id,
                 reason.as_deref().unwrap_or("banned"),
             );
-
-            // Wait briefly to allow cross-replica disconnect signals to propagate.
-            // This ensures that connection managers on other replicas have time to
-            // process the kick event and clean up WebSocket connections before we
-            // return from the ban operation.
-            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         }
 
         // Audit log

@@ -11,7 +11,8 @@ CREATE TABLE IF NOT EXISTS rooms (
     created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
     deleted_at TIMESTAMPTZ NULL,
-    version INTEGER NOT NULL DEFAULT 0  -- Optimistic locking version, incremented on each UPDATE
+    version INTEGER NOT NULL DEFAULT 0,  -- Optimistic locking version, incremented on each UPDATE
+    last_activity_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP  -- Tracks last room activity (chat, playback, member join/leave)
 );
 
 -- Create indexes
@@ -28,6 +29,9 @@ CREATE INDEX idx_rooms_description ON rooms USING gin(to_tsvector('english', des
 -- NOTE: pg_trgm extension is created in 20240101000001_create_users_table.sql
 CREATE INDEX idx_rooms_name_trgm ON rooms USING gin (name gin_trgm_ops) WHERE deleted_at IS NULL;
 CREATE INDEX idx_rooms_description_trgm ON rooms USING gin (description gin_trgm_ops) WHERE deleted_at IS NULL;
+
+-- Index for room TTL cleanup: efficiently find rooms with stale last_activity_at
+CREATE INDEX idx_rooms_last_activity ON rooms(last_activity_at) WHERE deleted_at IS NULL;
 
 -- Performance optimization indexes
 CREATE INDEX idx_rooms_status_created_at ON rooms(status, created_at DESC) WHERE deleted_at IS NULL AND is_banned = FALSE;

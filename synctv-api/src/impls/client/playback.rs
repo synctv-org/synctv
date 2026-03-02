@@ -31,8 +31,8 @@ impl ClientApiImpl {
             .await
             .map_err(ApiError::from)?;
 
-        // Broadcast PlaybackStateChanged via WebSocket
-        // (handled by room_service internally)
+        // Touch room activity to prevent TTL expiry on active rooms
+        self.room_service.touch_room_activity(rid);
 
         Ok(crate::proto::client::StartPlaybackResponse {})
     }

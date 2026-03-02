@@ -235,8 +235,7 @@ fn tier_from_path(path: &str) -> Option<GrpcRateLimitTier> {
 fn user_service_tier(method: Option<&str>) -> GrpcRateLimitTier {
     match method {
         Some(
-            "GetProfile" | "GetUser" | "ListCreatedRooms" | "ListParticipatedRooms"
-            | "GetSettings",
+            "GetProfile" | "GetUser" | "ListCreatedRooms" | "ListParticipatedRooms" | "GetSettings",
         ) => GrpcRateLimitTier::Read,
         _ => GrpcRateLimitTier::Write,
     }

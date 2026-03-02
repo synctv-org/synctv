@@ -124,8 +124,7 @@ impl FileIndex {
         let new_size = entry.data_size;
         if let Some(old) = self.entries.insert(key, entry) {
             // Replace: subtract old, add new.
-            self.total_size
-                .fetch_sub(old.data_size, Ordering::Relaxed);
+            self.total_size.fetch_sub(old.data_size, Ordering::Relaxed);
         }
         self.total_size.fetch_add(new_size, Ordering::Relaxed);
     }
@@ -134,8 +133,7 @@ impl FileIndex {
     /// Returns the removed entry if it existed.
     fn remove(&self, key: &str) -> Option<(String, FileIndexEntry)> {
         if let Some((k, v)) = self.entries.remove(key) {
-            self.total_size
-                .fetch_sub(v.data_size, Ordering::Relaxed);
+            self.total_size.fetch_sub(v.data_size, Ordering::Relaxed);
             Some((k, v))
         } else {
             None
@@ -203,12 +201,14 @@ impl FileBackend {
                 cache_dir.display()
             )
         })?;
-        fs::create_dir_all(cache_dir.join(".tmp")).await.map_err(|e| {
-            anyhow::anyhow!(
-                "Failed to create temp directory {}: {e}",
-                cache_dir.join(".tmp").display()
-            )
-        })?;
+        fs::create_dir_all(cache_dir.join(".tmp"))
+            .await
+            .map_err(|e| {
+                anyhow::anyhow!(
+                    "Failed to create temp directory {}: {e}",
+                    cache_dir.join(".tmp").display()
+                )
+            })?;
 
         Ok(Self {
             cache_dir,
@@ -289,8 +289,7 @@ impl FileBackend {
         now: u64,
         stale_max_millis: u64,
         result: &'a mut LoadResult,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<()>> + Send + 'a>>
-    {
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<()>> + Send + 'a>> {
         Box::pin(async move {
             let mut read_dir = match fs::read_dir(dir).await {
                 Ok(rd) => rd,
@@ -334,8 +333,7 @@ impl FileBackend {
                 // Attempt to read and validate the cache file header.
                 match read_cache_file_header(&path).await {
                     Ok(header) => {
-                        let deadline_millis =
-                            header.inserted_at_millis + header.ttl_secs * 1000;
+                        let deadline_millis = header.inserted_at_millis + header.ttl_secs * 1000;
                         let stale_deadline = deadline_millis + stale_max_millis;
 
                         if now > stale_deadline {
@@ -356,9 +354,7 @@ impl FileBackend {
                                     data_size: header.data_size,
                                     inserted_at_millis: header.inserted_at_millis,
                                     ttl_secs: header.ttl_secs,
-                                    last_accessed: AtomicU64::new(
-                                        header.last_accessed_millis,
-                                    ),
+                                    last_accessed: AtomicU64::new(header.last_accessed_millis),
                                 },
                             );
                             result.loaded += 1;
@@ -541,8 +537,7 @@ impl SliceCacheBackend for FileBackend {
         let header_len = header_bytes.len() as u32;
 
         // Build the complete file content.
-        let mut file_content =
-            Vec::with_capacity(4 + 4 + header_bytes.len() + entry.data.len());
+        let mut file_content = Vec::with_capacity(4 + 4 + header_bytes.len() + entry.data.len());
         file_content.extend_from_slice(CACHE_FILE_MAGIC);
         file_content.extend_from_slice(&header_len.to_le_bytes());
         file_content.extend_from_slice(&header_bytes);
@@ -555,10 +550,7 @@ impl SliceCacheBackend for FileBackend {
         let tmp_path = tmp_dir.join(&tmp_name);
 
         fs::write(&tmp_path, &file_content).await.map_err(|e| {
-            anyhow::anyhow!(
-                "Failed to write temp file {}: {e}",
-                tmp_path.display()
-            )
+            anyhow::anyhow!("Failed to write temp file {}: {e}", tmp_path.display())
         })?;
 
         if let Err(e) = fs::rename(&tmp_path, &path).await {
@@ -640,8 +632,7 @@ impl SliceCacheBackend for FileBackend {
         let mut expired_keys = Vec::new();
 
         for entry_ref in self.index.entries.iter() {
-            let deadline_millis =
-                entry_ref.inserted_at_millis + entry_ref.ttl_secs * 1000;
+            let deadline_millis = entry_ref.inserted_at_millis + entry_ref.ttl_secs * 1000;
             if now > deadline_millis {
                 expired_keys.push(entry_ref.key().clone());
             }
@@ -655,11 +646,7 @@ impl SliceCacheBackend for FileBackend {
     }
 
     async fn keys(&self) -> Vec<String> {
-        self.index
-            .entries
-            .iter()
-            .map(|r| r.key().clone())
-            .collect()
+        self.index.entries.iter().map(|r| r.key().clone()).collect()
     }
 }
 
@@ -669,15 +656,15 @@ impl SliceCacheBackend for FileBackend {
 
 /// Read a cache file and return the deserialized header + data body.
 async fn read_cache_file(path: &PathBuf) -> anyhow::Result<(FileEntryHeader, Bytes)> {
-    let mut file = tokio::fs::File::open(path).await.map_err(|e| {
-        anyhow::anyhow!("Failed to open cache file {}: {e}", path.display())
-    })?;
+    let mut file = tokio::fs::File::open(path)
+        .await
+        .map_err(|e| anyhow::anyhow!("Failed to open cache file {}: {e}", path.display()))?;
 
     // Read magic bytes.
     let mut magic = [0u8; 4];
-    file.read_exact(&mut magic).await.map_err(|e| {
-        anyhow::anyhow!("Failed to read magic from {}: {e}", path.display())
-    })?;
+    file.read_exact(&mut magic)
+        .await
+        .map_err(|e| anyhow::anyhow!("Failed to read magic from {}: {e}", path.display()))?;
     if &magic != CACHE_FILE_MAGIC {
         return Err(anyhow::anyhow!(
             "Invalid magic in {}: expected {:?}, got {:?}",
@@ -703,13 +690,9 @@ async fn read_cache_file(path: &PathBuf) -> anyhow::Result<(FileEntryHeader, Byt
     // Read and deserialize header.
     let mut header_buf = vec![0u8; header_len];
     file.read_exact(&mut header_buf).await?;
-    let header: FileEntryHeader =
-        bincode::deserialize(&header_buf).map_err(|e| {
-            anyhow::anyhow!(
-                "Failed to deserialize header from {}: {e}",
-                path.display()
-            )
-        })?;
+    let header: FileEntryHeader = bincode::deserialize(&header_buf).map_err(|e| {
+        anyhow::anyhow!("Failed to deserialize header from {}: {e}", path.display())
+    })?;
 
     // Read the remaining data body.
     let mut data_buf = Vec::new();
@@ -847,9 +830,7 @@ fn millis_since_epoch() -> u64 {
 
 /// Convert a [`SystemTime`] to milliseconds since the Unix epoch.
 fn system_time_to_millis(t: SystemTime) -> u64 {
-    t.duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() as u64
+    t.duration_since(UNIX_EPOCH).unwrap_or_default().as_millis() as u64
 }
 
 /// Convert milliseconds since the Unix epoch to a [`SystemTime`].
@@ -899,7 +880,9 @@ mod tests {
     #[tokio::test]
     async fn test_file_backend_get_missing() {
         let (backend, _tmp) = make_backend().await;
-        let result = backend.get("nonexistent_key_00000000000000000000000000000000000000000000").await;
+        let result = backend
+            .get("nonexistent_key_00000000000000000000000000000000000000000000")
+            .await;
         assert!(result.is_none());
     }
 
@@ -923,7 +906,9 @@ mod tests {
     async fn test_file_backend_remove_nonexistent() {
         let (backend, _tmp) = make_backend().await;
         // Should not panic.
-        backend.remove("does_not_exist_0000000000000000000000000000000000000000000000").await;
+        backend
+            .remove("does_not_exist_0000000000000000000000000000000000000000000000")
+            .await;
     }
 
     // --- Contains ---
@@ -1067,9 +1052,11 @@ mod tests {
         let evicted = backend.evict_expired().await;
         assert_eq!(evicted, 1);
         assert_eq!(backend.entry_count(), 1);
-        assert!(backend.contains(
-            "fresh_key_0000000000000000000000000000000000000000000000000000000000"
-        ).await);
+        assert!(
+            backend
+                .contains("fresh_key_0000000000000000000000000000000000000000000000000000000000")
+                .await
+        );
     }
 
     // --- Evict to size ---
@@ -1126,7 +1113,10 @@ mod tests {
 
         // Evict down to 150 bytes -- should remove the 2 oldest.
         let freed = backend.evict_to_size(150).await;
-        assert!(freed >= 200, "Expected at least 200 bytes freed, got {freed}");
+        assert!(
+            freed >= 200,
+            "Expected at least 200 bytes freed, got {freed}"
+        );
         assert!(
             backend.current_size() <= 150,
             "Expected size <= 150, got {}",
@@ -1134,9 +1124,11 @@ mod tests {
         );
 
         // The newest entry should survive.
-        assert!(backend.contains(
-            "newest_key_0000000000000000000000000000000000000000000000000000000"
-        ).await);
+        assert!(
+            backend
+                .contains("newest_key_0000000000000000000000000000000000000000000000000000000")
+                .await
+        );
     }
 
     #[tokio::test]
@@ -1255,12 +1247,9 @@ mod tests {
 
         // Write a garbage file that looks like it belongs in the cache hierarchy.
         let garbage_dir = cache_dir.join("ga").join("rb");
-        fs::create_dir_all(&garbage_dir)
-            .await
-            .expect("create dirs");
-        let garbage_path = garbage_dir.join(
-            "garb0000000000000000000000000000000000000000000000000000000000",
-        );
+        fs::create_dir_all(&garbage_dir).await.expect("create dirs");
+        let garbage_path =
+            garbage_dir.join("garb0000000000000000000000000000000000000000000000000000000000");
         fs::write(&garbage_path, b"this is not a valid cache file")
             .await
             .expect("write garbage");
@@ -1330,17 +1319,16 @@ mod tests {
         // Create a fake orphaned temp file.
         let tmp_dir = tmp.path().join(".tmp");
         let orphan = tmp_dir.join("tmp_orphaned_file");
-        fs::write(&orphan, b"orphan data").await.expect("write orphan");
+        fs::write(&orphan, b"orphan data")
+            .await
+            .expect("write orphan");
 
         // The cleanup function runs without panic.  Since the file was
         // just created (< 5 min old), it should not be removed.
         backend.cleanup_temp_files().await;
 
         // File should still exist because it's brand new.
-        assert!(
-            orphan.exists(),
-            "Fresh temp file should not be cleaned up"
-        );
+        assert!(orphan.exists(), "Fresh temp file should not be cleaned up");
     }
 
     // --- Edge cases ---

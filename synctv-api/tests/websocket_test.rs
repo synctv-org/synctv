@@ -652,9 +652,8 @@ mod websocket_e2e {
         /// Applies a 30-second timeout to container startup to fail fast when Docker
         /// is unavailable (instead of hanging indefinitely).
         async fn new() -> Self {
-            let (pg_container, redis_container) = tokio::time::timeout(
-                std::time::Duration::from_secs(30),
-                async {
+            let (pg_container, redis_container) =
+                tokio::time::timeout(std::time::Duration::from_secs(30), async {
                     tokio::join!(
                         Postgres::default()
                             .with_db_name("synctv_test")
@@ -664,10 +663,9 @@ mod websocket_e2e {
                             .start(),
                         Redis::default().with_tag(REDIS_VERSION).start(),
                     )
-                },
-            )
-            .await
-            .expect("Docker container startup timed out (is Docker running?)");
+                })
+                .await
+                .expect("Docker container startup timed out (is Docker running?)");
             let pg_container = pg_container.expect("Failed to start Postgres");
             let redis_container = redis_container.expect("Failed to start Redis");
 
@@ -724,6 +722,42 @@ mod websocket_e2e {
         connection_manager: Arc<ConnectionManager>,
     }
 
+    /// Create a minimal `ChatService` for tests.
+    ///
+    /// Accepts a shared `UsernameCache` so the `ChatService` can resolve
+    /// usernames that were populated by the `UserService`.
+    fn build_test_chat_service(
+        pool: &sqlx::PgPool,
+        username_cache: UsernameCache,
+    ) -> Arc<synctv_core::service::ChatService> {
+        let chat_repo = Arc::new(synctv_core::repository::ChatRepository::new(pool.clone()));
+        let chat_rate_limiter = RateLimiter::in_memory_only("test_chat:".to_string());
+        let content_filter = synctv_core::service::ContentFilter::new();
+        let member_repo = synctv_core::repository::RoomMemberRepository::new(pool.clone());
+        let room_repo = synctv_core::repository::RoomRepository::new(pool.clone());
+        let permission_service =
+            synctv_core::service::PermissionService::new(member_repo, room_repo, None, 1000, 300);
+        let room_settings_repo = synctv_core::repository::RoomSettingsRepository::new(pool.clone());
+        let notification_service = Arc::new(synctv_core::service::NotificationService::default());
+        let room_settings_service = synctv_core::service::RoomSettingsService::new(
+            room_settings_repo,
+            None,
+            notification_service,
+            None,
+            None,
+            None,
+        );
+        Arc::new(synctv_core::service::ChatService::new(
+            chat_repo,
+            chat_rate_limiter,
+            synctv_core::service::RateLimitConfig::default(),
+            content_filter,
+            username_cache,
+            permission_service,
+            room_settings_service,
+        ))
+    }
+
     /// Build a minimal `AppState` with real database and Redis for E2E testing.
     async fn setup_e2e_server(infra: &TestInfra) -> E2EServer {
         setup_e2e_server_with_node(infra, "test_node_1").await
@@ -740,15 +774,18 @@ mod websocket_e2e {
         // Create services
         let jwt_service = JwtService::new(TEST_JWT_SECRET).expect("JwtService");
         let redis_client = redis::Client::open(infra.redis_url.as_str()).expect("Redis client");
-        let redis_conn = redis::aio::ConnectionManager::new(redis_client.clone())
-            .await
-            .expect("Redis ConnectionManager");
+        let redis_conn = Arc::new(tokio::sync::RwLock::new(
+            redis::aio::ConnectionManager::new(redis_client.clone())
+                .await
+                .expect("Redis ConnectionManager"),
+        ));
 
         // UsernameCache with Redis L2 backend
-        let l2_backend = Arc::new(synctv_core::cache::l2_backend::RedisCacheL2::new(
+        let l2_backend = Arc::new(synctv_core::cache::l2_backend::RedisCacheL2::new_shared(
             redis_conn.clone(),
         ));
         let username_cache = UsernameCache::new(l2_backend, "test_un:".to_string(), 100, 300);
+        let username_cache_for_chat = username_cache.clone();
 
         let key_builder = synctv_core::cache::KeyBuilder::new("test:".to_string());
 
@@ -871,6 +908,7 @@ mod websocket_e2e {
             email_token_service: None,
             publish_key_service: None,
             notification_service: None,
+            chat_service: Some(build_test_chat_service(&pool, username_cache_for_chat)),
             audit_service: {
                 let (audit_svc, _audit_handle) =
                     synctv_core::service::AuditService::new(pool.clone());
@@ -885,13 +923,11 @@ mod websocket_e2e {
         };
 
         let guest_token_validator = Arc::new(
-            synctv_core::service::auth::GuestTokenValidator::new(Arc::new(
-                jwt_service.clone(),
-            ))
-            .with_blacklist(
-                user_service.token_blacklist_store(),
-                user_service.key_builder().clone(),
-            ),
+            synctv_core::service::auth::GuestTokenValidator::new(Arc::new(jwt_service.clone()))
+                .with_blacklist(
+                    user_service.token_blacklist_store(),
+                    user_service.key_builder().clone(),
+                ),
         );
 
         let state = synctv_api::AppState {
@@ -2579,6 +2615,40 @@ mod websocket_connection_limit_timing {
     const POSTGRES_VERSION: &str = "16-alpine";
     const REDIS_VERSION: &str = "7-alpine";
 
+    /// Create a minimal `ChatService` for tests.
+    /// Create a minimal `ChatService` for tests.
+    fn build_test_chat_service(
+        pool: &sqlx::PgPool,
+        username_cache: UsernameCache,
+    ) -> Arc<synctv_core::service::ChatService> {
+        let chat_repo = Arc::new(synctv_core::repository::ChatRepository::new(pool.clone()));
+        let chat_rate_limiter = RateLimiter::in_memory_only("test_chat:".to_string());
+        let content_filter = synctv_core::service::ContentFilter::new();
+        let member_repo = synctv_core::repository::RoomMemberRepository::new(pool.clone());
+        let room_repo = synctv_core::repository::RoomRepository::new(pool.clone());
+        let permission_service =
+            synctv_core::service::PermissionService::new(member_repo, room_repo, None, 1000, 300);
+        let room_settings_repo = synctv_core::repository::RoomSettingsRepository::new(pool.clone());
+        let notification_service = Arc::new(synctv_core::service::NotificationService::default());
+        let room_settings_service = synctv_core::service::RoomSettingsService::new(
+            room_settings_repo,
+            None,
+            notification_service,
+            None,
+            None,
+            None,
+        );
+        Arc::new(synctv_core::service::ChatService::new(
+            chat_repo,
+            chat_rate_limiter,
+            synctv_core::service::RateLimitConfig::default(),
+            content_filter,
+            username_cache,
+            permission_service,
+            room_settings_service,
+        ))
+    }
+
     struct TestInfra {
         pool: PgPool,
         redis_url: String,
@@ -2590,9 +2660,8 @@ mod websocket_connection_limit_timing {
         /// Applies a 30-second timeout to container startup to fail fast when Docker
         /// is unavailable (instead of hanging indefinitely).
         async fn new() -> Self {
-            let (pg_container, redis_container) = tokio::time::timeout(
-                std::time::Duration::from_secs(30),
-                async {
+            let (pg_container, redis_container) =
+                tokio::time::timeout(std::time::Duration::from_secs(30), async {
                     tokio::join!(
                         Postgres::default()
                             .with_db_name("synctv_test")
@@ -2602,10 +2671,9 @@ mod websocket_connection_limit_timing {
                             .start(),
                         Redis::default().with_tag(REDIS_VERSION).start(),
                     )
-                },
-            )
-            .await
-            .expect("Docker container startup timed out (is Docker running?)");
+                })
+                .await
+                .expect("Docker container startup timed out (is Docker running?)");
             let pg_container = pg_container.expect("Failed to start Postgres");
             let redis_container = redis_container.expect("Failed to start Redis");
 
@@ -2668,14 +2736,17 @@ mod websocket_connection_limit_timing {
 
         let jwt_service = JwtService::new(TEST_JWT_SECRET).expect("JwtService");
         let redis_client = redis::Client::open(infra.redis_url.as_str()).expect("Redis client");
-        let redis_conn = redis::aio::ConnectionManager::new(redis_client.clone())
-            .await
-            .expect("Redis ConnectionManager");
+        let redis_conn = Arc::new(tokio::sync::RwLock::new(
+            redis::aio::ConnectionManager::new(redis_client.clone())
+                .await
+                .expect("Redis ConnectionManager"),
+        ));
 
-        let l2_backend = Arc::new(synctv_core::cache::l2_backend::RedisCacheL2::new(
+        let l2_backend = Arc::new(synctv_core::cache::l2_backend::RedisCacheL2::new_shared(
             redis_conn.clone(),
         ));
         let username_cache = UsernameCache::new(l2_backend, "test_un:".to_string(), 100, 300);
+        let username_cache_for_chat = username_cache.clone();
         let key_builder = synctv_core::cache::KeyBuilder::new("test:".to_string());
         let brute_force = synctv_core::service::auth::BruteForceProtection::with_redis(
             redis_conn.clone(),
@@ -2795,6 +2866,7 @@ mod websocket_connection_limit_timing {
             email_token_service: None,
             publish_key_service: None,
             notification_service: None,
+            chat_service: Some(build_test_chat_service(&pool, username_cache_for_chat)),
             audit_service: {
                 let (audit_svc, _audit_handle) =
                     synctv_core::service::AuditService::new(pool.clone());
@@ -2809,13 +2881,11 @@ mod websocket_connection_limit_timing {
         };
 
         let guest_token_validator = Arc::new(
-            synctv_core::service::auth::GuestTokenValidator::new(Arc::new(
-                jwt_service.clone(),
-            ))
-            .with_blacklist(
-                user_service.token_blacklist_store(),
-                user_service.key_builder().clone(),
-            ),
+            synctv_core::service::auth::GuestTokenValidator::new(Arc::new(jwt_service.clone()))
+                .with_blacklist(
+                    user_service.token_blacklist_store(),
+                    user_service.key_builder().clone(),
+                ),
         );
 
         let state = synctv_api::AppState {

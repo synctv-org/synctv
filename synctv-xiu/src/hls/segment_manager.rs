@@ -182,7 +182,9 @@ impl SegmentManager {
                                 Err(e) => {
                                     tracing::warn!(
                                         "Count-based cleanup failed for {}/{}: {}",
-                                        app, stream, e
+                                        app,
+                                        stream,
+                                        e
                                     );
                                 }
                                 _ => {}
@@ -463,9 +465,18 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(storage.count_stream_segments("app1", "s1").await.unwrap(), 2);
-        assert_eq!(storage.count_stream_segments("app1", "s2").await.unwrap(), 1);
-        assert_eq!(storage.count_stream_segments("app1", "s3").await.unwrap(), 0);
+        assert_eq!(
+            storage.count_stream_segments("app1", "s1").await.unwrap(),
+            2
+        );
+        assert_eq!(
+            storage.count_stream_segments("app1", "s2").await.unwrap(),
+            1
+        );
+        assert_eq!(
+            storage.count_stream_segments("app1", "s3").await.unwrap(),
+            0
+        );
     }
 
     /// M2: Test CleanupConfig with max_segments_per_stream

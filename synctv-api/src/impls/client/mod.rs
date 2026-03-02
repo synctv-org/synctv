@@ -15,6 +15,7 @@
 //! - `webrtc`: ICE servers, network quality
 
 mod auth;
+pub use auth::LogoutOutcome;
 mod media;
 mod member;
 mod playback;

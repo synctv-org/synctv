@@ -58,6 +58,7 @@ pub struct Services {
     pub email_token_service: Option<Arc<synctv_core::service::EmailTokenService>>,
     pub publish_key_service: Arc<synctv_core::service::PublishKeyService>,
     pub notification_service: Option<Arc<synctv_core::service::UserNotificationService>>,
+    pub chat_service: Arc<synctv_core::service::ChatService>,
     pub audit_service: Arc<synctv_core::service::AuditService>,
     pub live_streaming_infrastructure:
         Option<Arc<synctv_livestream::api::LiveStreamingInfrastructure>>,
@@ -157,7 +158,9 @@ impl SyncTvServer {
                                     reason = %reason,
                                     "Received cluster-wide stream kick"
                                 );
-                                if let Err(e) = infra.kick_publisher(room_id.as_str(), media_id.as_str()) {
+                                if let Err(e) =
+                                    infra.kick_publisher(room_id.as_str(), media_id.as_str())
+                                {
                                     warn!(
                                         room_id = %room_id.as_str(),
                                         media_id = %media_id.as_str(),
@@ -227,7 +230,8 @@ impl SyncTvServer {
         // Previously, both HTTP drain and connection drain each used the full
         // timeout, potentially exceeding K8s grace period (2x the configured value).
         let shutdown_start = tokio::time::Instant::now();
-        let total_drain_budget = Duration::from_secs(self.config.server.shutdown_drain_timeout_seconds);
+        let total_drain_budget =
+            Duration::from_secs(self.config.server.shutdown_drain_timeout_seconds);
 
         // Phase 1: Wait for gRPC and HTTP servers to finish (use 60% of budget).
         let http_drain_budget = total_drain_budget * 60 / 100;
@@ -403,6 +407,7 @@ impl SyncTvServer {
                 live_streaming_infrastructure: services.live_streaming_infrastructure,
                 publish_key_service: Some(services.publish_key_service),
                 notification_service: services.notification_service,
+                chat_service: Some(services.chat_service),
                 oauth2_service: services.oauth2_service,
                 audit_service: services.audit_service,
                 node_registry: services.node_registry,
@@ -490,6 +495,7 @@ impl SyncTvServer {
                 email_token_service: self.services.email_token_service.clone(),
                 publish_key_service: Some(publish_key_service),
                 notification_service,
+                chat_service: Some(self.services.chat_service.clone()),
                 audit_service: self.services.audit_service.clone(),
                 live_streaming_infrastructure,
                 rate_limiter: self.services.rate_limiter.clone(),

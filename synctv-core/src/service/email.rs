@@ -25,7 +25,7 @@ use super::email_token::{EmailTokenService, EmailTokenType};
 use crate::{Error, InternalExt, Result};
 
 /// Mask an email address for safe logging: `user***@example.com`
-fn mask_email(email: &str) -> String {
+pub fn mask_email(email: &str) -> String {
     if let Some(at_pos) = email.find('@') {
         let local = &email[..at_pos];
         let domain = &email[at_pos..];

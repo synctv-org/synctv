@@ -1634,7 +1634,9 @@ mod tests {
     fn test_app_state_has_security_pipeline() {
         // Verify AppState exposes security_pipeline field (used by validate_auth_user)
         // This is a compile-time check that the field exists and is the correct type
-        fn _assert_pipeline_field(state: &super::AppState) -> &Arc<synctv_core::service::SecurityPipeline> {
+        fn _assert_pipeline_field(
+            state: &super::AppState,
+        ) -> &Arc<synctv_core::service::SecurityPipeline> {
             &state.security_pipeline
         }
     }

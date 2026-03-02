@@ -643,9 +643,7 @@ impl DynamicFolder for EmbyProvider {
                 ));
             }
             validate_path_for_traversal(rel).map_err(|e| {
-                ProviderError::InvalidConfig(format!(
-                    "Relative path failed traversal check: {e}"
-                ))
+                ProviderError::InvalidConfig(format!("Relative path failed traversal check: {e}"))
             })?;
         }
 

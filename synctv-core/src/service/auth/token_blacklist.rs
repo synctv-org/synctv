@@ -474,7 +474,8 @@ const L2_TTL_MARGIN_SECS: u64 = 30;
 /// still providing L1 cache acceleration, negative caching, and PG durability.
 pub struct TieredTokenBlacklistStore {
     pg: PgTokenBlacklistStore,
-    redis_conn: Option<redis::aio::ConnectionManager>,
+    /// Shared Redis connection handle that follows Sentinel failover.
+    redis_conn: Option<Arc<tokio::sync::RwLock<redis::aio::ConnectionManager>>>,
     /// L1 cache: JTI key -> (`is_blacklisted`, expiry)
     l1_blacklist: moka::future::Cache<String, (bool, Instant)>,
     /// L1 cache: family key -> (Option<`revoked_at_timestamp`>, expiry)
@@ -487,12 +488,13 @@ impl TieredTokenBlacklistStore {
     /// Create a new tiered token blacklist store.
     ///
     /// - `pg`: The `PostgreSQL` store used as durable primary.
-    /// - `redis_conn`: Optional Redis connection for L2 caching.
+    /// - `redis_conn`: Optional shared Redis connection handle for L2 caching.
+    ///   Uses `Arc<RwLock<ConnectionManager>>` to follow Sentinel failover.
     /// - `key_prefix`: Redis key prefix (e.g., `"synctv:"`).
     #[must_use]
     pub fn new(
         pg: PgTokenBlacklistStore,
-        redis_conn: Option<redis::aio::ConnectionManager>,
+        redis_conn: Option<Arc<tokio::sync::RwLock<redis::aio::ConnectionManager>>>,
         key_prefix: String,
     ) -> Self {
         Self {
@@ -543,7 +545,7 @@ impl TokenBlacklistStore for TieredTokenBlacklistStore {
         if let Some(ref redis_conn) = self.redis_conn {
             let redis_key = self.bl_key(key);
             let result: redis::RedisResult<Option<String>> = {
-                let mut conn = redis_conn.clone();
+                let mut conn = redis_conn.read().await.clone();
                 conn.get(&redis_key).await
             };
             match result {
@@ -578,7 +580,7 @@ impl TokenBlacklistStore for TieredTokenBlacklistStore {
                 .await;
             if let Some(ref redis_conn) = self.redis_conn {
                 let redis_key = self.bl_key(key);
-                let mut conn = redis_conn.clone();
+                let mut conn = redis_conn.read().await.clone();
                 // Use a reasonable TTL; we don't know the token's TTL here,
                 // so use L1_POSITIVE_TTL as a safe upper bound for L2.
                 let _: redis::RedisResult<()> = conn
@@ -592,7 +594,7 @@ impl TokenBlacklistStore for TieredTokenBlacklistStore {
                 .await;
             if let Some(ref redis_conn) = self.redis_conn {
                 let redis_key = self.bl_key(key);
-                let mut conn = redis_conn.clone();
+                let mut conn = redis_conn.read().await.clone();
                 let _: redis::RedisResult<()> =
                     conn.set_ex(&redis_key, "0", L2_NEGATIVE_TTL_SECS).await;
             }
@@ -614,7 +616,7 @@ impl TokenBlacklistStore for TieredTokenBlacklistStore {
         if let Some(ref redis_conn) = self.redis_conn {
             let redis_key = self.bl_key(key);
             let result: redis::RedisResult<Option<String>> = {
-                let mut conn = redis_conn.clone();
+                let mut conn = redis_conn.read().await.clone();
                 conn.get(&redis_key).await
             };
             match result {
@@ -649,7 +651,7 @@ impl TokenBlacklistStore for TieredTokenBlacklistStore {
                 .await;
             if let Some(ref redis_conn) = self.redis_conn {
                 let redis_key = self.bl_key(key);
-                let mut conn = redis_conn.clone();
+                let mut conn = redis_conn.read().await.clone();
                 let _: redis::RedisResult<()> = conn
                     .set_ex(&redis_key, "1", L1_POSITIVE_TTL.as_secs())
                     .await;
@@ -661,7 +663,7 @@ impl TokenBlacklistStore for TieredTokenBlacklistStore {
                 .await;
             if let Some(ref redis_conn) = self.redis_conn {
                 let redis_key = self.bl_key(key);
-                let mut conn = redis_conn.clone();
+                let mut conn = redis_conn.read().await.clone();
                 let _: redis::RedisResult<()> =
                     conn.set_ex(&redis_key, "0", L2_NEGATIVE_TTL_SECS).await;
             }
@@ -678,7 +680,7 @@ impl TokenBlacklistStore for TieredTokenBlacklistStore {
         if let Some(ref redis_conn) = self.redis_conn {
             let redis_key = self.bl_key(key);
             let l2_ttl = Self::l2_positive_ttl(ttl_secs);
-            let mut conn = redis_conn.clone();
+            let mut conn = redis_conn.read().await.clone();
             let _: redis::RedisResult<()> = conn.set_ex(&redis_key, "1", l2_ttl).await;
         }
 
@@ -706,7 +708,7 @@ impl TokenBlacklistStore for TieredTokenBlacklistStore {
         if let Some(ref redis_conn) = self.redis_conn {
             let redis_key = self.bl_key(key);
             let l2_ttl = Self::l2_positive_ttl(ttl_secs);
-            let mut conn = redis_conn.clone();
+            let mut conn = redis_conn.read().await.clone();
             let _: redis::RedisResult<()> = conn.set_ex(&redis_key, "1", l2_ttl).await;
         }
         self.l1_blacklist
@@ -728,7 +730,7 @@ impl TokenBlacklistStore for TieredTokenBlacklistStore {
         if let Some(ref redis_conn) = self.redis_conn {
             let redis_key = self.fam_key(key);
             let result: redis::RedisResult<Option<String>> = {
-                let mut conn = redis_conn.clone();
+                let mut conn = redis_conn.read().await.clone();
                 conn.get(&redis_key).await
             };
             match result {
@@ -775,7 +777,7 @@ impl TokenBlacklistStore for TieredTokenBlacklistStore {
                 .await;
             if let Some(ref redis_conn) = self.redis_conn {
                 let redis_key = self.fam_key(key);
-                let mut conn = redis_conn.clone();
+                let mut conn = redis_conn.read().await.clone();
                 let _: redis::RedisResult<()> = conn
                     .set_ex(&redis_key, ts.to_string(), L1_POSITIVE_TTL.as_secs())
                     .await;
@@ -788,7 +790,7 @@ impl TokenBlacklistStore for TieredTokenBlacklistStore {
                 .await;
             if let Some(ref redis_conn) = self.redis_conn {
                 let redis_key = self.fam_key(key);
-                let mut conn = redis_conn.clone();
+                let mut conn = redis_conn.read().await.clone();
                 let _: redis::RedisResult<()> =
                     conn.set_ex(&redis_key, "_", L2_NEGATIVE_TTL_SECS).await;
             }
@@ -804,7 +806,7 @@ impl TokenBlacklistStore for TieredTokenBlacklistStore {
         if let Some(ref redis_conn) = self.redis_conn {
             let redis_key = self.fam_key(key);
             let l2_ttl = Self::l2_positive_ttl(ttl_secs);
-            let mut conn = redis_conn.clone();
+            let mut conn = redis_conn.read().await.clone();
             let _: redis::RedisResult<()> =
                 conn.set_ex(&redis_key, timestamp.to_string(), l2_ttl).await;
         }

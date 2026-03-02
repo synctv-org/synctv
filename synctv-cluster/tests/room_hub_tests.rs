@@ -282,9 +282,7 @@ async fn test_unsubscribe_last_then_subscribe_emits_activated() {
     let event = lifecycle_rx.try_recv().unwrap();
     match event {
         RoomLifecycleEvent::RoomActivated(r) => assert_eq!(r, room),
-        other => panic!(
-            "Expected RoomActivated after re-subscribe, got: {other:?}"
-        ),
+        other => panic!("Expected RoomActivated after re-subscribe, got: {other:?}"),
     }
 
     // Verify room has exactly 1 subscriber

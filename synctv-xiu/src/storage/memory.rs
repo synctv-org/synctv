@@ -349,8 +349,7 @@ impl HlsStorage for MemoryStorage {
         for key in inner.data.keys() {
             // Keys are "app/stream/name"
             let mut parts = key.splitn(3, '/');
-            if let (Some(app), Some(stream), Some(_)) = (parts.next(), parts.next(), parts.next())
-            {
+            if let (Some(app), Some(stream), Some(_)) = (parts.next(), parts.next(), parts.next()) {
                 streams.insert((app.to_string(), stream.to_string()));
             }
         }
@@ -397,7 +396,11 @@ impl HlsStorage for MemoryStorage {
         if deleted > 0 {
             tracing::debug!(
                 "Deleted {} oldest segments for {}/{} (was {}, max {})",
-                deleted, app, stream, total, max_count
+                deleted,
+                app,
+                stream,
+                total,
+                max_count
             );
         }
 

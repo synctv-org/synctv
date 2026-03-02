@@ -493,7 +493,7 @@ async fn test_login_unverified_email_blocked_when_verification_required() {
         result.is_err(),
         "Unverified email user should be blocked when verification is required"
     );
-    assert!(matches!(result.unwrap_err(), Error::Authentication(_)));
+    assert!(matches!(result.unwrap_err(), Error::EmailNotVerified));
 }
 
 #[tokio::test]

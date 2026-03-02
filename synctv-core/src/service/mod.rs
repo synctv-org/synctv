@@ -15,6 +15,7 @@ pub mod global_settings;
 pub mod media;
 pub mod member;
 pub mod notification;
+pub mod notification_partition_manager;
 pub mod oauth2;
 pub mod optimistic_retry;
 pub mod permission;
@@ -63,8 +64,8 @@ pub use credential_encryption::CredentialEncryption;
 pub use db_maintenance::DatabaseMaintenanceService;
 pub use distributed_lock::{DistributedLock, LockGuard, MigrationLock, PgAdvisoryMigrationLock};
 pub use email::{
-    EmailConfig, EmailService, InMemoryVerificationCodeStore, RedisVerificationCodeStore,
-    VerificationCodeStore,
+    mask_email, EmailConfig, EmailService, InMemoryVerificationCodeStore,
+    RedisVerificationCodeStore, VerificationCodeStore,
 };
 pub use email_templates::{EmailTemplateManager, EmailTemplateType};
 pub use email_token::{EmailTokenService, EmailTokenType};
@@ -74,6 +75,10 @@ pub use global_settings::{
 pub use media::MediaService;
 pub use member::{AddMemberOptions, MemberEventBroadcaster, MemberService};
 pub use notification::{NotificationService, RoomEvent};
+pub use notification_partition_manager::{
+    ensure_notification_partitions_on_startup, NotificationPartitionHealth,
+    NotificationPartitionManager,
+};
 pub use oauth2::{
     InMemoryOAuthStateStore, OAuth2Service, OAuth2State, OAuth2UserInfo, OAuthStateStore,
     RedisOAuthStateStore,

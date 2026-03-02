@@ -503,17 +503,29 @@ impl StreamTracker {
 
     /// Spawn a periodic background task that calls `cleanup_stale_entries`
     /// every `interval` duration. Returns the `JoinHandle` for the task.
+    ///
+    /// The task shuts down gracefully when `cancel` is cancelled, matching
+    /// the pattern used by other background tasks in the codebase (HLS cleanup,
+    /// TTL refresh, data cleanup, etc.).
     #[must_use]
     pub fn start_periodic_cleanup(
         self: &Arc<Self>,
         interval: std::time::Duration,
+        cancel: tokio_util::sync::CancellationToken,
     ) -> tokio::task::JoinHandle<()> {
         let tracker = Arc::clone(self);
         tokio::spawn(async move {
             let mut tick = tokio::time::interval(interval);
             loop {
-                tick.tick().await;
-                tracker.cleanup_stale_entries();
+                tokio::select! {
+                    _ = tick.tick() => {
+                        tracker.cleanup_stale_entries();
+                    }
+                    () = cancel.cancelled() => {
+                        info!("Stream tracker periodic cleanup cancelled, shutting down");
+                        return;
+                    }
+                }
             }
         })
     }
@@ -647,5 +659,27 @@ mod tests {
         assert!(tracker
             .get_rtmp_identifiers("room1", "jwt_token_1")
             .is_none());
+    }
+
+    #[tokio::test]
+    async fn test_periodic_cleanup_cancellation() {
+        // L12: Verify that start_periodic_cleanup shuts down when CancellationToken is cancelled
+        let tracker = Arc::new(StreamTracker::new());
+        let cancel = tokio_util::sync::CancellationToken::new();
+
+        let handle = tracker.start_periodic_cleanup(
+            std::time::Duration::from_secs(3600), // Long interval so it blocks on tick
+            cancel.clone(),
+        );
+
+        // Cancel the token
+        cancel.cancel();
+
+        // The task should complete promptly (within a few ms)
+        let result = tokio::time::timeout(std::time::Duration::from_secs(2), handle).await;
+        assert!(
+            result.is_ok(),
+            "Periodic cleanup task should exit promptly after cancellation"
+        );
     }
 }

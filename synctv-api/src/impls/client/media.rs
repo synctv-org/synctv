@@ -127,12 +127,18 @@ impl ClientApiImpl {
             )));
         }
 
-        // Use the parsed provider as the instance name. For DirectUrl, this is
-        // empty (no remote provider). For other types, use the provider string
-        // from the request so the core layer knows which provider to use.
+        // Use the explicit provider_instance_name from the request for registry lookup.
+        // For DirectUrl, this is empty (no remote provider).
+        // For other provider types, prefer provider_instance_name (e.g., "bilibili_main")
+        // over provider type name (e.g., "bilibili") since the registry stores instances
+        // by their instance ID, not by type name.
         let provider_instance_name = if provider == ProviderType::DirectUrl {
             String::new()
+        } else if !req.provider_instance_name.is_empty() {
+            req.provider_instance_name
         } else {
+            // Fallback: use provider type name for backwards compatibility
+            // when client doesn't specify an instance name
             req.provider
         };
 

@@ -144,8 +144,8 @@ pub struct PlaybackState {
     #[prost(int64, tag = "6")]
     pub updated_at: i64,
     /// For optimistic locking
-    #[prost(int32, tag = "7")]
-    pub version: i32,
+    #[prost(int64, tag = "7")]
+    pub version: i64,
     /// Currently playing playlist
     #[prost(string, tag = "8")]
     pub playing_playlist_id: ::prost::alloc::string::String,
@@ -1280,10 +1280,13 @@ pub struct GetChatHistoryResponse {
 #[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct LogoutRequest {}
 #[derive(serde::Serialize, serde::Deserialize)]
-#[derive(Clone, Copy, PartialEq, Eq, Hash, ::prost::Message)]
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct LogoutResponse {
     #[prost(bool, tag = "1")]
     pub success: bool,
+    /// Non-empty when logout succeeded but token invalidation may be delayed
+    #[prost(string, tag = "2")]
+    pub message: ::prost::alloc::string::String,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]

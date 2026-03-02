@@ -74,6 +74,7 @@ async fn test_edit_media_sends_notification() {
                 updated_at: now,
                 deleted_at: None,
                 version: 0,
+                last_activity_at: now,
             }
         })
         .await
@@ -311,6 +312,7 @@ async fn test_edit_media_without_notification_service_succeeds() {
                 updated_at: now,
                 deleted_at: None,
                 version: 0,
+                last_activity_at: now,
             }
         })
         .await

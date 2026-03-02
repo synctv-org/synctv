@@ -124,6 +124,7 @@ pub struct RoomFixture {
     created_by: UserId,
     created_at: Option<chrono::DateTime<chrono::Utc>>,
     updated_at: Option<chrono::DateTime<chrono::Utc>>,
+    last_activity_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
 impl RoomFixture {
@@ -136,6 +137,7 @@ impl RoomFixture {
             created_by: random_user_id(),
             created_at: None,
             updated_at: None,
+            last_activity_at: None,
         }
     }
 
@@ -177,6 +179,16 @@ impl RoomFixture {
         self
     }
 
+    /// Set the `last_activity_at` timestamp for testing `room_ttl` enforcement
+    #[must_use]
+    pub fn with_last_activity_at(
+        mut self,
+        last_activity_at: chrono::DateTime<chrono::Utc>,
+    ) -> Self {
+        self.last_activity_at = Some(last_activity_at);
+        self
+    }
+
     #[must_use]
     pub fn build(self) -> crate::models::Room {
         let now = Utc::now();
@@ -191,6 +203,7 @@ impl RoomFixture {
             updated_at: self.updated_at.unwrap_or(now),
             deleted_at: None,
             version: 0,
+            last_activity_at: self.last_activity_at.unwrap_or(now),
         }
     }
 }

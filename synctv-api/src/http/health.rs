@@ -373,9 +373,60 @@ fn check_memory_health() -> Option<MemoryHealth> {
 
 #[cfg(target_os = "linux")]
 fn check_memory_health_linux() -> Option<MemoryHealth> {
+    // Try cgroup-aware memory check first (for containers), fall back to /proc/meminfo
+    check_cgroup_memory().or_else(check_proc_meminfo)
+}
+
+/// Read memory limits from cgroup v2 or v1 when running inside a container.
+///
+/// Returns `None` if not running in a cgroup-limited environment (e.g., bare metal).
+#[cfg(target_os = "linux")]
+fn check_cgroup_memory() -> Option<MemoryHealth> {
     use std::fs;
 
-    // Read /proc/meminfo for memory stats
+    // Try cgroup v2 first
+    let (limit, current) = if let (Ok(limit_str), Ok(current_str)) = (
+        fs::read_to_string("/sys/fs/cgroup/memory.max"),
+        fs::read_to_string("/sys/fs/cgroup/memory.current"),
+    ) {
+        let limit = limit_str.trim().parse::<u64>().ok()?;
+        let current = current_str.trim().parse::<u64>().ok()?;
+        (limit, current)
+    } else if let (Ok(limit_str), Ok(usage_str)) = (
+        // Try cgroup v1 fallback
+        fs::read_to_string("/sys/fs/cgroup/memory/memory.limit_in_bytes"),
+        fs::read_to_string("/sys/fs/cgroup/memory/memory.usage_in_bytes"),
+    ) {
+        let limit = limit_str.trim().parse::<u64>().ok()?;
+        let current = usage_str.trim().parse::<u64>().ok()?;
+        (limit, current)
+    } else {
+        return None;
+    };
+
+    // Sanity check: a limit of u64::MAX or 0 means "no limit" (not containerized)
+    if limit == 0 || limit >= (1u64 << 62) {
+        return None;
+    }
+
+    let usage_percent = (current as f64 / limit as f64) * 100.0;
+    let status = if usage_percent > MEMORY_UNHEALTHY_THRESHOLD_PERCENT {
+        "unhealthy"
+    } else {
+        "healthy"
+    };
+
+    Some(MemoryHealth {
+        usage_percent: (usage_percent * 100.0).round() / 100.0,
+        status: status.to_string(),
+    })
+}
+
+/// Read memory info from /proc/meminfo (host-level, not container-aware).
+#[cfg(target_os = "linux")]
+fn check_proc_meminfo() -> Option<MemoryHealth> {
+    use std::fs;
+
     let meminfo = fs::read_to_string("/proc/meminfo").ok()?;
     let mut total_kb: u64 = 0;
     let mut available_kb: u64 = 0;
@@ -418,7 +469,7 @@ fn check_memory_health_linux() -> Option<MemoryHealth> {
     };
 
     Some(MemoryHealth {
-        usage_percent: (usage_percent * 100.0).round() / 100.0, // Round to 2 decimal places
+        usage_percent: (usage_percent * 100.0).round() / 100.0,
         status: status.to_string(),
     })
 }
@@ -771,5 +822,30 @@ mod tests {
     fn test_memory_threshold_constant() {
         // Verify the threshold is set at 90%
         assert_eq!(MEMORY_UNHEALTHY_THRESHOLD_PERCENT, 90.0);
+    }
+
+    /// M18: Verify that cgroup memory check is attempted on Linux.
+    /// On non-containerized Linux, it should fall back to /proc/meminfo.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn test_cgroup_memory_check_graceful_fallback() {
+        // check_cgroup_memory returns None when not in a container
+        // (cgroup files don't exist or limit is very large)
+        let cgroup_result = check_cgroup_memory();
+        // On bare-metal Linux, this will be None; in a container, Some
+        // Either way, the overall check_memory_health_linux should return Some
+        let overall = check_memory_health_linux();
+        assert!(overall.is_some() || cgroup_result.is_some());
+    }
+
+    /// M18: Verify that proc_meminfo fallback works on Linux.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn test_proc_meminfo_returns_some() {
+        let result = check_proc_meminfo();
+        assert!(result.is_some());
+        let mem = result.unwrap();
+        assert!(mem.usage_percent >= 0.0);
+        assert!(mem.usage_percent <= 100.0);
     }
 }

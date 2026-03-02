@@ -67,6 +67,7 @@ pub struct RouterConfig {
     pub email_token_service: Option<Arc<synctv_core::service::EmailTokenService>>,
     pub publish_key_service: Option<Arc<synctv_core::service::PublishKeyService>>,
     pub notification_service: Option<Arc<synctv_core::service::UserNotificationService>>,
+    pub chat_service: Option<Arc<synctv_core::service::ChatService>>,
     pub audit_service: Arc<synctv_core::service::AuditService>,
     pub live_streaming_infrastructure: Option<Arc<LiveStreamingInfrastructure>>,
     pub rate_limiter: synctv_core::service::rate_limit::RateLimiter,
@@ -239,13 +240,11 @@ fn build_app_state(config: RouterConfig) -> AppState {
     // This ensures guest tokens are checked against the blacklist (for kicked guests)
     // instead of only verifying the JWT signature.
     let guest_token_validator = Arc::new(
-        synctv_core::service::auth::GuestTokenValidator::new(Arc::new(
-            config.jwt_service.clone(),
-        ))
-        .with_blacklist(
-            config.user_service.token_blacklist_store(),
-            config.user_service.key_builder().clone(),
-        ),
+        synctv_core::service::auth::GuestTokenValidator::new(Arc::new(config.jwt_service.clone()))
+            .with_blacklist(
+                config.user_service.token_blacklist_store(),
+                config.user_service.key_builder().clone(),
+            ),
     );
 
     AppState {

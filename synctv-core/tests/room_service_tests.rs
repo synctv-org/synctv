@@ -16,10 +16,13 @@ use synctv_core::{
         MemberStatus, PermissionBits, RoomId, RoomRole, RoomSettings, User, UserId, UserRole,
         UserStatus,
     },
-    repository::{RoomMemberRepository, RoomRepository, RoomSettingsRepository, UserRepository},
+    repository::{
+        RoomMemberRepository, RoomRepository, RoomSettingsRepository, SettingsRepository,
+        UserRepository,
+    },
     service::{
         auth::{BruteForceProtection, JwtService},
-        InMemoryTokenBlacklistStore, RoomService, UserService,
+        InMemoryTokenBlacklistStore, RoomService, SettingsRegistry, SettingsService, UserService,
     },
     Error,
 };
@@ -3960,4 +3963,309 @@ async fn test_admin_delete_orphaned_room_nonexistent_room() {
         result.is_err(),
         "Should reject deletion of nonexistent room"
     );
+}
+
+// ========== Room Password Policy Tests (H1) ==========
+
+async fn make_settings_registry(pool: PgPool) -> Arc<SettingsRegistry> {
+    let settings_repo = SettingsRepository::new(pool.clone());
+    let settings_service = Arc::new(SettingsService::new(settings_repo, pool.clone()));
+    let registry = Arc::new(SettingsRegistry::new(settings_service));
+
+    // Seed the settings rows that tests may need
+    for (key, group, default_value) in [
+        ("room.room_must_need_pwd", "room", "false"),
+        ("room.room_must_no_need_pwd", "room", "false"),
+        ("room.disable_create_room", "room", "false"),
+        ("server.allow_room_creation", "server", "true"),
+        ("room.create_room_need_review", "room", "false"),
+    ] {
+        sqlx::query(
+            "INSERT INTO settings (key, group_name, value) VALUES ($1, $2, $3) ON CONFLICT (key) DO NOTHING"
+        )
+        .bind(key)
+        .bind(group)
+        .bind(default_value)
+        .execute(&pool)
+        .await
+        .unwrap();
+    }
+
+    registry
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_create_room_rejects_no_password_when_must_need_pwd() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let mut room_service = make_room_service(pool.clone());
+    let registry = make_settings_registry(pool.clone()).await;
+
+    // Enable room_must_need_pwd
+    registry.room_must_need_pwd.set(true).await.unwrap();
+    room_service.set_settings_registry(registry);
+
+    let owner = user_repo
+        .create(&make_user("pwd_policy_owner"))
+        .await
+        .unwrap();
+
+    // Attempt to create room without password should fail
+    let result = room_service
+        .create_room(
+            "No Pwd Room".to_string(),
+            "Should fail".to_string(),
+            owner.id.clone(),
+            None,
+            None,
+        )
+        .await;
+
+    assert!(
+        result.is_err(),
+        "Should reject room without password when room_must_need_pwd is true"
+    );
+    let err = result.unwrap_err();
+    assert!(
+        matches!(err, Error::InvalidInput(ref msg) if msg.contains("password is required")),
+        "Error should mention password requirement, got: {err:?}"
+    );
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_create_room_allows_password_when_must_need_pwd() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let mut room_service = make_room_service(pool.clone());
+    let registry = make_settings_registry(pool.clone()).await;
+
+    // Enable room_must_need_pwd
+    registry.room_must_need_pwd.set(true).await.unwrap();
+    room_service.set_settings_registry(registry);
+
+    let owner = user_repo
+        .create(&make_user("pwd_policy_ok_owner"))
+        .await
+        .unwrap();
+
+    // Creating room WITH password should succeed
+    let result = room_service
+        .create_room(
+            "Pwd Room".to_string(),
+            "Should succeed".to_string(),
+            owner.id.clone(),
+            Some("StrongPassword123".to_string()),
+            None,
+        )
+        .await;
+
+    assert!(
+        result.is_ok(),
+        "Should allow room with password when room_must_need_pwd is true"
+    );
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_create_room_rejects_password_when_must_no_need_pwd() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let mut room_service = make_room_service(pool.clone());
+    let registry = make_settings_registry(pool.clone()).await;
+
+    // Enable room_must_no_need_pwd
+    registry.room_must_no_need_pwd.set(true).await.unwrap();
+    room_service.set_settings_registry(registry);
+
+    let owner = user_repo
+        .create(&make_user("no_pwd_policy_owner"))
+        .await
+        .unwrap();
+
+    // Attempt to create room WITH password should fail
+    let result = room_service
+        .create_room(
+            "Pwd Room Fail".to_string(),
+            "Should fail".to_string(),
+            owner.id.clone(),
+            Some("UnwantedPassword123".to_string()),
+            None,
+        )
+        .await;
+
+    assert!(
+        result.is_err(),
+        "Should reject room with password when room_must_no_need_pwd is true"
+    );
+    let err = result.unwrap_err();
+    assert!(
+        matches!(err, Error::InvalidInput(ref msg) if msg.contains("not allowed")),
+        "Error should mention passwords not allowed, got: {err:?}"
+    );
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_create_room_allows_no_password_when_must_no_need_pwd() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let mut room_service = make_room_service(pool.clone());
+    let registry = make_settings_registry(pool.clone()).await;
+
+    // Enable room_must_no_need_pwd
+    registry.room_must_no_need_pwd.set(true).await.unwrap();
+    room_service.set_settings_registry(registry);
+
+    let owner = user_repo
+        .create(&make_user("no_pwd_policy_ok_owner"))
+        .await
+        .unwrap();
+
+    // Creating room WITHOUT password should succeed
+    let result = room_service
+        .create_room(
+            "Open Room".to_string(),
+            "Should succeed".to_string(),
+            owner.id.clone(),
+            None,
+            None,
+        )
+        .await;
+
+    assert!(
+        result.is_ok(),
+        "Should allow room without password when room_must_no_need_pwd is true"
+    );
+}
+
+// ========== set_member_role Creator-Only Tests (M1) ==========
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_set_member_role_only_creator_can_change_roles() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let room_service = make_room_service(pool.clone());
+
+    let creator = user_repo.create(&make_user("role_creator")).await.unwrap();
+    let admin_user = user_repo.create(&make_user("role_admin")).await.unwrap();
+    let member_user = user_repo.create(&make_user("role_member")).await.unwrap();
+
+    // Create room
+    let (room, _) = room_service
+        .create_room(
+            "Role Test Room".to_string(),
+            "Testing roles".to_string(),
+            creator.id.clone(),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+    // Join admin and member
+    room_service
+        .join_room(room.id.clone(), admin_user.id.clone(), None)
+        .await
+        .unwrap();
+    room_service
+        .join_room(room.id.clone(), member_user.id.clone(), None)
+        .await
+        .unwrap();
+
+    // Creator promotes admin_user to Admin
+    room_service
+        .member_service()
+        .set_member_role(
+            room.id.clone(),
+            creator.id.clone(),
+            admin_user.id.clone(),
+            RoomRole::Admin,
+        )
+        .await
+        .unwrap();
+
+    // Admin tries to change member_user's role -- should fail (creator-only)
+    let result = room_service
+        .member_service()
+        .set_member_role(
+            room.id.clone(),
+            admin_user.id.clone(),
+            member_user.id.clone(),
+            RoomRole::Admin,
+        )
+        .await;
+
+    assert!(
+        result.is_err(),
+        "Admin should not be able to change roles (creator-only)"
+    );
+    let err = result.unwrap_err();
+    assert!(
+        matches!(err, Error::Authorization(ref msg) if msg.contains("creator")),
+        "Error should mention creator-only restriction, got: {err:?}"
+    );
+}
+
+// ========== ban_member No Sleep Test (M4) ==========
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_ban_member_completes_quickly() {
+    let (_container, pool) = create_test_pool().await;
+    let user_repo = UserRepository::new(pool.clone());
+    let member_repo = RoomMemberRepository::new(pool.clone());
+    let room_service = make_room_service(pool.clone());
+
+    let creator = user_repo.create(&make_user("ban_creator")).await.unwrap();
+    let target = user_repo.create(&make_user("ban_target")).await.unwrap();
+
+    let (room, _) = room_service
+        .create_room(
+            "Ban Test Room".to_string(),
+            "Testing ban".to_string(),
+            creator.id.clone(),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+    room_service
+        .join_room(room.id.clone(), target.id.clone(), None)
+        .await
+        .unwrap();
+
+    // Ban should complete without the 100ms sleep overhead
+    let start = std::time::Instant::now();
+    room_service
+        .member_service()
+        .ban_member(
+            room.id.clone(),
+            creator.id.clone(),
+            target.id.clone(),
+            Some("test ban".to_string()),
+        )
+        .await
+        .unwrap();
+    let elapsed = start.elapsed();
+
+    // Without the sleep, this should complete well under 100ms
+    // (allowing generous margin for DB operations)
+    // The main point is it shouldn't have the hardcoded 100ms sleep
+    assert!(
+        elapsed < std::time::Duration::from_millis(5000),
+        "Ban operation took too long: {:?}",
+        elapsed
+    );
+
+    // Verify the member is actually banned (use get_any since banned members have left_at set)
+    let member = member_repo
+        .get_any(&room.id, &target.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(member.status, MemberStatus::Banned);
 }

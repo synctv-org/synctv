@@ -19,6 +19,7 @@ pub async fn init_livestream(
     synctv_services: &synctv_core::bootstrap::services::Services,
     redis_handles: Option<&RedisHandles>,
     node_id: &str,
+    cancel: tokio_util::sync::CancellationToken,
 ) -> Result<(
     Option<server::LivestreamState>,
     Option<Arc<synctv_livestream::api::LiveStreamingInfrastructure>>,
@@ -58,7 +59,7 @@ pub async fn init_livestream(
     // When a publisher crashes without a clean on_unpublish, secondary indexes
     // can retain orphaned references. This background task cleans them up.
     let tracker_cleanup_handle =
-        user_stream_tracker.start_periodic_cleanup(std::time::Duration::from_mins(1));
+        user_stream_tracker.start_periodic_cleanup(std::time::Duration::from_mins(1), cancel);
     background_handles.push(tracker_cleanup_handle);
 
     let lifecycle_handle = tokio::spawn(async move {

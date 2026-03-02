@@ -309,7 +309,11 @@ impl AuthCallback for SyncTvRtmpAuth {
         );
 
         // 1. Unregister publisher from Redis
-        if let Err(e) = self.registry.unregister_publisher(app_name, stream_name).await {
+        if let Err(e) = self
+            .registry
+            .unregister_publisher(app_name, stream_name)
+            .await
+        {
             tracing::warn!(
                 room_id = %app_name,
                 media_id = %stream_name,

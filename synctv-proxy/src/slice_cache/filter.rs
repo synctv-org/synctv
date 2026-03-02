@@ -78,8 +78,13 @@ pub async fn proxy_with_cache(
 ) -> Result<Response, anyhow::Error> {
     // ------ BYPASS: cache disabled ------
     if !cache.config().enabled {
-        return stream_through_with_status(url, provider_headers, range_header, CacheStatus::Bypass)
-            .await;
+        return stream_through_with_status(
+            url,
+            provider_headers,
+            range_header,
+            CacheStatus::Bypass,
+        )
+        .await;
     }
 
     // ------ No Range header: full-body cache path ------
@@ -120,8 +125,7 @@ pub async fn proxy_with_cache(
         // Merge slice status: the "worst" status wins.
         worst_status = merge_cache_status(worst_status, slice_status);
 
-        let (slice_start, _) =
-            aligned_range_for_slice(idx, cache.config().slice_size, total_size);
+        let (slice_start, _) = aligned_range_for_slice(idx, cache.config().slice_size, total_size);
 
         #[allow(clippy::cast_possible_truncation)]
         let offset_start = if range_start > slice_start {
@@ -190,7 +194,11 @@ fn merge_cache_status(a: CacheStatus, b: CacheStatus) -> CacheStatus {
             CacheStatus::Bypass => 6,
         }
     }
-    if priority(a) >= priority(b) { a } else { b }
+    if priority(a) >= priority(b) {
+        a
+    } else {
+        b
+    }
 }
 
 // ------------------------------------------------------------------
@@ -229,8 +237,8 @@ pub(super) async fn full_body_cache_path(
         .await
         .map_err(|e| anyhow::anyhow!("Upstream request failed: {e}"))?;
 
-    let status = StatusCode::from_u16(resp.status().as_u16())
-        .unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+    let status =
+        StatusCode::from_u16(resp.status().as_u16()).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
 
     let content_type = resp
         .headers()
@@ -245,8 +253,8 @@ pub(super) async fn full_body_cache_path(
         .and_then(|v| v.to_str().ok())
         .and_then(|v| v.parse::<usize>().ok());
 
-    let too_large_hint = content_length_hint
-        .is_some_and(|cl| cl > cache.config().max_cacheable_body);
+    let too_large_hint =
+        content_length_hint.is_some_and(|cl| cl > cache.config().max_cacheable_body);
 
     if too_large_hint {
         // Too large to cache -- stream through with BYPASS.
@@ -275,8 +283,7 @@ pub(super) async fn full_body_cache_path(
     {
         let mut stream = resp.bytes_stream();
         while let Some(chunk) = stream.next().await {
-            let chunk =
-                chunk.map_err(|e| anyhow::anyhow!("Failed to read upstream body: {e}"))?;
+            let chunk = chunk.map_err(|e| anyhow::anyhow!("Failed to read upstream body: {e}"))?;
             buf.extend_from_slice(&chunk);
             if buf.len() > max_body {
                 break;

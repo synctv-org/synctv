@@ -153,6 +153,21 @@ impl OAuth2ApiImpl {
                 ));
             }
 
+            // Check if this provider account is already linked to a different user.
+            // Silently reassigning would steal the linkage from the other user.
+            if let Some(existing_user_id) = self
+                .oauth2_service
+                .find_user_by_provider(&provider_type, &user_info.provider_user_id)
+                .await
+                .map_err(ApiError::from)?
+            {
+                if existing_user_id != bind_user_id {
+                    return Err(ApiError::AlreadyExists(
+                        "This provider account is already linked to another user".to_string(),
+                    ));
+                }
+            }
+
             // Bind flow: associate provider with existing user
             self.oauth2_service
                 .upsert_user_provider(
@@ -210,26 +225,66 @@ impl OAuth2ApiImpl {
                 ApiError::Internal(format!("Failed to begin transaction: {e}"))
             })?;
 
-            let new_user = self
-                .user_service
-                .register_with_executor(
-                    user_info.username.clone(),
-                    user_info.email.clone(),
-                    random_password,
-                    SignupMethod::OAuth2,
-                    &mut *tx,
-                )
-                .await
-                .map_err(|e| {
-                    // Log detailed error for debugging, but return a generic error to the user
-                    tracing::error!(
-                        error = %e,
-                        username = %user_info.username,
-                        provider = %provider_type.as_str(),
-                        "Failed to create OAuth2 user (password hashing or validation failed)"
-                    );
-                    ApiError::from(e)
-                })?;
+            // Try registering with the provider username, retrying with suffixed
+            // usernames if there's a collision (AlreadyExists). Try up to 4 times:
+            // original, then with _<provider>, _1, _2 suffixes.
+            let suffixes = [
+                String::new(),
+                format!("_{}", provider_type.as_str()),
+                "_1".to_string(),
+                "_2".to_string(),
+            ];
+            let mut new_user = None;
+            let mut last_err = None;
+            for suffix in &suffixes {
+                let candidate = format!("{}{}", user_info.username, suffix);
+                match self
+                    .user_service
+                    .register_with_executor(
+                        candidate.clone(),
+                        user_info.email.clone(),
+                        random_password.clone(),
+                        SignupMethod::OAuth2,
+                        &mut *tx,
+                    )
+                    .await
+                {
+                    Ok(user) => {
+                        new_user = Some(user);
+                        break;
+                    }
+                    Err(synctv_core::Error::AlreadyExists(_)) => {
+                        tracing::debug!(
+                            username = %candidate,
+                            provider = %provider_type.as_str(),
+                            "OAuth2 username collision, trying next suffix"
+                        );
+                        last_err = Some(ApiError::AlreadyExists(
+                            "Username already taken".to_string(),
+                        ));
+                        continue;
+                    }
+                    Err(e) => {
+                        tracing::error!(
+                            error = %e,
+                            username = %candidate,
+                            provider = %provider_type.as_str(),
+                            "Failed to create OAuth2 user"
+                        );
+                        return Err(ApiError::from(e));
+                    }
+                }
+            }
+            let new_user = match new_user {
+                Some(u) => u,
+                None => {
+                    return Err(last_err.unwrap_or_else(|| {
+                        ApiError::Internal(
+                            "Failed to create OAuth2 user after all retries".to_string(),
+                        )
+                    }))
+                }
+            };
 
             self.oauth2_service
                 .upsert_user_provider_with_executor(

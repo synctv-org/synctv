@@ -100,6 +100,7 @@ fn make_room(name: &str, owner_id: &UserId) -> Room {
         updated_at: now,
         deleted_at: None,
         version: 0,
+        last_activity_at: now,
     }
 }
 
@@ -119,6 +120,7 @@ fn make_playlist(room_id: &RoomId, parent_id: Option<&PlaylistId>, name: &str) -
         created_at: now,
         updated_at: now,
         version: 0,
+        last_activity_at: now,
     }
 }
 
@@ -209,6 +211,7 @@ fn bench_list_media_with_data(c: &mut Criterion) {
                 provider_instance_name: None,
                 added_at: Utc::now(),
                 version: 0,
+                last_activity_at: now,
             };
             rt.block_on(media_repo.create(&media)).unwrap();
         }
@@ -287,7 +290,8 @@ fn bench_batch_insert_operations(c: &mut Criterion) {
                                 provider_instance_name: None,
                                 added_at: Utc::now(),
                                 version: 0,
-                            };
+                            last_activity_at: now,
+            };
                             media_repo.create(&media).await.unwrap();
                         }
                     }

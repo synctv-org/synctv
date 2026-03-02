@@ -960,6 +960,9 @@ impl RoomMemberRepository {
                     is_banned: row.try_get("is_banned")?,
                     created_at: row.try_get("created_at")?,
                     updated_at: row.try_get("updated_at")?,
+                    last_activity_at: row
+                        .try_get("last_activity_at")
+                        .unwrap_or_else(|_| row.try_get("updated_at").unwrap_or_default()),
                     deleted_at: row.try_get("deleted_at")?,
                     version: row.try_get("version")?,
                 };

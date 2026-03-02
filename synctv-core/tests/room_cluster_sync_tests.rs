@@ -96,13 +96,10 @@ async fn create_test_infra() -> TestInfra {
         .expect("Failed to run migrations");
 
     // Start Redis
-    let redis = tokio::time::timeout(
-        std::time::Duration::from_secs(30),
-        Redis::default().start(),
-    )
-    .await
-    .expect("Docker container startup timed out (is Docker running?)")
-    .expect("Failed to start Redis container");
+    let redis = tokio::time::timeout(std::time::Duration::from_secs(30), Redis::default().start())
+        .await
+        .expect("Docker container startup timed out (is Docker running?)")
+        .expect("Failed to start Redis container");
 
     let redis_port = redis
         .get_host_port_ipv4(6379)
@@ -153,6 +150,7 @@ fn make_room(name: &str, description: &str, owner: &UserId) -> Room {
         updated_at: now,
         deleted_at: None,
         version: 0,
+        last_activity_at: now,
     }
 }
 
@@ -935,13 +933,11 @@ async fn test_ban_visible_across_replicas() {
 // ============================================================================
 
 async fn start_redis() -> (ContainerAsync<Redis>, String) {
-    let container = tokio::time::timeout(
-        std::time::Duration::from_secs(30),
-        Redis::default().start(),
-    )
-    .await
-    .expect("Docker container startup timed out (is Docker running?)")
-    .expect("Failed to start Redis");
+    let container =
+        tokio::time::timeout(std::time::Duration::from_secs(30), Redis::default().start())
+            .await
+            .expect("Docker container startup timed out (is Docker running?)")
+            .expect("Failed to start Redis");
     let port = container
         .get_host_port_ipv4(6379)
         .await

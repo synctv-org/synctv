@@ -155,13 +155,11 @@ async fn test_redis_jti_store_cross_service_dedup() {
     use testcontainers::runners::AsyncRunner;
     use testcontainers_modules::redis::Redis;
 
-    let container = tokio::time::timeout(
-        std::time::Duration::from_secs(30),
-        Redis::default().start(),
-    )
-    .await
-    .expect("Docker container startup timed out (is Docker running?)")
-    .expect("Failed to start Redis container");
+    let container =
+        tokio::time::timeout(std::time::Duration::from_secs(30), Redis::default().start())
+            .await
+            .expect("Docker container startup timed out (is Docker running?)")
+            .expect("Failed to start Redis container");
 
     let host = container
         .get_host()
@@ -201,13 +199,11 @@ async fn test_publish_key_service_with_redis_full_lifecycle() {
     use testcontainers::runners::AsyncRunner;
     use testcontainers_modules::redis::Redis;
 
-    let container = tokio::time::timeout(
-        std::time::Duration::from_secs(30),
-        Redis::default().start(),
-    )
-    .await
-    .expect("Docker container startup timed out (is Docker running?)")
-    .expect("Failed to start Redis container");
+    let container =
+        tokio::time::timeout(std::time::Duration::from_secs(30), Redis::default().start())
+            .await
+            .expect("Docker container startup timed out (is Docker running?)")
+            .expect("Failed to start Redis container");
 
     let host = container
         .get_host()

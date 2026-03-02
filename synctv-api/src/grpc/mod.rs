@@ -190,6 +190,7 @@ pub struct GrpcServerConfig<'a> {
         Option<Arc<synctv_livestream::api::LiveStreamingInfrastructure>>,
     pub publish_key_service: Option<Arc<synctv_core::service::PublishKeyService>>,
     pub notification_service: Option<Arc<synctv_core::service::UserNotificationService>>,
+    pub chat_service: Option<Arc<synctv_core::service::ChatService>>,
     pub oauth2_service: Option<Arc<synctv_core::service::OAuth2Service>>,
     pub audit_service: Arc<synctv_core::service::AuditService>,
     pub node_registry: Option<Arc<synctv_cluster::discovery::NodeRegistry>>,
@@ -234,6 +235,7 @@ pub async fn serve(grpc_config: GrpcServerConfig<'_>) -> anyhow::Result<()> {
         live_streaming_infrastructure,
         publish_key_service,
         notification_service,
+        chat_service,
         oauth2_service,
         audit_service,
         node_registry,
@@ -316,6 +318,7 @@ pub async fn serve(grpc_config: GrpcServerConfig<'_>) -> anyhow::Result<()> {
     let client_service = ClientServiceImpl::from_config(ClientServiceConfig {
         user_service: user_service_clone,
         room_service: room_service_clone,
+        chat_service: chat_service.expect("chat_service must be configured for gRPC handler"),
         cluster_manager,
         rate_limiter,
         rate_limit_config,
@@ -371,7 +374,8 @@ pub async fn serve(grpc_config: GrpcServerConfig<'_>) -> anyhow::Result<()> {
             user_service.token_blacklist_store(),
             user_service.key_builder().clone(),
         );
-    let blacklist_layer = blacklist_layer::BlacklistCheckLayer::new(jwt_service.clone(), security_pipeline);
+    let blacklist_layer =
+        blacklist_layer::BlacklistCheckLayer::new(jwt_service.clone(), security_pipeline);
     // Distributed rate limiting layer: uses Redis when available (shared across
     // replicas), falls back to in-memory governor when Redis is unavailable.
     // Determines tier per-request from the gRPC service path.
@@ -591,6 +595,7 @@ pub async fn serve(grpc_config: GrpcServerConfig<'_>) -> anyhow::Result<()> {
             email_token_service: None,
             publish_key_service: None,
             notification_service: None,
+            chat_service: None,
             audit_service: audit_service.clone(),
             live_streaming_infrastructure: None,
             rate_limiter: rate_limiter_for_provider,
@@ -614,13 +619,11 @@ pub async fn serve(grpc_config: GrpcServerConfig<'_>) -> anyhow::Result<()> {
                     ),
             ),
             guest_token_validator: Arc::new(
-                synctv_core::service::auth::GuestTokenValidator::new(Arc::new(
-                    jwt_service.clone(),
-                ))
-                .with_blacklist(
-                    user_service.token_blacklist_store(),
-                    user_service.key_builder().clone(),
-                ),
+                synctv_core::service::auth::GuestTokenValidator::new(Arc::new(jwt_service.clone()))
+                    .with_blacklist(
+                        user_service.token_blacklist_store(),
+                        user_service.key_builder().clone(),
+                    ),
             ),
             client_api: client_api.clone(),
             admin_api: None,

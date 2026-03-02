@@ -875,12 +875,8 @@ impl PlaybackService {
                     self.playback_cache.invalidate(&cache_key).await;
 
                     // Broadcast to other replicas with retry
-                    self.broadcast_invalidation_with_retry(
-                        room_id,
-                        &saved_state,
-                        "play_next",
-                    )
-                    .await;
+                    self.broadcast_invalidation_with_retry(room_id, &saved_state, "play_next")
+                        .await;
 
                     tracing::info!(
                         room_id = %room_id.as_str(),
@@ -928,7 +924,7 @@ impl PlaybackService {
         &self,
         room_id: &RoomId,
         settings: &RoomSettings,
-        _current_time: f64,
+        current_time: f64,
     ) -> Result<Option<RoomPlaybackState>> {
         // Use new auto_play settings with legacy fallback
         let enabled = settings.auto_play.value.enabled || settings.auto_play_next.0;
@@ -950,9 +946,10 @@ impl PlaybackService {
             None => return Ok(None),
         };
 
-        // Check if media has metadata with duration
-        // For direct URLs, get duration from PlaybackResult metadata
-        // For provider-based media, duration check is skipped (client should handle)
+        // For direct URLs, get duration from PlaybackResult metadata.
+        // For provider-backed media, we don't have server-side duration,
+        // so we use the client-reported current_time as the signal.
+        // A negative current_time (-1.0) is used as an explicit "media ended" signal.
         let duration = if playing_media.is_direct() {
             if let Some(playback_result) = playing_media.get_playback_result() {
                 playback_result
@@ -960,11 +957,15 @@ impl PlaybackService {
                     .get("duration")
                     .and_then(serde_json::Value::as_f64)
             } else {
-                return Ok(None);
+                None
             }
         } else {
-            // For provider-based media, auto-play is handled by client or provider
-            return Ok(None);
+            // For provider-backed media, check for explicit end signal
+            // current_time < 0 means client explicitly signals "media ended"
+            if current_time < 0.0 {
+                return self.play_next(room_id, settings).await;
+            }
+            None
         };
 
         // Use computed time to account for elapsed wall-clock time when playing

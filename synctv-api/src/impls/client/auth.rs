@@ -4,6 +4,31 @@ use super::convert::user_to_proto;
 use super::ClientApiImpl;
 use crate::impls::ApiError;
 
+/// Outcome of a logout operation.
+///
+/// Logout always succeeds (the user's intent to log out is respected),
+/// but `message` indicates if token invalidation may be delayed.
+pub struct LogoutOutcome {
+    pub blacklist_ok: bool,
+    pub message: &'static str,
+}
+
+impl LogoutOutcome {
+    pub fn success() -> Self {
+        Self {
+            blacklist_ok: true,
+            message: "",
+        }
+    }
+
+    pub fn blacklist_failed() -> Self {
+        Self {
+            blacklist_ok: false,
+            message: "Logged out but token invalidation may be delayed",
+        }
+    }
+}
+
 impl ClientApiImpl {
     pub async fn register(
         &self,
@@ -80,7 +105,12 @@ impl ClientApiImpl {
     /// Extracts the JTI from the raw Bearer token, computes the remaining TTL,
     /// and adds it to the token blacklist. The token will be rejected by the
     /// security pipeline on subsequent requests.
-    pub async fn logout(&self, raw_token: &str) -> Result<(), ApiError> {
+    ///
+    /// Returns a `LogoutOutcome` indicating whether the blacklist operation
+    /// succeeded. The logout itself always succeeds (the user's intent to
+    /// log out is respected), but the client is informed if token invalidation
+    /// may be delayed.
+    pub async fn logout(&self, raw_token: &str) -> Result<LogoutOutcome, ApiError> {
         match self.jwt_service.verify_access_token(raw_token) {
             Ok(claims) => {
                 if !claims.jti.is_empty() {
@@ -92,13 +122,12 @@ impl ClientApiImpl {
                             .blacklist_access_token(&claims.jti, remaining_ttl)
                             .await
                         {
-                            // Log the failure but still return success to the client.
-                            // The token will expire naturally if blacklisting fails.
                             tracing::warn!(
                                 error = %e,
                                 jti = %claims.jti,
                                 "Failed to blacklist access token on logout; token will expire naturally",
                             );
+                            return Ok(LogoutOutcome::blacklist_failed());
                         }
                     }
                 }
@@ -109,6 +138,6 @@ impl ClientApiImpl {
                 tracing::debug!(error = %e, "Could not parse token during logout; skipping blacklist");
             }
         }
-        Ok(())
+        Ok(LogoutOutcome::success())
     }
 }

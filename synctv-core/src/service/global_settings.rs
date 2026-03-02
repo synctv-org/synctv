@@ -303,6 +303,8 @@ pub struct SettingsRegistry {
     // Chat message retention settings
     /// Maximum number of messages to keep per room (0 = unlimited)
     pub max_chat_messages_per_room: Setting<u64>,
+    /// Absolute retention cap in days for chat messages (default: 90)
+    pub chat_message_retention_days: Setting<i64>,
 
     // CORS settings
     /// Allowed CORS origins for proxy endpoints (empty = no origins allowed)
@@ -508,6 +510,21 @@ impl SettingsRegistry {
                     }
                 }
             ),
+            chat_message_retention_days: setting!(
+                i64,
+                "chat.message_retention_days",
+                storage.clone(),
+                90,
+                |v: &i64| -> crate::Result<()> {
+                    if *v >= 1 && *v <= 3650 {
+                        Ok(())
+                    } else {
+                        Err(crate::Error::InvalidInput(
+                            "chat_message_retention_days must be between 1 and 3650".into(),
+                        ))
+                    }
+                }
+            ),
 
             // CORS settings
             cors_allowed_origins: setting!(
@@ -628,17 +645,14 @@ impl SettingsRegistry {
                 &self.ts_disguised_as_png,
                 true,
             ),
-            custom_publish_host: self
-                .custom_publish_host
-                .get()
-                .unwrap_or_else(|e| {
-                    tracing::warn!(
-                        setting = "custom_publish_host",
-                        error = %e,
-                        "Failed to read setting for public settings, using default"
-                    );
-                    String::new()
-                }),
+            custom_publish_host: self.custom_publish_host.get().unwrap_or_else(|e| {
+                tracing::warn!(
+                    setting = "custom_publish_host",
+                    error = %e,
+                    "Failed to read setting for public settings, using default"
+                );
+                String::new()
+            }),
             email_whitelist_enabled: self.get_or_warn(
                 "email_whitelist_enabled",
                 &self.email_whitelist_enabled,

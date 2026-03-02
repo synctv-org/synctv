@@ -61,6 +61,7 @@ use super::map_api_error;
 pub struct ClientServiceConfig {
     pub user_service: CoreUserService,
     pub room_service: CoreRoomService,
+    pub chat_service: Arc<synctv_core::service::ChatService>,
     pub cluster_manager: Option<Arc<ClusterManager>>,
     pub rate_limiter: RateLimiter,
     pub rate_limit_config: RateLimitConfig,
@@ -79,6 +80,7 @@ pub struct ClientServiceConfig {
 pub struct ClientServiceImpl {
     user_service: Arc<CoreUserService>,
     room_service: Arc<CoreRoomService>,
+    chat_service: Arc<synctv_core::service::ChatService>,
     cluster_manager: Option<Arc<ClusterManager>>,
     rate_limiter: Arc<RateLimiter>,
     rate_limit_config: Arc<RateLimitConfig>,
@@ -96,6 +98,7 @@ impl ClientServiceImpl {
     pub fn new(
         user_service: CoreUserService,
         room_service: CoreRoomService,
+        chat_service: Arc<synctv_core::service::ChatService>,
         cluster_manager: Option<Arc<ClusterManager>>,
         rate_limiter: RateLimiter,
         rate_limit_config: RateLimitConfig,
@@ -111,6 +114,7 @@ impl ClientServiceImpl {
         Self {
             user_service: Arc::new(user_service),
             room_service: Arc::new(room_service),
+            chat_service,
             cluster_manager,
             rate_limiter: Arc::new(rate_limiter),
             rate_limit_config: Arc::new(rate_limit_config),
@@ -129,6 +133,7 @@ impl ClientServiceImpl {
         Self {
             user_service: Arc::new(config.user_service),
             room_service: Arc::new(config.room_service),
+            chat_service: config.chat_service,
             cluster_manager: config.cluster_manager,
             rate_limiter: Arc::new(config.rate_limiter),
             rate_limit_config: Arc::new(config.rate_limit_config),
@@ -279,38 +284,22 @@ impl UserService for ClientServiceImpl {
             .and_then(|v| v.to_str().ok())
             .and_then(|v| synctv_core::service::auth::JwtValidator::extract_bearer_token(v).ok());
 
+        let mut message = String::new();
         if let Some(token) = raw_token {
-            match self.client_api.jwt_service.verify_access_token(&token) {
-                Ok(claims) => {
-                    if !claims.jti.is_empty() {
-                        let now = chrono::Utc::now().timestamp();
-                        let remaining_ttl = (claims.exp - now).max(0) as u64;
-                        if remaining_ttl > 0 {
-                            if let Err(e) = self
-                                .user_service
-                                .blacklist_access_token(&claims.jti, remaining_ttl)
-                                .await
-                            {
-                                // Log the failure but still return success to the client.
-                                // The token will expire naturally if blacklisting fails.
-                                tracing::warn!(
-                                    error = %e,
-                                    jti = %claims.jti,
-                                    "Failed to blacklist access token on logout; token will expire naturally",
-                                );
-                            }
-                        }
-                    }
-                }
-                Err(e) => {
-                    // Token may be expired or malformed. Still succeed; the client
-                    // is logging out and the token is no longer useful anyway.
-                    tracing::debug!(error = %e, "Could not parse token during logout; skipping blacklist");
-                }
+            let outcome = self
+                .client_api
+                .logout(&token)
+                .await
+                .map_err(map_api_error)?;
+            if !outcome.blacklist_ok {
+                message = outcome.message.to_string();
             }
         }
 
-        Ok(Response::new(LogoutResponse { success: true }))
+        Ok(Response::new(LogoutResponse {
+            success: true,
+            message,
+        }))
     }
 
     async fn get_profile(
@@ -682,6 +671,7 @@ impl RoomService for ClientServiceImpl {
             user_id.clone(),
             username.clone(),
             self.room_service.clone(),
+            self.chat_service.clone(),
             cluster_manager,
             (*self.connection_manager).clone(),
             self.rate_limiter.clone(),

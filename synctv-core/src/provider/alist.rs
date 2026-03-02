@@ -187,9 +187,7 @@ impl MediaProvider for AlistProvider {
             ));
         }
         validate_path_for_traversal(&config.path).map_err(|e| {
-            ProviderError::InvalidConfig(format!(
-                "Alist path must not contain path traversal: {e}"
-            ))
+            ProviderError::InvalidConfig(format!("Alist path must not contain path traversal: {e}"))
         })?;
 
         // Validate token is non-empty
@@ -254,9 +252,7 @@ impl MediaProvider for AlistProvider {
 
         // Re-validate path at request time (defense-in-depth against traversal)
         validate_path_for_traversal(&config.path).map_err(|e| {
-            ProviderError::InvalidConfig(format!(
-                "Alist path must not contain path traversal: {e}"
-            ))
+            ProviderError::InvalidConfig(format!("Alist path must not contain path traversal: {e}"))
         })?;
 
         // Get appropriate client based on instance_name from config
@@ -831,9 +827,7 @@ mod tests {
         }
         // Use the shared validate_path_for_traversal (matches actual impl)
         validate_path_for_traversal(&config.path).map_err(|e| {
-            ProviderError::InvalidConfig(format!(
-                "Alist path must not contain path traversal: {e}"
-            ))
+            ProviderError::InvalidConfig(format!("Alist path must not contain path traversal: {e}"))
         })?;
         if config.token.is_empty() {
             return Err(ProviderError::InvalidConfig(

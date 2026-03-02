@@ -212,7 +212,7 @@ message PlaybackState {
     double speed = 4;
     bool is_playing = 5;
     int64 updated_at = 6;
-    int32 version = 7; // For optimistic locking
+    int64 version = 7; // For optimistic locking
     string playing_playlist_id = 8; // Currently playing playlist
     string relative_path = 9; // Relative path within dynamic folder (empty for static playlists)
 }
@@ -912,6 +912,8 @@ message LogoutRequest {}
 
 message LogoutResponse {
     bool success = 1;
+    // Non-empty when logout succeeded but token invalidation may be delayed
+    string message = 2;
 }
 
 message SetUsernameRequest {

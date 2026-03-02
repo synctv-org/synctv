@@ -69,23 +69,11 @@ impl ClientApiImpl {
         let rid = RoomId::from_string(room_id.to_string());
         let target_uid = UserId::from_string(req.user_id.clone());
 
-        // Check that the caller has GRANT_PERMISSION before any mutation.
-        // Use check_permission_no_cache for security-sensitive operations to
-        // ensure we always use fresh permission state from the database.
-        self.room_service
-            .permission_service()
-            .check_permission_no_cache(
-                &rid,
-                &uid,
-                synctv_core::models::PermissionBits::GRANT_PERMISSION,
-            )
-            .await
-            .map_err(ApiError::from)?;
-
-        // Handle role update if provided (non-zero = specified)
+        // Handle role update if provided (non-zero = specified).
+        // The service layer enforces creator-only authorization for role changes,
+        // so no separate permission check is needed here.
         if req.role != synctv_proto::common::RoomMemberRole::Unspecified as i32 {
             let new_role = proto_role_to_room_role(req.role)?;
-            // Update the member role
             self.room_service
                 .member_service()
                 .set_member_role(rid.clone(), uid.clone(), target_uid.clone(), new_role)
@@ -93,48 +81,60 @@ impl ClientApiImpl {
                 .map_err(ApiError::from)?;
         }
 
-        // Determine which permission set to use based on the caller's actual role,
-        // not based on whether admin fields are populated in the request.
-        let caller_member = self
-            .room_service
-            .member_service()
-            .get_member(&rid, &uid)
-            .await
-            .map_err(ApiError::from)?
-            .ok_or_else(|| {
-                ApiError::Authorization("Caller is not a member of this room".to_string())
-            })?;
+        // Handle permission updates if any permission fields are set
+        let has_permission_changes = req.added_permissions > 0
+            || req.removed_permissions > 0
+            || req.admin_added_permissions > 0
+            || req.admin_removed_permissions > 0;
 
-        let caller_is_admin = matches!(
-            caller_member.role,
-            synctv_core::models::RoomRole::Creator | synctv_core::models::RoomRole::Admin
-        );
+        if has_permission_changes {
+            // L1 fix: GRANT_PERMISSION check removed from API layer.
+            // The service layer (set_member_permissions) already enforces it
+            // as the single source of truth via check_permission_no_cache.
 
-        // Only callers with admin/creator role can set admin-level permissions
-        if !caller_is_admin
-            && (req.admin_added_permissions > 0 || req.admin_removed_permissions > 0)
-        {
-            return Err(ApiError::Authorization(
-                "Only admins or creators can modify admin-level permissions".to_string(),
-            ));
+            // Determine which permission set to use based on the caller's actual role
+            let caller_member = self
+                .room_service
+                .member_service()
+                .get_member(&rid, &uid)
+                .await
+                .map_err(ApiError::from)?
+                .ok_or_else(|| {
+                    ApiError::Authorization("Caller is not a member of this room".to_string())
+                })?;
+
+            let caller_is_admin = matches!(
+                caller_member.role,
+                synctv_core::models::RoomRole::Creator | synctv_core::models::RoomRole::Admin
+            );
+
+            // Only callers with admin/creator role can set admin-level permissions
+            if !caller_is_admin
+                && (req.admin_added_permissions > 0 || req.admin_removed_permissions > 0)
+            {
+                return Err(ApiError::Authorization(
+                    "Only admins or creators can modify admin-level permissions".to_string(),
+                ));
+            }
+
+            // Merge both admin-level and member-level permissions when caller is admin
+            let added = if caller_is_admin {
+                req.admin_added_permissions | req.added_permissions
+            } else {
+                req.added_permissions
+            };
+
+            let removed = if caller_is_admin {
+                req.admin_removed_permissions | req.removed_permissions
+            } else {
+                req.removed_permissions
+            };
+
+            self.room_service
+                .set_member_permission(rid.clone(), uid.clone(), target_uid.clone(), added, removed)
+                .await
+                .map_err(ApiError::from)?;
         }
-
-        let added = if caller_is_admin {
-            req.admin_added_permissions
-        } else {
-            req.added_permissions
-        };
-
-        let removed = if caller_is_admin {
-            req.admin_removed_permissions
-        } else {
-            req.removed_permissions
-        };
-
-        self.room_service
-            .set_member_permission(rid.clone(), uid.clone(), target_uid.clone(), added, removed)
-            .await
-            .map_err(ApiError::from)?;
 
         // Notify other replicas to invalidate permission cache.
         // Log a warning if this fails so operators can detect stale-permission drift.

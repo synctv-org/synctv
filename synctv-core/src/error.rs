@@ -17,6 +17,9 @@ pub enum Error {
     #[error("Authentication error: {0}")]
     Authentication(String),
 
+    #[error("Email not verified")]
+    EmailNotVerified,
+
     #[error("Authorization error: {0}")]
     Authorization(String),
 
@@ -157,6 +160,9 @@ impl From<Error> for tonic::Status {
         match err {
             Error::NotFound(msg) => Self::not_found(msg),
             Error::Authentication(msg) => Self::unauthenticated(msg),
+            Error::EmailNotVerified => {
+                Self::permission_denied("Email not verified. Please verify your email to continue.")
+            }
             Error::Authorization(msg) => Self::permission_denied(msg),
             Error::InvalidInput(msg) => Self::invalid_argument(msg),
             Error::AlreadyExists(msg) => Self::already_exists(msg),
@@ -391,6 +397,40 @@ mod tests {
             Error::OptimisticLockConflict.to_string(),
             "Optimistic lock conflict"
         );
+    }
+
+    // ========== EmailNotVerified Error Tests (M8) ==========
+
+    #[test]
+    fn test_email_not_verified_display() {
+        assert_eq!(Error::EmailNotVerified.to_string(), "Email not verified");
+    }
+
+    #[test]
+    fn test_email_not_verified_to_tonic_status() {
+        let status: tonic::Status = Error::EmailNotVerified.into();
+        assert_eq!(
+            status.code(),
+            tonic::Code::PermissionDenied,
+            "EmailNotVerified should map to PermissionDenied (403), not Unauthenticated (401)"
+        );
+        assert!(
+            status.message().contains("verify your email"),
+            "Error message should tell the user to verify their email"
+        );
+    }
+
+    #[test]
+    fn test_email_not_verified_is_distinct_from_authentication() {
+        // EmailNotVerified must be distinguishable from generic Authentication errors
+        let auth_err = Error::Authentication("Authentication failed".to_string());
+        let email_err = Error::EmailNotVerified;
+
+        let auth_status: tonic::Status = auth_err.into();
+        let email_status: tonic::Status = email_err.into();
+
+        // Different gRPC codes: Unauthenticated vs PermissionDenied
+        assert_ne!(auth_status.code(), email_status.code());
     }
 
     // ========== ProviderError Conversion Tests (#34) ==========

@@ -27,14 +27,7 @@ pub async fn init_cluster_components(
     cm: &Arc<ClusterManager>,
     config: &Config,
     connection_manager: &ConnectionManager,
-) -> Result<
-    (
-        Arc<NodeRegistry>,
-        Arc<HealthMonitor>,
-        Arc<LoadBalancer>,
-    ),
-    anyhow::Error,
-> {
+) -> Result<(Arc<NodeRegistry>, Arc<HealthMonitor>, Arc<LoadBalancer>), anyhow::Error> {
     let node_id = cm.node_id().to_string();
     let heartbeat_timeout_secs: i64 = 30;
 
@@ -180,12 +173,7 @@ pub async fn init_cluster_discovery(
                 info!("K8s DNS -> NodeRegistry sync bridge started (15s interval)");
             }
 
-            Ok((
-                Some(registry),
-                Some(hm),
-                Some(lb),
-                Some(dns_refresh_handle),
-            ))
+            Ok((Some(registry), Some(hm), Some(lb), Some(dns_refresh_handle)))
         }
         #[cfg(not(feature = "k8s"))]
         "k8s_dns" => Err(anyhow::anyhow!(

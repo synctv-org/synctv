@@ -227,6 +227,7 @@ impl TestRoom {
             version: 0,
             deleted_at: None,
             is_banned: false,
+            last_activity_at: now,
         }
     }
 }

@@ -22,6 +22,7 @@ use synctv_core::service::{
     AttemptTracker, BruteForceProtection, InMemoryAttemptTracker, RedisAttemptTracker,
 };
 use synctv_core_testing::constants::{brute_force, network};
+use tokio::sync::RwLock;
 
 // ============================================================================
 // InMemoryAttemptTracker tests
@@ -188,13 +189,11 @@ async fn start_redis() -> (
     testcontainers::ContainerAsync<Redis>,
     redis::aio::ConnectionManager,
 ) {
-    let container = tokio::time::timeout(
-        std::time::Duration::from_secs(30),
-        Redis::default().start(),
-    )
-    .await
-    .expect("Docker container startup timed out (is Docker running?)")
-    .expect("Failed to start Redis");
+    let container =
+        tokio::time::timeout(std::time::Duration::from_secs(30), Redis::default().start())
+            .await
+            .expect("Docker container startup timed out (is Docker running?)")
+            .expect("Failed to start Redis");
     let port = container
         .get_host_port_ipv4(6379)
         .await
@@ -211,7 +210,7 @@ async fn start_redis() -> (
 #[ignore = "Requires Docker"]
 async fn test_redis_tracker_record_and_get() {
     let (_container, conn) = start_redis().await;
-    let tracker = RedisAttemptTracker::new(conn, 50_000, 900);
+    let tracker = RedisAttemptTracker::new(Arc::new(RwLock::new(conn)), 50_000, 900);
 
     let key = "test:bf:redis_rg:alice";
     let now = chrono::Utc::now().timestamp();
@@ -233,7 +232,7 @@ async fn test_redis_tracker_record_and_get() {
 #[ignore = "Requires Docker"]
 async fn test_redis_tracker_reset() {
     let (_container, conn) = start_redis().await;
-    let tracker = RedisAttemptTracker::new(conn, 50_000, 900);
+    let tracker = RedisAttemptTracker::new(Arc::new(RwLock::new(conn)), 50_000, 900);
 
     let key = "test:bf:redis_reset:bob";
     let now = chrono::Utc::now().timestamp();
@@ -260,7 +259,8 @@ async fn test_redis_tracker_reset() {
 #[ignore = "Requires Docker"]
 async fn test_brute_force_with_redis_e2e_lockout_and_reset() {
     let (_container, conn) = start_redis().await;
-    let protection = BruteForceProtection::with_redis(conn, "test_e2e:".to_string());
+    let protection =
+        BruteForceProtection::with_redis(Arc::new(RwLock::new(conn)), "test_e2e:".to_string());
     let ip = Some(IpAddr::V4(Ipv4Addr::new(10, 1, 0, 1)));
 
     // Record 5 failures to trigger tier1 lockout
@@ -291,7 +291,8 @@ async fn test_brute_force_with_redis_e2e_lockout_and_reset() {
 #[ignore = "Requires Docker"]
 async fn test_brute_force_with_redis_ip_lockout_and_reset() {
     let (_container, conn) = start_redis().await;
-    let protection = BruteForceProtection::with_redis(conn, "test_ip_e2e:".to_string());
+    let protection =
+        BruteForceProtection::with_redis(Arc::new(RwLock::new(conn)), "test_ip_e2e:".to_string());
     let ip = IpAddr::V4(Ipv4Addr::new(192, 168, 50, 1));
 
     // Record 20 failures from the same IP across different usernames
@@ -331,7 +332,7 @@ async fn test_brute_force_with_redis_ip_lockout_and_reset() {
 #[ignore = "Requires Docker"]
 async fn test_redis_tracker_degradation_tracking() {
     let (_container, conn) = start_redis().await;
-    let tracker = RedisAttemptTracker::new(conn, 50_000, 900);
+    let tracker = RedisAttemptTracker::new(Arc::new(RwLock::new(conn)), 50_000, 900);
 
     // Initially should not be degraded
     assert!(
@@ -382,7 +383,7 @@ async fn test_redis_tracker_degradation_tracking() {
 #[ignore = "Requires Docker"]
 async fn test_redis_tracker_counter_is_monotonically_increasing() {
     let (_container, conn) = start_redis().await;
-    let tracker = RedisAttemptTracker::new(conn, 50_000, 900);
+    let tracker = RedisAttemptTracker::new(Arc::new(RwLock::new(conn)), 50_000, 900);
 
     // The degraded_operation_count should be monotonically increasing
     // (even if we can't easily simulate failures in this test)
@@ -410,7 +411,7 @@ async fn test_redis_tracker_counter_is_monotonically_increasing() {
 #[ignore = "Requires Docker"]
 async fn test_redis_tracker_success_clears_degraded_flag() {
     let (_container, conn) = start_redis().await;
-    let tracker = RedisAttemptTracker::new(conn, 50_000, 900);
+    let tracker = RedisAttemptTracker::new(Arc::new(RwLock::new(conn)), 50_000, 900);
 
     let key = "test:clear_degraded:user";
     let now = chrono::Utc::now().timestamp();
@@ -451,7 +452,7 @@ async fn test_redis_tracker_success_clears_degraded_flag() {
 #[ignore = "Requires Docker"]
 async fn test_redis_tracker_fallback_not_used_when_redis_healthy() {
     let (_container, conn) = start_redis().await;
-    let tracker = RedisAttemptTracker::new(conn, 50_000, 900);
+    let tracker = RedisAttemptTracker::new(Arc::new(RwLock::new(conn)), 50_000, 900);
 
     let key = "test:fallback:not_used";
     let now = chrono::Utc::now().timestamp();

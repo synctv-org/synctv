@@ -32,9 +32,9 @@ impl RoomRepository {
     /// Create a new room
     pub async fn create(&self, room: &Room) -> Result<Room> {
         let created = sqlx::query_as::<_, Room>(
-            "INSERT INTO rooms (id, name, description, created_by, status, is_banned, created_at, updated_at, version)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-             RETURNING id, name, description, created_by, status, is_banned, created_at, updated_at, deleted_at, version"
+            "INSERT INTO rooms (id, name, description, created_by, status, is_banned, created_at, updated_at, version, last_activity_at)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+             RETURNING id, name, description, created_by, status, is_banned, created_at, updated_at, deleted_at, version, last_activity_at"
         )
         .bind(room.id.as_str())
         .bind(&room.name)
@@ -45,6 +45,7 @@ impl RoomRepository {
         .bind(room.created_at)
         .bind(room.updated_at)
         .bind(room.version)
+        .bind(room.last_activity_at)
         .fetch_one(&self.pool)
         .await?;
 
@@ -57,9 +58,9 @@ impl RoomRepository {
         E: sqlx::PgExecutor<'e>,
     {
         let created = sqlx::query_as::<_, Room>(
-            "INSERT INTO rooms (id, name, description, created_by, status, is_banned, created_at, updated_at, version)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-             RETURNING id, name, description, created_by, status, is_banned, created_at, updated_at, deleted_at, version"
+            "INSERT INTO rooms (id, name, description, created_by, status, is_banned, created_at, updated_at, version, last_activity_at)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+             RETURNING id, name, description, created_by, status, is_banned, created_at, updated_at, deleted_at, version, last_activity_at"
         )
         .bind(room.id.as_str())
         .bind(&room.name)
@@ -70,6 +71,7 @@ impl RoomRepository {
         .bind(room.created_at)
         .bind(room.updated_at)
         .bind(room.version)
+        .bind(room.last_activity_at)
         .fetch_one(executor)
         .await?;
 
@@ -79,7 +81,7 @@ impl RoomRepository {
     /// Get room by ID
     pub async fn get_by_id(&self, room_id: &RoomId) -> Result<Option<Room>> {
         let room = sqlx::query_as::<_, Room>(
-            "SELECT id, name, description, created_by, status, is_banned, created_at, updated_at, deleted_at, version
+            "SELECT id, name, description, created_by, status, is_banned, created_at, updated_at, deleted_at, version, last_activity_at
              FROM rooms
              WHERE id = $1 AND deleted_at IS NULL"
         )
@@ -111,7 +113,7 @@ impl RoomRepository {
             "UPDATE rooms
              SET name = $2, description = $3, status = $4, is_banned = $5, version = version + 1
              WHERE id = $1 AND deleted_at IS NULL AND version = $6
-             RETURNING id, name, description, created_by, status, is_banned, created_at, updated_at, deleted_at, version"
+             RETURNING id, name, description, created_by, status, is_banned, created_at, updated_at, deleted_at, version, last_activity_at"
         )
         .bind(room.id.as_str())
         .bind(&room.name)
@@ -235,7 +237,7 @@ impl RoomRepository {
         // List query: $1=limit, $2=offset, then filter params start at $3
         let (list_where, _) = wb.build(3);
         let list_sql = format!(
-            "SELECT r.id, r.name, r.description, r.created_by, r.status, r.is_banned, r.created_at, r.updated_at, r.deleted_at, r.version
+            "SELECT r.id, r.name, r.description, r.created_by, r.status, r.is_banned, r.created_at, r.updated_at, r.deleted_at, r.version, r.last_activity_at
              FROM rooms r
              WHERE {list_where}
              ORDER BY r.created_at DESC
@@ -274,12 +276,12 @@ impl RoomRepository {
             r"
             SELECT
                 r.id, r.name, r.description, r.created_by, r.status, r.is_banned,
-                r.created_at, r.updated_at, r.deleted_at, r.version,
+                r.created_at, r.updated_at, r.deleted_at, r.version, r.last_activity_at,
                 COALESCE(COUNT(rm.user_id) FILTER (WHERE rm.left_at IS NULL), 0)::int as member_count
             FROM rooms r
             LEFT JOIN room_members rm ON r.id = rm.room_id
             WHERE {list_where}
-            GROUP BY r.id, r.name, r.description, r.created_by, r.status, r.is_banned, r.created_at, r.updated_at, r.deleted_at, r.version
+            GROUP BY r.id, r.name, r.description, r.created_by, r.status, r.is_banned, r.created_at, r.updated_at, r.deleted_at, r.version, r.last_activity_at
             ORDER BY r.created_at DESC
             LIMIT $1 OFFSET $2
             "
@@ -370,7 +372,7 @@ impl RoomRepository {
 
         // Get rooms
         let rooms = sqlx::query_as::<_, Room>(
-            "SELECT id, name, description, created_by, status, is_banned, created_at, updated_at, deleted_at, version
+            "SELECT id, name, description, created_by, status, is_banned, created_at, updated_at, deleted_at, version, last_activity_at
              FROM rooms
              WHERE created_by = $1 AND deleted_at IS NULL
              ORDER BY created_at DESC
@@ -444,7 +446,7 @@ impl RoomRepository {
             UPDATE rooms
             SET status = $1, updated_at = CURRENT_TIMESTAMP, version = version + 1
             WHERE id = $2 AND deleted_at IS NULL
-            RETURNING id, name, description, created_by, status, is_banned, created_at, updated_at, deleted_at, version
+            RETURNING id, name, description, created_by, status, is_banned, created_at, updated_at, deleted_at, version, last_activity_at
             ",
         )
         .bind(status)
@@ -463,7 +465,7 @@ impl RoomRepository {
             UPDATE rooms
             SET is_banned = $1, updated_at = CURRENT_TIMESTAMP, version = version + 1
             WHERE id = $2 AND deleted_at IS NULL
-            RETURNING id, name, description, created_by, status, is_banned, created_at, updated_at, deleted_at, version
+            RETURNING id, name, description, created_by, status, is_banned, created_at, updated_at, deleted_at, version, last_activity_at
             ",
         )
         .bind(is_banned)
@@ -482,7 +484,7 @@ impl RoomRepository {
             UPDATE rooms
             SET description = $1, updated_at = CURRENT_TIMESTAMP, version = version + 1
             WHERE id = $2 AND deleted_at IS NULL
-            RETURNING id, name, description, created_by, status, is_banned, created_at, updated_at, deleted_at, version
+            RETURNING id, name, description, created_by, status, is_banned, created_at, updated_at, deleted_at, version, last_activity_at
             ",
         )
         .bind(description)
@@ -492,6 +494,20 @@ impl RoomRepository {
         .ok_or_else(|| crate::Error::NotFound(format!("Room {} not found", room_id.as_str())))?;
 
         Ok(room)
+    }
+
+    /// Touch the room's `last_activity_at` timestamp to reflect recent activity
+    /// (chat messages, playback changes, member joins/leaves).
+    ///
+    /// This is a fire-and-forget operation -- callers should not block on it.
+    pub async fn touch_activity(&self, room_id: &RoomId) -> Result<()> {
+        sqlx::query(
+            "UPDATE rooms SET last_activity_at = CURRENT_TIMESTAMP WHERE id = $1 AND deleted_at IS NULL",
+        )
+        .bind(room_id.as_str())
+        .execute(&self.pool)
+        .await?;
+        Ok(())
     }
 
     /// Fetch all data needed by the join-room flow in a single query.
@@ -511,7 +527,7 @@ impl RoomRepository {
             r"
             SELECT
                 r.id, r.name, r.description, r.created_by, r.status, r.is_banned,
-                r.created_at, r.updated_at, r.deleted_at, r.version,
+                r.created_at, r.updated_at, r.deleted_at, r.version, r.last_activity_at,
                 EXISTS(
                     SELECT 1 FROM room_members rm
                     WHERE rm.room_id = r.id AND rm.user_id = $2 AND rm.status = $3

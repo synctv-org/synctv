@@ -341,7 +341,9 @@ impl AttemptTracker for InMemoryAttemptTracker {
 /// attackers to bypass lockouts by distributing requests across replicas.
 #[derive(Clone)]
 pub struct RedisAttemptTracker {
-    conn: redis::aio::ConnectionManager,
+    /// Shared Redis connection handle that follows Sentinel failover.
+    /// Acquire a read lock and clone to get a current ConnectionManager.
+    conn: Arc<tokio::sync::RwLock<redis::aio::ConnectionManager>>,
     /// In-memory fallback cache for fail-closed behavior on Redis errors.
     fallback: Arc<moka::future::Cache<String, (u64, i64)>>,
     /// Tracks whether we are currently in degraded mode (using fallback).
@@ -356,10 +358,17 @@ pub struct RedisAttemptTracker {
 impl RedisAttemptTracker {
     /// Create a new Redis-backed attempt tracker with fallback mode.
     ///
+    /// Accepts the shared `Arc<RwLock<ConnectionManager>>` so that the tracker
+    /// automatically follows Sentinel failover without holding a stale snapshot.
+    ///
     /// When Redis fails, the tracker falls back to in-memory cache.
     /// Suitable for standalone deployments where Redis is optional.
     #[must_use]
-    pub fn new(conn: redis::aio::ConnectionManager, max_capacity: u64, ttl_secs: u64) -> Self {
+    pub fn new(
+        conn: Arc<tokio::sync::RwLock<redis::aio::ConnectionManager>>,
+        max_capacity: u64,
+        ttl_secs: u64,
+    ) -> Self {
         Self {
             conn,
             fallback: Arc::new(
@@ -376,12 +385,15 @@ impl RedisAttemptTracker {
 
     /// Create a new Redis-backed attempt tracker with fail-closed mode.
     ///
+    /// Accepts the shared `Arc<RwLock<ConnectionManager>>` so that the tracker
+    /// automatically follows Sentinel failover without holding a stale snapshot.
+    ///
     /// When Redis fails, operations return errors rather than falling back.
     /// Required for cluster mode to prevent security degradation from
     /// per-replica independent counters.
     #[must_use]
     pub fn new_fail_closed(
-        conn: redis::aio::ConnectionManager,
+        conn: Arc<tokio::sync::RwLock<redis::aio::ConnectionManager>>,
         max_capacity: u64,
         ttl_secs: u64,
     ) -> Self {
@@ -397,6 +409,11 @@ impl RedisAttemptTracker {
             degraded_count: Arc::new(AtomicU64::new(0)),
             fail_closed: true,
         }
+    }
+
+    /// Acquire a fresh ConnectionManager clone from the shared handle.
+    async fn get_conn(&self) -> redis::aio::ConnectionManager {
+        self.conn.read().await.clone()
     }
 
     /// Check if the tracker is currently in degraded mode (using in-memory fallback).
@@ -475,7 +492,7 @@ impl RedisAttemptTracker {
 #[async_trait]
 impl AttemptTracker for RedisAttemptTracker {
     async fn get_attempts(&self, key: &str) -> Result<(u64, i64)> {
-        let mut conn = self.conn.clone();
+        let mut conn = self.get_conn().await;
 
         let redis_result =
             tokio::time::timeout(REDIS_OPERATION_TIMEOUT, conn.get::<_, Option<String>>(key)).await;
@@ -532,7 +549,7 @@ impl AttemptTracker for RedisAttemptTracker {
     }
 
     async fn record_failure(&self, key: &str, now: i64, ttl_secs: u64) -> Result<()> {
-        let mut conn = self.conn.clone();
+        let mut conn = self.get_conn().await;
 
         let script = redis::Script::new(
             r"
@@ -600,7 +617,7 @@ impl AttemptTracker for RedisAttemptTracker {
         // Always clear fallback cache (best-effort)
         self.fallback.remove(key).await;
 
-        let mut conn = self.conn.clone();
+        let mut conn = self.get_conn().await;
         match tokio::time::timeout(REDIS_OPERATION_TIMEOUT, conn.del::<_, ()>(key)).await {
             Ok(Ok(())) => {
                 self.clear_degraded();
@@ -711,7 +728,10 @@ impl BruteForceProtection {
     /// replica maintains independent brute-force counters, allowing attackers
     /// to bypass lockouts. Use [`Self::with_redis_fail_closed`] for cluster mode.
     #[must_use]
-    pub fn with_redis(conn: redis::aio::ConnectionManager, key_prefix: String) -> Self {
+    pub fn with_redis(
+        conn: Arc<tokio::sync::RwLock<redis::aio::ConnectionManager>>,
+        key_prefix: String,
+    ) -> Self {
         let config = BruteForceConfig::default();
         let username_tracker = Arc::new(RedisAttemptTracker::new(
             conn.clone(),
@@ -746,7 +766,10 @@ impl BruteForceProtection {
     /// in fail-closed mode" to detect when brute-force protection is blocking
     /// all login attempts.
     #[must_use]
-    pub fn with_redis_fail_closed(conn: redis::aio::ConnectionManager, key_prefix: String) -> Self {
+    pub fn with_redis_fail_closed(
+        conn: Arc<tokio::sync::RwLock<redis::aio::ConnectionManager>>,
+        key_prefix: String,
+    ) -> Self {
         tracing::info!(
             "Brute-force protection initialized in fail-closed mode. \
              Login attempts will be rejected if Redis is unavailable."

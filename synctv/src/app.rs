@@ -86,7 +86,9 @@ pub struct Application {
 impl Application {
     /// Build the application through phased initialization.
     pub async fn build(config: Config) -> Result<Self> {
-        let mut shutdown = ShutdownCoordinator::new();
+        let shutdown_budget =
+            std::time::Duration::from_secs(config.server.shutdown_drain_timeout_seconds);
+        let mut shutdown = ShutdownCoordinator::new(shutdown_budget);
 
         // Phase 1: Infrastructure (Redis, Database, NodeID)
         let infra = Self::init_infrastructure(config, &mut shutdown).await?;
@@ -222,11 +224,19 @@ impl Application {
         // When Redis is not configured, cache invalidation operates in no-op mode.
         let key_builder = KeyBuilder::from_config(&infra.config);
         let redis_client_for_cache = infra.redis_handles.as_ref().map(|h| h.client.clone());
-        let cache_invalidation = Arc::new(CacheInvalidationService::new(
+        let cache_invalidation_svc = CacheInvalidationService::new(
             redis_client_for_cache,
             infra.node_id.clone(),
             key_builder.cache_invalidation_stream(),
-        ));
+        );
+        // H9 fix: wire the shared Redis handle so the cache invalidation service
+        // follows Sentinel failover instead of creating an independent connection.
+        let cache_invalidation_svc = if let Some(ref rh) = infra.redis_handles {
+            cache_invalidation_svc.with_shared_conn(rh.conn.clone())
+        } else {
+            cache_invalidation_svc
+        };
+        let cache_invalidation = Arc::new(cache_invalidation_svc);
 
         // Start the cache invalidation Redis subscriber BEFORE init_services.
         // Issue #44: subscriber must be running before any service publishes an
@@ -277,6 +287,17 @@ impl Application {
         {
             error!(
                 "Failed to initialize chat partitions (non-fatal, continuing startup): {}",
+                e
+            );
+        }
+
+        // Initialize notification partitions (monthly granularity)
+        info!("Initializing notification partitions...");
+        if let Err(e) =
+            synctv_core::service::ensure_notification_partitions_on_startup(&infra.pool).await
+        {
+            error!(
+                "Failed to initialize notification partitions (non-fatal, continuing startup): {}",
                 e
             );
         }
@@ -485,6 +506,17 @@ impl Application {
         );
         info!("Chat message partition management started (leader-gated with fencing, check interval: 24 hours)");
 
+        let notification_partition_manager =
+            synctv_core::service::NotificationPartitionManager::new(
+                infra.pool.clone(),
+                leader.leader_check.clone(),
+            );
+        shutdown.register_task(
+            "notification_partition",
+            notification_partition_manager.start_auto_management(24, singleton_cancel.clone()),
+        );
+        info!("Notification partition management started (leader-gated, monthly granularity, check interval: 24 hours)");
+
         let cleanup_service = synctv_core::service::CleanupService::new(
             infra.pool.clone(),
             synctv_core::service::cleanup::CleanupConfig {
@@ -507,7 +539,8 @@ impl Application {
         let db_maintenance = synctv_core::service::DatabaseMaintenanceService::new(
             infra.pool.clone(),
             leader.leader_check.clone(),
-        );
+        )
+        .with_settings_registry(core.services.settings_registry.clone());
         shutdown.register_task(
             "db_maintenance",
             db_maintenance.spawn_maintenance_loop(singleton_cancel),
@@ -644,11 +677,13 @@ impl Application {
         shutdown: &mut ShutdownCoordinator,
     ) -> Result<ServerComponents> {
         // Livestream
+        let livestream_cancel = shutdown.register_token("livestream_tracker_cleanup");
         let (livestream_state, live_infra, background_handles) = init_livestream(
             &infra.config,
             &core.services,
             infra.redis_handles.as_ref(),
             &infra.node_id,
+            livestream_cancel,
         )
         .await?;
         for (i, handle) in background_handles.into_iter().enumerate() {
@@ -719,6 +754,7 @@ impl Application {
             email_token_service: core.services.email_token_service.clone(),
             publish_key_service: core.services.publish_key_service.clone(),
             notification_service: Some(core.services.notification_service.clone()),
+            chat_service: core.services.chat_service.clone(),
             audit_service: core.services.audit_service.clone(),
             live_streaming_infrastructure: servers.live_infra,
             stun_server: servers.stun_server,

@@ -142,7 +142,7 @@ pub(super) fn playlist_to_proto(
             .map(|id| id.as_str().to_string())
             .unwrap_or_default(),
         position: playlist.position,
-        is_folder: playlist.parent_id.is_none() || playlist.source_provider.is_some(),
+        is_folder: true, // All playlists are containers for media items
         is_dynamic: playlist.is_dynamic(),
         item_count,
         created_at: playlist.created_at.timestamp(),
@@ -164,7 +164,7 @@ pub(super) fn playback_state_to_proto(
         speed: state.speed,
         is_playing: state.is_playing,
         updated_at: state.updated_at.timestamp(),
-        version: state.version as i32,
+        version: state.version,
         playing_playlist_id: state
             .playing_playlist_id
             .as_ref()

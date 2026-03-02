@@ -502,7 +502,7 @@ pub async fn get_playlist(
 /// Unified handler for listing rooms (with query params) or getting single room by ID
 /// GET /api/rooms (list) or GET /api/rooms?id=xxx (single)
 pub async fn list_or_get_rooms(
-    _auth: Option<AuthUser>,
+    _auth: AuthUser,
     State(state): State<AppState>,
     Query(params): Query<std::collections::HashMap<String, String>>,
 ) -> AppResult<Json<ListRoomsResponse>> {

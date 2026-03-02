@@ -625,10 +625,7 @@ impl AdminApiImpl {
                 serde_json::Value::String(target_user.username.clone()),
             );
             if !req.reason.is_empty() {
-                details_map.insert(
-                    "reason".to_string(),
-                    serde_json::Value::String(req.reason),
-                );
+                details_map.insert("reason".to_string(), serde_json::Value::String(req.reason));
             }
             self.log_admin_action(
                 &caller_user_id,
@@ -2790,6 +2787,7 @@ mod tests {
     // === Admin Room Proto Conversion Tests ===
 
     fn make_test_room(status: RoomStatus) -> synctv_core::models::Room {
+        let now = chrono::Utc::now();
         synctv_core::models::Room {
             id: RoomId::from_string("admin_room_1".to_string()),
             name: "Admin Test Room".to_string(),
@@ -2797,10 +2795,11 @@ mod tests {
             created_by: UserId::from_string("creator_1".to_string()),
             status,
             is_banned: false,
-            created_at: chrono::Utc::now(),
-            updated_at: chrono::Utc::now(),
+            created_at: now,
+            updated_at: now,
             deleted_at: None,
             version: 1,
+            last_activity_at: now,
         }
     }
 

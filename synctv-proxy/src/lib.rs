@@ -547,7 +547,6 @@ pub async fn proxy_options_preflight() -> Response {
     build_deprecated_preflight_response()
 }
 
-
 // ------------------------------------------------------------------
 // CORS preflight helper functions
 // ------------------------------------------------------------------
@@ -1323,5 +1322,4 @@ mod tests {
         assert!(validate_proxy_url_static("ftp://example.com/file").is_err());
         assert!(validate_proxy_url_static("file:///etc/passwd").is_err());
     }
-
 }

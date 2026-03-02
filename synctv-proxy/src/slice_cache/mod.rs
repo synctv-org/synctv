@@ -54,10 +54,10 @@ pub use backend::{CacheBackend, SliceCacheBackend};
 pub use config::SliceCacheConfig;
 pub use etag::{CachedResourceMeta, StoredEntry};
 pub use filter::{head_content_length, proxy_with_cache};
+pub use lifecycle::CacheLifecycleManager;
 pub use range::{
     aligned_range_for_slice, compute_needed_slices, parse_content_range, parse_range_header,
     ContentRange,
 };
-pub use lifecycle::CacheLifecycleManager;
 pub use status::CacheStatus;
 pub use store::SliceCache;

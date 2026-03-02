@@ -48,8 +48,8 @@ pub struct RemoteProviderManager {
     /// Repository for database operations
     repository: Arc<ProviderInstanceRepository>,
 
-    /// Optional Redis connection for publishing invalidation notifications
-    redis_conn: Option<redis::aio::ConnectionManager>,
+    /// Shared Redis connection handle that follows Sentinel failover.
+    redis_conn: Option<Arc<tokio::sync::RwLock<redis::aio::ConnectionManager>>>,
 
     /// Optional Redis client for creating Pub/Sub subscriptions
     /// (`ConnectionManager` cannot be used for subscriptions)
@@ -75,7 +75,7 @@ impl RemoteProviderManager {
     #[must_use]
     pub fn new(
         repository: Arc<ProviderInstanceRepository>,
-        redis_conn: Option<redis::aio::ConnectionManager>,
+        redis_conn: Option<Arc<tokio::sync::RwLock<redis::aio::ConnectionManager>>>,
         redis_client: Option<redis::Client>,
     ) -> Self {
         if redis_conn.is_none() {
@@ -214,11 +214,11 @@ impl RemoteProviderManager {
     /// Publish a cache invalidation notification to Redis so other replicas
     /// evict the stale entry for `instance_name`.
     async fn notify_change(&self, instance_name: &str) {
-        let Some(ref conn) = self.redis_conn else {
+        let Some(ref conn_handle) = self.redis_conn else {
             return;
         };
 
-        let mut conn = conn.clone();
+        let mut conn = conn_handle.read().await.clone();
 
         // PUBLISH to the channel -- all subscribed replicas receive the message
         let result: Result<(), redis::RedisError> = redis::cmd("PUBLISH")

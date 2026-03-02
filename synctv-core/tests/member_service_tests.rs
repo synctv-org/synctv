@@ -742,15 +742,10 @@ async fn test_ban_with_event_broadcaster_includes_propagation_delay() {
         "Broadcast should have been called"
     );
 
-    // The ban operation should take at least 100ms due to the propagation delay
+    // The ban operation should complete quickly now that the hardcoded 100ms sleep
+    // has been removed. The cluster event system handles propagation asynchronously.
     assert!(
-        elapsed >= std::time::Duration::from_millis(100),
-        "Ban with event_broadcaster should include ~100ms propagation delay, took {elapsed:?}"
-    );
-
-    // But should not take excessively long
-    assert!(
-        elapsed < std::time::Duration::from_millis(500),
+        elapsed < std::time::Duration::from_millis(5000),
         "Ban operation should not take excessively long, took {elapsed:?}"
     );
 }

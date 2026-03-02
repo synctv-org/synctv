@@ -405,15 +405,9 @@ mod tests {
             .unwrap();
 
         assert_eq!(result.len(), 2);
-        assert_eq!(
-            result.get(&room1).map(|r| r.name()),
-            Some("Room 1")
-        );
+        assert_eq!(result.get(&room1).map(|r| r.name()), Some("Room 1"));
         assert_eq!(result.get(&room2), None);
-        assert_eq!(
-            result.get(&room3).map(|r| r.name()),
-            Some("Room 3")
-        );
+        assert_eq!(result.get(&room3).map(|r| r.name()), Some("Room 3"));
     }
 
     /// CachedRoom must include status field from the Room model
@@ -531,8 +525,8 @@ mod tests {
     /// CachedRoom::from(Room) must correctly populate all fields
     #[tokio::test]
     async fn test_cached_room_from_room_model() {
-        use crate::models::{Room, RoomStatus};
         use crate::models::UserId;
+        use crate::models::{Room, RoomStatus};
 
         let now = chrono::Utc::now();
         let room = Room {
@@ -546,6 +540,7 @@ mod tests {
             updated_at: now,
             deleted_at: Some(now),
             version: 5,
+            last_activity_at: now,
         };
 
         let cached: CachedRoom = CachedRoom::from(&room);

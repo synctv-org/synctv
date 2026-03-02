@@ -413,6 +413,20 @@ impl RoomService {
                     "Room creation is currently disabled".to_string(),
                 ));
             }
+            // `room_must_need_pwd`: if true, rooms must have a password
+            if registry.room_must_need_pwd.get().unwrap_or(false) && password.is_none() {
+                tracing::warn!(user_id = %created_by, "Room creation rejected: password required by server policy");
+                return Err(Error::InvalidInput(
+                    "Room password is required by server policy".to_string(),
+                ));
+            }
+            // `room_must_no_need_pwd`: if true, rooms must NOT have a password
+            if registry.room_must_no_need_pwd.get().unwrap_or(false) && password.is_some() {
+                tracing::warn!(user_id = %created_by, "Room creation rejected: passwords not allowed by server policy");
+                return Err(Error::InvalidInput(
+                    "Room passwords are not allowed by server policy".to_string(),
+                ));
+            }
         }
 
         // Validate room name using centralized validator
@@ -735,6 +749,9 @@ impl RoomService {
             member_count = members.len(),
             "User joined room successfully"
         );
+
+        // Touch room activity to prevent TTL expiry on active rooms
+        self.touch_room_activity(room_id);
 
         Ok((room, created_member, members))
     }
@@ -1824,6 +1841,20 @@ impl RoomService {
             .await
     }
 
+    /// Fire-and-forget: update the room's `last_activity_at` timestamp.
+    ///
+    /// Call this after chat messages, playback state changes, or member
+    /// joins/leaves to prevent active rooms from being expired by the TTL
+    /// cleanup.
+    pub fn touch_room_activity(&self, room_id: RoomId) {
+        let repo = self.room_repo.clone();
+        tokio::spawn(async move {
+            if let Err(e) = repo.touch_activity(&room_id).await {
+                tracing::debug!(error = %e, room_id = %room_id.as_str(), "Failed to touch room activity");
+            }
+        });
+    }
+
     /// Get room members with user info
     pub async fn get_room_members(
         &self,
@@ -2135,12 +2166,14 @@ impl RoomService {
     /// This method no longer performs its own permission check to avoid
     /// inconsistency with the API layer's `CLEAR_PLAYLIST` check.
     ///
-    /// Returns an error if media that is currently playing is in the playlist,
-    /// since removing it would leave playback in an inconsistent state.
+    /// If the currently playing media is in the playlist being cleared,
+    /// the playback state is reset to stopped within the same transaction
+    /// before clearing, giving a clean state. The FK has ON DELETE SET NULL
+    /// so it's safe, but explicitly resetting avoids orphaned playback state.
     pub async fn clear_playlist(&self, room_id: RoomId, _user_id: UserId) -> Result<i64> {
         let root_playlist = self.playlist_service.get_root_playlist(&room_id).await?;
 
-        // Atomic check-and-clear within a transaction to prevent TOCTOU race
+        // Atomic reset-and-clear within a transaction to prevent TOCTOU race
         // where another user starts playing media between the check and the clear.
         let mut tx = self.pool.begin().await?;
 
@@ -2154,7 +2187,7 @@ impl RoomService {
         .fetch_optional(&mut *tx)
         .await?;
 
-        // Only block clearing if the currently playing media is in this playlist
+        // If the currently playing media is in this playlist, reset playback state
         if let Some(row) = row {
             use sqlx::Row;
             let playing_media_id: Option<String> = row.try_get("playing_media_id")?;
@@ -2169,10 +2202,17 @@ impl RoomService {
                 .await?;
 
                 if in_playlist {
-                    return Err(Error::InvalidInput(
-                        "Cannot clear playlist while media from it is currently playing"
-                            .to_string(),
-                    ));
+                    // Reset playback state to stopped within the same transaction
+                    sqlx::query(
+                        "UPDATE room_playback_state
+                         SET playing_media_id = NULL, playing_playlist_id = NULL,
+                             current_time = 0, is_playing = false,
+                             version = version + 1, updated_at = NOW()
+                         WHERE room_id = $1",
+                    )
+                    .bind(room_id.as_str())
+                    .execute(&mut *tx)
+                    .await?;
                 }
             }
         }
@@ -2811,7 +2851,10 @@ impl RoomService {
     /// Broadcast room settings cache invalidation to other replicas.
     async fn notify_room_settings_invalidation(&self, room_id: &RoomId) {
         if let Some(ref service) = self.cache_invalidation {
-            if let Err(e) = service.invalidate_and_broadcast_room_settings(room_id).await {
+            if let Err(e) = service
+                .invalidate_and_broadcast_room_settings(room_id)
+                .await
+            {
                 tracing::warn!(
                     error = %e,
                     room_id = %room_id.as_str(),

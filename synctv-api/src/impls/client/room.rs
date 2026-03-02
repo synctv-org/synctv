@@ -408,6 +408,11 @@ impl ClientApiImpl {
 
         if req.settings.is_empty() {
             // No settings to update -- return current room state without a DB write.
+            // Still verify membership before returning room data.
+            self.room_service
+                .check_membership(&rid, &uid)
+                .await
+                .map_err(|e| ApiError::Authorization(format!("Forbidden: {e}")))?;
             let room = self
                 .room_service
                 .get_room(&rid)

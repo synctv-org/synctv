@@ -26,7 +26,9 @@
 //! Run with: cargo test -p synctv-core --test rate_limiter_fail_mode_tests
 #![allow(clippy::unwrap_used)]
 
+use std::sync::Arc;
 use synctv_core::service::{RateLimitError, RateLimiter};
+use tokio::sync::RwLock;
 
 // ============================================================================
 // Test 1: Verify current fail-open behavior (document existing behavior)
@@ -372,7 +374,10 @@ async fn test_redis_backend_strict_fails_closed_on_error() {
             // Try to create connection manager - this might fail for unreachable Redis
             match redis::aio::ConnectionManager::new(client).await {
                 Ok(conn) => {
-                    let limiter = RateLimiter::new(Some(conn), "redis_strict:".to_string());
+                    let limiter = RateLimiter::new(
+                        Some(Arc::new(RwLock::new(conn))),
+                        "redis_strict:".to_string(),
+                    );
 
                     // The distributed check should fail closed when Redis is unreachable
                     let result = limiter.check_rate_limit_distributed("key", 10, 1).await;

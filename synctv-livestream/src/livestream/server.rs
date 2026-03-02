@@ -125,7 +125,10 @@ impl LivestreamHandle {
         info!("All managed pull streams stopped");
 
         info!("Stopping all managed external publish streams...");
-        self.infrastructure.external_publish_manager.stop_all().await;
+        self.infrastructure
+            .external_publish_manager
+            .stop_all()
+            .await;
         info!("All managed external publish streams stopped");
 
         // 2. Abort external publish cleanup (periodic timer, no graceful signal)

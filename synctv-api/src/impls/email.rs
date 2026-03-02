@@ -83,7 +83,10 @@ impl EmailApiImpl {
             .await
             .map_err(|e| ApiError::Internal(format!("Failed to send email: {e}")))?;
 
-        tracing::info!("Sent verification email to {email}");
+        tracing::info!(
+            "Sent verification email to {}",
+            synctv_core::service::mask_email(email)
+        );
 
         Ok(SendVerificationResult {
             message: generic_message,

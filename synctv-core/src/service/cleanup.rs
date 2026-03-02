@@ -21,7 +21,7 @@ use crate::{InternalExt, Result};
 /// Configuration for data cleanup retention periods
 #[derive(Debug, Clone)]
 pub struct CleanupConfig {
-    /// Room TTL in seconds (0 = never expire). Rooms with `updated_at` older than this are soft-deleted.
+    /// Room TTL in seconds (0 = never expire). Rooms with `last_activity_at` older than this are soft-deleted.
     pub room_ttl_seconds: i64,
     /// Days to retain soft-deleted users before permanent deletion (0 = never purge)
     pub soft_delete_retention_days: u32,
@@ -222,7 +222,7 @@ impl CleanupService {
             UPDATE rooms
             SET deleted_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
             WHERE deleted_at IS NULL
-              AND updated_at < CURRENT_TIMESTAMP - ($1 || ' seconds')::INTERVAL
+              AND last_activity_at < CURRENT_TIMESTAMP - ($1 || ' seconds')::INTERVAL
             ",
         )
         .bind(ttl_seconds)

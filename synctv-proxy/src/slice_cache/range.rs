@@ -101,9 +101,7 @@ pub fn parse_content_range(value: &str) -> Result<ContentRange, anyhow::Error> {
 
     // Must start with "bytes " (case-sensitive, matching nginx).
     if !value.starts_with("bytes ") {
-        return Err(anyhow::anyhow!(
-            "Content-Range must start with 'bytes '"
-        ));
+        return Err(anyhow::anyhow!("Content-Range must start with 'bytes '"));
     }
 
     let rest = value["bytes ".len()..].trim_start();
@@ -197,11 +195,7 @@ pub fn compute_needed_slices(range_start: u64, range_end: u64, slice_size: usize
 /// Compute the aligned byte range `(start, end)` for a given slice index.
 /// Both `start` and `end` are inclusive.
 #[must_use]
-pub fn aligned_range_for_slice(
-    slice_index: u64,
-    slice_size: usize,
-    total_size: u64,
-) -> (u64, u64) {
+pub fn aligned_range_for_slice(slice_index: u64, slice_size: usize, total_size: u64) -> (u64, u64) {
     let ss = slice_size as u64;
     let start = slice_index * ss;
     let end = std::cmp::min(start + ss, total_size) - 1;

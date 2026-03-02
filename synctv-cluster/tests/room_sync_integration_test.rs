@@ -28,13 +28,11 @@ struct TestRedis {
 
 impl TestRedis {
     async fn start() -> Self {
-        let redis_container = tokio::time::timeout(
-            Duration::from_secs(30),
-            Redis::default().start(),
-        )
-        .await
-        .expect("Docker container startup timed out (is Docker running?)")
-        .expect("Failed to start Redis container");
+        let redis_container =
+            tokio::time::timeout(Duration::from_secs(30), Redis::default().start())
+                .await
+                .expect("Docker container startup timed out (is Docker running?)")
+                .expect("Failed to start Redis container");
 
         let redis_host = redis_container
             .get_host()

@@ -357,7 +357,10 @@ mod inner {
             assert!(storage.read("..", "stream", "name").await.is_err());
             assert!(storage.delete("..", "stream", "name").await.is_err());
             assert!(storage.exists("..", "stream", "name").await.is_err());
-            assert!(storage.get_public_url("..", "stream", "name").await.is_err());
+            assert!(storage
+                .get_public_url("..", "stream", "name")
+                .await
+                .is_err());
 
             // Path traversal via ".." in stream
             assert!(storage

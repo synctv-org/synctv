@@ -14,8 +14,6 @@ use tracing::{error, info, warn};
 
 use super::connection_pool::GrpcConnectionPool;
 use super::proto::{stream_relay_service_client::StreamRelayServiceClient, PullRtmpStreamRequest};
-use crate::relay::StreamRegistryTrait;
-
 /// gRPC Stream Puller
 /// Pulls RTMP stream from remote Publisher node via gRPC and publishes to local `StreamHub`
 pub struct GrpcStreamPuller {
@@ -34,9 +32,7 @@ impl GrpcStreamPuller {
         room_id: String,
         media_id: String,
         publisher_node_addr: String,
-        _node_id: String,
         stream_hub_event_sender: StreamHubEventSender,
-        _registry: Arc<dyn StreamRegistryTrait>,
     ) -> Self {
         Self {
             room_id,
@@ -376,8 +372,6 @@ impl GrpcStreamPuller {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::relay::MockStreamRegistry;
-
     #[tokio::test]
     async fn test_puller_creation() {
         let (stream_hub_event_sender, _) = tokio::sync::mpsc::channel(64);
@@ -386,9 +380,7 @@ mod tests {
             "room123".to_string(),
             "media456".to_string(),
             "publisher-node:50051".to_string(),
-            "node-1".to_string(),
             stream_hub_event_sender,
-            std::sync::Arc::new(MockStreamRegistry::new()),
         );
 
         assert_eq!(puller.room_id, "room123");
@@ -427,9 +419,7 @@ mod tests {
             "room".to_string(),
             "media".to_string(),
             "node:50051".to_string(),
-            "local".to_string(),
             stream_hub_event_sender,
-            std::sync::Arc::new(MockStreamRegistry::new()),
         )
         .with_cluster_secret(Some("test-secret".to_string()));
 

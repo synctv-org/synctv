@@ -60,6 +60,7 @@ async fn test_chat_message_default_partition_routing() {
                 updated_at: now,
                 deleted_at: None,
                 version: 0,
+                last_activity_at: now,
             }
         })
         .await

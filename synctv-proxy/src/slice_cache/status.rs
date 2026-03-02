@@ -124,7 +124,11 @@ mod tests {
         let mut deduped = strs.clone();
         deduped.sort();
         deduped.dedup();
-        assert_eq!(strs.len(), deduped.len(), "All status strings must be unique");
+        assert_eq!(
+            strs.len(),
+            deduped.len(),
+            "All status strings must be unique"
+        );
     }
 
     #[test]

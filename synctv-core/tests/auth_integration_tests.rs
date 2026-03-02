@@ -99,13 +99,10 @@ async fn create_test_infra() -> (
         .expect("Failed to run migrations");
 
     // Start Redis
-    let redis = tokio::time::timeout(
-        std::time::Duration::from_secs(30),
-        Redis::default().start(),
-    )
-    .await
-    .expect("Docker container startup timed out (is Docker running?)")
-    .expect("Failed to start Redis container");
+    let redis = tokio::time::timeout(std::time::Duration::from_secs(30), Redis::default().start())
+        .await
+        .expect("Docker container startup timed out (is Docker running?)")
+        .expect("Failed to start Redis container");
 
     let redis_port = redis
         .get_host_port_ipv4(6379)

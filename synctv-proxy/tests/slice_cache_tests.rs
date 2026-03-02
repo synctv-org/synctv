@@ -65,7 +65,7 @@ fn test_slice_cache_new() {
 fn test_slice_cache_custom_config() {
     let config = SliceCacheConfig {
         enabled: true,
-        slice_size: 1024 * 1024, // 1MB
+        slice_size: 1024 * 1024,           // 1MB
         max_cache_size: 100 * 1024 * 1024, // 100MB
         ..Default::default()
     };
@@ -93,7 +93,10 @@ fn test_cache_key_different_slice_index() {
     let headers: HashMap<String, String> = HashMap::new();
     let key0 = SliceCache::compute_cache_key(url, &headers, 0);
     let key1 = SliceCache::compute_cache_key(url, &headers, 1);
-    assert_ne!(key0, key1, "Different slice indices must produce different keys");
+    assert_ne!(
+        key0, key1,
+        "Different slice indices must produce different keys"
+    );
 }
 
 #[test]
@@ -149,8 +152,7 @@ fn test_parse_range_single_range() {
 #[test]
 fn test_parse_range_open_ended() {
     // "bytes=500-" means from 500 to end
-    let (start, end) =
-        synctv_proxy::slice_cache::parse_range_header("bytes=500-", 10000).unwrap();
+    let (start, end) = synctv_proxy::slice_cache::parse_range_header("bytes=500-", 10000).unwrap();
     assert_eq!(start, 500);
     assert_eq!(end, 9999);
 }
@@ -158,8 +160,7 @@ fn test_parse_range_open_ended() {
 #[test]
 fn test_parse_range_suffix() {
     // "bytes=-500" means last 500 bytes
-    let (start, end) =
-        synctv_proxy::slice_cache::parse_range_header("bytes=-500", 10000).unwrap();
+    let (start, end) = synctv_proxy::slice_cache::parse_range_header("bytes=-500", 10000).unwrap();
     assert_eq!(start, 9500);
     assert_eq!(end, 9999);
 }
@@ -208,7 +209,8 @@ fn test_compute_needed_slices_single_slice() {
 #[test]
 fn test_compute_needed_slices_multiple_slices() {
     // Range 0-4194303 (4MB) with slice_size=2MB needs slices 0 and 1
-    let slices = synctv_proxy::slice_cache::compute_needed_slices(0, 4 * 1024 * 1024 - 1, 2 * 1024 * 1024);
+    let slices =
+        synctv_proxy::slice_cache::compute_needed_slices(0, 4 * 1024 * 1024 - 1, 2 * 1024 * 1024);
     assert_eq!(slices, vec![0, 1]);
 }
 
@@ -224,7 +226,8 @@ fn test_compute_needed_slices_cross_boundary() {
 fn test_compute_needed_slices_exact_boundary() {
     // Range starts exactly at slice boundary
     let mb: u64 = 1024 * 1024;
-    let slices = synctv_proxy::slice_cache::compute_needed_slices(2 * mb, 4 * mb - 1, 2 * mb as usize);
+    let slices =
+        synctv_proxy::slice_cache::compute_needed_slices(2 * mb, 4 * mb - 1, 2 * mb as usize);
     assert_eq!(slices, vec![1]);
 }
 
@@ -344,10 +347,7 @@ async fn test_proxy_with_cache_returns_206_for_range_request() {
         .respond_with(
             ResponseTemplate::new(206)
                 .set_body_bytes(slice_data.clone())
-                .insert_header(
-                    "Content-Range",
-                    format!("bytes 0-2097151/{total_size}"),
-                )
+                .insert_header("Content-Range", format!("bytes 0-2097151/{total_size}"))
                 .insert_header("Content-Length", "2097152"),
         )
         .mount(&mock_server)
@@ -372,9 +372,7 @@ async fn test_proxy_with_cache_returns_206_for_range_request() {
 
     let headers = response.headers();
     assert_eq!(
-        headers
-            .get("Content-Range")
-            .map(|v| v.to_str().unwrap()),
+        headers.get("Content-Range").map(|v| v.to_str().unwrap()),
         Some(format!("bytes 0-999/{total_size}").as_str()),
     );
     assert!(
@@ -442,10 +440,7 @@ async fn test_proxy_with_cache_x_cache_status_miss() {
         .respond_with(
             ResponseTemplate::new(206)
                 .set_body_bytes(slice_data.clone())
-                .insert_header(
-                    "Content-Range",
-                    format!("bytes 0-2097151/{total_size}"),
-                )
+                .insert_header("Content-Range", format!("bytes 0-2097151/{total_size}"))
                 .insert_header("Content-Length", "2097152"),
         )
         .mount(&mock_server)
@@ -499,10 +494,7 @@ async fn test_proxy_with_cache_x_cache_status_hit() {
         .respond_with(
             ResponseTemplate::new(206)
                 .set_body_bytes(slice_data.clone())
-                .insert_header(
-                    "Content-Range",
-                    format!("bytes 0-2097151/{total_size}"),
-                )
+                .insert_header("Content-Range", format!("bytes 0-2097151/{total_size}"))
                 .insert_header("Content-Length", "2097152"),
         )
         .expect(1) // Should only be called once
@@ -567,12 +559,9 @@ async fn test_proxy_with_cache_head_request_returns_content_length() {
     let url = format!("{}/video.mp4", mock_server.uri());
     let provider_headers = HashMap::new();
 
-    let total = synctv_proxy::slice_cache::head_content_length(
-        &url,
-        &provider_headers,
-    )
-    .await
-    .unwrap();
+    let total = synctv_proxy::slice_cache::head_content_length(&url, &provider_headers)
+        .await
+        .unwrap();
 
     assert_eq!(total, total_size);
 }
@@ -621,10 +610,7 @@ async fn test_concurrent_fetches_same_slice_only_one_upstream_request() {
         .respond_with(
             ResponseTemplate::new(206)
                 .set_body_bytes(slice_data.clone())
-                .insert_header(
-                    "Content-Range",
-                    format!("bytes 0-2097151/{total_size}"),
-                )
+                .insert_header("Content-Range", format!("bytes 0-2097151/{total_size}"))
                 .insert_header("Content-Length", "2097152"),
         )
         .expect(1) // Exactly 1 upstream request even with concurrent callers
@@ -715,17 +701,20 @@ fn test_aligned_range_for_slice() {
     let total_size = 10 * 1024 * 1024; // 10MB
 
     // Slice 0: bytes 0 to 2097151
-    let (start, end) = synctv_proxy::slice_cache::aligned_range_for_slice(0, slice_size, total_size);
+    let (start, end) =
+        synctv_proxy::slice_cache::aligned_range_for_slice(0, slice_size, total_size);
     assert_eq!(start, 0);
     assert_eq!(end, 2 * 1024 * 1024 - 1);
 
     // Slice 1: bytes 2097152 to 4194303
-    let (start, end) = synctv_proxy::slice_cache::aligned_range_for_slice(1, slice_size, total_size);
+    let (start, end) =
+        synctv_proxy::slice_cache::aligned_range_for_slice(1, slice_size, total_size);
     assert_eq!(start, 2 * 1024 * 1024);
     assert_eq!(end, 4 * 1024 * 1024 - 1);
 
     // Last slice (slice 4): bytes 8388608 to 10485759
-    let (start, end) = synctv_proxy::slice_cache::aligned_range_for_slice(4, slice_size, total_size);
+    let (start, end) =
+        synctv_proxy::slice_cache::aligned_range_for_slice(4, slice_size, total_size);
     assert_eq!(start, 8 * 1024 * 1024);
     assert_eq!(end, 10 * 1024 * 1024 - 1);
 }
@@ -736,7 +725,8 @@ fn test_aligned_range_last_slice_partial() {
     let total_size: u64 = 3 * 1024 * 1024; // 3MB total
 
     // Slice 1: bytes 2097152 to 3145727 (only 1MB, not full 2MB)
-    let (start, end) = synctv_proxy::slice_cache::aligned_range_for_slice(1, slice_size, total_size);
+    let (start, end) =
+        synctv_proxy::slice_cache::aligned_range_for_slice(1, slice_size, total_size);
     assert_eq!(start, 2 * 1024 * 1024);
     assert_eq!(end, 3 * 1024 * 1024 - 1);
 }
@@ -770,36 +760,32 @@ async fn test_full_body_cache_no_range_cached_then_hit() {
     let provider_headers = HashMap::new();
 
     // First request - MISS, should fetch and cache
-    let resp1 = synctv_proxy::slice_cache::proxy_with_cache(
-        &cache,
-        None,
-        &url,
-        &provider_headers,
-    )
-    .await
-    .unwrap();
+    let resp1 = synctv_proxy::slice_cache::proxy_with_cache(&cache, None, &url, &provider_headers)
+        .await
+        .unwrap();
 
     assert_eq!(resp1.status(), StatusCode::OK);
     assert_eq!(
-        resp1.headers().get("X-Cache-Status").map(|v| v.to_str().unwrap()),
+        resp1
+            .headers()
+            .get("X-Cache-Status")
+            .map(|v| v.to_str().unwrap()),
         Some("MISS"),
     );
     let body1 = resp1.into_body().collect().await.unwrap().to_bytes();
     assert_eq!(body1.len(), 1024);
 
     // Second request - HIT from cache (wiremock expect(1) verifies no second upstream call)
-    let resp2 = synctv_proxy::slice_cache::proxy_with_cache(
-        &cache,
-        None,
-        &url,
-        &provider_headers,
-    )
-    .await
-    .unwrap();
+    let resp2 = synctv_proxy::slice_cache::proxy_with_cache(&cache, None, &url, &provider_headers)
+        .await
+        .unwrap();
 
     assert_eq!(resp2.status(), StatusCode::OK);
     assert_eq!(
-        resp2.headers().get("X-Cache-Status").map(|v| v.to_str().unwrap()),
+        resp2
+            .headers()
+            .get("X-Cache-Status")
+            .map(|v| v.to_str().unwrap()),
         Some("HIT"),
     );
     let body2 = resp2.into_body().collect().await.unwrap().to_bytes();
@@ -836,33 +822,26 @@ async fn test_full_body_cache_oversized_not_cached() {
     let provider_headers = HashMap::new();
 
     // First request
-    let resp1 = synctv_proxy::slice_cache::proxy_with_cache(
-        &cache,
-        None,
-        &url,
-        &provider_headers,
-    )
-    .await
-    .unwrap();
+    let resp1 = synctv_proxy::slice_cache::proxy_with_cache(&cache, None, &url, &provider_headers)
+        .await
+        .unwrap();
 
     assert_eq!(resp1.status(), StatusCode::OK);
     // Oversized bodies get BYPASS status
     assert_eq!(
-        resp1.headers().get("X-Cache-Status").map(|v| v.to_str().unwrap()),
+        resp1
+            .headers()
+            .get("X-Cache-Status")
+            .map(|v| v.to_str().unwrap()),
         Some("BYPASS"),
     );
     // Consume the body so the stream completes
     let _ = resp1.into_body().collect().await.unwrap().to_bytes();
 
     // Second request - also goes upstream since body was too large to cache
-    let resp2 = synctv_proxy::slice_cache::proxy_with_cache(
-        &cache,
-        None,
-        &url,
-        &provider_headers,
-    )
-    .await
-    .unwrap();
+    let resp2 = synctv_proxy::slice_cache::proxy_with_cache(&cache, None, &url, &provider_headers)
+        .await
+        .unwrap();
 
     assert_eq!(resp2.status(), StatusCode::OK);
     let _ = resp2.into_body().collect().await.unwrap().to_bytes();
@@ -898,32 +877,27 @@ async fn test_full_body_cache_m3u8_uses_manifest_ttl() {
     let url = format!("{}/live.m3u8", mock_server.uri());
     let provider_headers = HashMap::new();
 
-    let resp = synctv_proxy::slice_cache::proxy_with_cache(
-        &cache,
-        None,
-        &url,
-        &provider_headers,
-    )
-    .await
-    .unwrap();
+    let resp = synctv_proxy::slice_cache::proxy_with_cache(&cache, None, &url, &provider_headers)
+        .await
+        .unwrap();
 
     assert_eq!(resp.status(), StatusCode::OK);
     assert_eq!(
-        resp.headers().get("X-Cache-Status").map(|v| v.to_str().unwrap()),
+        resp.headers()
+            .get("X-Cache-Status")
+            .map(|v| v.to_str().unwrap()),
         Some("MISS"),
     );
 
     // Immediately after: should be HIT
-    let resp2 = synctv_proxy::slice_cache::proxy_with_cache(
-        &cache,
-        None,
-        &url,
-        &provider_headers,
-    )
-    .await
-    .unwrap();
+    let resp2 = synctv_proxy::slice_cache::proxy_with_cache(&cache, None, &url, &provider_headers)
+        .await
+        .unwrap();
     assert_eq!(
-        resp2.headers().get("X-Cache-Status").map(|v| v.to_str().unwrap()),
+        resp2
+            .headers()
+            .get("X-Cache-Status")
+            .map(|v| v.to_str().unwrap()),
         Some("HIT"),
     );
 }
@@ -961,16 +935,14 @@ async fn test_full_body_cache_expiry_returns_expired() {
     let provider_headers = HashMap::new();
 
     // First request - MISS
-    let resp1 = synctv_proxy::slice_cache::proxy_with_cache(
-        &cache,
-        None,
-        &url,
-        &provider_headers,
-    )
-    .await
-    .unwrap();
+    let resp1 = synctv_proxy::slice_cache::proxy_with_cache(&cache, None, &url, &provider_headers)
+        .await
+        .unwrap();
     assert_eq!(
-        resp1.headers().get("X-Cache-Status").map(|v| v.to_str().unwrap()),
+        resp1
+            .headers()
+            .get("X-Cache-Status")
+            .map(|v| v.to_str().unwrap()),
         Some("MISS"),
     );
     let _ = resp1.into_body().collect().await.unwrap().to_bytes();
@@ -979,16 +951,14 @@ async fn test_full_body_cache_expiry_returns_expired() {
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     // After expiry - should be EXPIRED
-    let resp2 = synctv_proxy::slice_cache::proxy_with_cache(
-        &cache,
-        None,
-        &url,
-        &provider_headers,
-    )
-    .await
-    .unwrap();
+    let resp2 = synctv_proxy::slice_cache::proxy_with_cache(&cache, None, &url, &provider_headers)
+        .await
+        .unwrap();
     assert_eq!(
-        resp2.headers().get("X-Cache-Status").map(|v| v.to_str().unwrap()),
+        resp2
+            .headers()
+            .get("X-Cache-Status")
+            .map(|v| v.to_str().unwrap()),
         Some("EXPIRED"),
     );
     let _ = resp2.into_body().collect().await.unwrap().to_bytes();
@@ -1106,10 +1076,7 @@ async fn test_etag_consistency_mismatch_triggers_invalidation() {
         .respond_with(
             ResponseTemplate::new(206)
                 .set_body_bytes(slice1.clone())
-                .insert_header(
-                    "Content-Range",
-                    format!("bytes 1024-2047/{total_size}"),
-                )
+                .insert_header("Content-Range", format!("bytes 1024-2047/{total_size}"))
                 .insert_header("Content-Length", "1024")
                 .insert_header("ETag", "\"etag-v2\""), // Different!
         )
@@ -1173,17 +1140,14 @@ async fn test_cache_status_bypass_when_disabled() {
     let cache = SliceCache::new(config);
     let url = format!("{}/video.mp4", mock_server.uri());
 
-    let resp = synctv_proxy::slice_cache::proxy_with_cache(
-        &cache,
-        None,
-        &url,
-        &HashMap::new(),
-    )
-    .await
-    .unwrap();
+    let resp = synctv_proxy::slice_cache::proxy_with_cache(&cache, None, &url, &HashMap::new())
+        .await
+        .unwrap();
 
     assert_eq!(
-        resp.headers().get("X-Cache-Status").map(|v| v.to_str().unwrap()),
+        resp.headers()
+            .get("X-Cache-Status")
+            .map(|v| v.to_str().unwrap()),
         Some("BYPASS"),
         "Disabled cache must return BYPASS"
     );
@@ -1245,10 +1209,7 @@ async fn test_cache_status_expired_for_slice_request() {
         .respond_with(
             ResponseTemplate::new(206)
                 .set_body_bytes(slice_data.clone())
-                .insert_header(
-                    "Content-Range",
-                    format!("bytes 0-2097151/{total_size}"),
-                )
+                .insert_header("Content-Range", format!("bytes 0-2097151/{total_size}"))
                 .insert_header("Content-Length", "2097152"),
         )
         .expect(2) // Called once initially, then again after expiry
@@ -1277,7 +1238,10 @@ async fn test_cache_status_expired_for_slice_request() {
     .await
     .unwrap();
     assert_eq!(
-        resp1.headers().get("X-Cache-Status").map(|v| v.to_str().unwrap()),
+        resp1
+            .headers()
+            .get("X-Cache-Status")
+            .map(|v| v.to_str().unwrap()),
         Some("MISS"),
     );
 
@@ -1294,7 +1258,10 @@ async fn test_cache_status_expired_for_slice_request() {
     .await
     .unwrap();
     assert_eq!(
-        resp2.headers().get("X-Cache-Status").map(|v| v.to_str().unwrap()),
+        resp2
+            .headers()
+            .get("X-Cache-Status")
+            .map(|v| v.to_str().unwrap()),
         Some("EXPIRED"),
     );
 }
@@ -1418,7 +1385,10 @@ fn test_parse_content_range_non_numeric_end() {
 #[test]
 fn test_parse_content_range_non_numeric_length() {
     let result = parse_content_range("bytes 0-499/abc");
-    assert!(result.is_err(), "Non-numeric complete length must be rejected");
+    assert!(
+        result.is_err(),
+        "Non-numeric complete length must be rejected"
+    );
 }
 
 #[test]
@@ -1536,10 +1506,7 @@ async fn test_stale_locks_cleaned_up() {
             .respond_with(
                 ResponseTemplate::new(206)
                     .set_body_bytes(slice_data.clone())
-                    .insert_header(
-                        "Content-Range",
-                        format!("bytes {start}-{end}/{total_size}"),
-                    )
+                    .insert_header("Content-Range", format!("bytes {start}-{end}/{total_size}"))
                     .insert_header("Content-Length", "1024"),
             )
             .mount(&mock_server)
@@ -1602,10 +1569,7 @@ async fn test_cached_meta_avoids_head_request() {
         .respond_with(
             ResponseTemplate::new(206)
                 .set_body_bytes(slice_data.clone())
-                .insert_header(
-                    "Content-Range",
-                    format!("bytes 0-2097151/{total_size}"),
-                )
+                .insert_header("Content-Range", format!("bytes 0-2097151/{total_size}"))
                 .insert_header("Content-Length", "2097152")
                 .insert_header("Content-Type", "video/mp4"),
         )
@@ -1631,7 +1595,10 @@ async fn test_cached_meta_avoids_head_request() {
 
     // Verify metadata is now cached
     let meta = cache.get_resource_meta(&url, &provider_headers).await;
-    assert!(meta.is_some(), "Metadata should be cached after first fetch");
+    assert!(
+        meta.is_some(),
+        "Metadata should be cached after first fetch"
+    );
     assert_eq!(meta.unwrap().total_size, Some(total_size));
 
     // Second range request: should reuse cached total_size, NO HEAD request
@@ -1695,16 +1662,14 @@ async fn test_full_body_stale_when_expired_within_window() {
     let provider_headers = HashMap::new();
 
     // First request - MISS
-    let resp1 = synctv_proxy::slice_cache::proxy_with_cache(
-        &cache,
-        None,
-        &url,
-        &provider_headers,
-    )
-    .await
-    .unwrap();
+    let resp1 = synctv_proxy::slice_cache::proxy_with_cache(&cache, None, &url, &provider_headers)
+        .await
+        .unwrap();
     assert_eq!(
-        resp1.headers().get("X-Cache-Status").map(|v| v.to_str().unwrap()),
+        resp1
+            .headers()
+            .get("X-Cache-Status")
+            .map(|v| v.to_str().unwrap()),
         Some("MISS"),
     );
     let body1 = resp1.into_body().collect().await.unwrap().to_bytes();
@@ -1714,14 +1679,9 @@ async fn test_full_body_stale_when_expired_within_window() {
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     // Second request - STALE (expired but within stale window)
-    let resp2 = synctv_proxy::slice_cache::proxy_with_cache(
-        &cache,
-        None,
-        &url,
-        &provider_headers,
-    )
-    .await
-    .unwrap();
+    let resp2 = synctv_proxy::slice_cache::proxy_with_cache(&cache, None, &url, &provider_headers)
+        .await
+        .unwrap();
     let status_str = resp2
         .headers()
         .get("X-Cache-Status")
@@ -1761,10 +1721,7 @@ async fn test_slice_stale_when_expired_within_window() {
         .respond_with(
             ResponseTemplate::new(206)
                 .set_body_bytes(slice_data.clone())
-                .insert_header(
-                    "Content-Range",
-                    format!("bytes 0-2097151/{total_size}"),
-                )
+                .insert_header("Content-Range", format!("bytes 0-2097151/{total_size}"))
                 .insert_header("Content-Length", "2097152"),
         )
         .mount(&mock_server)
@@ -1790,7 +1747,10 @@ async fn test_slice_stale_when_expired_within_window() {
     .await
     .unwrap();
     assert_eq!(
-        resp1.headers().get("X-Cache-Status").map(|v| v.to_str().unwrap()),
+        resp1
+            .headers()
+            .get("X-Cache-Status")
+            .map(|v| v.to_str().unwrap()),
         Some("MISS"),
     );
 
@@ -1807,7 +1767,10 @@ async fn test_slice_stale_when_expired_within_window() {
     .await
     .unwrap();
     assert_eq!(
-        resp2.headers().get("X-Cache-Status").map(|v| v.to_str().unwrap()),
+        resp2
+            .headers()
+            .get("X-Cache-Status")
+            .map(|v| v.to_str().unwrap()),
         Some("STALE"),
         "Expired slice within stale window should return STALE"
     );
@@ -1832,10 +1795,7 @@ async fn test_slice_updating_status_on_stale_entry() {
         .respond_with(
             ResponseTemplate::new(206)
                 .set_body_bytes(slice_data.clone())
-                .insert_header(
-                    "Content-Range",
-                    format!("bytes 0-1023/{total_size}"),
-                )
+                .insert_header("Content-Range", format!("bytes 0-1023/{total_size}"))
                 .insert_header("Content-Length", "1024"),
         )
         .mount(&mock_server)
@@ -1896,10 +1856,7 @@ async fn test_conditional_request_304_returns_revalidated() {
         .respond_with(
             ResponseTemplate::new(206)
                 .set_body_bytes(slice_data.clone())
-                .insert_header(
-                    "Content-Range",
-                    format!("bytes 0-1023/{total_size}"),
-                )
+                .insert_header("Content-Range", format!("bytes 0-1023/{total_size}"))
                 .insert_header("Content-Length", "1024")
                 .insert_header("ETag", "\"etag-v1\"")
                 .insert_header("Last-Modified", "Wed, 01 Jan 2025 00:00:00 GMT"),
@@ -1983,10 +1940,7 @@ async fn test_last_modified_tracked_in_metadata() {
         .respond_with(
             ResponseTemplate::new(206)
                 .set_body_bytes(slice_data.clone())
-                .insert_header(
-                    "Content-Range",
-                    format!("bytes 0-1023/{total_size}"),
-                )
+                .insert_header("Content-Range", format!("bytes 0-1023/{total_size}"))
                 .insert_header("Content-Length", "1024")
                 .insert_header("Last-Modified", "Sat, 01 Feb 2025 12:00:00 GMT"),
         )
@@ -2080,10 +2034,7 @@ async fn test_file_backend_slice_cache_integration() {
         .respond_with(
             ResponseTemplate::new(206)
                 .set_body_bytes(slice_data.clone())
-                .insert_header(
-                    "Content-Range",
-                    format!("bytes 0-1023/{total_size}"),
-                )
+                .insert_header("Content-Range", format!("bytes 0-1023/{total_size}"))
                 .insert_header("Content-Length", "1024"),
         )
         .expect(1) // Only one upstream request
@@ -2145,10 +2096,7 @@ async fn test_get_or_fetch_slice_returns_cache_status() {
         .respond_with(
             ResponseTemplate::new(206)
                 .set_body_bytes(slice_data.clone())
-                .insert_header(
-                    "Content-Range",
-                    format!("bytes 0-1023/{total_size}"),
-                )
+                .insert_header("Content-Range", format!("bytes 0-1023/{total_size}"))
                 .insert_header("Content-Length", "1024"),
         )
         .expect(1)
@@ -2202,10 +2150,7 @@ async fn test_updating_status_correctly_distinguishes_stale_and_updating() {
         .respond_with(
             ResponseTemplate::new(206)
                 .set_body_bytes(slice_data.clone())
-                .insert_header(
-                    "Content-Range",
-                    format!("bytes 0-1023/{total_size}"),
-                )
+                .insert_header("Content-Range", format!("bytes 0-1023/{total_size}"))
                 .insert_header("Content-Length", "1024"),
         )
         .mount(&mock_server)
@@ -2279,10 +2224,7 @@ async fn test_updating_keys_cleaned_on_fetch_failure() {
         .respond_with(
             ResponseTemplate::new(206)
                 .set_body_bytes(slice_data.clone())
-                .insert_header(
-                    "Content-Range",
-                    format!("bytes 0-1023/{total_size}"),
-                )
+                .insert_header("Content-Range", format!("bytes 0-1023/{total_size}"))
                 .insert_header("Content-Length", "1024"),
         )
         .expect(1)
@@ -2361,10 +2303,7 @@ async fn test_updating_keys_cleaned_on_fetch_failure() {
         .respond_with(
             ResponseTemplate::new(206)
                 .set_body_bytes(slice_data.clone())
-                .insert_header(
-                    "Content-Range",
-                    format!("bytes 0-1023/{total_size}"),
-                )
+                .insert_header("Content-Range", format!("bytes 0-1023/{total_size}"))
                 .insert_header("Content-Length", "1024"),
         )
         .mount(&mock_server)
@@ -2408,10 +2347,7 @@ async fn test_lock_timeout_returns_stale_data() {
         .respond_with(
             ResponseTemplate::new(206)
                 .set_body_bytes(slice_data.clone())
-                .insert_header(
-                    "Content-Range",
-                    format!("bytes 0-1023/{total_size}"),
-                )
+                .insert_header("Content-Range", format!("bytes 0-1023/{total_size}"))
                 .insert_header("Content-Length", "1024")
                 // Long delay to simulate upstream hang
                 .set_delay(Duration::from_secs(10)),
@@ -2518,8 +2454,7 @@ async fn test_full_body_oom_protection() {
     Mock::given(method("GET"))
         .and(path("/h2-test.bin"))
         .respond_with(
-            ResponseTemplate::new(200)
-                .set_body_bytes(body.clone()),
+            ResponseTemplate::new(200).set_body_bytes(body.clone()),
             // No Content-Length header - simulates chunked response
         )
         .mount(&mock_server)
@@ -2528,14 +2463,9 @@ async fn test_full_body_oom_protection() {
     let url = format!("{}/h2-test.bin", mock_server.uri());
     let provider_headers = HashMap::new();
 
-    let resp = synctv_proxy::slice_cache::proxy_with_cache(
-        &cache,
-        None,
-        &url,
-        &provider_headers,
-    )
-    .await
-    .unwrap();
+    let resp = synctv_proxy::slice_cache::proxy_with_cache(&cache, None, &url, &provider_headers)
+        .await
+        .unwrap();
 
     // Should get BYPASS since the body exceeds max_cacheable_body
     assert_eq!(resp.status(), StatusCode::OK);
@@ -2576,9 +2506,9 @@ async fn test_file_backend_rejects_corrupt_header_len() {
     let file_path = dir_path.join(key);
 
     let mut corrupt_data = Vec::new();
-    corrupt_data.extend_from_slice(b"STV\x01");     // magic
+    corrupt_data.extend_from_slice(b"STV\x01"); // magic
     corrupt_data.extend_from_slice(&u32::MAX.to_le_bytes()); // huge header_len
-    corrupt_data.extend_from_slice(&[0u8; 100]);     // some junk
+    corrupt_data.extend_from_slice(&[0u8; 100]); // some junk
     tokio::fs::write(&file_path, &corrupt_data).await.unwrap();
 
     // Attempting to get this entry should fail gracefully (not OOM).
@@ -2613,10 +2543,7 @@ async fn test_full_body_put_triggers_lock_cleanup() {
         .respond_with(
             ResponseTemplate::new(206)
                 .set_body_bytes(slice_data.clone())
-                .insert_header(
-                    "Content-Range",
-                    format!("bytes 0-1023/{total_size}"),
-                )
+                .insert_header("Content-Range", format!("bytes 0-1023/{total_size}"))
                 .insert_header("Content-Length", "1024"),
         )
         .mount(&mock_server)
@@ -2652,14 +2579,9 @@ async fn test_full_body_put_triggers_lock_cleanup() {
             .await;
 
         let url_i = format!("{}/m2-full-{}.bin", mock_server.uri(), i);
-        let resp = synctv_proxy::slice_cache::proxy_with_cache(
-            &cache,
-            None,
-            &url_i,
-            &headers,
-        )
-        .await
-        .unwrap();
+        let resp = synctv_proxy::slice_cache::proxy_with_cache(&cache, None, &url_i, &headers)
+            .await
+            .unwrap();
         let _ = resp.into_body().collect().await.unwrap().to_bytes();
     }
 

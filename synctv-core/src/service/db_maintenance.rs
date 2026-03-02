@@ -3,7 +3,7 @@
 //! Coordinates all periodic database maintenance in a single background task:
 //! - Partition creation for `audit_logs` (monthly)
 //! - Cleanup of expired email tokens, old notifications, and expired credentials
-//! - Cleanup of chat messages older than the 90-day absolute retention cap
+//! - Cleanup of chat messages older than the configurable retention cap (default: 90 days)
 //!
 //! Note: chat message partition management (creation and old partition dropping)
 //! is handled exclusively by `ChatPartitionManager` to avoid conflicting operations.
@@ -16,7 +16,10 @@ use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info};
 
-use super::LeaderCheck;
+use super::{LeaderCheck, SettingsRegistry};
+
+/// Default chat message retention in days (used when settings are unavailable).
+const DEFAULT_CHAT_MESSAGE_RETENTION_DAYS: i64 = 90;
 
 /// Unified database maintenance service.
 ///
@@ -26,13 +29,33 @@ use super::LeaderCheck;
 pub struct DatabaseMaintenanceService {
     pool: PgPool,
     leader_check: Arc<dyn LeaderCheck>,
+    settings_registry: Option<Arc<SettingsRegistry>>,
 }
 
 impl DatabaseMaintenanceService {
     /// Create a new maintenance service.
     #[must_use]
     pub fn new(pool: PgPool, leader_check: Arc<dyn LeaderCheck>) -> Self {
-        Self { pool, leader_check }
+        Self {
+            pool,
+            leader_check,
+            settings_registry: None,
+        }
+    }
+
+    /// Set the settings registry for configurable retention periods.
+    #[must_use]
+    pub fn with_settings_registry(mut self, registry: Arc<SettingsRegistry>) -> Self {
+        self.settings_registry = Some(registry);
+        self
+    }
+
+    /// Get the configured chat message retention period in days.
+    fn chat_message_retention_days(&self) -> i64 {
+        self.settings_registry
+            .as_ref()
+            .and_then(|r| r.chat_message_retention_days.get().ok())
+            .unwrap_or(DEFAULT_CHAT_MESSAGE_RETENTION_DAYS)
     }
 
     /// Create audit log partitions for the next `months_ahead` months.
@@ -78,21 +101,30 @@ impl DatabaseMaintenanceService {
         Ok(())
     }
 
-    /// Delete all chat messages older than the absolute 90-day retention cap.
+    /// Delete all chat messages older than the configured retention cap.
     ///
-    /// This enforces the hard retention limit for rooms that are inactive and
-    /// therefore never processed by the per-room count-based cleanup (which only
-    /// targets rooms with recent activity). Partition pruning makes this fast
-    /// because the `created_at` filter maps directly to daily partitions.
+    /// The retention period is read from `chat.message_retention_days` in the
+    /// settings registry (default: 90 days). This enforces the hard retention
+    /// limit for rooms that are inactive and therefore never processed by the
+    /// per-room count-based cleanup (which only targets rooms with recent
+    /// activity). Partition pruning makes this fast because the `created_at`
+    /// filter maps directly to daily partitions.
     pub async fn run_cleanup_old_chat_messages(&self) -> Result<(), sqlx::Error> {
+        let retention_days = self.chat_message_retention_days();
+        let interval = format!("{retention_days} days");
+
         let result =
-            sqlx::query("DELETE FROM chat_messages WHERE created_at <= NOW() - INTERVAL '90 days'")
+            sqlx::query("DELETE FROM chat_messages WHERE created_at <= NOW() - $1::interval")
+                .bind(&interval)
                 .execute(&self.pool)
                 .await?;
 
         let deleted = result.rows_affected();
         if deleted > 0 {
-            info!(deleted, "Old chat message cleanup (90-day cap) completed");
+            info!(
+                deleted,
+                retention_days, "Old chat message cleanup completed"
+            );
         }
         Ok(())
     }
@@ -148,6 +180,7 @@ impl DatabaseMaintenanceService {
         let service = Self {
             pool: self.pool.clone(),
             leader_check: self.leader_check.clone(),
+            settings_registry: self.settings_registry.clone(),
         };
 
         crate::spawn::spawn_monitored("db_maintenance", async move {
@@ -234,5 +267,25 @@ mod tests {
         ) -> std::pin::Pin<
             Box<dyn std::future::Future<Output = Result<(), sqlx::Error>> + Send + '_>,
         > = |svc| Box::pin(svc.run_cleanup_email_tokens());
+    }
+
+    /// M16: Verify that the default retention is 90 days when no settings registry is set.
+    #[tokio::test]
+    async fn test_default_retention_days() {
+        let pool = sqlx::PgPool::connect_lazy("postgres://localhost/test").unwrap();
+        let leader = Arc::new(AlwaysLeader);
+        let svc = DatabaseMaintenanceService::new(pool, leader);
+        assert_eq!(
+            svc.chat_message_retention_days(),
+            DEFAULT_CHAT_MESSAGE_RETENTION_DAYS
+        );
+    }
+
+    /// Dummy leader check that always returns true (for tests).
+    struct AlwaysLeader;
+    impl LeaderCheck for AlwaysLeader {
+        fn is_leader(&self) -> bool {
+            true
+        }
     }
 }

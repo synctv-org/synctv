@@ -6,7 +6,9 @@
 //! Run Docker tests: cargo test --test `rate_limiter_tests` -- --ignored
 #![allow(clippy::unwrap_used)]
 
+use std::sync::Arc;
 use synctv_core::service::{RateLimitError, RateLimiter};
+use tokio::sync::RwLock;
 
 // ============================================================================
 // In-memory rate limiter tests
@@ -129,13 +131,11 @@ async fn create_redis_connection_manager() -> (
     use testcontainers::runners::AsyncRunner;
     use testcontainers_modules::redis::Redis;
 
-    let container = tokio::time::timeout(
-        std::time::Duration::from_secs(30),
-        Redis::default().start(),
-    )
-    .await
-    .expect("Docker container startup timed out (is Docker running?)")
-    .expect("Failed to start Redis container");
+    let container =
+        tokio::time::timeout(std::time::Duration::from_secs(30), Redis::default().start())
+            .await
+            .expect("Docker container startup timed out (is Docker running?)")
+            .expect("Failed to start Redis container");
 
     let host = container
         .get_host()
@@ -158,7 +158,10 @@ async fn create_redis_connection_manager() -> (
 #[ignore = "Requires Docker"]
 async fn test_redis_rate_limiter_allows_under_limit() {
     let (conn, _container) = create_redis_connection_manager().await;
-    let limiter = RateLimiter::new(Some(conn), "redis_allow:".to_string());
+    let limiter = RateLimiter::new(
+        Some(Arc::new(RwLock::new(conn))),
+        "redis_allow:".to_string(),
+    );
 
     let key = "user:redis_allow:chat";
     limiter.reset(key).await.unwrap();
@@ -175,7 +178,10 @@ async fn test_redis_rate_limiter_allows_under_limit() {
 #[ignore = "Requires Docker"]
 async fn test_redis_rate_limiter_blocks_over_limit() {
     let (conn, _container) = create_redis_connection_manager().await;
-    let limiter = RateLimiter::new(Some(conn), "redis_block:".to_string());
+    let limiter = RateLimiter::new(
+        Some(Arc::new(RwLock::new(conn))),
+        "redis_block:".to_string(),
+    );
 
     let key = "user:redis_block:chat";
     limiter.reset(key).await.unwrap();
@@ -198,7 +204,7 @@ async fn test_redis_rate_limiter_blocks_over_limit() {
 #[ignore = "Requires Docker"]
 async fn test_redis_rate_limiter_concurrent_requests() {
     let (conn, _container) = create_redis_connection_manager().await;
-    let limiter = RateLimiter::new(Some(conn), "redis_conc:".to_string());
+    let limiter = RateLimiter::new(Some(Arc::new(RwLock::new(conn))), "redis_conc:".to_string());
 
     let key = "user:redis_conc:chat";
     limiter.reset(key).await.unwrap();
@@ -232,7 +238,10 @@ async fn test_redis_rate_limiter_concurrent_requests() {
 #[ignore = "Requires Docker"]
 async fn test_redis_rate_limiter_strict_enforcement() {
     let (conn, _container) = create_redis_connection_manager().await;
-    let limiter = RateLimiter::new(Some(conn), "redis_strict:".to_string());
+    let limiter = RateLimiter::new(
+        Some(Arc::new(RwLock::new(conn))),
+        "redis_strict:".to_string(),
+    );
 
     let key = "user:redis_strict:auth";
     limiter.reset(key).await.unwrap();

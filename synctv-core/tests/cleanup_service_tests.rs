@@ -242,6 +242,7 @@ fn create_test_room(created_by: UserId, updated_at: Option<chrono::DateTime<Utc>
         updated_at: updated_at.unwrap_or(now),
         deleted_at: None,
         version: 0,
+        last_activity_at: updated_at.unwrap_or(now),
     }
 }
 
@@ -317,7 +318,7 @@ async fn test_room_ttl_old_room_is_expired() {
 
     // Verify room is soft-deleted (need to query directly since get_by_id filters deleted_at)
     let found: Option<Room> = sqlx::query_as(
-        "SELECT id, name, description, created_by, status, is_banned, created_at, updated_at, deleted_at, version
+        "SELECT id, name, description, created_by, status, is_banned, created_at, updated_at, deleted_at, version, last_activity_at
          FROM rooms WHERE id = $1"
     )
     .bind(room.id.as_str())

@@ -211,6 +211,11 @@ pub struct Room {
     /// Incremented on each UPDATE. Used by compare-and-increment to detect concurrent modifications.
     #[serde(default)]
     pub version: i32,
+    /// Tracks the last significant activity in this room (chat messages,
+    /// playback state changes, member joins/leaves). Used by the room TTL
+    /// cleanup to avoid expiring active rooms.
+    #[serde(default = "Utc::now")]
+    pub last_activity_at: DateTime<Utc>,
 }
 
 impl Room {
@@ -228,6 +233,7 @@ impl Room {
             updated_at: now,
             deleted_at: None,
             version: 0,
+            last_activity_at: now,
         }
     }
 
@@ -246,6 +252,7 @@ impl Room {
             updated_at: now,
             deleted_at: None,
             version: 0,
+            last_activity_at: now,
         }
     }
 
@@ -272,6 +279,7 @@ impl Room {
             updated_at: now,
             deleted_at: None,
             version: 0,
+            last_activity_at: now,
         }
     }
 

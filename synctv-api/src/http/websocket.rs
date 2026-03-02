@@ -150,8 +150,9 @@ async fn extract_user_id(
     // falling through to query parameters.
     if let Some(auth_header) = headers.get("Authorization") {
         if let Ok(auth_str) = auth_header.to_str() {
-            let token = JwtValidator::extract_bearer_token(auth_str)
-                .map_err(|e| AppError::unauthorized(format!("Invalid Authorization header: {e}")))?;
+            let token = JwtValidator::extract_bearer_token(auth_str).map_err(|e| {
+                AppError::unauthorized(format!("Invalid Authorization header: {e}"))
+            })?;
 
             let claims = validator
                 .validate_token(&token)
@@ -577,12 +578,19 @@ async fn handle_socket(
     let raw_sender_for_ping = tx.clone();
     let ws_sender = ws_sender_primary;
 
+    // Resolve chat_service (required for proper business logic enforcement)
+    let chat_service = state
+        .chat_service
+        .clone()
+        .expect("chat_service must be configured for WebSocket handler");
+
     // Create StreamMessageHandler with all configuration
     let stream_handler = StreamMessageHandler::new(
         rid.clone(),
         user_id.clone(),
         username.clone(),
         state.room_service.clone(),
+        chat_service,
         cluster_manager,
         (*state.connection_manager).clone(),
         rate_limiter,
@@ -596,6 +604,13 @@ async fn handle_socket(
             .connection_limits
             .ws_message_rate_limit_per_second,
     );
+
+    // H11: Wire notification service for direct real-time push
+    let stream_handler = if let Some(ref notif_svc) = state.notification_service {
+        stream_handler.with_notification_service(Arc::clone(notif_svc))
+    } else {
+        stream_handler
+    };
 
     // Split WebSocket into sender and receiver
     let (mut ws_sender_sink, ws_receiver) = socket.split();

@@ -320,7 +320,10 @@ async fn test_list_by_user_with_count_has_partition_pruning() {
         .unwrap();
 
     // Only the recent notification should be returned (old one outside 6-month window)
-    assert_eq!(total, 1, "Old notification outside 6-month window should be excluded");
+    assert_eq!(
+        total, 1,
+        "Old notification outside 6-month window should be excluded"
+    );
     assert_eq!(notifications.len(), 1);
     assert_eq!(notifications[0].title, "Recent");
 }
@@ -352,8 +355,14 @@ async fn test_count_by_user_has_partition_pruning() {
         .await
         .unwrap();
 
-    let count = notif_repo.count_by_user(&user.id, None, None).await.unwrap();
-    assert_eq!(count, 1, "Old notification outside 6-month window should not be counted");
+    let count = notif_repo
+        .count_by_user(&user.id, None, None)
+        .await
+        .unwrap();
+    assert_eq!(
+        count, 1,
+        "Old notification outside 6-month window should not be counted"
+    );
 }
 
 /// Verify that count_unread includes created_at lower bound for partition pruning.
@@ -384,7 +393,10 @@ async fn test_count_unread_has_partition_pruning() {
         .unwrap();
 
     let count = notif_repo.count_unread(&user.id).await.unwrap();
-    assert_eq!(count, 1, "Old unread notification outside 6-month window should not be counted");
+    assert_eq!(
+        count, 1,
+        "Old unread notification outside 6-month window should not be counted"
+    );
 }
 
 /// Verify that mark_as_read includes created_at lower bound for partition pruning.

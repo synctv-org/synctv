@@ -362,7 +362,10 @@ mod tests {
 
         // Evict down to 250 bytes -- should remove the two oldest entries.
         let freed = backend.evict_to_size(250).await;
-        assert!(freed >= 200, "Expected at least 200 bytes freed, got {freed}");
+        assert!(
+            freed >= 200,
+            "Expected at least 200 bytes freed, got {freed}"
+        );
         assert!(
             backend.current_size() <= 250,
             "Expected size <= 250, got {}",
@@ -525,10 +528,7 @@ mod tests {
                 .unwrap();
             // Replace with different size.
             backend
-                .put(
-                    &key,
-                    make_entry(&[round; 100], Duration::from_secs(60)),
-                )
+                .put(&key, make_entry(&[round; 100], Duration::from_secs(60)))
                 .await
                 .unwrap();
         }

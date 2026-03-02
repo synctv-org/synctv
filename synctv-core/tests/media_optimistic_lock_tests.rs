@@ -72,6 +72,7 @@ async fn setup_test_context(suffix: &str) -> TestContext {
                 updated_at: now,
                 deleted_at: None,
                 version: 0,
+                last_activity_at: now,
             }
         })
         .await

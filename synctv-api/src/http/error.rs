@@ -229,6 +229,9 @@ impl From<synctv_core::Error> for AppError {
             Error::NotFound(msg) => Self::not_found(msg),
             Error::AlreadyExists(msg) => Self::conflict(msg),
             Error::Authentication(msg) => Self::unauthorized(msg),
+            Error::EmailNotVerified => {
+                Self::forbidden("Email not verified. Please verify your email to continue.")
+            }
             Error::Authorization(msg) => Self::forbidden(msg),
             Error::InvalidInput(msg) => Self::bad_request(msg),
             Error::RateLimited(msg) => Self::new(StatusCode::TOO_MANY_REQUESTS, msg),
@@ -642,6 +645,35 @@ mod tests {
         let core_err = synctv_core::Error::OptimisticLockConflict;
         let app_err = AppError::from(core_err);
         assert_eq!(app_err.status, StatusCode::CONFLICT);
+    }
+
+    #[test]
+    fn test_from_core_email_not_verified() {
+        let core_err = synctv_core::Error::EmailNotVerified;
+        let app_err = AppError::from(core_err);
+        // Should be 403 Forbidden (not 401 Unauthorized) because the user
+        // has authenticated successfully but is missing email verification
+        assert_eq!(app_err.status, StatusCode::FORBIDDEN);
+        assert!(
+            app_err.message.contains("verify your email"),
+            "Error message should tell the user to verify their email, got: {}",
+            app_err.message
+        );
+    }
+
+    #[test]
+    fn test_email_not_verified_distinct_from_auth_failure() {
+        let auth_err = synctv_core::Error::Authentication("Authentication failed".to_string());
+        let email_err = synctv_core::Error::EmailNotVerified;
+
+        let auth_app = AppError::from(auth_err);
+        let email_app = AppError::from(email_err);
+
+        // Different HTTP status codes: 401 vs 403
+        assert_ne!(
+            auth_app.status, email_app.status,
+            "EmailNotVerified (403) must be distinguishable from Authentication (401)"
+        );
     }
 
     // ========== From<serde_json::Error> ==========

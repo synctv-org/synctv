@@ -14,6 +14,9 @@ use crate::proto::client::{
 #[derive(serde::Serialize)]
 pub struct LogoutResponse {
     pub success: bool,
+    /// Non-empty when logout succeeded but token invalidation may be delayed
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub message: String,
 }
 
 /// Extract the real client IP from a request.
@@ -116,13 +119,16 @@ pub async fn logout(
     let token = synctv_core::service::auth::JwtValidator::extract_bearer_token(auth_value)
         .map_err(|e| AppError::unauthorized(format!("{e}")))?;
 
-    state
+    let outcome = state
         .client_api
         .logout(&token)
         .await
         .map_err(super::error::map_api_error)?;
 
-    Ok(Json(LogoutResponse { success: true }))
+    Ok(Json(LogoutResponse {
+        success: true,
+        message: outcome.message.to_string(),
+    }))
 }
 
 #[cfg(test)]
@@ -272,14 +278,33 @@ mod tests {
 
     #[test]
     fn test_logout_response_serialization() {
-        let resp = LogoutResponse { success: true };
+        let resp = LogoutResponse {
+            success: true,
+            message: String::new(),
+        };
         let json = serde_json::to_string(&resp).expect("serialize");
         assert!(json.contains(r#""success":true"#));
+        // Empty message should be omitted
+        assert!(!json.contains("message"));
+    }
+
+    #[test]
+    fn test_logout_response_partial_success() {
+        let resp = LogoutResponse {
+            success: true,
+            message: "Logged out but token invalidation may be delayed".to_string(),
+        };
+        let json = serde_json::to_string(&resp).expect("serialize");
+        assert!(json.contains(r#""success":true"#));
+        assert!(json.contains("token invalidation may be delayed"));
     }
 
     #[test]
     fn test_logout_response_failure() {
-        let resp = LogoutResponse { success: false };
+        let resp = LogoutResponse {
+            success: false,
+            message: String::new(),
+        };
         let json = serde_json::to_string(&resp).expect("serialize");
         assert!(json.contains(r#""success":false"#));
     }

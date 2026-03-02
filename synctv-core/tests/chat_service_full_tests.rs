@@ -1275,13 +1275,13 @@ async fn test_send_danmaku_broadcasts_to_room_members() {
     let last_event_type = broadcaster
         .get_last_event_type()
         .expect("Should have an event type");
-    assert_eq!(
-        last_event_type, "danmaku",
-        "Event type should be danmaku"
-    );
+    assert_eq!(last_event_type, "danmaku", "Event type should be danmaku");
 
     // Verify the danmaku message content
-    assert_eq!(danmaku.content, "Test danmaku", "Danmaku content should match");
+    assert_eq!(
+        danmaku.content, "Test danmaku",
+        "Danmaku content should match"
+    );
     assert_eq!(danmaku.color, "#FF0000", "Danmaku color should match");
 }
 
@@ -1393,10 +1393,7 @@ async fn test_send_message_oversized_content_rejected() {
         .send_message(room.id.clone(), creator.id.clone(), oversized_content)
         .await;
 
-    assert!(
-        result.is_err(),
-        "Oversized message should be rejected"
-    );
+    assert!(result.is_err(), "Oversized message should be rejected");
     match result.unwrap_err() {
         Error::InvalidInput(msg) => {
             assert!(
@@ -1453,10 +1450,7 @@ async fn test_send_message_valid_content_persisted() {
     assert!(!msg.id.is_empty());
 
     // Verify via history
-    let (history, _) = chat_service
-        .get_history(&room.id, None, 10)
-        .await
-        .unwrap();
+    let (history, _) = chat_service.get_history(&room.id, None, 10).await.unwrap();
     assert_eq!(history.len(), 1);
     assert_eq!(history[0].content, "Hello, valid message!");
 }

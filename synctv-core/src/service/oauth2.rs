@@ -67,14 +67,20 @@ pub trait OAuthStateStore: Send + Sync {
 /// States are stored as JSON with `SET EX` and consumed atomically with a
 /// Lua `GET + DEL` script (same pattern as `WsTicketService`).
 pub struct RedisOAuthStateStore {
-    conn: redis::aio::ConnectionManager,
+    /// Shared Redis connection handle that follows Sentinel failover.
+    conn: std::sync::Arc<tokio::sync::RwLock<redis::aio::ConnectionManager>>,
 }
 
 impl RedisOAuthStateStore {
-    /// Create from an existing Redis `ConnectionManager`.
+    /// Create from the shared `Arc<RwLock<ConnectionManager>>`.
     #[must_use]
-    pub const fn new(conn: redis::aio::ConnectionManager) -> Self {
+    pub fn new(conn: std::sync::Arc<tokio::sync::RwLock<redis::aio::ConnectionManager>>) -> Self {
         Self { conn }
+    }
+
+    /// Acquire a fresh ConnectionManager clone from the shared handle.
+    async fn get_conn(&self) -> redis::aio::ConnectionManager {
+        self.conn.read().await.clone()
     }
 }
 
@@ -97,7 +103,7 @@ impl OAuthStateStore for RedisOAuthStateStore {
         let value =
             serde_json::to_string(state).internal_with_err("Failed to serialize OAuth2 state")?;
 
-        let mut conn = self.conn.clone();
+        let mut conn = self.get_conn().await;
         use redis::AsyncCommands;
         let _: () = tokio::time::timeout(
             crate::resilience::timeout::REDIS_OPERATION_TIMEOUT,
@@ -116,7 +122,7 @@ impl OAuthStateStore for RedisOAuthStateStore {
 
     async fn consume(&self, token_id: &str) -> Result<Option<OAuth2State>> {
         let key = format!("{OAUTH2_STATE_KEY_PREFIX}{token_id}");
-        let mut conn = self.conn.clone();
+        let mut conn = self.get_conn().await;
 
         // Atomic GET + DEL via Lua script (same pattern as WsTicketService)
         let lua_script = redis::Script::new(

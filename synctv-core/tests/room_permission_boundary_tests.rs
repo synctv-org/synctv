@@ -134,6 +134,7 @@ fn make_room(name: &str, description: &str, owner: &UserId) -> Room {
         updated_at: now,
         deleted_at: None,
         version: 0,
+        last_activity_at: now,
     }
 }
 

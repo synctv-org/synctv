@@ -100,11 +100,8 @@ impl SliceCache {
                 cache_dir,
                 dir_levels,
             } => {
-                let fb = super::backend::file::FileBackend::new(
-                    cache_dir.clone(),
-                    *dir_levels,
-                )
-                .await?;
+                let fb =
+                    super::backend::file::FileBackend::new(cache_dir.clone(), *dir_levels).await?;
                 CacheBackend::File(fb)
             }
         };
@@ -177,10 +174,7 @@ impl SliceCache {
     }
 
     /// Compute the cache key used for full-body entries.
-    pub(super) fn full_body_key(
-        url: &str,
-        provider_headers: &HashMap<String, String>,
-    ) -> String {
+    pub(super) fn full_body_key(url: &str, provider_headers: &HashMap<String, String>) -> String {
         let mut hasher = Sha256::new();
         hasher.update(url.as_bytes());
         hasher.update(b"\0");
@@ -199,10 +193,7 @@ impl SliceCache {
     }
 
     /// Compute the key used to store per-resource metadata.
-    pub(super) fn meta_key(
-        url: &str,
-        provider_headers: &HashMap<String, String>,
-    ) -> String {
+    pub(super) fn meta_key(url: &str, provider_headers: &HashMap<String, String>) -> String {
         let mut hasher = Sha256::new();
         hasher.update(url.as_bytes());
         hasher.update(b"\0");
@@ -271,9 +262,7 @@ impl SliceCache {
                 return Ok((entry.data, CacheStatus::Hit));
             }
             // Check stale window for stale-while-revalidate.
-            if self.config.stale_while_revalidate
-                && entry.is_stale(self.config.stale_max_age)
-            {
+            if self.config.stale_while_revalidate && entry.is_stale(self.config.stale_max_age) {
                 // Mark as updating so subsequent requests know a refresh
                 // is expected.  `DashSet::insert` returns true if the key
                 // was newly inserted (i.e., we are the first stale request).
@@ -297,12 +286,7 @@ impl SliceCache {
             .entry(key.clone())
             .or_insert_with(|| Arc::new(Mutex::new(())))
             .clone();
-        let _guard = match tokio::time::timeout(
-            Duration::from_secs(5),
-            lock.lock(),
-        )
-        .await
-        {
+        let _guard = match tokio::time::timeout(Duration::from_secs(5), lock.lock()).await {
             Ok(guard) => guard,
             Err(_) => {
                 // Lock acquisition timed out -- serve stale data if available,
@@ -330,9 +314,7 @@ impl SliceCache {
             // Still expired -- check stale once more for concurrent stale
             // serving case, then proceed with re-fetch. Keep the entry
             // in the backend for now (conditional request may use it).
-            if self.config.stale_while_revalidate
-                && entry.is_stale(self.config.stale_max_age)
-            {
+            if self.config.stale_while_revalidate && entry.is_stale(self.config.stale_max_age) {
                 // We hold the lock and will do the re-fetch below, so
                 // let stale requests continue being served.
             }
@@ -673,9 +655,7 @@ impl SliceCache {
                 return Some((entry.data.clone(), ct, CacheStatus::Hit));
             }
             // Check stale window.
-            if self.config.stale_while_revalidate
-                && entry.is_stale(self.config.stale_max_age)
-            {
+            if self.config.stale_while_revalidate && entry.is_stale(self.config.stale_max_age) {
                 let ct = self
                     .meta
                     .get(&Self::meta_key(url, provider_headers))
@@ -766,8 +746,7 @@ impl SliceCache {
 
     /// Remove all per-key locks not currently held by any task.
     pub fn cleanup_stale_locks(&self) {
-        self.locks
-            .retain(|_key, lock| Arc::strong_count(lock) > 1);
+        self.locks.retain(|_key, lock| Arc::strong_count(lock) > 1);
     }
 
     /// Return the current number of per-key locks (for diagnostics/testing).

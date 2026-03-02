@@ -79,6 +79,7 @@ fn make_room(creator_id: UserId) -> Room {
         updated_at: chrono::Utc::now(),
         deleted_at: None,
         version: 0,
+        last_activity_at: chrono::Utc::now(),
     }
 }
 

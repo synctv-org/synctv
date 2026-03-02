@@ -1972,7 +1972,11 @@ pub fn build_auth_packet(room_id: u64, token: &str) -> Vec<u8> {
     let mut packet = Vec::with_capacity(packet_length);
 
     // Header
-    packet.extend_from_slice(&u32::try_from(packet_length).unwrap_or(u32::MAX).to_be_bytes());
+    packet.extend_from_slice(
+        &u32::try_from(packet_length)
+            .unwrap_or(u32::MAX)
+            .to_be_bytes(),
+    );
     packet.extend_from_slice(&16u16.to_be_bytes()); // header length
     packet.extend_from_slice(&1u16.to_be_bytes()); // protocol version
     packet.extend_from_slice(&7u32.to_be_bytes()); // operation = auth

@@ -14,7 +14,9 @@ use std::sync::Arc;
 use synctv_core::cache::KeyBuilder;
 use synctv_core::models::RoomId;
 use synctv_core::service::auth::token_blacklist::InMemoryTokenBlacklistStore;
-use synctv_core::service::auth::{GuestTokenValidator, JwtService, JwtValidator, TokenBlacklistStore};
+use synctv_core::service::auth::{
+    GuestTokenValidator, JwtService, JwtValidator, TokenBlacklistStore,
+};
 
 // ============================================================================
 // B1: GuestUser extractor must check blacklist
@@ -96,10 +98,7 @@ fn test_b8_bearer_lowercase_accepted() {
 #[test]
 fn test_b8_bearer_uppercase_accepted() {
     let result = JwtValidator::extract_bearer_token("BEARER some_token_value");
-    assert!(
-        result.is_ok(),
-        "B8: uppercase 'BEARER ' should be accepted"
-    );
+    assert!(result.is_ok(), "B8: uppercase 'BEARER ' should be accepted");
     assert_eq!(result.unwrap(), "some_token_value");
 }
 
@@ -172,7 +171,10 @@ fn test_b10_password_min_length_enforced() {
 
     // Single character
     let result = validate_password("a");
-    assert!(result.is_err(), "B10: Single char password should be rejected");
+    assert!(
+        result.is_err(),
+        "B10: Single char password should be rejected"
+    );
 
     // Empty
     let result = validate_password("");
@@ -419,7 +421,8 @@ fn test_i32_as_u32_is_dangerous() {
     // And PageParams::new would NOT clamp this since it only clamps page_size, not page
     let params = synctv_core::models::PageParams::new(Some(wrapped), Some(20));
     assert_eq!(
-        params.page, u32::MAX,
+        params.page,
+        u32::MAX,
         "PageParams does not clamp page number down from u32::MAX"
     );
 

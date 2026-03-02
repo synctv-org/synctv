@@ -225,8 +225,9 @@ pub trait RateLimitBackend: Send + Sync {
 /// Redis-backed rate limiter using sorted-set sliding window.
 ///
 /// Falls back to in-memory governor on Redis errors (graceful degradation).
+/// Accepts the shared `Arc<RwLock<ConnectionManager>>` to follow Sentinel failover.
 pub struct RedisRateLimitBackend {
-    conn: redis::aio::ConnectionManager,
+    conn: Arc<tokio::sync::RwLock<redis::aio::ConnectionManager>>,
     key_prefix: String,
     /// In-memory fallback for when Redis is temporarily unavailable.
     fallback: InMemoryGovernorLimiter,
@@ -234,12 +235,20 @@ pub struct RedisRateLimitBackend {
 
 impl RedisRateLimitBackend {
     #[must_use]
-    pub fn new(conn: redis::aio::ConnectionManager, key_prefix: String) -> Self {
+    pub fn new(
+        conn: Arc<tokio::sync::RwLock<redis::aio::ConnectionManager>>,
+        key_prefix: String,
+    ) -> Self {
         Self {
             conn,
             key_prefix,
             fallback: InMemoryGovernorLimiter::new(),
         }
+    }
+
+    /// Acquire a fresh ConnectionManager clone from the shared handle.
+    async fn get_conn(&self) -> redis::aio::ConnectionManager {
+        self.conn.read().await.clone()
     }
 }
 
@@ -251,7 +260,7 @@ impl RateLimitBackend for RedisRateLimitBackend {
         max_requests: u32,
         window_seconds: u64,
     ) -> std::result::Result<(), RateLimitError> {
-        let mut conn = self.conn.clone();
+        let mut conn = self.get_conn().await;
         let redis_key = format!("{}{}", self.key_prefix, key);
         let now = current_timestamp_millis();
         let window_start = now.saturating_sub(window_seconds * 1000);
@@ -334,7 +343,7 @@ impl RateLimitBackend for RedisRateLimitBackend {
         max_requests: u32,
         window_seconds: u64,
     ) -> std::result::Result<(), RateLimitError> {
-        let mut conn = self.conn.clone();
+        let mut conn = self.get_conn().await;
         let redis_key = format!("{}{}", self.key_prefix, key);
         let now = current_timestamp_millis();
         let window_start = now.saturating_sub(window_seconds * 1000);
@@ -389,7 +398,7 @@ impl RateLimitBackend for RedisRateLimitBackend {
     ) -> Result<(u32, u64)> {
         use redis::AsyncCommands;
 
-        let mut conn = self.conn.clone();
+        let mut conn = self.get_conn().await;
         let redis_key = format!("{}{}", self.key_prefix, key);
         let now = current_timestamp_millis();
         let window_start = now.saturating_sub(window_seconds * 1000);
@@ -423,7 +432,7 @@ impl RateLimitBackend for RedisRateLimitBackend {
 
     async fn reset(&self, key: &str) -> Result<()> {
         let full_key = format!("{}{}", self.key_prefix, key);
-        let mut conn = self.conn.clone();
+        let mut conn = self.get_conn().await;
         let seq_key = format!("{full_key}:seq");
         let _: () = redis::cmd("DEL")
             .arg(&full_key)
@@ -434,7 +443,7 @@ impl RateLimitBackend for RedisRateLimitBackend {
     }
 
     async fn health_check(&self) -> std::result::Result<(), String> {
-        let mut conn = self.conn.clone();
+        let mut conn = self.get_conn().await;
         redis::cmd("PING")
             .query_async::<String>(&mut conn)
             .await
@@ -553,7 +562,12 @@ impl RateLimiter {
     }
 
     /// Create a new `RateLimiter`, choosing backend based on Redis availability.
-    pub fn new(redis_conn: Option<redis::aio::ConnectionManager>, key_prefix: String) -> Self {
+    ///
+    /// Accepts the shared `Arc<RwLock<ConnectionManager>>` to follow Sentinel failover.
+    pub fn new(
+        redis_conn: Option<Arc<tokio::sync::RwLock<redis::aio::ConnectionManager>>>,
+        key_prefix: String,
+    ) -> Self {
         if let Some(conn) = redis_conn {
             let backend = Arc::new(RedisRateLimitBackend::new(conn, key_prefix.clone()));
             Self::from_backend(backend, key_prefix)
@@ -676,6 +690,7 @@ mod tests {
     async fn test_rate_limit_basic() {
         let infra = crate::test_helpers::containers::TestInfra::redis_only().await;
         let conn = infra.connection_manager().await;
+        let conn = Arc::new(tokio::sync::RwLock::new(conn));
         let limiter = RateLimiter::new(Some(conn), "test:".to_string());
 
         let key = "user:test1:chat";
@@ -703,6 +718,7 @@ mod tests {
     async fn test_rate_limit_sliding_window() {
         let infra = crate::test_helpers::containers::TestInfra::redis_only().await;
         let conn = infra.connection_manager().await;
+        let conn = Arc::new(tokio::sync::RwLock::new(conn));
         let limiter = RateLimiter::new(Some(conn), "test:".to_string());
 
         let key = "user:test2:chat";
@@ -725,6 +741,7 @@ mod tests {
     async fn test_get_quota() {
         let infra = crate::test_helpers::containers::TestInfra::redis_only().await;
         let conn = infra.connection_manager().await;
+        let conn = Arc::new(tokio::sync::RwLock::new(conn));
         let limiter = RateLimiter::new(Some(conn), "test:".to_string());
 
         let key = "user:test3:chat";
@@ -1038,7 +1055,8 @@ mod tests {
             return;
         }
 
-        let limiter = RateLimiter::new(Some(conn.unwrap()), "fallback_test:".to_string());
+        let conn = Arc::new(tokio::sync::RwLock::new(conn.unwrap()));
+        let limiter = RateLimiter::new(Some(conn), "fallback_test:".to_string());
 
         let result = limiter.check_rate_limit("test_key", 10, 1).await;
 

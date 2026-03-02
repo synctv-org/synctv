@@ -25,24 +25,38 @@ pub trait ShutdownHook: Send + Sync {
     fn run(self: Box<Self>) -> Pin<Box<dyn Future<Output = ()> + Send>>;
 }
 
+/// Minimum per-task timeout when dividing global budget.
+const MIN_PER_TASK_TIMEOUT: Duration = Duration::from_secs(5);
+
 /// Centralized collection of all shutdown resources.
 ///
 /// Resources are executed in this order during shutdown:
 /// 1. Cancel all registered `CancellationToken`s (in registration order).
-/// 2. Drain all background task `JoinHandle`s (with per-task timeouts).
-/// 3. Run all typed shutdown hooks (with per-hook timeouts).
+/// 2. Drain all background task `JoinHandle`s (budget-aware timeouts).
+/// 3. Run all typed shutdown hooks (budget-aware timeouts).
+///
+/// The `total_budget` limits the overall shutdown duration to stay within
+/// K8s `terminationGracePeriodSeconds`. The remaining budget is divided
+/// among pending tasks and hooks, with a per-item minimum of 5 seconds.
 pub struct ShutdownCoordinator {
     tokens: Vec<(&'static str, CancellationToken)>,
     tasks: Vec<(&'static str, JoinHandle<()>)>,
     hooks: Vec<Box<dyn ShutdownHook>>,
+    total_budget: Duration,
 }
 
 impl ShutdownCoordinator {
-    pub fn new() -> Self {
+    /// Create a new coordinator with a total shutdown budget.
+    ///
+    /// The budget should match or be slightly less than the container's
+    /// `terminationGracePeriodSeconds` to ensure all cleanup completes
+    /// before the process is killed.
+    pub fn new(total_budget: Duration) -> Self {
         Self {
             tokens: Vec::new(),
             tasks: Vec::new(),
             hooks: Vec::new(),
+            total_budget,
         }
     }
 
@@ -69,9 +83,15 @@ impl ShutdownCoordinator {
         self.hooks.push(Box::new(hook));
     }
 
-    /// Execute the full shutdown sequence.
+    /// Execute the full shutdown sequence within the total budget.
     pub async fn shutdown(self) {
-        // Phase 1: Cancel all tokens
+        let deadline = tokio::time::Instant::now() + self.total_budget;
+        info!(
+            "Starting shutdown sequence (total budget: {}s)",
+            self.total_budget.as_secs()
+        );
+
+        // Phase 1: Cancel all tokens (instant, no budget consumed)
         if !self.tokens.is_empty() {
             info!("Cancelling {} shutdown token(s)...", self.tokens.len());
             for (name, token) in &self.tokens {
@@ -80,14 +100,17 @@ impl ShutdownCoordinator {
             }
         }
 
-        // Phase 2: Drain background tasks
+        // Phase 2: Drain background tasks with budget-aware timeouts
         if !self.tasks.is_empty() {
+            let remaining_items = self.tasks.len() + self.hooks.len();
             info!(
                 "Waiting for {} background task(s) to finish...",
                 self.tasks.len()
             );
-            for (name, handle) in self.tasks {
-                match tokio::time::timeout(Duration::from_secs(30), handle).await {
+            for (i, (name, handle)) in self.tasks.into_iter().enumerate() {
+                let remaining = remaining_items - i;
+                let per_item = Self::budget_per_item(deadline, remaining);
+                match tokio::time::timeout(per_item, handle).await {
                     Ok(Ok(())) => {
                         info!("Background task '{name}' finished");
                     }
@@ -95,18 +118,25 @@ impl ShutdownCoordinator {
                         warn!("Background task '{name}' panicked: {e}");
                     }
                     Err(_) => {
-                        warn!("Background task '{name}' did not finish within 30s, proceeding");
+                        warn!(
+                            "Background task '{name}' did not finish within {}s, proceeding",
+                            per_item.as_secs()
+                        );
                     }
                 }
             }
         }
 
-        // Phase 3: Run typed shutdown hooks
+        // Phase 3: Run typed shutdown hooks with budget-aware timeouts
         if !self.hooks.is_empty() {
-            info!("Running {} shutdown hook(s)...", self.hooks.len());
-            for hook in self.hooks {
+            let remaining_hooks = self.hooks.len();
+            info!("Running {} shutdown hook(s)...", remaining_hooks);
+            for (i, hook) in self.hooks.into_iter().enumerate() {
                 let name = hook.name().to_string();
-                let timeout = hook.timeout();
+                let remaining = remaining_hooks - i;
+                let budget = Self::budget_per_item(deadline, remaining);
+                // Use the smaller of the hook's own timeout and the budget
+                let timeout = hook.timeout().min(budget);
                 info!(
                     "Running shutdown hook '{name}' (timeout: {}s)...",
                     timeout.as_secs()
@@ -124,6 +154,20 @@ impl ShutdownCoordinator {
                 }
             }
         }
+    }
+
+    /// Compute the timeout for a single item given the remaining budget.
+    ///
+    /// Divides the time remaining until `deadline` equally among `remaining_items`,
+    /// with a minimum of `MIN_PER_TASK_TIMEOUT` seconds per item.
+    fn budget_per_item(deadline: tokio::time::Instant, remaining_items: usize) -> Duration {
+        let now = tokio::time::Instant::now();
+        if now >= deadline || remaining_items == 0 {
+            return MIN_PER_TASK_TIMEOUT;
+        }
+        let remaining_budget = deadline - now;
+        let per_item = remaining_budget / remaining_items as u32;
+        per_item.max(MIN_PER_TASK_TIMEOUT)
     }
 }
 
@@ -210,5 +254,53 @@ impl ShutdownHook for SettingsListenHook {
                 let _ = task.await;
             }
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn test_budget_per_item_divides_evenly() {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+        let per = ShutdownCoordinator::budget_per_item(deadline, 3);
+        // 30s / 3 = 10s
+        assert!(per >= Duration::from_secs(9));
+        assert!(per <= Duration::from_secs(11));
+    }
+
+    #[tokio::test]
+    async fn test_budget_per_item_respects_minimum() {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+        let per = ShutdownCoordinator::budget_per_item(deadline, 100);
+        assert_eq!(per, MIN_PER_TASK_TIMEOUT);
+    }
+
+    #[tokio::test]
+    async fn test_budget_per_item_past_deadline() {
+        let deadline = tokio::time::Instant::now() - Duration::from_secs(1);
+        let per = ShutdownCoordinator::budget_per_item(deadline, 5);
+        assert_eq!(per, MIN_PER_TASK_TIMEOUT);
+    }
+
+    #[tokio::test]
+    async fn test_shutdown_coordinator_completes_within_budget() {
+        let budget = Duration::from_secs(10);
+        let mut coord = ShutdownCoordinator::new(budget);
+
+        let token = coord.register_token("test_token");
+
+        let handle = tokio::spawn(async move {
+            token.cancelled().await;
+        });
+        coord.register_task("test_task", handle);
+
+        let start = tokio::time::Instant::now();
+        coord.shutdown().await;
+        let elapsed = start.elapsed();
+
+        // Should complete quickly (tasks respond to cancel)
+        assert!(elapsed < Duration::from_secs(5));
     }
 }

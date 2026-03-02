@@ -95,25 +95,37 @@ async fn inject_request_id_into_error_response(response: Response, request_id: &
         .get(axum::http::header::CONTENT_TYPE)
         .and_then(|v| v.to_str().ok());
 
-    if content_type != Some("application/json") {
+    if !content_type
+        .map(|ct| ct.starts_with("application/json"))
+        .unwrap_or(false)
+    {
         return response;
     }
 
     // Try to extract and modify the JSON body
     // Note: This requires buffering the body, which has performance implications.
     // For high-traffic endpoints, consider alternative approaches.
+    //
+    // Preserve the original status code and headers before consuming the body,
+    // so we can reconstruct a proper response if injection fails.
+    let status = response.status();
+    let headers = response.headers().clone();
     match try_inject_request_id_async(response, request_id).await {
         Ok(new_response) => new_response,
         Err(e) => {
-            // Failed to inject, log and return original response
+            // Failed to inject, log and return response with original status/headers
             tracing::warn!(
                 request_id = %request_id,
                 error = %e,
                 "Failed to inject request_id into error response"
             );
-            // We need to return something here, but we consumed response
-            // For now, create an empty response
-            Response::new(axum::body::Body::empty())
+            // Reconstruct a response preserving the original status code and headers.
+            // The body was consumed by the failed injection attempt, so we return an
+            // empty body but with the correct status code (not a misleading 200 OK).
+            let mut fallback = Response::new(axum::body::Body::empty());
+            *fallback.status_mut() = status;
+            *fallback.headers_mut() = headers;
+            fallback
         }
     }
 }
@@ -1047,5 +1059,98 @@ mod tests {
         // HSTS preload list requires max-age >= 31536000 (1 year)
         let header = hsts_header(31536000, true, true);
         assert_eq!(header, "max-age=31536000; includeSubDomains; preload");
+    }
+
+    // === H3: inject_request_id_into_error_response preserves status on failure ===
+
+    #[tokio::test]
+    async fn test_inject_request_id_preserves_status_on_injection_failure() {
+        // Build a 404 error response with non-JSON body (injection will fail)
+        let response = Response::builder()
+            .status(StatusCode::NOT_FOUND)
+            .header(axum::http::header::CONTENT_TYPE, "application/json")
+            .body(axum::body::Body::from("not valid json {{{"))
+            .unwrap();
+
+        let result = inject_request_id_into_error_response(response, "test-req-1").await;
+
+        // The status should be preserved even when injection fails
+        assert_eq!(
+            result.status(),
+            StatusCode::NOT_FOUND,
+            "Status must be preserved when injection fails, not reset to 200"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_inject_request_id_preserves_headers_on_injection_failure() {
+        // Build a 500 error response with invalid JSON body
+        let response = Response::builder()
+            .status(StatusCode::INTERNAL_SERVER_ERROR)
+            .header(axum::http::header::CONTENT_TYPE, "application/json")
+            .header("X-Custom-Header", "custom-value")
+            .body(axum::body::Body::from("invalid json"))
+            .unwrap();
+
+        let result = inject_request_id_into_error_response(response, "test-req-2").await;
+
+        assert_eq!(result.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(
+            result.headers().get("X-Custom-Header").unwrap(),
+            "custom-value",
+            "Custom headers must be preserved when injection fails"
+        );
+    }
+
+    // === M6: Content-Type matching with charset ===
+
+    #[tokio::test]
+    async fn test_inject_request_id_handles_content_type_with_charset() {
+        // Build a 400 error response with application/json; charset=utf-8
+        let json_body = serde_json::json!({
+            "error": "bad request",
+            "status": 400
+        });
+        let response = Response::builder()
+            .status(StatusCode::BAD_REQUEST)
+            .header(
+                axum::http::header::CONTENT_TYPE,
+                "application/json; charset=utf-8",
+            )
+            .body(axum::body::Body::from(
+                serde_json::to_vec(&json_body).unwrap(),
+            ))
+            .unwrap();
+
+        let result = inject_request_id_into_error_response(response, "test-charset").await;
+
+        // Should have injected request_id (not skipped due to charset suffix)
+        let body_bytes = axum::body::to_bytes(result.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
+        assert_eq!(
+            json["request_id"], "test-charset",
+            "request_id should be injected even when content-type includes charset"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_inject_request_id_skips_non_json_content_type() {
+        // Build a 400 error response with text/plain content type
+        let response = Response::builder()
+            .status(StatusCode::BAD_REQUEST)
+            .header(axum::http::header::CONTENT_TYPE, "text/plain")
+            .body(axum::body::Body::from("bad request"))
+            .unwrap();
+
+        let result = inject_request_id_into_error_response(response, "test-skip").await;
+
+        // Should pass through unchanged for non-JSON responses
+        assert_eq!(result.status(), StatusCode::BAD_REQUEST);
+        let body_bytes = axum::body::to_bytes(result.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert_eq!(body_bytes, "bad request");
     }
 }

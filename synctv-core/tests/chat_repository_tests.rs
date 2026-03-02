@@ -46,6 +46,7 @@ fn make_room(name: &str, owner: &UserId) -> Room {
         updated_at: now,
         deleted_at: None,
         version: 0,
+        last_activity_at: now,
     }
 }
 
@@ -646,7 +647,11 @@ async fn test_list_by_room_initial_load_has_partition_lower_bound() {
     let messages = chat_repo.list_by_room(&room.id, None, 100).await.unwrap();
 
     // The old message (>90 days) should NOT be returned due to partition pruning filter
-    assert_eq!(messages.len(), 1, "Initial load should only return messages within 90-day window");
+    assert_eq!(
+        messages.len(),
+        1,
+        "Initial load should only return messages within 90-day window"
+    );
     assert_eq!(messages[0].content, "recent message");
 }
 
@@ -679,9 +684,16 @@ async fn test_list_by_room_cursor_initial_load_has_partition_lower_bound() {
     chat_repo.create(&msg).await.unwrap();
 
     // Initial load (no cursor) should only return recent messages
-    let (messages, _cursor) = chat_repo.list_by_room_cursor(&room.id, None, 100).await.unwrap();
+    let (messages, _cursor) = chat_repo
+        .list_by_room_cursor(&room.id, None, 100)
+        .await
+        .unwrap();
 
-    assert_eq!(messages.len(), 1, "Initial cursor load should only return messages within 90-day window");
+    assert_eq!(
+        messages.len(),
+        1,
+        "Initial cursor load should only return messages within 90-day window"
+    );
     assert_eq!(messages[0].content, "recent cursor message");
 }
 

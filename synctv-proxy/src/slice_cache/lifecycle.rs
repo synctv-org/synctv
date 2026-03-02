@@ -200,21 +200,15 @@ mod tests {
 
         let config = SliceCacheConfig {
             eviction_interval: Duration::from_millis(50),
-            max_cache_size: 500,      // 500 bytes max
-            watermark_ratio: 0.5,     // watermark at 250 bytes
+            max_cache_size: 500,  // 500 bytes max
+            watermark_ratio: 0.5, // watermark at 250 bytes
             ..SliceCacheConfig::default()
         };
 
         // Insert entries totaling 400 bytes (above 250 watermark).
         for i in 0..4u8 {
-            let entry = StoredEntry::new(
-                Bytes::from(vec![i; 100]),
-                Duration::from_secs(3600),
-            );
-            backend
-                .put(&format!("key_{i}"), entry)
-                .await
-                .unwrap();
+            let entry = StoredEntry::new(Bytes::from(vec![i; 100]), Duration::from_secs(3600));
+            backend.put(&format!("key_{i}"), entry).await.unwrap();
             // Small sleep so last_accessed differs for LRU.
             tokio::time::sleep(Duration::from_millis(5)).await;
         }

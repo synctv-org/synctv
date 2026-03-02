@@ -43,9 +43,9 @@ impl Default for SliceCacheConfig {
     fn default() -> Self {
         Self {
             enabled: true,
-            slice_size: 2 * 1024 * 1024,                // 2 MB
-            max_cache_size: 512 * 1024 * 1024,           // 512 MB
-            max_cacheable_body: 10 * 1024 * 1024,        // 10 MB
+            slice_size: 2 * 1024 * 1024,          // 2 MB
+            max_cache_size: 512 * 1024 * 1024,    // 512 MB
+            max_cacheable_body: 10 * 1024 * 1024, // 10 MB
             manifest_ttl: Duration::from_secs(5),
             segment_ttl: Duration::from_mins(5),
             stale_max_age: Duration::from_secs(60),

@@ -18,6 +18,7 @@ use synctv_core::{
 };
 use testcontainers::core::ImageExt;
 use testcontainers::runners::AsyncRunner;
+use tokio::sync::RwLock;
 
 // Test utilities
 
@@ -169,7 +170,9 @@ fn make_test_instance_tls(name: &str, insecure: bool) -> ProviderInstance {
 #[ignore = "Requires Docker"]
 async fn test_channel_creation_from_db_config() {
     let infra = TestInfra::new().await;
-    let redis_conn = Some(infra.redis_connection_manager().await);
+    let redis_conn = Some(Arc::new(RwLock::new(
+        infra.redis_connection_manager().await,
+    )));
     let redis_client = Some(infra.redis_client.clone());
 
     let repo = ProviderInstanceRepository::new(infra.pool.clone());
@@ -204,7 +207,9 @@ async fn test_channel_creation_from_db_config() {
 #[ignore = "Requires Docker"]
 async fn test_channel_cache_hit() {
     let infra = TestInfra::new().await;
-    let redis_conn = Some(infra.redis_connection_manager().await);
+    let redis_conn = Some(Arc::new(RwLock::new(
+        infra.redis_connection_manager().await,
+    )));
     let redis_client = Some(infra.redis_client.clone());
 
     let repo = ProviderInstanceRepository::new(infra.pool.clone());
@@ -231,7 +236,9 @@ async fn test_channel_cache_hit() {
 #[ignore = "Requires Docker"]
 async fn test_channel_cache_ttl_expiration() {
     let infra = TestInfra::new().await;
-    let redis_conn = Some(infra.redis_connection_manager().await);
+    let redis_conn = Some(Arc::new(RwLock::new(
+        infra.redis_connection_manager().await,
+    )));
     let redis_client = Some(infra.redis_client.clone());
 
     // Create a manager with a very short TTL for testing
@@ -266,7 +273,9 @@ async fn test_channel_cache_ttl_expiration() {
 #[ignore = "Requires Docker"]
 async fn test_redis_pubsub_invalidation() {
     let infra = TestInfra::new().await;
-    let redis_conn = Some(infra.redis_connection_manager().await);
+    let redis_conn = Some(Arc::new(RwLock::new(
+        infra.redis_connection_manager().await,
+    )));
     let redis_client = Some(infra.redis_client.clone());
 
     let repo = ProviderInstanceRepository::new(infra.pool.clone());
@@ -274,7 +283,9 @@ async fn test_redis_pubsub_invalidation() {
     // Create two managers (simulating two replicas)
     let manager1 = RemoteProviderManager::new(
         Arc::new(ProviderInstanceRepository::new(infra.pool.clone())),
-        Some(infra.redis_connection_manager().await),
+        Some(Arc::new(RwLock::new(
+            infra.redis_connection_manager().await,
+        ))),
         Some(infra.redis_client.clone()),
     );
 
@@ -328,14 +339,18 @@ async fn test_redis_pubsub_invalidation() {
 #[ignore = "Requires Docker"]
 async fn test_redis_invalidation_on_delete() {
     let infra = TestInfra::new().await;
-    let redis_conn = Some(infra.redis_connection_manager().await);
+    let redis_conn = Some(Arc::new(RwLock::new(
+        infra.redis_connection_manager().await,
+    )));
     let redis_client = Some(infra.redis_client.clone());
 
     let repo = ProviderInstanceRepository::new(infra.pool.clone());
 
     let manager1 = RemoteProviderManager::new(
         Arc::new(ProviderInstanceRepository::new(infra.pool.clone())),
-        Some(infra.redis_connection_manager().await),
+        Some(Arc::new(RwLock::new(
+            infra.redis_connection_manager().await,
+        ))),
         Some(infra.redis_client.clone()),
     );
 
@@ -376,7 +391,9 @@ async fn test_redis_invalidation_on_delete() {
 #[ignore = "Requires Docker"]
 async fn test_health_check_integration() {
     let infra = TestInfra::new().await;
-    let redis_conn = Some(infra.redis_connection_manager().await);
+    let redis_conn = Some(Arc::new(RwLock::new(
+        infra.redis_connection_manager().await,
+    )));
     let redis_client = Some(infra.redis_client.clone());
 
     let repo = ProviderInstanceRepository::new(infra.pool.clone());
@@ -407,7 +424,9 @@ async fn test_health_check_integration() {
 #[ignore = "Requires Docker"]
 async fn test_health_check_respects_enabled_flag() {
     let infra = TestInfra::new().await;
-    let redis_conn = Some(infra.redis_connection_manager().await);
+    let redis_conn = Some(Arc::new(RwLock::new(
+        infra.redis_connection_manager().await,
+    )));
     let redis_client = Some(infra.redis_client.clone());
 
     let repo = ProviderInstanceRepository::new(infra.pool.clone());
@@ -445,7 +464,9 @@ async fn test_health_check_respects_enabled_flag() {
 #[ignore = "Requires Docker"]
 async fn test_tls_configuration_secure() {
     let infra = TestInfra::new().await;
-    let redis_conn = Some(infra.redis_connection_manager().await);
+    let redis_conn = Some(Arc::new(RwLock::new(
+        infra.redis_connection_manager().await,
+    )));
     let redis_client = Some(infra.redis_client.clone());
 
     let _repo = ProviderInstanceRepository::new(infra.pool.clone());
@@ -489,7 +510,9 @@ async fn test_tls_configuration_secure() {
 #[ignore = "Requires Docker"]
 async fn test_tls_configuration_insecure() {
     let infra = TestInfra::new().await;
-    let redis_conn = Some(infra.redis_connection_manager().await);
+    let redis_conn = Some(Arc::new(RwLock::new(
+        infra.redis_connection_manager().await,
+    )));
     let redis_client = Some(infra.redis_client.clone());
 
     let repo = ProviderInstanceRepository::new(infra.pool.clone());
@@ -526,7 +549,9 @@ async fn test_tls_configuration_insecure() {
 #[ignore = "Requires Docker"]
 async fn test_fallback_to_local_provider() {
     let infra = TestInfra::new().await;
-    let redis_conn = Some(infra.redis_connection_manager().await);
+    let redis_conn = Some(Arc::new(RwLock::new(
+        infra.redis_connection_manager().await,
+    )));
     let redis_client = Some(infra.redis_client.clone());
 
     let repo = ProviderInstanceRepository::new(infra.pool.clone());
@@ -562,7 +587,9 @@ async fn test_fallback_to_local_provider() {
 #[ignore = "Requires Docker"]
 async fn test_fallback_when_instance_name_none() {
     let infra = TestInfra::new().await;
-    let redis_conn = Some(infra.redis_connection_manager().await);
+    let redis_conn = Some(Arc::new(RwLock::new(
+        infra.redis_connection_manager().await,
+    )));
     let redis_client = Some(infra.redis_client.clone());
 
     let repo = ProviderInstanceRepository::new(infra.pool.clone());
@@ -585,7 +612,9 @@ async fn test_fallback_when_instance_name_none() {
 #[ignore = "Requires Docker"]
 async fn test_fallback_when_channel_creation_fails() {
     let infra = TestInfra::new().await;
-    let redis_conn = Some(infra.redis_connection_manager().await);
+    let redis_conn = Some(Arc::new(RwLock::new(
+        infra.redis_connection_manager().await,
+    )));
     let redis_client = Some(infra.redis_client.clone());
 
     let repo = ProviderInstanceRepository::new(infra.pool.clone());
@@ -609,7 +638,9 @@ async fn test_fallback_when_channel_creation_fails() {
 #[ignore = "Requires Docker"]
 async fn test_enable_disable_instance() {
     let infra = TestInfra::new().await;
-    let redis_conn = Some(infra.redis_connection_manager().await);
+    let redis_conn = Some(Arc::new(RwLock::new(
+        infra.redis_connection_manager().await,
+    )));
     let redis_client = Some(infra.redis_client.clone());
 
     let repo = ProviderInstanceRepository::new(infra.pool.clone());
@@ -652,7 +683,9 @@ async fn test_enable_disable_instance() {
 #[ignore = "Requires Docker"]
 async fn test_reconnect_instance() {
     let infra = TestInfra::new().await;
-    let redis_conn = Some(infra.redis_connection_manager().await);
+    let redis_conn = Some(Arc::new(RwLock::new(
+        infra.redis_connection_manager().await,
+    )));
     let redis_client = Some(infra.redis_client.clone());
 
     let repo = ProviderInstanceRepository::new(infra.pool.clone());
@@ -690,7 +723,9 @@ async fn test_reconnect_instance() {
 #[ignore = "Requires Docker"]
 async fn test_add_duplicate_instance_fails() {
     let infra = TestInfra::new().await;
-    let redis_conn = Some(infra.redis_connection_manager().await);
+    let redis_conn = Some(Arc::new(RwLock::new(
+        infra.redis_connection_manager().await,
+    )));
     let redis_client = Some(infra.redis_client.clone());
 
     let repo = ProviderInstanceRepository::new(infra.pool.clone());
@@ -718,7 +753,9 @@ async fn test_add_duplicate_instance_fails() {
 #[ignore = "Requires Docker"]
 async fn test_update_nonexistent_instance_fails() {
     let infra = TestInfra::new().await;
-    let redis_conn = Some(infra.redis_connection_manager().await);
+    let redis_conn = Some(Arc::new(RwLock::new(
+        infra.redis_connection_manager().await,
+    )));
     let redis_client = Some(infra.redis_client.clone());
 
     let repo = ProviderInstanceRepository::new(infra.pool.clone());
@@ -741,7 +778,9 @@ async fn test_update_nonexistent_instance_fails() {
 #[ignore = "Requires Docker"]
 async fn test_delete_nonexistent_instance_fails() {
     let infra = TestInfra::new().await;
-    let redis_conn = Some(infra.redis_connection_manager().await);
+    let redis_conn = Some(Arc::new(RwLock::new(
+        infra.redis_connection_manager().await,
+    )));
     let redis_client = Some(infra.redis_client.clone());
 
     let repo = ProviderInstanceRepository::new(infra.pool.clone());
@@ -763,7 +802,9 @@ async fn test_delete_nonexistent_instance_fails() {
 #[ignore = "Requires Docker"]
 async fn test_get_all_instances() {
     let infra = TestInfra::new().await;
-    let redis_conn = Some(infra.redis_connection_manager().await);
+    let redis_conn = Some(Arc::new(RwLock::new(
+        infra.redis_connection_manager().await,
+    )));
     let redis_client = Some(infra.redis_client.clone());
 
     let repo = ProviderInstanceRepository::new(infra.pool.clone());
@@ -844,7 +885,9 @@ async fn test_manager_without_redis() {
 #[ignore = "Requires Docker"]
 async fn test_init_pre_warms_cache() {
     let infra = TestInfra::new().await;
-    let redis_conn = Some(infra.redis_connection_manager().await);
+    let redis_conn = Some(Arc::new(RwLock::new(
+        infra.redis_connection_manager().await,
+    )));
     let redis_client = Some(infra.redis_client.clone());
 
     let repo = ProviderInstanceRepository::new(infra.pool.clone());
@@ -874,7 +917,9 @@ async fn test_init_pre_warms_cache() {
 #[ignore = "Requires Docker"]
 async fn test_ssrf_validation_blocks_internal_ips() {
     let infra = TestInfra::new().await;
-    let redis_conn = Some(infra.redis_connection_manager().await);
+    let redis_conn = Some(Arc::new(RwLock::new(
+        infra.redis_connection_manager().await,
+    )));
     let redis_client = Some(infra.redis_client.clone());
 
     let repo = ProviderInstanceRepository::new(infra.pool.clone());
@@ -909,7 +954,9 @@ async fn test_ssrf_validation_blocks_internal_ips() {
 #[ignore = "Requires Docker"]
 async fn test_ssrf_validation_allows_public_endpoints() {
     let infra = TestInfra::new().await;
-    let redis_conn = Some(infra.redis_connection_manager().await);
+    let redis_conn = Some(Arc::new(RwLock::new(
+        infra.redis_connection_manager().await,
+    )));
     let redis_client = Some(infra.redis_client.clone());
 
     let repo = ProviderInstanceRepository::new(infra.pool.clone());
@@ -940,7 +987,9 @@ async fn test_ssrf_validation_allows_public_endpoints() {
 #[ignore = "Requires Docker"]
 async fn test_resolve_client_uses_remote_when_available() {
     let infra = TestInfra::new().await;
-    let redis_conn = Some(infra.redis_connection_manager().await);
+    let redis_conn = Some(Arc::new(RwLock::new(
+        infra.redis_connection_manager().await,
+    )));
     let redis_client = Some(infra.redis_client.clone());
 
     let repo = ProviderInstanceRepository::new(infra.pool.clone());
@@ -970,7 +1019,9 @@ async fn test_resolve_client_uses_remote_when_available() {
 #[ignore = "Requires Docker"]
 async fn test_cache_respects_max_capacity() {
     let infra = TestInfra::new().await;
-    let redis_conn = Some(infra.redis_connection_manager().await);
+    let redis_conn = Some(Arc::new(RwLock::new(
+        infra.redis_connection_manager().await,
+    )));
     let redis_client = Some(infra.redis_client.clone());
 
     let repo = ProviderInstanceRepository::new(infra.pool.clone());

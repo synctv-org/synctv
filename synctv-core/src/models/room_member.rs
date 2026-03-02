@@ -439,7 +439,10 @@ mod tests {
     #[test]
     fn test_ban_sets_left_at() {
         let mut member = test_member(RoomRole::Member);
-        assert!(member.left_at.is_none(), "Precondition: left_at starts as None");
+        assert!(
+            member.left_at.is_none(),
+            "Precondition: left_at starts as None"
+        );
 
         let banner = UserId("banner".to_string());
         member.ban(banner.clone(), Some("bad behavior".to_string()));
@@ -478,8 +481,15 @@ mod tests {
     #[test]
     fn test_leave_sets_status_and_left_at() {
         let mut member = test_member(RoomRole::Member);
-        assert_eq!(member.status, MemberStatus::Active, "Precondition: starts active");
-        assert!(member.left_at.is_none(), "Precondition: left_at starts as None");
+        assert_eq!(
+            member.status,
+            MemberStatus::Active,
+            "Precondition: starts active"
+        );
+        assert!(
+            member.left_at.is_none(),
+            "Precondition: left_at starts as None"
+        );
 
         member.leave();
 

@@ -222,10 +222,7 @@ impl ChatService {
         // Check if user is the sender or has DELETE_CHAT permission.
         // If the original author has been deleted (user_id is None), treat as
         // non-owner and require DELETE_CHAT permission.
-        let is_sender = message
-            .user_id
-            .as_ref()
-            .map_or(false, |uid| uid == user_id);
+        let is_sender = message.user_id.as_ref().map_or(false, |uid| uid == user_id);
         if !is_sender {
             // Not the sender, check DELETE_CHAT permission via PermissionService
             self.permission_service
@@ -347,7 +344,13 @@ impl ChatService {
         // Broadcast danmaku message to room members
         if let Some(ref notification_service) = self.notification_service {
             if let Err(e) = notification_service
-                .notify_danmaku(&room_id, &user_id, &username, &filtered_content, position_str)
+                .notify_danmaku(
+                    &room_id,
+                    &user_id,
+                    &username,
+                    &filtered_content,
+                    position_str,
+                )
                 .await
             {
                 error!(

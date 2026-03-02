@@ -28,12 +28,6 @@ impl LiveProxyProvider {
     }
 }
 
-impl Default for LiveProxyProvider {
-    fn default() -> Self {
-        Self::new("https://localhost:8080")
-    }
-}
-
 #[async_trait]
 impl MediaProvider for LiveProxyProvider {
     fn name(&self) -> &'static str {
@@ -185,7 +179,10 @@ mod tests {
             "media_id": "media-456"
         });
 
-        let result = provider.generate_playback(&ctx, &source_config).await.unwrap();
+        let result = provider
+            .generate_playback(&ctx, &source_config)
+            .await
+            .unwrap();
 
         // The metadata must NOT contain the full source URL.
         // Exposing it would leak internal infrastructure URLs to clients.
@@ -205,6 +202,14 @@ mod tests {
         }
     }
 
+    #[test]
+    fn test_live_proxy_provider_requires_explicit_base_url() {
+        // L14: LiveProxyProvider must NOT implement Default.
+        // It must always be constructed with an explicit base URL via new().
+        let provider = LiveProxyProvider::new("https://my-server.example.com:9090");
+        assert_eq!(provider.base_url, "https://my-server.example.com:9090");
+    }
+
     #[tokio::test]
     async fn test_live_proxy_metadata_contains_provider_tag() {
         let provider = LiveProxyProvider::new("https://localhost:8080");
@@ -216,7 +221,10 @@ mod tests {
             "media_id": "media-1"
         });
 
-        let result = provider.generate_playback(&ctx, &source_config).await.unwrap();
+        let result = provider
+            .generate_playback(&ctx, &source_config)
+            .await
+            .unwrap();
         assert_eq!(
             result.metadata.get("provider").and_then(|v| v.as_str()),
             Some("live_proxy"),

@@ -257,12 +257,15 @@ pub struct StreamMessageHandler {
     username: String,
     connection_id: String,
     room_service: Arc<RoomService>,
-    /// Optional `ChatService` for proper chat message handling with business logic.
-    /// When set, chat messages are processed through `ChatService::send_message()`
+    /// `ChatService` for chat message handling with business logic.
+    /// Chat messages are processed through `ChatService::send_message()`
     /// which handles permission checks, content filtering, rate limiting, and persistence.
-    /// When not set, falls back to direct persistence via `room_service.save_chat_message()`.
-    chat_service: Option<Arc<ChatService>>,
+    chat_service: Arc<ChatService>,
     cluster_manager: Arc<ClusterManager>,
+    /// Optional notification service for direct real-time push to connected clients.
+    /// When set, the handler subscribes to notification events and pushes them
+    /// without depending on the gRPC notification-to-cluster bridge.
+    notification_service: Option<Arc<synctv_core::service::UserNotificationService>>,
     connection_manager: ConnectionManager,
     rate_limiter: Arc<RateLimiter>,
     rate_limit_config: Arc<RateLimitConfig>,
@@ -299,8 +302,9 @@ impl Clone for StreamMessageHandler {
             username: self.username.clone(),
             connection_id: self.connection_id.clone(),
             room_service: Arc::clone(&self.room_service),
-            chat_service: self.chat_service.clone(),
+            chat_service: Arc::clone(&self.chat_service),
             cluster_manager: Arc::clone(&self.cluster_manager),
+            notification_service: self.notification_service.clone(),
             connection_manager: self.connection_manager.clone(),
             rate_limiter: Arc::clone(&self.rate_limiter),
             rate_limit_config: Arc::clone(&self.rate_limit_config),
@@ -324,6 +328,7 @@ impl StreamMessageHandler {
         user_id: UserId,
         username: String,
         room_service: Arc<RoomService>,
+        chat_service: Arc<ChatService>,
         cluster_manager: Arc<ClusterManager>,
         connection_manager: ConnectionManager,
         rate_limiter: Arc<RateLimiter>,
@@ -336,6 +341,7 @@ impl StreamMessageHandler {
             user_id,
             username,
             room_service,
+            chat_service,
             cluster_manager,
             connection_manager,
             rate_limiter,
@@ -356,6 +362,7 @@ impl StreamMessageHandler {
         user_id: UserId,
         username: String,
         room_service: Arc<RoomService>,
+        chat_service: Arc<ChatService>,
         cluster_manager: Arc<ClusterManager>,
         connection_manager: ConnectionManager,
         rate_limiter: Arc<RateLimiter>,
@@ -378,8 +385,9 @@ impl StreamMessageHandler {
             username,
             connection_id,
             room_service,
-            chat_service: None, // Can be set via with_chat_service()
+            chat_service,
             cluster_manager,
+            notification_service: None,
             connection_manager,
             rate_limiter,
             rate_limit_config,
@@ -398,6 +406,20 @@ impl StreamMessageHandler {
     #[must_use]
     pub const fn with_ws_message_rate_limit(mut self, limit: u32) -> Self {
         self.ws_message_rate_limit = limit;
+        self
+    }
+
+    /// Set the notification service for direct real-time notification push.
+    ///
+    /// When set, the handler subscribes to `UserNotificationService::subscribe_events()`
+    /// and pushes notifications directly to the connected client without depending on
+    /// the gRPC notification-to-cluster bridge task.
+    #[must_use]
+    pub fn with_notification_service(
+        mut self,
+        service: Arc<synctv_core::service::UserNotificationService>,
+    ) -> Self {
+        self.notification_service = Some(service);
         self
     }
 
@@ -479,6 +501,14 @@ impl StreamMessageHandler {
         // delivered through the room-level event subscription, so each connection
         // must independently monitor admin events and disconnect when targeted.
         let mut admin_rx = self.cluster_manager.subscribe_admin_events();
+
+        // H11: Subscribe to notification events for direct real-time push.
+        // This ensures notifications are delivered to WebSocket clients even when
+        // the gRPC notification-to-cluster bridge is not running.
+        let mut notification_rx = self
+            .notification_service
+            .as_ref()
+            .map(|svc| svc.subscribe_events());
 
         // E6 fix: Fetch member data ONCE and pass to both methods
         let member_data = self
@@ -823,6 +853,61 @@ impl StreamMessageHandler {
                         Err(tokio::sync::broadcast::error::RecvError::Closed) => {
                             tracing::error!("Admin event channel closed");
                             break;
+                        }
+                    }
+                }
+
+                // H11: Direct notification push from UserNotificationService.
+                // When notification_service is configured, notifications are pushed
+                // directly without depending on the gRPC bridge task.
+                result = async {
+                    match notification_rx.as_mut() {
+                        Some(rx) => rx.recv().await,
+                        None => std::future::pending().await,
+                    }
+                } => {
+                    match result {
+                        Ok(event) => {
+                            // Only push if this notification targets the connected user
+                            if event.user_id == self.user_id {
+                                let data = serde_json::json!({
+                                    "type": "user_notification",
+                                    "notification_id": event.notification.id.to_string(),
+                                    "notification_type": event.notification.notification_type.to_string(),
+                                    "title": &event.notification.title,
+                                    "content": &event.notification.content,
+                                });
+                                let msg = ServerMessage {
+                                    message: Some(crate::proto::client::server_message::Message::Notification(
+                                        crate::proto::client::UserNotification {
+                                            notification_id: event.notification.id.to_string(),
+                                            notification_type: event.notification.notification_type.to_string(),
+                                            title: event.notification.title,
+                                            content: event.notification.content,
+                                            data: data.to_string(),
+                                            timestamp: event.notification.created_at.timestamp(),
+                                        },
+                                    )),
+                                };
+                                if let Err(e) = stream.send(msg) {
+                                    tracing::error!("Failed to push direct notification to WebSocket: {}", e);
+                                }
+                            }
+                        }
+                        Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                            tracing::warn!(
+                                lagged = n,
+                                user_id = %self.user_id.as_str(),
+                                "Notification event channel lagged, re-subscribing"
+                            );
+                            notification_rx = self
+                                .notification_service
+                                .as_ref()
+                                .map(|svc| svc.subscribe_events());
+                        }
+                        Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                            tracing::debug!("Notification event channel closed");
+                            notification_rx = None;
                         }
                     }
                 }
@@ -1637,92 +1722,57 @@ impl StreamMessageHandler {
 
         match &msg.message {
             Some(Message::Chat(chat_msg)) => {
-                // R-6: Check permission first, before spending resources on rate
-                // limiting and content filtering for users who lack SEND_CHAT.
-                self.room_service
-                    .check_permission(&self.room_id, &self.user_id, PermissionBits::SEND_CHAT)
-                    .await
-                    .map_err(|e| e.to_string())?;
-
-                // Validate message length
-                if chat_msg.content.is_empty() {
-                    return Err("Chat message cannot be empty".to_string());
-                }
-                if chat_msg.content.chars().count()
-                    > synctv_core::service::chat::MAX_CHAT_MESSAGE_CHARS
-                {
-                    return Err(format!(
-                        "Chat message too long (max {} characters)",
-                        synctv_core::service::chat::MAX_CHAT_MESSAGE_CHARS,
-                    ));
-                }
-
                 // Check if this is a danmaku message (has position)
                 let is_danmaku = chat_msg.position.is_some();
 
-                // Check if chat/danmaku is enabled in room settings
-                let room_settings = self
-                    .room_service
-                    .get_room_settings(&self.room_id)
-                    .await
-                    .map_err(|e| e.to_string())?;
                 if is_danmaku {
+                    // Danmaku: validate, check settings, rate limit, filter, then handle
+                    self.room_service
+                        .check_permission(&self.room_id, &self.user_id, PermissionBits::SEND_CHAT)
+                        .await
+                        .map_err(|e| e.to_string())?;
+
+                    if chat_msg.content.is_empty() {
+                        return Err("Danmaku message cannot be empty".to_string());
+                    }
+                    if chat_msg.content.chars().count()
+                        > synctv_core::service::chat::MAX_CHAT_MESSAGE_CHARS
+                    {
+                        return Err(format!(
+                            "Danmaku message too long (max {} characters)",
+                            synctv_core::service::chat::MAX_CHAT_MESSAGE_CHARS,
+                        ));
+                    }
+
+                    let room_settings = self
+                        .room_service
+                        .get_room_settings(&self.room_id)
+                        .await
+                        .map_err(|e| e.to_string())?;
                     if !room_settings.danmaku_enabled.0 {
                         return Err("Danmaku is disabled in this room".to_string());
                     }
-                } else if !room_settings.chat_enabled.0 {
-                    return Err("Chat is disabled in this room".to_string());
-                }
 
-                // Check rate limit.
-                // The key includes room_id so that rate limits are per-user
-                // per-room: a user spamming in one room is not throttled in
-                // other rooms they belong to.
-                let rate_limit_key = if is_danmaku {
-                    format!(
+                    let rate_limit_key = format!(
                         "room:{}:user:{}:danmaku",
                         self.room_id.as_str(),
                         self.user_id.as_str()
-                    )
-                } else {
-                    format!(
-                        "room:{}:user:{}:chat",
-                        self.room_id.as_str(),
-                        self.user_id.as_str()
-                    )
-                };
+                    );
+                    self.rate_limiter
+                        .check_rate_limit(
+                            &rate_limit_key,
+                            self.rate_limit_config.danmaku_per_second,
+                            self.rate_limit_config.window_seconds,
+                        )
+                        .await
+                        .map_err(|e| e.to_string())?;
 
-                let rate_limit = if is_danmaku {
-                    self.rate_limit_config.danmaku_per_second
-                } else {
-                    self.rate_limit_config.chat_per_second
-                };
-
-                self.rate_limiter
-                    .check_rate_limit(
-                        &rate_limit_key,
-                        rate_limit,
-                        self.rate_limit_config.window_seconds,
-                    )
-                    .await
-                    .map_err(|e| e.to_string())?;
-
-                // Filter and sanitize content
-                let sanitized_content = if is_danmaku {
-                    self.content_filter
+                    let sanitized_content = self
+                        .content_filter
                         .filter_danmaku(&chat_msg.content)
-                        .map_err(|e| e.to_string())?
-                } else {
-                    self.content_filter
-                        .filter_chat(&chat_msg.content)
-                        .map_err(|e| e.to_string())?
-                };
+                        .map_err(|e| e.to_string())?;
 
-                // Handle message
-                if is_danmaku {
-                    // Validate danmaku color format to prevent XSS/injection attacks
                     validate_danmaku_color(&chat_msg.color)?;
-
                     self.handle_danmaku(
                         &sanitized_content,
                         chat_msg.position.unwrap_or(0.0),
@@ -1730,7 +1780,10 @@ impl StreamMessageHandler {
                     )
                     .await?;
                 } else {
-                    self.handle_chat_message(&sanitized_content).await?;
+                    // Chat: delegate entirely to ChatService which handles permissions,
+                    // room settings, rate limiting, content filtering, and persistence.
+                    // This eliminates the dual-path fallback (H10).
+                    self.handle_chat_message(&chat_msg.content).await?;
                 }
             }
             Some(Message::Heartbeat(_)) => {
@@ -1780,10 +1833,11 @@ impl StreamMessageHandler {
     }
 
     async fn handle_chat_message(&self, content: &str) -> Result<(), String> {
-        // Save to database
-        let _saved_msg = self
-            .room_service
-            .save_chat_message(
+        // Delegate to ChatService which handles permission checks, content filtering,
+        // rate limiting, and persistence (no fallback path).
+        let saved_msg = self
+            .chat_service
+            .send_message(
                 self.room_id.clone(),
                 self.user_id.clone(),
                 content.to_string(),
@@ -1791,17 +1845,21 @@ impl StreamMessageHandler {
             .await
             .map_err(|e| e.to_string())?;
 
+        // Touch room activity to prevent TTL expiry on active rooms
+        self.room_service.touch_room_activity(self.room_id.clone());
+
         // Track chat message metric
         synctv_core::metrics::http::CHAT_MESSAGES_TOTAL
             .with_label_values(&[] as &[&str])
             .inc();
 
+        // Use the filtered content from ChatService (content filtering already applied)
         let event = ClusterEvent::ChatMessage {
             event_id: nanoid::nanoid!(16),
             room_id: self.room_id.clone(),
             user_id: self.user_id.clone(),
             username: self.username.clone(),
-            message: content.to_string(),
+            message: saved_msg.content,
             timestamp: chrono::Utc::now(),
             position: None,
             color: None,
@@ -2404,7 +2462,7 @@ fn cluster_event_to_server_message(
                     speed: state.speed,
                     is_playing: state.is_playing,
                     updated_at: state.updated_at.timestamp(),
-                    version: state.version as i32,
+                    version: state.version,
                     playing_playlist_id: state
                         .playing_playlist_id
                         .as_ref()

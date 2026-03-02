@@ -916,12 +916,9 @@ mod tests {
 
         // Validator that simulates a banned user
         let result = service
-            .verify_publish_key_for_stream_checked(
-                &key.token,
-                &room_id,
-                &media_id,
-                |_uid| Err(Error::Authorization("User is banned".to_string())),
-            )
+            .verify_publish_key_for_stream_checked(&key.token, &room_id, &media_id, |_uid| {
+                Err(Error::Authorization("User is banned".to_string()))
+            })
             .await;
 
         assert!(result.is_err(), "Should reject banned user");
@@ -969,7 +966,10 @@ mod tests {
     async fn test_fail_closed_jti_store_rejects_on_backend_failure() {
         let store = FailClosedJtiStore;
         let result = store.try_claim("some-jti", 3600).await;
-        assert!(result.is_err(), "fail_closed store should return Err on backend failure");
+        assert!(
+            result.is_err(),
+            "fail_closed store should return Err on backend failure"
+        );
     }
 
     /// A mock JtiStore that always fails (simulates Redis unavailable with fail_closed=true).

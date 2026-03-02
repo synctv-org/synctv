@@ -19,13 +19,11 @@ use testcontainers_modules::redis::Redis;
 use tokio::sync::RwLock;
 
 async fn start_redis() -> (testcontainers::ContainerAsync<Redis>, String) {
-    let container = tokio::time::timeout(
-        std::time::Duration::from_secs(30),
-        Redis::default().start(),
-    )
-    .await
-    .expect("Docker container startup timed out (is Docker running?)")
-    .expect("Failed to start Redis");
+    let container =
+        tokio::time::timeout(std::time::Duration::from_secs(30), Redis::default().start())
+            .await
+            .expect("Docker container startup timed out (is Docker running?)")
+            .expect("Failed to start Redis");
     let port = container
         .get_host_port_ipv4(6379)
         .await
@@ -537,6 +535,7 @@ async fn test_cache_invalidation_before_commit() {
             deleted_at: None,
             is_banned: false,
             status: synctv_core::models::RoomStatus::Active,
+            last_activity_at: chrono::Utc::now(),
         })
         .await
         .expect("Failed to create room");
@@ -727,6 +726,7 @@ async fn test_cache_invalidation_rollback_safety() {
             deleted_at: None,
             is_banned: false,
             status: synctv_core::models::RoomStatus::Active,
+            last_activity_at: chrono::Utc::now(),
         })
         .await
         .expect("Failed to create room");

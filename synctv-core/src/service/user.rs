@@ -41,6 +41,8 @@ pub struct UserService {
     key_builder: KeyBuilder,
     /// Rate limiter for refresh token endpoint (prevents abuse/stolen token `DoS`)
     refresh_rate_limiter: RateLimiter,
+    /// Optional settings registry for reading signup_need_review and email_whitelist
+    settings_registry: Option<Arc<crate::service::SettingsRegistry>>,
 }
 
 impl std::fmt::Debug for UserService {
@@ -77,7 +79,13 @@ impl UserService {
             token_blacklist,
             key_builder,
             refresh_rate_limiter,
+            settings_registry: None,
         }
+    }
+
+    /// Inject the settings registry for reading signup_need_review and email_whitelist settings.
+    pub fn set_settings_registry(&mut self, registry: Arc<crate::service::SettingsRegistry>) {
+        self.settings_registry = Some(registry);
     }
 
     /// Set the cache invalidation service for cross-replica user cache sync
@@ -100,7 +108,7 @@ impl UserService {
     /// degrades to in-memory limiting (same as the default behavior).
     pub fn set_refresh_rate_limiter_redis(
         &mut self,
-        redis_conn: redis::aio::ConnectionManager,
+        redis_conn: Arc<tokio::sync::RwLock<redis::aio::ConnectionManager>>,
         key_prefix: String,
     ) {
         self.refresh_rate_limiter = RateLimiter::new(Some(redis_conn), key_prefix);
@@ -127,9 +135,14 @@ impl UserService {
         // OAuth2 users are exempt: they authenticated via an external provider,
         // so requiring email verification would lock them out if the provider
         // didn't confirm their email.
+        //
+        // Returns a specific EmailNotVerified error (not a generic Authentication error)
+        // so the client can prompt the user to verify their email. This is safe because
+        // the user has already authenticated successfully (correct credentials), so
+        // revealing that their email is unverified does not leak information.
         let is_oauth2_user = user.signup_method == Some(crate::models::SignupMethod::OAuth2);
         if self.email_verification_required && !user.email_verified && !is_oauth2_user {
-            return Err(Error::Authentication("Authentication failed".to_string()));
+            return Err(Error::EmailNotVerified);
         }
 
         Ok(())
@@ -196,14 +209,47 @@ impl UserService {
             return Err(e);
         }
 
+        // Check email whitelist setting from the settings registry.
+        // If email whitelist is enabled, the registration email domain must be in the whitelist.
+        if let Some(ref email_addr) = email {
+            if let Some(ref registry) = self.settings_registry {
+                let whitelist_enabled = registry.email_whitelist_enabled.get().unwrap_or(false);
+                if whitelist_enabled {
+                    let whitelist_str = registry.email_whitelist.get().unwrap_or_default();
+                    let domain = email_addr
+                        .rsplit_once('@')
+                        .map(|(_, d)| d.to_lowercase())
+                        .unwrap_or_default();
+                    let allowed: Vec<&str> = whitelist_str
+                        .split(',')
+                        .map(str::trim)
+                        .filter(|s| !s.is_empty())
+                        .collect();
+                    if !allowed.is_empty()
+                        && !allowed.iter().any(|d| d.eq_ignore_ascii_case(&domain))
+                    {
+                        return Err(Error::InvalidInput(
+                            "Email domain is not allowed for registration".to_string(),
+                        ));
+                    }
+                }
+            }
+        }
+
         // Hash password
         let password_hash = hash_password(&password).await?;
 
-        // Set initial status based on email verification config.
-        // When verification is required, users start as Pending and must verify
-        // their email before they can log in. When verification is disabled,
-        // users start as Active and receive tokens immediately.
-        let initial_status = if self.email_verification_required {
+        // Set initial status based on email verification config and signup_need_review setting.
+        // Priority: email verification required -> Pending (must verify email first)
+        // Otherwise: signup_need_review -> Pending (admin must approve)
+        // Otherwise: Active (immediate access)
+        let signup_need_review = self
+            .settings_registry
+            .as_ref()
+            .and_then(|r| r.signup_need_review.get().ok())
+            .unwrap_or(false);
+
+        let initial_status = if self.email_verification_required || signup_need_review {
             crate::models::UserStatus::Pending
         } else {
             crate::models::UserStatus::Active
@@ -247,9 +293,10 @@ impl UserService {
         // Populate username cache
         self.username_cache.set(&created_user.id, &username).await?;
 
-        // When email verification is required, do NOT issue tokens for pending users.
-        // The user must complete email verification before they can authenticate.
-        if self.email_verification_required {
+        // When the user starts as Pending (email verification or signup review required),
+        // do NOT issue tokens. The user must either verify their email or be approved
+        // by an admin before they can authenticate.
+        if initial_status == crate::models::UserStatus::Pending {
             return Ok((created_user, None, None));
         }
 

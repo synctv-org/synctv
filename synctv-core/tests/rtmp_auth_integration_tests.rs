@@ -98,13 +98,10 @@ async fn create_test_infra() -> (
 
     // Start Redis
     use testcontainers::runners::AsyncRunner;
-    let redis = tokio::time::timeout(
-        std::time::Duration::from_secs(30),
-        Redis::default().start(),
-    )
-    .await
-    .expect("Docker container startup timed out (is Docker running?)")
-    .expect("Failed to start Redis container");
+    let redis = tokio::time::timeout(std::time::Duration::from_secs(30), Redis::default().start())
+        .await
+        .expect("Docker container startup timed out (is Docker running?)")
+        .expect("Failed to start Redis container");
 
     let redis_host = redis.get_host().await.expect("Failed to get Redis host");
     let redis_port = redis
@@ -196,6 +193,7 @@ async fn create_test_room(pool: &sqlx::PgPool, creator_id: UserId, name: &str) -
         updated_at: chrono::Utc::now(),
         deleted_at: None,
         version: 0,
+        last_activity_at: chrono::Utc::now(),
     };
     let room = room_repo
         .create(&room)

@@ -40,6 +40,7 @@ serde_json.workspace = true
 
 # Caching
 moka.workspace = true
+lru.workspace = true
 dashmap.workspace = true
 async_singleflight.workspace = true
 

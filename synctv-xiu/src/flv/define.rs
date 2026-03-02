@@ -60,6 +60,25 @@ pub mod h264_nal_type {
     pub const H264_NAL_PPS: u8 = 8;
     pub const H264_NAL_AUD: u8 = 9;
 }
+
+/// HEVC (H.265) NAL unit types according to ITU-T H.265
+/// NAL type is extracted from the first byte: (nal_byte >> 1) & 0x3F
+pub mod hevc_nal_type {
+    /// Coded slice of a CRA (Clean Random Access) picture
+    pub const HEVC_NAL_CRA: u8 = 21;
+    /// Coded slice of an IDR (Instantaneous Decoding Refresh) picture
+    pub const HEVC_NAL_IDR_W_RADL: u8 = 19;
+    /// Coded slice of an IDR_N_LP picture
+    pub const HEVC_NAL_IDR_N_LP: u8 = 20;
+    /// Video Parameter Set (VPS)
+    pub const HEVC_NAL_VPS: u8 = 32;
+    /// Sequence Parameter Set (SPS)
+    pub const HEVC_NAL_SPS: u8 = 33;
+    /// Picture Parameter Set (PPS)
+    pub const HEVC_NAL_PPS: u8 = 34;
+    /// Access Unit Delimiter (AUD)
+    pub const HEVC_NAL_AUD: u8 = 35;
+}
 #[derive(Debug, Clone, Serialize, Default)]
 pub enum AacProfile {
     // @see @see ISO_IEC_14496-3-AAC-2001.pdf, page 23

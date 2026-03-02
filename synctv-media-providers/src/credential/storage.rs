@@ -138,6 +138,27 @@ pub trait CredentialStorage: Send + Sync {
 /// Simple in-memory implementation for testing purposes.
 /// Uses a `HashMap` protected by `RwLock` for thread safety.
 ///
+/// # Warning: Multi-Replica Deployments
+///
+/// **WARNING: This storage is NOT suitable for multi-replica/cluster deployments!**
+///
+/// In a multi-replica environment (e.g., Kubernetes with multiple pods), each replica
+/// maintains its own isolated in-memory storage. Credentials stored in one replica
+/// are NOT shared with others. This means:
+///
+/// - A user who logs in on Pod A will not have their credential available on Pod B
+/// - Load-balanced requests may fail to find credentials stored in a different pod
+/// - Pod restarts will lose all stored credentials
+///
+/// **For production deployments with multiple replicas, you MUST use
+/// `PostgresCredentialStorage` which provides persistent, shared storage across
+/// all replicas.**
+///
+/// This implementation is only appropriate for:
+/// - Single-replica deployments
+/// - Local development and testing
+/// - Unit tests
+///
 /// # Encryption
 ///
 /// When created with `with_encryption`, sensitive credential fields are encrypted:

@@ -315,10 +315,16 @@ pub async fn serve(grpc_config: GrpcServerConfig<'_>) -> anyhow::Result<()> {
 
     let rate_limiter_for_layer = rate_limiter.clone();
     let cluster_manager_for_rt = cluster_manager.clone();
+    let chat_service = chat_service.ok_or_else(|| {
+        anyhow::anyhow!(
+            "chat_service is required for gRPC ClientService but was not provided. \
+             Ensure chat_service is initialized before starting the gRPC server."
+        )
+    })?;
     let client_service = ClientServiceImpl::from_config(ClientServiceConfig {
         user_service: user_service_clone,
         room_service: room_service_clone,
-        chat_service: chat_service.expect("chat_service must be configured for gRPC handler"),
+        chat_service,
         cluster_manager,
         rate_limiter,
         rate_limit_config,
@@ -643,18 +649,21 @@ pub async fn serve(grpc_config: GrpcServerConfig<'_>) -> anyhow::Result<()> {
         let provider_interceptor2 = auth_interceptor.clone();
         let provider_interceptor3 = auth_interceptor.clone();
 
-        // Register provider services with interceptors
-        // Note: Message size limits must be applied via server-wide config, not per-service here
-        router = router.add_service(AlistProviderServiceServer::with_interceptor(
-            providers::alist::AlistProviderGrpcService::new(app_state.clone()),
+        // Register provider services with interceptors and message size limits
+        // Using InterceptedService::new() to apply message size limits before the interceptor
+        router = router.add_service(tonic::codegen::InterceptedService::new(
+            AlistProviderServiceServer::new(providers::alist::AlistProviderGrpcService::new(app_state.clone()))
+                .with_message_size_limit(max_message_size),
             move |req| provider_interceptor1.inject_user(req),
         ));
-        router = router.add_service(BilibiliProviderServiceServer::with_interceptor(
-            providers::bilibili::BilibiliProviderGrpcService::new(app_state.clone()),
+        router = router.add_service(tonic::codegen::InterceptedService::new(
+            BilibiliProviderServiceServer::new(providers::bilibili::BilibiliProviderGrpcService::new(app_state.clone()))
+                .with_message_size_limit(max_message_size),
             move |req| provider_interceptor2.inject_user(req),
         ));
-        router = router.add_service(EmbyProviderServiceServer::with_interceptor(
-            providers::emby::EmbyProviderGrpcService::new(app_state),
+        router = router.add_service(tonic::codegen::InterceptedService::new(
+            EmbyProviderServiceServer::new(providers::emby::EmbyProviderGrpcService::new(app_state))
+                .with_message_size_limit(max_message_size),
             move |req| provider_interceptor3.inject_user(req),
         ));
     }

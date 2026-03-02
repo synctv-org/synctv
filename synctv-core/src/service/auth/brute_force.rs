@@ -858,6 +858,20 @@ impl BruteForceProtection {
         self.lockout_duration_with_config(attempts)
     }
 
+    /// Test-only accessor for the username tracker.
+    #[cfg(test)]
+    #[must_use]
+    pub fn username_tracker(&self) -> Arc<dyn AttemptTracker> {
+        Arc::clone(&self.username_tracker)
+    }
+
+    /// Test-only accessor for the IP tracker.
+    #[cfg(test)]
+    #[must_use]
+    pub fn ip_tracker(&self) -> Arc<dyn AttemptTracker> {
+        Arc::clone(&self.ip_tracker)
+    }
+
     /// Check if a login attempt is allowed for the given username and optional IP.
     ///
     /// Returns `Ok(())` if the attempt is allowed, or an error:

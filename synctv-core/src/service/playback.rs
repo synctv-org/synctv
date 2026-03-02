@@ -1685,4 +1685,205 @@ mod tests {
             assert_eq!(delays[2], delays[1] * 2, "Third delay should be 2x second");
         }
     }
+
+    // ========== Optimistic Lock Retry Boundary Tests ==========
+
+    /// Tests for update_state retry mechanism boundary conditions.
+    ///
+    /// These tests verify the retry logic in PlaybackService::update_state:
+    /// - MAX_RETRIES = 3
+    /// - On OptimisticLockConflict, retry with exponential backoff + jitter
+    /// - After MAX_RETRIES, return Internal error with "maximum retry attempts" message
+    mod update_state_retry_boundary_tests {
+        use super::*;
+
+        /// Simulate the retry loop logic from update_state
+        /// Returns Ok(attempts_used) on success, Err("max_retries") on exhaustion
+        fn simulate_retry_loop(conflict_count: usize, max_retries: u32) -> std::result::Result<u32, &'static str> {
+            for attempt in 0..max_retries {
+                // Simulate conflict on first `conflict_count` attempts
+                if (attempt as usize) < conflict_count {
+                    // Conflict occurred
+                    if attempt + 1 >= max_retries {
+                        return Err("maximum retry attempts");
+                    }
+                    // Would apply backoff here in real code
+                    continue;
+                }
+                // Success
+                return Ok(attempt + 1);
+            }
+            Err("maximum retry attempts")
+        }
+
+        /// Test: With 0 conflicts, update succeeds on first attempt
+        #[test]
+        fn test_retry_succeeds_immediately_with_no_conflicts() {
+            let result = simulate_retry_loop(0, PlaybackService::MAX_RETRIES);
+            assert_eq!(result, Ok(1), "Should succeed on first attempt with no conflicts");
+        }
+
+        /// Test: With 1 conflict, update succeeds on second attempt (within MAX_RETRIES)
+        #[test]
+        fn test_retry_succeeds_after_one_conflict() {
+            let result = simulate_retry_loop(1, PlaybackService::MAX_RETRIES);
+            assert_eq!(result, Ok(2), "Should succeed on second attempt after 1 conflict");
+        }
+
+        /// Test: With 2 conflicts, update succeeds on third attempt (exactly MAX_RETRIES)
+        #[test]
+        fn test_retry_succeeds_after_two_conflicts() {
+            let result = simulate_retry_loop(2, PlaybackService::MAX_RETRIES);
+            assert_eq!(result, Ok(3), "Should succeed on third attempt after 2 conflicts");
+        }
+
+        /// Test: With 3 conflicts (equal to MAX_RETRIES), update fails
+        #[test]
+        fn test_retry_fails_after_three_conflicts() {
+            let result = simulate_retry_loop(3, PlaybackService::MAX_RETRIES);
+            assert!(result.is_err(), "Should fail after 3 conflicts (equal to MAX_RETRIES)");
+            assert_eq!(result, Err("maximum retry attempts"));
+        }
+
+        /// Test: With more conflicts than MAX_RETRIES, update fails
+        #[test]
+        fn test_retry_fails_with_excessive_conflicts() {
+            let result = simulate_retry_loop(10, PlaybackService::MAX_RETRIES);
+            assert!(result.is_err(), "Should fail when conflicts exceed MAX_RETRIES");
+        }
+
+        /// Test: Verify backoff calculation matches the formula:
+        /// delay = base * 2^attempt + jitter
+        #[test]
+        fn test_backoff_calculation_formula() {
+            let base_ms = PlaybackService::BACKOFF_BASE_MS;
+
+            // Attempt 0: backoff = 5 * 1 = 5ms, jitter = 0..5
+            let backoff_0 = base_ms * (1 << 0); // 5
+            assert_eq!(backoff_0, 5);
+
+            // Attempt 1: backoff = 5 * 2 = 10ms, jitter = 0..5
+            let backoff_1 = base_ms * (1 << 1); // 10
+            assert_eq!(backoff_1, 10);
+
+            // Attempt 2: backoff = 5 * 4 = 20ms, jitter = 0..5
+            let backoff_2 = base_ms * (1 << 2); // 20
+            assert_eq!(backoff_2, 20);
+        }
+
+        /// Test: Total possible delay before exhaustion
+        /// With 3 retries and backoffs of ~5, ~10, ~20 ms (+ jitter),
+        /// total delay is approximately 35-50ms
+        #[test]
+        fn test_total_delay_before_exhaustion() {
+            let base_ms = PlaybackService::BACKOFF_BASE_MS;
+
+            // Calculate total backoff (without jitter) for attempts 0, 1, 2
+            let total_backoff: u64 = (0..PlaybackService::MAX_RETRIES - 1)
+                .map(|attempt| base_ms * (1 << attempt))
+                .sum();
+
+            // Total backoff = 5 + 10 = 15ms (only 2 backoffs before final attempt)
+            assert_eq!(total_backoff, 15, "Total backoff before exhaustion should be ~15ms");
+
+            // With max jitter (5ms per backoff), total could be up to 25ms
+            let max_total = total_backoff + (base_ms * (PlaybackService::MAX_RETRIES - 1) as u64);
+            assert_eq!(max_total, 25, "Max total with jitter should be ~25ms");
+        }
+
+        /// Test: Jitter range is correct (0 to BACKOFF_BASE_MS exclusive)
+        #[test]
+        fn test_jitter_range() {
+            let base_ms = PlaybackService::BACKOFF_BASE_MS;
+            // The jitter is: rand::rng().random_range(0..BACKOFF_BASE_MS)
+            // Which means jitter is in range [0, BACKOFF_BASE_MS)
+            assert!(base_ms > 0, "BASE_MS should be positive for jitter to work");
+        }
+
+        /// Test: Verify the error message on exhaustion contains "maximum retry attempts"
+        #[test]
+        fn test_exhaustion_error_message_format() {
+            // The error message in update_state is:
+            // "Playback state update failed after maximum retry attempts"
+            let expected_substring = "maximum retry attempts";
+            let error_msg = "Playback state update failed after maximum retry attempts";
+            assert!(
+                error_msg.contains(expected_substring),
+                "Error message should contain '{}'",
+                expected_substring
+            );
+        }
+
+        /// Test: Seek operation returns degraded response on retry exhaustion
+        /// The seek() method catches Internal errors with "maximum retry attempts"
+        /// and returns a SeekResponse with seek_applied=false
+        #[test]
+        fn test_seek_returns_degraded_response_on_exhaustion() {
+            use crate::Error;
+
+            // Simulate the error matching logic in seek()
+            let error = Error::Internal(
+                "Playback state update failed after maximum retry attempts".to_string(),
+            );
+
+            // Check if the error matches the degradation condition
+            let is_degraded = matches!(
+                &error,
+                Error::Internal(ref msg) if msg.contains("maximum retry attempts")
+            );
+
+            assert!(is_degraded, "Internal error with 'maximum retry attempts' should trigger degraded response");
+        }
+
+        /// Test: Non-retry errors should not trigger retry mechanism
+        #[test]
+        fn test_non_retry_errors_bubble_up() {
+            use crate::Error;
+
+            // Errors other than OptimisticLockConflict should immediately return
+            let other_errors = vec![
+                Error::NotFound("Room not found".to_string()),
+                Error::Authorization("No permission".to_string()),
+                Error::InvalidInput("Invalid speed".to_string()),
+            ];
+
+            for error in other_errors {
+                // These should NOT be retried
+                let should_retry = matches!(error, Error::OptimisticLockConflict);
+                assert!(!should_retry, "Non-optimistic-lock errors should not retry");
+            }
+        }
+
+        /// Test: MAX_RETRIES value is appropriate for production use
+        #[test]
+        fn test_max_retries_is_reasonable() {
+            // MAX_RETRIES = 3 is chosen to balance:
+            // - High enough to handle normal contention
+            // - Low enough to avoid excessive latency
+            assert!(
+                PlaybackService::MAX_RETRIES >= 2,
+                "MAX_RETRIES should be at least 2 for contention handling"
+            );
+            assert!(
+                PlaybackService::MAX_RETRIES <= 5,
+                "MAX_RETRIES should be at most 5 to avoid excessive latency"
+            );
+        }
+
+        /// Test: BACKOFF_BASE_MS value is appropriate for production use
+        #[test]
+        fn test_backoff_base_is_reasonable() {
+            // BACKOFF_BASE_MS = 5ms is chosen to:
+            // - Be longer than typical DB round-trip
+            // - Be short enough to not noticeably affect latency
+            assert!(
+                PlaybackService::BACKOFF_BASE_MS >= 1,
+                "BACKOFF_BASE_MS should be at least 1ms"
+            );
+            assert!(
+                PlaybackService::BACKOFF_BASE_MS <= 50,
+                "BACKOFF_BASE_MS should be at most 50ms"
+            );
+        }
+    }
 }

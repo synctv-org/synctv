@@ -162,17 +162,15 @@ impl FlvVideoTagDemuxer {
         } else if tag_header.codec_id == AvcCodecId::HEVC as u8 {
             match tag_header.avc_packet_type {
                 avc_packet_type::AVC_SEQHDR => {
-                    // Load HEVC decoder configuration record
-                    let _ = self
-                        .hevc_processor
-                        .decoder_configuration_record_load(&mut reader);
+                    // Load HEVC decoder configuration record (VPS/SPS/PPS)
+                    self.hevc_processor
+                        .decoder_configuration_record_load(&mut reader)?;
                     return Ok(None);
                 }
                 avc_packet_type::AVC_NALU => {
-                    // For HEVC, pass through the raw NALU data (annex B conversion
-                    // would require full HEVC NALU parsing; raw passthrough works for
-                    // most players that handle HEVC in TS with stream_type 0x24).
-                    let data = reader.extract_remaining_bytes();
+                    // Convert HEVC NAL units from MP4 format to Annex B byte stream format
+                    let data = self.hevc_processor.hevc_mp4toannexb(&mut reader)?;
+
                     let video_data = FlvDemuxerVideoData {
                         codec_id: AvcCodecId::HEVC as u8,
                         pts: i64::from(timestamp) + i64::from(tag_header.composition_time),
@@ -552,5 +550,108 @@ mod tests {
         // Should return None since it's not H264
         assert!(result.is_ok());
         assert!(result.unwrap().is_none());
+    }
+
+    #[test]
+    fn test_flv_video_tag_demuxer_hevc_nalu() {
+        let mut demuxer = FlvVideoTagDemuxer::new();
+
+        // Create a minimal HEVC NALU data:
+        // VideoTagHeader: FrameType(4) | CodecID(4) | AVCPacketType(1) | CompositionTime(3)
+        // FrameType = 1 (keyframe), CodecID = 12 (HEVC)
+        // AVCPacketType = 1 (NALU), CompositionTime = 0
+        let mut data = BytesMut::new();
+        data.extend_from_slice(&[0x1C]); // FrameType(1) + CodecID(12) = 0x1C
+        data.extend_from_slice(&[0x01]); // AVCPacketType = AVC_NALU
+        data.extend_from_slice(&[0x00, 0x00, 0x00]); // CompositionTime = 0
+
+        // Add HEVC NAL data in MP4 format (size prefix + NAL data)
+        // NAL size (4 bytes) + NAL type byte + payload
+        data.extend_from_slice(&[0x00, 0x00, 0x00, 0x03]); // size = 3
+        data.extend_from_slice(&[0x02, 0xAA, 0xBB]); // NAL data (non-IDR slice)
+
+        let result = demuxer.demux(1000, data);
+
+        assert!(result.is_ok());
+        let video_data_opt = result.unwrap();
+        assert!(video_data_opt.is_some());
+
+        let video_data = video_data_opt.unwrap();
+        assert_eq!(video_data.codec_id, AvcCodecId::HEVC as u8);
+        assert_eq!(video_data.dts, 1000);
+        assert_eq!(video_data.pts, 1000);
+        assert_eq!(video_data.frame_type, 1); // keyframe
+
+        // Verify Annex B format: start code + NAL data
+        assert_eq!(&video_data.data[..4], &[0x00, 0x00, 0x00, 0x01]);
+        assert_eq!(&video_data.data[4..], &[0x02, 0xAA, 0xBB]);
+    }
+
+    #[test]
+    fn test_flv_video_tag_demuxer_hevc_seqhdr() {
+        let mut demuxer = FlvVideoTagDemuxer::new();
+
+        // Create HEVC sequence header (decoder configuration record)
+        // VideoTagHeader: FrameType(4) | CodecID(4) | AVCPacketType(1) | CompositionTime(3)
+        let mut data = BytesMut::new();
+        data.extend_from_slice(&[0x1C]); // FrameType(1) + CodecID(12) = 0x1C
+        data.extend_from_slice(&[0x00]); // AVCPacketType = AVC_SEQHDR
+        data.extend_from_slice(&[0x00, 0x00, 0x00]); // CompositionTime = 0
+
+        // Minimal HEVCDecoderConfigurationRecord
+        data.extend_from_slice(&[0x01]); // configurationVersion = 1
+        data.extend_from_slice(&[0x01]); // general_profile_space=0, tier=0, profile_idc=1
+        data.extend_from_slice(&[0x60, 0x00, 0x00, 0x00]); // general_profile_compatibility_flags
+        data.extend_from_slice(&[0x00, 0x00, 0x00, 0x00, 0x00, 0x00]); // constraint_indicator_flags
+        data.extend_from_slice(&[0x5D]); // general_level_idc = 93 (level 3.1)
+        data.extend_from_slice(&[0xF0, 0x00]); // min_spatial_segmentation_idc
+        data.extend_from_slice(&[0xFC]); // parallelismType
+        data.extend_from_slice(&[0xFD]); // chroma_format_idc = 1
+        data.extend_from_slice(&[0xFA]); // bit_depth_luma_minus8 = 2
+        data.extend_from_slice(&[0xFB]); // bit_depth_chroma_minus8 = 3
+        data.extend_from_slice(&[0x00, 0x00]); // avgFrameRate
+        data.extend_from_slice(&[0x0F]); // constantFrameRate=0, numTemporalLayers=0, temporalIdNested=0, lengthSizeMinusOne=3
+        data.extend_from_slice(&[0x00]); // numOfArrays = 0 (no NAL arrays for simplicity)
+
+        let result = demuxer.demux(1000, data);
+
+        // Sequence header should return None (no video data to output)
+        if let Err(ref e) = result {
+            eprintln!("Error: {:?}", e);
+        }
+        assert!(result.is_ok(), "demux should succeed");
+        assert!(result.unwrap().is_none());
+    }
+
+    #[test]
+    fn test_flv_video_tag_demuxer_hevc_multiple_nalus() {
+        let mut demuxer = FlvVideoTagDemuxer::new();
+
+        // Create HEVC data with multiple NAL units
+        let mut data = BytesMut::new();
+        data.extend_from_slice(&[0x1C]); // FrameType(1) + CodecID(12) = 0x1C
+        data.extend_from_slice(&[0x01]); // AVCPacketType = AVC_NALU
+        data.extend_from_slice(&[0x00, 0x00, 0x00]); // CompositionTime = 0
+
+        // First NAL: slice type
+        data.extend_from_slice(&[0x00, 0x00, 0x00, 0x02]); // size = 2
+        data.extend_from_slice(&[0x02, 0xAA]); // NAL data
+
+        // Second NAL: another slice
+        data.extend_from_slice(&[0x00, 0x00, 0x00, 0x02]); // size = 2
+        data.extend_from_slice(&[0x02, 0xBB]); // NAL data
+
+        let result = demuxer.demux(2000, data);
+
+        assert!(result.is_ok());
+        let video_data = result.unwrap().unwrap();
+
+        // Verify both NAL units are present with start codes
+        // Expected: start_code + nal1 + start_code + nal2
+        assert_eq!(video_data.data.len(), 12); // 4 + 2 + 4 + 2
+        assert_eq!(&video_data.data[..4], &[0x00, 0x00, 0x00, 0x01]);
+        assert_eq!(&video_data.data[4..6], &[0x02, 0xAA]);
+        assert_eq!(&video_data.data[6..10], &[0x00, 0x00, 0x00, 0x01]);
+        assert_eq!(&video_data.data[10..12], &[0x02, 0xBB]);
     }
 }

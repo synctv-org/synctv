@@ -240,15 +240,19 @@ impl AdminApiImpl {
             .await
             .unwrap_or_default();
 
+        // Batch-fetch distributed connection counts (single Redis MGET) to avoid N+1 queries
+        // This ensures accurate counts in multi-replica deployments
+        let room_id_refs: Vec<&synctv_core::models::RoomId> = rooms.iter().map(|r| &r.id).collect();
+        let counts = self
+            .connection_manager
+            .room_connection_count_distributed_batch(&room_id_refs)
+            .await;
+
         let room_list: Vec<_> = rooms
             .into_iter()
-            .map(|r| {
-                // Get online member count from connection manager
-                let member_count = self
-                    .connection_manager
-                    .room_connection_count(&r.id)
-                    .try_into()
-                    .ok();
+            .zip(counts)
+            .map(|(r, count)| {
+                let member_count: Option<i32> = count.try_into().ok();
                 let creator_username = username_map.get(&r.created_by).map(String::as_str);
                 admin_room_to_proto(&r, None, member_count, creator_username)
             })

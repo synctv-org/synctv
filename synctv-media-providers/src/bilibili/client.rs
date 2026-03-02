@@ -3188,6 +3188,9 @@ mod tests {
 
     #[test]
     fn test_refresh_lock_basic() {
+        // Reset any state from previous tests (parallel test isolation)
+        release_refresh_lock();
+
         // Test that the refresh lock can be claimed and released
         assert!(try_claim_refresh_lock(), "First claim should succeed");
         assert!(

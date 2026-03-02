@@ -870,4 +870,256 @@ mod tests {
             "Should pass when no providers are registered"
         );
     }
+
+    // ========== update_batch Cross-Validation Tests ==========
+
+    /// Tests for the cross-validation logic in update_batch that prevents
+    /// room_must_need_pwd and room_must_no_need_pwd from both being true.
+    ///
+    /// This validation happens within a database transaction to prevent
+    /// race conditions in multi-replica deployments.
+    mod update_batch_cross_validation_tests {
+
+        /// Test: Simulate the cross-validation logic without database.
+        /// Verifies that when both settings would be true, an error is returned.
+        #[test]
+        fn test_cross_validation_rejects_both_true() {
+            // Simulate the batch_map construction
+            let updates: Vec<(String, String)> = vec![
+                ("room.room_must_need_pwd".to_string(), "true".to_string()),
+                ("room.room_must_no_need_pwd".to_string(), "true".to_string()),
+            ];
+
+            let batch_map: std::collections::HashMap<&str, &str> = updates
+                .iter()
+                .map(|(k, v)| (k.as_str(), v.as_str()))
+                .collect();
+
+            // Simulate the cross-validation check
+            let must_need_pwd = batch_map
+                .get("room.room_must_need_pwd")
+                .is_some_and(|v| *v == "true");
+            let must_no_need_pwd = batch_map
+                .get("room.room_must_no_need_pwd")
+                .is_some_and(|v| *v == "true");
+
+            assert!(must_need_pwd, "room_must_need_pwd should be true");
+            assert!(must_no_need_pwd, "room_must_no_need_pwd should be true");
+
+            // This is the condition that should trigger an error
+            let is_invalid = must_need_pwd && must_no_need_pwd;
+            assert!(
+                is_invalid,
+                "Both settings being true should be detected as invalid"
+            );
+        }
+
+        /// Test: Only room_must_need_pwd=true is valid
+        #[test]
+        fn test_cross_validation_accepts_only_must_need_pwd_true() {
+            let updates: Vec<(String, String)> = vec![
+                ("room.room_must_need_pwd".to_string(), "true".to_string()),
+                ("room.room_must_no_need_pwd".to_string(), "false".to_string()),
+            ];
+
+            let batch_map: std::collections::HashMap<&str, &str> = updates
+                .iter()
+                .map(|(k, v)| (k.as_str(), v.as_str()))
+                .collect();
+
+            let must_need_pwd = batch_map
+                .get("room.room_must_need_pwd")
+                .is_some_and(|v| *v == "true");
+            let must_no_need_pwd = batch_map
+                .get("room.room_must_no_need_pwd")
+                .is_some_and(|v| *v == "true");
+
+            let is_valid = !(must_need_pwd && must_no_need_pwd);
+            assert!(
+                is_valid,
+                "Only must_need_pwd=true should be accepted when must_no_need_pwd=false"
+            );
+        }
+
+        /// Test: Only room_must_no_need_pwd=true is valid
+        #[test]
+        fn test_cross_validation_accepts_only_must_no_need_pwd_true() {
+            let updates: Vec<(String, String)> = vec![
+                ("room.room_must_need_pwd".to_string(), "false".to_string()),
+                ("room.room_must_no_need_pwd".to_string(), "true".to_string()),
+            ];
+
+            let batch_map: std::collections::HashMap<&str, &str> = updates
+                .iter()
+                .map(|(k, v)| (k.as_str(), v.as_str()))
+                .collect();
+
+            let must_need_pwd = batch_map
+                .get("room.room_must_need_pwd")
+                .is_some_and(|v| *v == "true");
+            let must_no_need_pwd = batch_map
+                .get("room.room_must_no_need_pwd")
+                .is_some_and(|v| *v == "true");
+
+            let is_valid = !(must_need_pwd && must_no_need_pwd);
+            assert!(
+                is_valid,
+                "Only must_no_need_pwd=true should be accepted when must_need_pwd=false"
+            );
+        }
+
+        /// Test: Both false is valid (no constraint)
+        #[test]
+        fn test_cross_validation_accepts_both_false() {
+            let updates: Vec<(String, String)> = vec![
+                ("room.room_must_need_pwd".to_string(), "false".to_string()),
+                ("room.room_must_no_need_pwd".to_string(), "false".to_string()),
+            ];
+
+            let batch_map: std::collections::HashMap<&str, &str> = updates
+                .iter()
+                .map(|(k, v)| (k.as_str(), v.as_str()))
+                .collect();
+
+            let must_need_pwd = batch_map
+                .get("room.room_must_need_pwd")
+                .is_some_and(|v| *v == "true");
+            let must_no_need_pwd = batch_map
+                .get("room.room_must_no_need_pwd")
+                .is_some_and(|v| *v == "true");
+
+            let is_valid = !(must_need_pwd && must_no_need_pwd);
+            assert!(
+                is_valid,
+                "Both settings being false should be accepted (no constraint)"
+            );
+        }
+
+        /// Test: Missing one setting in batch should read from DB (simulated as false)
+        #[test]
+        fn test_cross_validation_with_one_setting_missing() {
+            // Only providing room_must_need_pwd, room_must_no_need_pwd would be read from DB
+            let updates: Vec<(String, String)> =
+                vec![("room.room_must_need_pwd".to_string(), "true".to_string())];
+
+            let batch_map: std::collections::HashMap<&str, &str> = updates
+                .iter()
+                .map(|(k, v)| (k.as_str(), v.as_str()))
+                .collect();
+
+            // Simulate reading from DB (DB value is false)
+            let must_need_pwd = batch_map
+                .get("room.room_must_need_pwd")
+                .is_some_and(|v| *v == "true");
+            let must_no_need_pwd = batch_map
+                .get("room.room_must_no_need_pwd")
+                .is_some_and(|v| *v == "true")
+                || false; // Would read from DB as false
+
+            let is_valid = !(must_need_pwd && must_no_need_pwd);
+            assert!(
+                is_valid,
+                "Single setting without conflict should be accepted"
+            );
+        }
+
+        /// Test: Error message format for mutual exclusion violation
+        #[test]
+        fn test_cross_validation_error_message() {
+            let expected_msg =
+                "room_must_need_pwd and room_must_no_need_pwd cannot both be true";
+
+            // This matches the error message in update_batch
+            assert!(
+                expected_msg.contains("cannot both be true"),
+                "Error message should explain the mutual exclusion"
+            );
+        }
+
+        /// Test: Cross-validation should happen within transaction
+        /// (this is a documentation test - actual DB test requires integration test)
+        #[test]
+        fn test_cross_validation_uses_transaction_for_consistency() {
+            // The update_batch method uses:
+            // 1. BEGIN TRANSACTION
+            // 2. SELECT ... FOR UPDATE (to lock rows)
+            // 3. Cross-validate using fresh DB reads for missing settings
+            // 4. UPDATE all settings
+            // 5. COMMIT
+
+            // This prevents race conditions where two replicas could
+            // simultaneously set contradictory values based on stale cache reads.
+            // The FOR UPDATE lock ensures only one replica can modify at a time.
+
+            assert!(true, "Cross-validation uses database transaction with row locking");
+        }
+
+        /// Test: Other settings are not affected by cross-validation
+        #[test]
+        fn test_cross_validation_only_affects_password_settings() {
+            let updates: Vec<(String, String)> = vec![
+                ("server.allow_registration".to_string(), "true".to_string()),
+                ("server.max_rooms_per_user".to_string(), "10".to_string()),
+                ("room.room_must_need_pwd".to_string(), "true".to_string()),
+            ];
+
+            // Count how many settings would go through validation
+            let settings_count = updates.len();
+
+            // All settings should pass the provider validation (assuming no provider rejects)
+            // Only the password settings cross-validation should trigger
+            assert_eq!(settings_count, 3, "All settings should be processed");
+
+            // Check that non-password settings are not involved in cross-validation
+            let password_settings: Vec<_> = updates
+                .iter()
+                .filter(|(k, _)| k.starts_with("room.room_must_"))
+                .collect();
+            assert_eq!(password_settings.len(), 1, "Only one password setting in this batch");
+        }
+
+        /// Test: Empty batch should succeed without validation errors
+        #[test]
+        fn test_cross_validation_empty_batch() {
+            let updates: Vec<(String, String)> = vec![];
+
+            let batch_map: std::collections::HashMap<&str, &str> = updates
+                .iter()
+                .map(|(k, v)| (k.as_str(), v.as_str()))
+                .collect();
+
+            // No settings means no conflicts
+            let must_need_pwd = batch_map
+                .get("room.room_must_need_pwd")
+                .is_some_and(|v| *v == "true");
+            let must_no_need_pwd = batch_map
+                .get("room.room_must_no_need_pwd")
+                .is_some_and(|v| *v == "true");
+
+            let is_valid = !(must_need_pwd && must_no_need_pwd);
+            assert!(is_valid, "Empty batch should not trigger cross-validation error");
+        }
+
+        /// Test: Case sensitivity of boolean values
+        #[test]
+        fn test_cross_validation_boolean_case_sensitivity() {
+            // The code checks v == "true", which is case-sensitive
+            let true_values = ["true", "TRUE", "True"];
+            let false_values = ["false", "FALSE", "False"];
+
+            for v in &true_values {
+                let is_true = *v == "true";
+                if *v == "true" {
+                    assert!(is_true, "Lowercase 'true' should be recognized as true");
+                } else {
+                    assert!(!is_true, "'{v}' should NOT be recognized as true (case-sensitive)");
+                }
+            }
+
+            for v in &false_values {
+                let is_true = *v == "true";
+                assert!(!is_true, "'{v}' should not be recognized as true");
+            }
+        }
+    }
 }

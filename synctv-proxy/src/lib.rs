@@ -27,8 +27,11 @@ const MAX_MANIFEST_SIZE: usize = 10 * 1024 * 1024;
 /// Connection timeout for outbound proxy requests.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// DNS resolution timeout.
+const DNS_TIMEOUT: Duration = Duration::from_secs(5);
+
 /// Overall request timeout for outbound proxy requests.
-const REQUEST_TIMEOUT: Duration = Duration::from_mins(1);
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// Check if an HTTP status code is retryable.
 ///
@@ -51,13 +54,10 @@ pub fn is_retryable_status(status: StatusCode) -> bool {
 /// Using random delay helps prevent thundering herd when multiple clients
 /// retry simultaneously.
 fn calculate_retry_delay() -> Duration {
-    use std::sync::atomic::{AtomicU32, Ordering};
-    // Simple pseudo-random delay using a counter for basic jitter
-    // This is sufficient for retry delay purposes without requiring full RNG
-    static COUNTER: AtomicU32 = AtomicU32::new(0);
-    let count = COUNTER.fetch_add(1, Ordering::Relaxed);
-    let range = RETRY_DELAY_MAX_MS - RETRY_DELAY_MIN_MS;
-    let jitter = (u64::from(count) * 17) % range; // Simple linear congruential step
+    use rand::RngExt;
+    // Use proper random jitter to prevent thundering herd
+    let mut rng = rand::rng();
+    let jitter = rng.random_range(0..=(RETRY_DELAY_MAX_MS - RETRY_DELAY_MIN_MS));
     Duration::from_millis(RETRY_DELAY_MIN_MS + jitter)
 }
 
@@ -98,9 +98,15 @@ impl reqwest::dns::Resolve for SsrfSafeDnsResolver {
     fn resolve(&self, name: reqwest::dns::Name) -> reqwest::dns::Resolving {
         Box::pin(async move {
             let host = name.as_str();
-            // Resolve via the system DNS
-            let addrs: Vec<SocketAddr> = tokio::net::lookup_host((host, 0))
+            // Resolve via the system DNS with a timeout
+            let addrs: Vec<SocketAddr> = tokio::time::timeout(DNS_TIMEOUT, tokio::net::lookup_host((host, 0)))
                 .await
+                .map_err(|_| -> Box<dyn std::error::Error + Send + Sync> {
+                    Box::new(std::io::Error::other(format!(
+                        "DNS lookup timed out for {host} after {}s",
+                        DNS_TIMEOUT.as_secs()
+                    )))
+                })?
                 .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> {
                     Box::new(std::io::Error::other(format!(
                         "DNS lookup failed for {host}: {e}"
@@ -752,7 +758,7 @@ pub async fn proxy_options_preflight_with_cors(
 /// Maximum number of URLs that can be rewritten in a single M3U8 playlist.
 /// This prevents abuse via extremely large playlists that could cause memory
 /// exhaustion or excessive proxy traffic.
-const MAX_M3U8_URLS: usize = 1000;
+pub const MAX_M3U8_URLS: usize = 1000;
 
 /// Rewrite URLs inside an M3U8 playlist so they proxy through the server.
 ///
@@ -762,6 +768,11 @@ pub fn rewrite_m3u8(m3u8: &str, source_url: &str, proxy_base: &str) -> String {
     let base = url::Url::parse(source_url).ok();
     let mut output = String::with_capacity(m3u8.len());
     let mut url_count = 0usize;
+
+    // Detect if this is a VOD playlist (has #EXT-X-ENDLIST) vs live stream.
+    // For VOD, we can safely add #EXT-X-ENDLIST when truncating.
+    // For live streams, adding #EXT-X-ENDLIST would incorrectly signal stream end.
+    let is_vod = m3u8.contains("#EXT-X-ENDLIST");
 
     for line in m3u8.lines() {
         if line.starts_with('#') {
@@ -780,10 +791,14 @@ pub fn rewrite_m3u8(m3u8: &str, source_url: &str, proxy_base: &str) -> String {
                         source_url = %source_url,
                         url_count = url_count,
                         max = MAX_M3U8_URLS,
-                        "M3U8 playlist exceeded maximum URL limit, truncating with EXT-X-ENDLIST"
+                        is_vod = is_vod,
+                        "M3U8 playlist exceeded maximum URL limit, truncating"
                     );
-                    // Terminate the playlist cleanly instead of including raw segments
-                    output.push_str("#EXT-X-ENDLIST\n");
+                    // Only add #EXT-X-ENDLIST for VOD playlists.
+                    // For live streams, just truncate - clients will request more segments.
+                    if is_vod {
+                        output.push_str("#EXT-X-ENDLIST\n");
+                    }
                     break;
                 }
                 let absolute = make_absolute(trimmed, base.as_ref());

@@ -9,10 +9,13 @@
 //! - [`RedisOAuthStateStore`]: Redis-backed, required for cluster mode
 //!   (multi-replica) where the callback may hit a different node.
 //! - [`InMemoryOAuthStateStore`]: In-memory, for standalone mode without
-//!   Redis. Uses `Mutex<HashMap>` for atomic single-use consumption.
+//!   Redis. Uses `Mutex<LruCache>` with capacity limiting for atomic
+//!   single-use consumption.
 
+use lru::LruCache;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::num::NonZeroUsize;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use tracing::{debug, info};
@@ -37,7 +40,8 @@ use crate::{
 /// all others returning `Ok(None)`.
 ///
 /// The Redis implementation achieves this via a Lua `GET + DEL` script.
-/// An in-memory implementation can use a `Mutex`-protected `HashMap`.
+/// An in-memory implementation can use a `Mutex`-protected `LruCache` with
+/// capacity limiting to prevent memory exhaustion.
 #[async_trait::async_trait]
 pub trait OAuthStateStore: Send + Sync {
     /// Persist `state` under `token_id`, expiring it after `ttl`.
@@ -164,29 +168,65 @@ impl OAuthStateStore for RedisOAuthStateStore {
 
 /// In-memory [`OAuthStateStore`] for standalone mode (no Redis).
 ///
-/// Uses a `parking_lot::Mutex<HashMap>` for atomic single-use consumption.
-/// `parking_lot::Mutex` is preferred over `std::sync::Mutex` because it is
-/// more efficient and does not suffer from lock poisoning. TTL is enforced
-/// via stored expiry timestamps; expired entries are swept on every `store()`
-/// and `consume()` call to bound memory usage.
+/// Uses a `parking_lot::Mutex<LruCache>` for atomic single-use consumption with
+/// capacity limiting. `parking_lot::Mutex` is preferred over `std::sync::Mutex`
+/// because it is more efficient and does not suffer from lock poisoning.
+///
+/// ## Capacity Limiting
+/// The store has a maximum capacity (default: 1000 entries). When capacity is
+/// exceeded, the least recently used entries are evicted. This prevents memory
+/// exhaustion from malicious requests creating many OAuth states.
+///
+/// ## TTL Enforcement
+/// TTL is enforced via stored expiry timestamps; expired entries are swept on
+/// every `store()` and `consume()` call.
 pub struct InMemoryOAuthStateStore {
-    /// Map of `token_id` -> (state, `expiry_instant`)
-    states: parking_lot::Mutex<HashMap<String, (OAuth2State, std::time::Instant)>>,
+    /// LRU cache of `token_id` -> (state, `expiry_instant`)
+    states: parking_lot::Mutex<LruCache<String, (OAuth2State, std::time::Instant)>>,
 }
 
 impl InMemoryOAuthStateStore {
-    /// Create a new in-memory OAuth state store.
+    /// Default maximum capacity for the OAuth state store.
+    /// This limits memory usage from malicious OAuth state creation requests.
+    pub const DEFAULT_CAPACITY: usize = 1000;
+
+    /// Create a new in-memory OAuth state store with default capacity (1000 entries).
     #[must_use]
     pub fn new() -> Self {
+        Self::with_capacity(Self::DEFAULT_CAPACITY)
+    }
+
+    /// Create a new in-memory OAuth state store with a custom capacity.
+    ///
+    /// # Panics
+    /// Panics if `capacity` is 0.
+    #[must_use]
+    pub fn with_capacity(capacity: usize) -> Self {
+        assert!(capacity > 0, "OAuth state store capacity must be > 0");
+        let cap = NonZeroUsize::new(capacity).expect("capacity is guaranteed > 0");
         Self {
-            states: parking_lot::Mutex::new(HashMap::new()),
+            states: parking_lot::Mutex::new(LruCache::new(cap)),
         }
     }
 
     /// Remove all entries whose TTL has expired.
-    fn sweep_expired(map: &mut HashMap<String, (OAuth2State, std::time::Instant)>) {
+    fn sweep_expired(cache: &mut LruCache<String, (OAuth2State, std::time::Instant)>) {
         let now = std::time::Instant::now();
-        map.retain(|_, (_, expiry)| *expiry > now);
+        // Collect keys to remove (can't mutate during iteration)
+        let expired_keys: Vec<String> = cache
+            .iter()
+            .filter_map(|(k, (_, expiry))| {
+                if *expiry <= now {
+                    Some(k.clone())
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        for key in expired_keys {
+            cache.pop(&key);
+        }
     }
 }
 
@@ -209,16 +249,17 @@ impl OAuthStateStore for InMemoryOAuthStateStore {
         ttl: std::time::Duration,
     ) -> Result<()> {
         let expiry = std::time::Instant::now() + ttl;
-        let mut map = self.states.lock();
-        Self::sweep_expired(&mut map);
-        map.insert(token_id.to_string(), (state.clone(), expiry));
+        let mut cache = self.states.lock();
+        Self::sweep_expired(&mut cache);
+        // LruCache::put automatically evicts the least recently used entry if at capacity
+        cache.put(token_id.to_string(), (state.clone(), expiry));
         Ok(())
     }
 
     async fn consume(&self, token_id: &str) -> Result<Option<OAuth2State>> {
-        let mut map = self.states.lock();
-        Self::sweep_expired(&mut map);
-        Ok(map.remove(token_id).map(|(state, _expiry)| state))
+        let mut cache = self.states.lock();
+        Self::sweep_expired(&mut cache);
+        Ok(cache.pop(token_id).map(|(state, _expiry)| state))
     }
 }
 
@@ -2269,5 +2310,173 @@ mod tests {
         let store = InMemoryOAuthStateStore::new();
         let result = store.consume("nonexistent").await.unwrap();
         assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_in_memory_store_capacity_limit() {
+        // Create a store with capacity of 3
+        let store = InMemoryOAuthStateStore::with_capacity(3);
+        let state = OAuth2State {
+            instance_name: "test".to_string(),
+            redirect_url: None,
+            created_at: chrono::Utc::now(),
+            bind_user_id: None,
+            pkce_verifier: "v".to_string(),
+        };
+
+        // Store 3 entries (fills capacity)
+        store
+            .store("token_1", &state, std::time::Duration::from_secs(300))
+            .await
+            .unwrap();
+        store
+            .store("token_2", &state, std::time::Duration::from_secs(300))
+            .await
+            .unwrap();
+        store
+            .store("token_3", &state, std::time::Duration::from_secs(300))
+            .await
+            .unwrap();
+
+        // All 3 entries should be present
+        assert!(store.consume("token_1").await.unwrap().is_some());
+        assert!(store.consume("token_2").await.unwrap().is_some());
+        assert!(store.consume("token_3").await.unwrap().is_some());
+    }
+
+    #[tokio::test]
+    async fn test_in_memory_store_lru_eviction_on_overflow() {
+        // Create a store with capacity of 3
+        let store = InMemoryOAuthStateStore::with_capacity(3);
+        let state = OAuth2State {
+            instance_name: "test".to_string(),
+            redirect_url: None,
+            created_at: chrono::Utc::now(),
+            bind_user_id: None,
+            pkce_verifier: "v".to_string(),
+        };
+
+        // Store 4 entries (exceeds capacity by 1)
+        store
+            .store("token_1", &state, std::time::Duration::from_secs(300))
+            .await
+            .unwrap();
+        store
+            .store("token_2", &state, std::time::Duration::from_secs(300))
+            .await
+            .unwrap();
+        store
+            .store("token_3", &state, std::time::Duration::from_secs(300))
+            .await
+            .unwrap();
+        store
+            .store("token_4", &state, std::time::Duration::from_secs(300))
+            .await
+            .unwrap();
+
+        // token_1 should have been evicted (LRU - least recently used)
+        let result = store.consume("token_1").await.unwrap();
+        assert!(
+            result.is_none(),
+            "token_1 should have been evicted due to capacity limit"
+        );
+
+        // Newer tokens should still exist
+        assert!(store.consume("token_2").await.unwrap().is_some());
+        assert!(store.consume("token_3").await.unwrap().is_some());
+        assert!(store.consume("token_4").await.unwrap().is_some());
+    }
+
+    #[tokio::test]
+    async fn test_in_memory_store_access_updates_lru_order() {
+        // Create a store with capacity of 3
+        let store = InMemoryOAuthStateStore::with_capacity(3);
+        let state = OAuth2State {
+            instance_name: "test".to_string(),
+            redirect_url: None,
+            created_at: chrono::Utc::now(),
+            bind_user_id: None,
+            pkce_verifier: "v".to_string(),
+        };
+
+        // Store 3 entries
+        store
+            .store("token_1", &state, std::time::Duration::from_secs(300))
+            .await
+            .unwrap();
+        store
+            .store("token_2", &state, std::time::Duration::from_secs(300))
+            .await
+            .unwrap();
+        store
+            .store("token_3", &state, std::time::Duration::from_secs(300))
+            .await
+            .unwrap();
+
+        // Consume token_1 (now token_2 is the oldest)
+        let result = store.consume("token_1").await.unwrap();
+        assert!(result.is_some());
+
+        // Re-store token_1 to put it back (now token_2, token_3, token_1 order)
+        store
+            .store("token_1", &state, std::time::Duration::from_secs(300))
+            .await
+            .unwrap();
+
+        // Now token_2 should be evicted (oldest)
+        store
+            .store("token_4", &state, std::time::Duration::from_secs(300))
+            .await
+            .unwrap();
+
+        // token_2 should have been evicted
+        let result = store.consume("token_2").await.unwrap();
+        assert!(
+            result.is_none(),
+            "token_2 should have been evicted (oldest after token_1 was re-stored)"
+        );
+
+        // Others should exist
+        assert!(store.consume("token_3").await.unwrap().is_some());
+        assert!(store.consume("token_1").await.unwrap().is_some());
+        assert!(store.consume("token_4").await.unwrap().is_some());
+    }
+
+    #[tokio::test]
+    async fn test_in_memory_store_default_capacity() {
+        // Default store should have DEFAULT_CAPACITY
+        let store = InMemoryOAuthStateStore::new();
+
+        // Verify by storing more than 1000 entries and checking eviction occurs
+        // This is a basic sanity check that default capacity is set
+        let state = OAuth2State {
+            instance_name: "test".to_string(),
+            redirect_url: None,
+            created_at: chrono::Utc::now(),
+            bind_user_id: None,
+            pkce_verifier: "v".to_string(),
+        };
+
+        // Store DEFAULT_CAPACITY + 1 entries
+        for i in 0..(InMemoryOAuthStateStore::DEFAULT_CAPACITY + 1) {
+            store
+                .store(&format!("token_{i}"), &state, std::time::Duration::from_secs(300))
+                .await
+                .unwrap();
+        }
+
+        // The first entry should have been evicted due to capacity
+        let result = store.consume("token_0").await.unwrap();
+        assert!(
+            result.is_none(),
+            "token_0 should have been evicted (default capacity exceeded)"
+        );
+
+        // Recent entries should exist
+        let last_token = format!("token_{}", InMemoryOAuthStateStore::DEFAULT_CAPACITY);
+        assert!(
+            store.consume(&last_token).await.unwrap().is_some(),
+            "most recent token should exist"
+        );
     }
 }

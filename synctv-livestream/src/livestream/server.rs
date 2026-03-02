@@ -207,10 +207,24 @@ impl Drop for LivestreamHandle {
     /// Clean up all background tasks when the handle is dropped.
     ///
     /// This ensures that even if the caller forgets to call `shutdown()` or
-    /// `shutdown_graceful()`, all cancellation tokens are cancelled and tasks
-    /// are properly terminated. This prevents task leaks and memory leaks
-    /// from HLS segments.
+    /// `shutdown_graceful()`, all cancellation tokens are cancelled, tasks
+    /// are properly terminated, and all managed streams are stopped.
+    /// This prevents task leaks, memory leaks from HLS segments, and zombie streams.
     fn drop(&mut self) {
+        // P1 fix: Stop all managed streams first to prevent zombie streams.
+        // Since Drop can't be async, we spawn a task to call stop_all().
+        // The abort calls below will signal the cleanup tasks to exit,
+        // and the stop_all() calls will clean up the actual stream resources.
+        let pull_manager = Arc::clone(&self.pull_manager);
+        let external_publish_manager = Arc::clone(&self.infrastructure.external_publish_manager);
+        tokio::spawn(async move {
+            info!("LivestreamHandle drop: stopping all managed pull streams");
+            pull_manager.stop_all().await;
+            info!("LivestreamHandle drop: stopping all managed external publish streams");
+            external_publish_manager.stop_all().await;
+            info!("LivestreamHandle drop: all managed streams stopped");
+        });
+
         // Cancel all cancellation tokens to signal tasks to exit
         self.reregister_cancel_token.cancel();
         self.hls_shutdown_token.cancel();

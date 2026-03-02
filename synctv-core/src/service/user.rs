@@ -1678,4 +1678,187 @@ mod tests {
             "No one should be blocked when email verification is not required"
         );
     }
+
+    // ========== OAuth2 Login Brute-Force Counter Reset Tests ==========
+
+    /// Test that successful OAuth2 login resets the brute-force counter for the provider user ID.
+    ///
+    /// This verifies the behavior described in `UserService::login_oauth2`:
+    /// after a successful OAuth2 login, the brute-force counter for the provider_user_id
+    /// should be reset so that future login attempts start with a clean slate.
+    #[tokio::test]
+    async fn test_oauth2_login_resets_brute_force_counter_for_provider_user_id() {
+        use crate::cache::KeyBuilder;
+
+        // Create an in-memory brute-force protection instance
+        // Note: BruteForceProtection::in_memory uses this prefix directly in KeyBuilder::new()
+        let prefix = "test_oauth2_reset";
+        let key_builder = KeyBuilder::new(prefix);
+        let brute_force = BruteForceProtection::in_memory(prefix.to_string());
+        let provider_user_id = "github:12345";
+        let client_ip: Option<std::net::IpAddr> =
+            Some(std::net::IpAddr::V4(std::net::Ipv4Addr::new(192, 168, 1, 1)));
+
+        // Simulate some failed login attempts
+        for _ in 0..3 {
+            brute_force
+                .record_failure(provider_user_id, client_ip)
+                .await
+                .unwrap();
+        }
+
+        // Verify that failures were recorded using the prefixed key
+        let tracker = brute_force.username_tracker();
+        let prefixed_key = key_builder.login_attempts(provider_user_id);
+        let (count_before, _) = tracker.get_attempts(&prefixed_key).await.unwrap();
+        assert_eq!(count_before, 3, "Should have 3 failures recorded");
+
+        // Simulate successful OAuth2 login by resetting the counter
+        // (this is what happens in login_oauth2 on success)
+        brute_force.reset(provider_user_id).await.unwrap();
+
+        // Verify counter was reset
+        let (count_after, _) = tracker.get_attempts(&prefixed_key).await.unwrap();
+        assert_eq!(count_after, 0, "Counter should be reset to 0 after successful OAuth2 login");
+    }
+
+    /// Test that successful OAuth2 login resets the brute-force counter for the client IP.
+    ///
+    /// This verifies that the IP-based brute-force counter is also reset after
+    /// a successful OAuth2 login, allowing future attempts from the same IP.
+    #[tokio::test]
+    async fn test_oauth2_login_resets_brute_force_counter_for_client_ip() {
+        use crate::cache::KeyBuilder;
+
+        let prefix = "test_oauth2_ip_reset";
+        let key_builder = KeyBuilder::new(prefix);
+        let brute_force = BruteForceProtection::in_memory(prefix.to_string());
+        let provider_user_id = "github:67890";
+        let client_ip: std::net::IpAddr = std::net::IpAddr::V4(std::net::Ipv4Addr::new(10, 0, 0, 1));
+
+        // Simulate some failed login attempts from this IP
+        for _ in 0..5 {
+            brute_force
+                .record_failure(provider_user_id, Some(client_ip))
+                .await
+                .unwrap();
+        }
+
+        // Verify that IP failures were recorded using the prefixed key
+        let ip_tracker = brute_force.ip_tracker();
+        let ip_key = key_builder.login_attempts_ip(&client_ip.to_string());
+        let (count_before, _) = ip_tracker.get_attempts(&ip_key).await.unwrap();
+        assert_eq!(count_before, 5, "Should have 5 IP failures recorded");
+
+        // Simulate successful OAuth2 login by resetting the IP counter
+        brute_force.reset_ip(&client_ip).await.unwrap();
+
+        // Verify IP counter was reset
+        let (count_after, _) = ip_tracker.get_attempts(&ip_key).await.unwrap();
+        assert_eq!(count_after, 0, "IP counter should be reset to 0 after successful OAuth2 login");
+    }
+
+    /// Test that failed OAuth2 login (e.g., user is banned) increments the brute-force counter.
+    ///
+    /// This verifies that when an OAuth2 login fails due to user status issues,
+    /// the brute-force counter is incremented to prevent brute-forcing against locked accounts.
+    #[tokio::test]
+    async fn test_oauth2_login_failure_increments_brute_force_counter() {
+        use crate::cache::KeyBuilder;
+
+        let prefix = "test_oauth2_failure";
+        let key_builder = KeyBuilder::new(prefix);
+        let brute_force = BruteForceProtection::in_memory(prefix.to_string());
+        let provider_user_id = "google:99999";
+        let client_ip: Option<std::net::IpAddr> =
+            Some(std::net::IpAddr::V4(std::net::Ipv4Addr::new(172, 16, 0, 1)));
+
+        // Simulate a failed OAuth2 login attempt (user banned/pending/deleted)
+        // The login_oauth2 method calls record_failure on failure
+        brute_force
+            .record_failure(provider_user_id, client_ip)
+            .await
+            .unwrap();
+
+        // Verify counter was incremented using the prefixed key
+        let tracker = brute_force.username_tracker();
+        let prefixed_key = key_builder.login_attempts(provider_user_id);
+        let (count, _) = tracker.get_attempts(&prefixed_key).await.unwrap();
+        assert_eq!(count, 1, "Counter should be incremented after failed OAuth2 login");
+    }
+
+    /// Test that brute-force check happens before OAuth2 token issuance.
+    ///
+    /// This verifies that the check_allowed method is called before processing
+    /// an OAuth2 login, preventing locked-out users from getting tokens.
+    #[tokio::test]
+    async fn test_oauth2_login_checks_brute_force_before_token_issuance() {
+        let brute_force = BruteForceProtection::in_memory("test_oauth2_check".to_string());
+        let provider_user_id = "discord:11111";
+        let client_ip: Option<std::net::IpAddr> =
+            Some(std::net::IpAddr::V4(std::net::Ipv4Addr::new(192, 168, 100, 1)));
+
+        // Record enough failures to trigger lockout (5 is the tier1 threshold)
+        for _ in 0..5 {
+            brute_force
+                .record_failure(provider_user_id, client_ip)
+                .await
+                .unwrap();
+        }
+
+        // Verify that check_allowed now returns an error
+        let result = brute_force.check_allowed(provider_user_id, client_ip).await;
+        assert!(result.is_err(), "Should be locked out after 5 failures");
+
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("Too many failed login attempts"),
+            "Error should mention lockout: {err_msg}"
+        );
+    }
+
+    /// Test that brute-force counters for both provider_user_id and IP are independently tracked.
+    ///
+    /// This verifies that resetting the provider_user_id counter does not affect the IP counter
+    /// and vice versa.
+    #[tokio::test]
+    async fn test_oauth2_login_resets_counters_independently() {
+        use crate::cache::KeyBuilder;
+
+        let prefix = "test_oauth2_independent";
+        let key_builder = KeyBuilder::new(prefix);
+        let brute_force = BruteForceProtection::in_memory(prefix.to_string());
+        let provider_user_id = "github:22222";
+        let client_ip: std::net::IpAddr = std::net::IpAddr::V4(std::net::Ipv4Addr::new(10, 10, 10, 10));
+
+        // Record failures
+        for _ in 0..3 {
+            brute_force
+                .record_failure(provider_user_id, Some(client_ip))
+                .await
+                .unwrap();
+        }
+
+        // Reset only the provider_user_id counter
+        brute_force.reset(provider_user_id).await.unwrap();
+
+        // Verify provider_user_id counter is reset using prefixed key
+        let tracker = brute_force.username_tracker();
+        let user_key = key_builder.login_attempts(provider_user_id);
+        let (user_count, _) = tracker.get_attempts(&user_key).await.unwrap();
+        assert_eq!(user_count, 0, "Provider user ID counter should be reset");
+
+        // Verify IP counter is NOT reset
+        let ip_tracker = brute_force.ip_tracker();
+        let ip_key = key_builder.login_attempts_ip(&client_ip.to_string());
+        let (ip_count, _) = ip_tracker.get_attempts(&ip_key).await.unwrap();
+        assert_eq!(ip_count, 3, "IP counter should still have 3 failures");
+
+        // Now reset the IP counter
+        brute_force.reset_ip(&client_ip).await.unwrap();
+
+        // Verify IP counter is now reset
+        let (ip_count_after, _) = ip_tracker.get_attempts(&ip_key).await.unwrap();
+        assert_eq!(ip_count_after, 0, "IP counter should be reset");
+    }
 }

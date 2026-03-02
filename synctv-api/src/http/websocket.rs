@@ -579,10 +579,12 @@ async fn handle_socket(
     let ws_sender = ws_sender_primary;
 
     // Resolve chat_service (required for proper business logic enforcement)
-    let chat_service = state
-        .chat_service
-        .clone()
-        .expect("chat_service must be configured for WebSocket handler");
+    let chat_service = if let Some(ref svc) = state.chat_service {
+        svc.clone()
+    } else {
+        error!("chat_service not available, WebSocket connection not supported");
+        return;
+    };
 
     // Create StreamMessageHandler with all configuration
     let stream_handler = StreamMessageHandler::new(

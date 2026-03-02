@@ -745,3 +745,93 @@ async fn test_proxy_options_preflight_headers() {
         "86400"
     );
 }
+
+// ==================================================================
+// M3U8 Truncation behavior
+// ==================================================================
+
+/// Test that VOD playlists get #EXT-X-ENDLIST when truncated
+#[test]
+fn test_rewrite_m3u8_truncation_vod_adds_endlist() {
+    // Create a VOD playlist (has #EXT-X-ENDLIST) that exceeds MAX_M3U8_URLS
+    // We use a smaller limit for testing by creating exactly MAX+1 segments
+    let mut m3u8_content = String::from("#EXTM3U\n#EXT-X-VERSION:3\n");
+
+    // Add MAX_M3U8_URLS + 1 segments (the +1 will trigger truncation)
+    for i in 0..=synctv_proxy::MAX_M3U8_URLS {
+        m3u8_content.push_str(&format!("#EXTINF:10,\nsegment{i}.ts\n"));
+    }
+    m3u8_content.push_str("#EXT-X-ENDLIST\n");
+
+    let rewritten = rewrite_m3u8(&m3u8_content, "http://example.com/stream.m3u8", "/proxy");
+
+    // Should contain #EXT-X-ENDLIST because original was a VOD
+    assert!(
+        rewritten.contains("#EXT-X-ENDLIST"),
+        "VOD playlist truncation should include EXT-X-ENDLIST, got:\n{}",
+        rewritten.lines().take(10).collect::<Vec<_>>().join("\n")
+    );
+
+    // Should have exactly MAX_M3U8_URLS segments (truncated at limit)
+    let segment_count = rewritten.matches("url=").count();
+    assert_eq!(
+        segment_count,
+        synctv_proxy::MAX_M3U8_URLS,
+        "Should have exactly {} segments, got {}",
+        synctv_proxy::MAX_M3U8_URLS,
+        segment_count
+    );
+}
+
+/// Test that live streams do NOT get #EXT-X-ENDLIST when truncated
+#[test]
+fn test_rewrite_m3u8_truncation_live_no_endlist() {
+    // Create a live playlist (NO #EXT-X-ENDLIST) that exceeds MAX_M3U8_URLS
+    let mut m3u8_content = String::from("#EXTM3U\n#EXT-X-VERSION:3\n");
+
+    // Add MAX_M3U8_URLS + 1 segments (the +1 will trigger truncation)
+    for i in 0..=synctv_proxy::MAX_M3U8_URLS {
+        m3u8_content.push_str(&format!("#EXTINF:10,\nsegment{i}.ts\n"));
+    }
+    // NO #EXT-X-ENDLIST - this is a live stream
+
+    let rewritten = rewrite_m3u8(&m3u8_content, "http://example.com/live.m3u8", "/proxy");
+
+    // Should NOT contain #EXT-X-ENDLIST because original was a live stream
+    assert!(
+        !rewritten.contains("#EXT-X-ENDLIST"),
+        "Live stream truncation should NOT include EXT-X-ENDLIST, got:\n{}",
+        rewritten.lines().take(10).collect::<Vec<_>>().join("\n")
+    );
+
+    // Should have exactly MAX_M3U8_URLS segments (truncated at limit)
+    let segment_count = rewritten.matches("url=").count();
+    assert_eq!(
+        segment_count,
+        synctv_proxy::MAX_M3U8_URLS,
+        "Should have exactly {} segments, got {}",
+        synctv_proxy::MAX_M3U8_URLS,
+        segment_count
+    );
+}
+
+/// Test that small playlists are not truncated
+#[test]
+fn test_rewrite_m3u8_small_playlist_not_truncated() {
+    let m3u8_content = concat!(
+        "#EXTM3U\n",
+        "#EXT-X-VERSION:3\n",
+        "#EXTINF:10,\n",
+        "segment0.ts\n",
+        "#EXTINF:10,\n",
+        "segment1.ts\n",
+        "#EXT-X-ENDLIST\n",
+    );
+
+    let rewritten = rewrite_m3u8(m3u8_content, "http://example.com/stream.m3u8", "/proxy");
+
+    // Should have both segments
+    assert_eq!(rewritten.matches("url=").count(), 2);
+    // Should have #EXT-X-ENDLIST at the end
+    assert!(rewritten.contains("#EXT-X-ENDLIST"));
+}

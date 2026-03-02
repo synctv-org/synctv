@@ -222,7 +222,7 @@ impl ChatService {
         // Check if user is the sender or has DELETE_CHAT permission.
         // If the original author has been deleted (user_id is None), treat as
         // non-owner and require DELETE_CHAT permission.
-        let is_sender = message.user_id.as_ref().map_or(false, |uid| uid == user_id);
+        let is_sender = message.user_id.as_ref() == Some(user_id);
         if !is_sender {
             // Not the sender, check DELETE_CHAT permission via PermissionService
             self.permission_service

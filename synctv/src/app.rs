@@ -85,31 +85,67 @@ pub struct Application {
 
 impl Application {
     /// Build the application through phased initialization.
+    ///
+    /// If any phase fails, all resources created in earlier phases are cleaned up
+    /// via the `ShutdownCoordinator` before returning the error.
     pub async fn build(config: Config) -> Result<Self> {
         let shutdown_budget =
             std::time::Duration::from_secs(config.server.shutdown_drain_timeout_seconds);
         let mut shutdown = ShutdownCoordinator::new(shutdown_budget);
 
         // Phase 1: Infrastructure (Redis, Database, NodeID)
-        let infra = Self::init_infrastructure(config, &mut shutdown).await?;
+        let infra = match Self::init_infrastructure(config, &mut shutdown).await {
+            Ok(infra) => infra,
+            Err(e) => {
+                shutdown.shutdown().await;
+                return Err(e);
+            }
+        };
 
         // Phase 2: Schema (migrations, root user, partitions)
-        Self::init_schema(&infra).await?;
+        if let Err(e) = Self::init_schema(&infra).await {
+            shutdown.shutdown().await;
+            return Err(e);
+        }
 
         // Phase 3: Core services
-        let core = Self::init_core_services(&infra, &mut shutdown).await?;
+        let core = match Self::init_core_services(&infra, &mut shutdown).await {
+            Ok(core) => core,
+            Err(e) => {
+                shutdown.shutdown().await;
+                return Err(e);
+            }
+        };
 
         // Phase 4: Leader election and singleton tasks
-        let leader = Self::init_leader_election(&infra, &core, &mut shutdown).await?;
+        let leader = match Self::init_leader_election(&infra, &core, &mut shutdown).await {
+            Ok(leader) => leader,
+            Err(e) => {
+                shutdown.shutdown().await;
+                return Err(e);
+            }
+        };
 
         // Phase 5: Singleton background tasks
         Self::start_singleton_tasks(&infra, &core, &leader, &mut shutdown);
 
         // Phase 6: Cluster infrastructure
-        let cluster = Self::init_cluster(&infra, &core, &mut shutdown).await?;
+        let cluster = match Self::init_cluster(&infra, &core, &mut shutdown).await {
+            Ok(cluster) => cluster,
+            Err(e) => {
+                shutdown.shutdown().await;
+                return Err(e);
+            }
+        };
 
         // Phase 7: Server components (livestream, WebRTC, providers)
-        let servers = Self::init_servers(&infra, &core, &mut shutdown).await?;
+        let servers = match Self::init_servers(&infra, &core, &mut shutdown).await {
+            Ok(servers) => servers,
+            Err(e) => {
+                shutdown.shutdown().await;
+                return Err(e);
+            }
+        };
 
         // Assemble
         Ok(Self::assemble(infra, core, cluster, servers, shutdown))
@@ -464,11 +500,16 @@ impl Application {
         let leader_check: Arc<dyn synctv_core::service::LeaderCheck> = match &leader_elector {
             Some(elector) => Arc::new(elector.clone()),
             None => {
-                // This branch should never be reached because we return early on error.
-                // But if it does (due to a logic bug), fail rather than risk split-brain.
-                unreachable!(
-                    "leader_elector is None after successful initialization - this is a bug"
+                // This branch should never be reached because all code paths either
+                // set leader_elector to Some or return early with Err.
+                // However, if a logic bug causes us to reach here, fail gracefully
+                // instead of panicking, to avoid split-brain in cluster mode.
+                error!(
+                    "CRITICAL: leader_elector is None after initialization - this indicates a logic bug"
                 );
+                return Err(anyhow::anyhow!(
+                    "leader_elector is None after successful initialization - this is a bug"
+                ));
             }
         };
 

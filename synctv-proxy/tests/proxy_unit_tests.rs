@@ -178,7 +178,8 @@ fn test_rewrite_m3u8_empty_playlist() {
 
 #[test]
 fn test_rewrite_m3u8_max_urls_truncated() {
-    // Build a playlist with 1002 segments (exceeds MAX_M3U8_URLS = 1000)
+    // Build a live playlist (no #EXT-X-ENDLIST) with 1002 segments (exceeds MAX_M3U8_URLS = 1000)
+    // Live streams should NOT get #EXT-X-ENDLIST when truncated
     let mut m3u8 = String::from("#EXTM3U\n");
     for i in 0..1002 {
         m3u8.push_str(&format!("seg{i}.ts\n"));
@@ -188,10 +189,10 @@ fn test_rewrite_m3u8_max_urls_truncated() {
         "https://cdn.example.com/master.m3u8",
         "/proxy/stream",
     );
-    // Should contain #EXT-X-ENDLIST indicating truncation
+    // Live stream should NOT contain #EXT-X-ENDLIST after truncation
     assert!(
-        rewritten.contains("#EXT-X-ENDLIST"),
-        "Playlist exceeding 1000 URLs should be truncated with #EXT-X-ENDLIST"
+        !rewritten.contains("#EXT-X-ENDLIST"),
+        "Live playlist (no EXT-X-ENDLIST) should be truncated WITHOUT EXT-X-ENDLIST"
     );
     // Count how many url= references there are - should be exactly 1000
     let url_count = rewritten.matches("url=").count();

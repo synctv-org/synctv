@@ -30,6 +30,10 @@ const DEFAULT_GRACE_PERIOD_BASE_SECS: u64 = 5;
 /// Default maximum grace period in seconds (cap for exponential backoff).
 const DEFAULT_GRACE_PERIOD_MAX_SECS: u64 = 60;
 
+/// Number of consecutive election failures before declaring a leader vacancy.
+/// At the default renew interval of 10s, 3 failures = ~30s of no leader.
+const LEADER_VACANCY_THRESHOLD: u64 = 3;
+
 use super::LeadershipEvent;
 
 /// K8s Lease-based leader election.
@@ -70,6 +74,9 @@ pub struct K8sLeaderElector {
     leadership_lost_at: Arc<parking_lot::Mutex<Option<tokio::time::Instant>>>,
     /// Number of consecutive leadership losses (for exponential backoff).
     consecutive_losses: Arc<AtomicU64>,
+    /// Number of consecutive election failures (for vacancy detection).
+    /// Incremented when election attempts fail, reset when leadership is gained.
+    consecutive_failures: Arc<AtomicU64>,
     /// Broadcast channel for leadership change events (observer pattern)
     event_tx: Arc<broadcast::Sender<LeadershipEvent>>,
 }
@@ -148,6 +155,7 @@ impl K8sLeaderElector {
             leader_epoch: Arc::new(AtomicU64::new(0)),
             leadership_lost_at: Arc::new(parking_lot::Mutex::new(None)),
             consecutive_losses: Arc::new(AtomicU64::new(0)),
+            consecutive_failures: Arc::new(AtomicU64::new(0)),
             event_tx: Arc::new(event_tx),
         })
     }
@@ -243,6 +251,7 @@ impl K8sLeaderElector {
                     "Failed to get lease, assuming not leader"
                 );
                 self.set_leader(false);
+                self.record_election_failure();
             }
         }
     }
@@ -298,8 +307,9 @@ impl K8sLeaderElector {
                 holder = ?holder,
                 "Another pod holds the lease"
             );
-            // Reset consecutive losses since another valid leader exists
+            // Reset consecutive losses/failures since another valid leader exists
             self.consecutive_losses.store(0, Ordering::Relaxed);
+            self.reset_election_failures();
             self.set_leader(false);
         }
     }
@@ -316,10 +326,13 @@ impl K8sLeaderElector {
                 // Conflict - another pod created it first
                 debug!(identity = %self.identity, "Lease creation conflict, another pod is leader");
                 self.set_leader(false);
+                // Another leader exists, reset failures
+                self.reset_election_failures();
             }
             Err(e) => {
                 warn!(identity = %self.identity, error = %e, "Failed to create lease");
                 self.set_leader(false);
+                self.record_election_failure();
             }
         }
     }
@@ -353,6 +366,7 @@ impl K8sLeaderElector {
                             "Lease disappeared during renewal retry"
                         );
                         self.set_leader(false);
+                        self.record_election_failure();
                         return;
                     }
                     Err(e) => {
@@ -363,6 +377,7 @@ impl K8sLeaderElector {
                             "Failed to fetch lease for retry"
                         );
                         self.set_leader(false);
+                        self.record_election_failure();
                         return;
                     }
                 }
@@ -416,6 +431,8 @@ impl K8sLeaderElector {
                         MAX_RETRIES
                     );
                     self.set_leader(false);
+                    // Another pod took over, reset failures
+                    self.reset_election_failures();
                     return;
                 }
                 Err(e) => {
@@ -426,6 +443,7 @@ impl K8sLeaderElector {
                         "Failed to renew lease"
                     );
                     self.set_leader(false);
+                    self.record_election_failure();
                     return;
                 }
             }
@@ -471,6 +489,7 @@ impl K8sLeaderElector {
                             "Failed to fetch lease for acquisition retry"
                         );
                         self.set_leader(false);
+                        self.record_election_failure();
                         return;
                     }
                 }
@@ -498,6 +517,8 @@ impl K8sLeaderElector {
                     "Lease is no longer expired during retry, another pod acquired it"
                 );
                 self.set_leader(false);
+                // Another pod acquired leadership, reset failures
+                self.reset_election_failures();
                 return;
             }
 
@@ -551,6 +572,8 @@ impl K8sLeaderElector {
                         MAX_RETRIES
                     );
                     self.set_leader(false);
+                    // Another pod acquired the lease, reset failures
+                    self.reset_election_failures();
                     return;
                 }
                 Err(e) => {
@@ -561,6 +584,7 @@ impl K8sLeaderElector {
                         "Failed to acquire lease"
                     );
                     self.set_leader(false);
+                    self.record_election_failure();
                     return;
                 }
             }
@@ -670,11 +694,45 @@ impl K8sLeaderElector {
                 "Lost K8s lease leadership"
             );
             *self.leadership_lost_at.lock() = Some(tokio::time::Instant::now());
-            // Update metrics for monitoring
-            synctv_core::metrics::cluster::LEADER_ELECTION_CONSECUTIVE_FAILURES.set(losses as i64);
             // Notify observers of leadership loss
             let _ = self.event_tx.send(LeadershipEvent::Lost);
         }
+    }
+
+    /// Record an election failure and check for leader vacancy.
+    ///
+    /// If consecutive failures exceed [`LEADER_VACANCY_THRESHOLD`], emits
+    /// a `LeadershipEvent::Vacancy` event so observers can take action
+    /// (e.g., pause singleton tasks, report degraded status).
+    fn record_election_failure(&self) {
+        let failures = self.consecutive_failures.fetch_add(1, Ordering::Relaxed) + 1;
+        // Update metrics for monitoring
+        synctv_core::metrics::cluster::LEADER_ELECTION_CONSECUTIVE_FAILURES.set(failures as i64);
+        if failures == LEADER_VACANCY_THRESHOLD {
+            warn!(
+                identity = %self.identity,
+                consecutive_failures = failures,
+                "Leader vacancy detected: no node has held leadership for {} consecutive election cycles",
+                failures
+            );
+            let _ = self.event_tx.send(LeadershipEvent::Vacancy);
+        } else if failures > LEADER_VACANCY_THRESHOLD
+            && failures.is_multiple_of(LEADER_VACANCY_THRESHOLD)
+        {
+            // Periodic reminder at every N failures
+            warn!(
+                identity = %self.identity,
+                consecutive_failures = failures,
+                "Leader vacancy persists"
+            );
+        }
+    }
+
+    /// Reset consecutive failures counter (called when leadership is gained
+    /// or when another valid leader is detected).
+    fn reset_election_failures(&self) {
+        self.consecutive_failures.store(0, Ordering::Relaxed);
+        synctv_core::metrics::cluster::LEADER_ELECTION_CONSECUTIVE_FAILURES.set(0);
     }
 
     /// Record leadership gain: increment epoch, clear grace period, and reset losses.
@@ -696,13 +754,15 @@ impl K8sLeaderElector {
         // Step 3: Increment epoch after is_leader is visible.
         let epoch = self.leader_epoch.fetch_add(1, Ordering::AcqRel) + 1;
 
-        // Step 4: Clear grace period, reset consecutive losses, and log.
+        // Step 4: Clear grace period, reset consecutive losses/failures, and log.
         *self.leadership_lost_at.lock() = None;
         let previous_losses = self.consecutive_losses.swap(0, Ordering::AcqRel);
+        let previous_failures = self.consecutive_failures.swap(0, Ordering::AcqRel);
         info!(
             identity = %self.identity,
             epoch = epoch,
             previous_consecutive_losses = previous_losses,
+            previous_consecutive_failures = previous_failures,
             "Gained K8s lease leadership"
         );
 
@@ -759,6 +819,12 @@ impl K8sLeaderElector {
     /// Useful for monitoring and health checks.
     pub fn consecutive_losses(&self) -> u64 {
         self.consecutive_losses.load(Ordering::Relaxed)
+    }
+
+    /// Returns the number of consecutive election failures.
+    /// Useful for health check endpoints.
+    pub fn consecutive_failures(&self) -> u64 {
+        self.consecutive_failures.load(Ordering::Relaxed)
     }
 
     /// Gracefully resign leadership by releasing the K8s Lease.
@@ -969,5 +1035,60 @@ mod tests {
         assert!(elapsed_short < grace_period, "Should be in grace period");
         assert!(elapsed_equal >= grace_period, "Grace period should be over");
         assert!(elapsed_long >= grace_period, "Grace period should be over");
+    }
+
+    #[test]
+    fn test_vacancy_threshold_constant() {
+        // Verify the vacancy threshold is set to 3 (matching Redis implementation)
+        assert_eq!(LEADER_VACANCY_THRESHOLD, 3);
+    }
+
+    #[test]
+    fn test_consecutive_failures_tracking() {
+        // Test that consecutive_failures counter increments and resets correctly
+        let consecutive_failures = Arc::new(AtomicU64::new(0));
+
+        // Simulate first failure
+        let failures = consecutive_failures.fetch_add(1, Ordering::Relaxed) + 1;
+        assert_eq!(failures, 1);
+        assert!(failures < LEADER_VACANCY_THRESHOLD);
+
+        // Simulate second failure
+        let failures = consecutive_failures.fetch_add(1, Ordering::Relaxed) + 1;
+        assert_eq!(failures, 2);
+        assert!(failures < LEADER_VACANCY_THRESHOLD);
+
+        // Simulate third failure - this triggers vacancy
+        let failures = consecutive_failures.fetch_add(1, Ordering::Relaxed) + 1;
+        assert_eq!(failures, 3);
+        assert_eq!(failures, LEADER_VACANCY_THRESHOLD);
+
+        // Simulate leadership gain (reset)
+        let previous = consecutive_failures.swap(0, Ordering::Relaxed);
+        assert_eq!(previous, 3);
+        assert_eq!(consecutive_failures.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn test_vacancy_periodic_reminder() {
+        // Test that periodic reminders are sent at multiples of the threshold
+        let consecutive_failures = Arc::new(AtomicU64::new(0));
+
+        // Simulate failures up to threshold * 2
+        for _ in 1..=LEADER_VACANCY_THRESHOLD * 2 {
+            let failures = consecutive_failures.fetch_add(1, Ordering::Relaxed) + 1;
+
+            if failures == LEADER_VACANCY_THRESHOLD {
+                // First vacancy event
+                assert_eq!(failures, 3);
+            } else if failures > LEADER_VACANCY_THRESHOLD
+                && failures.is_multiple_of(LEADER_VACANCY_THRESHOLD)
+            {
+                // Periodic reminder (at 6, 9, 12, etc.)
+                assert!(failures > LEADER_VACANCY_THRESHOLD);
+            }
+        }
+
+        assert_eq!(consecutive_failures.load(Ordering::Relaxed), 6);
     }
 }

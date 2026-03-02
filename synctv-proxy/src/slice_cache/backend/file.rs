@@ -50,6 +50,12 @@ const CACHE_FILE_MAGIC: &[u8; 4] = b"STV\x01";
 /// Minimum size of a valid cache file: 4 (magic) + 4 (header_len) = 8.
 const MIN_FILE_SIZE: u64 = 8;
 
+/// Safety limit: reject any cache file whose header claims to be larger than
+/// 64 KiB.  A well-formed `FileEntryHeader` is typically under 1 KiB; anything
+/// larger signals corruption or an attacker-crafted file.  64 KB is far more
+/// than enough for a bincode-serialized header.
+const MAX_HEADER_LEN: usize = 64 * 1024;
+
 // ------------------------------------------------------------------
 // File entry header (serialized into each cache file)
 // ------------------------------------------------------------------
@@ -419,6 +425,35 @@ impl FileBackend {
     }
 
     // ---------------------------------------------------------------
+    // LRU access-time persistence (M3 fix)
+    // ---------------------------------------------------------------
+
+    /// Persist the current in-memory `last_accessed` timestamps to disk so that
+    /// LRU ordering survives restarts.
+    ///
+    /// Without this, `last_accessed` is only updated in the in-memory index on
+    /// `get()` and the on-disk header retains the original insertion-time value.
+    /// After a restart, `load_index()` reads the stale on-disk timestamp, which
+    /// degrades LRU to approximate FIFO.
+    ///
+    /// This method should be called periodically (e.g., by the lifecycle
+    /// manager) at a cadence that balances disk I/O against LRU accuracy.
+    pub async fn persist_access_times(&self) {
+        for entry in self.index.entries.iter() {
+            let current_accessed = entry.value().last_accessed.load(Ordering::Relaxed);
+            let path = entry.value().path.clone();
+            drop(entry); // Release the DashMap ref before doing I/O.
+
+            if let Err(e) = update_file_last_accessed(&path, current_accessed).await {
+                tracing::debug!(
+                    path = %path.display(),
+                    "Failed to persist access time: {e}"
+                );
+            }
+        }
+    }
+
+    // ---------------------------------------------------------------
     // Internal: remove entry from both index and disk
     // ---------------------------------------------------------------
 
@@ -656,6 +691,14 @@ async fn read_cache_file(path: &PathBuf) -> anyhow::Result<(FileEntryHeader, Byt
     let mut header_len_buf = [0u8; 4];
     file.read_exact(&mut header_len_buf).await?;
     let header_len = u32::from_le_bytes(header_len_buf) as usize;
+    if header_len > MAX_HEADER_LEN {
+        return Err(anyhow::anyhow!(
+            "Header too large in {}: {} bytes (max {})",
+            path.display(),
+            header_len,
+            MAX_HEADER_LEN
+        ));
+    }
 
     // Read and deserialize header.
     let mut header_buf = vec![0u8; header_len];
@@ -714,6 +757,14 @@ async fn read_cache_file_header(path: &PathBuf) -> anyhow::Result<FileEntryHeade
     let mut header_len_buf = [0u8; 4];
     file.read_exact(&mut header_len_buf).await?;
     let header_len = u32::from_le_bytes(header_len_buf) as usize;
+    if header_len > MAX_HEADER_LEN {
+        return Err(anyhow::anyhow!(
+            "Header too large in {}: {} bytes (max {})",
+            path.display(),
+            header_len,
+            MAX_HEADER_LEN
+        ));
+    }
 
     // Read and deserialize header.
     let mut header_buf = vec![0u8; header_len];
@@ -721,6 +772,65 @@ async fn read_cache_file_header(path: &PathBuf) -> anyhow::Result<FileEntryHeade
     let header: FileEntryHeader = bincode::deserialize(&header_buf)?;
 
     Ok(header)
+}
+
+/// Update the `last_accessed_millis` field in an existing cache file's header
+/// without rewriting the data portion.
+///
+/// This is used by [`FileBackend::persist_access_times`] to write back the
+/// in-memory LRU timestamps so they survive restarts.  The header is read,
+/// modified, and written back in-place.  If the re-serialized header differs
+/// in length from the original (should not happen with the same struct
+/// definition), the update is silently skipped.
+async fn update_file_last_accessed(
+    path: &std::path::Path,
+    last_accessed_millis: u64,
+) -> anyhow::Result<()> {
+    use tokio::io::{AsyncSeekExt, AsyncWriteExt};
+
+    let mut file = tokio::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(path)
+        .await?;
+
+    // Read magic.
+    let mut magic = [0u8; 4];
+    file.read_exact(&mut magic).await?;
+    if &magic != CACHE_FILE_MAGIC {
+        return Err(anyhow::anyhow!("Invalid magic"));
+    }
+
+    // Read header length.
+    let mut header_len_buf = [0u8; 4];
+    file.read_exact(&mut header_len_buf).await?;
+    let header_len = u32::from_le_bytes(header_len_buf) as usize;
+    if header_len > MAX_HEADER_LEN {
+        return Err(anyhow::anyhow!("Header too large: {header_len}"));
+    }
+
+    // Read and deserialize existing header.
+    let mut header_buf = vec![0u8; header_len];
+    file.read_exact(&mut header_buf).await?;
+    let mut header: FileEntryHeader = bincode::deserialize(&header_buf)?;
+
+    // Update last_accessed.
+    header.last_accessed_millis = last_accessed_millis;
+
+    // Re-serialize.
+    let new_header_buf =
+        bincode::serialize(&header).map_err(|e| anyhow::anyhow!("bincode encode: {e}"))?;
+    if new_header_buf.len() != header_len {
+        // Header size changed -- skip update to avoid corrupting the file.
+        return Ok(());
+    }
+
+    // Seek back to header position (offset 8 = 4 magic + 4 header_len).
+    file.seek(std::io::SeekFrom::Start(8)).await?;
+    file.write_all(&new_header_buf).await?;
+    file.flush().await?;
+
+    Ok(())
 }
 
 // ------------------------------------------------------------------
@@ -1276,5 +1386,79 @@ mod tests {
             got.inserted_at.elapsed().unwrap_or_default() < Duration::from_secs(5),
             "inserted_at should be recent"
         );
+    }
+
+    // --- LRU access time persistence (M3) ---
+
+    /// Verify that `persist_access_times` writes updated `last_accessed` to
+    /// disk, and a fresh backend loading the same cache directory picks up the
+    /// updated timestamps.
+    #[tokio::test]
+    async fn test_file_backend_persist_access_times() {
+        let tmp = TempDir::new().expect("create temp dir");
+        let cache_dir = tmp.path().to_path_buf();
+
+        let key_a = "aaaa0000000000000000000000000000000000000000000000000000000000aa";
+        let key_b = "bbbb0000000000000000000000000000000000000000000000000000000000bb";
+
+        // Phase 1: create entries, then read key_b to update its last_accessed.
+        {
+            let backend = FileBackend::new(cache_dir.clone(), (2, 2))
+                .await
+                .expect("create backend");
+            put_entry(&backend, key_a, b"data_a").await;
+            put_entry(&backend, key_b, b"data_b").await;
+
+            // Access key_b to update its in-memory last_accessed.
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            let _ = backend.get(key_b).await.expect("get key_b");
+
+            // Persist the in-memory access times to disk.
+            backend.persist_access_times().await;
+        }
+
+        // Phase 2: reload from disk and verify that key_b has a more recent
+        // last_accessed than key_a.
+        {
+            let backend2 = FileBackend::new(cache_dir, (2, 2))
+                .await
+                .expect("create backend2");
+            backend2
+                .load_index(Duration::from_secs(3600))
+                .await
+                .expect("load index");
+
+            let entry_a = backend2.index.entries.get(key_a).expect("key_a in index");
+            let entry_b = backend2.index.entries.get(key_b).expect("key_b in index");
+
+            let accessed_a = entry_a.last_accessed.load(Ordering::Relaxed);
+            let accessed_b = entry_b.last_accessed.load(Ordering::Relaxed);
+
+            assert!(
+                accessed_b > accessed_a,
+                "key_b should have a more recent last_accessed than key_a \
+                 (key_a={accessed_a}, key_b={accessed_b})"
+            );
+        }
+    }
+
+    /// Verify that `persist_access_times` does not corrupt cache files:
+    /// after persisting, entries are still readable.
+    #[tokio::test]
+    async fn test_file_backend_persist_access_times_no_corruption() {
+        let (backend, _tmp) = make_backend().await;
+        let key = "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789";
+
+        put_entry(&backend, key, b"important data").await;
+
+        // Read to update last_accessed.
+        let _ = backend.get(key).await;
+
+        // Persist.
+        backend.persist_access_times().await;
+
+        // Verify the entry is still readable and has correct data.
+        let got = backend.get(key).await.expect("should still exist");
+        assert_eq!(got.data, Bytes::from("important data"));
     }
 }

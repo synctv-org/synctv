@@ -276,11 +276,12 @@ impl SliceCache {
             {
                 // Mark as updating so subsequent requests know a refresh
                 // is expected.  `DashSet::insert` returns true if the key
-                // was not already present.
-                let _ = self.updating_keys.insert(key.clone());
-                if self.updating_keys.contains(&key) {
+                // was newly inserted (i.e., we are the first stale request).
+                if self.updating_keys.insert(key.clone()) {
+                    // Newly inserted -- we are the first stale request.
                     return Ok((entry.data, CacheStatus::Stale));
                 }
+                // Already present -- another request is updating this key.
                 return Ok((entry.data, CacheStatus::Updating));
             }
             // Expired beyond stale window -- fall through to re-fetch
@@ -289,12 +290,34 @@ impl SliceCache {
         }
 
         // Acquire per-key lock to prevent thundering herd.
+        // Use a timeout (like nginx's lock_timeout, default 5s) so a hung
+        // upstream doesn't block all subsequent requests forever.
         let lock = self
             .locks
             .entry(key.clone())
             .or_insert_with(|| Arc::new(Mutex::new(())))
             .clone();
-        let _guard = lock.lock().await;
+        let _guard = match tokio::time::timeout(
+            Duration::from_secs(5),
+            lock.lock(),
+        )
+        .await
+        {
+            Ok(guard) => guard,
+            Err(_) => {
+                // Lock acquisition timed out -- serve stale data if available,
+                // otherwise return an error.
+                if let Some(entry) = self.backend.get(&key).await {
+                    if entry.is_stale(self.config.stale_max_age) {
+                        return Ok((entry.data, CacheStatus::Stale));
+                    }
+                }
+                return Err(anyhow::anyhow!(
+                    "Cache lock timeout for slice {} (possible upstream hang)",
+                    slice_index,
+                ));
+            }
+        };
 
         // Double-check after acquiring lock.
         if let Some(entry) = self.backend.get(&key).await {
@@ -339,10 +362,15 @@ impl SliceCache {
             }
         }
 
-        let resp = request
-            .send()
-            .await
-            .map_err(|e| anyhow::anyhow!("Slice fetch failed: {e}"))?;
+        let resp = match request.send().await {
+            Ok(r) => r,
+            Err(e) => {
+                // Clean up updating_keys on send failure so the key is not
+                // permanently stuck in "updating" state.
+                self.updating_keys.remove(&key);
+                return Err(anyhow::anyhow!("Slice fetch failed: {e}"));
+            }
+        };
 
         // Handle 304 Not Modified: refresh the TTL and return Revalidated.
         if resp.status() == reqwest::StatusCode::NOT_MODIFIED {
@@ -362,11 +390,14 @@ impl SliceCache {
             let mut request2 = PROXY_CLIENT.get(url);
             request2 = apply_provider_headers(request2, url, provider_headers);
             request2 = request2.header("Range", &range_header);
-            let resp2 = request2
-                .send()
-                .await
-                .map_err(|e| anyhow::anyhow!("Slice re-fetch failed after 304: {e}"))?;
-            return self
+            let resp2 = match request2.send().await {
+                Ok(r) => r,
+                Err(e) => {
+                    self.updating_keys.remove(&key);
+                    return Err(anyhow::anyhow!("Slice re-fetch failed after 304: {e}"));
+                }
+            };
+            let result = self
                 .process_slice_response(
                     resp2,
                     url,
@@ -377,18 +408,27 @@ impl SliceCache {
                     range_start,
                 )
                 .await;
+            if result.is_err() {
+                self.updating_keys.remove(&key);
+            }
+            return result;
         }
 
-        self.process_slice_response(
-            resp,
-            url,
-            provider_headers,
-            &key,
-            slice_index,
-            total_size,
-            range_start,
-        )
-        .await
+        let result = self
+            .process_slice_response(
+                resp,
+                url,
+                provider_headers,
+                &key,
+                slice_index,
+                total_size,
+                range_start,
+            )
+            .await;
+        if result.is_err() {
+            self.updating_keys.remove(&key);
+        }
+        result
     }
 
     /// Process a successful (non-304) slice response: validate, store, and
@@ -404,9 +444,12 @@ impl SliceCache {
         total_size: u64,
         range_start: u64,
     ) -> Result<(Bytes, CacheStatus), anyhow::Error> {
-        if !resp.status().is_success() && resp.status() != reqwest::StatusCode::PARTIAL_CONTENT {
+        // For slice requests, only 206 Partial Content is valid.
+        // A 200 OK means upstream doesn't support Range requests and
+        // returned the full body, which would corrupt the slice cache.
+        if resp.status() != reqwest::StatusCode::PARTIAL_CONTENT {
             return Err(anyhow::anyhow!(
-                "Upstream returned {} for slice {}",
+                "Upstream returned {} for slice {} (expected 206 Partial Content)",
                 resp.status(),
                 slice_index
             ));
@@ -451,15 +494,9 @@ impl SliceCache {
             .and_then(|v| v.to_str().ok())
             .map(ToString::to_string);
 
-        // Read body first so the connection is properly closed before any
-        // error-path returns (dropping an unconsumed reqwest::Response can
-        // block while the client drains the body for connection reuse).
-        let data = resp
-            .bytes()
-            .await
-            .map_err(|e| anyhow::anyhow!("Failed to read slice body: {e}"))?;
-
-        // ETag consistency check.
+        // Early ETag consistency check BEFORE reading the body (nginx header
+        // filter pattern).  This avoids reading a full 2 MiB slice body only
+        // to discard it on mismatch.
         //
         // IMPORTANT: we must not hold a DashMap `Ref` across the call to
         // `invalidate_resource`, which needs a write lock on the same shard.
@@ -467,9 +504,13 @@ impl SliceCache {
         let mk = Self::meta_key(url, provider_headers);
         let existing_etag_cloned = self.meta.get(&mk).and_then(|m| m.etag.clone());
 
-        if let Some(existing_etag) = existing_etag_cloned {
+        if let Some(existing_etag) = &existing_etag_cloned {
             if let Some(new_etag) = &resp_etag {
-                if &existing_etag != new_etag {
+                if existing_etag != new_etag {
+                    // Drain the body to release the connection cleanly for
+                    // reqwest's connection pool (dropping an unconsumed
+                    // Response can block while the client drains it anyway).
+                    let _ = resp.bytes().await;
                     // ETag mismatch: resource was modified between slices.
                     // Invalidate all cached slices for this resource.
                     self.invalidate_resource(url, provider_headers, total_size)
@@ -480,7 +521,17 @@ impl SliceCache {
                     ));
                 }
             }
-        } else if !self.meta.contains_key(&mk) {
+        }
+
+        // Read body now that ETag is validated.  Reading eagerly (rather than
+        // on-demand) ensures the connection is properly closed before any
+        // error-path returns.
+        let data = resp
+            .bytes()
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to read slice body: {e}"))?;
+
+        if existing_etag_cloned.is_none() && !self.meta.contains_key(&mk) {
             // First slice for this resource -- store metadata.
             self.meta.insert(
                 mk,
@@ -690,6 +741,9 @@ impl SliceCache {
                 content_type: content_type.map(|s| s.to_string()),
             },
         );
+
+        // Periodically clean up stale per-key locks.
+        self.maybe_cleanup_locks();
     }
 
     // ---------------------------------------------------------------

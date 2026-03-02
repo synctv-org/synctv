@@ -268,11 +268,22 @@ pub(super) async fn full_body_cache_path(
             .map_err(|e| anyhow::anyhow!("Failed to build bypass response: {e}"));
     }
 
-    // Read body into memory (up to max_cacheable_body).
-    let body_bytes = resp
-        .bytes()
-        .await
-        .map_err(|e| anyhow::anyhow!("Failed to read upstream body: {e}"))?;
+    // Read body into memory with a size cap to prevent OOM from unbounded
+    // chunked responses that lack a Content-Length header.
+    let max_body = cache.config().max_cacheable_body;
+    let mut buf = Vec::with_capacity(std::cmp::min(max_body + 1, 4 * 1024 * 1024));
+    {
+        let mut stream = resp.bytes_stream();
+        while let Some(chunk) = stream.next().await {
+            let chunk =
+                chunk.map_err(|e| anyhow::anyhow!("Failed to read upstream body: {e}"))?;
+            buf.extend_from_slice(&chunk);
+            if buf.len() > max_body {
+                break;
+            }
+        }
+    }
+    let body_bytes = Bytes::from(buf);
 
     if body_bytes.len() > cache.config().max_cacheable_body {
         // Body turned out larger than expected (chunked transfer).

@@ -53,18 +53,29 @@ impl MemoryBackend {
             })
             .time_to_idle(time_to_idle)
             .eviction_listener(move |key: Arc<String>, value, cause| {
-                // Only handle evictions initiated by moka itself (TTL expiry
-                // or capacity-based size eviction).  `Replaced` and `Explicit`
-                // removals are handled manually in `put` and `remove` to avoid
-                // double-counting the size adjustment.
-                if cause.was_evicted() {
+                // Handle ALL eviction causes for accurate size tracking.
+                //
+                // Previously we only handled `was_evicted()` (Expired | Size)
+                // and manually adjusted sizes in `put()` and `remove()`.  This
+                // created a race: between `get(key)` and `insert(key, new)` in
+                // `put()`, moka could fire a Size eviction for the same key,
+                // causing a double-subtract of the old size.
+                //
+                // Now the listener is the single source of truth for size
+                // decrements.  `put()` only adds the new size, and `remove()`
+                // delegates entirely to the listener via `run_pending_tasks`.
+                let size = value.data_size();
+                total_bytes_clone
+                    .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |cur| {
+                        Some(cur.saturating_sub(size))
+                    })
+                    .ok();
+
+                // Only remove from key_set when the key truly no longer exists
+                // in the cache.  For `Replaced`, a new value was just inserted,
+                // so the key is still live.
+                if !matches!(cause, moka::notification::RemovalCause::Replaced) {
                     key_set_clone.remove(key.as_ref());
-                    let size = value.data_size();
-                    total_bytes_clone
-                        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |cur| {
-                            Some(cur.saturating_sub(size))
-                        })
-                        .ok();
                 }
             })
             .build();
@@ -91,34 +102,29 @@ impl SliceCacheBackend for MemoryBackend {
     async fn put(&self, key: &str, entry: StoredEntry) -> anyhow::Result<()> {
         let new_size = entry.data_size();
 
-        // If replacing an existing entry, subtract old size first.
-        // Moka fires the eviction listener with `Replaced` cause, but our
-        // listener ignores it, so we handle the bookkeeping manually here.
-        if let Some(old) = self.cache.get(key).await {
-            let old_size = old.data_size();
-            self.total_bytes
-                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |cur| {
-                    Some(cur.saturating_sub(old_size))
-                })
-                .ok();
-        }
-
+        // Insert into moka.  If a previous value existed, moka will fire the
+        // eviction listener with `Replaced` cause, which decrements total_bytes
+        // by the old size.  We only add the new size here -- no manual
+        // get-then-subtract, which was racy with moka's internal Size eviction.
         self.cache.insert(key.to_string(), entry).await;
         self.key_set.insert(key.to_string());
+
+        // Ensure the `Replaced` listener fires before we add the new size,
+        // so total_bytes transitions: old -> (old - old_size) -> (new_size).
+        self.cache.run_pending_tasks().await;
         self.total_bytes.fetch_add(new_size, Ordering::Relaxed);
+
         Ok(())
     }
 
     async fn remove(&self, key: &str) {
-        if let Some(entry) = self.cache.remove(key).await {
-            let size = entry.data_size();
-            self.total_bytes
-                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |cur| {
-                    Some(cur.saturating_sub(size))
-                })
-                .ok();
-        }
-        self.key_set.remove(key);
+        // Invalidate in moka.  The eviction listener (with `Explicit` cause)
+        // will decrement total_bytes and remove the key from key_set.
+        self.cache.remove(key).await;
+        // Run pending tasks to ensure the eviction listener fires immediately,
+        // so size tracking is accurate for callers that check current_size()
+        // right after remove().
+        self.cache.run_pending_tasks().await;
     }
 
     async fn contains(&self, key: &str) -> bool {
@@ -450,6 +456,95 @@ mod tests {
         assert_eq!(
             live_count, entry_count,
             "Live keys ({live_count}) should match moka entry_count ({entry_count})"
+        );
+    }
+
+    /// Regression test for H5: replacing a key must not double-subtract the old
+    /// size.  Under the old code, `put()` manually subtracted the old size AND
+    /// moka's eviction listener could also subtract it (via `Size` cause during
+    /// capacity pressure), leading to underflow/wrap-around in total_bytes.
+    #[tokio::test]
+    async fn test_memory_backend_replace_size_tracking_no_double_subtract() {
+        // Use a tight capacity so that moka is under pressure.
+        let backend = MemoryBackend::new(
+            500, // just enough for a few entries
+            Duration::from_secs(3600),
+        );
+
+        // Fill up close to capacity with other entries.
+        for i in 0..4u8 {
+            backend
+                .put(
+                    &format!("filler_{i}"),
+                    make_entry(&[i; 100], Duration::from_secs(3600)),
+                )
+                .await
+                .unwrap();
+        }
+        backend.run_pending_tasks().await;
+
+        // Insert the target key.
+        backend
+            .put("target", make_entry(&[0u8; 80], Duration::from_secs(3600)))
+            .await
+            .unwrap();
+        backend.run_pending_tasks().await;
+        let size_before_replace = backend.current_size();
+
+        // Replace the target key with a same-sized value.  Under the old code,
+        // if moka evicts the old "target" entry (Size cause) between the
+        // manual get() and insert(), total_bytes would be double-subtracted.
+        backend
+            .put("target", make_entry(&[1u8; 80], Duration::from_secs(3600)))
+            .await
+            .unwrap();
+        backend.run_pending_tasks().await;
+
+        let size_after_replace = backend.current_size();
+
+        // The size should be the same (replaced with identical-sized entry).
+        // With the old buggy code, this could underflow or be too small.
+        assert_eq!(
+            size_before_replace, size_after_replace,
+            "Size should be unchanged after same-size replace (before={size_before_replace}, after={size_after_replace})"
+        );
+    }
+
+    /// Verify that after multiple put-replace-remove cycles, total_bytes
+    /// returns to zero when all entries are removed.
+    #[tokio::test]
+    async fn test_memory_backend_size_returns_to_zero() {
+        let backend = default_backend();
+
+        // Insert, replace, and remove several keys.
+        for round in 0..3u8 {
+            let key = format!("k{round}");
+            backend
+                .put(&key, make_entry(&[round; 50], Duration::from_secs(60)))
+                .await
+                .unwrap();
+            // Replace with different size.
+            backend
+                .put(
+                    &key,
+                    make_entry(&[round; 100], Duration::from_secs(60)),
+                )
+                .await
+                .unwrap();
+        }
+        backend.run_pending_tasks().await;
+        assert_eq!(backend.current_size(), 300); // 3 keys * 100 bytes
+
+        // Remove all.
+        for round in 0..3u8 {
+            backend.remove(&format!("k{round}")).await;
+        }
+        backend.run_pending_tasks().await;
+
+        assert_eq!(
+            backend.current_size(),
+            0,
+            "After removing all entries, total_bytes should be 0"
         );
     }
 }

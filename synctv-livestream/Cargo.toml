@@ -9,6 +9,8 @@ license.workspace = true
 # Internal
 synctv-core.workspace = true
 synctv-cluster.workspace = true
+synctv-media-providers.workspace = true
+synctv-common.workspace = true
 
 # Async
 tokio.workspace = true
@@ -38,6 +40,7 @@ dashmap.workspace = true
 
 # HTTP Client (for HTTP-FLV pulling)
 reqwest.workspace = true
+
 
 # Utilities
 anyhow.workspace = true

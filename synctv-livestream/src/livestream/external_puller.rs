@@ -19,7 +19,7 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use bytes::{Buf, BytesMut};
-use synctv_core::validation::SSRFValidator;
+use synctv_common;
 use synctv_xiu::rtmp::session::client_session::{ClientSession, ClientSessionType};
 use synctv_xiu::rtmp::session::common::RtmpStreamHandler;
 use synctv_xiu::rtmp::utils::RtmpUrlParser;
@@ -117,47 +117,54 @@ impl ExternalStreamPuller {
             )
         })?;
 
-        // Async SSRF validation: resolves hostname and checks all IPs
-        // Note: url_jail only supports http/https schemes. For RTMP URLs, we extract
-        // the host and validate it by constructing a temporary http:// URL.
-        let ssrf_check_url = match source_type {
-            ExternalSourceType::Rtmp => {
-                let parsed = Url::parse(&source_url)?;
-                let host = parsed
-                    .host_str()
-                    .ok_or_else(|| anyhow::anyhow!("URL has no host"))?;
-                format!("http://{host}/")
-            }
-            ExternalSourceType::HttpFlv => source_url.clone(),
-        };
-        SSRFValidator::new()
-            .validate_url_async(&ssrf_check_url)
-            .await
-            .map_err(|e| anyhow::anyhow!("SSRF protection blocked URL: {e}"))?;
-
-        // Pin the resolved IP to prevent DNS rebinding attacks: the actual connection
-        // will use this address instead of re-resolving the hostname.
-        let mut resolved_addr = None;
+        // Resolve hostname and validate IPs against SSRF ACL.
+        // For RTMP: the DNS resolver can't be injected, so we check IPs explicitly.
+        // For HTTP-FLV: the reqwest DNS resolver handles it, but we still pin the
+        // address to prevent DNS rebinding between validation and connection.
         let parsed = Url::parse(&source_url)?;
         let host = parsed.host_str().unwrap_or("");
-        if !host.is_empty() && host.parse::<std::net::IpAddr>().is_err() {
-            // It's a hostname (not a literal IP), resolve and pin
-            let port = parsed.port().unwrap_or(match source_type {
-                ExternalSourceType::Rtmp => 1935,
-                ExternalSourceType::HttpFlv => {
-                    if parsed.scheme() == "https" {
-                        443
-                    } else {
-                        80
-                    }
+        let mut resolved_addr = None;
+
+        if !host.is_empty() {
+            if let Ok(ip) = host.parse::<std::net::IpAddr>() {
+                // Literal IP address - check directly
+                if synctv_common::ssrf::is_ip_blocked(&ip) {
+                    return Err(anyhow::anyhow!(
+                        "SSRF protection blocked IP: {ip} is private/reserved"
+                    ));
                 }
-            });
-            let addrs: Vec<std::net::SocketAddr> =
-                tokio::net::lookup_host(format!("{host}:{port}"))
-                    .await
-                    .map_err(|e| anyhow::anyhow!("DNS resolution failed: {e}"))?
+            } else {
+                // Hostname - resolve and check all IPs
+                let port = parsed.port().unwrap_or(match source_type {
+                    ExternalSourceType::Rtmp => 1935,
+                    ExternalSourceType::HttpFlv => {
+                        if parsed.scheme() == "https" {
+                            443
+                        } else {
+                            80
+                        }
+                    }
+                });
+                let addrs: Vec<std::net::SocketAddr> =
+                    tokio::net::lookup_host(format!("{host}:{port}"))
+                        .await
+                        .map_err(|e| anyhow::anyhow!("DNS resolution failed: {e}"))?
+                        .collect();
+
+                // Filter out blocked IPs
+                let safe_addrs: Vec<std::net::SocketAddr> = addrs
+                    .into_iter()
+                    .filter(|addr| !synctv_common::ssrf::is_ip_blocked(&addr.ip()))
                     .collect();
-            resolved_addr = addrs.into_iter().next();
+
+                if safe_addrs.is_empty() {
+                    return Err(anyhow::anyhow!(
+                        "SSRF protection blocked URL: all resolved IPs for {host} are private/reserved"
+                    ));
+                }
+
+                resolved_addr = safe_addrs.into_iter().next();
+            }
         }
 
         Ok(Self {
@@ -906,32 +913,14 @@ impl Drop for UnpublishGuard {
     }
 }
 
-/// Validate that a URL is a supported external source format and is SSRF-safe
+/// Validate that a URL is a supported external source format.
+///
+/// SSRF protection is enforced at the network level: HTTP clients use a
+/// SSRF-safe DNS resolver, and RTMP connections check resolved IPs before
+/// connecting.
 pub fn validate_source_url(url: &str) -> Result<ExternalSourceType, String> {
-    let source_type = ExternalSourceType::from_url(url)
-        .ok_or_else(|| format!("Unsupported source URL: {url}. Expected rtmp:// or *.flv"))?;
-
-    // SSRF validation: block private IPs, loopback, link-local, metadata endpoints
-    // Note: url_jail only supports http/https schemes. For RTMP URLs, we extract
-    // the host and validate it by constructing a temporary http:// URL.
-    let ssrf_check_url = match source_type {
-        ExternalSourceType::Rtmp => {
-            // Extract host from RTMP URL for SSRF validation
-            let parsed = Url::parse(url).map_err(|e| format!("Invalid URL: {e}"))?;
-            let host = parsed
-                .host_str()
-                .ok_or_else(|| "URL has no host".to_string())?;
-            // Use http:// to validate the host (we only care about IP validation)
-            format!("http://{host}/")
-        }
-        ExternalSourceType::HttpFlv => url.to_string(),
-    };
-
-    SSRFValidator::new()
-        .validate_url(&ssrf_check_url)
-        .map_err(|e| format!("SSRF protection blocked URL: {e}"))?;
-
-    Ok(source_type)
+    ExternalSourceType::from_url(url)
+        .ok_or_else(|| format!("Unsupported source URL: {url}. Expected rtmp:// or *.flv"))
 }
 
 #[cfg(test)]

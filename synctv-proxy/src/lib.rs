@@ -7,8 +7,7 @@
 pub mod slice_cache;
 
 use std::collections::HashMap;
-use std::net::SocketAddr;
-use std::sync::{Arc, LazyLock};
+use std::sync::LazyLock;
 use std::time::Duration;
 
 use axum::{
@@ -16,7 +15,6 @@ use axum::{
     http::{HeaderMap, StatusCode},
     response::Response,
 };
-use synctv_media_providers::ssrf;
 
 /// Maximum response body size for proxied media (256 MB).
 const MAX_PROXY_BODY_SIZE: usize = 256 * 1024 * 1024;
@@ -26,9 +24,6 @@ const MAX_MANIFEST_SIZE: usize = 10 * 1024 * 1024;
 
 /// Connection timeout for outbound proxy requests.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
-
-/// DNS resolution timeout.
-const DNS_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Overall request timeout for outbound proxy requests.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
@@ -83,77 +78,16 @@ const RETRYABLE_STATUS_CODES: &[u16] = &[500, 502, 503, 504];
 /// Maximum number of redirects to follow manually.
 const MAX_REDIRECTS: usize = 10;
 
-/// Custom DNS resolver that checks resolved IPs against SSRF blocklists
-/// at connection time, preventing DNS rebinding TOCTOU attacks.
-///
-/// By injecting this into the reqwest client, every TCP connection attempt
-/// validates the resolved IP before connecting -- not just at request-build
-/// time. This closes the window where a DNS name could resolve to a public
-/// IP during validation but rebind to a private IP by the time the TCP
-/// handshake occurs.
-#[derive(Clone)]
-struct SsrfSafeDnsResolver;
-
-impl reqwest::dns::Resolve for SsrfSafeDnsResolver {
-    fn resolve(&self, name: reqwest::dns::Name) -> reqwest::dns::Resolving {
-        Box::pin(async move {
-            let host = name.as_str();
-            // Resolve via the system DNS with a timeout
-            let addrs: Vec<SocketAddr> =
-                tokio::time::timeout(DNS_TIMEOUT, tokio::net::lookup_host((host, 0)))
-                    .await
-                    .map_err(|_| -> Box<dyn std::error::Error + Send + Sync> {
-                        Box::new(std::io::Error::other(format!(
-                            "DNS lookup timed out for {host} after {}s",
-                            DNS_TIMEOUT.as_secs()
-                        )))
-                    })?
-                    .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> {
-                        Box::new(std::io::Error::other(format!(
-                            "DNS lookup failed for {host}: {e}"
-                        )))
-                    })?
-                    .collect();
-
-            if addrs.is_empty() {
-                return Err(Box::new(std::io::Error::other(format!(
-                    "DNS lookup for {host} returned no addresses"
-                )))
-                    as Box<dyn std::error::Error + Send + Sync>);
-            }
-
-            // Filter out blocked IPs; if all are blocked, return an error.
-            let safe_addrs: Vec<SocketAddr> = addrs
-                .into_iter()
-                .filter(|addr| !ssrf::is_blocked_ip(addr.ip()))
-                .collect();
-
-            if safe_addrs.is_empty() {
-                return Err(Box::new(std::io::Error::other(format!(
-                    "All resolved IPs for {host} are private/reserved (SSRF blocked)"
-                )))
-                    as Box<dyn std::error::Error + Send + Sync>);
-            }
-
-            Ok(Box::new(safe_addrs.into_iter()) as reqwest::dns::Addrs)
-        })
-    }
-}
-
 /// Panics during initialization if the HTTP client cannot be built (e.g., TLS backend unavailable).
 /// This is intentional as the proxy cannot function without an HTTP client.
 ///
-/// **SSRF Protection**: Uses a custom DNS resolver (`SsrfSafeDnsResolver`) that
-/// checks every resolved IP at TCP-connect time against the SSRF blocklist.
-/// This prevents DNS rebinding attacks where a hostname resolves to a public IP
-/// during pre-request validation but rebinds to a private IP by connection time.
-///
-/// **Performance Enhancement**: Increased connection pool from 20 to 100 connections per host
-/// to better support high-traffic scenarios where multiple media sources may be accessed
-/// simultaneously (e.g., multi-room streaming, provider API calls).
+/// **SSRF Protection**: Uses the shared SSRF-safe DNS resolver that checks every
+/// resolved IP at TCP-connect time against the ACL blocklist. This prevents DNS
+/// rebinding attacks where a hostname resolves to a public IP during pre-request
+/// validation but rebinds to a private IP by connection time.
 static PROXY_CLIENT: LazyLock<reqwest::Client> = LazyLock::new(|| {
     reqwest::Client::builder()
-        .dns_resolver(Arc::new(SsrfSafeDnsResolver))
+        .dns_resolver(synctv_common::ssrf::ssrf_dns_resolver())
         .connect_timeout(CONNECT_TIMEOUT)
         .timeout(REQUEST_TIMEOUT)
         .read_timeout(BODY_READ_TIMEOUT)
@@ -319,8 +253,6 @@ fn build_proxy_request(cfg: &ProxyConfig<'_>) -> reqwest::RequestBuilder {
 
 /// Inner implementation of proxy fetch, separated for metrics wrapping.
 async fn proxy_fetch_and_forward_inner(cfg: ProxyConfig<'_>) -> Result<Response, anyhow::Error> {
-    validate_proxy_url(cfg.url).await?;
-
     let request = build_proxy_request(&cfg);
     let proxy_result = send_with_redirect_validation(request).await?;
 
@@ -478,8 +410,6 @@ pub async fn proxy_m3u8_and_rewrite(
     provider_headers: &HashMap<String, String>,
     proxy_base: &str,
 ) -> Result<Response, anyhow::Error> {
-    validate_proxy_url(url).await?;
-
     let request = apply_provider_headers(PROXY_CLIENT.get(url), url, provider_headers);
 
     let proxy_result = send_with_redirect_validation(request).await?;
@@ -952,12 +882,6 @@ async fn send_with_redirect_validation(
         .build()
         .map_err(|e| anyhow::anyhow!("Failed to build proxy request: {e}"))?;
 
-    // Validate the INITIAL URL before sending (SSRF protection).
-    // Previously only redirect targets were validated here, relying on callers
-    // to validate the initial URL. This was fragile and left a gap if any
-    // caller forgot to validate. Now we validate both initial and redirect URLs.
-    validate_proxy_url(built.url().as_str()).await?;
-
     // Snapshot headers to preserve across redirects.
     let preserved: Vec<(reqwest::header::HeaderName, reqwest::header::HeaderValue)> = built
         .headers()
@@ -986,9 +910,7 @@ async fn send_with_redirect_validation(
             .map_err(|_| anyhow::anyhow!("Invalid Location header"))?
             .to_string();
 
-        // Full validation: static checks + async DNS resolution
-        validate_proxy_url(&location).await?;
-
+        // SSRF protection is handled by the DNS resolver at connection time
         let mut redirect_req = PROXY_CLIENT.get(&location);
         for (name, value) in &preserved {
             redirect_req = redirect_req.header(name.clone(), value.clone());
@@ -1004,42 +926,6 @@ async fn send_with_redirect_validation(
         response,
         followed_redirects: hops > 0,
     })
-}
-
-// ------------------------------------------------------------------
-// SSRF protection
-// ------------------------------------------------------------------
-
-/// Validate that a URL is safe to proxy (not targeting internal services).
-///
-/// This function performs static URL validation only (scheme, hostname blocklist,
-/// literal IP checks). DNS-based SSRF protection is handled by `SsrfSafeDnsResolver`
-/// at connection time, which checks resolved IPs against the blocklist before
-/// establishing TCP connections.
-///
-/// This split approach provides:
-/// 1. Early rejection of obviously malicious URLs (private IPs, localhost, etc.)
-/// 2. Protection against DNS rebinding at connection time via the custom resolver
-/// 3. Avoids duplicate DNS lookups (previously this function and the resolver both did DNS)
-///
-/// Delegates to `synctv_media_providers::ssrf` as the single source of truth
-/// for SSRF validation logic.
-pub async fn validate_proxy_url(raw: &str) -> Result<(), anyhow::Error> {
-    // Static string-level checks only (scheme, hostname blocklist, literal IP)
-    // DNS-based SSRF protection is handled by SsrfSafeDnsResolver at connection time
-    validate_proxy_url_static(raw)?;
-    Ok(())
-}
-
-/// Synchronous URL string validation (scheme, hostname blocklist, literal IP checks).
-///
-/// Delegates to `synctv_media_providers::ssrf::check_url` as the single source
-/// of truth for SSRF URL validation.
-pub fn validate_proxy_url_static(raw: &str) -> Result<(), anyhow::Error> {
-    match ssrf::check_url(raw) {
-        ssrf::SsrfCheckResult::Ok => Ok(()),
-        ssrf::SsrfCheckResult::Blocked(reason) => Err(anyhow::anyhow!(reason)),
-    }
 }
 
 #[cfg(test)]
@@ -1385,25 +1271,28 @@ mod tests {
     }
 
     #[test]
-    fn test_validate_proxy_url_static_blocks_localhost() {
-        assert!(validate_proxy_url_static("http://localhost/foo").is_err());
+    fn test_ssrf_acl_blocks_private_ips() {
+        use std::net::IpAddr;
+        let blocked: &[&str] = &["127.0.0.1", "192.168.1.1", "10.0.0.1"];
+        for ip_str in blocked {
+            let ip: IpAddr = ip_str.parse().unwrap();
+            assert!(
+                synctv_common::ssrf::is_ip_blocked(&ip),
+                "IP {ip} should be blocked"
+            );
+        }
     }
 
     #[test]
-    fn test_validate_proxy_url_static_blocks_private_ip() {
-        assert!(validate_proxy_url_static("http://192.168.1.1/foo").is_err());
-        assert!(validate_proxy_url_static("http://10.0.0.1/foo").is_err());
-        assert!(validate_proxy_url_static("http://127.0.0.1/foo").is_err());
-    }
-
-    #[test]
-    fn test_validate_proxy_url_static_allows_public() {
-        assert!(validate_proxy_url_static("https://cdn.bilibili.com/v1.m4s").is_ok());
-    }
-
-    #[test]
-    fn test_validate_proxy_url_static_blocks_non_http() {
-        assert!(validate_proxy_url_static("ftp://example.com/file").is_err());
-        assert!(validate_proxy_url_static("file:///etc/passwd").is_err());
+    fn test_ssrf_acl_allows_public_ips() {
+        use std::net::IpAddr;
+        let allowed: &[&str] = &["1.1.1.1", "8.8.8.8"];
+        for ip_str in allowed {
+            let ip: IpAddr = ip_str.parse().unwrap();
+            assert!(
+                !synctv_common::ssrf::is_ip_blocked(&ip),
+                "IP {ip} should be allowed"
+            );
+        }
     }
 }

@@ -367,16 +367,6 @@ pub fn validate_url(url: &str) -> ValidationResult<String> {
         return Err(ValidationError::InvalidFormat { field: "url" });
     }
 
-    // SSRF protection: delegate to the authoritative SSRFValidator in synctv-core
-    // which properly parses IPs (no false positives from substring matching)
-    if synctv_core::validation::validate_url_for_ssrf(&sanitized).is_err() {
-        tracing::warn!(
-            url = %sanitized,
-            "SSRF attempt blocked by SSRFValidator"
-        );
-        return Err(ValidationError::SecurityRisk);
-    }
-
     Ok(sanitized.into_owned())
 }
 
@@ -959,47 +949,28 @@ mod tests {
     }
 
     #[test]
-    fn test_validate_url_ssrf_protection() {
-        // Should reject localhost
-        assert!(validate_url("http://localhost/admin").is_err());
-        assert!(validate_url("http://LOCALHOST/admin").is_err());
+    fn test_validate_url_format_only() {
+        // SSRF protection is now at the DNS resolver level, not in validate_url.
+        // validate_url only checks URL format (scheme, structure).
 
-        // Should reject loopback
-        assert!(validate_url("http://127.0.0.1/admin").is_err());
-        assert!(validate_url("http://0.0.0.0/admin").is_err());
-
-        // Should reject private IP ranges
-        assert!(validate_url("http://10.0.0.1/internal").is_err());
-        assert!(validate_url("http://172.16.0.1/internal").is_err());
-        assert!(validate_url("http://172.31.255.255/internal").is_err());
-        assert!(validate_url("http://192.168.1.1/internal").is_err());
-
-        // Should reject link-local
-        assert!(validate_url("http://169.254.1.1/internal").is_err());
-
-        // Should reject IPv6 private
-        assert!(validate_url("http://[::1]/admin").is_err());
-        assert!(validate_url("http://[fc00::1]/internal").is_err());
-        assert!(validate_url("http://[fd00::1]/internal").is_err());
-
-        // Octal loopback is treated as a hostname by the url crate, not as an IP.
-        // The SSRFValidator would catch it during async DNS resolution at request time.
-        // At the static validation level, it is not rejected as a private IP.
-        // assert!(validate_url("http://0177.0.0.1/admin").is_err());
-
-        // Should allow public URLs
+        // Valid HTTP/HTTPS URLs pass format validation
         assert!(validate_url("https://example.com/api").is_ok());
         assert!(validate_url("https://api.github.com/users").is_ok());
+        assert!(validate_url("http://localhost/admin").is_ok());
+        assert!(validate_url("http://127.0.0.1/admin").is_ok());
+        assert!(validate_url("http://192.168.1.1/internal").is_ok());
+
+        // Non-HTTP schemes are still rejected at format level
+        assert!(validate_url("ftp://example.com").is_err());
+        assert!(validate_url("javascript:alert(1)").is_err());
     }
 
     #[test]
     fn test_validate_url_with_options() {
-        // With allow_private_ips = true, should allow private IPs
+        // Both modes should validate URL format
         assert!(validate_url_with_options("http://localhost/admin", true).is_ok());
         assert!(validate_url_with_options("http://192.168.1.1/internal", true).is_ok());
-
-        // With allow_private_ips = false, should reject
-        assert!(validate_url_with_options("http://localhost/admin", false).is_err());
+        assert!(validate_url_with_options("http://localhost/admin", false).is_ok());
 
         // Both modes should still validate URL format
         assert!(validate_url_with_options("not-a-url", true).is_err());

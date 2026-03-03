@@ -7,7 +7,7 @@ use super::alist::{
     FsSearchReq, FsSearchResp, LoginReq, LoginResp, MeReq, MeResp,
 };
 use super::error_mapper::map_provider_error;
-use super::validation::validate_host_with_dns;
+use super::validation::validate_host;
 use crate::alist::error::AlistError;
 use crate::alist::{AlistInterface, AlistService as AlistServiceImpl};
 use tonic::{Request, Response, Status};
@@ -43,7 +43,7 @@ impl Default for AlistService {
 impl Alist for AlistService {
     async fn login(&self, request: Request<LoginReq>) -> Result<Response<LoginResp>, Status> {
         let req = request.into_inner();
-        validate_host_with_dns(&req.host).await?;
+        validate_host(&req.host)?;
 
         let token = self
             .service
@@ -56,7 +56,7 @@ impl Alist for AlistService {
 
     async fn me(&self, request: Request<MeReq>) -> Result<Response<MeResp>, Status> {
         let req = request.into_inner();
-        validate_host_with_dns(&req.host).await?;
+        validate_host(&req.host)?;
 
         let resp = self
             .service
@@ -69,7 +69,7 @@ impl Alist for AlistService {
 
     async fn fs_get(&self, request: Request<FsGetReq>) -> Result<Response<FsGetResp>, Status> {
         let req = request.into_inner();
-        validate_host_with_dns(&req.host).await?;
+        validate_host(&req.host)?;
 
         let resp = self
             .service
@@ -82,7 +82,7 @@ impl Alist for AlistService {
 
     async fn fs_list(&self, request: Request<FsListReq>) -> Result<Response<FsListResp>, Status> {
         let req = request.into_inner();
-        validate_host_with_dns(&req.host).await?;
+        validate_host(&req.host)?;
 
         let resp = self
             .service
@@ -98,7 +98,7 @@ impl Alist for AlistService {
         request: Request<FsOtherReq>,
     ) -> Result<Response<FsOtherResp>, Status> {
         let req = request.into_inner();
-        validate_host_with_dns(&req.host).await?;
+        validate_host(&req.host)?;
 
         let resp = self
             .service
@@ -114,7 +114,7 @@ impl Alist for AlistService {
         request: Request<FsSearchReq>,
     ) -> Result<Response<FsSearchResp>, Status> {
         let req = request.into_inner();
-        validate_host_with_dns(&req.host).await?;
+        validate_host(&req.host)?;
 
         let resp = self
             .service

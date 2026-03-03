@@ -545,8 +545,8 @@ async fn test_cross_room_parent_id_rejected() {
         .await
         .unwrap();
 
-    // BUG ATTEMPT: Try to create a playlist in Room B with parent_id from Room A
-    // This should be rejected by the database constraint, but currently it's allowed
+    // SECURITY CHECK: Try to create a playlist in Room B with parent_id from Room A
+    // This should be rejected by the database trigger (trigger_validate_parent_same_room)
     let cross_room_child = Playlist {
         id: PlaylistId::new(),
         room_id: room_b.id.clone(), // Child belongs to Room B
@@ -564,7 +564,7 @@ async fn test_cross_room_parent_id_rejected() {
 
     let result = playlist_repo.create(&cross_room_child).await;
 
-    // This should fail with a constraint violation, but currently succeeds (BUG)
+    // This should fail with a constraint violation from the database trigger
     assert!(
         result.is_err(),
         "Cross-room parent_id should be rejected. Child in room {} cannot have parent from room {}",

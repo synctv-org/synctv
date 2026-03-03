@@ -11,7 +11,6 @@ use serde::Deserialize;
 use serde_json::json;
 
 use crate::http::{middleware::AuthUser, provider_common::InstanceQuery, AppError, AppState};
-use synctv_core::validation::validate_url_for_ssrf;
 
 use crate::impls::providers::get_provider_binds;
 
@@ -182,14 +181,6 @@ struct ThumbnailQuery {
 /// 2. Injecting the X-Emby-Token authentication header
 /// 3. Not exposing the API token to the client
 ///
-/// # SSRF Protection
-///
-/// The Emby host URL is validated using `validate_url_for_ssrf` which blocks:
-/// - Private IP addresses (192.168.x.x, 10.x.x.x, 172.16-31.x.x)
-/// - Localhost variants (localhost, 127.0.0.1, `::1`)
-/// - Cloud metadata endpoints (AWS, GCP, Azure)
-/// - Link-local addresses (169.254.x.x)
-///
 /// # Query Parameters
 ///
 /// - `host`: Emby server base URL (e.g., "<https://emby.example.com>")
@@ -213,21 +204,6 @@ async fn thumbnail(
         max_height = ?query.max_height,
         "Emby thumbnail request"
     );
-
-    // Validate the Emby host URL for SSRF attacks BEFORE making any requests
-    // This is the critical security check that prevents SSRF vulnerabilities
-    if let Err(e) = validate_url_for_ssrf(&query.host) {
-        tracing::warn!(
-            host = %query.host,
-            error = %e,
-            "Blocked Emby thumbnail request due to SSRF validation failure"
-        );
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(json!({"error": format!("Invalid Emby host URL: {e}")})),
-        )
-            .into_response();
-    }
 
     // Build the thumbnail URL using Emby's Items endpoint
     // Format: {host}/Items/{item_id}/Images/Primary?maxHeight={max_height}

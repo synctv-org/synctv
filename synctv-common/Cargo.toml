@@ -1,0 +1,15 @@
+[package]
+name = "synctv-common"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+http-acl.workspace = true
+http-acl-reqwest.workspace = true
+ipnet.workspace = true
+reqwest.workspace = true
+
+[lints]
+workspace = true

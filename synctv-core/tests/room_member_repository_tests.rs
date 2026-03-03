@@ -1040,8 +1040,8 @@ async fn test_update_permissions_after_member_left_should_fail() {
     // CRITICAL: update_permissions should not allow updating permissions for
     // members who have left the room (left_at IS NOT NULL).
     //
-    // BUG: Currently update_permissions doesn't check left_at, allowing
-    // "ghost" permission updates on departed members.
+    // FIXED: update_permissions now checks left_at IS NULL in the WHERE clause,
+    // returning OptimisticLockConflict for departed members.
 
     let (_container, pool) = create_test_pool().await;
     let user_repo = UserRepository::new(pool.clone());
@@ -1094,8 +1094,8 @@ async fn test_update_permissions_after_member_left_should_fail() {
         "Member should have left_at set"
     );
 
-    // BUG ATTEMPT: Try to update permissions for departed member
-    // This should fail with OptimisticLockConflict but currently succeeds (BUG)
+    // SECURITY CHECK: Try to update permissions for departed member
+    // This should fail with OptimisticLockConflict because left_at IS NOT NULL
     let result = member_repo
         .update_permissions(
             &room.id,

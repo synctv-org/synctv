@@ -2,19 +2,12 @@
 //!
 //! Provides playback URLs for RTMP live streams.
 //! URLs point to synctv's own HTTP-FLV and HLS endpoints.
-//!
-//! # SSRF Protection
-//!
-//! The `new_validated()` constructor validates the `base_url` against private/internal
-//! IP ranges to prevent Server-Side Request Forgery attacks. Use this constructor
-//! when the `base_url` comes from an untrusted source (e.g., user configuration).
 
 use super::{MediaProvider, PlaybackResult, ProviderContext, ProviderError};
-use crate::validation::{validate_url_for_ssrf, ValidationError};
 use async_trait::async_trait;
 use serde_json::Value;
 
-/// Fields that should not be allowed in `source_config` to prevent SSRF.
+/// Fields that should not be allowed in `source_config`.
 /// `RtmpProvider` only uses `room_id` and `media_id`; any URL field could be abused.
 const FORBIDDEN_URL_FIELDS: &[&str] = &[
     "url",
@@ -31,39 +24,10 @@ pub struct RtmpProvider {
 }
 
 impl RtmpProvider {
-    /// Create a new `RtmpProvider` without SSRF validation.
-    ///
-    /// Use this when the `base_url` is trusted (e.g., from server configuration).
     pub fn new(base_url: impl Into<String>) -> Self {
         Self {
             base_url: base_url.into(),
         }
-    }
-
-    /// Create a new `RtmpProvider` with SSRF validation.
-    ///
-    /// Validates that the `base_url` does not point to a private/internal IP address
-    /// or blocked hostname. Use this when the `base_url` may come from an untrusted source.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if:
-    /// - The URL cannot be parsed
-    /// - The URL points to a private IP address (192.168.x.x, 10.x.x.x, 172.16-31.x.x, etc.)
-    /// - The URL points to localhost or loopback
-    /// - The URL points to a link-local address (169.254.x.x)
-    /// - The URL points to a blocked hostname (metadata endpoints, etc.)
-    pub fn new_validated(base_url: &str) -> Result<Self, ProviderError> {
-        validate_url_for_ssrf(base_url).map_err(|e| match e {
-            ValidationError::SSRF(msg) => {
-                ProviderError::InvalidConfig(format!("SSRF protection: {msg}"))
-            }
-            _ => ProviderError::InvalidConfig(e.to_string()),
-        })?;
-
-        Ok(Self {
-            base_url: base_url.to_string(),
-        })
     }
 }
 
@@ -269,53 +233,6 @@ mod tests {
         let key1 = provider.cache_key(&ctx, &source_config);
         let key2 = provider.cache_key(&ctx, &source_config);
         assert_eq!(key1, key2, "Cache key should be deterministic");
-    }
-
-    // ========== SSRF Protection Tests ==========
-
-    #[test]
-    fn test_new_validated_rejects_private_ipv4() {
-        let private_ips = vec![
-            "http://192.168.1.1:8080",
-            "http://10.0.0.1:8080",
-            "http://172.16.0.1:8080",
-            "http://127.0.0.1:8080",
-        ];
-
-        for url in private_ips {
-            let result = RtmpProvider::new_validated(url);
-            assert!(
-                result.is_err(),
-                "new_validated should reject private IP: {url}"
-            );
-        }
-    }
-
-    #[test]
-    fn test_new_validated_rejects_localhost() {
-        let localhost_urls = vec!["http://localhost:8080", "https://localhost:8080"];
-
-        for url in localhost_urls {
-            let result = RtmpProvider::new_validated(url);
-            assert!(
-                result.is_err(),
-                "new_validated should reject localhost: {url}"
-            );
-        }
-    }
-
-    #[test]
-    fn test_new_validated_accepts_public_urls() {
-        let public_urls = vec!["https://example.com", "http://93.184.216.34:8080"];
-
-        for url in public_urls {
-            let result = RtmpProvider::new_validated(url);
-            assert!(
-                result.is_ok(),
-                "new_validated should accept public URL: {url}, error: {:?}",
-                result.err()
-            );
-        }
     }
 
     #[tokio::test]

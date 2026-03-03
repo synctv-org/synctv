@@ -12,7 +12,7 @@ use super::{
     PlaybackResult, ProviderContext, ProviderError, SubtitleTrack,
 };
 use crate::service::RemoteProviderManager;
-use crate::validation::{validate_path_for_traversal, validate_url_for_ssrf, ValidationError};
+use crate::validation::validate_path_for_traversal;
 use async_trait::async_trait;
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
@@ -170,14 +170,6 @@ impl MediaProvider for AlistProvider {
             )));
         }
 
-        // SSRF protection: reject private/internal network addresses
-        validate_url_for_ssrf(&config.host).map_err(|e| match e {
-            ValidationError::SSRF(msg) => {
-                ProviderError::InvalidUrl(format!("SSRF protection: {msg}"))
-            }
-            _ => ProviderError::InvalidUrl(e.to_string()),
-        })?;
-
         // Validate path is not empty and doesn't contain path traversal.
         // Uses the shared validate_path_for_traversal which handles URL-encoded
         // variants (%2e%2e, %252e%252e), backslash traversal, null bytes, etc.
@@ -239,16 +231,6 @@ impl MediaProvider for AlistProvider {
 
         // Parse source_config first
         let config = AlistSourceConfig::try_from(&decrypted_config)?;
-
-        // Re-validate host URL at request time to protect against DNS rebinding.
-        // The hostname may have been safe at config time but could resolve to a
-        // private IP now.
-        validate_url_for_ssrf(&config.host).map_err(|e| match e {
-            ValidationError::SSRF(msg) => {
-                ProviderError::InvalidUrl(format!("SSRF protection: {msg}"))
-            }
-            _ => ProviderError::InvalidUrl(e.to_string()),
-        })?;
 
         // Re-validate path at request time (defense-in-depth against traversal)
         validate_path_for_traversal(&config.path).map_err(|e| {

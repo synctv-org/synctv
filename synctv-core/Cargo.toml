@@ -107,8 +107,6 @@ base64.workspace = true
 hostname.workspace = true
 urlencoding = "2.1"
 
-# SSRF Protection
-url_jail.workspace = true
 
 # STUN server (turn-rs with STUN-only config)
 turn-server.workspace = true

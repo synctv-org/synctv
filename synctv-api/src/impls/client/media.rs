@@ -35,56 +35,6 @@ pub(super) fn sanitize_url_derived_title(raw: &str) -> String {
 }
 
 impl ClientApiImpl {
-    /// Validate `source_config` URLs for SSRF protection.
-    ///
-    /// Checks all known URL fields in the `source_config` JSON to prevent
-    /// attackers from forcing the server to make requests to internal network addresses.
-    ///
-    /// # URL Fields Validated
-    /// - `url`, `urls` (common media URL fields)
-    /// - `host` (used by Alist, Emby providers)
-    /// - `base_url`, `api_endpoint`, `proxy_url`, `server_url` (potential API endpoints)
-    /// - `callback_url`, `thumbnail_url` (other URL fields that could be exploited)
-    pub(super) fn validate_source_config_urls(source_config_bytes: &[u8]) -> Result<(), ApiError> {
-        if source_config_bytes.is_empty() {
-            return Ok(());
-        }
-        if let Ok(source_config) = serde_json::from_slice::<serde_json::Value>(source_config_bytes)
-        {
-            // List of field names that may contain URLs requiring SSRF validation
-            const URL_FIELDS: &[&str] = &[
-                "url",
-                "host",
-                "base_url",
-                "api_endpoint",
-                "proxy_url",
-                "server_url",
-                "callback_url",
-                "thumbnail_url",
-            ];
-
-            // Validate single string URL fields
-            for field in URL_FIELDS {
-                if let Some(url_str) = source_config.get(*field).and_then(|v| v.as_str()) {
-                    crate::http::validation::validate_url(url_str)
-                        .map_err(|e| ApiError::InvalidInput(format!("Invalid media URL: {e}")))?;
-                }
-            }
-
-            // Validate `urls` array field (special case for multiple URLs)
-            if let Some(urls_arr) = source_config.get("urls").and_then(|v| v.as_array()) {
-                for url_val in urls_arr {
-                    if let Some(url_str) = url_val.as_str() {
-                        crate::http::validation::validate_url(url_str).map_err(|e| {
-                            ApiError::InvalidInput(format!("Invalid media URL: {e}"))
-                        })?;
-                    }
-                }
-            }
-        }
-        Ok(())
-    }
-
     pub async fn add_media(
         &self,
         user_id: &str,
@@ -93,9 +43,6 @@ impl ClientApiImpl {
     ) -> Result<crate::proto::client::AddMediaResponse, ApiError> {
         crate::http::validation::validate_id(room_id, "room_id")
             .map_err(|e| ApiError::InvalidInput(format!("Invalid room_id: {e}")))?;
-
-        // Validate media URLs to prevent SSRF attacks
-        Self::validate_source_config_urls(&req.source_config)?;
 
         let uid = UserId::from_string(user_id.to_string());
         let rid = RoomId::from_string(room_id.to_string());
@@ -452,9 +399,6 @@ impl ClientApiImpl {
         let mut items: Vec<(String, serde_json::Value, String)> =
             Vec::with_capacity(req.items.len());
         for item in &req.items {
-            // Validate media URLs for SSRF protection (same as add_media)
-            Self::validate_source_config_urls(&item.source_config)?;
-
             let source_config: serde_json::Value = if item.source_config.is_empty() {
                 serde_json::json!({})
             } else {

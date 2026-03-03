@@ -19,7 +19,7 @@ use tokio_tungstenite::{connect_async, tungstenite::Message};
 use super::error::{check_response, json_with_limit, BilibiliError};
 use super::types::{self as types, AnimeInfo, DurlItem, PlayUrlInfo, Quality, VideoInfo};
 use crate::error::with_retry;
-use crate::ssrf::ssrf_safe_dns_resolver;
+use crate::ssrf::ssrf_dns_resolver;
 
 // Pre-compiled regexes using std::sync::LazyLock (no external crate needed).
 // These patterns are compile-time constants; Regex::new cannot fail on them.
@@ -37,12 +37,12 @@ const REFERER: &str = "https://www.bilibili.com";
 
 /// Shared HTTP client for all Bilibili requests (connection pooling)
 /// Redirects are disabled to prevent SSRF via redirect to private IPs.
-/// Uses `SsrfSafeDnsResolver` to check resolved IPs at connection time,
+/// Uses SSRF-safe DNS resolver to check resolved IPs at connection time,
 /// preventing DNS rebinding attacks.
 static SHARED_CLIENT: LazyLock<Client> = LazyLock::new(|| {
     Client::builder()
         .user_agent(USER_AGENT)
-        .dns_resolver(ssrf_safe_dns_resolver())
+        .dns_resolver(ssrf_dns_resolver())
         .connect_timeout(Duration::from_secs(10))
         .timeout(Duration::from_secs(30))
         .pool_max_idle_per_host(10)
@@ -887,10 +887,7 @@ impl BilibiliClient {
     /// the `Location` header from b23.tv to get the resolved URL.
     /// The resolved URL is validated against SSRF rules before returning.
     pub async fn resolve_short_link(&self, url: &str) -> Result<String, BilibiliError> {
-        // Validate the initial URL before making the HTTP request (SSRF protection)
-        crate::grpc::validation::validate_host_with_dns(url)
-            .await
-            .map_err(|e| BilibiliError::InvalidConfig(e.to_string()))?;
+        // SSRF protection is handled by the DNS resolver at connection time
         let response = self.client.get(url).send().await?;
         let status = response.status();
 
@@ -900,14 +897,6 @@ impl BilibiliClient {
                 let resolved = location
                     .to_str()
                     .map_err(|e| BilibiliError::Parse(format!("Invalid Location header: {e}")))?;
-                // Validate resolved URL against SSRF rules (with DNS resolution to prevent rebinding)
-                crate::grpc::validation::validate_host_with_dns(resolved)
-                    .await
-                    .map_err(|e| {
-                        BilibiliError::InvalidConfig(format!(
-                            "Resolved URL blocked by SSRF check: {e}"
-                        ))
-                    })?;
                 return Ok(resolved.to_string());
             }
         }
@@ -1342,15 +1331,6 @@ impl BilibiliClient {
                         format!("https:{}", sub.subtitle_url)
                     };
                     if name.is_empty() || url.is_empty() {
-                        continue;
-                    }
-                    // Validate subtitle URL against SSRF
-                    if let Err(e) = crate::grpc::validation::validate_host(&url) {
-                        tracing::warn!(
-                            "Skipping subtitle with blocked URL: {} ({})",
-                            url,
-                            e.message()
-                        );
                         continue;
                     }
                     subtitles.insert(name, url);
@@ -1828,17 +1808,6 @@ impl BilibiliClient {
 
         // Build WebSocket URL (use wss:// for secure connection)
         let ws_url = format!("wss://{}:{}/sub", host.host, host.wss_port);
-
-        // Validate WebSocket URL against SSRF (convert wss to https for validation)
-        let validation_url = format!("https://{}:{}/sub", host.host, host.wss_port);
-        crate::grpc::validation::validate_host_with_dns(&validation_url)
-            .await
-            .map_err(|e| {
-                BilibiliError::InvalidConfig(format!(
-                    "Danmaku WebSocket URL blocked by SSRF check: {}",
-                    e.message()
-                ))
-            })?;
 
         // Connect to WebSocket with timeout
         let ws_connect_timeout = Duration::from_secs(10);

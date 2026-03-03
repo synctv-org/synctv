@@ -19,6 +19,7 @@ tokio = { workspace = true, features = ["time"] }
 tracing.workspace = true
 synctv-proto.workspace = true
 synctv-media-providers.workspace = true
+synctv-common.workspace = true
 moka = { workspace = true }
 dashmap.workspace = true
 sha2.workspace = true

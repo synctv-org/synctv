@@ -10,6 +10,8 @@ members = [
     "synctv-cluster",
     "synctv-media-providers",
     "synctv",
+    # Shared utilities
+    "synctv-common",
     # xiu consolidated crate
     "synctv-xiu",
 ]
@@ -118,7 +120,8 @@ jsonwebtoken = { version = "10.3", features = ["aws_lc_rs"] }
 oauth2 = "5.0"
 aes-gcm = "0.10"
 ammonia = "4.1"
-url_jail = { version = "0.2", features = ["fetch"] }
+http-acl = "0.11"
+http-acl-reqwest = "0.11"
 sha1 = "0.10"
 sha2 = "0.10"
 md-5 = "0.10"
@@ -256,6 +259,7 @@ synctv-cluster = { path = "synctv-cluster", default-features = false }
 synctv-media-providers = { path = "synctv-media-providers" }
 synctv-proxy = { path = "synctv-proxy" }
 synctv-livestream = { path = "synctv-livestream" }
+synctv-common = { path = "synctv-common" }
 
 [profile.dev]
 debug = 0

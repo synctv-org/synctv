@@ -7,7 +7,6 @@
 //! The `PullStreamManager` handles the actual pulling from the external source.
 
 use super::{MediaProvider, PlaybackResult, ProviderContext, ProviderError};
-use crate::validation::{validate_rtmp_url_host_with_dns, validate_url_for_ssrf, ValidationError};
 use async_trait::async_trait;
 use serde_json::{json, Value};
 
@@ -104,9 +103,6 @@ impl MediaProvider for LiveProxyProvider {
             )));
         }
 
-        // SSRF protection: validate the host is not a private/internal address
-        validate_source_url_host(url).await?;
-
         Ok(())
     }
 
@@ -124,41 +120,6 @@ impl MediaProvider for LiveProxyProvider {
             ctx.key_prefix
         )
     }
-}
-
-/// Validate that a source URL's host is not a private/internal address (SSRF protection).
-///
-/// Supports `rtmp://`, `http://`, and `https://` schemes.
-/// For HTTP(S) URLs, delegates to the shared `validate_url_for_ssrf` which covers
-/// hostname blocklists, IP range checks, and cloud metadata endpoints.
-/// For RTMP URLs, delegates to `validate_rtmp_url_host_with_dns` which performs
-/// static checks plus DNS resolution to prevent DNS rebinding attacks.
-async fn validate_source_url_host(raw: &str) -> Result<(), ProviderError> {
-    // For HTTP(S) URLs, use the shared comprehensive SSRF validator
-    if raw.starts_with("http://") || raw.starts_with("https://") {
-        return validate_url_for_ssrf(raw).map_err(|e| match e {
-            ValidationError::SSRF(msg) => {
-                ProviderError::InvalidConfig(format!("SSRF protection: {msg}"))
-            }
-            _ => ProviderError::InvalidConfig(e.to_string()),
-        });
-    }
-
-    // For RTMP URLs, use the shared async validator with DNS resolution
-    if raw.starts_with("rtmp://") || raw.starts_with("rtmps://") {
-        return validate_rtmp_url_host_with_dns(raw)
-            .await
-            .map_err(|e| match e {
-                ValidationError::SSRF(msg) => {
-                    ProviderError::InvalidConfig(format!("SSRF protection: {msg}"))
-                }
-                _ => ProviderError::InvalidConfig(e.to_string()),
-            });
-    }
-
-    Err(ProviderError::InvalidConfig(format!(
-        "Unsupported URL scheme: {raw}"
-    )))
 }
 
 #[cfg(test)]

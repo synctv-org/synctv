@@ -42,7 +42,7 @@ md-5.workspace = true
 uuid.workspace = true
 
 # SSRF Protection
-url_jail.workspace = true
+synctv-common.workspace = true
 
 # Compression
 flate2.workspace = true

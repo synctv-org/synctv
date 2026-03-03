@@ -8,7 +8,7 @@ use super::{
     PlaybackResult, ProviderContext, ProviderError, SubtitleTrack,
 };
 use crate::service::RemoteProviderManager;
-use crate::validation::{validate_path_for_traversal, validate_url_for_ssrf, ValidationError};
+use crate::validation::validate_path_for_traversal;
 use async_trait::async_trait;
 use chrono::Utc;
 use rand::prelude::IndexedRandom;
@@ -154,14 +154,6 @@ impl MediaProvider for EmbyProvider {
             )));
         }
 
-        // SSRF protection: reject private/internal network addresses
-        validate_url_for_ssrf(&config.host).map_err(|e| match e {
-            ValidationError::SSRF(msg) => {
-                ProviderError::InvalidUrl(format!("SSRF protection: {msg}"))
-            }
-            _ => ProviderError::InvalidUrl(e.to_string()),
-        })?;
-
         // Validate item_id is non-empty
         if config.item_id.is_empty() {
             return Err(ProviderError::InvalidConfig(
@@ -225,16 +217,6 @@ impl MediaProvider for EmbyProvider {
 
         // Parse source_config first
         let config = EmbySourceConfig::try_from(&decrypted_config)?;
-
-        // Re-validate host URL at request time to protect against DNS rebinding.
-        // The hostname may have been safe at config time but could resolve to a
-        // private IP now.
-        validate_url_for_ssrf(&config.host).map_err(|e| match e {
-            ValidationError::SSRF(msg) => {
-                ProviderError::InvalidUrl(format!("SSRF protection: {msg}"))
-            }
-            _ => ProviderError::InvalidUrl(e.to_string()),
-        })?;
 
         // Get appropriate client based on instance_name from config
         let client = self
@@ -988,14 +970,6 @@ mod tests {
                 config.host
             )));
         }
-
-        // SSRF protection: reject private/internal network addresses
-        validate_url_for_ssrf(&config.host).map_err(|e| match e {
-            ValidationError::SSRF(msg) => {
-                ProviderError::InvalidUrl(format!("SSRF protection: {msg}"))
-            }
-            _ => ProviderError::InvalidUrl(e.to_string()),
-        })?;
 
         if config.item_id.is_empty() {
             return Err(ProviderError::InvalidConfig(

@@ -4,7 +4,7 @@
 use std::collections::HashMap;
 use synctv_proxy::{
     apply_provider_headers, make_absolute, percent_encode, rewrite_m3u8,
-    rewrite_uri_attribute_with_count, validate_proxy_url_static,
+    rewrite_uri_attribute_with_count,
 };
 
 // ------------------------------------------------------------------
@@ -235,26 +235,45 @@ fn test_percent_encode_already_safe() {
 }
 
 // ==================================================================
-// validate_proxy_url_static
+// SSRF ACL IP checks (formerly validate_proxy_url_static)
 // ==================================================================
 
 #[test]
-fn test_validate_static_private_ip_blocked() {
-    assert!(validate_proxy_url_static("http://192.168.1.1/path").is_err());
-    assert!(validate_proxy_url_static("http://10.0.0.1/path").is_err());
-    assert!(validate_proxy_url_static("http://172.16.0.1/path").is_err());
+fn test_ssrf_acl_private_ip_blocked() {
+    use std::net::IpAddr;
+    let blocked: Vec<IpAddr> = vec![
+        "192.168.1.1".parse().unwrap(),
+        "10.0.0.1".parse().unwrap(),
+        "172.16.0.1".parse().unwrap(),
+    ];
+    for ip in &blocked {
+        assert!(
+            synctv_common::ssrf::is_ip_blocked(ip),
+            "IP {ip} should be blocked"
+        );
+    }
 }
 
 #[test]
-fn test_validate_static_public_ip_allowed() {
-    assert!(validate_proxy_url_static("https://1.1.1.1/dns-query").is_ok());
-    assert!(validate_proxy_url_static("https://8.8.8.8/resolve").is_ok());
+fn test_ssrf_acl_public_ip_allowed() {
+    use std::net::IpAddr;
+    let allowed: Vec<IpAddr> = vec!["1.1.1.1".parse().unwrap(), "8.8.8.8".parse().unwrap()];
+    for ip in &allowed {
+        assert!(
+            !synctv_common::ssrf::is_ip_blocked(ip),
+            "IP {ip} should be allowed"
+        );
+    }
 }
 
 #[test]
-fn test_validate_static_loopback_blocked() {
-    assert!(validate_proxy_url_static("http://127.0.0.1/secret").is_err());
-    assert!(validate_proxy_url_static("http://localhost/secret").is_err());
+fn test_ssrf_acl_loopback_blocked() {
+    use std::net::IpAddr;
+    let ip: IpAddr = "127.0.0.1".parse().unwrap();
+    assert!(
+        synctv_common::ssrf::is_ip_blocked(&ip),
+        "Loopback should be blocked"
+    );
 }
 
 // ==================================================================
@@ -403,22 +422,27 @@ fn test_percent_encode_cjk() {
 }
 
 // ==================================================================
-// validate_proxy_url_static - additional edge cases
+// SSRF ACL - additional edge cases
 // ==================================================================
 
 #[test]
-fn test_validate_static_empty_url_blocked() {
-    assert!(validate_proxy_url_static("").is_err());
+fn test_ssrf_acl_link_local_blocked() {
+    use std::net::IpAddr;
+    let ip: IpAddr = "169.254.1.1".parse().unwrap();
+    assert!(
+        synctv_common::ssrf::is_ip_blocked(&ip),
+        "Link-local should be blocked"
+    );
 }
 
 #[test]
-fn test_validate_static_link_local_blocked() {
-    assert!(validate_proxy_url_static("http://169.254.1.1/metadata").is_err());
-}
-
-#[test]
-fn test_validate_static_cgnat_blocked() {
-    assert!(validate_proxy_url_static("http://100.64.0.1/internal").is_err());
+fn test_ssrf_acl_cgnat_blocked() {
+    use std::net::IpAddr;
+    let ip: IpAddr = "100.64.0.1".parse().unwrap();
+    assert!(
+        synctv_common::ssrf::is_ip_blocked(&ip),
+        "CGNAT should be blocked"
+    );
 }
 
 // ==================================================================
@@ -647,47 +671,54 @@ fn test_max_proxy_body_size_constant() {
     // Verify the constant is 256 MB
     // We can't access MAX_PROXY_BODY_SIZE directly (private), but we can
     // verify it indirectly through behavior: Content-Length > 256MB rejects.
-    // For now, just verify the proxy URL validation works.
-    assert!(validate_proxy_url_static("https://cdn.example.com/large.mp4").is_ok());
+    // Verify the ACL allows public IPs that would serve large files.
+    use std::net::IpAddr;
+    let ip: IpAddr = "93.184.216.34".parse().unwrap();
+    assert!(!synctv_common::ssrf::is_ip_blocked(&ip));
 }
 
 // ==================================================================
-// Proxy SSRF validation - additional edge cases
+// Proxy SSRF ACL - additional edge cases
 // ==================================================================
 
 #[test]
-fn test_validate_static_ipv6_loopback_blocked() {
-    assert!(validate_proxy_url_static("http://[::1]/path").is_err());
+fn test_ssrf_acl_ipv6_loopback_blocked() {
+    use std::net::IpAddr;
+    let ip: IpAddr = "::1".parse().unwrap();
+    assert!(
+        synctv_common::ssrf::is_ip_blocked(&ip),
+        "IPv6 loopback should be blocked"
+    );
 }
 
 #[test]
-fn test_validate_static_ipv6_unspecified_blocked() {
-    assert!(validate_proxy_url_static("http://[::]/path").is_err());
+fn test_ssrf_acl_ipv6_unspecified_blocked() {
+    use std::net::IpAddr;
+    let ip: IpAddr = "::".parse().unwrap();
+    assert!(
+        synctv_common::ssrf::is_ip_blocked(&ip),
+        "IPv6 unspecified should be blocked"
+    );
 }
 
 #[test]
-fn test_validate_static_ipv6_public_allowed() {
-    assert!(validate_proxy_url_static("http://[2606:4700:4700::1111]/path").is_ok());
+fn test_ssrf_acl_ipv6_public_allowed() {
+    use std::net::IpAddr;
+    let ip: IpAddr = "2606:4700:4700::1111".parse().unwrap();
+    assert!(
+        !synctv_common::ssrf::is_ip_blocked(&ip),
+        "Public IPv6 should be allowed"
+    );
 }
 
 #[test]
-fn test_validate_static_ftp_scheme_blocked() {
-    assert!(validate_proxy_url_static("ftp://example.com/file").is_err());
-}
-
-#[test]
-fn test_validate_static_file_scheme_blocked() {
-    assert!(validate_proxy_url_static("file:///etc/passwd").is_err());
-}
-
-#[test]
-fn test_validate_static_cloud_metadata_blocked() {
-    assert!(validate_proxy_url_static("http://169.254.169.254/latest/meta-data/").is_err());
-}
-
-#[test]
-fn test_validate_static_metadata_hostname_blocked() {
-    assert!(validate_proxy_url_static("http://metadata.google.internal/").is_err());
+fn test_ssrf_acl_cloud_metadata_blocked() {
+    use std::net::IpAddr;
+    let ip: IpAddr = "169.254.169.254".parse().unwrap();
+    assert!(
+        synctv_common::ssrf::is_ip_blocked(&ip),
+        "Cloud metadata IP should be blocked"
+    );
 }
 
 // ==================================================================
@@ -972,10 +1003,10 @@ fn test_make_absolute_scheme_injection() {
 // M3U8 SSRF End-to-End Validation Tests
 // ==================================================================
 
-/// Test that malicious URLs in M3U8 are blocked when the proxy tries to fetch them.
-/// This tests the full chain: `rewrite_m3u8` -> `validate_proxy_url_static`
+/// Test that malicious URLs in M3U8 are rewritten through the proxy.
+/// The SSRF-safe DNS resolver will block private IPs at connection time.
 #[test]
-fn test_m3u8_ssrf_file_url_blocked_by_validator() {
+fn test_m3u8_ssrf_file_url_rewritten() {
     let m3u8 = "#EXTM3U\nfile:///etc/passwd\n";
     let rewritten = rewrite_m3u8(
         m3u8,
@@ -995,49 +1026,38 @@ fn test_m3u8_ssrf_file_url_blocked_by_validator() {
         rewritten.contains("file%3A%2F%2F"),
         "file:// scheme should be encoded in proxy URL, got: {rewritten}"
     );
-
-    // When the client fetches this URL, the proxy will decode and validate
-    // file:// URLs are blocked by validate_proxy_url_static
-    assert!(
-        validate_proxy_url_static("file:///etc/passwd").is_err(),
-        "file:// URLs should be blocked by validator"
-    );
 }
 
-/// Test that internal IP addresses in M3U8 are blocked when proxy tries to fetch.
+/// Test that private IPs are blocked by the SSRF ACL.
 #[test]
-fn test_m3u8_ssrf_private_ip_blocked_by_validator() {
-    // Test various private/internal IPs
-    let blocked_ips = [
-        "http://192.168.1.1/secret.ts",
-        "http://10.0.0.1/secret.ts",
-        "http://172.16.0.1/secret.ts",
-        "http://127.0.0.1/secret.ts",
-        "http://169.254.169.254/metadata",
-        "http://localhost/secret.ts",
+fn test_m3u8_ssrf_private_ip_blocked_by_acl() {
+    use std::net::IpAddr;
+    let blocked: Vec<IpAddr> = vec![
+        "192.168.1.1".parse().unwrap(),
+        "10.0.0.1".parse().unwrap(),
+        "172.16.0.1".parse().unwrap(),
+        "127.0.0.1".parse().unwrap(),
+        "169.254.169.254".parse().unwrap(),
     ];
 
-    for url in blocked_ips {
+    for ip in &blocked {
         assert!(
-            validate_proxy_url_static(url).is_err(),
-            "Private/internal IP {url} should be blocked by validator"
+            synctv_common::ssrf::is_ip_blocked(ip),
+            "Private/internal IP {ip} should be blocked by SSRF ACL"
         );
     }
 }
 
-/// Test that public URLs pass validation
+/// Test that public IPs are allowed by the SSRF ACL.
 #[test]
-fn test_m3u8_ssrf_public_url_allowed_by_validator() {
-    let allowed_urls = [
-        "https://cdn.example.com/seg1.ts",
-        "https://8.8.8.8/dns-query",
-        "https://1.1.1.1/dns",
-    ];
+fn test_m3u8_ssrf_public_ip_allowed_by_acl() {
+    use std::net::IpAddr;
+    let allowed: Vec<IpAddr> = vec!["8.8.8.8".parse().unwrap(), "1.1.1.1".parse().unwrap()];
 
-    for url in allowed_urls {
+    for ip in &allowed {
         assert!(
-            validate_proxy_url_static(url).is_ok(),
-            "Public URL {url} should be allowed by validator"
+            !synctv_common::ssrf::is_ip_blocked(ip),
+            "Public IP {ip} should be allowed by SSRF ACL"
         );
     }
 }

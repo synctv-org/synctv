@@ -3,16 +3,17 @@
 //! These tests verify:
 //! - Response streaming size limits
 //! - Redirect loop detection
-//! - SSRF protection edge cases
+//! - SSRF protection edge cases (via DNS-level ACL)
 //! - CORS preflight behavior
 
 #![allow(clippy::unwrap_used)]
 use std::collections::HashMap;
+use std::net::IpAddr;
 
 use axum::http::StatusCode;
 use synctv_proxy::{
-    is_retryable_status, proxy_fetch_and_forward, proxy_options_preflight_with_cors,
-    validate_proxy_url_static, CorsConfig, NoopMetrics, ProxyConfig,
+    is_retryable_status, proxy_fetch_and_forward, proxy_options_preflight_with_cors, CorsConfig,
+    NoopMetrics, ProxyConfig,
 };
 
 // ==================================================================
@@ -53,9 +54,6 @@ async fn test_oversized_response_blocked() {
 /// Test Content-Length validation for large responses
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_content_length_validation_blocks_oversized() {
-    // Test that a URL with obviously excessive Content-Length would be blocked
-    // Since we can't reach wiremock from the proxy (SSRF protection),
-    // we verify the URL validation blocks the request first
     let headers = axum::http::HeaderMap::new();
     let cfg = ProxyConfig {
         url: "http://127.0.0.1:9999/huge-file.mp4",
@@ -78,145 +76,149 @@ fn test_max_redirects_is_10() {
     assert_eq!(MAX_REDIRECTS, 10);
 }
 
-/// Test that relative redirects are validated
+/// Test that public URLs are allowed by the SSRF ACL
 #[test]
-fn test_relative_redirect_target_validation() {
-    // A relative redirect should be resolved against the base URL
-    // and then validated. The resolved URL should still pass SSRF checks.
-    let result = validate_proxy_url_static("https://example.com/redirect");
-    assert!(result.is_ok());
+fn test_public_url_allowed() {
+    // example.com resolves to a public IP - verify ACL allows public IPs
+    let ip: IpAddr = "93.184.216.34".parse().unwrap();
+    assert!(!synctv_common::ssrf::is_ip_blocked(&ip));
 }
 
 /// Test that redirect chains to private IPs are blocked
 #[test]
 fn test_redirect_chain_to_private_blocked() {
-    // Each URL in a redirect chain is validated individually
-    let private_target = "http://192.168.50.50/internal";
-    let result = validate_proxy_url_static(private_target);
-    assert!(result.is_err(), "Private IP redirect should be blocked");
-}
-
-/// Test self-referential redirect detection
-#[test]
-fn test_self_referential_url_valid() {
-    // A URL pointing to itself is technically valid (server handles it)
-    // The proxy just validates the URL format and SSRF
-    let url = "https://example.com/loop";
-    let result = validate_proxy_url_static(url);
-    assert!(result.is_ok(), "Self-referential URL should be valid");
+    // Each IP in a redirect chain is validated by the DNS resolver
+    let ip: IpAddr = "192.168.50.50".parse().unwrap();
+    assert!(
+        synctv_common::ssrf::is_ip_blocked(&ip),
+        "Private IP redirect should be blocked"
+    );
 }
 
 // ==================================================================
-// SSRF Protection Edge Cases
+// SSRF Protection Edge Cases (DNS-level ACL)
 // ==================================================================
 
-/// Test that encoded IP addresses are still blocked
+/// Test that private IPv4 ranges are blocked
 #[test]
-fn test_encoded_ip_address_blocked() {
-    // 192.168.1.1 encoded as hex/octal should still be blocked
-    // The URL parsing normalizes these, so we test the result
-    let _result = validate_proxy_url_static("http://0xc0.0xa8.0x01.0x01/");
-    // This should be blocked as it resolves to 192.168.1.1
-    // (actual blocking depends on DNS resolution)
-}
-
-/// Test that DNS rebinding attacks are mitigated
-#[test]
-fn test_dns_rebinding_protection() {
-    // A public domain that resolves to private IP should be blocked
-    // This is tested by the async validate_proxy_url function
-    // which performs DNS resolution
-    let public_url = "https://example.com/video.mp4";
-    let result = validate_proxy_url_static(public_url);
-    assert!(result.is_ok(), "Public URL should pass static validation");
+fn test_private_ipv4_ranges_blocked() {
+    let blocked_ips: Vec<IpAddr> = vec![
+        "192.168.1.1".parse().unwrap(),
+        "10.0.0.1".parse().unwrap(),
+        "172.16.0.1".parse().unwrap(),
+        "127.0.0.1".parse().unwrap(),
+        "169.254.169.254".parse().unwrap(),
+    ];
+    for ip in &blocked_ips {
+        assert!(
+            synctv_common::ssrf::is_ip_blocked(ip),
+            "IP {ip} should be blocked by SSRF ACL"
+        );
+    }
 }
 
 /// Test IPv6 address validation
 #[test]
 fn test_ipv6_loopback_blocked() {
-    let result = validate_proxy_url_static("http://[::1]/admin");
-    assert!(result.is_err(), "IPv6 loopback should be blocked");
+    let ip: IpAddr = "::1".parse().unwrap();
+    assert!(
+        synctv_common::ssrf::is_ip_blocked(&ip),
+        "IPv6 loopback should be blocked"
+    );
 }
 
 #[test]
 fn test_ipv6_unspecified_blocked() {
-    let result = validate_proxy_url_static("http://[::]/admin");
-    assert!(result.is_err(), "IPv6 unspecified should be blocked");
+    let ip: IpAddr = "::".parse().unwrap();
+    assert!(
+        synctv_common::ssrf::is_ip_blocked(&ip),
+        "IPv6 unspecified should be blocked"
+    );
 }
 
 #[test]
 fn test_ipv6_link_local_blocked() {
-    let result = validate_proxy_url_static("http://[fe80::1]/admin");
-    assert!(result.is_err(), "IPv6 link-local should be blocked");
+    let ip: IpAddr = "fe80::1".parse().unwrap();
+    assert!(
+        synctv_common::ssrf::is_ip_blocked(&ip),
+        "IPv6 link-local should be blocked"
+    );
 }
 
 #[test]
 fn test_ipv6_unique_local_blocked() {
-    let result = validate_proxy_url_static("http://[fc00::1]/admin");
-    assert!(result.is_err(), "IPv6 unique local should be blocked");
+    let ip: IpAddr = "fc00::1".parse().unwrap();
+    assert!(
+        synctv_common::ssrf::is_ip_blocked(&ip),
+        "IPv6 unique local should be blocked"
+    );
 }
 
 /// Test that IPv4-mapped IPv6 addresses are detected
 #[test]
 fn test_ipv4_mapped_ipv6_private_blocked() {
-    let result = validate_proxy_url_static("http://[::ffff:192.168.1.1]/admin");
+    let ip: IpAddr = "::ffff:192.168.1.1".parse().unwrap();
     assert!(
-        result.is_err(),
+        synctv_common::ssrf::is_ip_blocked(&ip),
         "IPv4-mapped private IPv6 should be blocked"
     );
-}
-
-/// Test URL scheme restrictions
-#[test]
-fn test_file_scheme_blocked() {
-    let result = validate_proxy_url_static("file:///etc/passwd");
-    assert!(result.is_err(), "file:// scheme should be blocked");
-}
-
-#[test]
-fn test_ftp_scheme_blocked() {
-    let result = validate_proxy_url_static("ftp://server/file");
-    assert!(result.is_err(), "ftp:// scheme should be blocked");
-}
-
-#[test]
-fn test_gopher_scheme_blocked() {
-    let result = validate_proxy_url_static("gopher://server/data");
-    assert!(result.is_err(), "gopher:// scheme should be blocked");
 }
 
 /// Test cloud metadata endpoints are blocked
 #[test]
 fn test_aws_metadata_endpoint_blocked() {
-    let result = validate_proxy_url_static("http://169.254.169.254/latest/meta-data/");
-    assert!(result.is_err(), "AWS metadata IP should be blocked");
+    let ip: IpAddr = "169.254.169.254".parse().unwrap();
+    assert!(
+        synctv_common::ssrf::is_ip_blocked(&ip),
+        "AWS metadata IP should be blocked"
+    );
 }
 
+/// Test multicast IP is blocked
 #[test]
-fn test_gcp_metadata_hostname_blocked() {
-    let result = validate_proxy_url_static("http://metadata.google.internal/");
-    assert!(result.is_err(), "GCP metadata hostname should be blocked");
+fn test_multicast_ip_blocked() {
+    let ip: IpAddr = "224.0.0.1".parse().unwrap();
+    assert!(
+        synctv_common::ssrf::is_ip_blocked(&ip),
+        "Multicast IP should be blocked"
+    );
 }
 
+/// Test broadcast IP is blocked
 #[test]
-fn test_azure_metadata_blocked() {
-    // Azure uses 169.254.169.254 as well
-    let result = validate_proxy_url_static("http://169.254.169.254/metadata/instance");
-    assert!(result.is_err(), "Azure metadata IP should be blocked");
+fn test_broadcast_ip_blocked() {
+    let ip: IpAddr = "255.255.255.255".parse().unwrap();
+    assert!(
+        synctv_common::ssrf::is_ip_blocked(&ip),
+        "Broadcast IP should be blocked"
+    );
 }
 
-/// Test Kubernetes internal endpoints are blocked
+/// Test zero IP is blocked
 #[test]
-fn test_kubernetes_api_blocked() {
-    let result = validate_proxy_url_static("http://kubernetes.default/api");
-    assert!(result.is_err(), "kubernetes.default should be blocked");
+fn test_zero_ip_blocked() {
+    let ip: IpAddr = "0.0.0.0".parse().unwrap();
+    assert!(
+        synctv_common::ssrf::is_ip_blocked(&ip),
+        "Zero IP should be blocked"
+    );
 }
 
-/// Test Docker internal endpoints are blocked
+/// Test public IPs are allowed
 #[test]
-fn test_docker_internal_blocked() {
-    let result = validate_proxy_url_static("http://host.docker.internal/api");
-    assert!(result.is_err(), "host.docker.internal should be blocked");
+fn test_public_ips_allowed() {
+    let allowed_ips: Vec<IpAddr> = vec![
+        "1.1.1.1".parse().unwrap(),
+        "8.8.8.8".parse().unwrap(),
+        "93.184.216.34".parse().unwrap(),
+        "2606:4700:4700::1111".parse().unwrap(),
+    ];
+    for ip in &allowed_ips {
+        assert!(
+            !synctv_common::ssrf::is_ip_blocked(ip),
+            "Public IP {ip} should be allowed"
+        );
+    }
 }
 
 // ==================================================================
@@ -375,91 +377,6 @@ fn test_non_retryable_status_404() {
 #[test]
 fn test_non_retryable_status_501() {
     assert!(!is_retryable_status(StatusCode::NOT_IMPLEMENTED));
-}
-
-// ==================================================================
-// URL Validation Edge Cases
-// ==================================================================
-
-/// Test empty URL is rejected
-#[test]
-fn test_empty_url_rejected() {
-    let result = validate_proxy_url_static("");
-    assert!(result.is_err(), "Empty URL should be rejected");
-}
-
-/// Test URL with only scheme is rejected
-#[test]
-fn test_scheme_only_url_rejected() {
-    let result = validate_proxy_url_static("http://");
-    assert!(result.is_err(), "Incomplete URL should be rejected");
-}
-
-/// Test URL with credentials
-#[test]
-fn test_url_with_credentials_validated() {
-    // URL with credentials should still be validated for SSRF
-    let result = validate_proxy_url_static("http://user:pass@192.168.1.1/admin");
-    assert!(
-        result.is_err(),
-        "Private IP with credentials should be blocked"
-    );
-}
-
-/// Test URL with port
-#[test]
-fn test_url_with_custom_port() {
-    let result = validate_proxy_url_static("https://example.com:8443/video.mp4");
-    assert!(
-        result.is_ok(),
-        "Public URL with custom port should be allowed"
-    );
-}
-
-/// Test URL with query parameters
-#[test]
-fn test_url_with_query_params() {
-    let result = validate_proxy_url_static("https://example.com/video.mp4?token=abc123&quality=hd");
-    assert!(result.is_ok(), "URL with query params should be allowed");
-}
-
-/// Test URL with fragment
-#[test]
-fn test_url_with_fragment() {
-    let result = validate_proxy_url_static("https://example.com/page#section");
-    assert!(result.is_ok(), "URL with fragment should be allowed");
-}
-
-/// Test URL with path traversal (still validated for SSRF)
-#[test]
-fn test_url_with_path_traversal() {
-    // Path traversal doesn't bypass IP validation
-    let result = validate_proxy_url_static("http://192.168.1.1/../etc/passwd");
-    assert!(
-        result.is_err(),
-        "Private IP with path traversal should still be blocked"
-    );
-}
-
-/// Test multicast IP is blocked
-#[test]
-fn test_multicast_ip_blocked() {
-    let result = validate_proxy_url_static("http://224.0.0.1/multicast");
-    assert!(result.is_err(), "Multicast IP should be blocked");
-}
-
-/// Test broadcast IP is blocked
-#[test]
-fn test_broadcast_ip_blocked() {
-    let result = validate_proxy_url_static("http://255.255.255.255/broadcast");
-    assert!(result.is_err(), "Broadcast IP should be blocked");
-}
-
-/// Test zero IP is blocked
-#[test]
-fn test_zero_ip_blocked() {
-    let result = validate_proxy_url_static("http://0.0.0.0/admin");
-    assert!(result.is_err(), "Zero IP should be blocked");
 }
 
 // ==================================================================

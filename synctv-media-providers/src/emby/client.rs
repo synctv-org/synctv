@@ -16,7 +16,7 @@ use super::types::{
     PlaybackInfoResponse, SystemInfo, UserInfo,
 };
 use crate::error::with_retry;
-use crate::ssrf::ssrf_safe_dns_resolver;
+use crate::ssrf::ssrf_dns_resolver;
 
 /// URL-encode a string for safe use in query parameters
 fn url_encode(s: &str) -> String {
@@ -46,11 +46,11 @@ fn validate_item_id(id: &str) -> Result<(), EmbyError> {
 
 /// Shared HTTP client for all Emby requests (connection pooling)
 /// Redirects are disabled to prevent SSRF via redirect to private IPs.
-/// Uses `SsrfSafeDnsResolver` to check resolved IPs at connection time,
+/// Uses SSRF-safe DNS resolver to check resolved IPs at connection time,
 /// preventing DNS rebinding attacks.
 static SHARED_CLIENT: LazyLock<Client> = LazyLock::new(|| {
     Client::builder()
-        .dns_resolver(ssrf_safe_dns_resolver())
+        .dns_resolver(ssrf_dns_resolver())
         .connect_timeout(Duration::from_secs(10))
         .timeout(Duration::from_secs(30))
         .pool_max_idle_per_host(10)

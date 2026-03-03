@@ -156,159 +156,95 @@ fn test_max_response_size_value() {
     assert_eq!(MAX_RESPONSE_SIZE, 16_777_216);
 }
 
-// === SSRF Validation Edge Cases ===
+// === SSRF IP Validation Tests ===
 
 mod ssrf_tests {
-    use std::net::{Ipv4Addr, Ipv6Addr};
-    use synctv_media_providers::ssrf::*;
+    use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+    use synctv_common::ssrf::is_ip_blocked;
 
     #[test]
     fn test_blocked_ipv4_172_range_boundary() {
-        // 172.16.0.0 - 172.31.255.255 should be blocked
-        assert!(is_blocked_ipv4(&Ipv4Addr::new(172, 16, 0, 0)));
-        assert!(is_blocked_ipv4(&Ipv4Addr::new(172, 31, 255, 255)));
-        // 172.15.x.x and 172.32.x.x should NOT be blocked
-        assert!(!is_blocked_ipv4(&Ipv4Addr::new(172, 15, 0, 1)));
-        assert!(!is_blocked_ipv4(&Ipv4Addr::new(172, 32, 0, 1)));
+        assert!(is_ip_blocked(&IpAddr::V4(Ipv4Addr::new(172, 16, 0, 0))));
+        assert!(is_ip_blocked(&IpAddr::V4(Ipv4Addr::new(172, 31, 255, 255))));
+        assert!(!is_ip_blocked(&IpAddr::V4(Ipv4Addr::new(172, 15, 0, 1))));
+        assert!(!is_ip_blocked(&IpAddr::V4(Ipv4Addr::new(172, 32, 0, 1))));
     }
 
     #[test]
     fn test_blocked_ipv4_cgnat_boundary() {
-        // CGNAT / Shared Address Space (100.64.0.0/10, RFC 6598) is blocked
-        assert!(is_blocked_ipv4(&Ipv4Addr::new(100, 64, 0, 0)));
-        assert!(is_blocked_ipv4(&Ipv4Addr::new(100, 127, 255, 255)));
-        // Just outside CGNAT range should NOT be blocked
-        assert!(!is_blocked_ipv4(&Ipv4Addr::new(100, 63, 255, 255)));
-        assert!(!is_blocked_ipv4(&Ipv4Addr::new(100, 128, 0, 0)));
+        assert!(is_ip_blocked(&IpAddr::V4(Ipv4Addr::new(100, 64, 0, 0))));
+        assert!(is_ip_blocked(&IpAddr::V4(Ipv4Addr::new(
+            100, 127, 255, 255
+        ))));
+        assert!(!is_ip_blocked(&IpAddr::V4(Ipv4Addr::new(
+            100, 63, 255, 255
+        ))));
+        assert!(!is_ip_blocked(&IpAddr::V4(Ipv4Addr::new(100, 128, 0, 0))));
     }
 
     #[test]
     fn test_blocked_ipv4_multicast_range() {
-        assert!(is_blocked_ipv4(&Ipv4Addr::new(224, 0, 0, 0)));
-        assert!(is_blocked_ipv4(&Ipv4Addr::new(239, 255, 255, 255)));
-        // Just before multicast
-        assert!(!is_blocked_ipv4(&Ipv4Addr::new(223, 255, 255, 255)));
+        assert!(is_ip_blocked(&IpAddr::V4(Ipv4Addr::new(224, 0, 0, 0))));
+        assert!(is_ip_blocked(&IpAddr::V4(Ipv4Addr::new(
+            239, 255, 255, 255
+        ))));
+        assert!(!is_ip_blocked(&IpAddr::V4(Ipv4Addr::new(
+            223, 255, 255, 255
+        ))));
     }
 
     #[test]
     fn test_blocked_ipv4_reserved_range() {
-        assert!(is_blocked_ipv4(&Ipv4Addr::new(240, 0, 0, 0)));
-        assert!(is_blocked_ipv4(&Ipv4Addr::new(250, 1, 2, 3)));
-        assert!(is_blocked_ipv4(&Ipv4Addr::BROADCAST));
+        assert!(is_ip_blocked(&IpAddr::V4(Ipv4Addr::new(240, 0, 0, 0))));
+        assert!(is_ip_blocked(&IpAddr::V4(Ipv4Addr::new(250, 1, 2, 3))));
+        assert!(is_ip_blocked(&IpAddr::V4(Ipv4Addr::BROADCAST)));
     }
 
     #[test]
     fn test_blocked_ipv6_unique_local() {
-        // fc00::/7 - unique local addresses
-        assert!(is_blocked_ipv6(&Ipv6Addr::new(0xfc00, 0, 0, 0, 0, 0, 0, 1)));
-        assert!(is_blocked_ipv6(&Ipv6Addr::new(0xfd00, 0, 0, 0, 0, 0, 0, 1)));
+        assert!(is_ip_blocked(&IpAddr::V6(Ipv6Addr::new(
+            0xfc00, 0, 0, 0, 0, 0, 0, 1
+        ))));
+        assert!(is_ip_blocked(&IpAddr::V6(Ipv6Addr::new(
+            0xfd00, 0, 0, 0, 0, 0, 0, 1
+        ))));
     }
 
     #[test]
     fn test_blocked_ipv6_link_local() {
-        // fe80::/10
-        assert!(is_blocked_ipv6(&Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 1)));
-        assert!(is_blocked_ipv6(&Ipv6Addr::new(0xfebf, 0, 0, 0, 0, 0, 0, 1)));
+        assert!(is_ip_blocked(&IpAddr::V6(Ipv6Addr::new(
+            0xfe80, 0, 0, 0, 0, 0, 0, 1
+        ))));
+        assert!(is_ip_blocked(&IpAddr::V6(Ipv6Addr::new(
+            0xfebf, 0, 0, 0, 0, 0, 0, 1
+        ))));
     }
 
     #[test]
     fn test_blocked_ipv6_multicast() {
-        assert!(is_blocked_ipv6(&Ipv6Addr::new(0xff00, 0, 0, 0, 0, 0, 0, 1)));
-        assert!(is_blocked_ipv6(&Ipv6Addr::new(0xff02, 0, 0, 0, 0, 0, 0, 1)));
+        assert!(is_ip_blocked(&IpAddr::V6(Ipv6Addr::new(
+            0xff00, 0, 0, 0, 0, 0, 0, 1
+        ))));
+        assert!(is_ip_blocked(&IpAddr::V6(Ipv6Addr::new(
+            0xff02, 0, 0, 0, 0, 0, 0, 1
+        ))));
     }
 
     #[test]
     fn test_allowed_ipv6_public() {
-        // 2001:db8:: (documentation range, but not blocked by our rules)
-        assert!(!is_blocked_ipv6(&Ipv6Addr::new(
+        assert!(!is_ip_blocked(&IpAddr::V6(Ipv6Addr::new(
             0x2001, 0xdb8, 0, 0, 0, 0, 0, 1
-        )));
-        // Google DNS IPv6
-        assert!(!is_blocked_ipv6(&Ipv6Addr::new(
+        ))));
+        assert!(!is_ip_blocked(&IpAddr::V6(Ipv6Addr::new(
             0x2001, 0x4860, 0x4860, 0, 0, 0, 0, 0x8888
-        )));
+        ))));
     }
 
     #[test]
-    fn test_is_blocked_ip_dispatches_correctly() {
-        use std::net::IpAddr;
-        assert!(is_blocked_ip(IpAddr::V4(Ipv4Addr::LOCALHOST)));
-        assert!(is_blocked_ip(IpAddr::V6(Ipv6Addr::LOCALHOST)));
-        assert!(!is_blocked_ip(IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8))));
-    }
-
-    #[test]
-    fn test_check_hostname_case_insensitive() {
-        assert!(!check_hostname("LOCALHOST").is_ok());
-        assert!(!check_hostname("Localhost").is_ok());
-        assert!(!check_hostname("lOcAlHoSt").is_ok());
-    }
-
-    #[test]
-    fn test_check_hostname_blocked_prefixes() {
-        assert!(!check_hostname("kubernetes.default.svc").is_ok());
-        assert!(!check_hostname("k8s.cluster.local").is_ok());
-        assert!(!check_hostname("docker.internal").is_ok());
-        assert!(!check_hostname("container.service").is_ok());
-    }
-
-    #[test]
-    fn test_check_hostname_instance_data() {
-        assert!(!check_hostname("instance-data").is_ok());
-    }
-
-    #[test]
-    fn test_check_hostname_metadata_azure() {
-        assert!(!check_hostname("metadata.azure").is_ok());
-    }
-
-    #[test]
-    fn test_check_url_no_hostname() {
-        let result = check_url("http://");
-        assert!(!result.is_ok());
-    }
-
-    #[test]
-    fn test_check_url_file_scheme() {
-        let result = check_url("file:///etc/passwd");
-        assert!(!result.is_ok());
-    }
-
-    #[test]
-    fn test_check_url_javascript_scheme() {
-        let result = check_url("javascript:alert(1)");
-        assert!(!result.is_ok());
-    }
-
-    #[test]
-    fn test_check_url_data_scheme() {
-        let result = check_url("data:text/html,<h1>test</h1>");
-        assert!(!result.is_ok());
-    }
-
-    #[test]
-    fn test_check_url_with_port() {
-        assert!(check_url("https://example.com:8080").is_ok());
-        assert!(!check_url("http://127.0.0.1:9090").is_ok());
-    }
-
-    #[test]
-    fn test_check_url_with_path() {
-        assert!(check_url("https://example.com/api/v1/test").is_ok());
-    }
-
-    #[test]
-    fn test_check_url_with_query() {
-        assert!(check_url("https://example.com/api?key=value").is_ok());
-    }
-
-    #[test]
-    fn test_ssrf_check_result_methods() {
-        let ok = SsrfCheckResult::Ok;
-        assert!(ok.is_ok());
-
-        let blocked = SsrfCheckResult::Blocked("test".to_string());
-        assert!(!blocked.is_ok());
+    fn test_is_ip_blocked_dispatches_correctly() {
+        assert!(is_ip_blocked(&IpAddr::V4(Ipv4Addr::LOCALHOST)));
+        assert!(is_ip_blocked(&IpAddr::V6(Ipv6Addr::LOCALHOST)));
+        assert!(!is_ip_blocked(&IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8))));
     }
 }
 

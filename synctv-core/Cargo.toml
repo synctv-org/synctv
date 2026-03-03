@@ -9,6 +9,7 @@ license.workspace = true
 # Internal
 synctv-proto.workspace = true
 synctv-media-providers.workspace = true
+synctv-common.workspace = true
 
 # Async
 tokio.workspace = true

@@ -5521,6 +5521,7 @@ dependencies = [
  "http-acl-reqwest",
  "ipnet",
  "reqwest 0.13.2",
+ "tracing",
 ]
 
 [[package]]
@@ -5575,6 +5576,7 @@ dependencies = [
  "sha1",
  "sha2",
  "sqlx",
+ "synctv-common",
  "synctv-core-testing",
  "synctv-media-providers",
  "synctv-proto",

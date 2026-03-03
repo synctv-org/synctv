@@ -22,12 +22,6 @@ const MAX_PROXY_BODY_SIZE: usize = 256 * 1024 * 1024;
 /// Maximum response body size for M3U8/MPD manifests (10 MB).
 const MAX_MANIFEST_SIZE: usize = 10 * 1024 * 1024;
 
-/// Connection timeout for outbound proxy requests.
-const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
-
-/// Overall request timeout for outbound proxy requests.
-const REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
-
 /// Check if an HTTP status code is retryable.
 ///
 /// Only specific 5xx errors that indicate transient issues should be retried:
@@ -85,22 +79,8 @@ const MAX_REDIRECTS: usize = 10;
 /// resolved IP at TCP-connect time against the ACL blocklist. This prevents DNS
 /// rebinding attacks where a hostname resolves to a public IP during pre-request
 /// validation but rebinds to a private IP by connection time.
-static PROXY_CLIENT: LazyLock<reqwest::Client> = LazyLock::new(|| {
-    reqwest::Client::builder()
-        .dns_resolver(synctv_common::ssrf::ssrf_dns_resolver())
-        .connect_timeout(CONNECT_TIMEOUT)
-        .timeout(REQUEST_TIMEOUT)
-        .read_timeout(BODY_READ_TIMEOUT)
-        .redirect(reqwest::redirect::Policy::none())
-        .pool_max_idle_per_host(100) // Increased from 20 to support high concurrency
-        .pool_idle_timeout(Duration::from_secs(30))
-        .build()
-        .unwrap_or_else(|e| {
-            // Log the error before panicking for better debugging
-            tracing::error!("Failed to build shared proxy HTTP client: {}", e);
-            panic!("Failed to build shared proxy HTTP client: {e}")
-        })
-});
+static PROXY_CLIENT: LazyLock<reqwest::Client> =
+    LazyLock::new(synctv_common::http::build_proxy_client);
 
 /// Configuration for a single proxy fetch.
 pub struct ProxyConfig<'a> {

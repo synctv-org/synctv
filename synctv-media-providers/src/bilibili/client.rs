@@ -19,7 +19,6 @@ use tokio_tungstenite::{connect_async, tungstenite::Message};
 use super::error::{check_response, json_with_limit, BilibiliError};
 use super::types::{self as types, AnimeInfo, DurlItem, PlayUrlInfo, Quality, VideoInfo};
 use crate::error::with_retry;
-use crate::ssrf::ssrf_dns_resolver;
 
 // Pre-compiled regexes using std::sync::LazyLock (no external crate needed).
 // These patterns are compile-time constants; Regex::new cannot fail on them.
@@ -35,20 +34,12 @@ static RE_LIVE_ROOM: LazyLock<Regex> =
 use crate::error::PROVIDER_USER_AGENT as USER_AGENT;
 const REFERER: &str = "https://www.bilibili.com";
 
-/// Shared HTTP client for all Bilibili requests (connection pooling)
-/// Redirects are disabled to prevent SSRF via redirect to private IPs.
-/// Uses SSRF-safe DNS resolver to check resolved IPs at connection time,
-/// preventing DNS rebinding attacks.
+/// Shared HTTP client for all Bilibili requests (connection pooling).
+/// SSRF-safe: uses the common DNS resolver and disables redirects.
 static SHARED_CLIENT: LazyLock<Client> = LazyLock::new(|| {
-    Client::builder()
+    synctv_common::http::SsrfSafeClientBuilder::provider()
         .user_agent(USER_AGENT)
-        .dns_resolver(ssrf_dns_resolver())
-        .connect_timeout(Duration::from_secs(10))
-        .timeout(Duration::from_secs(30))
-        .pool_max_idle_per_host(10)
-        .redirect(reqwest::redirect::Policy::none())
         .build()
-        .expect("Failed to build Bilibili shared HTTP client")
 });
 
 // ============================================================================

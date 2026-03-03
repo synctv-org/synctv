@@ -10,6 +10,7 @@ http-acl.workspace = true
 http-acl-reqwest.workspace = true
 ipnet.workspace = true
 reqwest.workspace = true
+tracing.workspace = true
 
 [lints]
 workspace = true

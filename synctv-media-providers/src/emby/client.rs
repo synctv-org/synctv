@@ -2,7 +2,6 @@
 
 use std::fmt::Write;
 use std::sync::LazyLock;
-use std::time::Duration;
 
 use reqwest::{
     header::{HeaderMap, HeaderValue, CONTENT_TYPE},
@@ -16,7 +15,6 @@ use super::types::{
     PlaybackInfoResponse, SystemInfo, UserInfo,
 };
 use crate::error::with_retry;
-use crate::ssrf::ssrf_dns_resolver;
 
 /// URL-encode a string for safe use in query parameters
 fn url_encode(s: &str) -> String {
@@ -44,20 +42,9 @@ fn validate_item_id(id: &str) -> Result<(), EmbyError> {
     Ok(())
 }
 
-/// Shared HTTP client for all Emby requests (connection pooling)
-/// Redirects are disabled to prevent SSRF via redirect to private IPs.
-/// Uses SSRF-safe DNS resolver to check resolved IPs at connection time,
-/// preventing DNS rebinding attacks.
-static SHARED_CLIENT: LazyLock<Client> = LazyLock::new(|| {
-    Client::builder()
-        .dns_resolver(ssrf_dns_resolver())
-        .connect_timeout(Duration::from_secs(10))
-        .timeout(Duration::from_secs(30))
-        .pool_max_idle_per_host(10)
-        .redirect(reqwest::redirect::Policy::none())
-        .build()
-        .expect("Failed to build Emby shared HTTP client")
-});
+/// Shared HTTP client for all Emby requests (connection pooling).
+/// SSRF-safe: uses the common DNS resolver and disables redirects.
+static SHARED_CLIENT: LazyLock<Client> = LazyLock::new(synctv_common::http::build_provider_client);
 
 const X_EMBY_TOKEN: &str = "X-Emby-Token";
 

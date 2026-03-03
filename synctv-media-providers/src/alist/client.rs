@@ -3,7 +3,6 @@
 //! Pure HTTP client for Alist API, no dependency on `MediaProvider`
 
 use std::sync::LazyLock;
-use std::time::Duration;
 
 use reqwest::{
     header::{HeaderMap, HeaderValue, AUTHORIZATION, CONTENT_TYPE, ORIGIN, REFERER, USER_AGENT},
@@ -17,101 +16,16 @@ use super::types::{
     LoginData,
 };
 use crate::error::with_retry;
-use crate::ssrf::ssrf_dns_resolver;
 
-/// Validate that a path does not contain traversal components (`..` or `.`).
-/// Rejects paths that attempt directory traversal to escape the intended root.
-///
-/// Defends against:
-/// - Simple `..` traversal
-/// - URL-encoded traversal (`%2e%2e`, `%2f`)
-/// - Double/multi-layer URL encoding (`%252e%252e` -> `%2e%2e` -> `..`)
-/// - Mixed-case encoding (`%2E`, `%2F`)
-/// - Backslash variants (`\`, `%5c`, `%5C`)
-/// - Null bytes (`%00`, literal `\0`)
+/// Validate that a path does not contain traversal components.
 fn validate_path(path: &str) -> Result<(), AlistError> {
-    // Reject null bytes (literal or encoded) immediately
-    if path.contains('\0') || path.contains("%00") {
-        return Err(AlistError::InvalidConfig(
-            "Path contains null bytes".to_string(),
-        ));
-    }
-
-    // Recursively URL-decode until the value stabilizes.
-    // This catches double encoding (%252e -> %2e -> .) and deeper layers.
-    let mut decoded = path.to_string();
-    for _ in 0..10 {
-        let next = percent_decode_path(&decoded);
-        if next == decoded {
-            break;
-        }
-        // Check for null bytes introduced by decoding
-        if next.contains('\0') {
-            return Err(AlistError::InvalidConfig(
-                "Path contains null bytes (encoded)".to_string(),
-            ));
-        }
-        decoded = next;
-    }
-
-    // Normalize backslashes to forward slashes
-    let normalized = decoded.replace('\\', "/");
-
-    // Check for directory traversal components
-    for component in normalized.split('/') {
-        if component == ".." || component == "." {
-            return Err(AlistError::InvalidConfig(format!(
-                "Path traversal detected: '{component}' components are not allowed"
-            )));
-        }
-    }
-    Ok(())
+    synctv_common::validation::validate_path_for_traversal(path)
+        .map_err(|e| AlistError::InvalidConfig(format!("Path traversal detected: {}", e.reason)))
 }
 
-/// Percent-decode a path string in a single pass.
-/// Handles `%XX` hex sequences (case-insensitive).
-fn percent_decode_path(input: &str) -> String {
-    let bytes = input.as_bytes();
-    let mut result = Vec::with_capacity(bytes.len());
-    let mut i = 0;
-    while i < bytes.len() {
-        if bytes[i] == b'%' && i + 2 < bytes.len() {
-            if let (Some(hi), Some(lo)) = (hex_val(bytes[i + 1]), hex_val(bytes[i + 2])) {
-                result.push(hi << 4 | lo);
-                i += 3;
-                continue;
-            }
-        }
-        result.push(bytes[i]);
-        i += 1;
-    }
-    String::from_utf8_lossy(&result).into_owned()
-}
-
-/// Convert an ASCII hex character to its numeric value (0-15), case-insensitive.
-const fn hex_val(b: u8) -> Option<u8> {
-    match b {
-        b'0'..=b'9' => Some(b - b'0'),
-        b'a'..=b'f' => Some(b - b'a' + 10),
-        b'A'..=b'F' => Some(b - b'A' + 10),
-        _ => None,
-    }
-}
-
-/// Shared HTTP client for all Alist requests (connection pooling)
-/// Redirects are disabled to prevent SSRF via redirect to private IPs.
-/// Uses SSRF-safe DNS resolver to check resolved IPs at connection time,
-/// preventing DNS rebinding attacks.
-static SHARED_CLIENT: LazyLock<Client> = LazyLock::new(|| {
-    Client::builder()
-        .dns_resolver(ssrf_dns_resolver())
-        .connect_timeout(Duration::from_secs(10))
-        .timeout(Duration::from_secs(30))
-        .pool_max_idle_per_host(10)
-        .redirect(reqwest::redirect::Policy::none())
-        .build()
-        .expect("Failed to build Alist shared HTTP client")
-});
+/// Shared HTTP client for all Alist requests (connection pooling).
+/// SSRF-safe: uses the common DNS resolver and disables redirects.
+static SHARED_CLIENT: LazyLock<Client> = LazyLock::new(synctv_common::http::build_provider_client);
 
 /// Alist HTTP Client
 ///

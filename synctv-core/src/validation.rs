@@ -533,95 +533,12 @@ impl Default for Validator {
 /// assert!(validate_path_for_traversal("%2e%2e/secret").is_err());
 /// ```
 pub fn validate_path_for_traversal(path: &str) -> Result<(), ValidationError> {
-    // Check 1: Literal .. (most basic)
-    if path.contains("..") {
-        return Err(ValidationError::Field {
+    synctv_common::validation::validate_path_for_traversal(path).map_err(|e| {
+        ValidationError::Field {
             field: "path".to_string(),
-            message: "must not contain '..' for path traversal".to_string(),
-        });
-    }
-
-    // Check 2: Null bytes
-    if path.contains('\0') {
-        return Err(ValidationError::Field {
-            field: "path".to_string(),
-            message: "must not contain null bytes".to_string(),
-        });
-    }
-
-    // Check 3: Backslash traversal (Windows-style)
-    if path.contains("..\\") || path.contains("\\..") {
-        return Err(ValidationError::Field {
-            field: "path".to_string(),
-            message: "must not contain backslash path traversal".to_string(),
-        });
-    }
-
-    // Check 4: Mixed traversal (e.g., "./../")
-    if path.contains("./.") {
-        return Err(ValidationError::Field {
-            field: "path".to_string(),
-            message: "must not contain mixed dot sequences".to_string(),
-        });
-    }
-
-    // Check 5: URL-encoded variants and complex attacks
-    // We need to check for:
-    // - %2e%2e or %2E%2E (single-encoded ..)
-    // - %252e%252e (double-encoded ..)
-    // - .%2e or %2e. (partial encoding)
-    // - Any % followed by hex that decodes to .
-    //
-    // Strategy: Reject any path containing %2e or %2E (URL-encoded dot)
-    // as it's too complex to correctly validate all encoding combinations.
-    // Legitimate paths don't need URL-encoded dots.
-    let bytes = path.as_bytes();
-    let mut i = 0;
-
-    while i < bytes.len() {
-        if bytes[i] == b'%' && i + 2 < bytes.len() {
-            let hex = &path[i + 1..i + 3];
-            if let Ok(byte_val) = u8::from_str_radix(hex, 16) {
-                // Check if this decodes to a dot (0x2E)
-                if byte_val == 0x2E {
-                    return Err(ValidationError::Field {
-                        field: "path".to_string(),
-                        message: "must not contain URL-encoded dot character".to_string(),
-                    });
-                }
-
-                // Check for double-encoded dot: %252e / %252E
-                // %25 decodes to %, so %252e -> %2e -> .
-                if byte_val == 0x25 && i + 4 < bytes.len() {
-                    let inner_hex = &path[i + 3..i + 5];
-                    if let Ok(inner_val) = u8::from_str_radix(inner_hex, 16) {
-                        if inner_val == 0x2E {
-                            return Err(ValidationError::Field {
-                                field: "path".to_string(),
-                                message: "must not contain double-encoded dot character"
-                                    .to_string(),
-                            });
-                        }
-                    }
-                }
-
-                // Also check for encoded / or \ after a dot
-                if byte_val == 0x2F || byte_val == 0x5C {
-                    // Check if we had .. before this
-                    if i >= 2 && bytes[i - 2] == b'.' && bytes[i - 1] == b'.' {
-                        return Err(ValidationError::Field {
-                            field: "path".to_string(),
-                            message: "must not contain '..' followed by encoded separator"
-                                .to_string(),
-                        });
-                    }
-                }
-            }
+            message: e.reason,
         }
-        i += 1;
-    }
-
-    Ok(())
+    })
 }
 
 #[cfg(test)]

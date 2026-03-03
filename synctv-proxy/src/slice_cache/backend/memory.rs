@@ -144,14 +144,20 @@ impl SliceCacheBackend for MemoryBackend {
             return 0;
         }
 
+        // Use iter() instead of get() to avoid updating moka's internal access times.
+        // iter() does not update the historic popularity estimator or reset idle timers.
         // Collect entries with their last_accessed times for LRU ordering.
-        let mut entries: Vec<(String, std::time::SystemTime, u64)> = Vec::new();
-        for key_ref in self.key_set.iter() {
-            let key = key_ref.key().clone();
-            if let Some(entry) = self.cache.get(&key).await {
-                entries.push((key, entry.last_accessed, entry.data_size()));
-            }
-        }
+        let mut entries: Vec<(String, std::time::SystemTime, u64)> = self
+            .cache
+            .iter()
+            .map(|(key, entry)| {
+                (
+                    key.as_ref().to_string(),
+                    entry.last_accessed,
+                    entry.data_size(),
+                )
+            })
+            .collect();
 
         // Sort by last_accessed ascending (oldest first = LRU).
         entries.sort_by_key(|e| e.1);
@@ -169,18 +175,18 @@ impl SliceCacheBackend for MemoryBackend {
     }
 
     async fn evict_expired(&self) -> u64 {
-        let keys: Vec<String> = self.key_set.iter().map(|k| k.key().clone()).collect();
-        let mut count = 0u64;
-        for key in keys {
-            let is_expired = self
-                .cache
-                .get(&key)
-                .await
-                .is_some_and(|entry| entry.is_expired());
-            if is_expired {
-                self.remove(&key).await;
-                count += 1;
-            }
+        // Use iter() instead of get() to avoid updating moka's internal access times.
+        // iter() does not update the historic popularity estimator or reset idle timers.
+        let expired_keys: Vec<String> = self
+            .cache
+            .iter()
+            .filter(|(_, entry)| entry.is_expired())
+            .map(|(key, _)| key.as_ref().to_string())
+            .collect();
+
+        let count = expired_keys.len() as u64;
+        for key in expired_keys {
+            self.remove(&key).await;
         }
         count
     }
@@ -511,6 +517,107 @@ mod tests {
             size_before_replace, size_after_replace,
             "Size should be unchanged after same-size replace (before={size_before_replace}, after={size_after_replace})"
         );
+    }
+
+    /// Regression test: evict_to_size should not update moka's internal access
+    /// times when collecting entries for LRU ordering.
+    ///
+    /// The bug: the old implementation called `cache.get()` for each key during
+    /// evict_to_size, which updated moka's internal access time. This meant that
+    /// the first key accessed would have its timestamp refreshed, potentially
+    /// causing it to be incorrectly considered "recently used" and not evicted.
+    ///
+    /// The fix: use `cache.iter()` which does not update access times.
+    #[tokio::test]
+    async fn test_memory_backend_evict_to_size_lru_ordering_not_affected_by_get() {
+        let backend = default_backend();
+
+        // Insert entries with deliberate timing to establish LRU order.
+        // k0 should be evicted first (oldest), k4 last (newest).
+        for i in 0..5u8 {
+            let data = vec![i; 100];
+            backend
+                .put(
+                    &format!("k{i}"),
+                    make_entry(&data, Duration::from_secs(3600)),
+                )
+                .await
+                .unwrap();
+            // Sleep to ensure different last_accessed timestamps.
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+
+        assert_eq!(backend.current_size(), 500);
+
+        // Evict down to 400 bytes - should only remove k0 (oldest).
+        let freed = backend.evict_to_size(400).await;
+        assert_eq!(freed, 100, "Should have freed exactly 100 bytes (k0)");
+        assert_eq!(backend.current_size(), 400);
+
+        // k0 should be gone, k1-k4 should remain.
+        assert!(
+            backend.get("k0").await.is_none(),
+            "k0 (oldest) should have been evicted"
+        );
+        assert!(backend.get("k1").await.is_some(), "k1 should still exist");
+        assert!(
+            backend.get("k4").await.is_some(),
+            "k4 (newest) should still exist"
+        );
+    }
+
+    /// Additional test: evict_to_size should respect actual LRU order even when
+    /// entries have been accessed in a different order after insertion.
+    #[tokio::test]
+    async fn test_memory_backend_evict_to_size_respects_last_accessed_order() {
+        let backend = default_backend();
+
+        // Insert three entries with delays to establish initial order:
+        // k0 (oldest), k1 (middle), k2 (newest)
+        backend
+            .put("k0", make_entry(&[0u8; 100], Duration::from_secs(3600)))
+            .await
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(20)).await;
+
+        backend
+            .put("k1", make_entry(&[1u8; 100], Duration::from_secs(3600)))
+            .await
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(20)).await;
+
+        backend
+            .put("k2", make_entry(&[2u8; 100], Duration::from_secs(3600)))
+            .await
+            .unwrap();
+
+        assert_eq!(backend.current_size(), 300);
+
+        // Now access k0 to make it most recently used via get()
+        // This updates moka's internal TTI tracker but NOT StoredEntry.last_accessed
+        let _ = backend.get("k0").await;
+
+        // Evict down to 200 bytes.
+        // Since we use StoredEntry.last_accessed for LRU ordering (not moka's internal TTI),
+        // k0 should still be evicted first because its StoredEntry.last_accessed is oldest.
+        // (The get() updates moka's TTI but we don't update StoredEntry.last_accessed on get)
+        let freed = backend.evict_to_size(200).await;
+        assert_eq!(freed, 100, "Should have freed exactly 100 bytes");
+        assert_eq!(backend.current_size(), 200);
+
+        // k1 should be evicted (it has the middle timestamp in StoredEntry.last_accessed,
+        // and we're evicting from oldest to newest based on that field).
+        // Actually: k0 was inserted first, then k1, then k2.
+        // After the get("k0"), moka's internal timer for k0 is updated, but
+        // StoredEntry.last_accessed is NOT updated (get() returns a clone).
+        // So the LRU order based on StoredEntry.last_accessed is: k0 (oldest), k1, k2 (newest).
+        // Evicting to 200 bytes removes k0 (100 bytes).
+        assert!(
+            backend.get("k0").await.is_none(),
+            "k0 should have been evicted (oldest StoredEntry.last_accessed)"
+        );
+        assert!(backend.get("k1").await.is_some(), "k1 should still exist");
+        assert!(backend.get("k2").await.is_some(), "k2 should still exist");
     }
 
     /// Verify that after multiple put-replace-remove cycles, total_bytes

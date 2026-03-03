@@ -115,6 +115,8 @@ impl MockShutdownHook {
         }
     }
 
+    #[allow(dead_code)]
+    #[allow(dead_code)]
     fn was_run(&self) -> bool {
         self.ran.load(std::sync::atomic::Ordering::SeqCst)
     }

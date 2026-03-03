@@ -12,6 +12,7 @@
 
 use crate::relay::registry_trait::StreamRegistryTrait;
 use async_trait::async_trait;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use synctv_core::service::PublishKeyService;
 use synctv_xiu::rtmp::auth::{AuthCallback, AuthPublishRewrite};
@@ -112,6 +113,10 @@ pub struct RtmpAuthCallbackImpl {
     node_id: String,
     /// Advertised gRPC address for cross-node proxying.
     grpc_address: String,
+    /// Optional flag to check if StreamHub is restarting.
+    /// When set and true, new publications are rejected to prevent race conditions
+    /// during the restart window.
+    is_restarting: Option<Arc<AtomicBool>>,
 }
 
 impl RtmpAuthCallbackImpl {
@@ -123,6 +128,7 @@ impl RtmpAuthCallbackImpl {
             registry: None,
             node_id: String::new(),
             grpc_address: String::new(),
+            is_restarting: None,
         }
     }
 
@@ -138,6 +144,7 @@ impl RtmpAuthCallbackImpl {
             registry: None,
             node_id: String::new(),
             grpc_address: String::new(),
+            is_restarting: None,
         }
     }
 
@@ -156,6 +163,15 @@ impl RtmpAuthCallbackImpl {
         self.grpc_address = grpc_address;
         self
     }
+
+    /// Set the is_restarting flag to reject publications during StreamHub restart.
+    /// This prevents race conditions where new publications arrive during the
+    /// cleanup -> re-registration window.
+    #[must_use]
+    pub fn with_restarting_flag(mut self, is_restarting: Arc<AtomicBool>) -> Self {
+        self.is_restarting = Some(is_restarting);
+        self
+    }
 }
 
 #[async_trait]
@@ -166,6 +182,18 @@ impl AuthCallback for RtmpAuthCallbackImpl {
         stream_name: &str,
         query: Option<&str>,
     ) -> Result<Option<AuthPublishRewrite>, Box<dyn std::error::Error + Send + Sync>> {
+        // Check if StreamHub is restarting - reject new publications during restart
+        // to prevent race conditions in the cleanup -> re-registration window.
+        if let Some(ref is_restarting) = self.is_restarting {
+            if is_restarting.load(Ordering::Acquire) {
+                warn!(
+                    room_id = %app_name,
+                    "RTMP publish rejected: StreamHub is restarting"
+                );
+                return Err("StreamHub is restarting, please retry in a few seconds".into());
+            }
+        }
+
         // Redact potential JWT tokens from log output for security
         let redacted_stream_name = redact_jwt_token(stream_name);
         let redacted_query = query.map(|q| {

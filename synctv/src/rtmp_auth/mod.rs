@@ -157,7 +157,7 @@ impl AuthCallback for SyncTvRtmpAuth {
         }))
     }
 
-    /// RTMP pull (play) authorization based on room settings.
+    /// RTMP pull (play) authorization based on room settings and status.
     ///
     /// By default, RTMP play is disabled (`rtmp_player` = false) because:
     /// - RTMP has no authentication mechanism
@@ -165,43 +165,17 @@ impl AuthCallback for SyncTvRtmpAuth {
     ///
     /// Room admins can enable RTMP play by setting `rtmp_player = true` if they understand
     /// the security implications (anyone with the RTMP URL can watch).
+    ///
+    /// This method also validates:
+    /// - Room is not banned
+    /// - Room status is not Pending or Closed
     async fn on_play(
         &self,
         app_name: &str,
         _stream_name: &str,
         _query: Option<&str>,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        // Check room settings for RTMP player
-        let room_id = synctv_core::models::RoomId::from_string(app_name.to_string());
-
-        match self.room_service.get_room_settings(&room_id).await {
-            Ok(settings) => {
-                if !settings.rtmp_player.0 {
-                    tracing::warn!(
-                        room_id = %app_name,
-                        "RTMP play rejected: rtmp_player is disabled in room settings"
-                    );
-                    return Err(
-                        format!("RTMP play rejected for room {app_name}: rtmp_player is disabled in room settings. Use HTTP-FLV or HLS.").into()
-                    );
-                }
-                // RTMP player is enabled - allow the connection
-                tracing::info!(
-                    room_id = %app_name,
-                    "RTMP play allowed: rtmp_player is enabled in room settings"
-                );
-                Ok(())
-            }
-            Err(e) => {
-                // If we can't load settings, default to rejecting for safety
-                tracing::warn!(
-                    room_id = %app_name,
-                    error = %e,
-                    "RTMP play rejected: failed to load room settings, defaulting to disabled"
-                );
-                Err(format!("RTMP play rejected: failed to load room settings: {e}").into())
-            }
-        }
+        self.validate_play_request(app_name).await
     }
 
     async fn on_unplay(&self, app_name: &str, _stream_name: &str, _query: Option<&str>) {
@@ -464,6 +438,75 @@ impl SyncTvRtmpAuth {
             user_id: claims.user_id,
             auth_level,
         })
+    }
+
+    /// Validate room status and settings for RTMP play requests.
+    ///
+    /// Checks:
+    /// - Room exists
+    /// - Room is not banned
+    /// - Room status is not Pending or Closed
+    /// - Room has rtmp_player enabled in settings
+    pub async fn validate_play_request(
+        &self,
+        app_name: &str,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let room_id = synctv_core::models::RoomId::from_string(app_name.to_string());
+
+        // Validate room exists and check status
+        let room = self
+            .room_service
+            .get_room(&room_id)
+            .await
+            .map_err(|e| format!("Failed to load room: {e}"))?;
+
+        if room.is_banned {
+            tracing::warn!(
+                room_id = %app_name,
+                "RTMP play rejected: room is banned"
+            );
+            return Err(format!("Room {app_name} is banned").into());
+        }
+
+        if room.status == RoomStatus::Pending {
+            tracing::warn!(
+                room_id = %app_name,
+                "RTMP play rejected: room is pending approval"
+            );
+            return Err(format!("Room {app_name} is pending, need admin approval").into());
+        }
+
+        if room.status == RoomStatus::Closed {
+            tracing::warn!(
+                room_id = %app_name,
+                "RTMP play rejected: room is closed"
+            );
+            return Err(format!("Room {app_name} is closed").into());
+        }
+
+        // Check room settings for RTMP player
+        let settings = self
+            .room_service
+            .get_room_settings(&room_id)
+            .await
+            .map_err(|e| format!("Failed to load room settings: {e}"))?;
+
+        if !settings.rtmp_player.0 {
+            tracing::warn!(
+                room_id = %app_name,
+                "RTMP play rejected: rtmp_player is disabled in room settings"
+            );
+            return Err(
+                format!("RTMP play rejected for room {app_name}: rtmp_player is disabled in room settings. Use HTTP-FLV or HLS.").into()
+            );
+        }
+
+        // All checks passed - allow the connection
+        tracing::info!(
+            room_id = %app_name,
+            "RTMP play allowed: room is active and rtmp_player is enabled"
+        );
+        Ok(())
     }
 
     /// Check that the user has permission to publish to this room/media.

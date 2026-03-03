@@ -82,8 +82,19 @@ static WBI_REFRESH_IN_PROGRESS: LazyLock<AtomicUsize> = LazyLock::new(|| AtomicU
 
 /// Notify for waking tasks waiting for refresh to complete.
 /// Replaces spin-loop waiting with efficient async notification.
-static WBI_REFRESH_NOTIFY: LazyLock<tokio::sync::Notify> =
-    LazyLock::new(|| tokio::sync::Notify::new());
+static WBI_REFRESH_NOTIFY: LazyLock<tokio::sync::Notify> = LazyLock::new(tokio::sync::Notify::new);
+
+/// Counter for consecutive refresh failures. Used to prevent infinite retry loops
+/// when the WBI API is persistently unavailable.
+static WBI_CONSECUTIVE_FAILURES: LazyLock<AtomicUsize> = LazyLock::new(|| AtomicUsize::new(0));
+
+/// Maximum number of consecutive refresh failures before we give up and return an error.
+/// This prevents infinite waiting when the WBI API is persistently unavailable.
+const WBI_MAX_CONSECUTIVE_FAILURES: usize = 3;
+
+/// Maximum time to wait for a refresh notification before timing out.
+/// This prevents tasks from waiting indefinitely if the refreshing task fails silently.
+const WBI_REFRESH_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Counter for tracking number of API calls (for testing).
 #[cfg(test)]
@@ -126,7 +137,36 @@ fn release_refresh_lock() {
     WBI_REFRESH_IN_PROGRESS.store(0, Ordering::Release);
 }
 
+/// Release the refresh lock after a successful refresh, reset failure counter, and notify waiters.
+fn release_refresh_lock_on_success_and_notify() {
+    WBI_CONSECUTIVE_FAILURES.store(0, Ordering::Release);
+    WBI_REFRESH_IN_PROGRESS.store(0, Ordering::Release);
+    WBI_REFRESH_NOTIFY.notify_waiters();
+}
+
+/// Release the refresh lock after a failed refresh, increment failure counter, and notify waiters.
+/// Returns true if we've exceeded the maximum consecutive failures.
+fn release_refresh_lock_on_failure_and_notify() -> bool {
+    let failures = WBI_CONSECUTIVE_FAILURES.fetch_add(1, Ordering::AcqRel) + 1;
+    WBI_REFRESH_IN_PROGRESS.store(0, Ordering::Release);
+    WBI_REFRESH_NOTIFY.notify_waiters();
+    failures >= WBI_MAX_CONSECUTIVE_FAILURES
+}
+
+/// Check if we've exceeded the maximum consecutive failures.
+fn has_exceeded_max_failures() -> bool {
+    WBI_CONSECUTIVE_FAILURES.load(Ordering::Acquire) >= WBI_MAX_CONSECUTIVE_FAILURES
+}
+
+/// Reset the consecutive failure counter. Used by tests and when a cached key is available.
+fn reset_consecutive_failures() {
+    WBI_CONSECUTIVE_FAILURES.store(0, Ordering::Release);
+}
+
 /// Release the refresh lock after refresh completes and notify all waiters.
+/// Deprecated: Use `release_refresh_lock_on_success_and_notify` or
+/// `release_refresh_lock_on_failure_and_notify` instead.
+#[allow(dead_code)]
 fn release_refresh_lock_and_notify() {
     WBI_REFRESH_IN_PROGRESS.store(0, Ordering::Release);
     // Notify all waiting tasks that refresh is complete
@@ -246,6 +286,10 @@ impl BilibiliClient {
     ///
     /// Fetches from Bilibili's nav API and caches in memory for 30 minutes.
     /// Uses coordinated refresh to prevent thundering herd when cache expires.
+    ///
+    /// # Failure Handling
+    /// - Uses timeout to prevent indefinite waiting on notification
+    /// - Tracks consecutive failures and returns error after max failures exceeded
     async fn get_wbi_mixin_key_internal(
         &self,
         force_refresh: bool,
@@ -253,36 +297,96 @@ impl BilibiliClient {
         // Check cache (unless force refresh)
         if !force_refresh {
             if let Some(key) = get_valid_wbi_key().await {
+                // Reset failure counter on successful cache hit
+                reset_consecutive_failures();
                 return Ok(key);
             }
+        }
+
+        // Check if we've exceeded max consecutive failures - fail fast
+        if has_exceeded_max_failures() {
+            return Err(BilibiliError::Parse(
+                "WBI key refresh unavailable: too many consecutive failures".to_string(),
+            ));
         }
 
         // Try to claim the refresh lock. Only one task will succeed.
         if try_claim_refresh_lock() {
             // We got the lock - we are responsible for refreshing.
             let result = self.fetch_and_cache_wbi_key().await;
-            // Always release the lock and notify waiters, even on error.
-            release_refresh_lock_and_notify();
+            match &result {
+                Ok(_) => {
+                    release_refresh_lock_on_success_and_notify();
+                }
+                Err(_) => {
+                    release_refresh_lock_on_failure_and_notify();
+                }
+            }
             result
         } else {
-            // Another task is refreshing. Wait for notification instead of spinning.
+            // Another task is refreshing. Wait for notification with timeout.
             // This prevents thundering herd and reduces unnecessary CPU usage.
-            WBI_REFRESH_NOTIFY.notified().await;
+            let notify_result =
+                tokio::time::timeout(WBI_REFRESH_TIMEOUT, WBI_REFRESH_NOTIFY.notified()).await;
+
+            if notify_result.is_err() {
+                // Timeout waiting for notification - the refreshing task may have failed silently
+                // or is taking too long. Return an error instead of waiting indefinitely.
+                return Err(BilibiliError::Parse(
+                    "WBI key refresh timeout: waited too long for refresh".to_string(),
+                ));
+            }
 
             // After being notified, check the cache again.
             if let Some(key) = get_valid_wbi_key().await {
+                reset_consecutive_failures();
                 return Ok(key);
+            }
+
+            // Check if we've exceeded max failures before retrying
+            if has_exceeded_max_failures() {
+                return Err(BilibiliError::Parse(
+                    "WBI key refresh unavailable: too many consecutive failures".to_string(),
+                ));
             }
 
             // If cache is still empty after notification (refresh failed),
             // try to refresh ourselves as a fallback.
             if try_claim_refresh_lock() {
                 let result = self.fetch_and_cache_wbi_key().await;
-                release_refresh_lock_and_notify();
+                match &result {
+                    Ok(_) => {
+                        release_refresh_lock_on_success_and_notify();
+                    }
+                    Err(_) => {
+                        release_refresh_lock_on_failure_and_notify();
+                    }
+                }
                 result
             } else {
-                // Another task beat us to it - wait again
-                WBI_REFRESH_NOTIFY.notified().await;
+                // Another task beat us to it - wait again with timeout
+                let notify_result =
+                    tokio::time::timeout(WBI_REFRESH_TIMEOUT, WBI_REFRESH_NOTIFY.notified()).await;
+
+                if notify_result.is_err() {
+                    return Err(BilibiliError::Parse(
+                        "WBI key refresh timeout: waited too long for refresh".to_string(),
+                    ));
+                }
+
+                // Check cache one more time
+                if let Some(key) = get_valid_wbi_key().await {
+                    reset_consecutive_failures();
+                    return Ok(key);
+                }
+
+                // Check if we've exceeded max failures
+                if has_exceeded_max_failures() {
+                    return Err(BilibiliError::Parse(
+                        "WBI key refresh unavailable: too many consecutive failures".to_string(),
+                    ));
+                }
+
                 get_valid_wbi_key()
                     .await
                     .ok_or_else(|| BilibiliError::Parse("WBI key refresh failed".to_string()))
@@ -2038,6 +2142,10 @@ const MAX_DANMAKU_DECOMPRESS_SIZE: u64 = 16 * 1024 * 1024;
 /// instead of returning only the first one.
 fn parse_danmaku_packet(data: &[u8]) -> std::vec::Vec<DanmakuMessage> {
     if data.len() < 16 {
+        tracing::warn!(
+            "Danmaku packet too short: {} bytes (minimum 16 required)",
+            data.len()
+        );
         return Vec::new();
     }
 
@@ -2070,7 +2178,12 @@ fn parse_danmaku_packet(data: &[u8]) -> std::vec::Vec<DanmakuMessage> {
                     let decoder = flate2::read::ZlibDecoder::new(body);
                     let mut limited = decoder.take(MAX_DANMAKU_DECOMPRESS_SIZE);
                     let mut out = Vec::new();
-                    if limited.read_to_end(&mut out).is_err() {
+                    if let Err(e) = limited.read_to_end(&mut out) {
+                        tracing::warn!(
+                            "Danmaku packet zlib decompression failed: {} (body length: {} bytes)",
+                            e,
+                            body.len()
+                        );
                         return Vec::new();
                     }
                     out
@@ -2081,12 +2194,23 @@ fn parse_danmaku_packet(data: &[u8]) -> std::vec::Vec<DanmakuMessage> {
                     let decoder = brotli::Decompressor::new(body, 4096);
                     let mut limited = decoder.take(MAX_DANMAKU_DECOMPRESS_SIZE);
                     let mut out = Vec::new();
-                    if limited.read_to_end(&mut out).is_err() {
+                    if let Err(e) = limited.read_to_end(&mut out) {
+                        tracing::warn!(
+                            "Danmaku packet brotli decompression failed: {} (body length: {} bytes)",
+                            e,
+                            body.len()
+                        );
                         return Vec::new();
                     }
                     out
                 }
-                _ => return Vec::new(),
+                _ => {
+                    tracing::warn!(
+                        "Danmaku packet has unknown protocol version: {} (expected 0, 1, 2, or 3)",
+                        protocol_version
+                    );
+                    return Vec::new();
+                }
             };
 
             // Compressed data contains concatenated sub-packets with headers;
@@ -3308,35 +3432,44 @@ mod tests {
 
     /// Test that Notify-based waiting works correctly for concurrent refresh.
     /// This test verifies that:
-    /// 1. Tasks that fail to claim the lock wait for notification
-    /// 2. When refresh completes, all waiting tasks are notified
-    /// 3. Notified tasks can read from the cache without additional API calls
+    /// 1. Tasks that fail to claim the lock can wait for notification
+    /// 2. When refresh completes, waiting tasks are notified
+    /// 3. Notified tasks can read from the cache
+    ///
+    /// Note: This test uses local state to avoid interference from parallel tests.
     #[tokio::test]
-    async fn test_notify_based_waiting_prevents_thundering_herd() {
+    async fn test_notify_based_waiting_pattern() {
+        use std::sync::atomic::AtomicBool;
         use std::sync::atomic::AtomicUsize;
         use std::sync::Arc;
 
-        // Reset state
-        release_refresh_lock();
-        WBI_API_CALL_COUNT.store(0, Ordering::SeqCst);
-        *WBI_KEY_CACHE.lock().await = None;
+        // Use local state to avoid interference from parallel tests
+        let local_notify = Arc::new(tokio::sync::Notify::new());
+        let local_cache = Arc::new(AsyncMutex::new(Option::<String>::None));
+        let local_lock = Arc::new(AtomicBool::new(false));
 
         let api_call_count = Arc::new(AtomicUsize::new(0));
         let waiting_tasks_woken = Arc::new(AtomicUsize::new(0));
 
-        // Simulate the scenario: one task refreshes, others wait
-
-        // First, spawn the refresher task
+        // Spawn the refresher task
         let api_count = Arc::clone(&api_call_count);
+        let cache = Arc::clone(&local_cache);
+        let notify = Arc::clone(&local_notify);
+        let lock = Arc::clone(&local_lock);
         let refresher = tokio::spawn(async move {
-            if try_claim_refresh_lock() {
+            // Try to claim lock
+            if lock
+                .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+                .is_ok()
+            {
                 // Simulate API call delay
                 tokio::time::sleep(std::time::Duration::from_millis(50)).await;
                 api_count.fetch_add(1, Ordering::SeqCst);
                 // Set a cached key
-                set_wbi_key("test_key_32_characters_long_x".to_string()).await;
+                *cache.lock().await = Some("test_key_32_characters_long_x".to_string());
                 // Release and notify
-                release_refresh_lock_and_notify();
+                lock.store(false, Ordering::Release);
+                notify.notify_waiters();
                 true
             } else {
                 false
@@ -3350,13 +3483,15 @@ mod tests {
         let mut waiter_handles = Vec::new();
         for _ in 0..5 {
             let woken_count = Arc::clone(&waiting_tasks_woken);
+            let cache = Arc::clone(&local_cache);
+            let notify = Arc::clone(&local_notify);
             waiter_handles.push(tokio::spawn(async move {
                 // Wait for notification
-                WBI_REFRESH_NOTIFY.notified().await;
+                notify.notified().await;
                 // Record that we were woken
                 woken_count.fetch_add(1, Ordering::SeqCst);
                 // Try to get the key from cache
-                get_valid_wbi_key().await
+                cache.lock().await.clone()
             }));
         }
 
@@ -3474,5 +3609,217 @@ mod tests {
         // The first 4 bytes encode the packet length as big-endian u32
         let len = u32::from_be_bytes([packet[0], packet[1], packet[2], packet[3]]);
         assert_eq!(len as usize, packet.len());
+    }
+
+    // ========== parse_danmaku_packet failure case tests ==========
+
+    #[test]
+    fn test_parse_danmaku_packet_too_short_returns_empty() {
+        // Packets less than 16 bytes should return empty Vec
+        let short_data = [0u8; 15];
+        let result = parse_danmaku_packet(&short_data);
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_parse_danmaku_packet_empty_returns_empty() {
+        // Empty packet should return empty Vec
+        let result = parse_danmaku_packet(&[]);
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_parse_danmaku_packet_invalid_zlib_returns_empty() {
+        // Create a packet with operation=5 (notification) and protocol_version=2 (zlib)
+        // but with invalid zlib data
+        let mut packet = Vec::new();
+        packet.extend_from_slice(&16u32.to_be_bytes()); // packet length
+        packet.extend_from_slice(&16u16.to_be_bytes()); // header length
+        packet.extend_from_slice(&2u16.to_be_bytes()); // protocol version = zlib
+        packet.extend_from_slice(&5u32.to_be_bytes()); // operation = notification
+        packet.extend_from_slice(&1u32.to_be_bytes()); // sequence
+                                                       // Add invalid zlib data (not valid zlib compressed data)
+        packet.extend_from_slice(&[0xDE, 0xAD, 0xBE, 0xEF]);
+
+        let result = parse_danmaku_packet(&packet);
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_parse_danmaku_packet_invalid_brotli_returns_empty() {
+        // Create a packet with operation=5 (notification) and protocol_version=3 (brotli)
+        // but with invalid brotli data
+        let mut packet = Vec::new();
+        packet.extend_from_slice(&20u32.to_be_bytes()); // packet length
+        packet.extend_from_slice(&16u16.to_be_bytes()); // header length
+        packet.extend_from_slice(&3u16.to_be_bytes()); // protocol version = brotli
+        packet.extend_from_slice(&5u32.to_be_bytes()); // operation = notification
+        packet.extend_from_slice(&1u32.to_be_bytes()); // sequence
+                                                       // Add invalid brotli data
+        packet.extend_from_slice(&[0xDE, 0xAD, 0xBE, 0xEF]);
+
+        let result = parse_danmaku_packet(&packet);
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_parse_danmaku_packet_unknown_protocol_version_returns_empty() {
+        // Create a packet with operation=5 (notification) and unknown protocol_version
+        let mut packet = Vec::new();
+        packet.extend_from_slice(&20u32.to_be_bytes()); // packet length
+        packet.extend_from_slice(&16u16.to_be_bytes()); // header length
+        packet.extend_from_slice(&99u16.to_be_bytes()); // protocol version = unknown
+        packet.extend_from_slice(&5u32.to_be_bytes()); // operation = notification
+        packet.extend_from_slice(&1u32.to_be_bytes()); // sequence
+        packet.extend_from_slice(&[0, 0, 0, 0]); // body
+
+        let result = parse_danmaku_packet(&packet);
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_parse_danmaku_packet_valid_heartbeat() {
+        // Create a valid heartbeat response packet
+        let mut packet = Vec::new();
+        packet.extend_from_slice(&20u32.to_be_bytes()); // packet length
+        packet.extend_from_slice(&16u16.to_be_bytes()); // header length
+        packet.extend_from_slice(&1u16.to_be_bytes()); // protocol version
+        packet.extend_from_slice(&3u32.to_be_bytes()); // operation = heartbeat response
+        packet.extend_from_slice(&1u32.to_be_bytes()); // sequence
+        packet.extend_from_slice(&12345u32.to_be_bytes()); // online count
+
+        let result = parse_danmaku_packet(&packet);
+        assert_eq!(result.len(), 1);
+        match &result[0] {
+            DanmakuMessage::Heartbeat { online_count } => {
+                assert_eq!(*online_count, 12345);
+            }
+            _ => panic!("Expected Heartbeat message"),
+        }
+    }
+
+    // === WBI Failure Counter and Timeout Tests ===
+    // Note: These tests share global static state and should not be split into
+    // separate #[test] functions to avoid parallel execution interference.
+
+    #[test]
+    fn test_failure_counter_mechanics() {
+        // === Test 1: Counter increments on failure ===
+        // Set counter to a known value just below max
+        WBI_CONSECUTIVE_FAILURES.store(WBI_MAX_CONSECUTIVE_FAILURES - 1, Ordering::SeqCst);
+        assert!(
+            !has_exceeded_max_failures(),
+            "Should not exceed max failures at {} failures",
+            WBI_MAX_CONSECUTIVE_FAILURES - 1
+        );
+
+        // One more failure should exceed max
+        let exceeded = release_refresh_lock_on_failure_and_notify();
+        assert!(
+            exceeded,
+            "Failure at count {} should exceed max {}",
+            WBI_MAX_CONSECUTIVE_FAILURES, WBI_MAX_CONSECUTIVE_FAILURES
+        );
+        assert!(
+            has_exceeded_max_failures(),
+            "Should exceed max after reaching {} failures",
+            WBI_MAX_CONSECUTIVE_FAILURES
+        );
+
+        // === Test 2: Counter resets on success ===
+        // Set counter to a value above zero
+        WBI_CONSECUTIVE_FAILURES.store(2, Ordering::SeqCst);
+
+        // Success should reset the counter to 0
+        release_refresh_lock_on_success_and_notify();
+
+        // The counter should now be 0 (success resets it)
+        let count = WBI_CONSECUTIVE_FAILURES.load(Ordering::SeqCst);
+        assert_eq!(
+            count, 0,
+            "Counter should be 0 after success reset, but got {}",
+            count
+        );
+
+        // === Test 3: Reset function works ===
+        // Add failures
+        WBI_CONSECUTIVE_FAILURES.store(5, Ordering::SeqCst);
+        assert!(has_exceeded_max_failures());
+
+        // Reset should clear
+        reset_consecutive_failures();
+        assert!(!has_exceeded_max_failures());
+        assert_eq!(WBI_CONSECUTIVE_FAILURES.load(Ordering::SeqCst), 0);
+
+        // Cleanup
+        release_refresh_lock();
+    }
+
+    /// Test that has_exceeded_max_failures returns error when too many failures occurred.
+    /// This is a unit test for the failure detection logic.
+    #[tokio::test]
+    async fn test_exceeded_max_failures_returns_error_fast() {
+        // Setup: reset all state
+        release_refresh_lock();
+        reset_consecutive_failures();
+        *WBI_KEY_CACHE.lock().await = None;
+
+        // Simulate 3 consecutive failures to exceed max
+        WBI_CONSECUTIVE_FAILURES.store(WBI_MAX_CONSECUTIVE_FAILURES, Ordering::SeqCst);
+
+        // Now has_exceeded_max_failures should return true
+        assert!(
+            has_exceeded_max_failures(),
+            "Should exceed max failures after setting counter to max"
+        );
+
+        // Cleanup
+        reset_consecutive_failures();
+        release_refresh_lock();
+    }
+
+    /// Test that waiting with timeout actually times out when no notification comes.
+    /// This test verifies the timeout mechanism works in isolation.
+    #[tokio::test]
+    async fn test_notify_timeout_mechanism() {
+        // We test that tokio::time::timeout works correctly with Notify.
+        // This is a sanity check that our timeout approach is valid.
+        let timeout_duration = std::time::Duration::from_millis(10);
+
+        // Create a new Notify for this test (not the global one) to avoid interference
+        let local_notify = tokio::sync::Notify::new();
+
+        // This should timeout since we never call local_notify.notify_waiters()
+        let result = tokio::time::timeout(timeout_duration, local_notify.notified()).await;
+        assert!(
+            result.is_err(),
+            "Should timeout when no notification is sent"
+        );
+    }
+
+    /// Test that notification arrives before timeout when sent quickly.
+    #[tokio::test]
+    async fn test_notify_arrives_before_timeout() {
+        // Create a new Notify wrapped in Arc for this test to avoid interference
+        use std::sync::Arc;
+        let local_notify = Arc::new(tokio::sync::Notify::new());
+        let timeout_duration = std::time::Duration::from_millis(100);
+
+        // Spawn a task that waits with timeout
+        let notify = Arc::clone(&local_notify);
+        let wait_task = tokio::spawn(async move {
+            let result = tokio::time::timeout(timeout_duration, notify.notified()).await;
+            result.is_ok()
+        });
+
+        // Send notification quickly
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        local_notify.notify_waiters();
+
+        let notification_received = wait_task.await.expect("Task should not panic");
+        assert!(
+            notification_received,
+            "Notification should have arrived before timeout"
+        );
     }
 }

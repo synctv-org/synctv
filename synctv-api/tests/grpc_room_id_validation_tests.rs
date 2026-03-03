@@ -6,7 +6,7 @@
 //! - Must not exceed 64 characters (ID_MAX limit)
 //! - Must contain only alphanumeric characters, underscores, and hyphens
 
-use synctv_api::grpc::interceptors::{AuthInterceptor, RoomContext};
+use synctv_api::grpc::interceptors::{AuthInterceptor, RoomContext, SecurityCheckPassed};
 use synctv_core::models::UserId;
 use synctv_core::service::auth::{JwtService, TokenType};
 use tonic::metadata::MetadataMap;
@@ -57,6 +57,8 @@ async fn test_valid_room_id_format_should_pass() {
 
     for room_id in valid_room_ids {
         let mut request = Request::new(());
+        // Inject SecurityCheckPassed marker to simulate BlacklistCheckLayer
+        request.extensions_mut().insert(SecurityCheckPassed);
         *request.metadata_mut() = create_metadata(&token, room_id);
 
         let result = interceptor.inject_room(request);
@@ -85,6 +87,8 @@ async fn test_empty_room_id_should_be_rejected() {
     let interceptor = AuthInterceptor::new(jwt_service);
 
     let mut request = Request::new(());
+    // Inject SecurityCheckPassed marker to simulate BlacklistCheckLayer
+    request.extensions_mut().insert(SecurityCheckPassed);
     *request.metadata_mut() = create_metadata(&token, "");
 
     let result = interceptor.inject_room(request);
@@ -119,6 +123,8 @@ async fn test_too_long_room_id_should_be_rejected() {
     let too_long_room_id = "a".repeat(65);
 
     let mut request = Request::new(());
+    // Inject SecurityCheckPassed marker to simulate BlacklistCheckLayer
+    request.extensions_mut().insert(SecurityCheckPassed);
     *request.metadata_mut() = create_metadata(&token, &too_long_room_id);
 
     let result = interceptor.inject_room(request);
@@ -187,6 +193,8 @@ async fn test_invalid_characters_in_room_id_should_be_rejected() {
 
     for room_id in invalid_room_ids {
         let mut request = Request::new(());
+        // Inject SecurityCheckPassed marker to simulate BlacklistCheckLayer
+        request.extensions_mut().insert(SecurityCheckPassed);
         *request.metadata_mut() = create_metadata(&token, room_id);
 
         let result = interceptor.inject_room(request);
@@ -223,6 +231,8 @@ async fn test_unicode_characters_in_room_id_should_be_rejected() {
 
     for room_id in unicode_room_ids {
         let mut request = Request::new(());
+        // Inject SecurityCheckPassed marker to simulate BlacklistCheckLayer
+        request.extensions_mut().insert(SecurityCheckPassed);
         *request.metadata_mut() = create_metadata(&token, room_id);
 
         let result = interceptor.inject_room(request);
@@ -261,6 +271,8 @@ async fn test_exactly_64_char_room_id_should_pass() {
     assert_eq!(boundary_room_id.len(), 64);
 
     let mut request = Request::new(());
+    // Inject SecurityCheckPassed marker to simulate BlacklistCheckLayer
+    request.extensions_mut().insert(SecurityCheckPassed);
     *request.metadata_mut() = create_metadata(&token, &boundary_room_id);
 
     let result = interceptor.inject_room(request);
@@ -302,6 +314,8 @@ async fn test_consistency_with_http_validation() {
 
         // Check gRPC validation
         let mut request = Request::new(());
+        // Inject SecurityCheckPassed marker to simulate BlacklistCheckLayer
+        request.extensions_mut().insert(SecurityCheckPassed);
         *request.metadata_mut() = create_metadata(&token, room_id);
         let grpc_result = interceptor.inject_room(request).is_ok();
 

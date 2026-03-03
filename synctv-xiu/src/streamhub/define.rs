@@ -1,4 +1,6 @@
-use crate::flv::define::{AacProfile, AvcCodecId, AvcLevel, AvcProfile, SoundFormat};
+use crate::flv::define::{
+    AacProfile, AvcCodecId, AvcLevel, AvcProfile, HevcLevel, HevcProfile, SoundFormat,
+};
 use chrono::{DateTime, Local};
 
 use {
@@ -333,6 +335,13 @@ pub enum StatisticData {
         codec: AvcCodecId,
         profile: AvcProfile,
         level: AvcLevel,
+        width: u32,
+        height: u32,
+    },
+    HevcCodec {
+        codec: AvcCodecId,
+        profile: HevcProfile,
+        level: HevcLevel,
         width: u32,
         height: u32,
     },

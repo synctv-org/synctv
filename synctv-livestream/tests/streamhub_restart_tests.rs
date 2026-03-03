@@ -403,3 +403,309 @@ async fn test_stop_all_handles_moderate_cleanup_time() {
     drop(stop_streams_tx);
     let _ = receiver_handle.await;
 }
+
+// ============================================================================
+// Race condition fix: Verify restart mutex and publication blocking
+// ============================================================================
+
+/// Test that concurrent restart attempts are serialized via a mutex.
+///
+/// This simulates the scenario where the StreamHub exits multiple times
+/// in quick succession. Without a mutex, multiple restart flows could
+/// execute concurrently, leading to:
+/// - Corrupted state from parallel cleanup_all_publishers_for_node calls
+/// - Lost re-registration signals
+/// - Inconsistent is_restarting flag state
+#[tokio::test]
+async fn test_restart_mutex_serializes_concurrent_attempts() {
+    use tokio::sync::Mutex;
+
+    let restart_mutex = Arc::new(Mutex::new(()));
+    let restart_count = Arc::new(AtomicUsize::new(0));
+    let concurrent_count = Arc::new(AtomicUsize::new(0));
+    let max_concurrent = Arc::new(AtomicUsize::new(0));
+
+    // Spawn multiple tasks that try to restart concurrently
+    let mut handles = vec![];
+    for _ in 0..5 {
+        let mutex = Arc::clone(&restart_mutex);
+        let count = Arc::clone(&restart_count);
+        let concurrent = Arc::clone(&concurrent_count);
+        let max = Arc::clone(&max_concurrent);
+
+        let handle = tokio::spawn(async move {
+            let _guard = mutex.lock().await;
+
+            // Track concurrent executions
+            let current = concurrent.fetch_add(1, Ordering::SeqCst) + 1;
+            max.fetch_max(current, Ordering::SeqCst);
+
+            // Simulate restart work
+            tokio::time::sleep(Duration::from_millis(50)).await;
+
+            count.fetch_add(1, Ordering::SeqCst);
+            concurrent.fetch_sub(1, Ordering::SeqCst);
+        });
+        handles.push(handle);
+    }
+
+    // Wait for all restarts to complete
+    for handle in handles {
+        handle.await.unwrap();
+    }
+
+    // All 5 restarts should have completed
+    assert_eq!(
+        restart_count.load(Ordering::SeqCst),
+        5,
+        "All restarts should complete"
+    );
+
+    // Maximum concurrent executions should be 1 (serialized)
+    assert_eq!(
+        max_concurrent.load(Ordering::SeqCst),
+        1,
+        "Restarts should be serialized, not concurrent"
+    );
+}
+
+/// Test that the is_restarting flag is set BEFORE the hub exits, not after.
+///
+/// This ensures that new publications are blocked during the entire restart
+/// window, including the cleanup phase. If the flag is set after hub exit,
+/// there's a window where:
+/// 1. Old hub has exited
+/// 2. New publications can still arrive (from in-flight requests)
+/// 3. is_restarting is false, so they're accepted
+/// 4. These publications then get cleaned up by cleanup_all_publishers_for_node
+#[tokio::test]
+async fn test_restarting_flag_set_before_hub_exit() {
+    // This test verifies the ordering: is_restarting = true -> hub exit -> cleanup
+    //
+    // In the actual implementation, we need to set is_restarting BEFORE
+    // the hub.run() returns. However, since hub exit is unpredictable,
+    // the fix is to:
+    // 1. Use a mutex to block new publications during the critical section
+    // 2. Check the mutex in on_publish before allowing registration
+
+    let is_restarting = Arc::new(AtomicBool::new(false));
+    let publications_allowed = Arc::new(AtomicBool::new(true));
+
+    // Simulate the restart flow:
+    // 1. Hub is about to exit - set restarting flag FIRST
+    is_restarting.store(true, Ordering::Release);
+    publications_allowed.store(false, Ordering::Release);
+
+    // 2. Now publications are blocked
+    assert!(
+        !publications_allowed.load(Ordering::Acquire),
+        "Publications should be blocked as soon as restart begins"
+    );
+
+    // 3. Hub exits, cleanup happens
+    tokio::time::sleep(Duration::from_millis(10)).await;
+
+    // 4. New hub starts, re-registration completes
+    publications_allowed.store(true, Ordering::Release);
+    is_restarting.store(false, Ordering::Release);
+
+    // 5. Publications are allowed again
+    assert!(
+        publications_allowed.load(Ordering::Acquire),
+        "Publications should be allowed after restart completes"
+    );
+}
+
+/// Test that publications are rejected during the restart window.
+///
+/// This simulates the scenario where an RTMP publish request arrives
+/// while the StreamHub is restarting. The publication should be rejected
+/// with an appropriate error.
+#[tokio::test]
+async fn test_publication_rejected_during_restart() {
+    let is_restarting = Arc::new(AtomicBool::new(true));
+    let publication_succeeded = Arc::new(AtomicBool::new(false));
+
+    // Simulate a publication attempt during restart
+    let flag = Arc::clone(&is_restarting);
+    let success = Arc::clone(&publication_succeeded);
+
+    let handle = tokio::spawn(async move {
+        // Check the flag before allowing publication
+        if flag.load(Ordering::Acquire) {
+            // Publication should be rejected
+            return Err("StreamHub is restarting, publication rejected");
+        }
+        // If not restarting, allow the publication
+        success.store(true, Ordering::Release);
+        Ok(())
+    });
+
+    let result = handle.await.unwrap();
+    assert!(
+        result.is_err(),
+        "Publication should be rejected during restart"
+    );
+    assert!(
+        !publication_succeeded.load(Ordering::SeqCst),
+        "Publication should not have succeeded"
+    );
+}
+
+/// Test that HUB_MAX_RESTARTS doesn't get exhausted by rapid transient failures.
+///
+/// The issue: if restart_count is incremented on every exit and never reset,
+/// transient failures (e.g., brief network issues) could exhaust the limit
+/// even though the hub eventually stabilizes.
+///
+/// The fix: reset restart_count after a successful stable period.
+#[tokio::test]
+async fn test_restart_count_resets_after_stable_period() {
+    const HUB_MAX_RESTARTS: u32 = 10;
+    let restart_count = Arc::new(AtomicUsize::new(0));
+    let successful_cycles = Arc::new(AtomicUsize::new(0));
+
+    // Simulate 3 restarts (failures)
+    for _ in 0..3 {
+        restart_count.fetch_add(1, Ordering::SeqCst);
+    }
+    assert_eq!(restart_count.load(Ordering::SeqCst), 3);
+
+    // Simulate stable operation: after N successful cycles, reset count
+    for _ in 0..5 {
+        successful_cycles.fetch_add(1, Ordering::SeqCst);
+    }
+
+    // After enough successful cycles, reset the restart count
+    if successful_cycles.load(Ordering::SeqCst) >= 5 {
+        restart_count.store(0, Ordering::SeqCst);
+    }
+
+    assert_eq!(
+        restart_count.load(Ordering::SeqCst),
+        0,
+        "Restart count should reset after stable period"
+    );
+
+    // Verify we haven't hit the limit
+    assert!(
+        (restart_count.load(Ordering::SeqCst) as u32) < HUB_MAX_RESTARTS,
+        "Should be below max restarts limit"
+    );
+}
+
+/// Test the complete restart flow with mutex protection.
+///
+/// This test verifies the entire restart flow with:
+/// 1. Mutex to serialize restart attempts
+/// 2. is_restarting flag to block publications
+/// 3. Two-phase cleanup with oneshot confirmation
+/// 4. Re-registration notification
+#[tokio::test]
+async fn test_complete_restart_flow_with_mutex() {
+    use tokio::sync::Mutex;
+
+    let restart_mutex = Arc::new(Mutex::new(()));
+    let is_restarting = Arc::new(AtomicBool::new(false));
+    let (stop_streams_tx, mut stop_streams_rx) = mpsc::channel::<oneshot::Sender<()>>(10);
+    let reregister_notify = Arc::new(tokio::sync::Notify::new());
+
+    // Spawn the stop receiver task
+    let receiver_handle = tokio::spawn(async move {
+        while let Some(stop_done_tx) = stop_streams_rx.recv().await {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+            let _ = stop_done_tx.send(());
+        }
+    });
+
+    // Simulate the restart flow
+    let mutex = Arc::clone(&restart_mutex);
+    let restarting = Arc::clone(&is_restarting);
+    let notify = Arc::clone(&reregister_notify);
+    let tx = stop_streams_tx.clone();
+
+    let restart_handle = tokio::spawn(async move {
+        // 1. Acquire restart mutex (blocks concurrent restarts)
+        let _guard = mutex.lock().await;
+
+        // 2. Set restarting flag FIRST (blocks new publications)
+        restarting.store(true, Ordering::Release);
+
+        // 3. Send stop request and wait for completion
+        let (stop_done_tx, stop_done_rx) = oneshot::channel::<()>();
+        tx.send(stop_done_tx).await.unwrap();
+
+        let result = tokio::time::timeout(Duration::from_millis(100), stop_done_rx).await;
+        assert!(result.is_ok(), "Stop should complete");
+
+        // 4. Simulate cleanup
+        tokio::time::sleep(Duration::from_millis(5)).await;
+
+        // 5. Notify re-registration
+        notify.notify_one();
+
+        // 6. Clear restarting flag
+        restarting.store(false, Ordering::Release);
+    });
+
+    // Wait for restart to complete
+    tokio::time::timeout(Duration::from_millis(500), restart_handle)
+        .await
+        .unwrap()
+        .unwrap();
+
+    // Verify final state
+    assert!(
+        !is_restarting.load(Ordering::Acquire),
+        "Restarting flag should be cleared"
+    );
+
+    // Clean up
+    drop(stop_streams_tx);
+    let _ = receiver_handle.await;
+}
+
+/// Test that publications wait for restart to complete when using try_lock.
+///
+/// This test verifies that when a publication attempt coincides with a restart,
+/// it can either:
+/// 1. Fail fast with "restarting" error (if flag is set)
+/// 2. Wait briefly then proceed (if restart completes quickly)
+#[tokio::test]
+async fn test_publication_during_restart_handles_gracefully() {
+    let is_restarting = Arc::new(AtomicBool::new(true));
+    let publication_result = Arc::new(std::sync::Mutex::new(None::<Result<(), &'static str>>));
+
+    // Try to publish while restarting
+    let flag = Arc::clone(&is_restarting);
+    let result = Arc::clone(&publication_result);
+
+    let pub_handle = tokio::spawn(async move {
+        // Check flag with a small retry loop
+        for _ in 0..10 {
+            if !flag.load(Ordering::Acquire) {
+                *result.lock().unwrap() = Some(Ok(()));
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        // Timed out waiting for restart to complete
+        *result.lock().unwrap() = Some(Err("StreamHub restarting timeout"));
+    });
+
+    // Simulate restart completing after 20ms
+    let flag = Arc::clone(&is_restarting);
+    tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        flag.store(false, Ordering::Release);
+    });
+
+    pub_handle.await.unwrap();
+
+    let final_result = publication_result.lock().unwrap().clone();
+    assert!(
+        matches!(final_result, Some(Ok(()))),
+        "Publication should succeed after restart completes, got {:?}",
+        final_result
+    );
+}

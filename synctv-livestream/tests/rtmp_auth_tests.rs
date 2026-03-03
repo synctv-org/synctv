@@ -383,3 +383,155 @@ async fn rtmp_play_default_is_rejected() {
         "RTMP play should be rejected by default (rtmp_player defaults to false)"
     );
 }
+
+// ========== StreamHub Restart Race Condition Tests ==========
+//
+// These tests verify that publications are rejected during StreamHub restart
+// to prevent race conditions in the cleanup -> re-registration window.
+
+use std::sync::atomic::AtomicBool;
+
+/// Mock auth callback that checks is_restarting flag
+struct MockRestartAwareAuthCallback {
+    is_restarting: Arc<AtomicBool>,
+    registry: Arc<InMemoryStreamRegistry>,
+}
+
+impl MockRestartAwareAuthCallback {
+    fn new(is_restarting: Arc<AtomicBool>, registry: Arc<InMemoryStreamRegistry>) -> Self {
+        Self {
+            is_restarting,
+            registry,
+        }
+    }
+}
+
+#[async_trait]
+impl AuthCallback for MockRestartAwareAuthCallback {
+    async fn on_publish(
+        &self,
+        app_name: &str,
+        stream_name: &str,
+        _query: Option<&str>,
+    ) -> Result<Option<AuthPublishRewrite>, Box<dyn std::error::Error + Send + Sync>> {
+        // Check if StreamHub is restarting - reject new publications
+        if self.is_restarting.load(Ordering::Acquire) {
+            return Err("StreamHub is restarting, please retry in a few seconds".into());
+        }
+
+        // Simulate successful auth with registration
+        self.registry
+            .try_register_publisher(
+                app_name,
+                stream_name,
+                "node1",
+                "user1",
+                "grpc://localhost:5001",
+            )
+            .await
+            .map_err(|e| e.to_string())?;
+
+        Ok(Some(AuthPublishRewrite {
+            app_name: app_name.to_string(),
+            stream_name: stream_name.to_string(),
+        }))
+    }
+
+    async fn on_play(
+        &self,
+        _app_name: &str,
+        _stream_name: &str,
+        _query: Option<&str>,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        Ok(())
+    }
+
+    async fn on_unpublish(&self, _app_name: &str, _stream_name: &str, _query: Option<&str>) {}
+
+    async fn on_unplay(&self, _app_name: &str, _stream_name: &str, _query: Option<&str>) {}
+
+    async fn on_publish_rollback(&self, app_name: &str, stream_name: &str, _query: Option<&str>) {
+        let _ = self
+            .registry
+            .unregister_publisher(app_name, stream_name)
+            .await;
+    }
+}
+
+/// Test that publications are rejected when is_restarting flag is set
+#[tokio::test]
+async fn test_publication_rejected_when_restarting() {
+    let is_restarting = Arc::new(AtomicBool::new(true));
+    let registry = Arc::new(InMemoryStreamRegistry::new());
+    let auth = MockRestartAwareAuthCallback::new(is_restarting.clone(), registry.clone());
+
+    // Attempt to publish while restarting
+    let result = auth.on_publish("room1", "media1", None).await;
+
+    assert!(
+        result.is_err(),
+        "Publication should be rejected when is_restarting is true"
+    );
+    let err = result.unwrap_err().to_string();
+    assert!(
+        err.contains("restarting"),
+        "Error message should mention restart: {err}"
+    );
+
+    // Verify publisher was NOT registered
+    assert!(
+        !registry.is_stream_active("room1", "media1").await.unwrap(),
+        "Publisher should not be registered when rejected"
+    );
+}
+
+/// Test that publications are allowed when is_restarting flag is cleared
+#[tokio::test]
+async fn test_publication_allowed_when_not_restarting() {
+    let is_restarting = Arc::new(AtomicBool::new(false));
+    let registry = Arc::new(InMemoryStreamRegistry::new());
+    let auth = MockRestartAwareAuthCallback::new(is_restarting.clone(), registry.clone());
+
+    // Attempt to publish when not restarting
+    let result = auth.on_publish("room1", "media1", None).await;
+
+    assert!(
+        result.is_ok(),
+        "Publication should be allowed when is_restarting is false"
+    );
+
+    // Verify publisher was registered
+    assert!(
+        registry.is_stream_active("room1", "media1").await.unwrap(),
+        "Publisher should be registered when allowed"
+    );
+}
+
+/// Test that the restarting flag can be toggled to control publications
+#[tokio::test]
+async fn test_restarting_flag_toggles_publication_access() {
+    let is_restarting = Arc::new(AtomicBool::new(false));
+    let registry = Arc::new(InMemoryStreamRegistry::new());
+    let auth = MockRestartAwareAuthCallback::new(is_restarting.clone(), registry.clone());
+
+    // Step 1: Publication allowed when not restarting
+    let result = auth.on_publish("room1", "media1", None).await;
+    assert!(result.is_ok(), "Should be allowed initially");
+    assert!(registry.is_stream_active("room1", "media1").await.unwrap());
+
+    // Step 2: Set restarting flag
+    is_restarting.store(true, Ordering::Release);
+
+    // Step 3: Publication rejected during restart
+    let result = auth.on_publish("room2", "media2", None).await;
+    assert!(result.is_err(), "Should be rejected during restart");
+    assert!(!registry.is_stream_active("room2", "media2").await.unwrap());
+
+    // Step 4: Clear restarting flag
+    is_restarting.store(false, Ordering::Release);
+
+    // Step 5: Publication allowed again
+    let result = auth.on_publish("room3", "media3", None).await;
+    assert!(result.is_ok(), "Should be allowed after restart completes");
+    assert!(registry.is_stream_active("room3", "media3").await.unwrap());
+}

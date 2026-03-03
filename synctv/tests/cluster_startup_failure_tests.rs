@@ -282,6 +282,7 @@ mod p1_cluster_cleanup_tests {
         let config = ClusterConfig {
             redis_client: None,
             redis_conn: None,
+            cluster_enabled: false,
             node_id: "cancel-test-node".to_string(),
             dedup_window: Duration::from_secs(1),
             cleanup_interval: Duration::from_secs(1),

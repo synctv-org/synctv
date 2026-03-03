@@ -11,6 +11,12 @@
 //! Requests with invalidated tokens or from banned/deleted users are rejected
 //! with `UNAUTHENTICATED` status.
 //! Requests without an `Authorization` header (public endpoints) pass through.
+//!
+//! # Layer Ordering Verification
+//!
+//! This layer injects a `SecurityCheckPassed` marker into request extensions after
+//! security checks pass. The `AuthInterceptor` checks for this marker and fails
+//! if it's missing, ensuring correct layer ordering at runtime.
 
 use std::future::Future;
 use std::pin::Pin;
@@ -21,6 +27,7 @@ use axum::http;
 use tonic::body::Body as TonicBody;
 use tower::{Layer, Service};
 
+use super::interceptors::SecurityCheckPassed;
 use synctv_core::service::{auth::JwtService, SecurityPipeline};
 
 type BoxError = Box<dyn std::error::Error + Send + Sync>;
@@ -90,7 +97,7 @@ where
         self.inner.poll_ready(cx)
     }
 
-    fn call(&mut self, req: http::Request<TonicBody>) -> Self::Future {
+    fn call(&mut self, mut req: http::Request<TonicBody>) -> Self::Future {
         // Clone the inner service for use in the async block (tower best practice:
         // swap the ready clone out so `self` retains a fresh clone for next poll_ready).
         let mut inner = self.inner.clone();
@@ -125,6 +132,12 @@ where
                     return Ok(response);
                 }
             }
+
+            // Inject SecurityCheckPassed marker into request extensions.
+            // This signals to AuthInterceptor that security checks have passed.
+            // The marker is always injected (even for public endpoints without auth)
+            // so that AuthInterceptor can verify layer ordering is correct.
+            req.extensions_mut().insert(SecurityCheckPassed);
 
             inner.call(req).await
         })
@@ -229,5 +242,29 @@ mod tests {
         // No auth header (public endpoint -- both layers should pass through)
         let empty_headers = http::HeaderMap::new();
         assert!(extract_bearer_token(&empty_headers).is_none());
+    }
+
+    // ========== SecurityCheckPassed Marker Tests ==========
+
+    #[test]
+    fn test_security_check_passed_marker_type_available() {
+        // Verify that the SecurityCheckPassed marker type is accessible
+        // from the interceptors module
+        use crate::grpc::interceptors::SecurityCheckPassed;
+        let marker = SecurityCheckPassed;
+        // Just verify we can create and use it
+        assert!(format!("{marker:?}").contains("SecurityCheckPassed"));
+    }
+
+    #[test]
+    fn test_http_extensions_can_hold_security_marker() {
+        // Verify that http::Extensions can hold the SecurityCheckPassed marker
+        use crate::grpc::interceptors::SecurityCheckPassed;
+        let mut extensions = http::Extensions::new();
+        extensions.insert(SecurityCheckPassed);
+        assert!(
+            extensions.get::<SecurityCheckPassed>().is_some(),
+            "Extensions should contain SecurityCheckPassed"
+        );
     }
 }

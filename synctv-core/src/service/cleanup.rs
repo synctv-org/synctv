@@ -9,13 +9,20 @@
 //! - Old chat messages (per-room cap)
 //!
 //! Runs as a background task with configurable intervals and retention periods.
+//!
+//! # Dynamic Settings
+//!
+//! The `room_ttl_seconds` and `chat_max_messages_per_room` settings can be
+//! dynamically configured via `SettingsRegistry`. When a registry is provided,
+//! these values are read at runtime on each cleanup cycle, allowing admins to
+//! change settings without restarting the service.
 
 use sqlx::PgPool;
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
-use super::LeaderCheck;
+use super::{LeaderCheck, SettingsRegistry};
 use crate::{InternalExt, Result};
 
 /// Configuration for data cleanup retention periods
@@ -78,6 +85,8 @@ pub struct CleanupService {
     pool: PgPool,
     config: CleanupConfig,
     leader_check: Arc<dyn LeaderCheck>,
+    /// Optional settings registry for dynamic `room_ttl` and `chat_max_messages_per_room`
+    settings_registry: Option<Arc<SettingsRegistry>>,
 }
 
 impl CleanupService {
@@ -91,7 +100,40 @@ impl CleanupService {
             pool,
             config,
             leader_check,
+            settings_registry: None,
         }
+    }
+
+    /// Set the settings registry for dynamic `room_ttl` and `chat_max_messages_per_room`.
+    ///
+    /// When set, `room_ttl_seconds` and `chat_max_messages_per_room` are read from
+    /// the registry at runtime on each cleanup cycle, allowing admins to change
+    /// these settings without restarting the service.
+    #[must_use]
+    pub fn with_settings_registry(mut self, registry: Arc<SettingsRegistry>) -> Self {
+        self.settings_registry = Some(registry);
+        self
+    }
+
+    /// Get the effective `room_ttl_seconds` value.
+    ///
+    /// Reads from `SettingsRegistry` if available, otherwise falls back to config.
+    fn room_ttl_seconds(&self) -> i64 {
+        self.settings_registry
+            .as_ref()
+            .and_then(|r| r.room_ttl.get().ok())
+            .unwrap_or(self.config.room_ttl_seconds)
+    }
+
+    /// Get the effective `chat_max_messages_per_room` value.
+    ///
+    /// Reads from `SettingsRegistry` if available, otherwise falls back to config.
+    fn chat_max_messages_per_room(&self) -> i32 {
+        self.settings_registry
+            .as_ref()
+            .and_then(|r| r.max_chat_messages_per_room.get().ok())
+            .map(|v| v as i32)
+            .unwrap_or(self.config.chat_max_messages_per_room)
     }
 
     /// Run all cleanup tasks once
@@ -101,9 +143,13 @@ impl CleanupService {
     pub async fn run_all(&self) -> CleanupResult {
         let mut result = CleanupResult::default();
 
+        // Read dynamic settings at runtime
+        let room_ttl_seconds = self.room_ttl_seconds();
+        let chat_max_messages = self.chat_max_messages_per_room();
+
         // 0. Soft-delete rooms past room_ttl threshold
-        if self.config.room_ttl_seconds > 0 {
-            match self.soft_delete_expired_rooms().await {
+        if room_ttl_seconds > 0 {
+            match self.soft_delete_expired_rooms(room_ttl_seconds).await {
                 Ok(count) => {
                     result.rooms_expired = count;
                     if count > 0 {
@@ -193,8 +239,8 @@ impl CleanupService {
         }
 
         // 6. Cleanup chat messages (per-room cap)
-        if self.config.chat_max_messages_per_room > 0 {
-            match self.cleanup_chat_messages().await {
+        if chat_max_messages > 0 {
+            match self.cleanup_chat_messages(chat_max_messages).await {
                 Ok(count) => {
                     result.chat_messages_deleted = count;
                     if count > 0 {
@@ -210,13 +256,12 @@ impl CleanupService {
 
     /// Soft-delete rooms that have exceeded the `room_ttl` threshold.
     ///
-    /// Rooms with `updated_at` older than `room_ttl_seconds` ago are soft-deleted
+    /// Rooms with `last_activity_at` older than `ttl_seconds` ago are soft-deleted
     /// by setting `deleted_at = CURRENT_TIMESTAMP`. This prevents unbounded room
     /// growth and ensures inactive rooms are eventually cleaned up.
     ///
     /// Only affects rooms that are not already soft-deleted.
-    async fn soft_delete_expired_rooms(&self) -> Result<u64> {
-        let ttl_seconds = self.config.room_ttl_seconds;
+    async fn soft_delete_expired_rooms(&self, ttl_seconds: i64) -> Result<u64> {
         let result = sqlx::query(
             r"
             UPDATE rooms
@@ -345,8 +390,7 @@ impl CleanupService {
     /// Cleanup chat messages exceeding per-room cap
     ///
     /// Uses window functions for efficient batch cleanup across all rooms.
-    async fn cleanup_chat_messages(&self) -> Result<u64> {
-        let keep_count = self.config.chat_max_messages_per_room;
+    async fn cleanup_chat_messages(&self, keep_count: i32) -> Result<u64> {
         if keep_count <= 0 {
             return Ok(0);
         }
@@ -390,6 +434,7 @@ impl CleanupService {
             pool: self.pool.clone(),
             config: self.config.clone(),
             leader_check: self.leader_check.clone(),
+            settings_registry: self.settings_registry.clone(),
         };
 
         crate::spawn::spawn_monitored("data_cleanup", async move {
@@ -414,8 +459,13 @@ impl CleanupService {
                     continue;
                 }
 
+                // Read dynamic settings at runtime for logging
+                let room_ttl_seconds = service.room_ttl_seconds();
+                let chat_max_messages = service.chat_max_messages_per_room();
+
                 info!(
-                    room_ttl_seconds = service.config.room_ttl_seconds,
+                    room_ttl_seconds,
+                    chat_max_messages,
                     room_retention_days = service.config.room_soft_delete_retention_days,
                     user_retention_days = service.config.soft_delete_retention_days,
                     "Starting periodic data cleanup"
@@ -575,5 +625,81 @@ mod tests {
         )
             -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<u64>> + Send + '_>> =
             |svc| Box::pin(svc.delete_expired_tokens());
+    }
+
+    // ========== Dynamic settings tests ==========
+
+    /// Test that `room_ttl_seconds` falls back to config when no registry is set.
+    #[tokio::test]
+    async fn test_room_ttl_seconds_fallback_to_config() {
+        let pool = sqlx::PgPool::connect_lazy("postgres://localhost/test").unwrap();
+        let config = CleanupConfig {
+            room_ttl_seconds: 3600, // 1 hour
+            ..CleanupConfig::default()
+        };
+        let leader: Arc<dyn LeaderCheck> = Arc::new(AlwaysLeader);
+        let service = CleanupService::new(pool, config, leader);
+
+        // No registry set, should use config value
+        assert_eq!(service.room_ttl_seconds(), 3600);
+    }
+
+    /// Test that `chat_max_messages_per_room` falls back to config when no registry is set.
+    #[tokio::test]
+    async fn test_chat_max_messages_fallback_to_config() {
+        let pool = sqlx::PgPool::connect_lazy("postgres://localhost/test").unwrap();
+        let config = CleanupConfig {
+            chat_max_messages_per_room: 500,
+            ..CleanupConfig::default()
+        };
+        let leader: Arc<dyn LeaderCheck> = Arc::new(AlwaysLeader);
+        let service = CleanupService::new(pool, config, leader);
+
+        // No registry set, should use config value
+        assert_eq!(service.chat_max_messages_per_room(), 500);
+    }
+
+    /// Test that `with_settings_registry` builder method works.
+    #[tokio::test]
+    async fn test_with_settings_registry_builder() {
+        let pool = sqlx::PgPool::connect_lazy("postgres://localhost/test").unwrap();
+        let config = CleanupConfig::default();
+        let leader: Arc<dyn LeaderCheck> = Arc::new(AlwaysLeader);
+
+        // Create a mock settings service (this won't actually connect)
+        let settings_service = Arc::new(crate::service::SettingsService::new(
+            crate::repository::SettingsRepository::new(pool.clone()),
+            pool.clone(),
+        ));
+        let registry = Arc::new(SettingsRegistry::new(settings_service));
+
+        let service = CleanupService::new(pool, config, leader).with_settings_registry(registry);
+
+        // Service should have registry set (we can't easily test the value read without DB)
+        assert!(service.settings_registry.is_some());
+    }
+
+    /// Test that service can be created without settings registry (backward compatibility).
+    #[tokio::test]
+    async fn test_cleanup_service_without_registry() {
+        let pool = sqlx::PgPool::connect_lazy("postgres://localhost/test").unwrap();
+        let config = CleanupConfig::default();
+        let leader: Arc<dyn LeaderCheck> = Arc::new(AlwaysLeader);
+
+        let service = CleanupService::new(pool, config, leader);
+
+        // Should work fine without registry
+        assert!(service.settings_registry.is_none());
+        // Should use config defaults
+        assert_eq!(service.room_ttl_seconds(), 172800);
+        assert_eq!(service.chat_max_messages_per_room(), 0);
+    }
+
+    /// Dummy leader check that always returns true (for tests).
+    struct AlwaysLeader;
+    impl LeaderCheck for AlwaysLeader {
+        fn is_leader(&self) -> bool {
+            true
+        }
     }
 }

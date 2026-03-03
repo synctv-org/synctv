@@ -23,6 +23,7 @@ async fn test_room_hub_connection_manager_state_consistency() {
     let config = ClusterConfig {
         redis_client: None,
         redis_conn: None, // No Redis -- single-node mode
+        cluster_enabled: false,
         node_id: "test_node".to_string(),
         dedup_window: Duration::from_secs(1),
         cleanup_interval: Duration::from_secs(1),
@@ -132,6 +133,7 @@ async fn test_rapid_subscribe_unsubscribe_no_leak() {
     let config = ClusterConfig {
         redis_client: None,
         redis_conn: None,
+        cluster_enabled: false,
         node_id: "test_node".to_string(),
         dedup_window: Duration::from_secs(1),
         cleanup_interval: Duration::from_secs(1),

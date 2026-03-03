@@ -5452,6 +5452,7 @@ dependencies = [
  "synctv-api",
  "synctv-cluster",
  "synctv-core",
+ "synctv-core-testing",
  "synctv-livestream",
  "synctv-media-providers",
  "testcontainers",

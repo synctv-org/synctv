@@ -568,22 +568,15 @@ impl Application {
 
         let cleanup_service = synctv_core::service::CleanupService::new(
             infra.pool.clone(),
-            synctv_core::service::cleanup::CleanupConfig {
-                room_ttl_seconds: core
-                    .services
-                    .settings_registry
-                    .room_ttl
-                    .get()
-                    .unwrap_or(172800),
-                ..synctv_core::service::cleanup::CleanupConfig::default()
-            },
+            synctv_core::service::cleanup::CleanupConfig::default(),
             leader.leader_check.clone(),
-        );
+        )
+        .with_settings_registry(core.services.settings_registry.clone());
         shutdown.register_task(
             "data_cleanup",
             cleanup_service.start_periodic(24, singleton_cancel.clone()),
         );
-        info!("Periodic data cleanup started (leader-gated with fencing, interval: 24 hours)");
+        info!("Periodic data cleanup started (leader-gated with fencing, interval: 24 hours, dynamic settings from registry)");
 
         let db_maintenance = synctv_core::service::DatabaseMaintenanceService::new(
             infra.pool.clone(),
@@ -633,6 +626,7 @@ impl Application {
             let cluster_config = ClusterConfig {
                 redis_client: Some(rh.client.clone()),
                 redis_conn: Some(rh.conn_snapshot().await),
+                cluster_enabled: infra.config.cluster.enabled,
                 node_id: infra.node_id.clone(),
                 dedup_window: Duration::from_secs(
                     infra

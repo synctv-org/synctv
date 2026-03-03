@@ -29,6 +29,7 @@ async fn make_cluster_manager(node_id: &str) -> ClusterManager {
     let config = ClusterConfig {
         redis_client: None,
         redis_conn: None,
+        cluster_enabled: false,
         node_id: node_id.to_string(),
         dedup_window: Duration::from_secs(1),
         cleanup_interval: Duration::from_secs(1),
@@ -383,6 +384,7 @@ async fn test_parent_cancel_token_propagates_cancellation() {
     let config = ClusterConfig {
         redis_client: None,
         redis_conn: None,
+        cluster_enabled: false,
         node_id: "child-token-test".to_string(),
         dedup_window: Duration::from_secs(1),
         cleanup_interval: Duration::from_secs(1),
@@ -423,6 +425,7 @@ async fn test_without_parent_cancel_token_uses_independent_token() {
     let config = ClusterConfig {
         redis_client: None,
         redis_conn: None,
+        cluster_enabled: false,
         node_id: "independent-token-test".to_string(),
         dedup_window: Duration::from_secs(1),
         cleanup_interval: Duration::from_secs(1),

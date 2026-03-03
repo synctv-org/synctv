@@ -36,7 +36,7 @@ use crate::impls::messaging::{MessageSender, ProtoCodec, StreamMessage, StreamMe
 use crate::proto::client::{ClientMessage, ServerMessage};
 use synctv_core::models::{RoomId, UserId};
 use synctv_core::service::auth::JwtValidator;
-use synctv_core::service::{ContentFilter, RateLimitConfig};
+use synctv_core::service::ContentFilter;
 
 /// Threshold for consecutive slow-client drops before disconnecting them
 const SLOW_CLIENT_DROP_THRESHOLD: u32 = 10;
@@ -563,7 +563,7 @@ async fn handle_socket(
 
     // Use the shared rate limiter from app state
     let rate_limiter = Arc::new(state.rate_limiter.clone());
-    let rate_limit_config = Arc::new(RateLimitConfig::default());
+    let rate_limit_config = state.messaging_rate_limit_config.clone();
     let content_filter = Arc::new(ContentFilter::new());
 
     // Create channel for sending messages to WebSocket with bounded capacity.
@@ -655,6 +655,7 @@ async fn handle_socket(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use synctv_core::service::RateLimitConfig;
 
     // ========== WsQuery Tests ==========
 
@@ -867,5 +868,53 @@ mod tests {
         let err = AppError::unauthorized("Token has been revoked");
         assert_eq!(err.status, axum::http::StatusCode::UNAUTHORIZED);
         assert_eq!(err.message, "Token has been revoked");
+    }
+
+    // ========== RateLimitConfig Tests ==========
+    // These tests verify that the RateLimitConfig used for WebSocket message handling
+    // has sensible defaults and can be customized.
+
+    #[test]
+    fn test_rate_limit_config_default_values() {
+        let config = RateLimitConfig::default();
+        // Default values should match synctv_core::service::RateLimitConfig defaults
+        assert_eq!(config.chat_per_second, 10);
+        assert_eq!(config.danmaku_per_second, 3);
+        assert_eq!(config.window_seconds, 1);
+    }
+
+    #[test]
+    fn test_rate_limit_config_custom_values() {
+        let config = RateLimitConfig {
+            chat_per_second: 5,
+            danmaku_per_second: 2,
+            window_seconds: 2,
+        };
+        assert_eq!(config.chat_per_second, 5);
+        assert_eq!(config.danmaku_per_second, 2);
+        assert_eq!(config.window_seconds, 2);
+    }
+
+    #[test]
+    fn test_rate_limit_config_clone() {
+        let config = RateLimitConfig {
+            chat_per_second: 20,
+            danmaku_per_second: 5,
+            window_seconds: 3,
+        };
+        let cloned = config.clone();
+        assert_eq!(cloned.chat_per_second, 20);
+        assert_eq!(cloned.danmaku_per_second, 5);
+        assert_eq!(cloned.window_seconds, 3);
+    }
+
+    #[test]
+    fn test_rate_limit_config_debug() {
+        let config = RateLimitConfig::default();
+        let debug_str = format!("{:?}", config);
+        assert!(debug_str.contains("RateLimitConfig"));
+        assert!(debug_str.contains("chat_per_second"));
+        assert!(debug_str.contains("danmaku_per_second"));
+        assert!(debug_str.contains("window_seconds"));
     }
 }

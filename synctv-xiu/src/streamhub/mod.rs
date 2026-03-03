@@ -452,6 +452,20 @@ impl StreamDataTransceiver {
                     video_codec_data.width = width;
                     video_codec_data.height = height;
                 }
+                StatisticData::HevcCodec {
+                    codec,
+                    profile,
+                    level,
+                    width,
+                    height,
+                } => {
+                    let video_codec_data = &mut statistics_data.lock().await.publisher.video;
+                    video_codec_data.codec = codec;
+                    video_codec_data.hevc_profile = Some(profile);
+                    video_codec_data.hevc_level = Some(level);
+                    video_codec_data.width = width;
+                    video_codec_data.height = height;
+                }
                 StatisticData::Publisher {
                     id,
                     remote_addr,

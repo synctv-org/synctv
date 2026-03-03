@@ -77,7 +77,7 @@ async fn test_resign_tracking_elector_infrastructure() {
 }
 
 /// Test that leadership loss sends Lost event via broadcast
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_quarantine_should_trigger_leadership_lost_event() {
     let elector = ResignTrackingElector::new();
 

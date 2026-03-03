@@ -507,6 +507,7 @@ impl SyncTvServer {
                 }),
                 turn_health_checker: self.services.turn_health_checker.clone(),
                 credential_encryption: self.services.credential_encryption.clone(),
+                messaging_rate_limit_config: self.services.rate_limit_config.clone(),
             });
 
         // Parse and bind HTTP address before spawning the task to propagate errors properly

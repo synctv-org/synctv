@@ -235,12 +235,29 @@ pub trait LeaderElect {
     ///
     /// This prevents split-brain scenarios where a demoted leader continues
     /// running singleton tasks that should only execute on the current leader.
+    ///
+    /// # Synchronization Guarantee
+    ///
+    /// This method does not return until the spawned listener task is ready
+    /// to receive events. This ensures no `Lost` events can be missed due to
+    /// the race between `subscribe()` and task spawning.
     #[must_use]
     fn leader_guard(&self) -> CancellationToken {
+        use tokio::sync::oneshot;
+
         let token = CancellationToken::new();
         let token_clone = token.clone();
         let mut rx = self.subscribe();
+
+        // Create a oneshot channel to synchronize task readiness.
+        // The spawned task will send on this channel when it starts listening.
+        let (ready_tx, ready_rx) = oneshot::channel();
+
         tokio::spawn(async move {
+            // Signal that we're about to start listening.
+            // Ignore send error (caller may have dropped the receiver).
+            let _ = ready_tx.send(());
+
             loop {
                 match rx.recv().await {
                     Ok(LeadershipEvent::Lost) | Ok(LeadershipEvent::Vacancy) => {
@@ -264,6 +281,26 @@ pub trait LeaderElect {
                 }
             }
         });
+
+        // Wait for the spawned task to signal readiness before returning.
+        // This ensures the listener is active before any Lost events could be sent.
+        //
+        // We spawn a dedicated thread to wait for the ready signal because:
+        // 1. This is a synchronous function that may be called from within an async context
+        // 2. blocking_recv() would panic in single-threaded tokio runtime
+        // 3. block_in_place() requires multi-threaded runtime
+        // 4. A spin loop would block the single-threaded runtime indefinitely
+        //
+        // The dedicated thread is acceptable because:
+        // 1. The wait should be nearly instantaneous
+        // 2. The thread will exit as soon as the ready signal is received
+        // 3. This is only called during leader guard creation (infrequent)
+        std::thread::spawn(move || {
+            let _ = ready_rx.blocking_recv();
+        })
+        .join()
+        .unwrap_or_default();
+
         token
     }
 }
@@ -907,7 +944,7 @@ mod tests {
         assert!(!LeaderCheck::is_leader(&elector));
     }
 
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_disabled_leader_guard_cancelled_on_channel_close() {
         // The leader_guard creates a CancellationToken and spawns a task
         // that watches the subscription channel. When the channel closes,

@@ -6,6 +6,21 @@ use synctv_core::service::auth::{JwtService, JwtValidator};
 use tonic::{Request, Status};
 use tracing::warn;
 
+/// Marker type injected by `BlacklistCheckLayer` after security checks pass.
+///
+/// This marker is used to enforce layer ordering at runtime. `AuthInterceptor`
+/// checks for this marker and rejects requests if it's missing, ensuring that
+/// the security pipeline (JWT verification, blacklist check, banned user check)
+/// has run before the interceptor extracts user context.
+///
+/// # Security
+///
+/// If `BlacklistCheckLayer` does not run before `AuthInterceptor`, revoked tokens
+/// or banned users could bypass security checks. This marker prevents that by
+/// failing fast with an internal error when the layer ordering is incorrect.
+#[derive(Debug, Clone, Copy)]
+pub struct SecurityCheckPassed;
+
 /// Constant-time secret comparison to prevent timing attacks.
 ///
 /// Both inputs are hashed to fixed-length SHA-256 digests before comparison,
@@ -56,13 +71,31 @@ impl AuthInterceptor {
     /// Inject `UserContext` - validates JWT and extracts `user_id` + `iat`
     /// Used for `UserService` and `AdminService`
     ///
-    /// SAFETY INVARIANT: `BlacklistCheckLayer` (tower middleware in `blacklist_layer.rs`)
-    /// MUST run before this interceptor in the gRPC pipeline. The layer performs async
-    /// security checks (password invalidation, banned/deleted user checks) that cannot
-    /// be done in a synchronous interceptor. If the ordering is wrong, revoked tokens
-    /// or banned users will bypass those checks.
+    /// # Layer Ordering (RUNTIME CHECK)
+    ///
+    /// This method requires `SecurityCheckPassed` marker in request extensions,
+    /// which is injected by `BlacklistCheckLayer`. If the marker is missing,
+    /// this method returns an internal error to indicate misconfigured layer ordering.
+    ///
+    /// The security checks performed by `BlacklistCheckLayer` include:
+    /// 1. JWT verification (signature, expiration, access token type)
+    /// 2. Password invalidation check (tokens issued before password change)
+    /// 3. Banned/deleted user check
     #[allow(clippy::result_large_err)]
     pub fn inject_user<T>(&self, mut request: Request<T>) -> Result<Request<T>, Status> {
+        // RUNTIME CHECK: Verify BlacklistCheckLayer has run before this interceptor.
+        // This prevents security bypass if layer ordering is misconfigured.
+        if request.extensions().get::<SecurityCheckPassed>().is_none() {
+            tracing::error!(
+                "AuthInterceptor called without SecurityCheckPassed marker. \
+                 BlacklistCheckLayer must run before AuthInterceptor. \
+                 Check gRPC server layer ordering in grpc/mod.rs."
+            );
+            return Err(Status::internal(
+                "Server misconfiguration: security layer ordering error",
+            ));
+        }
+
         // Extract and validate the bearer token
         let raw_token = Self::extract_raw_token(request.metadata())?;
 
@@ -85,12 +118,31 @@ impl AuthInterceptor {
     /// Inject `RoomContext` - validates JWT, extracts `user_id` and `room_id` from x-room-id header
     /// Used for `RoomService` and `MediaService`
     ///
+    /// # Layer Ordering (RUNTIME CHECK)
+    ///
+    /// This method requires `SecurityCheckPassed` marker in request extensions,
+    /// which is injected by `BlacklistCheckLayer`. If the marker is missing,
+    /// this method returns an internal error to indicate misconfigured layer ordering.
+    ///
     /// The room_id is validated against the same rules as HTTP endpoints:
     /// - Must not be empty
     /// - Must not exceed 64 characters (ID_MAX limit)
     /// - Must contain only alphanumeric characters, underscores, and hyphens
     #[allow(clippy::result_large_err)]
     pub fn inject_room<T>(&self, mut request: Request<T>) -> Result<Request<T>, Status> {
+        // RUNTIME CHECK: Verify BlacklistCheckLayer has run before this interceptor.
+        // This prevents security bypass if layer ordering is misconfigured.
+        if request.extensions().get::<SecurityCheckPassed>().is_none() {
+            tracing::error!(
+                "AuthInterceptor called without SecurityCheckPassed marker. \
+                 BlacklistCheckLayer must run before AuthInterceptor. \
+                 Check gRPC server layer ordering in grpc/mod.rs."
+            );
+            return Err(Status::internal(
+                "Server misconfiguration: security layer ordering error",
+            ));
+        }
+
         // Extract and validate the bearer token
         let raw_token = Self::extract_raw_token(request.metadata())?;
 
@@ -399,5 +451,157 @@ mod tests {
         assert_eq!(ctx.user_id, "user1");
         assert_eq!(ctx.iat, 1234567890);
         assert_eq!(ctx.pv, Some(3));
+    }
+
+    // ========== SecurityCheckPassed Marker Tests ==========
+
+    #[test]
+    fn test_security_check_passed_marker_exists() {
+        // Verify the marker type exists and can be created
+        let marker = SecurityCheckPassed;
+        assert!(format!("{marker:?}").contains("SecurityCheckPassed"));
+    }
+
+    #[test]
+    fn test_inject_user_rejects_without_security_check_marker() {
+        // TDD test: inject_user MUST reject requests without SecurityCheckPassed marker
+        // This ensures layer ordering is enforced at runtime
+        let jwt_service =
+            synctv_core::service::auth::JwtService::new("test-secret-key-for-testing-1234567890")
+                .expect("Should create JwtService");
+
+        let mut request = tonic::Request::new(());
+        // Add a valid token (but no SecurityCheckPassed marker)
+        let user_id = synctv_core::models::UserId::new();
+        let token = jwt_service
+            .sign_token(&user_id, synctv_core::service::auth::TokenType::Access, 0)
+            .expect("Should sign token");
+        request
+            .metadata_mut()
+            .insert("authorization", format!("Bearer {token}").parse().unwrap());
+
+        // Clone jwt_service before moving to AuthInterceptor
+        let interceptor = AuthInterceptor::new(jwt_service);
+
+        // Should fail with internal error because SecurityCheckPassed marker is missing
+        let result = interceptor.inject_user(request);
+        assert!(
+            result.is_err(),
+            "Should reject without SecurityCheckPassed marker"
+        );
+        let err = result.unwrap_err();
+        assert_eq!(
+            err.code(),
+            tonic::Code::Internal,
+            "Should return Internal status"
+        );
+        assert!(
+            err.message().contains("misconfiguration"),
+            "Error should mention misconfiguration"
+        );
+    }
+
+    #[test]
+    fn test_inject_user_accepts_with_security_check_marker() {
+        // TDD test: inject_user MUST accept requests with SecurityCheckPassed marker
+        let jwt_service =
+            synctv_core::service::auth::JwtService::new("test-secret-key-for-testing-1234567890")
+                .expect("Should create JwtService");
+
+        let mut request = tonic::Request::new(());
+        // Add the SecurityCheckPassed marker (simulating BlacklistCheckLayer)
+        request.extensions_mut().insert(SecurityCheckPassed);
+        // Add a valid token
+        let user_id = synctv_core::models::UserId::new();
+        let token = jwt_service
+            .sign_token(&user_id, synctv_core::service::auth::TokenType::Access, 0)
+            .expect("Should sign token");
+        request
+            .metadata_mut()
+            .insert("authorization", format!("Bearer {token}").parse().unwrap());
+
+        // Clone jwt_service before moving to AuthInterceptor
+        let interceptor = AuthInterceptor::new(jwt_service);
+
+        // Should succeed because SecurityCheckPassed marker is present
+        let result = interceptor.inject_user(request);
+        assert!(
+            result.is_ok(),
+            "Should accept with SecurityCheckPassed marker"
+        );
+    }
+
+    #[test]
+    fn test_inject_room_rejects_without_security_check_marker() {
+        // TDD test: inject_room MUST reject requests without SecurityCheckPassed marker
+        let jwt_service =
+            synctv_core::service::auth::JwtService::new("test-secret-key-for-testing-1234567890")
+                .expect("Should create JwtService");
+
+        let mut request = tonic::Request::new(());
+        // Add a valid token and room_id (but no SecurityCheckPassed marker)
+        let user_id = synctv_core::models::UserId::new();
+        let token = jwt_service
+            .sign_token(&user_id, synctv_core::service::auth::TokenType::Access, 0)
+            .expect("Should sign token");
+        request
+            .metadata_mut()
+            .insert("authorization", format!("Bearer {token}").parse().unwrap());
+        request
+            .metadata_mut()
+            .insert("x-room-id", "test-room-123".parse().unwrap());
+
+        // Clone jwt_service before moving to AuthInterceptor
+        let interceptor = AuthInterceptor::new(jwt_service);
+
+        // Should fail with internal error because SecurityCheckPassed marker is missing
+        let result = interceptor.inject_room(request);
+        assert!(
+            result.is_err(),
+            "Should reject without SecurityCheckPassed marker"
+        );
+        let err = result.unwrap_err();
+        assert_eq!(
+            err.code(),
+            tonic::Code::Internal,
+            "Should return Internal status"
+        );
+        assert!(
+            err.message().contains("misconfiguration"),
+            "Error should mention misconfiguration"
+        );
+    }
+
+    #[test]
+    fn test_inject_room_accepts_with_security_check_marker() {
+        // TDD test: inject_room MUST accept requests with SecurityCheckPassed marker
+        let jwt_service =
+            synctv_core::service::auth::JwtService::new("test-secret-key-for-testing-1234567890")
+                .expect("Should create JwtService");
+
+        let mut request = tonic::Request::new(());
+        // Add the SecurityCheckPassed marker (simulating BlacklistCheckLayer)
+        request.extensions_mut().insert(SecurityCheckPassed);
+        // Add a valid token and room_id
+        let user_id = synctv_core::models::UserId::new();
+        let token = jwt_service
+            .sign_token(&user_id, synctv_core::service::auth::TokenType::Access, 0)
+            .expect("Should sign token");
+        request
+            .metadata_mut()
+            .insert("authorization", format!("Bearer {token}").parse().unwrap());
+        request
+            .metadata_mut()
+            .insert("x-room-id", "test-room-123".parse().unwrap());
+
+        // Clone jwt_service before moving to AuthInterceptor
+        let interceptor = AuthInterceptor::new(jwt_service);
+
+        // Should succeed because SecurityCheckPassed marker is present
+        let result = interceptor.inject_room(request);
+        assert!(
+            result.is_ok(),
+            "Should accept with SecurityCheckPassed marker"
+        );
     }
 }

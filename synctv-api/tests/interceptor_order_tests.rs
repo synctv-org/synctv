@@ -177,6 +177,7 @@ fn test_auth_interceptor_requires_prior_security_checks() {
 
 #[test]
 fn test_auth_interceptor_injects_user_context() {
+    use synctv_api::grpc::interceptors::SecurityCheckPassed;
     use synctv_api::grpc::AuthInterceptor;
 
     let jwt_service = JwtService::new(TEST_SECRET).expect("Should create JwtService");
@@ -188,6 +189,8 @@ fn test_auth_interceptor_injects_user_context() {
         .expect("Should sign");
 
     let mut request = tonic::Request::new(());
+    // Inject SecurityCheckPassed marker to simulate BlacklistCheckLayer
+    request.extensions_mut().insert(SecurityCheckPassed);
     request
         .metadata_mut()
         .insert("authorization", format!("Bearer {token}").parse().unwrap());
@@ -319,19 +322,42 @@ fn test_security_pipeline_returns_unauthenticated_on_banned() {
 // ============================================================================
 
 #[test]
-fn test_missing_auth_header_passes_for_public_endpoints() {
-    // BlacklistCheckLayer passes requests without Authorization header through.
-    // This is needed for public endpoints like health checks, ListRooms (public flag).
-
-    // The request continues to AuthInterceptor, which will fail if auth is required.
-    // Service methods can check if UserContext exists for optional auth.
-
+fn test_missing_auth_header_fails_without_security_marker() {
+    // Without SecurityCheckPassed marker, AuthInterceptor fails with Internal error
+    // (layer ordering verification)
     use synctv_api::grpc::AuthInterceptor;
 
     let jwt_service = JwtService::new(TEST_SECRET).expect("Should create JwtService");
     let interceptor = AuthInterceptor::new(jwt_service);
 
     let request = tonic::Request::new(());
+    // No authorization header, no SecurityCheckPassed marker
+
+    let result = interceptor.inject_user(request);
+    assert!(
+        result.is_err(),
+        "Missing marker should fail at AuthInterceptor"
+    );
+    // Now fails with Internal because SecurityCheckPassed marker is missing
+    assert_eq!(
+        result.unwrap_err().code(),
+        tonic::Code::Internal,
+        "Should return Internal (layer ordering error)"
+    );
+}
+
+#[test]
+fn test_missing_auth_header_with_security_marker_fails_unauthenticated() {
+    // With SecurityCheckPassed marker but no auth header, AuthInterceptor fails with Unauthenticated
+    use synctv_api::grpc::interceptors::SecurityCheckPassed;
+    use synctv_api::grpc::AuthInterceptor;
+
+    let jwt_service = JwtService::new(TEST_SECRET).expect("Should create JwtService");
+    let interceptor = AuthInterceptor::new(jwt_service);
+
+    let mut request = tonic::Request::new(());
+    // Inject SecurityCheckPassed marker to simulate BlacklistCheckLayer
+    request.extensions_mut().insert(SecurityCheckPassed);
     // No authorization header
 
     let result = interceptor.inject_user(request);

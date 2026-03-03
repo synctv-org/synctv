@@ -1,6 +1,8 @@
 use {
     super::stream::StreamIdentifier,
-    crate::flv::define::{AacProfile, AvcCodecId, AvcLevel, AvcProfile, SoundFormat},
+    crate::flv::define::{
+        AacProfile, AvcCodecId, AvcLevel, AvcProfile, HevcLevel, HevcProfile, SoundFormat,
+    },
     crate::streamhub::{define::SubscribeType, utils::Uuid},
     chrono::{DateTime, Local},
     serde::Serialize,
@@ -16,6 +18,10 @@ pub struct VideoInfo {
     pub codec: AvcCodecId,
     pub profile: AvcProfile,
     pub level: AvcLevel,
+    /// HEVC profile (only set when codec is HEVC)
+    pub hevc_profile: Option<HevcProfile>,
+    /// HEVC level (only set when codec is HEVC)
+    pub hevc_level: Option<HevcLevel>,
     pub width: u32,
     pub height: u32,
     /*used for calculate the bitrate*/

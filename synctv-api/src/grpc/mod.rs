@@ -328,7 +328,7 @@ pub async fn serve(grpc_config: GrpcServerConfig<'_>) -> anyhow::Result<()> {
         chat_service,
         cluster_manager,
         rate_limiter,
-        rate_limit_config,
+        rate_limit_config: rate_limit_config.clone(),
         content_filter,
         connection_manager,
         email_service,
@@ -611,12 +611,14 @@ pub async fn serve(grpc_config: GrpcServerConfig<'_>) -> anyhow::Result<()> {
             builtin_stun_url: None,
             turn_health_checker: None,
             credential_encryption: None,
+            messaging_rate_limit_config: synctv_core::service::RateLimitConfig::default(),
         });
 
         // Reuse the already-constructed client_api and use actual rate limit config
         let app_state = Arc::new(crate::http::AppState {
             router_config: provider_router_config,
             rate_limit_config: Arc::new(config.http_rate_limits.clone()),
+            messaging_rate_limit_config: Arc::new(synctv_core::service::RateLimitConfig::default()),
             jwt_validator: provider_jwt_validator,
             security_pipeline: Arc::new(
                 synctv_core::service::SecurityPipeline::new(user_service.clone())

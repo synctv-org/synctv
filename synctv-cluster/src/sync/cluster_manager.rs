@@ -33,6 +33,11 @@ pub struct ClusterConfig {
     /// Pre-built Redis connection manager (shared across the process).
     /// `None` for local-only / single-node mode (used in tests).
     pub redis_conn: Option<redis::aio::ConnectionManager>,
+    /// Whether cluster mode is explicitly enabled.
+    /// When `true`, `ClusterManager::new` will return an error if Redis is not configured.
+    /// When `false`, missing Redis is allowed (single-node mode).
+    /// Default: `false`
+    pub cluster_enabled: bool,
     /// Unique identifier for this node
     pub node_id: String,
     /// Deduplication window duration
@@ -73,6 +78,7 @@ impl std::fmt::Debug for ClusterConfig {
                 "redis_conn",
                 &self.redis_conn.as_ref().map(|_| "ConnectionManager { .. }"),
             )
+            .field("cluster_enabled", &self.cluster_enabled)
             .field("node_id", &self.node_id)
             .field("dedup_window", &self.dedup_window)
             .field("cleanup_interval", &self.cleanup_interval)
@@ -94,6 +100,7 @@ impl Default for ClusterConfig {
         Self {
             redis_client: None,
             redis_conn: None,
+            cluster_enabled: false,
             node_id: format!("node_{}", nanoid::nanoid!(8)),
             dedup_window: Duration::from_secs(900),
             cleanup_interval: Duration::from_secs(30),
@@ -182,6 +189,21 @@ impl ClusterManager {
         permission_service: Option<PermissionService>,
         cache_invalidation: Option<synctv_core::cache::CacheInvalidationService>,
     ) -> ClusterResult<Self> {
+        // Validate: cluster mode requires Redis.
+        // Redis is essential for cross-replica pub/sub, leader election, node registry,
+        // distributed rate limiting, and brute-force protection. Running cluster mode
+        // without Redis causes silent data loss and broken multi-replica coordination.
+        if config.cluster_enabled && (config.redis_client.is_none() || config.redis_conn.is_none())
+        {
+            return Err(crate::error::Error::Configuration(
+                "Redis is required when cluster mode is enabled. \
+                 Provide redis_client and redis_conn in ClusterConfig. \
+                 Redis provides cross-replica pub/sub, leader election, node registry, \
+                 and distributed coordination — all mandatory for multi-replica deployments."
+                    .to_string(),
+            ));
+        }
+
         let deduplicator = Arc::new(MessageDeduplicator::new(
             config.dedup_window,
             config.cleanup_interval,
@@ -849,6 +871,7 @@ mod tests {
         let config = ClusterConfig {
             redis_client: None,
             redis_conn: None, // No Redis
+            cluster_enabled: false,
             node_id: "test_node".to_string(),
             dedup_window: Duration::from_secs(1),
             cleanup_interval: Duration::from_secs(1),
@@ -911,6 +934,7 @@ mod tests {
         let config = ClusterConfig {
             redis_client: None,
             redis_conn: None,
+            cluster_enabled: false,
             node_id: "test_node".to_string(),
             dedup_window: Duration::from_secs(1),
             cleanup_interval: Duration::from_secs(1),
@@ -962,6 +986,7 @@ mod tests {
         let config = ClusterConfig {
             redis_client: None,
             redis_conn: None,
+            cluster_enabled: false,
             node_id: "test_node".to_string(),
             dedup_window: Duration::from_secs(1),
             cleanup_interval: Duration::from_secs(1),
@@ -1015,6 +1040,7 @@ mod tests {
         let config = ClusterConfig {
             redis_client: None,
             redis_conn: None, // No Redis - triggers non-cluster mode
+            cluster_enabled: false,
             node_id: "test_node_cache".to_string(),
             dedup_window: Duration::from_secs(1),
             cleanup_interval: Duration::from_secs(1),
@@ -1081,6 +1107,7 @@ mod tests {
         let config = ClusterConfig {
             redis_client: None,
             redis_conn: None,
+            cluster_enabled: false,
             node_id: "test_node_no_cache".to_string(),
             dedup_window: Duration::from_secs(1),
             cleanup_interval: Duration::from_secs(1),
@@ -1135,6 +1162,7 @@ mod tests {
         let config = ClusterConfig {
             redis_client: None,
             redis_conn: None,
+            cluster_enabled: false,
             node_id: "test_node_epoch".to_string(),
             dedup_window: Duration::from_secs(1),
             cleanup_interval: Duration::from_secs(1),
@@ -1199,6 +1227,7 @@ mod tests {
         let config = ClusterConfig {
             redis_client: None,
             redis_conn: None,
+            cluster_enabled: false,
             node_id: "test_metrics_quarantine".to_string(),
             dedup_window: Duration::from_secs(1),
             cleanup_interval: Duration::from_secs(1),
@@ -1224,6 +1253,105 @@ mod tests {
         assert!(
             !metrics.is_quarantined,
             "Should not be quarantined initially"
+        );
+    }
+
+    /// Test that cluster mode requires Redis.
+    /// When cluster_enabled=true but Redis is not configured, ClusterManager::new should fail.
+    #[tokio::test]
+    async fn test_cluster_enabled_requires_redis() {
+        let config = ClusterConfig {
+            redis_client: None,
+            redis_conn: None,      // No Redis
+            cluster_enabled: true, // Cluster mode explicitly enabled
+            node_id: "test_cluster_requires_redis".to_string(),
+            dedup_window: Duration::from_secs(1),
+            cleanup_interval: Duration::from_secs(1),
+            critical_channel_capacity: 1000,
+            publish_channel_capacity: 10_000,
+            key_prefix: "synctv:".to_string(),
+            catchup_window_secs: 300,
+            stream_max_length: 10_000,
+            parent_cancel_token: None,
+        };
+
+        let result = ClusterManager::new(config, None, None).await;
+
+        assert!(
+            result.is_err(),
+            "ClusterManager::new should fail when cluster_enabled=true but Redis is not configured"
+        );
+
+        if let Err(err) = result {
+            let err_msg = err.to_string();
+            assert!(
+                err_msg.contains("Redis is required when cluster mode is enabled"),
+                "Error message should mention Redis requirement, got: {err_msg}"
+            );
+        }
+    }
+
+    /// Test that cluster mode with only redis_client but no redis_conn also fails.
+    #[tokio::test]
+    async fn test_cluster_enabled_requires_both_redis_client_and_conn() {
+        // Use a dummy Redis client that can't connect
+        let redis_client = redis::Client::open("redis://127.0.0.1:1").ok();
+
+        let config = ClusterConfig {
+            redis_client,
+            redis_conn: None, // Missing connection manager
+            cluster_enabled: true,
+            node_id: "test_cluster_missing_conn".to_string(),
+            dedup_window: Duration::from_secs(1),
+            cleanup_interval: Duration::from_secs(1),
+            critical_channel_capacity: 1000,
+            publish_channel_capacity: 10_000,
+            key_prefix: "synctv:".to_string(),
+            catchup_window_secs: 300,
+            stream_max_length: 10_000,
+            parent_cancel_token: None,
+        };
+
+        let result = ClusterManager::new(config, None, None).await;
+
+        assert!(
+            result.is_err(),
+            "ClusterManager::new should fail when cluster_enabled=true but redis_conn is None"
+        );
+
+        if let Err(err) = result {
+            let err_msg = err.to_string();
+            assert!(
+                err_msg.contains("Redis is required when cluster mode is enabled"),
+                "Error message should mention Redis requirement, got: {err_msg}"
+            );
+        }
+    }
+
+    /// Test that non-cluster mode (cluster_enabled=false) works without Redis.
+    #[tokio::test]
+    async fn test_non_cluster_mode_works_without_redis() {
+        let config = ClusterConfig {
+            redis_client: None,
+            redis_conn: None,
+            cluster_enabled: false, // Cluster mode disabled
+            node_id: "test_non_cluster_no_redis".to_string(),
+            dedup_window: Duration::from_secs(1),
+            cleanup_interval: Duration::from_secs(1),
+            critical_channel_capacity: 1000,
+            publish_channel_capacity: 10_000,
+            key_prefix: "synctv:".to_string(),
+            catchup_window_secs: 300,
+            stream_max_length: 10_000,
+            parent_cancel_token: None,
+        };
+
+        let result = ClusterManager::new(config, None, None).await;
+
+        assert!(
+            result.is_ok(),
+            "ClusterManager::new should succeed in non-cluster mode without Redis, got error: {:?}",
+            result.err()
         );
     }
 }

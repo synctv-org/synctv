@@ -1100,6 +1100,209 @@ fn test_playlist_to_proto_root_is_folder() {
     assert!(proto.is_folder, "Root playlist must be marked as folder");
 }
 
+// === SSRF URL Validation Tests for source_config ===
+// These tests verify that validate_source_config_urls checks ALL URL fields
+// in source_config, not just "url" and "urls".
+
+#[test]
+fn test_validate_source_config_urls_blocks_url_field() {
+    // The original "url" field should still be validated
+    let malicious = serde_json::json!({
+        "url": "http://169.254.169.254/latest/meta-data"
+    });
+    let result =
+        super::ClientApiImpl::validate_source_config_urls(&serde_json::to_vec(&malicious).unwrap());
+    assert!(result.is_err(), "Should block SSRF in 'url' field");
+}
+
+#[test]
+fn test_validate_source_config_urls_blocks_urls_array() {
+    // The original "urls" array should still be validated
+    let malicious = serde_json::json!({
+        "urls": ["http://192.168.1.1/secret", "https://valid.example.com/video.mp4"]
+    });
+    let result =
+        super::ClientApiImpl::validate_source_config_urls(&serde_json::to_vec(&malicious).unwrap());
+    assert!(result.is_err(), "Should block SSRF in 'urls' array");
+}
+
+#[test]
+fn test_validate_source_config_urls_blocks_host_field() {
+    // Alist/Emby providers use "host" for server URLs
+    let malicious = serde_json::json!({
+        "host": "http://localhost:8096",
+        "path": "/video.mp4"
+    });
+    let result =
+        super::ClientApiImpl::validate_source_config_urls(&serde_json::to_vec(&malicious).unwrap());
+    assert!(result.is_err(), "Should block SSRF in 'host' field");
+}
+
+#[test]
+fn test_validate_source_config_urls_blocks_host_with_private_ip() {
+    // "host" with private IP should be blocked
+    let malicious = serde_json::json!({
+        "host": "http://10.0.0.1:8096",
+        "path": "/video.mp4"
+    });
+    let result =
+        super::ClientApiImpl::validate_source_config_urls(&serde_json::to_vec(&malicious).unwrap());
+    assert!(result.is_err(), "Should block private IP in 'host' field");
+}
+
+#[test]
+fn test_validate_source_config_urls_blocks_base_url_field() {
+    // Some providers may use "base_url"
+    let malicious = serde_json::json!({
+        "base_url": "http://127.0.0.1/api",
+        "video_id": "abc123"
+    });
+    let result =
+        super::ClientApiImpl::validate_source_config_urls(&serde_json::to_vec(&malicious).unwrap());
+    assert!(result.is_err(), "Should block SSRF in 'base_url' field");
+}
+
+#[test]
+fn test_validate_source_config_urls_blocks_api_endpoint_field() {
+    // Some providers may use "api_endpoint"
+    let malicious = serde_json::json!({
+        "api_endpoint": "http://metadata.google.internal/computeMetadata/v1/",
+        "resource_id": "xyz"
+    });
+    let result =
+        super::ClientApiImpl::validate_source_config_urls(&serde_json::to_vec(&malicious).unwrap());
+    assert!(result.is_err(), "Should block SSRF in 'api_endpoint' field");
+}
+
+#[test]
+fn test_validate_source_config_urls_blocks_proxy_url_field() {
+    // Some providers may use "proxy_url"
+    let malicious = serde_json::json!({
+        "proxy_url": "http://169.254.169.254:8080",
+        "target": "video.mp4"
+    });
+    let result =
+        super::ClientApiImpl::validate_source_config_urls(&serde_json::to_vec(&malicious).unwrap());
+    assert!(result.is_err(), "Should block SSRF in 'proxy_url' field");
+}
+
+#[test]
+fn test_validate_source_config_urls_blocks_server_url_field() {
+    // Some providers may use "server_url"
+    let malicious = serde_json::json!({
+        "server_url": "http://[::1]:8080",
+        "stream_id": "live"
+    });
+    let result =
+        super::ClientApiImpl::validate_source_config_urls(&serde_json::to_vec(&malicious).unwrap());
+    assert!(result.is_err(), "Should block SSRF in 'server_url' field");
+}
+
+#[test]
+fn test_validate_source_config_urls_blocks_callback_url_field() {
+    // Some providers may use "callback_url"
+    let malicious = serde_json::json!({
+        "callback_url": "http://localhost/callback",
+        "event": "playback_done"
+    });
+    let result =
+        super::ClientApiImpl::validate_source_config_urls(&serde_json::to_vec(&malicious).unwrap());
+    assert!(result.is_err(), "Should block SSRF in 'callback_url' field");
+}
+
+#[test]
+fn test_validate_source_config_urls_blocks_thumbnail_url_field() {
+    // Thumbnail URLs should also be validated
+    let malicious = serde_json::json!({
+        "thumbnail_url": "http://192.168.0.1/internal/image.jpg",
+        "title": "My Video"
+    });
+    let result =
+        super::ClientApiImpl::validate_source_config_urls(&serde_json::to_vec(&malicious).unwrap());
+    assert!(
+        result.is_err(),
+        "Should block SSRF in 'thumbnail_url' field"
+    );
+}
+
+#[test]
+fn test_validate_source_config_urls_allows_valid_urls() {
+    // Valid public URLs should pass
+    let valid = serde_json::json!({
+        "url": "https://example.com/video.mp4",
+        "host": "https://api.bilibili.com",
+        "base_url": "https://emby.example.com",
+        "thumbnail_url": "https://cdn.example.com/thumb.jpg"
+    });
+    let result =
+        super::ClientApiImpl::validate_source_config_urls(&serde_json::to_vec(&valid).unwrap());
+    assert!(result.is_ok(), "Should allow valid public URLs");
+}
+
+#[test]
+fn test_validate_source_config_urls_empty_config() {
+    // Empty config should be accepted
+    let result = super::ClientApiImpl::validate_source_config_urls(b"");
+    assert!(result.is_ok(), "Empty config should be accepted");
+}
+
+#[test]
+fn test_validate_source_config_urls_empty_json() {
+    // Empty JSON object should be accepted
+    let result = super::ClientApiImpl::validate_source_config_urls(b"{}");
+    assert!(result.is_ok(), "Empty JSON object should be accepted");
+}
+
+#[test]
+fn test_validate_source_config_urls_invalid_json() {
+    // Invalid JSON should be silently ignored (no validation needed)
+    let result = super::ClientApiImpl::validate_source_config_urls(b"not json");
+    assert!(result.is_ok(), "Invalid JSON should be silently ignored");
+}
+
+#[test]
+fn test_validate_source_config_urls_non_url_fields_ignored() {
+    // Non-URL fields should not cause validation errors
+    let config = serde_json::json!({
+        "video_id": "BV1234567890",
+        "cid": 12345678,
+        "quality": "1080P",
+        "title": "My Video Title",
+        "path": "/movies/action/movie.mp4"
+    });
+    let result =
+        super::ClientApiImpl::validate_source_config_urls(&serde_json::to_vec(&config).unwrap());
+    assert!(result.is_ok(), "Non-URL fields should not cause errors");
+}
+
+#[test]
+fn test_validate_source_config_urls_first_failure_stops_validation() {
+    // When multiple URL fields have SSRF issues, should fail on first
+    let malicious = serde_json::json!({
+        "url": "http://localhost/secret",
+        "host": "http://192.168.1.1/internal"
+    });
+    let result =
+        super::ClientApiImpl::validate_source_config_urls(&serde_json::to_vec(&malicious).unwrap());
+    assert!(result.is_err(), "Should fail on first SSRF URL found");
+}
+
+#[test]
+fn test_validate_source_config_urls_ignores_non_string_values() {
+    // Non-string values in URL fields should be ignored
+    let config = serde_json::json!({
+        "url": {"nested": "object"},
+        "host": 12345,
+        "base_url": ["array", "of", "strings"]
+    });
+    let result =
+        super::ClientApiImpl::validate_source_config_urls(&serde_json::to_vec(&config).unwrap());
+    assert!(
+        result.is_ok(),
+        "Non-string URL field values should be ignored"
+    );
+}
+
 // === M13: Playback version i64 not truncated to i32 ===
 
 #[test]

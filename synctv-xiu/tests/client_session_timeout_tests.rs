@@ -35,6 +35,7 @@ async fn create_hanging_server_after_accept() -> (u16, tokio::task::JoinHandle<(
 }
 
 /// Helper to create a server that immediately sends handshake data
+#[allow(dead_code)]
 async fn create_responsive_server_with_extra_data() -> (u16, tokio::task::JoinHandle<()>) {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();

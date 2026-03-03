@@ -86,6 +86,7 @@ fn make_cluster_config(
     ClusterConfig {
         redis_client: Some(redis_client),
         redis_conn: Some(redis_conn),
+        cluster_enabled: true,
         node_id: node_id.to_string(),
         dedup_window: Duration::from_mins(1),
         cleanup_interval: Duration::from_secs(10),

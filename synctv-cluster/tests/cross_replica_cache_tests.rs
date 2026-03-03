@@ -36,6 +36,7 @@ async fn test_cross_replica_cache_invalidation() {
     let config_a = ClusterConfig {
         redis_client: Some(client_a),
         redis_conn: Some(conn_a),
+        cluster_enabled: true,
         node_id: "node_a".to_string(),
         dedup_window: Duration::from_secs(10),
         cleanup_interval: Duration::from_secs(30),
@@ -199,6 +200,7 @@ async fn test_cross_replica_permission_cache_invalidation_via_cache_service() {
     let config_a = ClusterConfig {
         redis_client: Some(client_a),
         redis_conn: Some(conn_a),
+        cluster_enabled: true,
         node_id: "node_a".to_string(),
         dedup_window: Duration::from_secs(10),
         cleanup_interval: Duration::from_secs(30),
@@ -285,6 +287,7 @@ async fn test_cluster_permission_cache_consistency() {
     let config_a = ClusterConfig {
         redis_client: Some(client_a),
         redis_conn: Some(conn_a),
+        cluster_enabled: true,
         node_id: "perm_node_a".to_string(),
         dedup_window: Duration::from_secs(10),
         cleanup_interval: Duration::from_secs(30),
@@ -308,6 +311,7 @@ async fn test_cluster_permission_cache_consistency() {
     let config_b = ClusterConfig {
         redis_client: Some(client_b),
         redis_conn: Some(conn_b),
+        cluster_enabled: true,
         node_id: "perm_node_b".to_string(),
         dedup_window: Duration::from_secs(10),
         cleanup_interval: Duration::from_secs(30),
@@ -464,6 +468,7 @@ async fn test_concurrent_permission_cache_updates() {
     let config_a = ClusterConfig {
         redis_client: Some(client_a),
         redis_conn: Some(conn_a),
+        cluster_enabled: true,
         node_id: "concurrent_node_a".to_string(),
         dedup_window: Duration::from_secs(10),
         cleanup_interval: Duration::from_secs(30),
@@ -488,6 +493,7 @@ async fn test_concurrent_permission_cache_updates() {
     let config_b = ClusterConfig {
         redis_client: Some(client_b),
         redis_conn: Some(conn_b),
+        cluster_enabled: true,
         node_id: "concurrent_node_b".to_string(),
         dedup_window: Duration::from_secs(10),
         cleanup_interval: Duration::from_secs(30),
@@ -512,6 +518,7 @@ async fn test_concurrent_permission_cache_updates() {
     let config_c = ClusterConfig {
         redis_client: Some(client_c),
         redis_conn: Some(conn_c),
+        cluster_enabled: true,
         node_id: "concurrent_node_c".to_string(),
         dedup_window: Duration::from_secs(10),
         cleanup_interval: Duration::from_secs(30),

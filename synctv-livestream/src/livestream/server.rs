@@ -24,7 +24,7 @@ use std::sync::Arc;
 use synctv_xiu::rtmp::auth::AuthCallback;
 use synctv_xiu::storage::MemoryStorage;
 use synctv_xiu::streamhub::StreamsHub;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, Mutex};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
@@ -33,6 +33,10 @@ use tracing::{error, info, warn};
 /// Used to size the stop-streams notification channel to prevent signal loss
 /// under rapid consecutive restarts.
 const HUB_MAX_RESTARTS: u32 = 10;
+
+/// Number of successful hub cycles after which the restart count is reset.
+/// This prevents transient failures from permanently exhausting HUB_MAX_RESTARTS.
+const STABLE_CYCLES_FOR_RESET: u32 = 5;
 
 pub struct LivestreamConfig {
     pub rtmp_address: String,
@@ -248,6 +252,9 @@ pub struct LivestreamServer {
     auth: Option<Arc<dyn AuthCallback>>,
     /// Pre-bound RTMP listener for early port conflict detection.
     rtmp_listener: Option<tokio::net::TcpListener>,
+    /// Shared flag to reject publications during StreamHub restart.
+    /// Created early so it can be shared with auth callback before start().
+    is_restarting_flag: Arc<AtomicBool>,
 }
 
 impl LivestreamServer {
@@ -262,6 +269,7 @@ impl LivestreamServer {
             user_stream_tracker,
             auth: None,
             rtmp_listener: None,
+            is_restarting_flag: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -278,6 +286,14 @@ impl LivestreamServer {
     pub fn with_auth(mut self, auth: Arc<dyn AuthCallback>) -> Self {
         self.auth = Some(auth);
         self
+    }
+
+    /// Get a clone of the is_restarting flag for sharing with auth callback.
+    /// This allows external auth implementations to check if StreamHub is restarting
+    /// and reject new publications during the restart window.
+    #[must_use]
+    pub fn restarting_flag(&self) -> Arc<AtomicBool> {
+        Arc::clone(&self.is_restarting_flag)
     }
 
     /// Start the entire livestream infrastructure.
@@ -314,7 +330,15 @@ impl LivestreamServer {
         let reregister_notify = Arc::new(tokio::sync::Notify::new());
         // Shared flag to suppress silent-publisher detection during StreamHub restart.
         // Set before cleanup begins, cleared after re-registration completes.
-        let is_restarting_flag = Arc::new(AtomicBool::new(false));
+        // Also checked by auth callback (via restarting_flag()) to reject new publications.
+        // Use the flag created in LivestreamServer::new so it can be shared with auth.
+        let is_restarting_flag = Arc::clone(&self.is_restarting_flag);
+        // Mutex to serialize restart operations and prevent race conditions.
+        // This ensures only one restart flow executes at a time, preventing:
+        // - Corrupted state from parallel cleanup_all_publishers_for_node calls
+        // - Lost re-registration signals
+        // - Inconsistent is_restarting flag state
+        let restart_mutex = Arc::new(Mutex::new(()));
         // Channel to notify pull/external managers to stop all streams before StreamHub restart.
         // This ensures zombie streams (still connected to the old hub) are cleaned up.
         // The oneshot sender allows the restart loop to wait for stop_all() completion
@@ -345,6 +369,7 @@ impl LivestreamServer {
         let rtmp_event_sender = event_sender.clone();
         let reregister_notify_for_hub = Arc::clone(&reregister_notify);
         let is_restarting_for_hub = Arc::clone(&is_restarting_flag);
+        let restart_mutex_for_hub = Arc::clone(&restart_mutex);
         // Pre-bound listener for first cycle (enables early port conflict detection)
         let rtmp_listener = self.rtmp_listener;
 
@@ -354,6 +379,8 @@ impl LivestreamServer {
             const MAX_BACKOFF_SECS: u64 = 30;
 
             let mut restart_count: u32 = 0;
+            // Track successful cycles to reset restart_count after stable operation
+            let mut successful_cycles: u32 = 0;
             // Pre-bound listener for first cycle only (enables early port conflict detection)
             let mut first_cycle_listener = rtmp_listener;
 
@@ -439,6 +466,13 @@ impl LivestreamServer {
                 synctv_core::metrics::livestream::LIVESTREAM_ACTIVE_PUBLISHERS.set(0);
                 synctv_core::metrics::livestream::LIVESTREAM_ACTIVE_VIEWERS.set(0);
 
+                // Track successful cycles for restart_count reset
+                // If this was a clean exit (channel_closed), it counts as stable operation
+                let was_clean_exit = run_result.is_ok();
+                if was_clean_exit {
+                    successful_cycles += 1;
+                }
+
                 restart_count += 1;
 
                 // Record restart metrics with exit reason
@@ -453,16 +487,25 @@ impl LivestreamServer {
                 warn!(
                     restart_count,
                     max_restarts = HUB_MAX_RESTARTS,
+                    successful_cycles,
                     reason,
                     "StreamHub event loop exited unexpectedly, cleaning up local state before restart..."
                 );
 
                 info!("Cancelled all active RTMP sessions due to StreamHub restart");
 
+                // Acquire the restart mutex to serialize cleanup operations.
+                // This prevents race conditions when multiple restarts happen in quick succession:
+                // - Prevents parallel cleanup_all_publishers_for_node calls
+                // - Ensures is_restarting flag state is consistent
+                // - Serializes re-registration notifications
+                let _restart_guard = restart_mutex_for_hub.lock().await;
+
                 // Set the restarting flag BEFORE cleanup to suppress silent-publisher
                 // detection during the restart window. This prevents false cleanup of
                 // publishers that are temporarily missing from Redis during the
                 // cleanup -> re-register cycle.
+                // Also checked by RtmpAuthCallbackImpl to reject new publications.
                 is_restarting_for_hub.store(true, Ordering::Release);
 
                 // Stop all managed pull/external-publish streams BEFORE restart.
@@ -536,6 +579,18 @@ impl LivestreamServer {
                 // after re-registration completes.
                 reregister_notify_for_hub.notify_one();
 
+                // Reset restart_count after enough successful cycles to prevent
+                // transient failures from permanently exhausting HUB_MAX_RESTARTS.
+                // Only reset if we've had stable operation since the last restart.
+                if successful_cycles >= STABLE_CYCLES_FOR_RESET && restart_count > 0 {
+                    info!(
+                        previous_restart_count = restart_count,
+                        successful_cycles, "Resetting restart count after stable operation"
+                    );
+                    restart_count = 0;
+                    successful_cycles = 0;
+                }
+
                 if restart_count >= HUB_MAX_RESTARTS {
                     error!(
                         "StreamHub has restarted {} times, giving up to avoid infinite restart loop",
@@ -553,6 +608,8 @@ impl LivestreamServer {
                     backoff_secs
                 );
                 tokio::time::sleep(std::time::Duration::from_secs(backoff_secs)).await;
+
+                // Mutex guard is dropped here, allowing the next restart (if any) to proceed
             }
         });
 

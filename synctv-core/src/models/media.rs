@@ -323,6 +323,10 @@ pub struct PlaybackInfo {
     /// Danmaku list (each mode can have different danmaku sources)
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub danmakus: Vec<Danmaku>,
+
+    /// Format (e.g., "hls", "dash", "mp4")
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub format: String,
 }
 
 /// Playback URL (represents a quality/codec option)
@@ -400,6 +404,10 @@ pub struct SubtitleUrl {
     /// Request headers (if needed)
     #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
     pub headers: std::collections::HashMap<String, String>,
+
+    /// Format (e.g., "json", "srt", "vtt")
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub format: String,
 }
 
 /// Danmaku (bullet comments) information
@@ -576,6 +584,7 @@ impl PlaybackInfo {
             subtitles: Vec::new(),
             default_subtitle_index: None,
             danmakus: Vec::new(),
+            format: String::new(),
         }
     }
 
@@ -594,6 +603,7 @@ pub struct PlaybackInfoBuilder {
     subtitles: Vec<Subtitle>,
     default_subtitle_index: Option<usize>,
     danmakus: Vec<Danmaku>,
+    format: String,
 }
 
 impl PlaybackInfoBuilder {
@@ -632,6 +642,13 @@ impl PlaybackInfoBuilder {
         self
     }
 
+    /// Set the format (e.g., "hls", "dash", "mp4")
+    #[must_use]
+    pub fn format(mut self, format: String) -> Self {
+        self.format = format;
+        self
+    }
+
     /// Build the `PlaybackInfo`
     #[must_use]
     pub fn build(self) -> PlaybackInfo {
@@ -641,6 +658,7 @@ impl PlaybackInfoBuilder {
             subtitles: self.subtitles,
             default_subtitle_index: self.default_subtitle_index,
             danmakus: self.danmakus,
+            format: self.format,
         }
     }
 }
@@ -770,5 +788,111 @@ mod tests {
             .build();
 
         assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_subtitle_url_format_field() {
+        // Test that SubtitleUrl can be created with format field
+        let subtitle_url = SubtitleUrl {
+            name: "English".to_string(),
+            url: "https://example.com/sub.vtt".to_string(),
+            headers: std::collections::HashMap::new(),
+            format: "vtt".to_string(),
+        };
+
+        assert_eq!(subtitle_url.name, "English");
+        assert_eq!(subtitle_url.url, "https://example.com/sub.vtt");
+        assert_eq!(subtitle_url.format, "vtt");
+
+        // Test serialization includes format
+        let json = serde_json::to_string(&subtitle_url).expect("should serialize");
+        assert!(json.contains("\"format\":\"vtt\""));
+
+        // Test deserialization with format
+        let json_with_format =
+            r#"{"name":"Chinese","url":"https://example.com/cn.srt","format":"srt"}"#;
+        let deserialized: SubtitleUrl =
+            serde_json::from_str(json_with_format).expect("should deserialize");
+        assert_eq!(deserialized.name, "Chinese");
+        assert_eq!(deserialized.format, "srt");
+
+        // Test deserialization without format (should default to empty string)
+        let json_without_format = r#"{"name":"Japanese","url":"https://example.com/jp.ass"}"#;
+        let deserialized_default: SubtitleUrl =
+            serde_json::from_str(json_without_format).expect("should deserialize");
+        assert_eq!(deserialized_default.name, "Japanese");
+        assert_eq!(deserialized_default.format, "");
+    }
+
+    #[test]
+    fn test_playback_info_format_field() {
+        // Test that PlaybackInfo can be created with format field using builder
+        let playback_info = PlaybackInfo::builder()
+            .add_url(PlaybackUrl::simple(
+                "1080P".to_string(),
+                "https://example.com/video.m3u8".to_string(),
+            ))
+            .format("hls".to_string())
+            .build();
+
+        assert_eq!(playback_info.format, "hls");
+        assert_eq!(playback_info.urls.len(), 1);
+
+        // Test serialization includes format
+        let json = serde_json::to_string(&playback_info).expect("should serialize");
+        assert!(json.contains("\"format\":\"hls\""));
+
+        // Test deserialization with format
+        let json_with_format =
+            r#"{"urls":[{"name":"720P","url":"https://example.com/video.mp4"}],"format":"mp4"}"#;
+        let deserialized: PlaybackInfo =
+            serde_json::from_str(json_with_format).expect("should deserialize");
+        assert_eq!(deserialized.format, "mp4");
+        assert_eq!(deserialized.urls.len(), 1);
+
+        // Test deserialization without format (should default to empty string)
+        let json_without_format =
+            r#"{"urls":[{"name":"480P","url":"https://example.com/video.webm"}]}"#;
+        let deserialized_default: PlaybackInfo =
+            serde_json::from_str(json_without_format).expect("should deserialize");
+        assert_eq!(deserialized_default.format, "");
+    }
+
+    #[test]
+    fn test_playback_info_single_url_has_empty_format() {
+        // Test that single_url convenience method creates PlaybackInfo with empty format
+        let playback_info = PlaybackInfo::single_url(
+            "https://example.com/video.mp4".to_string(),
+            "Direct".to_string(),
+        );
+
+        assert_eq!(playback_info.format, "");
+        assert_eq!(playback_info.urls.len(), 1);
+    }
+
+    #[test]
+    fn test_subtitle_url_skip_serializing_empty_format() {
+        // Test that empty format is skipped during serialization
+        let subtitle_url = SubtitleUrl {
+            name: "Test".to_string(),
+            url: "https://example.com/test.vtt".to_string(),
+            headers: std::collections::HashMap::new(),
+            format: String::new(),
+        };
+
+        let json = serde_json::to_string(&subtitle_url).expect("should serialize");
+        assert!(!json.contains("\"format\""));
+    }
+
+    #[test]
+    fn test_playback_info_skip_serializing_empty_format() {
+        // Test that empty format is skipped during serialization
+        let playback_info = PlaybackInfo::single_url(
+            "https://example.com/video.mp4".to_string(),
+            "Test".to_string(),
+        );
+
+        let json = serde_json::to_string(&playback_info).expect("should serialize");
+        assert!(!json.contains("\"format\""));
     }
 }

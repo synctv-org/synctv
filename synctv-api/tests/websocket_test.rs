@@ -920,6 +920,7 @@ mod websocket_e2e {
             redis_conn: None,
             builtin_stun_url: None,
             credential_encryption: None,
+            messaging_rate_limit_config: synctv_core::service::RateLimitConfig::default(),
         };
 
         let guest_token_validator = Arc::new(
@@ -933,6 +934,7 @@ mod websocket_e2e {
         let state = synctv_api::AppState {
             router_config: Arc::new(router_config),
             rate_limit_config,
+            messaging_rate_limit_config: Arc::new(synctv_core::service::RateLimitConfig::default()),
             jwt_validator,
             security_pipeline: Arc::new(
                 synctv_core::service::SecurityPipeline::new(user_service.clone())
@@ -2878,6 +2880,7 @@ mod websocket_connection_limit_timing {
             redis_conn: None,
             builtin_stun_url: None,
             credential_encryption: None,
+            messaging_rate_limit_config: synctv_core::service::RateLimitConfig::default(),
         };
 
         let guest_token_validator = Arc::new(
@@ -2891,6 +2894,7 @@ mod websocket_connection_limit_timing {
         let state = synctv_api::AppState {
             router_config: Arc::new(router_config),
             rate_limit_config,
+            messaging_rate_limit_config: Arc::new(synctv_core::service::RateLimitConfig::default()),
             jwt_validator,
             security_pipeline: Arc::new(
                 synctv_core::service::SecurityPipeline::new(user_service.clone())

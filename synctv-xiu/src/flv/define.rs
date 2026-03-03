@@ -31,7 +31,7 @@ pub mod frame_type {
     pub const INTER_FRAME: u8 = 2;
 }
 
-#[derive(Debug, Clone, Serialize, Default)]
+#[derive(Debug, Clone, Serialize, Default, PartialEq, Eq)]
 pub enum AvcCodecId {
     #[default]
     UNKNOWN = 0,
@@ -178,6 +178,89 @@ pub const fn u8_2_avc_level(profile: u8) -> AvcLevel {
         51_u8 => AvcLevel::Level51,
 
         _ => AvcLevel::UNKNOWN,
+    }
+}
+
+/// HEVC (H.265) profiles according to ITU-T H.265 Table A.2
+#[derive(Debug, Clone, Serialize, Default, PartialEq, Eq)]
+pub enum HevcProfile {
+    #[default]
+    UNKNOWN = -1,
+    /// Main profile (profile_idc = 1)
+    Main = 1,
+    /// Main 10 profile (profile_idc = 2)
+    Main10 = 2,
+    /// Main Still Picture profile (profile_idc = 3)
+    MainStillPicture = 3,
+    /// Rext format range extensions (profile_idc = 4)
+    Rext = 4,
+    /// High Throughput (profile_idc = 5)
+    HighThroughput = 5,
+}
+
+#[must_use]
+pub const fn u8_2_hevc_profile(profile_idc: u8) -> HevcProfile {
+    match profile_idc {
+        1_u8 => HevcProfile::Main,
+        2_u8 => HevcProfile::Main10,
+        3_u8 => HevcProfile::MainStillPicture,
+        4_u8 => HevcProfile::Rext,
+        5_u8 => HevcProfile::HighThroughput,
+        _ => HevcProfile::UNKNOWN,
+    }
+}
+
+/// HEVC (H.265) levels according to ITU-T H.265 Table A.1
+/// Level values are expressed as general_level_idc * 3 (e.g., Level 4.0 = 120)
+#[derive(Debug, Clone, Serialize, Default, PartialEq, Eq)]
+pub enum HevcLevel {
+    #[default]
+    UNKNOWN = -1,
+    #[serde(rename = "1.0")]
+    Level1 = 30,
+    #[serde(rename = "2.0")]
+    Level2 = 60,
+    #[serde(rename = "2.1")]
+    Level21 = 63,
+    #[serde(rename = "3.0")]
+    Level3 = 90,
+    #[serde(rename = "3.1")]
+    Level31 = 93,
+    #[serde(rename = "4.0")]
+    Level4 = 120,
+    #[serde(rename = "4.1")]
+    Level41 = 123,
+    #[serde(rename = "5.0")]
+    Level5 = 150,
+    #[serde(rename = "5.1")]
+    Level51 = 153,
+    #[serde(rename = "5.2")]
+    Level52 = 156,
+    #[serde(rename = "6.0")]
+    Level6 = 180,
+    #[serde(rename = "6.1")]
+    Level61 = 183,
+    #[serde(rename = "6.2")]
+    Level62 = 186,
+}
+
+#[must_use]
+pub const fn u8_2_hevc_level(level_idc: u8) -> HevcLevel {
+    match level_idc {
+        30_u8 => HevcLevel::Level1,
+        60_u8 => HevcLevel::Level2,
+        63_u8 => HevcLevel::Level21,
+        90_u8 => HevcLevel::Level3,
+        93_u8 => HevcLevel::Level31,
+        120_u8 => HevcLevel::Level4,
+        123_u8 => HevcLevel::Level41,
+        150_u8 => HevcLevel::Level5,
+        153_u8 => HevcLevel::Level51,
+        156_u8 => HevcLevel::Level52,
+        180_u8 => HevcLevel::Level6,
+        183_u8 => HevcLevel::Level61,
+        186_u8 => HevcLevel::Level62,
+        _ => HevcLevel::UNKNOWN,
     }
 }
 

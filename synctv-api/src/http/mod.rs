@@ -82,6 +82,9 @@ pub struct RouterConfig {
     pub turn_health_checker: Option<Arc<synctv_core::service::TurnHealthChecker>>,
     /// Credential encryption for protecting sensitive data in `source_config`
     pub credential_encryption: Option<synctv_core::service::CredentialEncryption>,
+    /// Rate limit configuration for WebSocket messaging (chat/danmaku).
+    /// This is separate from the HTTP rate limit config used by middleware.
+    pub messaging_rate_limit_config: synctv_core::service::RateLimitConfig,
 }
 
 /// Shared application state.
@@ -96,6 +99,8 @@ pub struct AppState {
     pub router_config: Arc<RouterConfig>,
     /// Shared rate limit config (created once at startup, not per-request)
     pub rate_limit_config: Arc<middleware::RateLimitConfig>,
+    /// Shared messaging rate limit config for WebSocket (chat/danmaku rate limits)
+    pub messaging_rate_limit_config: Arc<synctv_core::service::RateLimitConfig>,
     /// Shared JWT validator (created once at startup, not per-request)
     pub jwt_validator: Arc<synctv_core::service::auth::JwtValidator>,
     /// Shared security pipeline for post-JWT checks (password, user status)
@@ -222,6 +227,9 @@ fn build_app_state(config: RouterConfig) -> AppState {
     // H-3: Create shared RateLimitConfig from the config file (not hardcoded defaults)
     let rate_limit_config = Arc::new(config.config.http_rate_limits.clone());
 
+    // Create shared messaging rate limit config for WebSocket (chat/danmaku)
+    let messaging_rate_limit_config = Arc::new(config.messaging_rate_limit_config.clone());
+
     // H-5: Create shared JwtValidator once at startup (not per-request)
     let jwt_validator = Arc::new(synctv_core::service::auth::JwtValidator::new(Arc::new(
         config.jwt_service.clone(),
@@ -250,6 +258,7 @@ fn build_app_state(config: RouterConfig) -> AppState {
     AppState {
         router_config: Arc::new(config),
         rate_limit_config,
+        messaging_rate_limit_config,
         jwt_validator,
         security_pipeline,
         guest_token_validator,

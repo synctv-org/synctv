@@ -40,10 +40,12 @@ pub struct Mpeg4Hevc {
     configuration_version: u8, // 1-only
     general_profile_space: u8, // 2bit,[0,3]
     general_tier_flag: u8,     // 1bit,[0,1]
-    general_profile_idc: u8,   // 5bit,[0,31]
+    /// HEVC profile indicator (profile_idc): 1=Main, 2=Main10, 3=MainStillPicture, etc.
+    pub general_profile_idc: u8, // 5bit,[0,31]
     general_profile_compatibility_flags: u32,
     general_constraint_indicator_flags: u64,
-    general_level_idc: u8,
+    /// HEVC level indicator (level_idc * 3): 30=1.0, 60=2.0, 93=3.1, 120=4.0, etc.
+    pub general_level_idc: u8,
     min_spatial_segmentation_idc: u16,
     parallelism_type: u8,        // 2bit,[0,3]
     chroma_format: u8,           // 2bit,[0,3]
@@ -57,6 +59,11 @@ pub struct Mpeg4Hevc {
 
     /// NAL unit length size in bytes (1-4)
     nalu_length: u8,
+
+    /// Video width in pixels (parsed from SPS)
+    pub width: u32,
+    /// Video height in pixels (parsed from SPS)
+    pub height: u32,
 
     /// VPS NAL units
     vps: Vec<HevcNal>,
@@ -154,12 +161,10 @@ impl Mpeg4HevcProcessor {
                     hevc_nal_type::HEVC_NAL_VPS => {
                         let nal = HevcNal { data: nal_data };
                         self.mpeg4_hevc.vps.push(nal);
-                        // Store last VPS with Annex B start code
-                        self.mpeg4_hevc.vps_annexb_data.clear();
+                        // Append VPS with Annex B start code (accumulate all VPS NAL units)
                         self.mpeg4_hevc.vps_annexb_data.write(&HEVC_START_CODE)?;
                         self.mpeg4_hevc.vps_annexb_data.write(
-                            &self
-                                .mpeg4_hevc
+                            self.mpeg4_hevc
                                 .vps
                                 .last()
                                 .map(|v| v.data.as_ref())
@@ -169,12 +174,10 @@ impl Mpeg4HevcProcessor {
                     hevc_nal_type::HEVC_NAL_SPS => {
                         let nal = HevcNal { data: nal_data };
                         self.mpeg4_hevc.sps.push(nal);
-                        // Store last SPS with Annex B start code
-                        self.mpeg4_hevc.sps_annexb_data.clear();
+                        // Append SPS with Annex B start code (accumulate all SPS NAL units)
                         self.mpeg4_hevc.sps_annexb_data.write(&HEVC_START_CODE)?;
                         self.mpeg4_hevc.sps_annexb_data.write(
-                            &self
-                                .mpeg4_hevc
+                            self.mpeg4_hevc
                                 .sps
                                 .last()
                                 .map(|s| s.data.as_ref())
@@ -184,12 +187,10 @@ impl Mpeg4HevcProcessor {
                     hevc_nal_type::HEVC_NAL_PPS => {
                         let nal = HevcNal { data: nal_data };
                         self.mpeg4_hevc.pps.push(nal);
-                        // Store last PPS with Annex B start code
-                        self.mpeg4_hevc.pps_annexb_data.clear();
+                        // Append PPS with Annex B start code (accumulate all PPS NAL units)
                         self.mpeg4_hevc.pps_annexb_data.write(&HEVC_START_CODE)?;
                         self.mpeg4_hevc.pps_annexb_data.write(
-                            &self
-                                .mpeg4_hevc
+                            self.mpeg4_hevc
                                 .pps
                                 .last()
                                 .map(|p| p.data.as_ref())
@@ -499,6 +500,299 @@ mod tests {
         // Should have start code + original data
         assert_eq!(&annexb[..4], &[0x00, 0x00, 0x00, 0x01]);
         assert_eq!(&annexb[4..], &[0x02, 0xAA, 0xBB]);
+    }
+
+    #[test]
+    fn test_decoder_configuration_record_load_multiple_vps_sps_pps() {
+        // Test that when HVCC contains multiple VPS/SPS/PPS NAL units,
+        // all of them are stored and included in the Annex B data
+        let mut processor = Mpeg4HevcProcessor::default();
+
+        // Create a minimal HVCC (HEVCDecoderConfigurationRecord) with:
+        // - 2 VPS NAL units
+        // - 2 SPS NAL units
+        // - 2 PPS NAL units
+        let mut hvcc = Vec::new();
+
+        // Configuration version
+        hvcc.push(0x01); // version = 1
+
+        // general_profile_space(2) + general_tier_flag(1) + general_profile_idc(5)
+        hvcc.push(0x01); // profile_space=0, tier_flag=0, profile_idc=1
+
+        // general_profile_compatibility_flags (4 bytes)
+        hvcc.extend_from_slice(&[0x00, 0x00, 0x00, 0x00]);
+
+        // general_constraint_indicator_flags (6 bytes)
+        hvcc.extend_from_slice(&[0x00, 0x00, 0x00, 0x00, 0x00, 0x00]);
+
+        // general_level_idc
+        hvcc.push(0x5D); // level 93 = 4K
+
+        // min_spatial_segmentation_idc (4 bits reserved + 12 bits)
+        hvcc.extend_from_slice(&[0xF0, 0x00]);
+
+        // parallelism_type (6 bits reserved + 2 bits)
+        hvcc.push(0xFC);
+
+        // chroma_format (6 bits reserved + 2 bits) - 1 = 4:2:0
+        hvcc.push(0xFD);
+
+        // bit_depth_luma_minus8 (5 bits reserved + 3 bits)
+        hvcc.push(0xF8);
+
+        // bit_depth_chroma_minus8 (5 bits reserved + 3 bits)
+        hvcc.push(0xF8);
+
+        // avg_frame_rate
+        hvcc.extend_from_slice(&[0x00, 0x00]);
+
+        // constant_frame_rate(2) + num_temporal_layers(3) + temporal_id_nested(1) + length_size_minus_one(2)
+        hvcc.push(0x0F); // length_size_minus_one = 3 (4 bytes)
+
+        // num_arrays - we have 3 arrays (VPS, SPS, PPS)
+        hvcc.push(0x03);
+
+        // Array 1: VPS (type 32) with 2 NAL units
+        hvcc.push(0x20); // array_completeness=0, reserved=0, NAL_type=32 (VPS)
+        hvcc.extend_from_slice(&[0x00, 0x02]); // numNalus = 2
+                                               // First VPS NAL unit
+        hvcc.extend_from_slice(&[0x00, 0x02]); // nalUnitLength = 2
+        hvcc.extend_from_slice(&[0x40, 0x01]); // VPS data (first VPS)
+                                               // Second VPS NAL unit
+        hvcc.extend_from_slice(&[0x00, 0x02]); // nalUnitLength = 2
+        hvcc.extend_from_slice(&[0x40, 0x02]); // VPS data (second VPS)
+
+        // Array 2: SPS (type 33) with 2 NAL units
+        hvcc.push(0x21); // array_completeness=0, reserved=0, NAL_type=33 (SPS)
+        hvcc.extend_from_slice(&[0x00, 0x02]); // numNalus = 2
+                                               // First SPS NAL unit
+        hvcc.extend_from_slice(&[0x00, 0x02]); // nalUnitLength = 2
+        hvcc.extend_from_slice(&[0x42, 0x01]); // SPS data (first SPS)
+                                               // Second SPS NAL unit
+        hvcc.extend_from_slice(&[0x00, 0x02]); // nalUnitLength = 2
+        hvcc.extend_from_slice(&[0x42, 0x02]); // SPS data (second SPS)
+
+        // Array 3: PPS (type 34) with 2 NAL units
+        hvcc.push(0x22); // array_completeness=0, reserved=0, NAL_type=34 (PPS)
+        hvcc.extend_from_slice(&[0x00, 0x02]); // numNalus = 2
+                                               // First PPS NAL unit
+        hvcc.extend_from_slice(&[0x00, 0x02]); // nalUnitLength = 2
+        hvcc.extend_from_slice(&[0x44, 0x01]); // PPS data (first PPS)
+                                               // Second PPS NAL unit
+        hvcc.extend_from_slice(&[0x00, 0x02]); // nalUnitLength = 2
+        hvcc.extend_from_slice(&[0x44, 0x02]); // PPS data (second PPS)
+
+        let mut reader = BytesReader::new(BytesMut::from(&hvcc[..]));
+        let result = processor.decoder_configuration_record_load(&mut reader);
+
+        assert!(result.is_ok());
+
+        // Verify that all VPS/SPS/PPS are stored in vectors
+        assert_eq!(
+            processor.mpeg4_hevc.vps.len(),
+            2,
+            "Should have 2 VPS NAL units"
+        );
+        assert_eq!(
+            processor.mpeg4_hevc.sps.len(),
+            2,
+            "Should have 2 SPS NAL units"
+        );
+        assert_eq!(
+            processor.mpeg4_hevc.pps.len(),
+            2,
+            "Should have 2 PPS NAL units"
+        );
+
+        // Verify the content of each VPS
+        assert_eq!(
+            &processor.mpeg4_hevc.vps[0].data[..],
+            &[0x40, 0x01],
+            "First VPS data"
+        );
+        assert_eq!(
+            &processor.mpeg4_hevc.vps[1].data[..],
+            &[0x40, 0x02],
+            "Second VPS data"
+        );
+
+        // Verify the content of each SPS
+        assert_eq!(
+            &processor.mpeg4_hevc.sps[0].data[..],
+            &[0x42, 0x01],
+            "First SPS data"
+        );
+        assert_eq!(
+            &processor.mpeg4_hevc.sps[1].data[..],
+            &[0x42, 0x02],
+            "Second SPS data"
+        );
+
+        // Verify the content of each PPS
+        assert_eq!(
+            &processor.mpeg4_hevc.pps[0].data[..],
+            &[0x44, 0x01],
+            "First PPS data"
+        );
+        assert_eq!(
+            &processor.mpeg4_hevc.pps[1].data[..],
+            &[0x44, 0x02],
+            "Second PPS data"
+        );
+
+        // Verify that annexb_data contains ALL VPS/SPS/PPS with start codes
+        let vps_annexb = processor.mpeg4_hevc.vps_annexb_data.get_current_bytes();
+        let sps_annexb = processor.mpeg4_hevc.sps_annexb_data.get_current_bytes();
+        let pps_annexb = processor.mpeg4_hevc.pps_annexb_data.get_current_bytes();
+
+        // Each annexb should have 2 NAL units, each with start code
+        // Expected VPS: [start_code][VPS1][start_code][VPS2]
+        // = [0x00,0x00,0x00,0x01,0x40,0x01,0x00,0x00,0x00,0x01,0x40,0x02]
+        let expected_vps: Vec<u8> = vec![
+            0x00, 0x00, 0x00, 0x01, 0x40, 0x01, // first VPS
+            0x00, 0x00, 0x00, 0x01, 0x40, 0x02, // second VPS
+        ];
+        assert_eq!(
+            &vps_annexb[..],
+            &expected_vps[..],
+            "VPS Annex B should contain all VPS NAL units"
+        );
+
+        let expected_sps: Vec<u8> = vec![
+            0x00, 0x00, 0x00, 0x01, 0x42, 0x01, // first SPS
+            0x00, 0x00, 0x00, 0x01, 0x42, 0x02, // second SPS
+        ];
+        assert_eq!(
+            &sps_annexb[..],
+            &expected_sps[..],
+            "SPS Annex B should contain all SPS NAL units"
+        );
+
+        let expected_pps: Vec<u8> = vec![
+            0x00, 0x00, 0x00, 0x01, 0x44, 0x01, // first PPS
+            0x00, 0x00, 0x00, 0x01, 0x44, 0x02, // second PPS
+        ];
+        assert_eq!(
+            &pps_annexb[..],
+            &expected_pps[..],
+            "PPS Annex B should contain all PPS NAL units"
+        );
+    }
+
+    #[test]
+    fn test_hevc_mp4toannexb_with_multiple_parameter_sets() {
+        // Test that hevc_mp4toannexb correctly prepends ALL VPS/SPS/PPS to IDR frames
+        let mut processor = Mpeg4HevcProcessor::default();
+        processor.mpeg4_hevc.nalu_length = 4;
+
+        // Set up multiple VPS, SPS, PPS data in annexb format
+        // VPS: 2 NAL units
+        processor.mpeg4_hevc.vps_annexb_data = BytesWriter::new();
+        processor
+            .mpeg4_hevc
+            .vps_annexb_data
+            .write(&HEVC_START_CODE)
+            .unwrap();
+        processor
+            .mpeg4_hevc
+            .vps_annexb_data
+            .write(&[0x40, 0x01])
+            .unwrap();
+        processor
+            .mpeg4_hevc
+            .vps_annexb_data
+            .write(&HEVC_START_CODE)
+            .unwrap();
+        processor
+            .mpeg4_hevc
+            .vps_annexb_data
+            .write(&[0x40, 0x02])
+            .unwrap();
+
+        // SPS: 2 NAL units
+        processor.mpeg4_hevc.sps_annexb_data = BytesWriter::new();
+        processor
+            .mpeg4_hevc
+            .sps_annexb_data
+            .write(&HEVC_START_CODE)
+            .unwrap();
+        processor
+            .mpeg4_hevc
+            .sps_annexb_data
+            .write(&[0x42, 0x01])
+            .unwrap();
+        processor
+            .mpeg4_hevc
+            .sps_annexb_data
+            .write(&HEVC_START_CODE)
+            .unwrap();
+        processor
+            .mpeg4_hevc
+            .sps_annexb_data
+            .write(&[0x42, 0x02])
+            .unwrap();
+
+        // PPS: 2 NAL units
+        processor.mpeg4_hevc.pps_annexb_data = BytesWriter::new();
+        processor
+            .mpeg4_hevc
+            .pps_annexb_data
+            .write(&HEVC_START_CODE)
+            .unwrap();
+        processor
+            .mpeg4_hevc
+            .pps_annexb_data
+            .write(&[0x44, 0x01])
+            .unwrap();
+        processor
+            .mpeg4_hevc
+            .pps_annexb_data
+            .write(&HEVC_START_CODE)
+            .unwrap();
+        processor
+            .mpeg4_hevc
+            .pps_annexb_data
+            .write(&[0x44, 0x02])
+            .unwrap();
+
+        // Create an IDR NAL unit (type 19 = IDR_W_RADL, first byte = 0x26)
+        let mut data = BytesMut::new();
+        data.extend_from_slice(&[0x00, 0x00, 0x00, 0x02]); // size = 2
+        data.extend_from_slice(&[0x26, 0xFF]); // IDR NAL data
+
+        let mut reader = BytesReader::new(data);
+        let result = processor.hevc_mp4toannexb(&mut reader);
+
+        assert!(result.is_ok());
+        let annexb = result.unwrap();
+
+        // Expected: all VPS + all SPS + all PPS + IDR
+        // = [VPS1][VPS2][SPS1][SPS2][PPS1][PPS2][IDR]
+        // Each NAL: start_code(4) + data(2) = 6 bytes
+        // Total: 6*7 = 42 bytes
+        assert_eq!(
+            annexb.len(),
+            42,
+            "Should have 42 bytes total (7 NAL units * 6 bytes each)"
+        );
+
+        let slice = &annexb[..];
+
+        // Verify VPS1
+        assert_eq!(&slice[0..6], &[0x00, 0x00, 0x00, 0x01, 0x40, 0x01]);
+        // Verify VPS2
+        assert_eq!(&slice[6..12], &[0x00, 0x00, 0x00, 0x01, 0x40, 0x02]);
+        // Verify SPS1
+        assert_eq!(&slice[12..18], &[0x00, 0x00, 0x00, 0x01, 0x42, 0x01]);
+        // Verify SPS2
+        assert_eq!(&slice[18..24], &[0x00, 0x00, 0x00, 0x01, 0x42, 0x02]);
+        // Verify PPS1
+        assert_eq!(&slice[24..30], &[0x00, 0x00, 0x00, 0x01, 0x44, 0x01]);
+        // Verify PPS2
+        assert_eq!(&slice[30..36], &[0x00, 0x00, 0x00, 0x01, 0x44, 0x02]);
+        // Verify IDR
+        assert_eq!(&slice[36..42], &[0x00, 0x00, 0x00, 0x01, 0x26, 0xFF]);
     }
 
     #[test]

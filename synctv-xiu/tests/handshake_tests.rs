@@ -24,7 +24,7 @@ use synctv_xiu::rtmp::handshake::{
     errors::{DigestErrorValue, HandshakeError, HandshakeErrorValue},
     handshake_client::SimpleHandshakeClient,
     handshake_server::{ComplexHandshakeServer, HandshakeServer, SimpleHandshakeServer},
-    handshake_trait::{THandshakeClient, THandshakeServer},
+    handshake_trait::THandshakeServer,
     utils,
 };
 
@@ -566,7 +566,7 @@ mod state_transition_tests {
 mod timeout_tests {
     use super::*;
     use synctv_xiu::bytesio::bytesio::TcpIO;
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::io::AsyncReadExt;
     use tokio::net::{TcpListener, TcpStream};
     use tokio::time::{timeout, Instant};
 

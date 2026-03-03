@@ -236,6 +236,7 @@ pub fn provider_playback_info_to_model(
                 name: String::new(),
                 url: sub.url.clone(),
                 headers: std::collections::HashMap::new(),
+                format: String::new(),
             };
             Subtitle {
                 name: sub.name.clone(),
@@ -252,6 +253,7 @@ pub fn provider_playback_info_to_model(
         subtitles,
         default_subtitle_index: None,
         danmakus: Vec::new(),
+        format: String::new(),
     }
 }
 
@@ -298,7 +300,7 @@ fn playback_info_to_proto(
         subtitles: info.subtitles.iter().map(subtitle_to_proto).collect(),
         default_subtitle_index: info.default_subtitle_index.map(|idx| idx as i32),
         danmakus: info.danmakus.iter().map(danmaku_to_proto).collect(),
-        format: String::new(),
+        format: info.format.clone(),
     }
 }
 
@@ -354,7 +356,7 @@ fn subtitle_url_to_proto(
         name: url.name.clone(),
         url: url.url.clone(),
         headers: url.headers.clone(),
-        format: String::new(),
+        format: url.format.clone(),
     }
 }
 

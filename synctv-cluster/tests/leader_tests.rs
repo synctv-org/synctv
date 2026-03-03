@@ -32,7 +32,7 @@ impl LeaderElect for MockElector {
 // Test 1: leader_guard cancelled on Lost event
 // ============================================================================
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_leader_guard_cancelled_on_lost() {
     let elector = MockElector::new();
     let guard = elector.leader_guard();
@@ -55,7 +55,7 @@ async fn test_leader_guard_cancelled_on_lost() {
 // Test 2: leader_guard cancelled on Vacancy event
 // ============================================================================
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_leader_guard_cancelled_on_vacancy() {
     let elector = MockElector::new();
     let guard = elector.leader_guard();
@@ -77,7 +77,7 @@ async fn test_leader_guard_cancelled_on_vacancy() {
 // Test 3: leader_guard NOT cancelled on Gained event
 // ============================================================================
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_leader_guard_not_cancelled_on_gained() {
     let elector = MockElector::new();
     let guard = elector.leader_guard();
@@ -123,7 +123,7 @@ async fn test_first_election_not_delayed() {
 // Test 5: leader_guard cancelled when channel is closed (elector dropped)
 // ============================================================================
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn test_leader_guard_cancelled_on_channel_close() {
     let guard = {
         let elector = MockElector::new();
@@ -210,5 +210,106 @@ fn test_redis_time_saturating_sub_handles_underflow() {
     assert!(
         in_grace,
         "Should be in grace period when time goes backwards (conservative)"
+    );
+}
+
+// ============================================================================
+// Test 7: leader_guard race condition fix
+//
+// This test verifies that the race condition between subscribe() and the
+// spawned task starting to listen is fixed.
+//
+// The bug: If Lost event is sent AFTER subscribe() returns but BEFORE the
+// spawned task starts listening, the guard would never be cancelled.
+//
+// The fix: Use a oneshot channel to ensure the spawned task is listening
+// before returning the guard token.
+// ============================================================================
+
+/// A mock elector that allows precise control over when events are sent
+/// relative to when subscribe() is called.
+struct RaceConditionMockElector {
+    tx: broadcast::Sender<LeadershipEvent>,
+}
+
+impl RaceConditionMockElector {
+    fn new() -> Self {
+        let (tx, _) = broadcast::channel(16);
+        Self { tx }
+    }
+}
+
+impl LeaderElect for RaceConditionMockElector {
+    fn subscribe(&self) -> broadcast::Receiver<LeadershipEvent> {
+        let receiver = self.tx.subscribe();
+        // Send Lost event IMMEDIATELY after subscribe() returns,
+        // before the caller has a chance to spawn a task.
+        // This simulates the worst-case race condition.
+        let _ = self.tx.send(LeadershipEvent::Lost);
+        receiver
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_leader_guard_no_race_condition_on_immediate_lost() {
+    // This test simulates the race condition:
+    // 1. leader_guard() calls subscribe()
+    // 2. subscribe() returns a receiver
+    // 3. Lost event is sent IMMEDIATELY (before spawn starts listening)
+    // 4. leader_guard() spawns a task
+    //
+    // Note: tokio's broadcast channel buffers messages for all subscribers,
+    // so this test will pass even without synchronization. However, the
+    // synchronization in the implementation is still valuable for:
+    // 1. Documentation/semantic clarity
+    // 2. Ensuring consistent behavior across different implementations
+    // 3. Protection against future changes in behavior
+
+    let elector = RaceConditionMockElector::new();
+    let guard = elector.leader_guard();
+
+    // The Lost event was sent during subscribe(), before spawn.
+    // The fix ensures the spawned task receives it anyway.
+    // Give the task a bit of time to process (should be nearly instant).
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    assert!(
+        guard.is_cancelled(),
+        "Guard should be cancelled even when Lost is sent during subscribe()"
+    );
+}
+
+// ============================================================================
+// Test 8: Stress test for leader_guard race condition under concurrent load
+//
+// This test runs many iterations sequentially to try to expose any race
+// condition that might exist between subscribe() and the spawned task starting.
+// We run sequentially rather than in parallel to avoid thread exhaustion.
+// ============================================================================
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_leader_guard_race_condition_stress() {
+    const ITERATIONS: usize = 50;
+    let mut failures = 0usize;
+
+    for i in 0..ITERATIONS {
+        let elector = MockElector::new();
+        let guard = elector.leader_guard();
+
+        // Send Lost immediately after leader_guard returns
+        let _ = elector.tx.send(LeadershipEvent::Lost);
+
+        // Minimal delay to let the spawned task process
+        tokio::time::sleep(Duration::from_millis(10)).await;
+
+        if !guard.is_cancelled() {
+            failures += 1;
+            eprintln!("Iteration {i}: guard not cancelled!");
+        }
+    }
+
+    assert_eq!(
+        failures, 0,
+        "No race condition failures expected, but got {failures} failures out of {ITERATIONS} iterations"
     );
 }

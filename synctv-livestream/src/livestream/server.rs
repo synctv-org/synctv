@@ -246,6 +246,8 @@ pub struct LivestreamServer {
     publisher_registry: Arc<dyn StreamRegistryTrait>,
     user_stream_tracker: UserStreamTracker,
     auth: Option<Arc<dyn AuthCallback>>,
+    /// Pre-bound RTMP listener for early port conflict detection.
+    rtmp_listener: Option<tokio::net::TcpListener>,
 }
 
 impl LivestreamServer {
@@ -259,7 +261,16 @@ impl LivestreamServer {
             publisher_registry,
             user_stream_tracker,
             auth: None,
+            rtmp_listener: None,
         }
+    }
+
+    /// Use a pre-bound TCP listener for RTMP instead of binding internally.
+    /// This allows early port conflict detection before spawning the server.
+    #[must_use]
+    pub fn with_rtmp_listener(mut self, listener: tokio::net::TcpListener) -> Self {
+        self.rtmp_listener = Some(listener);
+        self
     }
 
     /// Set RTMP auth callback
@@ -334,6 +345,8 @@ impl LivestreamServer {
         let rtmp_event_sender = event_sender.clone();
         let reregister_notify_for_hub = Arc::clone(&reregister_notify);
         let is_restarting_for_hub = Arc::clone(&is_restarting_flag);
+        // Pre-bound listener for first cycle (enables early port conflict detection)
+        let rtmp_listener = self.rtmp_listener;
 
         // 2. Spawn StreamHub event loop with automatic recovery
         let hub_handle = tokio::spawn(async move {
@@ -341,6 +354,8 @@ impl LivestreamServer {
             const MAX_BACKOFF_SECS: u64 = 30;
 
             let mut restart_count: u32 = 0;
+            // Pre-bound listener for first cycle only (enables early port conflict detection)
+            let mut first_cycle_listener = rtmp_listener;
 
             loop {
                 // Subscribe to the hub's internal broadcast and forward to the
@@ -396,6 +411,13 @@ impl LivestreamServer {
                 )
                 .with_callbacks(stream_callbacks)
                 .with_cancellation_token(&rtmp_session_token.clone());
+
+                // Use pre-bound listener on first cycle for early port conflict detection.
+                // On subsequent cycles (after StreamHub restart), the RTMP server binds internally.
+                if let Some(listener) = first_cycle_listener.take() {
+                    rtmp_server = rtmp_server.with_listener(listener);
+                }
+
                 let rtmp_handle = tokio::spawn(async move {
                     if let Err(e) = rtmp_server.run().await {
                         error!("RTMP server error: {}", e);
@@ -1004,5 +1026,107 @@ mod tests {
         // which signals the HLS cleanup task to exit.
         // Note: We can't check the token after drop because it's owned by the handle,
         // but the Drop implementation calls cancel() on it.
+    }
+
+    // ========== RTMP Port Pre-binding Tests ==========
+    //
+    // Tests verify that RTMP port conflicts are detected early through pre-binding.
+
+    /// Test that pre-binding a port and passing it to LivestreamServer works correctly.
+    ///
+    /// This verifies that the `with_rtmp_listener` method properly accepts a pre-bound
+    /// listener and the server starts successfully using that listener.
+    #[tokio::test]
+    async fn test_rtmp_pre_binding_works() {
+        let registry = Arc::new(MockStreamRegistry::new());
+
+        // Pre-bind to port 0 (let OS assign a free port)
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("Failed to pre-bind RTMP port");
+
+        // Get the actual port assigned by the OS
+        let local_addr = listener.local_addr().expect("Failed to get local addr");
+
+        // Create config that matches the pre-bound address
+        let config = LivestreamConfig {
+            rtmp_address: local_addr.to_string(),
+            gop_cache_size: 1024 * 1024,
+            node_id: "test-node".to_string(),
+            cleanup_check_interval_seconds: 1,
+            stream_timeout_seconds: 5,
+            cluster_secret: None,
+            gop_cache_max_memory_mb: 0,
+            grpc_address: "127.0.0.1:0".to_string(),
+            hls_memory_max_mb: 0,
+        };
+
+        let server =
+            LivestreamServer::new(config, registry, test_tracker()).with_rtmp_listener(listener);
+
+        // Start should succeed because we already have the port
+        let handle = server
+            .start()
+            .await
+            .expect("Failed to start server with pre-bound listener");
+
+        // Give tasks a moment to start
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        // Clean up
+        handle.shutdown();
+    }
+
+    /// Test that port conflicts are detected when trying to bind an already-used port.
+    ///
+    /// This verifies the core purpose of pre-binding: detecting port conflicts early
+    /// before deep initialization.
+    #[tokio::test]
+    async fn test_port_conflict_detected_early() {
+        // Bind to a specific port first
+        let listener1 = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("Failed to bind first listener");
+
+        let bound_addr = listener1.local_addr().expect("Failed to get local addr");
+
+        // Try to bind to the same port - this should fail
+        let result = tokio::net::TcpListener::bind(bound_addr).await;
+
+        assert!(
+            result.is_err(),
+            "Binding to an already-in-use port should fail"
+        );
+
+        // The error should be an address-in-use error
+        let err = result.unwrap_err();
+        assert!(
+            err.kind() == std::io::ErrorKind::AddrInUse,
+            "Error should be AddrInUse, got: {err:?}"
+        );
+    }
+
+    /// Test that LivestreamServer starts without a pre-bound listener (backwards compatibility).
+    ///
+    /// This verifies that the existing behavior (binding internally) still works
+    /// when no pre-bound listener is provided.
+    #[tokio::test]
+    async fn test_livestream_server_without_prebound_listener() {
+        let registry = Arc::new(MockStreamRegistry::new());
+
+        // Use port 0 to let OS assign a free port
+        let server = LivestreamServer::new(test_config(), registry, test_tracker());
+
+        // Start without pre-binding should still work
+        let handle = server
+            .start()
+            .await
+            .expect("Server should start without pre-bound listener");
+
+        // Give tasks a moment to start
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        // Clean up
+        handle.shutdown();
     }
 }

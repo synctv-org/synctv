@@ -46,7 +46,10 @@ async fn test_local_count_only_tracks_local_connections() {
 
     // Without any connections, local count is 0
     let local_count = conn_manager.room_connection_count(&room_id);
-    assert_eq!(local_count, 0, "Local count should be 0 with no connections");
+    assert_eq!(
+        local_count, 0,
+        "Local count should be 0 with no connections"
+    );
 }
 
 /// Test that distributed batch count returns values for multiple rooms.
@@ -60,7 +63,9 @@ async fn test_distributed_batch_count_returns_vec() {
     let room_ids: Vec<&RoomId> = vec![&room1, &room2];
 
     // Without Redis, this returns local counts (0 for both)
-    let counts = conn_manager.room_connection_count_distributed_batch(&room_ids).await;
+    let counts = conn_manager
+        .room_connection_count_distributed_batch(&room_ids)
+        .await;
 
     assert_eq!(counts.len(), 2, "Should return count for each room");
     assert_eq!(counts[0], 0, "Room 1 count should be 0");
@@ -121,8 +126,7 @@ fn test_admin_list_rooms_uses_distributed_batch_count() {
 
     // Check that distributed batch method is used somewhere in the file
     // (This is a broad check; the specific usage should be in list_rooms)
-    let uses_distributed = admin_rs_content
-        .contains("room_connection_count_distributed_batch");
+    let uses_distributed = admin_rs_content.contains("room_connection_count_distributed_batch");
 
     // Check that the OLD local-only pattern in list_rooms context is removed
     // We look for the pattern that was there before: ".room_connection_count(&r.id)"
@@ -130,9 +134,7 @@ fn test_admin_list_rooms_uses_distributed_batch_count() {
 
     // A more specific check: ensure we don't have the old pattern in a mapping context
     // The old code was: rooms.into_iter().map(|r| { ... room_connection_count(&r.id) ... })
-    let has_old_local_pattern_in_map = admin_rs_content.contains(
-        ".room_connection_count(&r.id)"
-    );
+    let has_old_local_pattern_in_map = admin_rs_content.contains(".room_connection_count(&r.id)");
 
     // After fix: should use distributed batch, not local count on room id
     assert!(

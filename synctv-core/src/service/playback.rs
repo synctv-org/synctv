@@ -1699,7 +1699,10 @@ mod tests {
 
         /// Simulate the retry loop logic from update_state
         /// Returns Ok(attempts_used) on success, Err("max_retries") on exhaustion
-        fn simulate_retry_loop(conflict_count: usize, max_retries: u32) -> std::result::Result<u32, &'static str> {
+        fn simulate_retry_loop(
+            conflict_count: usize,
+            max_retries: u32,
+        ) -> std::result::Result<u32, &'static str> {
             for attempt in 0..max_retries {
                 // Simulate conflict on first `conflict_count` attempts
                 if (attempt as usize) < conflict_count {
@@ -1720,28 +1723,43 @@ mod tests {
         #[test]
         fn test_retry_succeeds_immediately_with_no_conflicts() {
             let result = simulate_retry_loop(0, PlaybackService::MAX_RETRIES);
-            assert_eq!(result, Ok(1), "Should succeed on first attempt with no conflicts");
+            assert_eq!(
+                result,
+                Ok(1),
+                "Should succeed on first attempt with no conflicts"
+            );
         }
 
         /// Test: With 1 conflict, update succeeds on second attempt (within MAX_RETRIES)
         #[test]
         fn test_retry_succeeds_after_one_conflict() {
             let result = simulate_retry_loop(1, PlaybackService::MAX_RETRIES);
-            assert_eq!(result, Ok(2), "Should succeed on second attempt after 1 conflict");
+            assert_eq!(
+                result,
+                Ok(2),
+                "Should succeed on second attempt after 1 conflict"
+            );
         }
 
         /// Test: With 2 conflicts, update succeeds on third attempt (exactly MAX_RETRIES)
         #[test]
         fn test_retry_succeeds_after_two_conflicts() {
             let result = simulate_retry_loop(2, PlaybackService::MAX_RETRIES);
-            assert_eq!(result, Ok(3), "Should succeed on third attempt after 2 conflicts");
+            assert_eq!(
+                result,
+                Ok(3),
+                "Should succeed on third attempt after 2 conflicts"
+            );
         }
 
         /// Test: With 3 conflicts (equal to MAX_RETRIES), update fails
         #[test]
         fn test_retry_fails_after_three_conflicts() {
             let result = simulate_retry_loop(3, PlaybackService::MAX_RETRIES);
-            assert!(result.is_err(), "Should fail after 3 conflicts (equal to MAX_RETRIES)");
+            assert!(
+                result.is_err(),
+                "Should fail after 3 conflicts (equal to MAX_RETRIES)"
+            );
             assert_eq!(result, Err("maximum retry attempts"));
         }
 
@@ -1749,7 +1767,10 @@ mod tests {
         #[test]
         fn test_retry_fails_with_excessive_conflicts() {
             let result = simulate_retry_loop(10, PlaybackService::MAX_RETRIES);
-            assert!(result.is_err(), "Should fail when conflicts exceed MAX_RETRIES");
+            assert!(
+                result.is_err(),
+                "Should fail when conflicts exceed MAX_RETRIES"
+            );
         }
 
         /// Test: Verify backoff calculation matches the formula:
@@ -1784,7 +1805,10 @@ mod tests {
                 .sum();
 
             // Total backoff = 5 + 10 = 15ms (only 2 backoffs before final attempt)
-            assert_eq!(total_backoff, 15, "Total backoff before exhaustion should be ~15ms");
+            assert_eq!(
+                total_backoff, 15,
+                "Total backoff before exhaustion should be ~15ms"
+            );
 
             // With max jitter (5ms per backoff), total could be up to 25ms
             let max_total = total_backoff + (base_ms * (PlaybackService::MAX_RETRIES - 1) as u64);
@@ -1832,7 +1856,10 @@ mod tests {
                 Error::Internal(ref msg) if msg.contains("maximum retry attempts")
             );
 
-            assert!(is_degraded, "Internal error with 'maximum retry attempts' should trigger degraded response");
+            assert!(
+                is_degraded,
+                "Internal error with 'maximum retry attempts' should trigger degraded response"
+            );
         }
 
         /// Test: Non-retry errors should not trigger retry mechanism

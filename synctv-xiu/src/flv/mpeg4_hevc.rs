@@ -208,10 +208,7 @@ impl Mpeg4HevcProcessor {
 
     /// Read the NAL unit size from the MP4 container format.
     /// The size is stored in `nalu_length` bytes as a big-endian integer.
-    fn read_nalu_size(
-        &mut self,
-        bytes_reader: &mut BytesReader,
-    ) -> Result<u32, Mpeg4AvcHevcError> {
+    fn read_nalu_size(&mut self, bytes_reader: &mut BytesReader) -> Result<u32, Mpeg4AvcHevcError> {
         // Default to 4 bytes if not initialized (e.g., in test scenarios)
         let nalu_length = if self.mpeg4_hevc.nalu_length == 0 {
             4
@@ -272,9 +269,12 @@ impl Mpeg4HevcProcessor {
                     vps_sps_pps_prepended = true;
 
                     // Prepend in order: VPS, SPS, PPS
-                    bytes_writer.prepend(&self.mpeg4_hevc.pps_annexb_data.get_current_bytes()[..])?;
-                    bytes_writer.prepend(&self.mpeg4_hevc.sps_annexb_data.get_current_bytes()[..])?;
-                    bytes_writer.prepend(&self.mpeg4_hevc.vps_annexb_data.get_current_bytes()[..])?;
+                    bytes_writer
+                        .prepend(&self.mpeg4_hevc.pps_annexb_data.get_current_bytes()[..])?;
+                    bytes_writer
+                        .prepend(&self.mpeg4_hevc.sps_annexb_data.get_current_bytes()[..])?;
+                    bytes_writer
+                        .prepend(&self.mpeg4_hevc.vps_annexb_data.get_current_bytes()[..])?;
                 }
                 _ => {}
             }
@@ -316,12 +316,24 @@ mod tests {
 
     #[test]
     fn test_is_idr_nal_type() {
-        assert!(Mpeg4HevcProcessor::is_idr_nal_type(hevc_nal_type::HEVC_NAL_IDR_W_RADL));
-        assert!(Mpeg4HevcProcessor::is_idr_nal_type(hevc_nal_type::HEVC_NAL_IDR_N_LP));
-        assert!(Mpeg4HevcProcessor::is_idr_nal_type(hevc_nal_type::HEVC_NAL_CRA));
-        assert!(!Mpeg4HevcProcessor::is_idr_nal_type(hevc_nal_type::HEVC_NAL_VPS));
-        assert!(!Mpeg4HevcProcessor::is_idr_nal_type(hevc_nal_type::HEVC_NAL_SPS));
-        assert!(!Mpeg4HevcProcessor::is_idr_nal_type(hevc_nal_type::HEVC_NAL_PPS));
+        assert!(Mpeg4HevcProcessor::is_idr_nal_type(
+            hevc_nal_type::HEVC_NAL_IDR_W_RADL
+        ));
+        assert!(Mpeg4HevcProcessor::is_idr_nal_type(
+            hevc_nal_type::HEVC_NAL_IDR_N_LP
+        ));
+        assert!(Mpeg4HevcProcessor::is_idr_nal_type(
+            hevc_nal_type::HEVC_NAL_CRA
+        ));
+        assert!(!Mpeg4HevcProcessor::is_idr_nal_type(
+            hevc_nal_type::HEVC_NAL_VPS
+        ));
+        assert!(!Mpeg4HevcProcessor::is_idr_nal_type(
+            hevc_nal_type::HEVC_NAL_SPS
+        ));
+        assert!(!Mpeg4HevcProcessor::is_idr_nal_type(
+            hevc_nal_type::HEVC_NAL_PPS
+        ));
         assert!(!Mpeg4HevcProcessor::is_idr_nal_type(1)); // Non-IDR slice
     }
 
@@ -387,16 +399,40 @@ mod tests {
 
         // Set up VPS, SPS, PPS data
         processor.mpeg4_hevc.vps_annexb_data = BytesWriter::new();
-        processor.mpeg4_hevc.vps_annexb_data.write(&HEVC_START_CODE).unwrap();
-        processor.mpeg4_hevc.vps_annexb_data.write(&[0x40, 0x01]).unwrap(); // VPS NAL
+        processor
+            .mpeg4_hevc
+            .vps_annexb_data
+            .write(&HEVC_START_CODE)
+            .unwrap();
+        processor
+            .mpeg4_hevc
+            .vps_annexb_data
+            .write(&[0x40, 0x01])
+            .unwrap(); // VPS NAL
 
         processor.mpeg4_hevc.sps_annexb_data = BytesWriter::new();
-        processor.mpeg4_hevc.sps_annexb_data.write(&HEVC_START_CODE).unwrap();
-        processor.mpeg4_hevc.sps_annexb_data.write(&[0x42, 0x01]).unwrap(); // SPS NAL
+        processor
+            .mpeg4_hevc
+            .sps_annexb_data
+            .write(&HEVC_START_CODE)
+            .unwrap();
+        processor
+            .mpeg4_hevc
+            .sps_annexb_data
+            .write(&[0x42, 0x01])
+            .unwrap(); // SPS NAL
 
         processor.mpeg4_hevc.pps_annexb_data = BytesWriter::new();
-        processor.mpeg4_hevc.pps_annexb_data.write(&HEVC_START_CODE).unwrap();
-        processor.mpeg4_hevc.pps_annexb_data.write(&[0x44, 0x01]).unwrap(); // PPS NAL
+        processor
+            .mpeg4_hevc
+            .pps_annexb_data
+            .write(&HEVC_START_CODE)
+            .unwrap();
+        processor
+            .mpeg4_hevc
+            .pps_annexb_data
+            .write(&[0x44, 0x01])
+            .unwrap(); // PPS NAL
 
         // Create an IDR NAL unit (type 19 = IDR_W_RADL, first byte = 0x26)
         let mut data = BytesMut::new();
@@ -473,23 +509,47 @@ mod tests {
 
         // Set up parameter sets (but they shouldn't be prepended since SPS is in stream)
         processor.mpeg4_hevc.vps_annexb_data = BytesWriter::new();
-        processor.mpeg4_hevc.vps_annexb_data.write(&HEVC_START_CODE).unwrap();
-        processor.mpeg4_hevc.vps_annexb_data.write(&[0x40, 0x01]).unwrap();
+        processor
+            .mpeg4_hevc
+            .vps_annexb_data
+            .write(&HEVC_START_CODE)
+            .unwrap();
+        processor
+            .mpeg4_hevc
+            .vps_annexb_data
+            .write(&[0x40, 0x01])
+            .unwrap();
 
         processor.mpeg4_hevc.sps_annexb_data = BytesWriter::new();
-        processor.mpeg4_hevc.sps_annexb_data.write(&HEVC_START_CODE).unwrap();
-        processor.mpeg4_hevc.sps_annexb_data.write(&[0x42, 0x01]).unwrap();
+        processor
+            .mpeg4_hevc
+            .sps_annexb_data
+            .write(&HEVC_START_CODE)
+            .unwrap();
+        processor
+            .mpeg4_hevc
+            .sps_annexb_data
+            .write(&[0x42, 0x01])
+            .unwrap();
 
         processor.mpeg4_hevc.pps_annexb_data = BytesWriter::new();
-        processor.mpeg4_hevc.pps_annexb_data.write(&HEVC_START_CODE).unwrap();
-        processor.mpeg4_hevc.pps_annexb_data.write(&[0x44, 0x01]).unwrap();
+        processor
+            .mpeg4_hevc
+            .pps_annexb_data
+            .write(&HEVC_START_CODE)
+            .unwrap();
+        processor
+            .mpeg4_hevc
+            .pps_annexb_data
+            .write(&[0x44, 0x01])
+            .unwrap();
 
         // Create stream with SPS first, then IDR (SPS in stream should prevent prepending)
         let mut data = BytesMut::new();
         // SPS NAL (type 33)
         data.extend_from_slice(&[0x00, 0x00, 0x00, 0x02]); // size = 2
         data.extend_from_slice(&[0x42, 0x01]); // SPS NAL data
-        // IDR NAL (type 19)
+                                               // IDR NAL (type 19)
         data.extend_from_slice(&[0x00, 0x00, 0x00, 0x02]); // size = 2
         data.extend_from_slice(&[0x26, 0xFF]); // IDR NAL data
 

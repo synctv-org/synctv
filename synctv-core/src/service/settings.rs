@@ -919,7 +919,10 @@ mod tests {
         fn test_cross_validation_accepts_only_must_need_pwd_true() {
             let updates: Vec<(String, String)> = vec![
                 ("room.room_must_need_pwd".to_string(), "true".to_string()),
-                ("room.room_must_no_need_pwd".to_string(), "false".to_string()),
+                (
+                    "room.room_must_no_need_pwd".to_string(),
+                    "false".to_string(),
+                ),
             ];
 
             let batch_map: std::collections::HashMap<&str, &str> = updates
@@ -973,7 +976,10 @@ mod tests {
         fn test_cross_validation_accepts_both_false() {
             let updates: Vec<(String, String)> = vec![
                 ("room.room_must_need_pwd".to_string(), "false".to_string()),
-                ("room.room_must_no_need_pwd".to_string(), "false".to_string()),
+                (
+                    "room.room_must_no_need_pwd".to_string(),
+                    "false".to_string(),
+                ),
             ];
 
             let batch_map: std::collections::HashMap<&str, &str> = updates
@@ -1026,8 +1032,7 @@ mod tests {
         /// Test: Error message format for mutual exclusion violation
         #[test]
         fn test_cross_validation_error_message() {
-            let expected_msg =
-                "room_must_need_pwd and room_must_no_need_pwd cannot both be true";
+            let expected_msg = "room_must_need_pwd and room_must_no_need_pwd cannot both be true";
 
             // This matches the error message in update_batch
             assert!(
@@ -1051,7 +1056,10 @@ mod tests {
             // simultaneously set contradictory values based on stale cache reads.
             // The FOR UPDATE lock ensures only one replica can modify at a time.
 
-            assert!(true, "Cross-validation uses database transaction with row locking");
+            assert!(
+                true,
+                "Cross-validation uses database transaction with row locking"
+            );
         }
 
         /// Test: Other settings are not affected by cross-validation
@@ -1075,7 +1083,11 @@ mod tests {
                 .iter()
                 .filter(|(k, _)| k.starts_with("room.room_must_"))
                 .collect();
-            assert_eq!(password_settings.len(), 1, "Only one password setting in this batch");
+            assert_eq!(
+                password_settings.len(),
+                1,
+                "Only one password setting in this batch"
+            );
         }
 
         /// Test: Empty batch should succeed without validation errors
@@ -1097,7 +1109,10 @@ mod tests {
                 .is_some_and(|v| *v == "true");
 
             let is_valid = !(must_need_pwd && must_no_need_pwd);
-            assert!(is_valid, "Empty batch should not trigger cross-validation error");
+            assert!(
+                is_valid,
+                "Empty batch should not trigger cross-validation error"
+            );
         }
 
         /// Test: Case sensitivity of boolean values
@@ -1112,7 +1127,10 @@ mod tests {
                 if *v == "true" {
                     assert!(is_true, "Lowercase 'true' should be recognized as true");
                 } else {
-                    assert!(!is_true, "'{v}' should NOT be recognized as true (case-sensitive)");
+                    assert!(
+                        !is_true,
+                        "'{v}' should NOT be recognized as true (case-sensitive)"
+                    );
                 }
             }
 

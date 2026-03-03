@@ -75,14 +75,17 @@ pub async fn json_with_limit<T: serde::de::DeserializeOwned>(
 
 /// Check HTTP response status before processing body.
 ///
-/// For HTTP 429 responses, the `Retry-After` header is parsed and stored
-/// in the error so that callers can respect the server's backoff hint.
+/// For HTTP 429 (Too Many Requests) and 503 (Service Unavailable) responses,
+/// the `Retry-After` header is parsed and stored in the error so that callers
+/// can respect the server's backoff hint.
 pub async fn check_response(
     resp: reqwest::Response,
 ) -> Result<reqwest::Response, ProviderClientError> {
     let status = resp.status();
     if status.is_client_error() || status.is_server_error() {
-        let retry_after_secs = if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
+        let retry_after_secs = if status == reqwest::StatusCode::TOO_MANY_REQUESTS
+            || status == reqwest::StatusCode::SERVICE_UNAVAILABLE
+        {
             resp.headers()
                 .get(reqwest::header::RETRY_AFTER)
                 .and_then(|v| v.to_str().ok())

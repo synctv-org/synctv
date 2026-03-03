@@ -1,6 +1,5 @@
 use super::bytesio_errors::BytesIOError;
 use std::io;
-// use tokio::time::Elapsed;
 
 #[derive(Debug, thiserror::Error)]
 pub enum BytesReadErrorValue {
@@ -20,8 +19,8 @@ pub enum BytesReadErrorValue {
         additional: usize,
         max: usize,
     },
-    // #[error("elapsed: {0}")]
-    // TimeoutError(#[source] Elapsed),
+    #[error("read timeout: {0}")]
+    TimeoutError(#[source] tokio::time::error::Elapsed),
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -52,13 +51,13 @@ impl From<BytesIOError> for BytesReadError {
     }
 }
 
-// impl From<Elapsed> for BytesReadError {
-//     fn from(error: Elapsed) -> Self {
-//         BytesReadError {
-//             value: BytesReadErrorValue::TimeoutError(error),
-//         }
-//     }
-// }
+impl From<tokio::time::error::Elapsed> for BytesReadError {
+    fn from(error: tokio::time::error::Elapsed) -> Self {
+        BytesReadError {
+            value: BytesReadErrorValue::TimeoutError(error),
+        }
+    }
+}
 
 #[derive(Debug, thiserror::Error)]
 #[error("{value}")]

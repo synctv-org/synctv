@@ -17,7 +17,7 @@ use super::types::{
     LoginData,
 };
 use crate::error::with_retry;
-use crate::ssrf::ssrf_safe_dns_resolver;
+use crate::ssrf::{check_url_async, ssrf_safe_dns_resolver, SsrfCheckResult};
 
 /// Validate that a path does not contain traversal components (`..` or `.`).
 /// Rejects paths that attempt directory traversal to escape the intended root.
@@ -96,6 +96,85 @@ const fn hex_val(b: u8) -> Option<u8> {
         b'A'..=b'F' => Some(b - b'A' + 10),
         _ => None,
     }
+}
+
+// ============================================================================
+// SSRF URL sanitization for Alist response URLs
+// ============================================================================
+
+/// Sanitize a URL string by checking it against SSRF protection rules.
+///
+/// Returns an empty string if the URL is blocked, otherwise returns the original URL.
+/// This is used to sanitize URLs returned by untrusted Alist servers before
+/// passing them to clients.
+///
+/// # Security
+///
+/// Alist servers may return arbitrary URLs in response fields like `raw_url`, `thumb`,
+/// `sign`, and transcoding URLs. A malicious Alist server could return URLs pointing
+/// to internal network resources (e.g., cloud metadata endpoints, internal services).
+/// This function validates all URLs before returning them to prevent SSRF attacks.
+#[allow(dead_code)]
+async fn sanitize_url(url: &str) -> String {
+    // Empty strings are allowed (common for optional fields)
+    if url.is_empty() {
+        return String::new();
+    }
+
+    // Check if it looks like a URL (starts with http:// or https://)
+    let lower = url.to_lowercase();
+    if !lower.starts_with("http://") && !lower.starts_with("https://") {
+        // Not a URL - might be a signature token or other non-URL value
+        // Preserve it as-is (e.g., "abc123_token_signature")
+        return url.to_string();
+    }
+
+    // Validate the URL against SSRF rules asynchronously
+    match check_url_async(url).await {
+        SsrfCheckResult::Ok => url.to_string(),
+        SsrfCheckResult::Blocked(reason) => {
+            tracing::warn!("SSRF blocked URL in Alist response: {} ({})", url, reason);
+            // Return empty string to indicate the URL was blocked
+            String::new()
+        }
+    }
+}
+
+/// Sanitize all URL fields in an `HttpFsGetResp`.
+#[allow(dead_code)]
+async fn sanitize_fs_get_resp(mut resp: HttpFsGetResp) -> HttpFsGetResp {
+    resp.raw_url = sanitize_url(&resp.raw_url).await;
+    resp.thumb = sanitize_url(&resp.thumb).await;
+    resp.sign = sanitize_url(&resp.sign).await;
+    for related in &mut resp.related {
+        related.sign = sanitize_url(&related.sign).await;
+        related.thumb = sanitize_url(&related.thumb).await;
+    }
+    resp
+}
+
+/// Sanitize all URL fields in an `HttpFsListResp`.
+#[allow(dead_code)]
+async fn sanitize_fs_list_resp(mut resp: HttpFsListResp) -> HttpFsListResp {
+    for item in &mut resp.content {
+        item.sign = sanitize_url(&item.sign).await;
+        item.thumb = sanitize_url(&item.thumb).await;
+    }
+    resp
+}
+
+/// Sanitize all URL fields in an `HttpFsOtherResp`.
+#[allow(dead_code)]
+async fn sanitize_fs_other_resp(mut resp: HttpFsOtherResp) -> HttpFsOtherResp {
+    if let Some(ref mut preview) = resp.video_preview_play_info {
+        for task in &mut preview.live_transcoding_task_list {
+            task.url = sanitize_url(&task.url).await;
+        }
+        for sub in &mut preview.live_transcoding_subtitle_task_list {
+            sub.url = sanitize_url(&sub.url).await;
+        }
+    }
+    resp
 }
 
 /// Shared HTTP client for all Alist requests (connection pooling)
@@ -243,6 +322,10 @@ impl AlistClient {
     /// # Arguments
     /// * `path` - File or directory path
     /// * `password` - Optional password for protected directories
+    ///
+    /// # SSRF Protection
+    /// URLs in the response (raw_url, thumb, sign) are validated against SSRF rules.
+    /// URLs pointing to private IPs, localhost, or cloud metadata endpoints are cleared.
     pub async fn fs_get(
         &self,
         path: &str,
@@ -257,7 +340,7 @@ impl AlistClient {
         let headers = self.build_headers()?;
         let client = self.client.clone();
 
-        with_retry(|| {
+        let result = with_retry(|| {
             let url = url.clone();
             let body = body.clone();
             let headers = headers.clone();
@@ -284,7 +367,13 @@ impl AlistClient {
                     .ok_or_else(|| AlistError::Parse("Missing data in fs_get response".to_string()))
             }
         })
-        .await
+        .await;
+
+        // Sanitize URLs in response to prevent SSRF attacks from malicious Alist servers
+        match result {
+            Ok(resp) => Ok(sanitize_fs_get_resp(resp).await),
+            Err(e) => Err(e),
+        }
     }
 
     /// List directory contents
@@ -294,6 +383,10 @@ impl AlistClient {
     /// * `page` - Page number (1-indexed)
     /// * `per_page` - Items per page
     /// * `password` - Optional password for protected directories
+    ///
+    /// # SSRF Protection
+    /// URLs in the response (sign, thumb for each content item) are validated against SSRF rules.
+    /// URLs pointing to private IPs, localhost, or cloud metadata endpoints are cleared.
     pub async fn fs_list(
         &self,
         path: &str,
@@ -313,7 +406,7 @@ impl AlistClient {
         let headers = self.build_headers()?;
         let client = self.client.clone();
 
-        with_retry(|| {
+        let result = with_retry(|| {
             let url = url.clone();
             let body = body.clone();
             let headers = headers.clone();
@@ -341,7 +434,13 @@ impl AlistClient {
                 })
             }
         })
-        .await
+        .await;
+
+        // Sanitize URLs in response to prevent SSRF attacks from malicious Alist servers
+        match result {
+            Ok(resp) => Ok(sanitize_fs_list_resp(resp).await),
+            Err(e) => Err(e),
+        }
     }
 
     /// Get video preview information (for instances supporting transcoding)
@@ -358,6 +457,10 @@ impl AlistClient {
     /// - Transcoding task status
     /// - Playback URLs for transcoded versions
     /// - Video metadata (duration, dimensions)
+    ///
+    /// # SSRF Protection
+    /// URLs in the response (transcoding task URLs, subtitle URLs) are validated against SSRF rules.
+    /// URLs pointing to private IPs, localhost, or cloud metadata endpoints are cleared.
     pub async fn fs_other(
         &self,
         path: &str,
@@ -374,7 +477,7 @@ impl AlistClient {
         let headers = self.build_headers()?;
         let client = self.client.clone();
 
-        with_retry(|| {
+        let result = with_retry(|| {
             let url = url.clone();
             let body = body.clone();
             let headers = headers.clone();
@@ -402,7 +505,13 @@ impl AlistClient {
                 })
             }
         })
-        .await
+        .await;
+
+        // Sanitize URLs in response to prevent SSRF attacks from malicious Alist servers
+        match result {
+            Ok(resp) => Ok(sanitize_fs_other_resp(resp).await),
+            Err(e) => Err(e),
+        }
     }
 
     /// Get current user information

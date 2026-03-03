@@ -20,6 +20,9 @@ pub struct RtmpServer {
     shutdown_token: CancellationToken,
     per_stream_max_bytes: Option<usize>,
     callbacks: Arc<StreamEventCallbacks>,
+    /// Pre-bound listener (optional). When set, the server uses this listener
+    /// instead of binding internally. This allows early port conflict detection.
+    listener: Option<TcpListener>,
 }
 
 impl RtmpServer {
@@ -39,7 +42,17 @@ impl RtmpServer {
             shutdown_token: CancellationToken::new(),
             per_stream_max_bytes,
             callbacks: Arc::new(StreamEventCallbacks::default()),
+            listener: None,
         }
+    }
+
+    /// Use a pre-bound TCP listener instead of binding internally.
+    /// This allows the caller to detect port conflicts early before
+    /// spawning the RTMP server task.
+    #[must_use]
+    pub fn with_listener(mut self, listener: TcpListener) -> Self {
+        self.listener = Some(listener);
+        self
     }
 
     /// Set stream event callbacks (for metrics, logging, etc.)
@@ -65,16 +78,22 @@ impl RtmpServer {
     }
 
     pub async fn run(&mut self) -> Result<(), Error> {
-        let socket_addr: SocketAddr = self.address.parse().map_err(|e| {
-            Error::new(
-                std::io::ErrorKind::InvalidInput,
-                format!("invalid address '{}': {}", self.address, e),
-            )
-        })?;
-        let listener = TcpListener::bind(&socket_addr).await?;
+        let listener = if let Some(pre_bound) = self.listener.take() {
+            pre_bound
+        } else {
+            let socket_addr: SocketAddr = self.address.parse().map_err(|e| {
+                Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    format!("invalid address '{}': {}", self.address, e),
+                )
+            })?;
+            TcpListener::bind(&socket_addr).await?
+        };
+
+        let local_addr = listener.local_addr()?;
         let session_tracker = tokio_util::task::TaskTracker::new();
 
-        tracing::info!("Rtmp server listening on tcp://{socket_addr}");
+        tracing::info!("Rtmp server listening on tcp://{local_addr}");
         loop {
             tokio::select! {
                 accept_result = listener.accept() => {

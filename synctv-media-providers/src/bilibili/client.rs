@@ -80,6 +80,11 @@ static WBI_KEY_CACHE: LazyLock<tokio::sync::Mutex<Option<WbiKeys>>> =
 /// Uses an atomic counter: 0 = no refresh in progress, >0 = refresh in progress.
 static WBI_REFRESH_IN_PROGRESS: LazyLock<AtomicUsize> = LazyLock::new(|| AtomicUsize::new(0));
 
+/// Notify for waking tasks waiting for refresh to complete.
+/// Replaces spin-loop waiting with efficient async notification.
+static WBI_REFRESH_NOTIFY: LazyLock<tokio::sync::Notify> =
+    LazyLock::new(|| tokio::sync::Notify::new());
+
 /// Counter for tracking number of API calls (for testing).
 #[cfg(test)]
 static WBI_API_CALL_COUNT: LazyLock<AtomicUsize> = LazyLock::new(|| AtomicUsize::new(0));
@@ -115,8 +120,17 @@ fn try_claim_refresh_lock() -> bool {
 }
 
 /// Release the refresh lock after refresh completes.
+/// Note: This is a test-only helper. Production code should use `release_refresh_lock_and_notify`.
+#[cfg(test)]
 fn release_refresh_lock() {
     WBI_REFRESH_IN_PROGRESS.store(0, Ordering::Release);
+}
+
+/// Release the refresh lock after refresh completes and notify all waiters.
+fn release_refresh_lock_and_notify() {
+    WBI_REFRESH_IN_PROGRESS.store(0, Ordering::Release);
+    // Notify all waiting tasks that refresh is complete
+    WBI_REFRESH_NOTIFY.notify_waiters();
 }
 
 /// Check if a refresh is currently in progress.
@@ -247,21 +261,32 @@ impl BilibiliClient {
         if try_claim_refresh_lock() {
             // We got the lock - we are responsible for refreshing.
             let result = self.fetch_and_cache_wbi_key().await;
-            // Always release the lock, even on error.
-            release_refresh_lock();
+            // Always release the lock and notify waiters, even on error.
+            release_refresh_lock_and_notify();
             result
         } else {
-            // Another task is refreshing. Wait and retry from cache.
-            // Use a spin loop with backoff to wait for the refresh.
-            for _ in 0..10 {
-                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-                if let Some(key) = get_valid_wbi_key().await {
-                    return Ok(key);
-                }
+            // Another task is refreshing. Wait for notification instead of spinning.
+            // This prevents thundering herd and reduces unnecessary CPU usage.
+            WBI_REFRESH_NOTIFY.notified().await;
+
+            // After being notified, check the cache again.
+            if let Some(key) = get_valid_wbi_key().await {
+                return Ok(key);
             }
-            // If we get here, refresh took too long or failed.
-            // Force a refresh ourselves as a fallback.
-            self.fetch_and_cache_wbi_key().await
+
+            // If cache is still empty after notification (refresh failed),
+            // try to refresh ourselves as a fallback.
+            if try_claim_refresh_lock() {
+                let result = self.fetch_and_cache_wbi_key().await;
+                release_refresh_lock_and_notify();
+                result
+            } else {
+                // Another task beat us to it - wait again
+                WBI_REFRESH_NOTIFY.notified().await;
+                get_valid_wbi_key()
+                    .await
+                    .ok_or_else(|| BilibiliError::Parse("WBI key refresh failed".to_string()))
+            }
         }
     }
 
@@ -3279,6 +3304,91 @@ mod tests {
         // Note: Due to timing, multiple tasks might succeed in sequence,
         // but the key invariant is that claims never overlap.
         assert!(successful_claims >= 1, "At least one claim should succeed");
+    }
+
+    /// Test that Notify-based waiting works correctly for concurrent refresh.
+    /// This test verifies that:
+    /// 1. Tasks that fail to claim the lock wait for notification
+    /// 2. When refresh completes, all waiting tasks are notified
+    /// 3. Notified tasks can read from the cache without additional API calls
+    #[tokio::test]
+    async fn test_notify_based_waiting_prevents_thundering_herd() {
+        use std::sync::atomic::AtomicUsize;
+        use std::sync::Arc;
+
+        // Reset state
+        release_refresh_lock();
+        WBI_API_CALL_COUNT.store(0, Ordering::SeqCst);
+        *WBI_KEY_CACHE.lock().await = None;
+
+        let api_call_count = Arc::new(AtomicUsize::new(0));
+        let waiting_tasks_woken = Arc::new(AtomicUsize::new(0));
+
+        // Simulate the scenario: one task refreshes, others wait
+
+        // First, spawn the refresher task
+        let api_count = Arc::clone(&api_call_count);
+        let refresher = tokio::spawn(async move {
+            if try_claim_refresh_lock() {
+                // Simulate API call delay
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                api_count.fetch_add(1, Ordering::SeqCst);
+                // Set a cached key
+                set_wbi_key("test_key_32_characters_long_x".to_string()).await;
+                // Release and notify
+                release_refresh_lock_and_notify();
+                true
+            } else {
+                false
+            }
+        });
+
+        // Small delay to ensure refresher claims the lock first
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+
+        // Spawn waiter tasks
+        let mut waiter_handles = Vec::new();
+        for _ in 0..5 {
+            let woken_count = Arc::clone(&waiting_tasks_woken);
+            waiter_handles.push(tokio::spawn(async move {
+                // Wait for notification
+                WBI_REFRESH_NOTIFY.notified().await;
+                // Record that we were woken
+                woken_count.fetch_add(1, Ordering::SeqCst);
+                // Try to get the key from cache
+                get_valid_wbi_key().await
+            }));
+        }
+
+        // Wait for all tasks
+        let refresher_result = refresher.await.expect("Refresher task panicked");
+        let waiter_results = futures_util::future::join_all(waiter_handles).await;
+
+        // Verify refresher task claimed the lock
+        assert!(refresher_result, "Refresher should have claimed the lock");
+
+        // Verify only one task performed the API call
+        assert_eq!(
+            api_call_count.load(Ordering::SeqCst),
+            1,
+            "Only one API call should occur"
+        );
+
+        // Verify all waiter tasks were woken
+        assert_eq!(
+            waiting_tasks_woken.load(Ordering::SeqCst),
+            5,
+            "All 5 waiter tasks should be woken"
+        );
+
+        // Verify waiter tasks got the cached key
+        for result in waiter_results {
+            assert_eq!(
+                result.expect("Waiter task should not panic"),
+                Some("test_key_32_characters_long_x".to_string()),
+                "Waiter should receive cached key"
+            );
+        }
     }
 
     #[tokio::test]

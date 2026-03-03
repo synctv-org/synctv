@@ -237,14 +237,8 @@ fn test_permission_bitmask_operations() {
     let perm_b = PermissionBits::VIEW_PLAYLIST;
     let combined = PermissionBits(perm_a | perm_b);
 
-    assert!(
-        combined.has(perm_a),
-        "Combined should have permission A"
-    );
-    assert!(
-        combined.has(perm_b),
-        "Combined should have permission B"
-    );
+    assert!(combined.has(perm_a), "Combined should have permission A");
+    assert!(combined.has(perm_b), "Combined should have permission B");
 
     // Remove perm_a
     let removed = PermissionBits(combined.0 & !perm_a);
@@ -252,10 +246,7 @@ fn test_permission_bitmask_operations() {
         !removed.has(perm_a),
         "Should not have permission A after removal"
     );
-    assert!(
-        removed.has(perm_b),
-        "Should still have permission B"
-    );
+    assert!(removed.has(perm_b), "Should still have permission B");
 }
 
 // ============================================================================

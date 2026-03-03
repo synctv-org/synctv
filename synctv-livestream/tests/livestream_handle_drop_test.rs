@@ -146,7 +146,11 @@ async fn test_stream_pool_stop_all_clears_streams() {
         }
     }
 
-    assert_eq!(streams.len(), 0, "All streams should be removed after stop_all");
+    assert_eq!(
+        streams.len(),
+        0,
+        "All streams should be removed after stop_all"
+    );
 
     // Verify the lifecycle methods were called
     // (This simulates what the real StreamPool.stop_all() does)
@@ -155,7 +159,8 @@ async fn test_stream_pool_stop_all_clears_streams() {
 /// Test that PullStreamManager.stop_all() clears the internal pool.
 #[tokio::test]
 async fn test_pull_stream_manager_stop_all_clears_pool() {
-    let registry = Arc::new(MockStreamRegistry) as Arc<dyn synctv_livestream::relay::StreamRegistryTrait>;
+    let registry =
+        Arc::new(MockStreamRegistry) as Arc<dyn synctv_livestream::relay::StreamRegistryTrait>;
     let (event_sender, _) = mpsc::channel(64);
 
     let pull_manager = Arc::new(synctv_livestream::livestream::PullStreamManager::new(
@@ -172,7 +177,8 @@ async fn test_pull_stream_manager_stop_all_clears_pool() {
 /// Test that ExternalPublishManager.stop_all() clears the internal pool.
 #[tokio::test]
 async fn test_external_publish_manager_stop_all_clears_pool() {
-    let registry = Arc::new(MockStreamRegistry) as Arc<dyn synctv_livestream::relay::StreamRegistryTrait>;
+    let registry =
+        Arc::new(MockStreamRegistry) as Arc<dyn synctv_livestream::relay::StreamRegistryTrait>;
     let (event_sender, _) = mpsc::channel(64);
 
     let external_publish_manager = Arc::new(
@@ -204,7 +210,8 @@ async fn test_livestream_handle_drop_spawns_stop_all_task() {
     // we need to give the runtime a chance to execute it.
 
     // Create infrastructure components
-    let registry = Arc::new(MockStreamRegistry) as Arc<dyn synctv_livestream::relay::StreamRegistryTrait>;
+    let registry =
+        Arc::new(MockStreamRegistry) as Arc<dyn synctv_livestream::relay::StreamRegistryTrait>;
     let (event_sender, _) = mpsc::channel(64);
 
     let pull_manager = Arc::new(synctv_livestream::livestream::PullStreamManager::new(
@@ -232,7 +239,10 @@ async fn test_livestream_handle_drop_spawns_stop_all_task() {
 
     // The spawned task should complete quickly since pools are empty
     let result = tokio::time::timeout(Duration::from_millis(100), handle).await;
-    assert!(result.is_ok(), "stop_all task should complete within timeout");
+    assert!(
+        result.is_ok(),
+        "stop_all task should complete within timeout"
+    );
     assert!(result.unwrap().is_ok(), "stop_all task should not panic");
 }
 
@@ -278,13 +288,18 @@ async fn test_stop_all_spawned_task_executes() {
         .expect("task should not panic");
 
     // Verify the counter was incremented
-    assert_eq!(counter.get_stop_all_calls(), 1, "stop_all should have been called once");
+    assert_eq!(
+        counter.get_stop_all_calls(),
+        1,
+        "stop_all should have been called once"
+    );
 }
 
 /// Test that multiple drops don't cause issues (idempotency).
 #[tokio::test]
 async fn test_multiple_stop_all_calls_are_safe() {
-    let registry = Arc::new(MockStreamRegistry) as Arc<dyn synctv_livestream::relay::StreamRegistryTrait>;
+    let registry =
+        Arc::new(MockStreamRegistry) as Arc<dyn synctv_livestream::relay::StreamRegistryTrait>;
     let (event_sender, _) = mpsc::channel(64);
 
     let pull_manager = Arc::new(synctv_livestream::livestream::PullStreamManager::new(
@@ -304,7 +319,8 @@ async fn test_multiple_stop_all_calls_are_safe() {
 /// This test simulates the exact code path in LivestreamHandle::drop.
 #[tokio::test]
 async fn test_drop_behavior_simulation() {
-    let registry = Arc::new(MockStreamRegistry) as Arc<dyn synctv_livestream::relay::StreamRegistryTrait>;
+    let registry =
+        Arc::new(MockStreamRegistry) as Arc<dyn synctv_livestream::relay::StreamRegistryTrait>;
     let (event_sender, _) = mpsc::channel(64);
 
     let pull_manager = Arc::new(synctv_livestream::livestream::PullStreamManager::new(
@@ -347,7 +363,8 @@ async fn test_stop_all_task_completes_after_scope_exit() {
 
     // Create managers in an inner scope
     let handle = {
-        let registry = Arc::new(MockStreamRegistry) as Arc<dyn synctv_livestream::relay::StreamRegistryTrait>;
+        let registry =
+            Arc::new(MockStreamRegistry) as Arc<dyn synctv_livestream::relay::StreamRegistryTrait>;
         let (event_sender, _) = mpsc::channel(64);
         let completed_counter = Arc::clone(&stop_all_completed);
 

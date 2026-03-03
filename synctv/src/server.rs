@@ -544,6 +544,10 @@ impl SyncTvServer {
 }
 
 /// Wait for a shutdown signal (SIGTERM or SIGINT/Ctrl+C)
+///
+/// On Unix systems, also handles SIGHUP for log rotation support.
+/// SIGHUP does NOT trigger shutdown - it is logged for awareness only,
+/// allowing external log rotation tools (logrotate, etc.) to work correctly.
 async fn shutdown_signal() {
     let ctrl_c = async {
         match tokio::signal::ctrl_c().await {
@@ -572,9 +576,32 @@ async fn shutdown_signal() {
     #[cfg(not(unix))]
     let terminate = std::future::pending::<()>();
 
+    // SIGHUP handler for log rotation support (Unix only)
+    // This does NOT trigger shutdown - it just logs the signal for awareness.
+    // External tools like logrotate send SIGHUP after rotating log files.
+    #[cfg(unix)]
+    let sighup = async {
+        match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::hangup()) {
+            Ok(mut signal) => {
+                // Keep receiving SIGHUP signals without shutting down
+                loop {
+                    signal.recv().await;
+                    info!("Received SIGHUP signal (log rotation notification)");
+                }
+            }
+            Err(e) => {
+                error!("Failed to install SIGHUP handler: {}", e);
+            }
+        }
+    };
+
+    #[cfg(not(unix))]
+    let sighup = std::future::pending::<()>();
+
     tokio::select! {
         () = ctrl_c => { info!("Received Ctrl+C"); }
         () = terminate => { info!("Received SIGTERM"); }
+        () = sighup => { /* SIGHUP never completes - it loops forever */ }
     }
 }
 
@@ -650,6 +677,51 @@ mod tests {
         assert!(
             result.is_ok(),
             "Expected binding to port 0 (OS-assigned) to succeed"
+        );
+    }
+
+    /// Test that SIGHUP signal handler can be installed on Unix systems
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn test_sighup_handler_can_be_installed() {
+        // Verify that we can successfully register a SIGHUP handler
+        let result = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::hangup());
+        assert!(
+            result.is_ok(),
+            "Failed to install SIGHUP handler: {:?}",
+            result.err()
+        );
+    }
+
+    /// Test that SIGTERM signal handler can be installed on Unix systems
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn test_sigterm_handler_can_be_installed() {
+        // Verify that we can successfully register a SIGTERM handler
+        let result = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate());
+        assert!(
+            result.is_ok(),
+            "Failed to install SIGTERM handler: {:?}",
+            result.err()
+        );
+    }
+
+    /// Test that SIGHUP does not immediately complete (it loops forever)
+    /// This test uses tokio::time::timeout to verify the handler keeps running
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn test_sighup_handler_does_not_complete_immediately() {
+        use tokio::time::{timeout, Duration};
+
+        let mut sighup_signal =
+            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::hangup())
+                .expect("Failed to install SIGHUP handler");
+
+        // The signal.recv() should not complete without an actual SIGHUP being sent
+        let result = timeout(Duration::from_millis(100), sighup_signal.recv()).await;
+        assert!(
+            result.is_err(),
+            "SIGHUP handler should not complete without receiving a signal"
         );
     }
 }

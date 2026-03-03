@@ -23,17 +23,32 @@ fn test_member_status_banned_is_detected() {
     // Verify MemberStatus::Banned exists and is detectable
     let status = MemberStatus::Banned;
 
-    assert!(status.is_banned(), "Banned status should return true for is_banned()");
-    assert!(!status.is_active(), "Banned status should return false for is_active()");
-    assert!(!status.is_pending(), "Banned status should return false for is_pending()");
+    assert!(
+        status.is_banned(),
+        "Banned status should return true for is_banned()"
+    );
+    assert!(
+        !status.is_active(),
+        "Banned status should return false for is_active()"
+    );
+    assert!(
+        !status.is_pending(),
+        "Banned status should return false for is_pending()"
+    );
 }
 
 #[test]
 fn test_member_status_active_is_not_banned() {
     let status = MemberStatus::Active;
 
-    assert!(!status.is_banned(), "Active status should return false for is_banned()");
-    assert!(status.is_active(), "Active status should return true for is_active()");
+    assert!(
+        !status.is_banned(),
+        "Active status should return false for is_banned()"
+    );
+    assert!(
+        status.is_active(),
+        "Active status should return true for is_active()"
+    );
 }
 
 // ============================================================================
@@ -51,7 +66,10 @@ fn test_member_ban_sets_status_and_timestamps() {
     assert!(member.is_active(), "Member should start active");
     assert!(member.banned_at.is_none(), "banned_at should start as None");
     assert!(member.banned_by.is_none(), "banned_by should start as None");
-    assert!(member.banned_reason.is_none(), "banned_reason should start as None");
+    assert!(
+        member.banned_reason.is_none(),
+        "banned_reason should start as None"
+    );
 }
 
 #[test]
@@ -120,10 +138,7 @@ fn test_periodic_check_detects_banned_status() {
 
     // Member starts active
     let mut member = RoomMember::new(room_id, user_id, RoomRole::Member);
-    assert!(
-        member.status.is_active(),
-        "Member should start active"
-    );
+    assert!(member.status.is_active(), "Member should start active");
 
     // Admin bans the member
     member.ban(banner_id, Some("Spam".to_string()));

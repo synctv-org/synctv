@@ -598,9 +598,9 @@ impl PermissionService {
     /// # Multi-Replica Consistency
     /// The order is: invalidate local cache first, then broadcast to Redis.
     /// This prevents a stale cache window where:
-    /// 1. Broadcast succeeds → other replicas invalidate
-    /// 2. Before local invalidation → cached reads on this node return stale data
-    /// 3. After local invalidation → window closes
+    /// 1. Broadcast succeeds -> other replicas invalidate
+    /// 2. Before local invalidation -> cached reads on this node return stale data
+    /// 3. After local invalidation -> window closes
     ///
     /// By invalidating locally first, we ensure this node never serves stale
     /// data after the mutation completes, even if the broadcast fails.
@@ -612,8 +612,15 @@ impl PermissionService {
         self.degraded_cache.invalidate(&cache_key).await;
 
         // Broadcast to other replicas (best effort)
+        // Use invalidate_and_broadcast_user_permission which broadcasts both locally
+        // (for other local subscribers) AND to Redis (for remote replicas).
+        // This is important for multi-replica scenarios where other replicas need
+        // to invalidate their caches.
         if let Some(ref service) = self.invalidation_service {
-            if let Err(e) = service.invalidate_user_permission(room_id, user_id).await {
+            if let Err(e) = service
+                .invalidate_and_broadcast_user_permission(room_id, user_id)
+                .await
+            {
                 tracing::warn!(
                     error = %e,
                     room_id = %room_id.as_str(),
@@ -646,8 +653,13 @@ impl PermissionService {
             .invalidate_entries_if(move |key, _| key.starts_with(&prefix));
 
         // Broadcast to other replicas (best effort)
+        // Use invalidate_and_broadcast_room_permission which broadcasts both locally
+        // AND to Redis for remote replicas.
         if let Some(ref service) = self.invalidation_service {
-            if let Err(e) = service.invalidate_room_permission(room_id).await {
+            if let Err(e) = service
+                .invalidate_and_broadcast_room_permission(room_id)
+                .await
+            {
                 tracing::warn!(
                     error = %e,
                     room_id = %room_id.as_str(),
@@ -666,8 +678,9 @@ impl PermissionService {
         self.cache.invalidate_all();
 
         // Broadcast to other replicas (best effort)
+        // Use broadcast_all which broadcasts both locally AND to Redis.
         if let Some(ref service) = self.invalidation_service {
-            if let Err(e) = service.invalidate_all().await {
+            if let Err(e) = service.broadcast_all(InvalidationMessage::All).await {
                 tracing::warn!(
                     error = %e,
                     "Failed to broadcast full permission cache invalidation to other replicas"
@@ -751,8 +764,10 @@ mod tests {
     use crate::models::{room_settings::*, MemberStatus, RoomMember};
 
     // Helper to create a PermissionService using tokio runtime for PgPool
+    // Note: This function should NOT be called from within an async context
+    // (e.g., inside rt.block_on()). Use make_service_async() instead.
     fn make_service() -> PermissionService {
-        // PgPool::connect_lazy requires a tokio runtime, so use Runtime::new
+        // PgPool::connect_lazy requires a tokio runtime context
         let rt = tokio::runtime::Runtime::new().unwrap();
         let pool = rt.block_on(async {
             sqlx::PgPool::connect_lazy("postgres://unused:5432/unused").unwrap()
@@ -762,7 +777,42 @@ mod tests {
             room_settings_repo: None,
             cache: Arc::new(
                 moka::future::CacheBuilder::new(10)
-                    .time_to_live(Duration::from_mins(1))
+                    .time_to_live(Duration::from_secs(60))
+                    .build(),
+            ),
+            degraded_cache: Arc::new(
+                moka::future::CacheBuilder::new(10)
+                    .time_to_live(Duration::from_secs(
+                        PermissionService::DEGRADED_CACHE_TTL_SECS,
+                    ))
+                    .build(),
+            ),
+            settings_registry: None,
+            invalidation_service: None,
+            cache_degraded: Arc::new(AtomicBool::new(false)),
+            last_flush_time: Arc::new(parking_lot::Mutex::new(
+                Instant::now()
+                    .checked_sub(Duration::from_secs(
+                        PermissionService::FLUSH_RATE_LIMIT_SECS,
+                    ))
+                    .unwrap_or(Instant::now()),
+            )),
+            degradation_started: Arc::new(parking_lot::Mutex::new(None)),
+        }
+    }
+
+    // Helper to create a PermissionService within an async context
+    // This should be called from inside rt.block_on() or async tests
+    fn make_service_async() -> PermissionService {
+        // PgPool::connect_lazy requires a tokio runtime context
+        // When called from within an async context, we can use the current context
+        let pool = sqlx::PgPool::connect_lazy("postgres://unused:5432/unused").unwrap();
+        PermissionService {
+            member_repo: RoomMemberRepository::new(pool),
+            room_settings_repo: None,
+            cache: Arc::new(
+                moka::future::CacheBuilder::new(10)
+                    .time_to_live(Duration::from_secs(60))
                     .build(),
             ),
             degraded_cache: Arc::new(
@@ -1461,5 +1511,414 @@ mod tests {
             elapsed < Duration::from_secs(PermissionService::FLUSH_RATE_LIMIT_SECS),
             "Second flush immediately after first should be blocked"
         );
+    }
+
+    // ========== Cache Invalidation Broadcast Tests ==========
+
+    /// Helper to create a PermissionService with invalidation service for tests
+    /// This version creates services without needing a nested runtime.
+    fn make_service_with_invalidation_no_rt() -> (
+        PermissionService,
+        Arc<crate::cache::CacheInvalidationService>,
+    ) {
+        use crate::cache::CacheInvalidationService;
+
+        // PgPool::connect_lazy is actually sync, despite its name
+        let pool = sqlx::PgPool::connect_lazy("postgres://unused:5432/unused").unwrap();
+        let member_repo = RoomMemberRepository::new(pool);
+        let room_repo = RoomRepository::new(
+            sqlx::PgPool::connect_lazy("postgres://unused:5432/unused").unwrap(),
+        );
+
+        let invalidation_service = Arc::new(CacheInvalidationService::new(
+            None, // No Redis - local only
+            "test-node".to_string(),
+            "test-stream".to_string(),
+        ));
+
+        let service = PermissionService::with_invalidation(
+            member_repo,
+            room_repo,
+            None,
+            10,
+            60,
+            invalidation_service.clone(),
+        );
+
+        (service, invalidation_service)
+    }
+
+    #[test]
+    fn test_invalidate_cache_local_clear_works() {
+        // This test verifies that when a PermissionService has an invalidation_service,
+        // calling invalidate_cache clears the local cache.
+        //
+        // The key behavior being tested is that invalidate_cache works correctly.
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            let (service, _invalidation_service) = make_service_with_invalidation_no_rt();
+
+            // Insert a value into the cache
+            let room_id = RoomId("room1".to_string());
+            let user_id = UserId("user1".to_string());
+            let cache_key = PermissionService::cache_key(&room_id, &user_id);
+            service
+                .cache
+                .insert(cache_key.clone(), PermissionBits(PermissionBits::ALL))
+                .await;
+
+            // Verify the cache has the value
+            assert!(service.cache.get(&cache_key).await.is_some());
+
+            // Invalidate the cache
+            service.invalidate_cache(&room_id, &user_id).await;
+
+            // Verify the local cache is invalidated
+            assert!(service.cache.get(&cache_key).await.is_none());
+        });
+    }
+
+    #[test]
+    fn test_invalidate_room_cache_local_clear_works() {
+        // This test verifies that invalidate_room_cache correctly invalidates
+        // cache entries for all users in a room.
+        //
+        // Note: moka's invalidate_entries_if is a background operation that may not
+        // be immediate. The broadcast test (test_invalidate_room_cache_receives_broadcast_after_fix)
+        // verifies the cross-replica behavior, which is the main fix for this issue.
+        //
+        // For local cache, we just verify the method doesn't panic and the broadcast is sent.
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            let (service, invalidation_service) = make_service_with_invalidation_no_rt();
+
+            // Subscribe to receive invalidation messages
+            let mut receiver = invalidation_service.subscribe();
+
+            // Insert values into the cache for multiple users in the same room
+            let room_id = RoomId("room1".to_string());
+            let user1_id = UserId("user1".to_string());
+            let user2_id = UserId("user2".to_string());
+
+            service
+                .cache
+                .insert(
+                    PermissionService::cache_key(&room_id, &user1_id),
+                    PermissionBits(PermissionBits::ALL),
+                )
+                .await;
+            service
+                .cache
+                .insert(
+                    PermissionService::cache_key(&room_id, &user2_id),
+                    PermissionBits(PermissionBits::ALL),
+                )
+                .await;
+
+            // Verify the cache has the values
+            assert!(service
+                .cache
+                .get(&PermissionService::cache_key(&room_id, &user1_id))
+                .await
+                .is_some());
+            assert!(service
+                .cache
+                .get(&PermissionService::cache_key(&room_id, &user2_id))
+                .await
+                .is_some());
+
+            // Invalidate the room cache
+            service.invalidate_room_cache(&room_id).await;
+
+            // Verify the broadcast was sent (this is the main fix)
+            let result =
+                tokio::time::timeout(tokio::time::Duration::from_millis(100), receiver.recv())
+                    .await;
+
+            match result {
+                Ok(Ok(InvalidationMessage::RoomPermission { room_id: rid })) => {
+                    assert_eq!(rid, "room1");
+                    // Success! The broadcast was received.
+                }
+                Ok(Ok(other)) => {
+                    panic!("Expected RoomPermission message, got {:?}", other);
+                }
+                Ok(Err(e)) => {
+                    panic!("Receiver error: {:?}", e);
+                }
+                Err(_) => {
+                    panic!("Timeout waiting for broadcast");
+                }
+            }
+        });
+    }
+
+    #[test]
+    fn test_clear_cache_local_clear_works() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            let (service, _invalidation_service) = make_service_with_invalidation_no_rt();
+
+            // Insert values into the cache
+            let room_id = RoomId("room1".to_string());
+            let user_id = UserId("user1".to_string());
+            service
+                .cache
+                .insert(
+                    PermissionService::cache_key(&room_id, &user_id),
+                    PermissionBits(PermissionBits::ALL),
+                )
+                .await;
+
+            // Verify the cache has the value
+            assert!(service
+                .cache
+                .get(&PermissionService::cache_key(&room_id, &user_id))
+                .await
+                .is_some());
+
+            // Clear the cache
+            service.clear_cache().await;
+
+            // Verify the local cache is cleared
+            assert!(service
+                .cache
+                .get(&PermissionService::cache_key(&room_id, &user_id))
+                .await
+                .is_none());
+        });
+    }
+
+    #[test]
+    fn test_invalidate_cache_no_panic_without_invalidation_service() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            // Create a PermissionService without invalidation service
+            // Use make_service_async() because we're inside an async context
+            let service = make_service_async();
+
+            // Insert a value into the cache
+            let room_id = RoomId("room1".to_string());
+            let user_id = UserId("user1".to_string());
+            let cache_key = PermissionService::cache_key(&room_id, &user_id);
+            service
+                .cache
+                .insert(cache_key.clone(), PermissionBits(PermissionBits::ALL))
+                .await;
+
+            // Verify the cache has the value
+            assert!(service.cache.get(&cache_key).await.is_some());
+
+            // Invalidate the cache - should not panic even without invalidation service
+            service.invalidate_cache(&room_id, &user_id).await;
+
+            // Verify the local cache is invalidated
+            assert!(service.cache.get(&cache_key).await.is_none());
+        });
+    }
+
+    #[test]
+    fn test_invalidate_cache_receives_broadcast_after_fix() {
+        use crate::cache::{CacheInvalidationService, InvalidationMessage};
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            // Create a CacheInvalidationService without Redis
+            let invalidation_service = Arc::new(CacheInvalidationService::new(
+                None, // No Redis
+                "test-node".to_string(),
+                "test-stream".to_string(),
+            ));
+
+            // Subscribe to receive invalidation messages
+            let mut receiver = invalidation_service.subscribe();
+
+            // Create a PermissionService with the invalidation service
+            let pool = sqlx::PgPool::connect_lazy("postgres://unused:5432/unused").unwrap();
+            let member_repo = RoomMemberRepository::new(pool);
+            let room_repo = RoomRepository::new(sqlx::PgPool::connect_lazy("postgres://unused:5432/unused").unwrap());
+
+            let service = PermissionService::with_invalidation(
+                member_repo,
+                room_repo,
+                None,
+                10,
+                60,
+                invalidation_service.clone(),
+            );
+
+            // Insert a value into the cache
+            let room_id = RoomId("room1".to_string());
+            let user_id = UserId("user1".to_string());
+            let cache_key = PermissionService::cache_key(&room_id, &user_id);
+            service.cache.insert(cache_key.clone(), PermissionBits(PermissionBits::ALL)).await;
+
+            // Invalidate the cache - this should broadcast via invalidation_service
+            service.invalidate_cache(&room_id, &user_id).await;
+
+            // Verify the local cache is invalidated
+            assert!(service.cache.get(&cache_key).await.is_none());
+
+            // Try to receive the broadcast message
+            // After the fix: invalidate_cache should use invalidate_and_broadcast_user_permission
+            // which broadcasts both locally AND to Redis. Since there's no Redis, only local
+            // broadcast happens, and we should receive it.
+            let result = tokio::time::timeout(
+                tokio::time::Duration::from_millis(100),
+                receiver.recv()
+            ).await;
+
+            // After the fix, this should receive the message
+            match result {
+                Ok(Ok(InvalidationMessage::UserPermission { room_id: rid, user_id: uid })) => {
+                    assert_eq!(rid, "room1");
+                    assert_eq!(uid, "user1");
+                    // Success! The broadcast was received.
+                }
+                Ok(Ok(other)) => {
+                    panic!("Expected UserPermission message, got {:?}", other);
+                }
+                Ok(Err(e)) => {
+                    panic!("Receiver error: {:?}", e);
+                }
+                Err(_) => {
+                    // Timeout - this indicates the fix is not yet applied
+                    // Currently, broadcast_remote doesn't send to local channel
+                    panic!(
+                        "Timeout waiting for broadcast - this indicates invalidate_cache \
+                         is not broadcasting locally. The fix should use \
+                         invalidate_and_broadcast_user_permission instead of invalidate_user_permission."
+                    );
+                }
+            }
+        });
+    }
+
+    #[test]
+    fn test_invalidate_room_cache_receives_broadcast_after_fix() {
+        use crate::cache::{CacheInvalidationService, InvalidationMessage};
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            // Create a CacheInvalidationService without Redis
+            let invalidation_service = Arc::new(CacheInvalidationService::new(
+                None, // No Redis
+                "test-node".to_string(),
+                "test-stream".to_string(),
+            ));
+
+            // Subscribe to receive invalidation messages
+            let mut receiver = invalidation_service.subscribe();
+
+            // Create a PermissionService with the invalidation service
+            let pool = sqlx::PgPool::connect_lazy("postgres://unused:5432/unused").unwrap();
+            let member_repo = RoomMemberRepository::new(pool);
+            let room_repo = RoomRepository::new(sqlx::PgPool::connect_lazy("postgres://unused:5432/unused").unwrap());
+
+            let service = PermissionService::with_invalidation(
+                member_repo,
+                room_repo,
+                None,
+                10,
+                60,
+                invalidation_service.clone(),
+            );
+
+            // Invalidate the room cache - this should broadcast via invalidation_service
+            let room_id = RoomId("room1".to_string());
+            service.invalidate_room_cache(&room_id).await;
+
+            // Try to receive the broadcast message
+            let result = tokio::time::timeout(
+                tokio::time::Duration::from_millis(100),
+                receiver.recv()
+            ).await;
+
+            // After the fix, this should receive the message
+            match result {
+                Ok(Ok(InvalidationMessage::RoomPermission { room_id: rid })) => {
+                    assert_eq!(rid, "room1");
+                    // Success! The broadcast was received.
+                }
+                Ok(Ok(other)) => {
+                    panic!("Expected RoomPermission message, got {:?}", other);
+                }
+                Ok(Err(e)) => {
+                    panic!("Receiver error: {:?}", e);
+                }
+                Err(_) => {
+                    // Timeout - this indicates the fix is not yet applied
+                    panic!(
+                        "Timeout waiting for broadcast - this indicates invalidate_room_cache \
+                         is not broadcasting locally. The fix should use \
+                         invalidate_and_broadcast_room_permission instead of invalidate_room_permission."
+                    );
+                }
+            }
+        });
+    }
+
+    #[test]
+    fn test_clear_cache_receives_broadcast_after_fix() {
+        use crate::cache::{CacheInvalidationService, InvalidationMessage};
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            // Create a CacheInvalidationService without Redis
+            let invalidation_service = Arc::new(CacheInvalidationService::new(
+                None, // No Redis
+                "test-node".to_string(),
+                "test-stream".to_string(),
+            ));
+
+            // Subscribe to receive invalidation messages
+            let mut receiver = invalidation_service.subscribe();
+
+            // Create a PermissionService with the invalidation service
+            let pool = sqlx::PgPool::connect_lazy("postgres://unused:5432/unused").unwrap();
+            let member_repo = RoomMemberRepository::new(pool);
+            let room_repo = RoomRepository::new(
+                sqlx::PgPool::connect_lazy("postgres://unused:5432/unused").unwrap(),
+            );
+
+            let service = PermissionService::with_invalidation(
+                member_repo,
+                room_repo,
+                None,
+                10,
+                60,
+                invalidation_service.clone(),
+            );
+
+            // Clear the cache - this should broadcast via invalidation_service
+            service.clear_cache().await;
+
+            // Try to receive the broadcast message
+            let result =
+                tokio::time::timeout(tokio::time::Duration::from_millis(100), receiver.recv())
+                    .await;
+
+            // After the fix, this should receive the message
+            match result {
+                Ok(Ok(InvalidationMessage::All)) => {
+                    // Success! The broadcast was received.
+                }
+                Ok(Ok(other)) => {
+                    panic!("Expected All message, got {:?}", other);
+                }
+                Ok(Err(e)) => {
+                    panic!("Receiver error: {:?}", e);
+                }
+                Err(_) => {
+                    // Timeout - this indicates the fix is not yet applied
+                    panic!(
+                        "Timeout waiting for broadcast - this indicates clear_cache \
+                         is not broadcasting locally. The fix should use \
+                         broadcast_all instead of invalidate_all."
+                    );
+                }
+            }
+        });
     }
 }

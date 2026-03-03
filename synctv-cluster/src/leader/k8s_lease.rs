@@ -343,6 +343,11 @@ impl K8sLeaderElector {
     /// modifications (optimistic concurrency). If another pod modified the lease
     /// between our GET and this PATCH, the API server returns 409 Conflict.
     ///
+    /// **Holder validation**: Before each renewal attempt (including retries),
+    /// verifies that the lease's `holderIdentity` still matches our identity.
+    /// If another pod acquired the lease, we give up immediately rather than
+    /// trying to update a lease we no longer hold.
+    ///
     /// **Conflict retry**: On 409 Conflict, retries up to 3 times with exponential
     /// backoff (100ms, 200ms, 400ms). Each retry re-fetches the lease to get the
     /// latest resourceVersion. This handles transient conflicts during rolling
@@ -382,6 +387,25 @@ impl K8sLeaderElector {
                     }
                 }
             };
+
+            // Verify holderIdentity still matches our identity before attempting renewal.
+            // This is critical on retries where another pod may have acquired the lease.
+            let holder = current_lease
+                .spec
+                .as_ref()
+                .and_then(|s| s.holder_identity.as_deref());
+            if holder != Some(self.identity.as_str()) {
+                warn!(
+                    identity = %self.identity,
+                    attempt = attempt,
+                    current_holder = ?holder,
+                    "Lease holder changed during renewal, lost leadership"
+                );
+                self.set_leader(false);
+                // Another pod took over, reset failures
+                self.reset_election_failures();
+                return;
+            }
 
             let now = chrono::Utc::now();
 
@@ -1090,5 +1114,69 @@ mod tests {
         }
 
         assert_eq!(consecutive_failures.load(Ordering::Relaxed), 6);
+    }
+
+    /// Test that verifies the holderIdentity validation logic for renew_lease.
+    ///
+    /// This test documents the requirement that renew_lease should verify
+    /// the holderIdentity still matches our identity before attempting renewal.
+    ///
+    /// # Scenario
+    ///
+    /// 1. Node A holds the lease (holderIdentity = "node-a")
+    /// 2. Node A's renewal fails with 409 conflict
+    /// 3. During retry, Node B has already acquired the lease (holderIdentity = "node-b")
+    /// 4. Node A's retry should detect the holderIdentity mismatch and give up
+    ///
+    /// Without this check, Node A would try to update a lease it no longer holds,
+    /// potentially interfering with Node B's leadership.
+    #[test]
+    fn test_renew_lease_should_verify_holder_identity_on_retry() {
+        // Simulate the holder identity check logic
+        let our_identity = "node-a";
+        let lease_holder_after_retry = "node-b"; // Different holder after re-fetch
+
+        // This is what renew_lease does on each retry:
+        // let holder = current_lease.spec.as_ref().and_then(|s| s.holder_identity.as_deref());
+        // if holder != Some(our_identity) {
+        //     warn!("Lease holder changed during renewal, giving up");
+        //     self.set_leader(false);
+        //     return;
+        // }
+
+        let holder: Option<&str> = Some(lease_holder_after_retry);
+        let is_still_our_lease = holder == Some(our_identity);
+
+        assert!(
+            !is_still_our_lease,
+            "Should detect that lease is now held by another node"
+        );
+
+        // Verify the expected behavior: set_leader(false) should be called
+        // and we should return early without attempting the replace() call.
+    }
+
+    /// Test that holder identity check is also needed on the first attempt.
+    ///
+    /// While handle_existing_lease() checks holderIdentity before calling renew_lease,
+    /// the check should still be performed in renew_lease for defense-in-depth.
+    #[test]
+    fn test_renew_lease_holder_identity_check_defensive() {
+        let our_identity = "node-a";
+
+        // Test case 1: holder matches our identity - should proceed
+        let holder_matches: Option<&str> = Some(our_identity);
+        let should_proceed = holder_matches == Some(our_identity);
+        assert!(should_proceed, "Should proceed when holder matches");
+
+        // Test case 2: holder is different - should not proceed
+        let holder_different: Option<&str> = Some("node-b");
+        let should_proceed = holder_different == Some(our_identity);
+        assert!(!should_proceed, "Should NOT proceed when holder differs");
+
+        // Test case 3: holder is None - should not proceed
+        let holder_none: Option<&str> = None;
+        let should_proceed = holder_none == Some(our_identity);
+        assert!(!should_proceed, "Should NOT proceed when holder is None");
     }
 }

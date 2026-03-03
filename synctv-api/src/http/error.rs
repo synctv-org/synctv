@@ -296,6 +296,7 @@ impl From<crate::impls::ApiError> for AppError {
             ErrorKind::PermissionDenied => Self::forbidden(msg),
             ErrorKind::AlreadyExists => Self::conflict(msg),
             ErrorKind::InvalidArgument => Self::bad_request(msg),
+            ErrorKind::RateLimited => Self::too_many_requests(msg),
             ErrorKind::Internal => {
                 tracing::error!("Internal error: {msg}");
                 Self::internal("Internal error")
@@ -685,5 +686,36 @@ mod tests {
         assert_eq!(app_err.status, StatusCode::BAD_REQUEST);
         // Should not leak serde error details
         assert_eq!(app_err.message, "Invalid request data format");
+    }
+
+    // ========== From<ApiError> RateLimited ==========
+
+    #[test]
+    fn test_from_api_error_rate_limited() {
+        let api_err = crate::impls::ApiError::RateLimited("too many requests".to_string());
+        let app_err = AppError::from(api_err);
+        assert_eq!(
+            app_err.status,
+            StatusCode::TOO_MANY_REQUESTS,
+            "ApiError::RateLimited should map to HTTP 429"
+        );
+        assert!(app_err.message.contains("too many requests"));
+        assert_eq!(
+            app_err.error_code,
+            Some(crate::impls::error_codes::RESOURCE_EXHAUSTED)
+        );
+    }
+
+    #[test]
+    fn test_from_core_rate_limited_via_api_error() {
+        // Test the full chain: synctv_core::Error::RateLimited -> ApiError -> AppError
+        let core_err = synctv_core::Error::RateLimited("exceeded quota".to_string());
+        let api_err = crate::impls::ApiError::from(core_err);
+        let app_err = AppError::from(api_err);
+        assert_eq!(
+            app_err.status,
+            StatusCode::TOO_MANY_REQUESTS,
+            "synctv_core::Error::RateLimited should map to HTTP 429 via ApiError"
+        );
     }
 }

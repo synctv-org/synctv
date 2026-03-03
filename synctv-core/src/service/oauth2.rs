@@ -2460,7 +2460,11 @@ mod tests {
         // Store DEFAULT_CAPACITY + 1 entries
         for i in 0..(InMemoryOAuthStateStore::DEFAULT_CAPACITY + 1) {
             store
-                .store(&format!("token_{i}"), &state, std::time::Duration::from_secs(300))
+                .store(
+                    &format!("token_{i}"),
+                    &state,
+                    std::time::Duration::from_secs(300),
+                )
                 .await
                 .unwrap();
         }

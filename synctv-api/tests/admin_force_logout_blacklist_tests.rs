@@ -13,7 +13,9 @@
 
 use std::sync::Arc;
 use synctv_core::models::UserId;
-use synctv_core::service::auth::token_blacklist::{InMemoryTokenBlacklistStore, TokenBlacklistStore};
+use synctv_core::service::auth::token_blacklist::{
+    InMemoryTokenBlacklistStore, TokenBlacklistStore,
+};
 
 // ============================================================================
 // Helper functions
@@ -41,7 +43,10 @@ async fn test_force_logout_blacklist_prevents_token_reuse() {
 
     // Simulate admin force logout: add token JTI to blacklist
     let ttl_secs = 3600; // 1 hour
-    store.blacklist(&jti, ttl_secs).await.expect("Blacklist should succeed");
+    store
+        .blacklist(&jti, ttl_secs)
+        .await
+        .expect("Blacklist should succeed");
 
     // Verify the token is now blacklisted
     let is_blacklisted = store.is_blacklisted(&jti).await;
@@ -61,14 +66,14 @@ async fn test_blacklisted_token_rejected_even_if_valid_signature() {
     let jti = generate_test_jti();
 
     // Add JTI to blacklist (simulating force logout)
-    store.blacklist(&jti, 3600).await.expect("Blacklist should succeed");
+    store
+        .blacklist(&jti, 3600)
+        .await
+        .expect("Blacklist should succeed");
 
     // The SecurityPipeline should check is_blacklisted_checked before accepting token
     let result = store.is_blacklisted_checked(&jti).await;
-    assert!(
-        result.is_ok(),
-        "is_blacklisted_checked should not error"
-    );
+    assert!(result.is_ok(), "is_blacklisted_checked should not error");
     assert!(
         result.unwrap(),
         "Blacklisted token should return true from is_blacklisted_checked"
@@ -88,7 +93,9 @@ async fn test_force_logout_revokes_token_family() {
     // Simulate admin force logout: revoke entire token family
     let revoked_at = chrono::Utc::now().timestamp();
     let ttl_secs = 3600;
-    store.set_family_revoked(&family_key, revoked_at, ttl_secs).await;
+    store
+        .set_family_revoked(&family_key, revoked_at, ttl_secs)
+        .await;
 
     // Verify the family is revoked
     let family_revoked_at = store.get_family_revoked_at(&family_key).await;
@@ -136,20 +143,23 @@ async fn test_blacklist_entry_expires_after_ttl() {
     let jti = generate_test_jti();
 
     // Add to blacklist with very short TTL
-    store.blacklist(&jti, 1).await.expect("Blacklist should succeed");
+    store
+        .blacklist(&jti, 1)
+        .await
+        .expect("Blacklist should succeed");
 
     // Immediately should be blacklisted
-    assert!(store.is_blacklisted(&jti).await, "Should be blacklisted immediately");
+    assert!(
+        store.is_blacklisted(&jti).await,
+        "Should be blacklisted immediately"
+    );
 
     // Wait for TTL to expire
     tokio::time::sleep(tokio::time::Duration::from_millis(1100)).await;
 
     // After TTL, should NOT be blacklisted
     let is_blacklisted = store.is_blacklisted(&jti).await;
-    assert!(
-        !is_blacklisted,
-        "Blacklist entry should expire after TTL"
-    );
+    assert!(!is_blacklisted, "Blacklist entry should expire after TTL");
 }
 
 // ============================================================================
@@ -176,22 +186,20 @@ async fn test_concurrent_blacklist_operations_atomic() {
 
     // Exactly one should return Ok(false) (first insert)
     // All others should return Ok(true) (already existed)
-    let (first_use_count, replay_count): (usize, usize) = results.iter().fold((0, 0), |(first, replay), r| {
-        match r.as_ref().unwrap().as_ref() {
-            Ok(false) => (first + 1, replay), // First use
-            Ok(true) => (first, replay + 1),  // Replay detected
-            Err(_) => (first, replay),         // Error (shouldn't happen)
-        }
-    });
+    let (first_use_count, replay_count): (usize, usize) =
+        results.iter().fold((0, 0), |(first, replay), r| {
+            match r.as_ref().unwrap().as_ref() {
+                Ok(false) => (first + 1, replay), // First use
+                Ok(true) => (first, replay + 1),  // Replay detected
+                Err(_) => (first, replay),        // Error (shouldn't happen)
+            }
+        });
 
     assert_eq!(
         first_use_count, 1,
         "Exactly one operation should succeed as first insert"
     );
-    assert_eq!(
-        replay_count, 9,
-        "All other operations should detect replay"
-    );
+    assert_eq!(replay_count, 9, "All other operations should detect replay");
 }
 
 // ============================================================================
@@ -213,9 +221,18 @@ async fn test_batch_blacklist_for_force_logout() {
     store.blacklist(&jti3, 3600).await.expect("Should succeed");
 
     // All should be blacklisted
-    assert!(store.is_blacklisted(&jti1).await, "JTI1 should be blacklisted");
-    assert!(store.is_blacklisted(&jti2).await, "JTI2 should be blacklisted");
-    assert!(store.is_blacklisted(&jti3).await, "JTI3 should be blacklisted");
+    assert!(
+        store.is_blacklisted(&jti1).await,
+        "JTI1 should be blacklisted"
+    );
+    assert!(
+        store.is_blacklisted(&jti2).await,
+        "JTI2 should be blacklisted"
+    );
+    assert!(
+        store.is_blacklisted(&jti3).await,
+        "JTI3 should be blacklisted"
+    );
 }
 
 // ============================================================================
@@ -230,7 +247,9 @@ async fn test_token_issued_after_family_revocation_not_blacklisted() {
 
     // Revoke family at time T1
     let revoked_at = chrono::Utc::now().timestamp();
-    store.set_family_revoked(&family_key, revoked_at, 3600).await;
+    store
+        .set_family_revoked(&family_key, revoked_at, 3600)
+        .await;
 
     // Token issued after revocation should have iat > revoked_at
     // This is checked by SecurityPipeline, not the blacklist store

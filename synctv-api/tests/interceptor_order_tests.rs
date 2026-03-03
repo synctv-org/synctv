@@ -14,8 +14,8 @@
 
 #![allow(clippy::unwrap_used)]
 
-use synctv_core::service::auth::{JwtService, TokenType};
 use synctv_core::models::UserId;
+use synctv_core::service::auth::{JwtService, TokenType};
 
 const TEST_SECRET: &str = "test-secret-key-long-enough-for-entropy-check-1234567890";
 
@@ -58,10 +58,18 @@ fn test_jwt_verification_happens_first() {
     let user_id = UserId::new();
 
     // Valid token should pass verification
-    let token = jwt_service.sign_token(&user_id, TokenType::Access, 0).expect("Should sign token");
-    let claims = jwt_service.verify_access_token(&token).expect("Should verify token");
+    let token = jwt_service
+        .sign_token(&user_id, TokenType::Access, 0)
+        .expect("Should sign token");
+    let claims = jwt_service
+        .verify_access_token(&token)
+        .expect("Should verify token");
 
-    assert_eq!(claims.sub, user_id.as_str(), "Token should be verified successfully");
+    assert_eq!(
+        claims.sub,
+        user_id.as_str(),
+        "Token should be verified successfully"
+    );
 }
 
 #[test]
@@ -77,10 +85,15 @@ fn test_invalid_jwt_rejected_before_interceptor() {
     let other_service = JwtService::new("different-secret-key-long-enough-1234567890")
         .expect("Should create JwtService");
     let user_id = UserId::new();
-    let token = other_service.sign_token(&user_id, TokenType::Access, 0).expect("Should sign");
+    let token = other_service
+        .sign_token(&user_id, TokenType::Access, 0)
+        .expect("Should sign");
 
     let result = jwt_service.verify_access_token(&token);
-    assert!(result.is_err(), "Token with wrong signature should be rejected");
+    assert!(
+        result.is_err(),
+        "Token with wrong signature should be rejected"
+    );
 }
 
 // ============================================================================
@@ -94,12 +107,16 @@ fn test_refresh_token_rejected_as_access_token() {
     let user_id = UserId::new();
 
     // Create refresh token
-    let refresh_token = jwt_service.sign_token(&user_id, TokenType::Refresh, 0)
+    let refresh_token = jwt_service
+        .sign_token(&user_id, TokenType::Refresh, 0)
         .expect("Should sign refresh token");
 
     // Try to verify as access token - should fail
     let result = jwt_service.verify_access_token(&refresh_token);
-    assert!(result.is_err(), "Refresh token should not pass as access token");
+    assert!(
+        result.is_err(),
+        "Refresh token should not pass as access token"
+    );
 }
 
 // ============================================================================
@@ -121,14 +138,21 @@ fn test_security_pipeline_checks_after_jwt_verification() {
 
     let jwt_service = JwtService::new(TEST_SECRET).expect("Should create JwtService");
     let user_id = UserId::new();
-    let token = jwt_service.sign_token(&user_id, TokenType::Access, 0).expect("Should sign");
-    let _claims = jwt_service.verify_access_token(&token).expect("Should verify");
+    let token = jwt_service
+        .sign_token(&user_id, TokenType::Access, 0)
+        .expect("Should sign");
+    let _claims = jwt_service
+        .verify_access_token(&token)
+        .expect("Should verify");
 
     // SecurityPipeline would then check:
     // - claims.pv (password version) against DB
     // - User status in DB
 
-    assert!(true, "SecurityPipeline checks happen after JWT verification");
+    assert!(
+        true,
+        "SecurityPipeline checks happen after JWT verification"
+    );
 }
 
 // ============================================================================
@@ -159,7 +183,9 @@ fn test_auth_interceptor_injects_user_context() {
     let interceptor = AuthInterceptor::new(jwt_service.clone());
 
     let user_id = UserId::new();
-    let token = jwt_service.sign_token(&user_id, TokenType::Access, 0).expect("Should sign");
+    let token = jwt_service
+        .sign_token(&user_id, TokenType::Access, 0)
+        .expect("Should sign");
 
     let mut request = tonic::Request::new(());
     request
@@ -171,7 +197,9 @@ fn test_auth_interceptor_injects_user_context() {
 
     // UserContext should be injected
     let request = result.unwrap();
-    let user_context = request.extensions().get::<synctv_api::grpc::interceptors::UserContext>();
+    let user_context = request
+        .extensions()
+        .get::<synctv_api::grpc::interceptors::UserContext>();
     assert!(user_context.is_some(), "UserContext should be injected");
 }
 
@@ -307,7 +335,10 @@ fn test_missing_auth_header_passes_for_public_endpoints() {
     // No authorization header
 
     let result = interceptor.inject_user(request);
-    assert!(result.is_err(), "Missing auth should fail at AuthInterceptor");
+    assert!(
+        result.is_err(),
+        "Missing auth should fail at AuthInterceptor"
+    );
     assert_eq!(
         result.unwrap_err().code(),
         tonic::Code::Unauthenticated,

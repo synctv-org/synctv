@@ -1297,6 +1297,12 @@ impl Config {
             errors.push("JWT secret is empty".to_string());
         } else if self.jwt.secret == "change-me-in-production" {
             errors.push("JWT secret is set to default value 'change-me-in-production'. Set SYNCTV_JWT_SECRET environment variable".to_string());
+        } else if self.jwt.secret.len() < 32 {
+            errors.push(format!(
+                "JWT secret is too short ({} chars). Minimum 32 characters required for security. \
+                 Set SYNCTV_JWT_SECRET to a strong random value.",
+                self.jwt.secret.len()
+            ));
         }
 
         // Validate root credentials
@@ -2373,6 +2379,25 @@ mod tests {
         config.jwt.secret = String::new();
         let errors = config.validate().unwrap_err();
         assert!(errors.iter().any(|e| e.contains("JWT secret is empty")));
+    }
+
+    #[test]
+    fn test_validate_jwt_secret_too_short() {
+        let mut config = valid_prod_config();
+        // 31 characters - just under the 32 minimum
+        config.jwt.secret = "a".repeat(31);
+        let errors = config.validate().unwrap_err();
+        assert!(errors
+            .iter()
+            .any(|e| e.contains("JWT secret") && e.contains("32") && e.contains("characters")));
+    }
+
+    #[test]
+    fn test_validate_jwt_secret_exactly_32_chars() {
+        let mut config = valid_prod_config();
+        // Exactly 32 characters - should pass
+        config.jwt.secret = "a".repeat(32);
+        assert!(config.validate().is_ok());
     }
 
     #[test]

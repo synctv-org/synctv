@@ -695,13 +695,6 @@ fn load_jwt_service(config: &Config) -> Result<JwtService, anyhow::Error> {
         warn!("Using a well-known JWT secret! This is insecure for production use.");
         warn!("Please set SYNCTV_JWT_SECRET to a strong random value.");
     }
-    if config.jwt.secret.len() < 32 {
-        return Err(anyhow::anyhow!(
-            "JWT secret is too short ({} chars). Minimum 32 characters required for security. \
-             Set SYNCTV_JWT_SECRET to a strong random value.",
-            config.jwt.secret.len()
-        ));
-    }
 
     JwtService::with_durations(
         &config.jwt.secret,

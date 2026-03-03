@@ -96,6 +96,7 @@ pub(crate) fn map_api_error(err: crate::impls::ApiError) -> tonic::Status {
         ErrorKind::PermissionDenied => tonic::Status::permission_denied(msg),
         ErrorKind::AlreadyExists => tonic::Status::already_exists(msg),
         ErrorKind::InvalidArgument => tonic::Status::invalid_argument(msg),
+        ErrorKind::RateLimited => tonic::Status::resource_exhausted(msg),
         ErrorKind::Internal => {
             tracing::error!("API internal error: {msg}");
             tonic::Status::internal("Internal error")
@@ -652,18 +653,24 @@ pub async fn serve(grpc_config: GrpcServerConfig<'_>) -> anyhow::Result<()> {
         // Register provider services with interceptors and message size limits
         // Using InterceptedService::new() to apply message size limits before the interceptor
         router = router.add_service(tonic::codegen::InterceptedService::new(
-            AlistProviderServiceServer::new(providers::alist::AlistProviderGrpcService::new(app_state.clone()))
-                .with_message_size_limit(max_message_size),
+            AlistProviderServiceServer::new(providers::alist::AlistProviderGrpcService::new(
+                app_state.clone(),
+            ))
+            .with_message_size_limit(max_message_size),
             move |req| provider_interceptor1.inject_user(req),
         ));
         router = router.add_service(tonic::codegen::InterceptedService::new(
-            BilibiliProviderServiceServer::new(providers::bilibili::BilibiliProviderGrpcService::new(app_state.clone()))
-                .with_message_size_limit(max_message_size),
+            BilibiliProviderServiceServer::new(
+                providers::bilibili::BilibiliProviderGrpcService::new(app_state.clone()),
+            )
+            .with_message_size_limit(max_message_size),
             move |req| provider_interceptor2.inject_user(req),
         ));
         router = router.add_service(tonic::codegen::InterceptedService::new(
-            EmbyProviderServiceServer::new(providers::emby::EmbyProviderGrpcService::new(app_state))
-                .with_message_size_limit(max_message_size),
+            EmbyProviderServiceServer::new(providers::emby::EmbyProviderGrpcService::new(
+                app_state,
+            ))
+            .with_message_size_limit(max_message_size),
             move |req| provider_interceptor3.inject_user(req),
         ));
     }

@@ -1696,8 +1696,9 @@ mod tests {
         let key_builder = KeyBuilder::new(prefix);
         let brute_force = BruteForceProtection::in_memory(prefix.to_string());
         let provider_user_id = "github:12345";
-        let client_ip: Option<std::net::IpAddr> =
-            Some(std::net::IpAddr::V4(std::net::Ipv4Addr::new(192, 168, 1, 1)));
+        let client_ip: Option<std::net::IpAddr> = Some(std::net::IpAddr::V4(
+            std::net::Ipv4Addr::new(192, 168, 1, 1),
+        ));
 
         // Simulate some failed login attempts
         for _ in 0..3 {
@@ -1719,7 +1720,10 @@ mod tests {
 
         // Verify counter was reset
         let (count_after, _) = tracker.get_attempts(&prefixed_key).await.unwrap();
-        assert_eq!(count_after, 0, "Counter should be reset to 0 after successful OAuth2 login");
+        assert_eq!(
+            count_after, 0,
+            "Counter should be reset to 0 after successful OAuth2 login"
+        );
     }
 
     /// Test that successful OAuth2 login resets the brute-force counter for the client IP.
@@ -1734,7 +1738,8 @@ mod tests {
         let key_builder = KeyBuilder::new(prefix);
         let brute_force = BruteForceProtection::in_memory(prefix.to_string());
         let provider_user_id = "github:67890";
-        let client_ip: std::net::IpAddr = std::net::IpAddr::V4(std::net::Ipv4Addr::new(10, 0, 0, 1));
+        let client_ip: std::net::IpAddr =
+            std::net::IpAddr::V4(std::net::Ipv4Addr::new(10, 0, 0, 1));
 
         // Simulate some failed login attempts from this IP
         for _ in 0..5 {
@@ -1755,7 +1760,10 @@ mod tests {
 
         // Verify IP counter was reset
         let (count_after, _) = ip_tracker.get_attempts(&ip_key).await.unwrap();
-        assert_eq!(count_after, 0, "IP counter should be reset to 0 after successful OAuth2 login");
+        assert_eq!(
+            count_after, 0,
+            "IP counter should be reset to 0 after successful OAuth2 login"
+        );
     }
 
     /// Test that failed OAuth2 login (e.g., user is banned) increments the brute-force counter.
@@ -1784,7 +1792,10 @@ mod tests {
         let tracker = brute_force.username_tracker();
         let prefixed_key = key_builder.login_attempts(provider_user_id);
         let (count, _) = tracker.get_attempts(&prefixed_key).await.unwrap();
-        assert_eq!(count, 1, "Counter should be incremented after failed OAuth2 login");
+        assert_eq!(
+            count, 1,
+            "Counter should be incremented after failed OAuth2 login"
+        );
     }
 
     /// Test that brute-force check happens before OAuth2 token issuance.
@@ -1795,8 +1806,9 @@ mod tests {
     async fn test_oauth2_login_checks_brute_force_before_token_issuance() {
         let brute_force = BruteForceProtection::in_memory("test_oauth2_check".to_string());
         let provider_user_id = "discord:11111";
-        let client_ip: Option<std::net::IpAddr> =
-            Some(std::net::IpAddr::V4(std::net::Ipv4Addr::new(192, 168, 100, 1)));
+        let client_ip: Option<std::net::IpAddr> = Some(std::net::IpAddr::V4(
+            std::net::Ipv4Addr::new(192, 168, 100, 1),
+        ));
 
         // Record enough failures to trigger lockout (5 is the tier1 threshold)
         for _ in 0..5 {
@@ -1829,7 +1841,8 @@ mod tests {
         let key_builder = KeyBuilder::new(prefix);
         let brute_force = BruteForceProtection::in_memory(prefix.to_string());
         let provider_user_id = "github:22222";
-        let client_ip: std::net::IpAddr = std::net::IpAddr::V4(std::net::Ipv4Addr::new(10, 10, 10, 10));
+        let client_ip: std::net::IpAddr =
+            std::net::IpAddr::V4(std::net::Ipv4Addr::new(10, 10, 10, 10));
 
         // Record failures
         for _ in 0..3 {

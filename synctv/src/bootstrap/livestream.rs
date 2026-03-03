@@ -112,8 +112,18 @@ pub async fn init_livestream(
     }
     let rtmp_auth: Arc<dyn synctv_livestream::AuthCallback> = Arc::new(rtmp_auth_impl);
 
-    // One-shot facade: start all xiu components
+    // Pre-bind RTMP listener to catch port-in-use errors before deep initialization.
+    // This follows the same pattern as gRPC/HTTP server pre-binding.
     let rtmp_listen_addr = format!("{}:{}", config.server.host, config.livestream.rtmp_port);
+    let rtmp_socket_addr: std::net::SocketAddr = rtmp_listen_addr
+        .parse()
+        .map_err(|e| anyhow::anyhow!("Invalid RTMP address '{rtmp_listen_addr}': {e}"))?;
+    let rtmp_listener = tokio::net::TcpListener::bind(rtmp_socket_addr)
+        .await
+        .map_err(|e| anyhow::anyhow!("Failed to bind RTMP address {rtmp_socket_addr}: {e}"))?;
+    info!("RTMP server pre-bound on {}", rtmp_socket_addr);
+
+    // One-shot facade: start all xiu components
     let handle = synctv_livestream::LivestreamServer::new(
         synctv_livestream::LivestreamConfig {
             rtmp_address: rtmp_listen_addr,
@@ -134,6 +144,7 @@ pub async fn init_livestream(
         user_stream_tracker,
     )
     .with_auth(rtmp_auth)
+    .with_rtmp_listener(rtmp_listener)
     .start()
     .await
     .map_err(|e| anyhow::anyhow!("Failed to start livestream: {e}"))?;

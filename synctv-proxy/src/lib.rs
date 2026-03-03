@@ -99,20 +99,21 @@ impl reqwest::dns::Resolve for SsrfSafeDnsResolver {
         Box::pin(async move {
             let host = name.as_str();
             // Resolve via the system DNS with a timeout
-            let addrs: Vec<SocketAddr> = tokio::time::timeout(DNS_TIMEOUT, tokio::net::lookup_host((host, 0)))
-                .await
-                .map_err(|_| -> Box<dyn std::error::Error + Send + Sync> {
-                    Box::new(std::io::Error::other(format!(
-                        "DNS lookup timed out for {host} after {}s",
-                        DNS_TIMEOUT.as_secs()
-                    )))
-                })?
-                .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> {
-                    Box::new(std::io::Error::other(format!(
-                        "DNS lookup failed for {host}: {e}"
-                    )))
-                })?
-                .collect();
+            let addrs: Vec<SocketAddr> =
+                tokio::time::timeout(DNS_TIMEOUT, tokio::net::lookup_host((host, 0)))
+                    .await
+                    .map_err(|_| -> Box<dyn std::error::Error + Send + Sync> {
+                        Box::new(std::io::Error::other(format!(
+                            "DNS lookup timed out for {host} after {}s",
+                            DNS_TIMEOUT.as_secs()
+                        )))
+                    })?
+                    .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> {
+                        Box::new(std::io::Error::other(format!(
+                            "DNS lookup failed for {host}: {e}"
+                        )))
+                    })?
+                    .collect();
 
             if addrs.is_empty() {
                 return Err(Box::new(std::io::Error::other(format!(
@@ -562,6 +563,13 @@ const CORS_ALLOW_METHODS: &str = "GET, OPTIONS";
 const CORS_ALLOW_HEADERS: &str = "Authorization, Content-Type, Accept, Range";
 const CORS_MAX_AGE: &str = "86400";
 
+/// Headers that frontend JavaScript can read from proxy responses.
+///
+/// By default, browsers only expose "simple" response headers to JavaScript.
+/// This header allows frontend code to read custom headers like Content-Range
+/// (needed for video seeking), cache status, and other useful metadata.
+const CORS_EXPOSE_HEADERS: &str = "Content-Range, Accept-Ranges, Content-Length, Content-Type, Cache-Control, ETag, Last-Modified, X-Content-Type-Options";
+
 /// Build a CORS preflight response for wildcard mode.
 ///
 /// Returns 204 No Content with `Access-Control-Allow-Origin: *`.
@@ -571,6 +579,7 @@ fn build_wildcard_cors_response() -> Response {
         .header("Access-Control-Allow-Origin", "*")
         .header("Access-Control-Allow-Methods", CORS_ALLOW_METHODS)
         .header("Access-Control-Allow-Headers", CORS_ALLOW_HEADERS)
+        .header("Access-Control-Expose-Headers", CORS_EXPOSE_HEADERS)
         .header("Access-Control-Max-Age", CORS_MAX_AGE)
         .body(Body::empty())
         .expect("Failed to build wildcard CORS response")
@@ -584,6 +593,7 @@ fn build_no_origin_cors_response() -> Response {
         .status(StatusCode::NO_CONTENT)
         .header("Access-Control-Allow-Methods", CORS_ALLOW_METHODS)
         .header("Access-Control-Allow-Headers", CORS_ALLOW_HEADERS)
+        .header("Access-Control-Expose-Headers", CORS_EXPOSE_HEADERS)
         .header("Access-Control-Max-Age", CORS_MAX_AGE)
         .body(Body::empty())
         .expect("Failed to build no-origin CORS response")
@@ -609,6 +619,7 @@ fn build_allowed_cors_response(origin: &str) -> Response {
         .header("Access-Control-Allow-Origin", origin)
         .header("Access-Control-Allow-Methods", CORS_ALLOW_METHODS)
         .header("Access-Control-Allow-Headers", CORS_ALLOW_HEADERS)
+        .header("Access-Control-Expose-Headers", CORS_EXPOSE_HEADERS)
         .header("Access-Control-Allow-Credentials", "true")
         .header("Access-Control-Max-Age", CORS_MAX_AGE)
         .header("Vary", "Origin")
@@ -625,6 +636,7 @@ fn build_deprecated_preflight_response() -> Response {
         .header("Access-Control-Allow-Origin", "*")
         .header("Access-Control-Allow-Methods", CORS_ALLOW_METHODS)
         .header("Access-Control-Allow-Headers", CORS_ALLOW_HEADERS)
+        .header("Access-Control-Expose-Headers", CORS_EXPOSE_HEADERS)
         .header("Access-Control-Max-Age", CORS_MAX_AGE)
         .header("Deprecation", "true")
         .header(
@@ -873,11 +885,21 @@ pub fn rewrite_uri_attribute_with_count(
 
 /// Percent-encode a string for use in URL query parameter values.
 ///
+/// This function first decodes any existing percent-encoded sequences, then
+/// re-encodes the result. This prevents double-encoding bugs where `%20`
+/// would become `%2520`.
+///
 /// Uses the `NON_ALPHANUMERIC` encode set, which encodes everything except
-/// `A-Z a-z 0-9 - _ . ~` (the RFC 3986 "unreserved" characters).
+/// `A-Z a-z 0-9` (the RFC 3986 "unreserved" alphanumeric characters).
+/// Note: Unlike strict RFC 3986, this also encodes `-`, `_`, `.`, and `~`
+/// to ensure consistent encoding for query parameter values.
 #[must_use]
 pub fn percent_encode(input: &str) -> String {
-    percent_encoding::utf8_percent_encode(input, percent_encoding::NON_ALPHANUMERIC).to_string()
+    // First, decode any existing percent-encoded sequences to get raw bytes.
+    // This normalizes the input so we don't double-encode.
+    let decoded = percent_encoding::percent_decode_str(input).collect::<Vec<u8>>();
+    // Then, re-encode using NON_ALPHANUMERIC for safe use in query params.
+    percent_encoding::percent_encode(&decoded, percent_encoding::NON_ALPHANUMERIC).to_string()
 }
 
 // ------------------------------------------------------------------
@@ -1088,6 +1110,24 @@ mod tests {
                 .map(|v| v.to_str().unwrap()),
             Some("Authorization, Content-Type, Accept, Range")
         );
+        // Verify Access-Control-Expose-Headers is present for frontend JS access
+        let expose_headers = response
+            .headers()
+            .get("Access-Control-Expose-Headers")
+            .map(|v| v.to_str().unwrap());
+        assert!(
+            expose_headers.is_some(),
+            "Access-Control-Expose-Headers must be present"
+        );
+        let expose_headers = expose_headers.unwrap();
+        assert!(
+            expose_headers.contains("Content-Range"),
+            "Expose-Headers must include Content-Range for video seeking, got: {expose_headers}"
+        );
+        assert!(
+            expose_headers.contains("Content-Length"),
+            "Expose-Headers must include Content-Length, got: {expose_headers}"
+        );
         assert_eq!(
             response
                 .headers()
@@ -1127,6 +1167,14 @@ mod tests {
                 .map(|v| v.to_str().unwrap()),
             Some("Authorization, Content-Type, Accept, Range")
         );
+        // Expose-Headers should still be present even without Origin
+        assert!(
+            response
+                .headers()
+                .get("Access-Control-Expose-Headers")
+                .is_some(),
+            "Access-Control-Expose-Headers should be present"
+        );
     }
 
     #[test]
@@ -1163,6 +1211,19 @@ mod tests {
                 .map(|v| v.to_str().unwrap()),
             Some("true")
         );
+        // Verify Expose-Headers is present
+        let expose_headers = response
+            .headers()
+            .get("Access-Control-Expose-Headers")
+            .map(|v| v.to_str().unwrap());
+        assert!(
+            expose_headers.is_some(),
+            "Access-Control-Expose-Headers must be present"
+        );
+        assert!(
+            expose_headers.unwrap().contains("Content-Range"),
+            "Expose-Headers must include Content-Range"
+        );
         assert_eq!(
             response.headers().get("Vary").map(|v| v.to_str().unwrap()),
             Some("Origin")
@@ -1189,6 +1250,14 @@ mod tests {
             Some("true")
         );
         assert!(response.headers().get("X-Deprecated").is_some());
+        // Even deprecated response should have Expose-Headers
+        assert!(
+            response
+                .headers()
+                .get("Access-Control-Expose-Headers")
+                .is_some(),
+            "Deprecated preflight should still include Expose-Headers"
+        );
     }
 
     #[test]

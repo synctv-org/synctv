@@ -103,6 +103,43 @@ async fn test_check_response_429_captures_retry_after() {
 }
 
 #[tokio::test]
+async fn test_check_response_503_captures_retry_after() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("GET"))
+        .respond_with(
+            ResponseTemplate::new(503)
+                .insert_header("Retry-After", "60")
+                .set_body_string("service unavailable - maintenance"),
+        )
+        .mount(&server)
+        .await;
+
+    let resp = reqwest::get(&server.uri()).await.unwrap();
+    let result = check_response(resp).await;
+    assert!(result.is_err());
+
+    let err = result.unwrap_err();
+    match &err {
+        ProviderClientError::Http {
+            status,
+            retry_after_secs,
+            body,
+            ..
+        } => {
+            assert_eq!(*status, reqwest::StatusCode::SERVICE_UNAVAILABLE);
+            assert_eq!(
+                *retry_after_secs,
+                Some(60),
+                "503 should parse Retry-After header"
+            );
+            assert!(body.contains("maintenance"));
+        }
+        other => panic!("Expected Http error, got: {other:?}"),
+    }
+}
+
+#[tokio::test]
 async fn test_check_response_500_captures_body() {
     let server = MockServer::start().await;
 

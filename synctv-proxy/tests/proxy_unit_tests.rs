@@ -1103,3 +1103,208 @@ fn test_m3u8_ssrf_encoded_traversal() {
         "Should produce proxy URL, got: {rewritten}"
     );
 }
+
+// ==================================================================
+// M3U8 Double Encoding Bug Tests
+// ==================================================================
+
+/// Test that already-encoded URLs are NOT double-encoded
+/// This is a regression test for the bug where %20 becomes %2520
+#[test]
+fn test_m3u8_no_double_encode_space() {
+    // URL with already-encoded space (%20)
+    let m3u8 = "#EXTM3U\nhttps://cdn.example.com/path%20with%20spaces/seg.ts\n";
+    let rewritten = rewrite_m3u8(
+        m3u8,
+        "https://cdn.example.com/hls/master.m3u8",
+        "/proxy/stream",
+    );
+
+    // The %20 should NOT become %2520 (double-encoded)
+    assert!(
+        !rewritten.contains("%2520"),
+        "Space should NOT be double-encoded (%%2520), got: {rewritten}"
+    );
+
+    // Should still contain a single %20 for the space
+    assert!(
+        rewritten.contains("%20"),
+        "Encoded space should remain as %20, got: {rewritten}"
+    );
+}
+
+/// Test that already-encoded CJK characters are not double-encoded
+#[test]
+fn test_m3u8_no_double_encode_cjk() {
+    // URL with already-encoded Chinese characters
+    // %E4%B8%96%E7%95%8C = 世界 (world in Chinese)
+    let m3u8 = "#EXTM3U\nhttps://cdn.example.com/%E4%B8%96%E7%95%8C/seg.ts\n";
+    let rewritten = rewrite_m3u8(
+        m3u8,
+        "https://cdn.example.com/hls/master.m3u8",
+        "/proxy/stream",
+    );
+
+    // Should NOT double-encode: %E4 should not become %25E4
+    assert!(
+        !rewritten.contains("%25E4"),
+        "CJK characters should NOT be double-encoded, got: {rewritten}"
+    );
+    assert!(
+        !rewritten.contains("%25B8"),
+        "CJK characters should NOT be double-encoded, got: {rewritten}"
+    );
+}
+
+/// Test that already-encoded special chars in query string are not double-encoded
+#[test]
+fn test_m3u8_no_double_encode_query_params() {
+    // URL with already-encoded query parameters
+    // ?key=value%20with%20spaces&foo=bar%26baz
+    let m3u8 = "#EXTM3U\nhttps://cdn.example.com/seg.ts?key=value%20with%20spaces\n";
+    let rewritten = rewrite_m3u8(
+        m3u8,
+        "https://cdn.example.com/hls/master.m3u8",
+        "/proxy/stream",
+    );
+
+    // %20 should NOT become %2520
+    assert!(
+        !rewritten.contains("%2520"),
+        "Query param space should NOT be double-encoded, got: {rewritten}"
+    );
+}
+
+/// Test that mixed encoded and unencoded content works correctly
+#[test]
+fn test_m3u8_mixed_encoding() {
+    // URL with some encoded chars and some raw special chars
+    let m3u8 = "#EXTM3U\nhttps://cdn.example.com/path%20space/file name.ts\n";
+    let rewritten = rewrite_m3u8(
+        m3u8,
+        "https://cdn.example.com/hls/master.m3u8",
+        "/proxy/stream",
+    );
+
+    // Already-encoded %20 should stay as %20 (not %2520)
+    // Raw space should be encoded as %20
+    // The result should be valid and not have double-encoding
+    assert!(
+        !rewritten.contains("%2520"),
+        "Should not have double-encoded spaces, got: {rewritten}"
+    );
+}
+
+/// Test percent_encode handles already-encoded input correctly
+#[test]
+fn test_percent_encode_already_encoded() {
+    // %20 is an encoded space
+    let encoded = percent_encode("%20");
+    // Should NOT become %2520
+    assert_ne!(
+        encoded, "%2520",
+        "Already-encoded %20 should not be double-encoded"
+    );
+    // It should stay as %20
+    assert_eq!(encoded, "%20", "Already-encoded %20 should remain %20");
+}
+
+/// Test percent_encode with complex already-encoded URL
+#[test]
+fn test_percent_encode_complex_encoded_url() {
+    // A URL that's already properly encoded
+    let url = "https://example.com/path%20with%20spaces/file%2Bname.ts?key=value%26other%3Dval";
+    let encoded = percent_encode(url);
+
+    // Should not double-encode any % signs
+    assert!(
+        !encoded.contains("%25"),
+        "Should not have any double-encoded percent signs, got: {encoded}"
+    );
+}
+
+/// Test that EXT-X-KEY URI with already-encoded content is not double-encoded
+#[test]
+fn test_m3u8_ext_x_key_no_double_encode() {
+    let m3u8 = concat!(
+        "#EXTM3U\n",
+        "#EXT-X-KEY:METHOD=AES-128,URI=\"https://cdn.example.com/key%20file.bin\"\n",
+        "seg1.ts\n",
+    );
+    let rewritten = rewrite_m3u8(
+        m3u8,
+        "https://cdn.example.com/hls/master.m3u8",
+        "/proxy/stream",
+    );
+
+    // %20 in the key URI should NOT become %2520
+    assert!(
+        !rewritten.contains("%2520"),
+        "Key URI should not be double-encoded, got: {rewritten}"
+    );
+}
+
+/// Test that EXT-X-MAP URI with already-encoded content is not double-encoded
+#[test]
+fn test_m3u8_ext_x_map_no_double_encode() {
+    let m3u8 = concat!(
+        "#EXTM3U\n",
+        "#EXT-X-MAP:URI=\"https://cdn.example.com/init%20file.mp4\"\n",
+        "#EXTINF:6.006,\n",
+        "seg0.m4s\n",
+    );
+    let rewritten = rewrite_m3u8(
+        m3u8,
+        "https://cdn.example.com/hls/master.m3u8",
+        "/proxy/stream",
+    );
+
+    // %20 in the map URI should NOT become %2520
+    assert!(
+        !rewritten.contains("%2520"),
+        "Map URI should not be double-encoded, got: {rewritten}"
+    );
+}
+
+/// Test handling of URL with plus sign (which may or may not be encoded)
+#[test]
+fn test_m3u8_plus_sign_handling() {
+    // + in URL can mean space (in query) or literal +
+    let m3u8 = "#EXTM3U\nhttps://cdn.example.com/file+name.ts\n";
+    let rewritten = rewrite_m3u8(
+        m3u8,
+        "https://cdn.example.com/hls/master.m3u8",
+        "/proxy/stream",
+    );
+
+    // + should be encoded as %2B (since we encode non-alphanumeric)
+    // This is correct behavior for path segments
+    assert!(
+        rewritten.contains("%2B") || rewritten.contains("+"),
+        "Plus sign handling, got: {rewritten}"
+    );
+}
+
+/// Test that a fully unencoded URL with special chars works correctly
+#[test]
+fn test_m3u8_raw_special_chars_encoded_once() {
+    // URL with raw special characters that need encoding
+    let m3u8 = "#EXTM3U\nhttps://cdn.example.com/path with spaces/file.ts\n";
+    let rewritten = rewrite_m3u8(
+        m3u8,
+        "https://cdn.example.com/hls/master.m3u8",
+        "/proxy/stream",
+    );
+
+    // Space should be encoded (as %20, not as +)
+    assert!(
+        rewritten.contains("%20"),
+        "Raw space should be encoded, got: {rewritten}"
+    );
+
+    // Should NOT be double-encoded
+    assert!(
+        !rewritten.contains("%2520"),
+        "Should not be double-encoded, got: {rewritten}"
+    );
+}

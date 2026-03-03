@@ -89,6 +89,14 @@ impl Application {
     /// If any phase fails, all resources created in earlier phases are cleaned up
     /// via the `ShutdownCoordinator` before returning the error.
     pub async fn build(config: Config) -> Result<Self> {
+        // Validate configuration before any initialization (fail fast on misconfigurations)
+        if let Err(errors) = config.validate() {
+            return Err(anyhow::anyhow!(
+                "Configuration validation failed: {}",
+                errors.join("; ")
+            ));
+        }
+
         let shutdown_budget =
             std::time::Duration::from_secs(config.server.shutdown_drain_timeout_seconds);
         let mut shutdown = ShutdownCoordinator::new(shutdown_budget);

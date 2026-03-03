@@ -38,8 +38,9 @@ fn test_missing_chat_service_error_is_anyhow_compatible() {
 
     // Simulate the error creation pattern used in the fix
     let chat_service: Option<()> = None;
-    let result: Result<(), anyhow::Error> = chat_service
-        .ok_or_else(|| anyhow!("chat_service is required for gRPC ClientService but was not provided"));
+    let result: Result<(), anyhow::Error> = chat_service.ok_or_else(|| {
+        anyhow!("chat_service is required for gRPC ClientService but was not provided")
+    });
 
     assert!(result.is_err());
     let err = result.unwrap_err();
@@ -52,8 +53,9 @@ fn test_chat_service_some_value_passes_through() {
     use anyhow::anyhow;
 
     let chat_service: Option<i32> = Some(42);
-    let result: Result<i32, anyhow::Error> = chat_service
-        .ok_or_else(|| anyhow!("chat_service is required for gRPC ClientService but was not provided"));
+    let result: Result<i32, anyhow::Error> = chat_service.ok_or_else(|| {
+        anyhow!("chat_service is required for gRPC ClientService but was not provided")
+    });
 
     assert!(result.is_ok());
     assert_eq!(result.unwrap(), 42);

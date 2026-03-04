@@ -995,7 +995,7 @@ mod tests {
         if let Some(host) = url.host_str() {
             if synctv_common::ssrf::SsrfGuard::default_policy().is_host_blocked(host) {
                 return Err(ProviderError::InvalidUrl(
-                    "SSRF: blocked hostname".to_string()
+                    "SSRF: blocked hostname".to_string(),
                 ));
             }
         }
@@ -1004,14 +1004,14 @@ mod tests {
         if let Some(host) = url.host_str() {
             // Handle IPv6 addresses in brackets notation [::1] -> ::1
             let host_stripped = if host.starts_with('[') && host.ends_with(']') {
-                &host[1..host.len()-1]
+                &host[1..host.len() - 1]
             } else {
                 host
             };
             if let Ok(ip) = host_stripped.parse::<std::net::IpAddr>() {
                 if synctv_common::ssrf::is_ip_blocked(&ip) {
                     return Err(ProviderError::InvalidUrl(
-                        "SSRF: blocked IP address".to_string()
+                        "SSRF: blocked IP address".to_string(),
                     ));
                 }
             }

@@ -46,7 +46,7 @@ const NODES_CACHE_TTL_SECS: u64 = 2;
 /// 10 seconds up to 60 seconds before allowing probe requests in half-open state.
 fn create_redis_circuit_breaker(
 ) -> failsafe::StateMachine<failure_policy::ConsecutiveFailures<backoff::Exponential>, ()> {
-    let backoff = backoff::exponential(Duration::from_secs(10), Duration::from_secs(60));
+    let backoff = backoff::exponential(Duration::from_secs(10), Duration::from_mins(1));
     let policy = failure_policy::consecutive_failures(3, backoff);
     CbConfig::new().failure_policy(policy).build()
 }
@@ -155,9 +155,9 @@ pub enum ClusterMode {
 impl std::fmt::Display for ClusterMode {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            ClusterMode::Normal => write!(f, "Normal"),
-            ClusterMode::Degraded => write!(f, "Degraded"),
-            ClusterMode::Standalone => write!(f, "Standalone"),
+            Self::Normal => write!(f, "Normal"),
+            Self::Degraded => write!(f, "Degraded"),
+            Self::Standalone => write!(f, "Standalone"),
         }
     }
 }
@@ -247,7 +247,7 @@ impl NodeRegistry {
             current_epoch: Arc::new(AtomicU64::new(1)),
             circuit_breaker: Some(create_redis_circuit_breaker()),
             nodes_cache,
-            key_prefix: format!("{}cluster:nodes", key_prefix),
+            key_prefix: format!("{key_prefix}cluster:nodes"),
             health_probe_running: Arc::new(AtomicBool::new(false)),
             cluster_mode: Arc::new(parking_lot::RwLock::new(ClusterMode::Normal)),
             last_refreshed: Arc::new(AtomicU64::new(0)),
@@ -289,7 +289,7 @@ impl NodeRegistry {
             current_epoch: Arc::new(AtomicU64::new(1)),
             circuit_breaker: None,
             nodes_cache,
-            key_prefix: format!("{}cluster:nodes", key_prefix),
+            key_prefix: format!("{key_prefix}cluster:nodes"),
             health_probe_running: Arc::new(AtomicBool::new(false)),
             cluster_mode: Arc::new(parking_lot::RwLock::new(ClusterMode::Standalone)),
             last_refreshed: Arc::new(AtomicU64::new(0)),

@@ -630,8 +630,8 @@ impl EventBroadcaster for CountingMockBroadcaster {
         Ok(true)
     }
 
-    async fn broadcast_to_cluster(&self, _room_id: &RoomId, _event: &RoomEvent) -> Result<()> {
-        Ok(())
+    async fn broadcast_to_cluster(&self, _room_id: &RoomId, _event: &RoomEvent) -> Result<bool> {
+        Ok(true)
     }
 }
 

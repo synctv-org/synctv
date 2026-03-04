@@ -668,7 +668,7 @@ mod tests {
         let cancel = tokio_util::sync::CancellationToken::new();
 
         let handle = tracker.start_periodic_cleanup(
-            std::time::Duration::from_secs(3600), // Long interval so it blocks on tick
+            std::time::Duration::from_hours(1), // Long interval so it blocks on tick
             cancel.clone(),
         );
 

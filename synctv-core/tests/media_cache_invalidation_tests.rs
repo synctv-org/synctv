@@ -158,8 +158,8 @@ async fn test_edit_media_sends_notification() {
             &self,
             _room_id: &RoomId,
             _event: &synctv_core::service::notification::RoomEvent,
-        ) -> Result<(), synctv_core::Error> {
-            Ok(())
+        ) -> Result<bool, synctv_core::Error> {
+            Ok(true)
         }
     }
 

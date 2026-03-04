@@ -529,7 +529,7 @@ impl LivestreamServer {
                         // remote servers or flush pending data. 5 seconds gives enough
                         // time for most cleanup operations while preventing indefinite blocks.
                         match tokio::time::timeout(
-                            std::time::Duration::from_millis(5000),
+                            std::time::Duration::from_secs(5),
                             stop_done_rx,
                         )
                         .await

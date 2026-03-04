@@ -606,7 +606,7 @@ pub struct RtmpStreamHandler {
 
 impl RtmpStreamHandler {
     #[must_use]
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         Self {
             cache: RwLock::new(None),
         }

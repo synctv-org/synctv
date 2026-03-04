@@ -1083,8 +1083,8 @@ mod websocket_e2e {
         loop {
             let msg = recv_server_message(ws).await?;
             match &msg.message {
-                Some(server_message::Message::UserJoined(_))
-                | Some(server_message::Message::UserLeft(_)) => continue,
+                Some(server_message::Message::UserJoined(_) |
+server_message::Message::UserLeft(_)) => continue,
                 _ => return Some(msg),
             }
         }
@@ -1220,7 +1220,7 @@ mod websocket_e2e {
         let result = tokio::time::timeout(std::time::Duration::from_secs(5), ws.next()).await;
 
         match result {
-            Ok(Some(Ok(tungstenite::Message::Close(_))) | None) | Err(_) | Ok(Some(Err(_))) => {
+            Ok(Some(Ok(tungstenite::Message::Close(_)) | Err(_)) | None) | Err(_) => {
                 // All acceptable: either received Close frame, stream ended, or timeout
             }
             Ok(Some(Ok(msg))) => {
@@ -1749,7 +1749,7 @@ mod websocket_e2e {
         let result = tokio::time::timeout(std::time::Duration::from_secs(5), async {
             loop {
                 match ws2.next().await {
-                    Some(Ok(tungstenite::Message::Close(_))) | None | Some(Err(_)) => return true,
+                    Some(Ok(tungstenite::Message::Close(_)) | Err(_)) | None => return true,
                     Some(Ok(tungstenite::Message::Binary(_))) => {
                         // May still receive buffered messages; keep draining
                         continue;
@@ -2483,7 +2483,7 @@ mod websocket_e2e {
         .await;
 
         match result {
-            Ok("error_message") | Ok("connection_closed" | "connection_error") => {
+            Ok("error_message" | "connection_closed" | "connection_error") => {
                 // Server closed the connection on invalid input — also acceptable
             }
             Err(_timeout) => {

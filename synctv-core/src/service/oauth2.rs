@@ -77,7 +77,7 @@ pub struct RedisOAuthStateStore {
 impl RedisOAuthStateStore {
     /// Create from the shared `Arc<RwLock<ConnectionManager>>`.
     #[must_use]
-    pub fn new(conn: std::sync::Arc<tokio::sync::RwLock<redis::aio::ConnectionManager>>) -> Self {
+    pub const fn new(conn: std::sync::Arc<tokio::sync::RwLock<redis::aio::ConnectionManager>>) -> Self {
         Self { conn }
     }
 
@@ -2273,7 +2273,7 @@ mod tests {
         };
 
         store
-            .store("token_1", &state, std::time::Duration::from_secs(300))
+            .store("token_1", &state, std::time::Duration::from_mins(5))
             .await
             .unwrap();
 
@@ -2333,19 +2333,19 @@ mod tests {
 
         // Store 4 entries (exceeds "capacity hint" by 1)
         store
-            .store("token_1", &state, std::time::Duration::from_secs(300))
+            .store("token_1", &state, std::time::Duration::from_mins(5))
             .await
             .unwrap();
         store
-            .store("token_2", &state, std::time::Duration::from_secs(300))
+            .store("token_2", &state, std::time::Duration::from_mins(5))
             .await
             .unwrap();
         store
-            .store("token_3", &state, std::time::Duration::from_secs(300))
+            .store("token_3", &state, std::time::Duration::from_mins(5))
             .await
             .unwrap();
         store
-            .store("token_4", &state, std::time::Duration::from_secs(300))
+            .store("token_4", &state, std::time::Duration::from_mins(5))
             .await
             .unwrap();
 
@@ -2387,7 +2387,7 @@ mod tests {
                 .store(
                     &format!("token_{i}"),
                     &state,
-                    std::time::Duration::from_secs(300),
+                    std::time::Duration::from_mins(5),
                 )
                 .await
                 .unwrap();
@@ -2429,7 +2429,7 @@ mod tests {
 
                 // Store the state
                 store_clone
-                    .store(&token_id, &state, std::time::Duration::from_secs(300))
+                    .store(&token_id, &state, std::time::Duration::from_mins(5))
                     .await
                     .unwrap();
 
@@ -2453,8 +2453,7 @@ mod tests {
         assert_eq!(
             success_count.load(Ordering::SeqCst),
             total_tasks,
-            "All {} tokens should be consumable - none should be evicted under concurrent load",
-            total_tasks
+            "All {total_tasks} tokens should be consumable - none should be evicted under concurrent load"
         );
     }
 
@@ -2475,7 +2474,7 @@ mod tests {
             pkce_verifier: "v".to_string(),
         };
         store
-            .store("shared_token", &state, std::time::Duration::from_secs(300))
+            .store("shared_token", &state, std::time::Duration::from_mins(5))
             .await
             .unwrap();
 

@@ -102,7 +102,7 @@ impl Default for ClusterConfig {
             redis_conn: None,
             cluster_enabled: false,
             node_id: format!("node_{}", nanoid::nanoid!(8)),
-            dedup_window: Duration::from_secs(900),
+            dedup_window: Duration::from_mins(15),
             cleanup_interval: Duration::from_secs(30),
             critical_channel_capacity: 1000,
             publish_channel_capacity: 10_000,
@@ -304,7 +304,7 @@ impl ClusterManager {
             cancel_token: config
                 .parent_cancel_token
                 .as_ref()
-                .map_or_else(CancellationToken::new, |parent| parent.child_token()),
+                .map_or_else(CancellationToken::new, tokio_util::sync::CancellationToken::child_token),
             critical_channel_capacity: config.critical_channel_capacity,
             publish_channel_capacity: config.publish_channel_capacity,
             heartbeat_state: tokio::sync::Mutex::new(HeartbeatState {

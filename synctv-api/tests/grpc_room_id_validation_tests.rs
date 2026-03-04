@@ -321,13 +321,11 @@ async fn test_consistency_with_http_validation() {
 
         assert_eq!(
             http_result, grpc_result,
-            "HTTP and gRPC validation should be consistent for room_id '{room_id}': HTTP={}, gRPC={}",
-            http_result, grpc_result
+            "HTTP and gRPC validation should be consistent for room_id '{room_id}': HTTP={http_result}, gRPC={grpc_result}"
         );
         assert_eq!(
             grpc_result, should_be_valid,
-            "Validation result for room_id '{room_id}' should be {}",
-            should_be_valid
+            "Validation result for room_id '{room_id}' should be {should_be_valid}"
         );
     }
 }

@@ -55,9 +55,7 @@ impl NotificationService for NotificationServiceImpl {
             .notification_type
             .map(proto_notification_type_to_core)
             .transpose()
-            .map_err(|e: NotificationTypeParseError| {
-                Status::invalid_argument(e.to_string())
-            })?;
+            .map_err(|e: NotificationTypeParseError| Status::invalid_argument(e.to_string()))?;
 
         let pagination =
             synctv_core::models::PageParams::new(Some(req.page as u32), Some(req.page_size as u32));

@@ -152,7 +152,7 @@ impl SliceCacheBackend for MemoryBackend {
             .iter()
             .map(|(key, entry)| {
                 (
-                    key.as_ref().to_string(),
+                    key.as_ref().clone(),
                     entry.last_accessed,
                     entry.data_size(),
                 )
@@ -181,7 +181,7 @@ impl SliceCacheBackend for MemoryBackend {
             .cache
             .iter()
             .filter(|(_, entry)| entry.is_expired())
-            .map(|(key, _)| key.as_ref().to_string())
+            .map(|(key, _)| key.as_ref().clone())
             .collect();
 
         let count = expired_keys.len() as u64;
@@ -210,13 +210,13 @@ mod tests {
 
     /// Shorthand for a backend with generous limits.
     fn default_backend() -> MemoryBackend {
-        MemoryBackend::new(64 * 1024 * 1024, Duration::from_secs(3600))
+        MemoryBackend::new(64 * 1024 * 1024, Duration::from_hours(1))
     }
 
     #[tokio::test]
     async fn test_memory_backend_put_get() {
         let backend = default_backend();
-        let entry = make_entry(b"hello world", Duration::from_secs(60));
+        let entry = make_entry(b"hello world", Duration::from_mins(1));
 
         backend.put("k1", entry.clone()).await.unwrap();
         let got = backend.get("k1").await;
@@ -234,7 +234,7 @@ mod tests {
     async fn test_memory_backend_remove() {
         let backend = default_backend();
         backend
-            .put("k1", make_entry(b"data", Duration::from_secs(60)))
+            .put("k1", make_entry(b"data", Duration::from_mins(1)))
             .await
             .unwrap();
 
@@ -255,7 +255,7 @@ mod tests {
         assert!(!backend.contains("k1").await);
 
         backend
-            .put("k1", make_entry(b"x", Duration::from_secs(60)))
+            .put("k1", make_entry(b"x", Duration::from_mins(1)))
             .await
             .unwrap();
         // moka's contains_key may be eventually consistent; run pending tasks.
@@ -269,13 +269,13 @@ mod tests {
         assert_eq!(backend.current_size(), 0);
 
         backend
-            .put("k1", make_entry(b"abcde", Duration::from_secs(60)))
+            .put("k1", make_entry(b"abcde", Duration::from_mins(1)))
             .await
             .unwrap();
         assert_eq!(backend.current_size(), 5);
 
         backend
-            .put("k2", make_entry(b"12345678", Duration::from_secs(60)))
+            .put("k2", make_entry(b"12345678", Duration::from_mins(1)))
             .await
             .unwrap();
         assert_eq!(backend.current_size(), 13);
@@ -291,11 +291,11 @@ mod tests {
         assert_eq!(backend.entry_count(), 0);
 
         backend
-            .put("k1", make_entry(b"a", Duration::from_secs(60)))
+            .put("k1", make_entry(b"a", Duration::from_mins(1)))
             .await
             .unwrap();
         backend
-            .put("k2", make_entry(b"b", Duration::from_secs(60)))
+            .put("k2", make_entry(b"b", Duration::from_mins(1)))
             .await
             .unwrap();
         backend.run_pending_tasks().await;
@@ -306,11 +306,11 @@ mod tests {
     async fn test_memory_backend_keys() {
         let backend = default_backend();
         backend
-            .put("alpha", make_entry(b"1", Duration::from_secs(60)))
+            .put("alpha", make_entry(b"1", Duration::from_mins(1)))
             .await
             .unwrap();
         backend
-            .put("beta", make_entry(b"2", Duration::from_secs(60)))
+            .put("beta", make_entry(b"2", Duration::from_mins(1)))
             .await
             .unwrap();
 
@@ -330,7 +330,7 @@ mod tests {
             .unwrap();
         // One entry with a long TTL.
         backend
-            .put("long", make_entry(b"stays", Duration::from_secs(3600)))
+            .put("long", make_entry(b"stays", Duration::from_hours(1)))
             .await
             .unwrap();
 
@@ -356,7 +356,7 @@ mod tests {
             backend
                 .put(
                     &format!("k{i}"),
-                    make_entry(&data, Duration::from_secs(3600)),
+                    make_entry(&data, Duration::from_hours(1)),
                 )
                 .await
                 .unwrap();
@@ -383,7 +383,7 @@ mod tests {
     async fn test_memory_backend_evict_to_size_already_under() {
         let backend = default_backend();
         backend
-            .put("k1", make_entry(b"small", Duration::from_secs(60)))
+            .put("k1", make_entry(b"small", Duration::from_mins(1)))
             .await
             .unwrap();
 
@@ -397,7 +397,7 @@ mod tests {
         let backend = default_backend();
 
         backend
-            .put("k1", make_entry(b"short", Duration::from_secs(60)))
+            .put("k1", make_entry(b"short", Duration::from_mins(1)))
             .await
             .unwrap();
         assert_eq!(backend.current_size(), 5);
@@ -406,7 +406,7 @@ mod tests {
         backend
             .put(
                 "k1",
-                make_entry(b"a much longer value", Duration::from_secs(60)),
+                make_entry(b"a much longer value", Duration::from_mins(1)),
             )
             .await
             .unwrap();
@@ -414,7 +414,7 @@ mod tests {
 
         // Replace with a smaller value.
         backend
-            .put("k1", make_entry(b"tiny", Duration::from_secs(60)))
+            .put("k1", make_entry(b"tiny", Duration::from_mins(1)))
             .await
             .unwrap();
         assert_eq!(backend.current_size(), 4);
@@ -426,7 +426,7 @@ mod tests {
         // automatically when capacity is exceeded.
         let backend = MemoryBackend::new(
             150, // 150 bytes max
-            Duration::from_secs(3600),
+            Duration::from_hours(1),
         );
 
         // Insert entries totaling more than 150 bytes to trigger eviction.
@@ -435,7 +435,7 @@ mod tests {
             backend
                 .put(
                     &format!("k{i}"),
-                    make_entry(&data, Duration::from_secs(3600)),
+                    make_entry(&data, Duration::from_hours(1)),
                 )
                 .await
                 .unwrap();
@@ -477,7 +477,7 @@ mod tests {
         // Use a tight capacity so that moka is under pressure.
         let backend = MemoryBackend::new(
             500, // just enough for a few entries
-            Duration::from_secs(3600),
+            Duration::from_hours(1),
         );
 
         // Fill up close to capacity with other entries.
@@ -485,7 +485,7 @@ mod tests {
             backend
                 .put(
                     &format!("filler_{i}"),
-                    make_entry(&[i; 100], Duration::from_secs(3600)),
+                    make_entry(&[i; 100], Duration::from_hours(1)),
                 )
                 .await
                 .unwrap();
@@ -494,7 +494,7 @@ mod tests {
 
         // Insert the target key.
         backend
-            .put("target", make_entry(&[0u8; 80], Duration::from_secs(3600)))
+            .put("target", make_entry(&[0u8; 80], Duration::from_hours(1)))
             .await
             .unwrap();
         backend.run_pending_tasks().await;
@@ -504,7 +504,7 @@ mod tests {
         // if moka evicts the old "target" entry (Size cause) between the
         // manual get() and insert(), total_bytes would be double-subtracted.
         backend
-            .put("target", make_entry(&[1u8; 80], Duration::from_secs(3600)))
+            .put("target", make_entry(&[1u8; 80], Duration::from_hours(1)))
             .await
             .unwrap();
         backend.run_pending_tasks().await;
@@ -539,7 +539,7 @@ mod tests {
             backend
                 .put(
                     &format!("k{i}"),
-                    make_entry(&data, Duration::from_secs(3600)),
+                    make_entry(&data, Duration::from_hours(1)),
                 )
                 .await
                 .unwrap();
@@ -575,19 +575,19 @@ mod tests {
         // Insert three entries with delays to establish initial order:
         // k0 (oldest), k1 (middle), k2 (newest)
         backend
-            .put("k0", make_entry(&[0u8; 100], Duration::from_secs(3600)))
+            .put("k0", make_entry(&[0u8; 100], Duration::from_hours(1)))
             .await
             .unwrap();
         tokio::time::sleep(Duration::from_millis(20)).await;
 
         backend
-            .put("k1", make_entry(&[1u8; 100], Duration::from_secs(3600)))
+            .put("k1", make_entry(&[1u8; 100], Duration::from_hours(1)))
             .await
             .unwrap();
         tokio::time::sleep(Duration::from_millis(20)).await;
 
         backend
-            .put("k2", make_entry(&[2u8; 100], Duration::from_secs(3600)))
+            .put("k2", make_entry(&[2u8; 100], Duration::from_hours(1)))
             .await
             .unwrap();
 
@@ -630,12 +630,12 @@ mod tests {
         for round in 0..3u8 {
             let key = format!("k{round}");
             backend
-                .put(&key, make_entry(&[round; 50], Duration::from_secs(60)))
+                .put(&key, make_entry(&[round; 50], Duration::from_mins(1)))
                 .await
                 .unwrap();
             // Replace with different size.
             backend
-                .put(&key, make_entry(&[round; 100], Duration::from_secs(60)))
+                .put(&key, make_entry(&[round; 100], Duration::from_mins(1)))
                 .await
                 .unwrap();
         }

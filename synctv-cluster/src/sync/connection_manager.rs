@@ -135,9 +135,9 @@ impl Default for ConnectionLimits {
             max_per_user: 5,
             max_per_room: 200,
             max_total: 10000,
-            idle_timeout: Duration::from_secs(5 * 60), // 5 minutes
-            max_duration: Duration::from_secs(24 * 60 * 60), // 24 hours
-            webrtc_session_timeout: Duration::from_secs(2 * 60 * 60), // 2 hours
+            idle_timeout: Duration::from_mins(5), // 5 minutes
+            max_duration: Duration::from_hours(24), // 24 hours
+            webrtc_session_timeout: Duration::from_hours(2), // 2 hours
         }
     }
 }
@@ -330,7 +330,7 @@ impl ConnectionManager {
         // to call spawn_ttl_refresh_task() manually.
         let cancel = tokio_util::sync::CancellationToken::new();
         self.ttl_refresh_cancel = Arc::new(cancel.clone());
-        let _handle = self.spawn_ttl_refresh_task(Duration::from_secs(60), cancel.clone());
+        let _handle = self.spawn_ttl_refresh_task(Duration::from_mins(1), cancel.clone());
 
         // Spawn the pending-retries background task.
         // Take the receiver that was stored in new() so it is not dropped.
@@ -341,14 +341,11 @@ impl ConnectionManager {
             .try_lock()
             .ok()
             .and_then(|mut guard| guard.take());
-        let rx = match rx {
-            Some(rx) => rx,
-            None => {
-                // Fallback: create a fresh channel and update the sender.
-                let (tx, rx) = mpsc::channel(PENDING_RETRY_QUEUE_CAPACITY);
-                self.pending_retries_tx = tx;
-                rx
-            }
+        let rx = if let Some(rx) = rx { rx } else {
+            // Fallback: create a fresh channel and update the sender.
+            let (tx, rx) = mpsc::channel(PENDING_RETRY_QUEUE_CAPACITY);
+            self.pending_retries_tx = tx;
+            rx
         };
         Self::spawn_pending_retries_task(conn, rx, cancel);
 
@@ -499,20 +496,17 @@ impl ConnectionManager {
                             }
 
                             // Try to resend the signal
-                            match disconnect_tx.send(signal.clone()) {
-                                Ok(_) => {
-                                    to_remove.push(id);
-                                    retry_count += 1;
-                                    debug!(
-                                        signal = ?signal,
-                                        age_ms = age.as_millis(),
-                                        "Successfully retried disconnect signal"
-                                    );
-                                }
-                                Err(_) => {
-                                    // Channel still full, will retry next tick
-                                    // The signal remains in pending_disconnects
-                                }
+                            if let Ok(_) = disconnect_tx.send(signal.clone()) {
+                                to_remove.push(id);
+                                retry_count += 1;
+                                debug!(
+                                    signal = ?signal,
+                                    age_ms = age.as_millis(),
+                                    "Successfully retried disconnect signal"
+                                );
+                            } else {
+                                // Channel still full, will retry next tick
+                                // The signal remains in pending_disconnects
                             }
                         }
 
@@ -538,49 +532,46 @@ impl ConnectionManager {
     /// task spawned in `new()`.
     fn send_disconnect_signal(&self, signal: DisconnectSignal) {
         // First try to send directly
-        match self.disconnect_tx.send(signal.clone()) {
-            Ok(_) => {
-                // Signal sent successfully
+        if let Ok(_) = self.disconnect_tx.send(signal.clone()) {
+            // Signal sent successfully
+        } else {
+            // Channel might be full or have no receivers
+            // Check if there are any subscribers by trying to get receiver count
+            let receiver_count = self.disconnect_tx.receiver_count();
+
+            if receiver_count == 0 {
+                // No receivers - this is not an error, just log at debug level
+                debug!(
+                    signal = ?signal,
+                    "Disconnect signal has no receivers (no active connections)"
+                );
+                return;
             }
-            Err(_) => {
-                // Channel might be full or have no receivers
-                // Check if there are any subscribers by trying to get receiver count
-                let receiver_count = self.disconnect_tx.receiver_count();
 
-                if receiver_count == 0 {
-                    // No receivers - this is not an error, just log at debug level
-                    debug!(
-                        signal = ?signal,
-                        "Disconnect signal has no receivers (no active connections)"
-                    );
-                    return;
-                }
-
-                // Channel is full - store for retry
-                if self.pending_disconnects.len() >= PENDING_DISCONNECT_QUEUE_CAPACITY {
-                    // Queue is full, have to drop the signal
-                    self.dropped_disconnect_signals
-                        .fetch_add(1, Ordering::Relaxed);
-                    warn!(
-                        signal = ?signal,
-                        queue_size = self.pending_disconnects.len(),
-                        "Disconnect signal queue full, dropping signal. \
-                         This indicates severe system overload."
-                    );
-                    return;
-                }
-
-                // Store signal for retry
-                let id = self.pending_disconnect_id.fetch_add(1, Ordering::Relaxed);
-                self.pending_disconnects
-                    .insert(id, (signal.clone(), Instant::now()));
-
+            // Channel is full - store for retry
+            if self.pending_disconnects.len() >= PENDING_DISCONNECT_QUEUE_CAPACITY {
+                // Queue is full, have to drop the signal
+                self.dropped_disconnect_signals
+                    .fetch_add(1, Ordering::Relaxed);
                 warn!(
                     signal = ?signal,
-                    pending_count = self.pending_disconnects.len(),
-                    "Disconnect signal queued for retry (broadcast channel full)"
+                    queue_size = self.pending_disconnects.len(),
+                    "Disconnect signal queue full, dropping signal. \
+                     This indicates severe system overload."
                 );
+                return;
             }
+
+            // Store signal for retry
+            let id = self.pending_disconnect_id.fetch_add(1, Ordering::Relaxed);
+            self.pending_disconnects
+                .insert(id, (signal.clone(), Instant::now()));
+
+            warn!(
+                signal = ?signal,
+                pending_count = self.pending_disconnects.len(),
+                "Disconnect signal queued for retry (broadcast channel full)"
+            );
         }
     }
 
@@ -666,7 +657,7 @@ impl ConnectionManager {
     pub fn can_accept_user_connection(&self, user_id: &UserId) -> Result<(), String> {
         // Check local user connection limit
         let user_entry = self.user_connections.get(user_id);
-        let current_count = user_entry.as_ref().map(|v| v.len()).unwrap_or(0);
+        let current_count = user_entry.as_ref().map_or(0, |v| v.len());
 
         if current_count >= self.limits.max_per_user {
             return Err(format!(
@@ -687,7 +678,7 @@ impl ConnectionManager {
     pub fn can_accept_room_connection(&self, room_id: &RoomId) -> Result<(), String> {
         // Check local room connection limit
         let room_entry = self.room_connections.get(room_id);
-        let current_count = room_entry.as_ref().map(|v| v.len()).unwrap_or(0);
+        let current_count = room_entry.as_ref().map_or(0, |v| v.len());
 
         if current_count >= self.limits.max_per_room {
             return Err(format!(
@@ -721,8 +712,7 @@ impl ConnectionManager {
             let registered = self
                 .room_connections
                 .get(room_id)
-                .map(|v| v.len())
-                .unwrap_or(0);
+                .map_or(0, |v| v.len());
             let effective = registered + pending;
 
             if effective >= self.limits.max_per_room {
@@ -769,8 +759,7 @@ impl ConnectionManager {
             let registered = self
                 .user_connections
                 .get(user_id)
-                .map(|v| v.len())
-                .unwrap_or(0);
+                .map_or(0, |v| v.len());
             let effective = registered + pending;
 
             if effective >= self.limits.max_per_user {

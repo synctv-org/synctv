@@ -59,7 +59,7 @@ pub async fn list_notifications(
     let notification_type = query
         .notification_type
         .as_deref()
-        .map(|t| t.parse::<i32>())
+        .map(str::parse::<i32>)
         .transpose()
         .map_err(|_| crate::http::AppError::bad_request("Invalid notification_type format"))?
         .map(proto_notification_type_to_core)

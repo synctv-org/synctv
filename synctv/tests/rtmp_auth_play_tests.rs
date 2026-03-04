@@ -115,7 +115,7 @@ fn make_rtmp_auth(
 struct MockStreamRegistry;
 
 impl MockStreamRegistry {
-    fn new() -> Self {
+    const fn new() -> Self {
         Self
     }
 }

@@ -38,7 +38,7 @@ pub async fn init_cluster_components(
         &config.redis.key_prefix,
     )
     .map(Arc::new)
-    .map_err(|e| anyhow::anyhow!("Failed to create NodeRegistry: {}", e))?;
+    .map_err(|e| anyhow::anyhow!("Failed to create NodeRegistry: {e}"))?;
 
     let advertise_grpc = config.advertise_grpc_address();
     let advertise_http = config.advertise_http_address();
@@ -46,7 +46,7 @@ pub async fn init_cluster_components(
     registry
         .register(advertise_grpc.clone(), advertise_http.clone())
         .await
-        .map_err(|e| anyhow::anyhow!("Failed to register node in Redis: {}", e))?;
+        .map_err(|e| anyhow::anyhow!("Failed to register node in Redis: {e}"))?;
 
     info!(
         node_id = %node_id,
@@ -82,9 +82,8 @@ pub async fn init_cluster_components(
                 );
             }
             return Err(anyhow::anyhow!(
-                "Failed to start health monitor: {}. \
-                 Health monitoring is required for cluster mode.",
-                e
+                "Failed to start health monitor: {e}. \
+                 Health monitoring is required for cluster mode."
             ));
         }
     }
@@ -133,9 +132,8 @@ pub async fn init_cluster_discovery(
                 K8sDnsDiscovery::from_env(config.server.grpc_port, config.server.http_port)
                     .map_err(|e| {
                         anyhow::anyhow!(
-                            "Failed to initialize K8s DNS discovery: {}. \
-                             Ensure HEADLESS_SERVICE_NAME and POD_NAMESPACE env vars are set.",
-                            e
+                            "Failed to initialize K8s DNS discovery: {e}. \
+                             Ensure HEADLESS_SERVICE_NAME and POD_NAMESPACE env vars are set."
                         )
                     })?;
 

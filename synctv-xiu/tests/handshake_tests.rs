@@ -43,7 +43,7 @@ struct MockNetIO {
 }
 
 impl MockNetIO {
-    fn new() -> Self {
+    const fn new() -> Self {
         Self {
             read_data: Vec::new(),
             read_pos: 0,
@@ -534,7 +534,7 @@ mod state_transition_tests {
     #[test]
     fn test_client_state_debug() {
         let state = ClientHandshakeState::WriteC0C1;
-        let debug_str = format!("{:?}", state);
+        let debug_str = format!("{state:?}");
         assert!(debug_str.contains("WriteC0C1"));
     }
 

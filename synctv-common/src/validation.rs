@@ -113,14 +113,13 @@ pub fn validate_path_for_traversal(path: &str) -> Result<(), PathTraversalError>
                 }
 
                 // Reject encoded separator (/ or \) after literal ..
-                if byte_val == 0x2F || byte_val == 0x5C {
-                    if i >= 2 && bytes[i - 2] == b'.' && bytes[i - 1] == b'.' {
+                if (byte_val == 0x2F || byte_val == 0x5C)
+                    && i >= 2 && bytes[i - 2] == b'.' && bytes[i - 1] == b'.' {
                         return Err(PathTraversalError {
                             reason: "must not contain '..' followed by encoded separator"
                                 .to_string(),
                         });
                     }
-                }
             }
         }
         i += 1;

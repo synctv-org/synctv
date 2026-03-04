@@ -244,8 +244,6 @@ async fn test_shutdown_runs_hooks() {
 /// Test that shutdown executes in the correct order: tokens -> tasks -> hooks
 #[tokio::test]
 async fn test_shutdown_order() {
-    use std::sync::atomic::Ordering;
-
     let mut coordinator = ShutdownCoordinator::new();
 
     let order = Arc::new(std::sync::Mutex::new(Vec::new()));
@@ -274,7 +272,7 @@ async fn test_shutdown_order() {
         order: Arc<std::sync::Mutex<Vec<&'static str>>>,
     }
     impl ShutdownHook for OrderHook {
-        fn name(&self) -> &str {
+        fn name(&self) -> &'static str {
             "order_hook"
         }
         fn timeout(&self) -> Duration {
@@ -467,7 +465,7 @@ mod config_initialization_tests {
         let errors = result.unwrap_err();
         let has_redis_error = errors
             .iter()
-            .any(|e| e.contains("Redis is required when cluster mode is enabled"));
+            .any(|e| e.contains("cluster mode requires Redis to be configured"));
         assert!(
             has_redis_error,
             "Error should mention Redis requirement: {errors:?}"

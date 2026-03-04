@@ -210,7 +210,7 @@ where
     }
 
     /// Sets a custom timeout for read operations.
-    pub fn set_timeout(&mut self, timeout: Duration) {
+    pub const fn set_timeout(&mut self, timeout: Duration) {
         self.timeout = Some(timeout);
     }
 
@@ -438,7 +438,7 @@ mod async_tests {
     async fn test_async_bytes_reader_default_timeout() {
         // Create an AsyncBytesReader with default timeout
         let io = Arc::new(Mutex::new(NeverReturningIO));
-        let reader = AsyncBytesReader::new(io.clone());
+        let reader = AsyncBytesReader::new(io);
 
         // Verify default timeout is 10 seconds
         assert_eq!(reader.timeout(), Duration::from_secs(10));
@@ -449,7 +449,7 @@ mod async_tests {
         // Create an AsyncBytesReader with custom timeout
         let io = Arc::new(Mutex::new(NeverReturningIO));
         let custom_timeout = Duration::from_millis(500);
-        let reader = AsyncBytesReader::with_timeout(io.clone(), custom_timeout);
+        let reader = AsyncBytesReader::with_timeout(io, custom_timeout);
 
         // Verify custom timeout is set
         assert_eq!(reader.timeout(), custom_timeout);
@@ -459,7 +459,7 @@ mod async_tests {
     async fn test_async_bytes_reader_set_timeout() {
         // Create an AsyncBytesReader and set timeout later
         let io = Arc::new(Mutex::new(NeverReturningIO));
-        let mut reader = AsyncBytesReader::new(io.clone());
+        let mut reader = AsyncBytesReader::new(io);
 
         // Initially should have default timeout
         assert_eq!(reader.timeout(), Duration::from_secs(10));

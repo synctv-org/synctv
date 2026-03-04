@@ -77,7 +77,7 @@ impl StoredEntry {
 
     /// Returns the size of the stored data in bytes.
     #[must_use]
-    pub fn data_size(&self) -> u64 {
+    pub const fn data_size(&self) -> u64 {
         self.data.len() as u64
     }
 }
@@ -112,7 +112,7 @@ mod tests {
             total_size: None,
             content_type: None,
         };
-        let cloned = meta.clone();
+        let cloned = meta;
         assert_eq!(cloned.etag, None);
         assert_eq!(cloned.last_modified, None);
     }
@@ -123,7 +123,7 @@ mod tests {
 
     #[test]
     fn new_entry_is_not_expired() {
-        let entry = StoredEntry::new(Bytes::from("hello"), Duration::from_secs(60));
+        let entry = StoredEntry::new(Bytes::from("hello"), Duration::from_mins(1));
         assert!(!entry.is_expired());
     }
 
@@ -131,8 +131,8 @@ mod tests {
     fn expired_entry_is_detected() {
         let entry = StoredEntry {
             data: Bytes::from("data"),
-            inserted_at: SystemTime::now() - Duration::from_secs(120),
-            ttl: Duration::from_secs(60),
+            inserted_at: SystemTime::now() - Duration::from_mins(2),
+            ttl: Duration::from_mins(1),
             last_accessed: SystemTime::now(),
         };
         assert!(entry.is_expired());
@@ -156,11 +156,11 @@ mod tests {
         let entry = StoredEntry {
             data: Bytes::from("data"),
             inserted_at: SystemTime::now() - Duration::from_secs(90),
-            ttl: Duration::from_secs(60),
+            ttl: Duration::from_mins(1),
             last_accessed: SystemTime::now(),
         };
         assert!(entry.is_expired());
-        assert!(entry.is_stale(Duration::from_secs(60)));
+        assert!(entry.is_stale(Duration::from_mins(1)));
     }
 
     #[test]
@@ -168,19 +168,19 @@ mod tests {
         // Entry expired 120s ago, stale window is 60s -> NOT stale (too old).
         let entry = StoredEntry {
             data: Bytes::from("data"),
-            inserted_at: SystemTime::now() - Duration::from_secs(180),
-            ttl: Duration::from_secs(60),
+            inserted_at: SystemTime::now() - Duration::from_mins(3),
+            ttl: Duration::from_mins(1),
             last_accessed: SystemTime::now(),
         };
         assert!(entry.is_expired());
-        assert!(!entry.is_stale(Duration::from_secs(60)));
+        assert!(!entry.is_stale(Duration::from_mins(1)));
     }
 
     #[test]
     fn fresh_entry_is_not_stale() {
-        let entry = StoredEntry::new(Bytes::from("fresh"), Duration::from_secs(300));
+        let entry = StoredEntry::new(Bytes::from("fresh"), Duration::from_mins(5));
         assert!(!entry.is_expired());
-        assert!(!entry.is_stale(Duration::from_secs(60)));
+        assert!(!entry.is_stale(Duration::from_mins(1)));
     }
 
     #[test]
@@ -188,7 +188,7 @@ mod tests {
         let mut entry = StoredEntry {
             data: Bytes::from("data"),
             inserted_at: SystemTime::now() - Duration::from_secs(100),
-            ttl: Duration::from_secs(300),
+            ttl: Duration::from_mins(5),
             last_accessed: SystemTime::now() - Duration::from_secs(100),
         };
         let before_touch = entry.last_accessed;
@@ -201,13 +201,13 @@ mod tests {
     #[test]
     fn data_size_matches_bytes_len() {
         let data = Bytes::from(vec![0u8; 1024]);
-        let entry = StoredEntry::new(data, Duration::from_secs(60));
+        let entry = StoredEntry::new(data, Duration::from_mins(1));
         assert_eq!(entry.data_size(), 1024);
     }
 
     #[test]
     fn data_size_empty() {
-        let entry = StoredEntry::new(Bytes::new(), Duration::from_secs(60));
+        let entry = StoredEntry::new(Bytes::new(), Duration::from_mins(1));
         assert_eq!(entry.data_size(), 0);
     }
 

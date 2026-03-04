@@ -705,7 +705,7 @@ impl K8sLeaderElector {
         let was_leader = self.is_leader.swap(leader, Ordering::AcqRel);
 
         // Update metrics
-        synctv_core::metrics::cluster::LEADER_ELECTION_STATE.set(if leader { 1 } else { 0 });
+        synctv_core::metrics::cluster::LEADER_ELECTION_STATE.set(i64::from(leader));
 
         if was_leader && !leader {
             // Increment consecutive losses for exponential backoff
@@ -823,7 +823,7 @@ impl K8sLeaderElector {
             let elapsed = lost_at.elapsed();
 
             if elapsed < grace_period {
-                Some(grace_period - elapsed)
+                Some(grace_period.checked_sub(elapsed).unwrap())
             } else {
                 None
             }

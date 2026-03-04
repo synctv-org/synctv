@@ -1458,21 +1458,18 @@ impl Config {
             }
         }
 
-        // Validate Redis requirement based on deployment mode
-        if self.redis.url.is_empty() {
-            if self.cluster.enabled {
-                errors.push(
-                    "Redis is required when cluster mode is enabled (cluster.enabled=true). \
-                     Configure redis.url or set SYNCTV_REDIS_URL."
-                        .to_string(),
-                );
-            } else {
-                tracing::info!(
-                    "Redis is not configured — running in standalone mode with in-memory fallbacks. \
-                     All features work, but data (rate limits, brute-force counters, token blacklist) \
-                     will not persist across restarts."
-                );
-            }
+        // Log info when Redis is not configured in standalone mode.
+        // Cluster mode Redis validation is handled below (around line 1588) to also cover
+        // the case where only cluster_secret is set without cluster.enabled=true.
+        if self.redis.url.is_empty()
+            && !self.cluster.enabled
+            && self.server.cluster_secret.is_empty()
+        {
+            tracing::info!(
+                "Redis is not configured — running in standalone mode with in-memory fallbacks. \
+                 All features work, but data (rate limits, brute-force counters, token blacklist) \
+                 will not persist across restarts."
+            );
         }
 
         // Validate connection limits
@@ -1588,11 +1585,9 @@ impl Config {
         let cluster_mode_active = self.cluster.enabled || !self.server.cluster_secret.is_empty();
         if cluster_mode_active && self.redis.url.is_empty() {
             errors.push(
-                "Redis is required when cluster mode is enabled. \
-                 Configure redis.url (or SYNCTV_REDIS_URL env var) before starting \
-                 with cluster.enabled=true or server.cluster_secret set. \
-                 Redis provides cross-replica pub/sub, leader election, node registry, \
-                 and distributed rate limiting — all mandatory for multi-replica deployments."
+                "cluster mode requires Redis to be configured. \
+                 Set redis.url (or SYNCTV_REDIS_URL env var) before enabling \
+                 cluster.enabled=true or server.cluster_secret."
                     .to_string(),
             );
         }
@@ -2336,7 +2331,9 @@ mod tests {
         let mut config = valid_prod_config();
         config.livestream.hls_shared_storage = false;
         let errors = config.validate().unwrap_err();
-        assert!(errors.iter().any(|e| e.contains("hls_shared_storage") && e.contains("Cluster mode")));
+        assert!(errors
+            .iter()
+            .any(|e| e.contains("hls_shared_storage") && e.contains("Cluster mode")));
     }
 
     #[test]
@@ -2609,7 +2606,7 @@ mod tests {
         assert!(
             errors
                 .iter()
-                .any(|e| e.contains("Redis is required when cluster mode is enabled")),
+                .any(|e| e.contains("cluster mode requires Redis to be configured")),
             "Expected cluster+no-redis error, got: {errors:?}"
         );
     }
@@ -2635,7 +2632,7 @@ mod tests {
         assert!(
             errors
                 .iter()
-                .any(|e| e.contains("Redis is required when cluster mode is enabled")),
+                .any(|e| e.contains("cluster mode requires Redis to be configured")),
             "Expected cluster+no-redis error, got: {errors:?}"
         );
     }

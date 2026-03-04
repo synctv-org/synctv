@@ -312,7 +312,7 @@ impl CacheInvalidationService {
                             }
                         }
                     }
-                    _ = async {
+                    () = async {
                         loop {
                             if shutdown.load(std::sync::atomic::Ordering::Relaxed) {
                                 return;
@@ -1501,7 +1501,7 @@ mod tests {
             InvalidationMessage::RoomSettings { room_id } => {
                 assert_eq!(room_id, "room_settings_test");
             }
-            other => panic!("Expected RoomSettings, got: {:?}", other),
+            other => panic!("Expected RoomSettings, got: {other:?}"),
         }
     }
 }

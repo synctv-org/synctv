@@ -32,8 +32,7 @@ impl ClientApiImpl {
         let page_size = u32::try_from(req.page_size)
             .ok()
             .filter(|&ps| ps > 0)
-            .map(|ps| ps.min(100))
-            .unwrap_or(50);
+            .map_or(50, |ps| ps.min(100));
         let pagination = synctv_core::models::PageParams::new(Some(page), Some(page_size));
 
         let (members, total) = self

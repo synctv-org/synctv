@@ -96,8 +96,7 @@ async fn inject_request_id_into_error_response(response: Response, request_id: &
         .and_then(|v| v.to_str().ok());
 
     if !content_type
-        .map(|ct| ct.starts_with("application/json"))
-        .unwrap_or(false)
+        .is_some_and(|ct| ct.starts_with("application/json"))
     {
         return response;
     }

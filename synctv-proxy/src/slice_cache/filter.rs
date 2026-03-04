@@ -182,8 +182,8 @@ pub async fn proxy_with_cache(
 ///
 /// Priority (worst to best): Miss > Expired > Stale > Updating >
 /// Revalidated > Hit.  Bypass is kept if either operand is Bypass.
-fn merge_cache_status(a: CacheStatus, b: CacheStatus) -> CacheStatus {
-    fn priority(s: CacheStatus) -> u8 {
+const fn merge_cache_status(a: CacheStatus, b: CacheStatus) -> CacheStatus {
+    const fn priority(s: CacheStatus) -> u8 {
         match s {
             CacheStatus::Hit => 0,
             CacheStatus::Revalidated => 1,

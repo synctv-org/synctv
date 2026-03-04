@@ -362,7 +362,7 @@ async fn test_stop_all_timeout_sufficient_for_slow_cleanup() {
     let (stop_done_tx, stop_done_rx) = oneshot::channel::<()>();
     stop_streams_tx.send(stop_done_tx).await.unwrap();
 
-    let result = tokio::time::timeout(Duration::from_millis(5000), stop_done_rx).await;
+    let result = tokio::time::timeout(Duration::from_secs(5), stop_done_rx).await;
 
     assert!(
         result.is_ok(),
@@ -393,7 +393,7 @@ async fn test_stop_all_handles_moderate_cleanup_time() {
     let (stop_done_tx, stop_done_rx) = oneshot::channel::<()>();
     stop_streams_tx.send(stop_done_tx).await.unwrap();
 
-    let result = tokio::time::timeout(Duration::from_millis(5000), stop_done_rx).await;
+    let result = tokio::time::timeout(Duration::from_secs(5), stop_done_rx).await;
 
     assert!(
         result.is_ok(),
@@ -638,8 +638,7 @@ async fn test_alternating_failures_successes_no_exhaustion() {
 
     assert!(
         restart_count < HUB_MAX_RESTARTS,
-        "restart_count should not exceed HUB_MAX_RESTARTS after alternating cycles, got {}",
-        restart_count
+        "restart_count should not exceed HUB_MAX_RESTARTS after alternating cycles, got {restart_count}"
     );
 }
 
@@ -751,10 +750,9 @@ async fn test_publication_during_restart_handles_gracefully() {
 
     pub_handle.await.unwrap();
 
-    let final_result = publication_result.lock().unwrap().clone();
+    let final_result = *publication_result.lock().unwrap();
     assert!(
         matches!(final_result, Some(Ok(()))),
-        "Publication should succeed after restart completes, got {:?}",
-        final_result
+        "Publication should succeed after restart completes, got {final_result:?}"
     );
 }

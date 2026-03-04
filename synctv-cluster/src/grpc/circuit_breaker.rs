@@ -41,7 +41,7 @@ struct EndpointBreaker {
 }
 
 impl EndpointBreaker {
-    fn new(breaker: EndpointCircuitBreaker) -> Self {
+    const fn new(breaker: EndpointCircuitBreaker) -> Self {
         Self {
             breaker,
             was_open: AtomicBool::new(false),

@@ -617,7 +617,7 @@ mod tests {
 
         // Sequence header should return None (no video data to output)
         if let Err(ref e) = result {
-            eprintln!("Error: {:?}", e);
+            eprintln!("Error: {e:?}");
         }
         assert!(result.is_ok(), "demux should succeed");
         assert!(result.unwrap().is_none());

@@ -487,8 +487,7 @@ mod tests {
         // Should have timed out around REDIS_OPERATION_TIMEOUT (5s), not waited full 10s
         assert!(
             elapsed < Duration::from_secs(6),
-            "Timeout should occur around 5s, took {:?}",
-            elapsed
+            "Timeout should occur around 5s, took {elapsed:?}"
         );
     }
 
@@ -506,8 +505,7 @@ mod tests {
         assert!(result.is_err(), "Expected timeout error");
         assert!(
             elapsed < Duration::from_secs(6),
-            "Timeout should occur around 5s, took {:?}",
-            elapsed
+            "Timeout should occur around 5s, took {elapsed:?}"
         );
     }
 
@@ -524,8 +522,7 @@ mod tests {
         assert!(result.is_err(), "Expected timeout error");
         assert!(
             elapsed < Duration::from_secs(6),
-            "Timeout should occur around 5s, took {:?}",
-            elapsed
+            "Timeout should occur around 5s, took {elapsed:?}"
         );
     }
 
@@ -543,8 +540,7 @@ mod tests {
         assert!(result.is_err(), "Expected timeout error");
         assert!(
             elapsed < Duration::from_secs(6),
-            "Timeout should occur around 5s, took {:?}",
-            elapsed
+            "Timeout should occur around 5s, took {elapsed:?}"
         );
     }
 
@@ -565,8 +561,7 @@ mod tests {
         assert!(result.is_err(), "Expected timeout error");
         assert!(
             elapsed < Duration::from_secs(6),
-            "Timeout should occur around 5s, took {:?}",
-            elapsed
+            "Timeout should occur around 5s, took {elapsed:?}"
         );
     }
 
@@ -584,8 +579,7 @@ mod tests {
         assert!(result.is_err(), "Expected timeout error");
         assert!(
             elapsed < Duration::from_secs(6),
-            "Timeout should occur around 5s, took {:?}",
-            elapsed
+            "Timeout should occur around 5s, took {elapsed:?}"
         );
     }
 
@@ -631,8 +625,7 @@ mod tests {
         let elapsed = start.elapsed();
         assert!(
             elapsed < Duration::from_millis(10),
-            "NoopCacheL2 operations should be instant, took {:?}",
-            elapsed
+            "NoopCacheL2 operations should be instant, took {elapsed:?}"
         );
     }
 

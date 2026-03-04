@@ -433,7 +433,7 @@ async fn test_shutdown_cleans_all_resources_on_phase7_failure() {
         let task_ran_clone = task_ran.clone();
         coordinator.register_task(
             // This is a hack to create a static str from a constant
-            Box::leak(format!("task_{}", i).into_boxed_str()),
+            Box::leak(format!("task_{i}").into_boxed_str()),
             tokio::spawn(async move {
                 task_ran_clone.store(true, std::sync::atomic::Ordering::SeqCst);
             }),
@@ -442,7 +442,7 @@ async fn test_shutdown_cleans_all_resources_on_phase7_failure() {
 
     // Simulate multiple hooks
     for i in 0..3 {
-        let hook = MockShutdownHook::new(Box::leak(format!("hook_{}", i).into_boxed_str()));
+        let hook = MockShutdownHook::new(Box::leak(format!("hook_{i}").into_boxed_str()));
         coordinator.register_hook(hook);
     }
 
@@ -532,7 +532,7 @@ struct MockCoordinator {
 }
 
 impl MockCoordinator {
-    fn register_token(&mut self, _name: &'static str) {
+    const fn register_token(&mut self, _name: &'static str) {
         // In real code, this would register a token
     }
 }
@@ -609,10 +609,10 @@ async fn test_long_running_tasks_respect_cancellation() {
     // Spawn a long-running task that respects cancellation
     let handle = tokio::spawn(async move {
         tokio::select! {
-            _ = tokio::time::sleep(Duration::from_secs(60)) => {
+            () = tokio::time::sleep(Duration::from_mins(1)) => {
                 // Normal completion (shouldn't happen in this test)
             }
-            _ = token_clone.cancelled() => {
+            () = token_clone.cancelled() => {
                 was_cancelled_clone.store(true, std::sync::atomic::Ordering::SeqCst);
             }
         }

@@ -150,8 +150,7 @@ fn test_grace_period_calculation_with_local_time() {
 
     assert!(
         in_grace,
-        "Should be in grace period: {:?} elapsed < {:?} grace",
-        elapsed, grace_period
+        "Should be in grace period: {elapsed:?} elapsed < {grace_period:?} grace"
     );
 
     // After grace period expires
@@ -162,8 +161,7 @@ fn test_grace_period_calculation_with_local_time() {
 
     assert!(
         !in_grace,
-        "Should NOT be in grace period: {:?} elapsed >= {:?} grace",
-        elapsed, grace_period
+        "Should NOT be in grace period: {elapsed:?} elapsed >= {grace_period:?} grace"
     );
 }
 
@@ -256,8 +254,7 @@ fn test_exponential_backoff_formula() {
         let grace_secs = (base_secs * multiplier).min(max_secs);
         assert_eq!(
             grace_secs, expected_secs,
-            "Failed for consecutive_losses = {}",
-            consecutive_losses
+            "Failed for consecutive_losses = {consecutive_losses}"
         );
     }
 }

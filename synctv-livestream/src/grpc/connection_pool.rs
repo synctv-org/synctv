@@ -187,7 +187,7 @@ impl GrpcConnectionPool {
 
     /// Returns the maximum number of connections allowed in the pool.
     #[must_use]
-    pub fn max_size(&self) -> usize {
+    pub const fn max_size(&self) -> usize {
         self.max_size
     }
 
@@ -518,21 +518,21 @@ mod tests {
 
     #[test]
     fn test_pool_max_size_custom() {
-        let pool = GrpcConnectionPool::new(Duration::from_secs(60), 50);
+        let pool = GrpcConnectionPool::new(Duration::from_mins(1), 50);
         assert_eq!(pool.max_size(), 50);
     }
 
     #[test]
     fn test_pool_max_size_minimum_is_one() {
         // max_size of 0 should be clamped to 1
-        let pool = GrpcConnectionPool::new(Duration::from_secs(60), 0);
+        let pool = GrpcConnectionPool::new(Duration::from_mins(1), 0);
         assert_eq!(pool.max_size(), 1);
     }
 
     #[tokio::test]
     async fn test_pool_enforces_max_size_on_insert() {
         // Create a pool with max_size = 3
-        let pool = GrpcConnectionPool::new(Duration::from_secs(300), 3);
+        let pool = GrpcConnectionPool::new(Duration::from_mins(5), 3);
 
         // Manually insert entries with staggered creation times.
         // node-0 is the oldest (created_at furthest in the past).
@@ -544,7 +544,7 @@ mod tests {
                 PooledChannel {
                     channel: channel.clone(),
                     // node-0 is oldest (300s ago), node-1 is 200s ago, node-2 is 100s ago
-                    created_at: now - Duration::from_secs((300 - i as u64 * 100).into()),
+                    created_at: now.checked_sub(Duration::from_secs(300 - u64::from(i) * 100)).unwrap(),
                     consecutive_errors: AtomicU32::new(0),
                 },
             );
@@ -572,8 +572,8 @@ mod tests {
         pool.connections.insert(
             "node-1:50051".to_string(),
             PooledChannel {
-                channel: channel.clone(),
-                created_at: Instant::now() - Duration::from_secs(10),
+                channel,
+                created_at: Instant::now().checked_sub(Duration::from_secs(10)).unwrap(),
                 consecutive_errors: AtomicU32::new(0),
             },
         );

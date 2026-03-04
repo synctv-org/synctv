@@ -2,6 +2,7 @@
 const LOCAL_IP_TIMEOUT_SECS: u64 = 2;
 
 /// Generate a unique node ID for this server instance.
+///
 /// Prefers the `POD_NAME` environment variable (set by Kubernetes downward API)
 /// for predictable, consistent node IDs in K8s deployments.
 /// Falls back to hostname + local IP + random suffix for non-K8s environments.
@@ -122,15 +123,13 @@ mod tests {
         // Should complete within 1 second + some overhead
         assert!(
             elapsed.as_secs() < 2,
-            "Should complete within timeout, took {:?}",
-            elapsed
+            "Should complete within timeout, took {elapsed:?}"
         );
 
         // Should return a valid IP string (either real IP or fallback)
         assert!(
             ip.parse::<std::net::IpAddr>().is_ok() || ip == "0.0.0.0",
-            "Should return valid IP or fallback: {}",
-            ip
+            "Should return valid IP or fallback: {ip}"
         );
     }
 

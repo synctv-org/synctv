@@ -121,13 +121,6 @@ fn try_claim_refresh_lock() -> bool {
         .is_ok()
 }
 
-/// Release the refresh lock after refresh completes.
-/// Note: This is a test-only helper. Production code should use `release_refresh_lock_and_notify`.
-#[cfg(test)]
-fn release_refresh_lock() {
-    WBI_REFRESH_IN_PROGRESS.store(0, Ordering::Release);
-}
-
 /// Release the refresh lock after a successful refresh, reset failure counter, and notify waiters.
 fn release_refresh_lock_on_success_and_notify() {
     WBI_CONSECUTIVE_FAILURES.store(0, Ordering::Release);
@@ -2358,7 +2351,7 @@ impl ReconnectableLiveDanmakuConnection {
     }
 
     /// Check if the connection is currently active
-    pub fn is_connected(&self) -> bool {
+    pub const fn is_connected(&self) -> bool {
         self.connection.is_some()
     }
 
@@ -2379,12 +2372,12 @@ impl ReconnectableLiveDanmakuConnection {
     }
 
     /// Set the heartbeat configuration for reconnected sessions
-    pub fn set_heartbeat_config(&mut self, config: HeartbeatConfig) {
+    pub const fn set_heartbeat_config(&mut self, config: HeartbeatConfig) {
         self.heartbeat_config = Some(config);
     }
 
     /// Get the underlying connection if available
-    pub fn connection(&self) -> Option<&Arc<LiveDanmakuConnection>> {
+    pub const fn connection(&self) -> Option<&Arc<LiveDanmakuConnection>> {
         self.connection.as_ref()
     }
 }

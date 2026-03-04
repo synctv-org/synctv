@@ -405,9 +405,9 @@ mod tests {
             .unwrap();
 
         assert_eq!(result.len(), 2);
-        assert_eq!(result.get(&room1).map(|r| r.name()), Some("Room 1"));
+        assert_eq!(result.get(&room1).map(super::CachedRoom::name), Some("Room 1"));
         assert_eq!(result.get(&room2), None);
-        assert_eq!(result.get(&room3).map(|r| r.name()), Some("Room 3"));
+        assert_eq!(result.get(&room3).map(super::CachedRoom::name), Some("Room 3"));
     }
 
     /// CachedRoom must include status field from the Room model

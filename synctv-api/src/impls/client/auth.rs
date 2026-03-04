@@ -14,14 +14,14 @@ pub struct LogoutOutcome {
 }
 
 impl LogoutOutcome {
-    pub fn success() -> Self {
+    pub const fn success() -> Self {
         Self {
             blacklist_ok: true,
             message: "",
         }
     }
 
-    pub fn blacklist_failed() -> Self {
+    pub const fn blacklist_failed() -> Self {
         Self {
             blacklist_ok: false,
             message: "Logged out but token invalidation may be delayed",

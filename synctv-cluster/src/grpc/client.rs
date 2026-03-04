@@ -73,12 +73,12 @@ pub struct FanOutResult<T> {
 
 impl<T> FanOutResult<T> {
     /// Whether all queried nodes responded successfully
-    pub fn is_complete(&self) -> bool {
+    pub const fn is_complete(&self) -> bool {
         self.nodes_failed == 0
     }
 
     /// Total number of nodes queried
-    pub fn total_nodes(&self) -> usize {
+    pub const fn total_nodes(&self) -> usize {
         self.nodes_succeeded + self.nodes_failed
     }
 }

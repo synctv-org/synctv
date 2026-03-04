@@ -242,8 +242,8 @@ fn test_multi_replica_implications_documentation() {
     assert_eq!(effective_without_redis, 30); // 3x the desired limit
 
     // Mitigation: divide limits by replica count
-    let mitigated_per_replica = desired_global_limit / replica_count as u32;
-    let mitigated_total = mitigated_per_replica * replica_count as u32;
+    let mitigated_per_replica = desired_global_limit / replica_count;
+    let mitigated_total = mitigated_per_replica * replica_count;
     assert_eq!(mitigated_total, 9); // Close to desired (integer division)
 }
 
@@ -369,36 +369,22 @@ async fn test_redis_backend_strict_fails_closed_on_error() {
     // This simulates a Redis that accepts connections but fails operations
     let client_result = redis::Client::open("redis://127.0.0.1:1");
 
-    match client_result {
-        Ok(client) => {
-            // Try to create connection manager - this might fail for unreachable Redis
-            match redis::aio::ConnectionManager::new(client).await {
-                Ok(conn) => {
-                    let limiter = RateLimiter::new(
-                        Some(Arc::new(RwLock::new(conn))),
-                        "redis_strict:".to_string(),
-                    );
+    if let Ok(client) = client_result {
+        // Try to create connection manager - this might fail for unreachable Redis
+        if let Ok(conn) = redis::aio::ConnectionManager::new(client).await {
+            let limiter = RateLimiter::new(
+                Some(Arc::new(RwLock::new(conn))),
+                "redis_strict:".to_string(),
+            );
 
-                    // The distributed check should fail closed when Redis is unreachable
-                    let result = limiter.check_rate_limit_distributed("key", 10, 1).await;
-                    assert!(
-                        matches!(result, Err(RateLimitError::RateLimitExceeded { .. })),
-                        "Redis backend check_strict should fail closed on connection error"
-                    );
-                }
-                Err(_) => {
-                    // Connection failed, use in-memory which also fails closed
-                    let limiter = RateLimiter::in_memory_only("redis_strict:".to_string());
-                    let result = limiter.check_rate_limit_distributed("key", 10, 1).await;
-                    assert!(
-                        matches!(result, Err(RateLimitError::RateLimitExceeded { .. })),
-                        "In-memory backend check_strict should fail closed"
-                    );
-                }
-            }
-        }
-        Err(_) => {
-            // If we can't even create client, use in-memory which also fails closed
+            // The distributed check should fail closed when Redis is unreachable
+            let result = limiter.check_rate_limit_distributed("key", 10, 1).await;
+            assert!(
+                matches!(result, Err(RateLimitError::RateLimitExceeded { .. })),
+                "Redis backend check_strict should fail closed on connection error"
+            );
+        } else {
+            // Connection failed, use in-memory which also fails closed
             let limiter = RateLimiter::in_memory_only("redis_strict:".to_string());
             let result = limiter.check_rate_limit_distributed("key", 10, 1).await;
             assert!(
@@ -406,6 +392,14 @@ async fn test_redis_backend_strict_fails_closed_on_error() {
                 "In-memory backend check_strict should fail closed"
             );
         }
+    } else {
+        // If we can't even create client, use in-memory which also fails closed
+        let limiter = RateLimiter::in_memory_only("redis_strict:".to_string());
+        let result = limiter.check_rate_limit_distributed("key", 10, 1).await;
+        assert!(
+            matches!(result, Err(RateLimitError::RateLimitExceeded { .. })),
+            "In-memory backend check_strict should fail closed"
+        );
     }
 }
 

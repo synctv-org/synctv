@@ -846,7 +846,7 @@ struct UnpublishGuard {
 }
 
 impl UnpublishGuard {
-    fn new(
+    const fn new(
         room_id: String,
         media_id: String,
         stream_hub_event_sender: StreamHubEventSender,

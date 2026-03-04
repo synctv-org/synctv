@@ -274,7 +274,12 @@ async fn test_redis_rate_limiter_distributed_fails_closed_without_redis() {
     // Should deny ALL requests when Redis is not configured (fail-closed)
     let result = limiter.check_rate_limit_distributed("key", 10, 1).await;
     assert!(
-        matches!(result, Err(RateLimitError::RateLimitExceeded { retry_after_seconds: 1 })),
+        matches!(
+            result,
+            Err(RateLimitError::RateLimitExceeded {
+                retry_after_seconds: 1
+            })
+        ),
         "check_rate_limit_distributed should fail closed when Redis is not configured"
     );
 }

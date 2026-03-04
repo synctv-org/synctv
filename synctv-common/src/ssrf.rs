@@ -64,7 +64,7 @@ impl SsrfGuard {
 
     /// Create from builder for custom policies.
     #[must_use]
-    pub fn builder() -> SsrfGuardBuilder {
+    pub const fn builder() -> SsrfGuardBuilder {
         SsrfGuardBuilder::new()
     }
 
@@ -91,7 +91,7 @@ impl SsrfGuard {
 
     /// Access the underlying ACL for advanced use.
     #[must_use]
-    pub fn acl(&self) -> &HttpAcl {
+    pub const fn acl(&self) -> &HttpAcl {
         &self.acl
     }
 }
@@ -110,7 +110,7 @@ pub struct SsrfGuardBuilder {
 }
 
 impl SsrfGuardBuilder {
-    fn new() -> Self {
+    const fn new() -> Self {
         Self {
             extra_denied_ip_ranges: Vec::new(),
             extra_denied_hosts: Vec::new(),
@@ -151,14 +151,14 @@ impl SsrfGuardBuilder {
 
     /// Set whether HTTP is allowed (default: true).
     #[must_use]
-    pub fn allow_http(mut self, allow: bool) -> Self {
+    pub const fn allow_http(mut self, allow: bool) -> Self {
         self.allow_http = allow;
         self
     }
 
     /// Set whether HTTPS is allowed (default: true).
     #[must_use]
-    pub fn allow_https(mut self, allow: bool) -> Self {
+    pub const fn allow_https(mut self, allow: bool) -> Self {
         self.allow_https = allow;
         self
     }
@@ -471,7 +471,7 @@ mod tests {
     #[test]
     fn test_guard_clone() {
         let guard = SsrfGuard::default_policy();
-        let cloned = guard.clone();
+        let cloned = guard;
         assert!(cloned.is_ip_blocked(&IpAddr::V4(Ipv4Addr::LOCALHOST)));
         assert!(!cloned.is_ip_blocked(&IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8))));
     }

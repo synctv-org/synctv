@@ -48,10 +48,10 @@ impl Default for SliceCacheConfig {
             max_cacheable_body: 10 * 1024 * 1024, // 10 MB
             manifest_ttl: Duration::from_secs(5),
             segment_ttl: Duration::from_mins(5),
-            stale_max_age: Duration::from_secs(60),
+            stale_max_age: Duration::from_mins(1),
             stale_while_revalidate: true,
             backend: CacheBackendConfig::default(),
-            eviction_interval: Duration::from_secs(60),
+            eviction_interval: Duration::from_mins(1),
             watermark_ratio: 0.875, // 7/8
         }
     }

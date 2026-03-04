@@ -648,7 +648,7 @@ async fn test_count_by_room() {
         playlist_repo
             .create(&make_playlist(
                 &room.id,
-                &format!("Playlist {}", i),
+                &format!("Playlist {i}"),
                 Some(&root.id),
                 i,
             ))
@@ -687,7 +687,7 @@ async fn test_get_by_room_paginated_first_page() {
         playlist_repo
             .create(&make_playlist(
                 &room.id,
-                &format!("Playlist {}", i),
+                &format!("Playlist {i}"),
                 Some(&root.id),
                 i,
             ))
@@ -731,7 +731,7 @@ async fn test_get_by_room_paginated_second_page() {
         playlist_repo
             .create(&make_playlist(
                 &room.id,
-                &format!("Playlist {}", i),
+                &format!("Playlist {i}"),
                 Some(&root.id),
                 i,
             ))
@@ -776,7 +776,7 @@ async fn test_get_by_room_paginated_last_partial_page() {
         playlist_repo
             .create(&make_playlist(
                 &room.id,
-                &format!("Playlist {}", i),
+                &format!("Playlist {i}"),
                 Some(&root.id),
                 i,
             ))
@@ -821,7 +821,7 @@ async fn test_get_by_room_paginated_large_dataset() {
         playlist_repo
             .create(&make_playlist(
                 &room.id,
-                &format!("Playlist {:03}", i),
+                &format!("Playlist {i:03}"),
                 Some(&root.id),
                 i,
             ))
@@ -914,7 +914,7 @@ async fn test_get_by_room_paginated_respects_page_size_limit() {
         playlist_repo
             .create(&make_playlist(
                 &room.id,
-                &format!("Playlist {:03}", i),
+                &format!("Playlist {i:03}"),
                 Some(&root.id),
                 i,
             ))

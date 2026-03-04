@@ -396,8 +396,7 @@ fn test_all_reserved_words_are_rejected() {
         let result = validator.validate(reserved);
         assert!(
             result.is_err(),
-            "Expected '{}' to be rejected as reserved word",
-            reserved
+            "Expected '{reserved}' to be rejected as reserved word"
         );
 
         // Also test uppercase version
@@ -405,8 +404,7 @@ fn test_all_reserved_words_are_rejected() {
         let result = validator.validate(&upper);
         assert!(
             result.is_err(),
-            "Expected '{}' (uppercase) to be rejected as reserved word",
-            upper
+            "Expected '{upper}' (uppercase) to be rejected as reserved word"
         );
     }
 }

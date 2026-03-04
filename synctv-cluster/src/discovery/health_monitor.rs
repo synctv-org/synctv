@@ -164,7 +164,7 @@ impl HealthMonitor {
                         tracing::info!("Health monitor shutting down");
                         return;
                     }
-                    _ = tokio::time::sleep(effective_check_interval) => {
+                    () = tokio::time::sleep(effective_check_interval) => {
                         // Passive heartbeat check with backoff on registry failures
                         match registry.get_all_nodes().await {
                             Ok(nodes) => {

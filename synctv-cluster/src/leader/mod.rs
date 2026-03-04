@@ -57,10 +57,10 @@ impl AnyLeaderElector {
     /// Returns `true` if this instance is currently the leader.
     pub fn is_leader(&self) -> bool {
         match self {
-            AnyLeaderElector::Redis(e) => e.is_leader(),
+            Self::Redis(e) => e.is_leader(),
             #[cfg(feature = "k8s")]
-            AnyLeaderElector::K8s(e) => e.is_leader(),
-            AnyLeaderElector::Disabled => false,
+            Self::K8s(e) => e.is_leader(),
+            Self::Disabled => false,
         }
     }
 
@@ -71,16 +71,16 @@ impl AnyLeaderElector {
     /// check the distributed lock directly.
     pub fn current_leader_identity(&self) -> Option<String> {
         match self {
-            AnyLeaderElector::Redis(e) => e.current_leader_identity(),
+            Self::Redis(e) => e.current_leader_identity(),
             #[cfg(feature = "k8s")]
-            AnyLeaderElector::K8s(e) => {
+            Self::K8s(e) => {
                 if e.is_leader() {
                     Some(e.identity().to_string())
                 } else {
                     None
                 }
             }
-            AnyLeaderElector::Disabled => None,
+            Self::Disabled => None,
         }
     }
 
@@ -93,10 +93,10 @@ impl AnyLeaderElector {
     /// Returns 0 if this node has never been leader.
     pub fn leader_epoch(&self) -> u64 {
         match self {
-            AnyLeaderElector::Redis(e) => e.leader_epoch(),
+            Self::Redis(e) => e.leader_epoch(),
             #[cfg(feature = "k8s")]
-            AnyLeaderElector::K8s(e) => e.leader_epoch(),
-            AnyLeaderElector::Disabled => 0,
+            Self::K8s(e) => e.leader_epoch(),
+            Self::Disabled => 0,
         }
     }
 
@@ -107,10 +107,10 @@ impl AnyLeaderElector {
     #[must_use]
     pub fn subscribe(&self) -> broadcast::Receiver<LeadershipEvent> {
         match self {
-            AnyLeaderElector::Redis(e) => e.subscribe(),
+            Self::Redis(e) => e.subscribe(),
             #[cfg(feature = "k8s")]
-            AnyLeaderElector::K8s(e) => e.subscribe(),
-            AnyLeaderElector::Disabled => {
+            Self::K8s(e) => e.subscribe(),
+            Self::Disabled => {
                 // Create a closed channel that never sends events.
                 // Since the Disabled elector never becomes leader,
                 // subscribers will only see channel closure when dropped.
@@ -127,10 +127,10 @@ impl AnyLeaderElector {
     /// renew leadership. The task runs until the `cancel_token` is cancelled.
     pub fn start(&self, cancel_token: CancellationToken) -> tokio::task::JoinHandle<()> {
         match self {
-            AnyLeaderElector::Redis(e) => e.start(cancel_token),
+            Self::Redis(e) => e.start(cancel_token),
             #[cfg(feature = "k8s")]
-            AnyLeaderElector::K8s(e) => e.start(cancel_token),
-            AnyLeaderElector::Disabled => {
+            Self::K8s(e) => e.start(cancel_token),
+            Self::Disabled => {
                 // No-op: Disabled elector doesn't run any background task.
                 // Return a handle that completes immediately when cancelled.
                 tokio::spawn(async move {
@@ -164,10 +164,10 @@ impl AnyLeaderElector {
     /// ```
     pub async fn resign(&self) {
         match self {
-            AnyLeaderElector::Redis(e) => e.resign().await,
+            Self::Redis(e) => e.resign().await,
             #[cfg(feature = "k8s")]
-            AnyLeaderElector::K8s(e) => e.resign_public().await,
-            AnyLeaderElector::Disabled => {
+            Self::K8s(e) => e.resign_public().await,
+            Self::Disabled => {
                 // No-op: Disabled elector never has leadership to resign
             }
         }
@@ -177,10 +177,10 @@ impl AnyLeaderElector {
 impl LeaderElect for AnyLeaderElector {
     fn subscribe(&self) -> broadcast::Receiver<LeadershipEvent> {
         match self {
-            AnyLeaderElector::Redis(e) => e.event_tx.subscribe(),
+            Self::Redis(e) => e.event_tx.subscribe(),
             #[cfg(feature = "k8s")]
-            AnyLeaderElector::K8s(e) => e.subscribe(),
-            AnyLeaderElector::Disabled => {
+            Self::K8s(e) => e.subscribe(),
+            Self::Disabled => {
                 // Create a closed channel that never sends events.
                 let (tx, rx) = broadcast::channel(1);
                 drop(tx);
@@ -260,7 +260,7 @@ pub trait LeaderElect {
 
             loop {
                 match rx.recv().await {
-                    Ok(LeadershipEvent::Lost) | Ok(LeadershipEvent::Vacancy) => {
+                    Ok(LeadershipEvent::Lost | LeadershipEvent::Vacancy) => {
                         token_clone.cancel();
                         break;
                     }
@@ -311,6 +311,17 @@ const DEFAULT_LEADER_LOCK_KEY: &str = "leader_election";
 /// Number of consecutive election failures before declaring a leader vacancy.
 /// At the default renew interval of 10s, 3 failures = ~30s of no leader.
 const LEADER_VACANCY_THRESHOLD: u64 = 3;
+
+/// Multiplier applied to grace period after prolonged Redis outage.
+/// When Redis recovers after being unavailable for an extended period,
+/// the grace period is multiplied by this factor to prevent multiple nodes
+/// from simultaneously attempting to acquire leadership.
+const OUTAGE_RECOVERY_GRACE_MULTIPLIER: u64 = 3;
+
+/// Threshold (in number of consecutive failures) at which we consider
+/// Redis to be in a prolonged outage state. Once failures exceed this
+/// threshold and Redis recovers, we apply an extended grace period.
+const PROLONGED_OUTAGE_FAILURE_THRESHOLD: u64 = 6;
 
 /// Leader election using Redis distributed locks.
 ///
@@ -371,6 +382,10 @@ pub struct LeaderElector {
     consecutive_failures: Arc<AtomicU64>,
     /// Redis connection manager for TIME command
     redis_conn: redis::aio::ConnectionManager,
+    /// Tracks whether we've experienced a prolonged Redis outage.
+    /// When true and Redis recovers, we apply an extended grace period
+    /// to prevent multiple nodes from simultaneously claiming leadership.
+    in_prolonged_outage: Arc<AtomicBool>,
 }
 
 /// Configuration for leader election.
@@ -455,12 +470,13 @@ impl LeaderElector {
             lease_duration_secs: config.lease_duration_secs,
             renew_interval_secs: config.renew_interval_secs,
             lock_value: Arc::new(TokioMutex::new(None)),
-            lock_key: format!("{}{}", key_prefix, DEFAULT_LEADER_LOCK_KEY),
+            lock_key: format!("{key_prefix}{DEFAULT_LEADER_LOCK_KEY}"),
             leader_epoch: Arc::new(AtomicU64::new(0)),
             leadership_lost_at_redis_ts: Arc::new(TokioMutex::new(None)),
             event_tx: Arc::new(event_tx),
             consecutive_failures: Arc::new(AtomicU64::new(0)),
             redis_conn: redis_conn_clone,
+            in_prolonged_outage: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -582,7 +598,15 @@ impl LeaderElector {
                 .await
             {
                 Ok(true) => {
-                    debug!(identity = %self.identity, "Leader lease renewed");
+                    let was_in_outage = self.in_prolonged_outage.swap(false, Ordering::AcqRel);
+                    if was_in_outage {
+                        info!(
+                            identity = %self.identity,
+                            "Leader lease renewed after prolonged outage recovery"
+                        );
+                    } else {
+                        debug!(identity = %self.identity, "Leader lease renewed");
+                    }
                     self.consecutive_failures.store(0, Ordering::Relaxed);
                     // Still the leader
                 }
@@ -607,6 +631,7 @@ impl LeaderElector {
                         warn!(
                             identity = %self.identity,
                             error = %e,
+                            consecutive_failures = self.consecutive_failures.load(Ordering::Relaxed),
                             "Leader lease renewal failed (Redis error)"
                         );
                     }
@@ -647,32 +672,82 @@ impl LeaderElector {
 
     /// Immediately mark this node as no longer the leader, clear the lock
     /// value, and record the Redis timestamp of loss for grace period enforcement.
+    ///
+    /// Logs additional context when leadership is lost during a prolonged outage
+    /// to aid in debugging split-brain scenarios.
     async fn lose_leadership(&self) {
+        let was_leader = self.is_leader.load(Ordering::Acquire);
+        let consecutive_failures = self.consecutive_failures.load(Ordering::Relaxed);
+
         self.set_leader(false, None);
         *self.lock_value.lock().await = None;
+
         // Get current Redis timestamp to avoid clock skew issues
         let redis_ts = self.get_redis_time().await.unwrap_or(0);
         *self.leadership_lost_at_redis_ts.lock().await = Some(redis_ts);
+
+        if was_leader {
+            debug!(
+                identity = %self.identity,
+                consecutive_failures = consecutive_failures,
+                redis_ts = redis_ts,
+                "Leadership lost, entering grace period"
+            );
+        }
     }
 
     /// Returns `true` if we recently lost leadership and should wait before
-    /// attempting to re-acquire. The grace period equals `renew_interval_secs`
-    /// to avoid rapid flip-flopping during transient Redis issues.
+    /// attempting to re-acquire.
+    ///
+    /// The grace period is determined as follows:
+    /// - Normal case: `renew_interval_secs` to avoid rapid flip-flopping during
+    ///   transient Redis issues.
+    /// - Prolonged outage recovery: `renew_interval_secs * OUTAGE_RECOVERY_GRACE_MULTIPLIER`
+    ///   to prevent multiple nodes from simultaneously claiming leadership when
+    ///   Redis recovers after being unavailable for an extended period.
     ///
     /// Uses Redis TIME (server-side timestamp) instead of local clock to prevent
     /// multiple nodes from simultaneously exiting the grace period due to NTP skew.
     async fn in_grace_period(&self) -> bool {
         let guard = self.leadership_lost_at_redis_ts.lock().await;
         if let Some(lost_at_ts) = *guard {
-            // Get current Redis time
-            if let Ok(current_ts) = self.get_redis_time().await {
-                // Check if less than grace period has elapsed on Redis clock
-                let elapsed = current_ts.saturating_sub(lost_at_ts);
-                elapsed < self.renew_interval_secs
+            // Determine the applicable grace period
+            let in_prolonged_outage = self.in_prolonged_outage.load(Ordering::Acquire);
+            let grace_period = if in_prolonged_outage {
+                // Extended grace period after prolonged outage
+                self.renew_interval_secs * OUTAGE_RECOVERY_GRACE_MULTIPLIER
             } else {
-                // If Redis TIME fails, fall back to assuming in grace period
-                // (conservative: prevent premature acquisition attempts)
-                true
+                // Normal grace period
+                self.renew_interval_secs
+            };
+
+            // Get current Redis time
+            match self.get_redis_time().await {
+                Ok(current_ts) => {
+                    let elapsed = current_ts.saturating_sub(lost_at_ts);
+                    let in_grace = elapsed < grace_period;
+
+                    if in_grace && in_prolonged_outage {
+                        debug!(
+                            identity = %self.identity,
+                            elapsed_secs = elapsed,
+                            grace_period_secs = grace_period,
+                            "In extended grace period after prolonged outage"
+                        );
+                    }
+
+                    in_grace
+                }
+                Err(e) => {
+                    // If Redis TIME fails, we're still in an outage.
+                    // Stay in grace period (conservative: prevent premature acquisition attempts)
+                    debug!(
+                        identity = %self.identity,
+                        error = %e,
+                        "Cannot determine grace period (Redis TIME failed), assuming in grace period"
+                    );
+                    true
+                }
             }
         } else {
             false
@@ -680,7 +755,20 @@ impl LeaderElector {
     }
 
     /// Try to acquire the leadership lock.
+    ///
+    /// When recovering from a prolonged Redis outage, applies an extended
+    /// grace period to prevent multiple nodes from simultaneously claiming
+    /// leadership. The extended grace period is calculated as:
+    /// `renew_interval_secs * OUTAGE_RECOVERY_GRACE_MULTIPLIER`.
+    ///
+    /// Additionally, when this node was in a prolonged outage and successfully
+    /// acquires the lock, it increments the leader epoch to ensure the fencing
+    /// token advances, invalidating any stale operations from nodes that may
+    /// have incorrectly believed they were leader during the outage.
     async fn try_acquire(&self) {
+        // Check if we're recovering from a prolonged outage
+        let was_in_prolonged_outage = self.in_prolonged_outage.load(Ordering::Acquire);
+
         match self
             .lock
             .acquire(&self.lock_key, self.lease_duration_secs)
@@ -688,11 +776,24 @@ impl LeaderElector {
         {
             Ok(Some(value)) => {
                 let epoch = self.leader_epoch.fetch_add(1, Ordering::AcqRel) + 1;
-                info!(
-                    identity = %self.identity,
-                    epoch = epoch,
-                    "Became leader"
-                );
+
+                // Log recovery from prolonged outage
+                if was_in_prolonged_outage {
+                    info!(
+                        identity = %self.identity,
+                        epoch = epoch,
+                        "Became leader after prolonged Redis outage (recovery)"
+                    );
+                    // Clear the prolonged outage flag now that we've recovered
+                    self.in_prolonged_outage.store(false, Ordering::Release);
+                } else {
+                    info!(
+                        identity = %self.identity,
+                        epoch = epoch,
+                        "Became leader"
+                    );
+                }
+
                 *self.lock_value.lock().await = Some(value);
                 // Clear grace period since we successfully acquired
                 *self.leadership_lost_at_redis_ts.lock().await = None;
@@ -702,7 +803,9 @@ impl LeaderElector {
             Ok(None) => {
                 debug!(identity = %self.identity, "Another node is leader");
                 // Another node is leader -- not a failure, reset counter
+                // Also clear prolonged outage flag since Redis is clearly working
                 self.consecutive_failures.store(0, Ordering::Relaxed);
+                self.in_prolonged_outage.store(false, Ordering::Release);
                 self.set_leader(false, None);
             }
             Err(e) => {
@@ -728,6 +831,8 @@ impl LeaderElector {
                     warn!(
                         identity = %self.identity,
                         error = %e,
+                        consecutive_failures = self.consecutive_failures.load(Ordering::Relaxed),
+                        in_prolonged_outage = was_in_prolonged_outage,
                         "Failed to acquire leader lock"
                     );
                 }
@@ -743,10 +848,26 @@ impl LeaderElector {
     /// If consecutive failures exceed [`LEADER_VACANCY_THRESHOLD`], emits
     /// a `LeadershipEvent::Vacancy` event so observers can take action
     /// (e.g., pause singleton tasks, report degraded status).
+    ///
+    /// When failures exceed [`PROLONGED_OUTAGE_FAILURE_THRESHOLD`], marks
+    /// this node as being in a prolonged outage state. When Redis recovers
+    /// after a prolonged outage, an extended grace period is applied to
+    /// prevent multiple nodes from simultaneously claiming leadership.
     fn record_election_failure(&self) {
         let failures = self.consecutive_failures.fetch_add(1, Ordering::Relaxed) + 1;
         // Update metrics for monitoring
         synctv_core::metrics::cluster::LEADER_ELECTION_CONSECUTIVE_FAILURES.set(failures as i64);
+
+        // Check for prolonged outage
+        if failures == PROLONGED_OUTAGE_FAILURE_THRESHOLD {
+            warn!(
+                identity = %self.identity,
+                consecutive_failures = failures,
+                "Prolonged Redis outage detected: applying extended grace period on recovery"
+            );
+            self.in_prolonged_outage.store(true, Ordering::Release);
+        }
+
         if failures == LEADER_VACANCY_THRESHOLD {
             warn!(
                 identity = %self.identity,
@@ -808,7 +929,7 @@ impl LeaderElector {
         let was_leader = self.is_leader.swap(leader, Ordering::AcqRel);
 
         // Update metrics
-        synctv_core::metrics::cluster::LEADER_ELECTION_STATE.set(if leader { 1 } else { 0 });
+        synctv_core::metrics::cluster::LEADER_ELECTION_STATE.set(i64::from(leader));
         if let Some(epoch) = gained_epoch {
             synctv_core::metrics::cluster::LEADER_ELECTION_EPOCH.set(epoch as i64);
         }

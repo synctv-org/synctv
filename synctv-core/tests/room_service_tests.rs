@@ -4256,9 +4256,8 @@ async fn test_ban_member_completes_quickly() {
     // (allowing generous margin for DB operations)
     // The main point is it shouldn't have the hardcoded 100ms sleep
     assert!(
-        elapsed < std::time::Duration::from_millis(5000),
-        "Ban operation took too long: {:?}",
-        elapsed
+        elapsed < std::time::Duration::from_secs(5),
+        "Ban operation took too long: {elapsed:?}"
     );
 
     // Verify the member is actually banned (use get_any since banned members have left_at set)

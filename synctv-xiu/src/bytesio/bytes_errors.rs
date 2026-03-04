@@ -53,7 +53,7 @@ impl From<BytesIOError> for BytesReadError {
 
 impl From<tokio::time::error::Elapsed> for BytesReadError {
     fn from(error: tokio::time::error::Elapsed) -> Self {
-        BytesReadError {
+        Self {
             value: BytesReadErrorValue::TimeoutError(error),
         }
     }

@@ -79,9 +79,7 @@ pub fn proto_notification_type_to_core(
         }
         Ok(ProtoNotificationType::RoomEvent) => Ok(CoreNotificationType::RoomEvent),
         Ok(ProtoNotificationType::PasswordReset) => Ok(CoreNotificationType::PasswordReset),
-        Ok(ProtoNotificationType::EmailVerification) => {
-            Ok(CoreNotificationType::EmailVerification)
-        }
+        Ok(ProtoNotificationType::EmailVerification) => Ok(CoreNotificationType::EmailVerification),
         Err(_) => Err(NotificationTypeParseError {
             invalid_value: value,
         }),

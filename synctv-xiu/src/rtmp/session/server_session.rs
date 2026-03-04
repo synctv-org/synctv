@@ -820,7 +820,7 @@ impl ServerSession {
         let query = self
             .query
             .as_ref()
-            .map_or_else(|| String::from("none"), |query_val| query_val.clone());
+            .map_or_else(|| String::from("none"), std::clone::Clone::clone);
 
         tracing::info!(
             "[ S->C ] [stream is record]  app_name: {}, stream_name: {}, query: {}",
@@ -930,7 +930,7 @@ impl ServerSession {
         let query = self
             .query
             .as_ref()
-            .map_or_else(|| String::from("none"), |query_val| query_val.clone());
+            .map_or_else(|| String::from("none"), std::clone::Clone::clone);
 
         tracing::info!(
             "[ S<-C ] [publish]  app_name: {}, stream_name: {}, query: {}",

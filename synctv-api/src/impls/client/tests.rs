@@ -955,7 +955,7 @@ fn test_build_room_cache_invalidation_event_produces_correct_target() {
                 CacheTarget::Room { room_id } => {
                     assert_eq!(room_id, "test_room_e1");
                 }
-                other => panic!("Expected CacheTarget::Room, got {:?}", other),
+                other => panic!("Expected CacheTarget::Room, got {other:?}"),
             }
             assert!(
                 !event_id.is_empty(),

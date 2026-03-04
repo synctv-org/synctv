@@ -30,7 +30,7 @@ impl SsrfSafeClientBuilder {
     ///
     /// Defaults: 10 s connect, 30 s request, pool 10, no read timeout.
     #[must_use]
-    pub fn provider() -> Self {
+    pub const fn provider() -> Self {
         Self {
             connect_timeout: Duration::from_secs(10),
             request_timeout: Duration::from_secs(30),
@@ -45,10 +45,10 @@ impl SsrfSafeClientBuilder {
     ///
     /// Defaults: 10 s connect, 60 s request, 30 s read, pool 100, 30 s idle.
     #[must_use]
-    pub fn proxy() -> Self {
+    pub const fn proxy() -> Self {
         Self {
             connect_timeout: Duration::from_secs(10),
-            request_timeout: Duration::from_secs(60),
+            request_timeout: Duration::from_mins(1),
             read_timeout: Some(Duration::from_secs(30)),
             pool_max_idle_per_host: 100,
             pool_idle_timeout: Some(Duration::from_secs(30)),
@@ -158,7 +158,7 @@ mod tests {
     fn test_proxy_defaults() {
         let b = SsrfSafeClientBuilder::proxy();
         assert_eq!(b.connect_timeout, Duration::from_secs(10));
-        assert_eq!(b.request_timeout, Duration::from_secs(60));
+        assert_eq!(b.request_timeout, Duration::from_mins(1));
         assert_eq!(b.read_timeout, Some(Duration::from_secs(30)));
         assert_eq!(b.pool_max_idle_per_host, 100);
         assert_eq!(b.pool_idle_timeout, Some(Duration::from_secs(30)));
@@ -168,13 +168,13 @@ mod tests {
     #[test]
     fn test_builder_customization() {
         let b = SsrfSafeClientBuilder::provider()
-            .request_timeout(Duration::from_secs(120))
-            .read_timeout(Duration::from_secs(60))
+            .request_timeout(Duration::from_mins(2))
+            .read_timeout(Duration::from_mins(1))
             .pool_max_idle_per_host(50)
             .pool_idle_timeout(Duration::from_secs(90))
             .user_agent("test-agent");
-        assert_eq!(b.request_timeout, Duration::from_secs(120));
-        assert_eq!(b.read_timeout, Some(Duration::from_secs(60)));
+        assert_eq!(b.request_timeout, Duration::from_mins(2));
+        assert_eq!(b.read_timeout, Some(Duration::from_mins(1)));
         assert_eq!(b.pool_max_idle_per_host, 50);
         assert_eq!(b.pool_idle_timeout, Some(Duration::from_secs(90)));
         assert_eq!(b.user_agent.as_deref(), Some("test-agent"));

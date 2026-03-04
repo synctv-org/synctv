@@ -60,7 +60,7 @@ fn test_member_ban_sets_status_and_timestamps() {
     let room_id = RoomId::from_string("test_room".to_string());
     let user_id = UserId::new();
     let _banner_id = UserId::new();
-    let member = RoomMember::new(room_id.clone(), user_id.clone(), RoomRole::Member);
+    let member = RoomMember::new(room_id, user_id, RoomRole::Member);
 
     // Verify initial state
     assert!(member.is_active(), "Member should start active");

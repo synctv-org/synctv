@@ -29,7 +29,7 @@ fn test_default_config() {
     assert_eq!(config.max_cache_size, 512 * 1024 * 1024); // 512MB
     assert_eq!(config.max_cacheable_body, 10 * 1024 * 1024); // 10MB
     assert_eq!(config.manifest_ttl, Duration::from_secs(5));
-    assert_eq!(config.segment_ttl, Duration::from_secs(300));
+    assert_eq!(config.segment_ttl, Duration::from_mins(5));
 }
 
 #[test]
@@ -869,7 +869,7 @@ async fn test_full_body_cache_m3u8_uses_manifest_ttl() {
     // The content-type check is the key assertion here.
     let config = SliceCacheConfig {
         manifest_ttl: Duration::from_millis(100),
-        segment_ttl: Duration::from_secs(300),
+        segment_ttl: Duration::from_mins(5),
         ..Default::default()
     };
     let cache = SliceCache::new(config);
@@ -1653,7 +1653,7 @@ async fn test_full_body_stale_when_expired_within_window() {
     // Short segment TTL, stale_while_revalidate enabled (default).
     let config = SliceCacheConfig {
         segment_ttl: Duration::from_millis(50),
-        stale_max_age: Duration::from_secs(60),
+        stale_max_age: Duration::from_mins(1),
         stale_while_revalidate: true,
         ..Default::default()
     };
@@ -1729,7 +1729,7 @@ async fn test_slice_stale_when_expired_within_window() {
 
     let config = SliceCacheConfig {
         segment_ttl: Duration::from_millis(50),
-        stale_max_age: Duration::from_secs(60),
+        stale_max_age: Duration::from_mins(1),
         stale_while_revalidate: true,
         ..Default::default()
     };
@@ -1804,7 +1804,7 @@ async fn test_slice_updating_status_on_stale_entry() {
     let config = SliceCacheConfig {
         slice_size: 1024,
         segment_ttl: Duration::from_millis(50),
-        stale_max_age: Duration::from_secs(60),
+        stale_max_age: Duration::from_mins(1),
         stale_while_revalidate: true,
         ..Default::default()
     };
@@ -2159,7 +2159,7 @@ async fn test_updating_status_correctly_distinguishes_stale_and_updating() {
     let config = SliceCacheConfig {
         slice_size: 1024,
         segment_ttl: Duration::from_millis(50),
-        stale_max_age: Duration::from_secs(60),
+        stale_max_age: Duration::from_mins(1),
         stale_while_revalidate: true,
         ..Default::default()
     };
@@ -2234,7 +2234,7 @@ async fn test_updating_keys_cleaned_on_fetch_failure() {
     let config = SliceCacheConfig {
         slice_size: 1024,
         segment_ttl: Duration::from_millis(50),
-        stale_max_age: Duration::from_secs(60),
+        stale_max_age: Duration::from_mins(1),
         stale_while_revalidate: true,
         ..Default::default()
     };
@@ -2279,19 +2279,16 @@ async fn test_updating_keys_cleaned_on_fetch_failure() {
     // If that re-fetch fails, the cleanup should remove it.
     // Let's just verify the stale path works, then do a non-stale path
     // that will trigger the lock.
-    match result {
-        Ok((data, status)) => {
-            // Stale fast path returned stale data
-            assert_eq!(data.len(), 1024);
-            assert!(
-                status == CacheStatus::Stale || status == CacheStatus::Updating,
-                "Expected Stale or Updating, got {status:?}"
-            );
-        }
-        Err(_) => {
-            // If the stale fast path is bypassed and the lock path
-            // encounters the 500, this is also acceptable.
-        }
+    if let Ok((data, status)) = result {
+        // Stale fast path returned stale data
+        assert_eq!(data.len(), 1024);
+        assert!(
+            status == CacheStatus::Stale || status == CacheStatus::Updating,
+            "Expected Stale or Updating, got {status:?}"
+        );
+    } else {
+        // If the stale fast path is bypassed and the lock path
+        // encounters the 500, this is also acceptable.
     }
 
     // Now wait until stale window could expire, then attempt again.
@@ -2358,7 +2355,7 @@ async fn test_lock_timeout_returns_stale_data() {
     let config = SliceCacheConfig {
         slice_size: 1024,
         segment_ttl: Duration::from_millis(50),
-        stale_max_age: Duration::from_secs(60),
+        stale_max_age: Duration::from_mins(1),
         stale_while_revalidate: false, // Disable so we go to lock path
         ..Default::default()
     };
@@ -2700,7 +2697,7 @@ async fn test_full_body_put_triggers_lock_cleanup() {
     let body = Bytes::from(vec![0xBBu8; 100]);
     for i in 0..5 {
         Mock::given(method("GET"))
-            .and(path(format!("/m2-full-{}.bin", i)))
+            .and(path(format!("/m2-full-{i}.bin")))
             .respond_with(
                 ResponseTemplate::new(200)
                     .set_body_bytes(body.clone())

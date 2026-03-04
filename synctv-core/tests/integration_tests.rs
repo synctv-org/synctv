@@ -717,10 +717,10 @@ async fn test_e2e_error_propagation() {
         match error {
             Error::Authentication(_) => assert!(msg.contains("Invalid credentials")),
             Error::Authorization(ref m) if m.contains("Cannot kick admin") => {
-                assert!(msg.contains("Cannot kick admin"))
+                assert!(msg.contains("Cannot kick admin"));
             }
             Error::Authorization(_) => {
-                assert!(msg.contains("Permission denied") || msg.contains("Cannot kick admin"))
+                assert!(msg.contains("Permission denied") || msg.contains("Cannot kick admin"));
             }
             Error::NotFound(_) => assert!(msg.contains("Room not found")),
             Error::InvalidInput(_) => assert!(msg.contains("Invalid room name")),

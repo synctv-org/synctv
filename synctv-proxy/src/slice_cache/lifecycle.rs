@@ -76,7 +76,7 @@ impl CacheLifecycleManager {
 
             loop {
                 tokio::select! {
-                    _ = self.cancel.cancelled() => {
+                    () = self.cancel.cancelled() => {
                         tracing::debug!("Cache lifecycle manager shutting down");
                         break;
                     }
@@ -141,7 +141,7 @@ mod tests {
     fn memory_backend() -> Arc<CacheBackend> {
         Arc::new(CacheBackend::Memory(MemoryBackend::new(
             64 * 1024 * 1024,
-            Duration::from_secs(3600),
+            Duration::from_hours(1),
         )))
     }
 
@@ -162,14 +162,14 @@ mod tests {
         // Insert an entry that is already expired.
         let expired_entry = StoredEntry {
             data: Bytes::from("old_data"),
-            inserted_at: std::time::SystemTime::now() - Duration::from_secs(120),
+            inserted_at: std::time::SystemTime::now() - Duration::from_mins(2),
             ttl: Duration::from_secs(1),
-            last_accessed: std::time::SystemTime::now() - Duration::from_secs(120),
+            last_accessed: std::time::SystemTime::now() - Duration::from_mins(2),
         };
         backend.put("expired_key", expired_entry).await.unwrap();
 
         // Insert a fresh entry.
-        let fresh_entry = StoredEntry::new(Bytes::from("fresh"), Duration::from_secs(3600));
+        let fresh_entry = StoredEntry::new(Bytes::from("fresh"), Duration::from_hours(1));
         backend.put("fresh_key", fresh_entry).await.unwrap();
 
         // Verify both entries are retrievable before lifecycle starts.
@@ -207,7 +207,7 @@ mod tests {
 
         // Insert entries totaling 400 bytes (above 250 watermark).
         for i in 0..4u8 {
-            let entry = StoredEntry::new(Bytes::from(vec![i; 100]), Duration::from_secs(3600));
+            let entry = StoredEntry::new(Bytes::from(vec![i; 100]), Duration::from_hours(1));
             backend.put(&format!("key_{i}"), entry).await.unwrap();
             // Small sleep so last_accessed differs for LRU.
             tokio::time::sleep(Duration::from_millis(5)).await;
@@ -238,7 +238,7 @@ mod tests {
     async fn test_lifecycle_cancellation() {
         let backend = memory_backend();
         let config = SliceCacheConfig {
-            eviction_interval: Duration::from_secs(3600), // Long interval
+            eviction_interval: Duration::from_hours(1), // Long interval
             ..SliceCacheConfig::default()
         };
 
@@ -270,7 +270,7 @@ mod tests {
         };
 
         // Insert a small entry well below the watermark.
-        let entry = StoredEntry::new(Bytes::from("tiny"), Duration::from_secs(3600));
+        let entry = StoredEntry::new(Bytes::from("tiny"), Duration::from_hours(1));
         backend.put("k1", entry).await.unwrap();
 
         let manager = CacheLifecycleManager::new(Arc::clone(&backend), config);
@@ -301,9 +301,9 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(100)).await;
         let expired_entry = StoredEntry {
             data: Bytes::from("late_expired"),
-            inserted_at: std::time::SystemTime::now() - Duration::from_secs(120),
+            inserted_at: std::time::SystemTime::now() - Duration::from_mins(2),
             ttl: Duration::from_secs(1),
-            last_accessed: std::time::SystemTime::now() - Duration::from_secs(120),
+            last_accessed: std::time::SystemTime::now() - Duration::from_mins(2),
         };
         backend.put("late_key", expired_entry).await.unwrap();
 

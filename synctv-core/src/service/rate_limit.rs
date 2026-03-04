@@ -935,7 +935,12 @@ mod tests {
             .check_rate_limit_distributed("strict_key", 5, 1)
             .await;
         assert!(
-            matches!(result, Err(RateLimitError::RateLimitExceeded { retry_after_seconds: 1 })),
+            matches!(
+                result,
+                Err(RateLimitError::RateLimitExceeded {
+                    retry_after_seconds: 1
+                })
+            ),
             "check_strict should deny all requests when Redis is not configured (fail-closed)"
         );
     }
@@ -946,20 +951,26 @@ mod tests {
         let limiter = RateLimiter::in_memory_only("strict_keys:".to_string());
 
         // key1 should be denied (fail-closed)
-        let result1 = limiter
-            .check_rate_limit_distributed("key1", 5, 1)
-            .await;
+        let result1 = limiter.check_rate_limit_distributed("key1", 5, 1).await;
         assert!(
-            matches!(result1, Err(RateLimitError::RateLimitExceeded { retry_after_seconds: 1 })),
+            matches!(
+                result1,
+                Err(RateLimitError::RateLimitExceeded {
+                    retry_after_seconds: 1
+                })
+            ),
             "check_strict should deny key1 when Redis is not configured"
         );
 
         // key2 should also be denied (fail-closed)
-        let result2 = limiter
-            .check_rate_limit_distributed("key2", 5, 1)
-            .await;
+        let result2 = limiter.check_rate_limit_distributed("key2", 5, 1).await;
         assert!(
-            matches!(result2, Err(RateLimitError::RateLimitExceeded { retry_after_seconds: 1 })),
+            matches!(
+                result2,
+                Err(RateLimitError::RateLimitExceeded {
+                    retry_after_seconds: 1
+                })
+            ),
             "check_strict should deny key2 when Redis is not configured"
         );
     }

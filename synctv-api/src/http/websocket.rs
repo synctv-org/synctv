@@ -902,7 +902,7 @@ mod tests {
             danmaku_per_second: 5,
             window_seconds: 3,
         };
-        let cloned = config.clone();
+        let cloned = config;
         assert_eq!(cloned.chat_per_second, 20);
         assert_eq!(cloned.danmaku_per_second, 5);
         assert_eq!(cloned.window_seconds, 3);
@@ -911,7 +911,7 @@ mod tests {
     #[test]
     fn test_rate_limit_config_debug() {
         let config = RateLimitConfig::default();
-        let debug_str = format!("{:?}", config);
+        let debug_str = format!("{config:?}");
         assert!(debug_str.contains("RateLimitConfig"));
         assert!(debug_str.contains("chat_per_second"));
         assert!(debug_str.contains("danmaku_per_second"));

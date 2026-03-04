@@ -223,7 +223,9 @@ async fn test_logout_simulation_working_store() {
     let logout_result = {
         match jwt.verify_access_token(&token) {
             Ok(claims) => {
-                if !claims.jti.is_empty() {
+                if claims.jti.is_empty() {
+                    Ok(())
+                } else {
                     let now = chrono::Utc::now().timestamp();
                     let remaining_ttl = (claims.exp - now).max(0) as u64;
                     if remaining_ttl > 0 {
@@ -231,8 +233,6 @@ async fn test_logout_simulation_working_store() {
                     } else {
                         Ok(())
                     }
-                } else {
-                    Ok(())
                 }
             }
             Err(e) => {
@@ -287,7 +287,9 @@ async fn test_logout_simulation_failing_store_must_fail() {
     let logout_result = {
         match jwt.verify_access_token(&token) {
             Ok(claims) => {
-                if !claims.jti.is_empty() {
+                if claims.jti.is_empty() {
+                    Ok(())
+                } else {
                     let now = chrono::Utc::now().timestamp();
                     let remaining_ttl = (claims.exp - now).max(0) as u64;
                     if remaining_ttl > 0 {
@@ -296,8 +298,6 @@ async fn test_logout_simulation_failing_store_must_fail() {
                     } else {
                         Ok(())
                     }
-                } else {
-                    Ok(())
                 }
             }
             Err(e) => {
@@ -341,7 +341,9 @@ async fn test_logout_with_invalid_token_succeeds() {
     let logout_result = {
         match jwt.verify_access_token(invalid_token) {
             Ok(claims) => {
-                if !claims.jti.is_empty() {
+                if claims.jti.is_empty() {
+                    Ok(())
+                } else {
                     let now = chrono::Utc::now().timestamp();
                     let remaining_ttl = (claims.exp - now).max(0) as u64;
                     if remaining_ttl > 0 {
@@ -349,8 +351,6 @@ async fn test_logout_with_invalid_token_succeeds() {
                     } else {
                         Ok(())
                     }
-                } else {
-                    Ok(())
                 }
             }
             Err(e) => {
@@ -388,15 +388,15 @@ async fn test_logout_with_expired_token_succeeds() {
 
     // Simulate logout with TTL = 0 (expired)
     let logout_result = {
-        if !claims.jti.is_empty() {
+        if claims.jti.is_empty() {
+            Ok(())
+        } else {
             let remaining_ttl = 0u64; // Already expired
             if remaining_ttl > 0 {
                 store.blacklist(&claims.jti, remaining_ttl).await
             } else {
                 Ok(()) // Token already expired, no need to blacklist
             }
-        } else {
-            Ok(())
         }
     };
 

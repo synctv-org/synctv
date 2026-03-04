@@ -30,7 +30,7 @@ impl CacheStatus {
     /// Return the canonical upper-case string representation used in
     /// the `X-Cache-Status` HTTP header.
     #[must_use]
-    pub fn as_str(&self) -> &'static str {
+    pub const fn as_str(&self) -> &'static str {
         match self {
             Self::Hit => "HIT",
             Self::Miss => "MISS",
@@ -117,12 +117,12 @@ mod tests {
             CacheStatus::Bypass,
         ]
         .iter()
-        .map(|s| s.as_str())
+        .map(super::CacheStatus::as_str)
         .collect();
 
         // Check uniqueness.
         let mut deduped = strs.clone();
-        deduped.sort();
+        deduped.sort_unstable();
         deduped.dedup();
         assert_eq!(
             strs.len(),

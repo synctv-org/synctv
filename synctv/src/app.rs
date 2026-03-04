@@ -524,20 +524,17 @@ impl Application {
 
         // leader_elector is guaranteed to be Some here because we return early on error.
         // This eliminates the unsafe AlwaysLeader fallback that could cause split-brain.
-        let leader_check: Arc<dyn synctv_core::service::LeaderCheck> = match &leader_elector {
-            Some(elector) => Arc::new(elector.clone()),
-            None => {
-                // This branch should never be reached because all code paths either
-                // set leader_elector to Some or return early with Err.
-                // However, if a logic bug causes us to reach here, fail gracefully
-                // instead of panicking, to avoid split-brain in cluster mode.
-                error!(
-                    "CRITICAL: leader_elector is None after initialization - this indicates a logic bug"
-                );
-                return Err(anyhow::anyhow!(
-                    "leader_elector is None after successful initialization - this is a bug"
-                ));
-            }
+        let leader_check: Arc<dyn synctv_core::service::LeaderCheck> = if let Some(elector) = &leader_elector { Arc::new(elector.clone()) } else {
+            // This branch should never be reached because all code paths either
+            // set leader_elector to Some or return early with Err.
+            // However, if a logic bug causes us to reach here, fail gracefully
+            // instead of panicking, to avoid split-brain in cluster mode.
+            error!(
+                "CRITICAL: leader_elector is None after initialization - this indicates a logic bug"
+            );
+            return Err(anyhow::anyhow!(
+                "leader_elector is None after successful initialization - this is a bug"
+            ));
         };
 
         Ok(LeaderState { leader_check })

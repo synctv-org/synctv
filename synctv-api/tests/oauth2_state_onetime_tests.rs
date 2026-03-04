@@ -53,7 +53,7 @@ async fn test_oauth2_state_first_use_succeeds() {
 
     // Store the state
     state_store
-        .store(state_token, &state, Duration::from_secs(300))
+        .store(state_token, &state, Duration::from_mins(5))
         .await
         .expect("Failed to store state");
 
@@ -85,7 +85,7 @@ async fn test_oauth2_state_second_use_fails_prevents_replay() {
 
     // Store the state
     state_store
-        .store(state_token, &state, Duration::from_secs(300))
+        .store(state_token, &state, Duration::from_mins(5))
         .await
         .expect("Failed to store state");
 
@@ -185,11 +185,11 @@ async fn test_oauth2_state_different_tokens_independent() {
 
     // Store both states
     state_store
-        .store(token1, &state1, Duration::from_secs(300))
+        .store(token1, &state1, Duration::from_mins(5))
         .await
         .expect("Failed to store state1");
     state_store
-        .store(token2, &state2, Duration::from_secs(300))
+        .store(token2, &state2, Duration::from_mins(5))
         .await
         .expect("Failed to store state2");
 
@@ -231,7 +231,7 @@ async fn test_oauth2_state_concurrent_only_one_succeeds() {
 
     // Store the state
     state_store
-        .store(state_token, &state, Duration::from_secs(300))
+        .store(state_token, &state, Duration::from_mins(5))
         .await
         .expect("Failed to store state");
 
@@ -293,7 +293,7 @@ async fn test_oauth2_state_with_bind_user_id_consumed_correctly() {
 
     // Store the state
     state_store
-        .store(state_token, &state, Duration::from_secs(300))
+        .store(state_token, &state, Duration::from_mins(5))
         .await
         .expect("Failed to store state");
 
@@ -351,7 +351,7 @@ async fn test_state_store_sweeps_expired_entries_on_store() {
     // Store another state - this should trigger sweep of expired entries
     let state2 = create_test_state("longlived");
     state_store
-        .store("long_token", &state2, Duration::from_secs(300))
+        .store("long_token", &state2, Duration::from_mins(5))
         .await
         .expect("Failed to store state2");
 
@@ -390,7 +390,7 @@ async fn test_oauth2_replay_attack_prevented() {
     let state_token = "user_oauth_state_12345";
 
     state_store
-        .store(state_token, &state, Duration::from_secs(300))
+        .store(state_token, &state, Duration::from_mins(5))
         .await
         .expect("Failed to store state");
 

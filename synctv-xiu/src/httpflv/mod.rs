@@ -23,6 +23,7 @@ use tracing::{error, info, warn};
 pub const FLV_RESPONSE_CHANNEL_CAPACITY: usize = 512;
 
 /// Maximum number of consecutive dropped frames before disconnecting a slow subscriber.
+///
 /// At 30fps video, 150 consecutive drops ≈ 5 seconds of missed content.
 /// The subscriber's playback is unrecoverable at this point.
 pub const MAX_CONSECUTIVE_DROPPED_FRAMES: u32 = 150;
@@ -448,14 +449,12 @@ mod tests {
             } else {
                 assert!(
                     result.is_err(),
-                    "Should disconnect after {} consecutive drops",
-                    MAX_CONSECUTIVE_DROPPED_FRAMES
+                    "Should disconnect after {MAX_CONSECUTIVE_DROPPED_FRAMES} consecutive drops"
                 );
                 let err_msg = result.unwrap_err().to_string();
                 assert!(
                     err_msg.contains("Slow subscriber disconnected"),
-                    "Error should mention slow subscriber: {}",
-                    err_msg
+                    "Error should mention slow subscriber: {err_msg}"
                 );
             }
         }

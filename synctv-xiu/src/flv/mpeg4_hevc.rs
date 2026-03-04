@@ -88,7 +88,7 @@ pub struct Mpeg4HevcProcessor {
 impl Mpeg4HevcProcessor {
     /// Extracts the HEVC NAL unit type from the first byte of a NAL unit.
     /// In HEVC, the NAL type is in bits 1-6 of the first byte: (byte >> 1) & 0x3F
-    fn get_hevc_nal_type(nal_byte: u8) -> u8 {
+    const fn get_hevc_nal_type(nal_byte: u8) -> u8 {
         (nal_byte >> 1) & 0x3F
     }
 
@@ -225,7 +225,7 @@ impl Mpeg4HevcProcessor {
     }
 
     /// Check if the NAL type is an IDR frame (random access point)
-    fn is_idr_nal_type(nal_type: u8) -> bool {
+    const fn is_idr_nal_type(nal_type: u8) -> bool {
         matches!(
             nal_type,
             hevc_nal_type::HEVC_NAL_IDR_W_RADL
@@ -353,7 +353,7 @@ mod tests {
         let result = processor.hevc_mp4toannexb(&mut reader);
 
         if let Err(ref e) = result {
-            eprintln!("Error: {:?}", e);
+            eprintln!("Error: {e:?}");
         }
         assert!(result.is_ok(), "hevc_mp4toannexb failed");
         let annexb = result.unwrap();

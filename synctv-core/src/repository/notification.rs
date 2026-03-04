@@ -313,8 +313,8 @@ impl NotificationRepository {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::models::pagination::PageParams;
     use crate::models::notification::{MarkAllAsReadRequest, MarkAsReadRequest};
+    use crate::models::pagination::PageParams;
 
     // ========== Unit Tests (No Database Required) ==========
 
@@ -336,7 +336,7 @@ mod tests {
     fn test_create_notification_request_minimal() {
         let user_id = UserId::from_string("user_123".to_string());
         let req = CreateNotificationRequest {
-            user_id: user_id.clone(),
+            user_id: user_id,
             notification_type: NotificationType::SystemAnnouncement,
             title: "Test Title".to_string(),
             content: "Test Content".to_string(),
@@ -436,7 +436,9 @@ mod tests {
     #[test]
     fn test_mark_all_as_read_request_with_before() {
         let before = chrono::Utc::now();
-        let req = MarkAllAsReadRequest { before: Some(before) };
+        let req = MarkAllAsReadRequest {
+            before: Some(before),
+        };
 
         assert!(req.before.is_some());
     }
@@ -537,7 +539,10 @@ mod tests {
 
         assert!(!notification.id.is_nil());
         assert_eq!(notification.user_id, created_user.id);
-        assert_eq!(notification.notification_type, NotificationType::SystemAnnouncement);
+        assert_eq!(
+            notification.notification_type,
+            NotificationType::SystemAnnouncement
+        );
         assert_eq!(notification.title, "Test Notification");
         assert_eq!(notification.content, "This is a test notification");
         assert!(!notification.is_read);
@@ -795,10 +800,7 @@ mod tests {
         }
 
         // Mark all as read
-        let affected = repo
-            .mark_all_as_read(&created_user.id, None)
-            .await
-            .unwrap();
+        let affected = repo.mark_all_as_read(&created_user.id, None).await.unwrap();
         assert_eq!(affected, 5);
 
         // Verify unread count is 0
@@ -970,7 +972,10 @@ mod tests {
         assert_eq!(count, 1);
 
         // Count all
-        let count = repo.count_by_user(&created_user.id, None, None).await.unwrap();
+        let count = repo
+            .count_by_user(&created_user.id, None, None)
+            .await
+            .unwrap();
         assert_eq!(count, 3);
     }
 
@@ -1010,7 +1015,10 @@ mod tests {
         assert_eq!(affected, 1);
 
         // Verify remaining count
-        let count = repo.count_by_user(&created_user.id, None, None).await.unwrap();
+        let count = repo
+            .count_by_user(&created_user.id, None, None)
+            .await
+            .unwrap();
         assert_eq!(count, 2);
     }
 

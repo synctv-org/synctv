@@ -1300,7 +1300,7 @@ fn test_m3u8_plus_sign_handling() {
     // + should be encoded as %2B (since we encode non-alphanumeric)
     // This is correct behavior for path segments
     assert!(
-        rewritten.contains("%2B") || rewritten.contains("+"),
+        rewritten.contains("%2B") || rewritten.contains('+'),
         "Plus sign handling, got: {rewritten}"
     );
 }

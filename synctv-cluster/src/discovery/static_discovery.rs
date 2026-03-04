@@ -70,7 +70,7 @@ pub struct StaticDiscovery {
 
 impl StaticDiscovery {
     /// Create a new StaticDiscovery
-    pub fn new(
+    pub const fn new(
         config: StaticDiscoveryConfig,
         node_registry: Arc<NodeRegistry>,
         cancel_token: CancellationToken,

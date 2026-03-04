@@ -85,7 +85,7 @@ impl DedupKey {
 /// retry buffer duration, events delivered via live Pub/Sub before the disconnect
 /// may have already been evicted from the dedup cache, causing them to be
 /// re-processed when replayed from the stream.
-pub const DEFAULT_DEDUP_TTL: Duration = Duration::from_secs(900);
+pub const DEFAULT_DEDUP_TTL: Duration = Duration::from_mins(15);
 
 /// Message deduplicator using moka TTL cache.
 ///
@@ -120,7 +120,7 @@ impl MessageDeduplicator {
     /// See [`DEFAULT_DEDUP_TTL`] for the full rationale.
     #[must_use]
     pub fn with_defaults() -> Self {
-        Self::new(DEFAULT_DEDUP_TTL, Duration::from_secs(60))
+        Self::new(DEFAULT_DEDUP_TTL, Duration::from_mins(1))
     }
 
     /// Check if an event should be processed (not a duplicate)

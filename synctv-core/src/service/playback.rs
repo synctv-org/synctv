@@ -1780,7 +1780,7 @@ mod tests {
             let base_ms = PlaybackService::BACKOFF_BASE_MS;
 
             // Attempt 0: backoff = 5 * 1 = 5ms, jitter = 0..5
-            let backoff_0 = base_ms * (1 << 0); // 5
+            let backoff_0 = base_ms; // 5
             assert_eq!(backoff_0, 5);
 
             // Attempt 1: backoff = 5 * 2 = 10ms, jitter = 0..5
@@ -1811,7 +1811,7 @@ mod tests {
             );
 
             // With max jitter (5ms per backoff), total could be up to 25ms
-            let max_total = total_backoff + (base_ms * (PlaybackService::MAX_RETRIES - 1) as u64);
+            let max_total = total_backoff + (base_ms * u64::from(PlaybackService::MAX_RETRIES - 1));
             assert_eq!(max_total, 25, "Max total with jitter should be ~25ms");
         }
 
@@ -1833,8 +1833,7 @@ mod tests {
             let error_msg = "Playback state update failed after maximum retry attempts";
             assert!(
                 error_msg.contains(expected_substring),
-                "Error message should contain '{}'",
-                expected_substring
+                "Error message should contain '{expected_substring}'"
             );
         }
 

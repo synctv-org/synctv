@@ -186,7 +186,7 @@ async fn test_email_different_emails_from_same_ip_hit_ip_limit() {
     // Send emails to different addresses from the same IP
     // Each email address is within its own limit, but the IP hits its limit
     for i in 0..EMAIL_IP_MAX_REQUESTS {
-        let email = format!("user{}@example.com", i);
+        let email = format!("user{i}@example.com");
         let addr_key = email_addr_key(&email);
 
         // Both IP and email checks pass

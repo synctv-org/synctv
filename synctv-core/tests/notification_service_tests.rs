@@ -35,8 +35,8 @@ impl EventBroadcaster for MockBroadcaster {
         &self,
         _room_id: &RoomId,
         _event: &RoomEvent,
-    ) -> synctv_core::Result<()> {
-        Ok(())
+    ) -> synctv_core::Result<bool> {
+        Ok(true)
     }
 }
 

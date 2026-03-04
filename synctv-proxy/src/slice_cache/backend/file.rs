@@ -394,7 +394,7 @@ impl FileBackend {
             Err(_) => return, // .tmp may not exist yet; that's fine.
         };
 
-        let cutoff = SystemTime::now() - Duration::from_secs(300);
+        let cutoff = SystemTime::now() - Duration::from_mins(5);
 
         while let Ok(Some(entry)) = read_dir.next_entry().await {
             let path = entry.path();
@@ -435,7 +435,7 @@ impl FileBackend {
     /// This method should be called periodically (e.g., by the lifecycle
     /// manager) at a cadence that balances disk I/O against LRU accuracy.
     pub async fn persist_access_times(&self) {
-        for entry in self.index.entries.iter() {
+        for entry in &self.index.entries {
             let current_accessed = entry.value().last_accessed.load(Ordering::Relaxed);
             let path = entry.value().path.clone();
             drop(entry); // Release the DashMap ref before doing I/O.
@@ -631,7 +631,7 @@ impl SliceCacheBackend for FileBackend {
         let now = millis_since_epoch();
         let mut expired_keys = Vec::new();
 
-        for entry_ref in self.index.entries.iter() {
+        for entry_ref in &self.index.entries {
             let deadline_millis = entry_ref.inserted_at_millis + entry_ref.ttl_secs * 1000;
             if now > deadline_millis {
                 expired_keys.push(entry_ref.key().clone());
@@ -858,7 +858,7 @@ mod tests {
 
     /// Helper: store an entry with sensible defaults.
     async fn put_entry(backend: &FileBackend, key: &str, data: &[u8]) {
-        let entry = StoredEntry::new(Bytes::from(data.to_vec()), Duration::from_secs(300));
+        let entry = StoredEntry::new(Bytes::from(data.to_vec()), Duration::from_mins(5));
         backend.put(key, entry).await.expect("put entry");
     }
 
@@ -1076,7 +1076,7 @@ mod tests {
                 StoredEntry {
                     data: Bytes::from(vec![0u8; 100]),
                     inserted_at: t1,
-                    ttl: Duration::from_secs(3600),
+                    ttl: Duration::from_hours(1),
                     last_accessed: t1,
                 },
             )
@@ -1089,7 +1089,7 @@ mod tests {
                 StoredEntry {
                     data: Bytes::from(vec![0u8; 100]),
                     inserted_at: t2,
-                    ttl: Duration::from_secs(3600),
+                    ttl: Duration::from_hours(1),
                     last_accessed: t2,
                 },
             )
@@ -1102,7 +1102,7 @@ mod tests {
                 StoredEntry {
                     data: Bytes::from(vec![0u8; 100]),
                     inserted_at: t3,
-                    ttl: Duration::from_secs(3600),
+                    ttl: Duration::from_hours(1),
                     last_accessed: t3,
                 },
             )
@@ -1181,7 +1181,7 @@ mod tests {
         assert_eq!(backend2.entry_count(), 0, "Fresh backend has empty index");
 
         let result = backend2
-            .load_index(Duration::from_secs(3600))
+            .load_index(Duration::from_hours(1))
             .await
             .expect("load index");
 
@@ -1263,7 +1263,7 @@ mod tests {
             .await
             .expect("create backend");
         let result = backend
-            .load_index(Duration::from_secs(3600))
+            .load_index(Duration::from_hours(1))
             .await
             .expect("load index");
 
@@ -1361,7 +1361,7 @@ mod tests {
     async fn test_file_backend_get_returns_stored_entry_fields() {
         let (backend, _tmp) = make_backend().await;
         let key = "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789";
-        let ttl = Duration::from_secs(600);
+        let ttl = Duration::from_mins(10);
 
         let entry = StoredEntry::new(Bytes::from("test data"), ttl);
         backend.put(key, entry).await.expect("put");
@@ -1412,7 +1412,7 @@ mod tests {
                 .await
                 .expect("create backend2");
             backend2
-                .load_index(Duration::from_secs(3600))
+                .load_index(Duration::from_hours(1))
                 .await
                 .expect("load index");
 

@@ -423,7 +423,7 @@ async fn test_list_by_room_paginated_large_member_count() {
     // Due to rapid concurrent creation, joined_at timestamps might have slight ordering issues
     // so we just verify we get some members and the total is consistent
     assert!(
-        p3.len() > 0 && p3.len() <= 50,
+        !p3.is_empty() && p3.len() <= 50,
         "Page 3 should have between 1-50 members"
     );
 

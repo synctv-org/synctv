@@ -777,7 +777,7 @@ mod tests {
             room_settings_repo: None,
             cache: Arc::new(
                 moka::future::CacheBuilder::new(10)
-                    .time_to_live(Duration::from_secs(60))
+                    .time_to_live(Duration::from_mins(1))
                     .build(),
             ),
             degraded_cache: Arc::new(
@@ -812,7 +812,7 @@ mod tests {
             room_settings_repo: None,
             cache: Arc::new(
                 moka::future::CacheBuilder::new(10)
-                    .time_to_live(Duration::from_secs(60))
+                    .time_to_live(Duration::from_mins(1))
                     .build(),
             ),
             degraded_cache: Arc::new(
@@ -1642,10 +1642,10 @@ mod tests {
                     // Success! The broadcast was received.
                 }
                 Ok(Ok(other)) => {
-                    panic!("Expected RoomPermission message, got {:?}", other);
+                    panic!("Expected RoomPermission message, got {other:?}");
                 }
                 Ok(Err(e)) => {
-                    panic!("Receiver error: {:?}", e);
+                    panic!("Receiver error: {e:?}");
                 }
                 Err(_) => {
                     panic!("Timeout waiting for broadcast");
@@ -1777,10 +1777,10 @@ mod tests {
                     // Success! The broadcast was received.
                 }
                 Ok(Ok(other)) => {
-                    panic!("Expected UserPermission message, got {:?}", other);
+                    panic!("Expected UserPermission message, got {other:?}");
                 }
                 Ok(Err(e)) => {
-                    panic!("Receiver error: {:?}", e);
+                    panic!("Receiver error: {e:?}");
                 }
                 Err(_) => {
                     // Timeout - this indicates the fix is not yet applied
@@ -1842,10 +1842,10 @@ mod tests {
                     // Success! The broadcast was received.
                 }
                 Ok(Ok(other)) => {
-                    panic!("Expected RoomPermission message, got {:?}", other);
+                    panic!("Expected RoomPermission message, got {other:?}");
                 }
                 Ok(Err(e)) => {
-                    panic!("Receiver error: {:?}", e);
+                    panic!("Receiver error: {e:?}");
                 }
                 Err(_) => {
                     // Timeout - this indicates the fix is not yet applied
@@ -1905,10 +1905,10 @@ mod tests {
                     // Success! The broadcast was received.
                 }
                 Ok(Ok(other)) => {
-                    panic!("Expected All message, got {:?}", other);
+                    panic!("Expected All message, got {other:?}");
                 }
                 Ok(Err(e)) => {
-                    panic!("Receiver error: {:?}", e);
+                    panic!("Receiver error: {e:?}");
                 }
                 Err(_) => {
                     // Timeout - this indicates the fix is not yet applied

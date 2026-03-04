@@ -1409,7 +1409,7 @@ mod tests {
         registry.insert("live/ended_stream".to_string(), state2);
 
         let checker = RegistryCleanupChecker {
-            registry: registry.clone(),
+            registry: registry,
         };
         let marked = checker.get_streams_marked_for_cleanup();
 
@@ -1447,10 +1447,10 @@ mod tests {
             marked_for_cleanup: false,
             cleanup_segment_names: Vec::new(),
         }));
-        registry.insert(key.clone(), new_state);
+        registry.insert(key, new_state);
 
         let checker = RegistryCleanupChecker {
-            registry: registry.clone(),
+            registry: registry,
         };
         let marked = checker.get_streams_marked_for_cleanup();
 

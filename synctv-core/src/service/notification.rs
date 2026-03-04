@@ -155,7 +155,11 @@ pub trait EventBroadcaster: Send + Sync {
     ) -> Result<bool>;
 
     /// Broadcast to all nodes in cluster
-    async fn broadcast_to_cluster(&self, room_id: &RoomId, event: &RoomEvent) -> Result<()>;
+    ///
+    /// Returns `Ok(true)` if the event was successfully queued for broadcast,
+    /// `Ok(false)` if Redis is not available (single-node mode or connection failure).
+    /// Returns `Err` for actual errors during broadcast.
+    async fn broadcast_to_cluster(&self, room_id: &RoomId, event: &RoomEvent) -> Result<bool>;
 }
 
 /// Notification service configuration
@@ -247,13 +251,26 @@ impl NotificationService {
         let sent_count = self.broadcaster.broadcast_to_room(room_id, &event).await?;
 
         // Broadcast to cluster (Redis Pub/Sub) so other nodes deliver the event
-        if let Err(e) = self.broadcaster.broadcast_to_cluster(room_id, &event).await {
-            tracing::warn!(
-                "Failed to broadcast event {} to cluster for room {}: {}",
-                event.event_type(),
-                room_id.as_str(),
-                e
-            );
+        match self.broadcaster.broadcast_to_cluster(room_id, &event).await {
+            Ok(true) => {
+                // Successfully queued for cluster broadcast
+            }
+            Ok(false) => {
+                // Redis not available - single-node mode or connection failure
+                tracing::debug!(
+                    "Cluster broadcast skipped for event {} in room {} - Redis not available (single-node mode)",
+                    event.event_type(),
+                    room_id.as_str()
+                );
+            }
+            Err(e) => {
+                tracing::warn!(
+                    "Failed to broadcast event {} to cluster for room {}: {}",
+                    event.event_type(),
+                    room_id.as_str(),
+                    e
+                );
+            }
         }
 
         tracing::debug!(
@@ -297,14 +314,60 @@ impl NotificationService {
     }
 
     /// Broadcast to all nodes in cluster (via Redis Pub/Sub)
+    ///
+    /// Returns `Ok(())` even if Redis is unavailable (single-node mode).
+    /// Use `broadcast_to_cluster_with_result` if you need to know whether
+    /// the broadcast actually reached the cluster.
     pub async fn broadcast_to_cluster(&self, room_id: &RoomId, event: RoomEvent) -> Result<()> {
+        self.broadcast_to_cluster_with_result(room_id, event)
+            .await?;
+        Ok(())
+    }
+
+    /// Broadcast to all nodes in cluster (via Redis Pub/Sub) with result
+    ///
+    /// Returns `Ok(true)` if the event was successfully queued for broadcast,
+    /// `Ok(false)` if Redis is not available (single-node mode or connection failure).
+    /// Returns `Err` for actual errors during broadcast.
+    pub async fn broadcast_to_cluster_with_result(
+        &self,
+        room_id: &RoomId,
+        event: RoomEvent,
+    ) -> Result<bool> {
         tracing::trace!(
             "Broadcasting event {} to cluster for room {}",
             event.event_type(),
             room_id.as_str()
         );
 
-        self.broadcaster.broadcast_to_cluster(room_id, &event).await
+        let result = self.broadcaster.broadcast_to_cluster(room_id, &event).await;
+
+        match &result {
+            Ok(true) => {
+                tracing::debug!(
+                    "Successfully queued event {} for cluster broadcast in room {}",
+                    event.event_type(),
+                    room_id.as_str()
+                );
+            }
+            Ok(false) => {
+                tracing::warn!(
+                    "Cluster broadcast unavailable for event {} in room {} - Redis not available (single-node mode)",
+                    event.event_type(),
+                    room_id.as_str()
+                );
+            }
+            Err(e) => {
+                tracing::warn!(
+                    "Failed to broadcast event {} to cluster for room {}: {}",
+                    event.event_type(),
+                    room_id.as_str(),
+                    e
+                );
+            }
+        }
+
+        result
     }
 
     /// Notify room members that a user joined
@@ -567,9 +630,10 @@ impl Default for NotificationService {
                 &self,
                 _room_id: &RoomId,
                 _event: &RoomEvent,
-            ) -> Result<()> {
+            ) -> Result<bool> {
                 self.warn_once();
-                Ok(())
+                // Return false to indicate Redis is not available
+                Ok(false)
             }
         }
 
@@ -622,8 +686,8 @@ mod tests {
                 &self,
                 _room_id: &RoomId,
                 _event: &RoomEvent,
-            ) -> Result<()> {
-                Ok(())
+            ) -> Result<bool> {
+                Ok(true)
             }
         }
 
@@ -658,8 +722,8 @@ mod tests {
                 &self,
                 _room_id: &RoomId,
                 _event: &RoomEvent,
-            ) -> Result<()> {
-                Ok(())
+            ) -> Result<bool> {
+                Ok(true)
             }
         }
 

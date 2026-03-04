@@ -199,13 +199,11 @@ async fn test_full_startup_sequence_pattern() {
 
     assert!(
         http_startup.is_ok(),
-        "HTTP startup should succeed: {:?}",
-        http_startup
+        "HTTP startup should succeed: {http_startup:?}"
     );
     assert!(
         grpc_startup.is_ok(),
-        "gRPC startup should succeed: {:?}",
-        grpc_startup
+        "gRPC startup should succeed: {grpc_startup:?}"
     );
 
     // Clean up

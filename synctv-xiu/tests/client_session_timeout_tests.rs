@@ -23,7 +23,7 @@ async fn create_hanging_server_after_accept() -> (u16, tokio::task::JoinHandle<(
         if let Ok((mut _stream, _addr)) = listener.accept().await {
             // Just hang forever - never send handshake response
             loop {
-                time::sleep(Duration::from_secs(3600)).await;
+                time::sleep(Duration::from_hours(1)).await;
             }
         }
     });
@@ -56,7 +56,7 @@ async fn create_responsive_server_with_extra_data() -> (u16, tokio::task::JoinHa
 
             // Keep connection alive
             loop {
-                time::sleep(Duration::from_secs(3600)).await;
+                time::sleep(Duration::from_hours(1)).await;
             }
         }
     });

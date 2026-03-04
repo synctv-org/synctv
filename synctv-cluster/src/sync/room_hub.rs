@@ -17,6 +17,7 @@ const CRITICAL_EVENT_SEND_TIMEOUT: Duration = Duration::from_secs(5);
 use super::events::ClusterEvent;
 
 /// Notification about room lifecycle changes (first subscriber / last unsubscribe).
+///
 /// Sent to the Redis Pub/Sub subscriber task so it can dynamically subscribe/unsubscribe
 /// to specific room channels instead of using a global `psubscribe("synctv:room:*")`.
 #[derive(Debug, Clone)]
@@ -161,7 +162,7 @@ impl RoomMessageHub {
         let stale_cancel = tokio_util::sync::CancellationToken::new();
         self.stale_cleanup_cancel = Arc::new(stale_cancel.clone());
         let _cleanup_handle =
-            self.spawn_stale_subscription_cleanup_task(Duration::from_secs(60), stale_cancel);
+            self.spawn_stale_subscription_cleanup_task(Duration::from_mins(1), stale_cancel);
 
         self
     }

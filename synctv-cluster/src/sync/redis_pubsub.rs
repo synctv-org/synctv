@@ -993,7 +993,7 @@ impl RedisPubSub {
                 .iter()
                 .map(|rid| self.room_pubsub_channel(rid))
                 .collect();
-            let channel_refs: Vec<&str> = room_channels.iter().map(|s| s.as_str()).collect();
+            let channel_refs: Vec<&str> = room_channels.iter().map(std::string::String::as_str).collect();
 
             match timeout(
                 Duration::from_secs(REDIS_TIMEOUT_SECS),
@@ -1308,7 +1308,7 @@ impl RedisPubSub {
         // A periodic cursor refresh ensures that stream cursors stay up-to-date
         // during long-lived sessions, so reconnect catch-up only reads truly missed
         // events (avoiding replay of events already delivered via live Pub/Sub).
-        let mut cursor_refresh_interval = tokio::time::interval(Duration::from_secs(60));
+        let mut cursor_refresh_interval = tokio::time::interval(Duration::from_mins(1));
         cursor_refresh_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         // Skip the first immediate tick
         cursor_refresh_interval.tick().await;
@@ -1560,11 +1560,11 @@ impl RedisPubSub {
             .collect();
 
         // Subscribe to newly active rooms
-        for room_id in active_rooms
+        let new_rooms: Vec<String> = active_rooms
             .difference(subscribed_rooms)
             .cloned()
-            .collect::<Vec<_>>()
-        {
+            .collect();
+        for room_id in new_rooms {
             let channel = self.room_pubsub_channel(&room_id);
             match timeout(
                 Duration::from_secs(REDIS_TIMEOUT_SECS),
@@ -1613,7 +1613,6 @@ impl RedisPubSub {
         for room_id in subscribed_rooms
             .difference(&active_rooms)
             .cloned()
-            .collect::<Vec<_>>()
         {
             let channel = self.room_pubsub_channel(&room_id);
             match timeout(

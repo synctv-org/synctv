@@ -758,7 +758,7 @@ mod tests {
             };
 
             // Key should be positive (advisory lock keys in PostgreSQL are signed 64-bit)
-            assert!(key >= 0, "Lock key should be non-negative for id: {}", id);
+            assert!(key >= 0, "Lock key should be non-negative for id: {id}");
         }
     }
 
@@ -776,9 +776,7 @@ mod tests {
         let playlist_repo = PlaylistRepository::new(infra.pool.clone());
 
         // Create owner and room
-        let owner = UserFixture::new()
-            .with_username("playlist_owner")
-            .build();
+        let owner = UserFixture::new().with_username("playlist_owner").build();
         let owner = user_repo.create(&owner).await.unwrap();
 
         let room = RoomFixture::new()
@@ -788,9 +786,7 @@ mod tests {
         let room = room_repo.create(&room).await.unwrap();
 
         // Create root playlist
-        let playlist = PlaylistFixture::new()
-            .with_room_id(room.id.clone())
-            .build();
+        let playlist = PlaylistFixture::new().with_room_id(room.id.clone()).build();
         let created = playlist_repo.create(&playlist).await.unwrap();
 
         assert!(created.is_root());
@@ -829,9 +825,7 @@ mod tests {
         let room = room_repo.create(&room).await.unwrap();
 
         // Create root playlist
-        let root = PlaylistFixture::new()
-            .with_room_id(room.id.clone())
-            .build();
+        let root = PlaylistFixture::new().with_room_id(room.id.clone()).build();
         let created = playlist_repo.create(&root).await.unwrap();
 
         // Get root playlist
@@ -865,9 +859,7 @@ mod tests {
         let room = room_repo.create(&room).await.unwrap();
 
         // Create root playlist
-        let root = PlaylistFixture::new()
-            .with_room_id(room.id.clone())
-            .build();
+        let root = PlaylistFixture::new().with_room_id(room.id.clone()).build();
         let created_root = playlist_repo.create(&root).await.unwrap();
 
         // Create child playlists
@@ -922,9 +914,7 @@ mod tests {
         let room = room_repo.create(&room).await.unwrap();
 
         // Create root and child
-        let root = PlaylistFixture::new()
-            .with_room_id(room.id.clone())
-            .build();
+        let root = PlaylistFixture::new().with_room_id(room.id.clone()).build();
         let created_root = playlist_repo.create(&root).await.unwrap();
 
         let child = PlaylistFixture::new_child(created_root.id.clone())
@@ -969,9 +959,7 @@ mod tests {
         let room = room_repo.create(&room).await.unwrap();
 
         // Create root and child
-        let root = PlaylistFixture::new()
-            .with_room_id(room.id.clone())
-            .build();
+        let root = PlaylistFixture::new().with_room_id(room.id.clone()).build();
         let created_root = playlist_repo.create(&root).await.unwrap();
 
         let child = PlaylistFixture::new_child(created_root.id.clone())
@@ -997,7 +985,10 @@ mod tests {
             .update_with_version(&stale, original_version) // Old version
             .await;
         assert!(result.is_err());
-        assert!(matches!(result.unwrap_err(), crate::Error::OptimisticLockConflict));
+        assert!(matches!(
+            result.unwrap_err(),
+            crate::Error::OptimisticLockConflict
+        ));
     }
 
     /// Integration test: Delete playlist
@@ -1025,9 +1016,7 @@ mod tests {
         let room = room_repo.create(&room).await.unwrap();
 
         // Create root and child
-        let root = PlaylistFixture::new()
-            .with_room_id(room.id.clone())
-            .build();
+        let root = PlaylistFixture::new().with_room_id(room.id.clone()).build();
         let created_root = playlist_repo.create(&root).await.unwrap();
 
         let child = PlaylistFixture::new_child(created_root.id.clone())
@@ -1074,9 +1063,7 @@ mod tests {
         let room = room_repo.create(&room).await.unwrap();
 
         // Create root, child, grandchild
-        let root = PlaylistFixture::new()
-            .with_room_id(room.id.clone())
-            .build();
+        let root = PlaylistFixture::new().with_room_id(room.id.clone()).build();
         let created_root = playlist_repo.create(&root).await.unwrap();
 
         let child = PlaylistFixture::new_child(created_root.id.clone())
@@ -1128,9 +1115,7 @@ mod tests {
         let room = room_repo.create(&room).await.unwrap();
 
         // Create root
-        let root = PlaylistFixture::new()
-            .with_room_id(room.id.clone())
-            .build();
+        let root = PlaylistFixture::new().with_room_id(room.id.clone()).build();
         let created_root = playlist_repo.create(&root).await.unwrap();
 
         // Initially no children, next position should be 0
@@ -1144,7 +1129,7 @@ mod tests {
         for i in 0..3 {
             let child = PlaylistFixture::new_child(created_root.id.clone())
                 .with_room_id(room.id.clone())
-                .with_name(&format!("Child {}", i))
+                .with_name(&format!("Child {i}"))
                 .with_position(i)
                 .build();
             playlist_repo.create(&child).await.unwrap();
@@ -1183,9 +1168,7 @@ mod tests {
         let room = room_repo.create(&room).await.unwrap();
 
         // Create root
-        let root = PlaylistFixture::new()
-            .with_room_id(room.id.clone())
-            .build();
+        let root = PlaylistFixture::new().with_room_id(room.id.clone()).build();
         let created_root = playlist_repo.create(&root).await.unwrap();
 
         // Create children with auto-position (negative position)
@@ -1239,26 +1222,21 @@ mod tests {
         let room = room_repo.create(&room).await.unwrap();
 
         // Create root
-        let root = PlaylistFixture::new()
-            .with_room_id(room.id.clone())
-            .build();
+        let root = PlaylistFixture::new().with_room_id(room.id.clone()).build();
         let created_root = playlist_repo.create(&root).await.unwrap();
 
         // Create 3 children
         for i in 0..3 {
             let child = PlaylistFixture::new_child(created_root.id.clone())
                 .with_room_id(room.id.clone())
-                .with_name(&format!("Child {}", i))
+                .with_name(&format!("Child {i}"))
                 .with_position(i)
                 .build();
             playlist_repo.create(&child).await.unwrap();
         }
 
         // Get children
-        let children = playlist_repo
-            .get_children(&created_root.id)
-            .await
-            .unwrap();
+        let children = playlist_repo.get_children(&created_root.id).await.unwrap();
         assert_eq!(children.len(), 3);
 
         // Should be sorted by position
@@ -1280,9 +1258,7 @@ mod tests {
         let room_repo = RoomRepository::new(infra.pool.clone());
         let playlist_repo = PlaylistRepository::new(infra.pool.clone());
 
-        let owner = UserFixture::new()
-            .with_username("paginated_owner")
-            .build();
+        let owner = UserFixture::new().with_username("paginated_owner").build();
         let owner = user_repo.create(&owner).await.unwrap();
 
         let room = RoomFixture::new()
@@ -1292,16 +1268,14 @@ mod tests {
         let room = room_repo.create(&room).await.unwrap();
 
         // Create root
-        let root = PlaylistFixture::new()
-            .with_room_id(room.id.clone())
-            .build();
+        let root = PlaylistFixture::new().with_room_id(room.id.clone()).build();
         let created_root = playlist_repo.create(&root).await.unwrap();
 
         // Create 15 children
         for i in 0..15 {
             let child = PlaylistFixture::new_child(created_root.id.clone())
                 .with_room_id(room.id.clone())
-                .with_name(&format!("Child {}", i))
+                .with_name(&format!("Child {i}"))
                 .with_position(i)
                 .build();
             playlist_repo.create(&child).await.unwrap();
@@ -1349,9 +1323,7 @@ mod tests {
         let room = room_repo.create(&room).await.unwrap();
 
         // Create root
-        let root = PlaylistFixture::new()
-            .with_room_id(room.id.clone())
-            .build();
+        let root = PlaylistFixture::new().with_room_id(room.id.clone()).build();
         let created_root = playlist_repo.create(&root).await.unwrap();
 
         // Initially 0 children
@@ -1365,7 +1337,7 @@ mod tests {
         for i in 0..5 {
             let child = PlaylistFixture::new_child(created_root.id.clone())
                 .with_room_id(room.id.clone())
-                .with_name(&format!("Child {}", i))
+                .with_name(&format!("Child {i}"))
                 .build();
             playlist_repo.create(&child).await.unwrap();
         }
@@ -1390,9 +1362,7 @@ mod tests {
         let room_repo = RoomRepository::new(infra.pool.clone());
         let playlist_repo = PlaylistRepository::new(infra.pool.clone());
 
-        let owner = UserFixture::new()
-            .with_username("count_room_owner")
-            .build();
+        let owner = UserFixture::new().with_username("count_room_owner").build();
         let owner = user_repo.create(&owner).await.unwrap();
 
         let room = RoomFixture::new()
@@ -1402,9 +1372,7 @@ mod tests {
         let room = room_repo.create(&room).await.unwrap();
 
         // Create root
-        let root = PlaylistFixture::new()
-            .with_room_id(room.id.clone())
-            .build();
+        let root = PlaylistFixture::new().with_room_id(room.id.clone()).build();
         let created_root = playlist_repo.create(&root).await.unwrap();
 
         // Initially 1 (just root)
@@ -1415,7 +1383,7 @@ mod tests {
         for i in 0..3 {
             let child = PlaylistFixture::new_child(created_root.id.clone())
                 .with_room_id(room.id.clone())
-                .with_name(&format!("Child {}", i))
+                .with_name(&format!("Child {i}"))
                 .build();
             playlist_repo.create(&child).await.unwrap();
         }
@@ -1449,9 +1417,7 @@ mod tests {
         let room = room_repo.create(&room).await.unwrap();
 
         // Create root -> child -> grandchild
-        let root = PlaylistFixture::new()
-            .with_room_id(room.id.clone())
-            .build();
+        let root = PlaylistFixture::new().with_room_id(room.id.clone()).build();
         let created_root = playlist_repo.create(&root).await.unwrap();
 
         let child = PlaylistFixture::new_child(created_root.id.clone())
@@ -1504,16 +1470,14 @@ mod tests {
         let room = room_repo.create(&room).await.unwrap();
 
         // Create root
-        let root = PlaylistFixture::new()
-            .with_room_id(room.id.clone())
-            .build();
+        let root = PlaylistFixture::new().with_room_id(room.id.clone()).build();
         let created_root = playlist_repo.create(&root).await.unwrap();
 
         // Create 15 children
         for i in 0..15 {
             let child = PlaylistFixture::new_child(created_root.id.clone())
                 .with_room_id(room.id.clone())
-                .with_name(&format!("Child {}", i))
+                .with_name(&format!("Child {i}"))
                 .with_position(i)
                 .build();
             playlist_repo.create(&child).await.unwrap();
@@ -1551,9 +1515,7 @@ mod tests {
         let room_repo = RoomRepository::new(infra.pool.clone());
         let playlist_repo = PlaylistRepository::new(infra.pool.clone());
 
-        let owner = UserFixture::new()
-            .with_username("executor_owner")
-            .build();
+        let owner = UserFixture::new().with_username("executor_owner").build();
         let owner = user_repo.create(&owner).await.unwrap();
 
         let room = RoomFixture::new()
@@ -1563,9 +1525,7 @@ mod tests {
         let room = room_repo.create(&room).await.unwrap();
 
         // Create root
-        let root = PlaylistFixture::new()
-            .with_room_id(room.id.clone())
-            .build();
+        let root = PlaylistFixture::new().with_room_id(room.id.clone()).build();
         let created_root = playlist_repo.create(&root).await.unwrap();
 
         // Attempt to create with executor using auto-position should fail

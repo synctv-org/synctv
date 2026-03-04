@@ -132,8 +132,7 @@ impl CleanupService {
         self.settings_registry
             .as_ref()
             .and_then(|r| r.max_chat_messages_per_room.get().ok())
-            .map(|v| v as i32)
-            .unwrap_or(self.config.chat_max_messages_per_room)
+            .map_or(self.config.chat_max_messages_per_room, |v| v as i32)
     }
 
     /// Run all cleanup tasks once

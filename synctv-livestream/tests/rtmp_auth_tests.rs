@@ -398,7 +398,7 @@ struct MockRestartAwareAuthCallback {
 }
 
 impl MockRestartAwareAuthCallback {
-    fn new(is_restarting: Arc<AtomicBool>, registry: Arc<InMemoryStreamRegistry>) -> Self {
+    const fn new(is_restarting: Arc<AtomicBool>, registry: Arc<InMemoryStreamRegistry>) -> Self {
         Self {
             is_restarting,
             registry,

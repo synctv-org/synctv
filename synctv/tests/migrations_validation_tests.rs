@@ -260,7 +260,7 @@ mod pg_advisory_lock_backoff_tests {
     /// Test that max wait time is not exceeded
     #[test]
     fn test_max_wait_not_exceeded() {
-        let max_wait = Duration::from_secs(60);
+        let max_wait = Duration::from_mins(1);
         let initial_backoff = Duration::from_millis(500);
         let max_backoff = Duration::from_secs(8);
 
@@ -300,7 +300,7 @@ mod migration_state_tests {
                 .into_iter()
                 .collect();
 
-        let pending_versions = vec![20240101000000_i64, 20240102000000, 20240104000000];
+        let pending_versions = [20240101000000_i64, 20240102000000, 20240104000000];
 
         let all_applied = pending_versions
             .iter()
@@ -309,7 +309,7 @@ mod migration_state_tests {
         // Should be false because 20240104000000 is not applied
         assert!(!all_applied);
 
-        let only_applied = vec![20240101000000_i64, 20240102000000];
+        let only_applied = [20240101000000_i64, 20240102000000];
         let all_applied = only_applied.iter().all(|v| applied_versions.contains(v));
 
         assert!(all_applied);
@@ -328,7 +328,7 @@ mod migration_state_tests {
         assert!(all_applied);
 
         // But with pending migrations, should be false
-        let pending_versions = vec![20240101000000_i64];
+        let pending_versions = [20240101000000_i64];
         let all_applied = pending_versions
             .iter()
             .all(|v| applied_versions.contains(v));

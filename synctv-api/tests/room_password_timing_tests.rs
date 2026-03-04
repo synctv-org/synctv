@@ -95,8 +95,8 @@ async fn test_timing_safe_sleep_concept() {
     };
 
     // Without timing protection, these would have different response times
-    let (_, fast_time) = measure_time(fast_work()).await;
-    let (_, slow_time) = measure_time(slow_work()).await;
+    let ((), fast_time) = measure_time(fast_work()).await;
+    let ((), slow_time) = measure_time(slow_work()).await;
 
     // The slow path should be slower (without protection)
     assert!(fast_time < slow_time);
@@ -107,7 +107,7 @@ async fn test_timing_safe_sleep_concept() {
         tokio::time::sleep(Duration::from_millis(1)).await;
         let elapsed = start.elapsed();
         if elapsed < MIN_DELAY {
-            tokio::time::sleep(MIN_DELAY - elapsed).await;
+            tokio::time::sleep(MIN_DELAY.checked_sub(elapsed).unwrap()).await;
         }
     };
 
@@ -116,12 +116,12 @@ async fn test_timing_safe_sleep_concept() {
         tokio::time::sleep(Duration::from_millis(10)).await;
         let elapsed = start.elapsed();
         if elapsed < MIN_DELAY {
-            tokio::time::sleep(MIN_DELAY - elapsed).await;
+            tokio::time::sleep(MIN_DELAY.checked_sub(elapsed).unwrap()).await;
         }
     };
 
-    let (_, protected_fast_time) = measure_time(protected_fast()).await;
-    let (_, protected_slow_time) = measure_time(protected_slow()).await;
+    let ((), protected_fast_time) = measure_time(protected_fast()).await;
+    let ((), protected_slow_time) = measure_time(protected_slow()).await;
 
     // Both should now meet the minimum delay
     assert!(
@@ -135,9 +135,9 @@ async fn test_timing_safe_sleep_concept() {
 
     // And the difference should be much smaller (within tolerance)
     let diff = if protected_fast_time > protected_slow_time {
-        protected_fast_time - protected_slow_time
+        protected_fast_time.checked_sub(protected_slow_time).unwrap()
     } else {
-        protected_slow_time - protected_fast_time
+        protected_slow_time.checked_sub(protected_fast_time).unwrap()
     };
     assert!(
         diff <= TIMING_TOLERANCE,
@@ -246,7 +246,7 @@ mod mock_based_tests {
         let bad_rate_limit_path = || async {
             // Rate limit check happens immediately and returns early
             // NO timing protection
-            return Err::<(), String>("rate limited".to_string());
+            Err::<(), String>("rate limited".to_string())
         };
 
         // Simulated "good" implementation (what we want)
@@ -259,10 +259,10 @@ mod mock_based_tests {
             // Apply timing protection before return
             let elapsed = start.elapsed();
             if elapsed < MIN_DELAY {
-                tokio::time::sleep(MIN_DELAY - elapsed).await;
+                tokio::time::sleep(MIN_DELAY.checked_sub(elapsed).unwrap()).await;
             }
 
-            return Err::<(), String>("rate limited".to_string());
+            Err::<(), String>("rate limited".to_string())
         };
 
         // Measure the "bad" path - should be very fast (timing attack vulnerable)
@@ -311,7 +311,7 @@ mod mock_based_tests {
                 // Apply timing protection
                 let elapsed = start.elapsed();
                 if elapsed < MIN_DELAY {
-                    tokio::time::sleep(MIN_DELAY - elapsed).await;
+                    tokio::time::sleep(MIN_DELAY.checked_sub(elapsed).unwrap()).await;
                 }
 
                 Err::<(), String>(error_msg.to_string())
@@ -335,15 +335,14 @@ mod mock_based_tests {
         for time in &times {
             assert!(
                 *time >= MIN_DELAY,
-                "All paths should meet minimum delay: {:?}",
-                time
+                "All paths should meet minimum delay: {time:?}"
             );
         }
 
         // Calculate spread (max - min)
         let max_time = *times.iter().max().unwrap();
         let min_time = *times.iter().min().unwrap();
-        let spread = max_time - min_time;
+        let spread = max_time.checked_sub(min_time).unwrap();
 
         // Spread should be small (within tolerance + work_time variance)
         // The work times vary by up to 49ms, so tolerance should account for that
@@ -368,7 +367,7 @@ mod mock_based_tests {
                 // Apply timing protection
                 let elapsed = start.elapsed();
                 if elapsed < MIN_DELAY {
-                    tokio::time::sleep(MIN_DELAY - elapsed).await;
+                    tokio::time::sleep(MIN_DELAY.checked_sub(elapsed).unwrap()).await;
                 }
 
                 if success {
@@ -394,9 +393,9 @@ mod mock_based_tests {
 
         // The difference should be minimal
         let diff = if success_time > failure_time {
-            success_time - failure_time
+            success_time.checked_sub(failure_time).unwrap()
         } else {
-            failure_time - success_time
+            failure_time.checked_sub(success_time).unwrap()
         };
         assert!(
             diff <= TIMING_TOLERANCE,

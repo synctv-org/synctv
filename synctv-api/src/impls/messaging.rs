@@ -3683,7 +3683,7 @@ mod tests {
 
         // Release one permit and try again
         permits.pop();
-        let retry = semaphore.clone().try_acquire_owned();
+        let retry = semaphore.try_acquire_owned();
         assert!(retry.is_ok(), "Should succeed after a permit is released");
     }
 

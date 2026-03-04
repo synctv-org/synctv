@@ -223,7 +223,7 @@ impl ClientApiImpl {
         } else {
             req.page_size.min(MAX_PAGE_SIZE)
         };
-        let offset = (page - 1) as i64 * page_size as i64;
+        let offset = i64::from(page - 1) * i64::from(page_size);
 
         let (playlists, total) = if req.parent_id.is_empty() {
             // Get all playlists in room with pagination
@@ -236,7 +236,7 @@ impl ClientApiImpl {
             let playlists = self
                 .room_service
                 .playlist_service()
-                .get_room_playlists_paginated(&rid, page_size as i64, offset)
+                .get_room_playlists_paginated(&rid, i64::from(page_size), offset)
                 .await
                 .map_err(ApiError::from)?;
             (playlists, total)

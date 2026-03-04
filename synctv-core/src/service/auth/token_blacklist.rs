@@ -263,7 +263,7 @@ impl PgTokenBlacklistStore {
 
     /// Get a reference to the underlying connection pool.
     #[must_use]
-    pub fn pool(&self) -> &PgPool {
+    pub const fn pool(&self) -> &PgPool {
         &self.pool
     }
 
@@ -1925,8 +1925,8 @@ mod tests {
         // Collect successful results (handle both JoinError and inner Result)
         let success_results: Vec<bool> = results
             .into_iter()
-            .filter_map(|r| r.ok()) // Unwrap JoinHandle result
-            .filter_map(|r| r.ok()) // Unwrap inner Result<bool, Error>
+            .filter_map(std::result::Result::ok) // Unwrap JoinHandle result
+            .filter_map(std::result::Result::ok) // Unwrap inner Result<bool, Error>
             .collect();
 
         // Exactly one should return false (first use), all others should return true (replay)
@@ -1935,14 +1935,12 @@ mod tests {
 
         assert_eq!(
             first_use_count, 1,
-            "Exactly one call should return false (first use), got {}",
-            first_use_count
+            "Exactly one call should return false (first use), got {first_use_count}"
         );
         assert_eq!(
             replay_count,
             num_concurrent - 1,
-            "All other calls should return true (replay), got {}",
-            replay_count
+            "All other calls should return true (replay), got {replay_count}"
         );
 
         // Verify the token is now blacklisted
@@ -1969,8 +1967,8 @@ mod tests {
         let results = futures::future::join_all(handles).await;
         let success_results: Vec<bool> = results
             .into_iter()
-            .filter_map(|r| r.ok())
-            .filter_map(|r| r.ok())
+            .filter_map(std::result::Result::ok)
+            .filter_map(std::result::Result::ok)
             .collect();
 
         let first_use_count = success_results.iter().filter(|&&r| !r).count();
@@ -1978,14 +1976,12 @@ mod tests {
 
         assert_eq!(
             first_use_count, 1,
-            "Exactly one call should return false (first use), got {}",
-            first_use_count
+            "Exactly one call should return false (first use), got {first_use_count}"
         );
         assert_eq!(
             replay_count,
             num_concurrent - 1,
-            "All other calls should return true (replay), got {}",
-            replay_count
+            "All other calls should return true (replay), got {replay_count}"
         );
 
         assert!(store.is_blacklisted(key).await);
@@ -2002,7 +1998,7 @@ mod tests {
         for i in 0..num_concurrent {
             let store_clone = Arc::clone(&store);
             let handle = tokio::spawn(async move {
-                let key = format!("jti:different_key_{}", i);
+                let key = format!("jti:different_key_{i}");
                 store_clone.blacklist_if_not_exists(&key, 3600).await
             });
             handles.push(handle);
@@ -2011,16 +2007,15 @@ mod tests {
         let results = futures::future::join_all(handles).await;
         let success_results: Vec<bool> = results
             .into_iter()
-            .filter_map(|r| r.ok())
-            .filter_map(|r| r.ok())
+            .filter_map(std::result::Result::ok)
+            .filter_map(std::result::Result::ok)
             .collect();
 
         // All should return false (first use) since keys are different
         let first_use_count = success_results.iter().filter(|&&r| !r).count();
         assert_eq!(
             first_use_count, num_concurrent,
-            "All calls with different keys should return false (first use), got {}",
-            first_use_count
+            "All calls with different keys should return false (first use), got {first_use_count}"
         );
     }
 
@@ -2060,7 +2055,7 @@ mod tests {
         let num_iterations = 100;
 
         for iteration in 0..5 {
-            let iteration_key = format!("{}_iter_{}", key, iteration);
+            let iteration_key = format!("{key}_iter_{iteration}");
             let mut handles = Vec::new();
 
             for _ in 0..num_iterations {
@@ -2075,8 +2070,8 @@ mod tests {
             let results = futures::future::join_all(handles).await;
             let success_results: Vec<bool> = results
                 .into_iter()
-                .filter_map(|r| r.ok())
-                .filter_map(|r| r.ok())
+                .filter_map(std::result::Result::ok)
+                .filter_map(std::result::Result::ok)
                 .collect();
 
             let first_use_count = success_results.iter().filter(|&&r| !r).count();
@@ -2084,8 +2079,7 @@ mod tests {
 
             assert_eq!(
                 first_use_count, 1,
-                "Iteration {}: exactly one first use expected, got {}",
-                iteration, first_use_count
+                "Iteration {iteration}: exactly one first use expected, got {first_use_count}"
             );
             assert_eq!(
                 replay_count,

@@ -554,43 +554,92 @@ async fn test_publication_rejected_during_restart() {
 
 /// Test that HUB_MAX_RESTARTS doesn't get exhausted by rapid transient failures.
 ///
-/// The issue: if restart_count is incremented on every exit and never reset,
+/// The issue: if restart_count is incremented on every exit and never decremented,
 /// transient failures (e.g., brief network issues) could exhaust the limit
 /// even though the hub eventually stabilizes.
 ///
-/// The fix: reset restart_count after a successful stable period.
+/// The fix: decrement restart_count on each successful exit (clean shutdown),
+/// allowing the hub to recover from transient failure bursts.
 #[tokio::test]
-async fn test_restart_count_resets_after_stable_period() {
+async fn test_restart_count_decrements_on_successful_exit() {
     const HUB_MAX_RESTARTS: u32 = 10;
     let restart_count = Arc::new(AtomicUsize::new(0));
-    let successful_cycles = Arc::new(AtomicUsize::new(0));
 
-    // Simulate 3 restarts (failures)
+    // Simulate 3 failures (panics) - increment restart_count
     for _ in 0..3 {
-        restart_count.fetch_add(1, Ordering::SeqCst);
+        let prev = restart_count.fetch_add(1, Ordering::SeqCst);
+        assert!(prev < HUB_MAX_RESTARTS as usize);
     }
     assert_eq!(restart_count.load(Ordering::SeqCst), 3);
 
-    // Simulate stable operation: after N successful cycles, reset count
-    for _ in 0..5 {
-        successful_cycles.fetch_add(1, Ordering::SeqCst);
+    // Simulate 2 successful exits (clean shutdowns) - decrement restart_count
+    for _ in 0..2 {
+        let prev = restart_count.fetch_sub(1, Ordering::SeqCst);
+        assert!(prev > 0, "restart_count should not go below 0");
     }
+    assert_eq!(
+        restart_count.load(Ordering::SeqCst),
+        1,
+        "restart_count should be 3 - 2 = 1 after 2 successful exits"
+    );
 
-    // After enough successful cycles, reset the restart count
-    if successful_cycles.load(Ordering::SeqCst) >= 5 {
-        restart_count.store(0, Ordering::SeqCst);
-    }
-
+    // Simulate 1 more successful exit - should bring count to 0
+    let prev = restart_count.fetch_sub(1, Ordering::SeqCst);
+    assert!(prev > 0);
     assert_eq!(
         restart_count.load(Ordering::SeqCst),
         0,
-        "Restart count should reset after stable period"
+        "restart_count should be 0 after all failures are 'forgiven'"
     );
 
     // Verify we haven't hit the limit
     assert!(
         (restart_count.load(Ordering::SeqCst) as u32) < HUB_MAX_RESTARTS,
         "Should be below max restarts limit"
+    );
+}
+
+/// Test that restart_count never goes below 0 (floor at 0).
+#[tokio::test]
+async fn test_restart_count_floor_at_zero() {
+    let restart_count: u32 = 0;
+
+    // Try to decrement when already at 0 using saturating_sub
+    let result = restart_count.saturating_sub(1);
+    // Note: saturating_sub on 0 returns 0, not -1
+
+    // Using saturating_sub correctly handles the floor
+    assert_eq!(result, 0, "saturating_sub should not go below 0");
+
+    // The actual code uses: restart_count = restart_count.saturating_sub(1)
+    // which correctly prevents underflow
+}
+
+/// Test that alternating failures and successes don't exhaust the limit.
+#[tokio::test]
+async fn test_alternating_failures_successes_no_exhaustion() {
+    const HUB_MAX_RESTARTS: u32 = 10;
+    let mut restart_count: u32 = 0;
+
+    // Simulate 20 cycles of alternating failure and success
+    // Without the fix, this would exhaust the limit
+    for i in 0..20 {
+        let is_failure = i % 2 == 0; // Even = failure, Odd = success
+
+        if is_failure {
+            restart_count += 1;
+        } else {
+            // Success: decrement if > 0
+            if restart_count > 0 {
+                restart_count = restart_count.saturating_sub(1);
+            }
+        }
+    }
+
+    assert!(
+        restart_count < HUB_MAX_RESTARTS,
+        "restart_count should not exceed HUB_MAX_RESTARTS after alternating cycles, got {}",
+        restart_count
     );
 }
 

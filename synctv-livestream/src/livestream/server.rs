@@ -34,10 +34,6 @@ use tracing::{error, info, warn};
 /// under rapid consecutive restarts.
 const HUB_MAX_RESTARTS: u32 = 10;
 
-/// Number of successful hub cycles after which the restart count is reset.
-/// This prevents transient failures from permanently exhausting HUB_MAX_RESTARTS.
-const STABLE_CYCLES_FOR_RESET: u32 = 5;
-
 pub struct LivestreamConfig {
     pub rtmp_address: String,
     pub gop_cache_size: usize,
@@ -468,12 +464,20 @@ impl LivestreamServer {
 
                 // Track successful cycles for restart_count reset
                 // If this was a clean exit (channel_closed), it counts as stable operation
+                // and allows the restart count to decay, preventing transient failures
+                // from permanently exhausting HUB_MAX_RESTARTS.
                 let was_clean_exit = run_result.is_ok();
                 if was_clean_exit {
                     successful_cycles += 1;
+                    // Decrement restart_count on successful exit (floor at 0)
+                    // This allows the hub to recover from transient failure bursts
+                    if restart_count > 0 {
+                        restart_count = restart_count.saturating_sub(1);
+                    }
+                } else {
+                    // Only increment restart_count on actual failures (panics)
+                    restart_count += 1;
                 }
-
-                restart_count += 1;
 
                 // Record restart metrics with exit reason
                 let reason = match &run_result {
@@ -579,18 +583,6 @@ impl LivestreamServer {
                 // after re-registration completes.
                 reregister_notify_for_hub.notify_one();
 
-                // Reset restart_count after enough successful cycles to prevent
-                // transient failures from permanently exhausting HUB_MAX_RESTARTS.
-                // Only reset if we've had stable operation since the last restart.
-                if successful_cycles >= STABLE_CYCLES_FOR_RESET && restart_count > 0 {
-                    info!(
-                        previous_restart_count = restart_count,
-                        successful_cycles, "Resetting restart count after stable operation"
-                    );
-                    restart_count = 0;
-                    successful_cycles = 0;
-                }
-
                 if restart_count >= HUB_MAX_RESTARTS {
                     error!(
                         "StreamHub has restarted {} times, giving up to avoid infinite restart loop",
@@ -600,9 +592,14 @@ impl LivestreamServer {
                 }
 
                 // Exponential backoff: 1s, 2s, 4s, 8s, 16s, 30s, 30s, ...
-                let backoff_secs = INITIAL_BACKOFF_SECS
-                    .saturating_mul(1u64 << (restart_count - 1).min(16))
-                    .min(MAX_BACKOFF_SECS);
+                // When restart_count is 0 (all previous exits were clean), use minimal backoff.
+                let backoff_secs = if restart_count == 0 {
+                    INITIAL_BACKOFF_SECS
+                } else {
+                    INITIAL_BACKOFF_SECS
+                        .saturating_mul(1u64 << (restart_count - 1).min(16))
+                        .min(MAX_BACKOFF_SECS)
+                };
                 info!(
                     "Waiting {} seconds before restarting StreamHub...",
                     backoff_secs

@@ -496,16 +496,18 @@ impl RateLimitBackend for InMemoryRateLimitBackend {
 
     async fn check_strict(
         &self,
-        _key: &str,
-        _max_requests: u32,
-        _window_seconds: u64,
+        key: &str,
+        max_requests: u32,
+        window_seconds: u64,
     ) -> std::result::Result<(), RateLimitError> {
-        tracing::error!(
-            "Distributed rate limit check failed: Redis not configured. Denying request (fail closed)."
-        );
-        Err(RateLimitError::RateLimitExceeded {
-            retry_after_seconds: 1,
-        })
+        // When Redis is not configured, use in-memory governor for strict checks.
+        // This provides per-instance rate limiting without distributed coordination.
+        let mem_key = format!("{}{}", self.key_prefix, key);
+        self.governor
+            .check(&mem_key, max_requests, window_seconds)
+            .map_err(|retry_after_seconds| RateLimitError::RateLimitExceeded {
+                retry_after_seconds,
+            })
     }
 
     async fn get_quota(
@@ -922,17 +924,52 @@ mod tests {
         assert!(limiter.check_rate_limit_sync("key1", 3, 1).is_err());
     }
 
+    /// Test that InMemoryRateLimitBackend::check_strict actually performs rate limiting
+    /// using the in-memory governor, rather than always rejecting requests.
     #[tokio::test]
-    async fn test_distributed_rate_limit_fails_closed_without_redis() {
-        let limiter = RateLimiter::in_memory_only("dist_test:".to_string());
+    async fn test_in_memory_check_strict_allows_within_limit() {
+        let limiter = RateLimiter::in_memory_only("strict_test:".to_string());
 
-        let result = limiter.check_rate_limit_distributed("key", 10, 1).await;
-        assert!(matches!(
-            result,
-            Err(RateLimitError::RateLimitExceeded {
-                retry_after_seconds: 1
-            })
-        ));
+        // Should allow requests within the limit
+        for i in 0..5 {
+            limiter
+                .check_rate_limit_distributed("strict_key", 5, 1)
+                .await
+                .unwrap_or_else(|_| panic!("Request {i} should succeed via check_strict"));
+        }
+
+        // Should reject requests exceeding the limit
+        let result = limiter
+            .check_rate_limit_distributed("strict_key", 5, 1)
+            .await;
+        assert!(
+            matches!(result, Err(RateLimitError::RateLimitExceeded { .. })),
+            "Request exceeding limit should be rejected"
+        );
+    }
+
+    /// Test that check_strict with in-memory backend has independent keys
+    #[tokio::test]
+    async fn test_in_memory_check_strict_independent_keys() {
+        let limiter = RateLimiter::in_memory_only("strict_keys:".to_string());
+
+        // Exhaust key1
+        for _ in 0..5 {
+            limiter
+                .check_rate_limit_distributed("key1", 5, 1)
+                .await
+                .unwrap();
+        }
+        assert!(limiter
+            .check_rate_limit_distributed("key1", 5, 1)
+            .await
+            .is_err());
+
+        // key2 should still be allowed
+        limiter
+            .check_rate_limit_distributed("key2", 5, 1)
+            .await
+            .unwrap();
     }
 
     #[test]

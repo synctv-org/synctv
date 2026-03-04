@@ -104,19 +104,22 @@ async fn test_in_memory_sync_check() {
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_in_memory_distributed_fails_closed() {
+async fn test_in_memory_distributed_uses_governor() {
     let limiter = RateLimiter::in_memory_only("dist:".to_string());
 
-    // Without Redis, distributed check should fail closed
-    let result = limiter.check_rate_limit_distributed("key", 10, 1).await;
+    // Without Redis, distributed check should still work using in-memory governor
+    for i in 0..5 {
+        limiter
+            .check_rate_limit_distributed("key", 5, 1)
+            .await
+            .unwrap_or_else(|_| panic!("Request {i} should succeed via in-memory check_strict"));
+    }
+
+    // Should be blocked after exhausting limit
+    let result = limiter.check_rate_limit_distributed("key", 5, 1).await;
     assert!(
-        matches!(
-            result,
-            Err(RateLimitError::RateLimitExceeded {
-                retry_after_seconds: 1
-            })
-        ),
-        "Distributed check without Redis should fail closed"
+        matches!(result, Err(RateLimitError::RateLimitExceeded { .. })),
+        "Request exceeding limit should be blocked via in-memory check_strict"
     );
 }
 
@@ -263,18 +266,22 @@ async fn test_redis_rate_limiter_strict_enforcement() {
 }
 
 #[tokio::test]
-async fn test_redis_rate_limiter_fail_closed_without_redis() {
-    // In-memory-only limiter should fail closed on distributed check
+async fn test_redis_rate_limiter_distributed_uses_memory_without_redis() {
+    // In-memory-only limiter should use governor for distributed check
     let limiter = RateLimiter::in_memory_only("redis_fc:".to_string());
 
+    // Should allow requests within limit
+    for i in 0..10 {
+        limiter
+            .check_rate_limit_distributed("key", 10, 1)
+            .await
+            .unwrap_or_else(|_| panic!("Request {i} should succeed"));
+    }
+
+    // Should block after limit exhausted
     let result = limiter.check_rate_limit_distributed("key", 10, 1).await;
     assert!(
-        matches!(
-            result,
-            Err(RateLimitError::RateLimitExceeded {
-                retry_after_seconds: 1
-            })
-        ),
-        "Distributed check without Redis should fail closed"
+        matches!(result, Err(RateLimitError::RateLimitExceeded { .. })),
+        "Request exceeding limit should be blocked"
     );
 }

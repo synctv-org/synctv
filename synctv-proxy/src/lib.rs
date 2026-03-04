@@ -233,6 +233,13 @@ fn build_proxy_request(cfg: &ProxyConfig<'_>) -> reqwest::RequestBuilder {
 
 /// Inner implementation of proxy fetch, separated for metrics wrapping.
 async fn proxy_fetch_and_forward_inner(cfg: ProxyConfig<'_>) -> Result<Response, anyhow::Error> {
+    // Validate URL scheme to prevent SSRF via non-HTTP schemes (e.g., file://)
+    if !cfg.url.starts_with("http://") && !cfg.url.starts_with("https://") {
+        return Err(anyhow::anyhow!(
+            "Invalid URL scheme: only http and https are supported"
+        ));
+    }
+
     let request = build_proxy_request(&cfg);
     let proxy_result = send_with_redirect_validation(request).await?;
 
@@ -686,7 +693,19 @@ pub const MAX_M3U8_URLS: usize = 1000;
 ///
 /// # Limits
 /// - Maximum 1000 URLs per playlist (prevents abuse)
+///
+/// # Security
+/// - Returns original m3u8 unchanged if proxy_base contains line breaks (prevents response injection)
 pub fn rewrite_m3u8(m3u8: &str, source_url: &str, proxy_base: &str) -> String {
+    // Security: Reject proxy_base with line breaks to prevent response splitting/injection
+    if proxy_base.contains('\n') || proxy_base.contains('\r') {
+        tracing::warn!(
+            proxy_base = %proxy_base,
+            "proxy_base contains line breaks, returning original m3u8"
+        );
+        return m3u8.to_string();
+    }
+
     let base = url::Url::parse(source_url).ok();
     let mut output = String::with_capacity(m3u8.len());
     let mut url_count = 0usize;
@@ -1251,6 +1270,34 @@ mod tests {
     }
 
     #[test]
+    fn test_rewrite_m3u8_rejects_newline_in_proxy_base() {
+        let m3u8 = "#EXTM3U\n#EXT-X-VERSION:3\nseg1.ts\n";
+        // proxy_base with LF should return original m3u8 unchanged
+        let rewritten = rewrite_m3u8(
+            m3u8,
+            "https://cdn.example.com/path/master.m3u8",
+            "/proxy/stream\nSet-Cookie: malicious=value",
+        );
+        assert_eq!(rewritten, m3u8);
+
+        // proxy_base with CR should also return original m3u8 unchanged
+        let rewritten = rewrite_m3u8(
+            m3u8,
+            "https://cdn.example.com/path/master.m3u8",
+            "/proxy/stream\rSet-Cookie: malicious=value",
+        );
+        assert_eq!(rewritten, m3u8);
+
+        // proxy_base with CRLF should also return original m3u8 unchanged
+        let rewritten = rewrite_m3u8(
+            m3u8,
+            "https://cdn.example.com/path/master.m3u8",
+            "/proxy/stream\r\nSet-Cookie: malicious=value",
+        );
+        assert_eq!(rewritten, m3u8);
+    }
+
+    #[test]
     fn test_ssrf_acl_blocks_private_ips() {
         use std::net::IpAddr;
         let blocked: &[&str] = &["127.0.0.1", "192.168.1.1", "10.0.0.1"];
@@ -1274,5 +1321,85 @@ mod tests {
                 "IP {ip} should be allowed"
             );
         }
+    }
+
+    // ------------------------------------------------------------------
+    // URL scheme validation tests
+    // ------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn test_proxy_fetch_rejects_file_scheme() {
+        let provider_headers = HashMap::new();
+        let client_headers = HeaderMap::new();
+        let cfg = ProxyConfig {
+            url: "file:///etc/passwd",
+            provider_headers: &provider_headers,
+            client_headers: &client_headers,
+        };
+
+        let result = proxy_fetch_and_forward_inner(cfg).await;
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            err.to_string().contains("Invalid URL scheme"),
+            "Expected URL scheme error, got: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_proxy_fetch_rejects_ftp_scheme() {
+        let provider_headers = HashMap::new();
+        let client_headers = HeaderMap::new();
+        let cfg = ProxyConfig {
+            url: "ftp://example.com/file.txt",
+            provider_headers: &provider_headers,
+            client_headers: &client_headers,
+        };
+
+        let result = proxy_fetch_and_forward_inner(cfg).await;
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            err.to_string().contains("Invalid URL scheme"),
+            "Expected URL scheme error, got: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_proxy_fetch_rejects_javascript_scheme() {
+        let provider_headers = HashMap::new();
+        let client_headers = HeaderMap::new();
+        let cfg = ProxyConfig {
+            url: "javascript:alert(1)",
+            provider_headers: &provider_headers,
+            client_headers: &client_headers,
+        };
+
+        let result = proxy_fetch_and_forward_inner(cfg).await;
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            err.to_string().contains("Invalid URL scheme"),
+            "Expected URL scheme error, got: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_proxy_fetch_rejects_data_scheme() {
+        let provider_headers = HashMap::new();
+        let client_headers = HeaderMap::new();
+        let cfg = ProxyConfig {
+            url: "data:text/plain,hello",
+            provider_headers: &provider_headers,
+            client_headers: &client_headers,
+        };
+
+        let result = proxy_fetch_and_forward_inner(cfg).await;
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            err.to_string().contains("Invalid URL scheme"),
+            "Expected URL scheme error, got: {err}"
+        );
     }
 }

@@ -741,3 +741,162 @@ fn test_heartbeat_config_custom() {
     };
     assert_eq!(config.interval, Duration::from_secs(10));
 }
+
+// ============================================================================
+// ReconnectConfig tests
+// ============================================================================
+
+#[test]
+fn test_reconnect_config_default() {
+    use std::time::Duration;
+    use synctv_media_providers::bilibili::ReconnectConfig;
+
+    let config = ReconnectConfig::default();
+    assert_eq!(config.max_retries, 5);
+    assert_eq!(config.initial_delay, Duration::from_secs(1));
+    assert_eq!(config.max_delay, Duration::from_secs(30));
+    assert!((config.backoff_multiplier - 2.0).abs() < f64::EPSILON);
+}
+
+#[test]
+fn test_reconnect_config_custom() {
+    use std::time::Duration;
+    use synctv_media_providers::bilibili::ReconnectConfig;
+
+    let config = ReconnectConfig {
+        max_retries: 10,
+        initial_delay: Duration::from_millis(500),
+        max_delay: Duration::from_secs(60),
+        backoff_multiplier: 1.5,
+    };
+    assert_eq!(config.max_retries, 10);
+    assert_eq!(config.initial_delay, Duration::from_millis(500));
+    assert_eq!(config.max_delay, Duration::from_secs(60));
+    assert!((config.backoff_multiplier - 1.5).abs() < f64::EPSILON);
+}
+
+#[test]
+fn test_reconnect_config_delay_calculation() {
+    use std::time::Duration;
+    use synctv_media_providers::bilibili::ReconnectConfig;
+
+    let config = ReconnectConfig {
+        max_retries: 5,
+        initial_delay: Duration::from_secs(1),
+        max_delay: Duration::from_secs(30),
+        backoff_multiplier: 2.0,
+    };
+
+    // First retry (retry_count = 0): 1 * 2^0 = 1s
+    let delay0 = config.delay_for_retry(0);
+    assert_eq!(delay0, Duration::from_secs(1));
+
+    // Second retry (retry_count = 1): 1 * 2^1 = 2s
+    let delay1 = config.delay_for_retry(1);
+    assert_eq!(delay1, Duration::from_secs(2));
+
+    // Third retry (retry_count = 2): 1 * 2^2 = 4s
+    let delay2 = config.delay_for_retry(2);
+    assert_eq!(delay2, Duration::from_secs(4));
+
+    // Fourth retry (retry_count = 3): 1 * 2^3 = 8s
+    let delay3 = config.delay_for_retry(3);
+    assert_eq!(delay3, Duration::from_secs(8));
+
+    // Fifth retry (retry_count = 4): 1 * 2^4 = 16s
+    let delay4 = config.delay_for_retry(4);
+    assert_eq!(delay4, Duration::from_secs(16));
+
+    // Sixth retry (retry_count = 5): 1 * 2^5 = 32s -> capped at 30s
+    let delay5 = config.delay_for_retry(5);
+    assert_eq!(delay5, Duration::from_secs(30));
+}
+
+#[test]
+fn test_reconnect_config_delay_never_exceeds_max() {
+    use std::time::Duration;
+    use synctv_media_providers::bilibili::ReconnectConfig;
+
+    let config = ReconnectConfig {
+        max_retries: 100,
+        initial_delay: Duration::from_secs(1),
+        max_delay: Duration::from_secs(10),
+        backoff_multiplier: 2.0,
+    };
+
+    // Even with large retry counts, delay should be capped
+    for i in 0..50 {
+        let delay = config.delay_for_retry(i);
+        assert!(
+            delay <= Duration::from_secs(10),
+            "Delay {:?} exceeds max for retry {}",
+            delay,
+            i
+        );
+    }
+}
+
+// ============================================================================
+// ReconnectResult tests
+// ============================================================================
+
+#[test]
+fn test_reconnect_result_messages() {
+    use synctv_media_providers::bilibili::{DanmakuMessage, ReconnectResult};
+
+    let messages = vec![DanmakuMessage::Chat {
+        user: "test".to_string(),
+        message: "hello".to_string(),
+        timestamp: 12345,
+    }];
+
+    let result = ReconnectResult::Messages(messages.clone());
+    if let ReconnectResult::Messages(msgs) = result {
+        assert_eq!(msgs.len(), 1);
+    } else {
+        panic!("Expected Messages variant");
+    }
+}
+
+#[test]
+fn test_reconnect_result_reconnected() {
+    use synctv_media_providers::bilibili::ReconnectResult;
+
+    let result = ReconnectResult::Reconnected { attempts: 3 };
+    if let ReconnectResult::Reconnected { attempts } = result {
+        assert_eq!(attempts, 3);
+    } else {
+        panic!("Expected Reconnected variant");
+    }
+}
+
+#[test]
+fn test_reconnect_result_failed() {
+    use synctv_media_providers::bilibili::{BilibiliError, ReconnectResult};
+
+    let result = ReconnectResult::Failed {
+        attempts: 5,
+        error: BilibiliError::Parse("test error".to_string()),
+    };
+
+    if let ReconnectResult::Failed { attempts, error: e } = result {
+        assert_eq!(attempts, 5);
+        match e {
+            BilibiliError::Parse(msg) => assert_eq!(msg, "test error"),
+            _ => panic!("Expected Parse error"),
+        }
+    } else {
+        panic!("Expected Failed variant");
+    }
+}
+
+#[test]
+fn test_reconnect_result_debug() {
+    use synctv_media_providers::bilibili::{DanmakuMessage, ReconnectResult};
+
+    let messages = vec![DanmakuMessage::Heartbeat { online_count: 100 }];
+    let result = ReconnectResult::Messages(messages);
+
+    let debug_str = format!("{:?}", result);
+    assert!(debug_str.contains("Messages"));
+}

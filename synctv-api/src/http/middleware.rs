@@ -1153,4 +1153,119 @@ mod tests {
             .unwrap();
         assert_eq!(body_bytes, "bad request");
     }
+
+    // === Provider Routes Security Headers Tests ===
+    //
+    // Provider routes are registered with only rate-limit middleware, but the
+    // global security_headers_middleware is applied to the entire router in
+    // apply_global_layers(). These tests verify that nested routes still
+    // receive security headers.
+
+    #[tokio::test]
+    async fn test_nested_routes_receive_security_headers() {
+        // Simulate the Provider routes architecture:
+        // 1. Inner router with a simple handler (no security layer)
+        // 2. Outer router that nests the inner router
+        // 3. Global security layer applied to the outer router
+
+        let inner_router = axum::Router::new().route(
+            "/api/providers/test",
+            axum::routing::get(|| async { "provider response" }),
+        );
+
+        let outer_router = axum::Router::new()
+            .merge(inner_router)
+            // Global security layer applied AFTER route registration
+            // (in Tower/Axum, layers are applied in reverse order)
+            .layer(axum::middleware::from_fn(security_headers_middleware));
+
+        let request = Request::builder()
+            .uri("/api/providers/test")
+            .body(Body::empty())
+            .unwrap();
+
+        let response = outer_router.oneshot(request).await.unwrap();
+
+        // Verify the nested route receives all security headers
+        assert_eq!(response.status(), StatusCode::OK);
+        let headers = response.headers();
+        assert_eq!(
+            headers.get("X-Frame-Options").unwrap(),
+            "DENY",
+            "Provider routes must have X-Frame-Options header"
+        );
+        assert_eq!(
+            headers.get("X-Content-Type-Options").unwrap(),
+            "nosniff",
+            "Provider routes must have X-Content-Type-Options header"
+        );
+        assert_eq!(
+            headers.get("X-XSS-Protection").unwrap(),
+            "1; mode=block",
+            "Provider routes must have X-XSS-Protection header"
+        );
+        assert!(
+            headers.contains_key("Content-Security-Policy"),
+            "Provider routes must have Content-Security-Policy header"
+        );
+        assert!(
+            headers.contains_key("Referrer-Policy"),
+            "Provider routes must have Referrer-Policy header"
+        );
+        assert!(
+            headers.contains_key("Permissions-Policy"),
+            "Provider routes must have Permissions-Policy header"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_nested_routes_with_rate_limit_still_get_security_headers() {
+        // Simulate the exact Provider routes architecture:
+        // 1. Inner router with provider handlers
+        // 2. Route layer with rate limiting
+        // 3. Merged into outer router
+        // 4. Global security layer applied
+
+        async fn mock_rate_limit(
+            request: axum::extract::Request,
+            next: axum::middleware::Next,
+        ) -> Result<Response, std::convert::Infallible> {
+            // Mock rate limiter that always passes
+            Ok(next.run(request).await)
+        }
+
+        let provider_router = axum::Router::new()
+            .route(
+                "/api/providers/bilibili/parse",
+                axum::routing::post(|| async { "parsed" }),
+            )
+            .route_layer(axum::middleware::from_fn(mock_rate_limit));
+
+        let app = axum::Router::new()
+            .merge(provider_router)
+            .layer(axum::middleware::from_fn(security_headers_middleware));
+
+        let request = Request::builder()
+            .method("POST")
+            .uri("/api/providers/bilibili/parse")
+            .body(Body::empty())
+            .unwrap();
+
+        let response = app.oneshot(request).await.unwrap();
+
+        // Verify security headers are present even with rate limit layer
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(
+            response.headers().contains_key("X-Frame-Options"),
+            "Provider routes with rate limit must still have X-Frame-Options"
+        );
+        assert!(
+            response.headers().contains_key("X-Content-Type-Options"),
+            "Provider routes with rate limit must still have X-Content-Type-Options"
+        );
+        assert!(
+            response.headers().contains_key("Content-Security-Policy"),
+            "Provider routes with rate limit must still have Content-Security-Policy"
+        );
+    }
 }

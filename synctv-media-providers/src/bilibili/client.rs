@@ -1826,6 +1826,71 @@ impl BilibiliClient {
             heartbeat_stop: Arc::new(AtomicBool::new(false)),
         })
     }
+
+    /// Connect to live danmaku WebSocket with automatic reconnection support
+    ///
+    /// Returns a [`ReconnectableLiveDanmakuConnection`] that will automatically
+    /// reconnect if the WebSocket connection is lost, using exponential backoff.
+    ///
+    /// # Arguments
+    /// * `room_id` - The live room ID to connect to
+    /// * `config` - Reconnection configuration (max retries, delays, etc.)
+    ///
+    /// # Example
+    /// ```ignore
+    /// use std::sync::Arc;
+    /// use std::time::Duration;
+    ///
+    /// let client = Arc::new(BilibiliClient::new()?);
+    /// let config = ReconnectConfig {
+    ///     max_retries: 5,
+    ///     initial_delay: Duration::from_secs(1),
+    ///     max_delay: Duration::from_secs(30),
+    ///     backoff_multiplier: 2.0,
+    /// };
+    ///
+    /// let mut conn = client.connect_live_danmaku_with_reconnect(room_id, config).await?;
+    ///
+    /// loop {
+    ///     match conn.recv().await {
+    ///         Ok(ReconnectResult::Messages(msgs)) => {
+    ///             for msg in msgs {
+    ///                 println!("{:?}", msg);
+    ///             }
+    ///         }
+    ///         Ok(ReconnectResult::Reconnected { attempts }) => {
+    ///             println!("Reconnected after {} attempts", attempts);
+    ///         }
+    ///         Ok(ReconnectResult::Failed { attempts, error }) => {
+    ///             eprintln!("Failed after {} attempts: {}", attempts, error);
+    ///             break;
+    ///         }
+    ///         Err(e) => {
+    ///             eprintln!("Error: {}", e);
+    ///             break;
+    ///         }
+    ///     }
+    /// }
+    /// ```
+    pub async fn connect_live_danmaku_with_reconnect(
+        self: &Arc<Self>,
+        room_id: u64,
+        config: ReconnectConfig,
+    ) -> Result<ReconnectableLiveDanmakuConnection, BilibiliError> {
+        // Establish initial connection
+        let connection = self.connect_live_danmaku(room_id).await?;
+        let connection = Arc::new(connection);
+
+        Ok(ReconnectableLiveDanmakuConnection {
+            client: Arc::clone(self),
+            connection: Some(connection),
+            room_id,
+            config,
+            current_retry: 0,
+            heartbeat_config: None,
+            stop_flag: Arc::new(AtomicBool::new(false)),
+        })
+    }
 }
 
 /// Configuration for automatic heartbeat keepalive
@@ -1840,6 +1905,62 @@ impl Default for HeartbeatConfig {
         Self {
             interval: Duration::from_secs(30),
         }
+    }
+}
+
+/// Configuration for automatic WebSocket reconnection
+#[derive(Debug, Clone, Copy)]
+pub struct ReconnectConfig {
+    /// Maximum number of reconnection attempts before giving up
+    pub max_retries: u32,
+    /// Initial delay before first reconnection attempt
+    pub initial_delay: Duration,
+    /// Maximum delay between reconnection attempts (for exponential backoff)
+    pub max_delay: Duration,
+    /// Multiplier for exponential backoff (default: 2.0)
+    pub backoff_multiplier: f64,
+}
+
+impl Default for ReconnectConfig {
+    fn default() -> Self {
+        Self {
+            max_retries: 5,
+            initial_delay: Duration::from_secs(1),
+            max_delay: Duration::from_secs(30),
+            backoff_multiplier: 2.0,
+        }
+    }
+}
+
+impl ReconnectConfig {
+    /// Calculate the delay for a given retry attempt using exponential backoff
+    ///
+    /// The delay is calculated as: `initial_delay * backoff_multiplier^retry_count`
+    /// and is capped at `max_delay`.
+    ///
+    /// # Arguments
+    /// * `retry_count` - Zero-based retry attempt number (0 = first retry)
+    ///
+    /// # Example
+    /// ```ignore
+    /// let config = ReconnectConfig {
+    ///     initial_delay: Duration::from_secs(1),
+    ///     max_delay: Duration::from_secs(30),
+    ///     backoff_multiplier: 2.0,
+    ///     ..Default::default()
+    /// };
+    ///
+    /// assert_eq!(config.delay_for_retry(0), Duration::from_secs(1));  // 1 * 2^0 = 1
+    /// assert_eq!(config.delay_for_retry(1), Duration::from_secs(2));  // 1 * 2^1 = 2
+    /// assert_eq!(config.delay_for_retry(2), Duration::from_secs(4));  // 1 * 2^2 = 4
+    /// ```
+    pub fn delay_for_retry(&self, retry_count: u32) -> Duration {
+        let delay_secs = self.initial_delay.as_secs_f64()
+            * self
+                .backoff_multiplier
+                .powi(i32::try_from(retry_count).unwrap_or(0));
+        let capped_secs = delay_secs.min(self.max_delay.as_secs_f64());
+        Duration::from_secs_f64(capped_secs)
     }
 }
 
@@ -2010,6 +2131,261 @@ impl LiveDanmakuConnection {
 
         *handle_guard = Some(handle);
         true
+    }
+}
+
+/// Result of a receive operation with reconnection support
+#[derive(Debug)]
+pub enum ReconnectResult {
+    /// Successfully received messages
+    Messages(Vec<DanmakuMessage>),
+    /// Connection was lost and successfully reconnected
+    Reconnected {
+        /// Number of reconnection attempts made
+        attempts: u32,
+    },
+    /// Reconnection failed after exhausting all retries
+    Failed {
+        /// Total number of reconnection attempts made
+        attempts: u32,
+        /// The final error that caused failure
+        error: BilibiliError,
+    },
+}
+
+/// Live danmaku WebSocket connection with automatic reconnection support
+///
+/// This wrapper around [`LiveDanmakuConnection`] provides automatic reconnection
+/// when the WebSocket connection is lost. It uses exponential backoff for
+/// reconnection attempts.
+///
+/// # Example
+/// ```ignore
+/// use std::sync::Arc;
+/// use std::time::Duration;
+///
+/// let client = Arc::new(BilibiliClient::new()?);
+/// let reconnect_config = ReconnectConfig {
+///     max_retries: 5,
+///     initial_delay: Duration::from_secs(1),
+///     max_delay: Duration::from_secs(30),
+///     backoff_multiplier: 2.0,
+/// };
+///
+/// let mut conn = client.connect_live_danmaku_with_reconnect(room_id, reconnect_config).await?;
+///
+/// loop {
+///     match conn.recv().await {
+///         Ok(ReconnectResult::Messages(msgs)) => {
+///             for msg in msgs {
+///                 // handle messages
+///             }
+///         }
+///         Ok(ReconnectResult::Reconnected { attempts }) => {
+///             tracing::info!("Reconnected after {} attempts", attempts);
+///         }
+///         Ok(ReconnectResult::Failed { attempts, error }) => {
+///             tracing::error!("Failed to reconnect after {} attempts: {}", attempts, error);
+///             break;
+///         }
+///         Err(e) => {
+///             tracing::error!("Error: {}", e);
+///             break;
+///         }
+///     }
+/// }
+/// ```
+pub struct ReconnectableLiveDanmakuConnection {
+    /// Reference to the Bilibili client for reconnection
+    client: Arc<BilibiliClient>,
+    /// The current underlying connection
+    connection: Option<Arc<LiveDanmakuConnection>>,
+    /// Room ID for reconnection
+    room_id: u64,
+    /// Reconnection configuration
+    config: ReconnectConfig,
+    /// Current retry count (resets on successful receive)
+    current_retry: u32,
+    /// Heartbeat configuration to restart after reconnection
+    heartbeat_config: Option<HeartbeatConfig>,
+    /// Flag to signal the connection should stop
+    stop_flag: Arc<AtomicBool>,
+}
+
+impl ReconnectableLiveDanmakuConnection {
+    /// Receive next danmaku messages with automatic reconnection
+    ///
+    /// This method will attempt to reconnect if the connection is lost.
+    /// Returns [`ReconnectResult`] indicating whether messages were received,
+    /// reconnection occurred, or reconnection failed.
+    pub async fn recv(&mut self) -> Result<ReconnectResult, BilibiliError> {
+        // Check if we should stop
+        if self.stop_flag.load(Ordering::SeqCst) {
+            return Err(BilibiliError::Parse(
+                "Connection stopped by user".to_string(),
+            ));
+        }
+
+        // Get current connection or attempt initial connection
+        let conn = match self.connection.as_ref() {
+            Some(conn) => conn,
+            None => {
+                // No connection yet, try to establish one
+                match self.try_reconnect().await {
+                    Ok(()) => {
+                        return Ok(ReconnectResult::Reconnected {
+                            attempts: self.current_retry,
+                        });
+                    }
+                    Err(e) => {
+                        let attempts = self.current_retry;
+                        self.current_retry = 0;
+                        return Ok(ReconnectResult::Failed { attempts, error: e });
+                    }
+                }
+            }
+        };
+
+        // Try to receive from current connection
+        match conn.recv().await {
+            Ok(messages) => {
+                // Reset retry count on successful receive
+                self.current_retry = 0;
+                Ok(ReconnectResult::Messages(messages))
+            }
+            Err(e) => {
+                // Connection error, try to reconnect
+                tracing::warn!(
+                    "Danmaku WebSocket error for room {}: {}, attempting reconnection",
+                    self.room_id,
+                    e
+                );
+
+                // Stop the heartbeat loop on the old connection
+                conn.stop_heartbeat_loop().await;
+
+                // Clear the old connection
+                self.connection = None;
+
+                // Try to reconnect
+                match self.try_reconnect().await {
+                    Ok(()) => Ok(ReconnectResult::Reconnected {
+                        attempts: self.current_retry,
+                    }),
+                    Err(e) => {
+                        let attempts = self.current_retry;
+                        self.current_retry = 0;
+                        Ok(ReconnectResult::Failed { attempts, error: e })
+                    }
+                }
+            }
+        }
+    }
+
+    /// Attempt to reconnect with exponential backoff
+    async fn try_reconnect(&mut self) -> Result<(), BilibiliError> {
+        while self.current_retry < self.config.max_retries {
+            // Check if we should stop
+            if self.stop_flag.load(Ordering::SeqCst) {
+                return Err(BilibiliError::Parse(
+                    "Connection stopped by user".to_string(),
+                ));
+            }
+
+            // Calculate delay for this retry
+            if self.current_retry > 0 {
+                let delay = self.config.delay_for_retry(self.current_retry - 1);
+                tracing::debug!(
+                    "Waiting {:?} before reconnection attempt {} for room {}",
+                    delay,
+                    self.current_retry,
+                    self.room_id
+                );
+                tokio::time::sleep(delay).await;
+            }
+
+            tracing::info!(
+                "Attempting danmaku reconnection {} for room {}",
+                self.current_retry + 1,
+                self.room_id
+            );
+
+            match self.client.connect_live_danmaku(self.room_id).await {
+                Ok(new_conn) => {
+                    let new_conn = Arc::new(new_conn);
+
+                    // Start heartbeat loop if configured
+                    if let Some(ref heartbeat_config) = self.heartbeat_config {
+                        new_conn
+                            .start_heartbeat_loop_arc(Arc::clone(&new_conn), *heartbeat_config)
+                            .await;
+                    }
+
+                    self.connection = Some(new_conn);
+                    let attempts = self.current_retry + 1;
+                    self.current_retry = 0;
+
+                    tracing::info!(
+                        "Successfully reconnected danmaku for room {} after {} attempt(s)",
+                        self.room_id,
+                        attempts
+                    );
+
+                    return Ok(());
+                }
+                Err(e) => {
+                    self.current_retry += 1;
+                    tracing::warn!(
+                        "Reconnection attempt {} failed for room {}: {}",
+                        self.current_retry,
+                        self.room_id,
+                        e
+                    );
+                }
+            }
+        }
+
+        // Exhausted all retries
+        Err(BilibiliError::Parse(format!(
+            "Failed to reconnect after {} attempts",
+            self.config.max_retries
+        )))
+    }
+
+    /// Get the room ID
+    pub const fn room_id(&self) -> u64 {
+        self.room_id
+    }
+
+    /// Check if the connection is currently active
+    pub fn is_connected(&self) -> bool {
+        self.connection.is_some()
+    }
+
+    /// Get the current retry count
+    pub const fn current_retry(&self) -> u32 {
+        self.current_retry
+    }
+
+    /// Stop the connection and prevent further reconnection attempts
+    pub async fn stop(&mut self) {
+        self.stop_flag.store(true, Ordering::SeqCst);
+
+        if let Some(ref conn) = self.connection {
+            conn.stop_heartbeat_loop().await;
+        }
+
+        self.connection = None;
+    }
+
+    /// Set the heartbeat configuration for reconnected sessions
+    pub fn set_heartbeat_config(&mut self, config: HeartbeatConfig) {
+        self.heartbeat_config = Some(config);
+    }
+
+    /// Get the underlying connection if available
+    pub fn connection(&self) -> Option<&Arc<LiveDanmakuConnection>> {
+        self.connection.as_ref()
     }
 }
 

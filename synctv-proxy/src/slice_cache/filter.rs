@@ -280,21 +280,29 @@ pub(super) async fn full_body_cache_path(
     // chunked responses that lack a Content-Length header.
     let max_body = cache.config().max_cacheable_body;
     let mut buf = Vec::with_capacity(std::cmp::min(max_body + 1, 4 * 1024 * 1024));
-    {
+    let exceeded_max_body = {
         let mut stream = resp.bytes_stream();
+        let mut exceeded = false;
         while let Some(chunk) = stream.next().await {
             let chunk = chunk.map_err(|e| anyhow::anyhow!("Failed to read upstream body: {e}"))?;
-            buf.extend_from_slice(&chunk);
-            if buf.len() > max_body {
-                break;
+            if !exceeded {
+                buf.extend_from_slice(&chunk);
+                if buf.len() > max_body {
+                    exceeded = true;
+                    // Continue draining remaining response body to allow connection reuse.
+                    // reqwest won't reuse connections with partially consumed responses.
+                }
             }
+            // When exceeded is true, we just discard chunks to drain the stream.
         }
-    }
+        exceeded
+    };
     let body_bytes = Bytes::from(buf);
 
-    if body_bytes.len() > cache.config().max_cacheable_body {
+    if exceeded_max_body {
         // Body turned out larger than expected (chunked transfer).
-        // Return it but don't cache.
+        // Return what we have but don't cache. The remaining body was already
+        // drained to allow connection reuse.
         let mut builder = Response::builder()
             .status(status)
             .header("Content-Length", body_bytes.len().to_string())

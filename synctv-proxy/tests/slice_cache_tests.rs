@@ -2481,6 +2481,137 @@ async fn test_full_body_oom_protection() {
 }
 
 // ------------------------------------------------------------------
+// H3: Connection reuse after oversized body drain
+// ------------------------------------------------------------------
+
+/// Verify that when a chunked response exceeds max_cacheable_body, the
+/// remaining body is fully consumed (drained) to allow connection reuse.
+///
+/// This test uses two sequential requests to the same server to verify
+/// that the connection can be reused after an oversized body is drained.
+/// Without proper draining, reqwest would not reuse the connection.
+#[tokio::test]
+async fn test_full_body_oversized_drains_for_connection_reuse() {
+    let mock_server = MockServer::start().await;
+
+    // Configure very small max_cacheable_body
+    let config = SliceCacheConfig {
+        max_cacheable_body: 100,
+        ..Default::default()
+    };
+    let cache = SliceCache::new(config);
+
+    // Upstream returns 500 bytes WITHOUT Content-Length header (chunked).
+    // The body is much larger than max_cacheable_body (100 bytes).
+    let body = Bytes::from(vec![0xAAu8; 500]);
+    Mock::given(method("GET"))
+        .and(path("/drain-test.bin"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_bytes(body.clone()),
+            // No Content-Length header - simulates chunked response
+        )
+        .expect(2) // Should be called twice
+        .mount(&mock_server)
+        .await;
+
+    let url = format!("{}/drain-test.bin", mock_server.uri());
+    let provider_headers = HashMap::new();
+
+    // First request - body exceeds max_cacheable_body, should be BYPASS
+    let resp1 = synctv_proxy::slice_cache::proxy_with_cache(&cache, None, &url, &provider_headers)
+        .await
+        .unwrap();
+
+    assert_eq!(resp1.status(), StatusCode::OK);
+    assert_eq!(
+        resp1
+            .headers()
+            .get("X-Cache-Status")
+            .map(|v| v.to_str().unwrap()),
+        Some("BYPASS"),
+        "Oversized response should be BYPASS"
+    );
+
+    // Consume the response body completely
+    let _ = resp1.into_body().collect().await.unwrap().to_bytes();
+
+    // Second request to the same URL - since body was too large to cache,
+    // it should hit upstream again. The key assertion is that this works
+    // correctly (no connection pool pollution from incomplete drain).
+    let resp2 = synctv_proxy::slice_cache::proxy_with_cache(&cache, None, &url, &provider_headers)
+        .await
+        .unwrap();
+
+    assert_eq!(resp2.status(), StatusCode::OK);
+    assert_eq!(
+        resp2
+            .headers()
+            .get("X-Cache-Status")
+            .map(|v| v.to_str().unwrap()),
+        Some("BYPASS"),
+        "Second oversized response should also be BYPASS"
+    );
+    let _ = resp2.into_body().collect().await.unwrap().to_bytes();
+
+    // Verify mock was called exactly twice (connection worked both times)
+    mock_server.verify().await;
+}
+
+/// Test that the body drain works correctly even with very large responses.
+/// This verifies that the fix properly drains all chunks, not just the first.
+#[tokio::test]
+async fn test_full_body_oversized_large_stream_drain() {
+    let mock_server = MockServer::start().await;
+
+    // Configure very small max_cacheable_body
+    let config = SliceCacheConfig {
+        max_cacheable_body: 50,
+        ..Default::default()
+    };
+    let cache = SliceCache::new(config);
+
+    // Create a body much larger than max_cacheable_body
+    // Using multiple "chunks" worth of data
+    let body = Bytes::from(vec![0xBBu8; 2000]);
+    Mock::given(method("GET"))
+        .and(path("/large-stream.bin"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_bytes(body.clone()),
+            // No Content-Length - simulates chunked streaming
+        )
+        .expect(1)
+        .mount(&mock_server)
+        .await;
+
+    let url = format!("{}/large-stream.bin", mock_server.uri());
+    let provider_headers = HashMap::new();
+
+    // Request should complete successfully without hanging
+    let resp = synctv_proxy::slice_cache::proxy_with_cache(&cache, None, &url, &provider_headers)
+        .await
+        .expect("Request should complete without error");
+
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert_eq!(
+        resp.headers()
+            .get("X-Cache-Status")
+            .map(|v| v.to_str().unwrap()),
+        Some("BYPASS")
+    );
+
+    // The response body should contain the data we buffered (up to max + one chunk)
+    let body_bytes = resp.into_body().collect().await.unwrap().to_bytes();
+    // We should have received some data (the buffered portion)
+    assert!(
+        !body_bytes.is_empty(),
+        "Should have received some body data"
+    );
+
+    // Verify mock was called exactly once
+    mock_server.verify().await;
+}
+
+// ------------------------------------------------------------------
 // H4: FileBackend header_len bounds check
 // ------------------------------------------------------------------
 

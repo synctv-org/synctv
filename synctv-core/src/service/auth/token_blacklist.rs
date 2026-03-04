@@ -261,6 +261,12 @@ impl PgTokenBlacklistStore {
         Self { pool }
     }
 
+    /// Get a reference to the underlying connection pool.
+    #[must_use]
+    pub fn pool(&self) -> &PgPool {
+        &self.pool
+    }
+
     /// Clean up expired token blacklist entries.
     ///
     /// This calls the `cleanup_expired_token_blacklist()` `PostgreSQL` function
@@ -472,6 +478,12 @@ const L2_TTL_MARGIN_SECS: u64 = 30;
 ///
 /// When Redis is not configured, the store degrades to L1 (moka) + PG,
 /// still providing L1 cache acceleration, negative caching, and PG durability.
+///
+/// ## Atomicity for `blacklist_if_not_exists`
+///
+/// When Redis is available, uses Redis `SET NX EX` for atomic operation.
+/// When Redis is not available, uses a per-key mutex (DashMap) to serialize
+/// concurrent operations on the same JTI, preventing TOCTOU race conditions.
 pub struct TieredTokenBlacklistStore {
     pg: PgTokenBlacklistStore,
     /// Shared Redis connection handle that follows Sentinel failover.
@@ -482,6 +494,9 @@ pub struct TieredTokenBlacklistStore {
     l1_family: moka::future::Cache<String, (Option<i64>, Instant)>,
     /// Redis key prefix (e.g., "synctv:")
     key_prefix: String,
+    /// Per-key mutex for atomic `blacklist_if_not_exists` operations (used when Redis unavailable)
+    /// Uses `DashMap` for O(1) lock acquisition without global contention
+    blacklist_locks: Arc<dashmap::DashMap<String, Arc<tokio::sync::Mutex<()>>>>,
 }
 
 impl TieredTokenBlacklistStore {
@@ -511,6 +526,7 @@ impl TieredTokenBlacklistStore {
                 .time_to_live(L1_POSITIVE_TTL)
                 .build(),
             key_prefix,
+            blacklist_locks: Arc::new(dashmap::DashMap::new()),
         }
     }
 
@@ -694,26 +710,105 @@ impl TokenBlacklistStore for TieredTokenBlacklistStore {
 
     /// Atomically blacklist the key if it doesn't already exist.
     ///
-    /// Uses `PostgreSQL` as the authoritative source for atomicity, then
-    /// propagates the result to L2 (Redis) and L1 (moka) caches.
+    /// ## Redis Mode (L2 available)
+    /// Uses Redis `SET NX EX` as the atomic operation, then asynchronously
+    /// persists to PG for durability. Redis provides the atomicity guarantee.
+    ///
+    /// ## Memory-Only Mode (no L2)
+    /// Uses a per-key mutex (DashMap) to serialize concurrent operations on the
+    /// same JTI, then delegates to PG's atomic operation.
     ///
     /// Returns:
     /// - `Ok(true)` if key already existed (replay detected)
     /// - `Ok(false)` if key was newly inserted (first use)
     async fn blacklist_if_not_exists(&self, key: &str, ttl_secs: u64) -> Result<bool> {
-        // 1. Atomic insert on PG (authoritative)
-        let already_existed = self.pg.blacklist_if_not_exists(key, ttl_secs).await?;
-
-        // 2. Propagate to caches (always positive, since PG now has the entry)
+        // --- Redis Mode: Use SET NX EX for atomic operation ---
         if let Some(ref redis_conn) = self.redis_conn {
             let redis_key = self.bl_key(key);
             let l2_ttl = Self::l2_positive_ttl(ttl_secs);
-            let mut conn = redis_conn.read().await.clone();
-            let _: redis::RedisResult<()> = conn.set_ex(&redis_key, "1", l2_ttl).await;
+
+            // SET key value NX EX ttl - atomically sets if not exists
+            // Returns Ok(true) if the key was set (first use)
+            // Returns Ok(false) if the key already existed (replay detected)
+            let set_result: redis::RedisResult<bool> = {
+                let mut conn = redis_conn.read().await.clone();
+                redis::cmd("SET")
+                    .arg(&redis_key)
+                    .arg("1")
+                    .arg("NX")
+                    .arg("EX")
+                    .arg(l2_ttl)
+                    .query_async(&mut conn)
+                    .await
+            };
+
+            let already_existed = match set_result {
+                Ok(true) => {
+                    // Key was newly set in Redis - first use
+                    // Asynchronously persist to PG (fire and forget, PG is for durability)
+                    // We don't wait for PG; Redis is the source of truth for atomicity
+                    let pg = PgTokenBlacklistStore::new(self.pg.pool.clone());
+                    let key_owned = key.to_string();
+                    tokio::spawn(async move {
+                        let _ = pg.blacklist(&key_owned, ttl_secs).await;
+                    });
+
+                    false // First use
+                }
+                Ok(false) => {
+                    // Key already existed in Redis - replay detected
+                    true // Replay detected
+                }
+                Err(e) => {
+                    // Redis error - fall back to PG atomic operation
+                    tracing::warn!(
+                        key = %key,
+                        error = %e,
+                        "Redis SET NX failed, falling back to PG atomic operation"
+                    );
+                    self.pg.blacklist_if_not_exists(key, ttl_secs).await?
+                }
+            };
+
+            // Update L1 cache (always positive after this operation)
+            self.l1_blacklist
+                .insert(key.to_string(), (true, Instant::now() + L1_POSITIVE_TTL))
+                .await;
+
+            return Ok(already_existed);
         }
+
+        // --- Memory-Only Mode: Use per-key mutex + PG atomic operation ---
+        // Get or create a mutex for this specific key to prevent TOCTOU races
+        let mutex = self
+            .blacklist_locks
+            .entry(key.to_string())
+            .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
+            .value()
+            .clone();
+
+        // Hold the lock while checking and inserting
+        let _guard = mutex.lock().await;
+
+        // Double-check L1 cache (may have been populated by another concurrent request)
+        if let Some((is_bl, expiry)) = self.l1_blacklist.get(key).await {
+            if Instant::now() < expiry && is_bl {
+                // Already blacklisted - replay detected
+                self.blacklist_locks.remove(key);
+                return Ok(true);
+            }
+        }
+
+        // Delegate to PG's atomic operation
+        let already_existed = self.pg.blacklist_if_not_exists(key, ttl_secs).await?;
+
+        // Update L1 cache
         self.l1_blacklist
             .insert(key.to_string(), (true, Instant::now() + L1_POSITIVE_TTL))
             .await;
+
+        // Clean up the mutex entry
+        self.blacklist_locks.remove(key);
 
         Ok(already_existed)
     }
@@ -1802,5 +1897,204 @@ mod tests {
             fallback_store.is_blacklisted(key).await,
             "Token should be blacklisted via fallback even when tiered store fails"
         );
+    }
+
+    // ---- Concurrent blacklist_if_not_exists tests ----
+
+    /// Test that concurrent calls to `blacklist_if_not_exists` on the same token
+    /// result in exactly one "first use" and all others detecting "replay".
+    /// This verifies the atomicity of the operation using InMemoryTokenBlacklistStore.
+    #[tokio::test]
+    async fn test_in_memory_concurrent_blacklist_if_not_exists_atomicity() {
+        let store = Arc::new(make_in_memory_store());
+        let key = "jti:concurrent_test";
+        let num_concurrent = 10;
+
+        // Spawn multiple concurrent tasks all trying to blacklist the same key
+        let mut handles = Vec::new();
+        for _ in 0..num_concurrent {
+            let store_clone = Arc::clone(&store);
+            let handle =
+                tokio::spawn(async move { store_clone.blacklist_if_not_exists(key, 3600).await });
+            handles.push(handle);
+        }
+
+        // Wait for all tasks to complete
+        let results = futures::future::join_all(handles).await;
+
+        // Collect successful results (handle both JoinError and inner Result)
+        let success_results: Vec<bool> = results
+            .into_iter()
+            .filter_map(|r| r.ok()) // Unwrap JoinHandle result
+            .filter_map(|r| r.ok()) // Unwrap inner Result<bool, Error>
+            .collect();
+
+        // Exactly one should return false (first use), all others should return true (replay)
+        let first_use_count = success_results.iter().filter(|&&r| !r).count();
+        let replay_count = success_results.iter().filter(|&&r| r).count();
+
+        assert_eq!(
+            first_use_count, 1,
+            "Exactly one call should return false (first use), got {}",
+            first_use_count
+        );
+        assert_eq!(
+            replay_count,
+            num_concurrent - 1,
+            "All other calls should return true (replay), got {}",
+            replay_count
+        );
+
+        // Verify the token is now blacklisted
+        assert!(store.is_blacklisted(key).await);
+    }
+
+    /// Test that concurrent calls to `blacklist_if_not_exists` on the same token
+    /// using FallbackTokenBlacklistStore maintain atomicity.
+    #[tokio::test]
+    async fn test_fallback_concurrent_blacklist_if_not_exists_atomicity() {
+        let primary = Arc::new(make_in_memory_store()) as Arc<dyn TokenBlacklistStore>;
+        let store = Arc::new(FallbackTokenBlacklistStore::with_defaults(primary));
+        let key = "jti:fallback_concurrent_test";
+        let num_concurrent = 10;
+
+        let mut handles = Vec::new();
+        for _ in 0..num_concurrent {
+            let store_clone = Arc::clone(&store);
+            let handle =
+                tokio::spawn(async move { store_clone.blacklist_if_not_exists(key, 3600).await });
+            handles.push(handle);
+        }
+
+        let results = futures::future::join_all(handles).await;
+        let success_results: Vec<bool> = results
+            .into_iter()
+            .filter_map(|r| r.ok())
+            .filter_map(|r| r.ok())
+            .collect();
+
+        let first_use_count = success_results.iter().filter(|&&r| !r).count();
+        let replay_count = success_results.iter().filter(|&&r| r).count();
+
+        assert_eq!(
+            first_use_count, 1,
+            "Exactly one call should return false (first use), got {}",
+            first_use_count
+        );
+        assert_eq!(
+            replay_count,
+            num_concurrent - 1,
+            "All other calls should return true (replay), got {}",
+            replay_count
+        );
+
+        assert!(store.is_blacklisted(key).await);
+    }
+
+    /// Test that concurrent calls to `blacklist_if_not_exists` on different tokens
+    /// all succeed (no false positives from the lock mechanism).
+    #[tokio::test]
+    async fn test_in_memory_concurrent_different_keys_all_succeed() {
+        let store = Arc::new(make_in_memory_store());
+        let num_concurrent = 10;
+
+        let mut handles = Vec::new();
+        for i in 0..num_concurrent {
+            let store_clone = Arc::clone(&store);
+            let handle = tokio::spawn(async move {
+                let key = format!("jti:different_key_{}", i);
+                store_clone.blacklist_if_not_exists(&key, 3600).await
+            });
+            handles.push(handle);
+        }
+
+        let results = futures::future::join_all(handles).await;
+        let success_results: Vec<bool> = results
+            .into_iter()
+            .filter_map(|r| r.ok())
+            .filter_map(|r| r.ok())
+            .collect();
+
+        // All should return false (first use) since keys are different
+        let first_use_count = success_results.iter().filter(|&&r| !r).count();
+        assert_eq!(
+            first_use_count, num_concurrent,
+            "All calls with different keys should return false (first use), got {}",
+            first_use_count
+        );
+    }
+
+    /// Test that the InMemoryTokenBlacklistStore cleans up lock entries after use
+    /// to prevent unbounded memory growth.
+    #[tokio::test]
+    async fn test_in_memory_blacklist_lock_cleanup() {
+        let store = make_in_memory_store();
+        let key = "jti:lock_cleanup_test";
+
+        // Initial lock count
+        let initial_count = store.blacklist_locks.len();
+
+        // Perform blacklist_if_not_exists
+        let _ = store.blacklist_if_not_exists(key, 3600).await;
+
+        // Lock should be cleaned up after the operation
+        // Note: There might be a brief moment where the lock exists,
+        // but it should be removed after the operation completes
+        tokio::time::sleep(Duration::from_millis(10)).await;
+
+        // The lock entry should be removed (or at least not grow unbounded)
+        // Since we're testing with a single key, the count should be back to initial
+        assert_eq!(
+            store.blacklist_locks.len(),
+            initial_count,
+            "Lock entry should be cleaned up after operation"
+        );
+    }
+
+    /// Stress test: rapid concurrent blacklist_if_not_exists on same key
+    /// to verify no race conditions under heavy load.
+    #[tokio::test]
+    async fn test_in_memory_stress_concurrent_blacklist_if_not_exists() {
+        let store = Arc::new(make_in_memory_store());
+        let key = "jti:stress_test";
+        let num_iterations = 100;
+
+        for iteration in 0..5 {
+            let iteration_key = format!("{}_iter_{}", key, iteration);
+            let mut handles = Vec::new();
+
+            for _ in 0..num_iterations {
+                let store_clone = Arc::clone(&store);
+                let key_clone = iteration_key.clone();
+                let handle = tokio::spawn(async move {
+                    store_clone.blacklist_if_not_exists(&key_clone, 3600).await
+                });
+                handles.push(handle);
+            }
+
+            let results = futures::future::join_all(handles).await;
+            let success_results: Vec<bool> = results
+                .into_iter()
+                .filter_map(|r| r.ok())
+                .filter_map(|r| r.ok())
+                .collect();
+
+            let first_use_count = success_results.iter().filter(|&&r| !r).count();
+            let replay_count = success_results.iter().filter(|&&r| r).count();
+
+            assert_eq!(
+                first_use_count, 1,
+                "Iteration {}: exactly one first use expected, got {}",
+                iteration, first_use_count
+            );
+            assert_eq!(
+                replay_count,
+                num_iterations - 1,
+                "Iteration {}: expected {} replays, got {}",
+                iteration,
+                num_iterations - 1,
+                replay_count
+            );
+        }
     }
 }

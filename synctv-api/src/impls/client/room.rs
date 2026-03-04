@@ -407,26 +407,11 @@ impl ClientApiImpl {
         let rid = RoomId::from_string(room_id.to_string());
 
         if req.settings.is_empty() {
-            // No settings to update -- return current room state without a DB write.
-            // Still verify membership before returning room data.
-            self.room_service
-                .check_membership(&rid, &uid)
-                .await
-                .map_err(|e| ApiError::Authorization(format!("Forbidden: {e}")))?;
-            let room = self
-                .room_service
-                .get_room(&rid)
-                .await
-                .map_err(ApiError::from)?;
-            let member_count = self
-                .connection_manager
-                .room_connection_count_distributed(&rid)
-                .await
-                .try_into()
-                .ok();
-            return Ok(crate::proto::client::UpdateRoomSettingsResponse {
-                room: Some(room_to_proto_basic(&room, None, member_count)),
-            });
+            // SECURITY: Return success with None room instead of room details.
+            // Previously this returned room data after only checking membership,
+            // which allowed any room member to bypass UPDATE_ROOM_SETTINGS permission.
+            // Users should use get_room or get_room_settings endpoints to fetch room info.
+            return Ok(crate::proto::client::UpdateRoomSettingsResponse { room: None });
         }
 
         let settings: synctv_core::models::RoomSettings = serde_json::from_slice(&req.settings)?;

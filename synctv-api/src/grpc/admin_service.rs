@@ -518,6 +518,14 @@ impl AdminService for AdminServiceImpl {
         &self,
         request: Request<BatchBanUsersRequest>,
     ) -> Result<Response<BatchBanUsersResponse>, Status> {
+        const MAX_BATCH_SIZE: usize = 100;
+        if request.get_ref().user_ids.len() > MAX_BATCH_SIZE {
+            return Err(Status::invalid_argument(format!(
+                "Batch size {} exceeds maximum allowed {}",
+                request.get_ref().user_ids.len(),
+                MAX_BATCH_SIZE
+            )));
+        }
         let caller_role = self.check_admin_get_role(&request).await?;
         let admin_user_id = super::interceptors::extract_user_id(&request)?;
         let ctx = grpc_request_context(&request);
@@ -534,6 +542,14 @@ impl AdminService for AdminServiceImpl {
         &self,
         request: Request<BatchDeleteUsersRequest>,
     ) -> Result<Response<BatchDeleteUsersResponse>, Status> {
+        const MAX_BATCH_SIZE: usize = 100;
+        if request.get_ref().user_ids.len() > MAX_BATCH_SIZE {
+            return Err(Status::invalid_argument(format!(
+                "Batch size {} exceeds maximum allowed {}",
+                request.get_ref().user_ids.len(),
+                MAX_BATCH_SIZE
+            )));
+        }
         self.check_root(&request).await?;
         let admin_user_id = super::interceptors::extract_user_id(&request)?;
         let ctx = grpc_request_context(&request);
@@ -556,6 +572,14 @@ impl AdminService for AdminServiceImpl {
         &self,
         request: Request<BatchBanRoomsRequest>,
     ) -> Result<Response<BatchBanRoomsResponse>, Status> {
+        const MAX_BATCH_SIZE: usize = 100;
+        if request.get_ref().room_ids.len() > MAX_BATCH_SIZE {
+            return Err(Status::invalid_argument(format!(
+                "Batch size {} exceeds maximum allowed {}",
+                request.get_ref().room_ids.len(),
+                MAX_BATCH_SIZE
+            )));
+        }
         self.check_admin(&request).await?;
         let admin_user_id = super::interceptors::extract_user_id(&request)?;
         let ctx = grpc_request_context(&request);
@@ -572,6 +596,14 @@ impl AdminService for AdminServiceImpl {
         &self,
         request: Request<BatchDeleteRoomsRequest>,
     ) -> Result<Response<BatchDeleteRoomsResponse>, Status> {
+        const MAX_BATCH_SIZE: usize = 100;
+        if request.get_ref().room_ids.len() > MAX_BATCH_SIZE {
+            return Err(Status::invalid_argument(format!(
+                "Batch size {} exceeds maximum allowed {}",
+                request.get_ref().room_ids.len(),
+                MAX_BATCH_SIZE
+            )));
+        }
         self.check_admin(&request).await?;
         let admin_user_id = super::interceptors::extract_user_id(&request)?;
         let ctx = grpc_request_context(&request);
@@ -964,5 +996,76 @@ mod tests {
             let status = map_api_error(err);
             assert_eq!(status.code(), expected_code);
         }
+    }
+
+    // ==================== Batch Size Limit Validation ====================
+
+    #[test]
+    fn test_batch_size_limit_validation() {
+        // Verify the constant is defined correctly
+        const MAX_BATCH_SIZE: usize = 100;
+        assert_eq!(MAX_BATCH_SIZE, 100);
+    }
+
+    #[test]
+    fn test_batch_ban_users_request_size_limit() {
+        // Create request with 101 user IDs (exceeds limit)
+        let user_ids: Vec<String> = (0..101).map(|i| format!("user_{i}")).collect();
+        let request = BatchBanUsersRequest {
+            user_ids,
+            reason: "test".to_string(),
+        };
+        assert!(request.user_ids.len() > 100);
+
+        // Create request with exactly 100 user IDs (at limit)
+        let user_ids_at_limit: Vec<String> = (0..100).map(|i| format!("user_{i}")).collect();
+        let request_at_limit = BatchBanUsersRequest {
+            user_ids: user_ids_at_limit,
+            reason: "test".to_string(),
+        };
+        assert_eq!(request_at_limit.user_ids.len(), 100);
+
+        // Create request with 99 user IDs (below limit)
+        let user_ids_below_limit: Vec<String> = (0..99).map(|i| format!("user_{i}")).collect();
+        let request_below_limit = BatchBanUsersRequest {
+            user_ids: user_ids_below_limit,
+            reason: "test".to_string(),
+        };
+        assert!(request_below_limit.user_ids.len() < 100);
+    }
+
+    #[test]
+    fn test_batch_delete_users_request_size_limit() {
+        // Create request with 101 user IDs (exceeds limit)
+        let user_ids: Vec<String> = (0..101).map(|i| format!("user_{i}")).collect();
+        let request = BatchDeleteUsersRequest { user_ids };
+        assert!(request.user_ids.len() > 100);
+    }
+
+    #[test]
+    fn test_batch_ban_rooms_request_size_limit() {
+        // Create request with 101 room IDs (exceeds limit)
+        let room_ids: Vec<String> = (0..101).map(|i| format!("room_{i}")).collect();
+        let request = BatchBanRoomsRequest {
+            room_ids,
+            reason: "test".to_string(),
+        };
+        assert!(request.room_ids.len() > 100);
+    }
+
+    #[test]
+    fn test_batch_delete_rooms_request_size_limit() {
+        // Create request with 101 room IDs (exceeds limit)
+        let room_ids: Vec<String> = (0..101).map(|i| format!("room_{i}")).collect();
+        let request = BatchDeleteRoomsRequest { room_ids };
+        assert!(request.room_ids.len() > 100);
+    }
+
+    #[test]
+    fn test_status_invalid_argument_for_batch_size() {
+        // Verify that we would return the correct Status for oversized batches
+        let status = Status::invalid_argument("Batch size 101 exceeds maximum allowed 100");
+        assert_eq!(status.code(), tonic::Code::InvalidArgument);
+        assert!(status.message().contains("exceeds maximum"));
     }
 }

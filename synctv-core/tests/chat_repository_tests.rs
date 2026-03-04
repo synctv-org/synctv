@@ -1,6 +1,6 @@
 //! `ChatRepository` integration tests
 //!
-//! Tests: `list_by_room_cursor` pagination, `get_by_id` 90-day limit,
+//! Tests: `list_by_room_cursor` pagination, `get_by_id` without time restriction,
 //!        `cleanup_old_messages` `keep_count=0` no-op, `cleanup_all_rooms` `activity_window_minutes=0`.
 //!
 //! Run with: cargo test -p synctv-core --test `chat_repository_tests`
@@ -123,14 +123,14 @@ async fn test_list_by_room_cursor_pagination() {
     assert_eq!(page3[0].content, "msg_0");
 }
 
-// ─── get_by_id 90-day limit ─────────────────────────────────────────
+// ─── get_by_id without time restriction ─────────────────────────────────────────
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_get_by_id_within_90_days() {
+async fn test_get_by_id_recent_message() {
     let (_container, pool) = create_test_pool().await;
     let chat_repo = ChatRepository::new(pool.clone());
-    let (user, room) = setup_room(&pool, "chat_90d_user", "chat_90d_room").await;
+    let (user, room) = setup_room(&pool, "chat_get_user", "chat_get_room").await;
 
     let msg = make_chat_message(&room.id, &user.id, "recent message");
     let created = chat_repo.create(&msg).await.unwrap();
@@ -142,10 +142,12 @@ async fn test_get_by_id_within_90_days() {
 
 #[tokio::test]
 #[ignore = "Requires Docker"]
-async fn test_get_by_id_older_than_90_days_returns_none() {
+async fn test_get_by_id_old_message_succeeds() {
+    // Verify that get_by_id can retrieve messages older than 90 days.
+    // This is important for audit scenarios where historical messages need to be accessed.
     let (_container, pool) = create_test_pool().await;
     let chat_repo = ChatRepository::new(pool.clone());
-    let (user, room) = setup_room(&pool, "chat_90d_old_user", "chat_90d_old_room").await;
+    let (user, room) = setup_room(&pool, "chat_old_user", "chat_old_room").await;
 
     let old_date = Utc::now() - Duration::days(100);
     let msg_id = synctv_core::models::generate_id();
@@ -163,10 +165,60 @@ async fn test_get_by_id_older_than_90_days_returns_none() {
     .await
     .unwrap();
 
+    // get_by_id should now successfully retrieve messages older than 90 days
     let fetched = chat_repo.get_by_id(&msg_id).await.unwrap();
     assert!(
+        fetched.is_some(),
+        "get_by_id should return messages older than 90 days for audit purposes"
+    );
+    assert_eq!(fetched.unwrap().content, "old message");
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_get_by_id_very_old_message_succeeds() {
+    // Verify that get_by_id can retrieve messages from a year ago.
+    // This ensures no hidden time restrictions exist.
+    let (_container, pool) = create_test_pool().await;
+    let chat_repo = ChatRepository::new(pool.clone());
+    let (user, room) = setup_room(&pool, "chat_very_old_user", "chat_very_old_room").await;
+
+    let very_old_date = Utc::now() - Duration::days(365);
+    let msg_id = synctv_core::models::generate_id();
+
+    // Insert directly with backdated created_at (1 year ago)
+    sqlx::query(
+        r"INSERT INTO chat_messages (id, room_id, user_id, content, message_type, created_at)
+          VALUES ($1, $2, $3, 'very old message from a year ago', 1, $4)",
+    )
+    .bind(&msg_id)
+    .bind(room.id.as_str())
+    .bind(user.id.as_str())
+    .bind(very_old_date)
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    // get_by_id should retrieve very old messages for audit purposes
+    let fetched = chat_repo.get_by_id(&msg_id).await.unwrap();
+    assert!(
+        fetched.is_some(),
+        "get_by_id should return messages from any time period"
+    );
+    assert_eq!(fetched.unwrap().content, "very old message from a year ago");
+}
+
+#[tokio::test]
+#[ignore = "Requires Docker"]
+async fn test_get_by_id_nonexistent_returns_none() {
+    // Verify that get_by_id returns None for non-existent messages
+    let (_container, pool) = create_test_pool().await;
+    let chat_repo = ChatRepository::new(pool.clone());
+
+    let fetched = chat_repo.get_by_id("nonexistent_msg_id").await.unwrap();
+    assert!(
         fetched.is_none(),
-        "get_by_id should not return messages older than 90 days"
+        "get_by_id should return None for non-existent messages"
     );
 }
 

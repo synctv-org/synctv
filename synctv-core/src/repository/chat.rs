@@ -158,15 +158,19 @@ impl ChatRepository {
 
     /// Get a specific message by ID
     ///
-    /// Scans only recent partitions (last 90 days) to avoid full partition scan.
-    /// This matches the default retention period for chat messages.
+    /// Queries by primary key without time restriction. This allows fetching
+    /// any message for audit/logging scenarios where historical messages may
+    /// need to be retrieved.
+    ///
+    /// Note: Without a `created_at` filter, this query cannot use partition
+    /// pruning and may scan multiple partitions. However, since this is a
+    /// primary key lookup, it remains efficient.
     pub async fn get_by_id(&self, message_id: &str) -> Result<Option<ChatMessage>> {
         let msg = sqlx::query_as::<_, ChatMessage>(
             r"
             SELECT id, room_id, user_id, content, message_type, created_at
             FROM chat_messages
             WHERE id = $1
-              AND created_at >= NOW() - INTERVAL '90 days'
             ",
         )
         .bind(message_id)

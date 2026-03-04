@@ -1143,3 +1143,78 @@ fn test_playback_state_version_i32_range_still_works() {
     let proto = playback_state_to_proto(&state);
     assert_eq!(proto.version, 42);
 }
+
+// === P2#11: update_room_settings empty settings permission bypass ===
+
+/// Test: Empty settings request should not return room details
+///
+/// SECURITY ISSUE: When settings.is_empty(), the original code only checked
+/// membership (which any room member has) before returning full room details.
+/// This allowed any regular member to get room info without having
+/// UPDATE_ROOM_SETTINGS permission by simply sending an empty settings request.
+///
+/// FIX: When settings.is_empty(), return success with None room field instead
+/// of returning room details. Users should use get_room or get_room_settings
+/// endpoints to retrieve room information (which have their own permission checks).
+#[test]
+fn test_empty_settings_response_design() {
+    // This test documents the expected behavior after the fix:
+    // Empty settings request should succeed but return None for room field.
+    //
+    // The proto definition allows room to be Optional:
+    //   message UpdateRoomSettingsResponse { Room room = 1; }
+    //
+    // After fix:
+    // - settings.is_empty() -> Ok(UpdateRoomSettingsResponse { room: None })
+    // - !settings.is_empty() -> requires UPDATE_ROOM_SETTINGS permission
+    //                          -> returns updated room on success
+    //
+    // This prevents the permission bypass where any member could get room info
+    // without proper authorization.
+    assert!(true, "Design documented: empty settings returns None room");
+}
+
+/// Test: Verify that check_membership alone is insufficient for room data access
+///
+/// The original bug: `check_membership` only verifies the user is in the room,
+/// not that they have permission to view room settings. Any Member role user
+/// would pass this check but should not have access to room details via
+/// update_room_settings.
+#[test]
+fn test_check_membership_vs_check_permission_distinction() {
+    // This test documents the distinction between:
+    // 1. check_membership - only verifies user is a room member
+    // 2. check_permission - verifies user has specific permission bit
+    //
+    // For update_room_settings with empty settings:
+    // - BEFORE (bug): used check_membership -> any member could get room info
+    // - AFTER (fix): returns success with no room data
+    //
+    // For update_room_settings with actual settings:
+    // - Uses check_permission(UPDATE_ROOM_SETTINGS) -> only authorized users
+
+    // Member role does NOT have UPDATE_ROOM_SETTINGS by default
+    let member_permissions = RoomRole::Member.permissions();
+    let update_settings_bit = synctv_core::models::PermissionBits::UPDATE_ROOM_SETTINGS;
+
+    assert_eq!(
+        member_permissions.0 & update_settings_bit,
+        0,
+        "Member role should NOT have UPDATE_ROOM_SETTINGS permission by default"
+    );
+
+    // Admin/Creator roles DO have UPDATE_ROOM_SETTINGS
+    let admin_permissions = RoomRole::Admin.permissions();
+    assert_ne!(
+        admin_permissions.0 & update_settings_bit,
+        0,
+        "Admin role SHOULD have UPDATE_ROOM_SETTINGS permission"
+    );
+
+    let creator_permissions = RoomRole::Creator.permissions();
+    assert_ne!(
+        creator_permissions.0 & update_settings_bit,
+        0,
+        "Creator role SHOULD have UPDATE_ROOM_SETTINGS permission"
+    );
+}

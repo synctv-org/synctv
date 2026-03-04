@@ -120,6 +120,14 @@ pub fn parse_content_range(value: &str) -> Result<ContentRange, anyhow::Error> {
     // Parse end (inclusive in the header, we convert to exclusive like nginx).
     let (end_inclusive, rest) = parse_u64_prefix(rest)
         .ok_or_else(|| anyhow::anyhow!("Invalid or missing end in Content-Range"))?;
+
+    // Validate start <= end_inclusive (e.g., "bytes 500-100/1000" is invalid).
+    if start > end_inclusive {
+        return Err(anyhow::anyhow!(
+            "Invalid Content-Range: start ({start}) > end ({end_inclusive})"
+        ));
+    }
+
     let end = end_inclusive
         .checked_add(1)
         .ok_or_else(|| anyhow::anyhow!("Content-Range end overflow"))?;
@@ -292,5 +300,20 @@ mod tests {
         assert!(
             parse_content_range("bytes 18446744073709551615-18446744073709551615/999").is_err()
         );
+    }
+
+    #[test]
+    fn test_parse_content_range_start_greater_than_end() {
+        // Invalid: start (500) > end (100)
+        assert!(parse_content_range("bytes 500-100/1000").is_err());
+    }
+
+    #[test]
+    fn test_parse_content_range_start_equals_end_is_valid() {
+        // Valid: start == end means a single byte (e.g., bytes 100-100/1000)
+        let cr = parse_content_range("bytes 100-100/1000").unwrap();
+        assert_eq!(cr.start, 100);
+        assert_eq!(cr.end, 101); // exclusive, so it's 1 byte
+        assert_eq!(cr.complete_length, Some(1000));
     }
 }

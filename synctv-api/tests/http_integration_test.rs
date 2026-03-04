@@ -701,6 +701,206 @@ mod security_headers {
 }
 
 // ============================================================================
+// Module: Provider routes security headers
+// ============================================================================
+
+mod provider_security_headers {
+    use super::*;
+    use synctv_api::http::middleware::security_headers_middleware;
+
+    /// Create a router that mimics the Provider routes structure with security headers.
+    /// This mirrors how Provider routes are set up in mod.rs:
+    /// Router::new()
+    ///     .nest("/api/providers/...", provider_routes())
+    ///     .route_layer(read_rate_limit)
+    ///     .layer(security_headers_middleware)  // Applied globally
+    fn provider_style_router() -> Router {
+        Router::new()
+            // Simulate /api/provider/* routes (common routes)
+            .route(
+                "/api/provider/instances",
+                get(|| async { "provider instances" }),
+            )
+            .route(
+                "/api/provider/backends/{provider_type}",
+                get(|| async { "provider backends" }),
+            )
+            // Simulate /api/providers/bilibili/* routes
+            .route(
+                "/api/providers/bilibili/parse",
+                post(|| async { "bilibili parse" }),
+            )
+            .route(
+                "/api/providers/bilibili/me",
+                get(|| async { "bilibili me" }),
+            )
+            // Simulate /api/providers/alist/* routes
+            .route("/api/providers/alist/list", get(|| async { "alist list" }))
+            // Simulate /api/providers/emby/* routes
+            .route(
+                "/api/providers/emby/search",
+                get(|| async { "emby search" }),
+            )
+            // Simulate /api/providers/direct_url/* routes
+            .route(
+                "/api/providers/direct_url/resolve",
+                post(|| async { "direct_url resolve" }),
+            )
+            // Apply security headers middleware (simulating global layer)
+            .layer(axum_middleware::from_fn(security_headers_middleware))
+    }
+
+    #[tokio::test]
+    async fn test_provider_common_routes_have_security_headers() {
+        let app = provider_style_router();
+        let req = Request::get("/api/provider/instances")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+
+        // Verify all security headers are present
+        assert_eq!(resp.headers().get("X-Frame-Options").unwrap(), "DENY");
+        assert_eq!(
+            resp.headers().get("X-Content-Type-Options").unwrap(),
+            "nosniff"
+        );
+        assert_eq!(
+            resp.headers().get("X-XSS-Protection").unwrap(),
+            "1; mode=block"
+        );
+        assert!(resp.headers().contains_key("Content-Security-Policy"));
+        assert!(resp.headers().contains_key("Referrer-Policy"));
+        assert!(resp.headers().contains_key("Permissions-Policy"));
+    }
+
+    #[tokio::test]
+    async fn test_bilibili_provider_routes_have_security_headers() {
+        let app = provider_style_router();
+        let req = Request::post("/api/providers/bilibili/parse")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+
+        // Verify security headers
+        assert_eq!(resp.headers().get("X-Frame-Options").unwrap(), "DENY");
+        assert_eq!(
+            resp.headers().get("X-Content-Type-Options").unwrap(),
+            "nosniff"
+        );
+        assert!(resp.headers().contains_key("Content-Security-Policy"));
+    }
+
+    #[tokio::test]
+    async fn test_alist_provider_routes_have_security_headers() {
+        let app = provider_style_router();
+        let req = Request::get("/api/providers/alist/list")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+
+        // Verify security headers
+        assert_eq!(resp.headers().get("X-Frame-Options").unwrap(), "DENY");
+        assert_eq!(
+            resp.headers().get("X-Content-Type-Options").unwrap(),
+            "nosniff"
+        );
+        assert!(resp.headers().contains_key("Content-Security-Policy"));
+    }
+
+    #[tokio::test]
+    async fn test_emby_provider_routes_have_security_headers() {
+        let app = provider_style_router();
+        let req = Request::get("/api/providers/emby/search")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+
+        // Verify security headers
+        assert_eq!(resp.headers().get("X-Frame-Options").unwrap(), "DENY");
+        assert_eq!(
+            resp.headers().get("X-Content-Type-Options").unwrap(),
+            "nosniff"
+        );
+        assert!(resp.headers().contains_key("Content-Security-Policy"));
+    }
+
+    #[tokio::test]
+    async fn test_direct_url_provider_routes_have_security_headers() {
+        let app = provider_style_router();
+        let req = Request::post("/api/providers/direct_url/resolve")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+
+        // Verify security headers
+        assert_eq!(resp.headers().get("X-Frame-Options").unwrap(), "DENY");
+        assert_eq!(
+            resp.headers().get("X-Content-Type-Options").unwrap(),
+            "nosniff"
+        );
+        assert!(resp.headers().contains_key("Content-Security-Policy"));
+    }
+
+    #[tokio::test]
+    async fn test_provider_routes_cache_control_no_store() {
+        let app = provider_style_router();
+        let req = Request::get("/api/provider/instances")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+
+        let cache_control = resp
+            .headers()
+            .get("Cache-Control")
+            .unwrap()
+            .to_str()
+            .unwrap();
+        assert!(
+            cache_control.contains("no-store"),
+            "Provider routes should have no-store cache control"
+        );
+        assert!(
+            cache_control.contains("no-cache"),
+            "Provider routes should have no-cache cache control"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_provider_routes_referrer_policy() {
+        let app = provider_style_router();
+        let req = Request::get("/api/provider/backends/bilibili")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+
+        assert_eq!(
+            resp.headers().get("Referrer-Policy").unwrap(),
+            "strict-origin-when-cross-origin"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_provider_routes_csp_has_frame_ancestors_none() {
+        let app = provider_style_router();
+        let req = Request::get("/api/providers/bilibili/me")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+
+        let csp = resp
+            .headers()
+            .get("Content-Security-Policy")
+            .unwrap()
+            .to_str()
+            .unwrap();
+        assert!(
+            csp.contains("frame-ancestors 'none'"),
+            "CSP must include frame-ancestors 'none' for clickjacking protection on provider routes"
+        );
+    }
+}
+
+// ============================================================================
 // Module: HSTS header generation
 // ============================================================================
 

@@ -10,11 +10,16 @@ name = "synctv"
 path = "src/main.rs"
 
 [features]
-default = ["k8s"]
+default = ["k8s", "mimalloc"]
 # Enable Kubernetes support (K8s DNS discovery, K8s Lease leader election).
 # Disable to reduce binary size for non-K8s deployments:
 #   cargo build --no-default-features
 k8s = ["synctv-cluster/k8s"]
+# Allocator selection (mutually exclusive — enable at most one):
+#   mimalloc (default) — fast, works on all platforms
+#   jemalloc           — excellent for long-running servers, unix only
+mimalloc = ["dep:mimalloc"]
+jemalloc = ["dep:tikv-jemallocator"]
 
 [lints]
 workspace = true
@@ -53,6 +58,11 @@ serde_json.workspace = true
 # Logging
 tracing.workspace = true
 tracing-subscriber.workspace = true
+
+mimalloc = { workspace = true, optional = true }
+
+[target.'cfg(unix)'.dependencies]
+tikv-jemallocator = { workspace = true, optional = true }
 
 [dev-dependencies]
 synctv-media-providers.workspace = true

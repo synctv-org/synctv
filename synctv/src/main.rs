@@ -1,5 +1,18 @@
 #![cfg_attr(test, allow(clippy::unwrap_used))]
 
+// Allocator selection: mimalloc (default) or jemalloc (opt-in, unix only).
+// Compile-time guard: cannot enable both simultaneously.
+#[cfg(all(feature = "mimalloc", feature = "jemalloc"))]
+compile_error!("features \"mimalloc\" and \"jemalloc\" are mutually exclusive — use only one");
+
+#[cfg(all(feature = "jemalloc", not(feature = "mimalloc")))]
+#[global_allocator]
+static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
+
+#[cfg(all(feature = "mimalloc", not(feature = "jemalloc")))]
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 mod app;
 mod bootstrap;
 mod cluster_bridge;

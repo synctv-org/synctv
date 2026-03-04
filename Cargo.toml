@@ -250,6 +250,10 @@ tokio-tungstenite = "0.26"
 # Benchmarking
 criterion = { version = "0.8", features = ["html_reports", "async_tokio"] }
 
+# Allocators
+tikv-jemallocator = "0.6"
+mimalloc = { version = "0.1", features = ["v3"] }
+
 # Internal workspace crates
 synctv-proto = { path = "synctv-proto" }
 synctv-core = { path = "synctv-core" }

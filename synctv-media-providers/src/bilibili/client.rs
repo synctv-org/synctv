@@ -147,20 +147,28 @@ fn reset_consecutive_failures() {
     WBI_CONSECUTIVE_FAILURES.store(0, Ordering::Release);
 }
 
-/// Release the refresh lock after refresh completes and notify all waiters.
-/// Deprecated: Use `release_refresh_lock_on_success_and_notify` or
-/// `release_refresh_lock_on_failure_and_notify` instead.
+/// Reset all global WBI state for test isolation.
+///
+/// Parallel tests that share the process-wide WBI cache / refresh lock can
+/// interfere with each other.  Call this at the start of any test that
+/// exercises WBI signing to get a clean slate.
+///
+/// # Safety (logical)
+/// This is only compiled for `#[cfg(test)]` and should **not** be called from
+/// production code.
+#[cfg(test)]
 #[allow(dead_code)]
-fn release_refresh_lock_and_notify() {
+pub(crate) async fn reset_wbi_state_for_tests() {
+    // Clear the cached key
+    {
+        let mut guard = WBI_KEY_CACHE.lock().await;
+        *guard = None;
+    }
+    // Reset atomics
     WBI_REFRESH_IN_PROGRESS.store(0, Ordering::Release);
-    // Notify all waiting tasks that refresh is complete
-    WBI_REFRESH_NOTIFY.notify_waiters();
-}
-
-/// Check if a refresh is currently in progress.
-#[allow(dead_code)]
-fn is_refresh_in_progress() -> bool {
-    WBI_REFRESH_IN_PROGRESS.load(Ordering::Acquire) > 0
+    WBI_CONSECUTIVE_FAILURES.store(0, Ordering::Release);
+    // Reset test API call counter
+    WBI_API_CALL_COUNT.store(0, Ordering::Relaxed);
 }
 
 /// Generate the mixin key from `img_key` and `sub_key` using the encoding table.
@@ -242,6 +250,14 @@ fn wbi_sign(params: &[(&str, String)], mixin_key: &str) -> Vec<(String, String)>
     all_params
 }
 
+/// Sanitize a single cookie key-value pair by stripping CR/LF characters
+/// to prevent HTTP header injection.
+fn sanitize_cookie_pair(key: &str, value: &str) -> String {
+    let safe_k: String = key.chars().filter(|c| *c != '\r' && *c != '\n').collect();
+    let safe_v: String = value.chars().filter(|c| *c != '\r' && *c != '\n').collect();
+    format!("{safe_k}={safe_v}")
+}
+
 /// Bilibili HTTP Client
 pub struct BilibiliClient {
     client: Client,
@@ -249,20 +265,28 @@ pub struct BilibiliClient {
 }
 
 impl BilibiliClient {
-    /// Create a new Bilibili client (reuses shared connection pool and rate limiter)
-    pub fn new() -> Result<Self, BilibiliError> {
-        Ok(Self {
+    /// Create a new Bilibili client (reuses shared connection pool and rate limiter).
+    ///
+    /// This is infallible because the shared HTTP client is constructed lazily
+    /// via `LazyLock` and the constructor only clones an `Arc`.
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
             client: SHARED_CLIENT.clone(),
             cookies: None,
-        })
+        }
     }
 
-    /// Create a new Bilibili client with cookies (reuses shared connection pool and rate limiter)
-    pub fn with_cookies(cookies: HashMap<String, String>) -> Result<Self, BilibiliError> {
-        Ok(Self {
+    /// Create a new Bilibili client with cookies (reuses shared connection pool and rate limiter).
+    ///
+    /// This is infallible because the shared HTTP client is constructed lazily
+    /// via `LazyLock` and the constructor only clones an `Arc`.
+    #[must_use]
+    pub fn with_cookies(cookies: HashMap<String, String>) -> Self {
+        Self {
             client: SHARED_CLIENT.clone(),
             cookies: Some(cookies),
-        })
+        }
     }
 
     /// Get WBI mixin key, fetching and caching it if necessary.
@@ -444,11 +468,7 @@ impl BilibiliClient {
         self.cookies.as_ref().map(|cookies| {
             cookies
                 .iter()
-                .map(|(k, v)| {
-                    let safe_k: String = k.chars().filter(|c| *c != '\r' && *c != '\n').collect();
-                    let safe_v: String = v.chars().filter(|c| *c != '\r' && *c != '\n').collect();
-                    format!("{safe_k}={safe_v}")
-                })
+                .map(|(k, v)| sanitize_cookie_pair(k, v))
                 .collect::<Vec<_>>()
                 .join("; ")
         })
@@ -460,11 +480,7 @@ impl BilibiliClient {
         if let Some(cookies) = &self.cookies {
             let cookie_str = cookies
                 .iter()
-                .map(|(k, v)| {
-                    let safe_k: String = k.chars().filter(|c| *c != '\r' && *c != '\n').collect();
-                    let safe_v: String = v.chars().filter(|c| *c != '\r' && *c != '\n').collect();
-                    format!("{safe_k}={safe_v}")
-                })
+                .map(|(k, v)| sanitize_cookie_pair(k, v))
                 .collect::<Vec<_>>()
                 .join("; ");
             req.header("Cookie", cookie_str)
@@ -1834,7 +1850,7 @@ impl BilibiliClient {
     /// use std::sync::Arc;
     /// use std::time::Duration;
     ///
-    /// let client = Arc::new(BilibiliClient::new()?);
+    /// let client = Arc::new(BilibiliClient::new());
     /// let config = ReconnectConfig {
     ///     max_retries: 5,
     ///     initial_delay: Duration::from_secs(1),
@@ -2157,7 +2173,7 @@ pub enum ReconnectResult {
 /// use std::sync::Arc;
 /// use std::time::Duration;
 ///
-/// let client = Arc::new(BilibiliClient::new()?);
+/// let client = Arc::new(BilibiliClient::new());
 /// let reconnect_config = ReconnectConfig {
 ///     max_retries: 5,
 ///     initial_delay: Duration::from_secs(1),
@@ -2735,8 +2751,11 @@ pub struct DanmuHost {
     pub ws_port: u32,
 }
 
-// Note: Default impl intentionally removed. BilibiliClient::new() returns
-// Result and callers should handle the error. Use BilibiliClient::new() directly.
+impl Default for BilibiliClient {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 /// DASH stream data (structured for upper layer to generate MPD)
 #[derive(Debug, Clone)]
@@ -3294,7 +3313,7 @@ mod tests {
 
     #[test]
     fn test_client_creation_no_cookies() {
-        let client = BilibiliClient::new().unwrap();
+        let client = BilibiliClient::new();
         assert!(client.cookies.is_none());
     }
 
@@ -3302,7 +3321,7 @@ mod tests {
     fn test_client_creation_with_cookies() {
         let mut cookies = HashMap::new();
         cookies.insert("SESSDATA".to_string(), "abc123".to_string());
-        let client = BilibiliClient::with_cookies(cookies.clone()).unwrap();
+        let client = BilibiliClient::with_cookies(cookies.clone());
         assert!(client.cookies.is_some());
         assert_eq!(
             client.cookies.as_ref().unwrap().get("SESSDATA"),
@@ -3631,7 +3650,7 @@ mod tests {
 
     #[test]
     fn test_build_cookie_header_empty_returns_none() {
-        let client = BilibiliClient::new().unwrap();
+        let client = BilibiliClient::new();
         assert!(client.build_cookie_header().is_none());
     }
 
@@ -3640,7 +3659,7 @@ mod tests {
         let mut cookies = HashMap::new();
         cookies.insert("SESSDATA".to_string(), "abc123".to_string());
         cookies.insert("bili_jct".to_string(), "token456".to_string());
-        let client = BilibiliClient::with_cookies(cookies).unwrap();
+        let client = BilibiliClient::with_cookies(cookies);
 
         let header = client.build_cookie_header().unwrap();
         // Should contain both cookies joined by "; "
@@ -3653,7 +3672,7 @@ mod tests {
     fn test_build_cookie_header_sanitizes_crlf() {
         let mut cookies = HashMap::new();
         cookies.insert("evil\r\nkey".to_string(), "evil\r\nvalue".to_string());
-        let client = BilibiliClient::with_cookies(cookies).unwrap();
+        let client = BilibiliClient::with_cookies(cookies);
 
         let header = client.build_cookie_header().unwrap();
         // CRLF characters should be stripped

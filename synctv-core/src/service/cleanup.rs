@@ -43,7 +43,7 @@ pub struct CleanupConfig {
     /// Days to retain any notification (read or unread) before deletion (0 = never purge)
     pub notification_max_retention_days: u32,
     /// Maximum chat messages to keep per room (0 = unlimited)
-    pub chat_max_messages_per_room: i32,
+    pub chat_max_messages_per_room: i64,
 }
 
 impl Default for CleanupConfig {
@@ -128,11 +128,11 @@ impl CleanupService {
     /// Get the effective `chat_max_messages_per_room` value.
     ///
     /// Reads from `SettingsRegistry` if available, otherwise falls back to config.
-    fn chat_max_messages_per_room(&self) -> i32 {
+    fn chat_max_messages_per_room(&self) -> i64 {
         self.settings_registry
             .as_ref()
             .and_then(|r| r.max_chat_messages_per_room.get().ok())
-            .map_or(self.config.chat_max_messages_per_room, |v| v as i32)
+            .map_or(self.config.chat_max_messages_per_room, |v| v as i64)
     }
 
     /// Run all cleanup tasks once
@@ -140,6 +140,14 @@ impl CleanupService {
     /// Each task runs independently; if one fails, others still execute.
     /// Returns a summary of what was cleaned up.
     pub async fn run_all(&self) -> CleanupResult {
+        // Short-circuit if we are not the leader to avoid duplicate work
+        // across cluster replicas. This guards direct `run_all()` callers;
+        // the periodic loop in `start_periodic` has its own check but calling
+        // `run_all()` directly (e.g. from an admin endpoint) should also be safe.
+        if !self.leader_check.is_leader() {
+            return CleanupResult::default();
+        }
+
         let mut result = CleanupResult::default();
 
         // Read dynamic settings at runtime
@@ -389,7 +397,7 @@ impl CleanupService {
     /// Cleanup chat messages exceeding per-room cap
     ///
     /// Uses window functions for efficient batch cleanup across all rooms.
-    async fn cleanup_chat_messages(&self, keep_count: i32) -> Result<u64> {
+    async fn cleanup_chat_messages(&self, keep_count: i64) -> Result<u64> {
         if keep_count <= 0 {
             return Ok(0);
         }

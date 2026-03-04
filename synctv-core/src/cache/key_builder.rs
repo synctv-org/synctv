@@ -40,6 +40,14 @@ impl KeyBuilder {
         Self::new(config.redis.key_prefix.clone())
     }
 
+    /// Sanitize a user-controlled key segment to prevent Redis key hierarchy
+    /// confusion.  Colons are used as the Redis key separator so they must not
+    /// appear in user-supplied values (e.g. email addresses, usernames).
+    #[must_use]
+    fn sanitize_key_segment(segment: &str) -> String {
+        segment.replace(':', "_")
+    }
+
     /// Get the key prefix
     #[must_use]
     pub fn prefix(&self) -> &str {
@@ -168,7 +176,12 @@ impl KeyBuilder {
     /// window: "1s", "1m", "1h", etc.
     #[must_use]
     pub fn rate_limit(&self, identifier: &str, window: &str) -> String {
-        format!("{}:ratelimit:{}:{}", self.prefix, identifier, window)
+        format!(
+            "{}:ratelimit:{}:{}",
+            self.prefix,
+            Self::sanitize_key_segment(identifier),
+            window
+        )
     }
 
     // ==================== OAuth2 State ====================
@@ -190,7 +203,11 @@ impl KeyBuilder {
     /// Value: JSON with code + attempts
     #[must_use]
     pub fn email_code(&self, email: &str) -> String {
-        format!("{}:email:code:{}", self.prefix, email)
+        format!(
+            "{}:email:code:{}",
+            self.prefix,
+            Self::sanitize_key_segment(email)
+        )
     }
 
     // ==================== Brute-Force Protection ====================
@@ -201,7 +218,11 @@ impl KeyBuilder {
     /// Value: counter (INCR operation)
     #[must_use]
     pub fn login_attempts(&self, username: &str) -> String {
-        format!("{}:auth:login_attempts:{}", self.prefix, username)
+        format!(
+            "{}:auth:login_attempts:{}",
+            self.prefix,
+            Self::sanitize_key_segment(username)
+        )
     }
 
     /// Failed login attempt counter per IP address
@@ -210,7 +231,11 @@ impl KeyBuilder {
     /// Value: JSON with count and `last_failure_at`
     #[must_use]
     pub fn login_attempts_ip(&self, ip: &str) -> String {
-        format!("{}:auth:login_attempts_ip:{}", self.prefix, ip)
+        format!(
+            "{}:auth:login_attempts_ip:{}",
+            self.prefix,
+            Self::sanitize_key_segment(ip)
+        )
     }
 
     /// Failed room password verification counter per room+IP combination
@@ -373,6 +398,34 @@ mod tests {
         assert_eq!(
             builder.email_code("user@example.com"),
             "synctv:email:code:user@example.com"
+        );
+    }
+
+    #[test]
+    fn test_email_code_key_sanitizes_colons() {
+        let builder = KeyBuilder::default();
+        // Colons in email-like strings must be replaced to avoid breaking Redis key hierarchy
+        assert_eq!(
+            builder.email_code("user:tag@example.com"),
+            "synctv:email:code:user_tag@example.com"
+        );
+    }
+
+    #[test]
+    fn test_login_attempts_sanitizes_colons() {
+        let builder = KeyBuilder::default();
+        assert_eq!(
+            builder.login_attempts("user:name"),
+            "synctv:auth:login_attempts:user_name"
+        );
+    }
+
+    #[test]
+    fn test_rate_limit_sanitizes_colons() {
+        let builder = KeyBuilder::default();
+        assert_eq!(
+            builder.rate_limit("user:id:123", "1m"),
+            "synctv:ratelimit:user_id_123:1m"
         );
     }
 

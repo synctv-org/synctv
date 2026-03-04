@@ -62,6 +62,7 @@ pub fn map_provider_error(context: &str, e: &ProviderClientError) -> Status {
         ProviderClientError::Api { code, .. } => match code {
             401 | 403 => Status::permission_denied(format!("{context}: access denied")),
             404 => Status::not_found(format!("{context}: resource not found")),
+            -412 | 429 => Status::resource_exhausted(format!("{context}: rate limited")),
             _ => Status::internal(format!("{context}: API error (code {code})")),
         },
     }
@@ -134,10 +135,20 @@ mod tests {
     }
 
     #[test]
-    fn api_error_unknown_maps_to_internal() {
+    fn api_error_neg412_maps_to_resource_exhausted() {
         let err = ProviderClientError::Api {
             code: -412,
             message: "rate limited".to_string(),
+        };
+        let status = map_provider_error("get_video_url", &err);
+        assert_eq!(status.code(), tonic::Code::ResourceExhausted);
+    }
+
+    #[test]
+    fn api_error_unknown_maps_to_internal() {
+        let err = ProviderClientError::Api {
+            code: -999,
+            message: "unknown error".to_string(),
         };
         let status = map_provider_error("get_video_url", &err);
         assert_eq!(status.code(), tonic::Code::Internal);

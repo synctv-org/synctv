@@ -1083,8 +1083,9 @@ mod websocket_e2e {
         loop {
             let msg = recv_server_message(ws).await?;
             match &msg.message {
-                Some(server_message::Message::UserJoined(_) |
-server_message::Message::UserLeft(_)) => continue,
+                Some(
+                    server_message::Message::UserJoined(_) | server_message::Message::UserLeft(_),
+                ) => continue,
                 _ => return Some(msg),
             }
         }

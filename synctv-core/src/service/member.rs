@@ -701,6 +701,7 @@ impl MemberService {
         room_id: &RoomId,
         pagination: PageParams,
     ) -> Result<(Vec<RoomMemberWithUser>, i64)> {
+        pagination.validate()?;
         self.member_repo
             .list_by_room_paginated(room_id, pagination)
             .await
@@ -744,6 +745,7 @@ impl MemberService {
         user_id: &UserId,
         pagination: PageParams,
     ) -> Result<(Vec<RoomId>, i64)> {
+        pagination.validate()?;
         self.member_repo.list_by_user(user_id, pagination).await
     }
 
@@ -753,6 +755,7 @@ impl MemberService {
         user_id: &UserId,
         pagination: PageParams,
     ) -> Result<(Vec<(Room, RoomRole, MemberStatus, i32)>, i64)> {
+        pagination.validate()?;
         self.member_repo
             .list_by_user_with_details(user_id, pagination)
             .await

@@ -217,13 +217,18 @@ impl SsrfGuardBuilder {
 }
 
 // ---------------------------------------------------------------------------
-// Backward-compatible free functions
+// Backward-compatible free functions (cached via LazyLock)
 // ---------------------------------------------------------------------------
+
+/// Cached default SSRF guard. The guard is constructed once and reused by all
+/// free functions, avoiding repeated ACL + middleware construction on every call.
+static DEFAULT_GUARD: std::sync::LazyLock<SsrfGuard> =
+    std::sync::LazyLock::new(SsrfGuard::default_policy);
 
 /// Create the default [`SsrfGuard`] with production defaults.
 #[must_use]
 pub fn default_ssrf_guard() -> SsrfGuard {
-    SsrfGuard::default_policy()
+    DEFAULT_GUARD.clone()
 }
 
 /// Create the standard SSRF-safe ACL used across all HTTP clients.
@@ -231,7 +236,7 @@ pub fn default_ssrf_guard() -> SsrfGuard {
 /// Equivalent to `SsrfGuard::default_policy().acl().clone()`.
 #[must_use]
 pub fn ssrf_acl() -> HttpAcl {
-    SsrfGuard::default_policy().acl().clone()
+    DEFAULT_GUARD.acl().clone()
 }
 
 /// Create a SSRF-safe DNS resolver for use with `reqwest::Client::builder().dns_resolver()`.
@@ -239,7 +244,7 @@ pub fn ssrf_acl() -> HttpAcl {
 /// Equivalent to `SsrfGuard::default_policy().dns_resolver()`.
 #[must_use]
 pub fn ssrf_dns_resolver() -> Arc<dyn reqwest::dns::Resolve> {
-    SsrfGuard::default_policy().dns_resolver()
+    DEFAULT_GUARD.dns_resolver()
 }
 
 /// Check if an IP address is blocked by the default SSRF policy.
@@ -247,7 +252,7 @@ pub fn ssrf_dns_resolver() -> Arc<dyn reqwest::dns::Resolve> {
 /// Equivalent to `SsrfGuard::default_policy().is_ip_blocked(ip)`.
 #[must_use]
 pub fn is_ip_blocked(ip: &IpAddr) -> bool {
-    SsrfGuard::default_policy().is_ip_blocked(ip)
+    DEFAULT_GUARD.is_ip_blocked(ip)
 }
 
 #[cfg(test)]

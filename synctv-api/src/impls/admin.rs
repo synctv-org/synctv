@@ -43,13 +43,23 @@ pub async fn validate_admin_auth(
     token_pv: Option<i32>,
     token_iat: i64,
 ) -> Result<ValidatedAdmin, ApiError> {
-    let user = user_service
-        .get_user(&user_id)
-        .await
-        .map_err(|_| ApiError::Authentication("Authentication failed".to_string()))?;
+    let user = user_service.get_user(&user_id).await.map_err(|e| {
+        tracing::debug!(
+            user_id = %user_id.as_str(),
+            error = %e,
+            "Admin auth rejected: failed to look up user"
+        );
+        ApiError::Authentication("Authentication failed".to_string())
+    })?;
 
     if user.is_deleted() || user.status == UserStatus::Banned || user.status == UserStatus::Pending
     {
+        tracing::debug!(
+            user_id = %user_id.as_str(),
+            status = ?user.status,
+            deleted = user.is_deleted(),
+            "Admin auth rejected: user is deleted, banned, or pending"
+        );
         return Err(ApiError::Authentication(
             "Authentication failed".to_string(),
         ));
@@ -58,11 +68,23 @@ pub async fn validate_admin_auth(
     // Check password version (with iat fallback for legacy tokens)
     if let Some(pv) = token_pv {
         if pv < user.password_version {
+            tracing::debug!(
+                user_id = %user_id.as_str(),
+                token_pv = pv,
+                current_pv = user.password_version,
+                "Admin auth rejected: token password version outdated"
+            );
             return Err(ApiError::Authentication(
                 "Token invalidated due to password change. Please log in again.".to_string(),
             ));
         }
     } else if token_iat < user.password_changed_at.timestamp() {
+        tracing::debug!(
+            user_id = %user_id.as_str(),
+            token_iat = token_iat,
+            password_changed_at = %user.password_changed_at,
+            "Admin auth rejected: token issued before password change (legacy token)"
+        );
         return Err(ApiError::Authentication(
             "Token invalidated due to password change. Please log in again.".to_string(),
         ));
@@ -287,7 +309,8 @@ impl AdminApiImpl {
                 &room,
                 None,
                 self.connection_manager
-                    .room_connection_count(&room.id)
+                    .room_connection_count_distributed(&room.id)
+                    .await
                     .try_into()
                     .ok(),
                 creator_username.as_deref(),
@@ -426,17 +449,23 @@ impl AdminApiImpl {
         let page = if req.page > 0 { req.page } else { 1 };
         let page_size = if req.page_size > 0 { req.page_size } else { 50 };
 
-        // Convert proto enum i32 values to Option<String> for UserListQuery
+        // Convert proto enum i32 values to typed enums for UserListQuery
         let status = match synctv_proto::common::UserStatus::try_from(req.status) {
-            Ok(synctv_proto::common::UserStatus::Active) => Some("active".to_owned()),
-            Ok(synctv_proto::common::UserStatus::Pending) => Some("pending".to_owned()),
-            Ok(synctv_proto::common::UserStatus::Banned) => Some("banned".to_owned()),
+            Ok(synctv_proto::common::UserStatus::Active) => {
+                Some(synctv_core::models::UserStatus::Active)
+            }
+            Ok(synctv_proto::common::UserStatus::Pending) => {
+                Some(synctv_core::models::UserStatus::Pending)
+            }
+            Ok(synctv_proto::common::UserStatus::Banned) => {
+                Some(synctv_core::models::UserStatus::Banned)
+            }
             _ => None, // Unspecified or unknown => no filter
         };
         let role = match synctv_proto::common::UserRole::try_from(req.role) {
-            Ok(synctv_proto::common::UserRole::Root) => Some("root".to_owned()),
-            Ok(synctv_proto::common::UserRole::Admin) => Some("admin".to_owned()),
-            Ok(synctv_proto::common::UserRole::User) => Some("user".to_owned()),
+            Ok(synctv_proto::common::UserRole::Root) => Some(synctv_core::models::UserRole::Root),
+            Ok(synctv_proto::common::UserRole::Admin) => Some(synctv_core::models::UserRole::Admin),
+            Ok(synctv_proto::common::UserRole::User) => Some(synctv_core::models::UserRole::User),
             _ => None, // Unspecified or unknown => no filter
         };
         let search = if req.search.is_empty() {
@@ -1504,19 +1533,25 @@ impl AdminApiImpl {
             .await
             .unwrap_or_default();
 
+        // Batch-fetch distributed connection counts for all rooms
+        let all_room_ids: Vec<&synctv_core::models::RoomId> = created_rooms
+            .iter()
+            .map(|r| &r.id)
+            .chain(joined_rooms_with_details.iter().map(|(r, _, _, _)| &r.id))
+            .collect();
+        let count_vec = self
+            .connection_manager
+            .room_connection_count_distributed_batch(&all_room_ids)
+            .await;
+        let count_map: std::collections::HashMap<&synctv_core::models::RoomId, usize> =
+            all_room_ids.into_iter().zip(count_vec).collect();
+
         let mut admin_rooms: Vec<crate::proto::admin::AdminRoom> = created_rooms
             .iter()
             .map(|r| {
                 let creator_username = username_map.get(&r.created_by).map(String::as_str);
-                admin_room_to_proto(
-                    r,
-                    None,
-                    self.connection_manager
-                        .room_connection_count(&r.id)
-                        .try_into()
-                        .ok(),
-                    creator_username,
-                )
+                let count = count_map.get(&r.id).copied().unwrap_or(0);
+                admin_room_to_proto(r, None, count.try_into().ok(), creator_username)
             })
             .collect();
 
@@ -1530,13 +1565,11 @@ impl AdminApiImpl {
                 continue;
             }
             let creator_username = username_map.get(&room.created_by).map(String::as_str);
+            let count = count_map.get(&room.id).copied().unwrap_or(0);
             admin_rooms.push(admin_room_to_proto(
                 room,
                 None,
-                self.connection_manager
-                    .room_connection_count(&room.id)
-                    .try_into()
-                    .ok(),
+                count.try_into().ok(),
                 creator_username,
             ));
         }
@@ -1624,7 +1657,8 @@ impl AdminApiImpl {
                 &updated,
                 None,
                 self.connection_manager
-                    .room_connection_count(&rid)
+                    .room_connection_count_distributed(&rid)
+                    .await
                     .try_into()
                     .ok(),
                 None,
@@ -1675,7 +1709,8 @@ impl AdminApiImpl {
                 &updated,
                 None,
                 self.connection_manager
-                    .room_connection_count(&rid)
+                    .room_connection_count_distributed(&rid)
+                    .await
                     .try_into()
                     .ok(),
                 None,
@@ -1716,7 +1751,8 @@ impl AdminApiImpl {
                 &room,
                 None,
                 self.connection_manager
-                    .room_connection_count(&rid)
+                    .room_connection_count_distributed(&rid)
+                    .await
                     .try_into()
                     .ok(),
                 None,
@@ -1792,7 +1828,8 @@ impl AdminApiImpl {
                 &room,
                 Some(&settings),
                 self.connection_manager
-                    .room_connection_count(&rid)
+                    .room_connection_count_distributed(&rid)
+                    .await
                     .try_into()
                     .ok(),
                 None,
@@ -1853,7 +1890,8 @@ impl AdminApiImpl {
                 &room,
                 Some(&settings),
                 self.connection_manager
-                    .room_connection_count(&rid)
+                    .room_connection_count_distributed(&rid)
+                    .await
                     .try_into()
                     .ok(),
                 None,
@@ -1966,7 +2004,7 @@ impl AdminApiImpl {
         // No additional client-side filtering needed.
         let query = synctv_core::models::UserListQuery {
             pagination: synctv_core::models::PageParams::new(Some(1), Some(100)),
-            role: Some("admin".to_string()),
+            role: Some(synctv_core::models::UserRole::Admin),
             ..Default::default()
         };
 
@@ -1995,12 +2033,12 @@ impl AdminApiImpl {
         };
         let query_active = synctv_core::models::UserListQuery {
             pagination: stats_pagination,
-            status: Some("active".to_string()),
+            status: Some(synctv_core::models::UserStatus::Active),
             ..Default::default()
         };
         let query_banned = synctv_core::models::UserListQuery {
             pagination: stats_pagination,
-            status: Some("banned".to_string()),
+            status: Some(synctv_core::models::UserStatus::Banned),
             ..Default::default()
         };
         let room_query_all = synctv_core::models::RoomListQuery {

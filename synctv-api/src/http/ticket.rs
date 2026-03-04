@@ -82,6 +82,33 @@ pub async fn create_ticket(
 
     let room_id = RoomId::from_string(req.room_id.clone());
 
+    // Verify room exists and is accessible
+    let room = state
+        .room_service
+        .get_room(&room_id)
+        .await
+        .map_err(|_| AppError::not_found(format!("Room {} not found", req.room_id)))?;
+
+    if room.is_banned {
+        return Err(AppError::forbidden("Room is banned"));
+    }
+
+    // Check room membership: user must be a member of the room
+    let is_member = state
+        .room_service
+        .member_service()
+        .is_member(&room_id, &auth.user_id)
+        .await
+        .map_err(|e| {
+            AppError::internal_server_error(format!("Failed to check room membership: {e}"))
+        })?;
+
+    if !is_member {
+        return Err(AppError::forbidden(
+            "Not a member of this room. Join the room first.",
+        ));
+    }
+
     // Check if ticket service is available
     let ws_ticket_service = state.ws_ticket_service.as_ref().ok_or_else(|| {
         AppError::internal_server_error("WebSocket ticket service not configured (Redis required)")

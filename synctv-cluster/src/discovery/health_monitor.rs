@@ -85,7 +85,11 @@ pub struct HealthMonitor {
 }
 
 impl HealthMonitor {
-    /// Create a new health monitor with default probe config
+    /// Create a new health monitor with default probe config.
+    ///
+    /// Creates its own independent `CancellationToken`. For integration with an
+    /// application-wide shutdown hierarchy, use [`with_cancellation_token`](Self::with_cancellation_token)
+    /// instead.
     #[must_use]
     pub fn new(node_registry: Arc<NodeRegistry>, check_interval_secs: u64) -> Self {
         Self {
@@ -99,7 +103,35 @@ impl HealthMonitor {
         }
     }
 
-    /// Create a new health monitor with custom probe configuration
+    /// Create a new health monitor that participates in an external shutdown hierarchy.
+    ///
+    /// A **child token** of the provided `parent_token` is created internally.
+    /// Cancelling the parent token will propagate to this monitor's loop, but
+    /// calling [`shutdown`](Self::shutdown) only cancels the child and does not
+    /// affect the parent or sibling tokens.
+    #[must_use]
+    pub fn with_cancellation_token(
+        node_registry: Arc<NodeRegistry>,
+        check_interval_secs: u64,
+        parent_token: &CancellationToken,
+    ) -> Self {
+        Self {
+            node_registry,
+            check_interval_secs,
+            health_status: Arc::new(RwLock::new(std::collections::HashMap::new())),
+            cancel_token: parent_token.child_token(),
+            probe_config: HealthProbeConfig::default(),
+            probe_states: Arc::new(RwLock::new(std::collections::HashMap::new())),
+            join_handle: tokio::sync::Mutex::new(None),
+        }
+    }
+
+    /// Create a new health monitor with custom probe configuration.
+    ///
+    /// Creates its own independent `CancellationToken`. For integration with an
+    /// application-wide shutdown hierarchy, combine with
+    /// [`with_cancellation_token`](Self::with_cancellation_token) or call
+    /// [`set_cancellation_token`](Self::set_cancellation_token) after construction.
     #[must_use]
     pub fn with_probe_config(
         node_registry: Arc<NodeRegistry>,
@@ -115,6 +147,14 @@ impl HealthMonitor {
             probe_states: Arc::new(RwLock::new(std::collections::HashMap::new())),
             join_handle: tokio::sync::Mutex::new(None),
         }
+    }
+
+    /// Replace the cancellation token with a child of the given parent.
+    ///
+    /// Must be called **before** [`start`](Self::start). Calling it after the
+    /// monitoring loop is already running has no effect on the running task.
+    pub fn set_cancellation_token(&mut self, parent_token: &CancellationToken) {
+        self.cancel_token = parent_token.child_token();
     }
 
     /// Store the JoinHandle from `start()` so it can be awaited during shutdown.
@@ -617,5 +657,59 @@ mod tests {
 
         assert_eq!(state.failure_count.load(Ordering::Relaxed), 0);
         assert_eq!(state.success_count.load(Ordering::Relaxed), 1);
+    }
+
+    // --- with_cancellation_token ---
+
+    #[tokio::test]
+    async fn test_with_cancellation_token_parent_cancel_stops_monitor() {
+        let registry = make_registry();
+        let parent = CancellationToken::new();
+        let monitor = HealthMonitor::with_cancellation_token(registry, 60, &parent);
+        let handle = monitor.start().await.unwrap();
+        monitor.set_join_handle(handle);
+
+        // Let it run briefly
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        // Cancel the parent token — the child should propagate
+        parent.cancel();
+
+        // The monitor should shut down within a reasonable time
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let status = monitor.get_all_status().await;
+        // No assertion on status content, just verify it doesn't hang
+        drop(status);
+    }
+
+    #[tokio::test]
+    async fn test_with_cancellation_token_child_cancel_does_not_affect_parent() {
+        let parent = CancellationToken::new();
+        let registry = make_registry();
+        let monitor = HealthMonitor::with_cancellation_token(registry, 60, &parent);
+
+        // Shutdown only cancels the child token
+        monitor.shutdown().await;
+
+        // Parent should NOT be cancelled
+        assert!(
+            !parent.is_cancelled(),
+            "Parent token should not be cancelled by child shutdown"
+        );
+    }
+
+    #[test]
+    fn test_set_cancellation_token() {
+        let registry = make_registry();
+        let mut monitor = HealthMonitor::new(registry, 10);
+        let parent = CancellationToken::new();
+        monitor.set_cancellation_token(&parent);
+
+        // Cancelling parent should propagate to the monitor's token
+        parent.cancel();
+        assert!(
+            monitor.cancel_token.is_cancelled(),
+            "Monitor's token should be cancelled when parent is cancelled"
+        );
     }
 }

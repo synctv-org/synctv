@@ -164,6 +164,12 @@ impl ClientApiImpl {
             .await
             .map_or_else(|_| format!("user_{}", target_uid.as_str()), |u| u.username);
 
+        // Query ConnectionManager for actual online status instead of hardcoding false
+        let is_online = self
+            .connection_manager
+            .get_connection_id(&rid, &target_uid)
+            .is_some();
+
         let member_with_user = synctv_core::models::RoomMemberWithUser {
             room_id: member.room_id,
             user_id: member.user_id,
@@ -175,7 +181,7 @@ impl ClientApiImpl {
             admin_added_permissions: member.admin_added_permissions,
             admin_removed_permissions: member.admin_removed_permissions,
             joined_at: member.joined_at,
-            is_online: false,
+            is_online,
             is_active: true,
             banned_at: member.banned_at,
             banned_reason: member.banned_reason,

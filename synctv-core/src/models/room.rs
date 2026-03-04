@@ -196,7 +196,7 @@ pub struct Room {
     /// Room description (max 500 characters)
     #[serde(default)]
     pub description: String,
-    /// Creator user ID. Room is CASCADE-deleted when the creator is deleted.
+    /// Creator user ID. ON DELETE RESTRICT prevents deleting users who still own rooms.
     pub created_by: UserId,
     /// Room lifecycle status (Active/Pending/Closed)
     pub status: RoomStatus,
@@ -377,7 +377,9 @@ pub struct RoomSettingsJson {
     #[serde(default)]
     pub shuffle_playlist: bool,
     pub allow_guest_join: bool,
-    pub max_members: Option<i32>,
+    /// Maximum number of members allowed in the room.
+    /// `None` or `0` means no limit.  Uses `u32` to prevent negative values.
+    pub max_members: Option<u32>,
     pub chat_enabled: bool,
     pub danmaku_enabled: bool,
 

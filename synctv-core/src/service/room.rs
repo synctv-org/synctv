@@ -207,7 +207,8 @@ impl RoomService {
     /// Wire the cache invalidation service into the inner playback service
     /// so it can broadcast invalidation messages to other replicas on updates.
     pub fn set_playback_cache_invalidation(&mut self, service: Arc<CacheInvalidationService>) {
-        self.playback_service.set_invalidation_service(service);
+        self.playback_service
+            .set_invalidation_service(service, None);
     }
 
     #[must_use]
@@ -968,13 +969,13 @@ impl RoomService {
             .execute(&mut *tx)
             .await?;
 
+        // Invalidate caches BEFORE committing the transaction.
+        // This prevents the race where another request reads stale cache
+        // between commit and invalidation. See module-level docs for details.
+        self.invalidate_room_caches(&room_id).await;
+
         // Commit transaction - all or nothing
         tx.commit().await?;
-
-        // Invalidate caches AFTER committing the transaction.
-        // This ensures cache state is always consistent with committed database state.
-        // If commit had failed, we would NOT invalidate (cache remains valid).
-        self.invalidate_room_caches(&room_id).await;
 
         // Notify after commit so notifications are only sent for successful deletions
         let _ = self
@@ -1163,6 +1164,8 @@ impl RoomService {
         admin_id: UserId,
         pagination: PageParams,
     ) -> Result<(Vec<Room>, i64)> {
+        pagination.validate()?;
+
         // Verify admin permission
         let admin = self.user_service.get_user(&admin_id).await?;
 
@@ -1470,6 +1473,11 @@ impl RoomService {
     }
 
     /// Check room password
+    ///
+    /// Returns:
+    /// - `Ok(true)` if the password matches the stored hash
+    /// - `Ok(false)` if the password does not match
+    /// - `Err(InvalidInput("Room has no password set"))` if the room has no password
     pub async fn check_room_password(&self, room_id: &RoomId, password: &str) -> Result<bool> {
         let password_hash = self.room_settings_repo.get_password_hash(room_id).await?;
 
@@ -1477,7 +1485,7 @@ impl RoomService {
             Some(stored) => verify_password(password, &stored)
                 .await
                 .internal_with_err("Password verification failed"),
-            None => Ok(false),
+            None => Err(Error::InvalidInput("Room has no password set".to_string())),
         }
     }
 
@@ -1738,6 +1746,7 @@ impl RoomService {
 
     /// List all rooms (paginated)
     pub async fn list_rooms(&self, query: &RoomListQuery) -> Result<(Vec<Room>, i64)> {
+        query.pagination.validate()?;
         self.room_repo.list(query).await
     }
 
@@ -1746,6 +1755,7 @@ impl RoomService {
         &self,
         query: &RoomListQuery,
     ) -> Result<(Vec<RoomWithCount>, i64)> {
+        query.pagination.validate()?;
         self.room_repo.list_with_count(query).await
     }
 
@@ -1755,6 +1765,7 @@ impl RoomService {
         creator_id: &UserId,
         pagination: PageParams,
     ) -> Result<(Vec<Room>, i64)> {
+        pagination.validate()?;
         self.room_repo.list_by_creator(creator_id, pagination).await
     }
 
@@ -1764,6 +1775,7 @@ impl RoomService {
         creator_id: &UserId,
         pagination: PageParams,
     ) -> Result<(Vec<RoomWithCount>, i64)> {
+        pagination.validate()?;
         self.room_repo
             .list_by_creator_with_count(creator_id, pagination)
             .await
@@ -1775,6 +1787,7 @@ impl RoomService {
         user_id: &UserId,
         pagination: PageParams,
     ) -> Result<(Vec<RoomId>, i64)> {
+        pagination.validate()?;
         self.member_service
             .list_user_rooms(user_id, pagination)
             .await
@@ -1786,6 +1799,7 @@ impl RoomService {
         user_id: &UserId,
         pagination: PageParams,
     ) -> Result<(Vec<(Room, RoomRole, MemberStatus, i32)>, i64)> {
+        pagination.validate()?;
         self.member_service
             .list_user_rooms_with_details(user_id, pagination)
             .await
@@ -2471,11 +2485,12 @@ impl RoomService {
             .execute(&mut *tx)
             .await?;
 
-        tx.commit().await?;
-
-        // Invalidate caches AFTER committing the transaction.
-        // This ensures cache state is always consistent with committed database state.
+        // Invalidate caches BEFORE committing the transaction.
+        // This prevents the race where another request reads stale cache
+        // between commit and invalidation. See module-level docs for details.
         self.invalidate_room_caches(room_id).await;
+
+        tx.commit().await?;
 
         // Notify after commit so notifications are only sent for successful deletions
         let _ = self.notification_service.notify_room_deleted(room_id).await;
@@ -2621,11 +2636,12 @@ impl RoomService {
             .execute(&mut *tx)
             .await?;
 
-        tx.commit().await?;
-
-        // Invalidate caches AFTER committing the transaction.
-        // This ensures cache state is always consistent with committed database state.
+        // Invalidate caches BEFORE committing the transaction.
+        // This prevents the race where another request reads stale cache
+        // between commit and invalidation. See module-level docs for details.
         self.invalidate_room_caches(room_id).await;
+
+        tx.commit().await?;
 
         // Notify after commit
         let _ = self.notification_service.notify_room_deleted(room_id).await;

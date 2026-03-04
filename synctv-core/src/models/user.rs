@@ -480,8 +480,8 @@ pub struct UpdateUserRequest {
 pub struct UserListQuery {
     pub pagination: super::pagination::PageParams,
     pub search: Option<String>,
-    pub status: Option<String>, // "active", "banned", etc.
-    pub role: Option<String>,   // "user", "admin", "root"
+    pub status: Option<UserStatus>,
+    pub role: Option<UserRole>,
 }
 
 #[cfg(test)]

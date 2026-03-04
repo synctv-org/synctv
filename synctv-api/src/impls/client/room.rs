@@ -47,6 +47,8 @@ impl ClientApiImpl {
 
         let mut query = synctv_core::models::RoomListQuery {
             pagination: synctv_core::models::PageParams::new(Some(page), Some(page_size)),
+            status: Some(synctv_core::models::RoomStatus::Active),
+            is_banned: Some(false),
             ..Default::default()
         };
         if !req.search.is_empty() {

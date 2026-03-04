@@ -33,7 +33,14 @@ pub fn notification_to_proto(n: Notification) -> NotificationProto {
         notification_type: notification_type as i32,
         title: n.title,
         content: n.content,
-        data: serde_json::to_vec(&n.data).unwrap_or_default(),
+        data: serde_json::to_vec(&n.data).unwrap_or_else(|e| {
+            tracing::warn!(
+                notification_id = %n.id,
+                error = %e,
+                "Failed to serialize notification data, using empty bytes"
+            );
+            Vec::new()
+        }),
         is_read: n.is_read,
         created_at: n.created_at.timestamp(),
         updated_at: n.updated_at.timestamp(),

@@ -186,11 +186,19 @@ impl GrpcCircuitBreakerRegistry {
     /// Get the current state of the circuit breaker for an endpoint.
     ///
     /// Returns `true` if the circuit is open (unhealthy), `false` if closed/half-open.
-    /// Note: this queries the underlying failsafe state without consuming a probe slot.
+    ///
+    /// This is a **read-only** check that inspects the `was_open` flag without
+    /// calling the underlying `is_call_permitted()`, which would mutate state
+    /// (transitioning Open -> HalfOpen when the cooldown expires). Use this
+    /// method for monitoring, logging, and conditional logic where you do not
+    /// want to trigger state transitions or consume a probe slot.
     pub async fn is_open(&self, address: &str) -> bool {
         let breakers = self.breakers.read().await;
         if let Some(breaker) = breakers.get(address) {
-            !breaker.breaker.is_call_permitted()
+            // Read-only: was_open is set by on_error() when the circuit opens,
+            // and cleared by on_success() when the circuit closes. This avoids
+            // the side-effect of is_call_permitted() which drives Open -> HalfOpen.
+            breaker.was_open.load(Ordering::Acquire)
         } else {
             false
         }
@@ -208,13 +216,15 @@ impl GrpcCircuitBreakerRegistry {
     /// Get statistics about circuit breaker states.
     ///
     /// Returns (total_endpoints, open_circuits, closed_circuits).
-    /// Queries the underlying failsafe state without consuming probe slots.
+    ///
+    /// **Read-only**: uses the `was_open` flag instead of `is_call_permitted()`
+    /// to avoid side effects (state transitions and probe slot consumption).
     pub async fn stats(&self) -> (usize, usize, usize) {
         let breakers = self.breakers.read().await;
         let total = breakers.len();
         let open = breakers
             .values()
-            .filter(|b| !b.breaker.is_call_permitted())
+            .filter(|b| b.was_open.load(Ordering::Acquire))
             .count();
         let closed = total - open;
         (total, open, closed)
@@ -225,7 +235,9 @@ impl GrpcCircuitBreakerRegistry {
     /// Returns `true` if more than 50% of known endpoints have open circuit
     /// breakers. When degraded, callers should skip fan-out to unhealthy nodes
     /// and return partial results immediately to avoid cascading timeouts.
-    /// Queries the underlying failsafe state without consuming probe slots.
+    ///
+    /// **Read-only**: uses the `was_open` flag instead of `is_call_permitted()`
+    /// to avoid side effects (state transitions and probe slot consumption).
     pub async fn is_cluster_degraded(&self) -> bool {
         let breakers = self.breakers.read().await;
         let total = breakers.len();
@@ -234,7 +246,7 @@ impl GrpcCircuitBreakerRegistry {
         }
         let open = breakers
             .values()
-            .filter(|b| !b.breaker.is_call_permitted())
+            .filter(|b| b.was_open.load(Ordering::Acquire))
             .count();
         open * 2 > total // more than 50% open
     }
@@ -244,12 +256,14 @@ impl GrpcCircuitBreakerRegistry {
     /// Used during degraded mode to limit fan-out to nodes that are likely
     /// reachable, returning partial results rather than waiting for timeouts
     /// from unhealthy nodes.
-    /// Queries the underlying failsafe state without consuming probe slots.
+    ///
+    /// **Read-only**: uses the `was_open` flag instead of `is_call_permitted()`
+    /// to avoid side effects (state transitions and probe slot consumption).
     pub async fn healthy_endpoints(&self) -> Vec<String> {
         let breakers = self.breakers.read().await;
         breakers
             .iter()
-            .filter(|(_, b)| b.breaker.is_call_permitted())
+            .filter(|(_, b)| !b.was_open.load(Ordering::Acquire))
             .map(|(addr, _)| addr.clone())
             .collect()
     }
@@ -334,5 +348,76 @@ mod tests {
         assert_eq!(total, 2);
         assert_eq!(open, 1);
         assert_eq!(closed, 1);
+    }
+
+    #[tokio::test]
+    async fn test_is_open_is_read_only() {
+        let registry = GrpcCircuitBreakerRegistry::new();
+        let addr = "node1:50051";
+
+        // Open the circuit
+        registry.on_error(addr).await;
+        registry.on_error(addr).await;
+        registry.on_error(addr).await;
+
+        assert!(registry.is_open(addr).await);
+
+        // Calling is_open multiple times should not change state (read-only)
+        for _ in 0..10 {
+            assert!(registry.is_open(addr).await);
+        }
+
+        // After success, circuit should close and is_open should return false
+        registry.on_success(addr).await;
+        assert!(!registry.is_open(addr).await);
+    }
+
+    #[tokio::test]
+    async fn test_stats_is_read_only() {
+        let registry = GrpcCircuitBreakerRegistry::new();
+
+        // Open one circuit
+        registry.on_error("node1:50051").await;
+        registry.on_error("node1:50051").await;
+        registry.on_error("node1:50051").await;
+
+        // Calling stats many times should give consistent results (no side effects)
+        let first = registry.stats().await;
+        let second = registry.stats().await;
+        assert_eq!(first, second, "stats() should be idempotent (read-only)");
+    }
+
+    #[tokio::test]
+    async fn test_is_cluster_degraded_is_read_only() {
+        let registry = GrpcCircuitBreakerRegistry::new();
+
+        // Create two endpoints, open both
+        for addr in &["node1:50051", "node2:50051"] {
+            for _ in 0..3 {
+                registry.on_error(addr).await;
+            }
+        }
+
+        // Should be degraded (100% open)
+        assert!(registry.is_cluster_degraded().await);
+        // Calling again should give same result (read-only, no state transition)
+        assert!(registry.is_cluster_degraded().await);
+    }
+
+    #[tokio::test]
+    async fn test_healthy_endpoints_is_read_only() {
+        let registry = GrpcCircuitBreakerRegistry::new();
+
+        // node1 open, node2 closed
+        for _ in 0..3 {
+            registry.on_error("node1:50051").await;
+        }
+        registry.on_success("node2:50051").await;
+
+        let first = registry.healthy_endpoints().await;
+        let second = registry.healthy_endpoints().await;
+        assert_eq!(first, second, "healthy_endpoints() should be idempotent");
+        assert!(first.contains(&"node2:50051".to_string()));
+        assert!(!first.contains(&"node1:50051".to_string()));
     }
 }

@@ -336,7 +336,7 @@ mod tests {
     fn test_create_notification_request_minimal() {
         let user_id = UserId::from_string("user_123".to_string());
         let req = CreateNotificationRequest {
-            user_id: user_id,
+            user_id,
             notification_type: NotificationType::SystemAnnouncement,
             title: "Test Title".to_string(),
             content: "Test Content".to_string(),

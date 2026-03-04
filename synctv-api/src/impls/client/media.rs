@@ -260,7 +260,7 @@ impl ClientApiImpl {
             .room_service
             .edit_media(rid.clone(), uid, mid, title)
             .await
-            .map_err(|e| ApiError::Internal(format!("Failed to edit media: {e}")))?;
+            .map_err(ApiError::from)?;
 
         // Invalidate room cache on other replicas so they see updated metadata
         self.publish_room_cache_invalidation(&rid);
@@ -300,7 +300,7 @@ impl ClientApiImpl {
             .room_service
             .clear_playlist(rid.clone(), uid.clone())
             .await
-            .map_err(|e| ApiError::Internal(format!("Failed to clear playlist: {e}")))?;
+            .map_err(ApiError::from)?;
 
         // Broadcast MediaRemoved for each cleared item so other replicas update playlists
         if let Some(ref tx) = self.redis_publish_tx {
@@ -751,7 +751,10 @@ impl ClientApiImpl {
                 })
                 .collect();
 
-            let total = dynamic_items.len() as i32;
+            // Dynamic playlists don't provide a reliable total count since the
+            // provider may paginate server-side.  Use -1 to signal "unknown total"
+            // so the client knows to use has_more / next-page semantics.
+            let total: i32 = -1;
 
             Ok(crate::proto::client::ListPlaylistItemsResponse {
                 playlists: Vec::new(),

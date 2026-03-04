@@ -298,7 +298,7 @@ impl PlaylistFixture {
             creator_id: None,
             name: String::new(), // Root playlists must have empty name per constraint
             parent_id: None,
-            position: 0,
+            position: -1, // Use auto-position (negative triggers MAX+1 logic in create)
         }
     }
 
@@ -313,7 +313,7 @@ impl PlaylistFixture {
             creator_id: None,
             name: format!("playlist_{}", nanoid::nanoid!(8)), // Unique non-empty name
             parent_id: Some(parent_id),
-            position: 0,
+            position: -1, // Use auto-position (negative triggers MAX+1 logic in create)
         }
     }
 

@@ -108,11 +108,20 @@ impl Clone for CacheInvalidationService {
 }
 
 impl CacheInvalidationService {
-    /// Create a new cache invalidation service
+    /// Create a new cache invalidation service.
     ///
     /// # Arguments
     /// * `redis_client` - Optional Redis client. If None, only local invalidation is used.
-    /// * `node_id` - Unique identifier for this node (for consumer group and logging)
+    /// * `node_id` - Unique identifier for this node (for consumer group and logging).
+    ///   **Important**: The consumer group name is derived as `cache-invalidation-{node_id}`.
+    ///   If `node_id` contains a random component (e.g., the nanoid suffix from
+    ///   `generate_node_id()` in non-K8s environments), each process restart creates
+    ///   a new consumer group and the previous one becomes orphaned in Redis. To
+    ///   avoid orphan accumulation, either:
+    ///   - Use a stable `node_id` (e.g., K8s `POD_NAME`, hostname, or a persisted ID)
+    ///   - Rely on [`start`](Self::start) which calls
+    ///     [`cleanup_orphaned_consumer_groups`](Self::cleanup_orphaned_consumer_groups)
+    ///     to remove groups with zero pending messages and zero active consumers.
     /// * `stream_key` - Redis stream key for cache invalidation (e.g., "synctv:cache:invalidate:stream")
     #[must_use]
     pub fn new(redis_client: Option<Client>, node_id: String, stream_key: String) -> Self {
@@ -193,6 +202,10 @@ impl CacheInvalidationService {
         // Clean up any stale consumer group left by a previous process with
         // the same node_id (e.g., after SIGKILL/OOM kill where stop() never ran).
         self.cleanup_stale_consumer_group().await;
+
+        // Clean up orphaned consumer groups left by previous processes with
+        // different node_ids (e.g., non-K8s restarts where node_id has a random suffix).
+        self.cleanup_orphaned_consumer_groups().await;
 
         // Create consumer group if it doesn't exist.
         // Use "$" so the group starts from the latest message (only new messages).
@@ -489,6 +502,97 @@ impl CacheInvalidationService {
                 );
             }
         }
+    }
+
+    /// Clean up orphaned consumer groups left by previous processes with different
+    /// `node_id` values (e.g., due to random suffix in non-K8s deployments).
+    ///
+    /// Scans all consumer groups on the stream and destroys any group that:
+    /// - Starts with the `cache-invalidation-` prefix (i.e., belongs to this service)
+    /// - Is **not** the current node's consumer group
+    /// - Has zero active consumers and zero pending messages
+    ///
+    /// Called from [`start`](Self::start) to prevent unbounded accumulation of
+    /// orphaned groups in Redis.
+    async fn cleanup_orphaned_consumer_groups(&self) {
+        let Ok(mut conn) = self.get_conn().await else {
+            return;
+        };
+
+        let result: redis::RedisResult<Vec<Vec<redis::Value>>> = redis::cmd("XINFO")
+            .arg("GROUPS")
+            .arg(&self.stream_key)
+            .query_async(&mut conn)
+            .await;
+
+        let groups = match result {
+            Ok(g) => g,
+            Err(_) => return, // Stream may not exist yet
+        };
+
+        for group_info in &groups {
+            let Some(name) = Self::extract_group_name(group_info) else {
+                continue;
+            };
+
+            // Only clean up groups belonging to this service, not the current one
+            if !name.starts_with("cache-invalidation-") || name == self.consumer_group {
+                continue;
+            }
+
+            // Check consumers == 0 and pending == 0
+            let consumers = Self::extract_integer_field(group_info, "consumers").unwrap_or(1);
+            let pending = Self::extract_integer_field(group_info, "pending").unwrap_or(1);
+
+            if consumers == 0 && pending == 0 {
+                let destroy_result: redis::RedisResult<()> = redis::cmd("XGROUP")
+                    .arg("DESTROY")
+                    .arg(&self.stream_key)
+                    .arg(&name)
+                    .query_async(&mut conn)
+                    .await;
+                match destroy_result {
+                    Ok(()) => {
+                        info!(
+                            stream = %self.stream_key,
+                            group = %name,
+                            "Destroyed orphaned consumer group"
+                        );
+                    }
+                    Err(e) => {
+                        warn!(
+                            error = %e,
+                            stream = %self.stream_key,
+                            group = %name,
+                            "Failed to destroy orphaned consumer group"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// Extract an integer field from an XINFO GROUPS response entry.
+    ///
+    /// Searches for `field_name` in the flat key-value list and returns the
+    /// following value as `i64`.
+    fn extract_integer_field(group_info: &[redis::Value], field_name: &str) -> Option<i64> {
+        let mut iter = group_info.iter();
+        while let Some(key) = iter.next() {
+            let key_str = match key {
+                redis::Value::BulkString(bytes) => std::str::from_utf8(bytes).ok(),
+                redis::Value::SimpleString(s) => Some(s.as_str()),
+                _ => None,
+            };
+            let value = iter.next()?;
+            if key_str == Some(field_name) {
+                return match value {
+                    redis::Value::Int(n) => Some(*n),
+                    _ => None,
+                };
+            }
+        }
+        None
     }
 
     /// Extract the "name" field from an XINFO GROUPS response entry.

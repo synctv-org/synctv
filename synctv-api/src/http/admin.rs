@@ -69,7 +69,7 @@ async fn validate_auth_user(
         claims.iat,
     )
     .await
-    .map_err(AppError::unauthorized)
+    .map_err(AppError::from)
 }
 
 /// Authenticated admin user (admin or root role required)

@@ -235,10 +235,61 @@ impl RemoteProviderManager {
         }
     }
 
+    /// Validate that an endpoint URL does not target internal/private IP addresses
+    /// or reserved hostnames (SSRF protection).
+    ///
+    /// Only validates hostnames and IP literals statically. Does NOT resolve DNS,
+    /// because DNS results can change between validation and connection (DNS rebinding),
+    /// and VPN/proxy environments may return unexpected IPs for public hostnames.
+    fn validate_endpoint_ssrf(endpoint: &str) -> crate::Result<()> {
+        let url = url::Url::parse(endpoint).map_err(|e| {
+            crate::Error::InvalidInput(format!("SSRF validation: invalid URL: {e}"))
+        })?;
+
+        let host = url.host_str().ok_or_else(|| {
+            crate::Error::InvalidInput("SSRF validation: missing host".to_string())
+        })?;
+
+        let guard = synctv_common::ssrf::SsrfGuard::default_policy();
+
+        // Check if the hostname itself is blocked (e.g., "localhost", metadata endpoints)
+        if guard.is_host_blocked(host) {
+            return Err(crate::Error::InvalidInput(format!(
+                "SSRF validation: host '{host}' is blocked (internal/reserved)"
+            )));
+        }
+
+        // If the host is an IP address, check it directly against blocklist
+        if let Ok(ip) = host.parse::<std::net::IpAddr>() {
+            if guard.is_ip_blocked(&ip) {
+                return Err(crate::Error::InvalidInput(format!(
+                    "SSRF validation: IP '{ip}' is blocked (internal/private)"
+                )));
+            }
+        }
+        // Note: For hostnames, we do NOT resolve DNS here. DNS-based SSRF checking
+        // is unreliable (DNS rebinding, VPN interception). The gRPC transport layer
+        // provides the actual connection-time SSRF protection.
+
+        // Validate port range
+        if let Some(port) = url.port() {
+            if port == 0 {
+                return Err(crate::Error::InvalidInput(
+                    "SSRF validation: port 0 is not valid".to_string(),
+                ));
+            }
+        }
+
+        Ok(())
+    }
+
     /// Create a gRPC channel for the given provider instance
     ///
     /// Establishes gRPC connection with configured TLS settings, timeout, and middleware.
     async fn create_grpc_channel(config: &ProviderInstance) -> crate::Result<Channel> {
+        // SSRF validation: block internal/private IPs and reserved hostnames
+        Self::validate_endpoint_ssrf(&config.endpoint)?;
+
         // Parse timeout
         let timeout = config.parse_timeout().map_err(crate::Error::Internal)?;
 
@@ -292,11 +343,10 @@ impl RemoteProviderManager {
                 .map_err(|e| crate::Error::Internal(format!("TLS config error: {e}")))?;
         }
 
-        // Connect to gRPC server
-        let channel = endpoint
-            .connect()
-            .await
-            .map_err(|e| crate::Error::Internal(format!("gRPC connect failed: {e}")))?;
+        // Create lazy gRPC channel (connects on first use, not eagerly)
+        // Lazy connection allows storing the channel even if the remote server
+        // is temporarily unavailable. Health checks detect unreachable servers.
+        let channel = endpoint.connect_lazy();
 
         tracing::info!(
             "Established gRPC connection to {} (timeout: {:?}, TLS: {})",

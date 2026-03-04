@@ -135,9 +135,13 @@ async fn test_timing_safe_sleep_concept() {
 
     // And the difference should be much smaller (within tolerance)
     let diff = if protected_fast_time > protected_slow_time {
-        protected_fast_time.checked_sub(protected_slow_time).unwrap()
+        protected_fast_time
+            .checked_sub(protected_slow_time)
+            .unwrap()
     } else {
-        protected_slow_time.checked_sub(protected_fast_time).unwrap()
+        protected_slow_time
+            .checked_sub(protected_fast_time)
+            .unwrap()
     };
     assert!(
         diff <= TIMING_TOLERANCE,

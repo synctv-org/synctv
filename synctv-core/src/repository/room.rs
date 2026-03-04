@@ -145,7 +145,7 @@ impl RoomRepository {
     pub async fn delete(&self, room_id: &RoomId) -> Result<bool> {
         let result = sqlx::query(
             "UPDATE rooms
-             SET deleted_at = $2, updated_at = $2
+             SET deleted_at = $2, version = version + 1
              WHERE id = $1 AND deleted_at IS NULL",
         )
         .bind(room_id.as_str())
@@ -192,32 +192,50 @@ impl RoomRepository {
             wb.push_param("(r.name ILIKE ${idx} OR r.description ILIKE ${idx})");
         }
 
+        if query.creator_id.is_some() {
+            wb.push_param("r.created_by = ${idx}");
+        }
+
         wb
     }
 
-    /// Bind the search pattern onto a `query_scalar` if present.
-    fn bind_search_scalar<'q>(
+    /// Bind the filter parameters (search, creator_id) onto a `query_scalar` in
+    /// the same order they appear in `build_room_list_conditions`.
+    fn bind_filters_scalar<'q>(
         qb: sqlx::query::QueryScalar<'q, sqlx::Postgres, i64, sqlx::postgres::PgArguments>,
+        query: &'q RoomListQuery,
         search_pattern: &'q Option<String>,
     ) -> sqlx::query::QueryScalar<'q, sqlx::Postgres, i64, sqlx::postgres::PgArguments> {
-        match search_pattern {
+        let qb = match search_pattern {
             Some(pattern) => qb.bind(pattern),
             None => qb,
-        }
+        };
+        let qb = match &query.creator_id {
+            Some(creator_id) => qb.bind(creator_id),
+            None => qb,
+        };
+        qb
     }
 
-    /// Bind the search pattern onto a `query_as` if present.
-    fn bind_search<'q, O>(
+    /// Bind the filter parameters (search, creator_id) onto a `query_as` in
+    /// the same order they appear in `build_room_list_conditions`.
+    fn bind_filters<'q, O>(
         qb: sqlx::query::QueryAs<'q, sqlx::Postgres, O, sqlx::postgres::PgArguments>,
+        query: &'q RoomListQuery,
         search_pattern: &'q Option<String>,
     ) -> sqlx::query::QueryAs<'q, sqlx::Postgres, O, sqlx::postgres::PgArguments>
     where
         O: for<'r> sqlx::FromRow<'r, sqlx::postgres::PgRow>,
     {
-        match search_pattern {
+        let qb = match search_pattern {
             Some(pattern) => qb.bind(pattern),
             None => qb,
-        }
+        };
+        let qb = match &query.creator_id {
+            Some(creator_id) => qb.bind(creator_id),
+            None => qb,
+        };
+        qb
     }
 
     /// List rooms with pagination and filters
@@ -230,9 +248,10 @@ impl RoomRepository {
         // Count query: params start at $1
         let (count_where, _) = wb.build(1);
         let count_sql = format!("SELECT COUNT(*) as count FROM rooms r WHERE {count_where}");
-        let count: i64 = Self::bind_search_scalar(sqlx::query_scalar(&count_sql), &search_pattern)
-            .fetch_one(&self.pool)
-            .await?;
+        let count: i64 =
+            Self::bind_filters_scalar(sqlx::query_scalar(&count_sql), query, &search_pattern)
+                .fetch_one(&self.pool)
+                .await?;
 
         // List query: $1=limit, $2=offset, then filter params start at $3
         let (list_where, _) = wb.build(3);
@@ -246,7 +265,7 @@ impl RoomRepository {
         let list_qb = sqlx::query_as::<_, Room>(&list_sql)
             .bind(limit)
             .bind(offset);
-        let rooms: Vec<Room> = Self::bind_search(list_qb, &search_pattern)
+        let rooms: Vec<Room> = Self::bind_filters(list_qb, query, &search_pattern)
             .fetch_all(&self.pool)
             .await?;
 
@@ -266,9 +285,10 @@ impl RoomRepository {
         // Count query: params start at $1
         let (count_where, _) = wb.build(1);
         let count_sql = format!("SELECT COUNT(DISTINCT r.id) FROM rooms r WHERE {count_where}");
-        let count: i64 = Self::bind_search_scalar(sqlx::query_scalar(&count_sql), &search_pattern)
-            .fetch_one(&self.pool)
-            .await?;
+        let count: i64 =
+            Self::bind_filters_scalar(sqlx::query_scalar(&count_sql), query, &search_pattern)
+                .fetch_one(&self.pool)
+                .await?;
 
         // List query: $1=limit, $2=offset, then filter params start at $3
         let (list_where, _) = wb.build(3);
@@ -290,6 +310,9 @@ impl RoomRepository {
         let mut list_qb = sqlx::query(&list_sql).bind(limit).bind(offset);
         if let Some(ref pattern) = search_pattern {
             list_qb = list_qb.bind(pattern);
+        }
+        if let Some(ref creator_id) = query.creator_id {
+            list_qb = list_qb.bind(creator_id);
         }
         let rows = list_qb.fetch_all(&self.pool).await?;
 
@@ -411,12 +434,12 @@ impl RoomRepository {
             r"
             SELECT
                 r.id, r.name, r.description, r.created_by, r.status, r.is_banned,
-                r.created_at, r.updated_at, r.deleted_at, r.version,
+                r.created_at, r.updated_at, r.deleted_at, r.version, r.last_activity_at,
                 COALESCE(COUNT(rm.user_id) FILTER (WHERE rm.left_at IS NULL), 0)::int as member_count
             FROM rooms r
             LEFT JOIN room_members rm ON r.id = rm.room_id
             WHERE r.created_by = $1 AND r.deleted_at IS NULL
-            GROUP BY r.id, r.name, r.description, r.created_by, r.status, r.is_banned, r.created_at, r.updated_at, r.deleted_at, r.version
+            GROUP BY r.id, r.name, r.description, r.created_by, r.status, r.is_banned, r.created_at, r.updated_at, r.deleted_at, r.version, r.last_activity_at
             ORDER BY r.created_at DESC
             LIMIT $2 OFFSET $3
             "
@@ -439,7 +462,12 @@ impl RoomRepository {
         Ok((rooms_with_count?, count))
     }
 
-    /// Update room status
+    /// Update room status.
+    ///
+    /// This intentionally does NOT use optimistic locking (CAS) because status
+    /// updates are idempotent flag-sets: setting a room to `Active` twice produces
+    /// the same result. The `version` column is still incremented to propagate
+    /// cache invalidation, but no `WHERE version = ?` guard is needed.
     pub async fn update_status(&self, room_id: &RoomId, status: RoomStatus) -> Result<Room> {
         let room = sqlx::query_as::<_, Room>(
             r"
@@ -458,7 +486,12 @@ impl RoomRepository {
         Ok(room)
     }
 
-    /// Update room ban status (admin only)
+    /// Update room ban status (admin only).
+    ///
+    /// This intentionally does NOT use optimistic locking (CAS) because ban/unban
+    /// is an idempotent flag-set: banning an already-banned room is a no-op.
+    /// The `version` column is still incremented to propagate cache invalidation,
+    /// but no `WHERE version = ?` guard is needed.
     pub async fn update_ban_status(&self, room_id: &RoomId, is_banned: bool) -> Result<Room> {
         let room = sqlx::query_as::<_, Room>(
             r"

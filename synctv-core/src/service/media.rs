@@ -587,6 +587,7 @@ impl MediaService {
         playlist_id: &PlaylistId,
         pagination: crate::models::PageParams,
     ) -> Result<(Vec<Media>, i64)> {
+        pagination.validate()?;
         self.media_repo
             .get_playlist_paginated(playlist_id, pagination)
             .await

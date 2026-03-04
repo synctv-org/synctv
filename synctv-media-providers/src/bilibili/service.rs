@@ -105,7 +105,7 @@ impl Default for BilibiliService {
 }
 
 /// Create a `BilibiliClient` from a cookies map (from proto requests)
-fn client_from_cookies(cookies: &HashMap<String, String>) -> Result<BilibiliClient, BilibiliError> {
+fn client_from_cookies(cookies: &HashMap<String, String>) -> BilibiliClient {
     if cookies.is_empty() {
         BilibiliClient::new()
     } else {
@@ -136,7 +136,7 @@ fn to_proto_page_info(page_info: super::client::VideoPageInfo) -> VideoPageInfo 
 #[async_trait]
 impl BilibiliInterface for BilibiliService {
     async fn new_qr_code(&self, _request: Empty) -> Result<NewQrCodeResp, BilibiliError> {
-        let client = BilibiliClient::new()?;
+        let client = BilibiliClient::new();
         let (url, key) = client.new_qr_code().await?;
         Ok(NewQrCodeResp { url, key })
     }
@@ -145,7 +145,7 @@ impl BilibiliInterface for BilibiliService {
         &self,
         request: LoginWithQrCodeReq,
     ) -> Result<LoginWithQrCodeResp, BilibiliError> {
-        let client = BilibiliClient::new()?;
+        let client = BilibiliClient::new();
         let (raw_status, cookies) = client.login_with_qr_code(&request.key).await?;
 
         let status = map_qr_status(raw_status);
@@ -157,7 +157,7 @@ impl BilibiliInterface for BilibiliService {
     }
 
     async fn new_captcha(&self, _request: Empty) -> Result<NewCaptchaResp, BilibiliError> {
-        let client = BilibiliClient::new()?;
+        let client = BilibiliClient::new();
         let (token, gt, challenge) = client.new_captcha().await?;
 
         Ok(NewCaptchaResp {
@@ -168,7 +168,7 @@ impl BilibiliInterface for BilibiliService {
     }
 
     async fn new_sms(&self, request: NewSmsReq) -> Result<NewSmsResp, BilibiliError> {
-        let client = BilibiliClient::new()?;
+        let client = BilibiliClient::new();
         let captcha_key = client
             .new_sms(
                 &request.phone,
@@ -185,7 +185,7 @@ impl BilibiliInterface for BilibiliService {
         &self,
         request: LoginWithSmsReq,
     ) -> Result<LoginWithSmsResp, BilibiliError> {
-        let client = BilibiliClient::new()?;
+        let client = BilibiliClient::new();
         let cookies = client
             .login_with_sms(&request.phone, &request.code, &request.captcha_key)
             .await?;
@@ -197,13 +197,13 @@ impl BilibiliInterface for BilibiliService {
         &self,
         request: ParseVideoPageReq,
     ) -> Result<VideoPageInfo, BilibiliError> {
-        let client = client_from_cookies(&request.cookies)?;
+        let client = client_from_cookies(&request.cookies);
         let page_info = client.parse_video_page(request.aid, &request.bvid).await?;
         Ok(to_proto_page_info(page_info))
     }
 
     async fn get_video_url(&self, request: GetVideoUrlReq) -> Result<VideoUrl, BilibiliError> {
-        let client = client_from_cookies(&request.cookies)?;
+        let client = client_from_cookies(&request.cookies);
         let quality = if request.quality == 0 {
             None
         } else {
@@ -233,7 +233,7 @@ impl BilibiliInterface for BilibiliService {
         &self,
         request: GetDashVideoUrlReq,
     ) -> Result<GetDashVideoUrlResp, BilibiliError> {
-        let client = client_from_cookies(&request.cookies)?;
+        let client = client_from_cookies(&request.cookies);
         let (dash, hevc_dash) = client
             .get_dash_video_url(request.aid, &request.bvid, request.cid)
             .await?;
@@ -252,7 +252,7 @@ impl BilibiliInterface for BilibiliService {
         &self,
         request: GetSubtitlesReq,
     ) -> Result<GetSubtitlesResp, BilibiliError> {
-        let client = client_from_cookies(&request.cookies)?;
+        let client = client_from_cookies(&request.cookies);
         let subtitles = client
             .get_subtitles(request.aid, &request.bvid, request.cid)
             .await?;
@@ -263,13 +263,13 @@ impl BilibiliInterface for BilibiliService {
         &self,
         request: ParsePgcPageReq,
     ) -> Result<VideoPageInfo, BilibiliError> {
-        let client = client_from_cookies(&request.cookies)?;
+        let client = client_from_cookies(&request.cookies);
         let page_info = client.parse_pgc_page(request.epid, request.ssid).await?;
         Ok(to_proto_page_info(page_info))
     }
 
     async fn get_pgcurl(&self, request: GetPgcurlReq) -> Result<VideoUrl, BilibiliError> {
-        let client = client_from_cookies(&request.cookies)?;
+        let client = client_from_cookies(&request.cookies);
         let quality = if request.quality == 0 {
             None
         } else {
@@ -299,7 +299,7 @@ impl BilibiliInterface for BilibiliService {
         &self,
         request: GetDashPgcurlReq,
     ) -> Result<GetDashPgcurlResp, BilibiliError> {
-        let client = client_from_cookies(&request.cookies)?;
+        let client = client_from_cookies(&request.cookies);
         let (dash, hevc_dash) = client.get_dash_pgc_url(request.epid, request.cid).await?;
 
         Ok(GetDashPgcurlResp {
@@ -313,7 +313,7 @@ impl BilibiliInterface for BilibiliService {
     }
 
     async fn user_info(&self, request: UserInfoReq) -> Result<UserInfoResp, BilibiliError> {
-        let client = client_from_cookies(&request.cookies)?;
+        let client = client_from_cookies(&request.cookies);
         let user_info = client.user_info().await?;
 
         Ok(UserInfoResp {
@@ -336,7 +336,7 @@ impl BilibiliInterface for BilibiliService {
         &self,
         request: GetLiveStreamsReq,
     ) -> Result<GetLiveStreamsResp, BilibiliError> {
-        let client = client_from_cookies(&request.cookies)?;
+        let client = client_from_cookies(&request.cookies);
         let streams = client.get_live_streams(request.cid, request.hls).await?;
 
         use crate::grpc::bilibili::LiveStream;
@@ -356,7 +356,7 @@ impl BilibiliInterface for BilibiliService {
         &self,
         request: ParseLivePageReq,
     ) -> Result<VideoPageInfo, BilibiliError> {
-        let client = client_from_cookies(&request.cookies)?;
+        let client = client_from_cookies(&request.cookies);
         let page_info = client.parse_live_page(request.room_id).await?;
         Ok(to_proto_page_info(page_info))
     }
@@ -365,7 +365,7 @@ impl BilibiliInterface for BilibiliService {
         &self,
         request: GetLiveDanmuInfoReq,
     ) -> Result<GetLiveDanmuInfoResp, BilibiliError> {
-        let client = client_from_cookies(&request.cookies)?;
+        let client = client_from_cookies(&request.cookies);
         let danmu_info = client.get_live_danmu_info(request.room_id).await?;
 
         use crate::grpc::bilibili::get_live_danmu_info_resp::Host;

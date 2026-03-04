@@ -113,27 +113,33 @@ impl StreamLifecycle {
 
     /// P2#19: Atomically attempt to claim the stream for cleanup.
     ///
-    /// Uses compare-and-swap on subscriber count to verify it is still 0 at the
-    /// moment we mark stopping. Returns `true` if cleanup can proceed, `false` if
-    /// a concurrent subscriber raced in.
+    /// Returns `true` if cleanup can proceed, `false` if a concurrent subscriber
+    /// raced in.
     ///
-    /// Protocol:
-    /// 1. CAS subscriber_count from 0 → `usize::MAX` (sentinel = "cleanup in progress")
-    /// 2. If CAS fails, a subscriber incremented between our check and now — abort.
-    /// 3. Mark stopping (`is_running = false`).
-    /// 4. Restore subscriber_count to 0 (the sentinel was temporary).
-    /// 5. Re-check subscriber_count to catch any subscriber that incremented
-    ///    between steps 3 and 4 (they would have seen the sentinel and retried).
+    /// Protocol (mark-stopping + verify):
+    /// 1. Mark stopping (`is_running = false`) so `is_healthy()` returns false
+    ///    for any new subscriber attempting `get_existing()`.
+    /// 2. Atomically read `subscriber_count` to verify it is still 0. The CAS
+    ///    `compare_exchange(0, 0)` acts as an atomic load-with-acquire: if the
+    ///    value is not 0, a concurrent subscriber incremented between the idle
+    ///    check and now, and cleanup must abort.
+    /// 3. If a subscriber raced in (CAS failed), restore running and return false.
     ///
-    /// The simpler approach: mark_stopping first, then re-check count. This is
-    /// equivalent to the current double-check but consolidated into one method
-    /// for clarity.
+    /// Safety of the 0->0 CAS: the value is intentionally unchanged because we
+    /// only need to *verify* the count, not mutate it. The `get_existing()`
+    /// double-check provides the complementary safety: after incrementing the
+    /// subscriber count, it re-checks `is_healthy()`, so if `mark_stopping()`
+    /// has already been called, the subscriber undoes its increment and treats
+    /// the stream as gone. Together these two double-checks guarantee that
+    /// either the subscriber is attached to a live stream, or cleanup sees the
+    /// subscriber and backs off.
     pub fn try_claim_for_cleanup(&self) -> bool {
         // Step 1: Mark stopping to make is_healthy() return false for new subscribers.
         self.mark_stopping();
 
-        // Step 2: Use CAS to atomically verify subscriber_count is still 0.
-        // If a subscriber incremented between our idle check and now, CAS fails.
+        // Step 2: Atomically verify subscriber_count is still 0.
+        // CAS(0, 0) is an atomic read that fails if any subscriber incremented
+        // between our idle check and now.
         let cas_result =
             self.subscriber_count
                 .compare_exchange(0, 0, Ordering::AcqRel, Ordering::Acquire);

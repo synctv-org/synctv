@@ -1,6 +1,5 @@
 use chrono::Utc;
 use sqlx::PgPool;
-use std::str::FromStr;
 
 use super::query_builder::{escape_ilike, WhereClauseBuilder};
 use crate::{
@@ -215,7 +214,7 @@ impl UserRepository {
         let result = sqlx::query(
             r"
             UPDATE users
-            SET deleted_at = $2
+            SET deleted_at = $2, version = version + 1
             WHERE id = $1 AND deleted_at IS NULL
             ",
         )
@@ -343,16 +342,6 @@ impl UserRepository {
         let offset = query.pagination.offset() as i64;
 
         let search_pattern = query.search.as_ref().map(|s| escape_ilike(s));
-        let status_enum = query
-            .status
-            .as_ref()
-            .map(|s| crate::models::UserStatus::from_str(s).map_err(crate::Error::InvalidInput))
-            .transpose()?;
-        let role_enum = query
-            .role
-            .as_ref()
-            .map(|s| crate::models::UserRole::from_str(s).map_err(crate::Error::InvalidInput))
-            .transpose()?;
 
         let wb = Self::build_user_list_conditions(query);
 
@@ -365,10 +354,10 @@ impl UserRepository {
         if let Some(ref pattern) = search_pattern {
             count_qb = count_qb.bind(pattern);
         }
-        if let Some(ref status) = status_enum {
+        if let Some(ref status) = &query.status {
             count_qb = count_qb.bind(status);
         }
-        if let Some(ref role) = role_enum {
+        if let Some(ref role) = &query.role {
             count_qb = count_qb.bind(role);
         }
         let count: i64 = count_qb.fetch_one(&self.pool).await?;
@@ -389,7 +378,7 @@ impl UserRepository {
         let list_qb = sqlx::query_as::<_, User>(&list_sql)
             .bind(limit)
             .bind(offset);
-        let list_qb = Self::bind_user_filters(list_qb, &search_pattern, &status_enum, &role_enum);
+        let list_qb = Self::bind_user_filters(list_qb, &search_pattern, &query.status, &query.role);
         let users: Vec<User> = list_qb.fetch_all(&self.pool).await?;
 
         Ok((users, count))
@@ -469,7 +458,7 @@ mod tests {
     fn test_build_user_list_conditions_with_status() {
         let query = UserListQuery {
             search: None,
-            status: Some("active".to_string()),
+            status: Some(crate::models::UserStatus::Active),
             role: None,
             pagination: crate::models::PageParams::default(),
         };
@@ -485,7 +474,7 @@ mod tests {
         let query = UserListQuery {
             search: None,
             status: None,
-            role: Some("admin".to_string()),
+            role: Some(crate::models::UserRole::Admin),
             pagination: crate::models::PageParams::default(),
         };
         let wb = UserRepository::build_user_list_conditions(&query);
@@ -499,8 +488,8 @@ mod tests {
     fn test_build_user_list_conditions_all_filters() {
         let query = UserListQuery {
             search: Some("bob".to_string()),
-            status: Some("active".to_string()),
-            role: Some("user".to_string()),
+            status: Some(crate::models::UserStatus::Active),
+            role: Some(crate::models::UserRole::User),
             pagination: crate::models::PageParams::default(),
         };
         let wb = UserRepository::build_user_list_conditions(&query);

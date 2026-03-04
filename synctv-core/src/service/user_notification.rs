@@ -151,6 +151,7 @@ impl UserNotificationService {
         user_id: &UserId,
         query: NotificationListQuery,
     ) -> Result<(Vec<Notification>, i64)> {
+        query.pagination.validate()?;
         self.repository
             .list_by_user_with_count(user_id, &query)
             .await

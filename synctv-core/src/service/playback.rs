@@ -30,13 +30,27 @@ pub struct BroadcastResult {
     pub local_sent: usize,
     /// Whether the event was successfully published to Redis
     pub redis_sent: bool,
+    /// Whether this is a single-node deployment (no broadcast needed)
+    pub single_node: bool,
 }
 
 impl BroadcastResult {
-    /// Check if the broadcast reached any destination
+    /// Check if the broadcast reached any destination (or single-node mode where
+    /// no broadcast is needed).
     #[must_use]
     pub const fn is_success(&self) -> bool {
-        self.local_sent > 0 || self.redis_sent
+        self.single_node || self.local_sent > 0 || self.redis_sent
+    }
+
+    /// Create a result for single-node mode where no cluster broadcast is needed.
+    /// This is considered a success because there are no remote replicas to notify.
+    #[must_use]
+    pub const fn single_node() -> Self {
+        Self {
+            local_sent: 0,
+            redis_sent: false,
+            single_node: true,
+        }
     }
 }
 
@@ -172,7 +186,14 @@ impl PlaybackService {
     /// When another replica updates playback state and broadcasts an invalidation
     /// message, this node's local L1 cache entry for that room is evicted so the
     /// next read fetches fresh data from the DB.
-    pub fn set_invalidation_service(&mut self, service: Arc<CacheInvalidationService>) {
+    ///
+    /// If `cancel` is provided, the listener shuts down gracefully when the token
+    /// is cancelled, allowing clean shutdown of the background task.
+    pub fn set_invalidation_service(
+        &mut self,
+        service: Arc<CacheInvalidationService>,
+        cancel: Option<tokio_util::sync::CancellationToken>,
+    ) {
         let cache = self.playback_cache.clone();
         let mut receiver = service.subscribe();
 
@@ -184,7 +205,20 @@ impl PlaybackService {
                 .unwrap_or_else(std::time::Instant::now);
 
             loop {
-                match receiver.recv().await {
+                let recv_result = if let Some(ref token) = cancel {
+                    tokio::select! {
+                        r = receiver.recv() => r,
+                        () = token.cancelled() => {
+                            tracing::debug!(
+                                "Playback cache invalidation listener cancelled, stopping"
+                            );
+                            break;
+                        }
+                    }
+                } else {
+                    receiver.recv().await
+                };
+                match recv_result {
                     Ok(msg) => match msg {
                         InvalidationMessage::PlaybackStateUpdate { room_id, state } => {
                             // Write the updated state directly into the L1 cache,
@@ -340,7 +374,7 @@ impl PlaybackService {
         }
 
         // No broadcaster configured (single-node mode) - return success
-        BroadcastResult::default()
+        BroadcastResult::single_node()
     }
 
     /// Broadcast playback state update to other replicas with exponential backoff retry.

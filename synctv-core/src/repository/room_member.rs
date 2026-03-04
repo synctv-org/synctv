@@ -18,12 +18,20 @@ impl RoomMemberRepository {
         Self { pool }
     }
 
-    /// Add user to room with role
+    /// Add user to room with role.
     ///
-    /// When an `ON CONFLICT` row exists but the `DO UPDATE ... WHERE` condition
-    /// is not satisfied (user is banned or has left), no row is returned. In
-    /// that case a follow-up query determines the specific reason and returns a
-    /// semantic error (`Authorization` for banned, `InvalidInput` for left).
+    /// # Re-join semantics
+    ///
+    /// This method intentionally allows users who previously left a room to
+    /// rejoin freely.  When an `ON CONFLICT` row exists **and the user is not
+    /// banned**, the `DO UPDATE` branch resets `left_at` to `NULL`, refreshes
+    /// `joined_at`, and bumps the version.  This is the designed rejoin flow:
+    /// left users can re-enter without needing an explicit invite or approval.
+    ///
+    /// When the `ON CONFLICT` row exists but the `DO UPDATE ... WHERE` condition
+    /// is not satisfied (user is **banned**), no row is returned. In that case a
+    /// follow-up query determines the specific reason and returns a semantic
+    /// error (`Authorization` for banned).
     pub async fn add(&self, member: &RoomMember) -> Result<RoomMember> {
         let result = sqlx::query_as::<_, RoomMember>(
             "INSERT INTO room_members (

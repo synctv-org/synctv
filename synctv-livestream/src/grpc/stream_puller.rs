@@ -28,29 +28,14 @@ pub struct GrpcStreamPuller {
 }
 
 impl GrpcStreamPuller {
-    pub fn new(
-        room_id: String,
-        media_id: String,
-        publisher_node_addr: String,
-        stream_hub_event_sender: StreamHubEventSender,
-    ) -> Self {
-        Self {
-            room_id,
-            media_id,
-            publisher_node_addr,
-            stream_hub_event_sender,
-            cluster_secret: None,
-            connection_pool: GrpcConnectionPool::with_defaults(),
-        }
-    }
-
     /// Create a new puller with a shared connection pool.
     ///
-    /// Preferred over `new()` when a pool is available (e.g., from `PullStreamManager`),
-    /// as it reuses HTTP/2 connections to publisher nodes across retry attempts
-    /// and across different pull streams targeting the same node.
+    /// A shared pool MUST be provided to reuse HTTP/2 connections to publisher
+    /// nodes across retry attempts and across different pull streams targeting
+    /// the same node. Creating a pool per-instance wastes resources and defeats
+    /// connection pooling.
     #[must_use]
-    pub const fn with_pool(
+    pub const fn new(
         room_id: String,
         media_id: String,
         publisher_node_addr: String,
@@ -375,27 +360,9 @@ mod tests {
     #[tokio::test]
     async fn test_puller_creation() {
         let (stream_hub_event_sender, _) = tokio::sync::mpsc::channel(64);
-
-        let puller = GrpcStreamPuller::new(
-            "room123".to_string(),
-            "media456".to_string(),
-            "publisher-node:50051".to_string(),
-            stream_hub_event_sender,
-        );
-
-        assert_eq!(puller.room_id, "room123");
-        assert_eq!(puller.media_id, "media456");
-        assert_eq!(puller.publisher_node_addr, "publisher-node:50051");
-        // Default pool should be created
-        assert!(puller.connection_pool.is_empty());
-    }
-
-    #[tokio::test]
-    async fn test_puller_with_shared_pool() {
-        let (stream_hub_event_sender, _) = tokio::sync::mpsc::channel(64);
         let pool = GrpcConnectionPool::with_defaults();
 
-        let puller = GrpcStreamPuller::with_pool(
+        let puller = GrpcStreamPuller::new(
             "room123".to_string(),
             "media456".to_string(),
             "publisher-node:50051".to_string(),
@@ -406,7 +373,7 @@ mod tests {
         assert_eq!(puller.room_id, "room123");
         assert_eq!(puller.media_id, "media456");
         assert_eq!(puller.publisher_node_addr, "publisher-node:50051");
-        // Pool should be shared (same underlying Arc)
+        // Pool should be shared
         assert!(puller.connection_pool.is_empty());
         assert_eq!(puller.connection_pool.len(), pool.len());
     }
@@ -414,12 +381,14 @@ mod tests {
     #[tokio::test]
     async fn test_puller_with_cluster_secret() {
         let (stream_hub_event_sender, _) = tokio::sync::mpsc::channel(64);
+        let pool = GrpcConnectionPool::with_defaults();
 
         let puller = GrpcStreamPuller::new(
             "room".to_string(),
             "media".to_string(),
             "node:50051".to_string(),
             stream_hub_event_sender,
+            pool,
         )
         .with_cluster_secret(Some("test-secret".to_string()));
 
@@ -607,7 +576,7 @@ mod tests {
         let pool = GrpcConnectionPool::with_defaults();
 
         // Create two pullers with the same pool
-        let puller1 = GrpcStreamPuller::with_pool(
+        let puller1 = GrpcStreamPuller::new(
             "room1".to_string(),
             "media1".to_string(),
             "node1:50051".to_string(),
@@ -615,7 +584,7 @@ mod tests {
             pool.clone(),
         );
 
-        let puller2 = GrpcStreamPuller::with_pool(
+        let puller2 = GrpcStreamPuller::new(
             "room2".to_string(),
             "media2".to_string(),
             "node2:50051".to_string(),

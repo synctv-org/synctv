@@ -172,13 +172,12 @@ impl ClientApiImpl {
             .ok_or_else(|| ApiError::NotFound(format!("Playlist {playlist_id} not found")))?;
 
         // Count child folders and media files
-        let child_folders = self
+        let child_folder_count = self
             .room_service
             .playlist_service()
-            .get_children(&pid)
+            .count_children(&pid)
             .await
-            .map_err(ApiError::from)?;
-        let child_folder_count = child_folders.len() as i32;
+            .map_err(ApiError::from)? as i32;
 
         let media_count = self
             .room_service
@@ -241,15 +240,20 @@ impl ClientApiImpl {
                 .map_err(ApiError::from)?;
             (playlists, total)
         } else {
-            // Get children of specific playlist (no pagination for children)
+            // Get children of specific playlist with pagination
             let parent_id = synctv_core::models::PlaylistId::from_string(req.parent_id);
+            let total = self
+                .room_service
+                .playlist_service()
+                .count_children(&parent_id)
+                .await
+                .map_err(ApiError::from)? as i32;
             let playlists = self
                 .room_service
                 .playlist_service()
-                .get_children(&parent_id)
+                .get_children_paginated(&parent_id, i64::from(page_size), offset)
                 .await
                 .map_err(ApiError::from)?;
-            let total = playlists.len() as i32;
             (playlists, total)
         };
 

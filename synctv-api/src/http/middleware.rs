@@ -95,9 +95,7 @@ async fn inject_request_id_into_error_response(response: Response, request_id: &
         .get(axum::http::header::CONTENT_TYPE)
         .and_then(|v| v.to_str().ok());
 
-    if !content_type
-        .is_some_and(|ct| ct.starts_with("application/json"))
-    {
+    if !content_type.is_some_and(|ct| ct.starts_with("application/json")) {
         return response;
     }
 

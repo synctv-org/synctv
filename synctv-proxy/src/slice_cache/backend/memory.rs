@@ -150,13 +150,7 @@ impl SliceCacheBackend for MemoryBackend {
         let mut entries: Vec<(String, std::time::SystemTime, u64)> = self
             .cache
             .iter()
-            .map(|(key, entry)| {
-                (
-                    key.as_ref().clone(),
-                    entry.last_accessed,
-                    entry.data_size(),
-                )
-            })
+            .map(|(key, entry)| (key.as_ref().clone(), entry.last_accessed, entry.data_size()))
             .collect();
 
         // Sort by last_accessed ascending (oldest first = LRU).
@@ -354,10 +348,7 @@ mod tests {
         for i in 0..5u8 {
             let data = vec![i; 100];
             backend
-                .put(
-                    &format!("k{i}"),
-                    make_entry(&data, Duration::from_hours(1)),
-                )
+                .put(&format!("k{i}"), make_entry(&data, Duration::from_hours(1)))
                 .await
                 .unwrap();
             // Small sleep to ensure different `last_accessed` timestamps.
@@ -433,10 +424,7 @@ mod tests {
         for i in 0..5u8 {
             let data = vec![i; 50]; // 50 bytes each, 250 total > 150
             backend
-                .put(
-                    &format!("k{i}"),
-                    make_entry(&data, Duration::from_hours(1)),
-                )
+                .put(&format!("k{i}"), make_entry(&data, Duration::from_hours(1)))
                 .await
                 .unwrap();
         }
@@ -537,10 +525,7 @@ mod tests {
         for i in 0..5u8 {
             let data = vec![i; 100];
             backend
-                .put(
-                    &format!("k{i}"),
-                    make_entry(&data, Duration::from_hours(1)),
-                )
+                .put(&format!("k{i}"), make_entry(&data, Duration::from_hours(1)))
                 .await
                 .unwrap();
             // Sleep to ensure different last_accessed timestamps.

@@ -975,39 +975,43 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "Requires network access for DNS resolution"]
     async fn test_external_puller_creation_rtmp() {
         let (sender, _) = tokio::sync::mpsc::channel(64);
 
+        // Use an IP literal to avoid DNS resolution (which may return
+        // non-public IPs in some environments, e.g. VPN/proxy setups).
+        // 93.184.216.34 is example.com's public IP - any public IP works here.
         let puller = ExternalStreamPuller::new_async(
             "room123".to_string(),
             "media456".to_string(),
-            "rtmp://example.com/app/stream".to_string(),
+            "rtmp://93.184.216.34/app/stream".to_string(),
             sender,
         )
         .await;
 
-        assert!(puller.is_ok());
+        assert!(puller.is_ok(), "new_async failed: {:?}", puller.err());
         let puller = puller.unwrap();
         assert_eq!(puller.room_id, "room123");
         assert_eq!(puller.media_id, "media456");
         assert!(matches!(puller.source_type, ExternalSourceType::Rtmp));
+        // IP literal path does not set resolved_addr (no DNS to resolve)
+        assert!(puller.resolved_addr.is_none());
     }
 
     #[tokio::test]
-    #[ignore = "Requires network access for DNS resolution"]
     async fn test_external_puller_creation_flv() {
         let (sender, _) = tokio::sync::mpsc::channel(64);
 
+        // Use an IP literal to avoid DNS resolution dependency.
         let puller = ExternalStreamPuller::new_async(
             "room123".to_string(),
             "media456".to_string(),
-            "http://example.com/app/stream.flv".to_string(),
+            "http://93.184.216.34/app/stream.flv".to_string(),
             sender,
         )
         .await;
 
-        assert!(puller.is_ok());
+        assert!(puller.is_ok(), "new_async failed: {:?}", puller.err());
         assert!(matches!(
             puller.unwrap().source_type,
             ExternalSourceType::HttpFlv
@@ -1045,9 +1049,11 @@ mod tests {
     }
 
     /// Test that `new_async()` properly resolves DNS and sets `resolved_addr`.
-    /// This test uses a real external hostname that should resolve.
+    /// This test uses a real external hostname that should resolve to a public IP.
+    /// Ignored because DNS results vary by environment (VPNs, proxies, firewalls
+    /// may return non-public IPs that are correctly blocked by SSRF protection).
     #[tokio::test]
-    #[ignore = "Requires network access for DNS resolution"]
+    #[ignore = "Requires DNS resolving to public IPs (fails behind VPN/proxy)"]
     async fn test_external_puller_async_sets_resolved_addr() {
         let (sender, _) = tokio::sync::mpsc::channel(64);
 
@@ -1061,7 +1067,11 @@ mod tests {
         .await;
 
         // The URL should parse correctly
-        assert!(puller.is_ok(), "new_async should succeed for valid URL");
+        assert!(
+            puller.is_ok(),
+            "new_async should succeed for valid URL: {:?}",
+            puller.err()
+        );
         let puller = puller.unwrap();
 
         // resolved_addr should be set (DNS resolution was successful)

@@ -481,7 +481,7 @@ async fn rtmp_auth_test_pending_room_rejects_operations() {
 }
 
 // ============================================================================
-// Test 7: Cross-replica user→stream mapping (Redis hash)
+// Test 7: Cross-replica user→stream mapping (per-user Redis key)
 // ============================================================================
 
 #[tokio::test]
@@ -493,42 +493,40 @@ async fn rtmp_auth_test_cross_replica_user_stream_mapping() {
     let room_id = RoomId::new();
     let media_id = MediaId::new();
 
-    // Simulate writing user stream mapping to Redis
-    let stream_key = format!("{room_id}:{media_id}");
-    let redis_key = "synctv:rtmp:user_streams";
+    // Simulate writing user stream mapping to Redis using per-user key with | separator
+    let stream_value = format!("{room_id}|{media_id}");
+    let redis_key = format!("synctv:rtmp:user_stream:{user_id}");
 
     let mut conn = redis_conn.clone();
-    let _: () = redis::cmd("HSET")
-        .arg(redis_key)
-        .arg(user_id.to_string())
-        .arg(&stream_key)
+    let _: () = redis::cmd("SET")
+        .arg(&redis_key)
+        .arg(&stream_value)
         .query_async(&mut conn)
         .await
         .expect("Failed to write user stream mapping");
 
     // Simulate reading user stream mapping from Redis
-    let result: Option<String> = redis::cmd("HGET")
-        .arg(redis_key)
-        .arg(user_id.to_string())
+    let result: Option<String> = redis::cmd("GET")
+        .arg(&redis_key)
         .query_async(&mut conn)
         .await
         .expect("Failed to read user stream mapping");
 
     assert!(result.is_some(), "Should find user stream mapping");
 
-    let found_stream_key = result.unwrap();
-    assert_eq!(found_stream_key, stream_key);
+    let found_stream_value = result.unwrap();
+    assert_eq!(found_stream_value, stream_value);
 
-    // Verify we can parse it back
-    let parts: Vec<&str> = found_stream_key.split(':').collect();
-    assert_eq!(parts.len(), 2);
-    assert_eq!(parts[0], room_id.to_string());
-    assert_eq!(parts[1], media_id.to_string());
+    // Verify we can parse it back using | separator
+    let (parsed_room_id, parsed_media_id) = found_stream_value
+        .split_once('|')
+        .expect("Should split on | separator");
+    assert_eq!(parsed_room_id, room_id.to_string());
+    assert_eq!(parsed_media_id, media_id.to_string());
 
     // Cleanup
-    let _: () = redis::cmd("HDEL")
-        .arg(redis_key)
-        .arg(user_id.to_string())
+    let _: () = redis::cmd("DEL")
+        .arg(&redis_key)
         .query_async(&mut conn)
         .await
         .expect("Failed to delete user stream mapping");

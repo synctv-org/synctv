@@ -200,7 +200,7 @@ impl PullStream {
             let mut rebuild_count: u32 = 0;
             let mut consecutive_epoch_failures: u32 = 0;
             let result = loop {
-                let grpc_puller = GrpcStreamPuller::with_pool(
+                let grpc_puller = GrpcStreamPuller::new(
                     room_id.clone(),
                     media_id.clone(),
                     publisher_node.clone(),

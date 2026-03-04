@@ -23,6 +23,15 @@ return 1
 ///
 /// KEYS[1] = active set key
 /// ARGV[1] = metadata key prefix (e.g., "synctv:streams:meta:")
+///
+/// **Performance note**: `SMEMBERS` is O(N) where N is the set cardinality.
+/// This is acceptable for the active streams set which is expected to remain
+/// small in practice (< 1000 entries — one entry per active stream across all
+/// replicas). If the deployment grows beyond ~1000 concurrent streams, consider
+/// replacing `SMEMBERS` with `SSCAN`-based iteration to avoid blocking Redis
+/// for the duration of the full-set read. The cleanup runs periodically on a
+/// background timer, so occasional higher latency is tolerable, but O(N) with
+/// N > 10 000 could noticeably block other Redis commands.
 const CLEANUP_STALE_SCRIPT: &str = r"
 local stale = {}
 local members = redis.call('SMEMBERS', KEYS[1])
@@ -277,11 +286,15 @@ impl StreamRegistry {
         None
     }
 
-    /// Get all active streams across all replicas (from Redis)
+    /// Get all active streams across all replicas (from Redis).
     ///
     /// Returns the full list of active streams from Redis, which includes
     /// streams from all replicas in the cluster. Falls back to local-only
     /// if Redis is not available.
+    ///
+    /// **Performance note**: Uses `SMEMBERS` (O(N)) internally. This is fine
+    /// for typical deployments with < 1000 concurrent streams. See the comment
+    /// on [`CLEANUP_STALE_SCRIPT`] for scaling guidance.
     pub async fn get_all_streams(&self) -> Vec<StreamMetadata> {
         if let Some(ref conn) = self.redis_conn {
             let active_key = format!("{}streams:active", self.redis_key_prefix);

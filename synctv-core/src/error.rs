@@ -56,10 +56,10 @@ impl From<sqlx::Error> for Error {
                 match code.as_ref() {
                     // PostgreSQL unique_violation
                     "23505" => {
-                        let detail = db_err.message().to_string();
-                        if detail.contains("username") {
+                        let constraint = db_err.constraint().unwrap_or_default();
+                        if constraint.contains("username") {
                             Self::AlreadyExists("Username already taken".to_string())
-                        } else if detail.contains("email") {
+                        } else if constraint.contains("email") {
                             Self::AlreadyExists("Email already registered".to_string())
                         } else {
                             Self::AlreadyExists("Resource already exists".to_string())
@@ -217,14 +217,23 @@ impl<T, E: std::fmt::Display> InternalExt<T> for std::result::Result<T, E> {
 mod tests {
     use super::*;
 
-    // Helper to create a sqlx::Error from a DatabaseError with a specific code
+    // Helper to create a sqlx::Error from a DatabaseError with a specific code and optional constraint
     fn make_db_error(code: &str, message: &str) -> sqlx::Error {
+        make_db_error_with_constraint(code, message, None)
+    }
+
+    fn make_db_error_with_constraint(
+        code: &str,
+        message: &str,
+        constraint: Option<&str>,
+    ) -> sqlx::Error {
         use std::borrow::Cow;
 
         #[derive(Debug)]
         struct FakeDbError {
             code: String,
             message: String,
+            constraint: Option<String>,
         }
 
         impl std::fmt::Display for FakeDbError {
@@ -241,6 +250,9 @@ mod tests {
             }
             fn code(&self) -> Option<Cow<'_, str>> {
                 Some(Cow::Borrowed(&self.code))
+            }
+            fn constraint(&self) -> Option<&str> {
+                self.constraint.as_deref()
             }
             fn as_error(&self) -> &(dyn std::error::Error + Send + Sync + 'static) {
                 self
@@ -259,25 +271,48 @@ mod tests {
         sqlx::Error::Database(Box::new(FakeDbError {
             code: code.to_string(),
             message: message.to_string(),
+            constraint: constraint.map(String::from),
         }))
     }
 
     #[test]
     fn test_sqlx_unique_violation_username() {
-        let err = make_db_error("23505", "duplicate key violates username constraint");
+        let err = make_db_error_with_constraint(
+            "23505",
+            "duplicate key violates unique constraint",
+            Some("users_username_key"),
+        );
         let core_err: Error = err.into();
         assert!(matches!(core_err, Error::AlreadyExists(ref msg) if msg.contains("Username")));
     }
 
     #[test]
     fn test_sqlx_unique_violation_email() {
-        let err = make_db_error("23505", "duplicate key violates email constraint");
+        let err = make_db_error_with_constraint(
+            "23505",
+            "duplicate key violates unique constraint",
+            Some("users_email_key"),
+        );
         let core_err: Error = err.into();
         assert!(matches!(core_err, Error::AlreadyExists(ref msg) if msg.contains("Email")));
     }
 
     #[test]
     fn test_sqlx_unique_violation_generic() {
+        let err = make_db_error_with_constraint(
+            "23505",
+            "duplicate key violates unique constraint",
+            Some("other_unique_key"),
+        );
+        let core_err: Error = err.into();
+        assert!(
+            matches!(core_err, Error::AlreadyExists(ref msg) if msg.contains("already exists"))
+        );
+    }
+
+    #[test]
+    fn test_sqlx_unique_violation_no_constraint_name() {
+        // When PostgreSQL doesn't provide a constraint name, fall back to generic message
         let err = make_db_error("23505", "duplicate key violates unique constraint");
         let core_err: Error = err.into();
         assert!(

@@ -233,6 +233,11 @@ impl RoomSettingsService {
 
     /// Set room settings (write-through cache) with optimistic locking.
     ///
+    /// **Important**: This is a whole-object replacement. The provided `settings`
+    /// replaces the entire row. Callers that need to update a single field should
+    /// use [`update_field`](Self::update_field) instead, which performs a
+    /// read-modify-write cycle and correctly handles concurrent retries.
+    ///
     /// Uses CAS (Compare-And-Swap) with automatic retry on version conflicts.
     ///
     /// # Multi-Replica Synchronization
@@ -243,7 +248,11 @@ impl RoomSettingsService {
     /// - Sends WebSocket notification to connected clients
     pub async fn set(&self, room_id: &RoomId, settings: &RoomSettings) -> Result<()> {
         for attempt in 0..Self::MAX_RETRIES {
-            // Get current version (bypass cache)
+            // Get current version (bypass cache).
+            // NOTE: We only read the version here, not the current settings, because
+            // `set` performs whole-object replacement. On retry after a version conflict
+            // we re-read the version but intentionally write the caller's `settings`
+            // unchanged. For partial (merge) updates, use `update_field` instead.
             let (_current, version) = self.repo.get_with_version(room_id).await?;
 
             // CAS write
@@ -374,18 +383,20 @@ impl RoomSettingsService {
     }
 
     /// Preload settings for multiple rooms (bulk loading)
+    ///
+    /// Uses a single `get_batch` query instead of N sequential queries.
     pub async fn preload(&self, room_ids: &[RoomId]) -> Result<()> {
-        let mut loaded = std::collections::HashMap::new();
-
-        for room_id in room_ids {
-            if let Ok(settings) = self.repo.get(room_id).await {
-                loaded.insert(room_id.clone(), settings);
-            }
+        if room_ids.is_empty() {
+            return Ok(());
         }
 
+        let id_strs: Vec<&str> = room_ids.iter().map(|id| id.as_str()).collect();
+        let batch = self.repo.get_batch(&id_strs).await?;
+
         // Bulk insert into cache
-        for (room_id, settings) in loaded {
-            self.cache.insert(room_id, settings).await;
+        for room_id in room_ids {
+            let settings = batch.get(room_id.as_str()).cloned().unwrap_or_default();
+            self.cache.insert(room_id.clone(), settings).await;
         }
 
         Ok(())

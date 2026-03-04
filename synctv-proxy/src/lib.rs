@@ -267,9 +267,11 @@ async fn proxy_fetch_and_forward_inner(cfg: ProxyConfig<'_>) -> Result<Response,
     let status = proxy_response.status();
     let response_headers = proxy_response.headers().clone();
 
-    // Check Content-Length hint before streaming (not authoritative, but catches obvious cases)
+    // Check Content-Length hint before streaming (not authoritative, but catches obvious cases).
+    // Use `try_from` instead of `as usize` to avoid silent truncation on 32-bit targets
+    // where u64 > usize::MAX would wrap around and pass the size check.
     if let Some(cl) = proxy_response.content_length() {
-        if cl as usize > MAX_PROXY_BODY_SIZE {
+        if usize::try_from(cl).map_or(true, |s| s > MAX_PROXY_BODY_SIZE) {
             return Err(anyhow::anyhow!(
                 "Response too large ({cl} bytes, max {MAX_PROXY_BODY_SIZE})"
             ));
@@ -908,6 +910,20 @@ async fn send_with_redirect_validation(
             .to_str()
             .map_err(|_| anyhow::anyhow!("Invalid Location header"))?
             .to_string();
+
+        // Validate redirect URL scheme to prevent protocol downgrade attacks
+        // (e.g. redirecting to file://, ftp://, data://, etc.)
+        match url::Url::parse(&location) {
+            Ok(parsed) => {
+                let scheme = parsed.scheme();
+                if scheme != "http" && scheme != "https" {
+                    return Err(anyhow::anyhow!("Redirect to disallowed scheme: {scheme}"));
+                }
+            }
+            Err(_) => {
+                // Relative URLs are allowed (they inherit the original scheme)
+            }
+        }
 
         // SSRF protection is handled by the DNS resolver at connection time
         let mut redirect_req = PROXY_CLIENT.get(&location);

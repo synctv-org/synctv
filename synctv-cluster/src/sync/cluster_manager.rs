@@ -301,10 +301,10 @@ impl ClusterManager {
             admin_event_tx,
             redis_pubsub,
             publisher_task: tokio::sync::Mutex::new(publisher_handle),
-            cancel_token: config
-                .parent_cancel_token
-                .as_ref()
-                .map_or_else(CancellationToken::new, tokio_util::sync::CancellationToken::child_token),
+            cancel_token: config.parent_cancel_token.as_ref().map_or_else(
+                CancellationToken::new,
+                tokio_util::sync::CancellationToken::child_token,
+            ),
             critical_channel_capacity: config.critical_channel_capacity,
             publish_channel_capacity: config.publish_channel_capacity,
             heartbeat_state: tokio::sync::Mutex::new(HeartbeatState {

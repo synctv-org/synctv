@@ -13,10 +13,10 @@ CREATE TABLE IF NOT EXISTS room_members (
     -- For admins: uses admin_added/admin_removed (overrides member-level)
     -- NOTE: Stored as BIGINT (signed i64) but logically treated as u64 bitmasks.
     -- CHECK constraints prevent negative values to avoid overflow when cast to u64.
-    added_permissions BIGINT DEFAULT 0 CHECK (added_permissions >= 0),      -- For member role: extra permissions
-    removed_permissions BIGINT DEFAULT 0 CHECK (removed_permissions >= 0),    -- For member role: removed permissions
-    admin_added_permissions BIGINT DEFAULT 0 CHECK (admin_added_permissions >= 0),     -- For admin role: extra permissions (on top of admin default)
-    admin_removed_permissions BIGINT DEFAULT 0 CHECK (admin_removed_permissions >= 0),   -- For admin role: removed permissions (overrides admin default)
+    added_permissions BIGINT NOT NULL DEFAULT 0 CHECK (added_permissions >= 0),      -- For member role: extra permissions
+    removed_permissions BIGINT NOT NULL DEFAULT 0 CHECK (removed_permissions >= 0),    -- For member role: removed permissions
+    admin_added_permissions BIGINT NOT NULL DEFAULT 0 CHECK (admin_added_permissions >= 0),     -- For admin role: extra permissions (on top of admin default)
+    admin_removed_permissions BIGINT NOT NULL DEFAULT 0 CHECK (admin_removed_permissions >= 0),   -- For admin role: removed permissions (overrides admin default)
 
     -- Timestamps
     joined_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,

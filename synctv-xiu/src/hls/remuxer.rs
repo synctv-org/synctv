@@ -1408,9 +1408,7 @@ mod tests {
         }));
         registry.insert("live/ended_stream".to_string(), state2);
 
-        let checker = RegistryCleanupChecker {
-            registry: registry,
-        };
+        let checker = RegistryCleanupChecker { registry };
         let marked = checker.get_streams_marked_for_cleanup();
 
         // Only the ended stream should be returned
@@ -1449,9 +1447,7 @@ mod tests {
         }));
         registry.insert(key, new_state);
 
-        let checker = RegistryCleanupChecker {
-            registry: registry,
-        };
+        let checker = RegistryCleanupChecker { registry };
         let marked = checker.get_streams_marked_for_cleanup();
 
         // After replacement, the new handler's state is NOT marked for cleanup.

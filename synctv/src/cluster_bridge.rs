@@ -34,6 +34,7 @@ impl synctv_core::service::PlaybackBroadcaster for ClusterPlaybackBroadcaster {
         synctv_core::service::BroadcastResult {
             local_sent: result.local_sent,
             redis_sent: result.redis_sent,
+            single_node: false,
         }
     }
 }

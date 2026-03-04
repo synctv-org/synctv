@@ -135,7 +135,7 @@ impl Default for ConnectionLimits {
             max_per_user: 5,
             max_per_room: 200,
             max_total: 10000,
-            idle_timeout: Duration::from_mins(5), // 5 minutes
+            idle_timeout: Duration::from_mins(5),   // 5 minutes
             max_duration: Duration::from_hours(24), // 24 hours
             webrtc_session_timeout: Duration::from_hours(2), // 2 hours
         }
@@ -268,7 +268,12 @@ const PENDING_RETRY_QUEUE_CAPACITY: usize = 10_000;
 const PENDING_DISCONNECT_QUEUE_CAPACITY: usize = 10_000;
 
 impl ConnectionManager {
-    /// Create a new `ConnectionManager`
+    /// Create a new `ConnectionManager`.
+    ///
+    /// **Note**: this constructor does not spawn any background tasks. Call
+    /// [`start`](Self::start) (or [`with_redis`](Self::with_redis), which calls
+    /// it internally) after construction to launch the disconnect-signal retry
+    /// task and any Redis-related background work.
     #[must_use]
     pub fn new(limits: ConnectionLimits) -> Self {
         // Use a large buffer (10 000) to minimise lag for critical events such as
@@ -283,7 +288,7 @@ impl ConnectionManager {
 
         // Store the receiver so it is not dropped here. with_redis() will take it
         // and hand it to spawn_pending_retries_task when Redis is configured.
-        let mgr = Self {
+        Self {
             connections: Arc::new(DashMap::new()),
             user_connections: Arc::new(DashMap::new()),
             room_connections: Arc::new(DashMap::new()),
@@ -301,15 +306,19 @@ impl ConnectionManager {
             redis_conn: None,
             redis_key_prefix: String::new(),
             ttl_refresh_cancel: Arc::new(tokio_util::sync::CancellationToken::new()),
-            disconnect_retry_cancel: Arc::new(disconnect_retry_cancel.clone()),
+            disconnect_retry_cancel: Arc::new(disconnect_retry_cancel),
             pending_retries_tx,
             pending_retries_rx: Arc::new(tokio::sync::Mutex::new(Some(pending_retries_rx))),
-        };
+        }
+    }
 
-        // Spawn the disconnect signal retry task
-        mgr.spawn_disconnect_retry_task(disconnect_retry_cancel);
-
-        mgr
+    /// Start background tasks that require a Tokio runtime.
+    ///
+    /// Launches the disconnect-signal retry task. This must be called from
+    /// within an async context (i.e. after the Tokio runtime is available).
+    /// [`with_redis`](Self::with_redis) calls this automatically.
+    pub fn start(&self) {
+        self.spawn_disconnect_retry_task((*self.disconnect_retry_cancel).clone());
     }
 
     /// Enable distributed connection counting via Redis.
@@ -317,14 +326,19 @@ impl ConnectionManager {
     /// When Redis is configured, per-user and per-room connection limits are
     /// enforced across all replicas. Without Redis, limits are per-node only.
     ///
-    /// Automatically spawns a background TTL refresh task (every 60s) to keep
-    /// Redis connection counters alive for long-lived connections, and a
-    /// pending-retries task that periodically retries failed Redis counter
-    /// operations. Both tasks are cancelled when `shutdown()` is called.
+    /// Automatically spawns background tasks:
+    /// - Disconnect-signal retry task (via [`start`](Self::start))
+    /// - TTL refresh task (every 60s) for long-lived connection counters
+    /// - Pending-retries task for failed Redis counter operations
+    ///
+    /// All tasks are cancelled when `shutdown()` is called.
     #[must_use]
     pub fn with_redis(mut self, conn: redis::aio::ConnectionManager, key_prefix: &str) -> Self {
         self.redis_conn = Some(conn.clone());
         self.redis_key_prefix = key_prefix.to_string();
+
+        // Start the disconnect-signal retry task (idempotent if already running)
+        self.start();
 
         // Auto-spawn the TTL refresh task so callers don't need to remember
         // to call spawn_ttl_refresh_task() manually.
@@ -341,7 +355,9 @@ impl ConnectionManager {
             .try_lock()
             .ok()
             .and_then(|mut guard| guard.take());
-        let rx = if let Some(rx) = rx { rx } else {
+        let rx = if let Some(rx) = rx {
+            rx
+        } else {
             // Fallback: create a fresh channel and update the sender.
             let (tx, rx) = mpsc::channel(PENDING_RETRY_QUEUE_CAPACITY);
             self.pending_retries_tx = tx;
@@ -709,10 +725,7 @@ impl ConnectionManager {
         // Atomically try to reserve a slot by checking combined count
         loop {
             let pending = counter.load(Ordering::Acquire);
-            let registered = self
-                .room_connections
-                .get(room_id)
-                .map_or(0, |v| v.len());
+            let registered = self.room_connections.get(room_id).map_or(0, |v| v.len());
             let effective = registered + pending;
 
             if effective >= self.limits.max_per_room {
@@ -756,10 +769,7 @@ impl ConnectionManager {
 
         loop {
             let pending = counter.load(Ordering::Acquire);
-            let registered = self
-                .user_connections
-                .get(user_id)
-                .map_or(0, |v| v.len());
+            let registered = self.user_connections.get(user_id).map_or(0, |v| v.len());
             let effective = registered + pending;
 
             if effective >= self.limits.max_per_user {
@@ -2903,5 +2913,29 @@ mod tests {
         assert!(mgr.reserve_room_slot(&rid).is_ok());
         assert!(mgr.reserve_room_slot(&rid).is_ok());
         assert!(mgr.reserve_room_slot(&rid).is_err());
+    }
+
+    #[tokio::test]
+    async fn test_new_does_not_spawn_tasks() {
+        // ConnectionManager::new() should not call tokio::spawn.
+        // It should be safe to call outside of a Tokio runtime (though we
+        // run this inside one for convenience). The key invariant is that
+        // the disconnect retry task is NOT started until start() is called.
+        let manager = ConnectionManager::new(ConnectionLimits::default());
+        // Verify manager is functional for basic operations without start()
+        let user_id = UserId::from_string("user1".to_string());
+        assert!(manager.register("conn1".to_string(), user_id).await.is_ok());
+        assert_eq!(manager.connection_count(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_start_spawns_disconnect_retry_task() {
+        let manager = ConnectionManager::new(ConnectionLimits::default());
+        // start() should be callable within a Tokio runtime without panicking
+        manager.start();
+        // Give the spawned task a moment to initialize
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        // Shutdown should cancel the retry task cleanly
+        manager.shutdown();
     }
 }

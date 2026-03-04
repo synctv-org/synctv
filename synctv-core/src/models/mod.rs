@@ -18,7 +18,7 @@ pub use chat::{
     ChatHistoryQuery, ChatMessage, DanmakuMessage, DanmakuPosition, SendChatRequest,
     SendDanmakuRequest,
 };
-pub use id::{generate_id, MediaId, PlaylistId, RoomId, UserId};
+pub use id::{generate_id, MediaId, PlaylistId, RoomId, UserId, ID_LENGTH};
 pub use media::{
     Danmaku, Media, PlaybackInfo, PlaybackResult, PlaybackUrl, PlaybackUrlMetadata, ProviderType,
     Subtitle, SubtitleUrl,

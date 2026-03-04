@@ -107,19 +107,21 @@ async fn test_in_memory_sync_check() {
 async fn test_in_memory_distributed_uses_governor() {
     let limiter = RateLimiter::in_memory_only("dist:".to_string());
 
-    // Without Redis, distributed check should still work using in-memory governor
+    // Without Redis, the async check should work using in-memory governor.
+    // Note: check_rate_limit_distributed (check_strict) intentionally fails
+    // closed without Redis. Use check_rate_limit (check) for in-memory fallback.
     for i in 0..5 {
         limiter
-            .check_rate_limit_distributed("key", 5, 1)
+            .check_rate_limit("key", 5, 1)
             .await
-            .unwrap_or_else(|_| panic!("Request {i} should succeed via in-memory check_strict"));
+            .unwrap_or_else(|_| panic!("Request {i} should succeed via in-memory governor"));
     }
 
     // Should be blocked after exhausting limit
-    let result = limiter.check_rate_limit_distributed("key", 5, 1).await;
+    let result = limiter.check_rate_limit("key", 5, 1).await;
     assert!(
         matches!(result, Err(RateLimitError::RateLimitExceeded { .. })),
-        "Request exceeding limit should be blocked via in-memory check_strict"
+        "Request exceeding limit should be blocked via in-memory governor"
     );
 }
 

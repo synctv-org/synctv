@@ -1,9 +1,26 @@
 use nanoid::nanoid;
 use serde::{Deserialize, Serialize};
 
+/// Expected length of all entity IDs (nanoid)
+pub const ID_LENGTH: usize = 12;
+
 /// Generate a 12-character nanoid for entity IDs
 pub fn generate_id() -> String {
-    nanoid!(12)
+    nanoid!(ID_LENGTH)
+}
+
+/// Validate that an externally-supplied ID string has the expected length.
+///
+/// Returns `Err` with a descriptive message when the length is wrong.
+fn validate_id_length(id: &str, type_name: &str) -> Result<(), String> {
+    if id.len() == ID_LENGTH {
+        Ok(())
+    } else {
+        Err(format!(
+            "invalid {type_name}: expected {ID_LENGTH} characters, got {}",
+            id.len()
+        ))
+    }
 }
 
 /// User ID type (CHAR(12) nanoid)
@@ -20,6 +37,14 @@ impl UserId {
     #[must_use]
     pub const fn from_string(id: String) -> Self {
         Self(id)
+    }
+
+    /// Create a `UserId` from an externally-supplied string, validating the
+    /// expected 12-character length.  Use this in API / gRPC handlers that
+    /// receive IDs from untrusted input.
+    pub fn from_string_validated(id: String) -> Result<Self, String> {
+        validate_id_length(&id, "UserId")?;
+        Ok(Self(id))
     }
 
     #[must_use]
@@ -87,6 +112,14 @@ impl RoomId {
         Self(id)
     }
 
+    /// Create a `RoomId` from an externally-supplied string, validating the
+    /// expected 12-character length.  Use this in API / gRPC handlers that
+    /// receive IDs from untrusted input.
+    pub fn from_string_validated(id: String) -> Result<Self, String> {
+        validate_id_length(&id, "RoomId")?;
+        Ok(Self(id))
+    }
+
     #[must_use]
     pub fn as_str(&self) -> &str {
         &self.0
@@ -152,6 +185,14 @@ impl MediaId {
         Self(id)
     }
 
+    /// Create a `MediaId` from an externally-supplied string, validating the
+    /// expected 12-character length.  Use this in API / gRPC handlers that
+    /// receive IDs from untrusted input.
+    pub fn from_string_validated(id: String) -> Result<Self, String> {
+        validate_id_length(&id, "MediaId")?;
+        Ok(Self(id))
+    }
+
     #[must_use]
     pub fn as_str(&self) -> &str {
         &self.0
@@ -215,6 +256,14 @@ impl PlaylistId {
     #[must_use]
     pub const fn from_string(id: String) -> Self {
         Self(id)
+    }
+
+    /// Create a `PlaylistId` from an externally-supplied string, validating the
+    /// expected 12-character length.  Use this in API / gRPC handlers that
+    /// receive IDs from untrusted input.
+    pub fn from_string_validated(id: String) -> Result<Self, String> {
+        validate_id_length(&id, "PlaylistId")?;
+        Ok(Self(id))
     }
 
     #[must_use]
@@ -298,5 +347,32 @@ mod tests {
         let id2 = MediaId::new();
         assert_ne!(id1, id2);
         assert_eq!(id1.as_str().len(), 12);
+    }
+
+    #[test]
+    fn test_from_string_validated_accepts_valid_length() {
+        let valid = "abcdefghijkl".to_string(); // 12 chars
+        assert!(UserId::from_string_validated(valid.clone()).is_ok());
+        assert!(RoomId::from_string_validated(valid.clone()).is_ok());
+        assert!(MediaId::from_string_validated(valid.clone()).is_ok());
+        assert!(PlaylistId::from_string_validated(valid).is_ok());
+    }
+
+    #[test]
+    fn test_from_string_validated_rejects_wrong_length() {
+        let too_short = "abc".to_string();
+        let too_long = "abcdefghijklmnop".to_string();
+
+        assert!(UserId::from_string_validated(too_short.clone()).is_err());
+        assert!(UserId::from_string_validated(too_long.clone()).is_err());
+        assert!(RoomId::from_string_validated(too_short.clone()).is_err());
+        assert!(MediaId::from_string_validated(too_short.clone()).is_err());
+        assert!(PlaylistId::from_string_validated(too_short).is_err());
+        assert!(PlaylistId::from_string_validated(too_long).is_err());
+    }
+
+    #[test]
+    fn test_from_string_validated_rejects_empty() {
+        assert!(UserId::from_string_validated(String::new()).is_err());
     }
 }

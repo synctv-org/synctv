@@ -112,8 +112,8 @@ fn test_is_short_link_false_positives() {
 
 #[test]
 fn test_client_creation_no_cookies() {
-    let client = BilibiliClient::new();
-    assert!(client.is_ok());
+    // BilibiliClient::new() is infallible; just verify it doesn't panic.
+    let _client = BilibiliClient::new();
 }
 
 #[test]
@@ -121,8 +121,8 @@ fn test_client_creation_with_cookies() {
     let mut cookies = std::collections::HashMap::new();
     cookies.insert("SESSDATA".to_string(), "abc123".to_string());
     cookies.insert("bili_jct".to_string(), "csrf_token".to_string());
-    let client = BilibiliClient::with_cookies(cookies);
-    assert!(client.is_ok());
+    // BilibiliClient::with_cookies() is infallible; just verify it doesn't panic.
+    let _client = BilibiliClient::with_cookies(cookies);
 }
 
 // ============================================================================

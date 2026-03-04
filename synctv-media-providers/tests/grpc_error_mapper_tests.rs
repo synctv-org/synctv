@@ -127,15 +127,15 @@ fn test_bilibili_network_to_unavailable() {
 }
 
 #[test]
-fn test_bilibili_api_error_code_to_internal() {
+fn test_bilibili_api_error_neg412_to_resource_exhausted() {
     use synctv_media_providers::bilibili::BilibiliError;
     let err = BilibiliError::Api {
         code: -412,
         message: "request intercepted".to_string(),
     };
     let status = map_provider_error("get_video_url", &err);
-    assert_eq!(status.code(), tonic::Code::Internal);
-    assert!(status.message().contains("-412"));
+    assert_eq!(status.code(), tonic::Code::ResourceExhausted);
+    assert!(status.message().contains("rate limited"));
 }
 
 #[test]

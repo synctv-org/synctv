@@ -377,9 +377,8 @@ fn test_fan_out_quarantine_error_format() {
     let expected_error_fragment = "quarantined";
 
     // This is the error message format we expect
-    let error_msg = format!(
-        "Fan-out rejected: node is {expected_error_fragment} due to epoch mismatch"
-    );
+    let error_msg =
+        format!("Fan-out rejected: node is {expected_error_fragment} due to epoch mismatch");
 
     assert!(
         error_msg.contains("quarantined"),

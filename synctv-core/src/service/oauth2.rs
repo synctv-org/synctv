@@ -77,7 +77,9 @@ pub struct RedisOAuthStateStore {
 impl RedisOAuthStateStore {
     /// Create from the shared `Arc<RwLock<ConnectionManager>>`.
     #[must_use]
-    pub const fn new(conn: std::sync::Arc<tokio::sync::RwLock<redis::aio::ConnectionManager>>) -> Self {
+    pub const fn new(
+        conn: std::sync::Arc<tokio::sync::RwLock<redis::aio::ConnectionManager>>,
+    ) -> Self {
         Self { conn }
     }
 

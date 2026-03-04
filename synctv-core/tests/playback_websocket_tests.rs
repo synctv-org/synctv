@@ -116,6 +116,7 @@ impl PlaybackBroadcaster for MockBroadcaster {
         BroadcastResult {
             local_sent: 1,
             redis_sent: true,
+            single_node: false,
         }
     }
 }
@@ -654,6 +655,7 @@ fn test_broadcast_result_is_success() {
     let result = BroadcastResult {
         local_sent: 5,
         redis_sent: true,
+        single_node: false,
     };
     assert!(result.is_success());
 
@@ -661,6 +663,7 @@ fn test_broadcast_result_is_success() {
     let result = BroadcastResult {
         local_sent: 5,
         redis_sent: false,
+        single_node: false,
     };
     assert!(result.is_success());
 
@@ -668,14 +671,24 @@ fn test_broadcast_result_is_success() {
     let result = BroadcastResult {
         local_sent: 0,
         redis_sent: true,
+        single_node: false,
     };
     assert!(result.is_success());
 
-    // Neither sent
+    // Neither sent (not single-node) - failure
     let result = BroadcastResult {
         local_sent: 0,
         redis_sent: false,
+        single_node: false,
     };
+    assert!(!result.is_success());
+
+    // Single-node mode - always success even with no subscribers
+    let result = BroadcastResult::single_node();
+    assert!(result.is_success());
+
+    // Default (no fields set) - still failure
+    let result = BroadcastResult::default();
     assert!(!result.is_success());
 }
 

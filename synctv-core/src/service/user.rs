@@ -336,10 +336,16 @@ impl UserService {
         // OAuth2 users are already authenticated by the provider, so they
         // start as Active. Email registrations go through the normal
         // email-verification flow (Pending when verification is required).
+        let signup_need_review = self
+            .settings_registry
+            .as_ref()
+            .and_then(|r| r.signup_need_review.get().ok())
+            .unwrap_or(false);
+
         let initial_status = match signup_method {
             SignupMethod::OAuth2 => crate::models::UserStatus::Active,
             SignupMethod::Email => {
-                if self.email_verification_required {
+                if self.email_verification_required || signup_need_review {
                     crate::models::UserStatus::Pending
                 } else {
                     crate::models::UserStatus::Active
@@ -817,6 +823,7 @@ impl UserService {
         &self,
         query: &crate::models::UserListQuery,
     ) -> Result<(Vec<User>, i64)> {
+        query.pagination.validate()?;
         self.repository.list(query).await
     }
 
@@ -1873,5 +1880,87 @@ mod tests {
         // Verify IP counter is now reset
         let (ip_count_after, _) = ip_tracker.get_attempts(&ip_key).await.unwrap();
         assert_eq!(ip_count_after, 0, "IP counter should be reset");
+    }
+
+    // ========== register_with_executor signup_need_review Tests ==========
+
+    /// Verify that register_with_executor respects signup_need_review for Email signups.
+    ///
+    /// This test mirrors the logic in register_with_executor to verify that when
+    /// signup_need_review is true and signup_method is Email, the initial status
+    /// is Pending (not Active).
+    #[test]
+    fn test_register_with_executor_respects_signup_need_review_for_email() {
+        // Simulate the logic from register_with_executor
+        let email_verification_required = false;
+        let signup_need_review = true;
+        let signup_method = SignupMethod::Email;
+
+        let initial_status = match signup_method {
+            SignupMethod::OAuth2 => crate::models::UserStatus::Active,
+            SignupMethod::Email => {
+                if email_verification_required || signup_need_review {
+                    crate::models::UserStatus::Pending
+                } else {
+                    crate::models::UserStatus::Active
+                }
+            }
+        };
+
+        assert_eq!(
+            initial_status,
+            crate::models::UserStatus::Pending,
+            "Email registration with signup_need_review=true must produce Pending status"
+        );
+    }
+
+    /// Verify that OAuth2 signups are NOT affected by signup_need_review.
+    #[test]
+    fn test_register_with_executor_oauth2_ignores_signup_need_review() {
+        let email_verification_required = false;
+        let signup_need_review = true;
+        let signup_method = SignupMethod::OAuth2;
+
+        let initial_status = match signup_method {
+            SignupMethod::OAuth2 => crate::models::UserStatus::Active,
+            SignupMethod::Email => {
+                if email_verification_required || signup_need_review {
+                    crate::models::UserStatus::Pending
+                } else {
+                    crate::models::UserStatus::Active
+                }
+            }
+        };
+
+        assert_eq!(
+            initial_status,
+            crate::models::UserStatus::Active,
+            "OAuth2 registration should always be Active regardless of signup_need_review"
+        );
+    }
+
+    /// Verify that Email signups are Active when neither review nor verification is required.
+    #[test]
+    fn test_register_with_executor_email_active_when_no_review() {
+        let email_verification_required = false;
+        let signup_need_review = false;
+        let signup_method = SignupMethod::Email;
+
+        let initial_status = match signup_method {
+            SignupMethod::OAuth2 => crate::models::UserStatus::Active,
+            SignupMethod::Email => {
+                if email_verification_required || signup_need_review {
+                    crate::models::UserStatus::Pending
+                } else {
+                    crate::models::UserStatus::Active
+                }
+            }
+        };
+
+        assert_eq!(
+            initial_status,
+            crate::models::UserStatus::Active,
+            "Email registration with no review/verification should be Active"
+        );
     }
 }

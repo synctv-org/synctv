@@ -3,7 +3,7 @@ use futures::stream::StreamExt;
 use redis::streams::StreamReadReply;
 use redis::{AsyncCommands, Client as RedisClient};
 use std::collections::{HashMap, HashSet};
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use tokio::sync::{broadcast, mpsc};
 use tokio::time::{timeout, Duration};
@@ -231,10 +231,12 @@ impl PublishBackpressure {
 pub struct RedisPubSub {
     redis_client: RedisClient,
     /// Shared multiplexed connection for non-Pub/Sub operations (stream reads).
-    /// Avoids creating a fresh connection for every get_latest_stream_id / read_missed_events call.
-    shared_conn: tokio::sync::Mutex<Option<redis::aio::MultiplexedConnection>>,
-    /// Timestamp of last successful connection health check (Unix seconds)
-    last_health_check: AtomicU64,
+    ///
+    /// `MultiplexedConnection` is clone-safe (internally `Arc`-based) and handles
+    /// automatic reconnection, so we use `OnceCell` for lazy one-time init
+    /// instead of a `Mutex<Option<_>>`.  Each caller clones the connection for
+    /// concurrent use without lock contention.
+    shared_conn: tokio::sync::OnceCell<redis::aio::MultiplexedConnection>,
     message_hub: Arc<RoomMessageHub>,
     node_id: String,
     /// Key prefix for all Redis keys and channels (e.g., "synctv:")
@@ -298,8 +300,7 @@ impl RedisPubSub {
     ) -> Result<Self> {
         Ok(Self {
             redis_client,
-            shared_conn: tokio::sync::Mutex::new(None),
-            last_health_check: AtomicU64::new(0),
+            shared_conn: tokio::sync::OnceCell::new(),
             message_hub,
             node_id,
             key_prefix: key_prefix.to_string(),
@@ -993,7 +994,10 @@ impl RedisPubSub {
                 .iter()
                 .map(|rid| self.room_pubsub_channel(rid))
                 .collect();
-            let channel_refs: Vec<&str> = room_channels.iter().map(std::string::String::as_str).collect();
+            let channel_refs: Vec<&str> = room_channels
+                .iter()
+                .map(std::string::String::as_str)
+                .collect();
 
             match timeout(
                 Duration::from_secs(REDIS_TIMEOUT_SECS),
@@ -1560,10 +1564,7 @@ impl RedisPubSub {
             .collect();
 
         // Subscribe to newly active rooms
-        let new_rooms: Vec<String> = active_rooms
-            .difference(subscribed_rooms)
-            .cloned()
-            .collect();
+        let new_rooms: Vec<String> = active_rooms.difference(subscribed_rooms).cloned().collect();
         for room_id in new_rooms {
             let channel = self.room_pubsub_channel(&room_id);
             match timeout(
@@ -1610,10 +1611,7 @@ impl RedisPubSub {
         }
 
         // Unsubscribe from deactivated rooms
-        for room_id in subscribed_rooms
-            .difference(&active_rooms)
-            .cloned()
-        {
+        for room_id in subscribed_rooms.difference(&active_rooms).cloned() {
             let channel = self.room_pubsub_channel(&room_id);
             match timeout(
                 Duration::from_secs(REDIS_TIMEOUT_SECS),
@@ -2008,64 +2006,20 @@ impl RedisPubSub {
 
     /// Get or create a shared multiplexed connection for non-Pub/Sub operations.
     ///
-    /// Includes periodic PING health checks (every 30s) to detect stale connections
-    /// early, matching the pattern used by `NodeRegistry::get_conn()`.
+    /// `MultiplexedConnection` is clone-safe and handles automatic reconnection
+    /// internally, so we lazily initialize once via `OnceCell` and clone for
+    /// each caller.  No mutex contention on the hot path.
     async fn get_shared_conn(&self) -> Result<redis::aio::MultiplexedConnection> {
-        const HEALTH_CHECK_INTERVAL_SECS: u64 = 30;
-
-        let mut guard = self.shared_conn.lock().await;
-
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
-        let last_check = self.last_health_check.load(Ordering::Relaxed);
-        let needs_health_check = now.saturating_sub(last_check) >= HEALTH_CHECK_INTERVAL_SECS;
-
-        if let Some(ref conn) = *guard {
-            if !needs_health_check {
-                return Ok(conn.clone());
-            }
-
-            // Perform health check with PING
-            let mut conn_clone = conn.clone();
-            drop(guard); // Release lock during PING
-
-            let ping_result = timeout(
-                Duration::from_secs(2),
-                redis::cmd("PING").query_async::<String>(&mut conn_clone),
-            )
-            .await;
-
-            guard = self.shared_conn.lock().await; // Re-acquire
-
-            match ping_result {
-                Ok(Ok(_)) => {
-                    self.last_health_check.store(now, Ordering::Relaxed);
-                    if let Some(ref current_conn) = *guard {
-                        return Ok(current_conn.clone());
-                    }
-                    // Connection was cleared while we released the lock, fall through
-                }
-                Ok(Err(ref e)) => {
-                    debug!("Redis shared connection PING failed: {}, reconnecting", e);
-                    *guard = None;
-                }
-                Err(_) => {
-                    debug!("Redis shared connection PING timeout, reconnecting");
-                    *guard = None;
-                }
-            }
-        }
-
         let conn = self
-            .redis_client
-            .get_multiplexed_async_connection()
-            .await
-            .context("Failed to get Redis shared connection")?;
-        *guard = Some(conn.clone());
-        self.last_health_check.store(now, Ordering::Relaxed);
-        Ok(conn)
+            .shared_conn
+            .get_or_try_init(|| async {
+                self.redis_client
+                    .get_multiplexed_async_connection()
+                    .await
+                    .context("Failed to get Redis shared connection")
+            })
+            .await?;
+        Ok(conn.clone())
     }
 
     /// Get the ID of the latest entry in the given Redis Stream, or `None` if

@@ -1,7 +1,7 @@
 -- Create rooms table
 CREATE TABLE IF NOT EXISTS rooms (
     id CHAR(12) PRIMARY KEY,
-    name VARCHAR(255) NOT NULL,
+    name VARCHAR(100) NOT NULL,
     description TEXT NOT NULL DEFAULT '',
     -- ON DELETE RESTRICT: prevent deleting a user who still owns rooms.
     -- Rooms should be explicitly transferred or deleted before removing the user.
@@ -36,7 +36,6 @@ CREATE INDEX idx_rooms_last_activity ON rooms(last_activity_at) WHERE deleted_at
 -- Performance optimization indexes
 CREATE INDEX idx_rooms_status_created_at ON rooms(status, created_at DESC) WHERE deleted_at IS NULL AND is_banned = FALSE;
 CREATE INDEX idx_rooms_creator_status ON rooms(created_by, status, created_at DESC) WHERE deleted_at IS NULL;
-CREATE INDEX idx_rooms_name_lower ON rooms(LOWER(name)) WHERE deleted_at IS NULL;
 
 -- Create updated_at trigger
 CREATE TRIGGER update_rooms_updated_at BEFORE UPDATE ON rooms

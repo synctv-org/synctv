@@ -324,11 +324,22 @@ impl ExternalPublishManager {
             })
         });
 
-        if let Err(e) = register_result {
-            error!("Failed to register external publisher in Redis after stream start, stopping stream: {e}");
-            // Roll back: stop the stream since we can't register it
-            let _ = stream.stop().await;
-            return Err(e);
+        match register_result {
+            Ok(true) => { /* success, continue */ }
+            Ok(false) => {
+                // Another publisher already registered for this stream.
+                // Stop the local stream to avoid a duplicate publisher.
+                let _ = stream.stop().await;
+                return Err(crate::error::StreamError::InvalidState(
+                    "Another publisher already registered".into(),
+                ));
+            }
+            Err(e) => {
+                error!("Failed to register external publisher in Redis after stream start, stopping stream: {e}");
+                // Roll back: stop the stream since we can't register it
+                let _ = stream.stop().await;
+                return Err(e);
+            }
         }
 
         // Creation path: increment subscriber count exactly once for the viewer

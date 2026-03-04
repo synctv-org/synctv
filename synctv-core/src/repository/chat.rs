@@ -29,7 +29,12 @@ impl ChatRepository {
         )
         .bind(&message.id)
         .bind(message.room_id.as_str())
-        .bind(message.user_id.as_ref().map(super::super::models::id::UserId::as_str))
+        .bind(
+            message
+                .user_id
+                .as_ref()
+                .map(super::super::models::id::UserId::as_str),
+        )
         .bind(&message.content)
         .bind(message.message_type)
         .bind(message.created_at)

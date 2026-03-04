@@ -6,7 +6,6 @@
 // frequently as new segments are generated.
 
 use bytes::Bytes;
-use dashmap::DashMap;
 use moka::future::Cache;
 use moka::Expiry;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -90,7 +89,11 @@ pub struct HlsProxyClient {
     /// Key: "{`room_id}:{media_id`}", Value: version number
     /// When a stream is invalidated, the version is incremented synchronously,
     /// and any cached entries with older versions are considered stale.
-    cache_versions: Arc<DashMap<String, u64>>,
+    ///
+    /// Uses a moka sync cache with a 10-minute idle TTL to prevent unbounded growth.
+    /// Entries that expire simply reset the version to 0 (the default),
+    /// which is safe because epoch-based keys already provide primary isolation.
+    cache_versions: Arc<moka::sync::Cache<String, u64>>,
 }
 
 impl HlsProxyClient {
@@ -135,6 +138,14 @@ impl HlsProxyClient {
             })
             .build();
 
+        // Cache version map with 10-minute idle TTL to prevent unbounded growth.
+        // Expired entries simply reset the version to 0 (the default), which
+        // is safe because epoch-based cache keys already provide primary isolation.
+        let cache_versions = moka::sync::Cache::builder()
+            .time_to_idle(Duration::from_secs(600)) // 10 minutes
+            .max_capacity(10_000)
+            .build();
+
         Self {
             segment_cache,
             playlist_cache,
@@ -142,7 +153,7 @@ impl HlsProxyClient {
             connection_pool: GrpcConnectionPool::with_defaults(),
             cache_hits: Arc::new(AtomicU64::new(0)),
             cache_misses: Arc::new(AtomicU64::new(0)),
-            cache_versions: Arc::new(DashMap::new()),
+            cache_versions: Arc::new(cache_versions),
         }
     }
 
@@ -481,11 +492,11 @@ impl HlsProxyClient {
 
     /// Get the current cache version for a stream.
     ///
-    /// Returns 0 if the stream has no version entry (never invalidated).
+    /// Returns 0 if the stream has no version entry (never invalidated or TTL expired).
     #[must_use]
     pub fn get_cache_version(&self, room_id: &str, media_id: &str) -> u64 {
         let key = format!("{room_id}:{media_id}");
-        self.cache_versions.get(&key).map_or(0, |v| *v)
+        self.cache_versions.get(&key).unwrap_or(0)
     }
 
     /// Increment and return the cache version for a stream.
@@ -501,13 +512,11 @@ impl HlsProxyClient {
     /// (the first valid version after reset).
     pub fn increment_cache_version(&self, room_id: &str, media_id: &str) -> u64 {
         let key = format!("{room_id}:{media_id}");
-        let mut entry = self.cache_versions.entry(key.clone()).or_insert(0);
-        let current = *entry;
+        let current = self.cache_versions.get(&key).unwrap_or(0);
 
         // Check for overflow before incrementing
         if let Some(new_version) = current.checked_add(1) {
-            *entry = new_version;
-            drop(entry);
+            self.cache_versions.insert(key, new_version);
 
             debug!(
                 room_id = room_id,
@@ -519,21 +528,13 @@ impl HlsProxyClient {
             new_version
         } else {
             // Overflow detected: remove entry and invalidate cache
-            drop(entry);
-            self.cache_versions.remove(&key);
+            self.cache_versions.invalidate(&key);
 
             debug!(
                 room_id = room_id,
                 media_id = media_id,
                 "Cache version overflow detected, invalidating cache"
             );
-
-            // Trigger async cache invalidation
-            // Note: We can't await here since this is a sync function,
-            // but we can still remove the version entry which will cause
-            // subsequent get_cache_version calls to return 0, effectively
-            // invalidating all cached entries with the old version.
-            // The actual cache entry removal will happen on the next access.
 
             1 // Return version 1 for the new epoch
         }

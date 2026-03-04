@@ -17,7 +17,9 @@ use uuid::Uuid;
 use crate::http::error::AppResult;
 use crate::http::middleware::AuthUser;
 use crate::http::AppState;
-use crate::impls::notification::{notification_to_proto, proto_notification_type_to_core};
+use crate::impls::notification::{
+    notification_to_proto, proto_notification_type_to_core, NotificationTypeParseError,
+};
 use crate::proto::client::{
     GetNotificationResponse, ListNotificationsResponse, MarkAllAsReadRequest, MarkAsReadRequest,
 };
@@ -57,8 +59,14 @@ pub async fn list_notifications(
     let notification_type = query
         .notification_type
         .as_deref()
-        .and_then(|t| t.parse::<i32>().ok())
-        .and_then(proto_notification_type_to_core);
+        .map(|t| t.parse::<i32>())
+        .transpose()
+        .map_err(|_| crate::http::AppError::bad_request("Invalid notification_type format"))?
+        .map(proto_notification_type_to_core)
+        .transpose()
+        .map_err(|e: NotificationTypeParseError| {
+            crate::http::AppError::bad_request(e.to_string())
+        })?;
 
     let (page, page_size) = super::validation::validate_pagination(query.page, query.page_size);
 

@@ -9,7 +9,9 @@ use uuid::Uuid;
 
 use synctv_core::models::id::UserId;
 
-use crate::impls::notification::{notification_to_proto, proto_notification_type_to_core};
+use crate::impls::notification::{
+    notification_to_proto, proto_notification_type_to_core, NotificationTypeParseError,
+};
 use crate::impls::NotificationApiImpl;
 use crate::proto::client::{
     notification_service_server::NotificationService, DeleteAllReadRequest, DeleteAllReadResponse,
@@ -51,7 +53,11 @@ impl NotificationService for NotificationServiceImpl {
 
         let notification_type = req
             .notification_type
-            .and_then(proto_notification_type_to_core);
+            .map(proto_notification_type_to_core)
+            .transpose()
+            .map_err(|e: NotificationTypeParseError| {
+                Status::invalid_argument(e.to_string())
+            })?;
 
         let pagination =
             synctv_core::models::PageParams::new(Some(req.page as u32), Some(req.page_size as u32));

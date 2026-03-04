@@ -359,10 +359,29 @@ impl Application {
         core: &CoreState,
         shutdown: &mut ShutdownCoordinator,
     ) -> Result<LeaderState> {
-        // Without Redis, use AlwaysLeader (single node = always the leader)
-        // This is safe because without Redis, cluster mode is disabled and
-        // there's only one node.
+        // Without Redis, we need to decide: AlwaysLeader (single-node) or error (cluster)?
         let Some(ref redis_conn) = core.services.redis_conn else {
+            // CRITICAL: In cluster mode, falling back to AlwaysLeader would cause split-brain.
+            // Multiple nodes could all believe they are the leader and run singleton tasks
+            // (partition management, cleanup) simultaneously, causing database corruption
+            // or inconsistent state.
+            if infra.config.cluster.enabled {
+                error!(
+                    "CRITICAL: Cluster mode is enabled (cluster.enabled=true) but Redis is not configured. \
+                     Cannot safely start - each node would believe it is the leader, causing split-brain."
+                );
+                error!(
+                    "To fix: either set cluster.enabled=false for single-node mode, \
+                     or configure redis.url to enable proper leader election."
+                );
+                return Err(anyhow::anyhow!(
+                    "Cluster mode requires Redis for leader election. \
+                     Either set cluster.enabled=false or configure redis.url."
+                ));
+            }
+
+            // Safe: cluster mode is disabled, this is a single-node deployment.
+            // Using AlwaysLeader is correct because there's only one node.
             info!("No Redis configured — using AlwaysLeader (single node)");
             // Set metrics: standalone mode (0), always leader
             synctv_core::metrics::cluster::LEADER_ELECTION_MODE.set(0);

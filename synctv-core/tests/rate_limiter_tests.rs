@@ -266,22 +266,15 @@ async fn test_redis_rate_limiter_strict_enforcement() {
 }
 
 #[tokio::test]
-async fn test_redis_rate_limiter_distributed_uses_memory_without_redis() {
-    // In-memory-only limiter should use governor for distributed check
+async fn test_redis_rate_limiter_distributed_fails_closed_without_redis() {
+    // In-memory-only limiter should fail closed for distributed checks
+    // when Redis is not configured (security-critical operations)
     let limiter = RateLimiter::in_memory_only("redis_fc:".to_string());
 
-    // Should allow requests within limit
-    for i in 0..10 {
-        limiter
-            .check_rate_limit_distributed("key", 10, 1)
-            .await
-            .unwrap_or_else(|_| panic!("Request {i} should succeed"));
-    }
-
-    // Should block after limit exhausted
+    // Should deny ALL requests when Redis is not configured (fail-closed)
     let result = limiter.check_rate_limit_distributed("key", 10, 1).await;
     assert!(
-        matches!(result, Err(RateLimitError::RateLimitExceeded { .. })),
-        "Request exceeding limit should be blocked"
+        matches!(result, Err(RateLimitError::RateLimitExceeded { retry_after_seconds: 1 })),
+        "check_rate_limit_distributed should fail closed when Redis is not configured"
     );
 }

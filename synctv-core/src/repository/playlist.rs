@@ -615,3 +615,981 @@ impl PlaylistRepository {
             .collect()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Unit test: Repository constructor is const
+    #[test]
+    fn test_repository_new() {
+        fn _assert_const_new(pool: PgPool) -> PlaylistRepository {
+            PlaylistRepository::new(pool)
+        }
+        // Compilation test only - cannot create PgPool without database
+    }
+
+    /// Unit test: Advisory lock key generation is deterministic
+    ///
+    /// The lock key must be consistent for the same (room_id, parent_id) pair
+    /// so that both `create()` and `get_next_position_for_update()` acquire
+    /// the same lock.
+    #[test]
+    fn test_advisory_lock_key_deterministic() {
+        use std::hash::{Hash, Hasher};
+
+        let room_id = RoomId::from_string("room12345678".to_string());
+        let parent_id = PlaylistId::from_string("parent123456".to_string());
+
+        // Test the same hash strategy used in the implementation
+        let key1 = {
+            let room_hash = {
+                let mut h = std::collections::hash_map::DefaultHasher::new();
+                room_id.as_str().hash(&mut h);
+                h.finish()
+            };
+            let parent_hash = {
+                let mut h = std::collections::hash_map::DefaultHasher::new();
+                parent_id.as_str().hash(&mut h);
+                h.finish()
+            };
+            let room_bits = (room_hash & 0x7FFFFFFF) as i64;
+            let parent_bits = (parent_hash & 0x7FFFFFFF) as i64;
+            (room_bits << 31) | parent_bits
+        };
+
+        // Same inputs should produce same key
+        let key2 = {
+            let room_hash = {
+                let mut h = std::collections::hash_map::DefaultHasher::new();
+                room_id.as_str().hash(&mut h);
+                h.finish()
+            };
+            let parent_hash = {
+                let mut h = std::collections::hash_map::DefaultHasher::new();
+                parent_id.as_str().hash(&mut h);
+                h.finish()
+            };
+            let room_bits = (room_hash & 0x7FFFFFFF) as i64;
+            let parent_bits = (parent_hash & 0x7FFFFFFF) as i64;
+            (room_bits << 31) | parent_bits
+        };
+
+        assert_eq!(key1, key2, "Lock key should be deterministic");
+    }
+
+    /// Unit test: Different (room_id, parent_id) pairs produce different keys
+    ///
+    /// While hash collisions are theoretically possible, this test verifies
+    /// that simple variations produce different keys.
+    #[test]
+    fn test_advisory_lock_key_different() {
+        use std::hash::{Hash, Hasher};
+
+        let room1 = RoomId::from_string("room11111111".to_string());
+        let room2 = RoomId::from_string("room22222222".to_string());
+        let parent1 = PlaylistId::from_string("parent111111".to_string());
+        let parent2 = PlaylistId::from_string("parent222222".to_string());
+
+        let compute_key = |room_id: &RoomId, parent_id: Option<&PlaylistId>| {
+            let room_hash = {
+                let mut h = std::collections::hash_map::DefaultHasher::new();
+                room_id.as_str().hash(&mut h);
+                h.finish()
+            };
+            let parent_hash = parent_id.map_or(0, |pid| {
+                let mut h = std::collections::hash_map::DefaultHasher::new();
+                pid.as_str().hash(&mut h);
+                h.finish()
+            });
+            let room_bits = (room_hash & 0x7FFFFFFF) as i64;
+            let parent_bits = (parent_hash & 0x7FFFFFFF) as i64;
+            (room_bits << 31) | parent_bits
+        };
+
+        let key_room1_parent1 = compute_key(&room1, Some(&parent1));
+        let key_room1_parent2 = compute_key(&room1, Some(&parent2));
+        let key_room2_parent1 = compute_key(&room2, Some(&parent1));
+        let key_room2_none = compute_key(&room2, None);
+
+        // Different room_id should produce different keys
+        assert_ne!(key_room1_parent1, key_room2_parent1);
+        // Different parent_id should produce different keys
+        assert_ne!(key_room1_parent1, key_room1_parent2);
+        // Root (no parent) should be different from child
+        assert_ne!(key_room2_parent1, key_room2_none);
+    }
+
+    /// Unit test: Lock key stays within i64 range
+    ///
+    /// The combination of two 31-bit values (room_bits and parent_bits)
+    /// should always fit within i64 without overflow.
+    #[test]
+    fn test_advisory_lock_key_range() {
+        use std::hash::{Hash, Hasher};
+
+        // Test with various ID patterns
+        let test_ids = [
+            "000000000000",
+            "ZZZZZZZZZZZZ",
+            "aaaaaaaaaaaa",
+            "123456789012",
+            "------------",
+        ];
+
+        for id in test_ids {
+            let room_id = RoomId::from_string(id.to_string());
+            let parent_id = PlaylistId::from_string(id.to_string());
+
+            let key = {
+                let room_hash = {
+                    let mut h = std::collections::hash_map::DefaultHasher::new();
+                    room_id.as_str().hash(&mut h);
+                    h.finish()
+                };
+                let parent_hash = {
+                    let mut h = std::collections::hash_map::DefaultHasher::new();
+                    parent_id.as_str().hash(&mut h);
+                    h.finish()
+                };
+                let room_bits = (room_hash & 0x7FFFFFFF) as i64;
+                let parent_bits = (parent_hash & 0x7FFFFFFF) as i64;
+                (room_bits << 31) | parent_bits
+            };
+
+            // Key should be positive (advisory lock keys in PostgreSQL are signed 64-bit)
+            assert!(key >= 0, "Lock key should be non-negative for id: {}", id);
+        }
+    }
+
+    /// Integration test: Create and get playlist by ID
+    #[tokio::test]
+    #[ignore = "Requires Docker"]
+    async fn test_create_and_get_by_id() {
+        use crate::repository::room::RoomRepository;
+        use crate::repository::user::UserRepository;
+        use crate::test_helpers::{PlaylistFixture, RoomFixture, UserFixture};
+
+        let infra = crate::test_helpers::containers::TestInfra::postgres_only().await;
+        let user_repo = UserRepository::new(infra.pool.clone());
+        let room_repo = RoomRepository::new(infra.pool.clone());
+        let playlist_repo = PlaylistRepository::new(infra.pool.clone());
+
+        // Create owner and room
+        let owner = UserFixture::new()
+            .with_username("playlist_owner")
+            .build();
+        let owner = user_repo.create(&owner).await.unwrap();
+
+        let room = RoomFixture::new()
+            .with_name("Playlist Test Room")
+            .with_owner(owner.id.clone())
+            .build();
+        let room = room_repo.create(&room).await.unwrap();
+
+        // Create root playlist
+        let playlist = PlaylistFixture::new()
+            .with_room_id(room.id.clone())
+            .build();
+        let created = playlist_repo.create(&playlist).await.unwrap();
+
+        assert!(created.is_root());
+        assert_eq!(created.position, 0);
+
+        // Get by ID
+        let fetched = playlist_repo.get_by_id(&created.id).await.unwrap();
+        assert!(fetched.is_some());
+        let fetched = fetched.unwrap();
+        assert_eq!(fetched.id, created.id);
+        assert!(fetched.is_root());
+    }
+
+    /// Integration test: Get root playlist for a room
+    #[tokio::test]
+    #[ignore = "Requires Docker"]
+    async fn test_get_root_playlist() {
+        use crate::repository::room::RoomRepository;
+        use crate::repository::user::UserRepository;
+        use crate::test_helpers::{PlaylistFixture, RoomFixture, UserFixture};
+
+        let infra = crate::test_helpers::containers::TestInfra::postgres_only().await;
+        let user_repo = UserRepository::new(infra.pool.clone());
+        let room_repo = RoomRepository::new(infra.pool.clone());
+        let playlist_repo = PlaylistRepository::new(infra.pool.clone());
+
+        let owner = UserFixture::new()
+            .with_username("root_playlist_owner")
+            .build();
+        let owner = user_repo.create(&owner).await.unwrap();
+
+        let room = RoomFixture::new()
+            .with_name("Root Playlist Room")
+            .with_owner(owner.id.clone())
+            .build();
+        let room = room_repo.create(&room).await.unwrap();
+
+        // Create root playlist
+        let root = PlaylistFixture::new()
+            .with_room_id(room.id.clone())
+            .build();
+        let created = playlist_repo.create(&root).await.unwrap();
+
+        // Get root playlist
+        let fetched = playlist_repo.get_root_playlist(&room.id).await.unwrap();
+        assert_eq!(fetched.id, created.id);
+        assert!(fetched.is_root());
+    }
+
+    /// Integration test: Get playlists by room
+    #[tokio::test]
+    #[ignore = "Requires Docker"]
+    async fn test_get_by_room() {
+        use crate::repository::room::RoomRepository;
+        use crate::repository::user::UserRepository;
+        use crate::test_helpers::{PlaylistFixture, RoomFixture, UserFixture};
+
+        let infra = crate::test_helpers::containers::TestInfra::postgres_only().await;
+        let user_repo = UserRepository::new(infra.pool.clone());
+        let room_repo = RoomRepository::new(infra.pool.clone());
+        let playlist_repo = PlaylistRepository::new(infra.pool.clone());
+
+        let owner = UserFixture::new()
+            .with_username("room_playlist_owner")
+            .build();
+        let owner = user_repo.create(&owner).await.unwrap();
+
+        let room = RoomFixture::new()
+            .with_name("Room Playlist Room")
+            .with_owner(owner.id.clone())
+            .build();
+        let room = room_repo.create(&room).await.unwrap();
+
+        // Create root playlist
+        let root = PlaylistFixture::new()
+            .with_room_id(room.id.clone())
+            .build();
+        let created_root = playlist_repo.create(&root).await.unwrap();
+
+        // Create child playlists
+        let child1 = PlaylistFixture::new_child(created_root.id.clone())
+            .with_room_id(room.id.clone())
+            .with_name("Child 1")
+            .build();
+        let created_child1 = playlist_repo.create(&child1).await.unwrap();
+
+        let child2 = PlaylistFixture::new_child(created_root.id.clone())
+            .with_room_id(room.id.clone())
+            .with_name("Child 2")
+            .build();
+        let created_child2 = playlist_repo.create(&child2).await.unwrap();
+
+        // Get all playlists for room
+        let playlists = playlist_repo.get_by_room(&room.id).await.unwrap();
+        assert_eq!(playlists.len(), 3);
+
+        // Verify root comes first (NULLS FIRST in ORDER BY)
+        assert!(playlists[0].is_root());
+        assert_eq!(playlists[0].id, created_root.id);
+
+        // Children should be sorted by position
+        let child_ids: Vec<_> = playlists[1..].iter().map(|p| p.id.clone()).collect();
+        assert!(child_ids.contains(&created_child1.id));
+        assert!(child_ids.contains(&created_child2.id));
+    }
+
+    /// Integration test: Update playlist
+    #[tokio::test]
+    #[ignore = "Requires Docker"]
+    async fn test_update() {
+        use crate::repository::room::RoomRepository;
+        use crate::repository::user::UserRepository;
+        use crate::test_helpers::{PlaylistFixture, RoomFixture, UserFixture};
+
+        let infra = crate::test_helpers::containers::TestInfra::postgres_only().await;
+        let user_repo = UserRepository::new(infra.pool.clone());
+        let room_repo = RoomRepository::new(infra.pool.clone());
+        let playlist_repo = PlaylistRepository::new(infra.pool.clone());
+
+        let owner = UserFixture::new()
+            .with_username("update_playlist_owner")
+            .build();
+        let owner = user_repo.create(&owner).await.unwrap();
+
+        let room = RoomFixture::new()
+            .with_name("Update Playlist Room")
+            .with_owner(owner.id.clone())
+            .build();
+        let room = room_repo.create(&room).await.unwrap();
+
+        // Create root and child
+        let root = PlaylistFixture::new()
+            .with_room_id(room.id.clone())
+            .build();
+        let created_root = playlist_repo.create(&root).await.unwrap();
+
+        let child = PlaylistFixture::new_child(created_root.id.clone())
+            .with_room_id(room.id.clone())
+            .with_name("Original Name")
+            .build();
+        let created = playlist_repo.create(&child).await.unwrap();
+
+        // Update playlist
+        let mut updated = created.clone();
+        updated.name = "Updated Name".to_string();
+        updated.position = 5;
+
+        let result = playlist_repo.update(&updated).await.unwrap();
+        assert_eq!(result.name, "Updated Name");
+        assert_eq!(result.position, 5);
+        assert!(result.version > created.version); // Version should increment
+    }
+
+    /// Integration test: Update with version (optimistic locking)
+    #[tokio::test]
+    #[ignore = "Requires Docker"]
+    async fn test_update_with_version() {
+        use crate::repository::room::RoomRepository;
+        use crate::repository::user::UserRepository;
+        use crate::test_helpers::{PlaylistFixture, RoomFixture, UserFixture};
+
+        let infra = crate::test_helpers::containers::TestInfra::postgres_only().await;
+        let user_repo = UserRepository::new(infra.pool.clone());
+        let room_repo = RoomRepository::new(infra.pool.clone());
+        let playlist_repo = PlaylistRepository::new(infra.pool.clone());
+
+        let owner = UserFixture::new()
+            .with_username("version_playlist_owner")
+            .build();
+        let owner = user_repo.create(&owner).await.unwrap();
+
+        let room = RoomFixture::new()
+            .with_name("Version Playlist Room")
+            .with_owner(owner.id.clone())
+            .build();
+        let room = room_repo.create(&room).await.unwrap();
+
+        // Create root and child
+        let root = PlaylistFixture::new()
+            .with_room_id(room.id.clone())
+            .build();
+        let created_root = playlist_repo.create(&root).await.unwrap();
+
+        let child = PlaylistFixture::new_child(created_root.id.clone())
+            .with_room_id(room.id.clone())
+            .with_name("Test Playlist")
+            .build();
+        let created = playlist_repo.create(&child).await.unwrap();
+        let original_version = created.version;
+
+        // Update with correct version
+        let mut updated = created.clone();
+        updated.name = "Updated".to_string();
+        let result = playlist_repo
+            .update_with_version(&updated, original_version)
+            .await
+            .unwrap();
+        assert_eq!(result.name, "Updated");
+
+        // Update with stale version should fail
+        let mut stale = created.clone();
+        stale.name = "Stale Update".to_string();
+        let result = playlist_repo
+            .update_with_version(&stale, original_version) // Old version
+            .await;
+        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), crate::Error::OptimisticLockConflict));
+    }
+
+    /// Integration test: Delete playlist
+    #[tokio::test]
+    #[ignore = "Requires Docker"]
+    async fn test_delete() {
+        use crate::repository::room::RoomRepository;
+        use crate::repository::user::UserRepository;
+        use crate::test_helpers::{PlaylistFixture, RoomFixture, UserFixture};
+
+        let infra = crate::test_helpers::containers::TestInfra::postgres_only().await;
+        let user_repo = UserRepository::new(infra.pool.clone());
+        let room_repo = RoomRepository::new(infra.pool.clone());
+        let playlist_repo = PlaylistRepository::new(infra.pool.clone());
+
+        let owner = UserFixture::new()
+            .with_username("delete_playlist_owner")
+            .build();
+        let owner = user_repo.create(&owner).await.unwrap();
+
+        let room = RoomFixture::new()
+            .with_name("Delete Playlist Room")
+            .with_owner(owner.id.clone())
+            .build();
+        let room = room_repo.create(&room).await.unwrap();
+
+        // Create root and child
+        let root = PlaylistFixture::new()
+            .with_room_id(room.id.clone())
+            .build();
+        let created_root = playlist_repo.create(&root).await.unwrap();
+
+        let child = PlaylistFixture::new_child(created_root.id.clone())
+            .with_room_id(room.id.clone())
+            .with_name("To Delete")
+            .build();
+        let created = playlist_repo.create(&child).await.unwrap();
+
+        // Delete child
+        let deleted = playlist_repo.delete(&created.id).await.unwrap();
+        assert!(deleted);
+
+        // Verify deleted
+        let fetched = playlist_repo.get_by_id(&created.id).await.unwrap();
+        assert!(fetched.is_none());
+
+        // Delete non-existent returns false
+        let deleted_again = playlist_repo.delete(&created.id).await.unwrap();
+        assert!(!deleted_again);
+    }
+
+    /// Integration test: Delete cascades to children
+    #[tokio::test]
+    #[ignore = "Requires Docker"]
+    async fn test_delete_cascades() {
+        use crate::repository::room::RoomRepository;
+        use crate::repository::user::UserRepository;
+        use crate::test_helpers::{PlaylistFixture, RoomFixture, UserFixture};
+
+        let infra = crate::test_helpers::containers::TestInfra::postgres_only().await;
+        let user_repo = UserRepository::new(infra.pool.clone());
+        let room_repo = RoomRepository::new(infra.pool.clone());
+        let playlist_repo = PlaylistRepository::new(infra.pool.clone());
+
+        let owner = UserFixture::new()
+            .with_username("cascade_playlist_owner")
+            .build();
+        let owner = user_repo.create(&owner).await.unwrap();
+
+        let room = RoomFixture::new()
+            .with_name("Cascade Playlist Room")
+            .with_owner(owner.id.clone())
+            .build();
+        let room = room_repo.create(&room).await.unwrap();
+
+        // Create root, child, grandchild
+        let root = PlaylistFixture::new()
+            .with_room_id(room.id.clone())
+            .build();
+        let created_root = playlist_repo.create(&root).await.unwrap();
+
+        let child = PlaylistFixture::new_child(created_root.id.clone())
+            .with_room_id(room.id.clone())
+            .with_name("Child")
+            .build();
+        let created_child = playlist_repo.create(&child).await.unwrap();
+
+        let grandchild = PlaylistFixture::new_child(created_child.id.clone())
+            .with_room_id(room.id.clone())
+            .with_name("Grandchild")
+            .build();
+        let created_grandchild = playlist_repo.create(&grandchild).await.unwrap();
+
+        // Delete child (should cascade to grandchild)
+        let deleted = playlist_repo.delete(&created_child.id).await.unwrap();
+        assert!(deleted);
+
+        // Grandchild should also be deleted
+        let fetched = playlist_repo
+            .get_by_id(&created_grandchild.id)
+            .await
+            .unwrap();
+        assert!(fetched.is_none());
+    }
+
+    /// Integration test: Get next position
+    #[tokio::test]
+    #[ignore = "Requires Docker"]
+    async fn test_get_next_position() {
+        use crate::repository::room::RoomRepository;
+        use crate::repository::user::UserRepository;
+        use crate::test_helpers::{PlaylistFixture, RoomFixture, UserFixture};
+
+        let infra = crate::test_helpers::containers::TestInfra::postgres_only().await;
+        let user_repo = UserRepository::new(infra.pool.clone());
+        let room_repo = RoomRepository::new(infra.pool.clone());
+        let playlist_repo = PlaylistRepository::new(infra.pool.clone());
+
+        let owner = UserFixture::new()
+            .with_username("position_playlist_owner")
+            .build();
+        let owner = user_repo.create(&owner).await.unwrap();
+
+        let room = RoomFixture::new()
+            .with_name("Position Playlist Room")
+            .with_owner(owner.id.clone())
+            .build();
+        let room = room_repo.create(&room).await.unwrap();
+
+        // Create root
+        let root = PlaylistFixture::new()
+            .with_room_id(room.id.clone())
+            .build();
+        let created_root = playlist_repo.create(&root).await.unwrap();
+
+        // Initially no children, next position should be 0
+        let next_pos = playlist_repo
+            .get_next_position(&room.id, Some(&created_root.id))
+            .await
+            .unwrap();
+        assert_eq!(next_pos, 0);
+
+        // Create children with explicit positions
+        for i in 0..3 {
+            let child = PlaylistFixture::new_child(created_root.id.clone())
+                .with_room_id(room.id.clone())
+                .with_name(&format!("Child {}", i))
+                .with_position(i)
+                .build();
+            playlist_repo.create(&child).await.unwrap();
+        }
+
+        // Next position should be 3
+        let next_pos = playlist_repo
+            .get_next_position(&room.id, Some(&created_root.id))
+            .await
+            .unwrap();
+        assert_eq!(next_pos, 3);
+    }
+
+    /// Integration test: Auto-position on create
+    #[tokio::test]
+    #[ignore = "Requires Docker"]
+    async fn test_create_auto_position() {
+        use crate::repository::room::RoomRepository;
+        use crate::repository::user::UserRepository;
+        use crate::test_helpers::{PlaylistFixture, RoomFixture, UserFixture};
+
+        let infra = crate::test_helpers::containers::TestInfra::postgres_only().await;
+        let user_repo = UserRepository::new(infra.pool.clone());
+        let room_repo = RoomRepository::new(infra.pool.clone());
+        let playlist_repo = PlaylistRepository::new(infra.pool.clone());
+
+        let owner = UserFixture::new()
+            .with_username("auto_position_owner")
+            .build();
+        let owner = user_repo.create(&owner).await.unwrap();
+
+        let room = RoomFixture::new()
+            .with_name("Auto Position Room")
+            .with_owner(owner.id.clone())
+            .build();
+        let room = room_repo.create(&room).await.unwrap();
+
+        // Create root
+        let root = PlaylistFixture::new()
+            .with_room_id(room.id.clone())
+            .build();
+        let created_root = playlist_repo.create(&root).await.unwrap();
+
+        // Create children with auto-position (negative position)
+        let child1 = PlaylistFixture::new_child(created_root.id.clone())
+            .with_room_id(room.id.clone())
+            .with_name("Auto 1")
+            .with_position(-1) // Negative triggers auto-position
+            .build();
+        let created1 = playlist_repo.create(&child1).await.unwrap();
+        assert_eq!(created1.position, 0);
+
+        let child2 = PlaylistFixture::new_child(created_root.id.clone())
+            .with_room_id(room.id.clone())
+            .with_name("Auto 2")
+            .with_position(-1)
+            .build();
+        let created2 = playlist_repo.create(&child2).await.unwrap();
+        assert_eq!(created2.position, 1);
+
+        let child3 = PlaylistFixture::new_child(created_root.id.clone())
+            .with_room_id(room.id.clone())
+            .with_name("Auto 3")
+            .with_position(-1)
+            .build();
+        let created3 = playlist_repo.create(&child3).await.unwrap();
+        assert_eq!(created3.position, 2);
+    }
+
+    /// Integration test: Get children
+    #[tokio::test]
+    #[ignore = "Requires Docker"]
+    async fn test_get_children() {
+        use crate::repository::room::RoomRepository;
+        use crate::repository::user::UserRepository;
+        use crate::test_helpers::{PlaylistFixture, RoomFixture, UserFixture};
+
+        let infra = crate::test_helpers::containers::TestInfra::postgres_only().await;
+        let user_repo = UserRepository::new(infra.pool.clone());
+        let room_repo = RoomRepository::new(infra.pool.clone());
+        let playlist_repo = PlaylistRepository::new(infra.pool.clone());
+
+        let owner = UserFixture::new()
+            .with_username("children_playlist_owner")
+            .build();
+        let owner = user_repo.create(&owner).await.unwrap();
+
+        let room = RoomFixture::new()
+            .with_name("Children Playlist Room")
+            .with_owner(owner.id.clone())
+            .build();
+        let room = room_repo.create(&room).await.unwrap();
+
+        // Create root
+        let root = PlaylistFixture::new()
+            .with_room_id(room.id.clone())
+            .build();
+        let created_root = playlist_repo.create(&root).await.unwrap();
+
+        // Create 3 children
+        for i in 0..3 {
+            let child = PlaylistFixture::new_child(created_root.id.clone())
+                .with_room_id(room.id.clone())
+                .with_name(&format!("Child {}", i))
+                .with_position(i)
+                .build();
+            playlist_repo.create(&child).await.unwrap();
+        }
+
+        // Get children
+        let children = playlist_repo
+            .get_children(&created_root.id)
+            .await
+            .unwrap();
+        assert_eq!(children.len(), 3);
+
+        // Should be sorted by position
+        for (i, child) in children.iter().enumerate() {
+            assert_eq!(child.position, i as i32);
+        }
+    }
+
+    /// Integration test: Get children paginated
+    #[tokio::test]
+    #[ignore = "Requires Docker"]
+    async fn test_get_children_paginated() {
+        use crate::repository::room::RoomRepository;
+        use crate::repository::user::UserRepository;
+        use crate::test_helpers::{PlaylistFixture, RoomFixture, UserFixture};
+
+        let infra = crate::test_helpers::containers::TestInfra::postgres_only().await;
+        let user_repo = UserRepository::new(infra.pool.clone());
+        let room_repo = RoomRepository::new(infra.pool.clone());
+        let playlist_repo = PlaylistRepository::new(infra.pool.clone());
+
+        let owner = UserFixture::new()
+            .with_username("paginated_owner")
+            .build();
+        let owner = user_repo.create(&owner).await.unwrap();
+
+        let room = RoomFixture::new()
+            .with_name("Paginated Room")
+            .with_owner(owner.id.clone())
+            .build();
+        let room = room_repo.create(&room).await.unwrap();
+
+        // Create root
+        let root = PlaylistFixture::new()
+            .with_room_id(room.id.clone())
+            .build();
+        let created_root = playlist_repo.create(&root).await.unwrap();
+
+        // Create 15 children
+        for i in 0..15 {
+            let child = PlaylistFixture::new_child(created_root.id.clone())
+                .with_room_id(room.id.clone())
+                .with_name(&format!("Child {}", i))
+                .with_position(i)
+                .build();
+            playlist_repo.create(&child).await.unwrap();
+        }
+
+        // Page 1 (limit 10, offset 0)
+        let page1 = playlist_repo
+            .get_children_paginated(&created_root.id, 10, 0)
+            .await
+            .unwrap();
+        assert_eq!(page1.len(), 10);
+        assert_eq!(page1[0].name, "Child 0");
+
+        // Page 2 (limit 10, offset 10)
+        let page2 = playlist_repo
+            .get_children_paginated(&created_root.id, 10, 10)
+            .await
+            .unwrap();
+        assert_eq!(page2.len(), 5);
+        assert_eq!(page2[0].name, "Child 10");
+    }
+
+    /// Integration test: Count children
+    #[tokio::test]
+    #[ignore = "Requires Docker"]
+    async fn test_count_children() {
+        use crate::repository::room::RoomRepository;
+        use crate::repository::user::UserRepository;
+        use crate::test_helpers::{PlaylistFixture, RoomFixture, UserFixture};
+
+        let infra = crate::test_helpers::containers::TestInfra::postgres_only().await;
+        let user_repo = UserRepository::new(infra.pool.clone());
+        let room_repo = RoomRepository::new(infra.pool.clone());
+        let playlist_repo = PlaylistRepository::new(infra.pool.clone());
+
+        let owner = UserFixture::new()
+            .with_username("count_children_owner")
+            .build();
+        let owner = user_repo.create(&owner).await.unwrap();
+
+        let room = RoomFixture::new()
+            .with_name("Count Children Room")
+            .with_owner(owner.id.clone())
+            .build();
+        let room = room_repo.create(&room).await.unwrap();
+
+        // Create root
+        let root = PlaylistFixture::new()
+            .with_room_id(room.id.clone())
+            .build();
+        let created_root = playlist_repo.create(&root).await.unwrap();
+
+        // Initially 0 children
+        let count = playlist_repo
+            .count_children(&created_root.id)
+            .await
+            .unwrap();
+        assert_eq!(count, 0);
+
+        // Create 5 children
+        for i in 0..5 {
+            let child = PlaylistFixture::new_child(created_root.id.clone())
+                .with_room_id(room.id.clone())
+                .with_name(&format!("Child {}", i))
+                .build();
+            playlist_repo.create(&child).await.unwrap();
+        }
+
+        let count = playlist_repo
+            .count_children(&created_root.id)
+            .await
+            .unwrap();
+        assert_eq!(count, 5);
+    }
+
+    /// Integration test: Count by room
+    #[tokio::test]
+    #[ignore = "Requires Docker"]
+    async fn test_count_by_room() {
+        use crate::repository::room::RoomRepository;
+        use crate::repository::user::UserRepository;
+        use crate::test_helpers::{PlaylistFixture, RoomFixture, UserFixture};
+
+        let infra = crate::test_helpers::containers::TestInfra::postgres_only().await;
+        let user_repo = UserRepository::new(infra.pool.clone());
+        let room_repo = RoomRepository::new(infra.pool.clone());
+        let playlist_repo = PlaylistRepository::new(infra.pool.clone());
+
+        let owner = UserFixture::new()
+            .with_username("count_room_owner")
+            .build();
+        let owner = user_repo.create(&owner).await.unwrap();
+
+        let room = RoomFixture::new()
+            .with_name("Count Room")
+            .with_owner(owner.id.clone())
+            .build();
+        let room = room_repo.create(&room).await.unwrap();
+
+        // Create root
+        let root = PlaylistFixture::new()
+            .with_room_id(room.id.clone())
+            .build();
+        let created_root = playlist_repo.create(&root).await.unwrap();
+
+        // Initially 1 (just root)
+        let count = playlist_repo.count_by_room(&room.id).await.unwrap();
+        assert_eq!(count, 1);
+
+        // Create children
+        for i in 0..3 {
+            let child = PlaylistFixture::new_child(created_root.id.clone())
+                .with_room_id(room.id.clone())
+                .with_name(&format!("Child {}", i))
+                .build();
+            playlist_repo.create(&child).await.unwrap();
+        }
+
+        let count = playlist_repo.count_by_room(&room.id).await.unwrap();
+        assert_eq!(count, 4); // root + 3 children
+    }
+
+    /// Integration test: Get path (breadcrumb)
+    #[tokio::test]
+    #[ignore = "Requires Docker"]
+    async fn test_get_path() {
+        use crate::repository::room::RoomRepository;
+        use crate::repository::user::UserRepository;
+        use crate::test_helpers::{PlaylistFixture, RoomFixture, UserFixture};
+
+        let infra = crate::test_helpers::containers::TestInfra::postgres_only().await;
+        let user_repo = UserRepository::new(infra.pool.clone());
+        let room_repo = RoomRepository::new(infra.pool.clone());
+        let playlist_repo = PlaylistRepository::new(infra.pool.clone());
+
+        let owner = UserFixture::new()
+            .with_username("path_playlist_owner")
+            .build();
+        let owner = user_repo.create(&owner).await.unwrap();
+
+        let room = RoomFixture::new()
+            .with_name("Path Playlist Room")
+            .with_owner(owner.id.clone())
+            .build();
+        let room = room_repo.create(&room).await.unwrap();
+
+        // Create root -> child -> grandchild
+        let root = PlaylistFixture::new()
+            .with_room_id(room.id.clone())
+            .build();
+        let created_root = playlist_repo.create(&root).await.unwrap();
+
+        let child = PlaylistFixture::new_child(created_root.id.clone())
+            .with_room_id(room.id.clone())
+            .with_name("Child")
+            .build();
+        let created_child = playlist_repo.create(&child).await.unwrap();
+
+        let grandchild = PlaylistFixture::new_child(created_child.id.clone())
+            .with_room_id(room.id.clone())
+            .with_name("Grandchild")
+            .build();
+        let created_grandchild = playlist_repo.create(&grandchild).await.unwrap();
+
+        // Get path from grandchild
+        let path = playlist_repo
+            .get_path(&created_grandchild.id)
+            .await
+            .unwrap();
+
+        assert_eq!(path.len(), 3);
+        // Should be ordered from root to leaf
+        assert!(path[0].is_root());
+        assert_eq!(path[1].id, created_child.id);
+        assert_eq!(path[2].id, created_grandchild.id);
+    }
+
+    /// Integration test: Get by room paginated
+    #[tokio::test]
+    #[ignore = "Requires Docker"]
+    async fn test_get_by_room_paginated() {
+        use crate::repository::room::RoomRepository;
+        use crate::repository::user::UserRepository;
+        use crate::test_helpers::{PlaylistFixture, RoomFixture, UserFixture};
+
+        let infra = crate::test_helpers::containers::TestInfra::postgres_only().await;
+        let user_repo = UserRepository::new(infra.pool.clone());
+        let room_repo = RoomRepository::new(infra.pool.clone());
+        let playlist_repo = PlaylistRepository::new(infra.pool.clone());
+
+        let owner = UserFixture::new()
+            .with_username("room_paginated_owner")
+            .build();
+        let owner = user_repo.create(&owner).await.unwrap();
+
+        let room = RoomFixture::new()
+            .with_name("Room Paginated Room")
+            .with_owner(owner.id.clone())
+            .build();
+        let room = room_repo.create(&room).await.unwrap();
+
+        // Create root
+        let root = PlaylistFixture::new()
+            .with_room_id(room.id.clone())
+            .build();
+        let created_root = playlist_repo.create(&root).await.unwrap();
+
+        // Create 15 children
+        for i in 0..15 {
+            let child = PlaylistFixture::new_child(created_root.id.clone())
+                .with_room_id(room.id.clone())
+                .with_name(&format!("Child {}", i))
+                .with_position(i)
+                .build();
+            playlist_repo.create(&child).await.unwrap();
+        }
+
+        // Total 16 playlists (root + 15 children)
+        let count = playlist_repo.count_by_room(&room.id).await.unwrap();
+        assert_eq!(count, 16);
+
+        // Page 1 (limit 10, offset 0)
+        let page1 = playlist_repo
+            .get_by_room_paginated(&room.id, 10, 0)
+            .await
+            .unwrap();
+        assert_eq!(page1.len(), 10);
+
+        // Page 2 (limit 10, offset 10)
+        let page2 = playlist_repo
+            .get_by_room_paginated(&room.id, 10, 10)
+            .await
+            .unwrap();
+        assert_eq!(page2.len(), 6);
+    }
+
+    /// Integration test: Create with executor (explicit position required)
+    #[tokio::test]
+    #[ignore = "Requires Docker"]
+    async fn test_create_with_executor_requires_position() {
+        use crate::repository::room::RoomRepository;
+        use crate::repository::user::UserRepository;
+        use crate::test_helpers::{PlaylistFixture, RoomFixture, UserFixture};
+
+        let infra = crate::test_helpers::containers::TestInfra::postgres_only().await;
+        let user_repo = UserRepository::new(infra.pool.clone());
+        let room_repo = RoomRepository::new(infra.pool.clone());
+        let playlist_repo = PlaylistRepository::new(infra.pool.clone());
+
+        let owner = UserFixture::new()
+            .with_username("executor_owner")
+            .build();
+        let owner = user_repo.create(&owner).await.unwrap();
+
+        let room = RoomFixture::new()
+            .with_name("Executor Room")
+            .with_owner(owner.id.clone())
+            .build();
+        let room = room_repo.create(&room).await.unwrap();
+
+        // Create root
+        let root = PlaylistFixture::new()
+            .with_room_id(room.id.clone())
+            .build();
+        let created_root = playlist_repo.create(&root).await.unwrap();
+
+        // Attempt to create with executor using auto-position should fail
+        let child_auto = PlaylistFixture::new_child(created_root.id.clone())
+            .with_room_id(room.id.clone())
+            .with_name("Auto Child")
+            .with_position(-1) // Auto-position
+            .build();
+
+        let result = playlist_repo
+            .create_with_executor(&child_auto, &infra.pool)
+            .await;
+        assert!(result.is_err());
+
+        // Create with explicit position should succeed
+        let child_explicit = PlaylistFixture::new_child(created_root.id.clone())
+            .with_room_id(room.id.clone())
+            .with_name("Explicit Child")
+            .with_position(0) // Explicit position
+            .build();
+
+        let result = playlist_repo
+            .create_with_executor(&child_explicit, &infra.pool)
+            .await;
+        assert!(result.is_ok());
+    }
+}

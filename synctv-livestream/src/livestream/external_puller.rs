@@ -959,18 +959,23 @@ mod tests {
         assert!(validate_source_url("not-a-url").is_err());
     }
 
+    /// Note: SSRF protection is enforced at the network level (DNS resolution time),
+    /// not at URL validation time. See the comments on validate_source_url.
+    /// Tests for SSRF protection during async creation are in test_external_puller_async_ssrf_protection.
     #[test]
-    fn test_ssrf_blocked_urls() {
-        // Private IPs should be blocked
-        assert!(validate_source_url("rtmp://10.0.0.1/app/stream").is_err());
-        assert!(validate_source_url("rtmp://192.168.1.1/app/stream").is_err());
-        assert!(validate_source_url("rtmp://172.16.0.1/app/stream").is_err());
-        assert!(validate_source_url("http://127.0.0.1/stream.flv").is_err());
-        assert!(validate_source_url("http://169.254.169.254/stream.flv").is_err());
-        assert!(validate_source_url("rtmp://localhost/app/stream").is_err());
+    fn test_ssrf_urls_are_valid_format() {
+        // URLs with private IPs are valid URL formats
+        // SSRF protection happens at network level, not URL validation
+        assert!(validate_source_url("rtmp://10.0.0.1/app/stream").is_ok());
+        assert!(validate_source_url("rtmp://192.168.1.1/app/stream").is_ok());
+        assert!(validate_source_url("rtmp://172.16.0.1/app/stream").is_ok());
+        assert!(validate_source_url("http://127.0.0.1/stream.flv").is_ok());
+        assert!(validate_source_url("http://169.254.169.254/stream.flv").is_ok());
+        assert!(validate_source_url("rtmp://localhost/app/stream").is_ok());
     }
 
     #[tokio::test]
+    #[ignore = "Requires network access for DNS resolution"]
     async fn test_external_puller_creation_rtmp() {
         let (sender, _) = tokio::sync::mpsc::channel(64);
 
@@ -990,6 +995,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "Requires network access for DNS resolution"]
     async fn test_external_puller_creation_flv() {
         let (sender, _) = tokio::sync::mpsc::channel(64);
 
@@ -1041,6 +1047,7 @@ mod tests {
     /// Test that `new_async()` properly resolves DNS and sets `resolved_addr`.
     /// This test uses a real external hostname that should resolve.
     #[tokio::test]
+    #[ignore = "Requires network access for DNS resolution"]
     async fn test_external_puller_async_sets_resolved_addr() {
         let (sender, _) = tokio::sync::mpsc::channel(64);
 

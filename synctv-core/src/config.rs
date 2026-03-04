@@ -1620,12 +1620,13 @@ impl Config {
                     );
                 }
             } else {
-                tracing::warn!(
+                errors.push(
                     "Cluster mode is enabled but livestream.hls_shared_storage is false. \
                      HLS segments stored on node-local storage will NOT be accessible from \
                      other replicas, causing 404 errors for clients. \
                      Use a shared volume (NFS, CSI), S3-compatible mount, or set \
                      livestream.hls_shared_storage=true once shared storage is configured."
+                        .to_string(),
                 );
             }
         } else {
@@ -2294,7 +2295,11 @@ mod tests {
                 ..JwtConfig::default()
             },
             logging: LoggingConfig::default(),
-            livestream: LivestreamConfig::default(),
+            livestream: LivestreamConfig {
+                // In cluster mode (cluster_secret is set), hls_shared_storage must be true.
+                hls_shared_storage: true,
+                ..LivestreamConfig::default()
+            },
             oauth2: OAuth2Config::default(),
             email: EmailConfig::default(),
             media_providers: MediaProvidersConfig::default(),
@@ -2321,6 +2326,35 @@ mod tests {
     #[test]
     fn test_validate_valid_production_config() {
         let config = valid_prod_config();
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn test_validate_cluster_mode_requires_hls_shared_storage() {
+        // In cluster mode (cluster_secret is set), hls_shared_storage must be true
+        // to prevent 404 errors when HLS segments are served from different replicas.
+        let mut config = valid_prod_config();
+        config.livestream.hls_shared_storage = false;
+        let errors = config.validate().unwrap_err();
+        assert!(errors.iter().any(|e| e.contains("hls_shared_storage") && e.contains("Cluster mode")));
+    }
+
+    #[test]
+    fn test_validate_standalone_mode_allows_hls_local_storage() {
+        // In standalone mode (no cluster_secret and cluster.enabled=false),
+        // hls_shared_storage=false should be allowed (only a warning is logged).
+        let mut config = valid_prod_config();
+        // Disable cluster mode by clearing cluster_secret and ensuring cluster.enabled is false
+        config.server.cluster_secret = String::new();
+        config.cluster.enabled = false;
+        // Remove Redis to ensure cluster mode is fully disabled
+        config.redis.url = String::new();
+        // Also need to set stun_external_addr to empty since cluster_secret is now empty
+        // (the validation only requires stun_external_addr when cluster_secret is set)
+        config.webrtc.stun_external_addr = String::new();
+        // hls_shared_storage=false should be allowed in standalone mode
+        config.livestream.hls_shared_storage = false;
+        // This should pass validation (only a warning is logged)
         assert!(config.validate().is_ok());
     }
 

@@ -87,7 +87,10 @@ fn cluster_test_config() -> Config {
             ..JwtConfig::default()
         },
         logging: LoggingConfig::default(),
-        livestream: LivestreamConfig::default(),
+        livestream: LivestreamConfig {
+            hls_shared_storage: true, // Required for cluster mode
+            ..LivestreamConfig::default()
+        },
         oauth2: OAuth2Config::default(),
         email: EmailConfig::default(),
         media_providers: MediaProvidersConfig::default(),
@@ -431,5 +434,132 @@ mod p1_cluster_cleanup_tests {
 
         // This test passes if the contract is understood
         assert!(true, "P1 cleanup contract verified");
+    }
+}
+
+// ============================================================================
+// Leader election fallback tests: Cluster mode requires Redis for leader election
+// ============================================================================
+
+mod leader_election_fallback_tests {
+    use super::*;
+
+    /// Test that cluster.enabled=true with empty redis.url fails validation.
+    ///
+    /// This prevents the split-brain scenario where multiple nodes could all
+    /// think they are the leader because Redis is unavailable.
+    #[test]
+    fn test_cluster_mode_requires_redis_for_leader_election() {
+        let mut config = cluster_test_config();
+        // Remove the Redis URL to simulate Redis unavailability
+        config.redis.url = String::new();
+
+        // Config validation should catch this before init_leader_election is called
+        let result = config.validate();
+        assert!(
+            result.is_err(),
+            "cluster.enabled=true with empty redis.url should fail validation"
+        );
+
+        let errors = result.unwrap_err();
+        let error_messages: Vec<_> = errors.iter().collect();
+        let has_redis_error = error_messages.iter().any(|e| {
+            e.contains("Redis is required when cluster mode is enabled")
+                || e.contains("cluster.enabled=true")
+        });
+        assert!(
+            has_redis_error,
+            "Error should mention Redis requirement for cluster mode, got: {error_messages:?}"
+        );
+    }
+
+    /// Test that standalone mode (cluster.enabled=false) passes validation without Redis.
+    ///
+    /// This verifies that single-node deployments can still run without Redis,
+    /// using AlwaysLeader for leader election (safe because there's only one node).
+    #[test]
+    fn test_standalone_mode_allows_always_leader_without_redis() {
+        let config = standalone_test_config();
+
+        // Standalone mode should pass validation without Redis
+        let result = config.validate();
+        assert!(
+            result.is_ok(),
+            "standalone mode should allow no Redis (will use AlwaysLeader), got error: {:?}",
+            result.err()
+        );
+
+        // Verify this is truly standalone mode
+        assert!(
+            !config.cluster.enabled,
+            "config should have cluster.enabled=false"
+        );
+        assert!(
+            config.redis.url.is_empty(),
+            "config should have empty redis.url"
+        );
+    }
+
+    /// Test that cluster mode with valid Redis URL passes validation.
+    ///
+    /// This verifies that the happy path (cluster mode with Redis) works correctly.
+    #[test]
+    fn test_cluster_mode_with_redis_passes_validation() {
+        let config = cluster_test_config();
+
+        // Verify this is cluster mode
+        assert!(
+            config.cluster.enabled,
+            "config should have cluster.enabled=true"
+        );
+        assert!(
+            !config.redis.url.is_empty(),
+            "config should have redis.url set"
+        );
+
+        // Should pass validation
+        let result = config.validate();
+        assert!(
+            result.is_ok(),
+            "cluster mode with Redis should pass validation, got error: {:?}",
+            result.err()
+        );
+    }
+
+    /// Document the split-brain prevention logic.
+    ///
+    /// This test documents the key invariant: in cluster mode, we must NEVER
+    /// fall back to AlwaysLeader when Redis is unavailable. The fix ensures:
+    /// 1. Config validation catches empty redis.url when cluster.enabled=true
+    /// 2. init_leader_election returns an error (not AlwaysLeader fallback)
+    ///
+    /// Without this fix, multiple nodes in a cluster could all believe they
+    /// are the leader and run singleton tasks simultaneously, causing:
+    /// - Database corruption (multiple nodes writing to same tables)
+    /// - Inconsistent state (cleanup tasks running concurrently)
+    /// - Resource leaks (partition management conflicts)
+    #[test]
+    fn test_split_brain_prevention_invariant() {
+        // Case 1: cluster.enabled=true, no Redis -> MUST fail
+        let mut cluster_no_redis = cluster_test_config();
+        cluster_no_redis.redis.url = String::new();
+        assert!(
+            cluster_no_redis.validate().is_err(),
+            "cluster.enabled=true with no Redis MUST fail validation"
+        );
+
+        // Case 2: cluster.enabled=false, no Redis -> OK (single-node mode)
+        let standalone = standalone_test_config();
+        assert!(
+            standalone.validate().is_ok(),
+            "cluster.enabled=false with no Redis should pass (AlwaysLeader is safe)"
+        );
+
+        // Case 3: cluster.enabled=true, with Redis -> OK (cluster mode)
+        let cluster_with_redis = cluster_test_config();
+        assert!(
+            cluster_with_redis.validate().is_ok(),
+            "cluster.enabled=true with Redis should pass"
+        );
     }
 }

@@ -986,6 +986,37 @@ mod tests {
                 "Emby user_id must not be empty".to_string(),
             ));
         }
+
+        // SSRF protection: Check if host resolves to a blocked IP or hostname
+        let url = url::Url::parse(&config.host)
+            .map_err(|e| ProviderError::InvalidUrl(format!("Invalid host URL: {e}")))?;
+
+        // Check for blocked hostnames (localhost, metadata endpoints)
+        if let Some(host) = url.host_str() {
+            if synctv_common::ssrf::SsrfGuard::default_policy().is_host_blocked(host) {
+                return Err(ProviderError::InvalidUrl(
+                    "SSRF: blocked hostname".to_string()
+                ));
+            }
+        }
+
+        // Check for blocked IPs (if host is an IP address)
+        if let Some(host) = url.host_str() {
+            // Handle IPv6 addresses in brackets notation [::1] -> ::1
+            let host_stripped = if host.starts_with('[') && host.ends_with(']') {
+                &host[1..host.len()-1]
+            } else {
+                host
+            };
+            if let Ok(ip) = host_stripped.parse::<std::net::IpAddr>() {
+                if synctv_common::ssrf::is_ip_blocked(&ip) {
+                    return Err(ProviderError::InvalidUrl(
+                        "SSRF: blocked IP address".to_string()
+                    ));
+                }
+            }
+        }
+
         Ok(())
     }
 

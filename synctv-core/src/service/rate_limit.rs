@@ -496,18 +496,17 @@ impl RateLimitBackend for InMemoryRateLimitBackend {
 
     async fn check_strict(
         &self,
-        key: &str,
-        max_requests: u32,
-        window_seconds: u64,
+        _key: &str,
+        _max_requests: u32,
+        _window_seconds: u64,
     ) -> std::result::Result<(), RateLimitError> {
-        // When Redis is not configured, use in-memory governor for strict checks.
-        // This provides per-instance rate limiting without distributed coordination.
-        let mem_key = format!("{}{}", self.key_prefix, key);
-        self.governor
-            .check(&mem_key, max_requests, window_seconds)
-            .map_err(|retry_after_seconds| RateLimitError::RateLimitExceeded {
-                retry_after_seconds,
-            })
+        // Fail-closed: Redis not configured, deny all distributed rate limit requests
+        // For security-critical operations (auth, password checks), distributed
+        // coordination is required. Without Redis, we request must be denied
+        // to ensure global limits are never exceeded.
+        Err(RateLimitError::RateLimitExceeded {
+            retry_after_seconds: 1,
+        })
     }
 
     async fn get_quota(
@@ -924,52 +923,45 @@ mod tests {
         assert!(limiter.check_rate_limit_sync("key1", 3, 1).is_err());
     }
 
-    /// Test that InMemoryRateLimitBackend::check_strict actually performs rate limiting
-    /// using the in-memory governor, rather than always rejecting requests.
+    /// Test that InMemoryRateLimitBackend::check_strict fails closed when Redis is not configured.
+    /// For security-critical operations, all requests should be denied when Redis is unavailable
+    /// to ensure global limits are never exceeded.
     #[tokio::test]
-    async fn test_in_memory_check_strict_allows_within_limit() {
+    async fn test_in_memory_check_strict_fails_closed() {
         let limiter = RateLimiter::in_memory_only("strict_test:".to_string());
 
-        // Should allow requests within the limit
-        for i in 0..5 {
-            limiter
-                .check_rate_limit_distributed("strict_key", 5, 1)
-                .await
-                .unwrap_or_else(|_| panic!("Request {i} should succeed via check_strict"));
-        }
-
-        // Should reject requests exceeding the limit
+        // Should deny ALL requests when Redis is not configured (fail-closed)
         let result = limiter
             .check_rate_limit_distributed("strict_key", 5, 1)
             .await;
         assert!(
-            matches!(result, Err(RateLimitError::RateLimitExceeded { .. })),
-            "Request exceeding limit should be rejected"
+            matches!(result, Err(RateLimitError::RateLimitExceeded { retry_after_seconds: 1 })),
+            "check_strict should deny all requests when Redis is not configured (fail-closed)"
         );
     }
 
-    /// Test that check_strict with in-memory backend has independent keys
+    /// Test that check_strict with in-memory backend denies all requests regardless of key
     #[tokio::test]
-    async fn test_in_memory_check_strict_independent_keys() {
+    async fn test_in_memory_check_strict_denies_all_keys() {
         let limiter = RateLimiter::in_memory_only("strict_keys:".to_string());
 
-        // Exhaust key1
-        for _ in 0..5 {
-            limiter
-                .check_rate_limit_distributed("key1", 5, 1)
-                .await
-                .unwrap();
-        }
-        assert!(limiter
+        // key1 should be denied (fail-closed)
+        let result1 = limiter
             .check_rate_limit_distributed("key1", 5, 1)
-            .await
-            .is_err());
+            .await;
+        assert!(
+            matches!(result1, Err(RateLimitError::RateLimitExceeded { retry_after_seconds: 1 })),
+            "check_strict should deny key1 when Redis is not configured"
+        );
 
-        // key2 should still be allowed
-        limiter
+        // key2 should also be denied (fail-closed)
+        let result2 = limiter
             .check_rate_limit_distributed("key2", 5, 1)
-            .await
-            .unwrap();
+            .await;
+        assert!(
+            matches!(result2, Err(RateLimitError::RateLimitExceeded { retry_after_seconds: 1 })),
+            "check_strict should deny key2 when Redis is not configured"
+        );
     }
 
     #[test]

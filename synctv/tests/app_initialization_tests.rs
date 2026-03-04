@@ -533,6 +533,8 @@ mod config_initialization_tests {
         config.server.cluster_secret = "test-cluster-secret-1234567890".to_string();
         // Cluster mode requires stun_external_addr for WebRTC
         config.webrtc.stun_external_addr = "203.0.113.1:3478".to_string();
+        // Cluster mode requires shared HLS storage
+        config.livestream.hls_shared_storage = true;
 
         let result = config.validate();
         assert!(

@@ -40,22 +40,51 @@ pub fn notification_to_proto(n: Notification) -> NotificationProto {
     }
 }
 
+/// Error type for notification type parsing failures.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NotificationTypeParseError {
+    pub invalid_value: i32,
+}
+
+impl std::fmt::Display for NotificationTypeParseError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "Invalid notification type: {} (must be 1-5)",
+            self.invalid_value
+        )
+    }
+}
+
+impl std::error::Error for NotificationTypeParseError {}
+
 /// Convert a proto `NotificationType` enum value to a domain `NotificationType`.
 ///
 /// Shared by both HTTP and gRPC handlers.
-#[must_use]
-pub fn proto_notification_type_to_core(value: i32) -> Option<CoreNotificationType> {
+///
+/// # Errors
+///
+/// Returns `NotificationTypeParseError` if the value is `Unspecified` (0) or an unknown type.
+/// Known valid values are 1-5 corresponding to the proto enum variants.
+pub fn proto_notification_type_to_core(
+    value: i32,
+) -> Result<CoreNotificationType, NotificationTypeParseError> {
     match ProtoNotificationType::try_from(value) {
-        Ok(ProtoNotificationType::RoomInvitation) => Some(CoreNotificationType::RoomInvitation),
+        Ok(ProtoNotificationType::Unspecified) => Err(NotificationTypeParseError {
+            invalid_value: value,
+        }),
+        Ok(ProtoNotificationType::RoomInvitation) => Ok(CoreNotificationType::RoomInvitation),
         Ok(ProtoNotificationType::SystemAnnouncement) => {
-            Some(CoreNotificationType::SystemAnnouncement)
+            Ok(CoreNotificationType::SystemAnnouncement)
         }
-        Ok(ProtoNotificationType::RoomEvent) => Some(CoreNotificationType::RoomEvent),
-        Ok(ProtoNotificationType::PasswordReset) => Some(CoreNotificationType::PasswordReset),
+        Ok(ProtoNotificationType::RoomEvent) => Ok(CoreNotificationType::RoomEvent),
+        Ok(ProtoNotificationType::PasswordReset) => Ok(CoreNotificationType::PasswordReset),
         Ok(ProtoNotificationType::EmailVerification) => {
-            Some(CoreNotificationType::EmailVerification)
+            Ok(CoreNotificationType::EmailVerification)
         }
-        _ => None,
+        Err(_) => Err(NotificationTypeParseError {
+            invalid_value: value,
+        }),
     }
 }
 
@@ -187,5 +216,92 @@ impl NotificationApiImpl {
             .map_err(|e| {
                 ApiError::Internal(format!("Failed to delete all read notifications: {e}"))
             })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_proto_notification_type_to_core_valid_types() {
+        // Test all valid notification types (1-5)
+        assert_eq!(
+            proto_notification_type_to_core(1),
+            Ok(CoreNotificationType::RoomInvitation)
+        );
+        assert_eq!(
+            proto_notification_type_to_core(2),
+            Ok(CoreNotificationType::SystemAnnouncement)
+        );
+        assert_eq!(
+            proto_notification_type_to_core(3),
+            Ok(CoreNotificationType::RoomEvent)
+        );
+        assert_eq!(
+            proto_notification_type_to_core(4),
+            Ok(CoreNotificationType::PasswordReset)
+        );
+        assert_eq!(
+            proto_notification_type_to_core(5),
+            Ok(CoreNotificationType::EmailVerification)
+        );
+    }
+
+    #[test]
+    fn test_proto_notification_type_to_core_unspecified_rejected() {
+        // Unspecified (0) should be rejected
+        let result = proto_notification_type_to_core(0);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert_eq!(err.invalid_value, 0);
+        assert!(err.to_string().contains("Invalid notification type"));
+        assert!(err.to_string().contains("must be 1-5"));
+    }
+
+    #[test]
+    fn test_proto_notification_type_to_core_unknown_type_rejected() {
+        // Unknown types (negative numbers) should be rejected
+        let result = proto_notification_type_to_core(-1);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert_eq!(err.invalid_value, -1);
+
+        // Unknown types (large positive numbers) should be rejected
+        let result = proto_notification_type_to_core(999);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert_eq!(err.invalid_value, 999);
+    }
+
+    #[test]
+    fn test_notification_type_parse_error_display() {
+        let err = NotificationTypeParseError { invalid_value: 42 };
+        let display = format!("{err}");
+        assert_eq!(display, "Invalid notification type: 42 (must be 1-5)");
+    }
+
+    #[test]
+    fn test_notification_type_roundtrip() {
+        // Test that converting to proto and back preserves the type
+        let types = [
+            CoreNotificationType::RoomInvitation,
+            CoreNotificationType::SystemAnnouncement,
+            CoreNotificationType::RoomEvent,
+            CoreNotificationType::PasswordReset,
+            CoreNotificationType::EmailVerification,
+        ];
+
+        for core_type in types {
+            let proto_value = match core_type {
+                CoreNotificationType::RoomInvitation => 1,
+                CoreNotificationType::SystemAnnouncement => 2,
+                CoreNotificationType::RoomEvent => 3,
+                CoreNotificationType::PasswordReset => 4,
+                CoreNotificationType::EmailVerification => 5,
+            };
+            let converted_back = proto_notification_type_to_core(proto_value).unwrap();
+            assert_eq!(converted_back, core_type);
+        }
     }
 }

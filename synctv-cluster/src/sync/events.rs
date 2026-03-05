@@ -1,8 +1,14 @@
+use std::sync::LazyLock;
+
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use synctv_core::models::id::{MediaId, RoomId, UserId};
 use synctv_core::models::permission::PermissionBits;
 use synctv_core::models::playback::RoomPlaybackState;
+
+/// Default timestamp sentinel (UNIX epoch) used for the `Unknown` variant.
+static UNKNOWN_TIMESTAMP: LazyLock<DateTime<Utc>> =
+    LazyLock::new(|| DateTime::<Utc>::from(std::time::UNIX_EPOCH));
 
 /// The kind of cache to invalidate in a `CacheInvalidate` cluster event.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -62,6 +68,16 @@ pub enum ClusterEvent {
         username: String,
         permissions: PermissionBits,
         role: i32, // RoomMemberRole as i32 for serde compatibility
+        #[serde(default)]
+        added_permissions: PermissionBits,
+        #[serde(default)]
+        removed_permissions: PermissionBits,
+        #[serde(default)]
+        admin_added_permissions: PermissionBits,
+        #[serde(default)]
+        admin_removed_permissions: PermissionBits,
+        #[serde(default = "chrono::Utc::now")]
+        joined_at: DateTime<Utc>,
         timestamp: DateTime<Utc>,
     },
 
@@ -124,6 +140,10 @@ pub enum ClusterEvent {
         role: i32, // RoomMemberRole as i32 for serde compatibility
         added_permissions: PermissionBits,
         removed_permissions: PermissionBits,
+        #[serde(default)]
+        admin_added_permissions: PermissionBits,
+        #[serde(default)]
+        admin_removed_permissions: PermissionBits,
         timestamp: DateTime<Utc>,
     },
 
@@ -281,6 +301,14 @@ pub enum ClusterEvent {
         targets: Vec<CacheTarget>,
         timestamp: DateTime<Utc>,
     },
+
+    /// Unknown/unrecognized event type for forward compatibility.
+    ///
+    /// When a newer cluster node sends an event type that this node does not
+    /// understand, serde will deserialize it into this variant instead of
+    /// failing. This allows rolling upgrades without breaking deserialization.
+    #[serde(other)]
+    Unknown,
 }
 
 /// Generate a unique event ID using nanoid
@@ -322,6 +350,7 @@ impl ClusterEvent {
             | Self::RoomDeleted { event_id, .. }
             | Self::UserNotification { event_id, .. }
             | Self::CacheInvalidate { event_id, .. } => event_id,
+            Self::Unknown => "unknown",
         }
     }
 
@@ -348,7 +377,8 @@ impl ClusterEvent {
             Self::SystemNotification { .. }
             | Self::KickUser { .. }
             | Self::UserNotification { .. }
-            | Self::CacheInvalidate { .. } => None,
+            | Self::CacheInvalidate { .. }
+            | Self::Unknown => None,
         }
     }
 
@@ -375,13 +405,14 @@ impl ClusterEvent {
             Self::WebRTCSignaling { .. }
             | Self::SystemNotification { .. }
             | Self::KickPublisher { .. }
-            | Self::CacheInvalidate { .. } => None,
+            | Self::CacheInvalidate { .. }
+            | Self::Unknown => None,
         }
     }
 
     /// Get the timestamp of this event
     #[must_use]
-    pub const fn timestamp(&self) -> &DateTime<Utc> {
+    pub fn timestamp(&self) -> &DateTime<Utc> {
         match self {
             Self::ChatMessage { timestamp, .. }
             | Self::PlaybackStateChanged { timestamp, .. }
@@ -403,6 +434,7 @@ impl ClusterEvent {
             | Self::RoomDeleted { timestamp, .. }
             | Self::UserNotification { timestamp, .. }
             | Self::CacheInvalidate { timestamp, .. } => timestamp,
+            Self::Unknown => &UNKNOWN_TIMESTAMP,
         }
     }
 
@@ -476,6 +508,7 @@ impl ClusterEvent {
             Self::RoomDeleted { .. } => "room_deleted",
             Self::UserNotification { .. } => "user_notification",
             Self::CacheInvalidate { .. } => "cache_invalidate",
+            Self::Unknown => "unknown",
         }
     }
 }
@@ -516,6 +549,11 @@ mod tests {
             username: "testuser".to_string(),
             permissions: PermissionBits(0),
             role: 2, // Member role
+            added_permissions: PermissionBits(0),
+            removed_permissions: PermissionBits(0),
+            admin_added_permissions: PermissionBits(0),
+            admin_removed_permissions: PermissionBits(0),
+            joined_at: Utc::now(),
             timestamp: Utc::now(),
         };
 

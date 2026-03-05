@@ -70,7 +70,7 @@ impl ClientApiImpl {
         let rtmp_host = self.config.advertise_host();
         let rtmp_port = self.config.livestream.rtmp_port;
         let rtmp_url = format!("rtmp://{}:{}/live/{}", rtmp_host, rtmp_port, rid.as_str());
-        let stream_key = publish_key.token.clone();
+        let stream_key = format!("{}?key={}", media_id.as_str(), publish_key.token);
 
         tracing::info!(
             room_id = %rid.as_str(),
@@ -95,10 +95,9 @@ impl ClientApiImpl {
         token: &str,
         room_id: &str,
     ) -> Result<UserId, ApiError> {
-        let validator =
-            synctv_core::service::auth::JwtValidator::new(Arc::new(self.jwt_service.clone()));
         let bearer_token = format!("Bearer {token}");
-        let user_id = validator
+        let user_id = self
+            .jwt_validator
             .validate_http_extract_user_id(&bearer_token)
             .map_err(|e| ApiError::Authentication(format!("Invalid token: {e}")))?;
 

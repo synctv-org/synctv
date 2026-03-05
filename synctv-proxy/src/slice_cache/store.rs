@@ -216,6 +216,8 @@ impl SliceCache {
     // ---------------------------------------------------------------
 
     /// Retrieve the stored metadata for a resource, if any.
+    /// Updates `last_accessed` on read so that LRU eviction in
+    /// `cleanup_stale_meta` works correctly.
     #[allow(clippy::unused_async)]
     pub async fn get_resource_meta(
         &self,
@@ -223,7 +225,12 @@ impl SliceCache {
         provider_headers: &HashMap<String, String>,
     ) -> Option<CachedResourceMeta> {
         let mk = Self::meta_key(url, provider_headers);
-        self.meta.get(&mk).map(|r| r.clone())
+        if let Some(mut entry) = self.meta.get_mut(&mk) {
+            entry.last_accessed = std::time::SystemTime::now();
+            Some(entry.clone())
+        } else {
+            None
+        }
     }
 
     // ---------------------------------------------------------------
@@ -325,7 +332,7 @@ impl SliceCache {
 
         // Build the upstream request.
         let (range_start, range_end) =
-            aligned_range_for_slice(slice_index, self.config.slice_size, total_size);
+            aligned_range_for_slice(slice_index, self.config.slice_size, total_size)?;
         let range_header = format!("bytes={range_start}-{range_end}");
 
         let mut request = PROXY_CLIENT.get(url);
@@ -527,6 +534,7 @@ impl SliceCache {
                     last_modified: resp_last_modified,
                     total_size: Some(total_size),
                     content_type: resp_content_type,
+                    last_accessed: std::time::SystemTime::now(),
                 },
             );
         }
@@ -673,9 +681,10 @@ impl SliceCache {
                 };
                 return Some((entry.data.clone(), ct, status));
             }
-            // Expired beyond stale window -- remove so the re-fetch can
-            // insert anew.
-            self.backend.remove(&key).await;
+            // Expired beyond stale window -- do NOT remove here. The
+            // re-fetch will overwrite the entry, and removing eagerly can
+            // race with a concurrent re-fetch that expects the entry to
+            // still exist for conditional request (304) support.
         }
         None
     }
@@ -724,6 +733,7 @@ impl SliceCache {
                 last_modified: None,
                 total_size: None,
                 content_type: content_type.map(std::string::ToString::to_string),
+                last_accessed: std::time::SystemTime::now(),
             },
         );
 
@@ -757,22 +767,25 @@ impl SliceCache {
 
     /// Remove stale metadata entries to prevent unbounded growth of the
     /// `meta` DashMap. Uses a simple size cap: when the map exceeds
-    /// `MAX_META_ENTRIES`, retain only the first half (arbitrary eviction).
+    /// `MAX_META_ENTRIES`, sorts by `last_accessed` and evicts the oldest
+    /// entries until the map is at half capacity.
     pub fn cleanup_stale_meta(&self) {
         const MAX_META_ENTRIES: usize = 100_000;
         if self.meta.len() <= MAX_META_ENTRIES {
             return;
         }
-        let target = MAX_META_ENTRIES / 2;
-        let mut kept = 0usize;
-        self.meta.retain(|_key, _val| {
-            if kept < target {
-                kept += 1;
-                true
-            } else {
-                false
-            }
-        });
+        // Collect keys with their last_accessed timestamps, sort by oldest first,
+        // and remove the oldest entries until we are at half capacity.
+        let target_removals = self.meta.len() - MAX_META_ENTRIES / 2;
+        let mut entries: Vec<(String, std::time::SystemTime)> = self
+            .meta
+            .iter()
+            .map(|entry| (entry.key().clone(), entry.value().last_accessed))
+            .collect();
+        entries.sort_by_key(|(_, ts)| *ts);
+        for (key, _) in entries.into_iter().take(target_removals) {
+            self.meta.remove(&key);
+        }
     }
 
     /// Return the current number of per-key locks (for diagnostics/testing).

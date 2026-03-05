@@ -91,6 +91,8 @@ async fn test_critical_events_high_priority() {
         role: 2, // Member role
         added_permissions: synctv_core::models::PermissionBits::empty(),
         removed_permissions: synctv_core::models::PermissionBits::empty(),
+        admin_added_permissions: synctv_core::models::PermissionBits::empty(),
+        admin_removed_permissions: synctv_core::models::PermissionBits::empty(),
         timestamp: Utc::now(),
     };
 

@@ -209,6 +209,7 @@ fn bench_list_media_with_data(c: &mut Criterion) {
                 source_config: serde_json::json!({"url": format!("https://example.com/{}.mp4", i)}),
                 provider_instance_name: None,
                 added_at: Utc::now(),
+                updated_at: Utc::now(),
                 version: 0,
             };
             rt.block_on(media_repo.create(&media)).unwrap();
@@ -287,6 +288,7 @@ fn bench_batch_insert_operations(c: &mut Criterion) {
                                 source_config: serde_json::json!({"url": "https://example.com/video.mp4"}),
                                 provider_instance_name: None,
                                 added_at: Utc::now(),
+                                updated_at: Utc::now(),
                                 version: 0,
                             };
                             media_repo.create(&media).await.unwrap();

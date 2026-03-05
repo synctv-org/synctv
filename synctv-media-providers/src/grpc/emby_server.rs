@@ -46,6 +46,8 @@ impl Emby for EmbyService {
     async fn login(&self, request: Request<LoginReq>) -> Result<Response<LoginResp>, Status> {
         let req = request.into_inner();
         validate_host(&req.host)?;
+        validate_required("username", &req.username)?;
+        validate_required("password", &req.password)?;
         let resp = self
             .service
             .login(req)

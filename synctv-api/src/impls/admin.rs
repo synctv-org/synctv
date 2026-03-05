@@ -282,7 +282,7 @@ impl AdminApiImpl {
 
         Ok(crate::proto::admin::ListRoomsResponse {
             rooms: room_list,
-            total: total as i32,
+            total: i32::try_from(total).unwrap_or(i32::MAX),
         })
     }
 
@@ -436,7 +436,7 @@ impl AdminApiImpl {
 
         Ok(crate::proto::admin::GetRoomMembersResponse {
             members: proto_members,
-            total: total as i32,
+            total: i32::try_from(total).unwrap_or(i32::MAX),
         })
     }
 
@@ -494,7 +494,7 @@ impl AdminApiImpl {
 
         Ok(crate::proto::admin::ListUsersResponse {
             users: user_list,
-            total: total as i32,
+            total: i32::try_from(total).unwrap_or(i32::MAX),
         })
     }
 
@@ -1493,25 +1493,24 @@ impl AdminApiImpl {
         req: crate::proto::admin::GetUserRoomsRequest,
     ) -> Result<crate::proto::admin::GetUserRoomsResponse, ApiError> {
         let uid = UserId::from_string(req.user_id);
+        let page = u32::try_from(req.page).unwrap_or(1);
+        let page_size = u32::try_from(req.page_size).unwrap_or(50).min(100);
+        let pagination = synctv_core::models::PageParams::new(Some(page), Some(page_size));
 
         // Get rooms created by user
         let (created_rooms, _) = self
             .room_service
-            .list_rooms_by_creator(
-                &uid,
-                synctv_core::models::PageParams::new(Some(1), Some(100)),
-            )
+            .list_rooms_by_creator(&uid, pagination)
             .await
             .map_err(ApiError::from)?;
 
         // Use list_joined_rooms_with_details to get room data in a single JOIN query,
         // eliminating the N+1 pattern of one get_room() call per joined room.
+        let pagination =
+            synctv_core::models::PageParams::new(Some(page), Some(page_size));
         let (joined_rooms_with_details, _) = self
             .room_service
-            .list_joined_rooms_with_details(
-                &uid,
-                synctv_core::models::PageParams::new(Some(1), Some(100)),
-            )
+            .list_joined_rooms_with_details(&uid, pagination)
             .await
             .map_err(ApiError::from)?;
 

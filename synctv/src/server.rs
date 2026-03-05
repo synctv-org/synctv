@@ -451,7 +451,7 @@ impl SyncTvServer {
 
         let live_streaming_infrastructure = self.services.live_streaming_infrastructure.clone();
 
-        let is_cluster_mode = !self.config.server.cluster_secret.is_empty();
+        let is_cluster_mode = self.config.cluster.enabled;
         let ws_ticket_service = if let Some(ref redis_conn) = self.services.redis_conn {
             let redis_conn_snapshot = redis_conn.read().await.clone();
             match synctv_core::service::WsTicketService::new(

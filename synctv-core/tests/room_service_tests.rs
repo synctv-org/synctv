@@ -3581,6 +3581,7 @@ async fn test_soft_delete_immediately_cleans_up_non_critical_data() {
     };
     playlist_repo.create(&playlist).await.unwrap();
 
+    let now = chrono::Utc::now();
     let media = synctv_core::models::Media {
         id: synctv_core::models::MediaId::new(),
         playlist_id: playlist.id.clone(),
@@ -3591,7 +3592,8 @@ async fn test_soft_delete_immediately_cleans_up_non_critical_data() {
         source_config: serde_json::json!({}),
         provider_instance_name: None,
         creator_id: Some(owner.id.clone()),
-        added_at: chrono::Utc::now(),
+        added_at: now,
+        updated_at: now,
         version: 0,
     };
     media_repo.create(&media).await.unwrap();

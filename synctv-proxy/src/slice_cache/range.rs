@@ -202,15 +202,23 @@ pub fn compute_needed_slices(range_start: u64, range_end: u64, slice_size: usize
 
 /// Compute the aligned byte range `(start, end)` for a given slice index.
 /// Both `start` and `end` are inclusive.
-#[must_use]
-pub fn aligned_range_for_slice(slice_index: u64, slice_size: usize, total_size: u64) -> (u64, u64) {
+///
+/// Returns an error if `total_size` is zero, since there are no valid byte
+/// ranges for an empty resource.
+pub fn aligned_range_for_slice(
+    slice_index: u64,
+    slice_size: usize,
+    total_size: u64,
+) -> Result<(u64, u64), anyhow::Error> {
     if total_size == 0 {
-        return (0, 0);
+        return Err(anyhow::anyhow!(
+            "Cannot compute slice range for zero-size resource"
+        ));
     }
     let ss = slice_size as u64;
     let start = slice_index * ss;
     let end = std::cmp::min(start + ss, total_size) - 1;
-    (start, end)
+    Ok((start, end))
 }
 
 // ------------------------------------------------------------------

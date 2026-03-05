@@ -30,6 +30,7 @@ CREATE TABLE IF NOT EXISTS media (
 
     -- Timestamps
     added_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
     -- Optimistic locking version (incremented on each update)
     version INTEGER NOT NULL DEFAULT 0,
@@ -70,6 +71,21 @@ COMMENT ON COLUMN media.source_provider IS 'Media provider type name (e.g., "bil
 COMMENT ON COLUMN media.source_config IS 'Media provider-specific configuration (persistent)';
 COMMENT ON COLUMN media.provider_instance_name IS 'Media provider instance name for registry lookup (e.g., "bilibili_main")';
 COMMENT ON COLUMN media.version IS 'Optimistic locking version, incremented on each update';
+COMMENT ON COLUMN media.updated_at IS 'Timestamp of last update (auto-maintained by trigger)';
 COMMENT ON INDEX unique_media_name IS 'No duplicate names in same playlist';
 COMMENT ON CONSTRAINT valid_media_name ON media IS 'File name validation: not empty, 1-255 chars, no / character';
+
+-- Trigger to auto-update updated_at on row modification
+CREATE OR REPLACE FUNCTION update_media_updated_at()
+RETURNS TRIGGER AS $$
+BEGIN
+    NEW.updated_at = CURRENT_TIMESTAMP;
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER trigger_media_updated_at
+    BEFORE UPDATE ON media
+    FOR EACH ROW
+    EXECUTE FUNCTION update_media_updated_at();
 

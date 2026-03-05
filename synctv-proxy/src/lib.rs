@@ -399,6 +399,16 @@ pub async fn proxy_m3u8_and_rewrite(
     provider_headers: &HashMap<String, String>,
     proxy_base: &str,
 ) -> Result<Response, anyhow::Error> {
+    // Validate URL scheme to prevent SSRF via non-HTTP protocols
+    if let Ok(parsed) = url::Url::parse(url) {
+        let scheme = parsed.scheme();
+        if scheme != "http" && scheme != "https" {
+            return Err(anyhow::anyhow!(
+                "M3U8 URL has disallowed scheme: {scheme}"
+            ));
+        }
+    }
+
     let request = apply_provider_headers(PROXY_CLIENT.get(url), url, provider_headers);
 
     let proxy_result = send_with_redirect_validation(request).await?;
@@ -412,7 +422,7 @@ pub async fn proxy_m3u8_and_rewrite(
     }
 
     if let Some(cl) = proxy_response.content_length() {
-        if cl as usize > MAX_MANIFEST_SIZE {
+        if usize::try_from(cl).map_or(true, |s| s > MAX_MANIFEST_SIZE) {
             return Err(anyhow::anyhow!(
                 "M3U8 too large ({cl} bytes, max {MAX_MANIFEST_SIZE})"
             ));
@@ -863,6 +873,19 @@ const REDIRECT_PRESERVE_HEADERS: &[&str] = &[
     "if-modified-since",
 ];
 
+/// Headers to drop when a redirect crosses origin boundaries.
+///
+/// The `Referer` header can leak the original request URL (including signed
+/// query parameters) to a third-party host. Dropping it on cross-origin
+/// redirects follows browser `strict-origin-when-cross-origin` behaviour.
+const CROSS_ORIGIN_DROP_HEADERS: &[&str] = &["referer"];
+
+/// Extract the origin (scheme + host + port) from a URL string.
+/// Returns `None` if the URL cannot be parsed.
+fn url_origin(url: &str) -> Option<String> {
+    url::Url::parse(url).ok().map(|u| u.origin().ascii_serialization())
+}
+
 /// Result of `send_with_redirect_validation`.
 struct ProxyResponse {
     /// The final HTTP response after following any redirects.
@@ -893,6 +916,9 @@ async fn send_with_redirect_validation(
     let built = request
         .build()
         .map_err(|e| anyhow::anyhow!("Failed to build proxy request: {e}"))?;
+
+    // Capture the original request's origin for cross-origin detection.
+    let original_origin = built.url().origin().ascii_serialization();
 
     // Snapshot headers to preserve across redirects.
     let preserved: Vec<(reqwest::header::HeaderName, reqwest::header::HeaderValue)> = built
@@ -933,9 +959,18 @@ async fn send_with_redirect_validation(
             // Relative URLs are allowed (they inherit the original scheme)
         }
 
+        // Determine if this redirect crosses origin boundaries.
+        let is_cross_origin = url_origin(&location)
+            .map_or(false, |redirect_origin| redirect_origin != original_origin);
+
         // SSRF protection is handled by the DNS resolver at connection time
         let mut redirect_req = PROXY_CLIENT.get(&location);
         for (name, value) in &preserved {
+            // Drop sensitive headers (e.g. Referer) on cross-origin redirects
+            // to avoid leaking signed URLs to third-party hosts.
+            if is_cross_origin && CROSS_ORIGIN_DROP_HEADERS.contains(&name.as_str()) {
+                continue;
+            }
             redirect_req = redirect_req.header(name.clone(), value.clone());
         }
 

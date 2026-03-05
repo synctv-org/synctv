@@ -19,7 +19,6 @@ use super::node_registry::NodeRegistry;
 use crate::error::Result;
 #[allow(unused_imports)]
 use futures::future::join_all;
-use tonic::transport::Endpoint;
 
 /// Health status of a node
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -393,41 +392,11 @@ impl HealthMonitor {
 
     /// Probe a node's gRPC service by calling `GetNodes`.
     ///
-    /// Unlike the previous TCP-only probe, this validates that the
-    /// application-layer gRPC service is responsive, not just that
-    /// the port is open.
+    /// Unlike a TCP-only probe, this validates that the application-layer
+    /// gRPC service is responsive, not just that the port is open.
+    /// Delegates to the shared [`super::probe_node_grpc`] function.
     async fn probe_node_grpc(grpc_address: &str, timeout_secs: u64, cluster_secret: &str) -> bool {
-        let uri = if grpc_address.starts_with("http://") || grpc_address.starts_with("https://") {
-            grpc_address.to_string()
-        } else {
-            format!("http://{grpc_address}")
-        };
-
-        let connect_timeout = Duration::from_secs(timeout_secs);
-        let endpoint = match Endpoint::from_shared(uri) {
-            Ok(ep) => ep.connect_timeout(connect_timeout).timeout(connect_timeout),
-            Err(_) => return false,
-        };
-
-        let channel = match endpoint.connect().await {
-            Ok(ch) => ch,
-            Err(_) => return false,
-        };
-
-        use crate::grpc::synctv::cluster::cluster_service_client::ClusterServiceClient;
-        use crate::grpc::synctv::cluster::GetNodesRequest;
-        let mut client = ClusterServiceClient::new(channel);
-        let mut request = tonic::Request::new(GetNodesRequest { status_filter: 0 });
-
-        if !cluster_secret.is_empty() {
-            if let Ok(val) =
-                cluster_secret.parse::<tonic::metadata::MetadataValue<tonic::metadata::Ascii>>()
-            {
-                request.metadata_mut().insert("x-cluster-secret", val);
-            }
-        }
-
-        client.get_nodes(request).await.is_ok()
+        super::probe_node_grpc(grpc_address, timeout_secs, cluster_secret).await
     }
 
     /// Gracefully shut down the health monitoring loop.

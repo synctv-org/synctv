@@ -514,6 +514,9 @@ impl MediaService {
     }
 
     /// Remove media from playlist
+    ///
+    /// Uses `check_permission_no_cache` to ensure fresh permissions (avoids stale cache).
+    /// Rejects removal if the target media is currently playing in the room.
     pub async fn remove_media(
         &self,
         room_id: RoomId,
@@ -535,16 +538,43 @@ impl MediaService {
         }
 
         // Check permission: DELETE_MOVIE_SELF if user owns the media, DELETE_MOVIE_ANY otherwise
+        // IMPORTANT: Use check_permission_no_cache to ensure fresh permissions
         let required_permission = if media.creator_id.as_ref() == Some(&user_id) {
             PermissionBits::DELETE_MOVIE_SELF
         } else {
             PermissionBits::DELETE_MOVIE_ANY
         };
         self.permission_service
-            .check_permission(&room_id, &user_id, required_permission)
+            .check_permission_no_cache(&room_id, &user_id, required_permission)
             .await?;
 
-        self.media_repo.delete(&media_id).await?;
+        // Use a transaction to atomically check "currently playing" and delete
+        let mut tx = self.media_repo.pool().begin().await?;
+
+        // Lock room_playback_state FOR UPDATE and reject if target media is playing
+        let playing_media_id: Option<String> = sqlx::query_scalar(
+            "SELECT playing_media_id FROM room_playback_state \
+             WHERE room_id = $1 \
+             FOR UPDATE",
+        )
+        .bind(room_id.as_str())
+        .fetch_optional(&mut *tx)
+        .await?
+        .flatten();
+
+        if playing_media_id.as_deref() == Some(media_id.as_str()) {
+            return Err(Error::InvalidInput(
+                "Cannot remove media that is currently playing".to_string(),
+            ));
+        }
+
+        // Delete within the transaction
+        sqlx::query("DELETE FROM media WHERE id = $1")
+            .bind(media_id.as_str())
+            .execute(&mut *tx)
+            .await?;
+
+        tx.commit().await?;
 
         tracing::info!(
             room_id = %room_id.as_str(),
@@ -616,9 +646,9 @@ impl MediaService {
         media_id1: MediaId,
         media_id2: MediaId,
     ) -> Result<()> {
-        // Check permission
+        // Check permission (use no_cache to ensure fresh permissions)
         self.permission_service
-            .check_permission(&room_id, &user_id, PermissionBits::REORDER_PLAYLIST)
+            .check_permission_no_cache(&room_id, &user_id, PermissionBits::REORDER_PLAYLIST)
             .await?;
 
         // Use a single transaction for both verification and swap to prevent
@@ -718,15 +748,35 @@ impl MediaService {
         // Check per-group permissions: user needs DELETE_MOVIE_SELF for their own
         // items and DELETE_MOVIE_ANY for others' items. Only fail if the user
         // lacks the permission for a group that actually has items.
+        // IMPORTANT: Use check_permission_no_cache to ensure fresh permissions
         if has_owned {
             self.permission_service
-                .check_permission(&room_id, &user_id, PermissionBits::DELETE_MOVIE_SELF)
+                .check_permission_no_cache(&room_id, &user_id, PermissionBits::DELETE_MOVIE_SELF)
                 .await?;
         }
         if has_non_owned {
             self.permission_service
-                .check_permission(&room_id, &user_id, PermissionBits::DELETE_MOVIE_ANY)
+                .check_permission_no_cache(&room_id, &user_id, PermissionBits::DELETE_MOVIE_ANY)
                 .await?;
+        }
+
+        // Lock room_playback_state FOR UPDATE and reject if any target media is playing
+        let playing_media_id: Option<String> = sqlx::query_scalar(
+            "SELECT playing_media_id FROM room_playback_state \
+             WHERE room_id = $1 \
+             FOR UPDATE",
+        )
+        .bind(room_id.as_str())
+        .fetch_optional(&mut *tx)
+        .await?
+        .flatten();
+
+        if let Some(ref playing_id) = playing_media_id {
+            if media_ids.iter().any(|mid| mid.as_str() == playing_id.as_str()) {
+                return Err(Error::InvalidInput(
+                    "Cannot remove media that is currently playing".to_string(),
+                ));
+            }
         }
 
         // Bulk delete within the same transaction

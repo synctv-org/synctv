@@ -367,8 +367,10 @@ impl UserService for ClientServiceImpl {
     ) -> Result<Response<ListParticipatedRoomsResponse>, Status> {
         let user_id = self.get_user_id(&request).await?;
         let req = request.into_inner();
+        let page = u32::try_from(req.page).unwrap_or(1);
+        let page_size = u32::try_from(req.page_size).unwrap_or(10).min(100);
         let params =
-            synctv_core::models::PageParams::new(Some(req.page as u32), Some(req.page_size as u32));
+            synctv_core::models::PageParams::new(Some(page), Some(page_size));
         let response = self
             .client_api
             .get_joined_rooms(
@@ -758,16 +760,11 @@ impl RoomService for ClientServiceImpl {
 
     async fn get_network_quality(
         &self,
-        request: Request<GetNetworkQualityRequest>,
+        _request: Request<GetNetworkQualityRequest>,
     ) -> Result<Response<GetNetworkQualityResponse>, Status> {
-        let user_id = self.get_user_id(&request).await?;
-        let room_id = self.get_room_id(&request)?;
-        let response = self
-            .client_api
-            .get_network_quality(&room_id, &user_id)
-            .await
-            .map_err(map_api_error)?;
-        Ok(Response::new(response))
+        Err(Status::unimplemented(
+            "Network quality tracking is not supported; quality metrics are handled peer-to-peer",
+        ))
     }
 }
 

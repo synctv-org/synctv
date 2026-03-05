@@ -55,6 +55,7 @@ pub struct EmbyClient {
     user_id: Option<String>,
     client: Client,
     api_prefix: Option<String>,
+    device_id: String,
 }
 
 impl EmbyClient {
@@ -66,6 +67,7 @@ impl EmbyClient {
             user_id: None,
             client: SHARED_CLIENT.clone(),
             api_prefix: None,
+            device_id: uuid::Uuid::new_v4().to_string(),
         })
     }
 
@@ -81,6 +83,7 @@ impl EmbyClient {
             user_id: Some(user_id.into()),
             client: SHARED_CLIENT.clone(),
             api_prefix: None,
+            device_id: uuid::Uuid::new_v4().to_string(),
         })
     }
 
@@ -128,10 +131,10 @@ impl EmbyClient {
         Ok(headers)
     }
 
-    fn build_emby_auth_header() -> Result<HeaderValue, EmbyError> {
+    fn build_emby_auth_header(&self) -> Result<HeaderValue, EmbyError> {
         HeaderValue::from_str(&format!(
             r#"Emby Client="Emby Web", Device="SyncTV", DeviceId="{}", Version="4.7.14.0""#,
-            uuid::Uuid::new_v4()
+            self.device_id
         ))
         .map_err(|e| EmbyError::InvalidConfig(format!("Failed to build auth header: {e}")))
     }
@@ -151,7 +154,7 @@ impl EmbyClient {
         });
 
         let mut headers = self.build_headers()?;
-        headers.insert(AUTHORIZATION, Self::build_emby_auth_header()?);
+        headers.insert(AUTHORIZATION, self.build_emby_auth_header()?);
         let client = self.client.clone();
 
         let (token, user_id) = with_retry(|| {
@@ -442,7 +445,7 @@ impl EmbyClient {
         let prefix = self.get_api_prefix();
         let url = format!("{}{}/Sessions/Logout", self.host, prefix);
         let mut headers = self.build_headers()?;
-        headers.insert(AUTHORIZATION, Self::build_emby_auth_header()?);
+        headers.insert(AUTHORIZATION, self.build_emby_auth_header()?);
         let client = self.client.clone();
 
         with_retry(|| {
@@ -536,7 +539,7 @@ impl EmbyClient {
             url_encode(play_session_id)
         );
         let mut headers = self.build_headers()?;
-        headers.insert(AUTHORIZATION, Self::build_emby_auth_header()?);
+        headers.insert(AUTHORIZATION, self.build_emby_auth_header()?);
         let client = self.client.clone();
 
         with_retry(|| {

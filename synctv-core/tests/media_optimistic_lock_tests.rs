@@ -117,6 +117,7 @@ fn make_media(playlist_id: &PlaylistId, room_id: &RoomId, name: &str, position: 
         source_config: json!({"url": "https://example.com/video.mp4"}),
         provider_instance_name: None,
         added_at: Utc::now(),
+        updated_at: Utc::now(),
         version: 0,
     }
 }

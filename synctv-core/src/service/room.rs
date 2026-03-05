@@ -81,7 +81,7 @@ use crate::{
     models::{
         ChatMessage, Media, MediaId, MemberStatus, PageParams, PermissionBits, Playlist,
         PlaylistId, Room, RoomId, RoomListQuery, RoomMember, RoomPlaybackState, RoomRole,
-        RoomSettings, RoomStatus, RoomWithCount, UserId,
+        RoomSettings, RoomStatus, RoomWithCount, UserId, UserListQuery, UserRole, UserStatus,
     },
     repository::{
         ChatRepository, MediaRepository, PlaylistRepository, RoomMemberRepository,
@@ -143,6 +143,10 @@ pub struct RoomService {
 
     /// Optional settings registry for reading `create_room_need_review` setting
     settings_registry: Option<Arc<crate::service::SettingsRegistry>>,
+
+    /// Optional user notification service for sending admin notifications
+    /// (e.g., pending room review alerts)
+    user_notification_service: Option<Arc<crate::service::UserNotificationService>>,
 }
 
 impl std::fmt::Debug for RoomService {
@@ -287,6 +291,7 @@ impl RoomService {
             audit_service: None,
             brute_force_service: None,
             settings_registry: None,
+            user_notification_service: None,
         }
     }
 
@@ -306,6 +311,15 @@ impl RoomService {
     /// Inject the settings registry for reading `create_room_need_review` and other global settings.
     pub fn set_settings_registry(&mut self, registry: Arc<crate::service::SettingsRegistry>) {
         self.settings_registry = Some(registry);
+    }
+
+    /// Inject the user notification service for sending admin notifications
+    /// (e.g., when a room is created with Pending status and needs review).
+    pub fn set_user_notification_service(
+        &mut self,
+        service: Arc<crate::service::UserNotificationService>,
+    ) {
+        self.user_notification_service = Some(service);
     }
 
     /// Log an audit event if the audit service is configured.
@@ -398,7 +412,19 @@ impl RoomService {
             "Creating new room"
         );
 
-        // Check global settings: room creation must be allowed
+        // Check global settings: room creation must be allowed.
+        //
+        // Setting precedence:
+        //   1. `disable_create_room` (highest priority) — when true, room creation is
+        //      unconditionally blocked. This is the "kill switch" for emergencies or
+        //      maintenance windows.
+        //   2. `allow_room_creation` — when explicitly set to false, room creation is
+        //      blocked. Defaults to true when unset. This is the normal admin toggle
+        //      for controlling whether users can create rooms.
+        //
+        // Both settings exist to serve different admin workflows:
+        //   - `disable_create_room` = emergency override (takes priority over everything)
+        //   - `allow_room_creation` = standard policy control (opt-out, default-allow)
         if let Some(ref registry) = self.settings_registry {
             // `disable_create_room` takes precedence (explicit disable)
             if registry.disable_create_room.get().unwrap_or(false) {
@@ -543,6 +569,49 @@ impl RoomService {
         self.permission_service
             .invalidate_cache(&created_room.id, &created_by)
             .await;
+
+        // Notify admin/root users about pending rooms so they can review them.
+        // This is best-effort: notification failures do not affect room creation.
+        if need_review {
+            if let Some(ref notif_service) = self.user_notification_service {
+                let admin_query = UserListQuery {
+                    pagination: PageParams::new(Some(1), Some(100)),
+                    search: None,
+                    status: Some(UserStatus::Active),
+                    role: Some(UserRole::Root),
+                };
+                let admin_users = self.user_service.list_users(&admin_query).await;
+                if let Ok((admins, _)) = admin_users {
+                    let room_name = created_room.name.clone();
+                    for admin in admins {
+                        if let Err(e) = notif_service
+                            .create_system_announcement(
+                                admin.id.clone(),
+                                format!("Room Pending Review: {room_name}"),
+                                format!(
+                                    "User {} created room \"{room_name}\" which requires admin review.",
+                                    created_by.as_str()
+                                ),
+                                Some(serde_json::json!({
+                                    "room_id": created_room.id.as_str(),
+                                    "room_name": &room_name,
+                                    "creator_id": created_by.as_str(),
+                                })),
+                            )
+                            .await
+                        {
+                            tracing::warn!(
+                                admin_id = %admin.id,
+                                error = %e,
+                                "Failed to notify admin about pending room"
+                            );
+                        }
+                    }
+                } else {
+                    tracing::warn!("Failed to query admin users for pending room notification");
+                }
+            }
+        }
 
         Ok((created_room, created_member))
     }
@@ -2032,7 +2101,7 @@ impl RoomService {
                 .fetch_optional(&mut *tx)
                 .await?;
 
-        let (media_id, media_creator_id, media_room_id) =
+        let (fetched_media_id, media_creator_id, media_room_id) =
             media_row.ok_or_else(|| Error::NotFound("Media not found".to_string()))?;
 
         if media_room_id != room_id.as_str() {
@@ -2101,7 +2170,7 @@ impl RoomService {
         .await?
         .flatten();
 
-        if playing_media_id.as_deref() == Some(media_id.as_str()) {
+        if playing_media_id.as_deref() == Some(fetched_media_id.as_str()) {
             return Err(Error::InvalidInput(
                 "Cannot remove media that is currently playing".to_string(),
             ));
@@ -2109,7 +2178,7 @@ impl RoomService {
 
         // Step 4: Delete the media within the transaction
         sqlx::query("DELETE FROM media WHERE id = $1")
-            .bind(media_id.as_str())
+            .bind(fetched_media_id.as_str())
             .execute(&mut *tx)
             .await?;
 
@@ -2117,7 +2186,7 @@ impl RoomService {
 
         tracing::info!(
             room_id = %room_id.as_str(),
-            media_id = %media_id.as_str(),
+            media_id = %fetched_media_id.as_str(),
             user_id = %user_id.as_str(),
             "Media removed from playlist"
         );

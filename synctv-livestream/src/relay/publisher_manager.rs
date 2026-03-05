@@ -774,9 +774,42 @@ impl PublisherManager {
         // 2. Unregister from Redis immediately (don't wait for TTL)
         if let Err(e) = self.registry.unregister_publisher(room_id, media_id).await {
             warn!(
-                "Failed to unregister publisher from Redis for room {} / media {}: {}",
+                "Failed to unregister publisher from Redis for room {} / media {}: {}. \
+                 Spawning background retry task for best-effort cleanup.",
                 room_id, media_id, e
             );
+            // Best-effort retry: spawn background task with 2 retries + exponential backoff
+            let registry = Arc::clone(&self.registry);
+            let room_id_owned = room_id.to_string();
+            let media_id_owned = media_id.to_string();
+            tokio::spawn(async move {
+                for attempt in 1..=2u32 {
+                    let delay = Duration::from_secs(2u64.pow(attempt)); // 2s, 4s
+                    sleep(delay).await;
+                    match registry
+                        .unregister_publisher(&room_id_owned, &media_id_owned)
+                        .await
+                    {
+                        Ok(()) => {
+                            info!(
+                                "Background retry #{attempt} succeeded: unregistered publisher \
+                                 room={room_id_owned} media={media_id_owned} from Redis"
+                            );
+                            return;
+                        }
+                        Err(retry_err) => {
+                            warn!(
+                                "Background retry #{attempt} failed to unregister publisher \
+                                 room={room_id_owned} media={media_id_owned}: {retry_err}"
+                            );
+                        }
+                    }
+                }
+                error!(
+                    "All background retries exhausted for unregistering publisher \
+                     room={room_id_owned} media={media_id_owned}; Redis key will expire via TTL"
+                );
+            });
         }
 
         // 3. Send UnPublish to StreamHub so subscribers are notified.

@@ -1,6 +1,6 @@
 // Provider Store - key-value storage abstraction for provider caching and locking
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -109,10 +109,27 @@ impl Expiry<String, TtlValue> for PerEntryExpiry {
     }
 }
 
+/// Moka `Expiry` for lock entries: each lock key expires after its stored TTL `Duration`.
+struct LockEntryExpiry;
+
+impl Expiry<String, Duration> for LockEntryExpiry {
+    fn expire_after_create(
+        &self,
+        _key: &String,
+        value: &Duration,
+        _current_time: std::time::Instant,
+    ) -> Option<Duration> {
+        Some(*value)
+    }
+}
+
 /// In-memory provider store backed by `moka::future::Cache` with per-entry TTL support.
+///
+/// Locks use a separate `moka::sync::Cache<String, Duration>` with per-entry TTL so that
+/// leaked guards auto-expire rather than holding the lock forever.
 pub struct InMemoryProviderStore {
     cache: moka::future::Cache<String, TtlValue>,
-    locks: Arc<Mutex<HashSet<String>>>,
+    locks: moka::sync::Cache<String, Duration>,
 }
 
 impl InMemoryProviderStore {
@@ -122,7 +139,9 @@ impl InMemoryProviderStore {
                 .max_capacity(max_capacity)
                 .expire_after(PerEntryExpiry)
                 .build(),
-            locks: Arc::new(Mutex::new(HashSet::new())),
+            locks: moka::sync::Cache::builder()
+                .expire_after(LockEntryExpiry)
+                .build(),
         }
     }
 }
@@ -151,17 +170,16 @@ impl ProviderStore for InMemoryProviderStore {
         Ok(())
     }
 
-    async fn lock(&self, key: &str, _ttl: Duration) -> Result<StoreLockGuard, StoreError> {
-        {
-            let mut set = self.locks.lock();
-            if !set.insert(key.to_string()) {
-                return Err(StoreError::LockFailed(format!("key already locked: {key}")));
-            }
+    async fn lock(&self, key: &str, ttl: Duration) -> Result<StoreLockGuard, StoreError> {
+        // Try to insert the lock key. If it already exists, the lock is held.
+        if self.locks.contains_key(key) {
+            return Err(StoreError::LockFailed(format!("key already locked: {key}")));
         }
-        let locks = Arc::clone(&self.locks);
+        self.locks.insert(key.to_string(), ttl);
+        let locks = self.locks.clone();
         let key_owned = key.to_string();
         Ok(StoreLockGuard::new(move || {
-            locks.lock().remove(&key_owned);
+            locks.invalidate(&key_owned);
         }))
     }
 }

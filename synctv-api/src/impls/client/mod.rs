@@ -126,6 +126,8 @@ pub struct ClientApiImpl {
     pub credential_repo: Option<Arc<synctv_core::repository::UserProviderCredentialRepository>>,
     /// Proxy signing key for generating HMAC-signed proxy URLs
     pub signing_key: Option<Arc<synctv_core::service::ProxySigningKey>>,
+    /// JWT validator for token validation (e.g. live streaming tokens)
+    pub jwt_validator: Arc<synctv_core::service::auth::JwtValidator>,
 }
 
 impl ClientApiImpl {
@@ -134,7 +136,7 @@ impl ClientApiImpl {
     /// Prefer [`ClientApiImpl::from_config`] for new code.
     #[allow(clippy::too_many_arguments)]
     #[must_use]
-    pub const fn new(
+    pub fn new(
         user_service: Arc<UserService>,
         room_service: Arc<RoomService>,
         connection_manager: Arc<ConnectionManager>,
@@ -147,6 +149,9 @@ impl ClientApiImpl {
         providers_manager: Option<Arc<synctv_core::service::ProvidersManager>>,
         settings_registry: Option<Arc<synctv_core::service::SettingsRegistry>>,
     ) -> Self {
+        let jwt_validator = Arc::new(synctv_core::service::auth::JwtValidator::new(
+            Arc::new(jwt_service.clone()),
+        ));
         Self {
             user_service,
             room_service,
@@ -165,12 +170,16 @@ impl ClientApiImpl {
             turn_health_checker: None,
             credential_repo: None,
             signing_key: None,
+            jwt_validator,
         }
     }
 
     /// Create a new `ClientApiImpl` from a config struct.
     #[must_use]
     pub fn from_config(config: ClientApiConfig) -> Self {
+        let jwt_validator = Arc::new(synctv_core::service::auth::JwtValidator::new(
+            Arc::new(config.jwt_service.clone()),
+        ));
         Self {
             user_service: config.user_service,
             room_service: config.room_service,
@@ -189,6 +198,7 @@ impl ClientApiImpl {
             turn_health_checker: None,
             credential_repo: None,
             signing_key: None,
+            jwt_validator,
         }
     }
 
@@ -416,6 +426,8 @@ impl ClientApiImpl {
                     role,
                     added_permissions: synctv_core::models::PermissionBits(added_permissions),
                     removed_permissions: synctv_core::models::PermissionBits(removed_permissions),
+                    admin_added_permissions: synctv_core::models::PermissionBits(0),
+                    admin_removed_permissions: synctv_core::models::PermissionBits(0),
                     timestamp: chrono::Utc::now(),
                 },
             };

@@ -311,6 +311,11 @@ async fn test_dedup_with_different_events() {
         username: "test".to_string(),
         permissions: synctv_core::models::permission::PermissionBits(0),
         role: 2,
+        added_permissions: synctv_core::models::permission::PermissionBits(0),
+        removed_permissions: synctv_core::models::permission::PermissionBits(0),
+        admin_added_permissions: synctv_core::models::permission::PermissionBits(0),
+        admin_removed_permissions: synctv_core::models::permission::PermissionBits(0),
+        joined_at: chrono::Utc::now(),
         timestamp: chrono::Utc::now(),
     };
 
@@ -635,6 +640,8 @@ async fn test_critical_event_classification() {
         role: 2,
         added_permissions: synctv_core::models::permission::PermissionBits(0),
         removed_permissions: synctv_core::models::permission::PermissionBits(0),
+        admin_added_permissions: synctv_core::models::permission::PermissionBits(0),
+        admin_removed_permissions: synctv_core::models::permission::PermissionBits(0),
         timestamp: chrono::Utc::now(),
     }
     .is_critical());

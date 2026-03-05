@@ -611,9 +611,9 @@ impl ClusterManager {
             }
         }
 
-        // Cancel Redis Pub/Sub tasks (signals the publisher and subscriber loops to stop)
+        // Cancel Redis Pub/Sub tasks and await subscriber completion
         if let Some(ref pubsub) = self.redis_pubsub {
-            pubsub.shutdown();
+            pubsub.shutdown().await;
         }
 
         // Shut down ConnectionManager's TTL refresh task
@@ -830,10 +830,8 @@ impl Drop for ClusterManager {
         // Cancel all background tasks (heartbeat, Redis pub/sub, connection manager).
         // Drop cannot run async code, but CancellationToken::cancel() is synchronous
         // and will notify all tasks holding a clone of this token to stop.
+        // For graceful shutdown with awaiting, use the async shutdown() method instead.
         self.cancel_token.cancel();
-        if let Some(ref pubsub) = self.redis_pubsub {
-            pubsub.shutdown();
-        }
         if let Some(ref cm) = self.connection_manager {
             cm.shutdown();
         }

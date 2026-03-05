@@ -167,13 +167,13 @@ impl EmbyInterface for EmbyService {
             Some(request.media_source_id.as_str())
         };
 
-        let audio_idx = if request.audio_stream_index == 0 {
+        let audio_idx = if request.audio_stream_index < 0 {
             None
         } else {
             Some(request.audio_stream_index)
         };
 
-        let subtitle_idx = if request.subtitle_stream_index == 0 {
+        let subtitle_idx = if request.subtitle_stream_index < 0 {
             None
         } else {
             Some(request.subtitle_stream_index)

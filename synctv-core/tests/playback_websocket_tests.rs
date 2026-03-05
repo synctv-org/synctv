@@ -326,6 +326,7 @@ async fn test_media_switch_triggers_broadcast() {
     let root_playlist = &playlists[0];
 
     // Add media
+    let now_media = Utc::now();
     let media = synctv_core::models::Media {
         id: synctv_core::models::MediaId::new(),
         playlist_id: root_playlist.id.clone(),
@@ -336,7 +337,8 @@ async fn test_media_switch_triggers_broadcast() {
         source_provider: "direct_url".to_string(),
         source_config: serde_json::json!({"url": "https://example.com/video.mp4"}),
         provider_instance_name: None,
-        added_at: Utc::now(),
+        added_at: now_media,
+        updated_at: now_media,
         version: 0,
     };
     media_repo.create(&media).await.unwrap();

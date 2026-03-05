@@ -19,6 +19,8 @@ impl ClientApiImpl {
         user_id: &str,
         room_id: &str,
     ) -> Result<Option<crate::proto::client::Media>, ApiError> {
+        crate::http::validation::validate_id(room_id, "room_id")
+            .map_err(|e| ApiError::InvalidInput(format!("Invalid room_id: {e}")))?;
         let uid = UserId::from_string(user_id.to_string());
         let rid = RoomId::from_string(room_id.to_string());
 
@@ -43,7 +45,7 @@ impl ClientApiImpl {
         // Clamp negative i32 values to valid u32 range before passing to PageParams.
         // Without this, -1i32 as u32 wraps to u32::MAX, causing absurd page numbers.
         let page = u32::try_from(req.page).unwrap_or(1);
-        let page_size = u32::try_from(req.page_size).unwrap_or(1);
+        let page_size = u32::try_from(req.page_size).unwrap_or(1).min(100);
 
         let mut query = synctv_core::models::RoomListQuery {
             pagination: synctv_core::models::PageParams::new(Some(page), Some(page_size)),
@@ -75,7 +77,7 @@ impl ClientApiImpl {
 
         Ok(crate::proto::client::ListRoomsResponse {
             rooms: room_list,
-            total: total as i32,
+            total: i32::try_from(total).unwrap_or(i32::MAX),
         })
     }
 
@@ -138,7 +140,7 @@ impl ClientApiImpl {
 
         Ok(crate::proto::client::ListParticipatedRoomsResponse {
             rooms: room_list,
-            total: total as i32,
+            total: i32::try_from(total).unwrap_or(i32::MAX),
         })
     }
 
@@ -480,6 +482,8 @@ impl ClientApiImpl {
         room_id: &str,
         req: crate::proto::client::SetRoomPasswordRequest,
     ) -> Result<crate::proto::client::SetRoomPasswordResponse, ApiError> {
+        crate::http::validation::validate_id(room_id, "room_id")
+            .map_err(|e| ApiError::InvalidInput(format!("Invalid room_id: {e}")))?;
         let uid = UserId::from_string(user_id.to_string());
         let rid = RoomId::from_string(room_id.to_string());
 
@@ -726,7 +730,7 @@ impl ClientApiImpl {
 
         Ok(crate::proto::client::ListCreatedRoomsResponse {
             rooms,
-            total: total as i32,
+            total: i32::try_from(total).unwrap_or(i32::MAX),
         })
     }
 
@@ -769,6 +773,8 @@ impl ClientApiImpl {
         &self,
         req: crate::proto::client::CheckRoomRequest,
     ) -> Result<crate::proto::client::CheckRoomResponse, ApiError> {
+        crate::http::validation::validate_id(&req.room_id, "room_id")
+            .map_err(|e| ApiError::InvalidInput(format!("Invalid room_id: {e}")))?;
         let rid = RoomId::from_string(req.room_id);
 
         match self.room_service.get_room(&rid).await {

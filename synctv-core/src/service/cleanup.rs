@@ -78,6 +78,8 @@ pub struct CleanupResult {
     pub notifications_deleted: u64,
     /// Number of old chat messages deleted
     pub chat_messages_deleted: u64,
+    /// Number of expired token blacklist entries deleted
+    pub token_blacklist_deleted: u64,
 }
 
 /// Data cleanup service
@@ -258,6 +260,14 @@ impl CleanupService {
             }
         }
 
+        // 7. Cleanup expired token blacklist entries (prevents unbounded table growth)
+        match self.cleanup_token_blacklist().await {
+            Ok(()) => {
+                // The DB function doesn't return a count; log at debug level.
+            }
+            Err(e) => warn!(error = %e, "Failed to cleanup token blacklist"),
+        }
+
         result
     }
 
@@ -394,6 +404,18 @@ impl CleanupService {
         Ok(result.rows_affected())
     }
 
+    /// Remove expired entries from the token blacklist table.
+    ///
+    /// Calls the `cleanup_expired_token_blacklist()` database function which
+    /// deletes all rows with `expires_at < CURRENT_TIMESTAMP`.
+    async fn cleanup_token_blacklist(&self) -> Result<()> {
+        sqlx::query("SELECT cleanup_expired_token_blacklist()")
+            .execute(&self.pool)
+            .await
+            .internal_with_err("Failed to cleanup token blacklist")?;
+        Ok(())
+    }
+
     /// Cleanup chat messages exceeding per-room cap
     ///
     /// Uses window functions for efficient batch cleanup across all rooms.
@@ -485,7 +507,8 @@ impl CleanupService {
                     + result.tokens_deleted
                     + result.credentials_deleted
                     + result.notifications_deleted
-                    + result.chat_messages_deleted;
+                    + result.chat_messages_deleted
+                    + result.token_blacklist_deleted;
 
                 if total > 0 {
                     info!(
@@ -534,6 +557,7 @@ mod tests {
         assert_eq!(result.credentials_deleted, 0);
         assert_eq!(result.notifications_deleted, 0);
         assert_eq!(result.chat_messages_deleted, 0);
+        assert_eq!(result.token_blacklist_deleted, 0);
     }
 
     #[test]
@@ -588,6 +612,7 @@ mod tests {
             credentials_deleted: 15,
             notifications_deleted: 50,
             chat_messages_deleted: 100,
+            token_blacklist_deleted: 8,
         };
         let total = result.users_purged
             + result.rooms_purged
@@ -595,8 +620,9 @@ mod tests {
             + result.tokens_deleted
             + result.credentials_deleted
             + result.notifications_deleted
-            + result.chat_messages_deleted;
-        assert_eq!(total, 203);
+            + result.chat_messages_deleted
+            + result.token_blacklist_deleted;
+        assert_eq!(total, 211);
     }
 
     #[test]

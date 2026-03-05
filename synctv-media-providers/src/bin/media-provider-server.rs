@@ -228,9 +228,10 @@ impl ProviderAuthInterceptor {
             .map_err(|_| Status::unauthenticated("Invalid x-provider-secret header"))?;
 
         // Issue #34: Validate that the secret is non-empty at the call site too
+        // Note: empty secrets are a client misconfiguration, not a backend failure,
+        // so we do NOT record a circuit-breaker failure here.
         if token.is_empty() {
             warn!("Provider gRPC auth failed: empty secret provided");
-            self.circuit_breaker.record_failure(self.service_name);
             return Err(Status::unauthenticated("Missing x-provider-secret header"));
         }
 

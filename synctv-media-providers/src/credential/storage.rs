@@ -90,6 +90,115 @@ pub struct StoredCredential {
     pub expires_at: Option<i64>,
 }
 
+/// Encrypt sensitive fields in credential data before storage.
+///
+/// Shared implementation used by both `InMemoryCredentialStorage` and `PostgresCredentialStorage`.
+pub(crate) fn encrypt_credential_data(
+    encryption: Option<&FieldEncryption>,
+    data: CredentialData,
+) -> Result<CredentialData> {
+    let Some(enc) = encryption else {
+        return Ok(data);
+    };
+
+    match data {
+        CredentialData::Alist {
+            host,
+            username,
+            password,
+        } => {
+            let encrypted_password = enc.encrypt(&password)?;
+            Ok(CredentialData::Alist {
+                host,
+                username,
+                password: encrypted_password,
+            })
+        }
+        CredentialData::Emby {
+            host,
+            api_key,
+            emby_user_id,
+        } => {
+            let encrypted_api_key = enc.encrypt(&api_key)?;
+            Ok(CredentialData::Emby {
+                host,
+                api_key: encrypted_api_key,
+                emby_user_id,
+            })
+        }
+        CredentialData::Bilibili { cookies } => {
+            let mut encrypted_cookies = HashMap::new();
+            for (key, value) in cookies {
+                encrypted_cookies.insert(key, enc.encrypt(&value)?);
+            }
+            Ok(CredentialData::Bilibili {
+                cookies: encrypted_cookies,
+            })
+        }
+    }
+}
+
+/// Decrypt sensitive fields in credential data after retrieval.
+///
+/// Shared implementation used by both `InMemoryCredentialStorage` and `PostgresCredentialStorage`.
+pub(crate) fn decrypt_credential_data(
+    encryption: Option<&FieldEncryption>,
+    data: CredentialData,
+) -> Result<CredentialData> {
+    let Some(enc) = encryption else {
+        return Ok(data);
+    };
+
+    match data {
+        CredentialData::Alist {
+            host,
+            username,
+            password,
+        } => {
+            let decrypted_password = if FieldEncryption::is_encrypted(&password) {
+                enc.decrypt(&password)?
+            } else {
+                password
+            };
+            Ok(CredentialData::Alist {
+                host,
+                username,
+                password: decrypted_password,
+            })
+        }
+        CredentialData::Emby {
+            host,
+            api_key,
+            emby_user_id,
+        } => {
+            let decrypted_api_key = if FieldEncryption::is_encrypted(&api_key) {
+                enc.decrypt(&api_key)?
+            } else {
+                api_key
+            };
+            Ok(CredentialData::Emby {
+                host,
+                api_key: decrypted_api_key,
+                emby_user_id,
+            })
+        }
+        CredentialData::Bilibili { cookies } => {
+            let mut decrypted_cookies = HashMap::new();
+            for (key, value) in cookies {
+                let decrypted_value = if FieldEncryption::is_encrypted(&value) {
+                    enc.decrypt(&value)?
+                } else {
+                    value
+                };
+                decrypted_cookies.insert(key, decrypted_value);
+            }
+            Ok(CredentialData::Bilibili {
+                cookies: decrypted_cookies,
+            })
+        }
+    }
+}
+
 /// Credential Storage Trait
 ///
 /// Defines the interface for persisting and retrieving provider credentials.
@@ -215,103 +324,12 @@ impl InMemoryCredentialStorage {
 
     /// Encrypt sensitive fields in credential data before storage
     fn encrypt_data(&self, data: CredentialData) -> Result<CredentialData> {
-        let Some(enc) = &self.encryption else {
-            return Ok(data);
-        };
-
-        match data {
-            CredentialData::Alist {
-                host,
-                username,
-                password,
-            } => {
-                let encrypted_password = enc.encrypt(&password)?;
-                Ok(CredentialData::Alist {
-                    host,
-                    username,
-                    password: encrypted_password,
-                })
-            }
-            CredentialData::Emby {
-                host,
-                api_key,
-                emby_user_id,
-            } => {
-                let encrypted_api_key = enc.encrypt(&api_key)?;
-                Ok(CredentialData::Emby {
-                    host,
-                    api_key: encrypted_api_key,
-                    emby_user_id,
-                })
-            }
-            CredentialData::Bilibili { cookies } => {
-                let mut encrypted_cookies = HashMap::new();
-                for (key, value) in cookies {
-                    encrypted_cookies.insert(key, enc.encrypt(&value)?);
-                }
-                Ok(CredentialData::Bilibili {
-                    cookies: encrypted_cookies,
-                })
-            }
-        }
+        encrypt_credential_data(self.encryption.as_ref(), data)
     }
 
     /// Decrypt sensitive fields in credential data after retrieval
     fn decrypt_data(&self, data: CredentialData) -> Result<CredentialData> {
-        let Some(enc) = &self.encryption else {
-            return Ok(data);
-        };
-
-        match data {
-            CredentialData::Alist {
-                host,
-                username,
-                password,
-            } => {
-                // Only decrypt if it looks encrypted
-                let decrypted_password = if FieldEncryption::is_encrypted(&password) {
-                    enc.decrypt(&password)?
-                } else {
-                    password
-                };
-                Ok(CredentialData::Alist {
-                    host,
-                    username,
-                    password: decrypted_password,
-                })
-            }
-            CredentialData::Emby {
-                host,
-                api_key,
-                emby_user_id,
-            } => {
-                // Only decrypt if it looks encrypted
-                let decrypted_api_key = if FieldEncryption::is_encrypted(&api_key) {
-                    enc.decrypt(&api_key)?
-                } else {
-                    api_key
-                };
-                Ok(CredentialData::Emby {
-                    host,
-                    api_key: decrypted_api_key,
-                    emby_user_id,
-                })
-            }
-            CredentialData::Bilibili { cookies } => {
-                let mut decrypted_cookies = HashMap::new();
-                for (key, value) in cookies {
-                    let decrypted_value = if FieldEncryption::is_encrypted(&value) {
-                        enc.decrypt(&value)?
-                    } else {
-                        value
-                    };
-                    decrypted_cookies.insert(key, decrypted_value);
-                }
-                Ok(CredentialData::Bilibili {
-                    cookies: decrypted_cookies,
-                })
-            }
-        }
+        decrypt_credential_data(self.encryption.as_ref(), data)
     }
 }
 

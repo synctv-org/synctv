@@ -253,6 +253,8 @@ pub struct RedisPubSub {
     /// Maximum number of entries per Redis Stream (approximate).
     /// Configurable via `ClusterChannelConfig::stream_max_length`.
     stream_max_length: usize,
+    /// JoinHandle for the subscriber task, stored so it can be awaited during shutdown.
+    subscriber_handle: tokio::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
 }
 
 impl RedisPubSub {
@@ -311,6 +313,7 @@ impl RedisPubSub {
             cancel_token: CancellationToken::new(),
             catchup_window_ms: u128::from(catchup_window_secs) * 1000,
             stream_max_length,
+            subscriber_handle: tokio::sync::Mutex::new(None),
         })
     }
 
@@ -369,10 +372,25 @@ impl RedisPubSub {
         self.cancel_token.clone()
     }
 
-    /// Shut down the Pub/Sub service (cancels subscriber and publisher tasks)
-    pub fn shutdown(&self) {
+    /// Shut down the Pub/Sub service.
+    ///
+    /// Cancels the subscriber and publisher tasks via the `CancellationToken`,
+    /// then awaits the subscriber task's completion (with a timeout).
+    /// The publisher task's `JoinHandle` is returned from `start()` and should
+    /// be awaited separately by the caller.
+    pub async fn shutdown(&self) {
         info!("Shutting down RedisPubSub service");
         self.cancel_token.cancel();
+
+        // Await the subscriber task
+        let handle = self.subscriber_handle.lock().await.take();
+        if let Some(handle) = handle {
+            match tokio::time::timeout(Duration::from_secs(5), handle).await {
+                Ok(Ok(())) => info!("Redis subscriber task completed"),
+                Ok(Err(e)) => warn!("Redis subscriber task panicked: {}", e),
+                Err(_) => warn!("Redis subscriber task did not finish within 5s timeout"),
+            }
+        }
     }
 
     /// Start the Pub/Sub service
@@ -811,11 +829,13 @@ impl RedisPubSub {
         });
 
         // Clone for the subscriber task
+        let subscriber_handle_ref = Arc::clone(&self);
         let self_clone = self;
         let cancel_subscriber = self_clone.cancel_token.clone();
 
-        // Spawn task to handle subscribing with exponential backoff on reconnection
-        tokio::spawn(async move {
+        // Spawn task to handle subscribing with exponential backoff on reconnection.
+        // Store the JoinHandle so shutdown() can await it.
+        let subscriber_jh = tokio::spawn(async move {
             let mut backoff_secs = INITIAL_BACKOFF_SECS;
             // Track per-stream cursors (per-room + admin) across reconnections.
             // On first connect, cursors are snapshotted from stream tips.
@@ -898,6 +918,9 @@ impl RedisPubSub {
                 backoff_secs = (backoff_secs * 2).min(MAX_BACKOFF_SECS);
             }
         });
+
+        // Store subscriber handle so shutdown() can await it
+        *subscriber_handle_ref.subscriber_handle.lock().await = Some(subscriber_jh);
 
         Ok((publish_tx, backpressure, publisher_handle))
     }
@@ -1643,6 +1666,15 @@ impl RedisPubSub {
     /// Handles deduplication, admin channel routing, permission cache invalidation,
     /// and local broadcast to room subscribers.
     async fn dispatch_event(&self, channel: &str, event: ClusterEvent) {
+        // Skip unknown/unrecognized event types (forward compatibility)
+        if matches!(&event, ClusterEvent::Unknown) {
+            debug!(
+                channel = %channel,
+                "Skipping unknown cluster event type (forward compatibility)"
+            );
+            return;
+        }
+
         // Deduplicate events (prevents duplicate delivery during catch-up + live overlap)
         let dedup_key = DedupKey::from_event(&event);
         if !self.deduplicator.should_process(&dedup_key) {
@@ -1944,7 +1976,7 @@ impl RedisPubSub {
                 "Atomic XADD+PUBLISH failed for critical event after {} retries",
                 CRITICAL_STREAM_MAX_RETRIES
             );
-            synctv_core::metrics::cluster::CLUSTER_EVENTS_RECEIVED
+            synctv_core::metrics::cluster::CLUSTER_EVENTS_DROPPED
                 .with_label_values(&["stream_write_failed"])
                 .inc();
             // Fall through: return error so the caller can buffer for retry

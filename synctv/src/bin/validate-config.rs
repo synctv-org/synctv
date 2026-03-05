@@ -114,7 +114,7 @@ fn print_config_summary(config: &Config) {
     println!("   Server:");
     println!("     • gRPC: {}", config.grpc_address());
     println!("     • HTTP: {}", config.http_address());
-    if !config.server.cluster_secret.is_empty() {
+    if config.cluster.enabled {
         println!("     • Cluster mode: enabled");
     }
 

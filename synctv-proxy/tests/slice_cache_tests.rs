@@ -702,21 +702,24 @@ fn test_aligned_range_for_slice() {
 
     // Slice 0: bytes 0 to 2097151
     let (start, end) =
-        synctv_proxy::slice_cache::aligned_range_for_slice(0, slice_size, total_size);
+        synctv_proxy::slice_cache::aligned_range_for_slice(0, slice_size, total_size).unwrap();
     assert_eq!(start, 0);
     assert_eq!(end, 2 * 1024 * 1024 - 1);
 
     // Slice 1: bytes 2097152 to 4194303
     let (start, end) =
-        synctv_proxy::slice_cache::aligned_range_for_slice(1, slice_size, total_size);
+        synctv_proxy::slice_cache::aligned_range_for_slice(1, slice_size, total_size).unwrap();
     assert_eq!(start, 2 * 1024 * 1024);
     assert_eq!(end, 4 * 1024 * 1024 - 1);
 
     // Last slice (slice 4): bytes 8388608 to 10485759
     let (start, end) =
-        synctv_proxy::slice_cache::aligned_range_for_slice(4, slice_size, total_size);
+        synctv_proxy::slice_cache::aligned_range_for_slice(4, slice_size, total_size).unwrap();
     assert_eq!(start, 8 * 1024 * 1024);
     assert_eq!(end, 10 * 1024 * 1024 - 1);
+
+    // Zero total_size should return an error.
+    assert!(synctv_proxy::slice_cache::aligned_range_for_slice(0, slice_size, 0).is_err());
 }
 
 #[test]
@@ -726,7 +729,7 @@ fn test_aligned_range_last_slice_partial() {
 
     // Slice 1: bytes 2097152 to 3145727 (only 1MB, not full 2MB)
     let (start, end) =
-        synctv_proxy::slice_cache::aligned_range_for_slice(1, slice_size, total_size);
+        synctv_proxy::slice_cache::aligned_range_for_slice(1, slice_size, total_size).unwrap();
     assert_eq!(start, 2 * 1024 * 1024);
     assert_eq!(end, 3 * 1024 * 1024 - 1);
 }
@@ -976,6 +979,7 @@ fn test_cached_resource_meta_fields() {
         last_modified: None,
         total_size: Some(10_485_760),
         content_type: Some("video/mp4".to_string()),
+        last_accessed: std::time::SystemTime::now(),
     };
     assert_eq!(meta.etag.as_deref(), Some("\"abc123\""));
     assert_eq!(meta.total_size, Some(10_485_760));

@@ -854,6 +854,41 @@ impl BilibiliClient {
             .map(|m| format!("ep{}", m.as_str()))
     }
 
+    /// Check if a hostname belongs to a known Bilibili domain.
+    ///
+    /// Known domains: `*.bilibili.com`, `*.b23.tv`, `*.bilivideo.com`,
+    /// `*.bilivideo.cn`, `*.hdslb.com`.
+    #[must_use]
+    pub fn is_bilibili_domain(host: &str) -> bool {
+        const BILIBILI_DOMAINS: &[&str] = &[
+            "bilibili.com",
+            "b23.tv",
+            "bilivideo.com",
+            "bilivideo.cn",
+            "hdslb.com",
+        ];
+        BILIBILI_DOMAINS.iter().any(|d| host == *d || host.ends_with(&format!(".{d}")))
+    }
+
+    /// Validate that a URL points to a known Bilibili domain.
+    ///
+    /// Returns `Ok(())` if the URL's host is a known Bilibili domain,
+    /// or an error otherwise.
+    pub fn validate_bilibili_url(url: &str) -> Result<(), BilibiliError> {
+        let parsed = url::Url::parse(url).map_err(|e| {
+            BilibiliError::Parse(format!("Invalid URL: {e}"))
+        })?;
+        let host = parsed.host_str().ok_or_else(|| {
+            BilibiliError::Parse("URL has no host".to_string())
+        })?;
+        if !Self::is_bilibili_domain(host) {
+            return Err(BilibiliError::Parse(format!(
+                "URL host is not a known Bilibili domain: {host}"
+            )));
+        }
+        Ok(())
+    }
+
     /// Check if URL is a short link (b23.tv)
     ///
     /// Uses proper URL host parsing to avoid false positives from URLs like
@@ -882,13 +917,18 @@ impl BilibiliClient {
                 let resolved = location
                     .to_str()
                     .map_err(|e| BilibiliError::Parse(format!("Invalid Location header: {e}")))?;
+                // Validate that the resolved URL points to a known Bilibili domain
+                Self::validate_bilibili_url(resolved)?;
                 return Ok(resolved.to_string());
             }
         }
 
         // If no redirect, the response URL is already the final URL
         if status.is_success() {
-            return Ok(response.url().to_string());
+            let final_url = response.url().to_string();
+            // Validate that the final URL points to a known Bilibili domain
+            Self::validate_bilibili_url(&final_url)?;
+            return Ok(final_url);
         }
 
         Err(BilibiliError::Http {
@@ -1795,6 +1835,42 @@ impl BilibiliClient {
 
         // Build WebSocket URL (use wss:// for secure connection)
         let ws_url = format!("wss://{}:{}/sub", host.host, host.wss_port);
+
+        // SSRF validation: verify the WebSocket host is not a blocked address
+        {
+            let guard = crate::ssrf::ssrf_acl();
+            let hostname = &host.host;
+            // Check if the hostname itself is blocked
+            if guard.is_host_allowed(hostname).is_denied() {
+                return Err(BilibiliError::Network(format!(
+                    "WebSocket host is blocked by SSRF policy: {hostname}"
+                )));
+            }
+            // If hostname is a raw IP, check it directly
+            if let Ok(ip) = hostname.parse::<std::net::IpAddr>() {
+                if crate::ssrf::is_ip_blocked(&ip) {
+                    return Err(BilibiliError::Network(format!(
+                        "WebSocket host IP is blocked by SSRF policy: {ip}"
+                    )));
+                }
+            } else {
+                // Resolve hostname and check all resolved IPs
+                let addr = format!("{}:{}", hostname, host.wss_port);
+                let resolved = tokio::net::lookup_host(&addr).await.map_err(|e| {
+                    BilibiliError::Network(format!(
+                        "Failed to resolve WebSocket host {hostname}: {e}"
+                    ))
+                })?;
+                for sock_addr in resolved {
+                    if crate::ssrf::is_ip_blocked(&sock_addr.ip()) {
+                        return Err(BilibiliError::Network(format!(
+                            "WebSocket host resolves to blocked IP: {}",
+                            sock_addr.ip()
+                        )));
+                    }
+                }
+            }
+        }
 
         // Connect to WebSocket with timeout
         let ws_connect_timeout = Duration::from_secs(10);

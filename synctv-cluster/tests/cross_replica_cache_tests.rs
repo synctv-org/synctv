@@ -137,6 +137,8 @@ async fn test_cross_replica_permission_changed() {
             synctv_core::models::PermissionBits::KICK_MEMBER,
         ),
         removed_permissions: synctv_core::models::PermissionBits::empty(),
+        admin_added_permissions: synctv_core::models::PermissionBits::empty(),
+        admin_removed_permissions: synctv_core::models::PermissionBits::empty(),
         changed_by: UserId::from_string("admin_user".to_string()),
         changed_by_username: "admin_user".to_string(),
         timestamp: Utc::now(),

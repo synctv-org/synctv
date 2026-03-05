@@ -184,7 +184,7 @@ async fn test_redis_stream_catchup() {
     }
 
     publisher.shutdown().await;
-    subscriber_for_shutdown.shutdown();
+    subscriber_for_shutdown.shutdown().await;
 }
 
 #[tokio::test]

@@ -498,6 +498,11 @@ async fn test_local_cluster_manager_supports_room_operations() {
         username: "user1".to_string(),
         permissions: PermissionBits(0),
         role: 2, // Member role
+        added_permissions: PermissionBits(0),
+        removed_permissions: PermissionBits(0),
+        admin_added_permissions: PermissionBits(0),
+        admin_removed_permissions: PermissionBits(0),
+        joined_at: Utc::now(),
         timestamp: Utc::now(),
     };
 

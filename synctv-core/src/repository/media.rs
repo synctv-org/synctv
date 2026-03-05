@@ -42,11 +42,11 @@ impl MediaRepository {
         let row = sqlx::query(
             r"
             INSERT INTO media (id, playlist_id, room_id, creator_id, name, position,
-                              source_provider, source_config, provider_instance_name, added_at, version)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 0)
+                              source_provider, source_config, provider_instance_name, added_at, updated_at, version)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $10, 0)
              RETURNING id, playlist_id, room_id, creator_id, name, position,
                        source_provider, source_config, provider_instance_name,
-                       added_at, version
+                       added_at, updated_at, version
             "
         )
         .bind(media.id.as_str())
@@ -128,7 +128,7 @@ impl MediaRepository {
 
         let mut query_builder = String::from(
             "INSERT INTO media (id, playlist_id, room_id, creator_id, name, position,
-                               source_provider, source_config, provider_instance_name, added_at, version)
+                               source_provider, source_config, provider_instance_name, added_at, updated_at, version)
              VALUES "
         );
         let mut binds = Vec::new();
@@ -138,7 +138,7 @@ impl MediaRepository {
             }
             let base = i * 10;
             query_builder.push_str(&format!(
-                "(${}, ${}, ${}, ${}, ${}, ${}, ${}, ${}, ${}, ${}, 0)",
+                "(${}, ${}, ${}, ${}, ${}, ${}, ${}, ${}, ${}, ${}, ${}, 0)",
                 base + 1,
                 base + 2,
                 base + 3,
@@ -148,6 +148,7 @@ impl MediaRepository {
                 base + 7,
                 base + 8,
                 base + 9,
+                base + 10,
                 base + 10
             ));
             binds.push(serde_json::to_value(&item.source_config)?);
@@ -155,7 +156,7 @@ impl MediaRepository {
         query_builder.push_str(
             " RETURNING id, playlist_id, room_id, creator_id, name, position,
                        source_provider, source_config, provider_instance_name,
-                       added_at, version",
+                       added_at, updated_at, version",
         );
 
         let mut query = sqlx::query(&query_builder);
@@ -218,7 +219,7 @@ impl MediaRepository {
                 provider_instance_name = $5
              WHERE id = $1             RETURNING id, playlist_id, room_id, creator_id, name, position,
                        source_provider, source_config, provider_instance_name,
-                       added_at, version
+                       added_at, updated_at, version
             "
         )
         .bind(media.id.as_str())
@@ -252,7 +253,7 @@ impl MediaRepository {
              WHERE id = $1 AND name = $6 AND position = $7
              RETURNING id, playlist_id, room_id, creator_id, name, position,
                        source_provider, source_config, provider_instance_name,
-                       added_at, version
+                       added_at, updated_at, version
             ",
         )
         .bind(media.id.as_str())
@@ -301,7 +302,7 @@ impl MediaRepository {
              WHERE id = $1 AND version = $6
              RETURNING id, playlist_id, room_id, creator_id, name, position,
                        source_provider, source_config, provider_instance_name,
-                       added_at, version
+                       added_at, updated_at, version
             ",
         )
         .bind(media.id.as_str())
@@ -325,7 +326,7 @@ impl MediaRepository {
             r"
             SELECT id, playlist_id, room_id, creator_id, name, position,
                    source_provider, source_config, provider_instance_name,
-                   added_at, version
+                   added_at, updated_at, version
              FROM media
              WHERE id = $1            ",
         )
@@ -362,7 +363,7 @@ impl MediaRepository {
             r"
             SELECT id, playlist_id, room_id, creator_id, name, position,
                    source_provider, source_config, provider_instance_name,
-                   added_at, version
+                   added_at, updated_at, version
              FROM media
              WHERE id = ANY($1)            ",
         )
@@ -381,7 +382,7 @@ impl MediaRepository {
             r"
             SELECT id, playlist_id, room_id, creator_id, name, position,
                    source_provider, source_config, provider_instance_name,
-                   added_at, version
+                   added_at, updated_at, version
              FROM media
              WHERE room_id = $1             ORDER BY playlist_id, position ASC
             ",
@@ -401,7 +402,7 @@ impl MediaRepository {
             r"
             SELECT id, playlist_id, room_id, creator_id, name, position,
                    source_provider, source_config, provider_instance_name,
-                   added_at, version
+                   added_at, updated_at, version
              FROM media
              WHERE playlist_id = $1             ORDER BY position ASC
             ",
@@ -438,7 +439,7 @@ impl MediaRepository {
             r"
             SELECT id, playlist_id, room_id, creator_id, name, position,
                    source_provider, source_config, provider_instance_name,
-                   added_at, version
+                   added_at, updated_at, version
              FROM media
              WHERE playlist_id = $1             ORDER BY position ASC
              LIMIT $2 OFFSET $3
@@ -472,7 +473,7 @@ impl MediaRepository {
             r"
             SELECT id, playlist_id, room_id, creator_id, name, position,
                    source_provider, source_config, provider_instance_name,
-                   added_at, version
+                   added_at, updated_at, version
              FROM media
              WHERE playlist_id = $1
              ORDER BY position ASC

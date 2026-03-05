@@ -115,6 +115,7 @@ fn make_media(playlist_id: &PlaylistId, room_id: &RoomId, name: &str, position: 
         source_config: json!({"url": "https://example.com/video.mp4"}),
         provider_instance_name: None,
         added_at: Utc::now(),
+        updated_at: Utc::now(),
         version: 0,
     }
 }
@@ -922,6 +923,7 @@ async fn test_concurrent_add_to_empty_playlist_unique_positions() {
                 source_config: json!({"url": format!("https://example.com/video{}.mp4", i)}),
                 provider_instance_name: None,
                 added_at: Utc::now(),
+                updated_at: Utc::now(),
                 version: 0,
             };
 
@@ -1030,6 +1032,7 @@ async fn test_concurrent_add_to_nonempty_playlist_unique_positions() {
                 source_config: json!({"url": format!("https://example.com/new{}.mp4", i)}),
                 provider_instance_name: None,
                 added_at: Utc::now(),
+                updated_at: Utc::now(),
                 version: 0,
             };
 

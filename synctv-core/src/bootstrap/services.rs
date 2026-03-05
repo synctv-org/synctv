@@ -499,6 +499,11 @@ pub async fn init_services(
     room_service.set_audit_service(Arc::clone(&audit_service));
     info!("Audit service wired into RoomService and MemberService");
 
+    // Wire user notification service into RoomService for pending room admin notifications
+    let notification_service = Arc::new(notification_service);
+    room_service.set_user_notification_service(Arc::clone(&notification_service));
+    info!("User notification service wired into RoomService");
+
     // Wire settings registry into UserService for signup_need_review and email_whitelist enforcement
     let settings_registry = Arc::new(settings_registry);
     user_service.set_settings_registry(Arc::clone(&settings_registry));
@@ -547,7 +552,7 @@ pub async fn init_services(
         email_service,
         email_token_service,
         publish_key_service: Arc::new(publish_key_service),
-        notification_service: Arc::new(notification_service),
+        notification_service,
         chat_service: Arc::new(chat_service),
         audit_service,
         cache_invalidation,

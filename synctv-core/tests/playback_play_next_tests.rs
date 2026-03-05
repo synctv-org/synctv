@@ -115,6 +115,7 @@ async fn insert_media(
         source_config: serde_json::json!({"url": format!("https://example.com/{}.mp4", name)}),
         provider_instance_name: None,
         added_at: Utc::now(),
+        updated_at: Utc::now(),
         version: 0,
     };
     let media_repo = MediaRepository::new(pool.clone());

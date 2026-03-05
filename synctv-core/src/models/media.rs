@@ -70,6 +70,8 @@ pub struct Media {
     /// Used to look up the provider from the registry at playback time
     pub provider_instance_name: Option<String>,
     pub added_at: DateTime<Utc>,
+    /// Timestamp of last update (auto-maintained by database trigger)
+    pub updated_at: DateTime<Utc>,
     /// Optimistic locking version, incremented on each update
     pub version: i32,
 }
@@ -114,6 +116,7 @@ impl Media {
         provider_instance_name: String,
         position: i32,
     ) -> Self {
+        let now = Utc::now();
         Self {
             id: MediaId::new(),
             playlist_id,
@@ -124,7 +127,8 @@ impl Media {
             source_provider: provider_name.to_string(),
             source_config,
             provider_instance_name: Some(provider_instance_name),
-            added_at: Utc::now(),
+            added_at: now,
+            updated_at: now,
             version: 0,
         }
     }
@@ -132,6 +136,7 @@ impl Media {
     /// Create media from provider with parameters struct
     #[must_use]
     pub fn from_provider_with_params(params: FromProviderParams) -> Self {
+        let now = Utc::now();
         Self {
             id: MediaId::new(),
             playlist_id: params.playlist_id,
@@ -142,7 +147,8 @@ impl Media {
             source_provider: params.provider_name,
             source_config: params.source_config,
             provider_instance_name: Some(params.provider_instance_name),
-            added_at: Utc::now(),
+            added_at: now,
+            updated_at: now,
             version: 0,
         }
     }
@@ -168,6 +174,7 @@ impl Media {
             "metadata": metadata,
         });
 
+        let now = Utc::now();
         Self {
             id: MediaId::new(),
             playlist_id,
@@ -178,7 +185,8 @@ impl Media {
             source_provider: "direct_url".to_string(),
             source_config,
             provider_instance_name: None,
-            added_at: Utc::now(),
+            added_at: now,
+            updated_at: now,
             version: 0,
         }
     }

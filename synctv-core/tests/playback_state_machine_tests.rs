@@ -466,6 +466,7 @@ async fn test_position_reset_on_media_switch() {
         source_config: serde_json::json!({"url": "https://example.com/video.mp4"}),
         provider_instance_name: None,
         added_at: Utc::now(),
+        updated_at: Utc::now(),
         version: 0,
     };
     media_repo.create(&media).await.unwrap();

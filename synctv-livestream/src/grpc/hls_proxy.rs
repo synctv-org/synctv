@@ -97,14 +97,14 @@ pub struct HlsProxyClient {
 }
 
 impl HlsProxyClient {
-    /// Default maximum total byte size for the segment cache (256 MB).
-    const DEFAULT_MAX_CACHE_BYTES: u64 = 256 * 1024 * 1024;
+    /// Default maximum total byte size for the segment cache (512 MB).
+    const DEFAULT_MAX_CACHE_BYTES: u64 = 512 * 1024 * 1024;
 
     /// Create a new HLS proxy client.
     ///
     /// # Arguments
     /// * `segment_cache_ttl` - TTL for cached TS segments (default: 90 seconds)
-    /// * `segment_cache_max_bytes` - Max total byte size for segment cache (default: 256 MB).
+    /// * `segment_cache_max_bytes` - Max total byte size for segment cache (default: 512 MB).
     ///   The cache uses a byte-based weigher so this is a hard memory bound, not an entry count.
     /// * `playlist_cache_ttl` - TTL for cached M3U8 playlists (default: 1 second)
     /// * `cluster_secret` - Optional cluster authentication secret
@@ -118,11 +118,13 @@ impl HlsProxyClient {
         let segment_cache = Cache::builder()
             .time_to_live(segment_cache_ttl)
             .max_capacity(segment_cache_max_bytes)
-            .weigher(|_key: &String, value: &Bytes| -> u32 {
-                // Weight each entry by its byte size (capped at u32::MAX).
+            .weigher(|key: &String, value: &Bytes| -> u32 {
+                // Weight each entry by key + value byte size (capped at u32::MAX).
                 // With a weigher, moka treats `max_capacity` as the total weight
                 // limit (in bytes here), not the entry count.
-                value.len().min(u32::MAX as usize) as u32
+                // Include key size for more accurate memory accounting.
+                let total = key.len().saturating_add(value.len());
+                total.min(u32::MAX as usize) as u32
             })
             .build();
 

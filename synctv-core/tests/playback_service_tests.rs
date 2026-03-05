@@ -238,6 +238,7 @@ async fn test_switch_media_resets_position() {
         source_config: serde_json::json!({"url": "https://example.com/video.mp4"}),
         provider_instance_name: None,
         added_at: Utc::now(),
+        updated_at: Utc::now(),
         version: 0,
     };
     media_repo.create(&media).await.unwrap();
@@ -468,6 +469,7 @@ async fn test_play_next_concurrent_playlist_modification() {
             source_config: serde_json::json!({"url": format!("https://example.com/video{}.mp4", i)}),
             provider_instance_name: None,
             added_at: Utc::now(),
+            updated_at: Utc::now(),
             version: 0,
         };
         media_repo.create(&media).await.unwrap();
@@ -556,6 +558,7 @@ async fn test_play_next_at_end_of_playlist() {
             source_config: serde_json::json!({"url": format!("https://example.com/end{}.mp4", i)}),
             provider_instance_name: None,
             added_at: Utc::now(),
+            updated_at: Utc::now(),
             version: 0,
         };
         media_repo.create(&media).await.unwrap();
@@ -636,6 +639,7 @@ async fn test_play_next_with_loop_enabled() {
             source_config: serde_json::json!({"url": format!("https://example.com/loop{}.mp4", i)}),
             provider_instance_name: None,
             added_at: Utc::now(),
+            updated_at: Utc::now(),
             version: 0,
         };
         media_repo.create(&media).await.unwrap();
@@ -840,6 +844,7 @@ async fn test_state_consistency_after_mixed_operations() {
         source_config: serde_json::json!({"url": "https://example.com/mixed.mp4"}),
         provider_instance_name: None,
         added_at: Utc::now(),
+        updated_at: Utc::now(),
         version: 0,
     };
     media_repo.create(&media).await.unwrap();

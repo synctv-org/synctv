@@ -10,8 +10,10 @@ CREATE TABLE IF NOT EXISTS chat_messages (
     created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (id, created_at),  -- Partition key must be in PK
     CONSTRAINT chat_messages_message_type_check CHECK (message_type BETWEEN 1 AND 3),
-    FOREIGN KEY (room_id) REFERENCES rooms(id) ON DELETE CASCADE,
-    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL
+    FOREIGN KEY (room_id) REFERENCES rooms(id) ON DELETE CASCADE
+    -- No FOREIGN KEY on user_id: partitioned tables do not support FK references
+    -- to non-partitioned tables. user_id is set to NULL by application logic on
+    -- user deletion.
 ) PARTITION BY RANGE (created_at);
 
 -- Comments

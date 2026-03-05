@@ -86,6 +86,8 @@ fn test_permission_changed_is_critical() {
         role: 0, // RoomMemberRole::Guest
         added_permissions: PermissionBits(0),
         removed_permissions: PermissionBits(0),
+        admin_added_permissions: PermissionBits(0),
+        admin_removed_permissions: PermissionBits(0),
         timestamp: chrono::Utc::now(),
     };
     assert!(

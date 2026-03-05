@@ -228,6 +228,13 @@ impl UserService {
                     if !allowed.is_empty()
                         && !allowed.iter().any(|d| d.eq_ignore_ascii_case(&domain))
                     {
+                        if let Err(err) = self
+                            .brute_force
+                            .record_failure("__registration__", client_ip)
+                            .await
+                        {
+                            tracing::warn!(error = %err, "Failed to record registration brute-force failure");
+                        }
                         return Err(Error::InvalidInput(
                             "Email domain is not allowed for registration".to_string(),
                         ));

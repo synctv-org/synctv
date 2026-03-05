@@ -267,6 +267,26 @@ impl GrpcCircuitBreakerRegistry {
             .map(|(addr, _)| addr.clone())
             .collect()
     }
+
+    /// Remove circuit breakers for endpoints that are no longer present in
+    /// the active address set.
+    ///
+    /// Call this periodically (e.g., during fan-out after a node registry
+    /// refresh) to prevent unbounded growth of the internal `HashMap` from
+    /// departed nodes.
+    pub async fn retain_only(&self, active_addresses: &std::collections::HashSet<String>) {
+        let mut breakers = self.breakers.write().await;
+        let before = breakers.len();
+        breakers.retain(|addr, _| active_addresses.contains(addr));
+        let pruned = before - breakers.len();
+        if pruned > 0 {
+            debug!(
+                pruned = pruned,
+                remaining = breakers.len(),
+                "Pruned circuit breakers for departed nodes"
+            );
+        }
+    }
 }
 
 impl Default for GrpcCircuitBreakerRegistry {

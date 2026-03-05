@@ -505,6 +505,7 @@ fn test_playback_state_to_proto_no_media() {
 // === Media Proto Conversion Tests ===
 
 fn make_test_media() -> synctv_core::models::Media {
+    let now = chrono::Utc::now();
     synctv_core::models::Media {
         id: MediaId::from_string("media1".to_string()),
         playlist_id: PlaylistId::from_string("pl1".to_string()),
@@ -515,7 +516,8 @@ fn make_test_media() -> synctv_core::models::Media {
         source_provider: "bilibili".to_string(),
         source_config: serde_json::json!({"bvid": "BV1234"}),
         provider_instance_name: Some("bili_main".to_string()),
-        added_at: chrono::Utc::now(),
+        added_at: now,
+        updated_at: now,
         version: 0,
     }
 }

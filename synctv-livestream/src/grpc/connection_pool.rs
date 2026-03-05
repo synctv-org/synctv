@@ -415,10 +415,15 @@ impl GrpcConnectionPool {
     /// Spawn a background task that calls `evict_stale` every `interval` and
     /// `evict_idle_circuit_breakers` every 5 minutes.
     ///
-    /// The task runs until the returned `JoinHandle` is aborted or the process
-    /// exits. Typical usage: call once at startup with a 5-minute interval.
+    /// The task runs until the `CancellationToken` is cancelled, the returned
+    /// `JoinHandle` is aborted, or the process exits. Typical usage: call once
+    /// at startup with a 5-minute interval.
     #[must_use]
-    pub fn spawn_cleanup_task(&self, interval: Duration) -> tokio::task::JoinHandle<()> {
+    pub fn spawn_cleanup_task(
+        &self,
+        interval: Duration,
+        token: tokio_util::sync::CancellationToken,
+    ) -> tokio::task::JoinHandle<()> {
         let pool = self.clone();
         tokio::spawn(async move {
             let mut stale_tick = tokio::time::interval(interval);
@@ -427,6 +432,10 @@ impl GrpcConnectionPool {
             cb_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
             loop {
                 tokio::select! {
+                    _ = token.cancelled() => {
+                        debug!("Connection pool cleanup task cancelled");
+                        break;
+                    }
                     _ = stale_tick.tick() => {
                         pool.evict_stale();
                     }

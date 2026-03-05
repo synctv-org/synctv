@@ -546,6 +546,7 @@ async fn test_reorder_media_rejects_negative_position() {
         provider_instance_name: None,
         creator_id: Some(owner.id.clone()),
         added_at: chrono::Utc::now(),
+        updated_at: chrono::Utc::now(),
         version: 0,
     };
     media_repo.create(&media).await.unwrap();
@@ -617,6 +618,7 @@ async fn test_reorder_media_rejects_overflow_position() {
         provider_instance_name: None,
         creator_id: Some(owner.id.clone()),
         added_at: chrono::Utc::now(),
+        updated_at: chrono::Utc::now(),
         version: 0,
     };
     media_repo.create(&media).await.unwrap();
@@ -683,6 +685,7 @@ async fn test_reorder_media_accepts_valid_positions() {
         provider_instance_name: None,
         creator_id: Some(owner.id.clone()),
         added_at: chrono::Utc::now(),
+        updated_at: chrono::Utc::now(),
         version: 0,
     };
     media_repo.create(&media1).await.unwrap();
@@ -698,6 +701,7 @@ async fn test_reorder_media_accepts_valid_positions() {
         provider_instance_name: None,
         creator_id: Some(owner.id.clone()),
         added_at: chrono::Utc::now(),
+        updated_at: chrono::Utc::now(),
         version: 0,
     };
     media_repo.create(&media2).await.unwrap();

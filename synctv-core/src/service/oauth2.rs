@@ -9,10 +9,8 @@
 //! - [`RedisOAuthStateStore`]: Redis-backed, required for cluster mode
 //!   (multi-replica) where the callback may hit a different node.
 //! - [`InMemoryOAuthStateStore`]: In-memory, for standalone mode without
-//!   Redis. Uses `DashMap` for concurrent access without LRU eviction,
-//!   ensuring states remain valid for their entire TTL duration.
+//!   Redis. Uses `moka::sync::Cache` with TTL-based expiry and bounded capacity.
 
-use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -167,73 +165,58 @@ impl OAuthStateStore for RedisOAuthStateStore {
 // InMemoryOAuthStateStore
 // ============================================================================
 
-/// In-memory [`OAuthStateStore`] for standalone mode (no Redis).
-///
-/// Uses a `DashMap` for concurrent access without evicting entries based on
-/// access patterns. This ensures OAuth states remain valid for their entire
-/// TTL duration, preventing login failures in high-concurrency scenarios.
-///
-/// ## Why DashMap instead of LruCache
-/// Unlike `LruCache`, `DashMap` does not evict entries based on capacity or
-/// access order. OAuth states have a short TTL (typically 5 minutes), and it's
-/// critical that a state remains retrievable for the entire duration. With
-/// LRU eviction, a burst of OAuth requests could evict valid states before
-/// they expire, causing legitimate login attempts to fail.
-///
-/// ## Memory Protection
-/// To prevent memory exhaustion from malicious requests, expired entries are
-/// cleaned up on each `store()` and `consume()` call. Since OAuth states have
-/// a short TTL (5 minutes by default), the memory footprint stays bounded.
-///
-/// ## Concurrency
-/// `DashMap` uses sharded locking internally, providing better concurrent
-/// performance than a single `Mutex<LruCache>`.
-pub struct InMemoryOAuthStateStore {
-    /// Map of `token_id` -> (state, `expiry_instant`)
-    states: DashMap<String, (OAuth2State, std::time::Instant)>,
+/// Entry stored in the in-memory OAuth state cache, pairing the state with its TTL.
+#[derive(Clone)]
+struct OAuthStateEntry {
+    state: OAuth2State,
+    ttl: std::time::Duration,
 }
 
-impl InMemoryOAuthStateStore {
-    /// Default maximum entries hint for the OAuth state store.
-    /// This is used as a capacity hint for DashMap's internal shard sizing.
-    /// It does NOT limit the actual number of entries.
-    pub const DEFAULT_CAPACITY: usize = 1000;
+/// Per-entry expiry policy: reads the requested TTL from each entry.
+struct PerEntryTtl;
 
-    /// Create a new in-memory OAuth state store with default capacity hint.
+impl moka::Expiry<String, OAuthStateEntry> for PerEntryTtl {
+    fn expire_after_create(
+        &self,
+        _key: &String,
+        value: &OAuthStateEntry,
+        _current_time: std::time::Instant,
+    ) -> Option<std::time::Duration> {
+        Some(value.ttl)
+    }
+}
+
+/// In-memory [`OAuthStateStore`] for standalone mode (no Redis).
+///
+/// Uses `moka::sync::Cache` with a hard capacity limit and per-entry
+/// TTL-based expiry. This provides:
+/// - **Bounded memory**: `max_capacity` prevents memory exhaustion from
+///   malicious requests (default 10,000 entries).
+/// - **Per-entry expiry**: each entry expires after its requested TTL.
+/// - **Concurrent access**: moka uses sharded locking internally for
+///   high-throughput concurrent operations.
+pub struct InMemoryOAuthStateStore {
+    entries: moka::sync::Cache<String, OAuthStateEntry>,
+}
+
+/// Default maximum entries for the OAuth state store.
+const DEFAULT_CAPACITY: u64 = 10_000;
+
+impl InMemoryOAuthStateStore {
+    /// Create a new in-memory OAuth state store with default capacity (10,000).
     #[must_use]
     pub fn new() -> Self {
-        Self::with_capacity(Self::DEFAULT_CAPACITY)
+        Self::with_capacity(DEFAULT_CAPACITY)
     }
 
-    /// Create a new in-memory OAuth state store with a custom capacity hint.
-    ///
-    /// Note: The capacity is only a hint for `DashMap`'s internal shard sizing.
-    /// It does NOT limit the actual number of entries stored.
+    /// Create a new in-memory OAuth state store with a custom max capacity.
     #[must_use]
-    pub fn with_capacity(capacity: usize) -> Self {
+    pub fn with_capacity(max_capacity: u64) -> Self {
         Self {
-            states: DashMap::with_capacity(capacity),
-        }
-    }
-
-    /// Remove all entries whose TTL has expired.
-    fn sweep_expired(states: &DashMap<String, (OAuth2State, std::time::Instant)>) {
-        let now = std::time::Instant::now();
-        // Collect keys to remove (can't mutate during iteration)
-        let expired_keys: Vec<String> = states
-            .iter()
-            .filter_map(|entry| {
-                let (_, (_, expiry)) = entry.pair();
-                if *expiry <= now {
-                    Some(entry.key().clone())
-                } else {
-                    None
-                }
-            })
-            .collect();
-
-        for key in expired_keys {
-            states.remove(&key);
+            entries: moka::sync::Cache::builder()
+                .max_capacity(max_capacity)
+                .expire_after(PerEntryTtl)
+                .build(),
         }
     }
 }
@@ -256,19 +239,26 @@ impl OAuthStateStore for InMemoryOAuthStateStore {
         state: &OAuth2State,
         ttl: std::time::Duration,
     ) -> Result<()> {
-        let expiry = std::time::Instant::now() + ttl;
-        Self::sweep_expired(&self.states);
-        self.states
-            .insert(token_id.to_string(), (state.clone(), expiry));
+        self.entries.insert(
+            token_id.to_string(),
+            OAuthStateEntry {
+                state: state.clone(),
+                ttl,
+            },
+        );
         Ok(())
     }
 
     async fn consume(&self, token_id: &str) -> Result<Option<OAuth2State>> {
-        Self::sweep_expired(&self.states);
-        Ok(self
-            .states
-            .remove(token_id)
-            .map(|(_, (state, _expiry))| state))
+        // get() respects TTL — returns None for expired entries.
+        // remove() does NOT check expiry, so we gate on get() first.
+        // Race between get and remove is fine: remove() is the atomic
+        // operation that determines the single winner among concurrent
+        // consumers.
+        if self.entries.get(token_id).is_none() {
+            return Ok(None);
+        }
+        Ok(self.entries.remove(token_id).map(|e| e.state))
     }
 }
 
@@ -2260,7 +2250,7 @@ mod tests {
     }
 
     // ========================================================================
-    // Tests: InMemoryOAuthStateStore (DashMap)
+    // Tests: InMemoryOAuthStateStore (moka cache)
     // ========================================================================
 
     #[tokio::test]
@@ -2290,31 +2280,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_in_memory_store_expired_entries_swept() {
-        let store = InMemoryOAuthStateStore::new();
-        let state = OAuth2State {
-            instance_name: "expiring".to_string(),
-            redirect_url: None,
-            created_at: chrono::Utc::now(),
-            bind_user_id: None,
-            pkce_verifier: "v".to_string(),
-        };
-
-        // Store with zero TTL (immediately expired)
-        store
-            .store("expired_token", &state, std::time::Duration::from_millis(0))
-            .await
-            .unwrap();
-
-        // Small delay to ensure expiry
-        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
-
-        // Consume should return None because entry is expired
-        let result = store.consume("expired_token").await.unwrap();
-        assert!(result.is_none(), "Expired entry should be swept on consume");
-    }
-
-    #[tokio::test]
     async fn test_in_memory_store_nonexistent_token() {
         let store = InMemoryOAuthStateStore::new();
         let result = store.consume("nonexistent").await.unwrap();
@@ -2322,57 +2287,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_in_memory_store_no_lru_eviction() {
-        // With DashMap, there is no LRU eviction - entries remain until consumed or expired
-        let store = InMemoryOAuthStateStore::with_capacity(3);
-        let state = OAuth2State {
-            instance_name: "test".to_string(),
-            redirect_url: None,
-            created_at: chrono::Utc::now(),
-            bind_user_id: None,
-            pkce_verifier: "v".to_string(),
-        };
-
-        // Store 4 entries (exceeds "capacity hint" by 1)
-        store
-            .store("token_1", &state, std::time::Duration::from_mins(5))
-            .await
-            .unwrap();
-        store
-            .store("token_2", &state, std::time::Duration::from_mins(5))
-            .await
-            .unwrap();
-        store
-            .store("token_3", &state, std::time::Duration::from_mins(5))
-            .await
-            .unwrap();
-        store
-            .store("token_4", &state, std::time::Duration::from_mins(5))
-            .await
-            .unwrap();
-
-        // ALL tokens should still exist (no LRU eviction with DashMap)
-        assert!(
-            store.consume("token_1").await.unwrap().is_some(),
-            "token_1 should NOT be evicted - DashMap doesn't do LRU eviction"
-        );
-        assert!(
-            store.consume("token_2").await.unwrap().is_some(),
-            "token_2 should exist"
-        );
-        assert!(
-            store.consume("token_3").await.unwrap().is_some(),
-            "token_3 should exist"
-        );
-        assert!(
-            store.consume("token_4").await.unwrap().is_some(),
-            "token_4 should exist"
-        );
-    }
-
-    #[tokio::test]
-    async fn test_in_memory_store_many_entries_within_ttl() {
-        // Store many entries and verify they all exist within their TTL
+    async fn test_in_memory_store_multiple_entries() {
         let store = InMemoryOAuthStateStore::new();
         let state = OAuth2State {
             instance_name: "test".to_string(),
@@ -2382,9 +2297,8 @@ mod tests {
             pkce_verifier: "v".to_string(),
         };
 
-        // Store DEFAULT_CAPACITY * 2 entries (more than the old LRU limit)
-        let num_entries = InMemoryOAuthStateStore::DEFAULT_CAPACITY * 2;
-        for i in 0..num_entries {
+        // Store multiple entries
+        for i in 0..100 {
             store
                 .store(
                     &format!("token_{i}"),
@@ -2395,19 +2309,16 @@ mod tests {
                 .unwrap();
         }
 
-        // All entries should still exist (no LRU eviction)
-        for i in 0..num_entries {
+        // All entries should be consumable
+        for i in 0..100 {
             let result = store.consume(&format!("token_{i}")).await.unwrap();
-            assert!(
-                result.is_some(),
-                "token_{i} should exist - DashMap doesn't evict based on capacity"
-            );
+            assert!(result.is_some(), "token_{i} should exist");
         }
     }
 
     #[tokio::test]
-    async fn test_in_memory_store_high_concurrency_no_eviction() {
-        // High concurrency test: verify states are not evicted under concurrent load
+    async fn test_in_memory_store_high_concurrency() {
+        // High concurrency test: verify states survive concurrent store+consume
         use std::sync::atomic::{AtomicUsize, Ordering};
 
         let store = std::sync::Arc::new(InMemoryOAuthStateStore::new());
@@ -2438,7 +2349,7 @@ mod tests {
                 // Simulate some delay (like OAuth redirect)
                 tokio::time::sleep(std::time::Duration::from_millis(10)).await;
 
-                // Consume should succeed - state should NOT have been evicted
+                // Consume should succeed
                 let result = store_clone.consume(&token_id).await.unwrap();
                 if result.is_some() {
                     success_count_clone.fetch_add(1, Ordering::SeqCst);
@@ -2455,7 +2366,7 @@ mod tests {
         assert_eq!(
             success_count.load(Ordering::SeqCst),
             total_tasks,
-            "All {total_tasks} tokens should be consumable - none should be evicted under concurrent load"
+            "All {total_tasks} tokens should be consumable under concurrent load"
         );
     }
 

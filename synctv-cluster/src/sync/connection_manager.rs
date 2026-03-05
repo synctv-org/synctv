@@ -752,7 +752,19 @@ impl ConnectionManager {
     /// if the WebSocket upgrade fails.
     pub fn release_room_reservation(&self, room_id: &RoomId) {
         if let Some(counter) = self.pending_room_reservations.get(room_id) {
-            counter.fetch_sub(1, Ordering::AcqRel);
+            let result = counter.fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
+                if current > 0 {
+                    Some(current - 1)
+                } else {
+                    None // refuse to decrement below zero
+                }
+            });
+            if result.is_err() {
+                warn!(
+                    room_id = %room_id.as_str(),
+                    "release_room_reservation called but counter is already 0 (double-release?)"
+                );
+            }
         }
     }
 
@@ -791,7 +803,19 @@ impl ConnectionManager {
     /// Release a user connection slot reservation.
     pub fn release_user_reservation(&self, user_id: &UserId) {
         if let Some(counter) = self.pending_user_reservations.get(user_id) {
-            counter.fetch_sub(1, Ordering::AcqRel);
+            let result = counter.fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
+                if current > 0 {
+                    Some(current - 1)
+                } else {
+                    None // refuse to decrement below zero
+                }
+            });
+            if result.is_err() {
+                warn!(
+                    user_id = %user_id.as_str(),
+                    "release_user_reservation called but counter is already 0 (double-release?)"
+                );
+            }
         }
     }
 

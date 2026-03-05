@@ -649,7 +649,7 @@ impl StreamMessageHandler {
                             }
                         }
 
-                        if let Some(msg) = cluster_event_to_server_message(&event, &room_id_str) {
+                        for msg in cluster_event_to_server_messages(&event, &room_id_str) {
                             if let Err(e) = stream.send(msg) {
                                 tracing::error!("Failed to send server message: {}", e);
                                 break;
@@ -1114,6 +1114,11 @@ impl StreamMessageHandler {
             username: self.username.clone(),
             permissions,
             role: role_proto,
+            added_permissions: synctv_core::models::PermissionBits(0),
+            removed_permissions: synctv_core::models::PermissionBits(0),
+            admin_added_permissions: synctv_core::models::PermissionBits(0),
+            admin_removed_permissions: synctv_core::models::PermissionBits(0),
+            joined_at: chrono::Utc::now(),
             timestamp: chrono::Utc::now(),
         };
         let result = self.cluster_manager.broadcast(event);
@@ -1435,7 +1440,7 @@ impl StreamMessageHandler {
 
                                 let is_room_deleted = matches!(event, ClusterEvent::RoomDeleted { .. });
 
-                                if let Some(msg) = cluster_event_to_server_message(&event, &room_id_str) {
+                                for msg in cluster_event_to_server_messages(&event, &room_id_str) {
                                     if let Err(e) = sender.send(msg) {
                                         tracing::error!("Failed to send message: {}", e);
                                         break;
@@ -2437,11 +2442,14 @@ impl StreamMessageHandler {
     }
 }
 
-/// Convert cluster event to server message
-fn cluster_event_to_server_message(
+/// Convert cluster event to zero or more server messages.
+///
+/// Returns a `Vec` because some events (e.g. `MediaRemovedBatch`) expand into
+/// multiple individual client messages.
+fn cluster_event_to_server_messages(
     event: &synctv_cluster::sync::ClusterEvent,
     room_id: &str,
-) -> Option<ServerMessage> {
+) -> Vec<ServerMessage> {
     use crate::proto::client::server_message::Message;
     use crate::proto::client::{
         ChatMessageReceive, ErrorMessage, PlaybackState, PlaybackStateChanged, RoomSettingsChanged,
@@ -2459,7 +2467,7 @@ fn cluster_event_to_server_message(
             position,
             color,
             ..
-        } => Some(ServerMessage {
+        } => vec![ServerMessage {
             message: Some(Message::Chat(ChatMessageReceive {
                 id: nanoid::nanoid!(12),
                 room_id: room_id.to_string(),
@@ -2470,8 +2478,8 @@ fn cluster_event_to_server_message(
                 position: *position,
                 color: color.clone(),
             })),
-        }),
-        ClusterEvent::PlaybackStateChanged { state, .. } => Some(ServerMessage {
+        }],
+        ClusterEvent::PlaybackStateChanged { state, .. } => vec![ServerMessage {
             message: Some(Message::PlaybackState(PlaybackStateChanged {
                 room_id: room_id.to_string(),
                 state: Some(PlaybackState {
@@ -2494,14 +2502,19 @@ fn cluster_event_to_server_message(
                     relative_path: state.relative_path.clone(),
                 }),
             })),
-        }),
+        }],
         ClusterEvent::UserJoined {
             user_id,
             username,
             permissions,
             role,
+            added_permissions,
+            removed_permissions,
+            admin_added_permissions,
+            admin_removed_permissions,
+            joined_at,
             ..
-        } => Some(ServerMessage {
+        } => vec![ServerMessage {
             message: Some(Message::UserJoined(UserJoinedRoom {
                 room_id: room_id.to_string(),
                 member: Some(RoomMember {
@@ -2510,28 +2523,28 @@ fn cluster_event_to_server_message(
                     username: username.clone(),
                     role: *role,
                     permissions: permissions.0,
-                    added_permissions: 0,
-                    removed_permissions: 0,
-                    admin_added_permissions: 0,
-                    admin_removed_permissions: 0,
-                    joined_at: chrono::Utc::now().timestamp(),
+                    added_permissions: added_permissions.0,
+                    removed_permissions: removed_permissions.0,
+                    admin_added_permissions: admin_added_permissions.0,
+                    admin_removed_permissions: admin_removed_permissions.0,
+                    joined_at: joined_at.timestamp(),
                     is_online: true,
                 }),
             })),
-        }),
-        ClusterEvent::UserLeft { user_id, .. } => Some(ServerMessage {
+        }],
+        ClusterEvent::UserLeft { user_id, .. } => vec![ServerMessage {
             message: Some(Message::UserLeft(UserLeftRoom {
                 room_id: room_id.to_string(),
                 user_id: user_id.as_str().to_string(),
             })),
-        }),
+        }],
         ClusterEvent::MediaAdded {
             media_id,
             media_title,
             user_id,
             username,
             ..
-        } => Some(ServerMessage {
+        } => vec![ServerMessage {
             message: Some(Message::MediaAdded(crate::proto::client::MediaAdded {
                 room_id: room_id.to_string(),
                 media_id: media_id.as_str().to_string(),
@@ -2539,36 +2552,42 @@ fn cluster_event_to_server_message(
                 added_by: username.clone(),
                 added_by_user_id: user_id.as_str().to_string(),
             })),
-        }),
+        }],
         ClusterEvent::MediaRemoved {
             media_id,
             user_id,
             username,
             ..
-        } => Some(ServerMessage {
+        } => vec![ServerMessage {
             message: Some(Message::MediaRemoved(crate::proto::client::MediaRemoved {
                 room_id: room_id.to_string(),
                 media_id: media_id.as_str().to_string(),
                 removed_by: username.clone(),
                 removed_by_user_id: user_id.as_str().to_string(),
             })),
-        }),
+        }],
         ClusterEvent::MediaRemovedBatch {
-            media_ids, user_id, ..
+            media_ids,
+            user_id,
+            username,
+            ..
         } => {
-            // Broadcast batch removal as individual messages for backward compatibility
-            // Clients receive one MediaRemoved message per item, but we only sent one
-            // Redis pub/sub message (O(1) instead of O(n) network traffic)
-            // Note: We return None here because this should be handled differently -
-            // batch events should be expanded into multiple messages if needed,
-            // but for now we just skip broadcasting to avoid message storms
-            tracing::debug!(
-                room_id = %room_id,
-                user_id = %user_id.as_str(),
-                count = media_ids.len(),
-                "Batch media removal event received"
-            );
-            None
+            // Expand batch removal into individual MediaRemoved messages for
+            // backward compatibility. Clients receive one message per item, but
+            // only one Redis pub/sub message was sent (O(1) network traffic).
+            media_ids
+                .iter()
+                .map(|mid| ServerMessage {
+                    message: Some(Message::MediaRemoved(
+                        crate::proto::client::MediaRemoved {
+                            room_id: room_id.to_string(),
+                            media_id: mid.as_str().to_string(),
+                            removed_by: username.clone(),
+                            removed_by_user_id: user_id.as_str().to_string(),
+                        },
+                    )),
+                })
+                .collect()
         }
         ClusterEvent::PermissionChanged {
             target_user_id,
@@ -2576,9 +2595,11 @@ fn cluster_event_to_server_message(
             role,
             added_permissions,
             removed_permissions,
+            admin_added_permissions,
+            admin_removed_permissions,
             changed_by_username,
             ..
-        } => Some(ServerMessage {
+        } => vec![ServerMessage {
             message: Some(Message::PermissionChanged(
                 crate::proto::client::PermissionChanged {
                     room_id: room_id.to_string(),
@@ -2587,18 +2608,18 @@ fn cluster_event_to_server_message(
                     effective_permissions: new_permissions.0,
                     added_permissions: added_permissions.0,
                     removed_permissions: removed_permissions.0,
-                    admin_added_permissions: 0,
-                    admin_removed_permissions: 0,
+                    admin_added_permissions: admin_added_permissions.0,
+                    admin_removed_permissions: admin_removed_permissions.0,
                     updated_by: changed_by_username.clone(),
                 },
             )),
-        }),
-        ClusterEvent::RoomSettingsChanged { settings_json, .. } => Some(ServerMessage {
+        }],
+        ClusterEvent::RoomSettingsChanged { settings_json, .. } => vec![ServerMessage {
             message: Some(Message::RoomSettings(RoomSettingsChanged {
                 room_id: room_id.to_string(),
                 settings: settings_json.clone(),
             })),
-        }),
+        }],
         ClusterEvent::WebRTCSignaling {
             message_type,
             from,
@@ -2607,7 +2628,7 @@ fn cluster_event_to_server_message(
             ..
         } => {
             // Convert to appropriate proto message based on message_type
-            match message_type.as_str() {
+            let msg = match message_type.as_str() {
                 "offer" => Some(ServerMessage {
                     message: Some(Message::WebrtcOffer(crate::proto::client::WebRtcOffer {
                         from: from.clone(),
@@ -2686,56 +2707,73 @@ fn cluster_event_to_server_message(
                     tracing::warn!("Unknown WebRTC message type: {}", message_type);
                     None
                 }
-            }
+            };
+            msg.into_iter().collect()
         }
         ClusterEvent::WebRTCJoin {
             user_id,
             conn_id,
             username,
             ..
-        } => Some(ServerMessage {
+        } => vec![ServerMessage {
             message: Some(Message::WebrtcJoin(crate::proto::client::WebRtcJoin {
                 user_id: user_id.as_str().to_string(),
                 conn_id: conn_id.clone(),
                 username: username.clone(),
             })),
-        }),
+        }],
         ClusterEvent::WebRTCLeave {
             user_id, conn_id, ..
-        } => Some(ServerMessage {
+        } => vec![ServerMessage {
             message: Some(Message::WebrtcLeave(crate::proto::client::WebRtcLeave {
                 user_id: user_id.as_str().to_string(),
                 conn_id: conn_id.clone(),
             })),
-        }),
-        ClusterEvent::SystemNotification { message, .. } => {
-            Some(ServerMessage {
-                message: Some(Message::Error(ErrorMessage {
-                    message: message.clone(),
-                    code: 0, // System notifications use code 0 (not actual errors)
-                    detail: String::new(),
-                })),
-            })
+        }],
+        ClusterEvent::SystemNotification {
+            message,
+            timestamp,
+            ..
+        } => {
+            let data = serde_json::json!({
+                "type": "system_notification",
+                "notification_type": "system_announcement",
+                "title": message,
+                "content": message,
+            });
+            vec![ServerMessage {
+                message: Some(Message::Notification(
+                    crate::proto::client::UserNotification {
+                        notification_id: String::new(),
+                        notification_type: "system_announcement".to_string(),
+                        title: message.clone(),
+                        content: message.clone(),
+                        data: data.to_string(),
+                        timestamp: timestamp.timestamp(),
+                    },
+                )),
+            }]
         }
         ClusterEvent::RoomDeleted { .. } => {
             // Notify WebSocket clients that the room has been deleted
-            Some(ServerMessage {
+            vec![ServerMessage {
                 message: Some(Message::Error(ErrorMessage {
                     message: "Room has been deleted".to_string(),
                     code: crate::impls::error_codes::NOT_FOUND,
                     detail: String::new(),
                 })),
-            })
+            }]
         }
         ClusterEvent::KickPublisher { .. }
         | ClusterEvent::KickUser { .. }
         | ClusterEvent::KickUserFromRoom { .. }
         | ClusterEvent::RoomCreated { .. }
         | ClusterEvent::CacheInvalidate { .. }
-        | ClusterEvent::UserNotification { .. } => {
+        | ClusterEvent::UserNotification { .. }
+        | ClusterEvent::Unknown => {
             // Admin/internal events are handled by other channels,
             // not forwarded to WebSocket clients via the room event path
-            None
+            vec![]
         }
     }
 }
@@ -2839,7 +2877,7 @@ mod tests {
         chrono::Utc::now()
     }
 
-    // ========== cluster_event_to_server_message Tests ==========
+    // ========== cluster_event_to_server_messages Tests ==========
 
     #[test]
     fn test_chat_message_event_conversion() {
@@ -2854,10 +2892,10 @@ mod tests {
             color: Some("#ff0000".to_string()),
         };
 
-        let msg = cluster_event_to_server_message(&event, "room_test");
-        assert!(msg.is_some());
-        let msg = msg.unwrap();
-        match msg.message {
+        let msgs = cluster_event_to_server_messages(&event, "room_test");
+        assert_eq!(msgs.len(), 1);
+        let msg = &msgs[0];
+        match &msg.message {
             Some(Message::Chat(chat)) => {
                 assert_eq!(chat.room_id, "room_test");
                 assert_eq!(chat.user_id, "user_test");
@@ -2892,11 +2930,12 @@ mod tests {
             timestamp: now(),
         };
 
-        let msg = cluster_event_to_server_message(&event, "room_test").unwrap();
-        match msg.message {
+        let msgs = cluster_event_to_server_messages(&event, "room_test");
+        assert_eq!(msgs.len(), 1);
+        match &msgs[0].message {
             Some(Message::PlaybackState(ps)) => {
                 assert_eq!(ps.room_id, "room_test");
-                let s = ps.state.unwrap();
+                let s = ps.state.as_ref().unwrap();
                 assert_eq!(s.current_time, 123.456);
                 assert_eq!(s.speed, 1.5);
                 assert!(s.is_playing);
@@ -2916,14 +2955,20 @@ mod tests {
             username: "carol".to_string(),
             permissions: PermissionBits(PermissionBits::DEFAULT_MEMBER),
             role: 3,
+            added_permissions: PermissionBits(0),
+            removed_permissions: PermissionBits(0),
+            admin_added_permissions: PermissionBits(0),
+            admin_removed_permissions: PermissionBits(0),
+            joined_at: now(),
             timestamp: now(),
         };
 
-        let msg = cluster_event_to_server_message(&event, "room_test").unwrap();
-        match msg.message {
+        let msgs = cluster_event_to_server_messages(&event, "room_test");
+        assert_eq!(msgs.len(), 1);
+        match &msgs[0].message {
             Some(Message::UserJoined(uj)) => {
                 assert_eq!(uj.room_id, "room_test");
-                let member = uj.member.unwrap();
+                let member = uj.member.as_ref().unwrap();
                 assert_eq!(member.user_id, "user_test");
                 assert_eq!(member.username, "carol");
                 assert_eq!(member.role, 3);
@@ -2943,8 +2988,9 @@ mod tests {
             timestamp: now(),
         };
 
-        let msg = cluster_event_to_server_message(&event, "room_test").unwrap();
-        match msg.message {
+        let msgs = cluster_event_to_server_messages(&event, "room_test");
+        assert_eq!(msgs.len(), 1);
+        match &msgs[0].message {
             Some(Message::UserLeft(ul)) => {
                 assert_eq!(ul.room_id, "room_test");
                 assert_eq!(ul.user_id, "user_test");
@@ -2965,8 +3011,9 @@ mod tests {
             timestamp: now(),
         };
 
-        let msg = cluster_event_to_server_message(&event, "room_test").unwrap();
-        match msg.message {
+        let msgs = cluster_event_to_server_messages(&event, "room_test");
+        assert_eq!(msgs.len(), 1);
+        match &msgs[0].message {
             Some(Message::MediaAdded(ma)) => {
                 assert_eq!(ma.room_id, "room_test");
                 assert_eq!(ma.media_id, "media_test");
@@ -2988,8 +3035,9 @@ mod tests {
             timestamp: now(),
         };
 
-        let msg = cluster_event_to_server_message(&event, "room_test").unwrap();
-        match msg.message {
+        let msgs = cluster_event_to_server_messages(&event, "room_test");
+        assert_eq!(msgs.len(), 1);
+        match &msgs[0].message {
             Some(Message::MediaRemoved(mr)) => {
                 assert_eq!(mr.room_id, "room_test");
                 assert_eq!(mr.media_id, "media_test");
@@ -3011,8 +3059,9 @@ mod tests {
             timestamp: now(),
         };
 
-        let msg = cluster_event_to_server_message(&event, "room_test").unwrap();
-        match msg.message {
+        let msgs = cluster_event_to_server_messages(&event, "room_test");
+        assert_eq!(msgs.len(), 1);
+        match &msgs[0].message {
             Some(Message::WebrtcOffer(o)) => {
                 assert_eq!(o.from, "conn_a");
                 assert_eq!(o.to, "conn_b");
@@ -3034,8 +3083,9 @@ mod tests {
             timestamp: now(),
         };
 
-        let msg = cluster_event_to_server_message(&event, "room_test").unwrap();
-        match msg.message {
+        let msgs = cluster_event_to_server_messages(&event, "room_test");
+        assert_eq!(msgs.len(), 1);
+        match &msgs[0].message {
             Some(Message::WebrtcAnswer(a)) => {
                 assert_eq!(a.from, "conn_b");
                 assert_eq!(a.to, "conn_a");
@@ -3056,12 +3106,13 @@ mod tests {
             timestamp: now(),
         };
 
-        let msg = cluster_event_to_server_message(&event, "room_test").unwrap();
-        assert!(matches!(msg.message, Some(Message::WebrtcIceCandidate(_))));
+        let msgs = cluster_event_to_server_messages(&event, "room_test");
+        assert_eq!(msgs.len(), 1);
+        assert!(matches!(&msgs[0].message, Some(Message::WebrtcIceCandidate(_))));
     }
 
     #[test]
-    fn test_webrtc_unknown_type_returns_none() {
+    fn test_webrtc_unknown_type_returns_empty() {
         let event = ClusterEvent::WebRTCSignaling {
             event_id: "evt10".to_string(),
             room_id: room_id(),
@@ -3072,8 +3123,8 @@ mod tests {
             timestamp: now(),
         };
 
-        let msg = cluster_event_to_server_message(&event, "room_test");
-        assert!(msg.is_none());
+        let msgs = cluster_event_to_server_messages(&event, "room_test");
+        assert!(msgs.is_empty());
     }
 
     #[test]
@@ -3085,8 +3136,9 @@ mod tests {
             timestamp: now(),
         };
 
-        let msg = cluster_event_to_server_message(&event, "room_test").unwrap();
-        match msg.message {
+        let msgs = cluster_event_to_server_messages(&event, "room_test");
+        assert_eq!(msgs.len(), 1);
+        match &msgs[0].message {
             Some(Message::Error(e)) => {
                 assert!(e.message.contains("deleted"));
                 assert_eq!(e.code, crate::impls::error_codes::NOT_FOUND);
@@ -3104,18 +3156,19 @@ mod tests {
             timestamp: now(),
         };
 
-        let msg = cluster_event_to_server_message(&event, "room_test").unwrap();
-        match msg.message {
-            Some(Message::Error(e)) => {
-                assert_eq!(e.message, "Server maintenance in 5 minutes");
-                assert_eq!(e.code, 0);
+        let msgs = cluster_event_to_server_messages(&event, "room_test");
+        assert_eq!(msgs.len(), 1);
+        match &msgs[0].message {
+            Some(Message::Notification(n)) => {
+                assert_eq!(n.title, "Server maintenance in 5 minutes");
+                assert_eq!(n.notification_type, "system_announcement");
             }
-            other => panic!("Expected Error message for SystemNotification, got: {other:?}"),
+            other => panic!("Expected Notification message for SystemNotification, got: {other:?}"),
         }
     }
 
     #[test]
-    fn test_admin_events_return_none() {
+    fn test_admin_events_return_empty() {
         let event = ClusterEvent::KickPublisher {
             event_id: "evt13".to_string(),
             room_id: room_id(),
@@ -3123,7 +3176,7 @@ mod tests {
             reason: "test".to_string(),
             timestamp: now(),
         };
-        assert!(cluster_event_to_server_message(&event, "room_test").is_none());
+        assert!(cluster_event_to_server_messages(&event, "room_test").is_empty());
 
         let event = ClusterEvent::KickUser {
             event_id: "evt14".to_string(),
@@ -3131,7 +3184,7 @@ mod tests {
             reason: "banned".to_string(),
             timestamp: now(),
         };
-        assert!(cluster_event_to_server_message(&event, "room_test").is_none());
+        assert!(cluster_event_to_server_messages(&event, "room_test").is_empty());
     }
 
     // ========== ProtoCodec Tests ==========

@@ -9,7 +9,6 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use tokio_util::sync::CancellationToken;
-use tonic::transport::Endpoint;
 use tracing::{debug, info, warn};
 
 use crate::discovery::node_registry::NodeInfo;
@@ -228,50 +227,8 @@ impl StaticDiscovery {
     /// Probe a single peer by attempting a gRPC connection.
     ///
     /// Returns `true` if the peer responds, `false` on timeout or error.
+    /// Delegates to the shared [`super::probe_node_grpc`] function.
     async fn probe_peer(address: &str, connect_timeout: Duration, cluster_secret: &str) -> bool {
-        let uri = if address.starts_with("http://") || address.starts_with("https://") {
-            address.to_string()
-        } else {
-            format!("http://{address}")
-        };
-
-        let endpoint = match Endpoint::from_shared(uri) {
-            Ok(ep) => ep.connect_timeout(connect_timeout).timeout(connect_timeout),
-            Err(e) => {
-                warn!(peer = %address, error = %e, "Invalid peer address");
-                return false;
-            }
-        };
-
-        let channel = match endpoint.connect().await {
-            Ok(ch) => ch,
-            Err(_) => return false,
-        };
-
-        // Use the GetNodes RPC as a health check
-        use crate::grpc::synctv::cluster::cluster_service_client::ClusterServiceClient;
-        use crate::grpc::synctv::cluster::GetNodesRequest;
-        let mut client = ClusterServiceClient::new(channel);
-        let mut request = tonic::Request::new(GetNodesRequest { status_filter: 0 });
-
-        if !cluster_secret.is_empty() {
-            match cluster_secret.parse::<tonic::metadata::MetadataValue<tonic::metadata::Ascii>>() {
-                Ok(val) => {
-                    request.metadata_mut().insert("x-cluster-secret", val);
-                }
-                Err(e) => {
-                    warn!(error = %e, "cluster_secret contains invalid characters for gRPC metadata, skipping probe");
-                    return false;
-                }
-            }
-        }
-
-        match client.get_nodes(request).await {
-            Ok(_) => true,
-            Err(e) => {
-                debug!(peer = %address, error = %e, "Peer health check failed");
-                false
-            }
-        }
+        super::probe_node_grpc(address, connect_timeout.as_secs(), cluster_secret).await
     }
 }

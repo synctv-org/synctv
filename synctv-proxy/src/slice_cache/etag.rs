@@ -21,6 +21,9 @@ pub struct CachedResourceMeta {
     pub total_size: Option<u64>,
     /// Content-Type of the resource.
     pub content_type: Option<String>,
+    /// When this metadata was last accessed. Used by `cleanup_stale_meta`
+    /// to evict least-recently-accessed entries first.
+    pub last_accessed: SystemTime,
 }
 
 /// Data stored in any cache backend. Uses `SystemTime` (not `Instant`) so that
@@ -97,6 +100,7 @@ mod tests {
             last_modified: Some("Tue, 01 Jan 2030 00:00:00 GMT".to_string()),
             total_size: Some(1024),
             content_type: Some("video/mp4".to_string()),
+            last_accessed: SystemTime::now(),
         };
         assert_eq!(
             meta.last_modified.as_deref(),
@@ -111,6 +115,7 @@ mod tests {
             last_modified: None,
             total_size: None,
             content_type: None,
+            last_accessed: SystemTime::now(),
         };
         let cloned = meta;
         assert_eq!(cloned.etag, None);

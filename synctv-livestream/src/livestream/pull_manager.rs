@@ -119,7 +119,9 @@ impl PullStreamManager {
     ) -> Self {
         let connection_pool = GrpcConnectionPool::with_defaults();
         // Evict stale gRPC connections every 5 minutes in the background
-        let pool_cleanup_handle = connection_pool.spawn_cleanup_task(Duration::from_mins(5));
+        let cleanup_token = tokio_util::sync::CancellationToken::new();
+        let pool_cleanup_handle =
+            connection_pool.spawn_cleanup_task(Duration::from_mins(5), cleanup_token);
         let pool = StreamPool::new(
             Duration::from_secs(cleanup_check_interval_secs),
             Duration::from_secs(idle_timeout_secs),

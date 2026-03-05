@@ -10,7 +10,7 @@
 //! - Partial failure tolerance (returns results from successful nodes)
 //! - Shared-secret authentication via `x-cluster-secret` header
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -229,15 +229,39 @@ impl ClusterClient {
         debug!("Invalidated all cached gRPC channels");
     }
 
-    /// Fan-out `GetUserOnlineStatus` to all remote nodes in parallel.
+    /// Generic fan-out to all remote nodes in parallel.
     ///
-    /// Returns merged `UserOnlineStatus` entries from all responding nodes.
-    /// A user is considered online if ANY node reports them as online.
-    pub async fn fan_out_user_online_status(
+    /// Queries all remote nodes concurrently, collecting results from nodes that
+    /// respond before the aggregate timeout. Skips unhealthy nodes when the
+    /// cluster is in degraded mode (>50% circuit breakers open).
+    ///
+    /// Also opportunistically prunes circuit breakers for nodes no longer in
+    /// the registry (ISSUE 4: prevents unbounded HashMap growth).
+    ///
+    /// # Type Parameters
+    /// - `T`: Per-node RPC response type
+    /// - `Item`: Individual result item extracted from each response
+    /// - `QueryFn`: Async function that queries a single node: `(node_id, address) -> Result<T>`
+    /// - `ExtractFn`: Function that extracts items from a successful response: `T -> Vec<Item>`
+    async fn fan_out<T, Item, QueryFn, QueryFut, ExtractFn>(
         &self,
-        user_ids: Vec<String>,
-    ) -> Result<FanOutResult<Vec<UserOnlineStatus>>> {
+        rpc_name: &str,
+        query_fn: QueryFn,
+        extract_fn: ExtractFn,
+    ) -> Result<FanOutResult<Vec<Item>>>
+    where
+        Item: Send + 'static,
+        T: Send + 'static,
+        QueryFn: Fn(String, String) -> QueryFut,
+        QueryFut: std::future::Future<Output = Result<T>> + Send,
+        ExtractFn: Fn(T) -> Vec<Item>,
+    {
         let nodes = self.node_registry.get_all_nodes().await?;
+
+        // Opportunistically prune circuit breakers for nodes no longer in the registry
+        let active_addresses: HashSet<String> =
+            nodes.iter().map(|n| n.grpc_address.clone()).collect();
+        self.circuit_breakers.retain_only(&active_addresses).await;
 
         // Filter out self
         let remote_nodes: Vec<_> = nodes
@@ -267,7 +291,8 @@ impl ClusterClient {
                 warn!(
                     skipped = skipped_nodes,
                     healthy = queryable.len(),
-                    "Cluster degraded: skipping unhealthy nodes for GetUserOnlineStatus fan-out"
+                    rpc = %rpc_name,
+                    "Cluster degraded: skipping unhealthy nodes for fan-out"
                 );
             }
             queryable.into_iter().cloned().collect()
@@ -283,19 +308,14 @@ impl ClusterClient {
         let mut futs: FuturesUnordered<_> = query_nodes
             .iter()
             .map(|node| {
-                let user_ids = user_ids.clone();
                 let address = node.grpc_address.clone();
                 let node_id = node.node_id.clone();
-                async move {
-                    let result = self
-                        .query_user_status_single(&node_id, &address, user_ids)
-                        .await;
-                    (node_id, address, result)
-                }
+                let fut = query_fn(node_id.clone(), address.clone());
+                async move { (node_id, address, fut.await) }
             })
             .collect();
 
-        let mut all_statuses: Vec<UserOnlineStatus> = Vec::new();
+        let mut all_items: Vec<Item> = Vec::new();
         let mut nodes_succeeded = 0usize;
         let mut nodes_failed = skipped_nodes;
         let mut failures = Vec::new();
@@ -311,7 +331,7 @@ impl ClusterClient {
                         match result {
                             Ok(response) => {
                                 nodes_succeeded += 1;
-                                all_statuses.extend(response.statuses);
+                                all_items.extend(extract_fn(response));
                             }
                             Err(e) => {
                                 nodes_failed += 1;
@@ -319,7 +339,8 @@ impl ClusterClient {
                                     node_id = %node_id,
                                     address = %address,
                                     error = %e,
-                                    "Fan-out GetUserOnlineStatus failed for node"
+                                    rpc = %rpc_name,
+                                    "Fan-out failed for node"
                                 );
                                 self.invalidate_channel(&node_id, &address);
                                 failures.push((node_id, e.to_string()));
@@ -340,7 +361,8 @@ impl ClusterClient {
             warn!(
                 remaining_nodes = remaining,
                 collected_succeeded = nodes_succeeded,
-                "Fan-out GetUserOnlineStatus aggregate timeout ({:?}), returning partial results",
+                rpc = %rpc_name,
+                "Fan-out aggregate timeout ({:?}), returning partial results",
                 FAN_OUT_AGGREGATE_TIMEOUT,
             );
         }
@@ -348,16 +370,39 @@ impl ClusterClient {
         debug!(
             succeeded = nodes_succeeded,
             failed = nodes_failed,
-            total_statuses = all_statuses.len(),
-            "Fan-out GetUserOnlineStatus complete"
+            total_items = all_items.len(),
+            rpc = %rpc_name,
+            "Fan-out complete"
         );
 
         Ok(FanOutResult {
-            data: all_statuses,
+            data: all_items,
             nodes_succeeded,
             nodes_failed,
             failures,
         })
+    }
+
+    /// Fan-out `GetUserOnlineStatus` to all remote nodes in parallel.
+    ///
+    /// Returns merged `UserOnlineStatus` entries from all responding nodes.
+    /// A user is considered online if ANY node reports them as online.
+    pub async fn fan_out_user_online_status(
+        &self,
+        user_ids: Vec<String>,
+    ) -> Result<FanOutResult<Vec<UserOnlineStatus>>> {
+        self.fan_out(
+            "GetUserOnlineStatus",
+            |node_id, address| {
+                let user_ids = user_ids.clone();
+                async move {
+                    self.query_user_status_single(&node_id, &address, user_ids)
+                        .await
+                }
+            },
+            |response: GetUserOnlineStatusResponse| response.statuses,
+        )
+        .await
     }
 
     /// Query a single node for user online status
@@ -380,8 +425,6 @@ impl ClusterClient {
         let mut request = tonic::Request::new(GetUserOnlineStatusRequest { user_ids });
         self.attach_secret(&mut request)?;
 
-        // Timeout is already set at the Endpoint level (see get_channel),
-        // so no additional tokio::time::timeout wrapper is needed.
         let result = client.get_user_online_status(request).await;
 
         match result {
@@ -406,127 +449,18 @@ impl ClusterClient {
         &self,
         room_id: String,
     ) -> Result<FanOutResult<Vec<RoomConnection>>> {
-        let nodes = self.node_registry.get_all_nodes().await?;
-
-        // Filter out self
-        let remote_nodes: Vec<_> = nodes
-            .into_iter()
-            .filter(|n| n.node_id != self.config.self_node_id)
-            .collect();
-
-        if remote_nodes.is_empty() {
-            return Ok(FanOutResult {
-                data: Vec::new(),
-                nodes_succeeded: 0,
-                nodes_failed: 0,
-                failures: Vec::new(),
-            });
-        }
-
-        // In degraded mode (>50% circuit breakers open), only query healthy nodes
-        // to return partial results quickly instead of waiting for timeouts.
-        let mut skipped_nodes = 0usize;
-        let query_nodes: Vec<_> = if self.circuit_breakers.is_cluster_degraded().await {
-            let healthy = self.circuit_breakers.healthy_endpoints().await;
-            let (queryable, skipped): (Vec<_>, Vec<_>) = remote_nodes
-                .iter()
-                .partition(|n| healthy.contains(&n.grpc_address));
-            skipped_nodes = skipped.len();
-            if skipped_nodes > 0 {
-                warn!(
-                    skipped = skipped_nodes,
-                    healthy = queryable.len(),
-                    "Cluster degraded: skipping unhealthy nodes for GetRoomConnections fan-out"
-                );
-            }
-            queryable.into_iter().cloned().collect()
-        } else {
-            remote_nodes.clone()
-        };
-
-        // Fan out to all remote nodes in parallel using FuturesUnordered
-        // so that on aggregate timeout we can collect already-completed results
-        // instead of discarding everything.
-        use futures::stream::{FuturesUnordered, StreamExt};
-
-        let mut futs: FuturesUnordered<_> = query_nodes
-            .iter()
-            .map(|node| {
+        self.fan_out(
+            "GetRoomConnections",
+            |node_id, address| {
                 let room_id = room_id.clone();
-                let address = node.grpc_address.clone();
-                let node_id = node.node_id.clone();
                 async move {
-                    let result = self
-                        .query_room_connections_single(&node_id, &address, room_id)
-                        .await;
-                    (node_id, address, result)
+                    self.query_room_connections_single(&node_id, &address, room_id)
+                        .await
                 }
-            })
-            .collect();
-
-        let mut all_connections: Vec<RoomConnection> = Vec::new();
-        let mut nodes_succeeded = 0usize;
-        let mut nodes_failed = skipped_nodes;
-        let mut failures = Vec::new();
-
-        let deadline = tokio::time::Instant::now() + FAN_OUT_AGGREGATE_TIMEOUT;
-        let mut timed_out = false;
-
-        while !futs.is_empty() {
-            tokio::select! {
-                biased;
-                maybe_result = futs.next() => {
-                    if let Some((node_id, address, result)) = maybe_result {
-                        match result {
-                            Ok(response) => {
-                                nodes_succeeded += 1;
-                                all_connections.extend(response.connections);
-                            }
-                            Err(e) => {
-                                nodes_failed += 1;
-                                warn!(
-                                    node_id = %node_id,
-                                    address = %address,
-                                    error = %e,
-                                    "Fan-out GetRoomConnections failed for node"
-                                );
-                                self.invalidate_channel(&node_id, &address);
-                                failures.push((node_id, e.to_string()));
-                            }
-                        }
-                    }
-                }
-                () = tokio::time::sleep_until(deadline) => {
-                    timed_out = true;
-                    break;
-                }
-            }
-        }
-
-        if timed_out {
-            let remaining = futs.len();
-            nodes_failed += remaining;
-            warn!(
-                remaining_nodes = remaining,
-                collected_succeeded = nodes_succeeded,
-                "Fan-out GetRoomConnections aggregate timeout ({:?}), returning partial results",
-                FAN_OUT_AGGREGATE_TIMEOUT,
-            );
-        }
-
-        debug!(
-            succeeded = nodes_succeeded,
-            failed = nodes_failed,
-            total_connections = all_connections.len(),
-            "Fan-out GetRoomConnections complete"
-        );
-
-        Ok(FanOutResult {
-            data: all_connections,
-            nodes_succeeded,
-            nodes_failed,
-            failures,
-        })
+            },
+            |response: GetRoomConnectionsResponse| response.connections,
+        )
+        .await
     }
 
     /// Query a single node for room connections
@@ -549,8 +483,6 @@ impl ClusterClient {
         let mut request = tonic::Request::new(GetRoomConnectionsRequest { room_id });
         self.attach_secret(&mut request)?;
 
-        // Timeout is already set at the Endpoint level (see get_channel),
-        // so no additional tokio::time::timeout wrapper is needed.
         let result = client.get_room_connections(request).await;
 
         match result {

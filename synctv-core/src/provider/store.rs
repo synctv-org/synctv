@@ -291,38 +291,50 @@ impl<S: ProviderStore> ProviderStore for PrefixedProviderStore<S> {
 }
 
 // ---------------------------------------------------------------------------
-// Factory
+// ProviderStoreRegistry — lazy, per-provider store creation
 // ---------------------------------------------------------------------------
 
-/// Create per-provider stores, using Redis when available, falling back to in-memory.
-pub fn create_provider_stores(
-    redis: Option<&redis::aio::ConnectionManager>,
-) -> HashMap<&'static str, Arc<dyn ProviderStore>> {
-    let providers = [
-        "bilibili",
-        "alist",
-        "emby",
-        "direct_url",
-        "rtmp",
-        "live_proxy",
-    ];
-    providers
-        .iter()
-        .map(|name| {
-            let prefix = format!("synctv:provider:{name}");
-            let store: Arc<dyn ProviderStore> = match redis {
-                Some(conn) => Arc::new(PrefixedProviderStore::new(
-                    RedisProviderStore::new(conn.clone()),
-                    prefix,
-                )),
-                None => Arc::new(PrefixedProviderStore::new(
-                    InMemoryProviderStore::new(10_000),
-                    prefix,
-                )),
-            };
-            (*name, store)
-        })
-        .collect()
+/// Registry that lazily creates and caches per-provider stores on first access.
+///
+/// No need to pre-register provider names — calling `load("some_new_provider")`
+/// automatically creates a prefixed store backed by Redis (if available) or in-memory.
+pub struct ProviderStoreRegistry {
+    redis: Option<redis::aio::ConnectionManager>,
+    stores: Mutex<HashMap<String, Arc<dyn ProviderStore>>>,
+}
+
+impl ProviderStoreRegistry {
+    /// Create a new registry, optionally backed by Redis.
+    pub fn new(redis: Option<redis::aio::ConnectionManager>) -> Self {
+        Self {
+            redis,
+            stores: Mutex::new(HashMap::new()),
+        }
+    }
+
+    /// Get or lazily create a store for the given provider name.
+    ///
+    /// The store is prefixed with `synctv:provider:{name}` and cached for
+    /// subsequent calls with the same name.
+    pub fn load(&self, name: &str) -> Arc<dyn ProviderStore> {
+        let mut stores = self.stores.lock();
+        stores
+            .entry(name.to_string())
+            .or_insert_with(|| {
+                let prefix = format!("synctv:provider:{name}");
+                match &self.redis {
+                    Some(conn) => Arc::new(PrefixedProviderStore::new(
+                        RedisProviderStore::new(conn.clone()),
+                        prefix,
+                    )),
+                    None => Arc::new(PrefixedProviderStore::new(
+                        InMemoryProviderStore::new(10_000),
+                        prefix,
+                    )),
+                }
+            })
+            .clone()
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -435,15 +447,34 @@ mod tests {
         assert!(!vp_future.is_expired());
     }
 
+    #[tokio::test]
+    async fn test_provider_store_registry_lazy_creation() {
+        let registry = ProviderStoreRegistry::new(None);
+
+        // First load creates the store
+        let store1 = registry.load("bilibili");
+        store1
+            .set_raw("key1", b"value1", Duration::from_secs(60))
+            .await
+            .unwrap();
+
+        // Second load returns the same (cached) store instance
+        let store2 = registry.load("bilibili");
+        assert_eq!(
+            store2.get_raw("key1").await.unwrap().unwrap(),
+            b"value1"
+        );
+
+        // Different provider name creates a separate store
+        let store3 = registry.load("emby");
+        assert!(store3.get_raw("key1").await.unwrap().is_none());
+    }
+
     #[test]
-    fn test_create_provider_stores_in_memory() {
-        let stores = create_provider_stores(None);
-        assert_eq!(stores.len(), 6);
-        assert!(stores.contains_key("bilibili"));
-        assert!(stores.contains_key("alist"));
-        assert!(stores.contains_key("emby"));
-        assert!(stores.contains_key("direct_url"));
-        assert!(stores.contains_key("rtmp"));
-        assert!(stores.contains_key("live_proxy"));
+    fn test_provider_store_registry_any_name() {
+        let registry = ProviderStoreRegistry::new(None);
+        // Any arbitrary provider name works — no pre-registration needed
+        let _store = registry.load("my_custom_provider");
+        let _store2 = registry.load("another_one");
     }
 }

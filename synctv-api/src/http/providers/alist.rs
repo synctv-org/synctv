@@ -54,10 +54,10 @@ async fn proxy_handler(
         .alist_provider
         .as_provider_proxy()
         .ok_or_else(|| AppError::not_found("Proxy not supported"))?;
-    let store = state.provider_stores.get("alist");
+    let store = state.provider_stores.load("alist");
     let ctx = ProxyRequestContext {
         sub_path: &sub_path,
-        store,
+        store: Some(&store),
         proxy_base: "/api/providers/alist/proxy",
     };
     let action = proxy.resolve_proxy(&ctx).await.map_err(AppError::from)?;

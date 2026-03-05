@@ -58,10 +58,10 @@ async fn proxy_handler(
         .emby_provider
         .as_provider_proxy()
         .ok_or_else(|| AppError::not_found("Proxy not supported"))?;
-    let store = state.provider_stores.get("emby");
+    let store = state.provider_stores.load("emby");
     let ctx = ProxyRequestContext {
         sub_path: &sub_path,
-        store,
+        store: Some(&store),
         proxy_base: "/api/providers/emby/proxy",
     };
     let action = proxy.resolve_proxy(&ctx).await.map_err(AppError::from)?;

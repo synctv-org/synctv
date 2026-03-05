@@ -512,7 +512,7 @@ impl ConnectionManager {
                             }
 
                             // Try to resend the signal
-                            if let Ok(_) = disconnect_tx.send(signal.clone()) {
+                            if disconnect_tx.send(signal.clone()).is_ok() {
                                 to_remove.push(id);
                                 retry_count += 1;
                                 debug!(
@@ -548,7 +548,7 @@ impl ConnectionManager {
     /// task spawned in `new()`.
     fn send_disconnect_signal(&self, signal: DisconnectSignal) {
         // First try to send directly
-        if let Ok(_) = self.disconnect_tx.send(signal.clone()) {
+        if self.disconnect_tx.send(signal.clone()).is_ok() {
             // Signal sent successfully
         } else {
             // Channel might be full or have no receivers
@@ -2590,12 +2590,11 @@ mod tests {
         use redis::AsyncCommands;
 
         let client = redis::Client::open("redis://127.0.0.1:6379").unwrap();
-        let conn = match redis::aio::ConnectionManager::new(client.clone()).await {
-            Ok(conn) => conn,
-            Err(_) => {
-                eprintln!("Skipping test: Redis not available at 127.0.0.1:6379");
-                return;
-            }
+        let conn = if let Ok(conn) = redis::aio::ConnectionManager::new(client.clone()).await {
+            conn
+        } else {
+            eprintln!("Skipping test: Redis not available at 127.0.0.1:6379");
+            return;
         };
 
         let manager = ConnectionManager::new(ConnectionLimits::default()).with_redis(conn, "test:");
@@ -2651,12 +2650,11 @@ mod tests {
         use redis::AsyncCommands;
 
         let client = redis::Client::open("redis://127.0.0.1:6379").unwrap();
-        let conn = match redis::aio::ConnectionManager::new(client.clone()).await {
-            Ok(conn) => conn,
-            Err(_) => {
-                eprintln!("Skipping test: Redis not available at 127.0.0.1:6379");
-                return;
-            }
+        let conn = if let Ok(conn) = redis::aio::ConnectionManager::new(client.clone()).await {
+            conn
+        } else {
+            eprintln!("Skipping test: Redis not available at 127.0.0.1:6379");
+            return;
         };
 
         let manager =
@@ -2706,12 +2704,11 @@ mod tests {
         use redis::AsyncCommands;
 
         let client = redis::Client::open("redis://127.0.0.1:6379").unwrap();
-        let conn = match redis::aio::ConnectionManager::new(client.clone()).await {
-            Ok(conn) => conn,
-            Err(_) => {
-                eprintln!("Skipping test: Redis not available at 127.0.0.1:6379");
-                return;
-            }
+        let conn = if let Ok(conn) = redis::aio::ConnectionManager::new(client.clone()).await {
+            conn
+        } else {
+            eprintln!("Skipping test: Redis not available at 127.0.0.1:6379");
+            return;
         };
 
         let manager =

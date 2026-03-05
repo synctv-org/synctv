@@ -176,7 +176,7 @@ pub struct RedisProviderStore {
 }
 
 impl RedisProviderStore {
-    pub fn new(conn: redis::aio::ConnectionManager) -> Self {
+    pub const fn new(conn: redis::aio::ConnectionManager) -> Self {
         Self { conn }
     }
 }
@@ -260,7 +260,7 @@ pub struct PrefixedProviderStore<S> {
 }
 
 impl<S> PrefixedProviderStore<S> {
-    pub fn new(inner: S, prefix: String) -> Self {
+    pub const fn new(inner: S, prefix: String) -> Self {
         Self { inner, prefix }
     }
 
@@ -368,7 +368,7 @@ mod tests {
         let store = InMemoryProviderStore::new(100);
         assert!(store.get_raw("key1").await.unwrap().is_none());
         store
-            .set_raw("key1", b"hello", Duration::from_secs(60))
+            .set_raw("key1", b"hello", Duration::from_mins(1))
             .await
             .unwrap();
         assert_eq!(store.get_raw("key1").await.unwrap().unwrap(), b"hello");
@@ -378,7 +378,7 @@ mod tests {
     async fn test_in_memory_store_delete() {
         let store = InMemoryProviderStore::new(100);
         store
-            .set_raw("key1", b"hello", Duration::from_secs(60))
+            .set_raw("key1", b"hello", Duration::from_mins(1))
             .await
             .unwrap();
         store.delete("key1").await.unwrap();
@@ -401,7 +401,7 @@ mod tests {
         let inner = InMemoryProviderStore::new(100);
         let store = PrefixedProviderStore::new(inner, "test:prefix".to_string());
         store
-            .set_raw("key1", b"value", Duration::from_secs(60))
+            .set_raw("key1", b"value", Duration::from_mins(1))
             .await
             .unwrap();
         assert_eq!(store.get_raw("key1").await.unwrap().unwrap(), b"value");
@@ -420,7 +420,7 @@ mod tests {
             count: 42,
         };
         store
-            .set("typed_key", &data, Duration::from_secs(60))
+            .set("typed_key", &data, Duration::from_mins(1))
             .await
             .unwrap();
         let retrieved: Option<TestData> = store.get("typed_key").await.unwrap();
@@ -454,7 +454,7 @@ mod tests {
         // First load creates the store
         let store1 = registry.load("bilibili");
         store1
-            .set_raw("key1", b"value1", Duration::from_secs(60))
+            .set_raw("key1", b"value1", Duration::from_mins(1))
             .await
             .unwrap();
 

@@ -191,10 +191,10 @@ impl StreamDataTransceiver {
                     frame_senders.lock().await.remove(id);
                     tracing::debug!("Removed closed frame subscriber: {}", id);
                 }
-                // Bump generation so next call rebuilds snapshot.
-                // No need to invalidate cached_gen separately — fetch_add(1) already
-                // ensures current_gen != *cached_gen on the next call.
+                // Bump generation so next call rebuilds snapshot
                 generation.fetch_add(1, Ordering::Release);
+                // Invalidate cached snapshot immediately
+                *cached_gen = cached_gen.wrapping_add(u64::MAX); // Force mismatch
 
                 // Decrement subscriber_count for subscribers removed by fan-out.
                 // Without this, subscriber_count only decrements on explicit UnSubscribe
@@ -217,9 +217,7 @@ impl StreamDataTransceiver {
         tokio::spawn(async move {
             // Cached snapshot: only rebuilt when generation counter changes
             let mut cached_snapshot: Vec<(Uuid, FrameDataSender, Arc<AtomicU64>)> = Vec::new();
-            // Initialize to 0 so first comparison with generation counter (also 0)
-            // matches immediately, avoiding an unnecessary snapshot rebuild on startup.
-            let mut cached_gen: u64 = 0;
+            let mut cached_gen: u64 = u64::MAX; // Force initial rebuild
 
             loop {
                 tokio::select! {
@@ -300,10 +298,8 @@ impl StreamDataTransceiver {
                     packet_senders.lock().await.remove(id);
                     tracing::debug!("Removed closed packet subscriber: {}", id);
                 }
-                // Bump generation so next call rebuilds snapshot.
-                // No need to invalidate cached_gen separately — fetch_add(1) already
-                // ensures current_gen != *cached_gen on the next call.
                 generation.fetch_add(1, Ordering::Release);
+                *cached_gen = cached_gen.wrapping_add(u64::MAX);
 
                 // Decrement subscriber_count for subscribers removed by fan-out.
                 let mut stats = statistics_data.lock().await;
@@ -322,9 +318,7 @@ impl StreamDataTransceiver {
     ) -> tokio::task::JoinHandle<()> {
         tokio::spawn(async move {
             let mut cached_snapshot: Vec<(Uuid, PacketDataSender, Arc<AtomicU64>)> = Vec::new();
-            // Initialize to 0 so first comparison with generation counter (also 0)
-            // matches immediately, avoiding an unnecessary snapshot rebuild on startup.
-            let mut cached_gen: u64 = 0;
+            let mut cached_gen: u64 = u64::MAX;
 
             loop {
                 tokio::select! {
@@ -454,15 +448,13 @@ impl StreamDataTransceiver {
                 }
                 StatisticData::HevcCodec {
                     codec,
-                    profile,
-                    level,
+                    profile: _,
+                    level: _,
                     width,
                     height,
                 } => {
                     let video_codec_data = &mut statistics_data.lock().await.publisher.video;
                     video_codec_data.codec = codec;
-                    video_codec_data.hevc_profile = Some(profile);
-                    video_codec_data.hevc_level = Some(level);
                     video_codec_data.width = width;
                     video_codec_data.height = height;
                 }

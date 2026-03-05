@@ -113,7 +113,22 @@ pub async fn proxy_with_cache(
         .determine_slice_cache_status(url, provider_headers, &needed)
         .await;
 
+    // For large range requests spanning many slices, stream directly from
+    // upstream to avoid buffering all slice data in memory.
+    const MAX_BUFFERED_SLICES: usize = 8;
+    if needed.len() > MAX_BUFFERED_SLICES {
+        return stream_through_with_status(
+            url,
+            provider_headers,
+            range_header,
+            CacheStatus::Bypass,
+        )
+        .await;
+    }
+
     // Fetch all needed slices, tracking the aggregate cache status.
+    // For typical requests spanning 1-8 slices (up to 16 MiB with default
+    // 2 MiB slice size), buffering is acceptable.
     let mut combined = Vec::new();
     let mut worst_status = CacheStatus::Hit; // Start optimistic.
 
@@ -280,40 +295,39 @@ pub(super) async fn full_body_cache_path(
     // chunked responses that lack a Content-Length header.
     let max_body = cache.config().max_cacheable_body;
     let mut buf = Vec::with_capacity(std::cmp::min(max_body + 1, 4 * 1024 * 1024));
-    let exceeded_max_body = {
-        let mut stream = resp.bytes_stream();
-        let mut exceeded = false;
-        while let Some(chunk) = stream.next().await {
-            let chunk = chunk.map_err(|e| anyhow::anyhow!("Failed to read upstream body: {e}"))?;
-            if !exceeded {
-                buf.extend_from_slice(&chunk);
-                if buf.len() > max_body {
-                    exceeded = true;
-                    // Continue draining remaining response body to allow connection reuse.
-                    // reqwest won't reuse connections with partially consumed responses.
-                }
-            }
-            // When exceeded is true, we just discard chunks to drain the stream.
+    let mut stream = resp.bytes_stream();
+    let mut exceeded = false;
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|e| anyhow::anyhow!("Failed to read upstream body: {e}"))?;
+        buf.extend_from_slice(&chunk);
+        if buf.len() > max_body {
+            exceeded = true;
+            break;
         }
-        exceeded
-    };
-    let body_bytes = Bytes::from(buf);
+    }
 
-    if exceeded_max_body {
-        // Body turned out larger than expected (chunked transfer).
-        // Return what we have but don't cache. The remaining body was already
-        // drained to allow connection reuse.
+    if exceeded {
+        // Body exceeds max_cacheable_body (chunked transfer without
+        // Content-Length). Stream the remainder through without caching.
+        // First yield what we've already buffered, then stream the rest.
+        let buffered = Bytes::from(buf);
+        let remainder =
+            stream.map(|r| r.map_err(|e| std::io::Error::other(format!("Stream error: {e}"))));
+        let first_chunk: Result<Bytes, std::io::Error> = Ok(buffered);
+        let combined_stream = futures::stream::once(async move { first_chunk }).chain(remainder);
+
         let mut builder = Response::builder()
             .status(status)
-            .header("Content-Length", body_bytes.len().to_string())
             .header("X-Cache-Status", CacheStatus::Bypass.as_str());
         if let Some(ref ct) = content_type {
             builder = builder.header("Content-Type", ct.as_str());
         }
+        // Do NOT set Content-Length -- full size is unknown.
         return builder
-            .body(Body::from(body_bytes))
+            .body(Body::from_stream(combined_stream))
             .map_err(|e| anyhow::anyhow!("Failed to build bypass response: {e}"));
     }
+    let body_bytes = Bytes::from(buf);
 
     // Cache the body.
     let ttl = match content_type.as_deref() {

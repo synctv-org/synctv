@@ -20,6 +20,11 @@ impl ClientApiImpl {
         room_id: &str,
         req: crate::proto::client::StartPlaybackRequest,
     ) -> Result<crate::proto::client::StartPlaybackResponse, ApiError> {
+        crate::http::validation::validate_id(room_id, "room_id")
+            .map_err(|e| ApiError::InvalidInput(format!("Invalid room_id: {e}")))?;
+        crate::http::validation::validate_id(&req.media_id, "media_id")
+            .map_err(|e| ApiError::InvalidInput(format!("Invalid media_id: {e}")))?;
+
         let uid = UserId::from_string(user_id.to_string());
         let rid = RoomId::from_string(room_id.to_string());
         let media_id = MediaId::from_string(req.media_id);
@@ -45,6 +50,9 @@ impl ClientApiImpl {
         room_id: &str,
         _req: crate::proto::client::StopPlaybackRequest,
     ) -> Result<crate::proto::client::StopPlaybackResponse, ApiError> {
+        crate::http::validation::validate_id(room_id, "room_id")
+            .map_err(|e| ApiError::InvalidInput(format!("Invalid room_id: {e}")))?;
+
         let uid = UserId::from_string(user_id.to_string());
         let rid = RoomId::from_string(room_id.to_string());
 
@@ -69,6 +77,9 @@ impl ClientApiImpl {
         room_id: &str,
         _req: crate::proto::client::GetPlaybackRequest,
     ) -> Result<crate::proto::client::GetPlaybackResponse, ApiError> {
+        crate::http::validation::validate_id(room_id, "room_id")
+            .map_err(|e| ApiError::InvalidInput(format!("Invalid room_id: {e}")))?;
+
         let uid = UserId::from_string(user_id.to_string());
         let rid = RoomId::from_string(room_id.to_string());
 

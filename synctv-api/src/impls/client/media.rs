@@ -251,6 +251,9 @@ impl ClientApiImpl {
         user_id: &str,
         room_id: &str,
     ) -> Result<crate::proto::client::ClearPlaylistResponse, ApiError> {
+        crate::http::validation::validate_id(room_id, "room_id")
+            .map_err(|e| ApiError::InvalidInput(format!("Invalid room_id: {e}")))?;
+
         let uid = UserId::from_string(user_id.to_string());
         let rid = RoomId::from_string(room_id.to_string());
 
@@ -277,24 +280,27 @@ impl ClientApiImpl {
             .await
             .map_err(ApiError::from)?;
 
-        // Broadcast MediaRemoved for each cleared item so other replicas update playlists
-        if let Some(ref tx) = self.redis_publish_tx {
-            let username = self
-                .user_service
-                .get_user(&uid)
-                .await
-                .map(|u| u.username)
-                .unwrap_or_default();
-            for media in &media_items {
+        // Broadcast a single MediaRemovedBatch event instead of N individual events.
+        // This reduces Redis pub/sub traffic from O(n) to O(1) messages.
+        if !media_items.is_empty() {
+            if let Some(ref tx) = self.redis_publish_tx {
+                let username = self
+                    .user_service
+                    .get_user(&uid)
+                    .await
+                    .map(|u| u.username)
+                    .unwrap_or_default();
+                let media_ids: Vec<synctv_core::models::MediaId> =
+                    media_items.iter().map(|m| m.id.clone()).collect();
                 crate::impls::try_publish_cluster_event(
                     tx,
                     synctv_cluster::sync::PublishRequest {
-                        event: synctv_cluster::sync::ClusterEvent::MediaRemoved {
+                        event: synctv_cluster::sync::ClusterEvent::MediaRemovedBatch {
                             event_id: nanoid::nanoid!(16),
                             room_id: rid.clone(),
                             user_id: uid.clone(),
-                            username: username.clone(),
-                            media_id: media.id.clone(),
+                            username,
+                            media_ids,
                             timestamp: chrono::Utc::now(),
                         },
                     },
@@ -324,6 +330,9 @@ impl ClientApiImpl {
         room_id: &str,
         req: crate::proto::client::AddMediaBatchRequest,
     ) -> Result<crate::proto::client::AddMediaBatchResponse, ApiError> {
+        crate::http::validation::validate_id(room_id, "room_id")
+            .map_err(|e| ApiError::InvalidInput(format!("Invalid room_id: {e}")))?;
+
         if req.items.is_empty() {
             return Err(ApiError::InvalidInput(
                 "items array cannot be empty".to_string(),
@@ -438,6 +447,9 @@ impl ClientApiImpl {
         room_id: &str,
         req: crate::proto::client::DeleteMediaBatchRequest,
     ) -> Result<crate::proto::client::DeleteMediaBatchResponse, ApiError> {
+        crate::http::validation::validate_id(room_id, "room_id")
+            .map_err(|e| ApiError::InvalidInput(format!("Invalid room_id: {e}")))?;
+
         if req.media_ids.is_empty() {
             return Err(ApiError::InvalidInput(
                 "media_ids array cannot be empty".to_string(),
@@ -447,6 +459,11 @@ impl ClientApiImpl {
             return Err(ApiError::InvalidInput(
                 "Too many items (max 100 per batch)".to_string(),
             ));
+        }
+
+        for media_id in &req.media_ids {
+            crate::http::validation::validate_id(media_id, "media_id")
+                .map_err(|e| ApiError::InvalidInput(format!("Invalid media_id: {e}")))?;
         }
 
         let uid = UserId::from_string(user_id.to_string());
@@ -513,6 +530,9 @@ impl ClientApiImpl {
         room_id: &str,
         req: crate::proto::client::ReorderMediaBatchRequest,
     ) -> Result<crate::proto::client::ReorderMediaBatchResponse, ApiError> {
+        crate::http::validation::validate_id(room_id, "room_id")
+            .map_err(|e| ApiError::InvalidInput(format!("Invalid room_id: {e}")))?;
+
         if req.updates.is_empty() {
             return Err(ApiError::InvalidInput(
                 "updates array cannot be empty".to_string(),
@@ -522,6 +542,11 @@ impl ClientApiImpl {
             return Err(ApiError::InvalidInput(
                 "Too many items (max 100 per batch)".to_string(),
             ));
+        }
+
+        for update in &req.updates {
+            crate::http::validation::validate_id(&update.media_id, "media_id")
+                .map_err(|e| ApiError::InvalidInput(format!("Invalid media_id: {e}")))?;
         }
 
         let uid = UserId::from_string(user_id.to_string());
@@ -569,6 +594,9 @@ impl ClientApiImpl {
         room_id: &str,
         req: crate::proto::client::ListPlaylistRequest,
     ) -> Result<crate::proto::client::ListPlaylistResponse, ApiError> {
+        crate::http::validation::validate_id(room_id, "room_id")
+            .map_err(|e| ApiError::InvalidInput(format!("Invalid room_id: {e}")))?;
+
         let uid = UserId::from_string(user_id.to_string());
         let rid = RoomId::from_string(room_id.to_string());
 
@@ -644,6 +672,11 @@ impl ClientApiImpl {
         room_id: &str,
         req: crate::proto::client::ListPlaylistItemsRequest,
     ) -> Result<crate::proto::client::ListPlaylistItemsResponse, ApiError> {
+        crate::http::validation::validate_id(room_id, "room_id")
+            .map_err(|e| ApiError::InvalidInput(format!("Invalid room_id: {e}")))?;
+        crate::http::validation::validate_id(&req.playlist_id, "playlist_id")
+            .map_err(|e| ApiError::InvalidInput(format!("Invalid playlist_id: {e}")))?;
+
         let uid = UserId::from_string(user_id.to_string());
         let rid = RoomId::from_string(room_id.to_string());
         let playlist_id = synctv_core::models::PlaylistId::from_string(req.playlist_id.clone());
@@ -817,6 +850,13 @@ impl ClientApiImpl {
         room_id: &str,
         req: crate::proto::client::SwapMediaRequest,
     ) -> Result<crate::proto::client::SwapMediaResponse, ApiError> {
+        crate::http::validation::validate_id(room_id, "room_id")
+            .map_err(|e| ApiError::InvalidInput(format!("Invalid room_id: {e}")))?;
+        crate::http::validation::validate_id(&req.media_id1, "media_id1")
+            .map_err(|e| ApiError::InvalidInput(format!("Invalid media_id1: {e}")))?;
+        crate::http::validation::validate_id(&req.media_id2, "media_id2")
+            .map_err(|e| ApiError::InvalidInput(format!("Invalid media_id2: {e}")))?;
+
         let uid = UserId::from_string(user_id.to_string());
         let rid = RoomId::from_string(room_id.to_string());
 

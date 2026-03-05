@@ -73,6 +73,7 @@ pub struct ClientServiceConfig {
     pub providers_manager: Option<Arc<synctv_core::service::ProvidersManager>>,
     pub config: Arc<synctv_core::Config>,
     pub client_api: Arc<crate::impls::ClientApiImpl>,
+    pub notification_service: Option<Arc<synctv_core::service::UserNotificationService>>,
 }
 
 /// `ClientService` implementation
@@ -90,6 +91,7 @@ pub struct ClientServiceImpl {
     email_token_service: Option<Arc<synctv_core::service::EmailTokenService>>,
     client_api: Arc<crate::impls::ClientApiImpl>,
     config: Arc<synctv_core::Config>,
+    notification_service: Option<Arc<synctv_core::service::UserNotificationService>>,
 }
 
 impl ClientServiceImpl {
@@ -124,6 +126,7 @@ impl ClientServiceImpl {
             email_token_service,
             client_api,
             config,
+            notification_service: None,
         }
     }
 
@@ -143,6 +146,7 @@ impl ClientServiceImpl {
             email_token_service: config.email_token_service,
             client_api: config.client_api,
             config: config.config,
+            notification_service: config.notification_service,
         }
     }
 
@@ -662,8 +666,8 @@ impl RoomService for ClientServiceImpl {
         // Create channel for outgoing messages with bounded capacity to prevent memory exhaustion
         let (outgoing_tx, outgoing_rx) = mpsc::channel::<ServerMessage>(MESSAGE_STREAM_BUFFER_SIZE);
 
-        // Create gRPC message sender
-        let grpc_sender = Arc::new(GrpcMessageSender::new(outgoing_tx.clone()));
+        // Create a single shared gRPC message sender (avoids dual-sender from same channel)
+        let grpc_sender = Arc::new(GrpcMessageSender::new(outgoing_tx));
 
         // Create StreamMessageHandler with all configuration
         let stream_handler = StreamMessageHandler::new(
@@ -677,7 +681,7 @@ impl RoomService for ClientServiceImpl {
             self.rate_limiter.clone(),
             self.rate_limit_config.clone(),
             self.content_filter.clone(),
-            grpc_sender,
+            Arc::clone(&grpc_sender) as Arc<dyn MessageSender>,
         )
         .with_ws_message_rate_limit(
             self.config
@@ -685,16 +689,32 @@ impl RoomService for ClientServiceImpl {
                 .ws_message_rate_limit_per_second,
         );
 
-        // Create unified GrpcStreamMessage adapter
+        // Wire notification service for direct real-time push (matches HTTP WebSocket behavior)
+        let stream_handler = if let Some(ref notif_svc) = self.notification_service {
+            stream_handler.with_notification_service(Arc::clone(notif_svc))
+        } else {
+            stream_handler
+        };
+
+        // Check connection limits BEFORE returning the response stream.
+        // This ensures limit violations are reported as gRPC errors instead of
+        // silently failing inside a background task.
+        stream_handler
+            .pre_join()
+            .await
+            .map_err(|e| Status::resource_exhausted(format!("Failed to join room: {e}")))?;
+
+        // Create unified GrpcStreamMessage adapter (shares the same sender)
         let mut grpc_stream = GrpcStreamMessage {
             client_stream,
-            sender: GrpcMessageSender::new(outgoing_tx),
+            sender: Arc::clone(&grpc_sender),
             alive: std::sync::atomic::AtomicBool::new(true),
         };
 
         // Spawn the unified message loop (handles disconnect signals, heartbeat, cleanup)
+        // Uses run_after_join since pre_join was already called above.
         tokio::spawn(async move {
-            if let Err(e) = stream_handler.run(&mut grpc_stream).await {
+            if let Err(e) = stream_handler.run_after_join(&mut grpc_stream).await {
                 tracing::error!("gRPC stream handler error: {}", e);
             }
         });
@@ -732,7 +752,7 @@ impl RoomService for ClientServiceImpl {
             .client_api
             .get_ice_servers(&room_id, &user_id)
             .await
-            .map_err(|e| internal_err("Failed to get ICE servers", e))?;
+            .map_err(map_api_error)?;
         Ok(Response::new(response))
     }
 
@@ -746,7 +766,7 @@ impl RoomService for ClientServiceImpl {
             .client_api
             .get_network_quality(&room_id, &user_id)
             .await
-            .map_err(|e| internal_err("Failed to get network quality", e))?;
+            .map_err(map_api_error)?;
         Ok(Response::new(response))
     }
 }
@@ -789,7 +809,7 @@ impl MessageSender for GrpcMessageSender {
 /// unified `StreamMessage` interface, enabling full code reuse with the WebSocket path.
 struct GrpcStreamMessage {
     client_stream: tonic::Streaming<ClientMessage>,
-    sender: GrpcMessageSender,
+    sender: Arc<GrpcMessageSender>,
     alive: std::sync::atomic::AtomicBool,
 }
 
@@ -812,7 +832,7 @@ impl StreamMessage for GrpcStreamMessage {
     }
 
     fn send(&self, message: ServerMessage) -> Result<(), String> {
-        MessageSender::send(&self.sender, message)
+        MessageSender::send(&*self.sender, message)
     }
 
     fn is_alive(&self) -> bool {

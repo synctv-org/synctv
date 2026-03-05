@@ -701,7 +701,7 @@ fn test_danmaku_message_debug() {
         message: "hello".to_string(),
         timestamp: 12345,
     };
-    let debug_str = format!("{:?}", chat);
+    let debug_str = format!("{chat:?}");
     assert!(debug_str.contains("test_user"));
     assert!(debug_str.contains("hello"));
 }
@@ -766,12 +766,12 @@ fn test_reconnect_config_custom() {
     let config = ReconnectConfig {
         max_retries: 10,
         initial_delay: Duration::from_millis(500),
-        max_delay: Duration::from_secs(60),
+        max_delay: Duration::from_mins(1),
         backoff_multiplier: 1.5,
     };
     assert_eq!(config.max_retries, 10);
     assert_eq!(config.initial_delay, Duration::from_millis(500));
-    assert_eq!(config.max_delay, Duration::from_secs(60));
+    assert_eq!(config.max_delay, Duration::from_mins(1));
     assert!((config.backoff_multiplier - 1.5).abs() < f64::EPSILON);
 }
 
@@ -829,9 +829,7 @@ fn test_reconnect_config_delay_never_exceeds_max() {
         let delay = config.delay_for_retry(i);
         assert!(
             delay <= Duration::from_secs(10),
-            "Delay {:?} exceeds max for retry {}",
-            delay,
-            i
+            "Delay {delay:?} exceeds max for retry {i}"
         );
     }
 }
@@ -850,7 +848,7 @@ fn test_reconnect_result_messages() {
         timestamp: 12345,
     }];
 
-    let result = ReconnectResult::Messages(messages.clone());
+    let result = ReconnectResult::Messages(messages);
     if let ReconnectResult::Messages(msgs) = result {
         assert_eq!(msgs.len(), 1);
     } else {
@@ -897,6 +895,6 @@ fn test_reconnect_result_debug() {
     let messages = vec![DanmakuMessage::Heartbeat { online_count: 100 }];
     let result = ReconnectResult::Messages(messages);
 
-    let debug_str = format!("{:?}", result);
+    let debug_str = format!("{result:?}");
     assert!(debug_str.contains("Messages"));
 }

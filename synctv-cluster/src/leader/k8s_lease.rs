@@ -932,8 +932,7 @@ mod tests {
             let grace_secs = (base_secs * multiplier).min(max_secs);
             assert_eq!(
                 grace_secs, expected_secs,
-                "Failed for consecutive_losses = {}",
-                losses
+                "Failed for consecutive_losses = {losses}"
             );
         }
     }
@@ -950,8 +949,7 @@ mod tests {
             let grace_secs = (base_secs * multiplier).min(max_secs);
             assert_eq!(
                 grace_secs, 60,
-                "Grace period should be capped at max for losses = {}",
-                losses
+                "Grace period should be capped at max for losses = {losses}"
             );
         }
     }
@@ -981,8 +979,7 @@ mod tests {
             let grace_secs = (base_secs * multiplier).min(max_secs);
             assert_eq!(
                 grace_secs, expected_secs,
-                "Failed for consecutive_losses = {}",
-                losses
+                "Failed for consecutive_losses = {losses}"
             );
         }
     }

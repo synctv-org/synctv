@@ -284,6 +284,6 @@ mod tests {
         // 2. Retry buffers: up to 5+ minutes
         // 3. Safety margin: 5 minutes
         // Total: 15 minutes (900s)
-        assert_eq!(DEFAULT_DEDUP_TTL, Duration::from_secs(900));
+        assert_eq!(DEFAULT_DEDUP_TTL, Duration::from_mins(15));
     }
 }

@@ -282,7 +282,7 @@ impl BilibiliSourceConfig {
     }
 
     /// Get a reference to the credential_ref from any variant
-    fn credential_ref(&self) -> &super::credential_resolver::CredentialRef {
+    const fn credential_ref(&self) -> &super::credential_resolver::CredentialRef {
         match self {
             Self::Video { credential_ref, .. }
             | Self::Pgc { credential_ref, .. }
@@ -343,7 +343,7 @@ impl MediaProvider for BilibiliProvider {
                     cid,
                     credential_ref.credential_owner_id
                 ),
-                Duration::from_secs(2 * 3600), // 2 hours
+                Duration::from_hours(2), // 2 hours
             ),
             BilibiliSourceConfig::Pgc {
                 epid,
@@ -355,7 +355,7 @@ impl MediaProvider for BilibiliProvider {
                     "playback:pgc:{epid}:{cid}:{}",
                     credential_ref.credential_owner_id
                 ),
-                Duration::from_secs(2 * 3600),
+                Duration::from_hours(2),
             ),
             BilibiliSourceConfig::Live {
                 room_id,
@@ -366,7 +366,7 @@ impl MediaProvider for BilibiliProvider {
                     "playback:live:{room_id}:{}",
                     credential_ref.credential_owner_id
                 ),
-                Duration::from_secs(120), // Live streams expire quickly
+                Duration::from_mins(2), // Live streams expire quickly
             ),
         };
 
@@ -666,7 +666,7 @@ impl BilibiliProvider {
                     let repo = &ctx.services.credential_repo;
                     let credential = super::credential_resolver::resolve_credential(
                         repo,
-                        BilibiliProvider::NAME,
+                        Self::NAME,
                         credential_ref,
                     )
                     .await?;

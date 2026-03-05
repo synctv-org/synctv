@@ -910,7 +910,7 @@ impl RoomService {
         // Soft-delete: set deleted_at timestamp.
         let deleted = sqlx::query(
             "UPDATE rooms
-             SET deleted_at = $2, updated_at = $2
+             SET deleted_at = $2, updated_at = $2, version = version + 1
              WHERE id = $1 AND deleted_at IS NULL",
         )
         .bind(room_id.as_str())
@@ -2444,7 +2444,7 @@ impl RoomService {
 
         let deleted = sqlx::query(
             "UPDATE rooms
-             SET deleted_at = $2, updated_at = $2
+             SET deleted_at = $2, updated_at = $2, version = version + 1
              WHERE id = $1 AND deleted_at IS NULL",
         )
         .bind(room_id.as_str())
@@ -2596,7 +2596,7 @@ impl RoomService {
 
         let deleted = sqlx::query(
             "UPDATE rooms
-             SET deleted_at = $2, updated_at = $2
+             SET deleted_at = $2, updated_at = $2, version = version + 1
              WHERE id = $1 AND deleted_at IS NULL",
         )
         .bind(room_id.as_str())

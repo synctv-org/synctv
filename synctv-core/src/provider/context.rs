@@ -67,42 +67,42 @@ impl<'a> ProviderContext<'a> {
 
     /// Set user ID
     #[must_use]
-    pub fn with_user_id(mut self, user_id: &'a str) -> Self {
+    pub const fn with_user_id(mut self, user_id: &'a str) -> Self {
         self.user_id = Some(user_id);
         self
     }
 
     /// Set room ID
     #[must_use]
-    pub fn with_room_id(mut self, room_id: &'a str) -> Self {
+    pub const fn with_room_id(mut self, room_id: &'a str) -> Self {
         self.room_id = Some(room_id);
         self
     }
 
     /// Set base URL
     #[must_use]
-    pub fn with_base_url(mut self, base_url: &'a str) -> Self {
+    pub const fn with_base_url(mut self, base_url: &'a str) -> Self {
         self.base_url = Some(base_url);
         self
     }
 
     /// Set database pool
     #[must_use]
-    pub fn with_db(mut self, db: &'a PgPool) -> Self {
+    pub const fn with_db(mut self, db: &'a PgPool) -> Self {
         self.db = Some(db);
         self
     }
 
     /// Set Redis connection manager
     #[must_use]
-    pub fn with_redis(mut self, redis: &'a redis::aio::ConnectionManager) -> Self {
+    pub const fn with_redis(mut self, redis: &'a redis::aio::ConnectionManager) -> Self {
         self.redis = Some(redis);
         self
     }
 
     /// Set credential encryption for protecting sensitive data in `source_config`
     #[must_use]
-    pub fn with_credential_encryption(mut self, enc: &'a CredentialEncryption) -> Self {
+    pub const fn with_credential_encryption(mut self, enc: &'a CredentialEncryption) -> Self {
         self.credential_encryption = Some(enc);
         self
     }
@@ -116,14 +116,17 @@ impl<'a> ProviderContext<'a> {
 
     /// Set user provider credential repository for resolving stored credentials
     #[must_use]
-    pub fn with_credential_repo(mut self, repo: &'a UserProviderCredentialRepository) -> Self {
+    pub const fn with_credential_repo(
+        mut self,
+        repo: &'a UserProviderCredentialRepository,
+    ) -> Self {
         self.credential_repo = Some(repo);
         self
     }
 
     /// Set proxy signing key for generating HMAC-signed proxy URLs
     #[must_use]
-    pub fn with_signing_key(mut self, key: &'a ProxySigningKey) -> Self {
+    pub const fn with_signing_key(mut self, key: &'a ProxySigningKey) -> Self {
         self.signing_key = Some(key);
         self
     }

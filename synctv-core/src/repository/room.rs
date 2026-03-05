@@ -297,7 +297,7 @@ impl RoomRepository {
             SELECT
                 r.id, r.name, r.description, r.created_by, r.status, r.is_banned,
                 r.created_at, r.updated_at, r.deleted_at, r.version, r.last_activity_at,
-                COALESCE(COUNT(rm.user_id) FILTER (WHERE rm.left_at IS NULL), 0)::int as member_count
+                COALESCE(COUNT(rm.user_id) FILTER (WHERE rm.left_at IS NULL AND rm.status != 3), 0)::int as member_count
             FROM rooms r
             LEFT JOIN room_members rm ON r.id = rm.room_id
             WHERE {list_where}
@@ -360,14 +360,15 @@ impl RoomRepository {
         Ok(count > 0)
     }
 
-    /// Get room member count
+    /// Get room member count (excludes banned members)
     pub async fn get_member_count(&self, room_id: &RoomId) -> Result<i32> {
         let count: i64 = sqlx::query_scalar(
             "SELECT COUNT(*) as count
              FROM room_members
-             WHERE room_id = $1 AND left_at IS NULL",
+             WHERE room_id = $1 AND left_at IS NULL AND status != $2",
         )
         .bind(room_id.as_str())
+        .bind(crate::models::MemberStatus::Banned)
         .fetch_one(&self.pool)
         .await?;
 
@@ -435,7 +436,7 @@ impl RoomRepository {
             SELECT
                 r.id, r.name, r.description, r.created_by, r.status, r.is_banned,
                 r.created_at, r.updated_at, r.deleted_at, r.version, r.last_activity_at,
-                COALESCE(COUNT(rm.user_id) FILTER (WHERE rm.left_at IS NULL), 0)::int as member_count
+                COALESCE(COUNT(rm.user_id) FILTER (WHERE rm.left_at IS NULL AND rm.status != 3), 0)::int as member_count
             FROM rooms r
             LEFT JOIN room_members rm ON r.id = rm.room_id
             WHERE r.created_by = $1 AND r.deleted_at IS NULL

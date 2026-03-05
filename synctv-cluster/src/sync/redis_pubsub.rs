@@ -1611,8 +1611,8 @@ impl RedisPubSub {
         }
 
         // Unsubscribe from deactivated rooms
-        for room_id in subscribed_rooms.difference(&active_rooms).cloned() {
-            let channel = self.room_pubsub_channel(&room_id);
+        for room_id in subscribed_rooms.difference(&active_rooms) {
+            let channel = self.room_pubsub_channel(room_id);
             match timeout(
                 Duration::from_secs(REDIS_TIMEOUT_SECS),
                 pubsub.unsubscribe(&channel),
@@ -1621,7 +1621,7 @@ impl RedisPubSub {
             {
                 Ok(Ok(())) => {
                     debug!(room_id = %room_id, "Re-synced: unsubscribed from room channel");
-                    stream_cursors.remove(&self.room_stream_key(&room_id));
+                    stream_cursors.remove(&self.room_stream_key(room_id));
                 }
                 _ => {
                     warn!(room_id = %room_id, "Re-sync: failed to unsubscribe from room channel");
@@ -2244,7 +2244,7 @@ mod tests {
             .await
             .expect("Failed to get Redis port");
 
-        let redis_url = format!("redis://{}:{}", redis_host, redis_port);
+        let redis_url = format!("redis://{redis_host}:{redis_port}");
         let redis_client = RedisClient::open(redis_url.as_str()).unwrap();
 
         // Verify Redis is reachable with retry logic
@@ -2258,7 +2258,7 @@ mod tests {
                         retries += 1;
                         tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
                     }
-                    Err(e) => panic!("Redis connection failed after {} retries: {}", retries, e),
+                    Err(e) => panic!("Redis connection failed after {retries} retries: {e}"),
                 }
             }
         };
@@ -2308,7 +2308,7 @@ mod tests {
         // Wait for subscriber loops to be ready and lifecycle subscriptions established.
         // The subscriber tasks need to: connect to Redis, subscribe to admin pattern,
         // then set up lifecycle subscription. This can take several hundred ms.
-        tokio::time::sleep(tokio::time::Duration::from_millis(1000)).await;
+        tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
 
         // Subscribe a client to the room - this triggers RoomLifecycleEvent::RoomActivated
         // which is received by both pubsub1 and pubsub2, causing them to subscribe to
@@ -2323,7 +2323,7 @@ mod tests {
 
         // Wait for Redis room channel subscription to complete in both pubsub instances.
         // The lifecycle event triggers async Redis SUBSCRIBE which takes time.
-        tokio::time::sleep(tokio::time::Duration::from_millis(1000)).await;
+        tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
 
         // Publish event from node1
         let event = ClusterEvent::ChatMessage {
@@ -2340,7 +2340,7 @@ mod tests {
         publish_tx1.send(PublishRequest { event }).await.unwrap();
 
         // Wait for event propagation
-        tokio::time::sleep(tokio::time::Duration::from_millis(1000)).await;
+        tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
 
         // Client should receive the event
         let received = tokio::time::timeout(tokio::time::Duration::from_secs(5), rx.recv())
@@ -2385,8 +2385,7 @@ mod tests {
         // Verify format: "{timestamp_ms}-0"
         assert!(
             catchup_id.ends_with("-0"),
-            "catchup_start_id should end with '-0', got: {}",
-            catchup_id
+            "catchup_start_id should end with '-0', got: {catchup_id}"
         );
 
         // Parse and verify timestamp is within expected range
@@ -2394,8 +2393,7 @@ mod tests {
         assert_eq!(
             parts.len(),
             2,
-            "ID should have 2 parts separated by '-', got: {}",
-            catchup_id
+            "ID should have 2 parts separated by '-', got: {catchup_id}"
         );
 
         let timestamp_ms: u64 = parts[0].parse().expect("timestamp should be a valid u64");
@@ -2412,8 +2410,7 @@ mod tests {
         // Allow 1 second tolerance for test execution time
         assert!(
             diff < 1000,
-            "catchup_start_id timestamp should be ~5 minutes ago, diff: {}ms",
-            diff
+            "catchup_start_id timestamp should be ~5 minutes ago, diff: {diff}ms"
         );
     }
 
@@ -2454,8 +2451,7 @@ mod tests {
         // Allow 1 second tolerance
         assert!(
             diff < 1000,
-            "catchup_start_id should use 60s window, diff: {}ms",
-            diff
+            "catchup_start_id should use 60s window, diff: {diff}ms"
         );
     }
 
@@ -2587,7 +2583,7 @@ mod tests {
             .await
             .expect("Failed to get Redis port");
 
-        let redis_url = format!("redis://{}:{}", redis_host, redis_port);
+        let redis_url = format!("redis://{redis_host}:{redis_port}");
         let redis_client = RedisClient::open(redis_url.as_str()).unwrap();
 
         // Verify Redis is reachable with retry logic
@@ -2606,7 +2602,7 @@ mod tests {
                         retries += 1;
                         tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
                     }
-                    Err(e) => panic!("Redis connection failed after {} retries: {}", retries, e),
+                    Err(e) => panic!("Redis connection failed after {retries} retries: {e}"),
                 }
             }
         }

@@ -441,7 +441,7 @@ impl MediaProvider for AlistProvider {
             .take(16)
             .collect();
         let cache_key = format!("playback:{}:{path_hash}", config.credential_ref.server_id);
-        let cache_ttl = Duration::from_secs(15 * 60);
+        let cache_ttl = Duration::from_mins(15);
 
         let store = _ctx.store.as_ref();
 

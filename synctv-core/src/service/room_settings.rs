@@ -390,7 +390,10 @@ impl RoomSettingsService {
             return Ok(());
         }
 
-        let id_strs: Vec<&str> = room_ids.iter().map(|id| id.as_str()).collect();
+        let id_strs: Vec<&str> = room_ids
+            .iter()
+            .map(super::super::models::id::RoomId::as_str)
+            .collect();
         let batch = self.repo.get_batch(&id_strs).await?;
 
         // Bulk insert into cache

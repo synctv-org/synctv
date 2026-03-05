@@ -389,9 +389,8 @@ impl SliceCache {
                     range_start,
                 )
                 .await;
-            if result.is_err() {
-                self.updating_keys.remove(&key);
-            }
+            // Always clean up updating_keys (idempotent remove).
+            self.updating_keys.remove(&key);
             return result;
         }
 
@@ -406,9 +405,9 @@ impl SliceCache {
                 range_start,
             )
             .await;
-        if result.is_err() {
-            self.updating_keys.remove(&key);
-        }
+        // Always clean up updating_keys (idempotent). Prevents the key from
+        // being stuck in "updating" state if process_slice_response errs.
+        self.updating_keys.remove(&key);
         result
     }
 
@@ -456,6 +455,13 @@ impl SliceCache {
                     ));
                 }
             }
+        } else {
+            tracing::warn!(
+                slice_index = slice_index,
+                range_start = range_start,
+                "Upstream returned 206 Partial Content without Content-Range header; \
+                 cannot validate slice boundaries"
+            );
         }
 
         // Extract headers for metadata before consuming body.
@@ -741,6 +747,7 @@ impl SliceCache {
             return;
         }
         self.cleanup_stale_locks();
+        self.cleanup_stale_meta();
     }
 
     /// Remove all per-key locks not currently held by any task.
@@ -748,10 +755,36 @@ impl SliceCache {
         self.locks.retain(|_key, lock| Arc::strong_count(lock) > 1);
     }
 
+    /// Remove stale metadata entries to prevent unbounded growth of the
+    /// `meta` DashMap. Uses a simple size cap: when the map exceeds
+    /// `MAX_META_ENTRIES`, retain only the first half (arbitrary eviction).
+    pub fn cleanup_stale_meta(&self) {
+        const MAX_META_ENTRIES: usize = 100_000;
+        if self.meta.len() <= MAX_META_ENTRIES {
+            return;
+        }
+        let target = MAX_META_ENTRIES / 2;
+        let mut kept = 0usize;
+        self.meta.retain(|_key, _val| {
+            if kept < target {
+                kept += 1;
+                true
+            } else {
+                false
+            }
+        });
+    }
+
     /// Return the current number of per-key locks (for diagnostics/testing).
     #[must_use]
     pub fn lock_count(&self) -> usize {
         self.locks.len()
+    }
+
+    /// Return the current number of metadata entries (for diagnostics/testing).
+    #[must_use]
+    pub fn meta_count(&self) -> usize {
+        self.meta.len()
     }
 
     /// Return the current number of entries in `seen_keys` (for diagnostics/testing).

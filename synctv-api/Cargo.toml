@@ -13,6 +13,7 @@ synctv-cluster.workspace = true
 synctv-media-providers.workspace = true
 synctv-livestream.workspace = true
 synctv-proto.workspace = true
+synctv-common.workspace = true
 
 # Async
 tokio.workspace = true

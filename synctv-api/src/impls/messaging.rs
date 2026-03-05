@@ -443,23 +443,13 @@ impl StreamMessageHandler {
         self.membership_cache.invalidate(&cache_key);
     }
 
-    /// Run the complete message loop using unified IO abstraction
+    /// Register the connection and join the room, enforcing connection limits.
     ///
-    /// This is the NEW recommended method that handles both sending and receiving
-    /// in a single unified loop using the `StreamMessage` trait.
-    ///
-    /// This method:
-    /// 1. Subscribes to cluster events and forwards them to the client
-    /// 2. Receives client messages via the `StreamMessage` trait
-    /// 3. Handles rate limiting, content filtering, and permissions
-    /// 4. Broadcasts events to the cluster
-    /// 5. Monitors for disconnect signals (user ban, kick, etc.)
-    /// 6. Handles cleanup on disconnect
-    ///
-    /// The caller only needs to provide a `StreamMessage` implementation (WebSocket or gRPC).
-    pub async fn run<S: StreamMessage>(&self, stream: &mut S) -> Result<(), String> {
-        let room_id_str = self.room_id.as_str().to_string();
-
+    /// Call this **before** returning the gRPC response stream so that limit
+    /// violations surface as a proper gRPC error instead of silently failing
+    /// inside a background task.  After a successful `pre_join`, call
+    /// [`run_after_join`] to enter the message loop.
+    pub async fn pre_join(&self) -> Result<(), String> {
         // Register connection with connection manager
         if let Err(e) = self
             .connection_manager
@@ -482,6 +472,39 @@ impl StreamMessageHandler {
                 .await;
             return Err(e);
         }
+
+        Ok(())
+    }
+
+    /// Run the complete message loop using unified IO abstraction.
+    ///
+    /// This is the recommended method that handles both sending and receiving
+    /// in a single unified loop using the `StreamMessage` trait.
+    ///
+    /// This method:
+    /// 1. Registers the connection and joins the room (enforcing limits)
+    /// 2. Subscribes to cluster events and forwards them to the client
+    /// 3. Receives client messages via the `StreamMessage` trait
+    /// 4. Handles rate limiting, content filtering, and permissions
+    /// 5. Broadcasts events to the cluster
+    /// 6. Monitors for disconnect signals (user ban, kick, etc.)
+    /// 7. Handles cleanup on disconnect
+    ///
+    /// The caller only needs to provide a `StreamMessage` implementation (WebSocket or gRPC).
+    ///
+    /// If you need to check connection limits *before* returning a response stream
+    /// (e.g. in gRPC), call [`pre_join`] first and then [`run_after_join`].
+    pub async fn run<S: StreamMessage>(&self, stream: &mut S) -> Result<(), String> {
+        self.pre_join().await?;
+        self.run_after_join(stream).await
+    }
+
+    /// Continue the message loop after a successful [`pre_join`].
+    ///
+    /// This is identical to [`run`] but skips the register/join_room steps
+    /// that were already performed by `pre_join`.
+    pub async fn run_after_join<S: StreamMessage>(&self, stream: &mut S) -> Result<(), String> {
+        let room_id_str = self.room_id.as_str().to_string();
 
         // Subscribe to cluster events using the same connection_id as ConnectionManager
         let (mut event_rx, _connection_id) = self

@@ -7,6 +7,7 @@
 use hmac::{Hmac, Mac};
 use sha2::Sha256;
 use std::fmt;
+use urlencoding::encode as url_encode;
 
 type HmacSha256 = Hmac<Sha256>;
 
@@ -113,7 +114,10 @@ impl ProxySigningKey {
         let sig = self.sign(claims);
         format!(
             "sig={}&uid={}&rid={}&exp={}",
-            sig, claims.user_id, claims.room_id, claims.expires_at
+            url_encode(&sig),
+            url_encode(&claims.user_id),
+            url_encode(&claims.room_id),
+            claims.expires_at
         )
     }
 
@@ -148,6 +152,12 @@ impl ProxySigningKey {
         let rid = rid.ok_or(ProxySignatureError::MissingParam("rid"))?;
         let exp_str = exp.ok_or(ProxySignatureError::MissingParam("exp"))?;
 
+        // URL-decode values since build_signed_query encodes them.
+        let uid_decoded =
+            urlencoding::decode(uid).map_err(|_| ProxySignatureError::InvalidParam("uid"))?;
+        let rid_decoded =
+            urlencoding::decode(rid).map_err(|_| ProxySignatureError::InvalidParam("rid"))?;
+
         let expires_at: i64 = exp_str
             .parse()
             .map_err(|_| ProxySignatureError::InvalidParam("exp"))?;
@@ -155,8 +165,8 @@ impl ProxySigningKey {
         let claims = ProxyUrlClaims {
             provider: provider.to_string(),
             version: version.to_string(),
-            room_id: rid.to_string(),
-            user_id: uid.to_string(),
+            room_id: rid_decoded.into_owned(),
+            user_id: uid_decoded.into_owned(),
             expires_at,
         };
 
@@ -204,7 +214,10 @@ pub fn build_signed_proxy_url(
     let query = signing_key.build_signed_query(&claims);
     format!(
         "/api/providers/proxy/{}/{}/{}?{}",
-        provider, version, action, query
+        url_encode(provider),
+        url_encode(version),
+        url_encode(action),
+        query
     )
 }
 
@@ -254,7 +267,7 @@ mod tests {
         let claims = test_claims();
         let sig = key.sign(&claims);
 
-        let mut tampered = claims.clone();
+        let mut tampered = claims;
         tampered.room_id = "room-2".to_string();
         assert!(matches!(
             key.verify(&tampered, &sig),
@@ -333,5 +346,45 @@ mod tests {
         let sig1 = key1.sign(&claims);
         let sig2 = key2.sign(&claims);
         assert_ne!(sig1, sig2);
+    }
+
+    #[test]
+    fn url_encoding_roundtrip_with_special_chars() {
+        let key = test_key();
+        let claims = ProxyUrlClaims {
+            provider: "emby".to_string(),
+            version: "abc123".to_string(),
+            room_id: "room&id=tricky".to_string(),
+            user_id: "user with spaces&more=yes".to_string(),
+            expires_at: chrono::Utc::now().timestamp() + 3600,
+        };
+        let query = key.build_signed_query(&claims);
+
+        // Verify that special chars are encoded (no raw & or = in uid/rid values)
+        // The query should still be parseable back to the original claims
+        let parsed = key
+            .parse_and_verify_query(&query, &claims.provider, &claims.version)
+            .unwrap();
+        assert_eq!(parsed.room_id, claims.room_id);
+        assert_eq!(parsed.user_id, claims.user_id);
+        assert_eq!(parsed.expires_at, claims.expires_at);
+    }
+
+    #[test]
+    fn build_signed_proxy_url_encodes_path_segments() {
+        let key = test_key();
+        let url = build_signed_proxy_url(
+            "provider/name",
+            "v1&bad",
+            "action=evil",
+            &key,
+            "room-1",
+            "user-1",
+            chrono::Utc::now().timestamp() + 3600,
+        );
+        // Path segments with special chars should be percent-encoded
+        assert!(url.contains("provider%2Fname"));
+        assert!(url.contains("v1%26bad"));
+        assert!(url.contains("action%3Devil"));
     }
 }

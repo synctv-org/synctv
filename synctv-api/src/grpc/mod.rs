@@ -210,6 +210,8 @@ pub struct GrpcServerConfig<'a> {
     pub builtin_stun_url: Option<String>,
     /// TURN health checker for filtering unhealthy TURN servers
     pub turn_health_checker: Option<Arc<synctv_core::service::TurnHealthChecker>>,
+    /// Credential encryption for protecting sensitive data in `source_config`
+    pub credential_encryption: Option<synctv_core::service::CredentialEncryption>,
     /// Pre-bound TCP listener for the gRPC server.
     /// When provided, the server will use this listener instead of binding internally.
     /// This allows the caller to detect port-in-use errors before spawning the server task.
@@ -248,6 +250,7 @@ pub async fn serve(grpc_config: GrpcServerConfig<'_>) -> anyhow::Result<()> {
         shutdown_rx,
         builtin_stun_url,
         turn_health_checker,
+        credential_encryption,
         // grpc_listener is reserved for future use to support pre-bound listeners
         grpc_listener,
     } = grpc_config;
@@ -304,6 +307,7 @@ pub async fn serve(grpc_config: GrpcServerConfig<'_>) -> anyhow::Result<()> {
         .with_redis_publish_tx(redis_publish_tx.clone())
         .with_redis_conn(redis_conn.clone())
         .with_rate_limiter(rate_limiter.clone())
+        .with_credential_encryption(credential_encryption.clone())
         .with_credential_repo(user_provider_credential_repository.clone())
         .with_signing_key(proxy_signing_key.clone()),
     );
@@ -347,6 +351,7 @@ pub async fn serve(grpc_config: GrpcServerConfig<'_>) -> anyhow::Result<()> {
         providers_manager: providers_manager_for_client,
         config: Arc::new(config.clone()),
         client_api: client_api.clone(),
+        notification_service: notification_service.clone(),
     });
 
     // Build the shared AdminApiImpl for gRPC handlers (same impls layer used by HTTP)
@@ -621,8 +626,9 @@ pub async fn serve(grpc_config: GrpcServerConfig<'_>) -> anyhow::Result<()> {
             redis_conn: redis_conn.clone(),
             builtin_stun_url: None,
             turn_health_checker: None,
-            credential_encryption: None,
+            credential_encryption: credential_encryption.clone(),
             messaging_rate_limit_config: synctv_core::service::RateLimitConfig::default(),
+            providers_manager: Some(Arc::clone(&_providers_mgr)),
         });
 
         // Reuse the already-constructed client_api and use actual rate limit config
@@ -661,13 +667,16 @@ pub async fn serve(grpc_config: GrpcServerConfig<'_>) -> anyhow::Result<()> {
                 providers.emby.clone(),
                 user_provider_credential_repository.clone(),
             )),
-            provider_stores: Arc::new(synctv_core::provider::store::ProviderStoreRegistry::new(
-                None,
-            )),
+            provider_stores: Arc::new(synctv_core::provider::store::ProviderStoreRegistry::new({
+                match &redis_conn {
+                    Some(shared) => Some(shared.read().await.clone()),
+                    None => None,
+                }
+            })),
             proxy_provider_registry: Arc::new(providers.build_proxy_registry()),
             proxy_services: std::sync::Arc::new(synctv_core::provider::proxy::ProxyServices {
                 room_service: room_service.clone(),
-                credential_encryption: None,
+                credential_encryption: credential_encryption.clone(),
                 credential_repo: user_provider_credential_repository.clone(),
                 signing_key: proxy_signing_key.clone(),
             }),

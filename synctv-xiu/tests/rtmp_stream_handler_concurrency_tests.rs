@@ -29,7 +29,7 @@ struct SplitCacheSim {
 }
 
 impl SplitCacheSim {
-    fn new() -> Self {
+    const fn new() -> Self {
         Self {
             video_seq: RwLock::new((Vec::new(), 0)),
             audio_seq: RwLock::new((Vec::new(), 0)),
@@ -67,7 +67,7 @@ struct SingleLockCacheSim {
 }
 
 impl SingleLockCacheSim {
-    fn new() -> Self {
+    const fn new() -> Self {
         Self {
             data: RwLock::new((Vec::new(), Vec::new(), Vec::new(), 0, 0, 0)),
         }
@@ -154,10 +154,7 @@ fn test_split_lock_vs_single_lock_performance() {
 
     // Split lock should be at least as fast as single lock
     // Under contention, split lock should be significantly faster
-    println!(
-        "Split lock: {:?}, Single lock: {:?}",
-        split_duration, single_duration
-    );
+    println!("Split lock: {split_duration:?}, Single lock: {single_duration:?}");
 
     // Note: This is not a strict assertion because timing can vary
     // but we can observe the trend
@@ -247,12 +244,10 @@ fn test_no_deadlock_under_contention() {
         if result.is_finished() {
             break;
         }
-        if start.elapsed() > timeout {
-            panic!(
-                "Deadlock detected: test did not complete within {:?}",
-                timeout
-            );
-        }
+        assert!(
+            start.elapsed() <= timeout,
+            "Deadlock detected: test did not complete within {timeout:?}"
+        );
         thread::sleep(Duration::from_millis(100));
     }
 }
@@ -465,7 +460,11 @@ fn test_split_cache_concurrent_saves() {
     let gops = cache.get_gops_data();
     assert!(gops.is_some());
     // Should have frames from both video and audio
-    let total_frames: usize = gops.unwrap().iter().map(|g| g.len()).sum();
+    let total_frames: usize = gops
+        .unwrap()
+        .iter()
+        .map(synctv_xiu::rtmp::cache::gop::Gop::len)
+        .sum();
     assert!(total_frames > 0, "Should have saved frames");
 }
 
@@ -503,9 +502,10 @@ fn test_split_cache_high_contention() {
 
     for h in handles {
         while !h.is_finished() {
-            if start.elapsed() > timeout {
-                panic!("Deadlock detected in SplitCache");
-            }
+            assert!(
+                start.elapsed() <= timeout,
+                "Deadlock detected in SplitCache"
+            );
             thread::sleep(Duration::from_millis(10));
         }
         h.join().unwrap();

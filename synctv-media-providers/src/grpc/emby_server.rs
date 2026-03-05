@@ -9,7 +9,7 @@ use super::emby::{
     ReportPlaybackStopReq, SystemInfoReq, SystemInfoResp,
 };
 use super::error_mapper::map_provider_error;
-use super::validation::validate_host;
+use super::validation::{validate_host, validate_required};
 use crate::emby::error::EmbyError;
 use crate::emby::{EmbyInterface, EmbyService as EmbyServiceImpl};
 use tonic::{Request, Response, Status};
@@ -57,6 +57,8 @@ impl Emby for EmbyService {
     async fn me(&self, request: Request<MeReq>) -> Result<Response<MeResp>, Status> {
         let req = request.into_inner();
         validate_host(&req.host)?;
+        validate_required("token", &req.token)?;
+        validate_required("user_id", &req.user_id)?;
         let resp = self
             .service
             .me(req)
@@ -71,6 +73,8 @@ impl Emby for EmbyService {
     ) -> Result<Response<GetItemsResp>, Status> {
         let req = request.into_inner();
         validate_host(&req.host)?;
+        validate_required("token", &req.token)?;
+        validate_required("user_id", &req.user_id)?;
         let resp = self
             .service
             .get_items(req)
@@ -82,6 +86,9 @@ impl Emby for EmbyService {
     async fn get_item(&self, request: Request<GetItemReq>) -> Result<Response<Item>, Status> {
         let req = request.into_inner();
         validate_host(&req.host)?;
+        validate_required("token", &req.token)?;
+        validate_required("user_id", &req.user_id)?;
+        validate_required("item_id", &req.item_id)?;
         let resp = self
             .service
             .get_item(req)
@@ -96,6 +103,7 @@ impl Emby for EmbyService {
     ) -> Result<Response<SystemInfoResp>, Status> {
         let req = request.into_inner();
         validate_host(&req.host)?;
+        validate_required("token", &req.token)?;
         let resp = self
             .service
             .get_system_info(req)
@@ -107,6 +115,8 @@ impl Emby for EmbyService {
     async fn fs_list(&self, request: Request<FsListReq>) -> Result<Response<FsListResp>, Status> {
         let req = request.into_inner();
         validate_host(&req.host)?;
+        validate_required("token", &req.token)?;
+        validate_required("user_id", &req.user_id)?;
         let resp = self
             .service
             .fs_list(req)
@@ -118,6 +128,7 @@ impl Emby for EmbyService {
     async fn logout(&self, request: Request<LogoutReq>) -> Result<Response<Empty>, Status> {
         let req = request.into_inner();
         validate_host(&req.host)?;
+        validate_required("token", &req.token)?;
         let resp = self
             .service
             .logout(req)
@@ -132,6 +143,9 @@ impl Emby for EmbyService {
     ) -> Result<Response<PlaybackInfoResp>, Status> {
         let req = request.into_inner();
         validate_host(&req.host)?;
+        validate_required("token", &req.token)?;
+        validate_required("user_id", &req.user_id)?;
+        validate_required("item_id", &req.item_id)?;
         let resp = self
             .service
             .playback_info(req)
@@ -146,6 +160,7 @@ impl Emby for EmbyService {
     ) -> Result<Response<Empty>, Status> {
         let req = request.into_inner();
         validate_host(&req.host)?;
+        validate_required("token", &req.token)?;
         let resp = self
             .service
             .delete_active_encodings(req)
@@ -160,6 +175,8 @@ impl Emby for EmbyService {
     ) -> Result<Response<Empty>, Status> {
         let req = request.into_inner();
         validate_host(&req.host)?;
+        validate_required("token", &req.token)?;
+        validate_required("item_id", &req.item_id)?;
         let resp = self
             .service
             .report_playback_start(req)
@@ -174,6 +191,8 @@ impl Emby for EmbyService {
     ) -> Result<Response<Empty>, Status> {
         let req = request.into_inner();
         validate_host(&req.host)?;
+        validate_required("token", &req.token)?;
+        validate_required("item_id", &req.item_id)?;
         let resp = self
             .service
             .report_playback_stop(req)
@@ -188,6 +207,8 @@ impl Emby for EmbyService {
     ) -> Result<Response<Empty>, Status> {
         let req = request.into_inner();
         validate_host(&req.host)?;
+        validate_required("token", &req.token)?;
+        validate_required("item_id", &req.item_id)?;
         let resp = self
             .service
             .report_playback_progress(req)

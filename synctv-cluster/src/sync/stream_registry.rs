@@ -134,7 +134,7 @@ impl StreamRegistry {
     /// Test-only: Simulate a failing Redis connection.
     #[cfg(test)]
     #[must_use]
-    pub fn with_redis_failing(mut self) -> Self {
+    pub const fn with_redis_failing(mut self) -> Self {
         self.redis_failing = true;
         self
     }

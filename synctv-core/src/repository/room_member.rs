@@ -389,10 +389,11 @@ impl RoomMemberRepository {
                 u.username
              FROM room_members rm
              JOIN users u ON rm.user_id = u.id
-             WHERE rm.room_id = $1 AND rm.left_at IS NULL AND u.deleted_at IS NULL
+             WHERE rm.room_id = $1 AND rm.left_at IS NULL AND rm.status != $2 AND u.deleted_at IS NULL
              ORDER BY rm.joined_at ASC",
         )
         .bind(room_id.as_str())
+        .bind(MemberStatus::Banned)
         .fetch_all(&self.pool)
         .await?;
 
@@ -470,10 +471,11 @@ impl RoomMemberRepository {
                 u.username
              FROM room_members rm
              JOIN users u ON rm.user_id = u.id
-             WHERE rm.room_id = $1 AND rm.left_at IS NULL AND u.deleted_at IS NULL
+             WHERE rm.room_id = $1 AND rm.left_at IS NULL AND rm.status != $2 AND u.deleted_at IS NULL
              ORDER BY rm.joined_at ASC",
         )
         .bind(room_id.as_str())
+        .bind(MemberStatus::Banned)
         .fetch_all(&self.pool)
         .await?;
 

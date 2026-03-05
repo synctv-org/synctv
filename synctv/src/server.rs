@@ -416,6 +416,7 @@ impl SyncTvServer {
                     format!("stun:{}:{}", addr.ip(), addr.port())
                 }),
                 turn_health_checker: services.turn_health_checker.clone(),
+                credential_encryption: services.credential_encryption.clone(),
                 grpc_listener: Some(grpc_listener),
             };
             if let Err(e) = synctv_api::grpc::serve(grpc_config).await {
@@ -503,6 +504,7 @@ impl SyncTvServer {
                 turn_health_checker: self.services.turn_health_checker.clone(),
                 credential_encryption: self.services.credential_encryption.clone(),
                 messaging_rate_limit_config: self.services.rate_limit_config.clone(),
+                providers_manager: Some(self.services.providers_manager.clone()),
             });
 
         // Parse and bind HTTP address before spawning the task to propagate errors properly

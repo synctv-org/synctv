@@ -26,7 +26,7 @@ fn test_is_metadata_with_set_data_frame_and_on_metadata() {
     let bytes = create_metadata_bytes(values);
     let mut metadata = MetaData::new();
     assert!(
-        metadata.is_metadata(bytes),
+        metadata.is_metadata(&bytes),
         "Should accept @setDataFrame + onMetaData"
     );
 }
@@ -38,7 +38,7 @@ fn test_is_metadata_with_only_on_metadata() {
     let bytes = create_metadata_bytes(values);
     let mut metadata = MetaData::new();
     assert!(
-        metadata.is_metadata(bytes),
+        metadata.is_metadata(&bytes),
         "Should accept onMetaData alone"
     );
 }
@@ -50,7 +50,7 @@ fn test_is_metadata_rejects_only_set_data_frame() {
     let bytes = create_metadata_bytes(values);
     let mut metadata = MetaData::new();
     assert!(
-        !metadata.is_metadata(bytes),
+        !metadata.is_metadata(&bytes),
         "Should reject @setDataFrame alone"
     );
 }
@@ -65,7 +65,7 @@ fn test_is_metadata_rejects_set_data_frame_with_wrong_second_value() {
     let bytes = create_metadata_bytes(values);
     let mut metadata = MetaData::new();
     assert!(
-        !metadata.is_metadata(bytes),
+        !metadata.is_metadata(&bytes),
         "Should reject @setDataFrame + wrong second value"
     );
 }
@@ -76,7 +76,7 @@ fn test_is_metadata_rejects_random_string() {
     let values = vec![Amf0ValueType::UTF8String("randomString".to_string())];
     let bytes = create_metadata_bytes(values);
     let mut metadata = MetaData::new();
-    assert!(!metadata.is_metadata(bytes), "Should reject random string");
+    assert!(!metadata.is_metadata(&bytes), "Should reject random string");
 }
 
 #[test]
@@ -84,7 +84,7 @@ fn test_is_metadata_rejects_empty() {
     // Empty data should be rejected
     let bytes = BytesMut::new();
     let mut metadata = MetaData::new();
-    assert!(!metadata.is_metadata(bytes), "Should reject empty data");
+    assert!(!metadata.is_metadata(&bytes), "Should reject empty data");
 }
 
 #[test]
@@ -103,7 +103,7 @@ fn test_is_metadata_with_additional_data() {
     let bytes = create_metadata_bytes(values);
     let mut metadata = MetaData::new();
     assert!(
-        metadata.is_metadata(bytes),
+        metadata.is_metadata(&bytes),
         "Should accept onMetaData with properties object"
     );
 }
@@ -123,7 +123,7 @@ fn test_is_metadata_with_set_data_frame_and_properties() {
     let bytes = create_metadata_bytes(values);
     let mut metadata = MetaData::new();
     assert!(
-        metadata.is_metadata(bytes),
+        metadata.is_metadata(&bytes),
         "Should accept @setDataFrame + onMetaData + properties"
     );
 }

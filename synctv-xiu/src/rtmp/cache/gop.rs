@@ -245,11 +245,6 @@ impl Gops {
             self.gops.push_back(Gop::new());
         }
 
-        // Evict oldest GOPs if per-stream memory exceeds limit (keep at least the active GOP)
-        while self.current_total_bytes > self.max_total_bytes && self.gops.len() > 1 {
-            self.evict_oldest_gop("per-stream memory limit");
-        }
-
         // Check memory limit BEFORE adding the frame to keep accounting precise.
         let frame_bytes = Gop::frame_memory_size(&data);
         while self.current_total_bytes + frame_bytes > self.max_total_bytes && self.gops.len() > 1 {

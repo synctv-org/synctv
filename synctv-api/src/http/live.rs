@@ -413,6 +413,18 @@ async fn handle_hls_segment(
     // Remove .ts suffix if present
     let segment_name = segment.trim_end_matches(".ts");
 
+    // Validate segment name against path traversal attacks.
+    // Segment names should be simple hash-based identifiers (e.g., "abc123"),
+    // never containing directory separators or traversal sequences.
+    if let Err(e) = synctv_common::validation::validate_path_for_traversal(segment_name) {
+        warn!(
+            segment = %segment_name,
+            error = %e,
+            "HLS segment name failed path traversal validation"
+        );
+        return Err(AppError::bad_request("Invalid segment name"));
+    }
+
     debug!(
         room_id = %room_id,
         media_id = %media_id,
@@ -476,6 +488,16 @@ async fn handle_hls_segment_disguised(
 ) -> AppResult<Response> {
     // Remove .png suffix
     let segment_name = segment.trim_end_matches(".png");
+
+    // Validate segment name against path traversal attacks.
+    if let Err(e) = synctv_common::validation::validate_path_for_traversal(segment_name) {
+        warn!(
+            segment = %segment_name,
+            error = %e,
+            "HLS segment name (PNG) failed path traversal validation"
+        );
+        return Err(AppError::bad_request("Invalid segment name"));
+    }
 
     debug!(
         room_id = %room_id,

@@ -68,7 +68,7 @@ impl MediaProvider for RtmpProvider {
         // Store with version for proxy URL identity
         let store = _ctx.store.as_ref();
         let cache_key = format!("playback:{room_id}:{media_id}");
-        let cache_ttl = Duration::from_secs(300); // 5 minutes for live
+        let cache_ttl = Duration::from_mins(5); // 5 minutes for live
         let version = nanoid::nanoid!(16);
         let versioned = VersionedPlayback {
             version: version.clone(),

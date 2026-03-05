@@ -224,7 +224,7 @@ impl MediaProvider for DirectUrlProvider {
                 .collect();
             format!("playback:{url_hash}")
         };
-        let cache_ttl = Duration::from_secs(3600); // 1 hour for direct URLs
+        let cache_ttl = Duration::from_hours(1); // 1 hour for direct URLs
 
         let store = _ctx.store.as_ref();
 

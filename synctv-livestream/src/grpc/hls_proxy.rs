@@ -142,7 +142,7 @@ impl HlsProxyClient {
         // Expired entries simply reset the version to 0 (the default), which
         // is safe because epoch-based cache keys already provide primary isolation.
         let cache_versions = moka::sync::Cache::builder()
-            .time_to_idle(Duration::from_secs(600)) // 10 minutes
+            .time_to_idle(Duration::from_mins(10)) // 10 minutes
             .max_capacity(10_000)
             .build();
 

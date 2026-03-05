@@ -88,6 +88,103 @@ pub struct AnimeInfo {
 }
 
 // ============================================================================
+// Typed API Response Types (for get_video_info, get_play_url, get_anime_info)
+// ============================================================================
+
+/// Typed response for video_info API (`/x/web-interface/view`)
+#[derive(Debug, Clone, Deserialize)]
+pub struct VideoInfoResp {
+    #[serde(default)]
+    pub code: i64,
+    #[serde(default)]
+    pub message: String,
+    #[serde(default)]
+    pub data: Option<VideoInfoData>,
+}
+
+/// Data payload for video_info response
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+#[derive(Default)]
+pub struct VideoInfoData {
+    pub bvid: String,
+    pub aid: u64,
+    pub title: String,
+    pub desc: String,
+    pub duration: u64,
+    pub pic: String,
+    pub pages: Vec<VideoInfoPage>,
+}
+
+/// Page info within video_info response
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+#[derive(Default)]
+pub struct VideoInfoPage {
+    pub cid: u64,
+    pub page: u32,
+    pub part: String,
+}
+
+/// Typed response for play_url API (`/x/player/playurl`)
+#[derive(Debug, Clone, Deserialize)]
+pub struct PlayUrlResp {
+    #[serde(default)]
+    pub code: i64,
+    #[serde(default)]
+    pub message: String,
+    #[serde(default)]
+    pub data: Option<PlayUrlData>,
+}
+
+/// Data payload for play_url response
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+#[derive(Default)]
+pub struct PlayUrlData {
+    pub accept_quality: Vec<i64>,
+    pub quality: i64,
+    pub durl: Vec<PlayUrlDurlItem>,
+}
+
+/// Individual durl item from play_url response
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+#[derive(Default)]
+pub struct PlayUrlDurlItem {
+    pub url: String,
+}
+
+/// Typed response for anime/PGC API (`/pgc/view/web/season`)
+#[derive(Debug, Clone, Deserialize)]
+pub struct AnimeInfoResp {
+    #[serde(default)]
+    pub code: i64,
+    #[serde(default)]
+    pub message: String,
+    #[serde(default)]
+    pub result: Option<AnimeInfoResult>,
+}
+
+/// Result payload for anime info response
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+#[derive(Default)]
+pub struct AnimeInfoResult {
+    pub episodes: Vec<AnimeEpisodeInfo>,
+}
+
+/// Episode info within anime info response
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
+#[derive(Default)]
+pub struct AnimeEpisodeInfo {
+    pub ep_id: u64,
+    pub cid: u64,
+    pub title: String,
+}
+
+// ============================================================================
 // API Response Types
 // ============================================================================
 

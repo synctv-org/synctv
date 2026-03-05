@@ -43,7 +43,7 @@ pub struct LivestreamConfig {
     /// Cluster secret for authenticating gRPC HLS proxy calls
     pub cluster_secret: Option<String>,
     /// Maximum memory (in megabytes) for the GOP cache per stream.
-    /// 0 means use the built-in default (50 MB).
+    /// 0 means use the built-in default (500 MB).
     pub gop_cache_max_memory_mb: u64,
     /// Advertised gRPC address of this node for cross-node proxying.
     /// Used by `PublisherManager` for re-registration after `StreamHub` restart.

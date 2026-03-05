@@ -30,6 +30,11 @@ pub struct MemoryBackend {
     /// Wrapped in `Arc` so the moka eviction listener can decrement it when
     /// entries are automatically evicted.
     total_bytes: Arc<AtomicU64>,
+    /// Per-key last-access timestamps for true LRU eviction ordering.
+    /// Updated on every `get()` so `evict_to_size` sorts by actual recency
+    /// instead of insertion time (which would be FIFO). Cleaned up by the
+    /// eviction listener when entries are removed.
+    access_times: Arc<dashmap::DashMap<String, std::time::SystemTime>>,
 }
 
 impl MemoryBackend {
@@ -41,10 +46,13 @@ impl MemoryBackend {
     pub fn new(max_capacity: u64, time_to_idle: Duration) -> Self {
         let key_set = DashSet::new();
         let total_bytes = Arc::new(AtomicU64::new(0));
+        let access_times: Arc<dashmap::DashMap<String, std::time::SystemTime>> =
+            Arc::new(dashmap::DashMap::new());
 
         // Clones for the eviction listener closure.
         let key_set_clone = key_set.clone();
         let total_bytes_clone = Arc::clone(&total_bytes);
+        let access_times_clone = Arc::clone(&access_times);
 
         let cache = moka::future::Cache::builder()
             .max_capacity(max_capacity)
@@ -76,6 +84,7 @@ impl MemoryBackend {
                 // so the key is still live.
                 if !matches!(cause, moka::notification::RemovalCause::Replaced) {
                     key_set_clone.remove(key.as_ref());
+                    access_times_clone.remove(key.as_ref());
                 }
             })
             .build();
@@ -84,6 +93,7 @@ impl MemoryBackend {
             cache,
             key_set,
             total_bytes,
+            access_times,
         }
     }
 
@@ -96,11 +106,21 @@ impl MemoryBackend {
 #[async_trait]
 impl SliceCacheBackend for MemoryBackend {
     async fn get(&self, key: &str) -> Option<StoredEntry> {
-        self.cache.get(key).await
+        let entry = self.cache.get(key).await;
+        if entry.is_some() {
+            // Record access time for true LRU eviction ordering.
+            self.access_times
+                .insert(key.to_string(), std::time::SystemTime::now());
+        }
+        entry
     }
 
     async fn put(&self, key: &str, entry: StoredEntry) -> anyhow::Result<()> {
         let new_size = entry.data_size();
+
+        // Record initial access time for LRU tracking.
+        self.access_times
+            .insert(key.to_string(), std::time::SystemTime::now());
 
         // Insert into moka.  If a previous value existed, moka will fire the
         // eviction listener with `Replaced` cause, which decrements total_bytes
@@ -145,15 +165,22 @@ impl SliceCacheBackend for MemoryBackend {
         }
 
         // Use iter() instead of get() to avoid updating moka's internal access times.
-        // iter() does not update the historic popularity estimator or reset idle timers.
-        // Collect entries with their last_accessed times for LRU ordering.
+        // Use access_times DashMap for true LRU ordering (updated on every get()),
+        // falling back to StoredEntry.last_accessed (insertion time) for entries
+        // never read via get().
         let mut entries: Vec<(String, std::time::SystemTime, u64)> = self
             .cache
             .iter()
-            .map(|(key, entry)| (key.as_ref().clone(), entry.last_accessed, entry.data_size()))
+            .map(|(key, entry)| {
+                let access_time = self
+                    .access_times
+                    .get(key.as_ref())
+                    .map_or(entry.last_accessed, |r| *r.value());
+                (key.as_ref().clone(), access_time, entry.data_size())
+            })
             .collect();
 
-        // Sort by last_accessed ascending (oldest first = LRU).
+        // Sort by last access time ascending (oldest first = LRU).
         entries.sort_by_key(|e| e.1);
 
         let mut freed = 0u64;
@@ -578,30 +605,32 @@ mod tests {
 
         assert_eq!(backend.current_size(), 300);
 
-        // Now access k0 to make it most recently used via get()
-        // This updates moka's internal TTI tracker but NOT StoredEntry.last_accessed
+        // Now access k0 to make it most recently used via get().
+        // This updates the access_times DashMap, making k0 the most recently
+        // accessed entry for LRU purposes.
         let _ = backend.get("k0").await;
 
         // Evict down to 200 bytes.
-        // Since we use StoredEntry.last_accessed for LRU ordering (not moka's internal TTI),
-        // k0 should still be evicted first because its StoredEntry.last_accessed is oldest.
-        // (The get() updates moka's TTI but we don't update StoredEntry.last_accessed on get)
+        // With true LRU ordering (based on access_times updated by get()),
+        // k1 should be evicted first because it was accessed longest ago:
+        //   - k0: recently accessed via get() above
+        //   - k1: last accessed at insertion time (oldest of the two non-get'd entries)
+        //   - k2: last accessed at insertion time (most recently inserted)
         let freed = backend.evict_to_size(200).await;
         assert_eq!(freed, 100, "Should have freed exactly 100 bytes");
         assert_eq!(backend.current_size(), 200);
 
-        // k1 should be evicted (it has the middle timestamp in StoredEntry.last_accessed,
-        // and we're evicting from oldest to newest based on that field).
-        // Actually: k0 was inserted first, then k1, then k2.
-        // After the get("k0"), moka's internal timer for k0 is updated, but
-        // StoredEntry.last_accessed is NOT updated (get() returns a clone).
-        // So the LRU order based on StoredEntry.last_accessed is: k0 (oldest), k1, k2 (newest).
-        // Evicting to 200 bytes removes k0 (100 bytes).
+        // k1 should be evicted (oldest access time -- never accessed after put).
+        // k0 should survive (recently accessed via get).
+        // k2 should survive (more recently inserted than k1).
         assert!(
-            backend.get("k0").await.is_none(),
-            "k0 should have been evicted (oldest StoredEntry.last_accessed)"
+            backend.get("k1").await.is_none(),
+            "k1 should have been evicted (oldest access time)"
         );
-        assert!(backend.get("k1").await.is_some(), "k1 should still exist");
+        assert!(
+            backend.get("k0").await.is_some(),
+            "k0 should still exist (recently accessed)"
+        );
         assert!(backend.get("k2").await.is_some(), "k2 should still exist");
     }
 

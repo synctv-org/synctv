@@ -85,6 +85,8 @@ pub struct RouterConfig {
     /// Rate limit configuration for WebSocket messaging (chat/danmaku).
     /// This is separate from the HTTP rate limit config used by middleware.
     pub messaging_rate_limit_config: synctv_core::service::RateLimitConfig,
+    /// Providers manager for playback generation (media provider lookup)
+    pub providers_manager: Option<Arc<synctv_core::service::ProvidersManager>>,
 }
 
 /// Shared application state.
@@ -177,7 +179,7 @@ fn build_app_state(config: RouterConfig) -> AppState {
             config.publish_key_service.clone(),
             config.jwt_service.clone(),
             config.live_streaming_infrastructure.clone(),
-            None,
+            config.providers_manager.clone(),
             config.settings_registry.clone(),
         )
         .with_redis_publish_tx(config.redis_publish_tx.clone())
@@ -277,8 +279,13 @@ fn build_app_state(config: RouterConfig) -> AppState {
     );
 
     // Create lazy provider store registry (stores created on first access per-provider)
+    // Resolve Redis connection synchronously at startup (lock is uncontended at this point)
+    let redis_for_stores = config
+        .redis_conn
+        .as_ref()
+        .and_then(|shared| shared.try_read().ok().map(|guard| guard.clone()));
     let provider_stores = Arc::new(synctv_core::provider::store::ProviderStoreRegistry::new(
-        None,
+        redis_for_stores,
     ));
 
     // Build proxy provider registry from ProviderSet (single source of truth)
@@ -288,7 +295,7 @@ fn build_app_state(config: RouterConfig) -> AppState {
     let proxy_services = Arc::new(ProxyServices {
         room_service: config.room_service.clone(),
         credential_encryption: config.credential_encryption.clone(),
-        credential_repo: credential_repo.clone(),
+        credential_repo,
         signing_key: proxy_signing_key.clone(),
     });
 

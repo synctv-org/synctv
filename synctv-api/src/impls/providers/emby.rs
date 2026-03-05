@@ -24,7 +24,7 @@ pub struct EmbyApiImpl {
 
 impl EmbyApiImpl {
     #[must_use]
-    pub fn new(
+    pub const fn new(
         provider: Arc<EmbyProvider>,
         credential_repo: Arc<UserProviderCredentialRepository>,
     ) -> Self {

@@ -415,7 +415,7 @@ fn test_i32_to_u32_negative_conversion() {
 fn test_i32_as_u32_is_dangerous() {
     // This demonstrates the bug we fixed: -1i32 as u32 wraps to u32::MAX
     let negative: u32 = (-1i32) as u32;
-    let wrapped = negative as u32;
+    let wrapped = negative;
     assert_eq!(wrapped, u32::MAX, "Demonstrates the wrapping bug");
 
     // And PageParams::new would NOT clamp this since it only clamps page_size, not page

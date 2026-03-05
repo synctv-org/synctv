@@ -272,7 +272,7 @@ impl CleanupService {
         let result = sqlx::query(
             r"
             UPDATE rooms
-            SET deleted_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
+            SET deleted_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP, version = version + 1
             WHERE deleted_at IS NULL
               AND last_activity_at < CURRENT_TIMESTAMP - ($1 || ' seconds')::INTERVAL
             ",

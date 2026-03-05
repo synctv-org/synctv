@@ -423,7 +423,7 @@ impl GrpcConnectionPool {
         tokio::spawn(async move {
             let mut stale_tick = tokio::time::interval(interval);
             stale_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-            let mut cb_tick = tokio::time::interval(Duration::from_secs(300)); // 5 minutes
+            let mut cb_tick = tokio::time::interval(Duration::from_mins(5)); // 5 minutes
             cb_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
             loop {
                 tokio::select! {

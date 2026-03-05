@@ -17,7 +17,10 @@ use tokio::task::JoinHandle;
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 
 use super::error::{check_response, json_with_limit, BilibiliError};
-use super::types::{self as types, AnimeInfo, DurlItem, PlayUrlInfo, Quality, VideoInfo};
+use super::types::{
+    self as types, AnimeInfo, AnimeInfoResp, DurlItem, PlayUrlInfo, PlayUrlResp, Quality,
+    VideoInfo, VideoInfoResp,
+};
 use crate::error::with_retry;
 
 // Pre-compiled regexes using std::sync::LazyLock (no external crate needed).
@@ -62,6 +65,13 @@ struct WbiKeys {
     expires_at: std::time::Instant,
 }
 
+impl WbiKeys {
+    /// Check if the cached key is still valid
+    fn is_valid(&self) -> bool {
+        std::time::Instant::now() < self.expires_at
+    }
+}
+
 /// Global in-memory WBI key cache.
 /// WBI keys are refreshed from Bilibili's nav API every 30 minutes.
 static WBI_KEY_CACHE: LazyLock<tokio::sync::Mutex<Option<WbiKeys>>> =
@@ -99,7 +109,7 @@ async fn get_valid_wbi_key() -> Option<String> {
     let guard = WBI_KEY_CACHE.lock().await;
     guard
         .as_ref()
-        .filter(|k| k.expires_at > std::time::Instant::now())
+        .filter(|k| k.is_valid())
         .map(|k| k.mixin_key.clone())
 }
 
@@ -553,18 +563,7 @@ impl BilibiliClient {
             .query(&[("qrcode_key", key)])
             .header("Referer", "https://passport.bilibili.com/login");
 
-        let resp = req.send().await?;
-        let status = resp.status();
-        if status.is_client_error() || status.is_server_error() {
-            let url = resp.url().to_string();
-            let body = resp.text().await.unwrap_or_default();
-            return Err(BilibiliError::Http {
-                status,
-                url,
-                retry_after_secs: None,
-                body,
-            });
-        }
+        let resp = check_response(req.send().await?).await?;
 
         // Extract ALL relevant cookies (SESSDATA, bili_jct, DedeUserID, DedeUserID__ckMd5)
         let cookies = {
@@ -738,12 +737,7 @@ impl BilibiliClient {
         // Sanitize \r\n to prevent header injection, consistent with add_cookies().
         let cookie_str: String = buvid_cookies
             .iter()
-            .map(|(name, value)| {
-                let safe_name: String = name.chars().filter(|c| *c != '\r' && *c != '\n').collect();
-                let safe_value: String =
-                    value.chars().filter(|c| *c != '\r' && *c != '\n').collect();
-                format!("{safe_name}={safe_value}")
-            })
+            .map(|(name, value)| sanitize_cookie_pair(name, value))
             .collect::<Vec<_>>()
             .join("; ");
         if !cookie_str.is_empty() {
@@ -801,18 +795,7 @@ impl BilibiliClient {
             .header("Content-Type", "application/x-www-form-urlencoded")
             .form(&params);
 
-        let resp = req.send().await?;
-        let status = resp.status();
-        if status.is_client_error() || status.is_server_error() {
-            let url = resp.url().to_string();
-            let body = resp.text().await.unwrap_or_default();
-            return Err(BilibiliError::Http {
-                status,
-                url,
-                retry_after_secs: None,
-                body,
-            });
-        }
+        let resp = check_response(req.send().await?).await?;
 
         // Extract cookies from headers BEFORE consuming body.
         // Cookies are in Set-Cookie headers, so we must read them before json_with_limit.
@@ -935,27 +918,25 @@ impl BilibiliClient {
                 }
                 let response = check_response(req.send().await?).await?;
 
-                let json: serde_json::Value = json_with_limit(response).await?;
+                let json: VideoInfoResp = json_with_limit(response).await?;
 
-                if json["code"].as_i64() != Some(0) {
+                if json.code != 0 {
                     return Err(BilibiliError::Api {
-                        code: json["code"].as_i64().unwrap_or(0),
-                        message: json["message"]
-                            .as_str()
-                            .unwrap_or("Unknown error")
-                            .to_string(),
+                        code: json.code,
+                        message: json.message,
                     });
                 }
 
-                let data = &json["data"];
+                let data = json.data.unwrap_or_default();
+                let cid = data.pages.first().map_or(0, |p| p.cid);
                 Ok(VideoInfo {
-                    bvid: data["bvid"].as_str().unwrap_or("").to_string(),
-                    aid: data["aid"].as_u64().unwrap_or(0),
-                    cid: data["cid"].as_u64().unwrap_or(0),
-                    title: data["title"].as_str().unwrap_or("").to_string(),
-                    desc: data["desc"].as_str().unwrap_or("").to_string(),
-                    pic: data["pic"].as_str().unwrap_or("").to_string(),
-                    duration: data["duration"].as_u64().unwrap_or(0),
+                    bvid: data.bvid,
+                    aid: data.aid,
+                    cid,
+                    title: data.title,
+                    desc: data.desc,
+                    pic: data.pic,
+                    duration: data.duration,
                 })
             }
         })
@@ -989,27 +970,22 @@ impl BilibiliClient {
                     req = req.header("Cookie", cookies.as_str());
                 }
                 let response = check_response(req.send().await?).await?;
-                let json: serde_json::Value = json_with_limit(response).await?;
+                let json: PlayUrlResp = json_with_limit(response).await?;
 
-                if json["code"].as_i64() != Some(0) {
+                if json.code != 0 {
                     return Err(BilibiliError::Api {
-                        code: json["code"].as_i64().unwrap_or(0),
-                        message: json["message"]
-                            .as_str()
-                            .unwrap_or("Unknown error")
-                            .to_string(),
+                        code: json.code,
+                        message: json.message,
                     });
                 }
 
-                let durl = json["data"]["durl"]
-                    .as_array()
-                    .ok_or_else(|| BilibiliError::Parse("Missing durl array".to_string()))?
-                    .iter()
-                    .filter_map(|item| {
-                        Some(DurlItem {
-                            url: item["url"].as_str()?.to_string(),
-                            size: item["size"].as_u64().unwrap_or(0),
-                        })
+                let data = json.data.unwrap_or_default();
+                let durl = data
+                    .durl
+                    .into_iter()
+                    .map(|item| DurlItem {
+                        url: item.url,
+                        size: 0,
                     })
                     .collect();
 
@@ -1037,29 +1013,32 @@ impl BilibiliClient {
                     req = req.header("Cookie", cookies.as_str());
                 }
                 let response = check_response(req.send().await?).await?;
-                let json: serde_json::Value = json_with_limit(response).await?;
+                let json: AnimeInfoResp = json_with_limit(response).await?;
 
-                if json["code"].as_i64() != Some(0) {
+                if json.code != 0 {
                     return Err(BilibiliError::Api {
-                        code: json["code"].as_i64().unwrap_or(0),
-                        message: json["message"]
-                            .as_str()
-                            .unwrap_or("Unknown error")
-                            .to_string(),
+                        code: json.code,
+                        message: json.message,
                     });
                 }
 
-                let data = &json["result"];
-                let first_episode = data["episodes"].as_array().and_then(|arr| arr.first());
+                let result = json.result.unwrap_or_default();
+                let first_episode = result.episodes.first().ok_or_else(|| {
+                    BilibiliError::Parse("No episodes found in anime info".to_string())
+                })?;
+
+                if first_episode.ep_id == 0 || first_episode.cid == 0 {
+                    return Err(BilibiliError::Parse(
+                        "Episode has zero ep_id or cid".to_string(),
+                    ));
+                }
 
                 Ok(AnimeInfo {
-                    season_id: data["season_id"].as_u64().unwrap_or(0),
-                    ep_id: first_episode
-                        .and_then(|ep| ep["ep_id"].as_u64())
-                        .unwrap_or(0),
-                    cid: first_episode.and_then(|ep| ep["cid"].as_u64()).unwrap_or(0),
-                    title: data["title"].as_str().unwrap_or("").to_string(),
-                    cover: data["cover"].as_str().unwrap_or("").to_string(),
+                    season_id: 0,
+                    ep_id: first_episode.ep_id,
+                    cid: first_episode.cid,
+                    title: first_episode.title.clone(),
+                    cover: String::new(),
                 })
             }
         })
@@ -1174,10 +1153,13 @@ impl BilibiliClient {
                 }
 
                 let data = json.data;
-                let accept_quality: Vec<u32> =
-                    data.accept_quality.iter().map(|&q| q as u32).collect();
+                let accept_quality: Vec<u32> = data
+                    .accept_quality
+                    .iter()
+                    .map(|&q| u32::try_from(q).unwrap_or(0))
+                    .collect();
                 let accept_description = data.accept_description;
-                let current_quality = data.quality as u32;
+                let current_quality = u32::try_from(data.quality).unwrap_or(0);
                 let segments: Vec<VideoSegment> = data
                     .durl
                     .iter()
@@ -1482,10 +1464,13 @@ impl BilibiliClient {
                 }
 
                 let result = json.result;
-                let accept_quality: Vec<u32> =
-                    result.accept_quality.iter().map(|&q| q as u32).collect();
+                let accept_quality: Vec<u32> = result
+                    .accept_quality
+                    .iter()
+                    .map(|&q| u32::try_from(q).unwrap_or(0))
+                    .collect();
                 let accept_description = result.accept_description;
-                let current_quality = result.quality as u32;
+                let current_quality = u32::try_from(result.quality).unwrap_or(0);
                 let segments: Vec<VideoSegment> = result
                     .durl
                     .iter()
@@ -1817,7 +1802,7 @@ impl BilibiliClient {
             .await
             .map_err(|_| BilibiliError::Network("WebSocket connection timeout".to_string()))?
             .map_err(|e| {
-                BilibiliError::Parse(format!("Failed to connect to danmaku WebSocket: {e}"))
+                BilibiliError::Network(format!("Failed to connect to danmaku WebSocket: {e}"))
             })?;
 
         let (mut write, read) = ws_stream.split();
@@ -1827,7 +1812,7 @@ impl BilibiliClient {
         write
             .send(Message::Binary(auth_packet.into()))
             .await
-            .map_err(|e| BilibiliError::Parse(format!("Failed to send auth packet: {e}")))?;
+            .map_err(|e| BilibiliError::Network(format!("Failed to send auth packet: {e}")))?;
 
         Ok(LiveDanmakuConnection {
             write: AsyncMutex::new(write),
@@ -2031,7 +2016,7 @@ impl LiveDanmakuConnection {
         write
             .send(Message::Binary(heartbeat_packet.into()))
             .await
-            .map_err(|e| BilibiliError::Parse(format!("Failed to send heartbeat: {e}")))
+            .map_err(|e| BilibiliError::Network(format!("Failed to send heartbeat: {e}")))
     }
 
     /// Get room ID
@@ -3525,7 +3510,7 @@ mod tests {
         let mut expected_params: Vec<(&str, &str)> =
             vec![("keyword", "hello world"), ("name", "\u{4f60}\u{597d}")];
         expected_params.push(("wts", wts));
-        expected_params.sort_by(|a, b| a.0.cmp(&b.0));
+        expected_params.sort_by(|a, b| a.0.cmp(b.0));
 
         let expected_query: String = {
             let mut ser = url::form_urlencoded::Serializer::new(String::new());

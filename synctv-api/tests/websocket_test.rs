@@ -929,6 +929,7 @@ mod websocket_e2e {
             builtin_stun_url: None,
             credential_encryption: None,
             messaging_rate_limit_config: synctv_core::service::RateLimitConfig::default(),
+            providers_manager: None,
         };
 
         let guest_token_validator = Arc::new(
@@ -972,7 +973,7 @@ mod websocket_e2e {
                     room_service: room_service.clone(),
                     credential_encryption: None,
                     credential_repo: user_provider_credential_repo.clone(),
-                    signing_key: signing_key.clone(),
+                    signing_key,
                 })
             },
             proxy_signing_key: std::sync::Arc::new(
@@ -1495,7 +1496,7 @@ mod websocket_e2e {
         for i in 0..3 {
             let heartbeat = ClientMessage {
                 message: Some(client_message::Message::Heartbeat(HeartbeatMessage {
-                    timestamp: chrono::Utc::now().timestamp_millis() + i,
+                    timestamp: chrono::Utc::now().timestamp() + i,
                 })),
             };
             send_client_message(&mut ws, &heartbeat).await;
@@ -2567,10 +2568,10 @@ mod websocket_e2e {
         // Drain initial membership events
         drain_until_quiet(&mut ws, 2000).await;
 
-        let now_ms = chrono::Utc::now().timestamp_millis();
+        let now_seconds = chrono::Utc::now().timestamp();
         let heartbeat = ClientMessage {
             message: Some(client_message::Message::Heartbeat(HeartbeatMessage {
-                timestamp: now_ms,
+                timestamp: now_seconds,
             })),
         };
         send_client_message(&mut ws, &heartbeat).await;
@@ -2586,10 +2587,10 @@ mod websocket_e2e {
         match ack.message {
             Some(server_message::Message::HeartbeatAck(ack_msg)) => {
                 assert!(
-                    ack_msg.timestamp >= now_ms,
+                    ack_msg.timestamp >= now_seconds,
                     "HeartbeatAck timestamp ({}) should be >= request timestamp ({})",
                     ack_msg.timestamp,
-                    now_ms,
+                    now_seconds,
                 );
             }
             other => panic!("Expected HeartbeatAck, got: {other:?}"),
@@ -2919,6 +2920,7 @@ mod websocket_connection_limit_timing {
             builtin_stun_url: None,
             credential_encryption: None,
             messaging_rate_limit_config: synctv_core::service::RateLimitConfig::default(),
+            providers_manager: None,
         };
 
         let guest_token_validator = Arc::new(
@@ -2962,7 +2964,7 @@ mod websocket_connection_limit_timing {
                     room_service: room_service.clone(),
                     credential_encryption: None,
                     credential_repo: user_provider_credential_repo.clone(),
-                    signing_key: signing_key.clone(),
+                    signing_key,
                 })
             },
             proxy_signing_key: std::sync::Arc::new(

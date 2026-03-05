@@ -11,6 +11,7 @@ use tonic::Status;
 /// Checks:
 /// - URL is parseable
 /// - Scheme is http or https only
+/// - URL contains a host component
 ///
 /// SSRF protection (private IP blocking, DNS rebinding) is handled by
 /// the SSRF-safe DNS resolver at HTTP connection time.
@@ -24,11 +25,21 @@ pub fn validate_host(host: &str) -> Result<(), Status> {
         .map_err(|e| Status::invalid_argument(format!("invalid host URL: {e}")))?;
 
     match parsed.scheme() {
-        "http" | "https" => Ok(()),
-        scheme => Err(Status::invalid_argument(format!(
-            "unsupported scheme '{scheme}': only http and https are allowed"
-        ))),
+        "http" | "https" => {}
+        scheme => {
+            return Err(Status::invalid_argument(format!(
+                "unsupported scheme '{scheme}': only http and https are allowed"
+            )))
+        }
     }
+
+    if parsed.host_str().is_none() {
+        return Err(Status::invalid_argument(
+            "host URL must contain a valid host component",
+        ));
+    }
+
+    Ok(())
 }
 
 /// Validate that a required string field is non-empty.
@@ -110,6 +121,16 @@ mod tests {
     #[test]
     fn test_invalid_url() {
         assert!(validate_host("not-a-url").is_err());
+    }
+
+    #[test]
+    fn test_validate_host_missing_host_component() {
+        // URLs with http/https scheme but no actual host should be rejected
+        let result = validate_host("http://");
+        assert!(result.is_err());
+        let status = result.unwrap_err();
+        assert_eq!(status.code(), tonic::Code::InvalidArgument);
+        assert!(status.message().contains("host"));
     }
 
     #[test]

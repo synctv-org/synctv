@@ -27,7 +27,7 @@ pub struct BilibiliApiImpl {
 
 impl BilibiliApiImpl {
     #[must_use]
-    pub fn new(
+    pub const fn new(
         provider: Arc<BilibiliProvider>,
         credential_repo: Arc<UserProviderCredentialRepository>,
     ) -> Self {

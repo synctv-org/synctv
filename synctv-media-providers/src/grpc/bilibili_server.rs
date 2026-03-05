@@ -127,6 +127,11 @@ impl Bilibili for BilibiliService {
         request: Request<ParseVideoPageReq>,
     ) -> Result<Response<VideoPageInfo>, Status> {
         let req = request.into_inner();
+        if req.aid == 0 && req.bvid.is_empty() {
+            return Err(Status::invalid_argument(
+                "either aid or bvid must be provided",
+            ));
+        }
         let resp = self
             .service
             .parse_video_page(req)
@@ -140,6 +145,14 @@ impl Bilibili for BilibiliService {
         request: Request<GetVideoUrlReq>,
     ) -> Result<Response<VideoUrl>, Status> {
         let req = request.into_inner();
+        if req.aid == 0 && req.bvid.is_empty() {
+            return Err(Status::invalid_argument(
+                "either aid or bvid must be provided",
+            ));
+        }
+        if req.cid == 0 {
+            return Err(Status::invalid_argument("cid must not be zero"));
+        }
         let resp = self
             .service
             .get_video_url(req)
@@ -153,6 +166,14 @@ impl Bilibili for BilibiliService {
         request: Request<GetDashVideoUrlReq>,
     ) -> Result<Response<GetDashVideoUrlResp>, Status> {
         let req = request.into_inner();
+        if req.aid == 0 && req.bvid.is_empty() {
+            return Err(Status::invalid_argument(
+                "either aid or bvid must be provided",
+            ));
+        }
+        if req.cid == 0 {
+            return Err(Status::invalid_argument("cid must not be zero"));
+        }
         let resp = self
             .service
             .get_dash_video_url(req)
@@ -166,6 +187,14 @@ impl Bilibili for BilibiliService {
         request: Request<GetSubtitlesReq>,
     ) -> Result<Response<GetSubtitlesResp>, Status> {
         let req = request.into_inner();
+        if req.aid == 0 && req.bvid.is_empty() {
+            return Err(Status::invalid_argument(
+                "either aid or bvid must be provided",
+            ));
+        }
+        if req.cid == 0 {
+            return Err(Status::invalid_argument("cid must not be zero"));
+        }
         let resp = self
             .service
             .get_subtitles(req)
@@ -179,6 +208,11 @@ impl Bilibili for BilibiliService {
         request: Request<ParsePgcPageReq>,
     ) -> Result<Response<VideoPageInfo>, Status> {
         let req = request.into_inner();
+        if req.ssid == 0 && req.epid == 0 {
+            return Err(Status::invalid_argument(
+                "either ssid or epid must be provided",
+            ));
+        }
         let resp = self
             .service
             .parse_pgc_page(req)
@@ -192,6 +226,12 @@ impl Bilibili for BilibiliService {
         request: Request<GetPgcurlReq>,
     ) -> Result<Response<VideoUrl>, Status> {
         let req = request.into_inner();
+        if req.epid == 0 {
+            return Err(Status::invalid_argument("epid must not be zero"));
+        }
+        if req.cid == 0 {
+            return Err(Status::invalid_argument("cid must not be zero"));
+        }
         let resp = self
             .service
             .get_pgcurl(req)
@@ -205,6 +245,12 @@ impl Bilibili for BilibiliService {
         request: Request<GetDashPgcurlReq>,
     ) -> Result<Response<GetDashPgcurlResp>, Status> {
         let req = request.into_inner();
+        if req.epid == 0 {
+            return Err(Status::invalid_argument("epid must not be zero"));
+        }
+        if req.cid == 0 {
+            return Err(Status::invalid_argument("cid must not be zero"));
+        }
         let resp = self
             .service
             .get_dash_pgcurl(req)
@@ -218,6 +264,11 @@ impl Bilibili for BilibiliService {
         request: Request<UserInfoReq>,
     ) -> Result<Response<UserInfoResp>, Status> {
         let req = request.into_inner();
+        if req.cookies.is_empty() {
+            return Err(Status::invalid_argument(
+                "cookies must not be empty for user_info",
+            ));
+        }
         let resp = self
             .service
             .user_info(req)
@@ -242,6 +293,9 @@ impl Bilibili for BilibiliService {
         request: Request<GetLiveStreamsReq>,
     ) -> Result<Response<GetLiveStreamsResp>, Status> {
         let req = request.into_inner();
+        if req.cid == 0 {
+            return Err(Status::invalid_argument("cid must not be zero"));
+        }
         let resp = self
             .service
             .get_live_streams(req)
@@ -255,6 +309,9 @@ impl Bilibili for BilibiliService {
         request: Request<ParseLivePageReq>,
     ) -> Result<Response<VideoPageInfo>, Status> {
         let req = request.into_inner();
+        if req.room_id == 0 {
+            return Err(Status::invalid_argument("room_id must not be zero"));
+        }
         let resp = self
             .service
             .parse_live_page(req)
@@ -268,6 +325,9 @@ impl Bilibili for BilibiliService {
         request: Request<GetLiveDanmuInfoReq>,
     ) -> Result<Response<GetLiveDanmuInfoResp>, Status> {
         let req = request.into_inner();
+        if req.room_id == 0 {
+            return Err(Status::invalid_argument("room_id must not be zero"));
+        }
         let resp = self
             .service
             .get_live_danmu_info(req)

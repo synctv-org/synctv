@@ -24,7 +24,7 @@ pub struct AlistApiImpl {
 
 impl AlistApiImpl {
     #[must_use]
-    pub fn new(
+    pub const fn new(
         provider: Arc<AlistProvider>,
         credential_repo: Arc<UserProviderCredentialRepository>,
     ) -> Self {
@@ -129,7 +129,7 @@ impl AlistApiImpl {
             use sha2::{Digest, Sha256};
             format!(
                 "{:x}",
-                Sha256::digest(format!("{}-https://github.com/AlistGo/alist", password).as_bytes())
+                Sha256::digest(format!("{password}-https://github.com/AlistGo/alist").as_bytes())
             )
         };
 

@@ -760,7 +760,7 @@ mod tests {
             .await
             .expect("Failed to get Redis port");
 
-        let redis_url = format!("redis://{}:{}", redis_host, redis_port);
+        let redis_url = format!("redis://{redis_host}:{redis_port}");
         let redis_client =
             redis::Client::open(redis_url.as_str()).expect("Failed to create Redis client");
 
@@ -775,7 +775,7 @@ mod tests {
                         retries += 1;
                         tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
                     }
-                    Err(e) => panic!("Redis connection failed after {} retries: {}", retries, e),
+                    Err(e) => panic!("Redis connection failed after {retries} retries: {e}"),
                 }
             }
         };

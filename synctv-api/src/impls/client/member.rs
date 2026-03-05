@@ -17,6 +17,9 @@ impl ClientApiImpl {
         room_id: &str,
         req: crate::proto::client::GetRoomMembersRequest,
     ) -> Result<crate::proto::client::GetRoomMembersResponse, ApiError> {
+        crate::http::validation::validate_id(room_id, "room_id")
+            .map_err(|e| ApiError::InvalidInput(format!("Invalid room_id: {e}")))?;
+
         let uid = UserId::from_string(user_id.to_string());
         let rid = RoomId::from_string(room_id.to_string());
 
@@ -64,6 +67,11 @@ impl ClientApiImpl {
         room_id: &str,
         req: crate::proto::client::UpdateMemberPermissionsRequest,
     ) -> Result<crate::proto::client::UpdateMemberPermissionsResponse, ApiError> {
+        crate::http::validation::validate_id(room_id, "room_id")
+            .map_err(|e| ApiError::InvalidInput(format!("Invalid room_id: {e}")))?;
+        crate::http::validation::validate_id(&req.user_id, "user_id")
+            .map_err(|e| ApiError::InvalidInput(format!("Invalid user_id: {e}")))?;
+
         let uid = UserId::from_string(user_id.to_string());
         let rid = RoomId::from_string(room_id.to_string());
         let target_uid = UserId::from_string(req.user_id.clone());
@@ -209,6 +217,11 @@ impl ClientApiImpl {
         room_id: &str,
         req: crate::proto::client::KickMemberRequest,
     ) -> Result<crate::proto::client::KickMemberResponse, ApiError> {
+        crate::http::validation::validate_id(room_id, "room_id")
+            .map_err(|e| ApiError::InvalidInput(format!("Invalid room_id: {e}")))?;
+        crate::http::validation::validate_id(&req.user_id, "user_id")
+            .map_err(|e| ApiError::InvalidInput(format!("Invalid user_id: {e}")))?;
+
         let uid = UserId::from_string(user_id.to_string());
         let rid = RoomId::from_string(room_id.to_string());
         let target_uid = UserId::from_string(req.user_id.clone());
@@ -245,12 +258,27 @@ impl ClientApiImpl {
         Ok(crate::proto::client::KickMemberResponse { success: true })
     }
 
+    /// Maximum length for ban reason text
+    const BAN_REASON_MAX: usize = 500;
+
     pub async fn ban_member(
         &self,
         user_id: &str,
         room_id: &str,
         req: crate::proto::client::BanMemberRequest,
     ) -> Result<crate::proto::client::BanMemberResponse, ApiError> {
+        crate::http::validation::validate_id(room_id, "room_id")
+            .map_err(|e| ApiError::InvalidInput(format!("Invalid room_id: {e}")))?;
+        crate::http::validation::validate_id(&req.user_id, "user_id")
+            .map_err(|e| ApiError::InvalidInput(format!("Invalid user_id: {e}")))?;
+
+        if req.reason.len() > Self::BAN_REASON_MAX {
+            return Err(ApiError::InvalidInput(format!(
+                "Ban reason too long (maximum {} characters)",
+                Self::BAN_REASON_MAX
+            )));
+        }
+
         let uid = UserId::from_string(user_id.to_string());
         let rid = RoomId::from_string(room_id.to_string());
         let target_uid = UserId::from_string(req.user_id.clone());
@@ -299,6 +327,11 @@ impl ClientApiImpl {
         room_id: &str,
         req: crate::proto::client::UnbanMemberRequest,
     ) -> Result<crate::proto::client::UnbanMemberResponse, ApiError> {
+        crate::http::validation::validate_id(room_id, "room_id")
+            .map_err(|e| ApiError::InvalidInput(format!("Invalid room_id: {e}")))?;
+        crate::http::validation::validate_id(&req.user_id, "user_id")
+            .map_err(|e| ApiError::InvalidInput(format!("Invalid user_id: {e}")))?;
+
         let uid = UserId::from_string(user_id.to_string());
         let rid = RoomId::from_string(room_id.to_string());
         let target_uid = UserId::from_string(req.user_id.clone());

@@ -96,8 +96,7 @@ async fn test_client_session_handshake_timeout_on_no_response() {
     );
     assert!(
         elapsed < Duration::from_secs(12),
-        "Timeout should occur within ~10 seconds, took {:?}",
-        elapsed
+        "Timeout should occur within ~10 seconds, took {elapsed:?}"
     );
 
     server_handle.abort();
@@ -181,8 +180,7 @@ async fn test_client_session_handshake_normal_flow() {
     );
     assert!(
         elapsed < Duration::from_secs(2),
-        "Normal handshake should complete quickly, took {:?}",
-        elapsed
+        "Normal handshake should complete quickly, took {elapsed:?}"
     );
 
     // Complete handshake
@@ -267,8 +265,7 @@ async fn test_client_session_handshake_timeout_constant() {
     let error_string = timeout_error.to_string();
     assert!(
         error_string.contains("timeout"),
-        "Timeout error should contain 'timeout': {}",
-        error_string
+        "Timeout error should contain 'timeout': {error_string}"
     );
 }
 
@@ -286,7 +283,6 @@ async fn test_client_session_handshake_timeout_error_type() {
     let error_message = error.to_string();
     assert!(
         error_message.contains("timeout"),
-        "Timeout error message should contain 'timeout': {}",
-        error_message
+        "Timeout error message should contain 'timeout': {error_message}"
     );
 }

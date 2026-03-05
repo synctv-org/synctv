@@ -168,6 +168,7 @@ impl ClientApiImpl {
         let password = if req.password.is_empty() {
             None
         } else {
+            validate_password_for_set(&req.password)?;
             Some(req.password)
         };
 
@@ -263,6 +264,7 @@ impl ClientApiImpl {
         let password = if req.password.is_empty() {
             None
         } else {
+            validate_password_for_verify(&req.password)?;
             Some(req.password)
         };
 
@@ -405,6 +407,9 @@ impl ClientApiImpl {
         room_id: &str,
         req: crate::proto::client::UpdateRoomSettingsRequest,
     ) -> Result<crate::proto::client::UpdateRoomSettingsResponse, ApiError> {
+        crate::http::validation::validate_id(room_id, "room_id")
+            .map_err(|e| ApiError::InvalidInput(format!("Invalid room_id: {e}")))?;
+
         let uid = UserId::from_string(user_id.to_string());
         let rid = RoomId::from_string(room_id.to_string());
 

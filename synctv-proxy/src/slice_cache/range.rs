@@ -204,6 +204,9 @@ pub fn compute_needed_slices(range_start: u64, range_end: u64, slice_size: usize
 /// Both `start` and `end` are inclusive.
 #[must_use]
 pub fn aligned_range_for_slice(slice_index: u64, slice_size: usize, total_size: u64) -> (u64, u64) {
+    if total_size == 0 {
+        return (0, 0);
+    }
     let ss = slice_size as u64;
     let start = slice_index * ss;
     let end = std::cmp::min(start + ss, total_size) - 1;

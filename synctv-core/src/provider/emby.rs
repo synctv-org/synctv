@@ -518,7 +518,7 @@ impl MediaProvider for EmbyProvider {
             "playback:{}:{}",
             config.credential_ref.server_id, config.item_id
         );
-        let cache_ttl = Duration::from_secs(30 * 60); // 30 minutes
+        let cache_ttl = Duration::from_mins(30); // 30 minutes
 
         let store = _ctx.store.as_ref();
 

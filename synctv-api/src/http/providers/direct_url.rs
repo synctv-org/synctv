@@ -1,6 +1,10 @@
 //! `DirectURL` Provider HTTP Proxy Routes
 //!
-//! Proxies direct URL media that has playback info stored in `source_config`.
+//! Proxy routes are stateless — no version needed. The playback URL is read
+//! directly from the media's `source_config` in the database.
+//!
+//! - `/proxy/{room_id}/{media_id}` — proxy the video stream
+//! - `/proxy/{room_id}/{media_id}/m3u8` — proxy M3U8 with URL rewriting
 
 use std::collections::HashMap;
 
@@ -22,11 +26,14 @@ pub fn direct_url_routes() -> Router<AppState> {
             "/proxy/{room_id}/{media_id}",
             get(proxy_stream).options(super::proxy_options_preflight),
         )
-        .route("/proxy/{room_id}/{media_id}/m3u8", get(proxy_m3u8))
+        .route(
+            "/proxy/{room_id}/{media_id}/m3u8",
+            get(proxy_m3u8).options(super::proxy_options_preflight),
+        )
 }
 
 // ------------------------------------------------------------------
-// Proxy handlers
+// Proxy handlers (stateless — reads URL from database source_config)
 // ------------------------------------------------------------------
 
 /// Resolve playback URL from a direct-URL media item's `source_config`.
@@ -58,7 +65,7 @@ async fn resolve_direct_playback(
     Ok((playback_url.url.clone(), playback_url.headers.clone()))
 }
 
-/// GET /`proxy/:room_id/:media_id` - Proxy direct URL video stream
+/// GET `/proxy/{room_id}/{media_id}` — Proxy direct URL video stream.
 async fn proxy_stream(
     auth: AuthUser,
     Path((room_id, media_id)): Path<(String, String)>,
@@ -84,7 +91,7 @@ async fn proxy_stream(
         .map_err(Into::into)
 }
 
-/// GET /`proxy/:room_id/:media_id/m3u8` - Proxy direct URL M3U8
+/// GET `/proxy/{room_id}/{media_id}/m3u8` — Proxy direct URL M3U8.
 async fn proxy_m3u8(
     auth: AuthUser,
     Path((room_id, media_id)): Path<(String, String)>,

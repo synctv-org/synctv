@@ -8,6 +8,7 @@ use super::{
         create_remote_alist_client, load_local_alist_client, AlistClientArc, AlistClientExt,
         AlistFileInfo,
     },
+    store::{ProviderStoreExt, VersionedPlayback},
     DirectoryItem, DynamicFolder, ItemType, MediaProvider, NextPlayItem, PlaybackInfo,
     PlaybackResult, ProviderContext, ProviderError, SubtitleTrack,
 };
@@ -19,6 +20,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Duration;
 
 /// Alist `MediaProvider`
 ///
@@ -144,99 +146,15 @@ impl TryFrom<&Value> for AlistSourceConfig {
 
 // Note: Default implementation removed as it requires RemoteProviderManager
 
-#[async_trait]
-impl MediaProvider for AlistProvider {
-    fn name(&self) -> &'static str {
-        "alist"
-    }
-
-    async fn validate_source_config(
+impl AlistProvider {
+    /// Resolve playback from the Alist API (no caching layer).
+    ///
+    /// Contains the core API interaction logic, called by `generate_playback`
+    /// after cache miss.
+    async fn resolve_from_api(
         &self,
-        _ctx: &ProviderContext<'_>,
-        source_config: &Value,
-    ) -> Result<(), ProviderError> {
-        let config = AlistSourceConfig::try_from(source_config)?;
-
-        // Validate host URL format
-        if config.host.is_empty() {
-            return Err(ProviderError::InvalidConfig(
-                "Alist host must not be empty".to_string(),
-            ));
-        }
-        if !config.host.starts_with("http://") && !config.host.starts_with("https://") {
-            return Err(ProviderError::InvalidConfig(format!(
-                "Alist host must start with http:// or https://, got: {}",
-                config.host
-            )));
-        }
-
-        // Validate path is not empty and doesn't contain path traversal.
-        // Uses the shared validate_path_for_traversal which handles URL-encoded
-        // variants (%2e%2e, %252e%252e), backslash traversal, null bytes, etc.
-        if config.path.is_empty() {
-            return Err(ProviderError::InvalidConfig(
-                "Alist path must not be empty".to_string(),
-            ));
-        }
-        validate_path_for_traversal(&config.path).map_err(|e| {
-            ProviderError::InvalidConfig(format!("Alist path must not contain path traversal: {e}"))
-        })?;
-
-        // Validate token is non-empty
-        if config.token.is_empty() {
-            return Err(ProviderError::InvalidConfig(
-                "Alist token must not be empty".to_string(),
-            ));
-        }
-
-        Ok(())
-    }
-
-    async fn prepare_source_config(
-        &self,
-        _ctx: &ProviderContext<'_>,
-        source_config: Value,
-    ) -> Result<Value, ProviderError> {
-        // Check if source_config contains sensitive credentials (token)
-        let has_sensitive_credentials = source_config
-            .get("token")
-            .and_then(|t| t.as_str())
-            .is_some_and(|s| !s.is_empty());
-
-        // If config has sensitive credentials, encryption is mandatory
-        if has_sensitive_credentials && _ctx.credential_encryption.is_none() {
-            return Err(ProviderError::EncryptionRequired("alist"));
-        }
-
-        // Encrypt token in source_config before storage if encryption is available
-        if let Some(enc) = _ctx.credential_encryption {
-            super::crypto_utils::encrypt_field_in_value(&source_config, enc, "token", "Alist")
-        } else {
-            // No sensitive credentials, safe to store without encryption
-            Ok(source_config)
-        }
-    }
-
-    async fn generate_playback(
-        &self,
-        _ctx: &ProviderContext<'_>,
-        source_config: &Value,
+        config: &AlistSourceConfig,
     ) -> Result<PlaybackResult, ProviderError> {
-        // Decrypt token if encryption is configured (handles both encrypted and plaintext)
-        let decrypted_config = if let Some(enc) = _ctx.credential_encryption {
-            super::crypto_utils::decrypt_field_in_value(source_config, enc, "token", "Alist")?
-        } else {
-            source_config.clone()
-        };
-
-        // Parse source_config first
-        let config = AlistSourceConfig::try_from(&decrypted_config)?;
-
-        // Re-validate path at request time (defense-in-depth against traversal)
-        validate_path_for_traversal(&config.path).map_err(|e| {
-            ProviderError::InvalidConfig(format!("Alist path must not contain path traversal: {e}"))
-        })?;
-
         // Get appropriate client based on instance_name from config
         let client = self
             .get_client(config.provider_instance_name.as_deref())
@@ -363,43 +281,216 @@ impl MediaProvider for AlistProvider {
             metadata,
         })
     }
+}
 
-    fn cache_key(&self, ctx: &ProviderContext<'_>, source_config: &Value) -> String {
-        // Decrypt token if encrypted before hashing for consistent cache keys
-        let decrypted = if let Some(enc) = ctx.credential_encryption {
-            let mut config = source_config.clone();
-            if let Some(obj) = config.as_object_mut() {
-                if let Some(token_value) = obj.get("token") {
-                    if let Some(encrypted_str) = token_value.as_str() {
-                        if encrypted_str.starts_with("enc:") {
-                            if let Ok(decrypted) = enc.decrypt(encrypted_str) {
-                                if let Some(s) = decrypted.as_str() {
-                                    obj.insert("token".to_string(), Value::String(s.to_string()));
-                                } else {
-                                    obj.insert("token".to_string(), decrypted);
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            config
+#[async_trait]
+impl MediaProvider for AlistProvider {
+    fn name(&self) -> &'static str {
+        "alist"
+    }
+
+    async fn validate_source_config(
+        &self,
+        _ctx: &ProviderContext<'_>,
+        source_config: &Value,
+    ) -> Result<(), ProviderError> {
+        let config = AlistSourceConfig::try_from(source_config)?;
+
+        // Validate host URL format
+        if config.host.is_empty() {
+            return Err(ProviderError::InvalidConfig(
+                "Alist host must not be empty".to_string(),
+            ));
+        }
+        if !config.host.starts_with("http://") && !config.host.starts_with("https://") {
+            return Err(ProviderError::InvalidConfig(format!(
+                "Alist host must start with http:// or https://, got: {}",
+                config.host
+            )));
+        }
+
+        // Validate path is not empty and doesn't contain path traversal.
+        // Uses the shared validate_path_for_traversal which handles URL-encoded
+        // variants (%2e%2e, %252e%252e), backslash traversal, null bytes, etc.
+        if config.path.is_empty() {
+            return Err(ProviderError::InvalidConfig(
+                "Alist path must not be empty".to_string(),
+            ));
+        }
+        validate_path_for_traversal(&config.path).map_err(|e| {
+            ProviderError::InvalidConfig(format!("Alist path must not contain path traversal: {e}"))
+        })?;
+
+        // Validate token is non-empty
+        if config.token.is_empty() {
+            return Err(ProviderError::InvalidConfig(
+                "Alist token must not be empty".to_string(),
+            ));
+        }
+
+        Ok(())
+    }
+
+    async fn prepare_source_config(
+        &self,
+        _ctx: &ProviderContext<'_>,
+        source_config: Value,
+    ) -> Result<Value, ProviderError> {
+        // Check if source_config contains sensitive credentials (token)
+        let has_sensitive_credentials = source_config
+            .get("token")
+            .and_then(|t| t.as_str())
+            .is_some_and(|s| !s.is_empty());
+
+        // If config has sensitive credentials, encryption is mandatory
+        if has_sensitive_credentials && _ctx.credential_encryption.is_none() {
+            return Err(ProviderError::EncryptionRequired("alist"));
+        }
+
+        // Encrypt token in source_config before storage if encryption is available
+        if let Some(enc) = _ctx.credential_encryption {
+            super::crypto_utils::encrypt_field_in_value(&source_config, enc, "token", "Alist")
+        } else {
+            // No sensitive credentials, safe to store without encryption
+            Ok(source_config)
+        }
+    }
+
+    async fn generate_playback(
+        &self,
+        _ctx: &ProviderContext<'_>,
+        source_config: &Value,
+    ) -> Result<PlaybackResult, ProviderError> {
+        // Decrypt token if encryption is configured (handles both encrypted and plaintext)
+        let decrypted_config = if let Some(enc) = _ctx.credential_encryption {
+            super::crypto_utils::decrypt_field_in_value(source_config, enc, "token", "Alist")?
         } else {
             source_config.clone()
         };
 
-        // Cache key must include token hash to prevent cross-user data leakage.
-        // Different users have different tokens and may see different files.
-        if let Ok(config) = AlistSourceConfig::try_from(&decrypted) {
-            let identifier = format!("{}:{}:{}", config.host, config.token, config.path);
-            super::build_playback_cache_key(ctx.key_prefix, "alist", &identifier)
-        } else {
-            super::build_unknown_cache_key_with_config(ctx.key_prefix, "alist", source_config)
+        // Parse source_config first
+        let config = AlistSourceConfig::try_from(&decrypted_config)?;
+
+        // Re-validate path at request time (defense-in-depth against traversal)
+        validate_path_for_traversal(&config.path).map_err(|e| {
+            ProviderError::InvalidConfig(format!("Alist path must not contain path traversal: {e}"))
+        })?;
+
+        // Build cache key from hashed host+token and path
+        use sha2::{Digest, Sha256};
+        let host_token = format!("{}:{}", config.host, config.token);
+        let host_hash: String = format!("{:x}", Sha256::digest(host_token.as_bytes()))
+            .chars()
+            .take(16)
+            .collect();
+        let path_hash: String = format!("{:x}", Sha256::digest(config.path.as_bytes()))
+            .chars()
+            .take(16)
+            .collect();
+        let cache_key = format!("playback:{host_hash}:{path_hash}");
+        let cache_ttl = Duration::from_secs(15 * 60);
+
+        let store = _ctx.store.as_ref();
+
+        // Check cache
+        if let Some(store) = store {
+            if let Ok(Some(cached)) = store.get::<VersionedPlayback>(&cache_key).await {
+                if !cached.is_expired() {
+                    return Ok(cached.result);
+                }
+            }
         }
+
+        // Acquire lock to prevent concurrent resolution of same content
+        let _lock = if let Some(store) = store {
+            store
+                .lock(&format!("lock:{cache_key}"), Duration::from_secs(30))
+                .await
+                .ok()
+        } else {
+            None
+        };
+
+        // Double-check cache after lock acquisition
+        if let Some(store) = store {
+            if let Ok(Some(cached)) = store.get::<VersionedPlayback>(&cache_key).await {
+                if !cached.is_expired() {
+                    return Ok(cached.result);
+                }
+            }
+        }
+
+        // Call provider API
+        let result = self.resolve_from_api(&config).await?;
+
+        // Generate version and store result
+        let version = nanoid::nanoid!(16);
+        let expires_at = Utc::now().timestamp() + cache_ttl.as_secs() as i64;
+        let versioned = VersionedPlayback {
+            version: version.clone(),
+            result: result.clone(),
+            expires_at,
+        };
+        if let Some(store) = store {
+            let _ = store.set(&cache_key, &versioned, cache_ttl).await;
+            let _ = store
+                .set(&format!("v:{version}"), &versioned, cache_ttl)
+                .await;
+        }
+
+        Ok(result)
     }
 
     fn as_dynamic_folder(&self) -> Option<&dyn DynamicFolder> {
         Some(self)
+    }
+
+    fn as_provider_proxy(&self) -> Option<&dyn super::proxy::ProviderProxy> {
+        Some(self)
+    }
+}
+
+// ProviderProxy implementation for Alist
+//
+// Supported sub_paths:
+// - `{version}/stream` — proxy the video stream
+// - `{version}/m3u8` — proxy M3U8 playlist with URL rewriting
+#[async_trait]
+impl super::proxy::ProviderProxy for AlistProvider {
+    async fn resolve_proxy(
+        &self,
+        ctx: &super::proxy::ProxyRequestContext<'_>,
+    ) -> Result<super::proxy::ProxyAction, ProviderError> {
+        let sub_path = ctx.sub_path;
+
+        if let Some((version, rest)) = sub_path.split_once('/') {
+            let versioned = super::proxy::lookup_versioned(ctx.store, version).await?;
+            let default_info = versioned
+                .result
+                .playback_infos
+                .get(&versioned.result.default_mode)
+                .ok_or(ProviderError::NotFound)?;
+            let url = default_info.urls.first().ok_or(ProviderError::NotFound)?;
+
+            match rest {
+                "stream" => {
+                    return Ok(super::proxy::ProxyAction::FetchAndForward {
+                        url: url.clone(),
+                        headers: default_info.headers.clone(),
+                    });
+                }
+                "m3u8" => {
+                    return Ok(super::proxy::ProxyAction::M3u8Rewrite {
+                        url: url.clone(),
+                        headers: default_info.headers.clone(),
+                        proxy_base: format!("{}/{version}", ctx.proxy_base),
+                    });
+                }
+                _ => {}
+            }
+        }
+
+        Err(ProviderError::NotFound)
     }
 }
 

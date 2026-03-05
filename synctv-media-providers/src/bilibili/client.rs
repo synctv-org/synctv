@@ -231,12 +231,14 @@ fn wbi_sign(params: &[(&str, String)], mixin_key: &str) -> Vec<(String, String)>
         param.1 = param.1.chars().filter(|c| !"!'()*".contains(*c)).collect();
     }
 
-    // Build query string for hashing
-    let query_str: String = all_params
-        .iter()
-        .map(|(k, v)| format!("{k}={v}"))
-        .collect::<Vec<_>>()
-        .join("&");
+    // Build query string for hashing (URL-encoded, matching Go's url.Values.Encode())
+    let query_str: String = {
+        let mut ser = url::form_urlencoded::Serializer::new(String::new());
+        for (k, v) in &all_params {
+            ser.append_pair(k, v);
+        }
+        ser.finish()
+    };
 
     // Compute MD5 hash of query_string + mixin_key
     let to_hash = format!("{query_str}{mixin_key}");
@@ -3495,6 +3497,58 @@ mod tests {
             .map(|(_, v)| v.as_str())
             .expect("key missing");
         assert_eq!(val, "helloworld");
+    }
+
+    #[test]
+    fn test_wbi_sign_url_encodes_values_for_hash() {
+        // Values with spaces and Chinese characters should be URL-encoded
+        // before hashing, matching Go's url.Values.Encode() behavior.
+        let params = vec![
+            ("keyword", "hello world".to_string()),
+            ("name", "\u{4f60}\u{597d}".to_string()), // 你好
+        ];
+        let mixin_key = "ea1db124af3c7062474693fa704f4ff8";
+        let signed = wbi_sign(&params, mixin_key);
+
+        let w_rid = signed
+            .iter()
+            .find(|(k, _)| k == "w_rid")
+            .map(|(_, v)| v.as_str())
+            .expect("w_rid missing");
+        let wts = signed
+            .iter()
+            .find(|(k, _)| k == "wts")
+            .map(|(_, v)| v.as_str())
+            .expect("wts missing");
+
+        // Reconstruct the expected hash using URL-encoded query string
+        let mut expected_params: Vec<(&str, &str)> =
+            vec![("keyword", "hello world"), ("name", "\u{4f60}\u{597d}")];
+        expected_params.push(("wts", wts));
+        expected_params.sort_by(|a, b| a.0.cmp(&b.0));
+
+        let expected_query: String = {
+            let mut ser = url::form_urlencoded::Serializer::new(String::new());
+            for (k, v) in &expected_params {
+                ser.append_pair(k, v);
+            }
+            ser.finish()
+        };
+
+        use md5::{Digest, Md5};
+        let mut hasher = Md5::new();
+        hasher.update(format!("{expected_query}{mixin_key}").as_bytes());
+        let expected_hash = format!("{:x}", hasher.finalize());
+
+        assert_eq!(
+            w_rid, expected_hash,
+            "w_rid should match hash of URL-encoded query string"
+        );
+        // Verify the URL-encoded form includes %20 or + for space, not raw space
+        assert!(
+            expected_query.contains('+') || expected_query.contains("%20"),
+            "query string should URL-encode spaces"
+        );
     }
 
     #[test]

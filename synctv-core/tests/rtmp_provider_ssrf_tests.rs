@@ -9,7 +9,7 @@
 use serde_json::json;
 use synctv_core::provider::{MediaProvider, ProviderContext, ProviderError, RtmpProvider};
 
-const fn create_context() -> ProviderContext<'static> {
+fn create_context() -> ProviderContext<'static> {
     ProviderContext::new("synctv")
         .with_user_id("test_user")
         .with_room_id("test_room")

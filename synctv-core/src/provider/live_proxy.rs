@@ -6,9 +6,14 @@
 //!
 //! The `PullStreamManager` handles the actual pulling from the external source.
 
-use super::{MediaProvider, PlaybackResult, ProviderContext, ProviderError};
+use super::{
+    store::{ProviderStoreExt, VersionedPlayback},
+    MediaProvider, PlaybackResult, ProviderContext, ProviderError,
+};
 use async_trait::async_trait;
+use chrono::Utc;
 use serde_json::{json, Value};
+use std::time::Duration;
 
 /// `LiveProxy` `MediaProvider`
 ///
@@ -54,8 +59,6 @@ impl MediaProvider for LiveProxyProvider {
             .ok_or_else(|| ProviderError::InvalidConfig("Missing url".to_string()))?;
 
         let mut result = super::build_live_playback(&self.base_url, media_id, room_id);
-        // Only include the hostname of the source URL in metadata to avoid
-        // leaking internal infrastructure paths/stream-keys to clients.
         let redacted_host = url::Url::parse(source_url)
             .ok()
             .and_then(|u| u.host_str().map(String::from))
@@ -66,6 +69,23 @@ impl MediaProvider for LiveProxyProvider {
         result
             .metadata
             .insert("provider".to_string(), json!("live_proxy"));
+
+        // Store with version for proxy URL identity
+        let store = _ctx.store.as_ref();
+        let cache_key = format!("playback:{room_id}:{media_id}");
+        let cache_ttl = Duration::from_secs(300);
+        let version = nanoid::nanoid!(16);
+        let versioned = VersionedPlayback {
+            version: version.clone(),
+            result: result.clone(),
+            expires_at: Utc::now().timestamp() + cache_ttl.as_secs() as i64,
+        };
+        if let Some(store) = store {
+            let _ = store.set(&cache_key, &versioned, cache_ttl).await;
+            let _ = store
+                .set(&format!("v:{version}"), &versioned, cache_ttl)
+                .await;
+        }
 
         Ok(result)
     }
@@ -104,21 +124,6 @@ impl MediaProvider for LiveProxyProvider {
         }
 
         Ok(())
-    }
-
-    fn cache_key(&self, ctx: &ProviderContext<'_>, source_config: &Value) -> String {
-        let room_id = source_config
-            .get("room_id")
-            .and_then(|v| v.as_str())
-            .unwrap_or("unknown");
-        let media_id = source_config
-            .get("media_id")
-            .and_then(|v| v.as_str())
-            .unwrap_or("unknown");
-        format!(
-            "{}:playback:live_proxy:{room_id}:{media_id}",
-            ctx.key_prefix
-        )
     }
 }
 

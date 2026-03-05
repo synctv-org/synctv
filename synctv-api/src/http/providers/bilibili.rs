@@ -1,4 +1,8 @@
 //! Bilibili Provider HTTP Routes
+//!
+//! Proxy routes use the `ProviderProxy` trait via a single wildcard handler:
+//! - `/proxy/*sub_path` — dispatches to `BilibiliProvider::resolve_proxy`
+//! - `/proxy/{room_id}/{media_id}/danmu` — danmu SSE (stateless, special endpoint)
 
 use std::collections::HashMap;
 use std::convert::Infallible;
@@ -19,9 +23,11 @@ use serde_json::json;
 use crate::http::{
     error::AppResult, middleware::AuthUser, provider_common::InstanceQuery, AppError, AppState,
 };
-use crate::impls::provider::{resolve_media_from_playlist, resolve_provider_playback_result};
+use crate::impls::provider::resolve_media_from_playlist;
 
 use synctv_core::models::{MediaId, RoomId};
+use synctv_core::provider::proxy::ProxyRequestContext;
+use synctv_core::provider::MediaProvider;
 
 /// Build Bilibili HTTP routes
 pub fn bilibili_routes() -> Router<AppState> {
@@ -34,107 +40,46 @@ pub fn bilibili_routes() -> Router<AppState> {
         .route("/login/sms/login", post(sms_login))
         .route("/me", get(user_info))
         .route("/logout", post(logout))
-        // Provider-specific proxy routes
-        // Note: MPD and stream proxying removed as DASH manifest structures were simplified
-        .route(
-            "/proxy/{room_id}/{media_id}/subtitle/{name}",
-            get(proxy_subtitle).options(super::proxy_options_preflight),
-        )
-        .route("/proxy/{room_id}/{media_id}/m3u8", get(proxy_m3u8))
+        // Danmu is stateless (no version needed) — must be before wildcard
         .route("/proxy/{room_id}/{media_id}/danmu", get(danmu_sse))
+        // Wildcard proxy route (dispatches via ProviderProxy trait)
+        .route(
+            "/proxy/{*sub_path}",
+            get(proxy_handler).options(super::proxy_options_preflight),
+        )
 }
 
 // ------------------------------------------------------------------
-// Proxy handlers
+// Generic proxy handler (delegates to ProviderProxy trait)
 // ------------------------------------------------------------------
 
-/// GET /`proxy/:room_id/:media_id/subtitle/:name` - Proxy subtitle
-async fn proxy_subtitle(
-    auth: AuthUser,
-    Path((room_id, media_id, name)): Path<(String, String, String)>,
+/// GET `/proxy/*sub_path` — Generic proxy handler for Bilibili.
+///
+/// Delegates to `BilibiliProvider::resolve_proxy` which parses the sub_path
+/// and returns a `ProxyAction` for the HTTP layer to execute.
+async fn proxy_handler(
+    _auth: AuthUser,
+    Path(sub_path): Path<String>,
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> AppResult<axum::response::Response> {
-    let room_id_parsed = RoomId::from_string(room_id);
-    let media_id_parsed = MediaId::from_string(media_id);
-
-    let result = {
-        let resolved = state.resolve_redis_conn().await;
-        resolve_provider_playback_result(
-            &auth.user_id,
-            &room_id_parsed,
-            &media_id_parsed,
-            state.bilibili_provider.as_ref(),
-            &state.room_service,
-            resolved.as_ref(),
-            state.credential_encryption.as_ref(),
-        )
-        .await
-    }
-    .map_err(crate::http::error::map_api_error)?;
-
-    // Find subtitle by name across all playback infos
-    let subtitle_url = result
-        .playback_infos
-        .values()
-        .flat_map(|pi| &pi.subtitles)
-        .find(|s| s.name == name)
-        .map(|s| s.url.clone())
-        .ok_or_else(|| anyhow::anyhow!("Subtitle '{name}' not found"))?;
-
-    let provider_headers = synctv_core::provider::bilibili_headers();
-
-    let cfg = synctv_proxy::ProxyConfig {
-        url: &subtitle_url,
-        provider_headers: &provider_headers,
-        client_headers: &headers,
+    let proxy = state
+        .bilibili_provider
+        .as_provider_proxy()
+        .ok_or_else(|| AppError::not_found("Proxy not supported"))?;
+    let store = state.provider_stores.get("bilibili");
+    let ctx = ProxyRequestContext {
+        sub_path: &sub_path,
+        store,
+        proxy_base: "/api/providers/bilibili/proxy",
     };
-
-    synctv_proxy::proxy_fetch_and_forward(cfg, &synctv_proxy::NoopMetrics)
-        .await
-        .map_err(Into::into)
+    let action = proxy.resolve_proxy(&ctx).await.map_err(AppError::from)?;
+    super::execute_proxy_action(action, &headers).await
 }
 
-/// GET /`proxy/:room_id/:media_id/m3u8` - Proxy Bilibili M3U8 (for live streams)
-async fn proxy_m3u8(
-    auth: AuthUser,
-    Path((room_id, media_id)): Path<(String, String)>,
-    State(state): State<AppState>,
-) -> AppResult<axum::response::Response> {
-    let room_id_parsed = RoomId::from_string(room_id.clone());
-    let media_id_parsed = MediaId::from_string(media_id.clone());
-
-    let result = {
-        let resolved = state.resolve_redis_conn().await;
-        resolve_provider_playback_result(
-            &auth.user_id,
-            &room_id_parsed,
-            &media_id_parsed,
-            state.bilibili_provider.as_ref(),
-            &state.room_service,
-            resolved.as_ref(),
-            state.credential_encryption.as_ref(),
-        )
-        .await
-    }
-    .map_err(crate::http::error::map_api_error)?;
-
-    let default_info = result
-        .playback_infos
-        .get(&result.default_mode)
-        .ok_or_else(|| anyhow::anyhow!("Default playback mode not found"))?;
-
-    let url = default_info
-        .urls
-        .first()
-        .ok_or_else(|| anyhow::anyhow!("No URLs in playback info"))?;
-
-    let proxy_base = format!("/api/providers/bilibili/proxy/{room_id}/{media_id}");
-
-    synctv_proxy::proxy_m3u8_and_rewrite(url, &default_info.headers, &proxy_base)
-        .await
-        .map_err(Into::into)
-}
+// ------------------------------------------------------------------
+// Danmu SSE handler (stateless, provider-specific)
+// ------------------------------------------------------------------
 
 /// GET /`proxy/:room_id/:media_id/danmu` - Bilibili danmaku SSE
 ///

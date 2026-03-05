@@ -6,6 +6,7 @@ use super::{
     provider_client::{
         create_remote_bilibili_client, load_local_bilibili_client, BilibiliClientArc,
     },
+    store::{ProviderStoreExt, VersionedPlayback},
     MediaProvider, PlaybackInfo, PlaybackResult, ProviderContext, ProviderError, SubtitleTrack,
 };
 use async_trait::async_trait;
@@ -14,6 +15,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Duration;
 
 use crate::service::RemoteProviderManager;
 
@@ -381,252 +383,97 @@ impl MediaProvider for BilibiliProvider {
         // Parse source_config first
         let config = BilibiliSourceConfig::try_from(&decrypted_config)?;
 
-        // Sanitize cookies at request time as defense-in-depth
-        let sanitized_cookies = config.sanitized_cookies();
-
-        // Get appropriate client based on instance_name from config
-        let client = self.get_client(config.provider_instance_name()).await;
-
-        match config {
-            BilibiliSourceConfig::Video { bvid, aid, cid, .. } => {
-                let bvid = bvid.unwrap_or_default();
-                let aid = aid.unwrap_or(0);
-
-                let request = synctv_media_providers::grpc::bilibili::GetDashVideoUrlReq {
-                    aid,
-                    bvid: bvid.clone(),
-                    cid,
-                    cookies: sanitized_cookies.clone(),
-                };
-                let dash_resp = client.get_dash_video_url(request).await?;
-
-                let mut metadata = HashMap::new();
-                let mut subtitles = Vec::new();
-
-                // Fetch subtitles
-                let subtitle_request = synctv_media_providers::grpc::bilibili::GetSubtitlesReq {
-                    aid,
-                    bvid: bvid.clone(),
-                    cid,
-                    cookies: sanitized_cookies.clone(),
-                };
-                match client.get_subtitles(subtitle_request).await {
-                    Ok(subtitle_resp) => {
-                        subtitles = subtitle_resp
-                            .subtitles
-                            .into_iter()
-                            .map(|(name, url)| SubtitleTrack {
-                                language: name.clone(),
-                                name,
-                                url,
-                                format: "json".to_string(),
-                            })
-                            .collect();
-                    }
-                    Err(e) => {
-                        tracing::warn!(
-                            bvid = %bvid,
-                            aid = %aid,
-                            cid = %cid,
-                            error = %e,
-                            "Failed to fetch Bilibili subtitles for video, continuing without subtitles"
-                        );
-                    }
-                }
-
-                // Store DASH duration metadata
-                if let Some(d) = &dash_resp.dash {
-                    metadata.insert("duration".to_string(), json!(d.duration));
-                    metadata.insert("min_buffer_time".to_string(), json!(d.min_buffer_time));
-                }
-
-                metadata.insert("content_type".to_string(), json!("video"));
-                metadata.insert("bvid".to_string(), json!(bvid));
-                metadata.insert("aid".to_string(), json!(aid));
-                metadata.insert("cid".to_string(), json!(cid));
-
-                // Bilibili CDN URLs are typically valid for ~2 hours
-                let expires_at = Some(Utc::now().timestamp() + 2 * 3600);
-
-                // Extract video stream URLs from DASH data so the proxy layer
-                // has URLs to work with (e.g., for M3U8 proxy).
-                let dash_urls: Vec<String> = dash_resp
-                    .dash
-                    .as_ref()
-                    .map(|d| d.video_streams.iter().map(|s| s.base_url.clone()).collect())
-                    .unwrap_or_default();
-
-                // Keep a "dash" PlaybackInfo with headers for proxy layer
-                let mut playback_infos = HashMap::new();
-                playback_infos.insert(
-                    "dash".to_string(),
-                    PlaybackInfo {
-                        urls: dash_urls,
-                        format: "mpd".to_string(),
-                        headers: bilibili_headers(),
-                        subtitles,
-                        expires_at,
-                        cors_proxy_required: true,
-                    },
-                );
-
-                Ok(PlaybackResult {
-                    playback_infos,
-                    default_mode: "dash".to_string(),
-                    metadata,
-                })
+        // Build cache key based on content identity + user cookie hash
+        let (cache_key, cache_ttl) = match &config {
+            BilibiliSourceConfig::Video {
+                bvid,
+                aid,
+                cid,
+                cookies,
+                ..
+            } => {
+                let user_hash = cookie_hash(cookies);
+                (
+                    format!(
+                        "playback:video:{}:{}:{}:{user_hash}",
+                        bvid.as_deref().unwrap_or(""),
+                        aid.unwrap_or(0),
+                        cid
+                    ),
+                    Duration::from_secs(2 * 3600), // 2 hours
+                )
             }
-
-            BilibiliSourceConfig::Pgc { epid, cid, .. } => {
-                let request = synctv_media_providers::grpc::bilibili::GetDashPgcurlReq {
-                    epid,
-                    cid,
-                    cookies: sanitized_cookies.clone(),
-                };
-                let dash_resp = client.get_dash_pgcurl(request).await?;
-
-                let mut metadata = HashMap::new();
-                let mut subtitles = Vec::new();
-
-                // Fetch subtitles for PGC content (uses cid-based lookup)
-                let subtitle_request = synctv_media_providers::grpc::bilibili::GetSubtitlesReq {
-                    aid: 0,
-                    bvid: String::new(),
-                    cid,
-                    cookies: sanitized_cookies.clone(),
-                };
-                match client.get_subtitles(subtitle_request).await {
-                    Ok(subtitle_resp) => {
-                        subtitles = subtitle_resp
-                            .subtitles
-                            .into_iter()
-                            .map(|(name, url)| SubtitleTrack {
-                                language: name.clone(),
-                                name,
-                                url,
-                                format: "json".to_string(),
-                            })
-                            .collect();
-                    }
-                    Err(e) => {
-                        tracing::warn!(
-                            epid = %epid,
-                            cid = %cid,
-                            error = %e,
-                            "Failed to fetch Bilibili subtitles for PGC content, continuing without subtitles"
-                        );
-                    }
-                }
-
-                // Store DASH duration metadata
-                if let Some(d) = &dash_resp.dash {
-                    metadata.insert("duration".to_string(), json!(d.duration));
-                }
-
-                metadata.insert("content_type".to_string(), json!("pgc"));
-                metadata.insert("epid".to_string(), json!(epid));
-                metadata.insert("cid".to_string(), json!(cid));
-
-                // Bilibili CDN URLs are typically valid for ~2 hours
-                let expires_at = Some(Utc::now().timestamp() + 2 * 3600);
-
-                // Extract video stream URLs from DASH data
-                let pgc_urls: Vec<String> = dash_resp
-                    .dash
-                    .as_ref()
-                    .map(|d| d.video_streams.iter().map(|s| s.base_url.clone()).collect())
-                    .unwrap_or_default();
-
-                let mut playback_infos = HashMap::new();
-                playback_infos.insert(
-                    "dash".to_string(),
-                    PlaybackInfo {
-                        urls: pgc_urls,
-                        format: "mpd".to_string(),
-                        headers: bilibili_headers(),
-                        subtitles,
-                        expires_at,
-                        cors_proxy_required: true,
-                    },
-                );
-
-                Ok(PlaybackResult {
-                    playback_infos,
-                    default_mode: "dash".to_string(),
-                    metadata,
-                })
+            BilibiliSourceConfig::Pgc {
+                epid, cid, cookies, ..
+            } => {
+                let user_hash = cookie_hash(cookies);
+                (
+                    format!("playback:pgc:{epid}:{cid}:{user_hash}"),
+                    Duration::from_secs(2 * 3600),
+                )
             }
+            BilibiliSourceConfig::Live {
+                room_id, cookies, ..
+            } => {
+                let user_hash = cookie_hash(cookies);
+                (
+                    format!("playback:live:{room_id}:{user_hash}"),
+                    Duration::from_secs(120), // Live streams expire quickly
+                )
+            }
+        };
 
-            BilibiliSourceConfig::Live { room_id, .. } => {
-                // Live streams use HLS — no DASH
-                //
-                // Note: `GetLiveStreamsReq.cid` is named `cid` in the protobuf definition
-                // for historical reasons, but for live streams this field carries the
-                // live **room_id**, not a video content-ID (cid). The Bilibili live API
-                // identifies rooms by room_id, so `room_id` is assigned here.
-                let request = synctv_media_providers::grpc::bilibili::GetLiveStreamsReq {
-                    cid: room_id, // semantically room_id — see comment above
-                    hls: true,
-                    cookies: sanitized_cookies,
-                };
-                let live_resp = client.get_live_streams(request).await?;
+        let store = _ctx.store.as_ref();
 
-                let mut playback_infos = HashMap::new();
-                let mut metadata = HashMap::new();
-
-                let live_expires_at = Some(Utc::now().timestamp() + 120);
-
-                for stream in live_resp.live_streams {
-                    // Append the quality code to the key to prevent collisions
-                    // when multiple streams share the same description string.
-                    let quality_name = if stream.desc.is_empty() {
-                        format!("quality_{}", stream.quality)
-                    } else {
-                        format!("{}_{}", stream.desc, stream.quality)
-                    };
-                    playback_infos.insert(
-                        quality_name,
-                        PlaybackInfo {
-                            urls: stream.urls,
-                            format: "hls".to_string(),
-                            headers: {
-                                let mut h = HashMap::new();
-                                h.insert(
-                                    "Referer".to_string(),
-                                    "https://live.bilibili.com".to_string(),
-                                );
-                                h
-                            },
-                            subtitles: Vec::new(),
-                            expires_at: live_expires_at,
-                            cors_proxy_required: true,
-                        },
-                    );
+        // Check cache
+        if let Some(store) = store {
+            if let Ok(Some(cached)) = store.get::<VersionedPlayback>(&cache_key).await {
+                if !cached.is_expired() {
+                    return Ok(cached.result);
                 }
-
-                metadata.insert("content_type".to_string(), json!("live"));
-                metadata.insert("room_id".to_string(), json!(room_id));
-                metadata.insert("is_live".to_string(), json!(true));
-
-                // Sort keys so the default mode is deterministic across server
-                // restarts and replicas.  HashMap iteration order is randomised
-                // per-process in Rust, so we must sort before picking the first key.
-                let default_mode = {
-                    let mut keys: Vec<&String> = playback_infos.keys().collect();
-                    keys.sort();
-                    keys.into_iter()
-                        .next()
-                        .cloned()
-                        .unwrap_or_else(|| "direct".to_string())
-                };
-
-                Ok(PlaybackResult {
-                    playback_infos,
-                    default_mode,
-                    metadata,
-                })
             }
         }
+
+        // Acquire lock to prevent concurrent resolution of same content
+        let _lock = if let Some(store) = store {
+            store
+                .lock(&format!("lock:{cache_key}"), Duration::from_secs(30))
+                .await
+                .ok()
+        } else {
+            None
+        };
+
+        // Double-check cache after lock acquisition
+        if let Some(store) = store {
+            if let Ok(Some(cached)) = store.get::<VersionedPlayback>(&cache_key).await {
+                if !cached.is_expired() {
+                    return Ok(cached.result);
+                }
+            }
+        }
+
+        // Call provider API
+        let result = self
+            .resolve_from_api(&config, _ctx.credential_encryption)
+            .await?;
+
+        // Generate version and store result
+        let version = nanoid::nanoid!(16);
+        let expires_at = Utc::now().timestamp() + cache_ttl.as_secs() as i64;
+        let versioned = VersionedPlayback {
+            version: version.clone(),
+            result: result.clone(),
+            expires_at,
+        };
+        if let Some(store) = store {
+            let _ = store.set(&cache_key, &versioned, cache_ttl).await;
+            let _ = store
+                .set(&format!("v:{version}"), &versioned, cache_ttl)
+                .await;
+        }
+
+        Ok(result)
     }
 
     async fn validate_source_config(
@@ -732,67 +579,320 @@ impl MediaProvider for BilibiliProvider {
         }
     }
 
-    fn cache_key(&self, ctx: &ProviderContext<'_>, source_config: &Value) -> String {
-        // Decrypt cookies if encrypted before hashing for consistent cache keys
-        let decrypted = if let Some(enc) = ctx.credential_encryption {
-            decrypt_field_in_value(source_config, enc, "cookies", "Bilibili")
-                .unwrap_or_else(|_| source_config.clone())
-        } else {
-            source_config.clone()
-        };
-        // Include a hash of the user's cookies in the cache key to prevent
-        // cross-user cache pollution (VIP vs non-VIP get different results).
-        if let Ok(config) = BilibiliSourceConfig::try_from(&decrypted) {
-            use sha2::{Digest, Sha256};
-            let (identifier, cookies) = match &config {
-                BilibiliSourceConfig::Video {
-                    bvid,
-                    aid,
-                    cid,
-                    cookies,
-                    ..
-                } => (
-                    format!(
-                        "video:{}:{}:{}",
-                        bvid.as_deref().unwrap_or(""),
-                        aid.unwrap_or(0),
-                        cid
-                    ),
-                    cookies,
-                ),
-                BilibiliSourceConfig::Pgc {
-                    epid, cid, cookies, ..
-                } => (format!("pgc:{epid}:{cid}"), cookies),
-                BilibiliSourceConfig::Live {
-                    room_id, cookies, ..
-                } => (format!("live:{room_id}"), cookies),
-            };
-            // Build a stable string from cookies for hashing
-            let mut cookie_parts: Vec<_> = cookies.iter().collect();
-            cookie_parts.sort_by_key(|(k, _)| k.as_str());
-            let cookies_str: String = cookie_parts
-                .iter()
-                .map(|(k, v)| format!("{k}={v}"))
-                .collect::<Vec<_>>()
-                .join(";");
-            let user_hash = if cookies_str.is_empty() {
-                "anon".to_string()
-            } else {
-                format!("{:x}", Sha256::digest(cookies_str.as_bytes()))
-                    .chars()
-                    .take(16)
-                    .collect::<String>()
-            };
-            let full_id = format!("{identifier}:{user_hash}");
-            super::build_playback_cache_key(ctx.key_prefix, "bilibili", &full_id)
-        } else {
-            super::build_unknown_cache_key_with_config(ctx.key_prefix, "bilibili", source_config)
+    fn as_provider_proxy(&self) -> Option<&dyn super::proxy::ProviderProxy> {
+        Some(self)
+    }
+}
+
+// ProviderProxy implementation for Bilibili
+//
+// Supported sub_paths:
+// - `{version}/subtitle/{name}` — proxy a specific subtitle track
+// - `{version}/m3u8` — proxy M3U8 playlist with URL rewriting
+#[async_trait]
+impl super::proxy::ProviderProxy for BilibiliProvider {
+    async fn resolve_proxy(
+        &self,
+        ctx: &super::proxy::ProxyRequestContext<'_>,
+    ) -> Result<super::proxy::ProxyAction, ProviderError> {
+        let sub_path = ctx.sub_path;
+
+        // Try `{version}/subtitle/{name}`
+        if let Some((version, rest)) = sub_path.split_once('/') {
+            if let Some(name) = rest.strip_prefix("subtitle/") {
+                let versioned = super::proxy::lookup_versioned(ctx.store, version).await?;
+                let subtitle_url = versioned
+                    .result
+                    .playback_infos
+                    .values()
+                    .flat_map(|pi| &pi.subtitles)
+                    .find(|s| s.name == name)
+                    .map(|s| s.url.clone())
+                    .ok_or(ProviderError::NotFound)?;
+
+                return Ok(super::proxy::ProxyAction::FetchAndForward {
+                    url: subtitle_url,
+                    headers: bilibili_headers(),
+                });
+            }
+
+            // Try `{version}/m3u8`
+            if rest == "m3u8" {
+                let versioned = super::proxy::lookup_versioned(ctx.store, version).await?;
+                let default_info = versioned
+                    .result
+                    .playback_infos
+                    .get(&versioned.result.default_mode)
+                    .ok_or(ProviderError::NotFound)?;
+                let url = default_info.urls.first().ok_or(ProviderError::NotFound)?;
+
+                return Ok(super::proxy::ProxyAction::M3u8Rewrite {
+                    url: url.clone(),
+                    headers: default_info.headers.clone(),
+                    proxy_base: format!("{}/{version}", ctx.proxy_base),
+                });
+            }
         }
+
+        Err(ProviderError::NotFound)
     }
 }
 
 // Use the shared bilibili_headers() from the parent module.
 use super::bilibili_headers;
+
+/// Hash cookies to create a user-specific cache key component.
+fn cookie_hash(cookies: &HashMap<String, String>) -> String {
+    if cookies.is_empty() {
+        return "anon".to_string();
+    }
+    use sha2::{Digest, Sha256};
+    let mut parts: Vec<_> = cookies.iter().collect();
+    parts.sort_by_key(|(k, _)| k.as_str());
+    let s: String = parts
+        .iter()
+        .map(|(k, v)| format!("{k}={v}"))
+        .collect::<Vec<_>>()
+        .join(";");
+    format!("{:x}", Sha256::digest(s.as_bytes()))
+        .chars()
+        .take(16)
+        .collect()
+}
+
+impl BilibiliProvider {
+    /// Resolve playback result from Bilibili API (no caching).
+    async fn resolve_from_api(
+        &self,
+        config: &BilibiliSourceConfig,
+        credential_encryption: Option<&crate::service::CredentialEncryption>,
+    ) -> Result<PlaybackResult, ProviderError> {
+        let _ = credential_encryption; // Used only for decryption which already happened
+        let sanitized_cookies = config.sanitized_cookies();
+        let client = self.get_client(config.provider_instance_name()).await;
+
+        match config {
+            BilibiliSourceConfig::Video { bvid, aid, cid, .. } => {
+                let bvid = bvid.clone().unwrap_or_default();
+                let aid = aid.unwrap_or(0);
+                let cid = *cid;
+
+                let request = synctv_media_providers::grpc::bilibili::GetDashVideoUrlReq {
+                    aid,
+                    bvid: bvid.clone(),
+                    cid,
+                    cookies: sanitized_cookies.clone(),
+                };
+                let dash_resp = client.get_dash_video_url(request).await?;
+
+                let mut metadata = HashMap::new();
+                let mut subtitles = Vec::new();
+
+                let subtitle_request = synctv_media_providers::grpc::bilibili::GetSubtitlesReq {
+                    aid,
+                    bvid: bvid.clone(),
+                    cid,
+                    cookies: sanitized_cookies.clone(),
+                };
+                match client.get_subtitles(subtitle_request).await {
+                    Ok(subtitle_resp) => {
+                        subtitles = subtitle_resp
+                            .subtitles
+                            .into_iter()
+                            .map(|(name, url)| SubtitleTrack {
+                                language: name.clone(),
+                                name,
+                                url,
+                                format: "json".to_string(),
+                            })
+                            .collect();
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            bvid = %bvid, aid = %aid, cid = %cid, error = %e,
+                            "Failed to fetch Bilibili subtitles for video, continuing without subtitles"
+                        );
+                    }
+                }
+
+                if let Some(d) = &dash_resp.dash {
+                    metadata.insert("duration".to_string(), json!(d.duration));
+                    metadata.insert("min_buffer_time".to_string(), json!(d.min_buffer_time));
+                }
+
+                metadata.insert("content_type".to_string(), json!("video"));
+                metadata.insert("bvid".to_string(), json!(bvid));
+                metadata.insert("aid".to_string(), json!(aid));
+                metadata.insert("cid".to_string(), json!(cid));
+
+                let expires_at = Some(Utc::now().timestamp() + 2 * 3600);
+
+                let dash_urls: Vec<String> = dash_resp
+                    .dash
+                    .as_ref()
+                    .map(|d| d.video_streams.iter().map(|s| s.base_url.clone()).collect())
+                    .unwrap_or_default();
+
+                let mut playback_infos = HashMap::new();
+                playback_infos.insert(
+                    "dash".to_string(),
+                    PlaybackInfo {
+                        urls: dash_urls,
+                        format: "mpd".to_string(),
+                        headers: bilibili_headers(),
+                        subtitles,
+                        expires_at,
+                        cors_proxy_required: true,
+                    },
+                );
+
+                Ok(PlaybackResult {
+                    playback_infos,
+                    default_mode: "dash".to_string(),
+                    metadata,
+                })
+            }
+
+            BilibiliSourceConfig::Pgc { epid, cid, .. } => {
+                let epid = *epid;
+                let cid = *cid;
+
+                let request = synctv_media_providers::grpc::bilibili::GetDashPgcurlReq {
+                    epid,
+                    cid,
+                    cookies: sanitized_cookies.clone(),
+                };
+                let dash_resp = client.get_dash_pgcurl(request).await?;
+
+                let mut metadata = HashMap::new();
+                let mut subtitles = Vec::new();
+
+                let subtitle_request = synctv_media_providers::grpc::bilibili::GetSubtitlesReq {
+                    aid: 0,
+                    bvid: String::new(),
+                    cid,
+                    cookies: sanitized_cookies.clone(),
+                };
+                match client.get_subtitles(subtitle_request).await {
+                    Ok(subtitle_resp) => {
+                        subtitles = subtitle_resp
+                            .subtitles
+                            .into_iter()
+                            .map(|(name, url)| SubtitleTrack {
+                                language: name.clone(),
+                                name,
+                                url,
+                                format: "json".to_string(),
+                            })
+                            .collect();
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            epid = %epid, cid = %cid, error = %e,
+                            "Failed to fetch Bilibili subtitles for PGC content, continuing without subtitles"
+                        );
+                    }
+                }
+
+                if let Some(d) = &dash_resp.dash {
+                    metadata.insert("duration".to_string(), json!(d.duration));
+                }
+
+                metadata.insert("content_type".to_string(), json!("pgc"));
+                metadata.insert("epid".to_string(), json!(epid));
+                metadata.insert("cid".to_string(), json!(cid));
+
+                let expires_at = Some(Utc::now().timestamp() + 2 * 3600);
+
+                let pgc_urls: Vec<String> = dash_resp
+                    .dash
+                    .as_ref()
+                    .map(|d| d.video_streams.iter().map(|s| s.base_url.clone()).collect())
+                    .unwrap_or_default();
+
+                let mut playback_infos = HashMap::new();
+                playback_infos.insert(
+                    "dash".to_string(),
+                    PlaybackInfo {
+                        urls: pgc_urls,
+                        format: "mpd".to_string(),
+                        headers: bilibili_headers(),
+                        subtitles,
+                        expires_at,
+                        cors_proxy_required: true,
+                    },
+                );
+
+                Ok(PlaybackResult {
+                    playback_infos,
+                    default_mode: "dash".to_string(),
+                    metadata,
+                })
+            }
+
+            BilibiliSourceConfig::Live { room_id, .. } => {
+                let room_id = *room_id;
+
+                let request = synctv_media_providers::grpc::bilibili::GetLiveStreamsReq {
+                    cid: room_id,
+                    hls: true,
+                    cookies: sanitized_cookies,
+                };
+                let live_resp = client.get_live_streams(request).await?;
+
+                let mut playback_infos = HashMap::new();
+                let mut metadata = HashMap::new();
+
+                let live_expires_at = Some(Utc::now().timestamp() + 120);
+
+                for stream in live_resp.live_streams {
+                    let quality_name = if stream.desc.is_empty() {
+                        format!("quality_{}", stream.quality)
+                    } else {
+                        format!("{}_{}", stream.desc, stream.quality)
+                    };
+                    playback_infos.insert(
+                        quality_name,
+                        PlaybackInfo {
+                            urls: stream.urls,
+                            format: "hls".to_string(),
+                            headers: {
+                                let mut h = HashMap::new();
+                                h.insert(
+                                    "Referer".to_string(),
+                                    "https://live.bilibili.com".to_string(),
+                                );
+                                h
+                            },
+                            subtitles: Vec::new(),
+                            expires_at: live_expires_at,
+                            cors_proxy_required: true,
+                        },
+                    );
+                }
+
+                metadata.insert("content_type".to_string(), json!("live"));
+                metadata.insert("room_id".to_string(), json!(room_id));
+                metadata.insert("is_live".to_string(), json!(true));
+
+                let default_mode = {
+                    let mut keys: Vec<&String> = playback_infos.keys().collect();
+                    keys.sort();
+                    keys.into_iter()
+                        .next()
+                        .cloned()
+                        .unwrap_or_else(|| "direct".to_string())
+                };
+
+                Ok(PlaybackResult {
+                    playback_infos,
+                    default_mode,
+                    metadata,
+                })
+            }
+        }
+    }
+}
 
 #[cfg(test)]
 mod tests {

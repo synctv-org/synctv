@@ -124,16 +124,11 @@ impl ClientApiImpl {
                     ctx = ctx.with_credential_encryption(enc);
                 }
 
-                // Use cached playback generation
-                let resolved_conn = self.resolve_redis_conn().await;
-                let provider_result = crate::impls::provider::cached_generate_playback(
-                    provider.as_ref(),
-                    &ctx,
-                    &media.source_config,
-                    resolved_conn.as_ref(),
-                )
-                .await
-                .map_err(|e| ApiError::Internal(format!("generate_playback failed: {e}")))?;
+                // Generate playback (caching is internal to providers via ProviderStore)
+                let provider_result = provider
+                    .generate_playback(&ctx, &media.source_config)
+                    .await
+                    .map_err(|e| ApiError::Internal(format!("generate_playback failed: {e}")))?;
 
                 // Build full PlaybackResult from provider result + media fields
                 // Convert provider PlaybackInfo to models PlaybackInfo

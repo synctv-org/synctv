@@ -4,7 +4,7 @@ use std::fmt::Write;
 use std::sync::LazyLock;
 
 use reqwest::{
-    header::{HeaderMap, HeaderValue, CONTENT_TYPE},
+    header::{HeaderMap, HeaderValue, AUTHORIZATION, CONTENT_TYPE},
     Client,
 };
 use serde_json::{json, Value};
@@ -128,6 +128,14 @@ impl EmbyClient {
         Ok(headers)
     }
 
+    fn build_emby_auth_header() -> Result<HeaderValue, EmbyError> {
+        HeaderValue::from_str(&format!(
+            r#"Emby Client="Emby Web", Device="SyncTV", DeviceId="{}", Version="4.7.14.0""#,
+            uuid::Uuid::new_v4()
+        ))
+        .map_err(|e| EmbyError::InvalidConfig(format!("Failed to build auth header: {e}")))
+    }
+
     /// Login to Emby/Jellyfin server
     pub async fn login(
         &mut self,
@@ -142,7 +150,8 @@ impl EmbyClient {
             "Pw": password,
         });
 
-        let headers = self.build_headers()?;
+        let mut headers = self.build_headers()?;
+        headers.insert(AUTHORIZATION, Self::build_emby_auth_header()?);
         let client = self.client.clone();
 
         let (token, user_id) = with_retry(|| {
@@ -177,7 +186,7 @@ impl EmbyClient {
 
         let prefix = self.get_api_prefix();
         let url = format!(
-            "{}{}/Users/{}/Items?Ids={}",
+            "{}{}/Users/{}/Items?Ids={}&Fields=MediaSources%2CParentId%2CContainer",
             self.host,
             prefix,
             url_encode(
@@ -261,7 +270,7 @@ impl EmbyClient {
 
         let prefix = self.get_api_prefix();
         let mut url = format!(
-            "{}{}/Users/{}/Items?SortBy=SortName&SortOrder=Ascending",
+            "{}{}/Users/{}/Items?SortBy=SortName&SortOrder=Ascending&Fields=MediaSources%2CParentId%2CContainer",
             self.host,
             prefix,
             url_encode(user_id)
@@ -432,7 +441,8 @@ impl EmbyClient {
     pub async fn logout(&self) -> Result<(), EmbyError> {
         let prefix = self.get_api_prefix();
         let url = format!("{}{}/Sessions/Logout", self.host, prefix);
-        let headers = self.build_headers()?;
+        let mut headers = self.build_headers()?;
+        headers.insert(AUTHORIZATION, Self::build_emby_auth_header()?);
         let client = self.client.clone();
 
         with_retry(|| {
@@ -525,7 +535,8 @@ impl EmbyClient {
             prefix,
             url_encode(play_session_id)
         );
-        let headers = self.build_headers()?;
+        let mut headers = self.build_headers()?;
+        headers.insert(AUTHORIZATION, Self::build_emby_auth_header()?);
         let client = self.client.clone();
 
         with_retry(|| {

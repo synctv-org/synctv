@@ -2,11 +2,16 @@
 //!
 //! Provides direct playback for HTTP(S) URLs
 
-use super::{MediaProvider, PlaybackInfo, PlaybackResult, ProviderContext, ProviderError};
+use super::{
+    store::{ProviderStoreExt, VersionedPlayback},
+    MediaProvider, PlaybackInfo, PlaybackResult, ProviderContext, ProviderError,
+};
 use async_trait::async_trait;
+use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::HashMap;
+use std::time::Duration;
 
 /// Direct URL `MediaProvider`
 pub struct DirectUrlProvider {}
@@ -151,6 +156,28 @@ impl MediaProvider for DirectUrlProvider {
     ) -> Result<PlaybackResult, ProviderError> {
         let config = DirectUrlSourceConfig::try_from(source_config)?;
 
+        // Build cache key from URL hash
+        let cache_key = {
+            use sha2::{Digest, Sha256};
+            let url_hash: String = format!("{:x}", Sha256::digest(config.url.as_bytes()))
+                .chars()
+                .take(16)
+                .collect();
+            format!("playback:{url_hash}")
+        };
+        let cache_ttl = Duration::from_secs(3600); // 1 hour for direct URLs
+
+        let store = _ctx.store.as_ref();
+
+        // Check cache
+        if let Some(store) = store {
+            if let Ok(Some(cached)) = store.get::<VersionedPlayback>(&cache_key).await {
+                if !cached.is_expired() {
+                    return Ok(cached.result);
+                }
+            }
+        }
+
         // Validate URL scheme: only allow http(s) and rtmp(s)
         if !config.url.starts_with("http://")
             && !config.url.starts_with("https://")
@@ -182,29 +209,32 @@ impl MediaProvider for DirectUrlProvider {
         metadata.insert("is_live".to_string(), json!(false));
         metadata.insert("proxy".to_string(), json!(config.proxy));
 
-        // Extract filename from URL
         if let Some(filename) = config.url.split('/').next_back() {
             metadata.insert("filename".to_string(), json!(filename));
         }
 
-        Ok(PlaybackResult {
+        let result = PlaybackResult {
             playback_infos,
             default_mode: "direct".to_string(),
             metadata,
-        })
-    }
+        };
 
-    fn cache_key(&self, ctx: &ProviderContext<'_>, source_config: &Value) -> String {
-        if let Ok(config) = DirectUrlSourceConfig::try_from(source_config) {
-            use sha2::{Digest, Sha256};
-            format!(
-                "{}:playback:direct_url:{:x}",
-                ctx.key_prefix,
-                Sha256::digest(config.url.as_bytes())
-            )
-        } else {
-            format!("{}:playback:direct_url:unknown", ctx.key_prefix)
+        // Store with version
+        let version = nanoid::nanoid!(16);
+        let expires_at = Utc::now().timestamp() + cache_ttl.as_secs() as i64;
+        let versioned = VersionedPlayback {
+            version: version.clone(),
+            result: result.clone(),
+            expires_at,
+        };
+        if let Some(store) = store {
+            let _ = store.set(&cache_key, &versioned, cache_ttl).await;
+            let _ = store
+                .set(&format!("v:{version}"), &versioned, cache_ttl)
+                .await;
         }
+
+        Ok(result)
     }
 }
 

@@ -2,6 +2,8 @@
 //
 // Contains all information needed for provider execution
 
+use std::sync::Arc;
+
 use sqlx::PgPool;
 
 use crate::service::CredentialEncryption;
@@ -32,12 +34,15 @@ pub struct ProviderContext<'a> {
 
     /// Credential encryption for protecting sensitive data in `source_config` (optional)
     pub credential_encryption: Option<&'a CredentialEncryption>,
+
+    /// Provider store for caching and distributed locking (optional)
+    pub store: Option<Arc<dyn super::store::ProviderStore>>,
 }
 
 impl<'a> ProviderContext<'a> {
     /// Create new context with defaults
     #[must_use]
-    pub const fn new(key_prefix: &'a str) -> Self {
+    pub fn new(key_prefix: &'a str) -> Self {
         Self {
             user_id: None,
             room_id: None,
@@ -46,48 +51,56 @@ impl<'a> ProviderContext<'a> {
             db: None,
             redis: None,
             credential_encryption: None,
+            store: None,
         }
     }
 
     /// Set user ID
     #[must_use]
-    pub const fn with_user_id(mut self, user_id: &'a str) -> Self {
+    pub fn with_user_id(mut self, user_id: &'a str) -> Self {
         self.user_id = Some(user_id);
         self
     }
 
     /// Set room ID
     #[must_use]
-    pub const fn with_room_id(mut self, room_id: &'a str) -> Self {
+    pub fn with_room_id(mut self, room_id: &'a str) -> Self {
         self.room_id = Some(room_id);
         self
     }
 
     /// Set base URL
     #[must_use]
-    pub const fn with_base_url(mut self, base_url: &'a str) -> Self {
+    pub fn with_base_url(mut self, base_url: &'a str) -> Self {
         self.base_url = Some(base_url);
         self
     }
 
     /// Set database pool
     #[must_use]
-    pub const fn with_db(mut self, db: &'a PgPool) -> Self {
+    pub fn with_db(mut self, db: &'a PgPool) -> Self {
         self.db = Some(db);
         self
     }
 
     /// Set Redis connection manager
     #[must_use]
-    pub const fn with_redis(mut self, redis: &'a redis::aio::ConnectionManager) -> Self {
+    pub fn with_redis(mut self, redis: &'a redis::aio::ConnectionManager) -> Self {
         self.redis = Some(redis);
         self
     }
 
     /// Set credential encryption for protecting sensitive data in `source_config`
     #[must_use]
-    pub const fn with_credential_encryption(mut self, enc: &'a CredentialEncryption) -> Self {
+    pub fn with_credential_encryption(mut self, enc: &'a CredentialEncryption) -> Self {
         self.credential_encryption = Some(enc);
+        self
+    }
+
+    /// Set provider store for caching and distributed locking
+    #[must_use]
+    pub fn with_store(mut self, store: Arc<dyn super::store::ProviderStore>) -> Self {
+        self.store = Some(store);
         self
     }
 

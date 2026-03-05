@@ -4,6 +4,7 @@
 
 use super::{
     provider_client::{create_remote_emby_client, load_local_emby_client, EmbyClientArc},
+    store::{ProviderStoreExt, VersionedPlayback},
     DirectoryItem, DynamicFolder, ItemType, MediaProvider, NextPlayItem, PlaybackInfo,
     PlaybackResult, ProviderContext, ProviderError, SubtitleTrack,
 };
@@ -14,8 +15,10 @@ use chrono::Utc;
 use rand::prelude::IndexedRandom;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Duration;
 use urlencoding;
 
 /// Emby `MediaProvider`
@@ -104,6 +107,191 @@ impl EmbyProvider {
     ) -> Result<synctv_media_providers::grpc::emby::MeResp, ProviderError> {
         let client = self.get_client(instance_name).await;
         client.me(req).await.map_err(std::convert::Into::into)
+    }
+
+    /// Resolve playback result from Emby API (no caching).
+    async fn resolve_from_api(
+        &self,
+        config: &EmbySourceConfig,
+    ) -> Result<PlaybackResult, ProviderError> {
+        // Get appropriate client based on instance_name from config
+        let client = self
+            .get_client(config.provider_instance_name.as_deref())
+            .await;
+
+        // Get item details first
+        let item_request = synctv_media_providers::grpc::emby::GetItemReq {
+            host: config.host.clone(),
+            token: config.token.clone(),
+            item_id: config.item_id.clone(),
+            user_id: config.user_id.clone(),
+        };
+
+        let item = client.get_item(item_request).await?;
+
+        let mut metadata = HashMap::new();
+        metadata.insert("name".to_string(), json!(item.name));
+        metadata.insert("type".to_string(), json!(item.r#type));
+        if !item.series_name.is_empty() {
+            metadata.insert("series_name".to_string(), json!(item.series_name));
+        }
+        if !item.season_name.is_empty() {
+            metadata.insert("season_name".to_string(), json!(item.season_name));
+        }
+
+        // Get playback info
+        let playback_request = synctv_media_providers::grpc::emby::PlaybackInfoReq {
+            host: config.host.clone(),
+            token: config.token.clone(),
+            user_id: config.user_id.clone(),
+            item_id: config.item_id.clone(),
+            media_source_id: String::new(), // Use default media source
+            audio_stream_index: 0,
+            subtitle_stream_index: 0,
+            max_streaming_bitrate: 0, // No limit
+        };
+
+        let playback_info = client.playback_info(playback_request).await?;
+
+        // Store play_session_id in metadata for lifecycle hooks
+        metadata.insert(
+            "emby_play_session_id".to_string(),
+            json!(playback_info.play_session_id),
+        );
+
+        let mut playback_infos = HashMap::new();
+
+        // Emby session-based URLs: default to 30 minutes
+        let emby_expires_at = Some(Utc::now().timestamp() + 30 * 60);
+
+        // Auth headers for Emby: use X-Emby-Token header instead of
+        // embedding api_key in query strings to avoid credential exposure
+        // in URLs (which end up in logs, browser history, Referer headers).
+        let emby_auth_headers = {
+            let mut h = HashMap::new();
+            h.insert("X-Emby-Token".to_string(), config.token.clone());
+            h
+        };
+
+        // Process media sources
+        for (idx, source) in playback_info.media_source_info.iter().enumerate() {
+            let mode_name = if source.name.is_empty() {
+                format!("source_{idx}")
+            } else {
+                source.name.clone()
+            };
+
+            // Get direct stream URL (no transcoding) -- no credentials in URL
+            let direct_url = if !source.direct_play_url.is_empty() {
+                format!(
+                    "{}{}",
+                    config.host.trim_end_matches('/'),
+                    source.direct_play_url
+                )
+            } else if !source.path.is_empty() {
+                format!(
+                    "{}/Items/{}/Download",
+                    config.host.trim_end_matches('/'),
+                    config.item_id
+                )
+            } else {
+                continue;
+            };
+
+            // Extract subtitles -- do NOT include api_key in the URL to avoid
+            // leaking the Emby token to clients. Instead, subtitle URLs are
+            // fetched through the server-side proxy which injects the
+            // X-Emby-Token header (same as video streams).
+            let subtitles: Vec<SubtitleTrack> = source
+                .media_stream_info
+                .iter()
+                .filter(|stream| stream.r#type == "Subtitle")
+                .map(|stream| {
+                    let subtitle_url = format!(
+                        "{}/Videos/{}/{}/Subtitles/{}/Stream.{}",
+                        config.host.trim_end_matches('/'),
+                        config.item_id,
+                        source.id,
+                        stream.index,
+                        stream.codec.to_lowercase(),
+                    );
+
+                    SubtitleTrack {
+                        language: stream.language.clone(),
+                        name: stream.display_title.clone(),
+                        url: subtitle_url,
+                        format: stream.codec.to_lowercase(),
+                    }
+                })
+                .collect();
+
+            // Detect format from container
+            let format = source.container.to_lowercase();
+            let format = if format.contains("mp4") || format == "m4v" {
+                "mp4"
+            } else if format.contains("mkv") {
+                "mkv"
+            } else if format.contains("webm") {
+                "webm"
+            } else if format.contains("m3u8") || format == "hls" {
+                "hls"
+            } else {
+                "video"
+            }
+            .to_string();
+
+            playback_infos.insert(
+                mode_name.clone(),
+                PlaybackInfo {
+                    urls: vec![direct_url],
+                    format,
+                    headers: emby_auth_headers.clone(),
+                    subtitles,
+                    expires_at: emby_expires_at,
+                    cors_proxy_required: true,
+                },
+            );
+
+            // Also add transcode URLs if available
+            if !source.transcoding_url.is_empty() {
+                let transcode_url = format!(
+                    "{}{}",
+                    config.host.trim_end_matches('/'),
+                    source.transcoding_url
+                );
+
+                playback_infos.insert(
+                    format!("{mode_name}_transcode"),
+                    PlaybackInfo {
+                        urls: vec![transcode_url],
+                        format: "hls".to_string(), // Emby transcodes to HLS
+                        headers: emby_auth_headers.clone(),
+                        subtitles: Vec::new(), // Subtitles burned in for transcode
+                        expires_at: emby_expires_at,
+                        cors_proxy_required: false,
+                    },
+                );
+            }
+        }
+
+        // Default to first media source in sorted order.
+        // HashMap iteration order is non-deterministic (randomised per-process for
+        // security reasons), so we sort the keys to guarantee a stable default
+        // across server restarts and replicas.
+        let default_mode = {
+            let mut keys: Vec<&String> = playback_infos.keys().collect();
+            keys.sort();
+            keys.into_iter()
+                .next()
+                .cloned()
+                .unwrap_or_else(|| "direct".to_string())
+        };
+
+        Ok(PlaybackResult {
+            playback_infos,
+            default_mode,
+            metadata,
+        })
     }
 }
 
@@ -218,221 +406,74 @@ impl MediaProvider for EmbyProvider {
         // Parse source_config first
         let config = EmbySourceConfig::try_from(&decrypted_config)?;
 
-        // Get appropriate client based on instance_name from config
-        let client = self
-            .get_client(config.provider_instance_name.as_deref())
-            .await;
+        // Build cache key from host hash + token hash + item_id
+        let host_hash: String = format!("{:x}", Sha256::digest(config.host.as_bytes()))
+            .chars()
+            .take(16)
+            .collect();
+        let token_hash: String = format!("{:x}", Sha256::digest(config.token.as_bytes()))
+            .chars()
+            .take(16)
+            .collect();
+        let cache_key = format!("playback:{}:{}:{}", host_hash, token_hash, config.item_id);
+        let cache_ttl = Duration::from_secs(30 * 60); // 30 minutes
 
-        // Get item details first
-        let item_request = synctv_media_providers::grpc::emby::GetItemReq {
-            host: config.host.clone(),
-            token: config.token.clone(),
-            item_id: config.item_id.clone(),
-            user_id: config.user_id.clone(),
-        };
+        let store = _ctx.store.as_ref();
 
-        let item = client.get_item(item_request).await?;
-
-        let mut metadata = HashMap::new();
-        metadata.insert("name".to_string(), json!(item.name));
-        metadata.insert("type".to_string(), json!(item.r#type));
-        if !item.series_name.is_empty() {
-            metadata.insert("series_name".to_string(), json!(item.series_name));
-        }
-        if !item.season_name.is_empty() {
-            metadata.insert("season_name".to_string(), json!(item.season_name));
-        }
-
-        // Get playback info
-        let playback_request = synctv_media_providers::grpc::emby::PlaybackInfoReq {
-            host: config.host.clone(),
-            token: config.token.clone(),
-            user_id: config.user_id.clone(),
-            item_id: config.item_id.clone(),
-            media_source_id: String::new(), // Use default media source
-            audio_stream_index: 0,
-            subtitle_stream_index: 0,
-            max_streaming_bitrate: 0, // No limit
-        };
-
-        let playback_info = client.playback_info(playback_request).await?;
-
-        // Store play_session_id in metadata for lifecycle hooks
-        metadata.insert(
-            "emby_play_session_id".to_string(),
-            json!(playback_info.play_session_id),
-        );
-
-        let mut playback_infos = HashMap::new();
-
-        // Emby session-based URLs: default to 30 minutes
-        let emby_expires_at = Some(Utc::now().timestamp() + 30 * 60);
-
-        // Auth headers for Emby: use X-Emby-Token header instead of
-        // embedding api_key in query strings to avoid credential exposure
-        // in URLs (which end up in logs, browser history, Referer headers).
-        let emby_auth_headers = {
-            let mut h = HashMap::new();
-            h.insert("X-Emby-Token".to_string(), config.token.clone());
-            h
-        };
-
-        // Process media sources
-        for (idx, source) in playback_info.media_source_info.iter().enumerate() {
-            let mode_name = if source.name.is_empty() {
-                format!("source_{idx}")
-            } else {
-                source.name.clone()
-            };
-
-            // Get direct stream URL (no transcoding) -- no credentials in URL
-            let direct_url = if !source.direct_play_url.is_empty() {
-                format!(
-                    "{}{}",
-                    config.host.trim_end_matches('/'),
-                    source.direct_play_url
-                )
-            } else if !source.path.is_empty() {
-                format!(
-                    "{}/Items/{}/Download",
-                    config.host.trim_end_matches('/'),
-                    config.item_id
-                )
-            } else {
-                continue;
-            };
-
-            // Extract subtitles -- do NOT include api_key in the URL to avoid
-            // leaking the Emby token to clients. Instead, subtitle URLs are
-            // fetched through the server-side proxy which injects the
-            // X-Emby-Token header (same as video streams at lines 234-238).
-            let subtitles: Vec<SubtitleTrack> = source
-                .media_stream_info
-                .iter()
-                .filter(|stream| stream.r#type == "Subtitle")
-                .map(|stream| {
-                    let subtitle_url = format!(
-                        "{}/Videos/{}/{}/Subtitles/{}/Stream.{}",
-                        config.host.trim_end_matches('/'),
-                        config.item_id,
-                        source.id,
-                        stream.index,
-                        stream.codec.to_lowercase(),
-                    );
-
-                    SubtitleTrack {
-                        language: stream.language.clone(),
-                        name: stream.display_title.clone(),
-                        url: subtitle_url,
-                        format: stream.codec.to_lowercase(),
-                    }
-                })
-                .collect();
-
-            // Detect format from container
-            let format = source.container.to_lowercase();
-            let format = if format.contains("mp4") || format == "m4v" {
-                "mp4"
-            } else if format.contains("mkv") {
-                "mkv"
-            } else if format.contains("webm") {
-                "webm"
-            } else if format.contains("m3u8") || format == "hls" {
-                "hls"
-            } else {
-                "video"
-            }
-            .to_string();
-
-            playback_infos.insert(
-                mode_name.clone(),
-                PlaybackInfo {
-                    urls: vec![direct_url],
-                    format,
-                    headers: emby_auth_headers.clone(),
-                    subtitles,
-                    expires_at: emby_expires_at,
-                    cors_proxy_required: true,
-                },
-            );
-
-            // Also add transcode URLs if available
-            if !source.transcoding_url.is_empty() {
-                let transcode_url = format!(
-                    "{}{}",
-                    config.host.trim_end_matches('/'),
-                    source.transcoding_url
-                );
-
-                playback_infos.insert(
-                    format!("{mode_name}_transcode"),
-                    PlaybackInfo {
-                        urls: vec![transcode_url],
-                        format: "hls".to_string(), // Emby transcodes to HLS
-                        headers: emby_auth_headers.clone(),
-                        subtitles: Vec::new(), // Subtitles burned in for transcode
-                        expires_at: emby_expires_at,
-                        cors_proxy_required: false,
-                    },
-                );
-            }
-        }
-
-        // Default to first media source in sorted order.
-        // HashMap iteration order is non-deterministic (randomised per-process for
-        // security reasons), so we sort the keys to guarantee a stable default
-        // across server restarts and replicas.
-        let default_mode = {
-            let mut keys: Vec<&String> = playback_infos.keys().collect();
-            keys.sort();
-            keys.into_iter()
-                .next()
-                .cloned()
-                .unwrap_or_else(|| "direct".to_string())
-        };
-
-        Ok(PlaybackResult {
-            playback_infos,
-            default_mode,
-            metadata,
-        })
-    }
-
-    fn cache_key(&self, ctx: &ProviderContext<'_>, source_config: &Value) -> String {
-        // Decrypt token if encrypted before hashing for consistent cache keys
-        let decrypted = if let Some(enc) = ctx.credential_encryption {
-            let mut config = source_config.clone();
-            if let Some(obj) = config.as_object_mut() {
-                if let Some(token_value) = obj.get("token") {
-                    if let Some(encrypted_str) = token_value.as_str() {
-                        if encrypted_str.starts_with("enc:") {
-                            if let Ok(decrypted) = enc.decrypt(encrypted_str) {
-                                if let Some(s) = decrypted.as_str() {
-                                    obj.insert("token".to_string(), Value::String(s.to_string()));
-                                } else {
-                                    obj.insert("token".to_string(), decrypted);
-                                }
-                            }
-                        }
-                    }
+        // Check cache
+        if let Some(store) = store {
+            if let Ok(Some(cached)) = store.get::<VersionedPlayback>(&cache_key).await {
+                if !cached.is_expired() {
+                    return Ok(cached.result);
                 }
             }
-            config
+        }
+
+        // Acquire lock to prevent concurrent resolution of same content
+        let _lock = if let Some(store) = store {
+            store
+                .lock(&format!("lock:{cache_key}"), Duration::from_secs(30))
+                .await
+                .ok()
         } else {
-            source_config.clone()
+            None
         };
 
-        // Cache key must include token hash to prevent cross-user data leakage.
-        // Different users have different tokens and may see different content.
-        if let Ok(config) = EmbySourceConfig::try_from(&decrypted) {
-            let identifier = format!("{}:{}:{}", config.host, config.token, config.item_id);
-            super::build_playback_cache_key(ctx.key_prefix, "emby", &identifier)
-        } else {
-            super::build_unknown_cache_key_with_config(ctx.key_prefix, "emby", source_config)
+        // Double-check cache after lock acquisition
+        if let Some(store) = store {
+            if let Ok(Some(cached)) = store.get::<VersionedPlayback>(&cache_key).await {
+                if !cached.is_expired() {
+                    return Ok(cached.result);
+                }
+            }
         }
+
+        // Call provider API
+        let result = self.resolve_from_api(&config).await?;
+
+        // Generate version and store result
+        let version = nanoid::nanoid!(16);
+        let expires_at = Utc::now().timestamp() + cache_ttl.as_secs() as i64;
+        let versioned = VersionedPlayback {
+            version: version.clone(),
+            result: result.clone(),
+            expires_at,
+        };
+        if let Some(store) = store {
+            let _ = store.set(&cache_key, &versioned, cache_ttl).await;
+            let _ = store
+                .set(&format!("v:{version}"), &versioned, cache_ttl)
+                .await;
+        }
+
+        Ok(result)
     }
 
     fn as_dynamic_folder(&self) -> Option<&dyn DynamicFolder> {
+        Some(self)
+    }
+
+    fn as_provider_proxy(&self) -> Option<&dyn super::proxy::ProviderProxy> {
         Some(self)
     }
 
@@ -592,6 +633,80 @@ impl MediaProvider for EmbyProvider {
         }
 
         Ok(())
+    }
+}
+
+// ProviderProxy implementation for Emby
+//
+// Supported sub_paths:
+// - `{version}/stream` — proxy the video stream
+// - `{version}/m3u8` — proxy M3U8 playlist with URL rewriting
+// - `{version}/subtitle/{index}` — proxy a subtitle track by index
+#[async_trait]
+impl super::proxy::ProviderProxy for EmbyProvider {
+    async fn resolve_proxy(
+        &self,
+        ctx: &super::proxy::ProxyRequestContext<'_>,
+    ) -> Result<super::proxy::ProxyAction, ProviderError> {
+        let sub_path = ctx.sub_path;
+
+        if let Some((version, rest)) = sub_path.split_once('/') {
+            let versioned = super::proxy::lookup_versioned(ctx.store, version).await?;
+
+            // `{version}/subtitle/{index}`
+            if let Some(index_str) = rest.strip_prefix("subtitle/") {
+                let index: usize = index_str
+                    .parse()
+                    .map_err(|_| ProviderError::ApiError("Invalid subtitle index".into()))?;
+
+                let all_subtitles: Vec<_> = versioned
+                    .result
+                    .playback_infos
+                    .values()
+                    .flat_map(|pi| &pi.subtitles)
+                    .collect();
+
+                let subtitle = all_subtitles.get(index).ok_or(ProviderError::NotFound)?;
+
+                let provider_headers: HashMap<String, String> = versioned
+                    .result
+                    .playback_infos
+                    .get(&versioned.result.default_mode)
+                    .map(|pi| pi.headers.clone())
+                    .unwrap_or_default();
+
+                return Ok(super::proxy::ProxyAction::FetchAndForward {
+                    url: subtitle.url.clone(),
+                    headers: provider_headers,
+                });
+            }
+
+            let default_info = versioned
+                .result
+                .playback_infos
+                .get(&versioned.result.default_mode)
+                .ok_or(ProviderError::NotFound)?;
+            let url = default_info.urls.first().ok_or(ProviderError::NotFound)?;
+
+            match rest {
+                "stream" => {
+                    return Ok(super::proxy::ProxyAction::FetchAndForward {
+                        url: url.clone(),
+                        headers: default_info.headers.clone(),
+                    });
+                }
+                "m3u8" => {
+                    return Ok(super::proxy::ProxyAction::M3u8Rewrite {
+                        url: url.clone(),
+                        headers: default_info.headers.clone(),
+                        proxy_base: format!("{}/{version}", ctx.proxy_base),
+                    });
+                }
+                _ => {}
+            }
+        }
+
+        Err(ProviderError::NotFound)
     }
 }
 

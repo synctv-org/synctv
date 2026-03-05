@@ -935,15 +935,9 @@ impl MediaService {
         })?;
 
         // Create context
-        let ctx = ProviderContext {
-            user_id: Some(user_id.as_str()),
-            room_id: Some(room_id.as_str()),
-            base_url: None,
-            key_prefix: "synctv",
-            db: None,
-            redis: None,
-            credential_encryption: None,
-        };
+        let ctx = ProviderContext::new("synctv")
+            .with_user_id(user_id.as_str())
+            .with_room_id(room_id.as_str());
 
         // List items
         let items = dynamic_folder

@@ -951,6 +951,7 @@ mod websocket_e2e {
             bilibili_api,
             alist_api,
             emby_api,
+            provider_stores: synctv_core::provider::store::create_provider_stores(None),
         };
 
         // Build a minimal router with just the WebSocket endpoint
@@ -2912,6 +2913,7 @@ mod websocket_connection_limit_timing {
             bilibili_api,
             alist_api,
             emby_api,
+            provider_stores: synctv_core::provider::store::create_provider_stores(None),
         };
 
         let app = axum::Router::new()

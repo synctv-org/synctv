@@ -1,8 +1,12 @@
 //! Emby Provider HTTP Routes
+//!
+//! Proxy routes use the `ProviderProxy` trait via a single wildcard handler:
+//! - `/proxy/*sub_path` — dispatches to `EmbyProvider::resolve_proxy`
+//! - `/thumbnail/{item_id}` — thumbnail proxy (stateless, special endpoint)
 
 use axum::{
     extract::{Path, Query, State},
-    http::StatusCode,
+    http::{HeaderMap, StatusCode},
     response::IntoResponse,
     routing::{get, post},
     Json, Router,
@@ -10,9 +14,14 @@ use axum::{
 use serde::Deserialize;
 use serde_json::json;
 
-use crate::http::{middleware::AuthUser, provider_common::InstanceQuery, AppError, AppState};
+use crate::http::{
+    error::AppResult, middleware::AuthUser, provider_common::InstanceQuery, AppError, AppState,
+};
 
 use crate::impls::providers::get_provider_binds;
+
+use synctv_core::provider::proxy::ProxyRequestContext;
+use synctv_core::provider::MediaProvider;
 
 /// Build Emby HTTP routes
 pub fn emby_routes() -> Router<AppState> {
@@ -22,21 +31,42 @@ pub fn emby_routes() -> Router<AppState> {
         .route("/list", post(list))
         .route("/me", post(me))
         .route("/binds", get(binds))
-        // Thumbnail proxy endpoint
+        // Thumbnail proxy endpoint (stateless, no version)
         .route("/thumbnail/{item_id}", get(thumbnail))
-        // Provider-specific proxy routes
+        // Wildcard proxy route (dispatches via ProviderProxy trait)
         .route(
-            "/proxy/{room_id}/{media_id}",
-            get(proxy_stream).options(super::proxy_options_preflight),
+            "/proxy/{*sub_path}",
+            get(proxy_handler).options(super::proxy_options_preflight),
         )
-        .route("/proxy/{room_id}/{media_id}/m3u8", get(proxy_m3u8))
 }
 
 // ------------------------------------------------------------------
-// Proxy handlers (generated via macro to avoid duplication with alist)
+// Generic proxy handler (delegates to ProviderProxy trait)
 // ------------------------------------------------------------------
 
-super::provider_proxy_handlers!(emby_provider, "Emby", "/api/providers/emby/proxy");
+/// GET `/proxy/*sub_path` — Generic proxy handler for Emby.
+///
+/// Delegates to `EmbyProvider::resolve_proxy` which parses the sub_path
+/// and returns a `ProxyAction` for the HTTP layer to execute.
+async fn proxy_handler(
+    _auth: AuthUser,
+    Path(sub_path): Path<String>,
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> AppResult<axum::response::Response> {
+    let proxy = state
+        .emby_provider
+        .as_provider_proxy()
+        .ok_or_else(|| AppError::not_found("Proxy not supported"))?;
+    let store = state.provider_stores.get("emby");
+    let ctx = ProxyRequestContext {
+        sub_path: &sub_path,
+        store,
+        proxy_base: "/api/providers/emby/proxy",
+    };
+    let action = proxy.resolve_proxy(&ctx).await.map_err(AppError::from)?;
+    super::execute_proxy_action(action, &headers).await
+}
 
 // ------------------------------------------------------------------
 // Existing provider API handlers

@@ -169,15 +169,6 @@ impl ClientApiImpl {
         let media_id_str = req.media_id.clone();
         let mid = synctv_core::models::MediaId::from_string(req.media_id);
 
-        // Fetch media before deletion so we can invalidate its playback cache
-        let media = self
-            .room_service
-            .media_service()
-            .get_media(&mid)
-            .await
-            .ok()
-            .flatten();
-
         self.room_service
             .remove_media(rid.clone(), uid.clone(), mid)
             .await
@@ -206,24 +197,8 @@ impl ClientApiImpl {
             );
         }
 
-        // Invalidate playback cache (best-effort)
-        if let (Some(media), Some(pm)) = (&media, self.providers_manager.as_ref()) {
-            if !media.is_direct() {
-                let instance_name = media
-                    .provider_instance_name
-                    .as_deref()
-                    .unwrap_or(&media.source_provider);
-                if let Some(provider) = pm.get(instance_name).await {
-                    let resolved = self.resolve_redis_conn().await;
-                    crate::impls::provider::invalidate_playback_cache(
-                        provider.as_ref(),
-                        &media.source_config,
-                        resolved.as_ref(),
-                    )
-                    .await;
-                }
-            }
-        }
+        // Note: playback cache invalidation is handled by TTL-based expiry
+        // in the provider's internal ProviderStore. No explicit invalidation needed.
 
         // Kick active stream for deleted media (local + cluster-wide)
         self.kick_stream_cluster(room_id, &media_id_str, "media_deleted");
@@ -327,16 +302,8 @@ impl ClientApiImpl {
             }
         }
 
-        // Invalidate playback cache for cleared media (best-effort)
-        if let Some(pm) = self.providers_manager.as_ref() {
-            let resolved = self.resolve_redis_conn().await;
-            crate::impls::provider::invalidate_playback_cache_batch(
-                &media_items,
-                pm,
-                resolved.as_ref(),
-            )
-            .await;
-        }
+        // Note: playback cache invalidation is handled by TTL-based expiry
+        // in the provider's internal ProviderStore. No explicit invalidation needed.
 
         Ok(crate::proto::client::ClearPlaylistResponse {
             success: true,
@@ -491,14 +458,6 @@ impl ClientApiImpl {
             .map(synctv_core::models::MediaId::from_string)
             .collect();
 
-        // M-12: Batch fetch all media in a single query instead of N+1
-        let media_items: Vec<synctv_core::models::Media> = self
-            .room_service
-            .media_service()
-            .get_media_batch(&mids)
-            .await
-            .unwrap_or_default();
-
         let deleted_count = self
             .room_service
             .media_service()
@@ -534,16 +493,8 @@ impl ClientApiImpl {
             );
         }
 
-        // Invalidate playback cache for deleted media (best-effort)
-        if let Some(pm) = self.providers_manager.as_ref() {
-            let resolved = self.resolve_redis_conn().await;
-            crate::impls::provider::invalidate_playback_cache_batch(
-                &media_items,
-                pm,
-                resolved.as_ref(),
-            )
-            .await;
-        }
+        // Note: playback cache invalidation is handled by TTL-based expiry
+        // in the provider's internal ProviderStore. No explicit invalidation needed.
 
         // Kick active streams for deleted media (local + cluster-wide)
         for media_id in &media_id_strings {

@@ -3,9 +3,14 @@
 //! Provides playback URLs for RTMP live streams.
 //! URLs point to synctv's own HTTP-FLV and HLS endpoints.
 
-use super::{MediaProvider, PlaybackResult, ProviderContext, ProviderError};
+use super::{
+    store::{ProviderStoreExt, VersionedPlayback},
+    MediaProvider, PlaybackResult, ProviderContext, ProviderError,
+};
 use async_trait::async_trait;
+use chrono::Utc;
 use serde_json::Value;
+use std::time::Duration;
 
 /// Fields that should not be allowed in `source_config`.
 /// `RtmpProvider` only uses `room_id` and `media_id`; any URL field could be abused.
@@ -58,11 +63,26 @@ impl MediaProvider for RtmpProvider {
             .and_then(|v| v.as_str())
             .ok_or_else(|| ProviderError::InvalidConfig("Missing room_id".to_string()))?;
 
-        Ok(super::build_live_playback(
-            &self.base_url,
-            media_id,
-            room_id,
-        ))
+        let result = super::build_live_playback(&self.base_url, media_id, room_id);
+
+        // Store with version for proxy URL identity
+        let store = _ctx.store.as_ref();
+        let cache_key = format!("playback:{room_id}:{media_id}");
+        let cache_ttl = Duration::from_secs(300); // 5 minutes for live
+        let version = nanoid::nanoid!(16);
+        let versioned = VersionedPlayback {
+            version: version.clone(),
+            result: result.clone(),
+            expires_at: Utc::now().timestamp() + cache_ttl.as_secs() as i64,
+        };
+        if let Some(store) = store {
+            let _ = store.set(&cache_key, &versioned, cache_ttl).await;
+            let _ = store
+                .set(&format!("v:{version}"), &versioned, cache_ttl)
+                .await;
+        }
+
+        Ok(result)
     }
 
     async fn validate_source_config(
@@ -94,22 +114,6 @@ impl MediaProvider for RtmpProvider {
 
         Ok(())
     }
-
-    fn cache_key(&self, ctx: &ProviderContext<'_>, source_config: &Value) -> String {
-        let room_id = source_config.get("room_id").and_then(|v| v.as_str());
-        let media_id = source_config.get("media_id").and_then(|v| v.as_str());
-
-        if let (Some(room_id), Some(media_id)) = (room_id, media_id) {
-            // Normal case: both fields present
-            format!("{}:playback:rtmp:{room_id}:{media_id}", ctx.key_prefix)
-        } else {
-            // Fallback: include hash of source_config to ensure uniqueness
-            // This prevents cache collisions when room_id or media_id are missing
-            use sha2::{Digest, Sha256};
-            let config_hash = hex::encode(Sha256::digest(source_config.to_string().as_bytes()));
-            format!("{}:playback:rtmp:fallback:{config_hash}", ctx.key_prefix)
-        }
-    }
 }
 
 #[cfg(test)]
@@ -121,118 +125,6 @@ mod tests {
         ProviderContext::new("synctv")
             .with_user_id("test_user")
             .with_room_id("test_room")
-    }
-
-    #[test]
-    fn test_cache_key_with_all_fields() {
-        let provider = RtmpProvider::default();
-        let ctx = create_context();
-        let source_config = json!({
-            "room_id": "room123",
-            "media_id": "media456"
-        });
-
-        let key = provider.cache_key(&ctx, &source_config);
-        assert_eq!(key, "synctv:playback:rtmp:room123:media456");
-    }
-
-    #[test]
-    fn test_cache_key_missing_room_id() {
-        let provider = RtmpProvider::default();
-        let ctx = create_context();
-        let source_config = json!({
-            "media_id": "media456"
-        });
-
-        let key = provider.cache_key(&ctx, &source_config);
-        // Should use fallback with hash
-        assert!(key.starts_with("synctv:playback:rtmp:fallback:"));
-        // Hash should be deterministic
-        let key2 = provider.cache_key(&ctx, &source_config);
-        assert_eq!(key, key2);
-    }
-
-    #[test]
-    fn test_cache_key_missing_media_id() {
-        let provider = RtmpProvider::default();
-        let ctx = create_context();
-        let source_config = json!({
-            "room_id": "room123"
-        });
-
-        let key = provider.cache_key(&ctx, &source_config);
-        // Should use fallback with hash
-        assert!(key.starts_with("synctv:playback:rtmp:fallback:"));
-    }
-
-    #[test]
-    fn test_cache_key_missing_both_fields() {
-        let provider = RtmpProvider::default();
-        let ctx = create_context();
-        let source_config = json!({});
-
-        let key = provider.cache_key(&ctx, &source_config);
-        // Should use fallback with hash
-        assert!(key.starts_with("synctv:playback:rtmp:fallback:"));
-    }
-
-    #[test]
-    fn test_cache_key_no_collision_for_different_missing_configs() {
-        let provider = RtmpProvider::default();
-        let ctx = create_context();
-
-        // Two configs with different missing fields should produce different keys
-        let config1 = json!({"room_id": "room1"});
-        let config2 = json!({"room_id": "room2"});
-
-        let key1 = provider.cache_key(&ctx, &config1);
-        let key2 = provider.cache_key(&ctx, &config2);
-
-        // Both should use fallback, but with different hashes
-        assert_ne!(
-            key1, key2,
-            "Different configs should produce different cache keys"
-        );
-    }
-
-    #[test]
-    fn test_cache_key_complete_vs_missing_produces_different_keys() {
-        let provider = RtmpProvider::default();
-        let ctx = create_context();
-
-        // Complete config should produce a direct key
-        let complete_config = json!({
-            "room_id": "room123",
-            "media_id": "media456"
-        });
-
-        // Incomplete config should produce a fallback key
-        let incomplete_config = json!({
-            "room_id": "room123"
-        });
-
-        let complete_key = provider.cache_key(&ctx, &complete_config);
-        let incomplete_key = provider.cache_key(&ctx, &incomplete_config);
-
-        // Keys should have different formats
-        assert!(complete_key.starts_with("synctv:playback:rtmp:room123:"));
-        assert!(incomplete_key.starts_with("synctv:playback:rtmp:fallback:"));
-        assert_ne!(complete_key, incomplete_key);
-    }
-
-    #[test]
-    fn test_cache_key_is_deterministic() {
-        let provider = RtmpProvider::default();
-        let ctx = create_context();
-        let source_config = json!({
-            "room_id": "room123",
-            "media_id": "media456",
-            "extra_field": "ignored"
-        });
-
-        let key1 = provider.cache_key(&ctx, &source_config);
-        let key2 = provider.cache_key(&ctx, &source_config);
-        assert_eq!(key1, key2, "Cache key should be deterministic");
     }
 
     #[tokio::test]

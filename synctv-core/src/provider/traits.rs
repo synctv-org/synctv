@@ -135,7 +135,7 @@ pub trait MediaProvider: Send + Sync {
     /// 3. Return `PlaybackResult` to client
     ///
     /// # Caching
-    /// Results are cached in Redis based on `cache_key()`
+    /// Results are cached in Redis by each provider's implementation
     ///
     /// # Returns
     /// `PlaybackResult` with multiple modes:
@@ -157,58 +157,6 @@ pub trait MediaProvider: Send + Sync {
         source_config: &Value,
     ) -> Result<PlaybackResult, ProviderError>;
 
-    // ========== Caching Strategy ==========
-
-    /// Generate cache key for playback result
-    ///
-    /// Default implementation supports shared vs user-level caching.
-    ///
-    /// # Returns
-    /// - Shared: "synctv:playback:{provider}:{hash}:shared"
-    /// - User: "`synctv:playback:{provider}:{hash}:user:{user_id`}"
-    fn cache_key(&self, ctx: &ProviderContext<'_>, source_config: &Value) -> String {
-        use sha2::{Digest, Sha256};
-
-        tracing::debug!(
-            provider = self.name(),
-            "Provider uses default cache_key implementation; \
-             consider overriding cache_key() for optimal caching behaviour"
-        );
-
-        let mut hasher = Sha256::new();
-        hasher.update(source_config.to_string().as_bytes());
-        let config_hash = hex::encode(hasher.finalize());
-
-        let is_shared = source_config
-            .get("shared")
-            .and_then(serde_json::Value::as_bool)
-            .unwrap_or(false);
-
-        if is_shared {
-            format!(
-                "{}:playback:{}:{}:shared",
-                ctx.key_prefix,
-                self.name(),
-                config_hash
-            )
-        } else if let Some(user_id) = ctx.user_id {
-            format!(
-                "{}:playback:{}:{}:user:{}",
-                ctx.key_prefix,
-                self.name(),
-                config_hash,
-                user_id
-            )
-        } else {
-            format!(
-                "{}:playback:{}:{}:anonymous",
-                ctx.key_prefix,
-                self.name(),
-                config_hash
-            )
-        }
-    }
-
     // ========== Optional Capabilities ==========
 
     /// Cast to `DynamicFolder` trait if supported
@@ -220,6 +168,18 @@ pub trait MediaProvider: Send + Sync {
     /// - `Some(&dyn DynamicFolder)` if provider supports dynamic folders
     /// - `None` if provider doesn't support this capability
     fn as_dynamic_folder(&self) -> Option<&dyn DynamicFolder> {
+        None
+    }
+
+    /// Cast to `ProviderProxy` trait if supported
+    ///
+    /// Providers that support HTTP proxy routes should override this
+    /// to return `Some(self)` for proxy resolution capability.
+    ///
+    /// # Returns
+    /// - `Some(&dyn ProviderProxy)` if provider supports proxy routes
+    /// - `None` if provider doesn't support this capability (e.g., DirectUrl)
+    fn as_provider_proxy(&self) -> Option<&dyn super::proxy::ProviderProxy> {
         None
     }
 

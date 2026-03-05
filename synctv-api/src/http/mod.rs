@@ -116,6 +116,11 @@ pub struct AppState {
     pub bilibili_api: Arc<crate::impls::BilibiliApiImpl>,
     pub alist_api: Arc<crate::impls::AlistApiImpl>,
     pub emby_api: Arc<crate::impls::EmbyApiImpl>,
+    /// Per-provider stores for caching and distributed locking
+    pub provider_stores: std::collections::HashMap<
+        &'static str,
+        Arc<dyn synctv_core::provider::store::ProviderStore>,
+    >,
 }
 
 impl std::ops::Deref for AppState {
@@ -255,6 +260,9 @@ fn build_app_state(config: RouterConfig) -> AppState {
             ),
     );
 
+    // Create per-provider stores for caching and distributed locking
+    let provider_stores = synctv_core::provider::store::create_provider_stores(None);
+
     AppState {
         router_config: Arc::new(config),
         rate_limit_config,
@@ -269,6 +277,7 @@ fn build_app_state(config: RouterConfig) -> AppState {
         bilibili_api,
         alist_api,
         emby_api,
+        provider_stores,
     }
 }
 

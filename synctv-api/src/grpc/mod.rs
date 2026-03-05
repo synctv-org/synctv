@@ -641,6 +641,7 @@ pub async fn serve(grpc_config: GrpcServerConfig<'_>) -> anyhow::Result<()> {
             bilibili_api: Arc::new(crate::impls::BilibiliApiImpl::new(bilibili_provider)),
             alist_api: Arc::new(crate::impls::AlistApiImpl::new(alist_provider)),
             emby_api: Arc::new(crate::impls::EmbyApiImpl::new(emby_provider)),
+            provider_stores: synctv_core::provider::store::create_provider_stores(None),
         });
 
         // Register provider gRPC services with auth interceptor

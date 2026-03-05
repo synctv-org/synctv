@@ -883,9 +883,10 @@ mod websocket_e2e {
         // BilibiliApiImpl, AlistApiImpl, EmbyApiImpl
         let bilibili_api = Arc::new(synctv_api::impls::BilibiliApiImpl::new(
             bilibili_provider.clone(),
+            user_provider_credential_repo.clone(),
         ));
-        let alist_api = Arc::new(synctv_api::impls::AlistApiImpl::new(alist_provider.clone()));
-        let emby_api = Arc::new(synctv_api::impls::EmbyApiImpl::new(emby_provider.clone()));
+        let alist_api = Arc::new(synctv_api::impls::AlistApiImpl::new(alist_provider.clone(), user_provider_credential_repo.clone()));
+        let emby_api = Arc::new(synctv_api::impls::EmbyApiImpl::new(emby_provider.clone(), user_provider_credential_repo.clone()));
 
         let router_config = synctv_api::http::RouterConfig {
             turn_health_checker: Default::default(),
@@ -893,10 +894,11 @@ mod websocket_e2e {
             user_service: user_service.clone(),
             room_service: room_service.clone(),
             provider_instance_manager,
-            user_provider_credential_repository: user_provider_credential_repo,
+            user_provider_credential_repository: user_provider_credential_repo.clone(),
             alist_provider,
             bilibili_provider,
             emby_provider,
+            direct_url_provider: std::sync::Arc::new(synctv_core::provider::DirectUrlProvider::new()),
             cluster_manager: Some(cluster_manager),
             connection_manager,
             jwt_service: jwt_service.clone(),
@@ -952,6 +954,25 @@ mod websocket_e2e {
             alist_api,
             emby_api,
             provider_stores: std::sync::Arc::new(synctv_core::provider::store::ProviderStoreRegistry::new(None)),
+            proxy_provider_registry: std::sync::Arc::new(synctv_core::provider::proxy::ProxyProviderRegistry::new()),
+            proxy_services: {
+                let signing_key = std::sync::Arc::new(
+                    synctv_core::service::ProxySigningKey::derive_from(
+                        b"Test_Secret_Key_For_JWT_Tokens_32Bytes!!",
+                    ),
+                );
+                std::sync::Arc::new(synctv_core::provider::proxy::ProxyServices {
+                    room_service: room_service.clone(),
+                    credential_encryption: None,
+                    credential_repo: user_provider_credential_repo.clone(),
+                    signing_key: signing_key.clone(),
+                })
+            },
+            proxy_signing_key: std::sync::Arc::new(
+                synctv_core::service::ProxySigningKey::derive_from(
+                    b"Test_Secret_Key_For_JWT_Tokens_32Bytes!!",
+                ),
+            ),
         };
 
         // Build a minimal router with just the WebSocket endpoint
@@ -2845,9 +2866,10 @@ mod websocket_connection_limit_timing {
 
         let bilibili_api = Arc::new(synctv_api::impls::BilibiliApiImpl::new(
             bilibili_provider.clone(),
+            user_provider_credential_repo.clone(),
         ));
-        let alist_api = Arc::new(synctv_api::impls::AlistApiImpl::new(alist_provider.clone()));
-        let emby_api = Arc::new(synctv_api::impls::EmbyApiImpl::new(emby_provider.clone()));
+        let alist_api = Arc::new(synctv_api::impls::AlistApiImpl::new(alist_provider.clone(), user_provider_credential_repo.clone()));
+        let emby_api = Arc::new(synctv_api::impls::EmbyApiImpl::new(emby_provider.clone(), user_provider_credential_repo.clone()));
 
         let router_config = synctv_api::http::RouterConfig {
             turn_health_checker: Default::default(),
@@ -2855,10 +2877,11 @@ mod websocket_connection_limit_timing {
             user_service: user_service.clone(),
             room_service: room_service.clone(),
             provider_instance_manager,
-            user_provider_credential_repository: user_provider_credential_repo,
+            user_provider_credential_repository: user_provider_credential_repo.clone(),
             alist_provider,
             bilibili_provider,
             emby_provider,
+            direct_url_provider: std::sync::Arc::new(synctv_core::provider::DirectUrlProvider::new()),
             cluster_manager: Some(cluster_manager),
             connection_manager,
             jwt_service: jwt_service.clone(),
@@ -2914,6 +2937,25 @@ mod websocket_connection_limit_timing {
             alist_api,
             emby_api,
             provider_stores: std::sync::Arc::new(synctv_core::provider::store::ProviderStoreRegistry::new(None)),
+            proxy_provider_registry: std::sync::Arc::new(synctv_core::provider::proxy::ProxyProviderRegistry::new()),
+            proxy_services: {
+                let signing_key = std::sync::Arc::new(
+                    synctv_core::service::ProxySigningKey::derive_from(
+                        b"Test_Secret_Key_For_JWT_Tokens_32Bytes!!",
+                    ),
+                );
+                std::sync::Arc::new(synctv_core::provider::proxy::ProxyServices {
+                    room_service: room_service.clone(),
+                    credential_encryption: None,
+                    credential_repo: user_provider_credential_repo.clone(),
+                    signing_key: signing_key.clone(),
+                })
+            },
+            proxy_signing_key: std::sync::Arc::new(
+                synctv_core::service::ProxySigningKey::derive_from(
+                    b"Test_Secret_Key_For_JWT_Tokens_32Bytes!!",
+                ),
+            ),
         };
 
         let app = axum::Router::new()

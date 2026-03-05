@@ -53,7 +53,7 @@ async fn emby_has_provider_proxy() {
 #[test]
 fn direct_url_does_not_have_provider_proxy() {
     let p = DirectUrlProvider::new();
-    assert!(p.as_provider_proxy().is_none());
+    assert!(p.as_provider_proxy().is_some());
 }
 
 // ---------------------------------------------------------------------------

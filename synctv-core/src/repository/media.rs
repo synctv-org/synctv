@@ -836,38 +836,6 @@ mod tests {
         assert_eq!(media.name, "Test Video");
         assert_eq!(media.position, 0);
         assert_eq!(media.source_provider, "direct_url");
-        assert!(media.is_direct());
-    }
-
-    /// Unit test: `is_direct()` check
-    #[test]
-    fn test_media_is_direct() {
-        let playlist_id = PlaylistId::new();
-        let room_id = RoomId::new();
-
-        let direct_media = Media::from_provider(
-            playlist_id.clone(),
-            room_id.clone(),
-            None,
-            "Direct Video".to_string(),
-            serde_json::json!({}),
-            "direct_url",
-            "default".to_string(),
-            0,
-        );
-        assert!(direct_media.is_direct());
-
-        let bilibili_media = Media::from_provider(
-            playlist_id,
-            room_id,
-            None,
-            "Bilibili Video".to_string(),
-            serde_json::json!({"bvid": "BV1234567890"}),
-            "bilibili",
-            "bilibili_main".to_string(),
-            1,
-        );
-        assert!(!bilibili_media.is_direct());
     }
 
     /// Unit test: `Media::from_direct_single_mode`
@@ -894,7 +862,6 @@ mod tests {
 
         assert_eq!(media.name, "Single Mode Video");
         assert_eq!(media.position, 5);
-        assert!(media.is_direct());
         assert!(media.source_config.get("playback_infos").is_some());
     }
 
@@ -936,59 +903,8 @@ mod tests {
 
         assert_eq!(media.name, "Multimode Video");
         assert_eq!(media.position, 10);
-        assert!(media.is_direct());
         assert!(media.source_config.get("playback_infos").is_some());
         assert!(media.source_config.get("metadata").is_some());
-    }
-
-    /// Unit test: `get_playback_result` for direct media
-    #[test]
-    fn test_get_playback_result_direct() {
-        let playlist_id = PlaylistId::new();
-        let room_id = RoomId::new();
-
-        let playback_info = crate::models::media::PlaybackInfo::single_url(
-            "https://example.com/video.mp4".to_string(),
-            "1080P".to_string(),
-        );
-
-        let media = Media::from_direct_single_mode(
-            playlist_id,
-            room_id,
-            None,
-            "Test Video".to_string(),
-            "direct",
-            playback_info,
-            0,
-        );
-
-        let result = media.get_playback_result();
-        assert!(result.is_some());
-
-        let playback = result.unwrap();
-        assert_eq!(playback.name, "Test Video");
-        assert!(playback.playback_infos.contains_key("direct"));
-    }
-
-    /// Unit test: `get_playback_result` returns None for non-direct media
-    #[test]
-    fn test_get_playback_result_non_direct() {
-        let playlist_id = PlaylistId::new();
-        let room_id = RoomId::new();
-
-        let media = Media::from_provider(
-            playlist_id,
-            room_id,
-            None,
-            "Bilibili Video".to_string(),
-            serde_json::json!({"bvid": "BV1234567890"}),
-            "bilibili",
-            "bilibili_main".to_string(),
-            0,
-        );
-
-        let result = media.get_playback_result();
-        assert!(result.is_none());
     }
 
     /// Unit test: Repository constructor

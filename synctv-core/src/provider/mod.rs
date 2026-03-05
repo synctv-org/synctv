@@ -19,6 +19,7 @@
 // Core traits and types
 pub mod config;
 pub mod context;
+pub mod credential_resolver;
 pub mod crypto_utils;
 pub mod error;
 pub mod provider_client;
@@ -37,6 +38,7 @@ pub mod rtmp;
 
 pub use config::*;
 pub use context::*;
+pub use credential_resolver::*;
 pub use error::*;
 pub use provider_client::{global_client_manager, ProviderClientManager};
 pub use proxy::*;
@@ -156,7 +158,67 @@ const CREDENTIAL_FIELDS: &[&str] = &[
     "cookies",
     "secret",
     "access_token",
+    "credential_ref",
 ];
+
+/// Rewrite playback URLs in a `PlaybackResult` to use signed proxy URLs.
+///
+/// Called by providers after `generate_playback` when `signing_key`, `room_id`,
+/// and `user_id` are available in the context. Each playback mode gets a signed
+/// proxy URL based on whether `cors_proxy_required` is set or the mode suggests proxying.
+///
+/// The version and provider name are needed to construct the proxy path.
+pub fn sign_playback_urls(
+    result: &mut PlaybackResult,
+    provider_name: &str,
+    version: &str,
+    signing_key: &crate::service::proxy_signature::ProxySigningKey,
+    room_id: &str,
+    user_id: &str,
+    expires_at: i64,
+) {
+    for (mode_name, info) in &mut result.playback_infos {
+        if info.urls.is_empty() {
+            continue;
+        }
+
+        // Determine the action based on the mode/format
+        let action = if info.format == "m3u8" || mode_name.contains("hls") {
+            "m3u8"
+        } else {
+            "stream"
+        };
+
+        let signed_url = crate::service::proxy_signature::build_signed_proxy_url(
+            provider_name,
+            version,
+            action,
+            signing_key,
+            room_id,
+            user_id,
+            expires_at,
+        );
+
+        // Replace the first URL with the signed proxy URL
+        info.urls = vec![signed_url];
+        // Proxy handles headers — client doesn't need them
+        info.headers.clear();
+        info.cors_proxy_required = false;
+
+        // Also sign subtitle URLs
+        for (idx, subtitle) in info.subtitles.iter_mut().enumerate() {
+            subtitle.url = crate::service::proxy_signature::build_signed_proxy_url(
+                provider_name,
+                version,
+                &format!("subtitle/{idx}"),
+                signing_key,
+                room_id,
+                user_id,
+                expires_at,
+            );
+        }
+    }
+}
 
 /// Strip credential fields from a `source_config` value before sending to clients.
 ///

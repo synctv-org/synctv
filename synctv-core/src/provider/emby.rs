@@ -15,7 +15,6 @@ use chrono::Utc;
 use rand::prelude::IndexedRandom;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
@@ -69,6 +68,55 @@ impl EmbyProvider {
             .await
     }
 
+    /// Resolve thumbnail proxy action from query parameters.
+    ///
+    /// Parses `host`, `token`, `max_height`, and `max_width` from query string,
+    /// builds the Emby thumbnail URL, and returns `FetchAndForward` with the
+    /// X-Emby-Token header for authentication.
+    fn resolve_thumbnail(
+        &self,
+        item_id: &str,
+        query_string: Option<&str>,
+    ) -> Result<super::proxy::ProxyAction, ProviderError> {
+        let qs = query_string.unwrap_or("");
+        let params: HashMap<String, String> = url::form_urlencoded::parse(qs.as_bytes())
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
+
+        let host = params
+            .get("host")
+            .ok_or_else(|| ProviderError::InvalidConfig("Missing 'host' parameter".into()))?;
+        let token = params
+            .get("token")
+            .ok_or_else(|| ProviderError::InvalidConfig("Missing 'token' parameter".into()))?;
+        let max_height: u32 = params
+            .get("max_height")
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(300)
+            .min(1920);
+        let max_width: u32 = params
+            .get("max_width")
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(0)
+            .min(1920);
+
+        let thumbnail_path = if max_width > 0 {
+            format!("/Items/{item_id}/Images/Primary?maxHeight={max_height}&maxWidth={max_width}&quality=90")
+        } else {
+            format!("/Items/{item_id}/Images/Primary?maxHeight={max_height}&quality=90")
+        };
+
+        let thumbnail_url = format!("{}{}", host.trim_end_matches('/'), thumbnail_path);
+
+        let mut headers = HashMap::new();
+        headers.insert("X-Emby-Token".to_string(), token.clone());
+
+        Ok(super::proxy::ProxyAction::FetchAndForward {
+            url: thumbnail_url,
+            headers,
+        })
+    }
+
     // ========== Provider API Methods ==========
 
     /// Login to Emby/Jellyfin (validate API key)
@@ -109,10 +157,47 @@ impl EmbyProvider {
         client.me(req).await.map_err(std::convert::Into::into)
     }
 
+    /// Resolve EmbySourceConfig + credential_ref into ResolvedEmbyConfig.
+    async fn resolve_config(
+        &self,
+        ctx: &ProviderContext<'_>,
+        source_config: &Value,
+    ) -> Result<ResolvedEmbyConfig, ProviderError> {
+        let config = EmbySourceConfig::try_from(source_config)?;
+
+        let repo = ctx.credential_repo.ok_or_else(|| {
+            ProviderError::Internal(
+                "credential_repo not available in ProviderContext".to_string(),
+            )
+        })?;
+
+        let credential = super::credential_resolver::resolve_credential(
+            repo,
+            "emby",
+            &config.credential_ref,
+        )
+        .await?;
+
+        match credential {
+            crate::models::ProviderCredential::Emby {
+                host,
+                api_key,
+                emby_user_id,
+            } => Ok(ResolvedEmbyConfig {
+                host,
+                token: api_key,
+                user_id: emby_user_id,
+                item_id: config.item_id,
+                provider_instance_name: config.provider_instance_name,
+            }),
+            _ => Err(ProviderError::InvalidCredentialType),
+        }
+    }
+
     /// Resolve playback result from Emby API (no caching).
     async fn resolve_from_api(
         &self,
-        config: &EmbySourceConfig,
+        config: &ResolvedEmbyConfig,
     ) -> Result<PlaybackResult, ProviderError> {
         // Get appropriate client based on instance_name from config
         let client = self
@@ -298,11 +383,19 @@ impl EmbyProvider {
 /// Emby source configuration
 #[derive(Debug, Deserialize, Serialize)]
 struct EmbySourceConfig {
+    item_id: String,
+    #[serde(default)]
+    provider_instance_name: Option<String>,
+    /// Reference to stored credentials (server-side)
+    credential_ref: super::credential_resolver::CredentialRef,
+}
+
+/// Resolved Emby configuration with credentials ready for API calls.
+struct ResolvedEmbyConfig {
     host: String,
     token: String,
     user_id: String,
     item_id: String,
-    #[serde(default)]
     provider_instance_name: Option<String>,
 }
 
@@ -329,19 +422,6 @@ impl MediaProvider for EmbyProvider {
     ) -> Result<(), ProviderError> {
         let config = EmbySourceConfig::try_from(source_config)?;
 
-        // Validate host URL format
-        if config.host.is_empty() {
-            return Err(ProviderError::InvalidConfig(
-                "Emby host must not be empty".to_string(),
-            ));
-        }
-        if !config.host.starts_with("http://") && !config.host.starts_with("https://") {
-            return Err(ProviderError::InvalidConfig(format!(
-                "Emby host must start with http:// or https://, got: {}",
-                config.host
-            )));
-        }
-
         // Validate item_id is non-empty
         if config.item_id.is_empty() {
             return Err(ProviderError::InvalidConfig(
@@ -349,18 +429,25 @@ impl MediaProvider for EmbyProvider {
             ));
         }
 
-        // Validate token (API key) is non-empty
-        if config.token.is_empty() {
-            return Err(ProviderError::InvalidConfig(
-                "Emby token (API key) must not be empty".to_string(),
-            ));
-        }
+        // Validate credential_ref exists and the referenced credential is accessible
+        if let Some(repo) = _ctx.credential_repo {
+            let cred = repo
+                .get_by_provider_and_server(
+                    &config.credential_ref.credential_owner_id,
+                    "emby",
+                    &config.credential_ref.server_id,
+                )
+                .await
+                .map_err(|e| {
+                    ProviderError::Internal(format!("Failed to verify credential reference: {e}"))
+                })?;
 
-        // Validate user_id is non-empty
-        if config.user_id.is_empty() {
-            return Err(ProviderError::InvalidConfig(
-                "Emby user_id must not be empty".to_string(),
-            ));
+            if cred.is_none() {
+                return Err(ProviderError::CredentialNotFound(format!(
+                    "Referenced emby credential not found for server_id '{}'",
+                    config.credential_ref.server_id
+                )));
+            }
         }
 
         Ok(())
@@ -369,26 +456,23 @@ impl MediaProvider for EmbyProvider {
     async fn prepare_source_config(
         &self,
         _ctx: &ProviderContext<'_>,
-        source_config: Value,
+        mut source_config: Value,
     ) -> Result<Value, ProviderError> {
-        // Check if source_config contains sensitive credentials (token)
-        let has_sensitive_credentials = source_config
-            .get("token")
-            .and_then(|t| t.as_str())
-            .is_some_and(|s| !s.is_empty());
-
-        // If config has sensitive credentials, encryption is mandatory
-        if has_sensitive_credentials && _ctx.credential_encryption.is_none() {
-            return Err(ProviderError::EncryptionRequired("emby"));
+        // Server-side: ensure credential_owner_id is set to the current user
+        if let Some(user_id) = _ctx.user_id {
+            if let Some(obj) = source_config.as_object_mut() {
+                if let Some(cred_ref) = obj.get_mut("credential_ref") {
+                    if let Some(cred_obj) = cred_ref.as_object_mut() {
+                        cred_obj.insert(
+                            "credential_owner_id".to_string(),
+                            Value::String(user_id.to_string()),
+                        );
+                    }
+                }
+            }
         }
 
-        // Encrypt token in source_config before storage if encryption is available
-        if let Some(enc) = _ctx.credential_encryption {
-            super::crypto_utils::encrypt_field_in_value(&source_config, enc, "token", "Emby")
-        } else {
-            // No sensitive credentials, safe to store without encryption
-            Ok(source_config)
-        }
+        Ok(source_config)
     }
 
     async fn generate_playback(
@@ -396,26 +480,45 @@ impl MediaProvider for EmbyProvider {
         _ctx: &ProviderContext<'_>,
         source_config: &Value,
     ) -> Result<PlaybackResult, ProviderError> {
-        // Decrypt token if encryption is configured (handles both encrypted and plaintext)
-        let decrypted_config = if let Some(enc) = _ctx.credential_encryption {
-            super::crypto_utils::decrypt_field_in_value(source_config, enc, "token", "Emby")?
-        } else {
-            source_config.clone()
+        // Parse source_config
+        let config = EmbySourceConfig::try_from(source_config)?;
+
+        // Resolve credentials from DB using credential_ref
+        let repo = _ctx.credential_repo.ok_or_else(|| {
+            ProviderError::Internal(
+                "credential_repo not available in ProviderContext".to_string(),
+            )
+        })?;
+
+        let credential = super::credential_resolver::resolve_credential(
+            repo,
+            "emby",
+            &config.credential_ref,
+        )
+        .await?;
+
+        let (host, token, user_id) = match credential {
+            crate::models::ProviderCredential::Emby {
+                host,
+                api_key,
+                emby_user_id,
+            } => (host, api_key, emby_user_id),
+            _ => return Err(ProviderError::InvalidCredentialType),
         };
 
-        // Parse source_config first
-        let config = EmbySourceConfig::try_from(&decrypted_config)?;
+        let resolved = ResolvedEmbyConfig {
+            host: host.clone(),
+            token: token.clone(),
+            user_id,
+            item_id: config.item_id.clone(),
+            provider_instance_name: config.provider_instance_name.clone(),
+        };
 
-        // Build cache key from host hash + token hash + item_id
-        let host_hash: String = format!("{:x}", Sha256::digest(config.host.as_bytes()))
-            .chars()
-            .take(16)
-            .collect();
-        let token_hash: String = format!("{:x}", Sha256::digest(config.token.as_bytes()))
-            .chars()
-            .take(16)
-            .collect();
-        let cache_key = format!("playback:{}:{}:{}", host_hash, token_hash, config.item_id);
+        // Build cache key from server_id + item_id
+        let cache_key = format!(
+            "playback:{}:{}",
+            config.credential_ref.server_id, config.item_id
+        );
         let cache_ttl = Duration::from_secs(30 * 60); // 30 minutes
 
         let store = _ctx.store.as_ref();
@@ -449,7 +552,7 @@ impl MediaProvider for EmbyProvider {
         }
 
         // Call provider API
-        let result = self.resolve_from_api(&config).await?;
+        let mut result = self.resolve_from_api(&resolved).await?;
 
         // Generate version and store result
         let version = nanoid::nanoid!(16);
@@ -464,6 +567,21 @@ impl MediaProvider for EmbyProvider {
             let _ = store
                 .set(&format!("v:{version}"), &versioned, cache_ttl)
                 .await;
+        }
+
+        // Sign playback URLs when signing_key and identity are available
+        if let (Some(signing_key), Some(room_id), Some(user_id)) =
+            (_ctx.signing_key, _ctx.room_id, _ctx.user_id)
+        {
+            super::sign_playback_urls(
+                &mut result,
+                "emby",
+                &version,
+                signing_key,
+                room_id,
+                user_id,
+                expires_at,
+            );
         }
 
         Ok(result)
@@ -483,13 +601,13 @@ impl MediaProvider for EmbyProvider {
         session_id: &str,
         source_config: &Value,
     ) -> Result<(), ProviderError> {
-        let config = match EmbySourceConfig::try_from(source_config) {
+        let config = match self.resolve_config(_ctx, source_config).await {
             Ok(c) => c,
             Err(e) => {
                 tracing::warn!(
                     error = %e,
                     session_id = %session_id,
-                    "Emby on_playback_start: failed to parse source_config, skipping"
+                    "Emby on_playback_start: failed to resolve config, skipping"
                 );
                 return Ok(());
             }
@@ -527,13 +645,13 @@ impl MediaProvider for EmbyProvider {
         source_config: &Value,
         position: f64,
     ) -> Result<(), ProviderError> {
-        let config = match EmbySourceConfig::try_from(source_config) {
+        let config = match self.resolve_config(_ctx, source_config).await {
             Ok(c) => c,
             Err(e) => {
                 tracing::warn!(
                     error = %e,
                     session_id = %session_id,
-                    "Emby on_playback_stop: failed to parse source_config, skipping"
+                    "Emby on_playback_stop: failed to resolve config, skipping"
                 );
                 return Ok(());
             }
@@ -592,14 +710,14 @@ impl MediaProvider for EmbyProvider {
         source_config: &Value,
         position: f64,
     ) -> Result<(), ProviderError> {
-        let config = match EmbySourceConfig::try_from(source_config) {
+        let config = match self.resolve_config(_ctx, source_config).await {
             Ok(c) => c,
             Err(e) => {
                 // Progress reports happen every 10s; log at debug level to avoid log spam
                 tracing::debug!(
                     error = %e,
                     session_id = %session_id,
-                    "Emby on_playback_progress: failed to parse source_config, skipping"
+                    "Emby on_playback_progress: failed to resolve config, skipping"
                 );
                 return Ok(());
             }
@@ -650,6 +768,12 @@ impl super::proxy::ProviderProxy for EmbyProvider {
     ) -> Result<super::proxy::ProxyAction, ProviderError> {
         let sub_path = ctx.sub_path;
 
+        // `thumbnail/{item_id}` — proxy Emby thumbnail images
+        // Query params: host, token, max_height, max_width
+        if let Some(item_id) = sub_path.strip_prefix("thumbnail/") {
+            return self.resolve_thumbnail(item_id, ctx.query_string);
+        }
+
         if let Some((version, rest)) = sub_path.split_once('/') {
             let versioned = super::proxy::lookup_versioned(ctx.store, version).await?;
 
@@ -696,10 +820,18 @@ impl super::proxy::ProviderProxy for EmbyProvider {
                     });
                 }
                 "m3u8" => {
+                    // Propagate HMAC signature into M3U8 segment URLs
+                    let proxy_base = if let Some(claims) = ctx.verified_claims {
+                        let signed_query =
+                            ctx.services.signing_key.build_signed_query(claims);
+                        format!("{}/{version}?{signed_query}", ctx.proxy_base)
+                    } else {
+                        format!("{}/{version}", ctx.proxy_base)
+                    };
                     return Ok(super::proxy::ProxyAction::M3u8Rewrite {
                         url: url.clone(),
                         headers: default_info.headers.clone(),
-                        proxy_base: format!("{}/{version}", ctx.proxy_base),
+                        proxy_base,
                     });
                 }
                 _ => {}
@@ -725,10 +857,7 @@ impl DynamicFolder for EmbyProvider {
             .source_config
             .as_ref()
             .ok_or_else(|| ProviderError::InvalidConfig("Missing source_config".to_string()))?;
-        let base_config: EmbySourceConfig =
-            serde_json::from_value(config.clone()).map_err(|e| {
-                ProviderError::InvalidConfig(format!("Failed to parse Emby playlist config: {e}"))
-            })?;
+        let resolved = self.resolve_config(_ctx, config).await?;
 
         // Validate relative_path to prevent path traversal and injection.
         // Uses the shared validate_path_for_traversal which handles URL-encoded
@@ -749,21 +878,21 @@ impl DynamicFolder for EmbyProvider {
         // Otherwise, use the base config's item_id
         let target_path = relative_path
             .filter(|s| !s.is_empty() && *s != "/")
-            .unwrap_or(&base_config.item_id);
+            .unwrap_or(&resolved.item_id);
 
         // Call fs_list to get items
         let client = self
-            .get_client(base_config.provider_instance_name.as_deref())
+            .get_client(resolved.provider_instance_name.as_deref())
             .await;
 
         let list_req = synctv_media_providers::grpc::emby::FsListReq {
-            host: base_config.host.clone(),
-            token: base_config.token.clone(),
+            host: resolved.host.clone(),
+            token: resolved.token.clone(),
             path: target_path.to_string(),
             start_index: (page * page_size) as u64,
             limit: page_size as u64,
             search_term: String::new(),
-            user_id: base_config.user_id.clone(),
+            user_id: resolved.user_id.clone(),
         };
 
         let response = client.fs_list(list_req).await?;
@@ -792,9 +921,9 @@ impl DynamicFolder for EmbyProvider {
                 // The proxy endpoint resolves credentials server-side from the
                 // playlist's source_config, keyed by host.
                 let thumbnail_url = format!(
-                    "/api/providers/emby/thumbnail/{item_id}?maxHeight=300&host={host}",
+                    "/api/providers/proxy/emby/thumbnail/{item_id}?maxHeight=300&host={host}",
                     item_id = item.id,
-                    host = urlencoding::encode(&base_config.host),
+                    host = urlencoding::encode(&resolved.host),
                 );
 
                 Some(DirectoryItem {
@@ -821,15 +950,24 @@ impl DynamicFolder for EmbyProvider {
     ) -> Result<Option<NextPlayItem>, ProviderError> {
         use crate::models::PlayMode;
 
-        // Parse base playlist config
+        // Parse base playlist config and resolve credentials
         let config = playlist
             .source_config
             .as_ref()
             .ok_or_else(|| ProviderError::InvalidConfig("Missing source_config".to_string()))?;
-        let base_config: EmbySourceConfig =
-            serde_json::from_value(config.clone()).map_err(|e| {
-                ProviderError::InvalidConfig(format!("Failed to parse Emby playlist config: {e}"))
-            })?;
+        let base_config = EmbySourceConfig::try_from(config)?;
+
+        // Build a helper to create NextPlayItem source_configs with credential_ref
+        let build_next_source_config = |item_id: &str| -> Value {
+            json!({
+                "item_id": item_id,
+                "provider_instance_name": base_config.provider_instance_name,
+                "credential_ref": {
+                    "credential_owner_id": base_config.credential_ref.credential_owner_id,
+                    "server_id": base_config.credential_ref.server_id,
+                },
+            })
+        };
 
         match play_mode {
             PlayMode::RepeatOne => {
@@ -866,18 +1004,11 @@ impl DynamicFolder for EmbyProvider {
                             .iter()
                             .find(|item| item.item_type == ItemType::Media)
                         {
-                            let source_config = json!({
-                                "host": base_config.host,
-                                "token": base_config.token,
-                                "user_id": base_config.user_id,
-                                "item_id": next.path,
-                                "provider_instance_name": base_config.provider_instance_name,
-                            });
                             return Ok(Some(
                                 NextPlayItem {
                                     name: next.name.clone(),
                                     item_type: next.item_type,
-                                    source_config,
+                                    source_config: build_next_source_config(&next.path),
                                     metadata: json!({}),
                                     provider_data: json!({}),
                                     relative_path: next.path.clone(),
@@ -896,18 +1027,11 @@ impl DynamicFolder for EmbyProvider {
                             .skip(idx + 1)
                             .find(|item| item.item_type == ItemType::Media)
                         {
-                            let source_config = json!({
-                                "host": base_config.host,
-                                "token": base_config.token,
-                                "user_id": base_config.user_id,
-                                "item_id": next.path,
-                                "provider_instance_name": base_config.provider_instance_name,
-                            });
                             return Ok(Some(
                                 NextPlayItem {
                                     name: next.name.clone(),
                                     item_type: next.item_type,
-                                    source_config,
+                                    source_config: build_next_source_config(&next.path),
                                     metadata: json!({}),
                                     provider_data: json!({}),
                                     relative_path: next.path.clone(),
@@ -936,18 +1060,11 @@ impl DynamicFolder for EmbyProvider {
                         .iter()
                         .find(|item| item.item_type == ItemType::Media)
                     {
-                        let source_config = json!({
-                            "host": base_config.host,
-                            "token": base_config.token,
-                            "user_id": base_config.user_id,
-                            "item_id": first.path,
-                            "provider_instance_name": base_config.provider_instance_name,
-                        });
                         return Ok(Some(
                             NextPlayItem {
                                 name: first.name.clone(),
                                 item_type: first.item_type,
-                                source_config,
+                                source_config: build_next_source_config(&first.path),
                                 metadata: json!({}),
                                 provider_data: json!({}),
                                 relative_path: first.path.clone(),
@@ -1007,19 +1124,11 @@ impl DynamicFolder for EmbyProvider {
                 };
 
                 if let Some(random) = random_item {
-                    let source_config = json!({
-                        "host": base_config.host,
-                        "token": base_config.token,
-                        "user_id": base_config.user_id,
-                        "item_id": random.path,
-                        "provider_instance_name": base_config.provider_instance_name,
-                    });
-
                     Ok(Some(
                         NextPlayItem {
                             name: random.name.clone(),
                             item_type: random.item_type,
-                            source_config,
+                            source_config: build_next_source_config(&random.path),
                             metadata: json!({}),
                             provider_data: json!({}),
                             relative_path: random.path.clone(),
@@ -1038,175 +1147,101 @@ impl DynamicFolder for EmbyProvider {
 mod tests {
     use super::*;
 
+    /// Validate Emby source config: checks item_id and credential_ref fields.
+    /// Host/token/user_id are no longer in source_config (resolved from credential_ref at runtime).
     fn validate_emby(config: Value) -> Result<(), ProviderError> {
         let config = EmbySourceConfig::try_from(&config)?;
 
-        if config.host.is_empty() {
-            return Err(ProviderError::InvalidConfig(
-                "Emby host must not be empty".to_string(),
-            ));
-        }
-        if !config.host.starts_with("http://") && !config.host.starts_with("https://") {
-            return Err(ProviderError::InvalidConfig(format!(
-                "Emby host must start with http:// or https://, got: {}",
-                config.host
-            )));
-        }
         if config.item_id.is_empty() {
             return Err(ProviderError::InvalidConfig(
                 "Emby item_id must not be empty".to_string(),
             ));
         }
-        if config.token.is_empty() {
+        if config.credential_ref.credential_owner_id.is_empty() {
             return Err(ProviderError::InvalidConfig(
-                "Emby token (API key) must not be empty".to_string(),
+                "credential_ref.credential_owner_id must not be empty".to_string(),
             ));
         }
-        if config.user_id.is_empty() {
+        if config.credential_ref.server_id.is_empty() {
             return Err(ProviderError::InvalidConfig(
-                "Emby user_id must not be empty".to_string(),
+                "credential_ref.server_id must not be empty".to_string(),
             ));
         }
-        Ok(())
-    }
-
-    /// Validate Emby config WITH SSRF protection (like the actual implementation)
-    fn validate_emby_with_ssrf(config: Value) -> Result<(), ProviderError> {
-        let config = EmbySourceConfig::try_from(&config)?;
-
-        if config.host.is_empty() {
-            return Err(ProviderError::InvalidConfig(
-                "Emby host must not be empty".to_string(),
-            ));
-        }
-        if !config.host.starts_with("http://") && !config.host.starts_with("https://") {
-            return Err(ProviderError::InvalidConfig(format!(
-                "Emby host must start with http:// or https://, got: {}",
-                config.host
-            )));
-        }
-
-        if config.item_id.is_empty() {
-            return Err(ProviderError::InvalidConfig(
-                "Emby item_id must not be empty".to_string(),
-            ));
-        }
-        if config.token.is_empty() {
-            return Err(ProviderError::InvalidConfig(
-                "Emby token (API key) must not be empty".to_string(),
-            ));
-        }
-        if config.user_id.is_empty() {
-            return Err(ProviderError::InvalidConfig(
-                "Emby user_id must not be empty".to_string(),
-            ));
-        }
-
-        // SSRF protection: Check if host resolves to a blocked IP or hostname
-        let url = url::Url::parse(&config.host)
-            .map_err(|e| ProviderError::InvalidUrl(format!("Invalid host URL: {e}")))?;
-
-        // Check for blocked hostnames (localhost, metadata endpoints)
-        if let Some(host) = url.host_str() {
-            if synctv_common::ssrf::SsrfGuard::default_policy().is_host_blocked(host) {
-                return Err(ProviderError::InvalidUrl(
-                    "SSRF: blocked hostname".to_string(),
-                ));
-            }
-        }
-
-        // Check for blocked IPs (if host is an IP address)
-        if let Some(host) = url.host_str() {
-            // Handle IPv6 addresses in brackets notation [::1] -> ::1
-            let host_stripped = if host.starts_with('[') && host.ends_with(']') {
-                &host[1..host.len() - 1]
-            } else {
-                host
-            };
-            if let Ok(ip) = host_stripped.parse::<std::net::IpAddr>() {
-                if synctv_common::ssrf::is_ip_blocked(&ip) {
-                    return Err(ProviderError::InvalidUrl(
-                        "SSRF: blocked IP address".to_string(),
-                    ));
-                }
-            }
-        }
-
         Ok(())
     }
 
     #[test]
     fn test_valid_emby_config() {
         let config = json!({
-            "host": "https://emby.example.com",
-            "token": "my-api-key",
-            "user_id": "abc123",
-            "item_id": "item-456"
+            "item_id": "item-456",
+            "credential_ref": {
+                "credential_owner_id": "user123",
+                "server_id": "test-server"
+            }
         });
         assert!(validate_emby(config).is_ok());
     }
 
     #[test]
-    fn test_emby_config_empty_host() {
+    fn test_emby_config_with_provider_instance_name() {
         let config = json!({
-            "host": "",
-            "token": "my-api-key",
-            "user_id": "abc123",
-            "item_id": "item-456"
+            "item_id": "item-456",
+            "provider_instance_name": "remote-emby-1",
+            "credential_ref": {
+                "credential_owner_id": "user123",
+                "server_id": "test-server"
+            }
         });
-        assert!(validate_emby(config).is_err());
-    }
-
-    #[test]
-    fn test_emby_config_invalid_host_scheme() {
-        let config = json!({
-            "host": "ftp://emby.example.com",
-            "token": "my-api-key",
-            "user_id": "abc123",
-            "item_id": "item-456"
-        });
-        assert!(validate_emby(config).is_err());
+        assert!(validate_emby(config).is_ok());
     }
 
     #[test]
     fn test_emby_config_empty_item_id() {
         let config = json!({
-            "host": "https://emby.example.com",
-            "token": "my-api-key",
-            "user_id": "abc123",
-            "item_id": ""
-        });
-        assert!(validate_emby(config).is_err());
-    }
-
-    #[test]
-    fn test_emby_config_empty_token() {
-        let config = json!({
-            "host": "https://emby.example.com",
-            "token": "",
-            "user_id": "abc123",
-            "item_id": "item-456"
-        });
-        assert!(validate_emby(config).is_err());
-    }
-
-    #[test]
-    fn test_emby_config_empty_user_id() {
-        let config = json!({
-            "host": "https://emby.example.com",
-            "token": "my-api-key",
-            "user_id": "",
-            "item_id": "item-456"
+            "item_id": "",
+            "credential_ref": {
+                "credential_owner_id": "user123",
+                "server_id": "test-server"
+            }
         });
         assert!(validate_emby(config).is_err());
     }
 
     #[test]
     fn test_emby_config_missing_required_fields() {
+        // Missing credential_ref entirely
         let config = json!({
-            "host": "https://emby.example.com"
+            "item_id": "item-456"
         });
         assert!(validate_emby(config).is_err());
+    }
+
+    #[test]
+    fn test_emby_config_missing_item_id() {
+        // Missing item_id field
+        let config = json!({
+            "credential_ref": {
+                "credential_owner_id": "user123",
+                "server_id": "test-server"
+            }
+        });
+        assert!(validate_emby(config).is_err());
+    }
+
+    #[test]
+    fn test_emby_credential_ref_parsing() {
+        let config = json!({
+            "item_id": "item-456",
+            "credential_ref": {
+                "credential_owner_id": "owner-abc",
+                "server_id": "srv-xyz"
+            }
+        });
+        let parsed = EmbySourceConfig::try_from(&config).unwrap();
+        assert_eq!(parsed.credential_ref.credential_owner_id, "owner-abc");
+        assert_eq!(parsed.credential_ref.server_id, "srv-xyz");
+        assert_eq!(parsed.item_id, "item-456");
+        assert!(parsed.provider_instance_name.is_none());
     }
 
     /// Test helper to verify cursor-based pagination bounds.
@@ -1262,195 +1297,6 @@ mod tests {
         // Memory usage: max 200 items vs 1000 items (80% reduction)
     }
 
-    // ========== SSRF Protection Tests ==========
-
-    #[test]
-    fn test_emby_ssrf_blocks_private_ip_192_168() {
-        // 192.168.0.0/16 - Private network
-        let config = json!({
-            "host": "http://192.168.1.100:8096",
-            "token": "my-api-key",
-            "user_id": "abc123",
-            "item_id": "item-456"
-        });
-
-        let result = validate_emby_with_ssrf(config);
-        assert!(result.is_err(), "Should block 192.168.x.x IP");
-        if let Err(ProviderError::InvalidUrl(msg)) = result {
-            assert!(msg.contains("SSRF"), "Error should mention SSRF");
-        } else {
-            panic!("Expected InvalidUrl error with SSRF message");
-        }
-    }
-
-    #[test]
-    fn test_emby_ssrf_blocks_private_ip_10() {
-        // 10.0.0.0/8 - Private network
-        let config = json!({
-            "host": "http://10.0.0.1:8096",
-            "token": "my-api-key",
-            "user_id": "abc123",
-            "item_id": "item-456"
-        });
-
-        let result = validate_emby_with_ssrf(config);
-        assert!(result.is_err(), "Should block 10.x.x.x IP");
-        if let Err(ProviderError::InvalidUrl(msg)) = result {
-            assert!(msg.contains("SSRF"), "Error should mention SSRF");
-        } else {
-            panic!("Expected InvalidUrl error with SSRF message");
-        }
-    }
-
-    #[test]
-    fn test_emby_ssrf_blocks_private_ip_172_16() {
-        // 172.16.0.0/12 - Private network
-        let config = json!({
-            "host": "http://172.16.0.1:8096",
-            "token": "my-api-key",
-            "user_id": "abc123",
-            "item_id": "item-456"
-        });
-
-        let result = validate_emby_with_ssrf(config);
-        assert!(result.is_err(), "Should block 172.16-31.x.x IP");
-    }
-
-    #[test]
-    fn test_emby_ssrf_blocks_aws_metadata() {
-        // AWS metadata endpoint
-        let config = json!({
-            "host": "http://169.254.169.254:8096",
-            "token": "my-api-key",
-            "user_id": "abc123",
-            "item_id": "item-456"
-        });
-
-        let result = validate_emby_with_ssrf(config);
-        assert!(result.is_err(), "Should block AWS metadata endpoint");
-    }
-
-    #[test]
-    fn test_emby_ssrf_blocks_gcp_metadata() {
-        // GCP metadata endpoint
-        let config = json!({
-            "host": "http://metadata.google.internal:8096",
-            "token": "my-api-key",
-            "user_id": "abc123",
-            "item_id": "item-456"
-        });
-
-        let result = validate_emby_with_ssrf(config);
-        assert!(result.is_err(), "Should block GCP metadata endpoint");
-    }
-
-    #[test]
-    fn test_emby_ssrf_blocks_localhost() {
-        let config = json!({
-            "host": "http://localhost:8096",
-            "token": "my-api-key",
-            "user_id": "abc123",
-            "item_id": "item-456"
-        });
-
-        let result = validate_emby_with_ssrf(config);
-        assert!(result.is_err(), "Should block localhost");
-    }
-
-    #[test]
-    fn test_emby_ssrf_blocks_127_0_0_1() {
-        let config = json!({
-            "host": "http://127.0.0.1:8096",
-            "token": "my-api-key",
-            "user_id": "abc123",
-            "item_id": "item-456"
-        });
-
-        let result = validate_emby_with_ssrf(config);
-        assert!(result.is_err(), "Should block 127.0.0.1");
-    }
-
-    #[test]
-    fn test_emby_ssrf_blocks_ipv6_localhost() {
-        let config = json!({
-            "host": "http://[::1]:8096",
-            "token": "my-api-key",
-            "user_id": "abc123",
-            "item_id": "item-456"
-        });
-
-        let result = validate_emby_with_ssrf(config);
-        assert!(result.is_err(), "Should block IPv6 localhost ::1");
-    }
-
-    #[test]
-    fn test_emby_ssrf_blocks_ipv6_link_local() {
-        let config = json!({
-            "host": "http://[fe80::1]:8096",
-            "token": "my-api-key",
-            "user_id": "abc123",
-            "item_id": "item-456"
-        });
-
-        let result = validate_emby_with_ssrf(config);
-        assert!(result.is_err(), "Should block IPv6 link-local fe80::/10");
-    }
-
-    #[test]
-    fn test_emby_ssrf_allows_public_domain() {
-        let config = json!({
-            "host": "https://emby.example.com",
-            "token": "my-api-key",
-            "user_id": "abc123",
-            "item_id": "item-456"
-        });
-
-        let result = validate_emby_with_ssrf(config);
-        assert!(result.is_ok(), "Should allow public domain");
-    }
-
-    #[test]
-    fn test_emby_ssrf_allows_public_ip() {
-        let config = json!({
-            "host": "http://1.2.3.4:8096",
-            "token": "my-api-key",
-            "user_id": "abc123",
-            "item_id": "item-456"
-        });
-
-        let result = validate_emby_with_ssrf(config);
-        assert!(result.is_ok(), "Should allow public IP address");
-    }
-
-    #[test]
-    fn test_emby_ssrf_blocks_url_encoded_private_ip() {
-        // URL encoding bypass attempt
-        let config = json!({
-            "host": "http://192%2e168%2e1%2e1:8096",
-            "token": "my-api-key",
-            "user_id": "abc123",
-            "item_id": "item-456"
-        });
-
-        // The URL parser should reject this as invalid before SSRF check
-        let result = validate_emby_with_ssrf(config);
-        assert!(result.is_err(), "Should reject URL-encoded IP");
-    }
-
-    #[test]
-    fn test_emby_ssrf_blocks_cloud_metadata_azure() {
-        // Azure metadata endpoint
-        let config = json!({
-            "host": "http://169.254.169.254:8096",
-            "token": "my-api-key",
-            "user_id": "abc123",
-            "item_id": "item-456"
-        });
-
-        let result = validate_emby_with_ssrf(config);
-        assert!(result.is_err(), "Should block Azure metadata endpoint");
-    }
-
     // ========== B2: Emby token must NOT be exposed in thumbnail URL ==========
 
     #[test]
@@ -1463,11 +1309,11 @@ mod tests {
 
         // Simulate the thumbnail URL generation (the code under test in list_playlist)
         // The old (insecure) format was:
-        //   /api/providers/emby/thumbnail/{item_id}?maxHeight=300&host={host}&token={token}
+        //   /api/providers/proxy/emby/thumbnail/{item_id}?maxHeight=300&host={host}&token={token}
         //
         // After the fix, the URL must NOT contain the raw token value.
         let thumbnail_url = format!(
-            "/api/providers/emby/thumbnail/{item_id}?maxHeight=300&host={host}",
+            "/api/providers/proxy/emby/thumbnail/{item_id}?maxHeight=300&host={host}",
             item_id = item_id,
             host = urlencoding::encode("https://emby.example.com"),
         );
@@ -1479,47 +1325,6 @@ mod tests {
         assert!(
             !thumbnail_url.contains("token="),
             "Thumbnail URL must not include a 'token=' query parameter"
-        );
-    }
-
-    // ========== B3: Emby missing EncryptionRequired guard ==========
-
-    #[test]
-    fn test_prepare_source_config_requires_encryption_for_emby_token() {
-        // Emby token is sensitive. If credential_encryption is not configured,
-        // prepare_source_config MUST return EncryptionRequired error
-        // (same as Bilibili and Alist providers).
-        let config_with_token = json!({
-            "host": "https://emby.example.com",
-            "token": "sensitive_api_key",
-            "user_id": "abc123",
-            "item_id": "item-456"
-        });
-
-        let config_empty_token = json!({
-            "host": "https://emby.example.com",
-            "token": "",
-            "user_id": "abc123",
-            "item_id": "item-456"
-        });
-
-        // Helper: detect sensitive credentials (same logic as Alist provider)
-        fn has_sensitive_credentials(config: &Value) -> bool {
-            config
-                .get("token")
-                .and_then(|t| t.as_str())
-                .is_some_and(|s| !s.is_empty())
-        }
-
-        // Config with non-empty token IS sensitive
-        assert!(
-            has_sensitive_credentials(&config_with_token),
-            "Config with non-empty token must be detected as sensitive"
-        );
-        // Config with empty token is NOT sensitive
-        assert!(
-            !has_sensitive_credentials(&config_empty_token),
-            "Config with empty token must not be detected as sensitive"
         );
     }
 

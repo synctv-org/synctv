@@ -22,27 +22,27 @@ pub struct LoginResponse {
     pub username: ::prost::alloc::string::String,
     #[prost(bool, tag = "3")]
     pub is_admin: bool,
+    /// SHA-256(host) identifier for stored credential
+    #[prost(string, tag = "4")]
+    pub server_id: ::prost::alloc::string::String,
 }
 /// List items request
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ListRequest {
+    /// Stored credential identifier
     #[prost(string, tag = "1")]
-    pub host: ::prost::alloc::string::String,
+    pub server_id: ::prost::alloc::string::String,
     #[prost(string, tag = "2")]
-    pub token: ::prost::alloc::string::String,
-    #[prost(string, tag = "3")]
     pub path: ::prost::alloc::string::String,
-    #[prost(uint64, tag = "4")]
+    #[prost(uint64, tag = "3")]
     pub start_index: u64,
-    #[prost(uint64, tag = "5")]
+    #[prost(uint64, tag = "4")]
     pub limit: u64,
-    #[prost(string, tag = "6")]
+    #[prost(string, tag = "5")]
     pub search_term: ::prost::alloc::string::String,
-    #[prost(string, tag = "7")]
-    pub user_id: ::prost::alloc::string::String,
     /// Optional provider instance name
-    #[prost(string, tag = "8")]
+    #[prost(string, tag = "6")]
     pub instance_name: ::prost::alloc::string::String,
 }
 /// List items response
@@ -77,12 +77,11 @@ pub struct MediaItem {
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct GetMeRequest {
+    /// Stored credential identifier
     #[prost(string, tag = "1")]
-    pub host: ::prost::alloc::string::String,
-    #[prost(string, tag = "2")]
-    pub token: ::prost::alloc::string::String,
+    pub server_id: ::prost::alloc::string::String,
     /// Optional provider instance name
-    #[prost(string, tag = "3")]
+    #[prost(string, tag = "2")]
     pub instance_name: ::prost::alloc::string::String,
 }
 /// Get user info response
@@ -98,8 +97,11 @@ pub struct GetMeResponse {
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct LogoutRequest {
-    /// Optional provider instance name
+    /// Which credential to unbind
     #[prost(string, tag = "1")]
+    pub server_id: ::prost::alloc::string::String,
+    /// Optional provider instance name
+    #[prost(string, tag = "2")]
     pub instance_name: ::prost::alloc::string::String,
 }
 /// Logout response
@@ -232,7 +234,7 @@ pub mod emby_provider_service_client {
             self.inner = self.inner.max_encoding_message_size(limit);
             self
         }
-        /// Login to Emby/Jellyfin server (validate API key)
+        /// Login to Emby/Jellyfin server (validate API key and persist credential)
         pub async fn login(
             &mut self,
             request: impl tonic::IntoRequest<super::LoginRequest>,
@@ -256,7 +258,7 @@ pub mod emby_provider_service_client {
                 );
             self.inner.unary(req, path, codec).await
         }
-        /// List library items
+        /// List library items (uses stored credential via server_id)
         pub async fn list(
             &mut self,
             request: impl tonic::IntoRequest<super::ListRequest>,
@@ -280,7 +282,7 @@ pub mod emby_provider_service_client {
                 );
             self.inner.unary(req, path, codec).await
         }
-        /// Get current user info
+        /// Get current user info (uses stored credential via server_id)
         pub async fn get_me(
             &mut self,
             request: impl tonic::IntoRequest<super::GetMeRequest>,
@@ -304,7 +306,7 @@ pub mod emby_provider_service_client {
                 );
             self.inner.unary(req, path, codec).await
         }
-        /// Logout from Emby
+        /// Logout from Emby (delete stored credential)
         pub async fn logout(
             &mut self,
             request: impl tonic::IntoRequest<super::LogoutRequest>,
@@ -373,22 +375,22 @@ pub mod emby_provider_service_server {
     /// Generated trait containing gRPC methods that should be implemented for use with EmbyProviderServiceServer.
     #[async_trait]
     pub trait EmbyProviderService: std::marker::Send + std::marker::Sync + 'static {
-        /// Login to Emby/Jellyfin server (validate API key)
+        /// Login to Emby/Jellyfin server (validate API key and persist credential)
         async fn login(
             &self,
             request: tonic::Request<super::LoginRequest>,
         ) -> std::result::Result<tonic::Response<super::LoginResponse>, tonic::Status>;
-        /// List library items
+        /// List library items (uses stored credential via server_id)
         async fn list(
             &self,
             request: tonic::Request<super::ListRequest>,
         ) -> std::result::Result<tonic::Response<super::ListResponse>, tonic::Status>;
-        /// Get current user info
+        /// Get current user info (uses stored credential via server_id)
         async fn get_me(
             &self,
             request: tonic::Request<super::GetMeRequest>,
         ) -> std::result::Result<tonic::Response<super::GetMeResponse>, tonic::Status>;
-        /// Logout from Emby
+        /// Logout from Emby (delete stored credential)
         async fn logout(
             &self,
             request: tonic::Request<super::LogoutRequest>,

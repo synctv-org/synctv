@@ -97,15 +97,12 @@ pub(super) fn room_to_proto_basic(
 
 #[must_use]
 pub fn media_to_proto(media: &synctv_core::models::Media) -> crate::proto::client::Media {
-    // Get metadata from PlaybackResult if available (for direct URLs)
-    let metadata_bytes = if media.is_direct() {
-        media
-            .get_playback_result()
-            .map(|pb| serde_json::to_vec(&pb.metadata).unwrap_or_default())
-            .unwrap_or_default()
-    } else {
-        Vec::new()
-    };
+    // Extract metadata from source_config if present (any provider may store it)
+    let metadata_bytes = media
+        .source_config
+        .get("metadata")
+        .map(|m| serde_json::to_vec(m).unwrap_or_default())
+        .unwrap_or_default();
 
     // Strip credentials from source_config before sending to clients
     let sanitized_config =

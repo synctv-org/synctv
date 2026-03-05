@@ -10,7 +10,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use synctv_core::provider::{
-    proxy::{ProxyAction, ProxyRequestContext, ProviderProxy},
+    proxy::{ProxyAction, ProxyRequestContext, ProxyServices, ProviderProxy},
     store::{InMemoryProviderStore, ProviderStore, ProviderStoreExt, VersionedPlayback},
     AlistProvider, PlaybackInfo, PlaybackResult, SubtitleTrack,
 };
@@ -66,6 +66,44 @@ async fn store_versioned(store: &Arc<dyn ProviderStore>, vp: &VersionedPlayback)
         .unwrap();
 }
 
+fn fake_proxy_services() -> ProxyServices {
+    let pool = sqlx::PgPool::connect_lazy("postgresql://fake").unwrap();
+    let jwt = synctv_core::service::auth::JwtService::new(
+        "Test_Secret_Key_For_JWT_Tokens_32Bytes!!",
+    )
+    .expect("jwt");
+    let l2 = Arc::new(synctv_core::cache::NoopCacheL2);
+    let username_cache =
+        synctv_core::cache::UsernameCache::new(l2, "test:username:".to_string(), 100, 60);
+    let token_blacklist = Arc::new(
+        synctv_core::service::InMemoryTokenBlacklistStore::new(1000, 3600, 86400),
+    );
+    let key_builder = synctv_core::cache::KeyBuilder::new("test");
+    let brute_force =
+        synctv_core::service::auth::BruteForceProtection::in_memory("test".to_string());
+    let user_service = synctv_core::service::UserService::new(
+        pool.clone(),
+        jwt,
+        username_cache,
+        synctv_core::config::PasswordComplexityConfig::default(),
+        token_blacklist,
+        key_builder,
+        brute_force,
+    );
+    let credential_repo = Arc::new(
+        synctv_core::repository::UserProviderCredentialRepository::new(pool.clone()),
+    );
+    let room_service = synctv_core::service::RoomService::new(pool, user_service);
+    ProxyServices {
+        room_service: Arc::new(room_service),
+        credential_encryption: None,
+        credential_repo,
+        signing_key: Arc::new(synctv_core::service::ProxySigningKey::derive_from(
+            b"Test_Secret_Key_For_JWT_Tokens_32Bytes!!",
+        )),
+    }
+}
+
 #[tokio::test]
 async fn test_stream_proxy() {
     let store = new_store();
@@ -79,10 +117,14 @@ async fn test_stream_proxy() {
     store_versioned(&store, &vp).await;
 
     let p = provider();
+    let fake_services = fake_proxy_services();
     let ctx = ProxyRequestContext {
         sub_path: "a1/stream",
         store: Some(&store),
-        proxy_base: "/api/providers/alist/proxy",
+        query_string: None,
+        services: &fake_services,
+        proxy_base: "/api/providers/proxy/alist",
+        verified_claims: None,
     };
     let action = p.resolve_proxy(&ctx).await.unwrap();
     match action {
@@ -107,16 +149,20 @@ async fn test_m3u8_proxy() {
     store_versioned(&store, &vp).await;
 
     let p = provider();
+    let fake_services = fake_proxy_services();
     let ctx = ProxyRequestContext {
         sub_path: "a2/m3u8",
         store: Some(&store),
-        proxy_base: "/api/providers/alist/proxy",
+        query_string: None,
+        services: &fake_services,
+        proxy_base: "/api/providers/proxy/alist",
+        verified_claims: None,
     };
     let action = p.resolve_proxy(&ctx).await.unwrap();
     match action {
         ProxyAction::M3u8Rewrite { url, proxy_base, .. } => {
             assert_eq!(url, "https://alist.example.com/d/video.m3u8");
-            assert_eq!(proxy_base, "/api/providers/alist/proxy/a2");
+            assert_eq!(proxy_base, "/api/providers/proxy/alist/a2");
         }
         other => panic!("Expected M3u8Rewrite, got {other:?}"),
     }
@@ -135,10 +181,14 @@ async fn test_unknown_sub_path() {
     store_versioned(&store, &vp).await;
 
     let p = provider();
+    let fake_services = fake_proxy_services();
     let ctx = ProxyRequestContext {
         sub_path: "a3/subtitle/zh",
         store: Some(&store),
-        proxy_base: "/api/providers/alist/proxy",
+        query_string: None,
+        services: &fake_services,
+        proxy_base: "/api/providers/proxy/alist",
+        verified_claims: None,
     };
     let err = p.resolve_proxy(&ctx).await.unwrap_err();
     assert!(matches!(
@@ -161,10 +211,14 @@ async fn test_expired_version() {
     store_versioned(&store, &vp).await;
 
     let p = provider();
+    let fake_services = fake_proxy_services();
     let ctx = ProxyRequestContext {
         sub_path: "aexp/stream",
         store: Some(&store),
-        proxy_base: "/api/providers/alist/proxy",
+        query_string: None,
+        services: &fake_services,
+        proxy_base: "/api/providers/proxy/alist",
+        verified_claims: None,
     };
     let err = p.resolve_proxy(&ctx).await.unwrap_err();
     assert!(matches!(
@@ -176,10 +230,14 @@ async fn test_expired_version() {
 #[tokio::test]
 async fn test_no_store() {
     let p = provider();
+    let fake_services = fake_proxy_services();
     let ctx = ProxyRequestContext {
         sub_path: "a1/stream",
         store: None,
-        proxy_base: "/api/providers/alist/proxy",
+        query_string: None,
+        services: &fake_services,
+        proxy_base: "/api/providers/proxy/alist",
+        verified_claims: None,
     };
     let err = p.resolve_proxy(&ctx).await.unwrap_err();
     assert!(matches!(
@@ -192,10 +250,14 @@ async fn test_no_store() {
 async fn test_no_slash_in_sub_path() {
     let store = new_store();
     let p = provider();
+    let fake_services = fake_proxy_services();
     let ctx = ProxyRequestContext {
         sub_path: "noslash",
         store: Some(&store),
-        proxy_base: "/api/providers/alist/proxy",
+        query_string: None,
+        services: &fake_services,
+        proxy_base: "/api/providers/proxy/alist",
+        verified_claims: None,
     };
     let err = p.resolve_proxy(&ctx).await.unwrap_err();
     assert!(matches!(
@@ -208,10 +270,14 @@ async fn test_no_slash_in_sub_path() {
 async fn test_version_not_in_store() {
     let store = new_store();
     let p = provider();
+    let fake_services = fake_proxy_services();
     let ctx = ProxyRequestContext {
         sub_path: "missing/stream",
         store: Some(&store),
-        proxy_base: "/api/providers/alist/proxy",
+        query_string: None,
+        services: &fake_services,
+        proxy_base: "/api/providers/proxy/alist",
+        verified_claims: None,
     };
     let err = p.resolve_proxy(&ctx).await.unwrap_err();
     assert!(matches!(
@@ -237,10 +303,14 @@ async fn test_m3u8_preserves_headers() {
     store_versioned(&store, &vp).await;
 
     let p = provider();
+    let fake_services = fake_proxy_services();
     let ctx = ProxyRequestContext {
         sub_path: "a4/m3u8",
         store: Some(&store),
-        proxy_base: "/api/providers/alist/proxy",
+        query_string: None,
+        services: &fake_services,
+        proxy_base: "/api/providers/proxy/alist",
+        verified_claims: None,
     };
     let action = p.resolve_proxy(&ctx).await.unwrap();
     match action {

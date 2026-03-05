@@ -2,12 +2,9 @@
 //
 // This is the client-facing gRPC API for Bilibili provider
 //
-// SECURITY: This service transmits Bilibili session cookies as plaintext
-// map<string,string> fields. These cookies grant full access to the user's
-// Bilibili account. Deployments MUST:
-//   - Use TLS for all connections to this service.
-//   - Never log request/response payloads containing cookie fields.
-//   - Treat cookie fields as sensitive credentials in observability pipelines.
+// SECURITY: This service transmits Bilibili session cookies during login only.
+// After login, credentials are stored server-side and referenced by server_id.
+// Deployments MUST use TLS for all connections to this service.
 
 syntax = "proto3";
 
@@ -17,13 +14,13 @@ package synctv.provider.bilibili;
 //
 // Client-facing API for Bilibili video parsing, login, and user management
 service BilibiliProviderService {
-  // Parse Bilibili URL (video, anime, live)
+  // Parse Bilibili URL (video, anime, live) - uses stored credential via server_id
   rpc Parse(ParseRequest) returns (ParseResponse);
 
   // Generate QR code for login
   rpc LoginQR(LoginQRRequest) returns (QRCodeResponse);
 
-  // Check QR code login status
+  // Check QR code login status (persists credential on success)
   rpc CheckQR(CheckQRRequest) returns (QRStatusResponse);
 
   // Get captcha for SMS login
@@ -32,20 +29,20 @@ service BilibiliProviderService {
   // Send SMS verification code
   rpc SendSMS(SendSMSRequest) returns (SendSMSResponse);
 
-  // Login with SMS code
+  // Login with SMS code (persists credential on success)
   rpc LoginSMS(LoginSMSRequest) returns (LoginSMSResponse);
 
-  // Get user info
+  // Get user info (uses stored credential via server_id)
   rpc GetUserInfo(UserInfoRequest) returns (UserInfoResponse);
 
-  // Logout
+  // Logout (delete stored credential)
   rpc Logout(LogoutRequest) returns (LogoutResponse);
 }
 
 // Parse video URL request
 message ParseRequest {
   string url = 1;
-  map<string, string> cookies = 2; // SENSITIVE: Session cookies - do not log
+  string server_id = 2; // Stored credential identifier (use stored cookies)
   string instance_name = 3; // Optional provider instance name
 }
 
@@ -96,7 +93,7 @@ enum QRLoginStatus {
 // QR status response
 message QRStatusResponse {
   QRLoginStatus status = 1;
-  map<string, string> cookies = 2; // SENSITIVE: Session cookies - do not log
+  string server_id = 2; // "bilibili" when login succeeded and credentials are stored
 }
 
 // Get captcha request
@@ -135,12 +132,12 @@ message LoginSMSRequest {
 
 // Login with SMS response
 message LoginSMSResponse {
-  map<string, string> cookies = 1; // SENSITIVE: Session cookies - do not log
+  string server_id = 1; // "bilibili" when login succeeded and credentials are stored
 }
 
 // User info request
 message UserInfoRequest {
-  map<string, string> cookies = 1; // SENSITIVE: Session cookies - do not log
+  string server_id = 1; // Stored credential identifier
   string instance_name = 2; // Optional provider instance name
 }
 
@@ -154,7 +151,8 @@ message UserInfoResponse {
 
 // Logout request
 message LogoutRequest {
-  string instance_name = 1; // Optional provider instance name
+  string server_id = 1; // Which credential to unbind (default: "bilibili")
+  string instance_name = 2; // Optional provider instance name
 }
 
 // Logout response

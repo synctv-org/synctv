@@ -8,7 +8,9 @@ use crate::proto::providers::emby::{
     LogoutRequest, LogoutResponse, MediaItem,
 };
 use std::sync::Arc;
+use synctv_core::models::{ProviderCredential, UserProviderCredential};
 use synctv_core::provider::EmbyProvider;
+use synctv_core::repository::UserProviderCredentialRepository;
 
 /// Emby API implementation
 ///
@@ -17,20 +19,69 @@ use synctv_core::provider::EmbyProvider;
 #[derive(Clone)]
 pub struct EmbyApiImpl {
     provider: Arc<EmbyProvider>,
+    credential_repo: Arc<UserProviderCredentialRepository>,
 }
 
 impl EmbyApiImpl {
     #[must_use]
-    pub const fn new(provider: Arc<EmbyProvider>) -> Self {
-        Self { provider }
+    pub fn new(
+        provider: Arc<EmbyProvider>,
+        credential_repo: Arc<UserProviderCredentialRepository>,
+    ) -> Self {
+        Self {
+            provider,
+            credential_repo,
+        }
     }
 
-    /// Login to Emby
+    /// Resolve Emby credentials from DB using server_id, returning (host, api_key, emby_user_id).
+    async fn resolve_credentials(
+        &self,
+        caller_user_id: &str,
+        server_id: &str,
+    ) -> Result<(String, String, String), synctv_core::provider::ProviderError> {
+        let cred = self
+            .credential_repo
+            .get_by_provider_and_server(caller_user_id, "emby", server_id)
+            .await
+            .map_err(|e| {
+                synctv_core::provider::ProviderError::Internal(format!(
+                    "Failed to query emby credential: {e}"
+                ))
+            })?
+            .ok_or(synctv_core::provider::ProviderError::CredentialNotFound(
+                format!("No emby credential found for server_id '{server_id}'"),
+            ))?;
+
+        if cred.is_expired() {
+            return Err(synctv_core::provider::ProviderError::CredentialExpired(
+                "Emby credential has expired".to_string(),
+            ));
+        }
+
+        match cred.get_credential() {
+            Ok(ProviderCredential::Emby {
+                host,
+                api_key,
+                emby_user_id,
+            }) => Ok((host, api_key, emby_user_id)),
+            Ok(_) => Err(synctv_core::provider::ProviderError::InvalidCredentialType),
+            Err(e) => Err(synctv_core::provider::ProviderError::Internal(format!(
+                "Failed to parse emby credential: {e}"
+            ))),
+        }
+    }
+
+    /// Login to Emby and persist credentials
     pub async fn login(
         &self,
+        caller_user_id: &str,
         req: LoginRequest,
         instance_name: Option<&str>,
     ) -> Result<LoginResponse, synctv_core::provider::ProviderError> {
+        let host = req.host.clone();
+        let api_key = req.api_key.clone();
+
         let user_info = self
             .provider
             .login(req.host, req.api_key, instance_name)
@@ -42,32 +93,75 @@ impl EmbyApiImpl {
             .as_ref()
             .is_some_and(|p| p.is_administrator);
 
+        // Generate server_id and persist credential
+        let server_id = UserProviderCredential::generate_server_id(&host);
+        let credential_data =
+            ProviderCredential::emby(host, api_key, user_info.id.clone());
+
+        // Upsert: delete existing then create
+        if let Some(existing) = self
+            .credential_repo
+            .get_by_provider_and_server(caller_user_id, "emby", &server_id)
+            .await
+            .ok()
+            .flatten()
+        {
+            let _ = self.credential_repo.delete(&existing.id).await;
+        }
+
+        let credential = UserProviderCredential {
+            id: nanoid::nanoid!(),
+            user_id: caller_user_id.to_string(),
+            provider: "emby".to_string(),
+            server_id: server_id.clone(),
+            provider_instance_name: instance_name.map(ToString::to_string),
+            credential_data: serde_json::to_value(&credential_data).map_err(|e| {
+                synctv_core::provider::ProviderError::Internal(format!(
+                    "Failed to serialize credential: {e}"
+                ))
+            })?,
+            expires_at: None,
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+        };
+
+        self.credential_repo.create(&credential).await.map_err(|e| {
+            synctv_core::provider::ProviderError::Internal(format!(
+                "Failed to persist emby credential: {e}"
+            ))
+        })?;
+
         Ok(LoginResponse {
             user_id: user_info.id,
             username: user_info.name,
             is_admin,
+            server_id,
         })
     }
 
-    /// List Emby library items
+    /// List Emby library items using stored credential
     pub async fn list(
         &self,
+        caller_user_id: &str,
         req: ListRequest,
         instance_name: Option<&str>,
     ) -> Result<ListResponse, synctv_core::provider::ProviderError> {
+        let (host, token, user_id) = self
+            .resolve_credentials(caller_user_id, &req.server_id)
+            .await?;
+
         let list_req = synctv_media_providers::grpc::emby::FsListReq {
-            host: req.host,
-            token: req.token,
+            host,
+            token,
             path: req.path,
             start_index: req.start_index,
             limit: req.limit,
             search_term: req.search_term,
-            user_id: req.user_id,
+            user_id,
         };
 
         let resp = self.provider.fs_list(list_req, instance_name).await?;
 
-        // Convert Item to MediaItem
         let items: Vec<MediaItem> = resp
             .items
             .into_iter()
@@ -88,16 +182,21 @@ impl EmbyApiImpl {
         })
     }
 
-    /// Get Emby user info
+    /// Get Emby user info using stored credential
     pub async fn get_me(
         &self,
+        caller_user_id: &str,
         req: GetMeRequest,
         instance_name: Option<&str>,
     ) -> Result<GetMeResponse, synctv_core::provider::ProviderError> {
+        let (host, token, _) = self
+            .resolve_credentials(caller_user_id, &req.server_id)
+            .await?;
+
         let me_req = synctv_media_providers::grpc::emby::MeReq {
-            host: req.host,
-            token: req.token,
-            user_id: String::new(), // Empty = get current user
+            host,
+            token,
+            user_id: String::new(),
         };
 
         let resp = self.provider.me(me_req, instance_name).await?;
@@ -108,11 +207,31 @@ impl EmbyApiImpl {
         })
     }
 
-    /// Logout
+    /// Logout and delete stored credential
     pub async fn logout(
         &self,
-        _req: LogoutRequest,
+        caller_user_id: &str,
+        req: LogoutRequest,
     ) -> Result<LogoutResponse, synctv_core::provider::ProviderError> {
+        if !req.server_id.is_empty() {
+            if let Some(existing) = self
+                .credential_repo
+                .get_by_provider_and_server(caller_user_id, "emby", &req.server_id)
+                .await
+                .map_err(|e| {
+                    synctv_core::provider::ProviderError::Internal(format!(
+                        "Failed to query credential: {e}"
+                    ))
+                })?
+            {
+                self.credential_repo.delete(&existing.id).await.map_err(|e| {
+                    synctv_core::provider::ProviderError::Internal(format!(
+                        "Failed to delete credential: {e}"
+                    ))
+                })?;
+            }
+        }
+
         Ok(LogoutResponse {
             message: "Logout successful".to_string(),
         })

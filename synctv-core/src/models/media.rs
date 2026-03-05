@@ -147,53 +147,6 @@ impl Media {
         }
     }
 
-    /// Check if this media is a direct URL type (no provider needed for playback)
-    #[must_use]
-    pub fn is_direct(&self) -> bool {
-        self.source_provider == "direct_url" || self.source_provider == "direct"
-    }
-
-    /// Get playback result from `source_config` (for direct type media)
-    ///
-    /// Returns None if this is not a direct type or if `source_config` doesn't contain valid playback data
-    /// Automatically fills in media fields (id, `playlist_id`, `room_id`, name, position) from self
-    #[must_use]
-    pub fn get_playback_result(&self) -> Option<PlaybackResult> {
-        if !self.is_direct() {
-            return None;
-        }
-
-        // Try parsing as source_config structure (HashMap<String, PlaybackInfo> with default_mode and metadata)
-        #[derive(Deserialize)]
-        struct SourceConfigFormat {
-            playback_infos: std::collections::HashMap<String, PlaybackInfo>,
-            default_mode: String,
-            #[serde(default)]
-            metadata: std::collections::HashMap<String, JsonValue>,
-        }
-
-        if let Ok(config) = serde_json::from_value::<SourceConfigFormat>(self.source_config.clone())
-        {
-            return Some(PlaybackResult {
-                id: Some(self.id.clone()),
-                playlist_id: self.playlist_id.clone(),
-                room_id: self.room_id.clone(),
-                name: self.name.clone(),
-                position: self.position,
-                playback_infos: config.playback_infos,
-                default_mode: config.default_mode,
-                metadata: config.metadata,
-            });
-        }
-
-        // Fall back to single PlaybackInfo (legacy format)
-        if let Ok(info) = serde_json::from_value::<PlaybackInfo>(self.source_config.clone()) {
-            return Some(PlaybackResult::from_media_single_mode(self, "direct", info));
-        }
-
-        None
-    }
-
     /// Create a direct URL media with multi-mode playback info
     #[must_use]
     #[allow(clippy::too_many_arguments)]

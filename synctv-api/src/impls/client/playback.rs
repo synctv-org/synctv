@@ -94,71 +94,65 @@ impl ClientApiImpl {
 
         // Generate playback result with provider
         let playback_result = if let Some(media) = playing_media {
-            // Check if media is direct URL or needs provider
-            if media.is_direct() {
-                // For direct media, get playback info from source_config
-                let result = media.get_playback_result().ok_or_else(|| {
-                    ApiError::Internal("Failed to parse direct media playback info".to_string())
-                })?;
+            // All media goes through ProvidersManager to generate playback
+            let providers_manager = self.providers_manager.as_ref().ok_or_else(|| {
+                ApiError::Internal("Providers manager not configured".to_string())
+            })?;
 
-                playback_result_to_proto(&result)
-            } else {
-                // For provider-backed media, use ProvidersManager to generate playback
-                let providers_manager = self.providers_manager.as_ref().ok_or_else(|| {
-                    ApiError::Internal("Providers manager not configured".to_string())
-                })?;
+            let instance_name = media
+                .provider_instance_name
+                .as_deref()
+                .unwrap_or(&media.source_provider);
 
-                let instance_name = media
-                    .provider_instance_name
-                    .as_deref()
-                    .unwrap_or(&media.source_provider);
+            let provider = providers_manager.get(instance_name).await.ok_or_else(|| {
+                ApiError::NotFound(format!("Provider instance '{instance_name}' not found"))
+            })?;
 
-                let provider = providers_manager.get(instance_name).await.ok_or_else(|| {
-                    ApiError::NotFound(format!("Provider instance '{instance_name}' not found"))
-                })?;
-
-                let mut ctx = ProviderContext::new("synctv")
-                    .with_user_id(user_id)
-                    .with_room_id(room_id);
-                if let Some(ref enc) = self.credential_encryption {
-                    ctx = ctx.with_credential_encryption(enc);
-                }
-
-                // Generate playback (caching is internal to providers via ProviderStore)
-                let provider_result = provider
-                    .generate_playback(&ctx, &media.source_config)
-                    .await
-                    .map_err(|e| ApiError::Internal(format!("generate_playback failed: {e}")))?;
-
-                // Build full PlaybackResult from provider result + media fields
-                // Convert provider PlaybackInfo to models PlaybackInfo
-                let mut builder = synctv_core::models::media::PlaybackResult::builder(
-                    media.playlist_id.clone(),
-                    media.room_id.clone(),
-                    media.name.clone(),
-                    media.position,
-                )
-                .id(media.id.clone())
-                .default_mode(provider_result.default_mode.clone());
-
-                // Add all playback modes from provider result
-                for (mode_name, provider_info) in provider_result.playback_infos {
-                    // Convert provider PlaybackInfo to models PlaybackInfo
-                    let info = provider_playback_info_to_model(&provider_info);
-                    builder = builder.add_mode(mode_name, info);
-                }
-
-                // Add metadata from provider result
-                for (key, value) in provider_result.metadata {
-                    builder = builder.add_metadata(key, value);
-                }
-
-                let full_result = builder.build().ok_or_else(|| {
-                    ApiError::Internal("Failed to build PlaybackResult".to_string())
-                })?;
-
-                playback_result_to_proto(&full_result)
+            let mut ctx = ProviderContext::new("synctv")
+                .with_user_id(user_id)
+                .with_room_id(room_id);
+            if let Some(ref enc) = self.credential_encryption {
+                ctx = ctx.with_credential_encryption(enc);
             }
+            if let Some(ref repo) = self.credential_repo {
+                ctx = ctx.with_credential_repo(repo);
+            }
+            if let Some(ref key) = self.signing_key {
+                ctx = ctx.with_signing_key(key);
+            }
+
+            // Generate playback (caching is internal to providers via ProviderStore)
+            let provider_result = provider
+                .generate_playback(&ctx, &media.source_config)
+                .await
+                .map_err(|e| ApiError::Internal(format!("generate_playback failed: {e}")))?;
+
+            // Build full PlaybackResult from provider result + media fields
+            let mut builder = synctv_core::models::media::PlaybackResult::builder(
+                media.playlist_id.clone(),
+                media.room_id.clone(),
+                media.name.clone(),
+                media.position,
+            )
+            .id(media.id.clone())
+            .default_mode(provider_result.default_mode.clone());
+
+            // Add all playback modes from provider result
+            for (mode_name, provider_info) in provider_result.playback_infos {
+                let info = provider_playback_info_to_model(&provider_info);
+                builder = builder.add_mode(mode_name, info);
+            }
+
+            // Add metadata from provider result
+            for (key, value) in provider_result.metadata {
+                builder = builder.add_metadata(key, value);
+            }
+
+            let full_result = builder.build().ok_or_else(|| {
+                ApiError::Internal("Failed to build PlaybackResult".to_string())
+            })?;
+
+            playback_result_to_proto(&full_result)
         } else {
             // No media playing, return empty playback result
             crate::proto::client::PlaybackResult {

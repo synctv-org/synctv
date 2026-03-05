@@ -216,6 +216,12 @@ impl From<synctv_core::provider::ProviderError> for AppError {
                 tracing::error!("Provider encryption required: {}", msg);
                 Self::internal_server_error("Credential encryption not configured")
             }
+            ProviderError::CredentialNotFound(msg) => Self::not_found(msg),
+            ProviderError::CredentialExpired(msg) => Self::unauthorized(msg),
+            ProviderError::Internal(msg) => {
+                tracing::error!("Provider internal error: {}", msg);
+                Self::internal("Provider internal error")
+            }
         }
     }
 }

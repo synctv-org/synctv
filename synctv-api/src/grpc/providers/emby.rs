@@ -28,7 +28,10 @@ pub struct EmbyProviderGrpcService {
 impl EmbyProviderGrpcService {
     #[must_use]
     pub fn new(app_state: Arc<AppState>) -> Self {
-        let api = EmbyApiImpl::new(app_state.emby_provider.clone());
+        let api = EmbyApiImpl::new(
+            app_state.emby_provider.clone(),
+            app_state.user_provider_credential_repository.clone(),
+        );
         Self { app_state, api }
     }
 }
@@ -40,36 +43,38 @@ impl EmbyProviderService for EmbyProviderGrpcService {
         &self,
         request: Request<LoginRequest>,
     ) -> Result<Response<LoginResponse>, Status> {
-        let _user_ctx = request
+        let user_ctx = request
             .extensions()
             .get::<crate::grpc::interceptors::UserContext>()
-            .ok_or_else(|| Status::unauthenticated("Authentication required"))?;
+            .ok_or_else(|| Status::unauthenticated("Authentication required"))?
+            .clone();
         let req = request.into_inner();
         tracing::info!("gRPC Emby login request: host={}", req.host);
         let instance_name = extract_instance_name(&req.instance_name);
 
         self.api
-            .login(req, instance_name.as_deref())
+            .login(&user_ctx.user_id, req, instance_name.as_deref())
             .await
             .map(Response::new)
             .map_err(api_err)
     }
 
     async fn list(&self, request: Request<ListRequest>) -> Result<Response<ListResponse>, Status> {
-        let _user_ctx = request
+        let user_ctx = request
             .extensions()
             .get::<crate::grpc::interceptors::UserContext>()
-            .ok_or_else(|| Status::unauthenticated("Authentication required"))?;
+            .ok_or_else(|| Status::unauthenticated("Authentication required"))?
+            .clone();
         let req = request.into_inner();
         tracing::info!(
-            "gRPC Emby list request: host={}, path={}",
-            req.host,
+            "gRPC Emby list request: server_id={}, path={}",
+            req.server_id,
             req.path
         );
         let instance_name = extract_instance_name(&req.instance_name);
 
         self.api
-            .list(req, instance_name.as_deref())
+            .list(&user_ctx.user_id, req, instance_name.as_deref())
             .await
             .map(Response::new)
             .map_err(api_err)
@@ -79,16 +84,17 @@ impl EmbyProviderService for EmbyProviderGrpcService {
         &self,
         request: Request<GetMeRequest>,
     ) -> Result<Response<GetMeResponse>, Status> {
-        let _user_ctx = request
+        let user_ctx = request
             .extensions()
             .get::<crate::grpc::interceptors::UserContext>()
-            .ok_or_else(|| Status::unauthenticated("Authentication required"))?;
+            .ok_or_else(|| Status::unauthenticated("Authentication required"))?
+            .clone();
         let req = request.into_inner();
-        tracing::info!("gRPC Emby me request: host={}", req.host);
+        tracing::info!("gRPC Emby me request: server_id={}", req.server_id);
         let instance_name = extract_instance_name(&req.instance_name);
 
         self.api
-            .get_me(req, instance_name.as_deref())
+            .get_me(&user_ctx.user_id, req, instance_name.as_deref())
             .await
             .map(Response::new)
             .map_err(api_err)
@@ -98,15 +104,16 @@ impl EmbyProviderService for EmbyProviderGrpcService {
         &self,
         request: Request<LogoutRequest>,
     ) -> Result<Response<LogoutResponse>, Status> {
-        let _user_ctx = request
+        let user_ctx = request
             .extensions()
             .get::<crate::grpc::interceptors::UserContext>()
-            .ok_or_else(|| Status::unauthenticated("Authentication required"))?;
+            .ok_or_else(|| Status::unauthenticated("Authentication required"))?
+            .clone();
         let req = request.into_inner();
         tracing::info!("gRPC Emby logout request");
 
         self.api
-            .logout(req)
+            .logout(&user_ctx.user_id, req)
             .await
             .map(Response::new)
             .map_err(api_err)

@@ -34,7 +34,9 @@ use axum::{
 };
 use std::sync::Arc;
 use synctv_cluster::sync::PublishRequest;
-use synctv_core::provider::{AlistProvider, BilibiliProvider, EmbyProvider};
+use synctv_core::provider::proxy::ProxyServices;
+use synctv_core::service::ProxySigningKey;
+use synctv_core::provider::{AlistProvider, BilibiliProvider, DirectUrlProvider, EmbyProvider};
 use synctv_core::repository::UserProviderCredentialRepository;
 use synctv_core::service::{RemoteProviderManager, RoomService, UserService};
 use synctv_livestream::api::LiveStreamingInfrastructure;
@@ -56,6 +58,7 @@ pub struct RouterConfig {
     pub alist_provider: Arc<AlistProvider>,
     pub bilibili_provider: Arc<BilibiliProvider>,
     pub emby_provider: Arc<EmbyProvider>,
+    pub direct_url_provider: Arc<DirectUrlProvider>,
     pub cluster_manager: Option<Arc<synctv_cluster::sync::ClusterManager>>,
     pub connection_manager: Arc<synctv_cluster::sync::ConnectionManager>,
     pub jwt_service: synctv_core::service::JwtService,
@@ -118,6 +121,12 @@ pub struct AppState {
     pub emby_api: Arc<crate::impls::EmbyApiImpl>,
     /// Per-provider stores for caching and distributed locking (lazy creation)
     pub provider_stores: Arc<synctv_core::provider::store::ProviderStoreRegistry>,
+    /// Registry of proxy-capable providers (looked up by type name in unified proxy handler)
+    pub proxy_provider_registry: Arc<synctv_core::provider::proxy::ProxyProviderRegistry>,
+    /// Services available to providers during proxy resolution (DB access)
+    pub proxy_services: Arc<ProxyServices>,
+    /// HMAC signing key for proxy URL authentication
+    pub proxy_signing_key: Arc<ProxySigningKey>,
 }
 
 impl std::ops::Deref for AppState {
@@ -148,6 +157,11 @@ pub fn create_router_from_config(config: RouterConfig) -> axum::Router {
 
 /// Build `AppState` from `RouterConfig`, creating the shared API implementation layers.
 fn build_app_state(config: RouterConfig) -> AppState {
+    // Derive HMAC signing key for proxy URLs from JWT secret
+    let proxy_signing_key = Arc::new(ProxySigningKey::derive_from(
+        config.config.jwt.secret.as_bytes(),
+    ));
+
     // Create shared security pipeline for post-JWT checks (password version, user status, access token blacklist)
     let security_pipeline = Arc::new(
         synctv_core::service::SecurityPipeline::new(config.user_service.clone())
@@ -172,7 +186,9 @@ fn build_app_state(config: RouterConfig) -> AppState {
         .with_redis_publish_tx(config.redis_publish_tx.clone())
         .with_redis_conn(config.redis_conn.clone())
         .with_rate_limiter(config.rate_limiter.clone())
-        .with_credential_encryption(config.credential_encryption.clone()),
+        .with_credential_encryption(config.credential_encryption.clone())
+        .with_credential_repo(config.user_provider_credential_repository.clone())
+        .with_signing_key(proxy_signing_key.clone()),
     );
 
     // Wire in the resolved STUN URL if the built-in STUN server started successfully
@@ -238,13 +254,19 @@ fn build_app_state(config: RouterConfig) -> AppState {
     )));
 
     // H-2: Create shared provider ApiImpls once at startup (not per-request)
+    let credential_repo = config.user_provider_credential_repository.clone();
     let bilibili_api = Arc::new(crate::impls::BilibiliApiImpl::new(
         config.bilibili_provider.clone(),
+        credential_repo.clone(),
     ));
     let alist_api = Arc::new(crate::impls::AlistApiImpl::new(
         config.alist_provider.clone(),
+        credential_repo.clone(),
     ));
-    let emby_api = Arc::new(crate::impls::EmbyApiImpl::new(config.emby_provider.clone()));
+    let emby_api = Arc::new(crate::impls::EmbyApiImpl::new(
+        config.emby_provider.clone(),
+        credential_repo.clone(),
+    ));
 
     // B1: Create shared GuestTokenValidator with blacklist support
     // This ensures guest tokens are checked against the blacklist (for kicked guests)
@@ -259,6 +281,24 @@ fn build_app_state(config: RouterConfig) -> AppState {
 
     // Create lazy provider store registry (stores created on first access per-provider)
     let provider_stores = Arc::new(synctv_core::provider::store::ProviderStoreRegistry::new(None));
+
+    // Build proxy provider registry (discovered at startup, not hardcoded in handler)
+    let proxy_provider_registry = {
+        let registry = synctv_core::provider::proxy::ProxyProviderRegistry::new();
+        registry.register("bilibili", config.bilibili_provider.clone());
+        registry.register("alist", config.alist_provider.clone());
+        registry.register("emby", config.emby_provider.clone());
+        registry.register("direct_url", config.direct_url_provider.clone());
+        Arc::new(registry)
+    };
+
+    // Create ProxyServices for unified proxy handler (gives providers DB access)
+    let proxy_services = Arc::new(ProxyServices {
+        room_service: config.room_service.clone(),
+        credential_encryption: config.credential_encryption.clone(),
+        credential_repo: credential_repo.clone(),
+        signing_key: proxy_signing_key.clone(),
+    });
 
     AppState {
         router_config: Arc::new(config),
@@ -275,6 +315,9 @@ fn build_app_state(config: RouterConfig) -> AppState {
         alist_api,
         emby_api,
         provider_stores,
+        proxy_provider_registry,
+        proxy_services,
+        proxy_signing_key,
     }
 }
 
@@ -588,16 +631,20 @@ fn register_all_routes(state: AppState) -> Router<AppState> {
         .merge(
             Router::new()
                 .nest("/api/provider", provider_common::register_common_routes())
+                // Unified proxy route for all providers — each provider internally
+                // parses its sub_path (version/m3u8, room_id/media_id, thumbnail, danmu, etc.)
+                .route(
+                    "/api/providers/proxy/{provider_name}/{*sub_path}",
+                    get(providers::unified_proxy_handler)
+                        .options(providers::proxy_options_preflight),
+                )
+                // Provider API routes (no proxy handlers in them)
                 .nest(
                     "/api/providers/bilibili",
                     providers::bilibili::bilibili_routes(),
                 )
                 .nest("/api/providers/alist", providers::alist::alist_routes())
                 .nest("/api/providers/emby", providers::emby::emby_routes())
-                .nest(
-                    "/api/providers/direct_url",
-                    providers::direct_url::direct_url_routes(),
-                )
                 .route_layer(axum_middleware::from_fn_with_state(
                     state.clone(),
                     middleware::read_rate_limit,

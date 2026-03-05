@@ -103,7 +103,7 @@ fn test_qr_status_response_uses_enum() {
     // Create response with enum status
     let response = QrStatusResponse {
         status: QrLoginStatus::Success as i32,
-        cookies: Default::default(),
+        server_id: String::new(),
     };
 
     // Verify the status field accepts enum values
@@ -112,7 +112,7 @@ fn test_qr_status_response_uses_enum() {
     // Create response with different status values
     let expired_response = QrStatusResponse {
         status: QrLoginStatus::Expired as i32,
-        cookies: Default::default(),
+        server_id: String::new(),
     };
     assert_eq!(expired_response.status, QrLoginStatus::Expired as i32);
 }

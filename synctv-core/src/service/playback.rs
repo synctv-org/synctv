@@ -980,27 +980,17 @@ impl PlaybackService {
             None => return Ok(None),
         };
 
-        // For direct URLs, get duration from PlaybackResult metadata.
-        // For provider-backed media, we don't have server-side duration,
-        // so we use the client-reported current_time as the signal.
-        // A negative current_time (-1.0) is used as an explicit "media ended" signal.
-        let duration = if playing_media.is_direct() {
-            if let Some(playback_result) = playing_media.get_playback_result() {
-                playback_result
-                    .metadata
-                    .get("duration")
-                    .and_then(serde_json::Value::as_f64)
-            } else {
-                None
-            }
-        } else {
-            // For provider-backed media, check for explicit end signal
-            // current_time < 0 means client explicitly signals "media ended"
-            if current_time < 0.0 {
-                return self.play_next(room_id, settings).await;
-            }
-            None
-        };
+        // A negative current_time (-1.0) is an explicit "media ended" signal from the client
+        if current_time < 0.0 {
+            return self.play_next(room_id, settings).await;
+        }
+
+        // Try to get duration from source_config metadata (any provider may store it)
+        let duration = playing_media
+            .source_config
+            .get("metadata")
+            .and_then(|m| m.get("duration"))
+            .and_then(serde_json::Value::as_f64);
 
         // Use computed time to account for elapsed wall-clock time when playing
         let effective_time = state.computed_current_time();

@@ -127,12 +127,21 @@ impl AlistProvider {
 /// Alist source configuration
 #[derive(Debug, Deserialize, Serialize)]
 struct AlistSourceConfig {
-    host: String,
-    token: String,
     path: String,
     #[serde(default)]
     password: Option<String>,
     #[serde(default)]
+    provider_instance_name: Option<String>,
+    /// Reference to stored credentials (server-side)
+    credential_ref: super::credential_resolver::CredentialRef,
+}
+
+/// Resolved Alist configuration with credentials ready for API calls.
+struct ResolvedAlistConfig {
+    host: String,
+    token: String,
+    path: String,
+    password: Option<String>,
     provider_instance_name: Option<String>,
 }
 
@@ -147,13 +156,71 @@ impl TryFrom<&Value> for AlistSourceConfig {
 // Note: Default implementation removed as it requires RemoteProviderManager
 
 impl AlistProvider {
+    /// Resolve AlistSourceConfig + credential_ref into ResolvedAlistConfig.
+    async fn resolve_config(
+        &self,
+        ctx: &ProviderContext<'_>,
+        source_config: &Value,
+    ) -> Result<ResolvedAlistConfig, ProviderError> {
+        let config = AlistSourceConfig::try_from(source_config)?;
+
+        let repo = ctx.credential_repo.ok_or_else(|| {
+            ProviderError::Internal(
+                "credential_repo not available in ProviderContext".to_string(),
+            )
+        })?;
+
+        let credential = super::credential_resolver::resolve_credential(
+            repo,
+            "alist",
+            &config.credential_ref,
+        )
+        .await?;
+
+        match credential {
+            crate::models::ProviderCredential::Alist {
+                host,
+                username,
+                password,
+            } => {
+                // Re-login with stored credentials to get a fresh token
+                let login_req = synctv_media_providers::grpc::alist::LoginReq {
+                    host: host.clone(),
+                    username,
+                    password,
+                    hashed: true,
+                };
+                let instance_name = config.provider_instance_name.as_deref();
+                let token = self.provider_login(login_req, instance_name).await?;
+
+                Ok(ResolvedAlistConfig {
+                    host,
+                    token,
+                    path: config.path,
+                    password: config.password,
+                    provider_instance_name: config.provider_instance_name,
+                })
+            }
+            _ => Err(ProviderError::InvalidCredentialType),
+        }
+    }
+
+    /// Internal login for credential resolution
+    async fn provider_login(
+        &self,
+        req: synctv_media_providers::grpc::alist::LoginReq,
+        instance_name: Option<&str>,
+    ) -> Result<String, ProviderError> {
+        self.login(req, instance_name).await
+    }
+
     /// Resolve playback from the Alist API (no caching layer).
     ///
     /// Contains the core API interaction logic, called by `generate_playback`
     /// after cache miss.
     async fn resolve_from_api(
         &self,
-        config: &AlistSourceConfig,
+        config: &ResolvedAlistConfig,
     ) -> Result<PlaybackResult, ProviderError> {
         // Get appropriate client based on instance_name from config
         let client = self
@@ -296,22 +363,7 @@ impl MediaProvider for AlistProvider {
     ) -> Result<(), ProviderError> {
         let config = AlistSourceConfig::try_from(source_config)?;
 
-        // Validate host URL format
-        if config.host.is_empty() {
-            return Err(ProviderError::InvalidConfig(
-                "Alist host must not be empty".to_string(),
-            ));
-        }
-        if !config.host.starts_with("http://") && !config.host.starts_with("https://") {
-            return Err(ProviderError::InvalidConfig(format!(
-                "Alist host must start with http:// or https://, got: {}",
-                config.host
-            )));
-        }
-
-        // Validate path is not empty and doesn't contain path traversal.
-        // Uses the shared validate_path_for_traversal which handles URL-encoded
-        // variants (%2e%2e, %252e%252e), backslash traversal, null bytes, etc.
+        // Validate path is not empty and doesn't contain path traversal
         if config.path.is_empty() {
             return Err(ProviderError::InvalidConfig(
                 "Alist path must not be empty".to_string(),
@@ -321,11 +373,25 @@ impl MediaProvider for AlistProvider {
             ProviderError::InvalidConfig(format!("Alist path must not contain path traversal: {e}"))
         })?;
 
-        // Validate token is non-empty
-        if config.token.is_empty() {
-            return Err(ProviderError::InvalidConfig(
-                "Alist token must not be empty".to_string(),
-            ));
+        // Validate credential_ref exists
+        if let Some(repo) = _ctx.credential_repo {
+            let cred = repo
+                .get_by_provider_and_server(
+                    &config.credential_ref.credential_owner_id,
+                    "alist",
+                    &config.credential_ref.server_id,
+                )
+                .await
+                .map_err(|e| {
+                    ProviderError::Internal(format!("Failed to verify credential reference: {e}"))
+                })?;
+
+            if cred.is_none() {
+                return Err(ProviderError::CredentialNotFound(format!(
+                    "Referenced alist credential not found for server_id '{}'",
+                    config.credential_ref.server_id
+                )));
+            }
         }
 
         Ok(())
@@ -334,26 +400,23 @@ impl MediaProvider for AlistProvider {
     async fn prepare_source_config(
         &self,
         _ctx: &ProviderContext<'_>,
-        source_config: Value,
+        mut source_config: Value,
     ) -> Result<Value, ProviderError> {
-        // Check if source_config contains sensitive credentials (token)
-        let has_sensitive_credentials = source_config
-            .get("token")
-            .and_then(|t| t.as_str())
-            .is_some_and(|s| !s.is_empty());
-
-        // If config has sensitive credentials, encryption is mandatory
-        if has_sensitive_credentials && _ctx.credential_encryption.is_none() {
-            return Err(ProviderError::EncryptionRequired("alist"));
+        // Server-side: ensure credential_owner_id is set to the current user
+        if let Some(user_id) = _ctx.user_id {
+            if let Some(obj) = source_config.as_object_mut() {
+                if let Some(cred_ref) = obj.get_mut("credential_ref") {
+                    if let Some(cred_obj) = cred_ref.as_object_mut() {
+                        cred_obj.insert(
+                            "credential_owner_id".to_string(),
+                            Value::String(user_id.to_string()),
+                        );
+                    }
+                }
+            }
         }
 
-        // Encrypt token in source_config before storage if encryption is available
-        if let Some(enc) = _ctx.credential_encryption {
-            super::crypto_utils::encrypt_field_in_value(&source_config, enc, "token", "Alist")
-        } else {
-            // No sensitive credentials, safe to store without encryption
-            Ok(source_config)
-        }
+        Ok(source_config)
     }
 
     async fn generate_playback(
@@ -361,33 +424,22 @@ impl MediaProvider for AlistProvider {
         _ctx: &ProviderContext<'_>,
         source_config: &Value,
     ) -> Result<PlaybackResult, ProviderError> {
-        // Decrypt token if encryption is configured (handles both encrypted and plaintext)
-        let decrypted_config = if let Some(enc) = _ctx.credential_encryption {
-            super::crypto_utils::decrypt_field_in_value(source_config, enc, "token", "Alist")?
-        } else {
-            source_config.clone()
-        };
-
-        // Parse source_config first
-        let config = AlistSourceConfig::try_from(&decrypted_config)?;
+        // Resolve credentials from DB
+        let resolved = self.resolve_config(_ctx, source_config).await?;
 
         // Re-validate path at request time (defense-in-depth against traversal)
-        validate_path_for_traversal(&config.path).map_err(|e| {
+        validate_path_for_traversal(&resolved.path).map_err(|e| {
             ProviderError::InvalidConfig(format!("Alist path must not contain path traversal: {e}"))
         })?;
 
-        // Build cache key from hashed host+token and path
+        // Build cache key from server_id and path
+        let config = AlistSourceConfig::try_from(source_config)?;
         use sha2::{Digest, Sha256};
-        let host_token = format!("{}:{}", config.host, config.token);
-        let host_hash: String = format!("{:x}", Sha256::digest(host_token.as_bytes()))
+        let path_hash: String = format!("{:x}", Sha256::digest(resolved.path.as_bytes()))
             .chars()
             .take(16)
             .collect();
-        let path_hash: String = format!("{:x}", Sha256::digest(config.path.as_bytes()))
-            .chars()
-            .take(16)
-            .collect();
-        let cache_key = format!("playback:{host_hash}:{path_hash}");
+        let cache_key = format!("playback:{}:{path_hash}", config.credential_ref.server_id);
         let cache_ttl = Duration::from_secs(15 * 60);
 
         let store = _ctx.store.as_ref();
@@ -421,7 +473,7 @@ impl MediaProvider for AlistProvider {
         }
 
         // Call provider API
-        let result = self.resolve_from_api(&config).await?;
+        let mut result = self.resolve_from_api(&resolved).await?;
 
         // Generate version and store result
         let version = nanoid::nanoid!(16);
@@ -436,6 +488,21 @@ impl MediaProvider for AlistProvider {
             let _ = store
                 .set(&format!("v:{version}"), &versioned, cache_ttl)
                 .await;
+        }
+
+        // Sign playback URLs when signing_key and identity are available
+        if let (Some(signing_key), Some(room_id), Some(user_id)) =
+            (_ctx.signing_key, _ctx.room_id, _ctx.user_id)
+        {
+            super::sign_playback_urls(
+                &mut result,
+                "alist",
+                &version,
+                signing_key,
+                room_id,
+                user_id,
+                expires_at,
+            );
         }
 
         Ok(result)
@@ -480,10 +547,18 @@ impl super::proxy::ProviderProxy for AlistProvider {
                     });
                 }
                 "m3u8" => {
+                    // Propagate HMAC signature into M3U8 segment URLs
+                    let proxy_base = if let Some(claims) = ctx.verified_claims {
+                        let signed_query =
+                            ctx.services.signing_key.build_signed_query(claims);
+                        format!("{}/{version}?{signed_query}", ctx.proxy_base)
+                    } else {
+                        format!("{}/{version}", ctx.proxy_base)
+                    };
                     return Ok(super::proxy::ProxyAction::M3u8Rewrite {
                         url: url.clone(),
                         headers: default_info.headers.clone(),
-                        proxy_base: format!("{}/{version}", ctx.proxy_base),
+                        proxy_base,
                     });
                 }
                 _ => {}
@@ -513,7 +588,7 @@ impl DynamicFolder for AlistProvider {
             .as_ref()
             .ok_or_else(|| ProviderError::InvalidConfig("Missing source_config".to_string()))?;
 
-        let base_config = AlistSourceConfig::try_from(config)?;
+        let resolved = self.resolve_config(_ctx, config).await?;
 
         // Validate relative_path BEFORE any path concatenation to prevent traversal attacks
         if let Some(rel) = relative_path {
@@ -524,25 +599,25 @@ impl DynamicFolder for AlistProvider {
         // Construct full path: base_path + relative_path
         let full_path = if let Some(rel) = relative_path {
             if rel.starts_with('/') {
-                format!("{}{}", base_config.path.trim_end_matches('/'), rel)
+                format!("{}{}", resolved.path.trim_end_matches('/'), rel)
             } else {
-                format!("{}/{}", base_config.path.trim_end_matches('/'), rel)
+                format!("{}/{}", resolved.path.trim_end_matches('/'), rel)
             }
         } else {
-            base_config.path.clone()
+            resolved.path.clone()
         };
 
         // Get appropriate client
         let client = self
-            .get_client(base_config.provider_instance_name.as_deref())
+            .get_client(resolved.provider_instance_name.as_deref())
             .await;
 
         // Build list request
         let list_req = synctv_media_providers::grpc::alist::FsListReq {
-            host: base_config.host.clone(),
-            token: base_config.token.clone(),
+            host: resolved.host.clone(),
+            token: resolved.token.clone(),
             path: full_path.clone(),
-            password: base_config.password.clone().unwrap_or_default(),
+            password: resolved.password.clone().unwrap_or_default(),
             page: page as u64,
             per_page: page_size as u64,
             refresh: false,
@@ -613,24 +688,37 @@ impl DynamicFolder for AlistProvider {
         validate_path_for_traversal(relative_path)
             .map_err(|e| ProviderError::InvalidConfig(format!("Invalid relative path: {e}")))?;
 
+        // Parse base config and build helper for NextPlayItem source_configs
+        let config = playlist
+            .source_config
+            .as_ref()
+            .ok_or_else(|| ProviderError::InvalidConfig("Missing source_config".to_string()))?;
+        let base_config = AlistSourceConfig::try_from(config)?;
+
+        let build_next_source_config = |full_path: &str| -> Value {
+            json!({
+                "path": full_path,
+                "password": base_config.password,
+                "provider_instance_name": base_config.provider_instance_name,
+                "credential_ref": {
+                    "credential_owner_id": base_config.credential_ref.credential_owner_id,
+                    "server_id": base_config.credential_ref.server_id,
+                },
+            })
+        };
+
+        let build_full_path = |item_path: &str| -> String {
+            format!("{}{}", base_config.path.trim_end_matches('/'), item_path)
+        };
+
         match play_mode {
-            PlayMode::RepeatOne => {
-                // Repeat current: return None to signal player to replay current
-                Ok(None)
-            }
+            PlayMode::RepeatOne => Ok(None),
             PlayMode::Sequential | PlayMode::RepeatAll => {
-                // Stream through pages to find current item and next, avoiding loading all items.
-                // This uses cursor-based pagination with bounded memory (max PAGE_SIZE items).
                 let parent_path = relative_path.rsplit_once('/').map(|x| x.0).and_then(|s| {
-                    if s.is_empty() {
-                        None
-                    } else {
-                        Some(s)
-                    }
+                    if s.is_empty() { None } else { Some(s) }
                 });
 
                 const PAGE_SIZE: usize = 50;
-
                 let mut found_current = false;
                 let mut current_page = 0;
 
@@ -639,227 +727,88 @@ impl DynamicFolder for AlistProvider {
                         .list_playlist(ctx, playlist, parent_path, current_page, PAGE_SIZE)
                         .await?;
 
-                    if page_items.is_empty() {
-                        break;
-                    }
+                    if page_items.is_empty() { break; }
 
-                    // If we haven't found current item yet, search for it
                     if found_current {
-                        // We've already found current, look for next media in this page
-                        if let Some(next) = page_items
-                            .iter()
-                            .find(|item| item.item_type == ItemType::Media)
-                        {
-                            let config = playlist.source_config.as_ref().ok_or_else(|| {
-                                ProviderError::InvalidConfig("Missing source_config".to_string())
-                            })?;
-                            let base_config = AlistSourceConfig::try_from(config)?;
-
-                            let full_path =
-                                format!("{}{}", base_config.path.trim_end_matches('/'), next.path);
-
-                            let source_config = json!({
-                                "host": base_config.host,
-                                "token": base_config.token,
-                                "path": full_path,
-                                "password": base_config.password,
-                                "provider_instance_name": base_config.provider_instance_name,
-                            });
-
-                            return Ok(Some(
-                                NextPlayItem {
-                                    name: next.name.clone(),
-                                    item_type: next.item_type,
-                                    source_config,
-                                    metadata: json!({
-                                        "size": next.size,
-                                        "thumbnail": next.thumbnail,
-                                        "modified_at": next.modified_at,
-                                    }),
-                                    provider_data: json!({}),
-                                    relative_path: next.path.clone(),
-                                }
-                                .strip_credentials(),
-                            ));
+                        if let Some(next) = page_items.iter().find(|item| item.item_type == ItemType::Media) {
+                            return Ok(Some(NextPlayItem {
+                                name: next.name.clone(),
+                                item_type: next.item_type,
+                                source_config: build_next_source_config(&build_full_path(&next.path)),
+                                metadata: json!({"size": next.size, "thumbnail": next.thumbnail, "modified_at": next.modified_at}),
+                                provider_data: json!({}),
+                                relative_path: next.path.clone(),
+                            }.strip_credentials()));
                         }
-                    } else if let Some(idx) = page_items
-                        .iter()
-                        .position(|item| item.path == relative_path)
-                    {
+                    } else if let Some(idx) = page_items.iter().position(|item| item.path == relative_path) {
                         found_current = true;
-                        // Look for next media item in remaining items of this page
-                        if let Some(next) = page_items
-                            .iter()
-                            .skip(idx + 1)
-                            .find(|item| item.item_type == ItemType::Media)
-                        {
-                            let config = playlist.source_config.as_ref().ok_or_else(|| {
-                                ProviderError::InvalidConfig("Missing source_config".to_string())
-                            })?;
-                            let base_config = AlistSourceConfig::try_from(config)?;
-
-                            let full_path =
-                                format!("{}{}", base_config.path.trim_end_matches('/'), next.path);
-
-                            let source_config = json!({
-                                "host": base_config.host,
-                                "token": base_config.token,
-                                "path": full_path,
-                                "password": base_config.password,
-                                "provider_instance_name": base_config.provider_instance_name,
-                            });
-
-                            return Ok(Some(
-                                NextPlayItem {
-                                    name: next.name.clone(),
-                                    item_type: next.item_type,
-                                    source_config,
-                                    metadata: json!({
-                                        "size": next.size,
-                                        "thumbnail": next.thumbnail,
-                                        "modified_at": next.modified_at,
-                                    }),
-                                    provider_data: json!({}),
-                                    relative_path: next.path.clone(),
-                                }
-                                .strip_credentials(),
-                            ));
+                        if let Some(next) = page_items.iter().skip(idx + 1).find(|item| item.item_type == ItemType::Media) {
+                            return Ok(Some(NextPlayItem {
+                                name: next.name.clone(),
+                                item_type: next.item_type,
+                                source_config: build_next_source_config(&build_full_path(&next.path)),
+                                metadata: json!({"size": next.size, "thumbnail": next.thumbnail, "modified_at": next.modified_at}),
+                                provider_data: json!({}),
+                                relative_path: next.path.clone(),
+                            }.strip_credentials()));
                         }
-                        // Current is at end of page, need to check next page
                     }
 
-                    // Check if this is the last page
-                    if page_items.len() < PAGE_SIZE {
-                        break;
-                    }
+                    if page_items.len() < PAGE_SIZE { break; }
                     current_page += 1;
                 }
 
-                // If we found current but no next, and we're in RepeatAll mode, wrap to first
                 if found_current && play_mode == PlayMode::RepeatAll {
-                    // Fetch first page again to get first item
-                    let first_page = self
-                        .list_playlist(ctx, playlist, parent_path, 0, PAGE_SIZE)
-                        .await?;
-
-                    if let Some(first) = first_page
-                        .iter()
-                        .find(|item| item.item_type == ItemType::Media)
-                    {
-                        let config = playlist.source_config.as_ref().ok_or_else(|| {
-                            ProviderError::InvalidConfig("Missing source_config".to_string())
-                        })?;
-                        let base_config = AlistSourceConfig::try_from(config)?;
-
-                        let full_path =
-                            format!("{}{}", base_config.path.trim_end_matches('/'), first.path);
-
-                        let source_config = json!({
-                            "host": base_config.host,
-                            "token": base_config.token,
-                            "path": full_path,
-                            "password": base_config.password,
-                            "provider_instance_name": base_config.provider_instance_name,
-                        });
-
-                        return Ok(Some(
-                            NextPlayItem {
-                                name: first.name.clone(),
-                                item_type: first.item_type,
-                                source_config,
-                                metadata: json!({
-                                    "size": first.size,
-                                    "thumbnail": first.thumbnail,
-                                    "modified_at": first.modified_at,
-                                }),
-                                provider_data: json!({}),
-                                relative_path: first.path.clone(),
-                            }
-                            .strip_credentials(),
-                        ));
+                    let parent_path = relative_path.rsplit_once('/').map(|x| x.0).and_then(|s| {
+                        if s.is_empty() { None } else { Some(s) }
+                    });
+                    let first_page = self.list_playlist(ctx, playlist, parent_path, 0, PAGE_SIZE).await?;
+                    if let Some(first) = first_page.iter().find(|item| item.item_type == ItemType::Media) {
+                        return Ok(Some(NextPlayItem {
+                            name: first.name.clone(),
+                            item_type: first.item_type,
+                            source_config: build_next_source_config(&build_full_path(&first.path)),
+                            metadata: json!({"size": first.size, "thumbnail": first.thumbnail, "modified_at": first.modified_at}),
+                            provider_data: json!({}),
+                            relative_path: first.path.clone(),
+                        }.strip_credentials()));
                     }
                 }
 
-                // No next item found
                 Ok(None)
             }
             PlayMode::Shuffle => {
-                // Get video items and pick random, using paginated fetching.
-                // Cap at MAX_ITEMS (4 pages of 50) to prevent memory exhaustion.
-                // This is acceptable for shuffle mode which doesn't need exact ordering.
                 let parent_path = relative_path.rsplit_once('/').map(|x| x.0).and_then(|s| {
-                    if s.is_empty() {
-                        None
-                    } else {
-                        Some(s)
-                    }
+                    if s.is_empty() { None } else { Some(s) }
                 });
 
                 const PAGE_SIZE: usize = 50;
-                const MAX_ITEMS: usize = 200; // 4 pages
+                const MAX_ITEMS: usize = 200;
                 let mut all_items = Vec::with_capacity(MAX_ITEMS);
                 let mut page = 0;
                 loop {
-                    let page_items = self
-                        .list_playlist(ctx, playlist, parent_path, page, PAGE_SIZE)
-                        .await?;
+                    let page_items = self.list_playlist(ctx, playlist, parent_path, page, PAGE_SIZE).await?;
                     let is_last_page = page_items.len() < PAGE_SIZE;
                     all_items.extend(page_items);
-                    if is_last_page || all_items.len() >= MAX_ITEMS {
-                        break;
-                    }
+                    if is_last_page || all_items.len() >= MAX_ITEMS { break; }
                     page += 1;
                 }
-                // Truncate to max items if needed
                 all_items.truncate(MAX_ITEMS);
-                let items = all_items;
 
-                let videos: Vec<_> = items
-                    .iter()
-                    .filter(|item| item.item_type == ItemType::Media)
-                    .collect();
-
-                if videos.is_empty() {
-                    return Ok(None);
-                }
+                let videos: Vec<_> = all_items.iter().filter(|item| item.item_type == ItemType::Media).collect();
+                if videos.is_empty() { return Ok(None); }
 
                 let random_idx = rand::random_range(0..videos.len());
                 let random_item = videos[random_idx];
 
-                let config = playlist.source_config.as_ref().ok_or_else(|| {
-                    ProviderError::InvalidConfig("Missing source_config".to_string())
-                })?;
-                let base_config = AlistSourceConfig::try_from(config)?;
-
-                let full_path = format!(
-                    "{}{}",
-                    base_config.path.trim_end_matches('/'),
-                    random_item.path
-                );
-
-                let source_config = json!({
-                    "host": base_config.host,
-                    "token": base_config.token,
-                    "path": full_path,
-                    "password": base_config.password,
-                    "provider_instance_name": base_config.provider_instance_name,
-                });
-
-                Ok(Some(
-                    NextPlayItem {
-                        name: random_item.name.clone(),
-                        item_type: random_item.item_type,
-                        source_config,
-                        metadata: json!({
-                            "size": random_item.size,
-                            "thumbnail": random_item.thumbnail,
-                            "modified_at": random_item.modified_at,
-                        }),
-                        provider_data: json!({}),
-                        relative_path: random_item.path.clone(),
-                    }
-                    .strip_credentials(),
-                ))
+                Ok(Some(NextPlayItem {
+                    name: random_item.name.clone(),
+                    item_type: random_item.item_type,
+                    source_config: build_next_source_config(&build_full_path(&random_item.path)),
+                    metadata: json!({"size": random_item.size, "thumbnail": random_item.thumbnail, "modified_at": random_item.modified_at}),
+                    provider_data: json!({}),
+                    relative_path: random_item.path.clone(),
+                }.strip_credentials()))
             }
         }
     }
@@ -879,20 +828,11 @@ mod tests {
         assert_eq!(AlistProvider::detect_format("video.unknown"), "video");
     }
 
+    /// Validate Alist source config: checks path and credential_ref fields.
+    /// Host/token are no longer in source_config (resolved from credential_ref at runtime).
     fn validate_alist(config: Value) -> Result<(), ProviderError> {
         let config = AlistSourceConfig::try_from(&config)?;
 
-        if config.host.is_empty() {
-            return Err(ProviderError::InvalidConfig(
-                "Alist host must not be empty".to_string(),
-            ));
-        }
-        if !config.host.starts_with("http://") && !config.host.starts_with("https://") {
-            return Err(ProviderError::InvalidConfig(format!(
-                "Alist host must start with http:// or https://, got: {}",
-                config.host
-            )));
-        }
         if config.path.is_empty() {
             return Err(ProviderError::InvalidConfig(
                 "Alist path must not be empty".to_string(),
@@ -902,9 +842,14 @@ mod tests {
         validate_path_for_traversal(&config.path).map_err(|e| {
             ProviderError::InvalidConfig(format!("Alist path must not contain path traversal: {e}"))
         })?;
-        if config.token.is_empty() {
+        if config.credential_ref.credential_owner_id.is_empty() {
             return Err(ProviderError::InvalidConfig(
-                "Alist token must not be empty".to_string(),
+                "credential_ref.credential_owner_id must not be empty".to_string(),
+            ));
+        }
+        if config.credential_ref.server_id.is_empty() {
+            return Err(ProviderError::InvalidConfig(
+                "credential_ref.server_id must not be empty".to_string(),
             ));
         }
         Ok(())
@@ -913,49 +858,36 @@ mod tests {
     #[test]
     fn test_valid_alist_config() {
         let config = json!({
-            "host": "https://alist.example.com",
-            "token": "my-token",
-            "path": "/media/movies/test.mp4"
+            "path": "/media/movies/test.mp4",
+            "credential_ref": {
+                "credential_owner_id": "user123",
+                "server_id": "test-server"
+            }
         });
         assert!(validate_alist(config).is_ok());
     }
 
     #[test]
-    fn test_alist_config_missing_host() {
+    fn test_alist_config_with_provider_instance_name() {
         let config = json!({
-            "host": "",
-            "token": "my-token",
-            "path": "/media/movies"
+            "path": "/media/movies/test.mp4",
+            "provider_instance_name": "remote-alist-1",
+            "credential_ref": {
+                "credential_owner_id": "user123",
+                "server_id": "test-server"
+            }
         });
-        assert!(validate_alist(config).is_err());
-    }
-
-    #[test]
-    fn test_alist_config_invalid_host_scheme() {
-        let config = json!({
-            "host": "ftp://alist.example.com",
-            "token": "my-token",
-            "path": "/media/movies"
-        });
-        assert!(validate_alist(config).is_err());
+        assert!(validate_alist(config).is_ok());
     }
 
     #[test]
     fn test_alist_config_path_traversal() {
         let config = json!({
-            "host": "https://alist.example.com",
-            "token": "my-token",
-            "path": "/media/../../../etc/passwd"
-        });
-        assert!(validate_alist(config).is_err());
-    }
-
-    #[test]
-    fn test_alist_config_empty_token() {
-        let config = json!({
-            "host": "https://alist.example.com",
-            "token": "",
-            "path": "/media/movies"
+            "path": "/media/../../../etc/passwd",
+            "credential_ref": {
+                "credential_owner_id": "user123",
+                "server_id": "test-server"
+            }
         });
         assert!(validate_alist(config).is_err());
     }
@@ -963,11 +895,37 @@ mod tests {
     #[test]
     fn test_alist_config_empty_path() {
         let config = json!({
-            "host": "https://alist.example.com",
-            "token": "my-token",
-            "path": ""
+            "path": "",
+            "credential_ref": {
+                "credential_owner_id": "user123",
+                "server_id": "test-server"
+            }
         });
         assert!(validate_alist(config).is_err());
+    }
+
+    #[test]
+    fn test_alist_config_missing_credential_ref() {
+        let config = json!({
+            "path": "/media/movies/test.mp4"
+        });
+        assert!(validate_alist(config).is_err());
+    }
+
+    #[test]
+    fn test_alist_credential_ref_parsing() {
+        let config = json!({
+            "path": "/media/movies",
+            "credential_ref": {
+                "credential_owner_id": "owner-abc",
+                "server_id": "srv-xyz"
+            }
+        });
+        let parsed = AlistSourceConfig::try_from(&config).unwrap();
+        assert_eq!(parsed.credential_ref.credential_owner_id, "owner-abc");
+        assert_eq!(parsed.credential_ref.server_id, "srv-xyz");
+        assert_eq!(parsed.path, "/media/movies");
+        assert!(parsed.provider_instance_name.is_none());
     }
 
     // ========== Path Traversal Validation Tests ==========
@@ -1076,65 +1034,21 @@ mod tests {
         // Memory usage: max 200 items vs 1000 items (80% reduction)
     }
 
-    // ========== Credential Encryption Tests ==========
+    // ========== Credential Ref Tests ==========
 
     #[test]
-    fn test_prepare_source_config_requires_encryption_for_token() {
-        // Test that prepare_source_config rejects token when encryption is not configured
-        // This simulates the security requirement: sensitive providers MUST use encryption
-
-        // Source config with token (sensitive)
-        let config_with_token = json!({
-            "host": "https://alist.example.com",
-            "token": "sensitive_token_value",
-            "path": "/media/movies/test.mp4"
+    fn test_alist_config_with_password() {
+        // Alist supports optional per-directory password
+        let config = json!({
+            "path": "/media/movies/test.mp4",
+            "password": "dir-password",
+            "credential_ref": {
+                "credential_owner_id": "user123",
+                "server_id": "test-server"
+            }
         });
-
-        // Source config with empty token (non-sensitive)
-        let config_without_token = json!({
-            "host": "https://alist.example.com",
-            "token": "",
-            "path": "/media/movies/test.mp4"
-        });
-
-        // Helper function to check if config has sensitive credentials
-        fn has_sensitive_credentials(config: &Value) -> bool {
-            config
-                .get("token")
-                .and_then(|t| t.as_str())
-                .is_some_and(|s| !s.is_empty())
-        }
-
-        // Verify detection logic
-        assert!(has_sensitive_credentials(&config_with_token));
-        assert!(!has_sensitive_credentials(&config_without_token));
-
-        // The actual prepare_source_config implementation should:
-        // 1. Check if credential_encryption is Some
-        // 2. If None and config has sensitive credentials, return EncryptionRequired error
-        // 3. If Some or no sensitive credentials, proceed normally
-    }
-
-    #[test]
-    fn test_prepare_source_config_allows_empty_token_without_encryption() {
-        // Source config with empty token should be allowed even without encryption
-        // (public Alist servers that don't require authentication)
-        let config_without_token = json!({
-            "host": "https://alist.example.com",
-            "token": "",
-            "path": "/media/movies/test.mp4"
-        });
-
-        // Helper function to check if config has sensitive credentials
-        fn has_sensitive_credentials(config: &Value) -> bool {
-            config
-                .get("token")
-                .and_then(|t| t.as_str())
-                .is_some_and(|s| !s.is_empty())
-        }
-
-        // Should be allowed without encryption since no sensitive data
-        assert!(!has_sensitive_credentials(&config_without_token));
+        let parsed = AlistSourceConfig::try_from(&config).unwrap();
+        assert_eq!(parsed.password, Some("dir-password".to_string()));
     }
 
     // ========== B6: Alist URL-encoded path traversal ==========
@@ -1172,9 +1086,11 @@ mod tests {
 
         // This config uses URL-encoded traversal: %2e%2e/etc/passwd
         let config = json!({
-            "host": "https://alist.example.com",
-            "token": "my-token",
-            "path": "/media/%2e%2e/etc/passwd"
+            "path": "/media/%2e%2e/etc/passwd",
+            "credential_ref": {
+                "credential_owner_id": "user123",
+                "server_id": "test-server"
+            }
         });
 
         // After the fix, the config should be rejected

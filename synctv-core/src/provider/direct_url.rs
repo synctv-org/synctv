@@ -3,6 +3,7 @@
 //! Provides direct playback for HTTP(S) URLs
 
 use super::{
+    proxy::{ProxyAction, ProxyRequestContext, ProviderProxy},
     store::{ProviderStoreExt, VersionedPlayback},
     MediaProvider, PlaybackInfo, PlaybackResult, ProviderContext, ProviderError,
 };
@@ -122,10 +123,66 @@ impl TryFrom<&Value> for DirectUrlSourceConfig {
     }
 }
 
+// ProviderProxy implementation for DirectUrl
+//
+// Supported sub_paths (same pattern as other providers):
+// - `{version}/stream` — proxy the video stream
+// - `{version}/m3u8` — proxy M3U8 with URL rewriting
+#[async_trait]
+impl ProviderProxy for DirectUrlProvider {
+    async fn resolve_proxy(
+        &self,
+        ctx: &ProxyRequestContext<'_>,
+    ) -> Result<ProxyAction, ProviderError> {
+        let sub_path = ctx.sub_path;
+
+        if let Some((version, rest)) = sub_path.split_once('/') {
+            let versioned = super::proxy::lookup_versioned(ctx.store, version).await?;
+            let default_info = versioned
+                .result
+                .playback_infos
+                .get(&versioned.result.default_mode)
+                .ok_or(ProviderError::NotFound)?;
+            let url = default_info.urls.first().ok_or(ProviderError::NotFound)?;
+
+            match rest {
+                "stream" => {
+                    return Ok(ProxyAction::FetchAndForward {
+                        url: url.clone(),
+                        headers: default_info.headers.clone(),
+                    });
+                }
+                "m3u8" => {
+                    // Propagate HMAC signature into M3U8 segment URLs
+                    let proxy_base = if let Some(claims) = ctx.verified_claims {
+                        let signed_query =
+                            ctx.services.signing_key.build_signed_query(claims);
+                        format!("{}/{version}?{signed_query}", ctx.proxy_base)
+                    } else {
+                        format!("{}/{version}", ctx.proxy_base)
+                    };
+                    return Ok(ProxyAction::M3u8Rewrite {
+                        url: url.clone(),
+                        headers: default_info.headers.clone(),
+                        proxy_base,
+                    });
+                }
+                _ => {}
+            }
+        }
+
+        Err(ProviderError::NotFound)
+    }
+}
+
 #[async_trait]
 impl MediaProvider for DirectUrlProvider {
     fn name(&self) -> &'static str {
         "direct_url"
+    }
+
+    fn as_provider_proxy(&self) -> Option<&dyn ProviderProxy> {
+        Some(self)
     }
 
     async fn validate_source_config(
@@ -213,7 +270,7 @@ impl MediaProvider for DirectUrlProvider {
             metadata.insert("filename".to_string(), json!(filename));
         }
 
-        let result = PlaybackResult {
+        let mut result = PlaybackResult {
             playback_infos,
             default_mode: "direct".to_string(),
             metadata,
@@ -232,6 +289,21 @@ impl MediaProvider for DirectUrlProvider {
             let _ = store
                 .set(&format!("v:{version}"), &versioned, cache_ttl)
                 .await;
+        }
+
+        // Sign playback URLs when signing_key and identity are available
+        if let (Some(signing_key), Some(room_id), Some(user_id)) =
+            (_ctx.signing_key, _ctx.room_id, _ctx.user_id)
+        {
+            super::sign_playback_urls(
+                &mut result,
+                "direct_url",
+                &version,
+                signing_key,
+                room_id,
+                user_id,
+                expires_at,
+            );
         }
 
         Ok(result)

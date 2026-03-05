@@ -6,6 +6,8 @@ use std::sync::Arc;
 
 use sqlx::PgPool;
 
+use crate::repository::UserProviderCredentialRepository;
+use crate::service::proxy_signature::ProxySigningKey;
 use crate::service::CredentialEncryption;
 
 /// Provider execution context
@@ -37,6 +39,12 @@ pub struct ProviderContext<'a> {
 
     /// Provider store for caching and distributed locking (optional)
     pub store: Option<Arc<dyn super::store::ProviderStore>>,
+
+    /// User provider credential repository for resolving stored credentials (optional)
+    pub credential_repo: Option<&'a UserProviderCredentialRepository>,
+
+    /// Proxy signing key for generating HMAC-signed proxy URLs (optional)
+    pub signing_key: Option<&'a ProxySigningKey>,
 }
 
 impl<'a> ProviderContext<'a> {
@@ -52,6 +60,8 @@ impl<'a> ProviderContext<'a> {
             redis: None,
             credential_encryption: None,
             store: None,
+            credential_repo: None,
+            signing_key: None,
         }
     }
 
@@ -101,6 +111,20 @@ impl<'a> ProviderContext<'a> {
     #[must_use]
     pub fn with_store(mut self, store: Arc<dyn super::store::ProviderStore>) -> Self {
         self.store = Some(store);
+        self
+    }
+
+    /// Set user provider credential repository for resolving stored credentials
+    #[must_use]
+    pub fn with_credential_repo(mut self, repo: &'a UserProviderCredentialRepository) -> Self {
+        self.credential_repo = Some(repo);
+        self
+    }
+
+    /// Set proxy signing key for generating HMAC-signed proxy URLs
+    #[must_use]
+    pub fn with_signing_key(mut self, key: &'a ProxySigningKey) -> Self {
+        self.signing_key = Some(key);
         self
     }
 

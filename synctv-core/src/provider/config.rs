@@ -5,6 +5,8 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
+use super::credential_resolver::CredentialRef;
+
 /// Bilibili Provider Configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BilibiliSourceConfig {
@@ -30,12 +32,16 @@ pub struct BilibiliSourceConfig {
     /// Whether to use shared cache
     #[serde(default)]
     pub shared: bool,
+
+    /// Reference to stored credentials (server-side)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub credential_ref: Option<CredentialRef>,
 }
 
 /// Alist Provider Configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AlistSourceConfig {
-    /// File path (format: "{`server_id}/{path`}")
+    /// File path (format: "{`server_id/{path`}")
     pub path: String,
 
     /// Folder password (optional)
@@ -45,6 +51,10 @@ pub struct AlistSourceConfig {
     /// Whether to use proxy mode (default: true)
     #[serde(default = "default_true")]
     pub prefer_proxy: bool,
+
+    /// Reference to stored credentials (server-side)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub credential_ref: Option<CredentialRef>,
 }
 
 /// Emby Provider Configuration
@@ -64,6 +74,10 @@ pub struct EmbySourceConfig {
     /// Whether to use proxy mode
     #[serde(default)]
     pub prefer_proxy: bool,
+
+    /// Reference to stored credentials (server-side)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub credential_ref: Option<CredentialRef>,
 }
 
 /// Direct URL Provider Configuration

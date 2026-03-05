@@ -28,7 +28,10 @@ pub struct BilibiliProviderGrpcService {
 impl BilibiliProviderGrpcService {
     #[must_use]
     pub fn new(app_state: Arc<AppState>) -> Self {
-        let api = BilibiliApiImpl::new(app_state.bilibili_provider.clone());
+        let api = BilibiliApiImpl::new(
+            app_state.bilibili_provider.clone(),
+            app_state.user_provider_credential_repository.clone(),
+        );
         Self { api }
     }
 }
@@ -40,16 +43,17 @@ impl BilibiliProviderService for BilibiliProviderGrpcService {
         &self,
         request: Request<ParseRequest>,
     ) -> Result<Response<ParseResponse>, Status> {
-        let _user_ctx = request
+        let user_ctx = request
             .extensions()
             .get::<crate::grpc::interceptors::UserContext>()
-            .ok_or_else(|| Status::unauthenticated("Authentication required"))?;
+            .ok_or_else(|| Status::unauthenticated("Authentication required"))?
+            .clone();
         let req = request.into_inner();
         tracing::info!("gRPC Bilibili parse request: url={}", req.url);
         let instance_name = extract_instance_name(&req.instance_name);
 
         self.api
-            .parse(req, instance_name.as_deref())
+            .parse(&user_ctx.user_id, req, instance_name.as_deref())
             .await
             .map(Response::new)
             .map_err(api_err)
@@ -78,16 +82,17 @@ impl BilibiliProviderService for BilibiliProviderGrpcService {
         &self,
         request: Request<CheckQrRequest>,
     ) -> Result<Response<QrStatusResponse>, Status> {
-        let _user_ctx = request
+        let user_ctx = request
             .extensions()
             .get::<crate::grpc::interceptors::UserContext>()
-            .ok_or_else(|| Status::unauthenticated("Authentication required"))?;
+            .ok_or_else(|| Status::unauthenticated("Authentication required"))?
+            .clone();
         let req = request.into_inner();
         tracing::info!("gRPC Bilibili check QR: {}", req.key);
         let instance_name = extract_instance_name(&req.instance_name);
 
         self.api
-            .check_qr(req, instance_name.as_deref())
+            .check_qr(&user_ctx.user_id, req, instance_name.as_deref())
             .await
             .map(Response::new)
             .map_err(api_err)
@@ -140,10 +145,11 @@ impl BilibiliProviderService for BilibiliProviderGrpcService {
         &self,
         request: Request<LoginSmsRequest>,
     ) -> Result<Response<LoginSmsResponse>, Status> {
-        let _user_ctx = request
+        let user_ctx = request
             .extensions()
             .get::<crate::grpc::interceptors::UserContext>()
-            .ok_or_else(|| Status::unauthenticated("Authentication required"))?;
+            .ok_or_else(|| Status::unauthenticated("Authentication required"))?
+            .clone();
         let req = request.into_inner();
         let masked_phone = if req.phone.len() >= 4 {
             format!("****{}", &req.phone[req.phone.len() - 4..])
@@ -154,7 +160,7 @@ impl BilibiliProviderService for BilibiliProviderGrpcService {
         let instance_name = extract_instance_name(&req.instance_name);
 
         self.api
-            .login_sms(req, instance_name.as_deref())
+            .login_sms(&user_ctx.user_id, req, instance_name.as_deref())
             .await
             .map(Response::new)
             .map_err(api_err)
@@ -164,16 +170,17 @@ impl BilibiliProviderService for BilibiliProviderGrpcService {
         &self,
         request: Request<UserInfoRequest>,
     ) -> Result<Response<UserInfoResponse>, Status> {
-        let _user_ctx = request
+        let user_ctx = request
             .extensions()
             .get::<crate::grpc::interceptors::UserContext>()
-            .ok_or_else(|| Status::unauthenticated("Authentication required"))?;
+            .ok_or_else(|| Status::unauthenticated("Authentication required"))?
+            .clone();
         let req = request.into_inner();
         tracing::info!("gRPC Bilibili user info request");
         let instance_name = extract_instance_name(&req.instance_name);
 
         self.api
-            .get_user_info(req, instance_name.as_deref())
+            .get_user_info(&user_ctx.user_id, req, instance_name.as_deref())
             .await
             .map(Response::new)
             .map_err(api_err)
@@ -183,15 +190,16 @@ impl BilibiliProviderService for BilibiliProviderGrpcService {
         &self,
         request: Request<LogoutRequest>,
     ) -> Result<Response<LogoutResponse>, Status> {
-        let _user_ctx = request
+        let user_ctx = request
             .extensions()
             .get::<crate::grpc::interceptors::UserContext>()
-            .ok_or_else(|| Status::unauthenticated("Authentication required"))?;
+            .ok_or_else(|| Status::unauthenticated("Authentication required"))?
+            .clone();
         let req = request.into_inner();
         tracing::info!("gRPC Bilibili logout request");
 
         self.api
-            .logout(req)
+            .logout(&user_ctx.user_id, req)
             .await
             .map(Response::new)
             .map_err(api_err)

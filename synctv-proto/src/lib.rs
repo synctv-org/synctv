@@ -598,13 +598,13 @@ mod tests {
     fn roundtrip_bilibili_parse_request() {
         let req = crate::providers::bilibili::ParseRequest {
             url: "https://bilibili.com/video/BV123".into(),
-            cookies: std::iter::once(("SESSDATA".into(), "abc123".into())).collect(),
+            server_id: "bilibili".into(),
             instance_name: "bilibili_main".into(),
         };
         let bytes = req.encode_to_vec();
         let decoded = crate::providers::bilibili::ParseRequest::decode(bytes.as_slice()).unwrap();
         assert_eq!(decoded.url, req.url);
-        assert_eq!(decoded.cookies.get("SESSDATA"), Some(&"abc123".to_string()));
+        assert_eq!(decoded.server_id, "bilibili");
     }
 
     #[test]

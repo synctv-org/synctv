@@ -8,7 +8,9 @@ use crate::proto::providers::alist::{
     LogoutRequest, LogoutResponse,
 };
 use std::sync::Arc;
+use synctv_core::models::{ProviderCredential, UserProviderCredential};
 use synctv_core::provider::AlistProvider;
+use synctv_core::repository::UserProviderCredentialRepository;
 
 /// Alist API implementation
 ///
@@ -17,47 +19,174 @@ use synctv_core::provider::AlistProvider;
 #[derive(Clone)]
 pub struct AlistApiImpl {
     provider: Arc<AlistProvider>,
+    credential_repo: Arc<UserProviderCredentialRepository>,
 }
 
 impl AlistApiImpl {
     #[must_use]
-    pub const fn new(provider: Arc<AlistProvider>) -> Self {
-        Self { provider }
+    pub fn new(
+        provider: Arc<AlistProvider>,
+        credential_repo: Arc<UserProviderCredentialRepository>,
+    ) -> Self {
+        Self {
+            provider,
+            credential_repo,
+        }
     }
 
-    /// Login to Alist
+    /// Resolve Alist credentials from DB using server_id.
+    ///
+    /// Re-authenticates with stored username/password to obtain a fresh API token.
+    async fn resolve_credentials(
+        &self,
+        caller_user_id: &str,
+        server_id: &str,
+    ) -> Result<(String, String, Option<String>), synctv_core::provider::ProviderError> {
+        let cred = self
+            .credential_repo
+            .get_by_provider_and_server(caller_user_id, "alist", server_id)
+            .await
+            .map_err(|e| {
+                synctv_core::provider::ProviderError::Internal(format!(
+                    "Failed to query alist credential: {e}"
+                ))
+            })?
+            .ok_or(synctv_core::provider::ProviderError::CredentialNotFound(
+                format!("No alist credential found for server_id '{server_id}'"),
+            ))?;
+
+        if cred.is_expired() {
+            return Err(synctv_core::provider::ProviderError::CredentialExpired(
+                "Alist credential has expired".to_string(),
+            ));
+        }
+
+        let instance_name = cred.provider_instance_name.clone();
+
+        match cred.get_credential() {
+            Ok(ProviderCredential::Alist {
+                host,
+                username,
+                password,
+            }) => {
+                // Re-login with stored credentials to get a fresh token
+                let login_req = synctv_media_providers::grpc::alist::LoginReq {
+                    host: host.clone(),
+                    username,
+                    password,
+                    hashed: true,
+                };
+
+                let token = self
+                    .provider
+                    .login(login_req, instance_name.as_deref())
+                    .await?;
+
+                Ok((host, token, instance_name))
+            }
+            Ok(_) => Err(synctv_core::provider::ProviderError::InvalidCredentialType),
+            Err(e) => Err(synctv_core::provider::ProviderError::Internal(format!(
+                "Failed to parse alist credential: {e}"
+            ))),
+        }
+    }
+
+    /// Login to Alist and persist credentials
     pub async fn login(
         &self,
+        caller_user_id: &str,
         req: LoginRequest,
         instance_name: Option<&str>,
     ) -> Result<LoginResponse, synctv_core::provider::ProviderError> {
+        let host = req.host.clone();
+
         let (password, hashed) = if req.hashed_password.is_empty() {
-            (req.password, false)
+            (req.password.clone(), false)
         } else {
-            (req.hashed_password, true)
+            (req.hashed_password.clone(), true)
         };
 
         let login_req = synctv_media_providers::grpc::alist::LoginReq {
             host: req.host,
-            username: req.username,
-            password,
+            username: req.username.clone(),
+            password: password.clone(),
             hashed,
         };
 
         let token = self.provider.login(login_req, instance_name).await?;
 
-        Ok(LoginResponse { token })
+        // Generate server_id and persist credential
+        let server_id = UserProviderCredential::generate_server_id(&host);
+
+        // Store with hashed password for re-authentication
+        let stored_password = if hashed {
+            password
+        } else {
+            use sha2::{Digest, Sha256};
+            format!(
+                "{:x}",
+                Sha256::digest(
+                    format!("{}-https://github.com/AlistGo/alist", password).as_bytes()
+                )
+            )
+        };
+
+        let credential_data =
+            ProviderCredential::alist(host, req.username, stored_password);
+
+        // Upsert: delete existing then create
+        if let Some(existing) = self
+            .credential_repo
+            .get_by_provider_and_server(caller_user_id, "alist", &server_id)
+            .await
+            .ok()
+            .flatten()
+        {
+            let _ = self.credential_repo.delete(&existing.id).await;
+        }
+
+        let credential = UserProviderCredential {
+            id: nanoid::nanoid!(),
+            user_id: caller_user_id.to_string(),
+            provider: "alist".to_string(),
+            server_id: server_id.clone(),
+            provider_instance_name: instance_name.map(ToString::to_string),
+            credential_data: serde_json::to_value(&credential_data).map_err(|e| {
+                synctv_core::provider::ProviderError::Internal(format!(
+                    "Failed to serialize credential: {e}"
+                ))
+            })?,
+            expires_at: None,
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+        };
+
+        self.credential_repo.create(&credential).await.map_err(|e| {
+            synctv_core::provider::ProviderError::Internal(format!(
+                "Failed to persist alist credential: {e}"
+            ))
+        })?;
+
+        Ok(LoginResponse {
+            token,
+            server_id,
+        })
     }
 
-    /// List Alist directory
+    /// List Alist directory using stored credential
     pub async fn list(
         &self,
+        caller_user_id: &str,
         req: ListRequest,
         instance_name: Option<&str>,
     ) -> Result<ListResponse, synctv_core::provider::ProviderError> {
+        let (host, token, _) = self
+            .resolve_credentials(caller_user_id, &req.server_id)
+            .await?;
+
         let list_req = synctv_media_providers::grpc::alist::FsListReq {
-            host: req.host,
-            token: req.token,
+            host,
+            token,
             path: req.path,
             password: req.password,
             page: req.page,
@@ -87,16 +216,18 @@ impl AlistApiImpl {
         })
     }
 
-    /// Get Alist user info
+    /// Get Alist user info using stored credential
     pub async fn get_me(
         &self,
+        caller_user_id: &str,
         req: GetMeRequest,
         instance_name: Option<&str>,
     ) -> Result<GetMeResponse, synctv_core::provider::ProviderError> {
-        let me_req = synctv_media_providers::grpc::alist::MeReq {
-            host: req.host,
-            token: req.token,
-        };
+        let (host, token, _) = self
+            .resolve_credentials(caller_user_id, &req.server_id)
+            .await?;
+
+        let me_req = synctv_media_providers::grpc::alist::MeReq { host, token };
 
         let resp = self.provider.me(me_req, instance_name).await?;
 
@@ -106,11 +237,31 @@ impl AlistApiImpl {
         })
     }
 
-    /// Logout
+    /// Logout and delete stored credential
     pub async fn logout(
         &self,
-        _req: LogoutRequest,
+        caller_user_id: &str,
+        req: LogoutRequest,
     ) -> Result<LogoutResponse, synctv_core::provider::ProviderError> {
+        if !req.server_id.is_empty() {
+            if let Some(existing) = self
+                .credential_repo
+                .get_by_provider_and_server(caller_user_id, "alist", &req.server_id)
+                .await
+                .map_err(|e| {
+                    synctv_core::provider::ProviderError::Internal(format!(
+                        "Failed to query credential: {e}"
+                    ))
+                })?
+            {
+                self.credential_repo.delete(&existing.id).await.map_err(|e| {
+                    synctv_core::provider::ProviderError::Internal(format!(
+                        "Failed to delete credential: {e}"
+                    ))
+                })?;
+            }
+        }
+
         Ok(LogoutResponse {
             message: "Logout successful".to_string(),
         })

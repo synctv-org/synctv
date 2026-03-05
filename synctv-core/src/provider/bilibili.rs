@@ -238,24 +238,24 @@ enum BilibiliSourceConfig {
         aid: Option<u64>,
         cid: u64,
         #[serde(default)]
-        cookies: HashMap<String, String>,
-        #[serde(default)]
         provider_instance_name: Option<String>,
+        /// Reference to stored credentials (server-side)
+        credential_ref: super::credential_resolver::CredentialRef,
     },
     Pgc {
         epid: u64,
         cid: u64,
         #[serde(default)]
-        cookies: HashMap<String, String>,
-        #[serde(default)]
         provider_instance_name: Option<String>,
+        /// Reference to stored credentials (server-side)
+        credential_ref: super::credential_resolver::CredentialRef,
     },
     Live {
         room_id: u64,
         #[serde(default)]
-        cookies: HashMap<String, String>,
-        #[serde(default)]
         provider_instance_name: Option<String>,
+        /// Reference to stored credentials (server-side)
+        credential_ref: super::credential_resolver::CredentialRef,
     },
 }
 
@@ -278,81 +278,17 @@ impl BilibiliSourceConfig {
         }
     }
 
-    /// Get a reference to the cookies from any variant
-    const fn cookies(&self) -> &HashMap<String, String> {
+    /// Get a reference to the credential_ref from any variant
+    fn credential_ref(&self) -> &super::credential_resolver::CredentialRef {
         match self {
-            Self::Video { cookies, .. }
-            | Self::Pgc { cookies, .. }
-            | Self::Live { cookies, .. } => cookies,
+            Self::Video { credential_ref, .. }
+            | Self::Pgc { credential_ref, .. }
+            | Self::Live { credential_ref, .. } => credential_ref,
         }
     }
 
-    /// Validate that cookie keys and values do not contain control characters
-    /// or HTTP header-unsafe characters that could lead to header injection.
-    ///
-    /// This function also URL-decodes cookies before validation to prevent
-    /// URL-encoded bypass attempts (e.g., %0D%0A for CRLF injection).
-    fn validate_cookies(&self) -> Result<(), ProviderError> {
-        for (key, value) in self.cookies() {
-            if key.is_empty() {
-                return Err(ProviderError::InvalidConfig(
-                    "Bilibili cookie key must not be empty".to_string(),
-                ));
-            }
-
-            // URL-decode both key and value to catch encoded injection attempts
-            let decoded_key = urlencoding::decode(key).map_err(|_| {
-                ProviderError::InvalidConfig(format!(
-                    "Bilibili cookie key '{key}' contains invalid URL encoding"
-                ))
-            })?;
-            let decoded_value = urlencoding::decode(value).map_err(|_| {
-                ProviderError::InvalidConfig(format!(
-                    "Bilibili cookie value for key '{key}' contains invalid URL encoding"
-                ))
-            })?;
-
-            // Check decoded key for invalid characters
-            if decoded_key
-                .chars()
-                .any(|c| c.is_control() || c == ';' || c == '=' || c == ' ')
-            {
-                return Err(ProviderError::InvalidConfig(format!(
-                    "Bilibili cookie key '{key}' contains invalid characters (control chars, ';', '=', or spaces, including URL-encoded forms)"
-                )));
-            }
-
-            // Check decoded value for invalid characters
-            if decoded_value.chars().any(|c| c.is_control() || c == ';') {
-                return Err(ProviderError::InvalidConfig(format!(
-                    "Bilibili cookie value for key '{key}' contains invalid characters (control chars or ';', including URL-encoded forms)"
-                )));
-            }
-        }
-        Ok(())
-    }
-
-    /// Return a sanitized copy of the cookies with any unsafe characters removed.
-    /// This is a defense-in-depth measure applied at request time.
-    fn sanitized_cookies(&self) -> HashMap<String, String> {
-        self.cookies()
-            .iter()
-            .filter(|(k, _)| !k.is_empty())
-            .map(|(k, v)| {
-                let clean_key: String = k
-                    .chars()
-                    .filter(|c| !c.is_control() && *c != ';' && *c != '=' && *c != ' ')
-                    .collect();
-                let clean_value: String =
-                    v.chars().filter(|c| !c.is_control() && *c != ';').collect();
-                (clean_key, clean_value)
-            })
-            .collect()
-    }
 }
 
-// Use shared credential encryption utilities from crypto_utils module
-use super::crypto_utils::{decrypt_field_in_value, encrypt_field_in_value};
 
 impl TryFrom<&Value> for BilibiliSourceConfig {
     type Error = ProviderError;
@@ -373,54 +309,59 @@ impl MediaProvider for BilibiliProvider {
         _ctx: &ProviderContext<'_>,
         source_config: &Value,
     ) -> Result<PlaybackResult, ProviderError> {
-        // Decrypt cookies if encryption is configured (handles both encrypted and plaintext)
-        let decrypted_config = if let Some(enc) = _ctx.credential_encryption {
-            decrypt_field_in_value(source_config, enc, "cookies", "Bilibili")?
-        } else {
-            source_config.clone()
+        // Parse source_config
+        let config = BilibiliSourceConfig::try_from(source_config)?;
+
+        // Resolve cookies from DB using credential_ref
+        let repo = _ctx.credential_repo.ok_or_else(|| {
+            ProviderError::Internal(
+                "credential_repo not available in ProviderContext".to_string(),
+            )
+        })?;
+
+        let cred_ref = config.credential_ref();
+        let credential = super::credential_resolver::resolve_credential(
+            repo,
+            "bilibili",
+            cred_ref,
+        )
+        .await?;
+
+        let cookies = match credential {
+            crate::models::ProviderCredential::Bilibili { cookies } => cookies,
+            _ => return Err(ProviderError::InvalidCredentialType),
         };
 
-        // Parse source_config first
-        let config = BilibiliSourceConfig::try_from(&decrypted_config)?;
-
-        // Build cache key based on content identity + user cookie hash
+        // Build cache key based on content identity + server_id (user-specific)
         let (cache_key, cache_ttl) = match &config {
             BilibiliSourceConfig::Video {
                 bvid,
                 aid,
                 cid,
-                cookies,
+                credential_ref,
                 ..
-            } => {
-                let user_hash = cookie_hash(cookies);
-                (
-                    format!(
-                        "playback:video:{}:{}:{}:{user_hash}",
-                        bvid.as_deref().unwrap_or(""),
-                        aid.unwrap_or(0),
-                        cid
-                    ),
-                    Duration::from_secs(2 * 3600), // 2 hours
-                )
-            }
+            } => (
+                format!(
+                    "playback:video:{}:{}:{}:{}",
+                    bvid.as_deref().unwrap_or(""),
+                    aid.unwrap_or(0),
+                    cid,
+                    credential_ref.credential_owner_id
+                ),
+                Duration::from_secs(2 * 3600), // 2 hours
+            ),
             BilibiliSourceConfig::Pgc {
-                epid, cid, cookies, ..
-            } => {
-                let user_hash = cookie_hash(cookies);
-                (
-                    format!("playback:pgc:{epid}:{cid}:{user_hash}"),
-                    Duration::from_secs(2 * 3600),
-                )
-            }
+                epid, cid, credential_ref, ..
+            } => (
+                format!("playback:pgc:{epid}:{cid}:{}", credential_ref.credential_owner_id),
+                Duration::from_secs(2 * 3600),
+            ),
             BilibiliSourceConfig::Live {
-                room_id, cookies, ..
-            } => {
-                let user_hash = cookie_hash(cookies);
-                (
-                    format!("playback:live:{room_id}:{user_hash}"),
-                    Duration::from_secs(120), // Live streams expire quickly
-                )
-            }
+                room_id, credential_ref, ..
+            } => (
+                format!("playback:live:{room_id}:{}", credential_ref.credential_owner_id),
+                Duration::from_secs(120), // Live streams expire quickly
+            ),
         };
 
         let store = _ctx.store.as_ref();
@@ -453,9 +394,9 @@ impl MediaProvider for BilibiliProvider {
             }
         }
 
-        // Call provider API
-        let result = self
-            .resolve_from_api(&config, _ctx.credential_encryption)
+        // Call provider API with resolved cookies
+        let mut result = self
+            .resolve_from_api_with_cookies(&config, &cookies)
             .await?;
 
         // Generate version and store result
@@ -471,6 +412,21 @@ impl MediaProvider for BilibiliProvider {
             let _ = store
                 .set(&format!("v:{version}"), &versioned, cache_ttl)
                 .await;
+        }
+
+        // Sign playback URLs when signing_key and identity are available
+        if let (Some(signing_key), Some(room_id), Some(user_id)) =
+            (_ctx.signing_key, _ctx.room_id, _ctx.user_id)
+        {
+            super::sign_playback_urls(
+                &mut result,
+                "bilibili",
+                &version,
+                signing_key,
+                room_id,
+                user_id,
+                expires_at,
+            );
         }
 
         Ok(result)
@@ -494,12 +450,6 @@ impl MediaProvider for BilibiliProvider {
                         "Bilibili video requires either bvid or aid".to_string(),
                     ));
                 }
-                // Validate bvid format to prevent injection via crafted identifiers.
-                // Valid BV IDs:
-                // - Start with "BV" prefix
-                // - Are exactly 12 characters long
-                // - Contain only alphanumeric characters
-                // Example: "BV1xx411c7mD"
                 if let Some(bv) = bvid.as_ref() {
                     if !bv.is_empty() {
                         if !bv.starts_with("BV") {
@@ -547,9 +497,24 @@ impl MediaProvider for BilibiliProvider {
             }
         }
 
-        // Validate cookie keys/values don't contain control characters or
-        // HTTP header-unsafe characters that could lead to header injection.
-        config.validate_cookies()?;
+        // Verify credential_ref points to an existing credential
+        if let Some(repo) = _ctx.credential_repo {
+            let cred_ref = config.credential_ref();
+            repo.get_by_provider_and_server(
+                &cred_ref.credential_owner_id,
+                "bilibili",
+                &cred_ref.server_id,
+            )
+            .await
+            .map_err(|e| {
+                ProviderError::Internal(format!("Failed to verify credential reference: {e}"))
+            })?
+            .ok_or_else(|| {
+                ProviderError::CredentialNotFound(
+                    "Referenced bilibili credential does not exist".to_string(),
+                )
+            })?;
+        }
 
         Ok(())
     }
@@ -559,24 +524,14 @@ impl MediaProvider for BilibiliProvider {
         _ctx: &ProviderContext<'_>,
         source_config: Value,
     ) -> Result<Value, ProviderError> {
-        // Check if source_config contains sensitive credentials (cookies)
-        let has_sensitive_credentials = source_config
-            .get("cookies")
-            .and_then(|c| c.as_object())
-            .is_some_and(|obj| !obj.is_empty());
-
-        // If config has sensitive credentials, encryption is mandatory
-        if has_sensitive_credentials && _ctx.credential_encryption.is_none() {
-            return Err(ProviderError::EncryptionRequired("bilibili"));
+        // Inject credential_owner_id from context (server-side, not trusting client)
+        let mut config = source_config;
+        if let Some(user_id) = _ctx.user_id {
+            if let Some(cred_ref) = config.get_mut("credential_ref") {
+                cred_ref["credential_owner_id"] = serde_json::Value::String(user_id.to_string());
+            }
         }
-
-        // Encrypt cookies in source_config before storage if encryption is available
-        if let Some(enc) = _ctx.credential_encryption {
-            encrypt_field_in_value(&source_config, enc, "cookies", "Bilibili")
-        } else {
-            // No sensitive credentials, safe to store without encryption
-            Ok(source_config)
-        }
+        Ok(config)
     }
 
     fn as_provider_proxy(&self) -> Option<&dyn super::proxy::ProviderProxy> {
@@ -589,6 +544,7 @@ impl MediaProvider for BilibiliProvider {
 // Supported sub_paths:
 // - `{version}/subtitle/{name}` — proxy a specific subtitle track
 // - `{version}/m3u8` — proxy M3U8 playlist with URL rewriting
+// - `{room_id}/{media_id}/danmu` — danmaku server connection info (JSON)
 #[async_trait]
 impl super::proxy::ProviderProxy for BilibiliProvider {
     async fn resolve_proxy(
@@ -596,6 +552,11 @@ impl super::proxy::ProviderProxy for BilibiliProvider {
         ctx: &super::proxy::ProxyRequestContext<'_>,
     ) -> Result<super::proxy::ProxyAction, ProviderError> {
         let sub_path = ctx.sub_path;
+
+        // Try `{room_id}/{media_id}/danmu`
+        if sub_path.ends_with("/danmu") {
+            return self.resolve_danmu(ctx).await;
+        }
 
         // Try `{version}/subtitle/{name}`
         if let Some((version, rest)) = sub_path.split_once('/') {
@@ -626,10 +587,18 @@ impl super::proxy::ProviderProxy for BilibiliProvider {
                     .ok_or(ProviderError::NotFound)?;
                 let url = default_info.urls.first().ok_or(ProviderError::NotFound)?;
 
+                // Propagate HMAC signature into M3U8 segment URLs
+                let proxy_base = if let Some(claims) = ctx.verified_claims {
+                    let signed_query =
+                        ctx.services.signing_key.build_signed_query(claims);
+                    format!("{}/{version}?{signed_query}", ctx.proxy_base)
+                } else {
+                    format!("{}/{version}", ctx.proxy_base)
+                };
                 return Ok(super::proxy::ProxyAction::M3u8Rewrite {
                     url: url.clone(),
                     headers: default_info.headers.clone(),
-                    proxy_base: format!("{}/{version}", ctx.proxy_base),
+                    proxy_base,
                 });
             }
         }
@@ -641,34 +610,106 @@ impl super::proxy::ProviderProxy for BilibiliProvider {
 // Use the shared bilibili_headers() from the parent module.
 use super::bilibili_headers;
 
-/// Hash cookies to create a user-specific cache key component.
-fn cookie_hash(cookies: &HashMap<String, String>) -> String {
-    if cookies.is_empty() {
-        return "anon".to_string();
-    }
-    use sha2::{Digest, Sha256};
-    let mut parts: Vec<_> = cookies.iter().collect();
-    parts.sort_by_key(|(k, _)| k.as_str());
-    let s: String = parts
-        .iter()
-        .map(|(k, v)| format!("{k}={v}"))
-        .collect::<Vec<_>>()
-        .join(";");
-    format!("{:x}", Sha256::digest(s.as_bytes()))
-        .chars()
-        .take(16)
-        .collect()
-}
-
 impl BilibiliProvider {
+    /// Resolve danmaku connection info from a media item's source config.
+    ///
+    /// Parses sub_path as `{room_id}/{media_id}/danmu`, resolves the media,
+    /// fetches danmu info from Bilibili, and returns a JSON response.
+    async fn resolve_danmu(
+        &self,
+        ctx: &super::proxy::ProxyRequestContext<'_>,
+    ) -> Result<super::proxy::ProxyAction, ProviderError> {
+        use crate::models::{MediaId, RoomId};
+
+        // Parse `{room_id}/{media_id}/danmu`
+        let parts: Vec<&str> = ctx.sub_path.splitn(3, '/').collect();
+        let (room_id_str, media_id_str) = match parts.as_slice() {
+            [room, media, "danmu"] => (*room, *media),
+            _ => return Err(ProviderError::NotFound),
+        };
+
+        let room_id = RoomId::from_string(room_id_str.to_string());
+        let media_id = MediaId::from_string(media_id_str.to_string());
+
+        // Check room membership and get media
+        let media = ctx
+            .services
+            .room_service
+            .media_service()
+            .get_media(&media_id)
+            .await
+            .map_err(|e| ProviderError::ApiError(format!("Failed to get media: {e}")))?
+            .ok_or(ProviderError::NotFound)?;
+
+        if media.room_id != room_id {
+            return Err(ProviderError::NotFound);
+        }
+
+        // Parse source_config to extract live stream info
+        let config = BilibiliSourceConfig::try_from(&media.source_config).map_err(|e| {
+            ProviderError::ApiError(format!("Failed to parse source config: {e}"))
+        })?;
+
+        match &config {
+            BilibiliSourceConfig::Live {
+                room_id: bilibili_room_id,
+                provider_instance_name,
+                credential_ref,
+                ..
+            } => {
+                // Resolve cookies from credential store
+                let cookies = {
+                    let repo = &ctx.services.credential_repo;
+                    let credential =
+                        super::credential_resolver::resolve_credential(repo, "bilibili", credential_ref)
+                            .await?;
+                    match credential {
+                        crate::models::ProviderCredential::Bilibili { cookies } => cookies,
+                        _ => return Err(ProviderError::InvalidCredentialType),
+                    }
+                };
+
+                let danmu_resp = self
+                    .get_live_danmu_info(
+                        *bilibili_room_id,
+                        cookies,
+                        provider_instance_name.as_deref(),
+                    )
+                    .await?;
+
+                let event_data = serde_json::json!({
+                    "token": danmu_resp.token,
+                    "host_list": danmu_resp.host_list.iter().map(|h| {
+                        serde_json::json!({
+                            "host": h.host,
+                            "port": h.port,
+                            "wss_port": h.wss_port,
+                            "ws_port": h.ws_port,
+                        })
+                    }).collect::<Vec<_>>(),
+                });
+
+                Ok(super::proxy::ProxyAction::DirectBody {
+                    body: serde_json::to_vec(&event_data)
+                        .unwrap_or_default(),
+                    content_type: "application/json".to_string(),
+                    status: 200,
+                })
+            }
+            _ => Err(ProviderError::ApiError(
+                "Danmaku is only available for Bilibili live streams".to_string(),
+            )),
+        }
+    }
+
     /// Resolve playback result from Bilibili API (no caching).
-    async fn resolve_from_api(
+    /// Cookies are resolved from the credential store, not from source_config.
+    async fn resolve_from_api_with_cookies(
         &self,
         config: &BilibiliSourceConfig,
-        credential_encryption: Option<&crate::service::CredentialEncryption>,
+        cookies: &HashMap<String, String>,
     ) -> Result<PlaybackResult, ProviderError> {
-        let _ = credential_encryption; // Used only for decryption which already happened
-        let sanitized_cookies = config.sanitized_cookies();
+        let sanitized_cookies = cookies.clone();
         let client = self.get_client(config.provider_instance_name()).await;
 
         match config {
@@ -898,6 +939,13 @@ impl BilibiliProvider {
 mod tests {
     use super::*;
 
+    fn test_cred_ref() -> serde_json::Value {
+        json!({
+            "credential_owner_id": "user123",
+            "server_id": "bilibili"
+        })
+    }
+
     fn validate_bilibili(config: Value) -> Result<(), ProviderError> {
         // Replicate the validation logic without needing a full provider instance
         let config = BilibiliSourceConfig::try_from(&config)?;
@@ -957,7 +1005,6 @@ mod tests {
                 }
             }
         }
-        config.validate_cookies()?;
         Ok(())
     }
 
@@ -966,7 +1013,8 @@ mod tests {
         let config = json!({
             "type": "video",
             "bvid": "BV1xx411c7mD",
-            "cid": 12345
+            "cid": 12345,
+            "credential_ref": test_cred_ref()
         });
         assert!(validate_bilibili(config).is_ok());
     }
@@ -976,7 +1024,8 @@ mod tests {
         let config = json!({
             "type": "video",
             "aid": 12345,
-            "cid": 67890
+            "cid": 67890,
+            "credential_ref": test_cred_ref()
         });
         assert!(validate_bilibili(config).is_ok());
     }
@@ -985,7 +1034,8 @@ mod tests {
     fn test_video_config_missing_bvid_and_aid() {
         let config = json!({
             "type": "video",
-            "cid": 12345
+            "cid": 12345,
+            "credential_ref": test_cred_ref()
         });
         assert!(validate_bilibili(config).is_err());
     }
@@ -995,7 +1045,8 @@ mod tests {
         let config = json!({
             "type": "video",
             "bvid": "BV1xx411c7mD",
-            "cid": 0
+            "cid": 0,
+            "credential_ref": test_cred_ref()
         });
         assert!(validate_bilibili(config).is_err());
     }
@@ -1005,7 +1056,8 @@ mod tests {
         let config = json!({
             "type": "pgc",
             "epid": 12345,
-            "cid": 67890
+            "cid": 67890,
+            "credential_ref": test_cred_ref()
         });
         assert!(validate_bilibili(config).is_ok());
     }
@@ -1015,7 +1067,8 @@ mod tests {
         let config = json!({
             "type": "pgc",
             "epid": 0,
-            "cid": 67890
+            "cid": 67890,
+            "credential_ref": test_cred_ref()
         });
         assert!(validate_bilibili(config).is_err());
     }
@@ -1024,7 +1077,8 @@ mod tests {
     fn test_valid_live_config() {
         let config = json!({
             "type": "live",
-            "room_id": 12345
+            "room_id": 12345,
+            "credential_ref": test_cred_ref()
         });
         assert!(validate_bilibili(config).is_ok());
     }
@@ -1033,7 +1087,8 @@ mod tests {
     fn test_live_config_zero_room_id() {
         let config = json!({
             "type": "live",
-            "room_id": 0
+            "room_id": 0,
+            "credential_ref": test_cred_ref()
         });
         assert!(validate_bilibili(config).is_err());
     }
@@ -1042,7 +1097,8 @@ mod tests {
     fn test_invalid_type() {
         let config = json!({
             "type": "unknown_type",
-            "cid": 12345
+            "cid": 12345,
+            "credential_ref": test_cred_ref()
         });
         assert!(validate_bilibili(config).is_err());
     }
@@ -1052,7 +1108,8 @@ mod tests {
         let config = json!({
             "type": "video",
             "bvid": "BV1xx/../../../etc/passwd",
-            "cid": 12345
+            "cid": 12345,
+            "credential_ref": test_cred_ref()
         });
         assert!(validate_bilibili(config).is_err());
     }
@@ -1062,7 +1119,8 @@ mod tests {
         let config = json!({
             "type": "video",
             "bvid": "BV1xx;DROP TABLE",
-            "cid": 12345
+            "cid": 12345,
+            "credential_ref": test_cred_ref()
         });
         assert!(validate_bilibili(config).is_err());
     }
@@ -1072,7 +1130,8 @@ mod tests {
         let config = json!({
             "type": "video",
             "bvid": "1xx411c7mD12",
-            "cid": 12345
+            "cid": 12345,
+            "credential_ref": test_cred_ref()
         });
         assert!(validate_bilibili(config).is_err());
     }
@@ -1082,7 +1141,8 @@ mod tests {
         let config = json!({
             "type": "video",
             "bvid": "bv1xx411c7mD",
-            "cid": 12345
+            "cid": 12345,
+            "credential_ref": test_cred_ref()
         });
         assert!(validate_bilibili(config).is_err());
     }
@@ -1092,7 +1152,8 @@ mod tests {
         let config = json!({
             "type": "video",
             "bvid": "BV1xx411c7m",
-            "cid": 12345
+            "cid": 12345,
+            "credential_ref": test_cred_ref()
         });
         assert!(validate_bilibili(config).is_err());
     }
@@ -1102,7 +1163,8 @@ mod tests {
         let config = json!({
             "type": "video",
             "bvid": "BV1xx411c7mDxx",
-            "cid": 12345
+            "cid": 12345,
+            "credential_ref": test_cred_ref()
         });
         assert!(validate_bilibili(config).is_err());
     }
@@ -1112,279 +1174,49 @@ mod tests {
         let config = json!({
             "type": "video",
             "bvid": "BV1GJ411x7gL",
-            "cid": 12345
+            "cid": 12345,
+            "credential_ref": test_cred_ref()
         });
         assert!(validate_bilibili(config).is_ok());
     }
 
     #[test]
     fn test_video_config_empty_bvid_uses_aid() {
-        // Empty bvid should be allowed when aid is provided
         let config = json!({
             "type": "video",
             "bvid": "",
             "aid": 12345,
-            "cid": 67890
+            "cid": 67890,
+            "credential_ref": test_cred_ref()
         });
         assert!(validate_bilibili(config).is_ok());
     }
 
     #[test]
-    fn test_cookie_with_control_chars_rejected() {
+    fn test_missing_credential_ref_rejected() {
+        // credential_ref is required, config without it should fail to parse
         let config = json!({
-            "type": "video",
-            "bvid": "BV1xx411c7mD",
-            "cid": 12345,
-            "cookies": {"SESSDATA": "value\r\nInjected-Header: evil"}
-        });
-        assert!(validate_bilibili(config).is_err());
-    }
-
-    #[test]
-    fn test_cookie_key_with_semicolon_rejected() {
-        let config = json!({
-            "type": "video",
-            "bvid": "BV1xx411c7mD",
-            "cid": 12345,
-            "cookies": {"key;inject": "value"}
-        });
-        assert!(validate_bilibili(config).is_err());
-    }
-
-    #[test]
-    fn test_valid_cookies_accepted() {
-        let config = json!({
-            "type": "video",
-            "bvid": "BV1xx411c7mD",
-            "cid": 12345,
-            "cookies": {"SESSDATA": "abc123def456"}
-        });
-        assert!(validate_bilibili(config).is_ok());
-    }
-
-    // ========== Credential Encryption Tests ==========
-
-    #[test]
-    fn test_prepare_source_config_requires_encryption_for_cookies() {
-        // Test that prepare_source_config rejects cookies when encryption is not configured
-        // This simulates the security requirement: sensitive providers MUST use encryption
-
-        // Source config with cookies (sensitive)
-        let config_with_cookies = json!({
-            "type": "video",
-            "bvid": "BV1xx411c7mD",
-            "cid": 12345,
-            "cookies": {"SESSDATA": "sensitive_value"}
-        });
-
-        // Source config without cookies (non-sensitive)
-        let config_without_cookies = json!({
             "type": "video",
             "bvid": "BV1xx411c7mD",
             "cid": 12345
         });
+        assert!(validate_bilibili(config).is_err());
+    }
 
-        // Helper function to check if config has sensitive credentials
-        fn has_sensitive_credentials(config: &Value) -> bool {
-            if let Some(cookies) = config.get("cookies") {
-                if let Some(obj) = cookies.as_object() {
-                    return !obj.is_empty();
-                }
+    #[test]
+    fn test_credential_ref_fields() {
+        let config = json!({
+            "type": "video",
+            "bvid": "BV1xx411c7mD",
+            "cid": 12345,
+            "credential_ref": {
+                "credential_owner_id": "user456",
+                "server_id": "bilibili"
             }
-            false
-        }
-
-        // Verify detection logic
-        assert!(has_sensitive_credentials(&config_with_cookies));
-        assert!(!has_sensitive_credentials(&config_without_cookies));
-
-        // The actual prepare_source_config implementation should:
-        // 1. Check if credential_encryption is Some
-        // 2. If None and config has sensitive credentials, return EncryptionRequired error
-        // 3. If Some or no sensitive credentials, proceed normally
-    }
-
-    #[test]
-    fn test_prepare_source_config_allows_non_sensitive_without_encryption() {
-        // Source config without cookies should be allowed even without encryption
-        let config_without_cookies = json!({
-            "type": "video",
-            "bvid": "BV1xx411c7mD",
-            "cid": 12345
         });
-
-        // Helper function to check if config has sensitive credentials
-        fn has_sensitive_credentials(config: &Value) -> bool {
-            if let Some(cookies) = config.get("cookies") {
-                if let Some(obj) = cookies.as_object() {
-                    return !obj.is_empty();
-                }
-            }
-            false
-        }
-
-        // Should be allowed without encryption since no sensitive data
-        assert!(!has_sensitive_credentials(&config_without_cookies));
-    }
-
-    // ========== URL Encoding Injection Tests ==========
-
-    #[test]
-    fn test_cookie_value_with_url_encoded_crlf_rejected() {
-        // Test URL-encoded CRLF (%0D%0A) injection attempt
-        let config = json!({
-            "type": "video",
-            "bvid": "BV1xx411c7mD",
-            "cid": 12345,
-            "cookies": {"SESSDATA": "value%0D%0AX-Evil-Header: attack"}
-        });
-        assert!(validate_bilibili(config).is_err());
-    }
-
-    #[test]
-    fn test_cookie_value_with_url_encoded_cr_rejected() {
-        // Test URL-encoded CR (%0D) injection attempt
-        let config = json!({
-            "type": "video",
-            "bvid": "BV1xx411c7mD",
-            "cid": 12345,
-            "cookies": {"SESSDATA": "value%0DX-Evil-Header: attack"}
-        });
-        assert!(validate_bilibili(config).is_err());
-    }
-
-    #[test]
-    fn test_cookie_value_with_url_encoded_lf_rejected() {
-        // Test URL-encoded LF (%0A) injection attempt
-        let config = json!({
-            "type": "video",
-            "bvid": "BV1xx411c7mD",
-            "cid": 12345,
-            "cookies": {"SESSDATA": "value%0AX-Evil-Header: attack"}
-        });
-        assert!(validate_bilibili(config).is_err());
-    }
-
-    #[test]
-    fn test_cookie_key_with_url_encoded_equals_rejected() {
-        // Test URL-encoded equals (%3D) in cookie key
-        let config = json!({
-            "type": "video",
-            "bvid": "BV1xx411c7mD",
-            "cid": 12345,
-            "cookies": {"key%3Dinject": "value"}
-        });
-        assert!(validate_bilibili(config).is_err());
-    }
-
-    #[test]
-    fn test_cookie_key_with_url_encoded_semicolon_rejected() {
-        // Test URL-encoded semicolon (%3B) in cookie key
-        let config = json!({
-            "type": "video",
-            "bvid": "BV1xx411c7mD",
-            "cid": 12345,
-            "cookies": {"key%3Binject": "value"}
-        });
-        assert!(validate_bilibili(config).is_err());
-    }
-
-    #[test]
-    fn test_cookie_key_with_url_encoded_space_rejected() {
-        // Test URL-encoded space (%20) in cookie key
-        let config = json!({
-            "type": "video",
-            "bvid": "BV1xx411c7mD",
-            "cid": 12345,
-            "cookies": {"key%20inject": "value"}
-        });
-        assert!(validate_bilibili(config).is_err());
-    }
-
-    #[test]
-    fn test_cookie_value_with_url_encoded_semicolon_rejected() {
-        // Test URL-encoded semicolon (%3B) in cookie value
-        let config = json!({
-            "type": "video",
-            "bvid": "BV1xx411c7mD",
-            "cid": 12345,
-            "cookies": {"SESSDATA": "value%3Bmalicious"}
-        });
-        assert!(validate_bilibili(config).is_err());
-    }
-
-    #[test]
-    fn test_cookie_with_multiple_url_encoded_sequences_rejected() {
-        // Test multiple URL-encoded control characters
-        let config = json!({
-            "type": "video",
-            "bvid": "BV1xx411c7mD",
-            "cid": 12345,
-            "cookies": {"SESSDATA": "%0D%0A%0D%0Aattack"}
-        });
-        assert!(validate_bilibili(config).is_err());
-    }
-
-    #[test]
-    fn test_cookie_with_percent_sign_accepted() {
-        // Test lone % sign - urlencoding crate treats this as valid literal
-        // This is acceptable since it doesn't decode to a control character
-        let config = json!({
-            "type": "video",
-            "bvid": "BV1xx411c7mD",
-            "cid": 12345,
-            "cookies": {"SESSDATA": "value%"}
-        });
-        // Lone % is valid (doesn't decode to control chars)
-        assert!(validate_bilibili(config).is_ok());
-    }
-
-    #[test]
-    fn test_cookie_with_lowercase_hex_encoding_rejected() {
-        // Test lowercase hex URL encoding (also valid but decodes to control chars)
-        let config = json!({
-            "type": "video",
-            "bvid": "BV1xx411c7mD",
-            "cid": 12345,
-            "cookies": {"SESSDATA": "value%0a%0dattack"}
-        });
-        // Should reject because %0a and %0d decode to LF and CR
-        assert!(validate_bilibili(config).is_err());
-    }
-
-    #[test]
-    fn test_cookie_with_url_encoded_tab_rejected() {
-        // Test URL-encoded tab (%09) which is a control character
-        let config = json!({
-            "type": "video",
-            "bvid": "BV1xx411c7mD",
-            "cid": 12345,
-            "cookies": {"SESSDATA": "value%09attack"}
-        });
-        assert!(validate_bilibili(config).is_err());
-    }
-
-    #[test]
-    fn test_cookie_key_with_url_encoded_space_in_middle_rejected() {
-        // Test URL-encoded space (%20) in the middle of cookie key
-        let config = json!({
-            "type": "video",
-            "bvid": "BV1xx411c7mD",
-            "cid": 12345,
-            "cookies": {"key%20inject": "value"}
-        });
-        assert!(validate_bilibili(config).is_err());
-    }
-
-    #[test]
-    fn test_cookie_value_with_percent_plus_accepted() {
-        // Test that %2B (plus) is accepted (not a control char)
-        let config = json!({
-            "type": "video",
-            "bvid": "BV1xx411c7mD",
-            "cid": 12345,
-            "cookies": {"SESSDATA": "value%2Bmore"}
-        });
-        assert!(validate_bilibili(config).is_ok());
+        let parsed = BilibiliSourceConfig::try_from(&config).unwrap();
+        let cred_ref = parsed.credential_ref();
+        assert_eq!(cred_ref.credential_owner_id, "user456");
+        assert_eq!(cred_ref.server_id, "bilibili");
     }
 }

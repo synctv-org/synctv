@@ -122,6 +122,10 @@ pub struct ClientApiImpl {
     pub credential_encryption: Option<synctv_core::service::CredentialEncryption>,
     /// TURN health checker for filtering unhealthy servers
     pub turn_health_checker: Option<Arc<synctv_core::service::TurnHealthChecker>>,
+    /// Credential repository for resolving stored provider credentials
+    pub credential_repo: Option<Arc<synctv_core::repository::UserProviderCredentialRepository>>,
+    /// Proxy signing key for generating HMAC-signed proxy URLs
+    pub signing_key: Option<Arc<synctv_core::service::ProxySigningKey>>,
 }
 
 impl ClientApiImpl {
@@ -159,6 +163,8 @@ impl ClientApiImpl {
             builtin_stun_url: None,
             credential_encryption: None,
             turn_health_checker: None,
+            credential_repo: None,
+            signing_key: None,
         }
     }
 
@@ -181,6 +187,8 @@ impl ClientApiImpl {
             builtin_stun_url: None,
             credential_encryption: config.credential_encryption,
             turn_health_checker: None,
+            credential_repo: None,
+            signing_key: None,
         }
     }
 
@@ -208,6 +216,23 @@ impl ClientApiImpl {
         enc: Option<synctv_core::service::CredentialEncryption>,
     ) -> Self {
         self.credential_encryption = enc;
+        self
+    }
+
+    /// Set the credential repository for resolving stored provider credentials
+    #[must_use]
+    pub fn with_credential_repo(
+        mut self,
+        repo: Arc<synctv_core::repository::UserProviderCredentialRepository>,
+    ) -> Self {
+        self.credential_repo = Some(repo);
+        self
+    }
+
+    /// Set the proxy signing key for generating HMAC-signed proxy URLs
+    #[must_use]
+    pub fn with_signing_key(mut self, key: Arc<synctv_core::service::ProxySigningKey>) -> Self {
+        self.signing_key = Some(key);
         self
     }
 

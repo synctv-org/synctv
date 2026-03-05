@@ -137,6 +137,15 @@ impl From<crate::provider::ProviderError> for Error {
             ProviderError::EncryptionRequired(provider) => Self::InvalidInput(format!(
                 "Credential encryption required for provider '{provider}'"
             )),
+            // Credential errors
+            ProviderError::CredentialNotFound(msg) => {
+                Self::NotFound(format!("Credential not found: {msg}"))
+            }
+            ProviderError::CredentialExpired(msg) => {
+                Self::Authentication(format!("Credential expired: {msg}"))
+            }
+            // Internal errors
+            ProviderError::Internal(msg) => Self::Internal(format!("Provider error: {msg}")),
             // API errors - could be various things
             ProviderError::ApiError(msg) => Self::Internal(format!("Provider API error: {msg}")),
             // Format/parse errors

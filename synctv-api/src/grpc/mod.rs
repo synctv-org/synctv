@@ -134,10 +134,13 @@ pub(crate) fn map_provider_error(err: synctv_core::provider::ProviderError) -> t
         ProviderError::AuthRequired | ProviderError::CredentialRequired => {
             tonic::Status::unauthenticated(msg)
         }
+        ProviderError::CredentialNotFound(_) => tonic::Status::not_found(msg),
+        ProviderError::CredentialExpired(_) => tonic::Status::unauthenticated(msg),
         ProviderError::RouteRegistrationFailed(_)
         | ProviderError::IoError(_)
         | ProviderError::JsonError(_)
-        | ProviderError::EncryptionRequired(_) => {
+        | ProviderError::EncryptionRequired(_)
+        | ProviderError::Internal(_) => {
             tracing::error!("Provider internal error: {msg}");
             tonic::Status::internal("Internal error")
         }
@@ -250,6 +253,11 @@ pub async fn serve(grpc_config: GrpcServerConfig<'_>) -> anyhow::Result<()> {
     } = grpc_config;
     let addr = config.grpc_address().parse()?;
 
+    // Derive HMAC signing key for proxy URLs from JWT secret
+    let proxy_signing_key = std::sync::Arc::new(
+        synctv_core::service::ProxySigningKey::derive_from(config.jwt.secret.as_bytes()),
+    );
+
     tracing::info!("Starting gRPC server on {}", addr);
 
     // Clone services for all uses before unwrapping
@@ -295,7 +303,9 @@ pub async fn serve(grpc_config: GrpcServerConfig<'_>) -> anyhow::Result<()> {
         )
         .with_redis_publish_tx(redis_publish_tx.clone())
         .with_redis_conn(redis_conn.clone())
-        .with_rate_limiter(rate_limiter.clone()),
+        .with_rate_limiter(rate_limiter.clone())
+        .with_credential_repo(user_provider_credential_repository.clone())
+        .with_signing_key(proxy_signing_key.clone()),
     );
 
     // Wire in the resolved STUN URL if the built-in STUN server started successfully
@@ -591,6 +601,7 @@ pub async fn serve(grpc_config: GrpcServerConfig<'_>) -> anyhow::Result<()> {
             alist_provider: alist_provider.clone(),
             bilibili_provider: bilibili_provider.clone(),
             emby_provider: emby_provider.clone(),
+            direct_url_provider: std::sync::Arc::new(synctv_core::provider::DirectUrlProvider::new()),
             cluster_manager: None,
             connection_manager: Arc::new(connection_manager_for_provider.clone()),
             jwt_service: jwt_service_for_provider.clone(),
@@ -638,10 +649,25 @@ pub async fn serve(grpc_config: GrpcServerConfig<'_>) -> anyhow::Result<()> {
             admin_api: None,
             notification_api: None,
             oauth2_api: None,
-            bilibili_api: Arc::new(crate::impls::BilibiliApiImpl::new(bilibili_provider)),
-            alist_api: Arc::new(crate::impls::AlistApiImpl::new(alist_provider)),
-            emby_api: Arc::new(crate::impls::EmbyApiImpl::new(emby_provider)),
+            bilibili_api: Arc::new(crate::impls::BilibiliApiImpl::new(bilibili_provider.clone(), user_provider_credential_repository.clone())),
+            alist_api: Arc::new(crate::impls::AlistApiImpl::new(alist_provider.clone(), user_provider_credential_repository.clone())),
+            emby_api: Arc::new(crate::impls::EmbyApiImpl::new(emby_provider.clone(), user_provider_credential_repository.clone())),
             provider_stores: Arc::new(synctv_core::provider::store::ProviderStoreRegistry::new(None)),
+            proxy_provider_registry: {
+                let registry = Arc::new(synctv_core::provider::proxy::ProxyProviderRegistry::new());
+                registry.register("bilibili", bilibili_provider);
+                registry.register("alist", alist_provider);
+                registry.register("emby", emby_provider);
+                registry.register("direct_url", std::sync::Arc::new(synctv_core::provider::DirectUrlProvider::new()));
+                registry
+            },
+            proxy_services: std::sync::Arc::new(synctv_core::provider::proxy::ProxyServices {
+                room_service: room_service.clone(),
+                credential_encryption: None,
+                credential_repo: user_provider_credential_repository.clone(),
+                signing_key: proxy_signing_key.clone(),
+            }),
+            proxy_signing_key: proxy_signing_key.clone(),
         });
 
         // Register provider gRPC services with auth interceptor

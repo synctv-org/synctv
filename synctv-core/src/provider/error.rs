@@ -45,6 +45,12 @@ pub enum ProviderError {
     #[error("Provider instance not found: {0}")]
     InstanceNotFound(String),
 
+    #[error("Credential not found: {0}")]
+    CredentialNotFound(String),
+
+    #[error("Credential expired: {0}")]
+    CredentialExpired(String),
+
     #[error("Credential encryption required for sensitive provider '{0}'. Configure credential_encryption in server settings.")]
     EncryptionRequired(&'static str),
 
@@ -53,6 +59,9 @@ pub enum ProviderError {
 
     #[error("IO error: {0}")]
     IoError(#[from] std::io::Error),
+
+    #[error("Internal error: {0}")]
+    Internal(String),
 
     #[error("JSON error: {0}")]
     JsonError(#[from] serde_json::Error),

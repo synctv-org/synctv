@@ -810,6 +810,7 @@ impl Application {
             alist_provider: servers.alist_provider,
             bilibili_provider: servers.bilibili_provider,
             emby_provider: servers.emby_provider,
+            direct_url_provider: Arc::new(synctv_core::provider::DirectUrlProvider::new()),
             oauth2_service: core.services.oauth2_service.clone(),
             settings_service: core.services.settings_service.clone(),
             settings_registry: core.services.settings_registry.clone(),

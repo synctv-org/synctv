@@ -24,28 +24,30 @@ pub struct LoginRequest {
 pub struct LoginResponse {
     #[prost(string, tag = "1")]
     pub token: ::prost::alloc::string::String,
+    /// SHA-256(host) identifier for stored credential
+    #[prost(string, tag = "2")]
+    pub server_id: ::prost::alloc::string::String,
 }
 /// List directory request
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ListRequest {
+    /// Stored credential identifier
     #[prost(string, tag = "1")]
-    pub host: ::prost::alloc::string::String,
+    pub server_id: ::prost::alloc::string::String,
     #[prost(string, tag = "2")]
-    pub token: ::prost::alloc::string::String,
-    #[prost(string, tag = "3")]
     pub path: ::prost::alloc::string::String,
     /// Directory password (optional)
-    #[prost(string, tag = "4")]
+    #[prost(string, tag = "3")]
     pub password: ::prost::alloc::string::String,
-    #[prost(uint64, tag = "5")]
+    #[prost(uint64, tag = "4")]
     pub page: u64,
-    #[prost(uint64, tag = "6")]
+    #[prost(uint64, tag = "5")]
     pub per_page: u64,
-    #[prost(bool, tag = "7")]
+    #[prost(bool, tag = "6")]
     pub refresh: bool,
     /// Optional provider instance name
-    #[prost(string, tag = "8")]
+    #[prost(string, tag = "7")]
     pub instance_name: ::prost::alloc::string::String,
 }
 /// List directory response
@@ -80,12 +82,11 @@ pub struct FileItem {
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct GetMeRequest {
+    /// Stored credential identifier
     #[prost(string, tag = "1")]
-    pub host: ::prost::alloc::string::String,
-    #[prost(string, tag = "2")]
-    pub token: ::prost::alloc::string::String,
+    pub server_id: ::prost::alloc::string::String,
     /// Optional provider instance name
-    #[prost(string, tag = "3")]
+    #[prost(string, tag = "2")]
     pub instance_name: ::prost::alloc::string::String,
 }
 /// Get user info response
@@ -101,8 +102,11 @@ pub struct GetMeResponse {
 #[derive(serde::Serialize, serde::Deserialize)]
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct LogoutRequest {
-    /// Optional provider instance name
+    /// Which credential to unbind
     #[prost(string, tag = "1")]
+    pub server_id: ::prost::alloc::string::String,
+    /// Optional provider instance name
+    #[prost(string, tag = "2")]
     pub instance_name: ::prost::alloc::string::String,
 }
 /// Logout response
@@ -235,7 +239,7 @@ pub mod alist_provider_service_client {
             self.inner = self.inner.max_encoding_message_size(limit);
             self
         }
-        /// Login to Alist server
+        /// Login to Alist server (persist credential)
         pub async fn login(
             &mut self,
             request: impl tonic::IntoRequest<super::LoginRequest>,
@@ -262,7 +266,7 @@ pub mod alist_provider_service_client {
                 );
             self.inner.unary(req, path, codec).await
         }
-        /// List directory contents
+        /// List directory contents (uses stored credential via server_id)
         pub async fn list(
             &mut self,
             request: impl tonic::IntoRequest<super::ListRequest>,
@@ -286,7 +290,7 @@ pub mod alist_provider_service_client {
                 );
             self.inner.unary(req, path, codec).await
         }
-        /// Get current user info
+        /// Get current user info (uses stored credential via server_id)
         pub async fn get_me(
             &mut self,
             request: impl tonic::IntoRequest<super::GetMeRequest>,
@@ -313,7 +317,7 @@ pub mod alist_provider_service_client {
                 );
             self.inner.unary(req, path, codec).await
         }
-        /// Logout from Alist
+        /// Logout from Alist (delete stored credential)
         pub async fn logout(
             &mut self,
             request: impl tonic::IntoRequest<super::LogoutRequest>,
@@ -385,22 +389,22 @@ pub mod alist_provider_service_server {
     /// Generated trait containing gRPC methods that should be implemented for use with AlistProviderServiceServer.
     #[async_trait]
     pub trait AlistProviderService: std::marker::Send + std::marker::Sync + 'static {
-        /// Login to Alist server
+        /// Login to Alist server (persist credential)
         async fn login(
             &self,
             request: tonic::Request<super::LoginRequest>,
         ) -> std::result::Result<tonic::Response<super::LoginResponse>, tonic::Status>;
-        /// List directory contents
+        /// List directory contents (uses stored credential via server_id)
         async fn list(
             &self,
             request: tonic::Request<super::ListRequest>,
         ) -> std::result::Result<tonic::Response<super::ListResponse>, tonic::Status>;
-        /// Get current user info
+        /// Get current user info (uses stored credential via server_id)
         async fn get_me(
             &self,
             request: tonic::Request<super::GetMeRequest>,
         ) -> std::result::Result<tonic::Response<super::GetMeResponse>, tonic::Status>;
-        /// Logout from Alist
+        /// Logout from Alist (delete stored credential)
         async fn logout(
             &self,
             request: tonic::Request<super::LogoutRequest>,

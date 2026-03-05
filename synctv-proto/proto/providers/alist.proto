@@ -13,16 +13,16 @@ package synctv.provider.alist;
 //
 // Client-facing API for Alist network storage access
 service AlistProviderService {
-  // Login to Alist server
+  // Login to Alist server (persist credential)
   rpc Login(LoginRequest) returns (LoginResponse);
 
-  // List directory contents
+  // List directory contents (uses stored credential via server_id)
   rpc List(ListRequest) returns (ListResponse);
 
-  // Get current user info
+  // Get current user info (uses stored credential via server_id)
   rpc GetMe(GetMeRequest) returns (GetMeResponse);
 
-  // Logout from Alist
+  // Logout from Alist (delete stored credential)
   rpc Logout(LogoutRequest) returns (LogoutResponse);
 
   // Get saved credentials (binds)
@@ -42,18 +42,18 @@ message LoginRequest {
 // Login response
 message LoginResponse {
   string token = 1;
+  string server_id = 2; // SHA-256(host) identifier for stored credential
 }
 
 // List directory request
 message ListRequest {
-  string host = 1;
-  string token = 2;
-  string path = 3;
-  string password = 4; // Directory password (optional)
-  uint64 page = 5;
-  uint64 per_page = 6;
-  bool refresh = 7;
-  string instance_name = 8; // Optional provider instance name
+  string server_id = 1;    // Stored credential identifier
+  string path = 2;
+  string password = 3; // Directory password (optional)
+  uint64 page = 4;
+  uint64 per_page = 5;
+  bool refresh = 6;
+  string instance_name = 7; // Optional provider instance name
 }
 
 // List directory response
@@ -75,9 +75,8 @@ message FileItem {
 
 // Get user info request
 message GetMeRequest {
-  string host = 1;
-  string token = 2;
-  string instance_name = 3; // Optional provider instance name
+  string server_id = 1;    // Stored credential identifier
+  string instance_name = 2; // Optional provider instance name
 }
 
 // Get user info response
@@ -88,7 +87,8 @@ message GetMeResponse {
 
 // Logout request
 message LogoutRequest {
-  string instance_name = 1; // Optional provider instance name
+  string server_id = 1;     // Which credential to unbind
+  string instance_name = 2; // Optional provider instance name
 }
 
 // Logout response

@@ -159,14 +159,10 @@ impl SecurityPipeline {
     ///
     /// ## Cache behaviour
     ///
-    /// For modern tokens that carry a `pv` (password version) claim the check
+    /// The `pv` (password version) claim is always present, so the check
     /// is fully satisfiable from the [`UserCache`]:
     /// - Cache hit → validate `password_version` + `status` without a DB round-trip.
     /// - Cache miss → fall back to DB, then populate the cache.
-    ///
-    /// For legacy tokens without `pv` we always fall back to the DB because the
-    /// `password_changed_at` timestamp required for the `iat`-based check is not
-    /// stored in the cache.
     ///
     /// # Arguments
     /// * `claims` -- the already-verified JWT claims
@@ -176,12 +172,11 @@ impl SecurityPipeline {
     pub async fn check(&self, claims: &Claims) -> Result<AuthenticatedToken> {
         let user_id = claims.user_id();
 
-        // Fast path: try to satisfy the check from the cache when the token
-        // carries a `pv` claim (all tokens issued by modern code do).
-        if let (Some(cache), Some(token_pv)) = (&self.user_cache, claims.pv) {
+        // Fast path: try to satisfy the check from the cache.
+        if let Some(cache) = &self.user_cache {
             if let Ok(Some(cached)) = cache.get(&user_id).await {
                 // Step 2: Password version check against cached value.
-                if token_pv < cached.password_version() {
+                if claims.pv < cached.password_version() {
                     return Err(Error::Authentication(
                         "Token invalidated due to password change. Please log in again."
                             .to_string(),
@@ -224,19 +219,10 @@ impl SecurityPipeline {
             })?;
 
         // Step 2: Password version check
-        if let Some(token_pv) = claims.pv {
-            if token_pv < user.password_version {
-                return Err(Error::Authentication(
-                    "Token invalidated due to password change. Please log in again.".to_string(),
-                ));
-            }
-        } else {
-            // Legacy tokens without pv: fall back to iat-based check
-            if claims.iat < user.password_changed_at.timestamp() {
-                return Err(Error::Authentication(
-                    "Token invalidated due to password change. Please log in again.".to_string(),
-                ));
-            }
+        if claims.pv < user.password_version {
+            return Err(Error::Authentication(
+                "Token invalidated due to password change. Please log in again.".to_string(),
+            ));
         }
 
         if user.is_deleted()

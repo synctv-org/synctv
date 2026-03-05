@@ -18,43 +18,24 @@ mod ws_query {
     use super::*;
 
     #[test]
-    fn test_deserialize_with_token() {
-        let params = "token=eyJhbGciOiJIUzI1NiJ9.test";
-        let query: WsQuery = serde_urlencoded::from_str(params).unwrap();
-        assert_eq!(query.token.as_deref(), Some("eyJhbGciOiJIUzI1NiJ9.test"));
-        assert!(query.ticket.is_none());
-    }
-
-    #[test]
     fn test_deserialize_with_ticket() {
         let params = "ticket=abc123def456";
         let query: WsQuery = serde_urlencoded::from_str(params).unwrap();
-        assert!(query.token.is_none());
         assert_eq!(query.ticket.as_deref(), Some("abc123def456"));
-    }
-
-    #[test]
-    fn test_deserialize_with_both() {
-        let params = "token=jwt_tok&ticket=ticket_val";
-        let query: WsQuery = serde_urlencoded::from_str(params).unwrap();
-        assert_eq!(query.token.as_deref(), Some("jwt_tok"));
-        assert_eq!(query.ticket.as_deref(), Some("ticket_val"));
     }
 
     #[test]
     fn test_deserialize_empty() {
         let params = "";
         let query: WsQuery = serde_urlencoded::from_str(params).unwrap();
-        assert!(query.token.is_none());
         assert!(query.ticket.is_none());
     }
 
     #[test]
     fn test_deserialize_ignores_unknown_params() {
-        let params = "token=tok&unknown=value";
+        let params = "ticket=tix&unknown=value";
         let query: WsQuery = serde_urlencoded::from_str(params).unwrap();
-        assert_eq!(query.token.as_deref(), Some("tok"));
-        assert!(query.ticket.is_none());
+        assert_eq!(query.ticket.as_deref(), Some("tix"));
     }
 }
 
@@ -78,16 +59,8 @@ mod auth_method {
     }
 
     #[test]
-    fn test_token_query_method() {
-        let method = AuthMethod::TokenQuery;
-        assert_eq!(method, AuthMethod::TokenQuery);
-    }
-
-    #[test]
     fn test_methods_are_distinct() {
         assert_ne!(AuthMethod::Header, AuthMethod::Ticket);
-        assert_ne!(AuthMethod::Header, AuthMethod::TokenQuery);
-        assert_ne!(AuthMethod::Ticket, AuthMethod::TokenQuery);
     }
 
     #[test]
@@ -103,8 +76,6 @@ mod auth_method {
         assert!(s.contains("Header"));
         let s = format!("{:?}", AuthMethod::Ticket);
         assert!(s.contains("Ticket"));
-        let s = format!("{:?}", AuthMethod::TokenQuery);
-        assert!(s.contains("TokenQuery"));
     }
 }
 
@@ -865,10 +836,7 @@ mod websocket_e2e {
             direct_url: Arc::new(synctv_core::provider::DirectUrlProvider::new()),
         };
 
-        // Config — enable ?token= query parameter for test convenience
-        let mut config = synctv_core::Config::default();
-        config.server.disable_ws_token_query = false;
-        let config = Arc::new(config);
+        let config = Arc::new(synctv_core::Config::default());
 
         // ClientApiImpl
         let client_api = Arc::new(synctv_api::impls::ClientApiImpl::new(
@@ -2859,9 +2827,7 @@ mod websocket_connection_limit_timing {
             direct_url: Arc::new(synctv_core::provider::DirectUrlProvider::new()),
         };
 
-        let mut config = synctv_core::Config::default();
-        config.server.disable_ws_token_query = false;
-        let config = Arc::new(config);
+        let config = Arc::new(synctv_core::Config::default());
 
         let client_api = Arc::new(synctv_api::impls::ClientApiImpl::new(
             user_service.clone(),

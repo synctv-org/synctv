@@ -340,7 +340,7 @@ fn make_test_user(role: UserRole, status: UserStatus) -> synctv_core::models::Us
         password_hash: "hash".to_string(),
         role,
         status,
-        signup_method: None,
+        signup_method: synctv_core::models::SignupMethod::Email,
         email_verified: true,
         created_at: chrono::Utc::now(),
         updated_at: chrono::Utc::now(),

@@ -82,12 +82,6 @@ pub struct ServerConfig {
     /// Maximum time in seconds to wait for active connections to drain during shutdown.
     /// Defaults to 30 seconds. Increase for deployments with many long-lived connections.
     pub shutdown_drain_timeout_seconds: u64,
-    /// Disable the legacy `?token=<jwt>` WebSocket query parameter authentication.
-    /// When true, only Authorization header and `?ticket=` are accepted for WebSocket auth.
-    /// The `?token=` method is less secure because JWT tokens appear in server logs,
-    /// browser history, and Referer headers. Defaults to true (disabled) for security;
-    /// set to false only if you need backward compatibility with legacy clients.
-    pub disable_ws_token_query: bool,
     /// Bearer token required to access the `/metrics` Prometheus endpoint.
     /// When set (non-empty), requests to `/metrics` must include an
     /// `Authorization: Bearer <token>` header with this value.
@@ -116,7 +110,6 @@ impl Default for ServerConfig {
             cluster_secret: String::new(),
             advertise_host: String::new(),
             shutdown_drain_timeout_seconds: 30,
-            disable_ws_token_query: true,
             metrics_bearer_token: String::new(),
             grpc_max_message_size_bytes: 16 * 1024 * 1024, // 16 MB default
         }
@@ -501,7 +494,7 @@ pub struct OAuth2Config {
 }
 
 fn default_redirect_scheme() -> String {
-    "http".to_string()
+    "https".to_string()
 }
 
 impl Default for OAuth2Config {
@@ -834,10 +827,6 @@ impl Config {
         env_override_parse(
             "SYNCTV_SERVER_SHUTDOWN_DRAIN_TIMEOUT_SECONDS",
             &mut self.server.shutdown_drain_timeout_seconds,
-        );
-        env_override_bool(
-            "SYNCTV_SERVER_DISABLE_WS_TOKEN_QUERY",
-            &mut self.server.disable_ws_token_query,
         );
         env_override_str(
             "SYNCTV_SERVER_METRICS_BEARER_TOKEN",
@@ -2235,7 +2224,6 @@ mod tests {
                 cluster_secret: String::new(),
                 advertise_host: String::new(),
                 shutdown_drain_timeout_seconds: 30,
-                disable_ws_token_query: true,
             },
             database: DatabaseConfig::default(),
             redis: RedisConfig::default(),
@@ -2278,7 +2266,6 @@ mod tests {
                 cluster_secret: "test-cluster-secret-for-validation".to_string(),
                 advertise_host: String::new(),
                 shutdown_drain_timeout_seconds: 30,
-                disable_ws_token_query: true,
             },
             database: DatabaseConfig::default(),
             redis: RedisConfig {

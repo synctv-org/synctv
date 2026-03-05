@@ -5,7 +5,7 @@ use tracing::{info, warn};
 
 use crate::{
     config::BootstrapConfig,
-    models::{User, UserRole, UserStatus},
+    models::{SignupMethod, User, UserRole, UserStatus},
     repository::UserRepository,
     service::auth::hash_password,
     Error, Result,
@@ -64,7 +64,7 @@ pub async fn bootstrap_root_user(pool: &PgPool, config: &BootstrapConfig) -> Res
         config.root_username.clone(),
         None, // No email required for root
         password_hash,
-        None, // No signup method for root
+        SignupMethod::AdminCreated, // Root user created via bootstrap config
     );
 
     // Override defaults to set root role and active status
@@ -122,7 +122,7 @@ mod tests {
             "test_root".to_string(),
             None,
             password_hash,
-            Some(SignupMethod::Email),
+            SignupMethod::Email,
         );
 
         // Verify defaults

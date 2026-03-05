@@ -27,7 +27,7 @@ fn make_user(username: &str) -> User {
         role: UserRole::User,
         status: UserStatus::Active,
         email_verified: true,
-        signup_method: None,
+        signup_method: synctv_core::models::SignupMethod::Email,
         created_at: now,
         updated_at: now,
         password_changed_at: now,
@@ -501,90 +501,6 @@ async fn test_swap_positions_no_constraint_violation() {
 
     assert_eq!(updated_m1.position, 1, "m1 should now be at position 1");
     assert_eq!(updated_m2.position, 0, "m2 should now be at position 0");
-}
-
-// ============================================================================
-// Optimistic locking: update_if_unchanged tests
-// ============================================================================
-
-#[allow(deprecated)]
-#[tokio::test]
-#[ignore = "Requires Docker"]
-async fn test_update_if_unchanged_succeeds_when_row_unchanged() {
-    let ctx = setup_test_context("opt_lock_ok").await;
-    let media_repo = MediaRepository::new(ctx.pool.clone());
-
-    let m = media_repo
-        .create(&make_media(
-            &ctx.root_playlist.id,
-            &ctx.room.id,
-            "opt.mp4",
-            0,
-        ))
-        .await
-        .unwrap();
-
-    let old_name = m.name.clone();
-    let old_position = m.position;
-
-    let mut updated = m.clone();
-    updated.name = "opt_renamed.mp4".to_string();
-
-    let result = media_repo
-        .update_if_unchanged(&updated, &old_name, old_position)
-        .await
-        .unwrap();
-
-    assert!(
-        result.is_some(),
-        "Update should succeed when row is unchanged"
-    );
-    let result = result.unwrap();
-    assert_eq!(result.name, "opt_renamed.mp4");
-}
-
-#[allow(deprecated)]
-#[tokio::test]
-#[ignore = "Requires Docker"]
-async fn test_update_if_unchanged_returns_none_when_changed_concurrently() {
-    let ctx = setup_test_context("opt_lock_conflict").await;
-    let media_repo = MediaRepository::new(ctx.pool.clone());
-
-    let m = media_repo
-        .create(&make_media(
-            &ctx.root_playlist.id,
-            &ctx.room.id,
-            "conflict.mp4",
-            0,
-        ))
-        .await
-        .unwrap();
-
-    let old_name = m.name.clone();
-    let old_position = m.position;
-
-    // Simulate a concurrent update
-    let mut concurrent = m.clone();
-    concurrent.name = "concurrently_changed.mp4".to_string();
-    media_repo.update(&concurrent).await.unwrap();
-
-    // Now try update_if_unchanged with the stale old_name/old_position
-    let mut my_update = m.clone();
-    my_update.name = "my_change.mp4".to_string();
-
-    let result = media_repo
-        .update_if_unchanged(&my_update, &old_name, old_position)
-        .await
-        .unwrap();
-
-    assert!(
-        result.is_none(),
-        "Update should return None when row has been changed concurrently"
-    );
-
-    // Verify the concurrent change is still in place
-    let current = media_repo.get_by_id(&m.id).await.unwrap().unwrap();
-    assert_eq!(current.name, "concurrently_changed.mp4");
 }
 
 // ============================================================================

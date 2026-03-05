@@ -515,15 +515,9 @@ impl AttemptTracker for RedisAttemptTracker {
 
         match redis_result {
             Ok(Some(raw)) => {
-                // Try parsing as JSON state first, fall back to plain integer
-                // for backward compatibility with pre-existing counters.
                 if let Ok(state) = serde_json::from_str::<BruteForceState>(&raw) {
                     self.clear_degraded();
                     return Ok((state.count, state.last_failure_at));
-                }
-                if let Ok(count) = raw.parse::<u64>() {
-                    self.clear_degraded();
-                    return Ok((count, 0));
                 }
                 self.clear_degraded();
                 Ok((0, 0))

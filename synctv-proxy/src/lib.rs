@@ -459,30 +459,6 @@ pub async fn proxy_m3u8_and_rewrite(
         .map_err(|e| anyhow::anyhow!("Failed to build M3U8 response: {e}"))
 }
 
-/// Preflight handler suitable for `OPTIONS` routes.
-///
-/// Returns CORS headers as defense-in-depth. The global `CorsLayer` middleware
-/// handles standard preflight requests before they reach routes, but this
-/// ensures correct headers if the middleware is bypassed or misconfigured.
-///
-/// **Deprecated**: This function uses `Access-Control-Allow-Origin: *` which is
-/// insecure for production use. Use `proxy_options_preflight_with_cors` with an
-/// explicit allowed origins list instead.
-///
-/// # Security Warning
-///
-/// This function allows any origin to access your resources, which may expose
-/// your application to CSRF attacks and data exfiltration. Migrate to
-/// `proxy_options_preflight_with_cors` with a whitelist of trusted origins.
-#[deprecated(
-    since = "0.2.0",
-    note = "Use `proxy_options_preflight_with_cors` with explicit origin list for security"
-)]
-#[allow(clippy::unused_async)]
-pub async fn proxy_options_preflight() -> Response {
-    build_deprecated_preflight_response()
-}
-
 // ------------------------------------------------------------------
 // CORS preflight helper functions
 // ------------------------------------------------------------------
@@ -565,26 +541,6 @@ fn build_allowed_cors_response(origin: &str) -> Response {
         .header("Vary", "Origin")
         .body(Body::empty())
         .expect("Failed to build allowed CORS response")
-}
-
-/// Build a deprecated preflight response with deprecation headers.
-///
-/// Used by deprecated functions to warn users to migrate to the new API.
-fn build_deprecated_preflight_response() -> Response {
-    Response::builder()
-        .status(StatusCode::NO_CONTENT)
-        .header("Access-Control-Allow-Origin", "*")
-        .header("Access-Control-Allow-Methods", CORS_ALLOW_METHODS)
-        .header("Access-Control-Allow-Headers", CORS_ALLOW_HEADERS)
-        .header("Access-Control-Expose-Headers", CORS_EXPOSE_HEADERS)
-        .header("Access-Control-Max-Age", CORS_MAX_AGE)
-        .header("Deprecation", "true")
-        .header(
-            "X-Deprecated",
-            "Use proxy_options_preflight_with_cors with explicit CORS config",
-        )
-        .body(Body::empty())
-        .expect("Failed to build deprecated preflight response")
 }
 
 /// Core CORS preflight logic shared between all preflight handlers.
@@ -961,7 +917,7 @@ async fn send_with_redirect_validation(
 
         // Determine if this redirect crosses origin boundaries.
         let is_cross_origin = url_origin(&location)
-            .map_or(false, |redirect_origin| redirect_origin != original_origin);
+            .is_some_and(|redirect_origin| redirect_origin != original_origin);
 
         // SSRF protection is handled by the DNS resolver at connection time
         let mut redirect_req = PROXY_CLIENT.get(&location);
@@ -987,44 +943,11 @@ async fn send_with_redirect_validation(
 }
 
 #[cfg(test)]
-#[allow(deprecated)]
 mod tests {
     use super::*;
     use axum::http::StatusCode;
 
-    // ------------------------------------------------------------------
-    // P-01: CORS preflight returns proper headers
-    // ------------------------------------------------------------------
-
-    #[tokio::test]
-    async fn test_options_preflight_returns_cors_headers() {
-        let response = proxy_options_preflight().await;
-
-        assert_eq!(response.status(), StatusCode::NO_CONTENT);
-
-        let headers = response.headers();
-        assert_eq!(
-            headers
-                .get("Access-Control-Allow-Origin")
-                .map(|v| v.to_str().unwrap_or("")),
-            Some("*"),
-            "OPTIONS preflight must include Access-Control-Allow-Origin"
-        );
-        assert!(
-            headers.get("Access-Control-Allow-Methods").is_some(),
-            "OPTIONS preflight must include Access-Control-Allow-Methods"
-        );
-        assert!(
-            headers.get("Access-Control-Allow-Headers").is_some(),
-            "OPTIONS preflight must include Access-Control-Allow-Headers"
-        );
-        assert!(
-            headers.get("Access-Control-Max-Age").is_some(),
-            "OPTIONS preflight should include Access-Control-Max-Age for caching"
-        );
-    }
-
-    // ------------------------------------------------------------------
+// ------------------------------------------------------------------
     // CORS preflight helper function tests
     // ------------------------------------------------------------------
 
@@ -1156,29 +1079,7 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_build_deprecated_preflight_response() {
-        let response = build_deprecated_preflight_response();
-
-        assert_eq!(response.status(), StatusCode::NO_CONTENT);
-        assert_eq!(
-            response
-                .headers()
-                .get("Access-Control-Allow-Origin")
-                .map(|v| v.to_str().unwrap()),
-            Some("*")
-        );
-        assert_eq!(
-            response
-                .headers()
-                .get("Deprecation")
-                .map(|v| v.to_str().unwrap()),
-            Some("true")
-        );
-        assert!(response.headers().get("X-Deprecated").is_some());
-    }
-
-    #[test]
+#[test]
     fn test_handle_cors_preflight_wildcard_mode() {
         let config = CorsConfig::new_wildcard();
         let response = handle_cors_preflight(Some("https://example.com"), &config);

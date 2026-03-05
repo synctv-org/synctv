@@ -129,13 +129,13 @@ fn test_invalid_key_lengths() {
 }
 
 #[test]
-fn test_decrypt_plaintext_backward_compatibility() {
+fn test_decrypt_plaintext_returns_error() {
     let enc = CredentialEncryption::new(&test_key()).unwrap();
 
-    // Plaintext JSON string should be parsed directly (backward compat)
+    // Plaintext JSON string should be rejected
     let plaintext = r#"{"cookies":{"SESSDATA":"test_value"}}"#;
-    let decrypted = enc.decrypt(plaintext).unwrap();
-    assert_eq!(decrypted["cookies"]["SESSDATA"], "test_value");
+    let result = enc.decrypt(plaintext);
+    assert!(result.is_err(), "Plaintext credentials should be rejected");
 }
 
 #[test]

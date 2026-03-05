@@ -13,7 +13,7 @@ use sqlx::PgPool;
 use synctv_core::{
     cache::{KeyBuilder, NoopCacheL2, UsernameCache},
     config::PasswordComplexityConfig,
-    models::{Media, MediaId, Playlist, User, UserId, UserRole, UserStatus},
+    models::{room::AutoPlaySettings, Media, MediaId, PlayMode, Playlist, User, UserId, UserRole, UserStatus},
     repository::{MediaRepository, UserRepository},
     service::{
         auth::{BruteForceProtection, JwtService},
@@ -58,7 +58,7 @@ fn make_user(username: &str) -> User {
         role: UserRole::User,
         status: UserStatus::Active,
         email_verified: true,
-        signup_method: None,
+        signup_method: synctv_core::models::SignupMethod::Email,
         created_at: now,
         updated_at: now,
         password_changed_at: now,
@@ -575,7 +575,6 @@ async fn test_play_next_at_end_of_playlist() {
     // Sequential mode (no loop) - play_next should return None
     let settings = RoomSettings {
         auto_play_next: room_settings::AutoPlayNext(false),
-        loop_playlist: room_settings::LoopPlaylist(false),
         ..Default::default()
     };
 
@@ -653,9 +652,15 @@ async fn test_play_next_with_loop_enabled() {
         .await
         .unwrap();
 
-    // Loop mode enabled
+    // Loop (RepeatAll) mode enabled via auto_play
     let settings = RoomSettings {
-        loop_playlist: room_settings::LoopPlaylist(true),
+        auto_play: room_settings::AutoPlay {
+            value: AutoPlaySettings {
+                enabled: true,
+                mode: PlayMode::RepeatAll,
+                delay: 0,
+            },
+        },
         ..Default::default()
     };
 

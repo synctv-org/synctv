@@ -9,10 +9,8 @@ use sqlx::PgPool;
 
 /// Provider Instance Repository
 ///
-/// Supports optional encryption for sensitive fields (`jwt_secret`, `custom_ca`)
-/// using `CredentialEncryption`. When encryption is configured, these fields are
-/// encrypted before storage and decrypted after read. Plaintext values are
-/// supported for backward compatibility during the migration period.
+/// Encrypts sensitive fields (`jwt_secret`, `custom_ca`) using `CredentialEncryption`
+/// before storage and decrypts after read. Encryption is mandatory.
 pub struct ProviderInstanceRepository {
     pool: PgPool,
     encryption: Option<CredentialEncryption>,
@@ -28,7 +26,7 @@ impl std::fmt::Debug for ProviderInstanceRepository {
 }
 
 impl ProviderInstanceRepository {
-    /// Create a new repository without encryption (backward compatible)
+    /// Create a new repository without encryption
     #[must_use]
     pub const fn new(pool: PgPool) -> Self {
         Self {
@@ -59,7 +57,7 @@ impl ProviderInstanceRepository {
         }
     }
 
-    /// Decrypt a string field after reading (handles both encrypted and plaintext).
+    /// Decrypt a string field after reading. Only encrypted values (enc: prefix) are supported.
     fn decrypt_field(&self, stored: &Option<String>) -> Result<Option<String>> {
         match (&self.encryption, stored) {
             (Some(enc), Some(value)) if value.starts_with("enc:") => {
@@ -246,87 +244,11 @@ impl ProviderInstanceRepository {
         Ok(())
     }
 
-    /// Migrate plaintext `jwt_secret` and `custom_ca` to encrypted format.
-    ///
-    /// Runs inside a single database transaction so that a crash mid-migration
-    /// will not leave a mix of encrypted and plaintext rows. Safe to run
-    /// multiple times (idempotent).
-    ///
-    /// Returns the number of instances migrated.
-    pub async fn migrate_plaintext_to_encrypted(&self) -> Result<u64> {
-        let encryption = match &self.encryption {
-            Some(enc) => enc,
-            None => {
-                return Err(crate::Error::Internal(
-                    "Cannot migrate provider instances: encryption not configured".to_string(),
-                ))
-            }
-        };
-
-        let mut tx = self.pool.begin().await?;
-
-        // Fetch all instances within the transaction (raw, without decryption)
-        let instances = sqlx::query_as::<_, ProviderInstance>(
-            "SELECT * FROM media_provider_instances ORDER BY name",
-        )
-        .fetch_all(&mut *tx)
-        .await?;
-
-        let mut migrated_count = 0u64;
-
-        for instance in instances {
-            let mut needs_update = false;
-            let mut new_jwt_secret = instance.jwt_secret.clone();
-            let mut new_custom_ca = instance.custom_ca.clone();
-
-            // Check and encrypt jwt_secret if plaintext
-            if let Some(ref secret) = instance.jwt_secret {
-                if !secret.is_empty() && !secret.starts_with("enc:") {
-                    let json_value = serde_json::Value::String(secret.clone());
-                    new_jwt_secret = Some(encryption.encrypt(&json_value)?);
-                    needs_update = true;
-                }
-            }
-
-            // Check and encrypt custom_ca if plaintext
-            if let Some(ref ca) = instance.custom_ca {
-                if !ca.is_empty() && !ca.starts_with("enc:") {
-                    let json_value = serde_json::Value::String(ca.clone());
-                    new_custom_ca = Some(encryption.encrypt(&json_value)?);
-                    needs_update = true;
-                }
-            }
-
-            if needs_update {
-                sqlx::query(
-                    "UPDATE media_provider_instances SET jwt_secret = $2, custom_ca = $3, updated_at = NOW() WHERE name = $1"
-                )
-                .bind(&instance.name)
-                .bind(&new_jwt_secret)
-                .bind(&new_custom_ca)
-                .execute(&mut *tx)
-                .await?;
-
-                migrated_count += 1;
-            }
-        }
-
-        tx.commit().await?;
-
-        tracing::info!(
-            "Migrated {} provider instances from plaintext to encrypted secrets",
-            migrated_count
-        );
-
-        Ok(migrated_count)
-    }
 }
 
 /// User Provider Credential Repository
 ///
-/// Credentials are encrypted at rest using AES-256-GCM when a `CredentialEncryption`
-/// instance is provided. During read, both encrypted and plaintext data are supported
-/// for backward compatibility during the migration period.
+/// Credentials are encrypted at rest using AES-256-GCM. Encryption is mandatory.
 pub struct UserProviderCredentialRepository {
     pool: PgPool,
     encryption: Option<CredentialEncryption>,
@@ -342,7 +264,7 @@ impl std::fmt::Debug for UserProviderCredentialRepository {
 }
 
 impl UserProviderCredentialRepository {
-    /// Create a new repository without encryption (backward compatible)
+    /// Create a new repository without encryption
     #[must_use]
     pub const fn new(pool: PgPool) -> Self {
         Self {
@@ -368,7 +290,7 @@ impl UserProviderCredentialRepository {
         }
     }
 
-    /// Decrypt credential data after reading (handles both encrypted and plaintext)
+    /// Decrypt credential data after reading
     fn decrypt_credential(&self, data: &serde_json::Value) -> Result<serde_json::Value> {
         match &self.encryption {
             Some(enc) => enc.decrypt_value(data),
@@ -571,64 +493,6 @@ impl UserProviderCredentialRepository {
         Ok(result.rows_affected())
     }
 
-    /// Migrate plaintext credentials to encrypted format
-    ///
-    /// Runs inside a single database transaction so that a crash mid-migration
-    /// will not leave a mix of encrypted and plaintext rows. Safe to run
-    /// multiple times (idempotent).
-    ///
-    /// Returns the number of credentials migrated.
-    pub async fn migrate_plaintext_to_encrypted(&self) -> Result<u64> {
-        let encryption = match &self.encryption {
-            Some(enc) => enc,
-            None => {
-                return Err(crate::Error::Internal(
-                    "Cannot migrate credentials: encryption not configured".to_string(),
-                ))
-            }
-        };
-
-        let mut tx = self.pool.begin().await?;
-
-        // Fetch all credentials within the transaction (raw, without decryption)
-        let creds = sqlx::query_as::<_, UserProviderCredential>(
-            "SELECT * FROM user_media_provider_credentials ORDER BY id",
-        )
-        .fetch_all(&mut *tx)
-        .await?;
-
-        let mut migrated_count = 0u64;
-
-        for cred in creds {
-            // Skip already-encrypted credentials
-            if CredentialEncryption::is_encrypted(&cred.credential_data) {
-                continue;
-            }
-
-            // Encrypt the plaintext credential data
-            let encrypted_data = encryption.encrypt_to_value(&cred.credential_data)?;
-
-            // Update in database
-            sqlx::query(
-                "UPDATE user_media_provider_credentials SET credential_data = $2, updated_at = NOW() WHERE id = $1"
-            )
-            .bind(&cred.id)
-            .bind(&encrypted_data)
-            .execute(&mut *tx)
-            .await?;
-
-            migrated_count += 1;
-        }
-
-        tx.commit().await?;
-
-        tracing::info!(
-            "Migrated {} plaintext credentials to encrypted format",
-            migrated_count
-        );
-
-        Ok(migrated_count)
-    }
 }
 
 #[cfg(test)]

@@ -47,21 +47,20 @@ fn test_postgres_credential_storage_has_with_encryption_constructor() {
     // Note: We cannot actually construct a PostgresCredentialStorage without a PgPool,
     // but this test documents the expected API.
     // The actual implementation should provide:
-    // - PostgresCredentialStorage::new(pool) - without encryption (backward compat)
+    // - PostgresCredentialStorage::new(pool) - without encryption
     // - PostgresCredentialStorage::with_encryption(pool, key) - with encryption
 
     // Verify the type exists by checking its size
     let _ = std::mem::size_of::<PostgresCredentialStorage>();
 }
 
-/// Verify that PostgresCredentialStorage::new exists (backward compatibility)
+/// Verify that PostgresCredentialStorage::new exists
 #[test]
 fn test_postgres_credential_storage_has_new_constructor() {
     use synctv_media_providers::PostgresCredentialStorage;
 
     // PostgresCredentialStorage::new(PgPool) should exist
     // This is verified by the existing code that uses it
-    // The new() constructor creates storage WITHOUT encryption for backward compatibility
 
     // The type should exist
     let _ = std::mem::size_of::<PostgresCredentialStorage>();

@@ -6,7 +6,7 @@
 //!
 //! # Encryption Pattern
 //!
-//! 1. During `prepare_source_config`: encrypt plaintext credentials before storage
+//! 1. During `prepare_source_config`: encrypt credentials before storage
 //! 2. During `generate_playback`: decrypt credentials for API calls
 //!
 //! # Supported Field Types
@@ -96,9 +96,9 @@ pub fn encrypt_field_in_value(
 ///
 /// # Returns
 ///
-/// Returns the config with the specified field decrypted. If the field is not
-/// encrypted (doesn't start with "enc:"), returns the original config unchanged
-/// for backward compatibility with plaintext credentials.
+/// Returns the config with the specified field decrypted. String fields must
+/// be encrypted (start with "enc:"). Non-string fields (objects, missing) are
+/// left unchanged.
 ///
 /// # Errors
 ///
@@ -113,7 +113,7 @@ pub fn decrypt_field_in_value(
     if let Some(obj) = result.as_object_mut() {
         if let Some(field_value) = obj.get(field_name) {
             if let Some(encrypted_str) = field_value.as_str() {
-                if encrypted_str.starts_with("enc:") {
+                if !encrypted_str.is_empty() {
                     let decrypted = encryption.decrypt(encrypted_str).map_err(|e| {
                         ProviderError::ApiError(format!(
                             "Failed to decrypt {provider_name} {field_name}: {e}"
@@ -300,20 +300,20 @@ mod tests {
     }
 
     #[test]
-    fn test_decrypt_field_skips_plaintext_string_for_backward_compat() {
+    fn test_decrypt_field_rejects_plaintext_string() {
         let enc = test_encryption();
         let config = json!({
             "token": "plaintext_token"
         });
 
-        let result = decrypt_field_in_value(&config, &enc, "token", "Test").unwrap();
+        let result = decrypt_field_in_value(&config, &enc, "token", "Test");
 
-        // Plaintext token should pass through unchanged
-        assert_eq!(result.get("token").unwrap(), "plaintext_token");
+        // Plaintext token should be rejected
+        assert!(result.is_err(), "Plaintext credentials should be rejected");
     }
 
     #[test]
-    fn test_decrypt_field_skips_object_for_backward_compat() {
+    fn test_decrypt_field_skips_object_field() {
         let enc = test_encryption();
         let config = json!({
             "cookies": {
@@ -323,7 +323,7 @@ mod tests {
 
         let result = decrypt_field_in_value(&config, &enc, "cookies", "Test").unwrap();
 
-        // Plaintext cookies object should pass through unchanged
+        // Non-string fields are left unchanged (they are not encrypted strings)
         assert_eq!(
             result.get("cookies").unwrap().get("SESSDATA").unwrap(),
             "session_value"

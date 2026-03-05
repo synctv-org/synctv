@@ -98,7 +98,7 @@ impl UserFixture {
             password_hash: self.password_hash,
             role: self.role,
             status: self.status,
-            signup_method: None,
+            signup_method: crate::models::SignupMethod::Email,
             email_verified: true,
             created_at: now,
             updated_at: now,

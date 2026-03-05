@@ -411,7 +411,6 @@ mod config_initialization_tests {
                 cluster_secret: String::new(),
                 advertise_host: String::new(),
                 shutdown_drain_timeout_seconds: 30,
-                disable_ws_token_query: false,
             },
             database: DatabaseConfig::default(),
             redis: RedisConfig::default(),

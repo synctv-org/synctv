@@ -40,7 +40,7 @@ pub use config::*;
 pub use context::*;
 pub use credential_resolver::*;
 pub use error::*;
-pub use provider_client::{global_client_manager, ProviderClientManager};
+pub use provider_client::ProviderClientManager;
 pub use proxy::*;
 pub use registry::*;
 pub use store::*;

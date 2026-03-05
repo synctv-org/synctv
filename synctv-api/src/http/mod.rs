@@ -1,5 +1,5 @@
 // Module: http
-// HTTP/JSON REST API for backward compatibility and easier integration
+// HTTP/JSON REST API
 
 pub mod admin;
 pub mod auth;

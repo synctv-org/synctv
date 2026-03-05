@@ -69,7 +69,7 @@ pub mod content_moderation {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SettingsGroup {
     pub key: String,
-    /// Settings group name (maps to `group_name` column in database and `group` in JSON)
+    /// Settings group name (Rust field is `group_name` to match the database column; serialized as `group` in JSON)
     #[serde(rename = "group")]
     pub group_name: String,
     pub value: String,
@@ -260,7 +260,7 @@ mod tests {
 
     #[test]
     fn test_settings_group_json_field_name_is_group() {
-        // Verify that JSON serialization uses "group" field name (backward compatibility)
+        // Verify that JSON serialization uses "group" field name
         // even though the Rust struct field is "group_name" (matching database column)
         let sg = SettingsGroup::new("email".to_string(), r#"{"enabled":true}"#.to_string());
         let json = serde_json::to_value(&sg).unwrap();
@@ -279,7 +279,7 @@ mod tests {
 
     #[test]
     fn test_settings_group_deserialize_from_group_field() {
-        // Verify that JSON deserialization accepts "group" field name (backward compatibility)
+        // Verify that JSON deserialization accepts "group" field name
         let json = serde_json::json!({
             "key": "server.default",
             "group": "server",

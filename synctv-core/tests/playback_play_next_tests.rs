@@ -1,7 +1,7 @@
 //! `PlaybackService::play_next` logic tests
 //!
 //! Tests the `play_next` method's playlist navigation logic for each `PlayMode`,
-//! including edge cases like deleted media, empty playlists, and legacy field mapping.
+//! including edge cases like deleted media and empty playlists.
 //!
 //! These tests exercise the `play_next` decision logic with a real `PostgreSQL`
 //! via testcontainers, since `play_next` reads from the DB repo layer.
@@ -18,7 +18,7 @@ use synctv_core::{
     config::PasswordComplexityConfig,
     models::{
         room::AutoPlaySettings,
-        room_settings::{AutoPlay, AutoPlayNext, LoopPlaylist, ShufflePlaylist},
+        room_settings::{AutoPlay, AutoPlayNext},
         Media, MediaId, PlayMode, Playlist, PlaylistId, RoomId, RoomSettings, User, UserId,
         UserRole, UserStatus,
     },
@@ -65,7 +65,7 @@ fn make_user(username: &str) -> User {
         role: UserRole::User,
         status: UserStatus::Active,
         email_verified: true,
-        signup_method: None,
+        signup_method: synctv_core::models::SignupMethod::Email,
         created_at: now,
         updated_at: now,
         password_changed_at: now,
@@ -555,109 +555,6 @@ async fn test_auto_play_disabled_returns_none() {
     assert!(
         result.is_none(),
         "play_next should return None when auto_play disabled"
-    );
-}
-
-// ========== Legacy Field Mapping Tests ==========
-
-#[tokio::test]
-#[ignore = "Requires Docker"]
-async fn test_legacy_loop_playlist_maps_to_repeat_all() {
-    let (_container, pool) = create_test_pool().await;
-    let user_repo = UserRepository::new(pool.clone());
-    let room_service = make_room_service(pool.clone());
-
-    let owner = user_repo
-        .create(&make_user("legacy_loop_owner"))
-        .await
-        .unwrap();
-    let (room, _) = room_service
-        .create_room(
-            "Legacy Loop".to_string(),
-            String::new(),
-            owner.id.clone(),
-            None,
-            None,
-        )
-        .await
-        .unwrap();
-
-    let playlist = get_root_playlist(&pool, &room.id).await;
-    let media1 = insert_media(&pool, &playlist.id, &room.id, "loop_last", 0).await;
-
-    let playback = room_service.playback_service();
-    playback
-        .switch_media(room.id.clone(), owner.id.clone(), media1.id.clone())
-        .await
-        .unwrap();
-
-    // Use legacy field: loop_playlist = true, auto_play.mode = Sequential (default)
-    let settings = RoomSettings {
-        auto_play_next: AutoPlayNext(true),
-        loop_playlist: LoopPlaylist(true),
-        ..Default::default()
-    };
-    // auto_play.mode stays Sequential, which triggers legacy fallback
-
-    let result = playback.play_next(&room.id, &settings).await.unwrap();
-    // Single item + RepeatAll should wrap to itself
-    assert!(
-        result.is_some(),
-        "Legacy loop_playlist should enable RepeatAll behavior"
-    );
-    let state = result.unwrap();
-    assert_eq!(
-        state.playing_media_id,
-        Some(media1.id),
-        "Should wrap around (RepeatAll from legacy field)"
-    );
-}
-
-#[tokio::test]
-#[ignore = "Requires Docker"]
-async fn test_legacy_shuffle_playlist_maps_to_shuffle() {
-    let (_container, pool) = create_test_pool().await;
-    let user_repo = UserRepository::new(pool.clone());
-    let room_service = make_room_service(pool.clone());
-
-    let owner = user_repo
-        .create(&make_user("legacy_shuf_owner"))
-        .await
-        .unwrap();
-    let (room, _) = room_service
-        .create_room(
-            "Legacy Shuf".to_string(),
-            String::new(),
-            owner.id.clone(),
-            None,
-            None,
-        )
-        .await
-        .unwrap();
-
-    let playlist = get_root_playlist(&pool, &room.id).await;
-    let media1 = insert_media(&pool, &playlist.id, &room.id, "s1", 0).await;
-    for i in 2..=5 {
-        insert_media(&pool, &playlist.id, &room.id, &format!("s{i}"), i - 1).await;
-    }
-
-    let playback = room_service.playback_service();
-    playback
-        .switch_media(room.id.clone(), owner.id.clone(), media1.id.clone())
-        .await
-        .unwrap();
-
-    // Legacy shuffle_playlist = true
-    let settings = RoomSettings {
-        auto_play_next: AutoPlayNext(true),
-        shuffle_playlist: ShufflePlaylist(true),
-        ..Default::default()
-    };
-
-    let result = playback.play_next(&room.id, &settings).await.unwrap();
-    assert!(
-        result.is_some(),
-        "Legacy shuffle_playlist should enable shuffle behavior"
     );
 }
 

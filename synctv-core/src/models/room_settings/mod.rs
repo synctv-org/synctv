@@ -302,8 +302,6 @@ room_setting!(RequirePassword, bool, "require_password", false);
 room_setting!(RequireApproval, bool, "require_approval", false);
 room_setting!(AllowAutoJoin, bool, "allow_auto_join", true);
 room_setting!(AutoPlayNext, bool, "auto_play_next", false);
-room_setting!(LoopPlaylist, bool, "loop_playlist", false);
-room_setting!(ShufflePlaylist, bool, "shuffle_playlist", false);
 
 /// Maximum allowed value for `max_members` setting (used in validator below)
 const MAX_MEMBERS_LIMIT: u64 = 10_000;
@@ -440,10 +438,6 @@ pub struct RoomSettings {
     pub danmaku_enabled: DanmakuEnabled,
     #[serde(default)]
     pub auto_play_next: AutoPlayNext,
-    #[serde(default)]
-    pub loop_playlist: LoopPlaylist,
-    #[serde(default)]
-    pub shuffle_playlist: ShufflePlaylist,
     #[serde(default)]
     pub auto_play: AutoPlay,
     #[serde(default)]

@@ -59,7 +59,7 @@ fn make_user(username: &str) -> User {
         role: UserRole::User,
         status: UserStatus::Active,
         email_verified: true,
-        signup_method: None,
+        signup_method: synctv_core::models::SignupMethod::Email,
         created_at: now,
         updated_at: now,
         password_changed_at: now,

@@ -234,14 +234,6 @@ impl ProviderClientManager {
 static GLOBAL_CLIENT_MANAGER: std::sync::LazyLock<ProviderClientManager> =
     std::sync::LazyLock::new(ProviderClientManager::new);
 
-/// Get the global `ProviderClientManager` instance.
-///
-/// Prefer using dependency injection over this function.
-#[must_use]
-pub fn global_client_manager() -> &'static ProviderClientManager {
-    &GLOBAL_CLIENT_MANAGER
-}
-
 // ============================================================================
 // Alist Client
 // ============================================================================
@@ -871,33 +863,6 @@ mod tests {
 
         // Both calls should return the same client (from global manager)
         assert!(Arc::ptr_eq(&client1, &client2));
-    }
-
-    /// Test that `global_client_manager` returns a valid reference
-    #[test]
-    fn test_global_client_manager_returns_valid_reference() {
-        let manager = global_client_manager();
-        let _ = manager.local_alist_client();
-        let _ = manager.local_bilibili_client();
-        let _ = manager.local_emby_client();
-    }
-
-    /// Test that multiple calls to `global_client_manager` return the same instance
-    #[test]
-    fn test_global_client_manager_singleton() {
-        let manager1 = std::ptr::from_ref::<ProviderClientManager>(global_client_manager());
-        let manager2 = std::ptr::from_ref::<ProviderClientManager>(global_client_manager());
-
-        assert_eq!(manager1, manager2);
-    }
-
-    /// Test backward compatibility: `load_local_xxx_client` functions work
-    #[test]
-    fn test_backward_compatibility_load_functions() {
-        // These functions should work as before
-        let _alist = load_local_alist_client();
-        let _bilibili = load_local_bilibili_client();
-        let _emby = load_local_emby_client();
     }
 
     /// Test that `create_remote_xxx_client` functions work

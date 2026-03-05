@@ -629,28 +629,6 @@ pub fn validate_pagination(page: Option<i32>, page_size: Option<i32>) -> (i32, i
     (validate_page(page), validate_page_size(page_size))
 }
 
-/// Validate pagination limit (legacy function for backward compatibility)
-///
-/// # Deprecated
-/// Use `validate_page_size` instead for consistency with page-based pagination.
-pub const fn validate_pagination_limit(limit: u32) -> ValidationResult<u32> {
-    // Default and max limits
-    const DEFAULT_LIMIT: u32 = 20;
-    const MAX_LIMIT: u32 = 100;
-
-    if limit == 0 {
-        return Ok(DEFAULT_LIMIT);
-    }
-    if limit > MAX_LIMIT {
-        return Err(ValidationError::TooLong {
-            field: "limit",
-            max: MAX_LIMIT as usize,
-            actual: limit as usize,
-        });
-    }
-    Ok(limit)
-}
-
 /// Validate generic ID (`user_id`, `media_id`, etc.)
 pub fn validate_id(id: &str, field_name: &'static str) -> ValidationResult<String> {
     let sanitized = sanitize_string(id);
@@ -1068,13 +1046,6 @@ mod tests {
         assert!(validate_playback_speed(4.0).is_ok()); // Max
         assert!(validate_playback_speed(0.1).is_err()); // Too slow
         assert!(validate_playback_speed(5.0).is_err()); // Too fast
-    }
-
-    #[test]
-    fn test_validate_pagination_limit() {
-        assert_eq!(validate_pagination_limit(0).unwrap(), 20); // Default
-        assert_eq!(validate_pagination_limit(50).unwrap(), 50);
-        assert!(validate_pagination_limit(101).is_err()); // Over max
     }
 
     // ========== Pagination Validation Tests ==========

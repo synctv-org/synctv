@@ -80,6 +80,7 @@ async fn test_jwt_expiry_enforcement() {
         sub: String,
         typ: String,
         jti: String,
+        pv: i32,
         iat: i64,
         exp: i64,
     }
@@ -93,6 +94,7 @@ async fn test_jwt_expiry_enforcement() {
         sub: user_id.as_str().to_string(),
         typ: "access".to_string(),
         jti: nanoid::nanoid!(),
+        pv: 0,
         iat: now - 7200, // 2 hours ago
         exp: now - 3600, // expired 1 hour ago
     };
@@ -667,7 +669,7 @@ async fn test_token_includes_password_version() {
 
     assert_eq!(
         claims_v0.pv,
-        Some(0),
+        0,
         "Token should include password version"
     );
 
@@ -682,7 +684,7 @@ async fn test_token_includes_password_version() {
 
     assert_eq!(
         claims_v5.pv,
-        Some(5),
+        5,
         "Token should include updated password version"
     );
 }

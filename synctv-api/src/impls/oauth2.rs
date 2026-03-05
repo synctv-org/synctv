@@ -642,7 +642,7 @@ mod tests {
             password_hash: "$argon2id$v=19$m=16384,t=3,p=1$random$hash".to_string(),
             role: UserRole::User,
             status: UserStatus::Active,
-            signup_method: Some(SignupMethod::OAuth2),
+            signup_method: SignupMethod::OAuth2,
             email_verified: false,
             created_at: now,
             updated_at: now,
@@ -668,7 +668,7 @@ mod tests {
 
         // Case 3: Email signup user always has usable password
         let email_user = User {
-            signup_method: Some(SignupMethod::Email),
+            signup_method: SignupMethod::Email,
             ..oauth2_user_no_password
         };
         assert!(

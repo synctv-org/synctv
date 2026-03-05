@@ -2769,13 +2769,13 @@ pub struct VideoSegment {
 ///
 /// Bilibili may return multiple durl segments for a single video (common for
 /// older videos or certain formats). The `url` field contains the first segment
-/// for backwards compatibility; `segments` contains ALL segments.
+/// as a convenience; `segments` contains ALL segments.
 #[derive(Debug, Clone)]
 pub struct VideoUrlInfo {
     pub accept_quality: Vec<u32>,
     pub accept_description: Vec<String>,
     pub current_quality: u32,
-    /// First segment URL (for backwards compatibility with single-segment callers).
+    /// First segment URL (convenience accessor for single-segment callers).
     pub url: String,
     /// All video segments. For single-segment videos this has one entry.
     pub segments: Vec<VideoSegment>,

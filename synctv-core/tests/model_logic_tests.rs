@@ -104,28 +104,43 @@ fn test_user_status_from_str_roundtrip() {
 #[test]
 fn test_signup_method_from_str_name() {
     assert_eq!(
+        SignupMethod::from_str_name("unknown"),
+        Some(SignupMethod::Unknown)
+    );
+    assert_eq!(
         SignupMethod::from_str_name("email"),
         Some(SignupMethod::Email)
+    );
+    assert_eq!(
+        SignupMethod::from_str_name("password"),
+        Some(SignupMethod::Password)
     );
     assert_eq!(
         SignupMethod::from_str_name("oauth2"),
         Some(SignupMethod::OAuth2)
     );
-    assert_eq!(SignupMethod::from_str_name("unknown"), None);
+    assert_eq!(
+        SignupMethod::from_str_name("admin_created"),
+        Some(SignupMethod::AdminCreated)
+    );
     assert_eq!(SignupMethod::from_str_name(""), None);
+    assert_eq!(SignupMethod::from_str_name("invalid"), None);
 }
 
 #[test]
 fn test_signup_method_as_str() {
+    assert_eq!(SignupMethod::Unknown.as_str(), "unknown");
     assert_eq!(SignupMethod::Email.as_str(), "email");
+    assert_eq!(SignupMethod::Password.as_str(), "password");
     assert_eq!(SignupMethod::OAuth2.as_str(), "oauth2");
+    assert_eq!(SignupMethod::AdminCreated.as_str(), "admin_created");
 }
 
 // ============================================================================
 // User model logic tests
 // ============================================================================
 
-fn make_user(role: UserRole, status: UserStatus, signup_method: Option<SignupMethod>) -> User {
+fn make_user(role: UserRole, status: UserStatus, signup_method: SignupMethod) -> User {
     let mut user = User::new_with_status(
         "testuser".to_string(),
         Some("test@example.com".to_string()),
@@ -143,7 +158,7 @@ fn test_user_new_defaults() {
         "alice".to_string(),
         Some("alice@example.com".to_string()),
         "hash".to_string(),
-        Some(SignupMethod::Email),
+        SignupMethod::Email,
     );
     assert_eq!(user.role, UserRole::User);
     assert_eq!(user.status, UserStatus::Pending);
@@ -156,7 +171,7 @@ fn test_user_new_defaults() {
 #[test]
 fn test_user_can_create_room_role_and_status_interaction() {
     // Active admin: always can create rooms
-    let mut user = make_user(UserRole::Admin, UserStatus::Active, None);
+    let mut user = make_user(UserRole::Admin, UserStatus::Active, SignupMethod::Email);
     assert!(user.can_create_room(false));
     assert!(user.can_create_room(true));
 
@@ -174,7 +189,7 @@ fn test_user_can_create_room_role_and_status_interaction() {
     assert!(!user.can_create_room(true));
 
     // Pending admin: cannot create rooms (status blocks it)
-    let user = make_user(UserRole::Admin, UserStatus::Pending, None);
+    let user = make_user(UserRole::Admin, UserStatus::Pending, SignupMethod::Email);
     assert!(!user.can_create_room(true));
 }
 
@@ -183,7 +198,7 @@ fn test_user_can_unbind_provider_email_signup() {
     let user = make_user(
         UserRole::User,
         UserStatus::Active,
-        Some(SignupMethod::Email),
+        SignupMethod::Email,
     );
     // Email users can always unbind OAuth2 providers (they still have email)
     assert!(user.can_unbind_provider(0, true));
@@ -196,7 +211,7 @@ fn test_user_can_unbind_provider_oauth2_signup() {
     let user = make_user(
         UserRole::User,
         UserStatus::Active,
-        Some(SignupMethod::OAuth2),
+        SignupMethod::OAuth2,
     );
     // OAuth2 user needs at least one OAuth2 or has email
     assert!(!user.can_unbind_provider(1, false)); // Only 1 OAuth2, no email -> cannot unbind
@@ -205,18 +220,18 @@ fn test_user_can_unbind_provider_oauth2_signup() {
 }
 
 #[test]
-fn test_user_can_unbind_provider_legacy() {
-    let user = make_user(UserRole::User, UserStatus::Active, None);
-    // Legacy users: need email or multiple OAuth2
-    assert!(!user.can_unbind_provider(0, false));
-    assert!(!user.can_unbind_provider(1, false));
+fn test_user_can_unbind_provider_email_user_always_can() {
+    let user = make_user(UserRole::User, UserStatus::Active, SignupMethod::Email);
+    // Email users can always unbind providers
+    assert!(user.can_unbind_provider(0, false));
+    assert!(user.can_unbind_provider(1, false));
     assert!(user.can_unbind_provider(2, false));
     assert!(user.can_unbind_provider(0, true));
 }
 
 #[test]
 fn test_user_role_predicates() {
-    let mut user = make_user(UserRole::Root, UserStatus::Active, None);
+    let mut user = make_user(UserRole::Root, UserStatus::Active, SignupMethod::Email);
     assert!(user.is_root());
     assert!(!user.is_admin());
     assert!(user.is_admin_or_above());

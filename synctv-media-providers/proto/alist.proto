@@ -72,7 +72,6 @@ message FsListResp {
     uint64 size = 2;
     bool isDir = 3;
     uint64 modified = 4;
-    reserved 5; // previously 'created', removed
     string sign = 6;
     string thumb = 7;
     uint64 type = 8;
@@ -132,7 +131,6 @@ message MeReq {
 message MeResp {
   uint64 id = 1;
   string username = 2;
-  reserved 3; // password field removed - never expose password hash over gRPC
   string basePath = 4;
   uint64 role = 5;
   bool disabled = 6;

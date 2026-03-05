@@ -899,45 +899,22 @@ impl ClientApiImpl {
         // Enforce a hard max page size of 100 to prevent OOM on large rooms
         let limit = req.limit.clamp(1, 100);
 
-        // Cursor takes precedence over the legacy timestamp field.
-        // If cursor is non-empty, use (created_at, id) composite keyset pagination
-        // (avoids O(N) scans and nanoid ordering issues).
+        // Cursor-based keyset pagination using (created_at, id) composite key.
         // Cursor format: "<rfc3339_created_at>|<id>"
-        // Otherwise fall back to the legacy timestamp-based pagination for backward compat.
-        let (messages, next_cursor_str) = if req.cursor.is_empty() {
-            // Legacy path: timestamp-based pagination
-            let before = if req.before > 0 {
-                chrono::DateTime::from_timestamp(req.before, 0)
-            } else {
-                None
-            };
-            let msgs = self
-                .room_service
-                .get_chat_history(&rid, before, limit)
-                .await
-                .map_err(ApiError::from)?;
-            // Derive a cursor from the oldest message so callers can switch to cursor pagination
-            let cursor = msgs
-                .last()
-                .map(|m| format!("{}|{}", m.created_at.to_rfc3339(), m.id));
-            (msgs, cursor)
+        let cursor = if let Some((ts_str, id)) = req.cursor.split_once('|') {
+            let ts = chrono::DateTime::parse_from_rfc3339(ts_str)
+                .map(|dt| dt.with_timezone(&chrono::Utc))
+                .map_err(|_| ApiError::InvalidInput("Invalid cursor format".to_string()))?;
+            Some((ts, id))
         } else {
-            let cursor = if let Some((ts_str, id)) = req.cursor.split_once('|') {
-                let ts = chrono::DateTime::parse_from_rfc3339(ts_str)
-                    .map(|dt| dt.with_timezone(&chrono::Utc))
-                    .map_err(|_| ApiError::InvalidInput("Invalid cursor format".to_string()))?;
-                Some((ts, id))
-            } else {
-                None
-            };
-            let (msgs, next) = self
-                .room_service
-                .get_chat_history_cursor(&rid, cursor.as_ref().map(|(ts, id)| (*ts, *id)), limit)
-                .await
-                .map_err(ApiError::from)?;
-            let next_str = next.map(|(ts, id)| format!("{}|{}", ts.to_rfc3339(), id));
-            (msgs, next_str)
+            None
         };
+        let (messages, next) = self
+            .room_service
+            .get_chat_history_cursor(&rid, cursor.as_ref().map(|(ts, id)| (*ts, *id)), limit)
+            .await
+            .map_err(ApiError::from)?;
+        let next_cursor_str = next.map(|(ts, id)| format!("{}|{}", ts.to_rfc3339(), id));
 
         // Collect unique user IDs to batch fetch usernames
         let user_ids: Vec<synctv_core::models::UserId> = messages

@@ -231,40 +231,78 @@ impl<'r> sqlx::Decode<'r, sqlx::Postgres> for UserStatus {
 }
 
 /// User signup method
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum SignupMethod {
+    /// Unknown or unspecified signup method (default)
+    #[default]
+    Unknown,
+    /// Registered via email verification flow
     Email,
+    /// Registered via username + password (no email verification)
+    Password,
+    /// Registered via OAuth2 provider
     OAuth2,
+    /// Created by an administrator
+    AdminCreated,
 }
 
 impl SignupMethod {
+    /// Integer representation for database storage.
+    #[must_use]
+    pub const fn as_i16(&self) -> i16 {
+        match self {
+            Self::Unknown => 0,
+            Self::Email => 1,
+            Self::Password => 2,
+            Self::OAuth2 => 3,
+            Self::AdminCreated => 4,
+        }
+    }
+
+    /// Parse from database integer value.
+    #[must_use]
+    pub const fn from_i16(v: i16) -> Option<Self> {
+        match v {
+            0 => Some(Self::Unknown),
+            1 => Some(Self::Email),
+            2 => Some(Self::Password),
+            3 => Some(Self::OAuth2),
+            4 => Some(Self::AdminCreated),
+            _ => None,
+        }
+    }
+
+    /// String representation for API serialization.
     #[must_use]
     pub const fn as_str(&self) -> &'static str {
         match self {
+            Self::Unknown => "unknown",
             Self::Email => "email",
+            Self::Password => "password",
             Self::OAuth2 => "oauth2",
+            Self::AdminCreated => "admin_created",
         }
     }
 
     /// Parse signup method from string name.
-    ///
-    /// Returns `None` for unrecognized values instead of silently defaulting,
-    /// so callers can handle unknown signup methods explicitly.
     #[must_use]
     pub fn from_str_name(s: &str) -> Option<Self> {
         match s {
+            "unknown" => Some(Self::Unknown),
             "email" => Some(Self::Email),
+            "password" => Some(Self::Password),
             "oauth2" => Some(Self::OAuth2),
+            "admin_created" => Some(Self::AdminCreated),
             _ => None,
         }
     }
 }
 
-// Database mapping: SignupMethod <-> VARCHAR
+// Database mapping: SignupMethod <-> SMALLINT
 impl sqlx::Type<sqlx::Postgres> for SignupMethod {
     fn type_info() -> sqlx::postgres::PgTypeInfo {
-        sqlx::postgres::PgTypeInfo::with_name("varchar")
+        <i16 as sqlx::Type<sqlx::Postgres>>::type_info()
     }
 }
 
@@ -273,7 +311,7 @@ impl sqlx::Encode<'_, sqlx::Postgres> for SignupMethod {
         &self,
         buf: &mut sqlx::postgres::PgArgumentBuffer,
     ) -> Result<sqlx::encode::IsNull, Box<dyn std::error::Error + Send + Sync>> {
-        <&str as sqlx::Encode<sqlx::Postgres>>::encode_by_ref(&self.as_str(), buf)
+        <i16 as sqlx::Encode<sqlx::Postgres>>::encode_by_ref(&self.as_i16(), buf)
     }
 }
 
@@ -281,8 +319,8 @@ impl<'r> sqlx::Decode<'r, sqlx::Postgres> for SignupMethod {
     fn decode(
         value: sqlx::postgres::PgValueRef<'r>,
     ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
-        let s = <String as sqlx::Decode<sqlx::Postgres>>::decode(value)?;
-        Self::from_str_name(&s).ok_or_else(|| format!("Unknown SignupMethod value: {s}").into())
+        let v = <i16 as sqlx::Decode<sqlx::Postgres>>::decode(value)?;
+        Self::from_i16(v).ok_or_else(|| format!("Unknown SignupMethod value: {v}").into())
     }
 }
 
@@ -300,7 +338,7 @@ pub struct User {
     /// User status (account state) - SEPARATE from role
     pub status: UserStatus,
 
-    pub signup_method: Option<SignupMethod>, // NULL for legacy users
+    pub signup_method: SignupMethod,
     pub email_verified: bool,                // Whether email has been verified
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
@@ -320,7 +358,7 @@ impl User {
         username: String,
         email: Option<String>,
         password_hash: String,
-        signup_method: Option<SignupMethod>,
+        signup_method: SignupMethod,
     ) -> Self {
         Self::new_with_status(
             username,
@@ -340,7 +378,7 @@ impl User {
         username: String,
         email: Option<String>,
         password_hash: String,
-        signup_method: Option<SignupMethod>,
+        signup_method: SignupMethod,
         initial_status: UserStatus,
     ) -> Self {
         let now = Utc::now();
@@ -411,8 +449,8 @@ impl User {
     /// Check if this user has a usable password for authentication.
     ///
     /// A user has usable password auth if:
-    /// - They signed up via email (explicitly set a password), OR
-    /// - They are a legacy user (`signup_method` is None) with a non-empty password hash, OR
+    /// - They signed up via email or password (explicitly set a password), OR
+    /// - They were created by admin and have a password set, OR
     /// - They signed up via `OAuth2` but later set a password (`password_version` > 0 indicates
     ///   the password was explicitly changed after account creation)
     ///
@@ -427,34 +465,25 @@ impl User {
         }
 
         match self.signup_method {
-            Some(SignupMethod::Email) => true,
-            Some(SignupMethod::OAuth2) => {
+            SignupMethod::Email | SignupMethod::Password | SignupMethod::AdminCreated | SignupMethod::Unknown => true,
+            SignupMethod::OAuth2 => {
                 // OAuth2 users get a random password at signup (pv=0).
                 // If pv > 0, the user explicitly changed/set their password.
                 self.password_version > 0
-            }
-            None => {
-                // Legacy users: assume they have a usable password if hash is non-empty
-                true
             }
         }
     }
 
     /// Check if user can unbind a provider
     /// `OAuth2` users cannot remove all `OAuth2` providers unless they have email
-    /// Email users cannot remove their email
+    /// Other users can unbind freely
     #[must_use]
     pub const fn can_unbind_provider(&self, has_oauth2_count: usize, has_email: bool) -> bool {
         match self.signup_method {
-            None => {
-                // Legacy users - allow if they have email or multiple OAuth2
-                has_email || has_oauth2_count > 1
-            }
-            Some(SignupMethod::Email) => {
-                // Email users can unbind OAuth2, but need to keep email
+            SignupMethod::Email | SignupMethod::Password | SignupMethod::AdminCreated | SignupMethod::Unknown => {
                 true
             }
-            Some(SignupMethod::OAuth2) => {
+            SignupMethod::OAuth2 => {
                 // OAuth2 users must keep at least one OAuth2 or add email
                 has_oauth2_count > 1 || has_email
             }
@@ -489,7 +518,7 @@ mod tests {
     use super::*;
 
     fn make_test_user(
-        signup_method: Option<SignupMethod>,
+        signup_method: SignupMethod,
         password_hash: &str,
         password_version: i32,
     ) -> User {
@@ -518,7 +547,7 @@ mod tests {
 
     #[test]
     fn test_email_user_has_usable_password() {
-        let user = make_test_user(Some(SignupMethod::Email), "$argon2id$fake_hash", 0);
+        let user = make_test_user(SignupMethod::Email, "$argon2id$fake_hash", 0);
         assert!(
             user.has_usable_password(),
             "Email signup user with non-empty hash should have usable password"
@@ -527,7 +556,7 @@ mod tests {
 
     #[test]
     fn test_email_user_empty_hash_no_usable_password() {
-        let user = make_test_user(Some(SignupMethod::Email), "", 0);
+        let user = make_test_user(SignupMethod::Email, "", 0);
         assert!(
             !user.has_usable_password(),
             "Email signup user with empty hash should NOT have usable password"
@@ -537,7 +566,7 @@ mod tests {
     #[test]
     fn test_oauth2_user_initial_no_usable_password() {
         // OAuth2 users start with password_version=0 and a random hash they don't know
-        let user = make_test_user(Some(SignupMethod::OAuth2), "$argon2id$random_hash", 0);
+        let user = make_test_user(SignupMethod::OAuth2, "$argon2id$random_hash", 0);
         assert!(
             !user.has_usable_password(),
             "OAuth2 user with pv=0 should NOT have usable password (random password they don't know)"
@@ -547,7 +576,7 @@ mod tests {
     #[test]
     fn test_oauth2_user_after_setting_password_has_usable_password() {
         // OAuth2 user who later explicitly set a password (pv > 0)
-        let user = make_test_user(Some(SignupMethod::OAuth2), "$argon2id$explicit_hash", 1);
+        let user = make_test_user(SignupMethod::OAuth2, "$argon2id$explicit_hash", 1);
         assert!(
             user.has_usable_password(),
             "OAuth2 user with pv > 0 should have usable password (they explicitly set one)"
@@ -556,29 +585,11 @@ mod tests {
 
     #[test]
     fn test_oauth2_user_empty_hash_no_usable_password() {
-        let user = make_test_user(Some(SignupMethod::OAuth2), "", 1);
+        let user = make_test_user(SignupMethod::OAuth2, "", 1);
         assert!(
             !user.has_usable_password(),
             "OAuth2 user with empty hash should NOT have usable password regardless of pv"
         );
     }
 
-    #[test]
-    fn test_legacy_user_has_usable_password() {
-        // Legacy users (signup_method=None) with non-empty hash
-        let user = make_test_user(None, "$argon2id$legacy_hash", 0);
-        assert!(
-            user.has_usable_password(),
-            "Legacy user with non-empty hash should have usable password"
-        );
-    }
-
-    #[test]
-    fn test_legacy_user_empty_hash_no_usable_password() {
-        let user = make_test_user(None, "", 0);
-        assert!(
-            !user.has_usable_password(),
-            "Legacy user with empty hash should NOT have usable password"
-        );
-    }
 }

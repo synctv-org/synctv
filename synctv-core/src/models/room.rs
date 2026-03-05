@@ -370,12 +370,6 @@ pub struct RoomSettingsJson {
     /// Auto-play settings
     #[serde(default)]
     pub auto_play: AutoPlaySettings,
-    /// Legacy: loop playlist (use `auto_play.mode` instead)
-    #[serde(default)]
-    pub loop_playlist: bool,
-    /// Legacy: shuffle playlist (use `auto_play.mode` instead)
-    #[serde(default)]
-    pub shuffle_playlist: bool,
     pub allow_guest_join: bool,
     /// Maximum number of members allowed in the room.
     /// `None` or `0` means no limit.  Uses `u32` to prevent negative values.

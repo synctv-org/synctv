@@ -1,7 +1,6 @@
 //! `ProviderInstanceRepository` integration tests
 //!
-//! Tests: `migrate_plaintext_to_encrypted` (idempotency, None fields, rollback),
-//!        encryption prefix edge case.
+//! Tests: encryption of sensitive fields, CHECK constraints.
 //!
 //! Run with: cargo test -p synctv-core --test `provider_instance_repository_tests`
 #![allow(clippy::unwrap_used)]
@@ -39,111 +38,6 @@ fn make_instance(
         created_at: now,
         updated_at: now,
     }
-}
-
-// ─── migrate_plaintext_to_encrypted: idempotency ─────────────────────
-
-#[tokio::test]
-#[ignore = "Requires Docker"]
-async fn test_migrate_plaintext_to_encrypted_idempotent() {
-    let (_container, pool) = create_test_pool().await;
-    let enc = CredentialEncryption::new(&test_key()).unwrap();
-
-    // Create an instance with encrypted secrets (using the repository with encryption)
-    let enc_repo = ProviderInstanceRepository::new_with_encryption(pool.clone(), enc.clone());
-    let instance = make_instance("idempotent_test", Some("my_secret"), Some("my_ca_cert"));
-    enc_repo.create(&instance).await.unwrap();
-
-    // First migration should migrate 0 instances (already encrypted)
-    let count1 = enc_repo.migrate_plaintext_to_encrypted().await.unwrap();
-    assert_eq!(
-        count1, 0,
-        "First migration should find no plaintext to migrate"
-    );
-
-    // Second migration should also migrate 0 (idempotent)
-    let count2 = enc_repo.migrate_plaintext_to_encrypted().await.unwrap();
-    assert_eq!(count2, 0, "Second migration should be idempotent");
-
-    // Verify decryption works
-    let fetched = enc_repo
-        .get_by_name("idempotent_test")
-        .await
-        .unwrap()
-        .unwrap();
-    assert_eq!(fetched.jwt_secret.as_deref(), Some("my_secret"));
-    assert_eq!(fetched.custom_ca.as_deref(), Some("my_ca_cert"));
-}
-
-// ─── migrate_plaintext_to_encrypted: None fields ─────────────────────
-
-#[tokio::test]
-#[ignore = "Requires Docker"]
-async fn test_migrate_plaintext_to_encrypted_none_fields() {
-    let (_container, pool) = create_test_pool().await;
-    let enc = CredentialEncryption::new(&test_key()).unwrap();
-
-    // Create an instance with no secrets (None)
-    let no_enc_repo = ProviderInstanceRepository::new(pool.clone());
-    let instance = make_instance("none_fields_test", None, None);
-    no_enc_repo.create(&instance).await.unwrap();
-
-    let enc_repo = ProviderInstanceRepository::new_with_encryption(pool.clone(), enc);
-
-    // Migration should skip this instance
-    let count = enc_repo.migrate_plaintext_to_encrypted().await.unwrap();
-    assert_eq!(
-        count, 0,
-        "Instance with None secrets should not need migration"
-    );
-
-    // Verify it still reads correctly
-    let fetched = enc_repo
-        .get_by_name("none_fields_test")
-        .await
-        .unwrap()
-        .unwrap();
-    assert!(fetched.jwt_secret.is_none());
-    assert!(fetched.custom_ca.is_none());
-}
-
-// ─── migrate_plaintext_to_encrypted: rollback (no encryption) ────────
-
-#[tokio::test]
-#[ignore = "Requires Docker"]
-async fn test_migrate_without_encryption_returns_error() {
-    let (_container, pool) = create_test_pool().await;
-    let repo = ProviderInstanceRepository::new(pool.clone());
-
-    let result = repo.migrate_plaintext_to_encrypted().await;
-    assert!(
-        result.is_err(),
-        "Migration without encryption configured should fail"
-    );
-}
-
-// ─── encryption prefix edge case ─────────────────────────────────────
-
-#[tokio::test]
-#[ignore = "Requires Docker"]
-async fn test_encryption_prefix_edge_case() {
-    let (_container, pool) = create_test_pool().await;
-    let enc = CredentialEncryption::new(&test_key()).unwrap();
-
-    // Create an instance where the plaintext value starts with "enc:" prefix
-    let no_enc_repo = ProviderInstanceRepository::new(pool.clone());
-    let instance = make_instance("prefix_test", Some("enc:looks_like_encrypted"), None);
-    no_enc_repo.create(&instance).await.unwrap();
-
-    let enc_repo = ProviderInstanceRepository::new_with_encryption(pool.clone(), enc);
-
-    // This value already starts with "enc:" so migration should skip it
-    // (it looks like an already-encrypted value)
-    let count = enc_repo.migrate_plaintext_to_encrypted().await.unwrap();
-    assert_eq!(
-        count, 0,
-        "Value starting with 'enc:' should be treated as already encrypted"
-    );
 }
 
 // ─── CHECK constraint: plaintext jwt_secret rejected ─────────────────

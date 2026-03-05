@@ -40,8 +40,8 @@ pub struct ValidatedAdmin {
 pub async fn validate_admin_auth(
     user_service: &UserService,
     user_id: UserId,
-    token_pv: Option<i32>,
-    token_iat: i64,
+    token_pv: i32,
+    _token_iat: i64,
 ) -> Result<ValidatedAdmin, ApiError> {
     let user = user_service.get_user(&user_id).await.map_err(|e| {
         tracing::debug!(
@@ -65,25 +65,13 @@ pub async fn validate_admin_auth(
         ));
     }
 
-    // Check password version (with iat fallback for legacy tokens)
-    if let Some(pv) = token_pv {
-        if pv < user.password_version {
-            tracing::debug!(
-                user_id = %user_id.as_str(),
-                token_pv = pv,
-                current_pv = user.password_version,
-                "Admin auth rejected: token password version outdated"
-            );
-            return Err(ApiError::Authentication(
-                "Token invalidated due to password change. Please log in again.".to_string(),
-            ));
-        }
-    } else if token_iat < user.password_changed_at.timestamp() {
+    // Check password version
+    if token_pv < user.password_version {
         tracing::debug!(
             user_id = %user_id.as_str(),
-            token_iat = token_iat,
-            password_changed_at = %user.password_changed_at,
-            "Admin auth rejected: token issued before password change (legacy token)"
+            token_pv = token_pv,
+            current_pv = user.password_version,
+            "Admin auth rejected: token password version outdated"
         );
         return Err(ApiError::Authentication(
             "Token invalidated due to password change. Please log in again.".to_string(),
@@ -2889,7 +2877,7 @@ mod tests {
             password_hash: "hash".to_string(),
             role,
             status,
-            signup_method: None,
+            signup_method: synctv_core::models::SignupMethod::Email,
             email_verified: true,
             created_at: chrono::Utc::now(),
             updated_at: chrono::Utc::now(),

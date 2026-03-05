@@ -107,8 +107,7 @@ impl ClientApiImpl {
         } else if !req.provider_instance_name.is_empty() {
             req.provider_instance_name
         } else {
-            // Fallback: use provider type name for backwards compatibility
-            // when client doesn't specify an instance name
+            // Fallback: use provider type name when client doesn't specify an instance name
             req.provider
         };
 

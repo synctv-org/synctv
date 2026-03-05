@@ -9,7 +9,7 @@
 use chrono::{Duration, Utc};
 use serde_json::json;
 use synctv_core::{
-    models::{User, UserProviderCredential},
+    models::{SignupMethod, User, UserProviderCredential},
     repository::{UserProviderCredentialRepository, UserRepository},
 };
 use synctv_core_testing::create_test_pool;
@@ -18,7 +18,7 @@ fn make_user(username: &str) -> User {
         username.to_string(),
         Some(format!("{username}@test.com")),
         "hash".to_string(),
-        None,
+        SignupMethod::Email,
     )
 }
 

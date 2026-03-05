@@ -348,7 +348,7 @@ pub async fn init_services(
     } else {
         warn!(
             "Credential encryption key not configured (set SYNCTV_CREDENTIAL_ENCRYPTION_KEY). \
-             Provider credentials will be stored in plaintext."
+             Provider credentials will not be encrypted."
         );
         Arc::new(UserProviderCredentialRepository::new(pool.clone()))
     };

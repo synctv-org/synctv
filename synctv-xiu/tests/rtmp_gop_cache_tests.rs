@@ -445,21 +445,14 @@ fn test_gops_current_total_bytes_initial() {
     assert_eq!(gops.current_total_bytes(), 0);
 }
 
-/// Test the deprecated setted method for backward compatibility
+/// Test is_enabled method
 #[test]
-fn test_gops_deprecated_setted_method() {
+fn test_gops_is_enabled_method() {
     let gops = Gops::new(5, None);
-    // Deprecated method should work but warn
-    #[allow(deprecated)]
-    {
-        assert!(gops.setted());
-    }
+    assert!(gops.is_enabled());
 
     let gops_disabled = Gops::new(0, None);
-    #[allow(deprecated)]
-    {
-        assert!(!gops_disabled.setted());
-    }
+    assert!(!gops_disabled.is_enabled());
 }
 
 /// Test that very large frames are handled

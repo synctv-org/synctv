@@ -98,11 +98,6 @@ impl Drop for MetricsGuard {
 /// Query parameters for WebSocket connection
 #[derive(Debug, Deserialize)]
 pub struct WsQuery {
-    /// JWT token for authentication (legacy method)
-    /// NOTE: Token in URL may appear in server logs and browser history.
-    /// Consider using ?ticket= instead for better security.
-    pub token: Option<String>,
-
     /// WebSocket ticket for authentication (recommended)
     /// Short-lived, one-time-use ticket obtained via POST /api/tickets
     /// More secure than passing JWT in URL.
@@ -116,8 +111,6 @@ pub enum AuthMethod {
     Header,
     /// Ticket query parameter (recommended for browsers)
     Ticket,
-    /// JWT token query parameter (legacy, less secure)
-    TokenQuery,
 }
 
 /// Extract user ID from authentication credentials
@@ -125,15 +118,14 @@ pub enum AuthMethod {
 /// Priority:
 /// 1. Authorization header (most secure)
 /// 2. Ticket query parameter (recommended for browsers)
-/// 3. JWT token query parameter (legacy fallback)
 ///
 /// The `room_id` parameter is required for ticket validation (Issue #65): tickets are
 /// room-scoped and must be checked against the room the connection targets.
 ///
-/// For JWT-based paths (header and ?token=), the `SecurityPipeline` is invoked after
-/// signature verification to enforce password-version, banned, and deleted checks
-/// (parity with the HTTP `AuthUser` extractor). For the ticket path, the user status
-/// is checked explicitly since tickets don't carry JWT claims.
+/// For the header path, the `SecurityPipeline` is invoked after signature verification
+/// to enforce password-version, banned, and deleted checks (parity with the HTTP
+/// `AuthUser` extractor). For the ticket path, the user status is checked explicitly
+/// since tickets don't carry JWT claims.
 async fn extract_user_id(
     state: &AppState,
     headers: &HeaderMap,
@@ -188,31 +180,8 @@ async fn extract_user_id(
         ));
     }
 
-    // Finally, try JWT token query parameter (legacy fallback)
-    if let Some(ref token) = query.token {
-        // Check if token query parameter is disabled via configuration
-        if state.config.server.disable_ws_token_query {
-            return Err(AppError::unauthorized(
-                "WebSocket ?token= query parameter is disabled. Use Authorization header or ?ticket= instead.",
-            ));
-        }
-
-        let claims = validator
-            .validate_token(token)
-            .map_err(|e| AppError::unauthorized(format!("Invalid token: {e}")))?;
-
-        // Run SecurityPipeline checks (password version, banned/deleted status)
-        let authenticated = state
-            .security_pipeline
-            .check(&claims)
-            .await
-            .map_err(|e| AppError::unauthorized(format!("{e}")))?;
-
-        return Ok((authenticated.user_id, AuthMethod::TokenQuery));
-    }
-
     Err(AppError::unauthorized(
-        "Missing authentication: provide token via Authorization header, ?ticket=, or ?token=",
+        "Missing authentication: provide token via Authorization header or ?ticket=",
     ))
 }
 
@@ -429,12 +398,10 @@ impl crate::impls::messaging::MessageSender for WebSocketMessageSender {
 /// Clients can authenticate via:
 /// 1. Authorization header: `Authorization: Bearer <token>` (most secure)
 /// 2. Ticket query parameter: `?ticket=<ticket>` (recommended for browsers)
-/// 3. Token query parameter: `?token=<jwt>` (legacy fallback)
 ///
 /// Example:
 /// - Native clients: `ws://host/ws/room/{room_id}` with `Authorization: Bearer <token>`
 /// - Browser clients: `ws://host/ws/room/{room_id}?ticket=<ticket>` (obtained from POST /api/tickets)
-/// - Legacy browser: `ws://host/ws/room/{room_id}?token=<jwt>` (appears in logs)
 pub async fn websocket_handler(
     State(state): State<AppState>,
     Path(room_id): Path<String>,
@@ -447,15 +414,7 @@ pub async fn websocket_handler(
 
     // Extract user ID from authentication credentials.
     // The room_id is passed so that ticket validation can enforce room-scoping (Issue #65).
-    let (user_id, auth_method) = extract_user_id(&state, &headers, &query, &rid).await?;
-
-    // Log warning if using legacy token query parameter (less secure)
-    if auth_method == AuthMethod::TokenQuery {
-        warn!(
-            room_id = %room_id,
-            "WebSocket authentication via ?token= query parameter (consider using ?ticket= or Authorization header for better security)"
-        );
-    }
+    let (user_id, _auth_method) = extract_user_id(&state, &headers, &query, &rid).await?;
 
     // Check room membership before upgrading
     let is_member = state
@@ -662,57 +621,23 @@ mod tests {
     #[test]
     fn test_ws_query_no_auth() {
         let query = WsQuery {
-            token: None,
             ticket: None,
         };
-        assert!(query.token.is_none());
-        assert!(query.ticket.is_none());
-    }
-
-    #[test]
-    fn test_ws_query_with_token() {
-        let query = WsQuery {
-            token: Some("jwt_token_here".to_string()),
-            ticket: None,
-        };
-        assert_eq!(query.token.as_deref(), Some("jwt_token_here"));
         assert!(query.ticket.is_none());
     }
 
     #[test]
     fn test_ws_query_with_ticket() {
         let query = WsQuery {
-            token: None,
             ticket: Some("ticket_abc".to_string()),
         };
-        assert!(query.token.is_none());
         assert_eq!(query.ticket.as_deref(), Some("ticket_abc"));
-    }
-
-    #[test]
-    fn test_ws_query_with_both_token_and_ticket() {
-        // Both can be provided; extract_user_id uses priority order
-        let query = WsQuery {
-            token: Some("jwt_token".to_string()),
-            ticket: Some("ticket_123".to_string()),
-        };
-        assert!(query.token.is_some());
-        assert!(query.ticket.is_some());
     }
 
     #[test]
     fn test_ws_query_deserialization_empty() {
         let json = "{}";
         let query: WsQuery = serde_json::from_str(json).expect("deserialize empty");
-        assert!(query.token.is_none());
-        assert!(query.ticket.is_none());
-    }
-
-    #[test]
-    fn test_ws_query_deserialization_with_token() {
-        let json = r#"{"token":"my_jwt"}"#;
-        let query: WsQuery = serde_json::from_str(json).expect("deserialize");
-        assert_eq!(query.token.as_deref(), Some("my_jwt"));
         assert!(query.ticket.is_none());
     }
 
@@ -720,15 +645,14 @@ mod tests {
     fn test_ws_query_deserialization_with_ticket() {
         let json = r#"{"ticket":"my_ticket"}"#;
         let query: WsQuery = serde_json::from_str(json).expect("deserialize");
-        assert!(query.token.is_none());
         assert_eq!(query.ticket.as_deref(), Some("my_ticket"));
     }
 
     #[test]
     fn test_ws_query_deserialization_ignores_extra_fields() {
-        let json = r#"{"token":"jwt","extra":"ignored"}"#;
+        let json = r#"{"ticket":"tix","extra":"ignored"}"#;
         let query: WsQuery = serde_json::from_str(json).expect("deserialize with extra");
-        assert_eq!(query.token.as_deref(), Some("jwt"));
+        assert_eq!(query.ticket.as_deref(), Some("tix"));
     }
 
     // ========== AuthMethod Tests ==========
@@ -737,14 +661,11 @@ mod tests {
     fn test_auth_method_equality() {
         assert_eq!(AuthMethod::Header, AuthMethod::Header);
         assert_eq!(AuthMethod::Ticket, AuthMethod::Ticket);
-        assert_eq!(AuthMethod::TokenQuery, AuthMethod::TokenQuery);
     }
 
     #[test]
     fn test_auth_method_inequality() {
         assert_ne!(AuthMethod::Header, AuthMethod::Ticket);
-        assert_ne!(AuthMethod::Header, AuthMethod::TokenQuery);
-        assert_ne!(AuthMethod::Ticket, AuthMethod::TokenQuery);
     }
 
     #[test]
@@ -759,10 +680,8 @@ mod tests {
         // Verify Debug trait is implemented and produces reasonable output
         let header = format!("{:?}", AuthMethod::Header);
         let ticket = format!("{:?}", AuthMethod::Ticket);
-        let token = format!("{:?}", AuthMethod::TokenQuery);
         assert!(header.contains("Header"));
         assert!(ticket.contains("Ticket"));
-        assert!(token.contains("TokenQuery"));
     }
 
     // ========== Auth Priority Logic Tests ==========
@@ -800,7 +719,6 @@ mod tests {
     fn test_auth_priority_no_header_falls_through_to_ticket() {
         let headers = HeaderMap::new();
         let query = WsQuery {
-            token: None,
             ticket: Some("ticket_abc".to_string()),
         };
 
@@ -811,30 +729,14 @@ mod tests {
     }
 
     #[test]
-    fn test_auth_priority_no_header_no_ticket_falls_through_to_token() {
-        let headers = HeaderMap::new();
-        let query = WsQuery {
-            token: Some("jwt_token".to_string()),
-            ticket: None,
-        };
-
-        assert!(headers.get("Authorization").is_none());
-        assert!(query.ticket.is_none());
-        // Token query is the last fallback
-        assert!(query.token.is_some());
-    }
-
-    #[test]
     fn test_auth_priority_no_auth_at_all() {
         let headers = HeaderMap::new();
         let query = WsQuery {
-            token: None,
             ticket: None,
         };
 
         assert!(headers.get("Authorization").is_none());
         assert!(query.ticket.is_none());
-        assert!(query.token.is_none());
         // This would produce an Unauthorized error in extract_user_id
     }
 
@@ -843,7 +745,7 @@ mod tests {
     #[test]
     fn test_unauthorized_error_for_missing_auth() {
         let err = AppError::unauthorized(
-            "Missing authentication: provide token via Authorization header, ?ticket=, or ?token=",
+            "Missing authentication: provide token via Authorization header or ?ticket=",
         );
         assert_eq!(err.status, axum::http::StatusCode::UNAUTHORIZED);
         assert!(err.message.contains("Missing authentication"));

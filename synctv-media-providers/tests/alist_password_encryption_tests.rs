@@ -74,15 +74,15 @@ fn test_field_encryption_different_ciphertext() {
     assert_eq!(enc.decrypt(&enc2).unwrap(), plain_password);
 }
 
-/// Test that plaintext is detected and passes through
+/// Test that plaintext credentials are rejected
 #[test]
-fn test_field_encryption_backward_compat() {
+fn test_field_encryption_rejects_plaintext() {
     let enc = FieldEncryption::new(&test_encryption_key()).unwrap();
     let plaintext = "plaintext_password";
 
-    // Plaintext should pass through unchanged
-    let result = enc.decrypt(plaintext).unwrap();
-    assert_eq!(result, plaintext);
+    // Plaintext should be rejected
+    let result = enc.decrypt(plaintext);
+    assert!(result.is_err(), "Plaintext credentials should be rejected");
 }
 
 // ========== TEST: InMemoryCredentialStorage with encryption ==========
@@ -219,41 +219,6 @@ async fn test_multiple_alist_credentials_encrypted() {
         .as_alist()
         .expect("Expected Alist credential data");
     assert_eq!(password, password2);
-}
-
-// ========== TEST: Encryption key missing (backward compatibility) ==========
-
-/// Test that creating storage without encryption key works (backward compatibility)
-#[tokio::test]
-async fn test_storage_without_encryption_backward_compat() {
-    // Create storage WITHOUT encryption key
-    let storage = InMemoryCredentialStorage::new();
-
-    let plain_password = "plaintext_password";
-
-    // Store Alist credential
-    let stored = storage
-        .set(
-            "user1",
-            Some("my_alist"),
-            CredentialData::alist(
-                "https://alist.example.com".to_string(),
-                "admin".to_string(),
-                plain_password.to_string(),
-            ),
-        )
-        .await
-        .expect("Failed to store credential");
-
-    // Without encryption, password should be stored as-is (plaintext)
-    let (_, _, password) = stored
-        .data
-        .as_alist()
-        .expect("Expected Alist credential data");
-    assert_eq!(
-        password, plain_password,
-        "Without encryption, password should be plaintext"
-    );
 }
 
 // ========== TEST: Emby api_key round trip with encryption ==========

@@ -7,7 +7,6 @@
 use std::sync::Arc;
 
 use axum::http::StatusCode;
-use axum::response::IntoResponse;
 
 // ==================================================================
 // CORS preflight with allowed origins tests
@@ -225,67 +224,6 @@ async fn test_cors_wildcard_mode_allows_all() {
     assert!(
         headers.get("Access-Control-Allow-Origin").is_some(),
         "Wildcard mode should return Allow-Origin header"
-    );
-}
-
-// ==================================================================
-// Security: Wildcard CORS function deprecation tests
-// ==================================================================
-
-/// Test that deprecated `proxy_options_preflight` returns warning header
-/// This function uses wildcard (*) which is insecure for production use.
-#[tokio::test]
-async fn test_deprecated_preflight_includes_warning_header() {
-    // The deprecated function should include a Deprecation or Warning header
-    // to indicate it should not be used in production
-    #[allow(deprecated)]
-    let response = synctv_proxy::proxy_options_preflight()
-        .await
-        .into_response();
-
-    // Should still return 204 for backward compatibility
-    assert_eq!(
-        response.status(),
-        StatusCode::NO_CONTENT,
-        "Deprecated function should still work for backward compatibility"
-    );
-
-    // But should include a warning header to discourage use
-    let headers = response.headers();
-    let has_deprecation_warning = headers.get("Deprecation").is_some()
-        || headers.get("Warning").is_some()
-        || headers.get("X-Deprecated").is_some();
-
-    assert!(
-        has_deprecation_warning,
-        "Deprecated proxy_options_preflight should include a deprecation warning header"
-    );
-}
-
-/// Test that deprecated `proxy_options_preflight` still returns wildcard
-/// (backward compatibility test - this behavior is intentionally insecure)
-#[tokio::test]
-async fn test_deprecated_preflight_returns_wildcard_for_backward_compat() {
-    #[allow(deprecated)]
-    let response = synctv_proxy::proxy_options_preflight()
-        .await
-        .into_response();
-
-    let headers = response.headers();
-    // This test documents the insecure behavior - it returns "*"
-    // This is why the function is deprecated
-    assert_eq!(
-        headers
-            .get("Access-Control-Allow-Origin")
-            .map(|v| v.to_str().unwrap()),
-        Some("*"),
-        "Deprecated function returns wildcard for backward compatibility (this is insecure)"
-    );
-
-    // Should NOT include Allow-Credentials because wildcard + credentials is invalid
-    assert!(
-        headers.get("Access-Control-Allow-Credentials").is_none(),
-        "Wildcard CORS must NOT include Access-Control-Allow-Credentials (per CORS spec)"
     );
 }
 

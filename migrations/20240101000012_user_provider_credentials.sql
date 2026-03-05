@@ -15,8 +15,8 @@ CREATE TABLE user_media_provider_credentials (
     -- Associated Provider Instance (optional)
     provider_instance_name VARCHAR(64),
 
-    -- Credential Data (JSONB, encrypted at rest via AES-256-GCM when encryption key is configured)
-    -- Format: "enc:<base64(nonce+ciphertext)>" for encrypted, raw JSON for legacy plaintext
+    -- Credential Data (JSONB, encrypted at rest via AES-256-GCM)
+    -- Format: "enc:<base64(version+nonce+ciphertext)>"
     credential_data JSONB NOT NULL,
 
     -- Expiration Time (optional, for tokens/cookies with TTL)

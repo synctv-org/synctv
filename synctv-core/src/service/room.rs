@@ -3282,8 +3282,6 @@ mod tests {
             ("require_password", "false"),
             ("max_members", "100"),
             ("auto_play_next", "true"),
-            ("loop_playlist", "false"),
-            ("shuffle_playlist", "true"),
         ];
         for (key, val) in &known_keys {
             assert!(

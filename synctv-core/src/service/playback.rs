@@ -730,31 +730,8 @@ impl PlaybackService {
         room_id: &RoomId,
         settings: &RoomSettings,
     ) -> Result<Option<RoomPlaybackState>> {
-        // Use new auto_play settings, falling back to legacy fields for compatibility.
-        // Precedence: if the new auto_play.mode is explicitly set (not the default
-        // Sequential), use it directly. Only fall back to legacy fields when the
-        // new mode is at its default value.
-        let (enabled, mode) = if settings.auto_play.value.enabled || settings.auto_play_next.0 {
-            let enabled = settings.auto_play.value.enabled || settings.auto_play_next.0;
-            let mode = settings.auto_play.value.mode;
-
-            // Only use legacy fields as fallback when the new mode is at its
-            // default value (Sequential). If the new mode was explicitly set,
-            // honour it and ignore legacy fields.
-            let mode = if mode != PlayMode::Sequential {
-                mode
-            } else if settings.loop_playlist.0 {
-                PlayMode::RepeatAll
-            } else if settings.shuffle_playlist.0 {
-                PlayMode::Shuffle
-            } else {
-                mode
-            };
-
-            (enabled, mode)
-        } else {
-            (false, PlayMode::Sequential)
-        };
+        let enabled = settings.auto_play.value.enabled || settings.auto_play_next.0;
+        let mode = settings.auto_play.value.mode;
 
         if !enabled {
             return Ok(None);
@@ -960,7 +937,6 @@ impl PlaybackService {
         settings: &RoomSettings,
         current_time: f64,
     ) -> Result<Option<RoomPlaybackState>> {
-        // Use new auto_play settings with legacy fallback
         let enabled = settings.auto_play.value.enabled || settings.auto_play_next.0;
 
         if !enabled {

@@ -130,25 +130,6 @@ pub mod error_codes {
     pub const FORBIDDEN: i32 = 4001;
     pub const BANNED: i32 = 4002;
 
-    // Push notification codes (5xxx) - DEPRECATED
-    // User notifications now use the dedicated Notification variant in ServerMessage.
-    // This code is kept for backward compatibility with old clients that may still
-    // expect notifications via the ErrorMessage abuse.
-    //
-    // NEW IMPLEMENTATION: ServerMessage.Notification is the proper way to deliver
-    // user notifications. It carries structured data:
-    //   - notification_id: UUID for deduplication
-    //   - notification_type: Type of notification (e.g., "room_invitation", "system")
-    //   - title: Display title
-    //   - content: Display content
-    //   - data: JSON-encoded additional data
-    //   - timestamp: Unix timestamp in milliseconds
-    #[deprecated(
-        since = "0.1.0",
-        note = "Use ServerMessage::Notification variant instead"
-    )]
-    pub const NOTIFICATION_PUSH: i32 = 5000;
-
     // Internal errors (9xxx)
     pub const INTERNAL_ERROR: i32 = 9000;
     pub const DATABASE_ERROR: i32 = 9001;

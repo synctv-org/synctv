@@ -105,56 +105,60 @@ impl CredentialEncryption {
 
     /// Decrypt credential data
     ///
-    /// Accepts either:
-    /// - Encrypted format: "enc:<base64(nonce + ciphertext)>"
-    /// - Plaintext JSON: parsed as-is (for backward compatibility during migration)
+    /// Only accepts encrypted format: "enc:<base64(version + nonce + ciphertext)>"
+    /// Plaintext credentials are no longer supported.
     pub fn decrypt(&self, stored: &str) -> Result<serde_json::Value> {
-        if let Some(encoded) = stored.strip_prefix(ENCRYPTED_PREFIX) {
-            // Encrypted format
-            let combined =
-                base64::Engine::decode(&base64::engine::general_purpose::STANDARD, encoded)
-                    .internal_with_err("Invalid base64 in encrypted credential")?;
+        let encoded = stored.strip_prefix(ENCRYPTED_PREFIX).ok_or_else(|| {
+            Error::Internal(
+                "Credential data is not encrypted (missing 'enc:' prefix). \
+                 Plaintext credentials are no longer supported."
+                    .to_string(),
+            )
+        })?;
 
-            if combined.len() < 1 + NONCE_SIZE {
-                return Err(Error::Internal(
-                    "Encrypted credential data too short".to_string(),
-                ));
-            }
+        let combined =
+            base64::Engine::decode(&base64::engine::general_purpose::STANDARD, encoded)
+                .internal_with_err("Invalid base64 in encrypted credential")?;
 
-            let version = combined[0];
-            if version != KEY_VERSION {
-                // Future: select decryption key based on version byte
-                return Err(Error::Internal(format!(
-                    "Unsupported credential encryption version: {version} (expected {KEY_VERSION})"
-                )));
-            }
-
-            let (nonce_bytes, ciphertext) = combined[1..].split_at(NONCE_SIZE);
-            let nonce = Nonce::from_slice(nonce_bytes);
-
-            let plaintext = self.cipher.decrypt(nonce, ciphertext).map_err(|_| {
-                Error::Internal(
-                    "Credential decryption failed (wrong key or corrupted data)".to_string(),
-                )
-            })?;
-
-            serde_json::from_slice(&plaintext)
-                .internal_with_err("Decrypted credential is not valid JSON")
-        } else {
-            // Plaintext JSON (backward compatibility)
-            serde_json::from_str(stored).internal_with_err("Credential data is not valid JSON")
+        if combined.len() < 1 + NONCE_SIZE {
+            return Err(Error::Internal(
+                "Encrypted credential data too short".to_string(),
+            ));
         }
+
+        let version = combined[0];
+        if version != KEY_VERSION {
+            // Future: select decryption key based on version byte
+            return Err(Error::Internal(format!(
+                "Unsupported credential encryption version: {version} (expected {KEY_VERSION})"
+            )));
+        }
+
+        let (nonce_bytes, ciphertext) = combined[1..].split_at(NONCE_SIZE);
+        let nonce = Nonce::from_slice(nonce_bytes);
+
+        let plaintext = self.cipher.decrypt(nonce, ciphertext).map_err(|_| {
+            Error::Internal(
+                "Credential decryption failed (wrong key or corrupted data)".to_string(),
+            )
+        })?;
+
+        serde_json::from_slice(&plaintext)
+            .internal_with_err("Decrypted credential is not valid JSON")
     }
 
-    /// Decrypt a JSON Value that may be encrypted
+    /// Decrypt a JSON Value that must be an encrypted string
     ///
-    /// If the value is a string starting with "enc:", decrypt it.
-    /// Otherwise, return as-is (plaintext JSON object).
+    /// The value must be a string starting with "enc:". Plaintext JSON
+    /// objects/arrays are no longer supported.
     pub fn decrypt_value(&self, value: &serde_json::Value) -> Result<serde_json::Value> {
         match value {
             serde_json::Value::String(s) => self.decrypt(s),
-            // If it's already a JSON object/array, it's plaintext (pre-migration)
-            other => Ok(other.clone()),
+            other => Err(Error::Internal(format!(
+                "Expected encrypted string value (enc:...), got {}. \
+                 Plaintext credentials are no longer supported.",
+                other
+            ))),
         }
     }
 
@@ -203,13 +207,12 @@ mod tests {
     }
 
     #[test]
-    fn test_decrypt_plaintext_backward_compat() {
+    fn test_decrypt_plaintext_returns_error() {
         let enc = CredentialEncryption::new(&test_key()).unwrap();
         let plaintext = r#"{"type":"bilibili","cookies":{"SESSDATA":"test"}}"#;
 
-        let decrypted = enc.decrypt(plaintext).unwrap();
-        assert_eq!(decrypted["type"], "bilibili");
-        assert_eq!(decrypted["cookies"]["SESSDATA"], "test");
+        let result = enc.decrypt(plaintext);
+        assert!(result.is_err(), "Plaintext credentials should be rejected");
     }
 
     #[test]
@@ -225,13 +228,13 @@ mod tests {
     }
 
     #[test]
-    fn test_decrypt_value_plaintext() {
+    fn test_decrypt_value_plaintext_returns_error() {
         let enc = CredentialEncryption::new(&test_key()).unwrap();
         let plaintext = json!({"cookies": {"SESSDATA": "test"}});
 
-        // Plaintext JSON object should pass through directly
-        let result = enc.decrypt_value(&plaintext).unwrap();
-        assert_eq!(plaintext, result);
+        // Plaintext JSON objects should be rejected
+        let result = enc.decrypt_value(&plaintext);
+        assert!(result.is_err(), "Plaintext JSON values should be rejected");
     }
 
     #[test]

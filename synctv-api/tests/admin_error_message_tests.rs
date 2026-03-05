@@ -165,7 +165,7 @@ async fn test_user_not_found_returns_unified_error_message() {
     let non_existent_user_id = UserId::from_string("nonexistent-user-12345".to_string());
     let token_iat = Utc::now().timestamp();
 
-    let result = validate_admin_auth(&user_service, non_existent_user_id, None, token_iat).await;
+    let result = validate_admin_auth(&user_service, non_existent_user_id, 0, token_iat).await;
 
     assert!(result.is_err(), "Non-existent user should fail auth");
 
@@ -204,7 +204,7 @@ async fn test_banned_user_returns_unified_error_message() {
 
     let token_iat = Utc::now().timestamp();
 
-    let result = validate_admin_auth(&user_service, user.id, None, token_iat).await;
+    let result = validate_admin_auth(&user_service, user.id, 0, token_iat).await;
 
     assert!(result.is_err(), "Banned user should fail auth");
 
@@ -243,7 +243,7 @@ async fn test_deleted_user_returns_unified_error_message() {
 
     let token_iat = Utc::now().timestamp();
 
-    let result = validate_admin_auth(&user_service, user.id, None, token_iat).await;
+    let result = validate_admin_auth(&user_service, user.id, 0, token_iat).await;
 
     assert!(result.is_err(), "Deleted user should fail auth");
 
@@ -282,7 +282,7 @@ async fn test_pending_user_returns_unified_error_message() {
 
     let token_iat = Utc::now().timestamp();
 
-    let result = validate_admin_auth(&user_service, user.id, None, token_iat).await;
+    let result = validate_admin_auth(&user_service, user.id, 0, token_iat).await;
 
     assert!(result.is_err(), "Pending user should fail auth");
 
@@ -315,7 +315,7 @@ async fn test_active_user_passes_auth() {
 
     let token_iat = Utc::now().timestamp();
 
-    let result = validate_admin_auth(&user_service, user.id, None, token_iat).await;
+    let result = validate_admin_auth(&user_service, user.id, 0, token_iat).await;
 
     assert!(
         result.is_ok(),
@@ -339,7 +339,7 @@ async fn test_all_failure_scenarios_return_identical_error_messages() {
     // Scenario 1: User not found
     let non_existent_id = UserId::from_string("nonexistent-for-comparison".to_string());
     let token_iat = Utc::now().timestamp();
-    let result = validate_admin_auth(&user_service, non_existent_id, None, token_iat).await;
+    let result = validate_admin_auth(&user_service, non_existent_id, 0, token_iat).await;
     error_messages.push(get_authentication_error_message(result));
 
     // Scenario 2: Banned user
@@ -356,7 +356,7 @@ async fn test_all_failure_scenarios_return_identical_error_messages() {
         .set_user_status(&banned_user.id, UserStatus::Banned)
         .await
         .unwrap();
-    let result = validate_admin_auth(&user_service, banned_user.id, None, token_iat).await;
+    let result = validate_admin_auth(&user_service, banned_user.id, 0, token_iat).await;
     error_messages.push(get_authentication_error_message(result));
 
     // Scenario 3: Deleted user
@@ -370,7 +370,7 @@ async fn test_all_failure_scenarios_return_identical_error_messages() {
         .await
         .unwrap();
     user_service.delete_user(&deleted_user.id).await.unwrap();
-    let result = validate_admin_auth(&user_service, deleted_user.id, None, token_iat).await;
+    let result = validate_admin_auth(&user_service, deleted_user.id, 0, token_iat).await;
     error_messages.push(get_authentication_error_message(result));
 
     // Scenario 4: Pending user
@@ -387,7 +387,7 @@ async fn test_all_failure_scenarios_return_identical_error_messages() {
         .set_user_status(&pending_user.id, UserStatus::Pending)
         .await
         .unwrap();
-    let result = validate_admin_auth(&user_service, pending_user.id, None, token_iat).await;
+    let result = validate_admin_auth(&user_service, pending_user.id, 0, token_iat).await;
     error_messages.push(get_authentication_error_message(result));
 
     // Verify all error messages are identical

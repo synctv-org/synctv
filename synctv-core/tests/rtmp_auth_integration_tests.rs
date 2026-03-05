@@ -162,7 +162,7 @@ async fn create_test_user(pool: &sqlx::PgPool, username: &str, role: UserRole) -
         username: username.to_string(),
         email: Some(format!("{username}@test.com")),
         password_hash: "test_hash".to_string(),
-        signup_method: Some(SignupMethod::Email),
+        signup_method: SignupMethod::Email,
         role,
         status: UserStatus::Active,
         created_at: chrono::Utc::now(),

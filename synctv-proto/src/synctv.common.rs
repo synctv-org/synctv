@@ -144,7 +144,6 @@ pub enum RoomStatus {
     Unspecified = 0,
     Active = 1,
     Pending = 2,
-    /// Reserved: 4, 5 (previously ARCHIVED, BANNED - now using is_banned field)
     Closed = 3,
 }
 impl RoomStatus {

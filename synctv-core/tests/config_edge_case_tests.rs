@@ -183,10 +183,6 @@ fn test_config_default_has_sane_values() {
     assert_eq!(config.server.http_port, 8080);
     assert_eq!(config.database.max_connections, 20);
     assert!(config.database.max_connections >= config.database.min_connections);
-    assert!(
-        config.server.disable_ws_token_query,
-        "WS token query should be disabled by default for security"
-    );
 }
 
 #[test]

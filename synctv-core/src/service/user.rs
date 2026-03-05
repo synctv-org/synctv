@@ -140,7 +140,7 @@ impl UserService {
         // so the client can prompt the user to verify their email. This is safe because
         // the user has already authenticated successfully (correct credentials), so
         // revealing that their email is unverified does not leak information.
-        let is_oauth2_user = user.signup_method == Some(crate::models::SignupMethod::OAuth2);
+        let is_oauth2_user = user.signup_method == crate::models::SignupMethod::OAuth2;
         if self.email_verification_required && !user.email_verified && !is_oauth2_user {
             return Err(Error::EmailNotVerified);
         }
@@ -273,7 +273,7 @@ impl UserService {
             username.clone(),
             email.clone(),
             password_hash,
-            Some(SignupMethod::Email),
+            SignupMethod::Email,
             initial_status,
         );
         let created_user = match self.repository.create(&user).await {
@@ -350,8 +350,8 @@ impl UserService {
             .unwrap_or(false);
 
         let initial_status = match signup_method {
-            SignupMethod::OAuth2 => crate::models::UserStatus::Active,
-            SignupMethod::Email => {
+            SignupMethod::OAuth2 | SignupMethod::AdminCreated => crate::models::UserStatus::Active,
+            SignupMethod::Email | SignupMethod::Password | SignupMethod::Unknown => {
                 if self.email_verification_required || signup_need_review {
                     crate::models::UserStatus::Pending
                 } else {
@@ -363,7 +363,7 @@ impl UserService {
             username,
             email,
             password_hash,
-            Some(signup_method),
+            signup_method,
             initial_status,
         );
         self.repository.create_with_executor(&user, executor).await
@@ -391,7 +391,7 @@ impl UserService {
             username.clone(),
             email,
             password_hash,
-            Some(SignupMethod::Email),
+            SignupMethod::Email,
         );
         if let Some(role) = role {
             user.role = role;
@@ -622,15 +622,8 @@ impl UserService {
         self.validate_user_access(&user)?;
 
         // Reject refresh tokens issued with an old password version
-        if let Some(token_pv) = claims.pv {
-            if token_pv < user.password_version {
-                return Err(Error::Authentication("Authentication failed".to_string()));
-            }
-        } else {
-            // Legacy tokens without pv: fall back to iat-based check
-            if claims.iat < user.password_changed_at.timestamp() {
-                return Err(Error::Authentication("Authentication failed".to_string()));
-            }
+        if claims.pv < user.password_version {
+            return Err(Error::Authentication("Authentication failed".to_string()));
         }
 
         // Refresh Token Rotation: check blacklist and family revocation
@@ -1150,7 +1143,7 @@ impl UserService {
                 candidate.clone(),
                 user_email.clone(),
                 password_hash.clone(),
-                Some(SignupMethod::OAuth2),
+                SignupMethod::OAuth2,
             );
             match self.repository.create(&user).await {
                 Ok(created_user) => {
@@ -1589,7 +1582,7 @@ mod tests {
             password_hash: "hash".to_string(),
             role: crate::models::UserRole::User,
             status: crate::models::UserStatus::Active,
-            signup_method: Some(crate::models::SignupMethod::OAuth2),
+            signup_method: crate::models::SignupMethod::OAuth2,
             email_verified: false,
             created_at: now,
             updated_at: now,
@@ -1601,7 +1594,7 @@ mod tests {
 
         // The check in login(): email_verification_required && !email_verified && !is_oauth2
         let email_verification_required = true;
-        let is_oauth2_user = oauth2_user.signup_method == Some(crate::models::SignupMethod::OAuth2);
+        let is_oauth2_user = oauth2_user.signup_method == crate::models::SignupMethod::OAuth2;
 
         // OAuth2 user should NOT be blocked
         let would_block =
@@ -1624,7 +1617,7 @@ mod tests {
             password_hash: "hash".to_string(),
             role: crate::models::UserRole::User,
             status: crate::models::UserStatus::Active,
-            signup_method: Some(crate::models::SignupMethod::Email),
+            signup_method: crate::models::SignupMethod::Email,
             email_verified: false,
             created_at: now,
             updated_at: now,
@@ -1635,7 +1628,7 @@ mod tests {
         };
 
         let email_verification_required = true;
-        let is_oauth2_user = email_user.signup_method == Some(crate::models::SignupMethod::OAuth2);
+        let is_oauth2_user = email_user.signup_method == crate::models::SignupMethod::OAuth2;
 
         // Email user should still be blocked
         let would_block =
@@ -1658,7 +1651,7 @@ mod tests {
             password_hash: "hash".to_string(),
             role: crate::models::UserRole::User,
             status: crate::models::UserStatus::Active,
-            signup_method: Some(crate::models::SignupMethod::OAuth2),
+            signup_method: crate::models::SignupMethod::OAuth2,
             email_verified: true,
             created_at: now,
             updated_at: now,
@@ -1669,7 +1662,7 @@ mod tests {
         };
 
         let email_verification_required = true;
-        let is_oauth2_user = oauth2_user.signup_method == Some(crate::models::SignupMethod::OAuth2);
+        let is_oauth2_user = oauth2_user.signup_method == crate::models::SignupMethod::OAuth2;
 
         let would_block =
             email_verification_required && !oauth2_user.email_verified && !is_oauth2_user;
@@ -1904,8 +1897,8 @@ mod tests {
         let signup_method = SignupMethod::Email;
 
         let initial_status = match signup_method {
-            SignupMethod::OAuth2 => crate::models::UserStatus::Active,
-            SignupMethod::Email => {
+            SignupMethod::OAuth2 | SignupMethod::AdminCreated => crate::models::UserStatus::Active,
+            SignupMethod::Email | SignupMethod::Password | SignupMethod::Unknown => {
                 if email_verification_required || signup_need_review {
                     crate::models::UserStatus::Pending
                 } else {
@@ -1929,8 +1922,8 @@ mod tests {
         let signup_method = SignupMethod::OAuth2;
 
         let initial_status = match signup_method {
-            SignupMethod::OAuth2 => crate::models::UserStatus::Active,
-            SignupMethod::Email => {
+            SignupMethod::OAuth2 | SignupMethod::AdminCreated => crate::models::UserStatus::Active,
+            SignupMethod::Email | SignupMethod::Password | SignupMethod::Unknown => {
                 if email_verification_required || signup_need_review {
                     crate::models::UserStatus::Pending
                 } else {
@@ -1954,8 +1947,8 @@ mod tests {
         let signup_method = SignupMethod::Email;
 
         let initial_status = match signup_method {
-            SignupMethod::OAuth2 => crate::models::UserStatus::Active,
-            SignupMethod::Email => {
+            SignupMethod::OAuth2 | SignupMethod::AdminCreated => crate::models::UserStatus::Active,
+            SignupMethod::Email | SignupMethod::Password | SignupMethod::Unknown => {
                 if email_verification_required || signup_need_review {
                     crate::models::UserStatus::Pending
                 } else {

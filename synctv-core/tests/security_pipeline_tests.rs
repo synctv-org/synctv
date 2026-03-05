@@ -62,7 +62,7 @@ fn make_user(status: UserStatus, password_version: i32) -> User {
         role: UserRole::User,
         status,
         email_verified: true,
-        signup_method: Some(SignupMethod::Email),
+        signup_method: SignupMethod::Email,
         created_at: chrono::Utc::now(),
         updated_at: chrono::Utc::now(),
         password_changed_at: chrono::Utc::now(),
@@ -72,7 +72,7 @@ fn make_user(status: UserStatus, password_version: i32) -> User {
     }
 }
 
-fn make_claims(user_id: &UserId, pv: Option<i32>) -> Claims {
+fn make_claims(user_id: &UserId, pv: i32) -> Claims {
     let now = chrono::Utc::now();
     Claims {
         sub: user_id.as_str().to_string(),
@@ -100,7 +100,7 @@ async fn test_cache_miss_falls_through_to_db() {
     // Use permissive mode for tests without blacklist store
     let pipeline = SecurityPipeline::new(user_service)
         .with_blacklist_enforcement(BlacklistEnforcement::permissive());
-    let claims = make_claims(&user.id, Some(0));
+    let claims = make_claims(&user.id, 0);
 
     let result = pipeline.check(&claims).await;
     assert!(result.is_ok(), "Active user with valid pv should pass");
@@ -120,7 +120,7 @@ async fn test_db_error_propagates_not_swallowed() {
     // Use a user_id that doesn't exist -> get_user returns NotFound,
     // which should be mapped to Authentication error
     let fake_id = UserId::new();
-    let claims = make_claims(&fake_id, Some(0));
+    let claims = make_claims(&fake_id, 0);
 
     let result = pipeline.check(&claims).await;
     assert!(result.is_err());
@@ -135,7 +135,7 @@ async fn test_db_error_propagates_not_swallowed() {
     pool.close().await;
 
     let fake_id2 = UserId::new();
-    let claims2 = make_claims(&fake_id2, Some(0));
+    let claims2 = make_claims(&fake_id2, 0);
     let user_service2 = Arc::new(create_user_service(
         PgPool::connect_lazy("postgresql://invalid:invalid@127.0.0.1:1/invalid").unwrap(),
     ));
@@ -163,7 +163,7 @@ async fn test_banned_user_rejected_via_db() {
     let pipeline = SecurityPipeline::new(user_service)
         .with_blacklist_enforcement(BlacklistEnforcement::permissive());
 
-    let claims = make_claims(&user.id, Some(0));
+    let claims = make_claims(&user.id, 0);
     let result = pipeline.check(&claims).await;
     assert!(result.is_err());
     assert!(matches!(result.unwrap_err(), Error::Authentication(_)));
@@ -184,38 +184,12 @@ async fn test_deleted_user_rejected() {
     let pipeline = SecurityPipeline::new(user_service)
         .with_blacklist_enforcement(BlacklistEnforcement::permissive());
 
-    let claims = make_claims(&user.id, Some(0));
+    let claims = make_claims(&user.id, 0);
     let result = pipeline.check(&claims).await;
     assert!(result.is_err(), "Deleted user should be rejected");
     assert!(matches!(result.unwrap_err(), Error::Authentication(_)));
 }
 
-#[tokio::test]
-#[ignore = "Requires Docker"]
-async fn test_legacy_token_iat_before_password_change_rejected() {
-    let (_container, pool) = create_test_pool().await;
-    let user = make_user(UserStatus::Active, 1);
-    // password_changed_at is "now"
-    let user = insert_user(&pool, &user).await;
-    let user_service = Arc::new(create_user_service(pool));
-    let pipeline = SecurityPipeline::new(user_service)
-        .with_blacklist_enforcement(BlacklistEnforcement::permissive());
-
-    // Legacy token: no pv, iat BEFORE password_changed_at
-    let mut claims = make_claims(&user.id, None);
-    claims.iat = (chrono::Utc::now() - chrono::Duration::hours(2)).timestamp();
-
-    let result = pipeline.check(&claims).await;
-    assert!(
-        result.is_err(),
-        "Legacy token with old iat should be rejected"
-    );
-    let err = result.unwrap_err();
-    assert!(
-        matches!(&err, Error::Authentication(msg) if msg.contains("password change")),
-        "Should mention password change, got: {err}"
-    );
-}
 
 // ============================================================================
 // SecurityPipeline tests with UserCache (fast path)
@@ -248,7 +222,7 @@ async fn test_cache_hit_active_user_passes() {
     let pipeline = SecurityPipeline::new(user_service)
         .with_user_cache(user_cache)
         .with_blacklist_enforcement(BlacklistEnforcement::permissive());
-    let claims = make_claims(&user.id, Some(0));
+    let claims = make_claims(&user.id, 0);
 
     let result = pipeline.check(&claims).await;
     assert!(result.is_ok(), "Cached active user should pass");
@@ -283,7 +257,7 @@ async fn test_cache_hit_outdated_password_version_rejected() {
         .with_blacklist_enforcement(BlacklistEnforcement::permissive());
 
     // Token has pv=3 < cached pv=5 -> should be rejected
-    let claims = make_claims(&user.id, Some(3));
+    let claims = make_claims(&user.id, 3);
     let result = pipeline.check(&claims).await;
     assert!(result.is_err());
     let err = result.unwrap_err();
@@ -319,7 +293,7 @@ async fn test_cache_hit_banned_user_rejected() {
     let pipeline = SecurityPipeline::new(user_service)
         .with_user_cache(user_cache)
         .with_blacklist_enforcement(BlacklistEnforcement::permissive());
-    let claims = make_claims(&user.id, Some(0));
+    let claims = make_claims(&user.id, 0);
 
     let result = pipeline.check(&claims).await;
     assert!(result.is_err(), "Banned user should be rejected via cache");
@@ -339,7 +313,7 @@ async fn test_pending_user_rejected_via_db() {
     let pipeline = SecurityPipeline::new(user_service)
         .with_blacklist_enforcement(BlacklistEnforcement::permissive());
 
-    let claims = make_claims(&user.id, Some(0));
+    let claims = make_claims(&user.id, 0);
     let result = pipeline.check(&claims).await;
     assert!(result.is_err(), "Pending user should be rejected via DB");
     assert!(
@@ -375,7 +349,7 @@ async fn test_cache_hit_pending_user_rejected() {
     let pipeline = SecurityPipeline::new(user_service)
         .with_user_cache(user_cache)
         .with_blacklist_enforcement(BlacklistEnforcement::permissive());
-    let claims = make_claims(&user.id, Some(0));
+    let claims = make_claims(&user.id, 0);
 
     let result = pipeline.check(&claims).await;
     assert!(
@@ -418,7 +392,7 @@ async fn test_cache_populated_with_correct_password_version_after_db_miss() {
     let pipeline = SecurityPipeline::new(user_service)
         .with_user_cache(user_cache.clone())
         .with_blacklist_enforcement(BlacklistEnforcement::permissive());
-    let claims = make_claims(&user.id, Some(password_version));
+    let claims = make_claims(&user.id, password_version);
 
     // This call should fall through to DB and then populate the cache
     let result = pipeline.check(&claims).await;
@@ -460,7 +434,7 @@ async fn test_cache_populated_then_subsequent_check_uses_cache() {
     let pipeline = SecurityPipeline::new(user_service)
         .with_user_cache(user_cache.clone())
         .with_blacklist_enforcement(BlacklistEnforcement::permissive());
-    let claims = make_claims(&user.id, Some(0));
+    let claims = make_claims(&user.id, 0);
 
     // First check: DB hit, populates cache
     let result1 = pipeline.check(&claims).await;
@@ -505,7 +479,7 @@ async fn test_blacklisted_access_token_rejected() {
     let pipeline = SecurityPipeline::new(user_service)
         .with_token_blacklist(token_blacklist.clone(), key_builder.clone());
 
-    let claims = make_claims(&user.id, Some(0));
+    let claims = make_claims(&user.id, 0);
 
     // First check: token should be valid
     let result1 = pipeline.check(&claims).await;
@@ -566,7 +540,7 @@ async fn test_blacklisted_access_token_rejected_via_cache_path() {
         .with_user_cache(user_cache)
         .with_token_blacklist(token_blacklist.clone(), key_builder.clone());
 
-    let claims = make_claims(&user.id, Some(0));
+    let claims = make_claims(&user.id, 0);
 
     // First check: cache hit, token should be valid
     let result1 = pipeline.check(&claims).await;
@@ -605,7 +579,7 @@ async fn test_non_blacklisted_access_token_allowed() {
     let pipeline = SecurityPipeline::new(user_service)
         .with_token_blacklist(token_blacklist.clone(), key_builder.clone());
 
-    let claims = make_claims(&user.id, Some(0));
+    let claims = make_claims(&user.id, 0);
 
     // Token not in blacklist should be allowed
     let result = pipeline.check(&claims).await;
@@ -650,7 +624,7 @@ async fn test_require_blacklist_false_allows_without_store() {
     let pipeline = SecurityPipeline::new(user_service)
         .with_blacklist_enforcement(BlacklistEnforcement::permissive());
 
-    let claims = make_claims(&user.id, Some(0));
+    let claims = make_claims(&user.id, 0);
 
     // Request should be allowed
     let result = pipeline.check(&claims).await;
@@ -760,7 +734,7 @@ async fn test_blacklist_store_error_rejects_request_fail_closed() {
     let pipeline =
         SecurityPipeline::new(user_service).with_token_blacklist(erroring_store, key_builder);
 
-    let claims = make_claims(&user.id, Some(0));
+    let claims = make_claims(&user.id, 0);
 
     // The store will return an error from is_blacklisted_checked.
     // The pipeline should fail-closed and reject the request.
@@ -795,7 +769,7 @@ async fn test_in_memory_blacklist_store_is_blacklisted_checked_ok() {
     let pipeline = SecurityPipeline::new(user_service)
         .with_token_blacklist(store.clone(), key_builder.clone());
 
-    let claims = make_claims(&user.id, Some(0));
+    let claims = make_claims(&user.id, 0);
 
     // Non-blacklisted token should pass
     let result = pipeline.check(&claims).await;

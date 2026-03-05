@@ -52,7 +52,7 @@ impl UserRepository {
         .bind(&user.username)
         .bind(user.email.as_ref())
         .bind(&user.password_hash)
-        .bind(user.signup_method.map(|m| m.as_str()))
+        .bind(user.signup_method)
         .bind(user.role)
         .bind(user.status)
         .bind(user.email_verified)
@@ -420,6 +420,7 @@ impl UserRepository {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::models::SignupMethod;
 
     #[test]
     fn test_build_user_list_conditions_no_filters() {
@@ -523,7 +524,7 @@ mod tests {
             "testuser".into(),
             Some("test@example.com".into()),
             "hash".into(),
-            None,
+            SignupMethod::Email,
         );
         let created = repo.create(&user).await.unwrap();
         assert_eq!(created.username, "testuser");
@@ -539,14 +540,14 @@ mod tests {
             "same_name".into(),
             Some("a@b.com".into()),
             "hash".into(),
-            None,
+            SignupMethod::Email,
         );
         repo.create(&user1).await.unwrap();
         let user2 = User::new(
             "same_name".into(),
             Some("c@d.com".into()),
             "hash".into(),
-            None,
+            SignupMethod::Email,
         );
         let err = repo.create(&user2).await.unwrap_err();
         assert!(matches!(err, Error::AlreadyExists(_)));
@@ -557,7 +558,7 @@ mod tests {
     async fn test_soft_delete_user() {
         let infra = crate::test_helpers::containers::TestInfra::postgres_only().await;
         let repo = UserRepository::new(infra.pool.clone());
-        let user = User::new("deleteme".into(), None, "hash".into(), None);
+        let user = User::new("deleteme".into(), None, "hash".into(), SignupMethod::Email);
         let created = repo.create(&user).await.unwrap();
         assert!(repo.delete(&created.id).await.unwrap());
         // Soft-deleted users should not be returned by get_by_id

@@ -30,7 +30,6 @@ fn standalone_test_config() -> Config {
             cluster_secret: String::new(), // No cluster secret for standalone mode
             advertise_host: String::new(),
             shutdown_drain_timeout_seconds: 30,
-            disable_ws_token_query: true,
         },
         database: DatabaseConfig::default(),
         redis: RedisConfig::default(), // Empty Redis URL for standalone
@@ -75,7 +74,6 @@ fn cluster_test_config() -> Config {
             cluster_secret: "test-cluster-secret-key-1234567890".to_string(),
             advertise_host: String::new(),
             shutdown_drain_timeout_seconds: 30,
-            disable_ws_token_query: true,
         },
         database: DatabaseConfig::default(),
         redis: RedisConfig {

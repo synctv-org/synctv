@@ -45,13 +45,10 @@ pub struct CachedRoom {
     owner_id: String,
     is_public: bool,
     /// Room lifecycle status (Active/Pending/Closed)
-    #[serde(default)]
     status: RoomStatus,
     /// Ban flag - independent of status
-    #[serde(default)]
     is_banned: bool,
     /// Soft-delete timestamp (None if the room is not deleted)
-    #[serde(default)]
     deleted_at: Option<chrono::DateTime<chrono::Utc>>,
     created_at: chrono::DateTime<chrono::Utc>,
     /// Timestamp of last update - used to prevent stale data from overwriting fresh data

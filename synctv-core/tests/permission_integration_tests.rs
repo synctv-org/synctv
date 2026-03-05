@@ -25,7 +25,7 @@ async fn create_test_user(pool: &PgPool, user_id: &UserId) {
         username,
         email: Some(format!("{}@test.com", user_id.as_str())),
         password_hash: "test_hash".to_string(),
-        signup_method: Some(SignupMethod::Email),
+        signup_method: SignupMethod::Email,
         role: synctv_core::models::UserRole::User,
         status: UserStatus::Active,
         created_at: chrono::Utc::now(),

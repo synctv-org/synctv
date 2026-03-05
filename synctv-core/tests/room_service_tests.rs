@@ -67,7 +67,7 @@ fn make_user(username: &str) -> User {
         role: UserRole::User,
         status: UserStatus::Active,
         email_verified: true,
-        signup_method: None,
+        signup_method: synctv_core::models::SignupMethod::Email,
         created_at: now,
         updated_at: now,
         password_changed_at: now,
@@ -839,7 +839,7 @@ async fn test_join_room_password_not_required_password_cleared_during_join() {
     // Directly remove password requirement from room settings
     // The value column is TEXT, so we need to update with properly serialized JSON
     sqlx::query(
-        r#"UPDATE room_settings SET value = '{"require_password":false,"allow_guest_join":false,"max_members":0,"require_approval":false,"allow_auto_join":true,"chat_enabled":true,"danmaku_enabled":true,"auto_play_next":false,"loop_playlist":false,"shuffle_playlist":false,"auto_play":{"enabled":true,"mode":"sequential","delay":3},"admin_added_permissions":0,"admin_removed_permissions":0,"member_added_permissions":0,"member_removed_permissions":0,"guest_added_permissions":0,"guest_removed_permissions":0}' WHERE room_id = $1 AND key = '_settings'"#
+        r#"UPDATE room_settings SET value = '{"require_password":false,"allow_guest_join":false,"max_members":0,"require_approval":false,"allow_auto_join":true,"chat_enabled":true,"danmaku_enabled":true,"auto_play_next":false,"auto_play":{"enabled":true,"mode":"sequential","delay":3},"admin_added_permissions":0,"admin_removed_permissions":0,"member_added_permissions":0,"member_removed_permissions":0,"guest_added_permissions":0,"guest_removed_permissions":0}' WHERE room_id = $1 AND key = '_settings'"#
     )
     .bind(room.id.as_str())
     .execute(&pool)
@@ -909,7 +909,7 @@ async fn test_join_room_password_added_during_join_requires_password() {
 
     // Update require_password setting - value column is TEXT with serialized JSON
     sqlx::query(
-        r#"UPDATE room_settings SET value = '{"require_password":true,"allow_guest_join":false,"max_members":0,"require_approval":false,"allow_auto_join":true,"chat_enabled":true,"danmaku_enabled":true,"auto_play_next":false,"loop_playlist":false,"shuffle_playlist":false,"auto_play":{"enabled":true,"mode":"sequential","delay":3},"admin_added_permissions":0,"admin_removed_permissions":0,"member_added_permissions":0,"member_removed_permissions":0,"guest_added_permissions":0,"guest_removed_permissions":0}' WHERE room_id = $1 AND key = '_settings'"#
+        r#"UPDATE room_settings SET value = '{"require_password":true,"allow_guest_join":false,"max_members":0,"require_approval":false,"allow_auto_join":true,"chat_enabled":true,"danmaku_enabled":true,"auto_play_next":false,"auto_play":{"enabled":true,"mode":"sequential","delay":3},"admin_added_permissions":0,"admin_removed_permissions":0,"member_added_permissions":0,"member_removed_permissions":0,"guest_added_permissions":0,"guest_removed_permissions":0}' WHERE room_id = $1 AND key = '_settings'"#
     )
     .bind(room.id.as_str())
     .execute(&pool)

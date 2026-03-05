@@ -145,22 +145,13 @@ impl std::fmt::Debug for ProviderRegistry {
 }
 
 // ============================================================================
-// Global singleton (backwards compatibility)
+// Global registry for provider factories
 // ============================================================================
 
-/// Global provider registry singleton.
-///
-/// Prefer injecting `ProviderRegistry` via constructor/DI where possible.
-/// This global exists for backward compatibility with `init_providers()` and
-/// `create_provider()` free functions.
+/// Global provider registry singleton used by `register_provider_factory()`
+/// and `create_provider()` free functions.
 static PROVIDER_REGISTRY: std::sync::LazyLock<ProviderRegistry> =
     std::sync::LazyLock::new(ProviderRegistry::new);
-
-/// Get a reference to the global provider registry.
-#[must_use]
-pub fn global_provider_registry() -> &'static ProviderRegistry {
-    &PROVIDER_REGISTRY
-}
 
 /// Register an `OAuth2` provider factory function in the global registry.
 ///

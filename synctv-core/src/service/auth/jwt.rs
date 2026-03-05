@@ -29,7 +29,6 @@ pub struct Claims {
     /// Token type (access or refresh)
     pub typ: String,
     /// JWT ID (unique token identifier for efficient blacklisting)
-    #[serde(default)]
     pub jti: String,
     /// Issued at (Unix timestamp)
     pub iat: i64,
@@ -37,8 +36,7 @@ pub struct Claims {
     pub exp: i64,
     /// Password version at time of token issuance.
     /// Tokens with a `pv` lower than the user's current `password_version` are rejected.
-    #[serde(default)]
-    pub pv: Option<i32>,
+    pub pv: i32,
     /// Issuer - identifies the service that issued the token
     #[serde(skip_serializing_if = "Option::is_none")]
     pub iss: Option<String>,
@@ -491,7 +489,7 @@ impl JwtService {
             jti: nanoid::nanoid!(16),
             iat: now.timestamp(),
             exp: (now + duration).timestamp(),
-            pv: Some(password_version),
+            pv: password_version,
             iss: self.issuer.clone(),
             aud: self.audience.clone(),
         };
@@ -921,7 +919,7 @@ mod tests {
             jti: String::new(),
             iat: 0,
             exp: 0,
-            pv: None,
+            pv: 0,
             iss: None,
             aud: None,
         };
@@ -935,7 +933,7 @@ mod tests {
             jti: String::new(),
             iat: 0,
             exp: 0,
-            pv: None,
+            pv: 0,
             iss: None,
             aud: None,
         };
@@ -949,7 +947,7 @@ mod tests {
             jti: String::new(),
             iat: 0,
             exp: 0,
-            pv: None,
+            pv: 0,
             iss: None,
             aud: None,
         };
@@ -1054,7 +1052,7 @@ mod tests {
             jti: "test-jti".into(),
             iat: (past - Duration::hours(3)).timestamp(),
             exp: past.timestamp(), // expired 2 hours ago
-            pv: None,
+            pv: 0,
             iss: None,
             aud: None,
         };

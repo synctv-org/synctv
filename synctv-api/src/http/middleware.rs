@@ -228,7 +228,7 @@ where
             .map_err(|e| AppError::unauthorized(format!("{e}")))?;
 
         // Extract password version from claims, defaulting to 0 for legacy tokens
-        let password_version = authenticated.claims.pv.unwrap_or(0);
+        let password_version = authenticated.claims.pv;
 
         Ok(Self {
             user_id: authenticated.user_id,

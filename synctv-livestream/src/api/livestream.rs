@@ -584,41 +584,4 @@ impl HlsStreamingApi {
         }
     }
 
-    /// Generate HLS M3U8 playlist with lazy-load pull and custom URL generator.
-    ///
-    /// **DEPRECATED for HLS**: Use `generate_playlist` instead. HLS should NOT
-    /// trigger RTMP pull streams. This method is kept for backwards compatibility
-    /// but now behaves identically to `generate_playlist` (no pull stream).
-    #[deprecated(
-        since = "0.1.0",
-        note = "Use generate_playlist instead; HLS should not trigger RTMP pull streams"
-    )]
-    pub async fn generate_playlist_with_pull<F>(
-        infrastructure: &LiveStreamingInfrastructure,
-        room_id: &str,
-        media_id: &str,
-        _external_source_url: Option<&str>,
-        url_generator: F,
-    ) -> Result<Option<String>>
-    where
-        F: Fn(&str) -> String,
-    {
-        // HLS does NOT trigger pull streams — only FLV should.
-        // Just generate the playlist (local or proxied).
-        Self::generate_playlist(infrastructure, room_id, media_id, url_generator).await
-    }
-
-    /// Generate HLS M3U8 playlist with lazy-load pull and simple base URL (convenience method).
-    ///
-    /// **DEPRECATED for HLS**: Use `generate_playlist_simple` instead.
-    #[deprecated(since = "0.1.0", note = "Use generate_playlist_simple instead")]
-    pub async fn generate_playlist_with_pull_simple(
-        infrastructure: &LiveStreamingInfrastructure,
-        room_id: &str,
-        media_id: &str,
-        _external_source_url: Option<&str>,
-        segment_url_base: &str,
-    ) -> Result<Option<String>> {
-        Self::generate_playlist_simple(infrastructure, room_id, media_id, segment_url_base).await
-    }
 }

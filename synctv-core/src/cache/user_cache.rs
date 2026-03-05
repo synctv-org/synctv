@@ -45,7 +45,6 @@ pub struct CachedUser {
     /// Password version counter for JWT invalidation
     password_version: i32,
     /// Whether the user has been soft-deleted (`deleted_at` IS NOT NULL)
-    #[serde(default)]
     is_deleted: bool,
 }
 

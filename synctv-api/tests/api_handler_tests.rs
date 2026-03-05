@@ -972,27 +972,11 @@ mod websocket_auth_priority {
     fn test_auth_priority_ticket_second() {
         let headers = axum::http::HeaderMap::new();
         let query = WsQuery {
-            token: None,
             ticket: Some("ticket_abc".to_string()),
         };
 
         assert!(headers.get("Authorization").is_none());
         assert!(query.ticket.is_some());
-        assert!(query.token.is_none());
-    }
-
-    /// Auth priority: no header, no ticket, token present -> should use `TokenQuery`
-    #[test]
-    fn test_auth_priority_token_query_last() {
-        let headers = axum::http::HeaderMap::new();
-        let query = WsQuery {
-            token: Some("jwt_token".to_string()),
-            ticket: None,
-        };
-
-        assert!(headers.get("Authorization").is_none());
-        assert!(query.ticket.is_none());
-        assert!(query.token.is_some());
     }
 
     /// Missing all credentials should produce unauthorized
@@ -1000,17 +984,15 @@ mod websocket_auth_priority {
     fn test_missing_all_credentials_produces_unauthorized() {
         let headers = axum::http::HeaderMap::new();
         let query = WsQuery {
-            token: None,
             ticket: None,
         };
 
         assert!(headers.get("Authorization").is_none());
         assert!(query.ticket.is_none());
-        assert!(query.token.is_none());
 
         // This would produce:
         let err = synctv_api::http::error::AppError::unauthorized(
-            "Missing authentication: provide token via Authorization header, ?ticket=, or ?token=",
+            "Missing authentication: provide token via Authorization header or ?ticket=",
         );
         assert_eq!(err.status, axum::http::StatusCode::UNAUTHORIZED);
         assert!(err.message.contains("Missing authentication"));
@@ -1021,24 +1003,20 @@ mod websocket_auth_priority {
     fn test_auth_method_enum_values() {
         assert_eq!(AuthMethod::Header, AuthMethod::Header);
         assert_eq!(AuthMethod::Ticket, AuthMethod::Ticket);
-        assert_eq!(AuthMethod::TokenQuery, AuthMethod::TokenQuery);
         assert_ne!(AuthMethod::Header, AuthMethod::Ticket);
-        assert_ne!(AuthMethod::Ticket, AuthMethod::TokenQuery);
     }
 
     /// `WsQuery` deserialization
     #[test]
     fn test_ws_query_deserialization_combinations() {
-        // Both token and ticket
-        let json = r#"{"token":"jwt","ticket":"tix"}"#;
+        // With ticket
+        let json = r#"{"ticket":"tix"}"#;
         let query: WsQuery = serde_json::from_str(json).unwrap();
-        assert!(query.token.is_some());
         assert!(query.ticket.is_some());
 
         // Neither
         let json = r"{}";
         let query: WsQuery = serde_json::from_str(json).unwrap();
-        assert!(query.token.is_none());
         assert!(query.ticket.is_none());
     }
 

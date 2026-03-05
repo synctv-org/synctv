@@ -36,7 +36,6 @@ enum RoomStatus {
     ROOM_STATUS_ACTIVE = 1;
     ROOM_STATUS_PENDING = 2;
     ROOM_STATUS_CLOSED = 3;
-    // Reserved: 4, 5 (previously ARCHIVED, BANNED - now using is_banned field)
 }
 
 // Error codes for ErrorMessage

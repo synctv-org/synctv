@@ -233,45 +233,6 @@ impl MediaRepository {
         Ok(Media::from_row(&row)?)
     }
 
-    /// Conditional update: only succeeds if the row's name and position still
-    /// match `old_name`/`old_position`, providing optimistic locking without a
-    /// dedicated version column. Returns `Ok(None)` on conflict (no rows updated).
-    #[deprecated(note = "Use update_with_version for proper optimistic locking")]
-    pub async fn update_if_unchanged(
-        &self,
-        media: &Media,
-        old_name: &str,
-        old_position: i32,
-    ) -> Result<Option<Media>> {
-        let source_config_json = serde_json::to_value(&media.source_config)?;
-
-        let row = sqlx::query(
-            r"
-            UPDATE media
-            SET name = $2, position = $3, source_config = $4,
-                provider_instance_name = $5, version = version + 1
-             WHERE id = $1 AND name = $6 AND position = $7
-             RETURNING id, playlist_id, room_id, creator_id, name, position,
-                       source_provider, source_config, provider_instance_name,
-                       added_at, updated_at, version
-            ",
-        )
-        .bind(media.id.as_str())
-        .bind(&media.name)
-        .bind(media.position)
-        .bind(&source_config_json)
-        .bind(&media.provider_instance_name)
-        .bind(old_name)
-        .bind(old_position)
-        .fetch_optional(&self.pool)
-        .await?;
-
-        match row {
-            Some(row) => Ok(Some(Media::from_row(&row)?)),
-            None => Ok(None),
-        }
-    }
-
     /// Optimistic locking update: only succeeds if the row's version matches
     /// the provided `expected_version`. Returns `Ok(Some(Media))` with the updated
     /// row (version incremented) on success, or `Ok(None)` if the version doesn't
@@ -693,28 +654,6 @@ impl MediaRepository {
         }
 
         Ok(())
-    }
-
-    /// Get the next available position in a playlist (read-only, no locking).
-    ///
-    /// **WARNING**: This method does NOT hold a lock, so concurrent inserts may
-    /// produce duplicate positions. Use [`get_next_position_with_tx`] inside an
-    /// existing transaction for any write path (e.g. `add_media`, `add_batch`).
-    ///
-    /// This method is only safe for read-only / advisory purposes (e.g. UI hints).
-    #[deprecated(note = "Use get_next_position_with_tx inside a transaction for write paths")]
-    pub async fn get_next_position(&self, playlist_id: &PlaylistId) -> Result<i32> {
-        let next_pos: i32 = sqlx::query_scalar(
-            r"
-            SELECT COALESCE(MAX(position), -1) + 1
-            FROM media
-            WHERE playlist_id = $1            ",
-        )
-        .bind(playlist_id.as_str())
-        .fetch_one(&self.pool)
-        .await?;
-
-        Ok(next_pos)
     }
 
     /// Get the next available position in a playlist within a transaction.
@@ -1201,77 +1140,6 @@ mod tests {
         let result = media_repo.create_batch(&items).await;
         assert!(result.is_ok()); // Should succeed with automatic chunking
         assert_eq!(result.unwrap().len(), 1001);
-    }
-
-    /// Integration test: `update_if_unchanged` (optimistic locking)
-    #[tokio::test]
-    #[ignore = "Requires Docker"]
-    #[allow(deprecated)]
-    async fn test_update_if_unchanged() {
-        use crate::repository::playlist::PlaylistRepository;
-        use crate::repository::room::RoomRepository;
-        use crate::repository::user::UserRepository;
-        use crate::test_helpers::{RoomFixture, UserFixture};
-
-        let infra = crate::test_helpers::containers::TestInfra::postgres_only().await;
-        let user_repo = UserRepository::new(infra.pool.clone());
-        let room_repo = RoomRepository::new(infra.pool.clone());
-        let playlist_repo = PlaylistRepository::new(infra.pool.clone());
-        let media_repo = MediaRepository::new(infra.pool.clone());
-
-        // Setup
-        let owner = UserFixture::new().with_username("optimistic_owner").build();
-        let owner = user_repo.create(&owner).await.unwrap();
-
-        let room = RoomFixture::new()
-            .with_name("Optimistic Room")
-            .with_owner(owner.id.clone())
-            .build();
-        let room = room_repo.create(&room).await.unwrap();
-
-        // Create playlist hierarchy (root + child with name)
-        let (_, playlist) = crate::test_helpers::create_media_playlist_hierarchy(
-            &playlist_repo,
-            room.id.clone(),
-            "Optimistic Playlist",
-        )
-        .await;
-
-        let media = Media::from_provider(
-            playlist.id.clone(),
-            room.id.clone(),
-            Some(owner.id.clone()),
-            "Original".to_string(),
-            serde_json::json!({}),
-            "direct_url",
-            "default".to_string(),
-            0,
-        );
-        let created = media_repo.create(&media).await.unwrap();
-
-        // Update with correct old values
-        let mut updated = created.clone();
-        updated.name = "Updated".to_string();
-        updated.position = 5;
-
-        let result = media_repo
-            .update_if_unchanged(&updated, "Original", 0)
-            .await
-            .unwrap();
-        assert!(result.is_some());
-        let result = result.unwrap();
-        assert_eq!(result.name, "Updated");
-        assert_eq!(result.position, 5);
-
-        // Try update with stale old values (should return None)
-        let mut stale = created.clone();
-        stale.name = "Stale Update".to_string();
-
-        let result = media_repo
-            .update_if_unchanged(&stale, "Original", 0) // Old name and position
-            .await
-            .unwrap();
-        assert!(result.is_none()); // Conflict detected
     }
 
     /// Integration test: Swap positions

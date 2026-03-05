@@ -53,10 +53,6 @@ server:
   # Maximum time in seconds to wait for active connections to drain during shutdown.
   # Defaults to 30 seconds. Increase for deployments with many long-lived connections.
   shutdown_drain_timeout_seconds: 30
-  # Disable the legacy ?token=<jwt> WebSocket query parameter authentication.
-  # When true, only Authorization header and ?ticket= are accepted for WebSocket auth.
-  # Defaults to true (disabled) for security.
-  disable_ws_token_query: true
 
 database:
   url: "postgresql://synctv:synctv@localhost:5432/synctv"

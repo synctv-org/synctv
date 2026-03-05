@@ -700,41 +700,6 @@ async fn test_link_local_blocked_via_proxy() {
 }
 
 // ==================================================================
-// Proxy options preflight
-// ==================================================================
-
-// The deprecated function is intentionally tested for backward compatibility
-#[allow(deprecated)]
-#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
-async fn test_proxy_options_preflight_headers() {
-    use axum::response::IntoResponse;
-    let response = synctv_proxy::proxy_options_preflight()
-        .await
-        .into_response();
-    assert_eq!(response.status(), axum::http::StatusCode::NO_CONTENT);
-
-    let headers = response.headers();
-    assert_eq!(
-        headers
-            .get("access-control-allow-origin")
-            .unwrap()
-            .to_str()
-            .unwrap(),
-        "*"
-    );
-    assert!(headers.get("access-control-allow-methods").is_some());
-    assert!(headers.get("access-control-allow-headers").is_some());
-    assert_eq!(
-        headers
-            .get("access-control-max-age")
-            .unwrap()
-            .to_str()
-            .unwrap(),
-        "86400"
-    );
-}
-
-// ==================================================================
 // M3U8 Truncation behavior
 // ==================================================================
 

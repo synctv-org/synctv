@@ -119,13 +119,15 @@ impl FieldEncryption {
 
     /// Decrypt an encrypted string
     ///
-    /// Accepts either:
-    /// - Encrypted format: "enc:<base64(version + nonce + ciphertext)>"
-    /// - Plaintext: returned as-is (for backward compatibility)
+    /// Only accepts encrypted format: "enc:<base64(version + nonce + ciphertext)>"
+    /// Plaintext credentials are no longer supported.
     pub fn decrypt(&self, stored: &str) -> EncryptionResult<String> {
         let Some(encoded) = stored.strip_prefix(ENCRYPTED_PREFIX) else {
-            // Plaintext - return as-is for backward compatibility
-            return Ok(stored.to_string());
+            return Err(EncryptionError::InvalidFormat(
+                "Credential is not encrypted (missing 'enc:' prefix). \
+                 Plaintext credentials are no longer supported."
+                    .to_string(),
+            ));
         };
 
         // Encrypted format
@@ -190,13 +192,13 @@ mod tests {
     }
 
     #[test]
-    fn test_decrypt_plaintext_backward_compat() {
+    fn test_decrypt_plaintext_returns_error() {
         let enc = FieldEncryption::new(&test_key()).unwrap();
         let plaintext = "plaintext_password";
 
-        // Plaintext should pass through unchanged
-        let result = enc.decrypt(plaintext).unwrap();
-        assert_eq!(plaintext, result);
+        // Plaintext should be rejected
+        let result = enc.decrypt(plaintext);
+        assert!(result.is_err(), "Plaintext credentials should be rejected");
     }
 
     #[test]

@@ -37,10 +37,10 @@ fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
 #[derive(Debug, Clone)]
 pub struct UserContext {
     pub user_id: String,
-    /// Token issued-at timestamp (Unix seconds), used for password-change invalidation (legacy fallback)
+    /// Token issued-at timestamp (Unix seconds)
     pub iat: i64,
     /// Password version from JWT claims, used for password-change invalidation
-    pub pv: Option<i32>,
+    pub pv: i32,
 }
 
 /// Room context - contains `UserContext` and `room_id`
@@ -446,11 +446,11 @@ mod tests {
         let ctx = UserContext {
             user_id: "user1".to_string(),
             iat: 1234567890,
-            pv: Some(3),
+            pv: 3,
         };
         assert_eq!(ctx.user_id, "user1");
         assert_eq!(ctx.iat, 1234567890);
-        assert_eq!(ctx.pv, Some(3));
+        assert_eq!(ctx.pv, 3);
     }
 
     // ========== SecurityCheckPassed Marker Tests ==========

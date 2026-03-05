@@ -44,7 +44,11 @@ impl AlistApiImpl {
     ) -> Result<(String, String, Option<String>), synctv_core::provider::ProviderError> {
         let cred = self
             .credential_repo
-            .get_by_provider_and_server(caller_user_id, "alist", server_id)
+            .get_by_provider_and_server(
+                caller_user_id,
+                synctv_core::provider::AlistProvider::NAME,
+                server_id,
+            )
             .await
             .map_err(|e| {
                 synctv_core::provider::ProviderError::Internal(format!(
@@ -125,19 +129,20 @@ impl AlistApiImpl {
             use sha2::{Digest, Sha256};
             format!(
                 "{:x}",
-                Sha256::digest(
-                    format!("{}-https://github.com/AlistGo/alist", password).as_bytes()
-                )
+                Sha256::digest(format!("{}-https://github.com/AlistGo/alist", password).as_bytes())
             )
         };
 
-        let credential_data =
-            ProviderCredential::alist(host, req.username, stored_password);
+        let credential_data = ProviderCredential::alist(host, req.username, stored_password);
 
         // Upsert: delete existing then create
         if let Some(existing) = self
             .credential_repo
-            .get_by_provider_and_server(caller_user_id, "alist", &server_id)
+            .get_by_provider_and_server(
+                caller_user_id,
+                synctv_core::provider::AlistProvider::NAME,
+                &server_id,
+            )
             .await
             .ok()
             .flatten()
@@ -148,7 +153,7 @@ impl AlistApiImpl {
         let credential = UserProviderCredential {
             id: nanoid::nanoid!(),
             user_id: caller_user_id.to_string(),
-            provider: "alist".to_string(),
+            provider: synctv_core::provider::AlistProvider::NAME.to_string(),
             server_id: server_id.clone(),
             provider_instance_name: instance_name.map(ToString::to_string),
             credential_data: serde_json::to_value(&credential_data).map_err(|e| {
@@ -161,16 +166,16 @@ impl AlistApiImpl {
             updated_at: chrono::Utc::now(),
         };
 
-        self.credential_repo.create(&credential).await.map_err(|e| {
-            synctv_core::provider::ProviderError::Internal(format!(
-                "Failed to persist alist credential: {e}"
-            ))
-        })?;
+        self.credential_repo
+            .create(&credential)
+            .await
+            .map_err(|e| {
+                synctv_core::provider::ProviderError::Internal(format!(
+                    "Failed to persist alist credential: {e}"
+                ))
+            })?;
 
-        Ok(LoginResponse {
-            token,
-            server_id,
-        })
+        Ok(LoginResponse { token, server_id })
     }
 
     /// List Alist directory using stored credential
@@ -246,7 +251,11 @@ impl AlistApiImpl {
         if !req.server_id.is_empty() {
             if let Some(existing) = self
                 .credential_repo
-                .get_by_provider_and_server(caller_user_id, "alist", &req.server_id)
+                .get_by_provider_and_server(
+                    caller_user_id,
+                    synctv_core::provider::AlistProvider::NAME,
+                    &req.server_id,
+                )
                 .await
                 .map_err(|e| {
                     synctv_core::provider::ProviderError::Internal(format!(
@@ -254,11 +263,14 @@ impl AlistApiImpl {
                     ))
                 })?
             {
-                self.credential_repo.delete(&existing.id).await.map_err(|e| {
-                    synctv_core::provider::ProviderError::Internal(format!(
-                        "Failed to delete credential: {e}"
-                    ))
-                })?;
+                self.credential_repo
+                    .delete(&existing.id)
+                    .await
+                    .map_err(|e| {
+                        synctv_core::provider::ProviderError::Internal(format!(
+                            "Failed to delete credential: {e}"
+                        ))
+                    })?;
             }
         }
 

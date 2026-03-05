@@ -13,9 +13,7 @@ use axum::{
 };
 use serde_json::json;
 
-use crate::http::{
-    middleware::AuthUser, provider_common::InstanceQuery, AppError, AppState,
-};
+use crate::http::{middleware::AuthUser, provider_common::InstanceQuery, AppError, AppState};
 
 /// Build Bilibili HTTP routes (API only, no proxy)
 pub fn bilibili_routes() -> Router<AppState> {

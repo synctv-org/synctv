@@ -148,9 +148,9 @@ impl ClientApiImpl {
                 builder = builder.add_metadata(key, value);
             }
 
-            let full_result = builder.build().ok_or_else(|| {
-                ApiError::Internal("Failed to build PlaybackResult".to_string())
-            })?;
+            let full_result = builder
+                .build()
+                .ok_or_else(|| ApiError::Internal("Failed to build PlaybackResult".to_string()))?;
 
             playback_result_to_proto(&full_result)
         } else {

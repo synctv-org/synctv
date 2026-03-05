@@ -852,15 +852,18 @@ mod websocket_e2e {
         ));
         let user_provider_credential_repo =
             Arc::new(synctv_core::repository::UserProviderCredentialRepository::new(pool.clone()));
-        let bilibili_provider = Arc::new(synctv_core::provider::BilibiliProvider::new(
-            provider_instance_manager.clone(),
-        ));
-        let alist_provider = Arc::new(synctv_core::provider::AlistProvider::new(
-            provider_instance_manager.clone(),
-        ));
-        let emby_provider = Arc::new(synctv_core::provider::EmbyProvider::new(
-            provider_instance_manager.clone(),
-        ));
+        let providers = synctv_core::provider::ProviderSet {
+            bilibili: Arc::new(synctv_core::provider::BilibiliProvider::new(
+                provider_instance_manager.clone(),
+            )),
+            alist: Arc::new(synctv_core::provider::AlistProvider::new(
+                provider_instance_manager.clone(),
+            )),
+            emby: Arc::new(synctv_core::provider::EmbyProvider::new(
+                provider_instance_manager.clone(),
+            )),
+            direct_url: Arc::new(synctv_core::provider::DirectUrlProvider::new()),
+        };
 
         // Config — enable ?token= query parameter for test convenience
         let mut config = synctv_core::Config::default();
@@ -882,11 +885,17 @@ mod websocket_e2e {
 
         // BilibiliApiImpl, AlistApiImpl, EmbyApiImpl
         let bilibili_api = Arc::new(synctv_api::impls::BilibiliApiImpl::new(
-            bilibili_provider.clone(),
+            providers.bilibili.clone(),
             user_provider_credential_repo.clone(),
         ));
-        let alist_api = Arc::new(synctv_api::impls::AlistApiImpl::new(alist_provider.clone(), user_provider_credential_repo.clone()));
-        let emby_api = Arc::new(synctv_api::impls::EmbyApiImpl::new(emby_provider.clone(), user_provider_credential_repo.clone()));
+        let alist_api = Arc::new(synctv_api::impls::AlistApiImpl::new(
+            providers.alist.clone(),
+            user_provider_credential_repo.clone(),
+        ));
+        let emby_api = Arc::new(synctv_api::impls::EmbyApiImpl::new(
+            providers.emby.clone(),
+            user_provider_credential_repo.clone(),
+        ));
 
         let router_config = synctv_api::http::RouterConfig {
             turn_health_checker: Default::default(),
@@ -895,10 +904,7 @@ mod websocket_e2e {
             room_service: room_service.clone(),
             provider_instance_manager,
             user_provider_credential_repository: user_provider_credential_repo.clone(),
-            alist_provider,
-            bilibili_provider,
-            emby_provider,
-            direct_url_provider: std::sync::Arc::new(synctv_core::provider::DirectUrlProvider::new()),
+            providers: providers.clone(),
             cluster_manager: Some(cluster_manager),
             connection_manager,
             jwt_service: jwt_service.clone(),
@@ -953,14 +959,15 @@ mod websocket_e2e {
             bilibili_api,
             alist_api,
             emby_api,
-            provider_stores: std::sync::Arc::new(synctv_core::provider::store::ProviderStoreRegistry::new(None)),
-            proxy_provider_registry: std::sync::Arc::new(synctv_core::provider::proxy::ProxyProviderRegistry::new()),
+            provider_stores: std::sync::Arc::new(
+                synctv_core::provider::store::ProviderStoreRegistry::new(None),
+            ),
+            proxy_provider_registry: std::sync::Arc::new(providers.build_proxy_registry()),
             proxy_services: {
-                let signing_key = std::sync::Arc::new(
-                    synctv_core::service::ProxySigningKey::derive_from(
+                let signing_key =
+                    std::sync::Arc::new(synctv_core::service::ProxySigningKey::derive_from(
                         b"Test_Secret_Key_For_JWT_Tokens_32Bytes!!",
-                    ),
-                );
+                    ));
                 std::sync::Arc::new(synctv_core::provider::proxy::ProxyServices {
                     room_service: room_service.clone(),
                     credential_encryption: None,
@@ -2838,15 +2845,18 @@ mod websocket_connection_limit_timing {
         ));
         let user_provider_credential_repo =
             Arc::new(synctv_core::repository::UserProviderCredentialRepository::new(pool.clone()));
-        let bilibili_provider = Arc::new(synctv_core::provider::BilibiliProvider::new(
-            provider_instance_manager.clone(),
-        ));
-        let alist_provider = Arc::new(synctv_core::provider::AlistProvider::new(
-            provider_instance_manager.clone(),
-        ));
-        let emby_provider = Arc::new(synctv_core::provider::EmbyProvider::new(
-            provider_instance_manager.clone(),
-        ));
+        let providers = synctv_core::provider::ProviderSet {
+            bilibili: Arc::new(synctv_core::provider::BilibiliProvider::new(
+                provider_instance_manager.clone(),
+            )),
+            alist: Arc::new(synctv_core::provider::AlistProvider::new(
+                provider_instance_manager.clone(),
+            )),
+            emby: Arc::new(synctv_core::provider::EmbyProvider::new(
+                provider_instance_manager.clone(),
+            )),
+            direct_url: Arc::new(synctv_core::provider::DirectUrlProvider::new()),
+        };
 
         let mut config = synctv_core::Config::default();
         config.server.disable_ws_token_query = false;
@@ -2865,11 +2875,17 @@ mod websocket_connection_limit_timing {
         ));
 
         let bilibili_api = Arc::new(synctv_api::impls::BilibiliApiImpl::new(
-            bilibili_provider.clone(),
+            providers.bilibili.clone(),
             user_provider_credential_repo.clone(),
         ));
-        let alist_api = Arc::new(synctv_api::impls::AlistApiImpl::new(alist_provider.clone(), user_provider_credential_repo.clone()));
-        let emby_api = Arc::new(synctv_api::impls::EmbyApiImpl::new(emby_provider.clone(), user_provider_credential_repo.clone()));
+        let alist_api = Arc::new(synctv_api::impls::AlistApiImpl::new(
+            providers.alist.clone(),
+            user_provider_credential_repo.clone(),
+        ));
+        let emby_api = Arc::new(synctv_api::impls::EmbyApiImpl::new(
+            providers.emby.clone(),
+            user_provider_credential_repo.clone(),
+        ));
 
         let router_config = synctv_api::http::RouterConfig {
             turn_health_checker: Default::default(),
@@ -2878,10 +2894,7 @@ mod websocket_connection_limit_timing {
             room_service: room_service.clone(),
             provider_instance_manager,
             user_provider_credential_repository: user_provider_credential_repo.clone(),
-            alist_provider,
-            bilibili_provider,
-            emby_provider,
-            direct_url_provider: std::sync::Arc::new(synctv_core::provider::DirectUrlProvider::new()),
+            providers: providers.clone(),
             cluster_manager: Some(cluster_manager),
             connection_manager,
             jwt_service: jwt_service.clone(),
@@ -2936,14 +2949,15 @@ mod websocket_connection_limit_timing {
             bilibili_api,
             alist_api,
             emby_api,
-            provider_stores: std::sync::Arc::new(synctv_core::provider::store::ProviderStoreRegistry::new(None)),
-            proxy_provider_registry: std::sync::Arc::new(synctv_core::provider::proxy::ProxyProviderRegistry::new()),
+            provider_stores: std::sync::Arc::new(
+                synctv_core::provider::store::ProviderStoreRegistry::new(None),
+            ),
+            proxy_provider_registry: std::sync::Arc::new(providers.build_proxy_registry()),
             proxy_services: {
-                let signing_key = std::sync::Arc::new(
-                    synctv_core::service::ProxySigningKey::derive_from(
+                let signing_key =
+                    std::sync::Arc::new(synctv_core::service::ProxySigningKey::derive_from(
                         b"Test_Secret_Key_For_JWT_Tokens_32Bytes!!",
-                    ),
-                );
+                    ));
                 std::sync::Arc::new(synctv_core::provider::proxy::ProxyServices {
                     room_service: room_service.clone(),
                     credential_encryption: None,

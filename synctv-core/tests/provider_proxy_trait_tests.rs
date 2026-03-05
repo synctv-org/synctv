@@ -13,12 +13,15 @@ use std::time::Duration;
 use synctv_core::provider::{
     proxy::lookup_versioned,
     store::{InMemoryProviderStore, ProviderStore, ProviderStoreExt, VersionedPlayback},
-    AlistProvider, BilibiliProvider, DirectUrlProvider, EmbyProvider, MediaProvider, PlaybackResult,
+    AlistProvider, BilibiliProvider, DirectUrlProvider, EmbyProvider, MediaProvider,
+    PlaybackResult,
 };
 
 fn fake_provider_instance_manager() -> Arc<synctv_core::service::RemoteProviderManager> {
     let pool = sqlx::PgPool::connect_lazy("postgresql://fake").unwrap();
-    let repo = Arc::new(synctv_core::repository::ProviderInstanceRepository::new(pool));
+    let repo = Arc::new(synctv_core::repository::ProviderInstanceRepository::new(
+        pool,
+    ));
     Arc::new(synctv_core::service::RemoteProviderManager::new(
         repo, None, None,
     ))

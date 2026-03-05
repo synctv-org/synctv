@@ -29,7 +29,7 @@ impl AlistProviderGrpcService {
     #[must_use]
     pub fn new(app_state: Arc<AppState>) -> Self {
         let api = AlistApiImpl::new(
-            app_state.alist_provider.clone(),
+            app_state.providers.alist.clone(),
             app_state.user_provider_credential_repository.clone(),
         );
         Self { app_state, api }
@@ -136,7 +136,7 @@ impl AlistProviderService for AlistProviderGrpcService {
         let provider_binds = get_provider_binds(
             &self.app_state.user_provider_credential_repository,
             &auth_context.user_id,
-            "alist",
+            synctv_core::provider::AlistProvider::NAME,
             "username",
         )
         .await

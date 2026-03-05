@@ -29,7 +29,7 @@ impl EmbyProviderGrpcService {
     #[must_use]
     pub fn new(app_state: Arc<AppState>) -> Self {
         let api = EmbyApiImpl::new(
-            app_state.emby_provider.clone(),
+            app_state.providers.emby.clone(),
             app_state.user_provider_credential_repository.clone(),
         );
         Self { app_state, api }
@@ -136,7 +136,7 @@ impl EmbyProviderService for EmbyProviderGrpcService {
         let provider_binds = get_provider_binds(
             &self.app_state.user_provider_credential_repository,
             &auth_context.user_id,
-            "emby",
+            synctv_core::provider::EmbyProvider::NAME,
             "emby_user_id",
         )
         .await

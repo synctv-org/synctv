@@ -39,11 +39,7 @@ pub async fn resolve_credential(
     cred_ref: &CredentialRef,
 ) -> Result<ProviderCredential, ProviderError> {
     let credential = repo
-        .get_by_provider_and_server(
-            &cred_ref.credential_owner_id,
-            provider,
-            &cred_ref.server_id,
-        )
+        .get_by_provider_and_server(&cred_ref.credential_owner_id, provider, &cred_ref.server_id)
         .await
         .map_err(|e| {
             ProviderError::Internal(format!("Failed to query credential from database: {e}"))

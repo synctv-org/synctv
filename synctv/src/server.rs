@@ -14,7 +14,6 @@ use tracing::{error, info, warn};
 
 use synctv_cluster::sync::ClusterEvent;
 use synctv_core::{
-    provider::{AlistProvider, BilibiliProvider, EmbyProvider},
     repository::UserProviderCredentialRepository,
     service::{RoomService, UserService},
     Config,
@@ -48,10 +47,7 @@ pub struct Services {
     pub providers_manager: Arc<synctv_core::service::ProvidersManager>,
     pub provider_instance_manager: Arc<synctv_core::service::RemoteProviderManager>,
     pub user_provider_credential_repository: Arc<UserProviderCredentialRepository>,
-    pub alist_provider: Arc<AlistProvider>,
-    pub bilibili_provider: Arc<BilibiliProvider>,
-    pub emby_provider: Arc<EmbyProvider>,
-    pub direct_url_provider: Arc<synctv_core::provider::DirectUrlProvider>,
+    pub providers: synctv_core::provider::ProviderSet,
     pub oauth2_service: Option<Arc<synctv_core::service::OAuth2Service>>,
     pub settings_service: Arc<synctv_core::service::SettingsService>,
     pub settings_registry: Arc<synctv_core::service::SettingsRegistry>,
@@ -482,10 +478,7 @@ impl SyncTvServer {
                 room_service,
                 provider_instance_manager,
                 user_provider_credential_repository,
-                alist_provider: self.services.alist_provider.clone(),
-                bilibili_provider: self.services.bilibili_provider.clone(),
-                emby_provider: self.services.emby_provider.clone(),
-                direct_url_provider: self.services.direct_url_provider.clone(),
+                providers: self.services.providers.clone(),
                 cluster_manager,
                 connection_manager: Arc::new(connection_manager),
                 jwt_service,

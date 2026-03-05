@@ -69,9 +69,7 @@ struct ServerComponents {
     live_infra: Option<Arc<synctv_livestream::api::LiveStreamingInfrastructure>>,
     stun_server: Option<Arc<synctv_core::service::StunServer>>,
     turn_health_checker: Option<Arc<synctv_core::service::TurnHealthChecker>>,
-    alist_provider: Arc<AlistProvider>,
-    bilibili_provider: Arc<BilibiliProvider>,
-    emby_provider: Arc<EmbyProvider>,
+    providers: synctv_core::provider::ProviderSet,
 }
 
 /// The assembled application, ready to be started.
@@ -767,18 +765,19 @@ impl Application {
 
         // Media providers
         let pim = core.services.provider_instance_manager.clone();
-        let alist_provider = Arc::new(AlistProvider::new(pim.clone()));
-        let bilibili_provider = Arc::new(BilibiliProvider::new(pim.clone()));
-        let emby_provider = Arc::new(EmbyProvider::new(pim));
+        let providers = synctv_core::provider::ProviderSet {
+            alist: Arc::new(AlistProvider::new(pim.clone())),
+            bilibili: Arc::new(BilibiliProvider::new(pim.clone())),
+            emby: Arc::new(EmbyProvider::new(pim)),
+            direct_url: Arc::new(synctv_core::provider::DirectUrlProvider::new()),
+        };
 
         Ok(ServerComponents {
             livestream_state,
             live_infra,
             stun_server: webrtc_components.stun_server,
             turn_health_checker: webrtc_components.turn_health_checker,
-            alist_provider,
-            bilibili_provider,
-            emby_provider,
+            providers,
         })
     }
 
@@ -807,10 +806,7 @@ impl Application {
                 .services
                 .user_provider_credential_repo
                 .clone(),
-            alist_provider: servers.alist_provider,
-            bilibili_provider: servers.bilibili_provider,
-            emby_provider: servers.emby_provider,
-            direct_url_provider: Arc::new(synctv_core::provider::DirectUrlProvider::new()),
+            providers: servers.providers,
             oauth2_service: core.services.oauth2_service.clone(),
             settings_service: core.services.settings_service.clone(),
             settings_registry: core.services.settings_registry.clone(),

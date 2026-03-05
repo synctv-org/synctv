@@ -48,6 +48,9 @@ pub struct BilibiliPageInfo {
 }
 
 impl BilibiliProvider {
+    /// Provider type name constant.
+    pub const NAME: &'static str = "bilibili";
+
     /// Create a new `BilibiliProvider` with `RemoteProviderManager`
     #[must_use]
     pub const fn new(provider_instance_manager: Arc<RemoteProviderManager>) -> Self {
@@ -286,9 +289,7 @@ impl BilibiliSourceConfig {
             | Self::Live { credential_ref, .. } => credential_ref,
         }
     }
-
 }
-
 
 impl TryFrom<&Value> for BilibiliSourceConfig {
     type Error = ProviderError;
@@ -301,7 +302,7 @@ impl TryFrom<&Value> for BilibiliSourceConfig {
 #[async_trait]
 impl MediaProvider for BilibiliProvider {
     fn name(&self) -> &'static str {
-        "bilibili"
+        Self::NAME
     }
 
     async fn generate_playback(
@@ -314,18 +315,12 @@ impl MediaProvider for BilibiliProvider {
 
         // Resolve cookies from DB using credential_ref
         let repo = _ctx.credential_repo.ok_or_else(|| {
-            ProviderError::Internal(
-                "credential_repo not available in ProviderContext".to_string(),
-            )
+            ProviderError::Internal("credential_repo not available in ProviderContext".to_string())
         })?;
 
         let cred_ref = config.credential_ref();
-        let credential = super::credential_resolver::resolve_credential(
-            repo,
-            "bilibili",
-            cred_ref,
-        )
-        .await?;
+        let credential =
+            super::credential_resolver::resolve_credential(repo, Self::NAME, cred_ref).await?;
 
         let cookies = match credential {
             crate::models::ProviderCredential::Bilibili { cookies } => cookies,
@@ -351,15 +346,26 @@ impl MediaProvider for BilibiliProvider {
                 Duration::from_secs(2 * 3600), // 2 hours
             ),
             BilibiliSourceConfig::Pgc {
-                epid, cid, credential_ref, ..
+                epid,
+                cid,
+                credential_ref,
+                ..
             } => (
-                format!("playback:pgc:{epid}:{cid}:{}", credential_ref.credential_owner_id),
+                format!(
+                    "playback:pgc:{epid}:{cid}:{}",
+                    credential_ref.credential_owner_id
+                ),
                 Duration::from_secs(2 * 3600),
             ),
             BilibiliSourceConfig::Live {
-                room_id, credential_ref, ..
+                room_id,
+                credential_ref,
+                ..
             } => (
-                format!("playback:live:{room_id}:{}", credential_ref.credential_owner_id),
+                format!(
+                    "playback:live:{room_id}:{}",
+                    credential_ref.credential_owner_id
+                ),
                 Duration::from_secs(120), // Live streams expire quickly
             ),
         };
@@ -420,7 +426,7 @@ impl MediaProvider for BilibiliProvider {
         {
             super::sign_playback_urls(
                 &mut result,
-                "bilibili",
+                Self::NAME,
                 &version,
                 signing_key,
                 room_id,
@@ -502,7 +508,7 @@ impl MediaProvider for BilibiliProvider {
             let cred_ref = config.credential_ref();
             repo.get_by_provider_and_server(
                 &cred_ref.credential_owner_id,
-                "bilibili",
+                Self::NAME,
                 &cred_ref.server_id,
             )
             .await
@@ -589,8 +595,7 @@ impl super::proxy::ProviderProxy for BilibiliProvider {
 
                 // Propagate HMAC signature into M3U8 segment URLs
                 let proxy_base = if let Some(claims) = ctx.verified_claims {
-                    let signed_query =
-                        ctx.services.signing_key.build_signed_query(claims);
+                    let signed_query = ctx.services.signing_key.build_signed_query(claims);
                     format!("{}/{version}?{signed_query}", ctx.proxy_base)
                 } else {
                     format!("{}/{version}", ctx.proxy_base)
@@ -646,9 +651,8 @@ impl BilibiliProvider {
         }
 
         // Parse source_config to extract live stream info
-        let config = BilibiliSourceConfig::try_from(&media.source_config).map_err(|e| {
-            ProviderError::ApiError(format!("Failed to parse source config: {e}"))
-        })?;
+        let config = BilibiliSourceConfig::try_from(&media.source_config)
+            .map_err(|e| ProviderError::ApiError(format!("Failed to parse source config: {e}")))?;
 
         match &config {
             BilibiliSourceConfig::Live {
@@ -660,9 +664,12 @@ impl BilibiliProvider {
                 // Resolve cookies from credential store
                 let cookies = {
                     let repo = &ctx.services.credential_repo;
-                    let credential =
-                        super::credential_resolver::resolve_credential(repo, "bilibili", credential_ref)
-                            .await?;
+                    let credential = super::credential_resolver::resolve_credential(
+                        repo,
+                        BilibiliProvider::NAME,
+                        credential_ref,
+                    )
+                    .await?;
                     match credential {
                         crate::models::ProviderCredential::Bilibili { cookies } => cookies,
                         _ => return Err(ProviderError::InvalidCredentialType),
@@ -690,8 +697,7 @@ impl BilibiliProvider {
                 });
 
                 Ok(super::proxy::ProxyAction::DirectBody {
-                    body: serde_json::to_vec(&event_data)
-                        .unwrap_or_default(),
+                    body: serde_json::to_vec(&event_data).unwrap_or_default(),
                     content_type: "application/json".to_string(),
                     status: 200,
                 })

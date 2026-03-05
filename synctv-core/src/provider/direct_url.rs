@@ -3,7 +3,7 @@
 //! Provides direct playback for HTTP(S) URLs
 
 use super::{
-    proxy::{ProxyAction, ProxyRequestContext, ProviderProxy},
+    proxy::{ProviderProxy, ProxyAction, ProxyRequestContext},
     store::{ProviderStoreExt, VersionedPlayback},
     MediaProvider, PlaybackInfo, PlaybackResult, ProviderContext, ProviderError,
 };
@@ -18,6 +18,9 @@ use std::time::Duration;
 pub struct DirectUrlProvider {}
 
 impl DirectUrlProvider {
+    /// Provider type name constant.
+    pub const NAME: &'static str = "direct_url";
+
     #[must_use]
     pub const fn new() -> Self {
         Self {}
@@ -155,8 +158,7 @@ impl ProviderProxy for DirectUrlProvider {
                 "m3u8" => {
                     // Propagate HMAC signature into M3U8 segment URLs
                     let proxy_base = if let Some(claims) = ctx.verified_claims {
-                        let signed_query =
-                            ctx.services.signing_key.build_signed_query(claims);
+                        let signed_query = ctx.services.signing_key.build_signed_query(claims);
                         format!("{}/{version}?{signed_query}", ctx.proxy_base)
                     } else {
                         format!("{}/{version}", ctx.proxy_base)
@@ -178,7 +180,7 @@ impl ProviderProxy for DirectUrlProvider {
 #[async_trait]
 impl MediaProvider for DirectUrlProvider {
     fn name(&self) -> &'static str {
-        "direct_url"
+        Self::NAME
     }
 
     fn as_provider_proxy(&self) -> Option<&dyn ProviderProxy> {
@@ -297,7 +299,7 @@ impl MediaProvider for DirectUrlProvider {
         {
             super::sign_playback_urls(
                 &mut result,
-                "direct_url",
+                Self::NAME,
                 &version,
                 signing_key,
                 room_id,

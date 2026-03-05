@@ -42,7 +42,11 @@ impl EmbyApiImpl {
     ) -> Result<(String, String, String), synctv_core::provider::ProviderError> {
         let cred = self
             .credential_repo
-            .get_by_provider_and_server(caller_user_id, "emby", server_id)
+            .get_by_provider_and_server(
+                caller_user_id,
+                synctv_core::provider::EmbyProvider::NAME,
+                server_id,
+            )
             .await
             .map_err(|e| {
                 synctv_core::provider::ProviderError::Internal(format!(
@@ -95,13 +99,16 @@ impl EmbyApiImpl {
 
         // Generate server_id and persist credential
         let server_id = UserProviderCredential::generate_server_id(&host);
-        let credential_data =
-            ProviderCredential::emby(host, api_key, user_info.id.clone());
+        let credential_data = ProviderCredential::emby(host, api_key, user_info.id.clone());
 
         // Upsert: delete existing then create
         if let Some(existing) = self
             .credential_repo
-            .get_by_provider_and_server(caller_user_id, "emby", &server_id)
+            .get_by_provider_and_server(
+                caller_user_id,
+                synctv_core::provider::EmbyProvider::NAME,
+                &server_id,
+            )
             .await
             .ok()
             .flatten()
@@ -112,7 +119,7 @@ impl EmbyApiImpl {
         let credential = UserProviderCredential {
             id: nanoid::nanoid!(),
             user_id: caller_user_id.to_string(),
-            provider: "emby".to_string(),
+            provider: synctv_core::provider::EmbyProvider::NAME.to_string(),
             server_id: server_id.clone(),
             provider_instance_name: instance_name.map(ToString::to_string),
             credential_data: serde_json::to_value(&credential_data).map_err(|e| {
@@ -125,11 +132,14 @@ impl EmbyApiImpl {
             updated_at: chrono::Utc::now(),
         };
 
-        self.credential_repo.create(&credential).await.map_err(|e| {
-            synctv_core::provider::ProviderError::Internal(format!(
-                "Failed to persist emby credential: {e}"
-            ))
-        })?;
+        self.credential_repo
+            .create(&credential)
+            .await
+            .map_err(|e| {
+                synctv_core::provider::ProviderError::Internal(format!(
+                    "Failed to persist emby credential: {e}"
+                ))
+            })?;
 
         Ok(LoginResponse {
             user_id: user_info.id,
@@ -216,7 +226,11 @@ impl EmbyApiImpl {
         if !req.server_id.is_empty() {
             if let Some(existing) = self
                 .credential_repo
-                .get_by_provider_and_server(caller_user_id, "emby", &req.server_id)
+                .get_by_provider_and_server(
+                    caller_user_id,
+                    synctv_core::provider::EmbyProvider::NAME,
+                    &req.server_id,
+                )
                 .await
                 .map_err(|e| {
                     synctv_core::provider::ProviderError::Internal(format!(
@@ -224,11 +238,14 @@ impl EmbyApiImpl {
                     ))
                 })?
             {
-                self.credential_repo.delete(&existing.id).await.map_err(|e| {
-                    synctv_core::provider::ProviderError::Internal(format!(
-                        "Failed to delete credential: {e}"
-                    ))
-                })?;
+                self.credential_repo
+                    .delete(&existing.id)
+                    .await
+                    .map_err(|e| {
+                        synctv_core::provider::ProviderError::Internal(format!(
+                            "Failed to delete credential: {e}"
+                        ))
+                    })?;
             }
         }
 

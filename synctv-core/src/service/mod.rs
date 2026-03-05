@@ -20,9 +20,9 @@ pub mod oauth2;
 pub mod optimistic_retry;
 pub mod permission;
 pub mod playback;
-pub mod proxy_signature;
 pub mod playlist;
 pub mod providers_manager;
+pub mod proxy_signature;
 pub mod publish_key;
 pub mod rate_limit;
 pub mod remote_provider_manager;
@@ -87,11 +87,11 @@ pub use oauth2::{
 pub use optimistic_retry::retry_with_optimistic_lock;
 pub use permission::PermissionService;
 pub use playback::{BroadcastResult, PlaybackBroadcaster, PlaybackService, SeekResponse};
+pub use playlist::{PlaylistBroadcaster, PlaylistService};
+pub use providers_manager::ProvidersManager;
 pub use proxy_signature::{
     build_signed_proxy_url, ProxySignatureError, ProxySigningKey, ProxyUrlClaims,
 };
-pub use playlist::{PlaylistBroadcaster, PlaylistService};
-pub use providers_manager::ProvidersManager;
 pub use publish_key::{InMemoryJtiStore, JtiStore, PublishKey, PublishKeyService, RedisJtiStore};
 pub use rate_limit::{
     InMemoryRateLimitBackend, RateLimitBackend, RateLimitConfig, RateLimitError, RateLimiter,

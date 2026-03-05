@@ -35,9 +35,9 @@ use axum::{
 use std::sync::Arc;
 use synctv_cluster::sync::PublishRequest;
 use synctv_core::provider::proxy::ProxyServices;
-use synctv_core::service::ProxySigningKey;
-use synctv_core::provider::{AlistProvider, BilibiliProvider, DirectUrlProvider, EmbyProvider};
+use synctv_core::provider::ProviderSet;
 use synctv_core::repository::UserProviderCredentialRepository;
+use synctv_core::service::ProxySigningKey;
 use synctv_core::service::{RemoteProviderManager, RoomService, UserService};
 use synctv_livestream::api::LiveStreamingInfrastructure;
 use tokio::sync::mpsc;
@@ -55,10 +55,7 @@ pub struct RouterConfig {
     pub room_service: Arc<RoomService>,
     pub provider_instance_manager: Arc<RemoteProviderManager>,
     pub user_provider_credential_repository: Arc<UserProviderCredentialRepository>,
-    pub alist_provider: Arc<AlistProvider>,
-    pub bilibili_provider: Arc<BilibiliProvider>,
-    pub emby_provider: Arc<EmbyProvider>,
-    pub direct_url_provider: Arc<DirectUrlProvider>,
+    pub providers: ProviderSet,
     pub cluster_manager: Option<Arc<synctv_cluster::sync::ClusterManager>>,
     pub connection_manager: Arc<synctv_cluster::sync::ConnectionManager>,
     pub jwt_service: synctv_core::service::JwtService,
@@ -256,15 +253,15 @@ fn build_app_state(config: RouterConfig) -> AppState {
     // H-2: Create shared provider ApiImpls once at startup (not per-request)
     let credential_repo = config.user_provider_credential_repository.clone();
     let bilibili_api = Arc::new(crate::impls::BilibiliApiImpl::new(
-        config.bilibili_provider.clone(),
+        config.providers.bilibili.clone(),
         credential_repo.clone(),
     ));
     let alist_api = Arc::new(crate::impls::AlistApiImpl::new(
-        config.alist_provider.clone(),
+        config.providers.alist.clone(),
         credential_repo.clone(),
     ));
     let emby_api = Arc::new(crate::impls::EmbyApiImpl::new(
-        config.emby_provider.clone(),
+        config.providers.emby.clone(),
         credential_repo.clone(),
     ));
 
@@ -280,17 +277,12 @@ fn build_app_state(config: RouterConfig) -> AppState {
     );
 
     // Create lazy provider store registry (stores created on first access per-provider)
-    let provider_stores = Arc::new(synctv_core::provider::store::ProviderStoreRegistry::new(None));
+    let provider_stores = Arc::new(synctv_core::provider::store::ProviderStoreRegistry::new(
+        None,
+    ));
 
-    // Build proxy provider registry (discovered at startup, not hardcoded in handler)
-    let proxy_provider_registry = {
-        let registry = synctv_core::provider::proxy::ProxyProviderRegistry::new();
-        registry.register("bilibili", config.bilibili_provider.clone());
-        registry.register("alist", config.alist_provider.clone());
-        registry.register("emby", config.emby_provider.clone());
-        registry.register("direct_url", config.direct_url_provider.clone());
-        Arc::new(registry)
-    };
+    // Build proxy provider registry from ProviderSet (single source of truth)
+    let proxy_provider_registry = Arc::new(config.providers.build_proxy_registry());
 
     // Create ProxyServices for unified proxy handler (gives providers DB access)
     let proxy_services = Arc::new(ProxyServices {

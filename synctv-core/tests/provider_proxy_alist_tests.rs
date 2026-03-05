@@ -10,14 +10,16 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use synctv_core::provider::{
-    proxy::{ProxyAction, ProxyRequestContext, ProxyServices, ProviderProxy},
+    proxy::{ProviderProxy, ProxyAction, ProxyRequestContext, ProxyServices},
     store::{InMemoryProviderStore, ProviderStore, ProviderStoreExt, VersionedPlayback},
     AlistProvider, PlaybackInfo, PlaybackResult, SubtitleTrack,
 };
 
 fn fake_provider_instance_manager() -> Arc<synctv_core::service::RemoteProviderManager> {
     let pool = sqlx::PgPool::connect_lazy("postgresql://fake").unwrap();
-    let repo = Arc::new(synctv_core::repository::ProviderInstanceRepository::new(pool));
+    let repo = Arc::new(synctv_core::repository::ProviderInstanceRepository::new(
+        pool,
+    ));
     Arc::new(synctv_core::service::RemoteProviderManager::new(
         repo, None, None,
     ))
@@ -68,16 +70,15 @@ async fn store_versioned(store: &Arc<dyn ProviderStore>, vp: &VersionedPlayback)
 
 fn fake_proxy_services() -> ProxyServices {
     let pool = sqlx::PgPool::connect_lazy("postgresql://fake").unwrap();
-    let jwt = synctv_core::service::auth::JwtService::new(
-        "Test_Secret_Key_For_JWT_Tokens_32Bytes!!",
-    )
-    .expect("jwt");
+    let jwt =
+        synctv_core::service::auth::JwtService::new("Test_Secret_Key_For_JWT_Tokens_32Bytes!!")
+            .expect("jwt");
     let l2 = Arc::new(synctv_core::cache::NoopCacheL2);
     let username_cache =
         synctv_core::cache::UsernameCache::new(l2, "test:username:".to_string(), 100, 60);
-    let token_blacklist = Arc::new(
-        synctv_core::service::InMemoryTokenBlacklistStore::new(1000, 3600, 86400),
-    );
+    let token_blacklist = Arc::new(synctv_core::service::InMemoryTokenBlacklistStore::new(
+        1000, 3600, 86400,
+    ));
     let key_builder = synctv_core::cache::KeyBuilder::new("test");
     let brute_force =
         synctv_core::service::auth::BruteForceProtection::in_memory("test".to_string());
@@ -90,9 +91,8 @@ fn fake_proxy_services() -> ProxyServices {
         key_builder,
         brute_force,
     );
-    let credential_repo = Arc::new(
-        synctv_core::repository::UserProviderCredentialRepository::new(pool.clone()),
-    );
+    let credential_repo =
+        Arc::new(synctv_core::repository::UserProviderCredentialRepository::new(pool.clone()));
     let room_service = synctv_core::service::RoomService::new(pool, user_service);
     ProxyServices {
         room_service: Arc::new(room_service),
@@ -160,7 +160,9 @@ async fn test_m3u8_proxy() {
     };
     let action = p.resolve_proxy(&ctx).await.unwrap();
     match action {
-        ProxyAction::M3u8Rewrite { url, proxy_base, .. } => {
+        ProxyAction::M3u8Rewrite {
+            url, proxy_base, ..
+        } => {
             assert_eq!(url, "https://alist.example.com/d/video.m3u8");
             assert_eq!(proxy_base, "/api/providers/proxy/alist/a2");
         }

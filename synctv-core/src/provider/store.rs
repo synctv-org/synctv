@@ -460,10 +460,7 @@ mod tests {
 
         // Second load returns the same (cached) store instance
         let store2 = registry.load("bilibili");
-        assert_eq!(
-            store2.get_raw("key1").await.unwrap().unwrap(),
-            b"value1"
-        );
+        assert_eq!(store2.get_raw("key1").await.unwrap().unwrap(), b"value1");
 
         // Different provider name creates a separate store
         let store3 = registry.load("emby");

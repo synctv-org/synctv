@@ -51,7 +51,11 @@ impl BilibiliApiImpl {
 
         let cred = self
             .credential_repo
-            .get_by_provider_and_server(caller_user_id, "bilibili", server_id)
+            .get_by_provider_and_server(
+                caller_user_id,
+                synctv_core::provider::BilibiliProvider::NAME,
+                server_id,
+            )
             .await
             .map_err(|e| {
                 synctv_core::provider::ProviderError::Internal(format!(
@@ -90,7 +94,11 @@ impl BilibiliApiImpl {
         // Upsert: delete existing then create
         if let Some(existing) = self
             .credential_repo
-            .get_by_provider_and_server(caller_user_id, "bilibili", &server_id)
+            .get_by_provider_and_server(
+                caller_user_id,
+                synctv_core::provider::BilibiliProvider::NAME,
+                &server_id,
+            )
             .await
             .ok()
             .flatten()
@@ -101,7 +109,7 @@ impl BilibiliApiImpl {
         let credential = UserProviderCredential {
             id: nanoid::nanoid!(),
             user_id: caller_user_id.to_string(),
-            provider: "bilibili".to_string(),
+            provider: synctv_core::provider::BilibiliProvider::NAME.to_string(),
             server_id: server_id.clone(),
             provider_instance_name: instance_name.map(ToString::to_string),
             credential_data: serde_json::to_value(&credential_data).map_err(|e| {
@@ -114,11 +122,14 @@ impl BilibiliApiImpl {
             updated_at: chrono::Utc::now(),
         };
 
-        self.credential_repo.create(&credential).await.map_err(|e| {
-            synctv_core::provider::ProviderError::Internal(format!(
-                "Failed to persist bilibili credential: {e}"
-            ))
-        })?;
+        self.credential_repo
+            .create(&credential)
+            .await
+            .map_err(|e| {
+                synctv_core::provider::ProviderError::Internal(format!(
+                    "Failed to persist bilibili credential: {e}"
+                ))
+            })?;
 
         Ok(server_id)
     }
@@ -130,9 +141,7 @@ impl BilibiliApiImpl {
         req: ParseRequest,
         instance_name: Option<&str>,
     ) -> Result<ParseResponse, synctv_core::provider::ProviderError> {
-        let cookies = self
-            .resolve_cookies(caller_user_id, &req.server_id)
-            .await?;
+        let cookies = self.resolve_cookies(caller_user_id, &req.server_id).await?;
 
         // Step 1: Match URL
         let match_resp = self
@@ -339,9 +348,7 @@ impl BilibiliApiImpl {
         req: UserInfoRequest,
         instance_name: Option<&str>,
     ) -> Result<UserInfoResponse, synctv_core::provider::ProviderError> {
-        let cookies = self
-            .resolve_cookies(caller_user_id, &req.server_id)
-            .await?;
+        let cookies = self.resolve_cookies(caller_user_id, &req.server_id).await?;
 
         let info_req = synctv_media_providers::grpc::bilibili::UserInfoReq { cookies };
 
@@ -369,7 +376,11 @@ impl BilibiliApiImpl {
 
         if let Some(existing) = self
             .credential_repo
-            .get_by_provider_and_server(caller_user_id, "bilibili", server_id)
+            .get_by_provider_and_server(
+                caller_user_id,
+                synctv_core::provider::BilibiliProvider::NAME,
+                server_id,
+            )
             .await
             .map_err(|e| {
                 synctv_core::provider::ProviderError::Internal(format!(
@@ -377,11 +388,14 @@ impl BilibiliApiImpl {
                 ))
             })?
         {
-            self.credential_repo.delete(&existing.id).await.map_err(|e| {
-                synctv_core::provider::ProviderError::Internal(format!(
-                    "Failed to delete credential: {e}"
-                ))
-            })?;
+            self.credential_repo
+                .delete(&existing.id)
+                .await
+                .map_err(|e| {
+                    synctv_core::provider::ProviderError::Internal(format!(
+                        "Failed to delete credential: {e}"
+                    ))
+                })?;
         }
 
         Ok(LogoutResponse {

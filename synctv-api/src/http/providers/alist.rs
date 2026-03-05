@@ -12,9 +12,7 @@ use axum::{
 };
 use serde_json::json;
 
-use crate::http::{
-    middleware::AuthUser, provider_common::InstanceQuery, AppError, AppState,
-};
+use crate::http::{middleware::AuthUser, provider_common::InstanceQuery, AppError, AppState};
 
 use crate::impls::providers::get_provider_binds;
 
@@ -133,7 +131,7 @@ async fn binds(
     match get_provider_binds(
         &state.user_provider_credential_repository,
         &auth.user_id.to_string(),
-        "alist",
+        synctv_core::provider::AlistProvider::NAME,
         "username",
     )
     .await

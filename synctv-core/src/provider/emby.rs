@@ -30,6 +30,9 @@ pub struct EmbyProvider {
 }
 
 impl EmbyProvider {
+    /// Provider type name constant.
+    pub const NAME: &'static str = "emby";
+
     /// Create a new `EmbyProvider` with `RemoteProviderManager`
     #[must_use]
     pub const fn new(provider_instance_manager: Arc<RemoteProviderManager>) -> Self {
@@ -166,14 +169,12 @@ impl EmbyProvider {
         let config = EmbySourceConfig::try_from(source_config)?;
 
         let repo = ctx.credential_repo.ok_or_else(|| {
-            ProviderError::Internal(
-                "credential_repo not available in ProviderContext".to_string(),
-            )
+            ProviderError::Internal("credential_repo not available in ProviderContext".to_string())
         })?;
 
         let credential = super::credential_resolver::resolve_credential(
             repo,
-            "emby",
+            Self::NAME,
             &config.credential_ref,
         )
         .await?;
@@ -412,7 +413,7 @@ impl TryFrom<&Value> for EmbySourceConfig {
 #[async_trait]
 impl MediaProvider for EmbyProvider {
     fn name(&self) -> &'static str {
-        "emby"
+        Self::NAME
     }
 
     async fn validate_source_config(
@@ -434,7 +435,7 @@ impl MediaProvider for EmbyProvider {
             let cred = repo
                 .get_by_provider_and_server(
                     &config.credential_ref.credential_owner_id,
-                    "emby",
+                    Self::NAME,
                     &config.credential_ref.server_id,
                 )
                 .await
@@ -485,14 +486,12 @@ impl MediaProvider for EmbyProvider {
 
         // Resolve credentials from DB using credential_ref
         let repo = _ctx.credential_repo.ok_or_else(|| {
-            ProviderError::Internal(
-                "credential_repo not available in ProviderContext".to_string(),
-            )
+            ProviderError::Internal("credential_repo not available in ProviderContext".to_string())
         })?;
 
         let credential = super::credential_resolver::resolve_credential(
             repo,
-            "emby",
+            Self::NAME,
             &config.credential_ref,
         )
         .await?;
@@ -575,7 +574,7 @@ impl MediaProvider for EmbyProvider {
         {
             super::sign_playback_urls(
                 &mut result,
-                "emby",
+                Self::NAME,
                 &version,
                 signing_key,
                 room_id,
@@ -822,8 +821,7 @@ impl super::proxy::ProviderProxy for EmbyProvider {
                 "m3u8" => {
                     // Propagate HMAC signature into M3U8 segment URLs
                     let proxy_base = if let Some(claims) = ctx.verified_claims {
-                        let signed_query =
-                            ctx.services.signing_key.build_signed_query(claims);
+                        let signed_query = ctx.services.signing_key.build_signed_query(claims);
                         format!("{}/{version}?{signed_query}", ctx.proxy_base)
                     } else {
                         format!("{}/{version}", ctx.proxy_base)

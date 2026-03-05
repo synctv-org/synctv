@@ -86,14 +86,19 @@ impl ProxySigningKey {
     }
 
     /// Verify claims against a hex-encoded signature.
-    pub fn verify(&self, claims: &ProxyUrlClaims, signature: &str) -> Result<(), ProxySignatureError> {
+    pub fn verify(
+        &self,
+        claims: &ProxyUrlClaims,
+        signature: &str,
+    ) -> Result<(), ProxySignatureError> {
         // Check expiry first
         let now = chrono::Utc::now().timestamp();
         if now > claims.expires_at {
             return Err(ProxySignatureError::Expired);
         }
 
-        let sig_bytes = hex::decode(signature).map_err(|_| ProxySignatureError::InvalidSignature)?;
+        let sig_bytes =
+            hex::decode(signature).map_err(|_| ProxySignatureError::InvalidSignature)?;
         let mut mac = self.key.clone();
         mac.update(Self::canonical_message(claims).as_bytes());
         mac.verify_slice(&sig_bytes)

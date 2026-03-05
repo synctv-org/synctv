@@ -32,6 +32,9 @@ pub struct AlistProvider {
 }
 
 impl AlistProvider {
+    /// Provider type name constant.
+    pub const NAME: &'static str = "alist";
+
     /// Create a new `AlistProvider` with `RemoteProviderManager`
     #[must_use]
     pub const fn new(provider_instance_manager: Arc<RemoteProviderManager>) -> Self {
@@ -165,14 +168,12 @@ impl AlistProvider {
         let config = AlistSourceConfig::try_from(source_config)?;
 
         let repo = ctx.credential_repo.ok_or_else(|| {
-            ProviderError::Internal(
-                "credential_repo not available in ProviderContext".to_string(),
-            )
+            ProviderError::Internal("credential_repo not available in ProviderContext".to_string())
         })?;
 
         let credential = super::credential_resolver::resolve_credential(
             repo,
-            "alist",
+            Self::NAME,
             &config.credential_ref,
         )
         .await?;
@@ -353,7 +354,7 @@ impl AlistProvider {
 #[async_trait]
 impl MediaProvider for AlistProvider {
     fn name(&self) -> &'static str {
-        "alist"
+        Self::NAME
     }
 
     async fn validate_source_config(
@@ -378,7 +379,7 @@ impl MediaProvider for AlistProvider {
             let cred = repo
                 .get_by_provider_and_server(
                     &config.credential_ref.credential_owner_id,
-                    "alist",
+                    Self::NAME,
                     &config.credential_ref.server_id,
                 )
                 .await
@@ -496,7 +497,7 @@ impl MediaProvider for AlistProvider {
         {
             super::sign_playback_urls(
                 &mut result,
-                "alist",
+                Self::NAME,
                 &version,
                 signing_key,
                 room_id,
@@ -549,8 +550,7 @@ impl super::proxy::ProviderProxy for AlistProvider {
                 "m3u8" => {
                     // Propagate HMAC signature into M3U8 segment URLs
                     let proxy_base = if let Some(claims) = ctx.verified_claims {
-                        let signed_query =
-                            ctx.services.signing_key.build_signed_query(claims);
+                        let signed_query = ctx.services.signing_key.build_signed_query(claims);
                         format!("{}/{version}?{signed_query}", ctx.proxy_base)
                     } else {
                         format!("{}/{version}", ctx.proxy_base)
@@ -715,7 +715,11 @@ impl DynamicFolder for AlistProvider {
             PlayMode::RepeatOne => Ok(None),
             PlayMode::Sequential | PlayMode::RepeatAll => {
                 let parent_path = relative_path.rsplit_once('/').map(|x| x.0).and_then(|s| {
-                    if s.is_empty() { None } else { Some(s) }
+                    if s.is_empty() {
+                        None
+                    } else {
+                        Some(s)
+                    }
                 });
 
                 const PAGE_SIZE: usize = 50;
@@ -727,10 +731,15 @@ impl DynamicFolder for AlistProvider {
                         .list_playlist(ctx, playlist, parent_path, current_page, PAGE_SIZE)
                         .await?;
 
-                    if page_items.is_empty() { break; }
+                    if page_items.is_empty() {
+                        break;
+                    }
 
                     if found_current {
-                        if let Some(next) = page_items.iter().find(|item| item.item_type == ItemType::Media) {
+                        if let Some(next) = page_items
+                            .iter()
+                            .find(|item| item.item_type == ItemType::Media)
+                        {
                             return Ok(Some(NextPlayItem {
                                 name: next.name.clone(),
                                 item_type: next.item_type,
@@ -740,9 +749,16 @@ impl DynamicFolder for AlistProvider {
                                 relative_path: next.path.clone(),
                             }.strip_credentials()));
                         }
-                    } else if let Some(idx) = page_items.iter().position(|item| item.path == relative_path) {
+                    } else if let Some(idx) = page_items
+                        .iter()
+                        .position(|item| item.path == relative_path)
+                    {
                         found_current = true;
-                        if let Some(next) = page_items.iter().skip(idx + 1).find(|item| item.item_type == ItemType::Media) {
+                        if let Some(next) = page_items
+                            .iter()
+                            .skip(idx + 1)
+                            .find(|item| item.item_type == ItemType::Media)
+                        {
                             return Ok(Some(NextPlayItem {
                                 name: next.name.clone(),
                                 item_type: next.item_type,
@@ -754,16 +770,27 @@ impl DynamicFolder for AlistProvider {
                         }
                     }
 
-                    if page_items.len() < PAGE_SIZE { break; }
+                    if page_items.len() < PAGE_SIZE {
+                        break;
+                    }
                     current_page += 1;
                 }
 
                 if found_current && play_mode == PlayMode::RepeatAll {
                     let parent_path = relative_path.rsplit_once('/').map(|x| x.0).and_then(|s| {
-                        if s.is_empty() { None } else { Some(s) }
+                        if s.is_empty() {
+                            None
+                        } else {
+                            Some(s)
+                        }
                     });
-                    let first_page = self.list_playlist(ctx, playlist, parent_path, 0, PAGE_SIZE).await?;
-                    if let Some(first) = first_page.iter().find(|item| item.item_type == ItemType::Media) {
+                    let first_page = self
+                        .list_playlist(ctx, playlist, parent_path, 0, PAGE_SIZE)
+                        .await?;
+                    if let Some(first) = first_page
+                        .iter()
+                        .find(|item| item.item_type == ItemType::Media)
+                    {
                         return Ok(Some(NextPlayItem {
                             name: first.name.clone(),
                             item_type: first.item_type,
@@ -779,7 +806,11 @@ impl DynamicFolder for AlistProvider {
             }
             PlayMode::Shuffle => {
                 let parent_path = relative_path.rsplit_once('/').map(|x| x.0).and_then(|s| {
-                    if s.is_empty() { None } else { Some(s) }
+                    if s.is_empty() {
+                        None
+                    } else {
+                        Some(s)
+                    }
                 });
 
                 const PAGE_SIZE: usize = 50;
@@ -787,16 +818,25 @@ impl DynamicFolder for AlistProvider {
                 let mut all_items = Vec::with_capacity(MAX_ITEMS);
                 let mut page = 0;
                 loop {
-                    let page_items = self.list_playlist(ctx, playlist, parent_path, page, PAGE_SIZE).await?;
+                    let page_items = self
+                        .list_playlist(ctx, playlist, parent_path, page, PAGE_SIZE)
+                        .await?;
                     let is_last_page = page_items.len() < PAGE_SIZE;
                     all_items.extend(page_items);
-                    if is_last_page || all_items.len() >= MAX_ITEMS { break; }
+                    if is_last_page || all_items.len() >= MAX_ITEMS {
+                        break;
+                    }
                     page += 1;
                 }
                 all_items.truncate(MAX_ITEMS);
 
-                let videos: Vec<_> = all_items.iter().filter(|item| item.item_type == ItemType::Media).collect();
-                if videos.is_empty() { return Ok(None); }
+                let videos: Vec<_> = all_items
+                    .iter()
+                    .filter(|item| item.item_type == ItemType::Media)
+                    .collect();
+                if videos.is_empty() {
+                    return Ok(None);
+                }
 
                 let random_idx = rand::random_range(0..videos.len());
                 let random_item = videos[random_idx];

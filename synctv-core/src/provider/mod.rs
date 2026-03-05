@@ -54,6 +54,36 @@ pub use emby::EmbyProvider;
 pub use live_proxy::LiveProxyProvider;
 pub use rtmp::RtmpProvider;
 
+/// Bundle of all media provider instances.
+///
+/// Consolidates per-provider fields into a single struct. Pass this through
+/// the application instead of 4 separate `Arc<XxxProvider>` fields.
+/// Adding a new provider only requires updating this struct and its
+/// `build_proxy_registry()` method.
+#[derive(Clone)]
+pub struct ProviderSet {
+    pub alist: std::sync::Arc<AlistProvider>,
+    pub bilibili: std::sync::Arc<BilibiliProvider>,
+    pub emby: std::sync::Arc<EmbyProvider>,
+    pub direct_url: std::sync::Arc<DirectUrlProvider>,
+}
+
+impl ProviderSet {
+    /// Build a `ProxyProviderRegistry` from this provider set.
+    ///
+    /// Registers all proxy-capable providers under their canonical names.
+    /// Called once at startup; both HTTP and gRPC share the resulting registry.
+    #[must_use]
+    pub fn build_proxy_registry(&self) -> ProxyProviderRegistry {
+        let registry = ProxyProviderRegistry::new();
+        registry.register(AlistProvider::NAME, self.alist.clone());
+        registry.register(BilibiliProvider::NAME, self.bilibili.clone());
+        registry.register(EmbyProvider::NAME, self.emby.clone());
+        registry.register(DirectUrlProvider::NAME, self.direct_url.clone());
+        registry
+    }
+}
+
 /// Parse a `serde_json::Value` into a typed source config.
 ///
 /// Common helper for provider `TryFrom<&Value>` implementations.

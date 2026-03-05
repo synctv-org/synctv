@@ -161,7 +161,7 @@ use tonic::transport::Server;
 
 use std::sync::Arc;
 use synctv_cluster::sync::{ClusterManager, ConnectionManager, PublishRequest};
-use synctv_core::provider::{AlistProvider, BilibiliProvider, EmbyProvider};
+use synctv_core::provider::{AlistProvider, BilibiliProvider, DirectUrlProvider, EmbyProvider};
 use synctv_core::service::auth::JwtService;
 use synctv_core::service::{
     ContentFilter, EmailService, EmailTokenService, ProvidersManager, RateLimitConfig, RateLimiter,
@@ -577,15 +577,18 @@ pub async fn serve(grpc_config: GrpcServerConfig<'_>) -> anyhow::Result<()> {
     if let Some(_providers_mgr) = providers_manager {
         tracing::info!("Registering provider gRPC services");
 
-        // Create provider instances for the gRPC services
+        // Create provider set for the gRPC services
         let provider_instance_manager_for_provider = _providers_mgr.instance_manager().clone();
-        let alist_provider = Arc::new(AlistProvider::new(
-            provider_instance_manager_for_provider.clone(),
-        ));
-        let bilibili_provider = Arc::new(BilibiliProvider::new(
-            provider_instance_manager_for_provider.clone(),
-        ));
-        let emby_provider = Arc::new(EmbyProvider::new(provider_instance_manager_for_provider));
+        let providers = synctv_core::provider::ProviderSet {
+            alist: Arc::new(AlistProvider::new(
+                provider_instance_manager_for_provider.clone(),
+            )),
+            bilibili: Arc::new(BilibiliProvider::new(
+                provider_instance_manager_for_provider.clone(),
+            )),
+            emby: Arc::new(EmbyProvider::new(provider_instance_manager_for_provider)),
+            direct_url: Arc::new(DirectUrlProvider::new()),
+        };
 
         let provider_jwt_validator = Arc::new(synctv_core::service::auth::JwtValidator::new(
             Arc::new(jwt_service_for_provider.clone()),
@@ -598,10 +601,7 @@ pub async fn serve(grpc_config: GrpcServerConfig<'_>) -> anyhow::Result<()> {
             room_service: room_service_for_provider,
             provider_instance_manager: _providers_mgr.instance_manager().clone(),
             user_provider_credential_repository: user_provider_credential_repository.clone(),
-            alist_provider: alist_provider.clone(),
-            bilibili_provider: bilibili_provider.clone(),
-            emby_provider: emby_provider.clone(),
-            direct_url_provider: std::sync::Arc::new(synctv_core::provider::DirectUrlProvider::new()),
+            providers: providers.clone(),
             cluster_manager: None,
             connection_manager: Arc::new(connection_manager_for_provider.clone()),
             jwt_service: jwt_service_for_provider.clone(),
@@ -649,18 +649,22 @@ pub async fn serve(grpc_config: GrpcServerConfig<'_>) -> anyhow::Result<()> {
             admin_api: None,
             notification_api: None,
             oauth2_api: None,
-            bilibili_api: Arc::new(crate::impls::BilibiliApiImpl::new(bilibili_provider.clone(), user_provider_credential_repository.clone())),
-            alist_api: Arc::new(crate::impls::AlistApiImpl::new(alist_provider.clone(), user_provider_credential_repository.clone())),
-            emby_api: Arc::new(crate::impls::EmbyApiImpl::new(emby_provider.clone(), user_provider_credential_repository.clone())),
-            provider_stores: Arc::new(synctv_core::provider::store::ProviderStoreRegistry::new(None)),
-            proxy_provider_registry: {
-                let registry = Arc::new(synctv_core::provider::proxy::ProxyProviderRegistry::new());
-                registry.register("bilibili", bilibili_provider);
-                registry.register("alist", alist_provider);
-                registry.register("emby", emby_provider);
-                registry.register("direct_url", std::sync::Arc::new(synctv_core::provider::DirectUrlProvider::new()));
-                registry
-            },
+            bilibili_api: Arc::new(crate::impls::BilibiliApiImpl::new(
+                providers.bilibili.clone(),
+                user_provider_credential_repository.clone(),
+            )),
+            alist_api: Arc::new(crate::impls::AlistApiImpl::new(
+                providers.alist.clone(),
+                user_provider_credential_repository.clone(),
+            )),
+            emby_api: Arc::new(crate::impls::EmbyApiImpl::new(
+                providers.emby.clone(),
+                user_provider_credential_repository.clone(),
+            )),
+            provider_stores: Arc::new(synctv_core::provider::store::ProviderStoreRegistry::new(
+                None,
+            )),
+            proxy_provider_registry: Arc::new(providers.build_proxy_registry()),
             proxy_services: std::sync::Arc::new(synctv_core::provider::proxy::ProxyServices {
                 room_service: room_service.clone(),
                 credential_encryption: None,

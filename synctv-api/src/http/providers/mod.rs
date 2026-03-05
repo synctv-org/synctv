@@ -54,8 +54,8 @@ pub(crate) async fn execute_proxy_action(
             content_type,
             status,
         } => {
-            let status_code = axum::http::StatusCode::from_u16(status)
-                .unwrap_or(axum::http::StatusCode::OK);
+            let status_code =
+                axum::http::StatusCode::from_u16(status).unwrap_or(axum::http::StatusCode::OK);
             Ok(axum::response::Response::builder()
                 .status(status_code)
                 .header(axum::http::header::CONTENT_TYPE, content_type)
